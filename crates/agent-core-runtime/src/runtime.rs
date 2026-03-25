@@ -1245,7 +1245,7 @@ mod tests {
                     id: ToolCallId::new(),
                     call_id: "call-read-1".to_string(),
                     tool_name: "read".to_string(),
-                    arguments: serde_json::json!({"path":"sample.txt","limit":1}),
+                    arguments: serde_json::json!({"path":"sample.txt","line_count":1}),
                     origin: ToolOrigin::Local,
                 };
                 Ok(stream::iter(vec![

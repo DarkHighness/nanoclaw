@@ -104,7 +104,7 @@ pub struct Message {
     pub parts: Vec<MessagePart>,
     #[serde(default)]
     pub name: Option<String>,
-    #[serde(default = "new_opaque_id", alias = "provider_message_id")]
+    #[serde(default = "new_opaque_id")]
     pub message_id: String,
     #[serde(default)]
     pub metadata: BTreeMap<String, Value>,

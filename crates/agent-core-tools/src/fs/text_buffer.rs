@@ -59,7 +59,7 @@ impl TextBuffer {
     pub fn insert_after(&mut self, after_line: usize, text: &str) -> Result<()> {
         if after_line > self.line_count() {
             return Err(ToolError::invalid(format!(
-                "insert_line {} is beyond end of file ({} lines total)",
+                "after_line {} is beyond end of file ({} lines total)",
                 after_line,
                 self.line_count()
             )));

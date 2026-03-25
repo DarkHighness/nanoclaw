@@ -32,7 +32,7 @@ pub struct ToolSpec {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ToolCall {
     pub id: ToolCallId,
-    #[serde(default = "new_opaque_id", alias = "provider_call_id")]
+    #[serde(default = "new_opaque_id")]
     pub call_id: String,
     pub tool_name: String,
     pub arguments: Value,
@@ -42,7 +42,7 @@ pub struct ToolCall {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ToolResult {
     pub id: ToolCallId,
-    #[serde(default = "new_opaque_id", alias = "provider_call_id")]
+    #[serde(default = "new_opaque_id")]
     pub call_id: String,
     pub tool_name: String,
     pub parts: Vec<MessagePart>,

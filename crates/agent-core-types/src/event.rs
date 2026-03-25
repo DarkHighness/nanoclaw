@@ -31,7 +31,7 @@ pub enum ModelEvent {
     },
     ResponseComplete {
         stop_reason: Option<String>,
-        #[serde(default, alias = "assistant_message_id")]
+        #[serde(default)]
         message_id: Option<String>,
         reasoning: Vec<Reasoning>,
     },

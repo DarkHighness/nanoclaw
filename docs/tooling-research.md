@@ -90,7 +90,7 @@ Implementation impact:
 
 - The OpenAI backend path now uses the Responses-compatible `rig` path.
 - `agent-core-types` preserves `message_id` on messages and `call_id` on tool calls/results.
-- Provider-specific legacy names remain only as deserialization aliases for compatibility.
+- Provider adapters now emit the substrate's canonical field names directly instead of preserving compatibility aliases in the core types.
 
 ### 7. Local web tooling should preserve the hosted-tool split between discovery and retrieval
 
@@ -183,7 +183,7 @@ Implementation impact:
 - `patch` now stages multi-file `write` / `edit` / `delete` operations in memory first, so a failed later operation does not partially commit earlier mutations.
 - `grep`, `glob`, and `list` now return stable text headers plus structured metadata arrays, so discovery tools line up better with the read/edit path.
 - `bash`, `web_fetch`, `web_search`, `todo_write`, and `task` now expose more structured inputs and metadata rather than relying on one-off text blobs alone.
-- Legacy `offset` / `limit` and `old_text` / `new_text` flows remain available as compatibility aliases while the substrate converges on the clearer contract.
+- The substrate now accepts only the canonical tool fields (`start_line` / `line_count`, explicit `operation`, explicit `prompt` / `agent`) instead of carrying compatibility aliases in development builds.
 - The design choice for now is file-level and slice-level hashes, not per-line hashes, because they preserve stale-read detection without overwhelming the prompt with checksum noise.
 
 ### 13. Optional code-intel should follow LSP request families but remain backend-pluggable
@@ -199,7 +199,7 @@ Implementation impact:
 - `agent-core-tools` now exposes a feature-gated `code-intel` bundle with four local tools: `code_symbol_search`, `code_document_symbols`, `code_definitions`, and `code_references`.
 - The feature provides a `CodeIntelBackend` trait so hosts can plug in an LSP client, an external index, or another backend without changing the tool contract.
 - The default concrete backend is `WorkspaceTextCodeIntelBackend`, a lexical in-workspace indexer that proves the contract and keeps tests deterministic when no external code-intel daemon is available.
-- `code_references` adopts an `include_declaration` switch with `includeDeclaration` alias to stay aligned with LSP naming.
+- `code_references` uses the substrate's canonical `include_declaration` field directly, even when the underlying backend is LSP-shaped.
 
 ### 14. Tool contracts should carry async handles and normalized identities where execution is multi-hop
 

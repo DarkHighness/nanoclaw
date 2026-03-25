@@ -39,7 +39,6 @@ pub enum TextEditOperation {
         expected_selection_hash: Option<String>,
     },
     Insert {
-        #[serde(alias = "insert_line")]
         after_line: usize,
         text: String,
     },

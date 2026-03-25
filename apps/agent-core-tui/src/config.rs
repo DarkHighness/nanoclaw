@@ -14,7 +14,7 @@ const CONFIG_FILE_CANDIDATES: &[&str] = &["agent-core.toml", ".agent-core/config
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ProviderKind {
-    #[serde(rename = "openai", alias = "open_ai")]
+    #[serde(rename = "openai")]
     OpenAi,
     #[serde(rename = "anthropic")]
     Anthropic,
@@ -103,7 +103,7 @@ impl AgentCoreConfig {
 
         if let Some(value) = env_map.get("AGENT_CORE_PROVIDER") {
             config.provider.kind = match value.trim().to_ascii_lowercase().as_str() {
-                "openai" | "open_ai" => Some(ProviderKind::OpenAi),
+                "openai" => Some(ProviderKind::OpenAi),
                 "anthropic" => Some(ProviderKind::Anthropic),
                 _ => config.provider.kind,
             };

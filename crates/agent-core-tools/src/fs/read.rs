@@ -22,10 +22,10 @@ const DEFAULT_ANCHOR_CONTEXT: usize = 8;
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 pub struct ReadToolInput {
     pub path: String,
-    #[serde(default, alias = "offset")]
+    #[serde(default)]
     pub start_line: Option<usize>,
     pub end_line: Option<usize>,
-    #[serde(default, alias = "limit")]
+    #[serde(default)]
     pub line_count: Option<usize>,
     pub annotate_lines: Option<bool>,
     #[serde(default)]
@@ -415,7 +415,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn read_tool_accepts_legacy_offset_and_limit_aliases() {
+    async fn read_tool_reads_with_explicit_start_line_and_line_count() {
         let dir = tempfile::tempdir().unwrap();
         tokio::fs::write(dir.path().join("sample.txt"), "alpha\nbeta\ngamma\n")
             .await
@@ -427,8 +427,8 @@ mod tests {
                 ToolCallId::new(),
                 serde_json::json!({
                     "path": "sample.txt",
-                    "offset": 2,
-                    "limit": 1
+                    "start_line": 2,
+                    "line_count": 1
                 }),
                 &context(dir.path()),
             )

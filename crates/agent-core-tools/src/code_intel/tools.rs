@@ -38,7 +38,7 @@ pub struct CodeDefinitionsInput {
 pub struct CodeReferencesInput {
     pub symbol: String,
     pub limit: Option<usize>,
-    #[serde(default, alias = "includeDeclaration")]
+    #[serde(default)]
     pub include_declaration: Option<bool>,
 }
 
@@ -635,7 +635,7 @@ mod tests {
                 ToolCallId::new(),
                 json!({
                     "symbol": "Engine",
-                    "includeDeclaration": true
+                    "include_declaration": true
                 }),
                 &context(dir.path()),
             )

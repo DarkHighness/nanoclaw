@@ -331,7 +331,7 @@ fn next_arg(args: &mut impl Iterator<Item = String>, flag: &str) -> Result<Strin
 
 fn parse_provider(value: &str) -> Result<SelectedProvider> {
     match value.trim().to_ascii_lowercase().as_str() {
-        "openai" | "open_ai" => Ok(SelectedProvider::OpenAi),
+        "openai" => Ok(SelectedProvider::OpenAi),
         "anthropic" => Ok(SelectedProvider::Anthropic),
         other => bail!("unsupported provider `{other}`"),
     }

@@ -7,7 +7,7 @@ This note focuses on the contract shape of local coding tools: their parameters,
 The earlier tool surface had a real mismatch:
 
 - `read` returned unnumbered plain text slices
-- `edit` expected exact `old_text` / `new_text` replacements over the raw file body
+- `edit` expected raw exact replacements over the full file body
 
 That shape worked for trivial cases, but it did not give the model a stable transition from:
 
@@ -115,11 +115,6 @@ Inputs:
 - `anchor_occurrence`
 - `anchor_ignore_case`
 
-Compatibility aliases are preserved for now:
-
-- `offset` -> `start_line`
-- `limit` -> `line_count`
-
 Outputs:
 
 - header with `path`, `lines`, `snapshot`, and `slice`
@@ -141,11 +136,7 @@ Command-specific fields:
 
 - `str_replace`: `old_text`, `new_text`, optional `replace_all`
 - `replace_lines`: `start_line`, `end_line`, `text`
-- `insert`: `insert_line`, `text`
-
-Compatibility path:
-
-- omitting `command` while providing `old_text` / `new_text` still resolves to `str_replace`
+- `insert`: `after_line`, `text`
 
 Outputs:
 
@@ -233,7 +224,7 @@ The agentic tools now also participate in the same grounding model:
 
 - `todo_read` returns a stable revision id
 - `todo_write` accepts an optional `expected_revision` plus `replace` / `merge` modes
-- `task` prefers explicit `prompt` / `agent` inputs, while preserving legacy aliases for compatibility
+- `task` accepts explicit `prompt` / `agent` inputs only
 - `task` now normalizes subagent output into machine-readable `status`, `summary`, and `artifacts` metadata while still preserving full text output for transcript continuity
 
 These are not file tools, but the same principle applies: reads should expose a stable anchor, and writes/delegations should accept enough structure to validate follow-up actions.

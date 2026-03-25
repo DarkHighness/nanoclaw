@@ -1,3 +1,4 @@
+use crate::Result;
 use crate::ToolExecutionContext;
 use crate::annotations::mcp_tool_annotations;
 use crate::fs::{
@@ -5,7 +6,6 @@ use crate::fs::{
     resolve_tool_path_against_workspace_root,
 };
 use crate::registry::Tool;
-use crate::{Result, ToolError};
 use agent_core_types::{MessagePart, ToolCallId, ToolOrigin, ToolOutputMode, ToolResult, ToolSpec};
 use async_trait::async_trait;
 use schemars::{JsonSchema, schema_for};
@@ -15,26 +15,9 @@ use serde_json::Value;
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 pub struct EditToolInput {
     pub path: String,
-    #[serde(default)]
-    pub operation: Option<TextEditOperation>,
-    #[serde(default)]
-    pub old_text: Option<String>,
-    #[serde(default)]
-    pub new_text: Option<String>,
-    #[serde(default)]
-    pub replace_all: Option<bool>,
-    #[serde(default)]
-    pub start_line: Option<usize>,
-    #[serde(default)]
-    pub end_line: Option<usize>,
-    #[serde(default, alias = "after_line")]
-    pub insert_line: Option<usize>,
-    #[serde(default)]
-    pub text: Option<String>,
+    pub operation: TextEditOperation,
     #[serde(default)]
     pub expected_snapshot: Option<String>,
-    #[serde(default)]
-    pub expected_selection_hash: Option<String>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -45,56 +28,6 @@ impl EditTool {
     pub fn new() -> Self {
         Self
     }
-}
-
-fn resolve_operation(input: &EditToolInput) -> Result<TextEditOperation> {
-    if let Some(operation) = &input.operation {
-        return Ok(operation.clone());
-    }
-    if input.old_text.is_some() || input.new_text.is_some() {
-        return Ok(TextEditOperation::StrReplace {
-            old_text: input
-                .old_text
-                .clone()
-                .ok_or_else(|| ToolError::invalid("str_replace requires old_text"))?,
-            new_text: input
-                .new_text
-                .clone()
-                .ok_or_else(|| ToolError::invalid("str_replace requires new_text"))?,
-            replace_all: input.replace_all.unwrap_or(false),
-        });
-    }
-    if input.start_line.is_some() || input.end_line.is_some() {
-        return Ok(TextEditOperation::ReplaceLines {
-            start_line: input
-                .start_line
-                .ok_or_else(|| ToolError::invalid("replace_lines requires start_line"))?,
-            end_line: input
-                .end_line
-                .ok_or_else(|| ToolError::invalid("replace_lines requires end_line"))?,
-            text: input
-                .text
-                .clone()
-                .or_else(|| input.new_text.clone())
-                .ok_or_else(|| ToolError::invalid("replace_lines requires text"))?,
-            expected_selection_hash: input.expected_selection_hash.clone(),
-        });
-    }
-    if input.insert_line.is_some() {
-        return Ok(TextEditOperation::Insert {
-            after_line: input
-                .insert_line
-                .ok_or_else(|| ToolError::invalid("insert requires insert_line"))?,
-            text: input
-                .text
-                .clone()
-                .or_else(|| input.new_text.clone())
-                .ok_or_else(|| ToolError::invalid("insert requires text"))?,
-        });
-    }
-    Err(ToolError::invalid(
-        "edit requires operation, or legacy old_text/new_text, line-range, or insert fields",
-    ))
 }
 
 #[async_trait]
@@ -128,12 +61,11 @@ impl Tool for EditTool {
         }
 
         let existing = load_optional_text_file(&resolved).await?;
-        let operation = resolve_operation(&input)?;
         let outcome = apply_text_edits(
             existing.as_deref(),
             &input.path,
             input.expected_snapshot.as_deref(),
-            &[operation],
+            &[input.operation],
         )?;
 
         if outcome.is_error {
@@ -187,20 +119,12 @@ mod tests {
                 ToolCallId::new(),
                 serde_json::to_value(EditToolInput {
                     path: "sample.txt".to_string(),
-                    operation: Some(TextEditOperation::StrReplace {
+                    operation: TextEditOperation::StrReplace {
                         old_text: "world".to_string(),
                         new_text: "agent".to_string(),
                         replace_all: false,
-                    }),
-                    old_text: None,
-                    new_text: None,
-                    replace_all: None,
-                    start_line: None,
-                    end_line: None,
-                    insert_line: None,
-                    text: None,
+                    },
                     expected_snapshot: None,
-                    expected_selection_hash: None,
                 })
                 .unwrap(),
                 &ToolExecutionContext {
@@ -233,21 +157,13 @@ mod tests {
                 ToolCallId::new(),
                 serde_json::to_value(EditToolInput {
                     path: "sample.txt".to_string(),
-                    operation: Some(TextEditOperation::ReplaceLines {
+                    operation: TextEditOperation::ReplaceLines {
                         start_line: 2,
                         end_line: 3,
                         text: "middle\ntail".to_string(),
                         expected_selection_hash: None,
-                    }),
-                    old_text: None,
-                    new_text: None,
-                    replace_all: None,
-                    start_line: None,
-                    end_line: None,
-                    insert_line: None,
-                    text: None,
+                    },
                     expected_snapshot: None,
-                    expected_selection_hash: None,
                 })
                 .unwrap(),
                 &ToolExecutionContext {
@@ -278,20 +194,12 @@ mod tests {
                 ToolCallId::new(),
                 serde_json::to_value(EditToolInput {
                     path: "sample.txt".to_string(),
-                    operation: Some(TextEditOperation::StrReplace {
+                    operation: TextEditOperation::StrReplace {
                         old_text: "beta".to_string(),
                         new_text: "gamma".to_string(),
                         replace_all: false,
-                    }),
-                    old_text: None,
-                    new_text: None,
-                    replace_all: None,
-                    start_line: None,
-                    end_line: None,
-                    insert_line: None,
-                    text: None,
+                    },
                     expected_snapshot: Some(stable_text_hash("other")),
-                    expected_selection_hash: None,
                 })
                 .unwrap(),
                 &ToolExecutionContext {
