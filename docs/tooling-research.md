@@ -217,6 +217,21 @@ Implementation impact:
 - `task` now normalizes `status`, `summary`, and `artifacts` metadata without removing raw text output.
 - `mcp_adapter` now enforces local call/tool identity while preserving upstream ids inside metadata for audit and correlation.
 
+### 15. Tool execution context should carry host roots plus runtime call scope
+
+Reason:
+
+- OpenAI's current tooling stack emphasizes stable `call_id` / `message_id` style identities because downstream auditing, compaction, and recovery depend on correlating execution results back to the loop that produced them.
+- MCP keeps tool invocation application-mediated, which means host-level root policy and execution correlation belong at the runtime boundary rather than hidden inside individual tool implementations.
+- Generic code agents often need more than one allowed local root: a checked-out worktree, a sandbox root, and a small set of explicitly mounted auxiliary roots. Re-encoding that policy separately inside every file-like tool does not scale.
+
+Implementation impact:
+
+- `ToolExecutionContext` now carries `worktree_root`, `additional_roots`, and runtime ids (`run_id`, `session_id`, `turn_id`, `tool_name`, `tool_call_id`).
+- `agent-core-runtime` now clones a per-call scoped context before tool execution so each local tool sees the exact runtime identifiers for the current invocation.
+- Path-policy helpers now support validating a candidate path against multiple allowed roots, and local fs/process/code-intel tools delegate root checks through that shared context method instead of open-coding one-root assumptions.
+- The minimal runtime example and reference shells now initialize `worktree_root` explicitly so hosts can opt into multi-root policy without inventing a parallel config surface.
+
 ## Remaining Gaps
 
 - MCP prompt arguments are discovered and displayed, but the TUI does not yet provide an argument-entry UX beyond the current basic command surface.

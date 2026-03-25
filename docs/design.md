@@ -216,6 +216,7 @@ Hosts embedding the substrate should define their own config layer, or none at a
 - MCP resource handling follows the application-mediated model from the MCP resources spec. Resources are discoverable and loadable through the host layer, then reviewed before submission.
 - Local tool annotations use MCP hint names so local and remote tools can be rendered consistently in one registry.
 - Feature-enabled local web tooling follows the same two-step pattern as hosted agent stacks: `web_search` for discovery, then `web_fetch` for retrieval.
+- `ToolExecutionContext` carries both host root policy (`workspace_root`, `worktree_root`, `additional_roots`) and per-call runtime scope (`run_id`, `session_id`, `turn_id`, `tool_name`, `tool_call_id`) so local tools can stay generic while still participating in audit and path-control flows.
 - Provider streaming passes through the `ModelBackend` boundary into runtime progress events, and hosts can consume those events however they want.
 - Startup assembly for the reference shell lives in a testable boot module, so that shell's config parsing, provider wiring, skill loading, and store fallback can be exercised without launching the full shell loop.
 - MCP `stdio` support is guarded by a real child-process integration test instead of only mock-client coverage.

@@ -106,6 +106,7 @@ async fn main() -> Result<()> {
             workspace_root,
             workspace_only: true,
             model_context_window_tokens: Some(128_000),
+            worktree_root: Some(std::env::current_dir()?),
             ..Default::default()
         })
         .instructions(system_preamble)

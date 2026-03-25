@@ -1,6 +1,6 @@
 use crate::ToolExecutionContext;
 use crate::annotations::mcp_tool_annotations;
-use crate::fs::{assert_path_inside_root, resolve_tool_path_against_workspace_root};
+use crate::fs::resolve_tool_path_against_workspace_root;
 use crate::registry::Tool;
 use agent_core_types::{MessagePart, ToolCallId, ToolOrigin, ToolOutputMode, ToolResult, ToolSpec};
 use anyhow::Result;
@@ -101,7 +101,7 @@ impl Tool for ListTool {
             ctx.container_workdir.as_deref(),
         )?;
         if ctx.workspace_only {
-            assert_path_inside_root(&root, ctx.effective_root())?;
+            ctx.assert_path_allowed(&root)?;
         }
 
         let mut entries = if root.is_file() {

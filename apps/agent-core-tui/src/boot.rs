@@ -155,10 +155,10 @@ async fn bootstrap_from_parts(
         .tool_registry(tools)
         .tool_context(ToolExecutionContext {
             workspace_root: workspace_root.clone(),
-            sandbox_root: None,
+            worktree_root: Some(workspace_root.clone()),
             workspace_only: config.runtime.workspace_only,
-            container_workdir: None,
             model_context_window_tokens: Some(context_tokens),
+            ..Default::default()
         })
         .tool_approval_handler(Arc::new(InteractiveToolApprovalHandler::default()))
         .conversation_compactor(Arc::new(ModelConversationCompactor::new(backend.clone())))

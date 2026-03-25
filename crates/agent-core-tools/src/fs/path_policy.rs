@@ -53,6 +53,34 @@ pub fn assert_path_inside_root(path: &Path, root: &Path) -> Result<()> {
     }
 }
 
+pub fn assert_path_inside_allowed_roots<'a, I>(path: &Path, roots: I) -> Result<()>
+where
+    I: IntoIterator<Item = &'a Path>,
+{
+    let normalized_path = normalize_for_prefix(path)?;
+    let normalized_roots = roots
+        .into_iter()
+        .map(normalize_for_prefix)
+        .collect::<Result<Vec<_>>>()?;
+    if normalized_roots
+        .iter()
+        .any(|root| normalized_path.starts_with(root))
+    {
+        return Ok(());
+    }
+
+    let allowed = normalized_roots
+        .iter()
+        .map(|root| root.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    bail!(
+        "Path escapes allowed roots: {} is outside [{}]",
+        normalized_path.display(),
+        allowed
+    )
+}
+
 fn normalize_for_prefix(path: &Path) -> Result<PathBuf> {
     if path.exists() {
         return std::fs::canonicalize(path)
@@ -79,4 +107,32 @@ fn normalize_for_prefix(path: &Path) -> Result<PathBuf> {
         normalized.push(component);
     }
     Ok(normalized)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::assert_path_inside_allowed_roots;
+
+    #[test]
+    fn allowed_roots_accept_any_configured_root() {
+        let workspace = tempfile::tempdir().unwrap();
+        let extra = tempfile::tempdir().unwrap();
+        let allowed_path = extra.path().join("nested/file.txt");
+
+        let result =
+            assert_path_inside_allowed_roots(&allowed_path, [workspace.path(), extra.path()]);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn allowed_roots_reject_paths_outside_every_root() {
+        let workspace = tempfile::tempdir().unwrap();
+        let extra = tempfile::tempdir().unwrap();
+        let outsider = tempfile::tempdir().unwrap();
+        let denied_path = outsider.path().join("nested/file.txt");
+
+        let err = assert_path_inside_allowed_roots(&denied_path, [workspace.path(), extra.path()])
+            .unwrap_err();
+        assert!(err.to_string().contains("Path escapes allowed roots"));
+    }
 }

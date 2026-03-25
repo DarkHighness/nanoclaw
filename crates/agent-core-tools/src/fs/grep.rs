@@ -1,6 +1,6 @@
 use crate::ToolExecutionContext;
 use crate::annotations::mcp_tool_annotations;
-use crate::fs::{assert_path_inside_root, resolve_tool_path_against_workspace_root};
+use crate::fs::resolve_tool_path_against_workspace_root;
 use crate::registry::Tool;
 use agent_core_types::{MessagePart, ToolCallId, ToolOrigin, ToolOutputMode, ToolResult, ToolSpec};
 use anyhow::Result;
@@ -96,7 +96,7 @@ impl Tool for GrepTool {
         )?;
         let search_path_string = search_path.to_string_lossy().to_string();
         if ctx.workspace_only {
-            assert_path_inside_root(&search_path, ctx.effective_root())?;
+            ctx.assert_path_allowed(&search_path)?;
         }
 
         let pattern = input.pattern.clone();

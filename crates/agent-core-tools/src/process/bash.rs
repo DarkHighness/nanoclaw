@@ -1,6 +1,6 @@
 use crate::ToolExecutionContext;
 use crate::annotations::mcp_tool_annotations;
-use crate::fs::{assert_path_inside_root, resolve_tool_path_against_workspace_root};
+use crate::fs::resolve_tool_path_against_workspace_root;
 use crate::registry::Tool;
 use agent_core_types::{
     MessagePart, ToolCallId, ToolOrigin, ToolOutputMode, ToolResult, ToolSpec, new_opaque_id,
@@ -695,7 +695,7 @@ fn resolve_cwd(input: &BashToolInput, ctx: &ToolExecutionContext) -> Result<Path
         ctx.container_workdir.as_deref(),
     )?;
     if ctx.workspace_only {
-        assert_path_inside_root(&cwd, ctx.effective_root())?;
+        ctx.assert_path_allowed(&cwd)?;
     }
     Ok(cwd)
 }

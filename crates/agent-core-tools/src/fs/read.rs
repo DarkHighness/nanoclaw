@@ -1,8 +1,7 @@
 use crate::ToolExecutionContext;
 use crate::annotations::mcp_tool_annotations;
 use crate::fs::{
-    TextBuffer, assert_path_inside_root, format_numbered_lines,
-    resolve_tool_path_against_workspace_root, stable_text_hash,
+    TextBuffer, format_numbered_lines, resolve_tool_path_against_workspace_root, stable_text_hash,
 };
 use crate::registry::Tool;
 use agent_core_types::{MessagePart, ToolCallId, ToolOrigin, ToolOutputMode, ToolResult, ToolSpec};
@@ -76,7 +75,7 @@ impl Tool for ReadTool {
             ctx.container_workdir.as_deref(),
         )?;
         if ctx.workspace_only {
-            assert_path_inside_root(&resolved, ctx.effective_root())?;
+            ctx.assert_path_allowed(&resolved)?;
         }
         let bytes = fs::read(&resolved).await?;
         if let Some(mime) = sniff_image_mime(&bytes, &resolved) {

@@ -154,6 +154,7 @@ async fn build_runtime(
     let instructions = build_system_preamble(options.system_prompt.as_deref(), &skill_catalog);
     let tool_context = ToolExecutionContext {
         workspace_root: workspace_root.to_path_buf(),
+        worktree_root: Some(workspace_root.to_path_buf()),
         workspace_only: true,
         model_context_window_tokens: Some(DEFAULT_CONTEXT_TOKENS),
         ..Default::default()

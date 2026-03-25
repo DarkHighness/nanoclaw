@@ -2,8 +2,8 @@ use crate::ToolExecutionContext;
 use crate::annotations::mcp_tool_annotations;
 use crate::fs::{
     TextEditOperation, WriteExistingBehavior, WriteMissingBehavior, WriteRequest, apply_delete,
-    apply_text_edits, apply_write, assert_path_inside_root, commit_text_file,
-    load_optional_text_file, resolve_tool_path_against_workspace_root,
+    apply_text_edits, apply_write, commit_text_file, load_optional_text_file,
+    resolve_tool_path_against_workspace_root,
 };
 use crate::registry::Tool;
 use agent_core_types::{MessagePart, ToolCallId, ToolOrigin, ToolOutputMode, ToolResult, ToolSpec};
@@ -281,8 +281,8 @@ impl Tool for PatchTool {
                         ctx.container_workdir.as_deref(),
                     )?;
                     if ctx.workspace_only {
-                        assert_path_inside_root(&from_resolved, ctx.effective_root())?;
-                        assert_path_inside_root(&to_resolved, ctx.effective_root())?;
+                        ctx.assert_path_allowed(&from_resolved)?;
+                        ctx.assert_path_allowed(&to_resolved)?;
                     }
                     if from_resolved == to_resolved {
                         return Ok(patch_error_result(
@@ -495,7 +495,7 @@ async fn stage_entry(
         ctx.container_workdir.as_deref(),
     )?;
     if ctx.workspace_only {
-        assert_path_inside_root(&resolved, ctx.effective_root())?;
+        ctx.assert_path_allowed(&resolved)?;
     }
     stage_entry_by_resolved(path, resolved, staged).await
 }

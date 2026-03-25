@@ -667,8 +667,20 @@ impl AgentRuntime {
             }
         }
 
+        let scoped_tool_context = self.tool_context.with_runtime_scope(
+            self.session.run_id.clone(),
+            self.session.session_id.clone(),
+            turn_id.clone(),
+            tool_name.clone(),
+            call.call_id.clone(),
+        );
+
         match tool
-            .execute(call.id.clone(), call.arguments.clone(), &self.tool_context)
+            .execute(
+                call.id.clone(),
+                call.arguments.clone(),
+                &scoped_tool_context,
+            )
             .await
         {
             Ok(mut result) => {
@@ -1298,10 +1310,9 @@ mod tests {
             .tool_registry(registry)
             .tool_context(ToolExecutionContext {
                 workspace_root: dir.path().to_path_buf(),
-                sandbox_root: None,
                 workspace_only: true,
-                container_workdir: None,
                 model_context_window_tokens: Some(128_000),
+                ..Default::default()
             })
             .skill_catalog(SkillCatalog::default())
             .build();
@@ -1369,10 +1380,9 @@ mod tests {
                 .tool_registry(registry)
                 .tool_context(ToolExecutionContext {
                     workspace_root: dir.path().to_path_buf(),
-                    sandbox_root: None,
                     workspace_only: true,
-                    container_workdir: None,
                     model_context_window_tokens: Some(128_000),
+                    ..Default::default()
                 })
                 .skill_catalog(SkillCatalog::default())
                 .build();
@@ -1467,10 +1477,9 @@ mod tests {
                 .tool_registry(registry)
                 .tool_context(ToolExecutionContext {
                     workspace_root: dir.path().to_path_buf(),
-                    sandbox_root: None,
                     workspace_only: true,
-                    container_workdir: None,
                     model_context_window_tokens: Some(128_000),
+                    ..Default::default()
                 })
                 .tool_approval_handler(approval_handler.clone())
                 .skill_catalog(SkillCatalog::default())
@@ -1553,10 +1562,9 @@ mod tests {
             .hook_runner(Arc::new(HookRunner::default()))
             .tool_context(ToolExecutionContext {
                 workspace_root: dir.path().to_path_buf(),
-                sandbox_root: None,
                 workspace_only: true,
-                container_workdir: None,
                 model_context_window_tokens: Some(128_000),
+                ..Default::default()
             })
             .skill_catalog(SkillCatalog::default())
             .build();
@@ -1600,10 +1608,9 @@ mod tests {
             .hook_runner(Arc::new(HookRunner::default()))
             .tool_context(ToolExecutionContext {
                 workspace_root: dir.path().to_path_buf(),
-                sandbox_root: None,
                 workspace_only: true,
-                container_workdir: None,
                 model_context_window_tokens: Some(128_000),
+                ..Default::default()
             })
             .skill_catalog(SkillCatalog::default())
             .build();
@@ -1647,10 +1654,9 @@ mod tests {
             .hook_runner(Arc::new(HookRunner::default()))
             .tool_context(ToolExecutionContext {
                 workspace_root: dir.path().to_path_buf(),
-                sandbox_root: None,
                 workspace_only: true,
-                container_workdir: None,
                 model_context_window_tokens: Some(128_000),
+                ..Default::default()
             })
             .skill_catalog(SkillCatalog::default())
             .build();
@@ -1708,10 +1714,9 @@ mod tests {
             .hook_runner(hook_runner)
             .tool_context(ToolExecutionContext {
                 workspace_root: dir.path().to_path_buf(),
-                sandbox_root: None,
                 workspace_only: true,
-                container_workdir: None,
                 model_context_window_tokens: Some(128_000),
+                ..Default::default()
             })
             .instructions(vec!["static base instruction".to_string()])
             .hooks(vec![HookRegistration {
@@ -1782,10 +1787,9 @@ mod tests {
             .hook_runner(Arc::new(HookRunner::default()))
             .tool_context(ToolExecutionContext {
                 workspace_root: dir.path().to_path_buf(),
-                sandbox_root: None,
                 workspace_only: true,
-                container_workdir: None,
                 model_context_window_tokens: Some(128_000),
+                ..Default::default()
             })
             .instructions(vec!["static base instruction".to_string()])
             .conversation_compactor(Arc::new(StaticCompactor))

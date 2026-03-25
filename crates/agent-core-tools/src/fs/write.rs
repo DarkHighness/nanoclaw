@@ -1,9 +1,8 @@
 use crate::ToolExecutionContext;
 use crate::annotations::mcp_tool_annotations;
 use crate::fs::{
-    WriteExistingBehavior, WriteMissingBehavior, WriteRequest, apply_write,
-    assert_path_inside_root, commit_text_file, load_optional_text_file,
-    resolve_tool_path_against_workspace_root,
+    WriteExistingBehavior, WriteMissingBehavior, WriteRequest, apply_write, commit_text_file,
+    load_optional_text_file, resolve_tool_path_against_workspace_root,
 };
 use crate::registry::Tool;
 use agent_core_types::{MessagePart, ToolCallId, ToolOrigin, ToolOutputMode, ToolResult, ToolSpec};
@@ -62,7 +61,7 @@ impl Tool for WriteTool {
             ctx.container_workdir.as_deref(),
         )?;
         if ctx.workspace_only {
-            assert_path_inside_root(&resolved, ctx.effective_root())?;
+            ctx.assert_path_allowed(&resolved)?;
         }
 
         let existing = load_optional_text_file(&resolved).await?;
@@ -133,10 +132,8 @@ mod tests {
                 .unwrap(),
                 &ToolExecutionContext {
                     workspace_root: dir.path().to_path_buf(),
-                    sandbox_root: None,
                     workspace_only: true,
-                    container_workdir: None,
-                    model_context_window_tokens: None,
+                    ..Default::default()
                 },
             )
             .await
@@ -171,10 +168,8 @@ mod tests {
                 .unwrap(),
                 &ToolExecutionContext {
                     workspace_root: dir.path().to_path_buf(),
-                    sandbox_root: None,
                     workspace_only: true,
-                    container_workdir: None,
-                    model_context_window_tokens: None,
+                    ..Default::default()
                 },
             )
             .await
