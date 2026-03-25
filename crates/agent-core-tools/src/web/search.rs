@@ -13,8 +13,11 @@ use reqwest::{Client, Url};
 use schemars::{JsonSchema, schema_for};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
+use std::fmt::Write as _;
 use std::sync::OnceLock;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const DEFAULT_SEARCH_ENDPOINT: &str = "https://www.bing.com/search";
 const DEFAULT_RESULT_SNIPPET_MAX_CHARS: usize = 280;
@@ -24,11 +27,24 @@ pub struct WebSearchToolInput {
     pub query: String,
     pub limit: Option<usize>,
     #[serde(default)]
+    pub offset: Option<usize>,
+    #[serde(default)]
     pub domains: Option<Vec<String>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct SearchResultItem {
+    title: String,
+    url: String,
+    snippet: Option<String>,
+    published_at: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+struct SearchResultRecord {
+    id: String,
+    rank: usize,
+    domain: Option<String>,
     title: String,
     url: String,
     snippet: Option<String>,
@@ -106,6 +122,7 @@ impl Tool for WebSearchTool {
 
         let domains = normalize_domains(input.domains);
         let limit = clamped_search_limit(input.limit);
+        let offset = input.offset.unwrap_or(0);
         let request_query = augment_query_with_domains(query, &domains);
 
         let mut request_url = self.endpoint.clone();
@@ -169,29 +186,59 @@ impl Tool for WebSearchTool {
             });
         }
 
-        let results = parse_rss_results(&body)
+        let filtered_results = parse_rss_results(&body)
             .into_iter()
             .filter(|item| matches_policy(item, &self.policy))
             .filter(|item| matches_domains(item, &domains))
-            .take(limit)
             .collect::<Vec<_>>();
-        let unique_domains = unique_domains(&results);
+        let filtered_total = filtered_results.len();
+        let offset = offset.min(filtered_total);
+        let paged_results = filtered_results
+            .iter()
+            .skip(offset)
+            .take(limit)
+            .cloned()
+            .collect::<Vec<_>>();
+        let result_records = paged_results
+            .iter()
+            .enumerate()
+            .map(|(index, item)| SearchResultRecord {
+                id: stable_result_id(item),
+                rank: offset + index + 1,
+                domain: result_domain(&item.url),
+                title: item.title.clone(),
+                url: item.url.clone(),
+                snippet: item.snippet.clone(),
+                published_at: item.published_at.clone(),
+            })
+            .collect::<Vec<_>>();
+        let unique_domains = unique_domains(&result_records);
+        let next_offset = (offset + result_records.len() < filtered_total)
+            .then_some(offset + result_records.len());
+        let retrieved_at_unix_s = unix_timestamp_s();
 
         let mut sections = vec![
             format!("query> {query}"),
             format!("engine> {}", self.endpoint.host_str().unwrap_or("custom")),
             format!("limit> {limit}"),
+            format!("offset> {offset}"),
         ];
         if !domains.is_empty() {
             sections.push(format!("domains> {}", domains.join(", ")));
         }
-        sections.push(format!("results> {}", results.len()));
-        if results.is_empty() {
+        sections.push(format!("results> {}", result_records.len()));
+        sections.push(format!("total_matches> {filtered_total}"));
+        if result_records.is_empty() {
             sections.push(String::new());
             sections.push("No search results matched the current filters.".to_string());
         } else {
             sections.push(String::new());
-            sections.extend(results.iter().enumerate().map(format_result_entry));
+            sections.extend(result_records.iter().map(format_result_entry));
+            if let Some(next_offset) = next_offset {
+                sections.push(format!(
+                    "\n[more results available; continue with offset={next_offset}]"
+                ));
+            }
         }
 
         Ok(ToolResult {
@@ -207,15 +254,22 @@ impl Tool for WebSearchTool {
                 "status": status.as_u16(),
                 "content_type": content_type,
                 "limit": limit,
+                "offset": offset,
+                "next_offset": next_offset,
                 "domains": domains,
-                "result_count": results.len(),
+                "result_count": result_records.len(),
+                "total_matches": filtered_total,
                 "result_domains": unique_domains,
+                "retrieved_at_unix_s": retrieved_at_unix_s,
                 "policy": {
                     "allow_private_hosts": self.policy.allow_private_hosts,
                     "allowed_domains": self.policy.allowed_domains.iter().cloned().collect::<Vec<_>>(),
                     "blocked_domains": self.policy.blocked_domains.iter().cloned().collect::<Vec<_>>(),
                 },
-                "results": results.iter().map(|item| serde_json::json!({
+                "results": result_records.iter().map(|item| serde_json::json!({
+                    "id": item.id,
+                    "rank": item.rank,
+                    "domain": item.domain,
                     "title": item.title,
                     "url": item.url,
                     "snippet": item.snippet,
@@ -322,23 +376,25 @@ fn matches_domains(item: &SearchResultItem, domains: &[String]) -> bool {
     })
 }
 
-fn unique_domains(results: &[SearchResultItem]) -> Vec<String> {
+fn unique_domains(results: &[SearchResultRecord]) -> Vec<String> {
     let mut domains = BTreeSet::new();
     for item in results {
-        if let Ok(url) = Url::parse(&item.url)
-            && let Some(host) = url.host_str()
-        {
-            domains.insert(host.to_ascii_lowercase());
+        if let Some(host) = &item.domain {
+            domains.insert(host.clone());
         }
     }
     domains.into_iter().collect()
 }
 
-fn format_result_entry((index, item): (usize, &SearchResultItem)) -> String {
+fn format_result_entry(item: &SearchResultRecord) -> String {
     let mut entry = vec![
-        format!("{}. {}", index + 1, item.title),
+        format!("{}. {}", item.rank, item.title),
+        format!("id: {}", item.id),
         format!("url: {}", item.url),
     ];
+    if let Some(domain) = &item.domain {
+        entry.push(format!("domain: {domain}"));
+    }
     if let Some(snippet) = &item.snippet {
         let (snippet, truncated) = truncate_text(snippet, DEFAULT_RESULT_SNIPPET_MAX_CHARS);
         entry.push(if truncated {
@@ -350,7 +406,34 @@ fn format_result_entry((index, item): (usize, &SearchResultItem)) -> String {
     if let Some(published_at) = &item.published_at {
         entry.push(format!("published_at: {published_at}"));
     }
+    entry.push(format!("fetch_hint: web_fetch url={}", item.url));
     entry.join("\n")
+}
+
+fn result_domain(url: &str) -> Option<String> {
+    Url::parse(url)
+        .ok()
+        .and_then(|parsed| parsed.host_str().map(|host| host.to_ascii_lowercase()))
+}
+
+fn stable_result_id(item: &SearchResultItem) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(item.url.as_bytes());
+    hasher.update(b"\n");
+    hasher.update(item.title.as_bytes());
+    let digest = hasher.finalize();
+    let mut output = String::from("wsr_");
+    for byte in digest.iter().take(8) {
+        let _ = write!(&mut output, "{byte:02x}");
+    }
+    output
+}
+
+fn unix_timestamp_s() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -429,6 +512,7 @@ mod tests {
                 serde_json::to_value(WebSearchToolInput {
                     query: "example".to_string(),
                     limit: Some(5),
+                    offset: None,
                     domains: Some(vec!["allowed.example.com".to_string()]),
                 })
                 .unwrap(),
@@ -443,6 +527,64 @@ mod tests {
         assert_eq!(
             result.metadata.unwrap()["domains"][0],
             "allowed.example.com"
+        );
+    }
+
+    #[tokio::test]
+    async fn web_search_supports_offset_pagination() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/search"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "application/rss+xml")
+                    .set_body_string(
+                        r#"
+                    <rss><channel>
+                        <item><title>One</title><link>https://example.com/1</link></item>
+                        <item><title>Two</title><link>https://example.com/2</link></item>
+                        <item><title>Three</title><link>https://example.com/3</link></item>
+                    </channel></rss>
+                "#,
+                    ),
+            )
+            .mount(&server)
+            .await;
+
+        let tool = WebSearchTool::with_settings(
+            WebToolPolicy {
+                allow_private_hosts: true,
+                allowed_domains: BTreeSet::new(),
+                blocked_domains: BTreeSet::new(),
+            },
+            5_000,
+            Some(format!("{}/search", server.uri())),
+        )
+        .unwrap();
+        let result = tool
+            .execute(
+                ToolCallId::new(),
+                serde_json::to_value(WebSearchToolInput {
+                    query: "example".to_string(),
+                    limit: Some(1),
+                    offset: Some(1),
+                    domains: None,
+                })
+                .unwrap(),
+                &ToolExecutionContext::default(),
+            )
+            .await
+            .unwrap();
+
+        assert!(result.text_content().contains("Two"));
+        let metadata = result.metadata.unwrap();
+        assert_eq!(metadata["offset"], 1);
+        assert_eq!(metadata["next_offset"], 2);
+        assert!(
+            metadata["results"][0]["id"]
+                .as_str()
+                .unwrap()
+                .starts_with("wsr_")
         );
     }
 }

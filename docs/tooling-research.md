@@ -11,11 +11,17 @@ This note captures the external references used for the current tooling pass on 
 - Anthropic web search tool: [docs.anthropic.com/en/docs/agents-and-tools/tool-use/web-search-tool](https://docs.anthropic.com/en/docs/agents-and-tools/tool-use/web-search-tool)
 - Anthropic web fetch tool: [docs.anthropic.com/en/docs/agents-and-tools/tool-use/web-fetch-tool](https://docs.anthropic.com/en/docs/agents-and-tools/tool-use/web-fetch-tool)
 - OpenAI tools overview: [platform.openai.com/docs/guides/tools?api-mode=responses](https://platform.openai.com/docs/guides/tools?api-mode=responses)
+- OpenAI background mode guide: [platform.openai.com/docs/guides/background](https://platform.openai.com/docs/guides/background)
 - OpenAI prompt caching guide: [platform.openai.com/docs/guides/prompt-caching](https://platform.openai.com/docs/guides/prompt-caching)
 - OpenAI Responses compact API: [platform.openai.com/docs/api-reference/responses/compact](https://platform.openai.com/docs/api-reference/responses/compact)
+- MCP progress utility: [modelcontextprotocol.io/specification/draft/basic/utilities/progress](https://modelcontextprotocol.io/specification/draft/basic/utilities/progress)
 - OpenAI Codex agent loop writeup: [openai.com/index/unrolling-the-codex-agent-loop](https://openai.com/index/unrolling-the-codex-agent-loop/)
 - OpenClaw compaction concept: [docs.openclaw.ai/concepts/compaction](https://docs.openclaw.ai/concepts/compaction)
 - `rig-core` OpenAI completion model docs: [docs.rs/rig-core/latest/rig/providers/openai/completion/struct.CompletionModel.html](https://docs.rs/rig-core/latest/rig/providers/openai/completion/struct.CompletionModel.html)
+- Language Server Protocol 3.17 spec: [microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification](https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/)
+- SCIP protocol and toolkit: [github.com/sourcegraph/scip](https://github.com/sourcegraph/scip)
+- Universal Ctags reference manual: [docs.ctags.io/en/latest/man/ctags.1.html](https://docs.ctags.io/en/latest/man/ctags.1.html)
+- LocAgent: [arXiv:2503.09089](https://arxiv.org/abs/2503.09089)
 
 ## Decisions Taken
 
@@ -179,6 +185,37 @@ Implementation impact:
 - `bash`, `web_fetch`, `web_search`, `todo_write`, and `task` now expose more structured inputs and metadata rather than relying on one-off text blobs alone.
 - Legacy `offset` / `limit` and `old_text` / `new_text` flows remain available as compatibility aliases while the substrate converges on the clearer contract.
 - The design choice for now is file-level and slice-level hashes, not per-line hashes, because they preserve stale-read detection without overwhelming the prompt with checksum noise.
+
+### 13. Optional code-intel should follow LSP request families but remain backend-pluggable
+
+Reason:
+
+- LSP already standardizes the navigation request families we want (`workspace/symbol`, `textDocument/documentSymbol`, `textDocument/definition`, `textDocument/references`), so local tool names should map cleanly to those categories instead of inventing one-off semantics.
+- SCIP and ctags are both real-world index formats/tools used in production stacks; both reinforce separating the model-facing navigation contract from the underlying index/provider implementation.
+- LocAgent-style SWE localization results continue to support explicit entity/symbol localization as a first-order step before patching.
+
+Implementation impact:
+
+- `agent-core-tools` now exposes a feature-gated `code-intel` bundle with four local tools: `code_symbol_search`, `code_document_symbols`, `code_definitions`, and `code_references`.
+- The feature provides a `CodeIntelBackend` trait so hosts can plug in an LSP client, an external index, or another backend without changing the tool contract.
+- The default concrete backend is `WorkspaceTextCodeIntelBackend`, a lexical in-workspace indexer that proves the contract and keeps tests deterministic when no external code-intel daemon is available.
+- `code_references` adopts an `include_declaration` switch with `includeDeclaration` alias to stay aligned with LSP naming.
+
+### 14. Tool contracts should carry async handles and normalized identities where execution is multi-hop
+
+Reason:
+
+- OpenAI's background mode is explicitly handle-based (`response_id` plus follow-up retrieval/cancel), so long-running work should not require replaying the full request body on every follow-up.
+- MCP utility guidance exposes explicit progress/correlation semantics across calls. Even when local tools are not full MCP servers, this reinforces returning stable ids and status snapshots for long-running tasks.
+- Runtime transcripts and compaction rely on deterministic tool call/result identity. Adapter boundaries should preserve upstream ids, but normalize the runtime-facing call id.
+
+Implementation impact:
+
+- `bash` now supports `start` / `poll` / `cancel` with `session_id`, explicit state metadata, and output window offsets for continuation.
+- `web_fetch` now emits `document_id` and accepts `expected_document_id` to guard continuation calls against stale or changed responses.
+- `web_search` now emits stable per-result ids and supports `offset` pagination so citation/retrieval loops can continue deterministically.
+- `task` now normalizes `status`, `summary`, and `artifacts` metadata without removing raw text output.
+- `mcp_adapter` now enforces local call/tool identity while preserving upstream ids inside metadata for audit and correlation.
 
 ## Remaining Gaps
 

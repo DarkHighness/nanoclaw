@@ -110,6 +110,10 @@ Inputs:
 - `end_line`
 - `line_count`
 - `annotate_lines`
+- `anchor_text`
+- `anchor_context`
+- `anchor_occurrence`
+- `anchor_ignore_case`
 
 Compatibility aliases are preserved for now:
 
@@ -120,6 +124,7 @@ Outputs:
 
 - header with `path`, `lines`, `snapshot`, and `slice`
 - line-numbered body by default
+- optional anchor hint showing which matched line anchored the span
 - continuation hint when more lines remain
 - metadata containing the same ids for host-side auditing
 
@@ -177,8 +182,15 @@ Each operation is one of:
 - `write`
 - `edit`
 - `delete`
+- `move`
 
 `patch` stages those operations in memory first, then commits them only if all operations succeed. That keeps the tool surface aligned with the multi-file diff role suggested by OpenAI and OpenCode, without forcing the runtime into partial-apply behavior.
+
+The contract now also emits:
+
+- operation-indexed diagnostics on failure (`failed_operation_index` plus compact failed input shape)
+- per-file hunk-style previews for changed files, capped to a small removed/added line budget
+- explicit move semantics (`from_path` -> `to_path`) with source snapshot guards and destination overwrite policy
 
 ### `list`, `glob`, and `grep`
 
@@ -188,6 +200,8 @@ These discovery tools now follow the same pattern:
 - bounded result counts
 - structured metadata arrays (`entries` / `matches`)
 - explicit truncation and limit flags
+- deterministic file traversal order for stable repeated calls
+- `grep` de-duplicates overlapping context rows so each file+line appears once
 
 That gives the model and the host a cleaner transition from discovery to `read`.
 
@@ -195,19 +209,23 @@ That gives the model and the host a cleaner transition from discovery to `read`.
 
 `bash` remains an open-world tool, but its contract is tighter now:
 
-- bounded output via `max_output_chars`
-- explicit `timeout_ms`
+- explicit execution modes: `run`, `start`, `poll`/`continue`, and `cancel`
+- long-running commands return a `session_id` and can be polled without rerunning
+- `poll` supports `stdout_start_char` / `stderr_start_char` windowing so follow-up calls can continue from known offsets
+- bounded output via `max_output_chars` in both one-shot and poll mode
+- explicit `timeout_ms` for each command session
 - optional per-call environment overrides
-- truncation metadata for stdout and stderr
+- status metadata (`running`, `completed`, `timed_out`, `cancelled`) plus exit-code/error fields
 
-That makes command execution more auditable and easier to reason about when the model is chaining shell output into later file reads.
+That keeps the substrate minimal while still matching the asynchronous/pollable execution shape used by industrial agent loops.
 
 ### `web_search` and `web_fetch`
 
 The optional web tools now mirror the local file tools more closely:
 
-- `web_search` supports per-call domain filtering and returns structured result metadata
-- `web_fetch` supports `start_index` continuation so the model can page through extracted text instead of re-fetching a growing blob
+- `web_search` supports per-call domain filtering plus explicit pagination (`limit`, `offset`) and stable per-result ids for follow-up retrieval/citation wiring
+- `web_fetch` supports `start_index` continuation and now returns a stable `document_id` with optional `expected_document_id` guard for stale-read detection across follow-up calls
+- both tools now expose stronger provenance metadata (`retrieved_at`, response headers, result domains/ranks) so hosts can audit retrieval behavior
 
 ### `todo_read`, `todo_write`, and `task`
 
@@ -216,6 +234,7 @@ The agentic tools now also participate in the same grounding model:
 - `todo_read` returns a stable revision id
 - `todo_write` accepts an optional `expected_revision` plus `replace` / `merge` modes
 - `task` prefers explicit `prompt` / `agent` inputs, while preserving legacy aliases for compatibility
+- `task` now normalizes subagent output into machine-readable `status`, `summary`, and `artifacts` metadata while still preserving full text output for transcript continuity
 
 These are not file tools, but the same principle applies: reads should expose a stable anchor, and writes/delegations should accept enough structure to validate follow-up actions.
 
@@ -223,9 +242,12 @@ These are not file tools, but the same principle applies: reads should expose a 
 
 - OpenAI Apply Patch: [developers.openai.com/api/docs/guides/tools-apply-patch](https://developers.openai.com/api/docs/guides/tools-apply-patch/)
 - OpenAI Codex CLI features: [developers.openai.com/codex/cli/features](https://developers.openai.com/codex/cli/features/)
+- OpenAI background mode guide: [platform.openai.com/docs/guides/background](https://platform.openai.com/docs/guides/background)
+- OpenAI tools overview: [platform.openai.com/docs/guides/tools?api-mode=responses](https://platform.openai.com/docs/guides/tools?api-mode=responses)
 - Anthropic text editor tool: [docs.anthropic.com/en/docs/agents-and-tools/tool-use/text-editor-tool](https://docs.anthropic.com/en/docs/agents-and-tools/tool-use/text-editor-tool)
 - Anthropic SDK overview: [docs.anthropic.com/en/docs/claude-code/sdk](https://docs.anthropic.com/en/docs/claude-code/sdk)
 - OpenCode tools: [opencode.ai/docs/tools](https://opencode.ai/docs/tools/)
+- MCP progress utility: [modelcontextprotocol.io/specification/draft/basic/utilities/progress](https://modelcontextprotocol.io/specification/draft/basic/utilities/progress)
 - Trace-Free+: [arXiv:2602.20426](https://arxiv.org/abs/2602.20426)
 - Tool-Genesis: [arXiv:2603.05578](https://arxiv.org/abs/2603.05578)
 - OpaqueToolsBench: [arXiv:2602.15197](https://arxiv.org/abs/2602.15197)
