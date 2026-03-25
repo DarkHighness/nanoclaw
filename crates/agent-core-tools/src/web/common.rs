@@ -1,4 +1,4 @@
-use anyhow::{Result, anyhow, bail};
+use crate::{Result, ToolError};
 use regex::Regex;
 use reqwest::{Client, Url, redirect::Policy};
 use std::collections::BTreeSet;
@@ -39,14 +39,20 @@ impl WebToolPolicy {
     pub(crate) fn validate_transport_url(&self, url: &Url) -> Result<()> {
         match url.scheme() {
             "http" | "https" => {}
-            scheme => bail!("unsupported URL scheme `{scheme}`; expected http or https"),
+            scheme => {
+                return Err(ToolError::invalid(format!(
+                    "unsupported URL scheme `{scheme}`; expected http or https"
+                )));
+            }
         }
 
         let host = url
             .host_str()
-            .ok_or_else(|| anyhow!("URL is missing a host"))?;
+            .ok_or_else(|| ToolError::invalid("URL is missing a host"))?;
         if !self.allow_private_hosts && is_private_or_local_host(host) {
-            bail!("refusing to access local or private host `{host}`");
+            return Err(ToolError::invalid(format!(
+                "refusing to access local or private host `{host}`"
+            )));
         }
         Ok(())
     }
@@ -55,12 +61,16 @@ impl WebToolPolicy {
         self.validate_transport_url(url)?;
         let host = url
             .host_str()
-            .ok_or_else(|| anyhow!("URL is missing a host"))?;
+            .ok_or_else(|| ToolError::invalid("URL is missing a host"))?;
         if !domain_allowed(host, &self.allowed_domains) {
-            bail!("host `{host}` is outside the configured allowlist");
+            return Err(ToolError::invalid(format!(
+                "host `{host}` is outside the configured allowlist"
+            )));
         }
         if domain_blocked(host, &self.blocked_domains) {
-            bail!("host `{host}` is blocked by policy");
+            return Err(ToolError::invalid(format!(
+                "host `{host}` is blocked by policy"
+            )));
         }
         Ok(())
     }

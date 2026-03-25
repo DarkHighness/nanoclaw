@@ -253,7 +253,7 @@ fn build_backend(config: &AgentCoreConfig) -> Result<RigModelBackend> {
         ProviderKind::Anthropic => RigProviderDescriptor::anthropic(model),
     });
 
-    RigModelBackend::from_settings_with_api_key(
+    Ok(RigModelBackend::from_settings_with_api_key(
         descriptor,
         RigRequestOptions {
             temperature: config.provider.temperature,
@@ -262,7 +262,7 @@ fn build_backend(config: &AgentCoreConfig) -> Result<RigModelBackend> {
         },
         config.provider.base_url.clone(),
         configured_provider_api_key(config, &provider_kind),
-    )
+    )?)
 }
 
 fn configured_provider_api_key(

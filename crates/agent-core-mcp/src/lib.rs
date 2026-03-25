@@ -8,8 +8,10 @@ mod bridge;
 mod catalog;
 mod client;
 mod config;
+mod error;
 
 pub use bridge::*;
 pub use catalog::*;
 pub use client::*;
 pub use config::*;
+pub use error::*;

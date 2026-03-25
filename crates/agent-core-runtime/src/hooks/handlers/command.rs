@@ -1,5 +1,5 @@
+use crate::{Result, RuntimeError};
 use agent_core_types::{HookContext, HookOutput};
-use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use std::collections::BTreeMap;
 use tokio::process::Command;
@@ -33,10 +33,10 @@ impl CommandHookExecutor for DefaultCommandHookExecutor {
         );
         let output = process.output().await?;
         if !output.status.success() {
-            return Err(anyhow!(
+            return Err(RuntimeError::hook(format!(
                 "hook command failed: {}",
                 String::from_utf8_lossy(&output.stderr)
-            ));
+            )));
         }
         let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
         if stdout.is_empty() {

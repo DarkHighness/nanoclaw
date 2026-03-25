@@ -5,9 +5,11 @@
 //! from hooks or explicit file reads, not client-side heuristics.
 
 mod catalog;
+mod error;
 mod frontmatter;
 mod loader;
 
 pub use catalog::*;
+pub use error::*;
 pub use frontmatter::*;
 pub use loader::*;

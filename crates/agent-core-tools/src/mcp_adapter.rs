@@ -1,6 +1,5 @@
-use crate::{Tool, ToolExecutionContext};
+use crate::{Result, Tool, ToolExecutionContext};
 use agent_core_types::{ToolCallId, ToolResult, ToolSpec};
-use anyhow::Result;
 use async_trait::async_trait;
 use serde_json::{Map, Value, json};
 use std::future::Future;

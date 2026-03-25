@@ -1,6 +1,5 @@
-use crate::ModelBackend;
+use crate::{ModelBackend, Result};
 use agent_core_types::{AgentCoreError, ModelEvent, ModelRequest, RunId, SessionId, TurnId};
-use anyhow::Result;
 use async_trait::async_trait;
 use futures::StreamExt;
 use serde_json::json;

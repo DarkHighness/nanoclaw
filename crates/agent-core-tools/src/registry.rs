@@ -1,6 +1,5 @@
-use crate::ToolExecutionContext;
+use crate::{Result, ToolExecutionContext};
 use agent_core_types::{ToolCallId, ToolResult, ToolSpec};
-use anyhow::Result;
 use async_trait::async_trait;
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -72,9 +71,8 @@ impl ToolRegistry {
 #[cfg(test)]
 mod tests {
     use super::{Tool, ToolRegistry};
-    use crate::ToolExecutionContext;
+    use crate::{Result, ToolExecutionContext};
     use agent_core_types::{ToolCallId, ToolOrigin, ToolOutputMode, ToolResult, ToolSpec};
-    use anyhow::Result;
     use async_trait::async_trait;
     use serde_json::{Value, json};
 

@@ -1,14 +1,14 @@
 use crate::{
     AgentRuntimeBuilder, CompactionConfig, ConversationCompactor, HookRunner, LoopDetectionConfig,
-    ModelBackend, ToolApprovalHandler,
+    ModelBackend, Result, RuntimeError, ToolApprovalHandler,
 };
 use agent_core_skills::SkillCatalog;
 use agent_core_store::RunStore;
 use agent_core_tools::{
-    SubagentExecutor, SubagentRequest, SubagentResult, ToolExecutionContext, ToolRegistry,
+    SubagentExecutor, SubagentRequest, SubagentResult, ToolError, ToolExecutionContext,
+    ToolRegistry,
 };
 use agent_core_types::HookRegistration;
-use anyhow::{Result, bail};
 use async_trait::async_trait;
 use std::sync::Arc;
 
@@ -79,7 +79,9 @@ impl RuntimeSubagentExecutor {
         let filtered = self.tool_registry.filtered_by_names(&allowed_names);
         let resolved_names = filtered.names();
         if requested.is_some() && resolved_names.is_empty() {
-            bail!("task: no allowed tools matched the parent registry");
+            return Err(RuntimeError::invalid_state(
+                "task: no allowed tools matched the parent registry",
+            ));
         }
         Ok((filtered, resolved_names))
     }
@@ -87,9 +89,13 @@ impl RuntimeSubagentExecutor {
 
 #[async_trait]
 impl SubagentExecutor for RuntimeSubagentExecutor {
-    async fn run(&self, request: SubagentRequest) -> Result<SubagentResult> {
-        let (tool_registry, resolved_tools) =
-            self.resolve_child_tools(request.allowed_tools.as_deref())?;
+    async fn run(
+        &self,
+        request: SubagentRequest,
+    ) -> std::result::Result<SubagentResult, ToolError> {
+        let (tool_registry, resolved_tools) = self
+            .resolve_child_tools(request.allowed_tools.as_deref())
+            .map_err(|error| ToolError::invalid_state(error.to_string()))?;
         let mut runtime = AgentRuntimeBuilder::new(self.backend.clone(), self.store.clone())
             .hook_runner(self.hook_runner.clone())
             .tool_registry(tool_registry)
@@ -115,10 +121,14 @@ impl SubagentExecutor for RuntimeSubagentExecutor {
                             .unwrap_or_else(|| "task".to_string()),
                     ),
                 )
-                .await?;
+                .await
+                .map_err(|error| ToolError::invalid_state(error.to_string()))?;
         }
 
-        let outcome = runtime.run_user_prompt(request.prompt.clone()).await?;
+        let outcome = runtime
+            .run_user_prompt(request.prompt.clone())
+            .await
+            .map_err(|error| ToolError::invalid_state(error.to_string()))?;
         Ok(SubagentResult {
             run_id: runtime.run_id().0,
             session_id: runtime.session_id().0,
@@ -134,6 +144,7 @@ impl SubagentExecutor for RuntimeSubagentExecutor {
 #[cfg(test)]
 mod tests {
     use super::RuntimeSubagentExecutor;
+    use crate::Result;
     use crate::{
         AlwaysAllowToolApprovalHandler, CompactionConfig, HookRunner, LoopDetectionConfig,
         ModelBackend, NoopConversationCompactor,
@@ -144,7 +155,6 @@ mod tests {
         ReadTool, SubagentExecutor, SubagentRequest, ToolExecutionContext, ToolRegistry,
     };
     use agent_core_types::{ModelEvent, ModelRequest};
-    use anyhow::Result;
     use async_trait::async_trait;
     use futures::{StreamExt, stream, stream::BoxStream};
     use std::sync::{Arc, Mutex};

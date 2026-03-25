@@ -1,5 +1,5 @@
 use crate::frontmatter::SkillFrontmatter;
-use anyhow::{Context, Result, bail};
+use crate::{Result, SkillError};
 use regex::Regex;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -33,7 +33,7 @@ pub async fn load_skill_from_dir(dir: impl AsRef<Path>) -> Result<Skill> {
     let skill_path = dir.join("SKILL.md");
     let raw = fs::read_to_string(&skill_path)
         .await
-        .with_context(|| format!("failed to read {}", skill_path.display()))?;
+        .map_err(|source| SkillError::read_path(skill_path.display().to_string(), source))?;
     let (frontmatter, body) = parse_frontmatter(&raw)?;
     Ok(Skill {
         name: frontmatter.name,
@@ -59,7 +59,7 @@ pub async fn load_skill_roots(roots: &[PathBuf]) -> Result<crate::SkillCatalog> 
         }
         let mut entries = fs::read_dir(root)
             .await
-            .with_context(|| format!("failed to read skill root {}", root.display()))?;
+            .map_err(|source| SkillError::read_path(root.display().to_string(), source))?;
         while let Some(entry) = entries.next_entry().await? {
             let path = entry.path();
             if entry.file_type().await?.is_dir() && path.join("SKILL.md").exists() {
@@ -74,18 +74,20 @@ fn parse_frontmatter(raw: &str) -> Result<(SkillFrontmatter, String)> {
     let re = Regex::new(r"(?s)\A---\n(.*?)\n---\n?(.*)\z").expect("frontmatter regex");
     let captures = re
         .captures(raw)
-        .ok_or_else(|| anyhow::anyhow!("skill file is missing YAML frontmatter"))?;
+        .ok_or_else(|| SkillError::invalid_format("skill file is missing YAML frontmatter"))?;
     let frontmatter = captures
         .get(1)
         .map(|value| value.as_str())
-        .ok_or_else(|| anyhow::anyhow!("missing frontmatter body"))?;
+        .ok_or_else(|| SkillError::invalid_format("missing frontmatter body"))?;
     let body = captures
         .get(2)
         .map(|value| value.as_str())
-        .ok_or_else(|| anyhow::anyhow!("missing skill body"))?;
+        .ok_or_else(|| SkillError::invalid_format("missing skill body"))?;
     let parsed: SkillFrontmatter = serde_yaml::from_str(frontmatter)?;
     if parsed.name.trim().is_empty() || parsed.description.trim().is_empty() {
-        bail!("skill frontmatter requires non-empty name and description");
+        return Err(SkillError::invalid_format(
+            "skill frontmatter requires non-empty name and description",
+        ));
     }
     Ok((parsed, body.to_string()))
 }

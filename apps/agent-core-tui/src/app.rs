@@ -2,8 +2,8 @@ use crate::{TuiCommand, config::AgentCoreConfig, parse_command, render};
 use agent_core::mcp::{ConnectedMcpServer, McpPrompt, McpResource};
 use agent_core::skills::Skill;
 use agent_core_runtime::{
-    AgentRuntime, RunTurnOutcome, RuntimeObserver, RuntimeProgressEvent, ToolApprovalHandler,
-    ToolApprovalOutcome, ToolApprovalRequest,
+    AgentRuntime, Result as RuntimeResult, RunTurnOutcome, RuntimeError, RuntimeObserver,
+    RuntimeProgressEvent, ToolApprovalHandler, ToolApprovalOutcome, ToolApprovalRequest,
 };
 use agent_core_store::{RunSearchResult, RunStore, RunSummary};
 use agent_core_types::{
@@ -587,7 +587,7 @@ impl<'a> LiveRenderObserver<'a> {
 }
 
 impl RuntimeObserver for LiveRenderObserver<'_> {
-    fn on_event(&mut self, event: RuntimeProgressEvent) -> Result<()> {
+    fn on_event(&mut self, event: RuntimeProgressEvent) -> RuntimeResult<()> {
         match event {
             RuntimeProgressEvent::SteerApplied { message, reason } => {
                 self.active_assistant_line = None;
@@ -687,6 +687,7 @@ impl RuntimeObserver for LiveRenderObserver<'_> {
             }
         }
         self.redraw()
+            .map_err(|error| RuntimeError::invalid_state(error.to_string()))
     }
 }
 
@@ -747,14 +748,15 @@ impl InteractiveToolApprovalHandler {
 
 #[async_trait]
 impl ToolApprovalHandler for InteractiveToolApprovalHandler {
-    async fn decide(&self, request: ToolApprovalRequest) -> Result<ToolApprovalOutcome> {
+    async fn decide(&self, request: ToolApprovalRequest) -> RuntimeResult<ToolApprovalOutcome> {
         if let Some(outcome) = self.cached_outcome(&request) {
             return Ok(outcome);
         }
         let mut stdout = io::stdout();
         loop {
-            render_tool_approval_prompt(&mut stdout, &request)?;
-            match event::read()? {
+            render_tool_approval_prompt(&mut stdout, &request)
+                .map_err(|error| RuntimeError::invalid_state(error.to_string()))?;
+            match event::read().map_err(|error| RuntimeError::invalid_state(error.to_string()))? {
                 Event::Key(key) => match key.code {
                     KeyCode::Char('y') | KeyCode::Char('Y') => {
                         return Ok(ToolApprovalOutcome::Approve);

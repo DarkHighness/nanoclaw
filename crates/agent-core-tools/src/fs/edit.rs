@@ -5,8 +5,8 @@ use crate::fs::{
     resolve_tool_path_against_workspace_root,
 };
 use crate::registry::Tool;
+use crate::{Result, ToolError};
 use agent_core_types::{MessagePart, ToolCallId, ToolOrigin, ToolOutputMode, ToolResult, ToolSpec};
-use anyhow::{Result, anyhow, bail};
 use async_trait::async_trait;
 use schemars::{JsonSchema, schema_for};
 use serde::{Deserialize, Serialize};
@@ -56,11 +56,11 @@ fn resolve_operation(input: &EditToolInput) -> Result<TextEditOperation> {
             old_text: input
                 .old_text
                 .clone()
-                .ok_or_else(|| anyhow!("str_replace requires old_text"))?,
+                .ok_or_else(|| ToolError::invalid("str_replace requires old_text"))?,
             new_text: input
                 .new_text
                 .clone()
-                .ok_or_else(|| anyhow!("str_replace requires new_text"))?,
+                .ok_or_else(|| ToolError::invalid("str_replace requires new_text"))?,
             replace_all: input.replace_all.unwrap_or(false),
         });
     }
@@ -68,15 +68,15 @@ fn resolve_operation(input: &EditToolInput) -> Result<TextEditOperation> {
         return Ok(TextEditOperation::ReplaceLines {
             start_line: input
                 .start_line
-                .ok_or_else(|| anyhow!("replace_lines requires start_line"))?,
+                .ok_or_else(|| ToolError::invalid("replace_lines requires start_line"))?,
             end_line: input
                 .end_line
-                .ok_or_else(|| anyhow!("replace_lines requires end_line"))?,
+                .ok_or_else(|| ToolError::invalid("replace_lines requires end_line"))?,
             text: input
                 .text
                 .clone()
                 .or_else(|| input.new_text.clone())
-                .ok_or_else(|| anyhow!("replace_lines requires text"))?,
+                .ok_or_else(|| ToolError::invalid("replace_lines requires text"))?,
             expected_selection_hash: input.expected_selection_hash.clone(),
         });
     }
@@ -84,15 +84,17 @@ fn resolve_operation(input: &EditToolInput) -> Result<TextEditOperation> {
         return Ok(TextEditOperation::Insert {
             after_line: input
                 .insert_line
-                .ok_or_else(|| anyhow!("insert requires insert_line"))?,
+                .ok_or_else(|| ToolError::invalid("insert requires insert_line"))?,
             text: input
                 .text
                 .clone()
                 .or_else(|| input.new_text.clone())
-                .ok_or_else(|| anyhow!("insert requires text"))?,
+                .ok_or_else(|| ToolError::invalid("insert requires text"))?,
         });
     }
-    bail!("edit requires operation, or legacy old_text/new_text, line-range, or insert fields")
+    Err(ToolError::invalid(
+        "edit requires operation, or legacy old_text/new_text, line-range, or insert fields",
+    ))
 }
 
 #[async_trait]

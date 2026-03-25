@@ -44,11 +44,11 @@ version = "0.1.0"
 dependencies = [
  "agent-core-runtime",
  "agent-core-types",
- "anyhow",
  "async-trait",
  "futures",
  "rig-core",
  "serde_json",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -59,7 +59,6 @@ dependencies = [
  "agent-core-store",
  "agent-core-tools",
  "agent-core-types",
- "anyhow",
  "async-trait",
  "futures",
  "regex",
@@ -75,10 +74,10 @@ name = "agent-core-skills"
 version = "0.1.0"
 dependencies = [
  "agent-core-types",
- "anyhow",
  "regex",
  "serde",
  "serde_yaml",
+ "thiserror 2.0.18",
  "tokio",
 ]
 
@@ -98,7 +97,6 @@ name = "agent-core-tools"
 version = "0.1.0"
 dependencies = [
  "agent-core-types",
- "anyhow",
  "async-trait",
  "base64",
  "globset",

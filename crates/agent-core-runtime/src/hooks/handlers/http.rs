@@ -1,5 +1,5 @@
+use crate::{Result, RuntimeError};
 use agent_core_types::{HookContext, HookOutput};
-use anyhow::Result;
 use async_trait::async_trait;
 use reqwest::Method;
 use std::collections::HashMap;
@@ -36,9 +36,12 @@ impl HttpHookExecutor for ReqwestHttpHookExecutor {
         headers: &HashMap<String, String>,
         context: HookContext,
     ) -> Result<HookOutput> {
-        let mut request = self
-            .client
-            .request(Method::from_bytes(method.as_bytes())?, url);
+        let mut request = self.client.request(
+            Method::from_bytes(method.as_bytes()).map_err(|error| {
+                RuntimeError::hook(format!("invalid hook HTTP method: {error}"))
+            })?,
+            url,
+        );
         for (key, value) in headers {
             request = request.header(key, value);
         }

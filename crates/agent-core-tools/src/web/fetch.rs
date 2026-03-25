@@ -1,12 +1,11 @@
-use crate::ToolExecutionContext;
 use crate::annotations::mcp_tool_annotations;
 use crate::registry::Tool;
 use crate::web::common::{
     DEFAULT_HTTP_TIMEOUT_MS, WebToolPolicy, clamped_fetch_max_chars, default_http_client,
     extract_html_title, is_text_content_type, summarize_remote_body, truncate_text,
 };
+use crate::{Result, ToolExecutionContext};
 use agent_core_types::{MessagePart, ToolCallId, ToolOrigin, ToolOutputMode, ToolResult, ToolSpec};
-use anyhow::Result;
 use async_trait::async_trait;
 use reqwest::Client;
 use reqwest::header::{CACHE_CONTROL, CONTENT_LANGUAGE, ETAG, LAST_MODIFIED};

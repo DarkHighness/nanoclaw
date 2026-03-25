@@ -1,5 +1,5 @@
+use crate::Result;
 use agent_core_types::{HookContext, HookRegistration};
-use anyhow::Result;
 use regex::Regex;
 
 pub fn matches_hook(registration: &HookRegistration, context: &HookContext) -> Result<bool> {

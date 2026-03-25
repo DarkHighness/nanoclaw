@@ -1,8 +1,8 @@
 use crate::ToolExecutionContext;
 use crate::annotations::mcp_tool_annotations;
 use crate::registry::Tool;
+use crate::{Result, ToolError};
 use agent_core_types::{MessagePart, ToolCallId, ToolOrigin, ToolOutputMode, ToolResult, ToolSpec};
-use anyhow::{Result, bail};
 use async_trait::async_trait;
 use regex::Regex;
 use schemars::{JsonSchema, schema_for};
@@ -97,7 +97,7 @@ fn resolve_prompt(input: &TaskToolInput) -> Result<String> {
         .or_else(|| input.task.clone())
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
-        .ok_or_else(|| anyhow::anyhow!("task requires prompt (or legacy task)"))
+        .ok_or_else(|| ToolError::invalid("task requires prompt (or legacy task)"))
 }
 
 fn resolve_agent(input: &TaskToolInput) -> Option<String> {
@@ -138,7 +138,7 @@ impl Tool for TaskTool {
             allowed_tools: input.allowed_tools,
         };
         if request.prompt.is_empty() {
-            bail!("task prompt must not be empty");
+            return Err(ToolError::invalid("task prompt must not be empty"));
         }
 
         let output = self.executor.run(request).await?;
@@ -341,9 +341,9 @@ fn infer_artifact_kind(uri: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::{SubagentExecutor, SubagentRequest, SubagentResult, TaskTool, TaskToolInput};
+    use crate::Result;
     use crate::{Tool, ToolExecutionContext};
     use agent_core_types::ToolCallId;
-    use anyhow::Result;
     use async_trait::async_trait;
     use std::sync::{Arc, Mutex};
 

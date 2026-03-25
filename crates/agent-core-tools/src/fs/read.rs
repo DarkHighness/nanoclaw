@@ -4,8 +4,8 @@ use crate::fs::{
     TextBuffer, format_numbered_lines, resolve_tool_path_against_workspace_root, stable_text_hash,
 };
 use crate::registry::Tool;
+use crate::{Result, ToolError};
 use agent_core_types::{MessagePart, ToolCallId, ToolOrigin, ToolOutputMode, ToolResult, ToolSpec};
-use anyhow::{Result, anyhow, bail};
 use async_trait::async_trait;
 use base64::Engine;
 use schemars::{JsonSchema, schema_for};
@@ -96,9 +96,11 @@ impl Tool for ReadTool {
         }
 
         let text = String::from_utf8(bytes)
-            .map_err(|_| anyhow!("read: file is not valid UTF-8 or supported image"))?;
+            .map_err(|_| ToolError::invalid("read: file is not valid UTF-8 or supported image"))?;
         if input.end_line.is_some() && input.line_count.is_some() {
-            bail!("read accepts either end_line or line_count, not both");
+            return Err(ToolError::invalid(
+                "read accepts either end_line or line_count, not both",
+            ));
         }
         let snapshot_id = stable_text_hash(&text);
         let buffer = TextBuffer::parse(&text);
@@ -135,11 +137,13 @@ impl Tool for ReadTool {
         if let Some(anchor_text) = input.anchor_text.as_deref() {
             if input.start_line.is_some() || input.end_line.is_some() || input.line_count.is_some()
             {
-                bail!("anchor_text cannot be combined with start_line, end_line, or line_count");
+                return Err(ToolError::invalid(
+                    "anchor_text cannot be combined with start_line, end_line, or line_count",
+                ));
             }
             let occurrence = input.anchor_occurrence.unwrap_or(1);
             if occurrence == 0 {
-                bail!("anchor_occurrence must be at least 1");
+                return Err(ToolError::invalid("anchor_occurrence must be at least 1"));
             }
             let context_lines = input.anchor_context.unwrap_or(DEFAULT_ANCHOR_CONTEXT);
             let ignore_case = input.anchor_ignore_case.unwrap_or(false);
@@ -156,11 +160,10 @@ impl Tool for ReadTool {
         }
 
         if start_line > total_lines {
-            bail!(
+            return Err(ToolError::invalid(format!(
                 "start_line {} is beyond end of file ({} lines total)",
-                start_line,
-                total_lines
-            );
+                start_line, total_lines
+            )));
         }
 
         let budget = resolve_adaptive_read_max_bytes(ctx.model_context_window_tokens);
@@ -179,7 +182,9 @@ impl Tool for ReadTool {
             }
         } else if let Some(end_line) = input.end_line {
             if end_line < start_line {
-                bail!("end_line {end_line} is before start_line {start_line}");
+                return Err(ToolError::invalid(format!(
+                    "end_line {end_line} is before start_line {start_line}"
+                )));
             }
             let count = end_line.min(total_lines) - start_line + 1;
             for line in selected.iter().take(count) {
@@ -188,7 +193,7 @@ impl Tool for ReadTool {
             }
         } else if let Some(line_count) = input.line_count {
             if line_count == 0 {
-                bail!("line_count must be at least 1");
+                return Err(ToolError::invalid("line_count must be at least 1"));
             }
             for line in selected.iter().take(line_count) {
                 output_lines.push(line.clone());
@@ -305,10 +310,10 @@ fn resolve_anchor_window(
             }
         }
     }
-    bail!(
+    Err(ToolError::invalid(format!(
         "anchor_text was not found at occurrence {} in the selected file",
         occurrence
-    );
+    )))
 }
 
 fn line_contains_anchor(line: &str, anchor_text: &str, ignore_case: bool) -> bool {

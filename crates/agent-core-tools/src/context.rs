@@ -1,6 +1,5 @@
-use crate::fs::assert_path_inside_allowed_roots;
+use crate::{Result, fs::assert_path_inside_allowed_roots};
 use agent_core_types::{RunId, SessionId, TurnId};
-use anyhow::Result;
 use std::path::{Path, PathBuf};
 
 #[derive(Clone, Debug, Default)]

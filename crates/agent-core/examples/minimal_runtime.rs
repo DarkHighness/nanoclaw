@@ -3,6 +3,7 @@ use agent_core::{
     ListTool, Message, MessageRole, ModelBackend, ModelEvent, ModelRequest, PatchTool, ReadTool,
     Skill, SkillCatalog, ToolExecutionContext, ToolRegistry, WriteTool,
 };
+use agent_core_runtime::Result as RuntimeResult;
 use anyhow::Result;
 use async_trait::async_trait;
 use futures::stream::{self, BoxStream};
@@ -16,7 +17,7 @@ impl ModelBackend for EchoBackend {
     async fn stream_turn(
         &self,
         request: ModelRequest,
-    ) -> Result<BoxStream<'static, Result<ModelEvent>>> {
+    ) -> RuntimeResult<BoxStream<'static, RuntimeResult<ModelEvent>>> {
         let latest_user_message = request
             .messages
             .iter()

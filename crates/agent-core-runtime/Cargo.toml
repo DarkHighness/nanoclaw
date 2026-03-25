@@ -13,7 +13,6 @@ agent-core-skills = { path = "../agent-core-skills" }
 agent-core-store = { path = "../agent-core-store" }
 agent-core-tools = { path = "../agent-core-tools" }
 agent-core-types = { path = "../agent-core-types" }
-anyhow.workspace = true
 async-trait.workspace = true
 futures.workspace = true
 regex.workspace = true

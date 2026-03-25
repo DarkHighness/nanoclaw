@@ -1,4 +1,4 @@
-use anyhow::{Context, Result, anyhow, bail};
+use crate::{Result, ToolError};
 use std::path::{Path, PathBuf};
 
 pub fn resolve_tool_path_against_workspace_root(
@@ -45,11 +45,11 @@ pub fn assert_path_inside_root(path: &Path, root: &Path) -> Result<()> {
     if normalized_path.starts_with(&normalized_root) {
         Ok(())
     } else {
-        bail!(
+        Err(ToolError::invalid(format!(
             "Path escapes workspace root: {} is outside {}",
             normalized_path.display(),
             normalized_root.display()
-        )
+        )))
     }
 }
 
@@ -74,17 +74,21 @@ where
         .map(|root| root.display().to_string())
         .collect::<Vec<_>>()
         .join(", ");
-    bail!(
+    Err(ToolError::invalid(format!(
         "Path escapes allowed roots: {} is outside [{}]",
         normalized_path.display(),
         allowed
-    )
+    )))
 }
 
 fn normalize_for_prefix(path: &Path) -> Result<PathBuf> {
     if path.exists() {
-        return std::fs::canonicalize(path)
-            .with_context(|| format!("failed to canonicalize {}", path.display()));
+        return std::fs::canonicalize(path).map_err(|source| {
+            ToolError::invalid_state(format!(
+                "failed to canonicalize {}: {source}",
+                path.display()
+            ))
+        });
     }
     let absolute = if path.is_absolute() {
         path.to_path_buf()
@@ -94,13 +98,16 @@ fn normalize_for_prefix(path: &Path) -> Result<PathBuf> {
     let mut existing_ancestor = absolute.as_path();
     let mut suffix = Vec::new();
     while !existing_ancestor.exists() {
-        let file_name = existing_ancestor
-            .file_name()
-            .ok_or_else(|| anyhow!("path has no existing ancestor: {}", absolute.display()))?;
+        let file_name = existing_ancestor.file_name().ok_or_else(|| {
+            ToolError::invalid(format!(
+                "path has no existing ancestor: {}",
+                absolute.display()
+            ))
+        })?;
         suffix.push(file_name.to_os_string());
-        existing_ancestor = existing_ancestor
-            .parent()
-            .ok_or_else(|| anyhow!("path has no parent: {}", absolute.display()))?;
+        existing_ancestor = existing_ancestor.parent().ok_or_else(|| {
+            ToolError::invalid(format!("path has no parent: {}", absolute.display()))
+        })?;
     }
     let mut normalized = std::fs::canonicalize(existing_ancestor)?;
     for component in suffix.iter().rev() {

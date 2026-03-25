@@ -320,6 +320,7 @@ impl CodeAgentTui {
                 .apply_control_with_observer(command, &mut observer)
                 .await
                 .map(|_| ())
+                .map_err(anyhow::Error::from)
         }));
     }
 

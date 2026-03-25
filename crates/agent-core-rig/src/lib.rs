@@ -5,8 +5,10 @@
 
 mod backend;
 mod capabilities;
+mod error;
 mod mapping;
 
 pub use backend::*;
 pub use capabilities::*;
+pub use error::*;
 pub use mapping::*;

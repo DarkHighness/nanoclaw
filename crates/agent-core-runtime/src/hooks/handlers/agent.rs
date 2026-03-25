@@ -1,5 +1,5 @@
+use crate::Result;
 use agent_core_types::{HookContext, HookOutput};
-use anyhow::Result;
 use async_trait::async_trait;
 
 #[async_trait]

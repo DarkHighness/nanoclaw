@@ -1,12 +1,12 @@
 use crate::{
-    RigProviderCapabilities, RigProviderDescriptor, RigProviderKind, to_rig_tool_definition,
+    Result, RigError, RigProviderCapabilities, RigProviderDescriptor, RigProviderKind,
+    to_rig_tool_definition,
 };
-use agent_core_runtime::ModelBackend;
+use agent_core_runtime::{ModelBackend, Result as RuntimeResult, RuntimeError};
 use agent_core_types::{
-    Message, MessagePart, MessageRole, ModelEvent, ModelRequest, Reasoning,
+    AgentCoreError, Message, MessagePart, MessageRole, ModelEvent, ModelRequest, Reasoning,
     ReasoningContent as AgentReasoningContent, ToolCall, ToolCallId, ToolOrigin, new_opaque_id,
 };
-use anyhow::{Result, anyhow, bail};
 use async_trait::async_trait;
 use futures::{Stream, stream::BoxStream};
 use rig::OneOrMany;
@@ -119,20 +119,22 @@ impl ModelBackend for RigModelBackend {
     async fn stream_turn(
         &self,
         request: ModelRequest,
-    ) -> Result<BoxStream<'static, Result<ModelEvent>>> {
+    ) -> RuntimeResult<BoxStream<'static, RuntimeResult<ModelEvent>>> {
         let tool_origins = request
             .tools
             .iter()
             .map(|tool| (tool.name.clone(), tool.origin.clone()))
             .collect::<BTreeMap<_, _>>();
-        let request = to_completion_request(request, &self.request_options)?;
+        let request =
+            to_completion_request(request, &self.request_options).map_err(RuntimeError::from)?;
         let stream = match &self.client {
             RigProviderClient::OpenAi(client) => stream_completion_to_model_events(
                 execute_streaming_completion(
                     client.completion_model(self.descriptor.provider.model.clone()),
                     request.clone(),
                 )
-                .await?,
+                .await
+                .map_err(RuntimeError::from)?,
                 tool_origins.clone(),
             ),
             RigProviderClient::Anthropic(client) => stream_completion_to_model_events(
@@ -140,7 +142,8 @@ impl ModelBackend for RigModelBackend {
                     client.completion_model(self.descriptor.provider.model.clone()),
                     request,
                 )
-                .await?,
+                .await
+                .map_err(RuntimeError::from)?,
                 tool_origins,
             ),
         };
@@ -155,7 +158,10 @@ async fn execute_streaming_completion<M>(
 where
     M: CompletionModel,
 {
-    Ok(model.stream(request).await?)
+    model
+        .stream(request)
+        .await
+        .map_err(|error| RigError::provider(error.to_string()))
 }
 
 fn build_openai_client(
@@ -170,15 +176,18 @@ fn build_openai_client(
         if let Some(base_url) = base_url.as_deref() {
             builder = builder.base_url(base_url);
         }
-        return Ok(builder.build()?);
+        return builder
+            .build()
+            .map_err(|error| RigError::config(error.to_string()));
     }
     if let Some(base_url) = base_url.as_deref() {
-        let api_key =
-            std::env::var("OPENAI_API_KEY").map_err(|_| anyhow!("OPENAI_API_KEY not set"))?;
-        return Ok(openai::Client::builder()
+        let api_key = std::env::var("OPENAI_API_KEY")
+            .map_err(|_| RigError::config("OPENAI_API_KEY not set"))?;
+        return openai::Client::builder()
             .api_key(api_key)
             .base_url(base_url)
-            .build()?);
+            .build()
+            .map_err(|error| RigError::config(error.to_string()));
     }
     Ok(openai::Client::from_env())
 }
@@ -195,15 +204,18 @@ fn build_anthropic_client(
         if let Some(base_url) = base_url.as_deref() {
             builder = builder.base_url(base_url);
         }
-        return Ok(builder.build()?);
+        return builder
+            .build()
+            .map_err(|error| RigError::config(error.to_string()));
     }
     if let Some(base_url) = base_url.as_deref() {
-        let api_key =
-            std::env::var("ANTHROPIC_API_KEY").map_err(|_| anyhow!("ANTHROPIC_API_KEY not set"))?;
-        return Ok(anthropic::Client::builder()
+        let api_key = std::env::var("ANTHROPIC_API_KEY")
+            .map_err(|_| RigError::config("ANTHROPIC_API_KEY not set"))?;
+        return anthropic::Client::builder()
             .api_key(api_key)
             .base_url(base_url)
-            .build()?);
+            .build()
+            .map_err(|error| RigError::config(error.to_string()));
     }
     Ok(anthropic::Client::from_env())
 }
@@ -227,14 +239,17 @@ fn to_completion_request(
         messages.push(to_rig_message(message)?);
     }
     if messages.is_empty() {
-        bail!("model request did not contain any messages");
+        return Err(RigError::protocol(
+            "model request did not contain any messages",
+        ));
     }
 
     Ok(CompletionRequest {
         model: None,
         preamble: None,
-        chat_history: OneOrMany::many(messages)
-            .map_err(|error| anyhow!("failed to build chat history: {error}"))?,
+        chat_history: OneOrMany::many(messages).map_err(|error| {
+            RigError::protocol(format!("failed to build chat history: {error}"))
+        })?,
         documents: Vec::new(),
         tools: request
             .tools
@@ -255,23 +270,26 @@ fn to_rig_message(message: Message) -> Result<RigMessage> {
         MessageRole::User => {
             let content = to_user_content(message.parts)?;
             Ok(RigMessage::User {
-                content: OneOrMany::many(content)
-                    .map_err(|error| anyhow!("failed to build user message: {error}"))?,
+                content: OneOrMany::many(content).map_err(|error| {
+                    RigError::protocol(format!("failed to build user message: {error}"))
+                })?,
             })
         }
         MessageRole::Assistant => {
             let content = to_assistant_content(message.parts)?;
             Ok(RigMessage::Assistant {
                 id: Some(message.message_id),
-                content: OneOrMany::many(content)
-                    .map_err(|error| anyhow!("failed to build assistant message: {error}"))?,
+                content: OneOrMany::many(content).map_err(|error| {
+                    RigError::protocol(format!("failed to build assistant message: {error}"))
+                })?,
             })
         }
         MessageRole::Tool => {
             let content = to_tool_result_content(message.parts)?;
             Ok(RigMessage::User {
-                content: OneOrMany::many(content)
-                    .map_err(|error| anyhow!("failed to build tool result message: {error}"))?,
+                content: OneOrMany::many(content).map_err(|error| {
+                    RigError::protocol(format!("failed to build tool result message: {error}"))
+                })?,
             })
         }
     }
@@ -307,8 +325,9 @@ fn to_user_content(parts: Vec<MessagePart>) -> Result<Vec<UserContent>> {
             }
             MessagePart::ToolResult { result } => {
                 let converted = to_rig_tool_result_parts(result.parts)?;
-                let converted = OneOrMany::many(converted)
-                    .map_err(|error| anyhow!("failed to build tool result content: {error}"))?;
+                let converted = OneOrMany::many(converted).map_err(|error| {
+                    RigError::protocol(format!("failed to build tool result content: {error}"))
+                })?;
                 content.push(UserContent::tool_result_with_call_id(
                     result.id.0,
                     result.call_id,
@@ -336,7 +355,9 @@ fn to_user_content(parts: Vec<MessagePart>) -> Result<Vec<UserContent>> {
     }
 
     if content.is_empty() {
-        bail!("message did not contain any user-compatible content");
+        return Err(RigError::protocol(
+            "message did not contain any user-compatible content",
+        ));
     }
     Ok(content)
 }
@@ -387,7 +408,9 @@ fn to_assistant_content(parts: Vec<MessagePart>) -> Result<Vec<AssistantContent>
     }
 
     if content.is_empty() {
-        bail!("message did not contain any assistant-compatible content");
+        return Err(RigError::protocol(
+            "message did not contain any assistant-compatible content",
+        ));
     }
     Ok(content)
 }
@@ -399,7 +422,7 @@ fn to_tool_result_content(parts: Vec<MessagePart>) -> Result<Vec<UserContent>> {
             MessagePart::ToolResult { result } => {
                 let converted = to_rig_tool_result_parts(result.parts)?;
                 let converted = OneOrMany::many(converted).map_err(|error| {
-                    anyhow!("failed to build user tool result content: {error}")
+                    RigError::protocol(format!("failed to build user tool result content: {error}"))
                 })?;
                 content.push(UserContent::tool_result_with_call_id(
                     result.id.0,
@@ -452,7 +475,9 @@ fn to_tool_result_content(parts: Vec<MessagePart>) -> Result<Vec<UserContent>> {
     }
 
     if content.is_empty() {
-        bail!("tool message did not contain any tool-compatible content");
+        return Err(RigError::protocol(
+            "tool message did not contain any tool-compatible content",
+        ));
     }
     Ok(content)
 }
@@ -503,7 +528,9 @@ fn to_rig_tool_result_parts(parts: Vec<MessagePart>) -> Result<Vec<RigToolResult
     }
 
     if content.is_empty() {
-        bail!("tool result did not contain any MCP-compatible content");
+        return Err(RigError::protocol(
+            "tool result did not contain any MCP-compatible content",
+        ));
     }
     Ok(content)
 }
@@ -575,7 +602,7 @@ fn response_to_model_events(
 fn stream_completion_to_model_events<R>(
     inner: StreamingCompletionResponse<R>,
     tool_origins: BTreeMap<String, ToolOrigin>,
-) -> BoxStream<'static, Result<ModelEvent>>
+) -> BoxStream<'static, RuntimeResult<ModelEvent>>
 where
     R: Clone + Unpin + GetTokenUsage + Send + 'static,
 {
@@ -603,7 +630,7 @@ impl<R> Stream for RigStreamingModelEventStream<R>
 where
     R: Clone + Unpin + GetTokenUsage + Send + 'static,
 {
-    type Item = Result<ModelEvent>;
+    type Item = RuntimeResult<ModelEvent>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let stream = self.get_mut();
@@ -633,7 +660,11 @@ where
                         reasoning: extract_reasoning(stream.inner.choice.iter()),
                     })));
                 }
-                Poll::Ready(Some(Err(error))) => return Poll::Ready(Some(Err(error.into()))),
+                Poll::Ready(Some(Err(error))) => {
+                    return Poll::Ready(Some(Err(
+                        AgentCoreError::ModelBackend(error.to_string()).into()
+                    )));
+                }
                 Poll::Ready(Some(Ok(chunk))) => match chunk {
                     StreamedAssistantContent::Text(text) => {
                         stream

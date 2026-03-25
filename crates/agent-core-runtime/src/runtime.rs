@@ -1,7 +1,7 @@
 use crate::{
     CompactionConfig, CompactionRequest, ConversationCompactor, HookAggregate, HookRunner,
-    LoopDetectionConfig, LoopSignalSeverity, ModelBackend, NoopRuntimeObserver, RuntimeCommand,
-    RuntimeObserver, RuntimeProgressEvent, RuntimeSession, ToolApprovalHandler,
+    LoopDetectionConfig, LoopSignalSeverity, ModelBackend, NoopRuntimeObserver, Result,
+    RuntimeCommand, RuntimeObserver, RuntimeProgressEvent, RuntimeSession, ToolApprovalHandler,
     ToolApprovalOutcome, ToolApprovalRequest, ToolLoopDetector, append_transcript_message,
     estimate_prompt_tokens,
 };
@@ -13,7 +13,6 @@ use agent_core_types::{
     ModelEvent, ModelRequest, PermissionBehavior, PermissionDecision, RunEventEnvelope,
     RunEventKind, ToolCall, ToolSpec, TurnId, new_opaque_id,
 };
-use anyhow::Result;
 use futures::StreamExt;
 use serde_json::json;
 use std::collections::BTreeMap;
@@ -1071,20 +1070,19 @@ mod tests {
     use crate::{
         AgentRuntimeBuilder, CompactionConfig, CompactionRequest, CompactionResult,
         ConversationCompactor, DefaultCommandHookExecutor, HookRunner, ModelBackend,
-        NoopAgentHookEvaluator, ReqwestHttpHookExecutor, RuntimeCommand, RuntimeObserver,
+        NoopAgentHookEvaluator, ReqwestHttpHookExecutor, Result, RuntimeCommand, RuntimeObserver,
         RuntimeProgressEvent, ToolApprovalHandler, ToolApprovalOutcome, ToolApprovalRequest,
     };
     use agent_core_skills::{Skill, SkillCatalog};
     use agent_core_store::{InMemoryRunStore, RunStore};
     use agent_core_tools::{
-        ReadTool, Tool, ToolExecutionContext, ToolRegistry, mcp_tool_annotations,
+        ReadTool, Tool, ToolError, ToolExecutionContext, ToolRegistry, mcp_tool_annotations,
     };
     use agent_core_types::{
         HookContext, HookEvent, HookHandler, HookOutput, HookRegistration, Message, ModelEvent,
         ModelRequest, PromptHookHandler, RunEventKind, ToolCall, ToolCallId, ToolOrigin,
         ToolOutputMode, ToolResult, ToolSpec,
     };
-    use anyhow::Result;
     use async_trait::async_trait;
     use futures::{StreamExt, stream, stream::BoxStream};
     use serde_json::Value;
@@ -1150,8 +1148,8 @@ mod tests {
             _call_id: ToolCallId,
             _arguments: Value,
             _ctx: &ToolExecutionContext,
-        ) -> Result<ToolResult> {
-            anyhow::bail!("boom")
+        ) -> std::result::Result<ToolResult, ToolError> {
+            Err(ToolError::invalid_state("boom"))
         }
     }
 
@@ -1176,7 +1174,7 @@ mod tests {
             call_id: ToolCallId,
             _arguments: Value,
             _ctx: &ToolExecutionContext,
-        ) -> Result<ToolResult> {
+        ) -> std::result::Result<ToolResult, ToolError> {
             Ok(ToolResult::text(call_id, "danger", "mutated"))
         }
     }
@@ -1397,7 +1395,7 @@ mod tests {
         assert!(events.iter().any(|event| {
             matches!(
                 &event.event,
-                RunEventKind::ToolCallFailed { error, .. } if error == "boom"
+                RunEventKind::ToolCallFailed { error, .. } if error.contains("boom")
             )
         }));
         assert!(events.iter().any(|event| {
@@ -1407,7 +1405,7 @@ mod tests {
                     if message.parts.iter().any(|part| matches!(
                         part,
                         agent_core_types::MessagePart::ToolResult { result }
-                            if result.is_error && result.text_content() == "boom"
+                            if result.is_error && result.text_content().contains("boom")
                 ))
             )
         }));

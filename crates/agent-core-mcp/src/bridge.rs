@@ -1,7 +1,6 @@
-use crate::McpClient;
-use agent_core_tools::McpToolAdapter;
+use crate::{McpClient, Result};
+use agent_core_tools::{McpToolAdapter, ToolError};
 use agent_core_types::{ToolCallId, ToolResult};
-use anyhow::Result;
 use serde_json::Value;
 use std::sync::Arc;
 
@@ -21,12 +20,14 @@ pub async fn catalog_tools_as_registry_entries(
                     let client = client.clone();
                     let tool_name = tool_name.clone();
                     Box::pin(async move {
-                        client.call_tool(&tool_name, arguments).await.map(
-                            |mut tool_result: ToolResult| {
+                        client
+                            .call_tool(&tool_name, arguments)
+                            .await
+                            .map_err(|error| ToolError::invalid_state(error.to_string()))
+                            .map(|mut tool_result: ToolResult| {
                                 tool_result.id = call_id;
                                 tool_result
-                            },
-                        )
+                            })
                     })
                 }),
             )

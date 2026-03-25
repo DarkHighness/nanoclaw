@@ -1,5 +1,5 @@
+use crate::Result;
 use agent_core_types::{ToolCall, ToolResult, TurnId};
-use anyhow::Result;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum RuntimeProgressEvent {

@@ -6,8 +6,8 @@ use crate::fs::{
     resolve_tool_path_against_workspace_root,
 };
 use crate::registry::Tool;
+use crate::{Result, ToolError};
 use agent_core_types::{MessagePart, ToolCallId, ToolOrigin, ToolOutputMode, ToolResult, ToolSpec};
-use anyhow::{Result, bail};
 use async_trait::async_trait;
 use schemars::{JsonSchema, schema_for};
 use serde::{Deserialize, Serialize};
@@ -118,7 +118,7 @@ impl Tool for PatchTool {
         let external_call_id = call_id.0.clone();
         let input: PatchToolInput = serde_json::from_value(arguments)?;
         if input.operations.is_empty() {
-            bail!("patch requires at least one operation");
+            return Err(ToolError::invalid("patch requires at least one operation"));
         }
 
         let mut staged = BTreeMap::<PathBuf, StagedFile>::new();

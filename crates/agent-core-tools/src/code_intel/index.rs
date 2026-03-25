@@ -2,7 +2,7 @@ use crate::ToolExecutionContext;
 use crate::code_intel::{
     CodeIntelBackend, CodeLocation, CodeReference, CodeSymbol, CodeSymbolKind,
 };
-use anyhow::{Context, Result};
+use crate::{Result, ToolError};
 use async_trait::async_trait;
 use ignore::WalkBuilder;
 use regex::Regex;
@@ -149,8 +149,12 @@ impl CodeIntelBackend for WorkspaceTextCodeIntelBackend {
         limit: usize,
         ctx: &ToolExecutionContext,
     ) -> Result<Vec<CodeSymbol>> {
-        let source = std::fs::read_to_string(path)
-            .with_context(|| format!("failed to read source file {}", path.display()))?;
+        let source = std::fs::read_to_string(path).map_err(|source| {
+            ToolError::invalid_state(format!(
+                "failed to read source file {}: {source}",
+                path.display()
+            ))
+        })?;
         let mut symbols = self.parse_symbols_in_source(ctx.effective_root(), path, &source);
         symbols.sort_by_key(symbol_sort_key);
         symbols.truncate(limit);

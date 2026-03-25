@@ -1,13 +1,12 @@
 use crate::{
     AgentHookEvaluator, CommandHookExecutor, DefaultCommandHookExecutor, HttpHookExecutor,
     NoopAgentHookEvaluator, NoopPromptHookEvaluator, PromptHookEvaluator, ReqwestHttpHookExecutor,
-    matches_hook,
+    Result, matches_hook,
 };
 use agent_core_types::{
     GateDecision, HookContext, HookDecision, HookHandler, HookOutput, HookRegistration,
     PermissionBehavior, PermissionDecision,
 };
-use anyhow::Result;
 use std::sync::Arc;
 use tokio::sync::{Mutex, mpsc};
 

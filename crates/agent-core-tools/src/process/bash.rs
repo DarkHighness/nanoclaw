@@ -2,10 +2,10 @@ use crate::ToolExecutionContext;
 use crate::annotations::mcp_tool_annotations;
 use crate::fs::resolve_tool_path_against_workspace_root;
 use crate::registry::Tool;
+use crate::{Result, ToolError};
 use agent_core_types::{
     MessagePart, ToolCallId, ToolOrigin, ToolOutputMode, ToolResult, ToolSpec, new_opaque_id,
 };
-use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use schemars::{JsonSchema, schema_for};
 use serde::{Deserialize, Serialize};
@@ -676,7 +676,7 @@ fn resolve_command(input: &BashToolInput) -> Result<String> {
         .as_ref()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
-        .ok_or_else(|| anyhow!("bash requires a non-empty `command` for this mode"))
+        .ok_or_else(|| ToolError::invalid("bash requires a non-empty `command` for this mode"))
 }
 
 fn resolve_session_id(input: &BashToolInput) -> Result<String> {
@@ -685,7 +685,7 @@ fn resolve_session_id(input: &BashToolInput) -> Result<String> {
         .as_ref()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
-        .ok_or_else(|| anyhow!("bash requires a non-empty `session_id` for this mode"))
+        .ok_or_else(|| ToolError::invalid("bash requires a non-empty `session_id` for this mode"))
 }
 
 fn resolve_cwd(input: &BashToolInput, ctx: &ToolExecutionContext) -> Result<PathBuf> {

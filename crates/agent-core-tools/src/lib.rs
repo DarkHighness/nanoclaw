@@ -11,6 +11,7 @@ pub mod annotations;
 #[cfg(feature = "code-intel")]
 pub mod code_intel;
 pub mod context;
+mod error;
 pub mod fs;
 pub mod mcp_adapter;
 pub mod process;
@@ -25,6 +26,7 @@ pub use annotations::*;
 #[cfg(feature = "code-intel")]
 pub use code_intel::*;
 pub use context::*;
+pub use error::*;
 pub use fs::*;
 pub use mcp_adapter::*;
 pub use process::*;

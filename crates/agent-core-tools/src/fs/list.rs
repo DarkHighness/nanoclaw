@@ -1,9 +1,8 @@
-use crate::ToolExecutionContext;
 use crate::annotations::mcp_tool_annotations;
 use crate::fs::resolve_tool_path_against_workspace_root;
 use crate::registry::Tool;
+use crate::{Result, ToolExecutionContext};
 use agent_core_types::{MessagePart, ToolCallId, ToolOrigin, ToolOutputMode, ToolResult, ToolSpec};
-use anyhow::Result;
 use async_trait::async_trait;
 use ignore::WalkBuilder;
 use schemars::{JsonSchema, schema_for};

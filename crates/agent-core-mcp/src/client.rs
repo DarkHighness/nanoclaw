@@ -1,12 +1,11 @@
 use crate::{
-    ConnectedMcpServer, McpCatalog, McpPrompt, McpPromptArgument, McpResource, McpServerConfig,
-    McpTransportConfig,
+    ConnectedMcpServer, McpCatalog, McpError, McpPrompt, McpPromptArgument, McpResource,
+    McpServerConfig, McpTransportConfig, Result,
 };
 use agent_core_types::{
     Message, MessagePart, MessageRole, ToolCallId, ToolOrigin, ToolOutputMode, ToolResult,
     ToolSpec, new_opaque_id,
 };
-use anyhow::{Result, anyhow, bail};
 use async_trait::async_trait;
 use http::{HeaderName, HeaderValue};
 use rmcp::ServiceExt;
@@ -93,21 +92,24 @@ impl McpClient for RmcpClient {
         let tools = self
             .peer
             .list_all_tools()
-            .await?
+            .await
+            .map_err(|error| McpError::protocol(error.to_string()))?
             .into_iter()
             .map(|tool| tool_spec_from_rmcp(&self.server_name, tool))
             .collect::<Result<Vec<_>>>()?;
         let prompts = self
             .peer
             .list_all_prompts()
-            .await?
+            .await
+            .map_err(|error| McpError::protocol(error.to_string()))?
             .into_iter()
             .map(mcp_prompt_from_listing)
             .collect();
         let resources = self
             .peer
             .list_all_resources()
-            .await?
+            .await
+            .map_err(|error| McpError::protocol(error.to_string()))?
             .into_iter()
             .map(mcp_resource_from_listing)
             .collect();
@@ -124,12 +126,18 @@ impl McpClient for RmcpClient {
         let mut params = CallToolRequestParams::new(tool_name.to_string());
         if !arguments.is_null() {
             let Value::Object(map) = arguments else {
-                bail!("MCP tool arguments must serialize as a JSON object");
+                return Err(McpError::protocol(
+                    "MCP tool arguments must serialize as a JSON object",
+                ));
             };
             params = params.with_arguments(map);
         }
 
-        let result = self.peer.call_tool(params).await?;
+        let result = self
+            .peer
+            .call_tool(params)
+            .await
+            .map_err(|error| McpError::protocol(error.to_string()))?;
         Ok(tool_result_from_rmcp(tool_name, result))
     }
 
@@ -137,7 +145,8 @@ impl McpClient for RmcpClient {
         let result = self
             .peer
             .read_resource(ReadResourceRequestParams::new(uri))
-            .await?;
+            .await
+            .map_err(|error| McpError::protocol(error.to_string()))?;
         Ok(mcp_resource_from_contents(uri, result.contents))
     }
 
@@ -145,11 +154,17 @@ impl McpClient for RmcpClient {
         let mut params = GetPromptRequestParams::new(name);
         if !arguments.is_null() {
             let Value::Object(map) = arguments else {
-                bail!("MCP prompt arguments must serialize as a JSON object");
+                return Err(McpError::protocol(
+                    "MCP prompt arguments must serialize as a JSON object",
+                ));
             };
             params = params.with_arguments(map);
         }
-        let result = self.peer.get_prompt(params).await?;
+        let result = self
+            .peer
+            .get_prompt(params)
+            .await
+            .map_err(|error| McpError::protocol(error.to_string()))?;
         Ok(McpPrompt {
             name: name.to_string(),
             title: None,
@@ -195,7 +210,7 @@ impl McpClient for MockMcpClient {
             .iter()
             .find(|resource| resource.uri == uri)
             .cloned()
-            .ok_or_else(|| anyhow!("resource not found: {uri}"))
+            .ok_or_else(|| McpError::protocol(format!("resource not found: {uri}")))
     }
 
     async fn get_prompt(&self, name: &str, _arguments: Value) -> Result<McpPrompt> {
@@ -204,7 +219,7 @@ impl McpClient for MockMcpClient {
             .iter()
             .find(|prompt| prompt.name == name)
             .cloned()
-            .ok_or_else(|| anyhow!("prompt not found: {name}"))
+            .ok_or_else(|| McpError::protocol(format!("prompt not found: {name}")))
     }
 }
 
@@ -220,8 +235,11 @@ async fn connect_stdio_transport(
     if let Some(cwd) = cwd {
         process.current_dir(cwd);
     }
-    let transport = TokioChildProcess::new(process)?;
-    Ok(().serve(transport).await?)
+    let transport =
+        TokioChildProcess::new(process).map_err(|error| McpError::transport(error.to_string()))?;
+    ().serve(transport)
+        .await
+        .map_err(|error| McpError::transport(error.to_string()))
 }
 
 async fn connect_streamable_http_transport(
@@ -232,7 +250,9 @@ async fn connect_streamable_http_transport(
         StreamableHttpClientTransportConfig::with_uri(url.to_string())
             .custom_headers(http_headers(headers)?),
     );
-    Ok(().serve(transport).await?)
+    ().serve(transport)
+        .await
+        .map_err(|error| McpError::transport(error.to_string()))
 }
 
 fn http_headers(headers: &BTreeMap<String, String>) -> Result<HashMap<HeaderName, HeaderValue>> {

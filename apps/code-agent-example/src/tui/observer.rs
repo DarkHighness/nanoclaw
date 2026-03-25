@@ -1,6 +1,5 @@
 use super::state::{SharedUiState, preview_text};
-use agent_core::runtime::{RuntimeObserver, RuntimeProgressEvent};
-use anyhow::Result;
+use agent_core::runtime::{Result as RuntimeResult, RuntimeObserver, RuntimeProgressEvent};
 
 pub(crate) struct SharedRenderObserver {
     ui_state: SharedUiState,
@@ -17,7 +16,7 @@ impl SharedRenderObserver {
 }
 
 impl RuntimeObserver for SharedRenderObserver {
-    fn on_event(&mut self, event: RuntimeProgressEvent) -> Result<()> {
+    fn on_event(&mut self, event: RuntimeProgressEvent) -> RuntimeResult<()> {
         self.ui_state.mutate(|state| match event {
             RuntimeProgressEvent::SteerApplied { message, reason } => {
                 state.push_transcript(format!("system> {message}"));

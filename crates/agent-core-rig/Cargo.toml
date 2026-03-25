@@ -7,8 +7,8 @@ version.workspace = true
 [dependencies]
 agent-core-runtime = { path = "../agent-core-runtime" }
 agent-core-types = { path = "../agent-core-types" }
-anyhow.workspace = true
 async-trait.workspace = true
 futures.workspace = true
 serde_json.workspace = true
+thiserror.workspace = true
 rig = { package = "rig-core", version = "0.33.0", default-features = false, features = ["reqwest-rustls"] }

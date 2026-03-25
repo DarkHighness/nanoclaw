@@ -224,7 +224,11 @@ fn build_backend(options: &AppOptions) -> Result<RigModelBackend> {
         SelectedProvider::OpenAi => RigProviderDescriptor::openai(options.model.clone()),
         SelectedProvider::Anthropic => RigProviderDescriptor::anthropic(options.model.clone()),
     });
-    RigModelBackend::from_settings(descriptor, RigRequestOptions::default(), None)
+    Ok(RigModelBackend::from_settings(
+        descriptor,
+        RigRequestOptions::default(),
+        None,
+    )?)
 }
 
 fn build_system_preamble(system_prompt: Option<&str>, skill_catalog: &SkillCatalog) -> Vec<String> {

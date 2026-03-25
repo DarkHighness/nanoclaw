@@ -1,5 +1,5 @@
 use crate::fs::{TextBuffer, stable_text_hash};
-use anyhow::{Result, anyhow, bail};
+use crate::{Result, ToolError};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -170,7 +170,7 @@ pub fn apply_text_edits(
         ));
     };
     if edits.is_empty() {
-        bail!("edit requires at least one operation");
+        return Err(ToolError::invalid("edit requires at least one operation"));
     }
 
     let snapshot_before = stable_text_hash(existing);
@@ -210,9 +210,9 @@ pub fn apply_text_edits(
                 snapshot_after: None,
             });
         }
-        working = outcome
-            .next_content
-            .ok_or_else(|| anyhow!("text edit unexpectedly removed file content"))?;
+        working = outcome.next_content.ok_or_else(|| {
+            ToolError::invalid_state("text edit unexpectedly removed file content")
+        })?;
         operations.push(outcome.metadata);
     }
 

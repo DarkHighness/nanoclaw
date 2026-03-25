@@ -1,7 +1,9 @@
 use super::state::{SharedUiState, preview_text, truncate_preview};
 use agent_core::ToolOrigin;
-use agent_core::runtime::{ToolApprovalHandler, ToolApprovalOutcome, ToolApprovalRequest};
-use anyhow::Result;
+use agent_core::runtime::{
+    Result as RuntimeResult, RuntimeError, ToolApprovalHandler, ToolApprovalOutcome,
+    ToolApprovalRequest,
+};
 use async_trait::async_trait;
 use std::sync::{Arc, Mutex};
 use tokio::sync::oneshot;
@@ -80,7 +82,7 @@ impl InteractiveToolApprovalHandler {
 
 #[async_trait]
 impl ToolApprovalHandler for InteractiveToolApprovalHandler {
-    async fn decide(&self, request: ToolApprovalRequest) -> Result<ToolApprovalOutcome> {
+    async fn decide(&self, request: ToolApprovalRequest) -> RuntimeResult<ToolApprovalOutcome> {
         self.ui_state.mutate(|state| {
             state.status = format!("Approval required for {}", request.call.tool_name);
             state.push_activity(format!(
@@ -94,10 +96,15 @@ impl ToolApprovalHandler for InteractiveToolApprovalHandler {
         self.approval_bridge.present(prompt, tx);
         match rx.await {
             Ok(outcome) => Ok(outcome),
-            Err(_) => Ok(ToolApprovalOutcome::Deny {
-                reason: Some("approval dialog closed".to_string()),
-            }),
+            Err(error) => Err(RuntimeError::hook(format!(
+                "approval dialog closed unexpectedly: {error}"
+            ))),
         }
+        .or_else(|_| {
+            Ok(ToolApprovalOutcome::Deny {
+                reason: Some("approval dialog closed".to_string()),
+            })
+        })
     }
 }
 

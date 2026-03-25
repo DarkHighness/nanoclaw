@@ -5,8 +5,8 @@ use crate::code_intel::{
 };
 use crate::fs::resolve_tool_path_against_workspace_root;
 use crate::registry::Tool;
+use crate::{Result, ToolError};
 use agent_core_types::{MessagePart, ToolCallId, ToolOrigin, ToolOutputMode, ToolResult, ToolSpec};
-use anyhow::{Result, bail};
 use async_trait::async_trait;
 use schemars::{JsonSchema, schema_for};
 use serde::{Deserialize, Serialize};
@@ -158,7 +158,9 @@ impl Tool for CodeSymbolSearchTool {
         let input: CodeSymbolSearchInput = serde_json::from_value(arguments)?;
         let query = input.query.trim();
         if query.is_empty() {
-            bail!("code_symbol_search requires a non-empty query");
+            return Err(ToolError::invalid(
+                "code_symbol_search requires a non-empty query",
+            ));
         }
         let limit = clamp_limit(input.limit);
         let symbols = self.backend.workspace_symbols(query, limit, ctx).await?;
@@ -276,7 +278,9 @@ impl Tool for CodeDefinitionsTool {
         let input: CodeDefinitionsInput = serde_json::from_value(arguments)?;
         let symbol = input.symbol.trim();
         if symbol.is_empty() {
-            bail!("code_definitions requires a non-empty symbol");
+            return Err(ToolError::invalid(
+                "code_definitions requires a non-empty symbol",
+            ));
         }
         let limit = clamp_limit(input.limit);
         let symbols = self.backend.definitions(symbol, limit, ctx).await?;
@@ -331,7 +335,9 @@ impl Tool for CodeReferencesTool {
         let input: CodeReferencesInput = serde_json::from_value(arguments)?;
         let symbol = input.symbol.trim();
         if symbol.is_empty() {
-            bail!("code_references requires a non-empty symbol");
+            return Err(ToolError::invalid(
+                "code_references requires a non-empty symbol",
+            ));
         }
         let limit = clamp_limit(input.limit);
         let include_declaration = input.include_declaration.unwrap_or(false);
@@ -470,12 +476,12 @@ mod tests {
         CodeDefinitionsTool, CodeDocumentSymbolsTool, CodeReferencesTool, CodeSymbolSearchTool,
         Tool,
     };
+    use crate::Result;
     use crate::ToolExecutionContext;
     use crate::code_intel::{
         CodeIntelBackend, CodeLocation, CodeReference, CodeSymbol, CodeSymbolKind,
     };
     use agent_core_types::ToolCallId;
-    use anyhow::Result;
     use async_trait::async_trait;
     use serde_json::json;
     use std::path::Path;

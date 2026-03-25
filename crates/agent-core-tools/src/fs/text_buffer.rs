@@ -1,4 +1,4 @@
-use anyhow::{Result, bail};
+use crate::{Result, ToolError};
 use sha2::{Digest, Sha256};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -58,11 +58,11 @@ impl TextBuffer {
 
     pub fn insert_after(&mut self, after_line: usize, text: &str) -> Result<()> {
         if after_line > self.line_count() {
-            bail!(
+            return Err(ToolError::invalid(format!(
                 "insert_line {} is beyond end of file ({} lines total)",
                 after_line,
                 self.line_count()
-            );
+            )));
         }
         self.lines
             .splice(after_line..after_line, parse_replacement_lines(text));
@@ -81,13 +81,17 @@ fn normalize_line_range(
     end_line: usize,
 ) -> Result<(usize, usize)> {
     if start_line == 0 {
-        bail!("line numbers are 1-indexed");
+        return Err(ToolError::invalid("line numbers are 1-indexed"));
     }
     if end_line < start_line {
-        bail!("end_line {end_line} is before start_line {start_line}");
+        return Err(ToolError::invalid(format!(
+            "end_line {end_line} is before start_line {start_line}"
+        )));
     }
     if end_line > line_count {
-        bail!("end_line {end_line} is beyond end of file ({line_count} lines total)");
+        return Err(ToolError::invalid(format!(
+            "end_line {end_line} is beyond end of file ({line_count} lines total)"
+        )));
     }
     Ok((start_line - 1, end_line))
 }
