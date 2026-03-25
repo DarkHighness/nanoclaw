@@ -169,6 +169,7 @@ cargo run --manifest-path apps/code-agent-example/Cargo.toml
 
 - architecture: [docs/design.md](/Users/twiliness/nanoclaw/docs/design.md)
 - design plan: [docs/plan.md](/Users/twiliness/nanoclaw/docs/plan.md)
+- tool interface design: [docs/tool-interface-design.md](/Users/twiliness/nanoclaw/docs/tool-interface-design.md)
 - tooling research: [docs/tooling-research.md](/Users/twiliness/nanoclaw/docs/tooling-research.md)
 
 ## Testing

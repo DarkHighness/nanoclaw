@@ -77,6 +77,8 @@ Completed in this pass:
 - added append-only context compaction with automatic trigger thresholds and manual `/compact`
 - compaction now preserves a recent raw-message tail instead of flattening the whole visible history into one summary
 - added config/env control for context window size, compaction trigger, and retained recent message count
+- redesigned the local file-tool contract so `read` returns line-numbered views with snapshot ids and slice hashes
+- expanded `edit` from legacy exact replace into explicit `str_replace`, `replace_lines`, and `insert` commands with optional stale-read guards
 
 ## Phase 4: Skill System Maturity
 
@@ -116,6 +118,8 @@ Completed in this pass:
 
 ## Next Priority
 
-The next highest-value framework gaps are provider-native compaction support where upstream APIs expose structured state compaction, plus better run-store indexing and retention beyond the current JSONL scan model.
+The next highest-value tooling gap is a dedicated structured `patch` tool for multi-file diffs, so larger edits stop overloading `edit` or `write`.
+
+After that, the next framework gaps are provider-native compaction support where upstream APIs expose structured state compaction, plus better run-store indexing and retention beyond the current JSONL scan model.
 
 After that, the next capability gap is better approval policy composition, richer per-skill policy/configuration on top of the new hook-driven model, and a pluggable search backend with stronger ranking and citation metadata.

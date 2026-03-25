@@ -84,6 +84,13 @@ Optional tool bundles are compiled behind features. Today that includes:
 
 Provider-hosted tools and MCP tools enter through the same runtime tool boundary instead of bespoke client logic.
 
+For code-editing tools specifically, the current substrate now treats file access as a two-step contract:
+
+- `read` exposes line-numbered views plus stable file snapshot ids and slice hashes
+- `edit` exposes structured local mutations (`str_replace`, `replace_lines`, `insert`) with optional freshness guards
+
+That contract is documented in detail in [tool-interface-design.md](/Users/twiliness/nanoclaw/docs/tool-interface-design.md).
+
 ### `agent-core-skills`
 
 Loads skills from host-provided roots. Each skill folder contains a `SKILL.md` with YAML frontmatter and optional subdirectories such as:

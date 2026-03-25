@@ -159,6 +159,23 @@ Implementation impact:
 - The stored transcript remains append-only. Compaction appends a new system summary and changes only the logical request view used for future model calls.
 - Auto-compaction and manual `/compact` now share the same runtime path, so hooks and run events observe both flows consistently.
 
+### 12. File tools should share a single grounding model
+
+Reason:
+
+- Anthropic's text editor tool uses line-oriented `view` output and pairs it with explicit edit commands such as `str_replace` and `insert`, which keeps reads and writes in the same conceptual frame.
+- OpenAI's `apply_patch` guidance suggests that larger edits should move toward structured diff application instead of ever-larger raw string replacements.
+- OpenCode keeps `read`, `edit`, and `patch` distinct, reinforcing the value of separating discovery, local precise edits, and larger diff application.
+- Trace-Free+, Tool-Genesis, OpaqueToolsBench, and ToolComp all point in the same direction: interface quality, parameter clarity, and failure observability materially affect agent quality, and small interface flaws amplify downstream.
+- I did not find a primary source describing Cursor's exact line-hash contract, so per-line consistency hashes should be treated as an inferred product pattern rather than a sourced baseline.
+
+Implementation impact:
+
+- `read` now defaults to line-numbered output and surfaces a stable file snapshot id plus a slice hash for the visible range.
+- `edit` now supports explicit `str_replace`, `replace_lines`, and `insert` commands, with optional `expected_snapshot` and `expected_selection_hash` guards.
+- Legacy `offset` / `limit` and `old_text` / `new_text` flows remain available as compatibility aliases while the substrate converges on the clearer contract.
+- The design choice for now is file-level and slice-level hashes, not per-line hashes, because they preserve stale-read detection without overwhelming the prompt with checksum noise.
+
 ## Remaining Gaps
 
 - MCP prompt arguments are discovered and displayed, but the TUI does not yet provide an argument-entry UX beyond the current basic command surface.
@@ -166,3 +183,4 @@ Implementation impact:
 - The optional local `web_search` path is a bootstrap implementation. It does not yet match hosted-tool quality for ranking, citation richness, or location-aware search controls.
 - Optional `web_fetch` does not yet parse binary documents like PDFs into model-friendly text.
 - The new skill model removes heuristic activation, but richer explicit skill policy and versioning still need to be designed.
+- The current local tool surface still lacks a first-party structured `patch` tool for multi-file diffs. Today `edit` is better grounded, but larger refactors still need a cleaner diff-oriented path.
