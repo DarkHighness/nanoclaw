@@ -20,7 +20,7 @@ The intended boundary is:
 
 - substrate closure: `agent-core-types`, `agent-core-runtime`, `agent-core-tools`, `agent-core-skills`, plus one provider adapter such as `agent-core-rig`
 - core built-in tools: `read`, `write`, `edit`, `patch`, `glob`, `grep`, `list`, `bash`
-- optional tool bundles: non-essential tools such as first-party web access and agentic task/todo tools compile only behind Cargo features
+- optional tool bundles: non-essential tools such as first-party web access, code-intel navigation tools, and agentic task/todo tools compile only behind Cargo features
 - integration surfaces: `agent-core-mcp` and `agent-core-store` bolt onto the same runtime contracts
 - reference product layer: `apps/agent-core-tui` sits outside the substrate, keeps its shell-local config private, and can be removed without changing the runtime core
 
@@ -91,6 +91,7 @@ The core workspace now provides:
 - provider streaming through the runtime observer boundary
 - MCP `stdio` integration tests and provider-adapter contract tests
 - feature-gated non-core tools such as `todo_read`, `todo_write`, `task`, `web_search`, and `web_fetch`
+- feature-gated code-intel tools for symbol navigation: `code_symbol_search`, `code_document_symbols`, `code_definitions`, `code_references`
 - grounded file mutations with `expected_snapshot` / `expected_selection_hash` guards across `write`, `edit`, `patch`, and `todo_write`
 
 ## Reference Shell

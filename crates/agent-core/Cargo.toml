@@ -10,6 +10,7 @@ agentic-tools = [
     "agent-core-runtime/agentic-tools",
     "agent-core-tools/agentic-tools",
 ]
+code-intel = ["agent-core-tools/code-intel"]
 web-tools = ["agent-core-tools/web-tools"]
 
 [dependencies]

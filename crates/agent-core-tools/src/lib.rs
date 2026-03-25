@@ -8,6 +8,8 @@
 #[cfg(feature = "agentic-tools")]
 pub mod agentic;
 pub mod annotations;
+#[cfg(feature = "code-intel")]
+pub mod code_intel;
 pub mod context;
 pub mod fs;
 pub mod mcp_adapter;
@@ -20,6 +22,8 @@ pub mod web;
 #[cfg(feature = "agentic-tools")]
 pub use agentic::*;
 pub use annotations::*;
+#[cfg(feature = "code-intel")]
+pub use code_intel::*;
 pub use context::*;
 pub use fs::*;
 pub use mcp_adapter::*;

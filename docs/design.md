@@ -82,6 +82,10 @@ Optional tool bundles are compiled behind features. Today that includes:
 - `task`
 - `web_search`
 - `web_fetch`
+- `code_symbol_search`
+- `code_document_symbols`
+- `code_definitions`
+- `code_references`
 
 Provider-hosted tools and MCP tools enter through the same runtime tool boundary instead of bespoke client logic.
 
@@ -217,6 +221,7 @@ Hosts embedding the substrate should define their own config layer, or none at a
 - Local tool annotations use MCP hint names so local and remote tools can be rendered consistently in one registry.
 - Feature-enabled local web tooling follows the same two-step pattern as hosted agent stacks: `web_search` for discovery, then `web_fetch` for retrieval.
 - `ToolExecutionContext` carries both host root policy (`workspace_root`, `worktree_root`, `additional_roots`) and per-call runtime scope (`run_id`, `session_id`, `turn_id`, `tool_name`, `tool_call_id`) so local tools can stay generic while still participating in audit and path-control flows.
+- Feature-enabled local code-intel tooling follows the same request families as LSP (`workspace/symbol`, `textDocument/documentSymbol`, `textDocument/definition`, `textDocument/references`), while keeping the backend host-pluggable instead of hardcoding one language server process contract.
 - Provider streaming passes through the `ModelBackend` boundary into runtime progress events, and hosts can consume those events however they want.
 - Startup assembly for the reference shell lives in a testable boot module, so that shell's config parsing, provider wiring, skill loading, and store fallback can be exercised without launching the full shell loop.
 - MCP `stdio` support is guarded by a real child-process integration test instead of only mock-client coverage.

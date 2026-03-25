@@ -8,6 +8,12 @@ pub use agent_core_tools::{
     BashTool, EditTool, GlobTool, GrepTool, ListTool, PatchTool, ReadTool, Tool,
     ToolExecutionContext, ToolRegistry, WriteTool,
 };
+#[cfg(feature = "code-intel")]
+pub use agent_core_tools::{
+    CodeDefinitionsTool, CodeDocumentSymbolsTool, CodeIntelBackend, CodeReference,
+    CodeReferencesTool, CodeSymbol, CodeSymbolKind, CodeSymbolSearchTool,
+    WorkspaceTextCodeIntelBackend,
+};
 #[cfg(feature = "agentic-tools")]
 pub use agent_core_tools::{
     TaskTool, TodoItem, TodoListState, TodoReadTool, TodoStatus, TodoWriteTool,
