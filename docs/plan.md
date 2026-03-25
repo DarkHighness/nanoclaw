@@ -121,3 +121,9 @@ Completed in this pass:
 The next framework gaps are provider-native compaction support where upstream APIs expose structured state compaction, plus better run-store indexing and retention beyond the current JSONL scan model.
 
 After that, the next capability gap is better approval policy composition, richer per-skill policy/configuration on top of the new hook-driven model, and a pluggable search backend with stronger ranking and citation metadata.
+
+Completed in this pass:
+
+- added runtime-level approval policy composition with ordered allow/ask/deny rules
+- added argument-aware approval matchers over canonical JSON pointers, plus tool-name and origin matchers
+- kept shell approval handlers as the final UX boundary instead of hardcoding interactive prompts into runtime policy

@@ -2,8 +2,8 @@ use crate::{
     CompactionConfig, CompactionRequest, ConversationCompactor, HookAggregate, HookRunner,
     LoopDetectionConfig, LoopSignalSeverity, ModelBackend, NoopRuntimeObserver, Result,
     RuntimeCommand, RuntimeObserver, RuntimeProgressEvent, RuntimeSession, ToolApprovalHandler,
-    ToolApprovalOutcome, ToolApprovalRequest, ToolLoopDetector, append_transcript_message,
-    estimate_prompt_tokens,
+    ToolApprovalOutcome, ToolApprovalPolicy, ToolApprovalPolicyDecision, ToolApprovalRequest,
+    ToolLoopDetector, append_transcript_message, estimate_prompt_tokens,
 };
 use agent_core_skills::SkillCatalog;
 use agent_core_store::RunStore;
@@ -25,6 +25,7 @@ pub struct AgentRuntime {
     tool_registry: ToolRegistry,
     tool_context: ToolExecutionContext,
     tool_approval_handler: Arc<dyn ToolApprovalHandler>,
+    tool_approval_policy: Arc<dyn ToolApprovalPolicy>,
     conversation_compactor: Arc<dyn ConversationCompactor>,
     compaction_config: CompactionConfig,
     tool_loop_detector: ToolLoopDetector,
@@ -48,6 +49,7 @@ impl AgentRuntime {
         tool_registry: ToolRegistry,
         tool_context: ToolExecutionContext,
         tool_approval_handler: Arc<dyn ToolApprovalHandler>,
+        tool_approval_policy: Arc<dyn ToolApprovalPolicy>,
         conversation_compactor: Arc<dyn ConversationCompactor>,
         compaction_config: CompactionConfig,
         loop_detection_config: LoopDetectionConfig,
@@ -62,6 +64,7 @@ impl AgentRuntime {
             tool_registry,
             tool_context,
             tool_approval_handler,
+            tool_approval_policy,
             conversation_compactor,
             compaction_config,
             tool_loop_detector: ToolLoopDetector::new(loop_detection_config),
@@ -507,6 +510,8 @@ impl AgentRuntime {
             .await?;
 
         let mut approval_reasons = approval_reasons_for_tool(&tool_spec);
+        let mut hook_approval_reasons = Vec::new();
+        let mut policy_only_reasons = Vec::new();
         match pre_hooks
             .permission_decision
             .unwrap_or(PermissionDecision::Allow)
@@ -548,7 +553,7 @@ impl AgentRuntime {
                         )
                         .await;
                 }
-                approval_reasons.push(
+                hook_approval_reasons.push(
                     permission_hooks
                         .gate_reason
                         .unwrap_or_else(|| "hook requested approval".to_string()),
@@ -556,6 +561,39 @@ impl AgentRuntime {
             }
             PermissionDecision::Allow => {}
         }
+
+        let policy_request = ToolApprovalRequest {
+            call: call.clone(),
+            spec: tool_spec.clone(),
+            reasons: approval_reasons
+                .iter()
+                .chain(hook_approval_reasons.iter())
+                .cloned()
+                .collect(),
+        };
+        match self.tool_approval_policy.decide(&policy_request) {
+            ToolApprovalPolicyDecision::Allow => {
+                // Runtime-native allow rules can suppress baseline hint-driven
+                // approval, but they intentionally do not erase hook-requested
+                // review because hooks may encode higher-order host policy.
+                approval_reasons.clear();
+            }
+            ToolApprovalPolicyDecision::Ask { reason } => {
+                policy_only_reasons
+                    .push(reason.unwrap_or_else(|| "approval policy requested review".to_string()));
+            }
+            ToolApprovalPolicyDecision::Deny { reason } => {
+                let error = reason.unwrap_or_else(|| {
+                    AgentCoreError::PermissionDenied(tool_name.clone()).to_string()
+                });
+                return self
+                    .record_tool_failure_result(hooks, turn_id, &call, observer, error)
+                    .await;
+            }
+            ToolApprovalPolicyDecision::Abstain => {}
+        }
+        approval_reasons.extend(hook_approval_reasons);
+        approval_reasons.extend(policy_only_reasons);
 
         if !approval_reasons.is_empty() {
             self.append_event(
@@ -1071,7 +1109,9 @@ mod tests {
         AgentRuntimeBuilder, CompactionConfig, CompactionRequest, CompactionResult,
         ConversationCompactor, DefaultCommandHookExecutor, HookRunner, ModelBackend,
         NoopAgentHookEvaluator, ReqwestHttpHookExecutor, Result, RuntimeCommand, RuntimeObserver,
-        RuntimeProgressEvent, ToolApprovalHandler, ToolApprovalOutcome, ToolApprovalRequest,
+        RuntimeProgressEvent, StringMatcher, ToolApprovalHandler, ToolApprovalMatcher,
+        ToolApprovalOutcome, ToolApprovalRequest, ToolApprovalRule, ToolApprovalRuleSet,
+        ToolArgumentMatcher,
     };
     use agent_core_skills::{Skill, SkillCatalog};
     use agent_core_store::{InMemoryRunStore, RunStore};
@@ -1523,6 +1563,113 @@ mod tests {
                             if result.is_error
                                 && result.text_content() == "user denied dangerous tool"
                     ))
+            )
+        }));
+    }
+
+    #[tokio::test]
+    async fn approval_policy_can_auto_allow_matching_tool_calls() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut registry = ToolRegistry::new();
+        registry.register(DangerousTool);
+        let approval_handler = Arc::new(MockApprovalHandler::with_outcomes([
+            ToolApprovalOutcome::Deny {
+                reason: Some("fallback should not run".to_string()),
+            },
+        ]));
+        let policy = Arc::new(ToolApprovalRuleSet::new(vec![ToolApprovalRule::allow(
+            ToolApprovalMatcher {
+                tool_names: ["danger".to_string()].into_iter().collect(),
+                origins: vec![crate::ToolOriginMatcher::Local],
+                argument_matchers: vec![ToolArgumentMatcher::String {
+                    pointer: "/path".to_string(),
+                    matcher: StringMatcher::Prefix("sample".to_string()),
+                }],
+            },
+            "allow the sample fixture destructive tool",
+        )]));
+        let store = Arc::new(InMemoryRunStore::new());
+        let mut runtime: AgentRuntime =
+            AgentRuntimeBuilder::new(Arc::new(ApprovalRecoveringBackend), store)
+                .hook_runner(Arc::new(HookRunner::default()))
+                .tool_registry(registry)
+                .tool_context(ToolExecutionContext {
+                    workspace_root: dir.path().to_path_buf(),
+                    workspace_only: true,
+                    model_context_window_tokens: Some(128_000),
+                    ..Default::default()
+                })
+                .tool_approval_handler(approval_handler.clone())
+                .tool_approval_policy(policy)
+                .skill_catalog(SkillCatalog::default())
+                .build();
+
+        let outcome = runtime
+            .run_user_prompt("please use the dangerous tool")
+            .await
+            .unwrap();
+
+        assert_eq!(outcome.assistant_text, "approval recovered");
+        assert!(approval_handler.requests().is_empty());
+    }
+
+    #[tokio::test]
+    async fn approval_policy_can_require_review_for_otherwise_safe_tools() {
+        let dir = tempfile::tempdir().unwrap();
+        tokio::fs::write(dir.path().join("sample.txt"), "hello\nworld")
+            .await
+            .unwrap();
+        let mut registry = ToolRegistry::new();
+        registry.register(ReadTool::new());
+        let approval_handler = Arc::new(MockApprovalHandler::with_outcomes([
+            ToolApprovalOutcome::Deny {
+                reason: Some("review required for sensitive file".to_string()),
+            },
+        ]));
+        let policy = Arc::new(ToolApprovalRuleSet::new(vec![ToolApprovalRule::ask(
+            ToolApprovalMatcher {
+                tool_names: ["read".to_string()].into_iter().collect(),
+                origins: vec![crate::ToolOriginMatcher::Local],
+                argument_matchers: vec![ToolArgumentMatcher::String {
+                    pointer: "/path".to_string(),
+                    matcher: StringMatcher::Exact("sample.txt".to_string()),
+                }],
+            },
+            "sensitive file read requires review",
+        )]));
+        let store = Arc::new(InMemoryRunStore::new());
+        let mut runtime: AgentRuntime =
+            AgentRuntimeBuilder::new(Arc::new(MockBackend), store.clone())
+                .hook_runner(Arc::new(HookRunner::default()))
+                .tool_registry(registry)
+                .tool_context(ToolExecutionContext {
+                    workspace_root: dir.path().to_path_buf(),
+                    workspace_only: true,
+                    model_context_window_tokens: Some(128_000),
+                    ..Default::default()
+                })
+                .tool_approval_handler(approval_handler.clone())
+                .tool_approval_policy(policy)
+                .skill_catalog(SkillCatalog::default())
+                .build();
+
+        let outcome = runtime.run_user_prompt("please use tool").await.unwrap();
+        assert_eq!(outcome.assistant_text, "done");
+
+        let requests = approval_handler.requests();
+        assert_eq!(requests.len(), 1);
+        assert!(
+            requests[0]
+                .reasons
+                .iter()
+                .any(|reason| reason.contains("sensitive file read requires review"))
+        );
+        let events = store.events(&runtime.run_id()).await.unwrap();
+        assert!(events.iter().any(|event| {
+            matches!(
+                &event.event,
+                RunEventKind::ToolApprovalRequested { reasons, .. }
+                    if reasons.iter().any(|reason| reason.contains("sensitive file read requires review"))
             )
         }));
     }

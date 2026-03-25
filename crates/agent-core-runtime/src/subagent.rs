@@ -1,6 +1,6 @@
 use crate::{
     AgentRuntimeBuilder, CompactionConfig, ConversationCompactor, HookRunner, LoopDetectionConfig,
-    ModelBackend, Result, RuntimeError, ToolApprovalHandler,
+    ModelBackend, Result, RuntimeError, ToolApprovalHandler, ToolApprovalPolicy,
 };
 use agent_core_skills::SkillCatalog;
 use agent_core_store::RunStore;
@@ -22,6 +22,7 @@ pub struct RuntimeSubagentExecutor {
     tool_registry: ToolRegistry,
     tool_context: ToolExecutionContext,
     tool_approval_handler: Arc<dyn ToolApprovalHandler>,
+    tool_approval_policy: Arc<dyn ToolApprovalPolicy>,
     conversation_compactor: Arc<dyn ConversationCompactor>,
     compaction_config: CompactionConfig,
     loop_detection_config: LoopDetectionConfig,
@@ -40,6 +41,7 @@ impl RuntimeSubagentExecutor {
         tool_registry: ToolRegistry,
         tool_context: ToolExecutionContext,
         tool_approval_handler: Arc<dyn ToolApprovalHandler>,
+        tool_approval_policy: Arc<dyn ToolApprovalPolicy>,
         conversation_compactor: Arc<dyn ConversationCompactor>,
         compaction_config: CompactionConfig,
         loop_detection_config: LoopDetectionConfig,
@@ -54,6 +56,7 @@ impl RuntimeSubagentExecutor {
             tool_registry,
             tool_context,
             tool_approval_handler,
+            tool_approval_policy,
             conversation_compactor,
             compaction_config,
             loop_detection_config,
@@ -101,6 +104,7 @@ impl SubagentExecutor for RuntimeSubagentExecutor {
             .tool_registry(tool_registry)
             .tool_context(self.tool_context.clone())
             .tool_approval_handler(self.tool_approval_handler.clone())
+            .tool_approval_policy(self.tool_approval_policy.clone())
             .conversation_compactor(self.conversation_compactor.clone())
             .compaction_config(self.compaction_config.clone())
             .loop_detection_config(self.loop_detection_config.clone())
@@ -147,7 +151,7 @@ mod tests {
     use crate::Result;
     use crate::{
         AlwaysAllowToolApprovalHandler, CompactionConfig, HookRunner, LoopDetectionConfig,
-        ModelBackend, NoopConversationCompactor,
+        ModelBackend, NoopConversationCompactor, NoopToolApprovalPolicy,
     };
     use agent_core_skills::SkillCatalog;
     use agent_core_store::InMemoryRunStore;
@@ -204,6 +208,7 @@ mod tests {
                 ..Default::default()
             },
             Arc::new(AlwaysAllowToolApprovalHandler),
+            Arc::new(NoopToolApprovalPolicy),
             Arc::new(NoopConversationCompactor),
             CompactionConfig::default(),
             LoopDetectionConfig::default(),

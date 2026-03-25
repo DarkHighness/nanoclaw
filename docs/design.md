@@ -194,6 +194,7 @@ Hosts embedding the substrate should treat this as an example of one application
 - `message_id` and `call_id` are retained as stable audit fields even when a provider omits them.
 - Skills are surfaced as catalog entries and hooks, not through client-side prompt matching.
 - Runtime approval is expressed through an injected `ToolApprovalHandler`, not hardcoded to one shell.
+- Runtime approval policy is also composable before any shell UX enters the picture. Hosts can attach first-match allow/ask/deny rules over tool name, tool origin, and selected argument fields, then fall through to an interactive or automatic handler only when policy leaves the request unresolved.
 - The runtime does not expose a fixed global iteration cap. Code-agent behavior should rely on
   progress-aware loop detection, stop conditions, approvals, and hook decisions instead of a small
   hardcoded cycle budget.
@@ -231,7 +232,7 @@ Hosts embedding the substrate should define their own config layer, or none at a
 
 - The current compaction path is runtime-local and model-generated. It preserves append-only history and recent-message tails, but it does not yet integrate provider-native compaction APIs such as OpenAI Responses `/compact`.
 - The default persistent store is intentionally simple JSONL. It supports browsing, replay, search, and export, but it still does not provide indexed search, retention controls, or multi-process coordination.
-- The current approval flow is intentionally simple. It supports session-scoped allow/deny caching by tool identity, but it does not yet support argument-aware policies or persistent allowlists.
+- The current approval flow now supports runtime-level rule composition in addition to shell-side prompts. Hosts can auto-allow, deny, or require review for matching tool/origin/argument patterns, but persistent allowlists and richer policy storage are still outer-host concerns.
 - Feature-enabled `web_search` is intentionally lightweight today. It does not yet provide hosted-tool quality ranking, citations, or user-location controls.
 - Feature-enabled `web_fetch` extracts readable HTML/text content, but binary documents such as PDFs are still summarized instead of fully parsed.
 
@@ -242,7 +243,7 @@ The next clean extension points are:
 - richer run-store filtering, indexing, and retention
 - richer provider request controls
 - provider-native compaction support where an upstream API can preserve more structured state
-- richer permission policy and approval caching
+- persistent approval policy storage and richer host-managed approval caches
 - richer loop-detection policies and model-aware progress heuristics
 - richer explicit skill policy and package controls
 - richer MCP prompt/resource consumption in the model context

@@ -232,10 +232,26 @@ Implementation impact:
 - Path-policy helpers now support validating a candidate path against multiple allowed roots, and local fs/process/code-intel tools delegate root checks through that shared context method instead of open-coding one-root assumptions.
 - The minimal runtime example and reference shells now initialize `worktree_root` explicitly so hosts can opt into multi-root policy without inventing a parallel config surface.
 
+### 16. Approval policy should be a runtime substrate concern, not just a shell prompt
+
+Reason:
+
+- OpenAI's MCP guidance explicitly separates `require_approval` from the transport/tool definition, and also supports narrower "never approve these tools" allowlists instead of forcing one global mode.
+- Anthropic's MCP connector and Claude Code SDK both push developers toward explicit `allowedTools` / allowlist patterns rather than a single coarse permission mode.
+- Those hosted patterns are server-centric, but the underlying lesson generalizes: approval policy belongs in the runtime control plane, while the final UX for unresolved approvals belongs in the host.
+- Argument-aware matching over canonical JSON pointers is a local substrate extension rather than a direct copy of any one hosted API. It is useful for local tools like `bash`, `read`, or `web_fetch`, where "same tool name" is still too coarse to express safe auto-allow rules.
+
+Implementation impact:
+
+- `agent-core-runtime` now exposes `ToolApprovalPolicy` alongside `ToolApprovalHandler`.
+- Hosts can install ordered first-match rules that `allow`, `ask`, or `deny` based on tool name, tool origin, and selected argument predicates (`exists`, `value equals`, `string matcher`, `URL host matcher`).
+- The runtime consults policy before invoking the approval handler. Policy can suppress hint-driven approval, force review for otherwise safe tools, or deny the call outright.
+- Hook-driven permission denial or review still wins over policy suppression, so higher-order host policy is not erased by a local allowlist shortcut.
+
 ## Remaining Gaps
 
 - MCP prompt arguments are discovered and displayed, but the TUI does not yet provide an argument-entry UX beyond the current basic command surface.
-- Tool approvals are still coarse. Session caching exists now, but there is still no argument-aware policy, persistent allowlist, or config-driven approval rules.
+- Approval policy is no longer purely coarse, but persistent allowlists, config-driven rule loading, and richer host-side policy distribution are still missing.
 - The optional local `web_search` path is a bootstrap implementation. It does not yet match hosted-tool quality for ranking, citation richness, or location-aware search controls.
 - Optional `web_fetch` does not yet parse binary documents like PDFs into model-friendly text.
 - The new skill model removes heuristic activation, but richer explicit skill policy and versioning still need to be designed.

@@ -1,6 +1,7 @@
 use crate::{
     AgentRuntime, AlwaysAllowToolApprovalHandler, CompactionConfig, ConversationCompactor,
-    HookRunner, LoopDetectionConfig, ModelBackend, NoopConversationCompactor, ToolApprovalHandler,
+    HookRunner, LoopDetectionConfig, ModelBackend, NoopConversationCompactor,
+    NoopToolApprovalPolicy, ToolApprovalHandler, ToolApprovalPolicy,
 };
 use agent_core_skills::SkillCatalog;
 use agent_core_store::RunStore;
@@ -15,6 +16,7 @@ pub struct AgentRuntimeBuilder {
     tool_registry: ToolRegistry,
     tool_context: ToolExecutionContext,
     tool_approval_handler: Arc<dyn ToolApprovalHandler>,
+    tool_approval_policy: Arc<dyn ToolApprovalPolicy>,
     conversation_compactor: Arc<dyn ConversationCompactor>,
     compaction_config: CompactionConfig,
     loop_detection_config: LoopDetectionConfig,
@@ -33,6 +35,7 @@ impl AgentRuntimeBuilder {
             tool_registry: ToolRegistry::new(),
             tool_context: ToolExecutionContext::default(),
             tool_approval_handler: Arc::new(AlwaysAllowToolApprovalHandler),
+            tool_approval_policy: Arc::new(NoopToolApprovalPolicy),
             conversation_compactor: Arc::new(NoopConversationCompactor),
             compaction_config: CompactionConfig::default(),
             loop_detection_config: LoopDetectionConfig::default(),
@@ -66,6 +69,15 @@ impl AgentRuntimeBuilder {
         tool_approval_handler: Arc<dyn ToolApprovalHandler>,
     ) -> Self {
         self.tool_approval_handler = tool_approval_handler;
+        self
+    }
+
+    #[must_use]
+    pub fn tool_approval_policy(
+        mut self,
+        tool_approval_policy: Arc<dyn ToolApprovalPolicy>,
+    ) -> Self {
+        self.tool_approval_policy = tool_approval_policy;
         self
     }
 
@@ -117,6 +129,7 @@ impl AgentRuntimeBuilder {
             self.tool_registry,
             self.tool_context,
             self.tool_approval_handler,
+            self.tool_approval_policy,
             self.conversation_compactor,
             self.compaction_config,
             self.loop_detection_config,
