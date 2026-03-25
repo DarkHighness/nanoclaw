@@ -1,0 +1,16 @@
+[package]
+name = "agent-core-skills"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+agent-core-types = { path = "../agent-core-types" }
+anyhow.workspace = true
+regex.workspace = true
+serde.workspace = true
+serde_yaml.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

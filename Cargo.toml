@@ -1,6 +1,16 @@
 [workspace]
-default-members = ["crates/agent-core-types"]
-members = ["crates/agent-core-types"]
+default-members = [
+    "crates/agent-core-skills",
+    "crates/agent-core-store",
+    "crates/agent-core-tools",
+    "crates/agent-core-types",
+]
+members = [
+    "crates/agent-core-skills",
+    "crates/agent-core-store",
+    "crates/agent-core-tools",
+    "crates/agent-core-types",
+]
 resolver = "2"
 
 [workspace.package]

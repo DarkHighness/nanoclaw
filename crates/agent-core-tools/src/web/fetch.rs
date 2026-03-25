@@ -1,0 +1,288 @@
+use crate::ToolExecutionContext;
+use crate::annotations::mcp_tool_annotations;
+use crate::registry::Tool;
+use crate::web::common::{
+    DEFAULT_HTTP_TIMEOUT_MS, WebToolPolicy, clamped_fetch_max_chars, default_http_client,
+    extract_html_title, is_text_content_type, summarize_remote_body, truncate_text,
+};
+use agent_core_types::{MessagePart, ToolCallId, ToolOrigin, ToolOutputMode, ToolResult, ToolSpec};
+use anyhow::Result;
+use async_trait::async_trait;
+use reqwest::Client;
+use schemars::{JsonSchema, schema_for};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+pub struct WebFetchToolInput {
+    pub url: String,
+    pub max_chars: Option<usize>,
+}
+
+#[derive(Clone, Debug)]
+pub struct WebFetchTool {
+    client: Client,
+    policy: WebToolPolicy,
+}
+
+impl Default for WebFetchTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl WebFetchTool {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::with_policy(WebToolPolicy::default(), DEFAULT_HTTP_TIMEOUT_MS)
+            .expect("web fetch client")
+    }
+
+    pub(crate) fn with_policy(policy: WebToolPolicy, timeout_ms: u64) -> Result<Self> {
+        Ok(Self {
+            client: default_http_client(timeout_ms)?,
+            policy,
+        })
+    }
+}
+
+#[async_trait]
+impl Tool for WebFetchTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "web_fetch".to_string(),
+            description: "Fetch a web page over HTTP(S), extract readable text, and return a truncated preview with metadata.".to_string(),
+            input_schema: serde_json::to_value(schema_for!(WebFetchToolInput)).expect("web_fetch schema"),
+            output_mode: ToolOutputMode::Text,
+            origin: ToolOrigin::Local,
+            annotations: mcp_tool_annotations("Fetch Web Page", true, false, false, true),
+        }
+    }
+
+    async fn execute(
+        &self,
+        call_id: ToolCallId,
+        arguments: Value,
+        _ctx: &ToolExecutionContext,
+    ) -> Result<ToolResult> {
+        let external_call_id = call_id.0.clone();
+        let input: WebFetchToolInput = serde_json::from_value(arguments)?;
+        let url = match reqwest::Url::parse(input.url.trim()) {
+            Ok(url) => url,
+            Err(error) => {
+                return Ok(ToolResult::error(
+                    call_id,
+                    "web_fetch",
+                    format!("Invalid URL: {error}"),
+                ));
+            }
+        };
+        if let Err(error) = self.policy.validate_target_url(&url) {
+            return Ok(ToolResult::error(call_id, "web_fetch", error.to_string()));
+        }
+
+        let max_chars = clamped_fetch_max_chars(input.max_chars);
+        let response = match self.client.get(url.clone()).send().await {
+            Ok(response) => response,
+            Err(error) => {
+                return Ok(ToolResult::error(
+                    call_id,
+                    "web_fetch",
+                    format!("Failed to fetch {url}: {error}"),
+                ));
+            }
+        };
+        let status = response.status();
+        let final_url = response.url().clone();
+        let content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string);
+        let body = match response.text().await {
+            Ok(body) => body,
+            Err(error) => {
+                return Ok(ToolResult::error(
+                    call_id,
+                    "web_fetch",
+                    format!("Failed to read response body from {final_url}: {error}"),
+                ));
+            }
+        };
+
+        if !status.is_success() {
+            let summary = summarize_remote_body(&body, content_type.as_deref());
+            return Ok(ToolResult {
+                id: call_id,
+                call_id: external_call_id.clone(),
+                tool_name: "web_fetch".to_string(),
+                parts: vec![MessagePart::text(format!(
+                    "url> {url}\nfinal_url> {final_url}\nstatus> {}\n\n{}",
+                    status,
+                    if summary.is_empty() {
+                        "Remote server returned a non-success status with no readable body."
+                            .to_string()
+                    } else {
+                        summary
+                    }
+                ))],
+                metadata: Some(serde_json::json!({
+                    "url": url.as_str(),
+                    "final_url": final_url.as_str(),
+                    "status": status.as_u16(),
+                    "content_type": content_type,
+                })),
+                is_error: true,
+            });
+        }
+
+        if !is_text_content_type(content_type.as_deref()) {
+            return Ok(ToolResult {
+                id: call_id,
+                call_id: external_call_id.clone(),
+                tool_name: "web_fetch".to_string(),
+                parts: vec![MessagePart::text(format!(
+                    "url> {url}\nfinal_url> {final_url}\nstatus> {}\ncontent_type> {}\n\nFetched a non-text response. Text extraction is currently limited to text, HTML, JSON, XML, and similar content types.",
+                    status,
+                    content_type.as_deref().unwrap_or("unknown"),
+                ))],
+                metadata: Some(serde_json::json!({
+                    "url": url.as_str(),
+                    "final_url": final_url.as_str(),
+                    "status": status.as_u16(),
+                    "content_type": content_type,
+                    "unsupported_content_type": true,
+                })),
+                is_error: true,
+            });
+        }
+
+        let title = extract_html_title(&body);
+        let extracted_text = summarize_remote_body(&body, content_type.as_deref());
+        let (preview, truncated) = truncate_text(&extracted_text, max_chars);
+
+        let mut sections = vec![
+            format!("url> {url}"),
+            format!("final_url> {final_url}"),
+            format!("status> {status}"),
+        ];
+        if let Some(content_type) = &content_type {
+            sections.push(format!("content_type> {content_type}"));
+        }
+        if let Some(title) = &title {
+            sections.push(format!("title> {title}"));
+        }
+        sections.push(String::new());
+        sections.push(if preview.is_empty() {
+            "[No readable text extracted from page]".to_string()
+        } else {
+            preview
+        });
+        if truncated {
+            sections.push(format!(
+                "\n[truncated to {max_chars} characters; fetch again with a larger max_chars to continue]"
+            ));
+        }
+
+        Ok(ToolResult {
+            id: call_id,
+            call_id: external_call_id,
+            tool_name: "web_fetch".to_string(),
+            parts: vec![MessagePart::text(sections.join("\n"))],
+            metadata: Some(serde_json::json!({
+                "url": url.as_str(),
+                "final_url": final_url.as_str(),
+                "status": status.as_u16(),
+                "content_type": content_type,
+                "title": title,
+                "truncated": truncated,
+                "max_chars": max_chars,
+            })),
+            is_error: false,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{WebFetchTool, WebFetchToolInput};
+    use crate::web::common::WebToolPolicy;
+    use crate::{Tool, ToolExecutionContext};
+    use agent_core_types::ToolCallId;
+    use std::collections::BTreeSet;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[tokio::test]
+    async fn web_fetch_extracts_readable_html() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/page"))
+            .respond_with(ResponseTemplate::new(200).insert_header("content-type", "text/html").set_body_string(
+                r#"<html><head><title>Example Page</title><script>bad()</script></head><body><h1>Hello</h1><p>World &amp; friends.</p></body></html>"#,
+            ))
+            .mount(&server)
+            .await;
+
+        let tool = WebFetchTool::with_policy(
+            WebToolPolicy {
+                allow_private_hosts: true,
+                allowed_domains: BTreeSet::new(),
+                blocked_domains: BTreeSet::new(),
+            },
+            5_000,
+        )
+        .unwrap();
+        let result = tool
+            .execute(
+                ToolCallId::new(),
+                serde_json::to_value(WebFetchToolInput {
+                    url: format!("{}/page", server.uri()),
+                    max_chars: Some(200),
+                })
+                .unwrap(),
+                &ToolExecutionContext::default(),
+            )
+            .await
+            .unwrap();
+
+        assert!(!result.is_error);
+        let text = result.text_content();
+        assert!(text.contains("title> Example Page"));
+        assert!(text.contains("Hello"));
+        assert!(text.contains("World & friends."));
+        assert!(!text.contains("bad()"));
+    }
+
+    #[tokio::test]
+    async fn web_fetch_rejects_private_hosts_by_default() {
+        let tool = WebFetchTool::with_policy(
+            WebToolPolicy {
+                allow_private_hosts: false,
+                allowed_domains: BTreeSet::new(),
+                blocked_domains: BTreeSet::new(),
+            },
+            5_000,
+        )
+        .unwrap();
+        let result = tool
+            .execute(
+                ToolCallId::new(),
+                serde_json::to_value(WebFetchToolInput {
+                    url: "http://127.0.0.1/test".to_string(),
+                    max_chars: None,
+                })
+                .unwrap(),
+                &ToolExecutionContext::default(),
+            )
+            .await
+            .unwrap();
+
+        assert!(result.is_error);
+        assert!(
+            result
+                .text_content()
+                .contains("refusing to access local or private host")
+        );
+    }
+}
