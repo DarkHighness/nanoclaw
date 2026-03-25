@@ -192,3 +192,18 @@ cargo test -p agent-core --example minimal_runtime
 cargo test -p agent-core-mcp --test stdio_integration
 cargo test -p agent-core-rig --lib
 ```
+
+## Git Hooks
+
+The repository ships its own git hooks under `.githooks`.
+
+Install them once per clone:
+
+```bash
+./scripts/install-git-hooks.sh
+```
+
+Those hooks enforce two repository rules:
+
+- `pre-commit` runs formatting for the root workspace and the independent app manifests, then blocks the commit if any staged file changed and needs re-staging
+- `commit-msg` requires a Conventional Commit first line such as `feat(runtime): add queue drain` or `docs: document hook installation`

@@ -1,4 +1,4 @@
-# AGENT.md
+# AGENTS.md
 
 This repository is an agent substrate, not a throwaway demo. Design clarity is part of the implementation.
 
@@ -9,6 +9,9 @@ This repository is an agent substrate, not a throwaway demo. Design clarity is p
 - Do not add decorative comments or narrate trivial assignments. Comments must explain intent, constraints, or reasoning.
 - When a subsystem boundary or tradeoff matters, capture it in the nearest appropriate design note, crate doc, or README update.
 - Prefer removing misleading abstractions over layering more policy on top of them.
+- Before any commit, run repository formatting. The enforced hook path does this automatically and blocks the commit until formatted files are re-staged.
+- Commit messages must follow Conventional Commits. The repository `commit-msg` hook enforces this on the first line.
+- When a meaningful implementation slice is complete and the relevant validation passes, create a git commit proactively instead of leaving the repository in an uncommitted completed state.
 
 ## Comments
 
@@ -27,3 +30,11 @@ If a future reader would have to reverse-engineer why a piece of code exists, ad
 - Runtime coordination primitives such as steer and queue belong in the runtime layer, not as normal tools.
 - Tool surfaces should stay minimal by default; non-essential bundles belong behind Cargo features.
 - Global fixed iteration budgets are not the primary control model. Prefer explicit stop conditions and progress-aware loop detection.
+
+## Git Hooks
+
+- Install hooks with `scripts/install-git-hooks.sh` after cloning or whenever local git config is reset.
+- The repository hook path is `.githooks`.
+- `pre-commit` formats the root workspace and the independent app manifests, then stops if formatting changed staged files.
+- `commit-msg` accepts only Conventional Commit subjects such as `feat(runtime): ...` or `docs: ...`.
+

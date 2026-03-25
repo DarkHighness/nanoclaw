@@ -1,0 +1,44 @@
+#!/bin/sh
+set -eu
+
+repo_root=$(git rev-parse --show-toplevel)
+cd "$repo_root"
+
+staged_files=$(git diff --cached --name-only --diff-filter=ACMR)
+
+needs_format=0
+for file in $staged_files; do
+    case "$file" in
+        *.rs|Cargo.toml)
+            needs_format=1
+            break
+            ;;
+    esac
+done
+
+[ "$needs_format" -eq 1 ] || exit 0
+
+# Format every Rust surface we maintain separately so commits cannot bypass the
+# independent app manifests that sit outside the root workspace.
+cargo fmt --all
+
+if [ -f apps/agent-core-tui/Cargo.toml ]; then
+    cargo fmt --manifest-path apps/agent-core-tui/Cargo.toml --all
+fi
+
+if [ -f apps/code-agent-example/Cargo.toml ]; then
+    cargo fmt --manifest-path apps/code-agent-example/Cargo.toml --all
+fi
+
+tmpfile=$(mktemp)
+trap 'rm -f "$tmpfile"' EXIT INT TERM
+printf '%s\n' "$staged_files" > "$tmpfile"
+
+changed_files=$(git diff --name-only | grep -F -x -f "$tmpfile" || true)
+
+if [ -n "$changed_files" ]; then
+    echo "pre-commit: formatting updated staged files. Review and re-stage them before committing:" >&2
+    printf '%s\n' "$changed_files" >&2
+    exit 1
+fi
+
