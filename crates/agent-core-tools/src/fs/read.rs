@@ -1,7 +1,9 @@
 use crate::ToolExecutionContext;
 use crate::annotations::mcp_tool_annotations;
-use crate::fs::{TextBuffer, format_numbered_lines, stable_text_hash};
-use crate::fs::{assert_path_inside_root, resolve_tool_path_against_workspace_root};
+use crate::fs::{
+    TextBuffer, assert_path_inside_root, format_numbered_lines,
+    resolve_tool_path_against_workspace_root, stable_text_hash,
+};
 use crate::registry::Tool;
 use agent_core_types::{MessagePart, ToolCallId, ToolOrigin, ToolOutputMode, ToolResult, ToolSpec};
 use anyhow::{Result, anyhow, bail};
@@ -16,6 +18,7 @@ const DEFAULT_READ_PAGE_MAX_BYTES: usize = 50 * 1024;
 const MAX_ADAPTIVE_READ_MAX_BYTES: usize = 512 * 1024;
 const ADAPTIVE_READ_CONTEXT_SHARE: f64 = 0.2;
 const CHARS_PER_TOKEN_ESTIMATE: usize = 4;
+const DEFAULT_ANCHOR_CONTEXT: usize = 8;
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 pub struct ReadToolInput {
@@ -26,6 +29,14 @@ pub struct ReadToolInput {
     #[serde(default, alias = "limit")]
     pub line_count: Option<usize>,
     pub annotate_lines: Option<bool>,
+    #[serde(default)]
+    pub anchor_text: Option<String>,
+    #[serde(default)]
+    pub anchor_context: Option<usize>,
+    #[serde(default)]
+    pub anchor_occurrence: Option<usize>,
+    #[serde(default)]
+    pub anchor_ignore_case: Option<bool>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -43,7 +54,7 @@ impl Tool for ReadTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "read".to_string(),
-            description: "Read a file or image. Text files are returned as a line-numbered view with start_line/end_line or line_count paging, plus snapshot ids for follow-up edits.".to_string(),
+            description: "Read a file or image. Text files are returned as a line-numbered view with range paging (`start_line`/`end_line` or `line_count`) or anchor-based spans (`anchor_text`), plus snapshot ids for follow-up edits.".to_string(),
             input_schema: serde_json::to_value(schema_for!(ReadToolInput)).expect("read schema"),
             output_mode: ToolOutputMode::ContentParts,
             origin: ToolOrigin::Local,
@@ -94,7 +105,9 @@ impl Tool for ReadTool {
         let buffer = TextBuffer::parse(&text);
         let total_lines = buffer.line_count();
         let annotate_lines = input.annotate_lines.unwrap_or(true);
-        let start_line = input.start_line.unwrap_or(1).max(1);
+        let mut anchor_line = None;
+        let mut forced_end_line = None;
+        let mut start_line = input.start_line.unwrap_or(1).max(1);
 
         if buffer.is_empty() {
             let output = format!(
@@ -114,9 +127,33 @@ impl Tool for ReadTool {
                     "total_lines": 0,
                     "remaining_lines": 0,
                     "annotate_lines": annotate_lines,
+                    "anchor": Value::Null,
                 })),
                 is_error: false,
             });
+        }
+
+        if let Some(anchor_text) = input.anchor_text.as_deref() {
+            if input.start_line.is_some() || input.end_line.is_some() || input.line_count.is_some()
+            {
+                bail!("anchor_text cannot be combined with start_line, end_line, or line_count");
+            }
+            let occurrence = input.anchor_occurrence.unwrap_or(1);
+            if occurrence == 0 {
+                bail!("anchor_occurrence must be at least 1");
+            }
+            let context_lines = input.anchor_context.unwrap_or(DEFAULT_ANCHOR_CONTEXT);
+            let ignore_case = input.anchor_ignore_case.unwrap_or(false);
+            let (resolved_start_line, resolved_end_line, matched_line) = resolve_anchor_window(
+                &buffer,
+                anchor_text,
+                occurrence,
+                context_lines,
+                ignore_case,
+            )?;
+            start_line = resolved_start_line;
+            forced_end_line = Some(resolved_end_line);
+            anchor_line = Some(matched_line);
         }
 
         if start_line > total_lines {
@@ -135,7 +172,13 @@ impl Tool for ReadTool {
         let mut used_bytes = 0usize;
         let mut consumed = 0usize;
 
-        if let Some(end_line) = input.end_line {
+        if let Some(anchor_end_line) = forced_end_line {
+            let count = anchor_end_line - start_line + 1;
+            for line in selected.iter().take(count) {
+                output_lines.push(line.clone());
+                consumed += 1;
+            }
+        } else if let Some(end_line) = input.end_line {
             if end_line < start_line {
                 bail!("end_line {end_line} is before start_line {start_line}");
             }
@@ -189,10 +232,15 @@ impl Tool for ReadTool {
         } else {
             format!("{header}\n{body}")
         };
+        if let Some(anchor_line) = anchor_line {
+            output.push_str(&format!(
+                "\n\n[anchor matched at line {anchor_line}; use start_line={anchor_line} for a centered follow-up read]"
+            ));
+        }
         let remaining_lines = total_lines.saturating_sub(start_line + consumed - 1);
         if remaining_lines > 0 {
             let next_start_line = start_line + consumed;
-            if input.line_count.is_some() || input.end_line.is_some() {
+            if input.line_count.is_some() || input.end_line.is_some() || forced_end_line.is_some() {
                 output.push_str(&format!(
                     "\n\n[{remaining_lines} more lines in file. Use start_line={next_start_line} to continue.]"
                 ));
@@ -223,9 +271,52 @@ impl Tool for ReadTool {
                 "total_lines": total_lines,
                 "remaining_lines": remaining_lines,
                 "annotate_lines": annotate_lines,
+                "anchor": input.anchor_text.as_ref().map(|value| {
+                    serde_json::json!({
+                        "text": value,
+                        "context": input.anchor_context.unwrap_or(DEFAULT_ANCHOR_CONTEXT),
+                        "occurrence": input.anchor_occurrence.unwrap_or(1),
+                        "ignore_case": input.anchor_ignore_case.unwrap_or(false),
+                        "line": anchor_line,
+                    })
+                }),
             })),
             is_error: false,
         })
+    }
+}
+
+fn resolve_anchor_window(
+    buffer: &TextBuffer,
+    anchor_text: &str,
+    occurrence: usize,
+    context_lines: usize,
+    ignore_case: bool,
+) -> Result<(usize, usize, usize)> {
+    let lines = buffer.lines();
+    let mut seen = 0usize;
+    for (index, line) in lines.iter().enumerate() {
+        if line_contains_anchor(line, anchor_text, ignore_case) {
+            seen += 1;
+            if seen == occurrence {
+                let anchor_line = index + 1;
+                let start_line = anchor_line.saturating_sub(context_lines).max(1);
+                let end_line = (anchor_line + context_lines).min(lines.len());
+                return Ok((start_line, end_line, anchor_line));
+            }
+        }
+    }
+    bail!(
+        "anchor_text was not found at occurrence {} in the selected file",
+        occurrence
+    );
+}
+
+fn line_contains_anchor(line: &str, anchor_text: &str, ignore_case: bool) -> bool {
+    if ignore_case {
+        line.to_lowercase().contains(&anchor_text.to_lowercase())
+    } else {
+        line.contains(anchor_text)
     }
 }
 
@@ -280,10 +371,8 @@ mod tests {
     fn context(root: &std::path::Path) -> ToolExecutionContext {
         ToolExecutionContext {
             workspace_root: root.to_path_buf(),
-            sandbox_root: None,
             workspace_only: true,
-            container_workdir: None,
-            model_context_window_tokens: None,
+            ..Default::default()
         }
     }
 
@@ -304,6 +393,10 @@ mod tests {
                     end_line: Some(3),
                     line_count: None,
                     annotate_lines: None,
+                    anchor_text: None,
+                    anchor_context: None,
+                    anchor_occurrence: None,
+                    anchor_ignore_case: None,
                 })
                 .unwrap(),
                 &context(dir.path()),
@@ -341,5 +434,58 @@ mod tests {
         let text = result.text_content();
         assert!(text.contains("lines=2-2 / 3"));
         assert!(text.contains(" 2 | beta"));
+    }
+
+    #[tokio::test]
+    async fn read_tool_can_anchor_on_symbol_like_text() {
+        let dir = tempfile::tempdir().unwrap();
+        tokio::fs::write(
+            dir.path().join("sample.rs"),
+            "fn alpha() {}\nfn beta() {}\nfn target_symbol() {}\nfn gamma() {}\n",
+        )
+        .await
+        .unwrap();
+
+        let result = ReadTool::new()
+            .execute(
+                ToolCallId::new(),
+                serde_json::json!({
+                    "path": "sample.rs",
+                    "anchor_text": "target_symbol",
+                    "anchor_context": 1
+                }),
+                &context(dir.path()),
+            )
+            .await
+            .unwrap();
+
+        let text = result.text_content();
+        assert!(text.contains("lines=2-4 / 4"));
+        assert!(text.contains(" 3 | fn target_symbol() {}"));
+        let metadata = result.metadata.unwrap();
+        assert_eq!(metadata["anchor"]["line"].as_u64().unwrap(), 3);
+    }
+
+    #[tokio::test]
+    async fn read_tool_rejects_anchor_with_manual_range() {
+        let dir = tempfile::tempdir().unwrap();
+        tokio::fs::write(dir.path().join("sample.txt"), "alpha\nbeta\n")
+            .await
+            .unwrap();
+
+        let err = ReadTool::new()
+            .execute(
+                ToolCallId::new(),
+                serde_json::json!({
+                    "path": "sample.txt",
+                    "anchor_text": "beta",
+                    "start_line": 2
+                }),
+                &context(dir.path()),
+            )
+            .await
+            .unwrap_err();
+
+        assert!(err.to_string().contains("anchor_text cannot be combined"));
     }
 }

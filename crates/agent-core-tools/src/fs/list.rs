@@ -93,9 +93,10 @@ impl Tool for ListTool {
             .unwrap_or(if recursive { DEFAULT_LIST_MAX_DEPTH } else { 1 })
             .max(1);
         let limit = input.limit.unwrap_or(DEFAULT_LIST_LIMIT).max(1);
+        let requested_path = input.path.as_deref().unwrap_or(".");
 
         let root = resolve_tool_path_against_workspace_root(
-            input.path.as_deref().unwrap_or("."),
+            requested_path,
             ctx.effective_root(),
             ctx.container_workdir.as_deref(),
         )?;
@@ -103,7 +104,15 @@ impl Tool for ListTool {
             assert_path_inside_root(&root, ctx.effective_root())?;
         }
 
-        let mut entries = collect_entries(&root, recursive, max_depth, limit + 1)?;
+        let mut entries = if root.is_file() {
+            let path = normalize_requested_file_path(requested_path, &root);
+            vec![ListEntry {
+                path,
+                kind: EntryKind::File,
+            }]
+        } else {
+            collect_entries(&root, recursive, max_depth, limit + 1)?
+        };
         entries.sort_by(|left, right| {
             left.path
                 .cmp(&right.path)
@@ -132,7 +141,6 @@ impl Tool for ListTool {
             .filter(|entry| matches!(entry.kind, EntryKind::Other))
             .count();
 
-        let requested_path = input.path.as_deref().unwrap_or(".");
         let header = format!(
             "[list path={} recursive={} max_depth={} entries={} truncated={}]",
             requested_path,
@@ -210,17 +218,6 @@ fn collect_entries(
     max_depth: usize,
     limit: usize,
 ) -> Result<Vec<ListEntry>> {
-    if root.is_file() {
-        let path = root
-            .file_name()
-            .and_then(|name| name.to_str())
-            .map_or_else(|| root.to_string_lossy().to_string(), ToOwned::to_owned);
-        return Ok(vec![ListEntry {
-            path,
-            kind: EntryKind::File,
-        }]);
-    }
-
     let mut builder = WalkBuilder::new(root);
     builder.hidden(false);
     builder.git_ignore(true);
@@ -263,6 +260,19 @@ fn collect_entries(
     Ok(entries)
 }
 
+fn normalize_requested_file_path(requested_path: &str, root: &Path) -> String {
+    if requested_path == "." {
+        return root
+            .file_name()
+            .and_then(|value| value.to_str())
+            .map_or_else(|| root.to_string_lossy().to_string(), ToOwned::to_owned);
+    }
+    requested_path
+        .strip_prefix("./")
+        .unwrap_or(requested_path)
+        .replace('\\', "/")
+}
+
 #[cfg(test)]
 mod tests {
     use super::{ListTool, ListToolInput};
@@ -273,10 +283,8 @@ mod tests {
     fn context(root: PathBuf) -> ToolExecutionContext {
         ToolExecutionContext {
             workspace_root: root,
-            sandbox_root: None,
             workspace_only: true,
-            container_workdir: None,
-            model_context_window_tokens: None,
+            ..Default::default()
         }
     }
 
@@ -397,5 +405,34 @@ mod tests {
                 .starts_with("[list path=")
         );
         assert_eq!(metadata["counts"]["files"].as_u64().unwrap(), 2);
+    }
+
+    #[tokio::test]
+    async fn list_tool_preserves_requested_file_path() {
+        let dir = tempfile::tempdir().unwrap();
+        tokio::fs::create_dir_all(dir.path().join("src"))
+            .await
+            .unwrap();
+        tokio::fs::write(dir.path().join("src/lib.rs"), "pub fn f() {}")
+            .await
+            .unwrap();
+
+        let result = ListTool::new()
+            .execute(
+                ToolCallId::new(),
+                serde_json::to_value(ListToolInput {
+                    path: Some("src/lib.rs".to_string()),
+                    recursive: None,
+                    max_depth: None,
+                    limit: None,
+                })
+                .unwrap(),
+                &context(dir.path().to_path_buf()),
+            )
+            .await
+            .unwrap();
+
+        let output = result.text_content();
+        assert!(output.contains("[F] src/lib.rs"));
     }
 }

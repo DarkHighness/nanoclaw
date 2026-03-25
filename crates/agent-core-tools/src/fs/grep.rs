@@ -11,6 +11,7 @@ use regex::{Regex, RegexBuilder};
 use schemars::{JsonSchema, schema_for};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use tokio::fs;
 
@@ -110,9 +111,10 @@ impl Tool for GrepTool {
         let limit = input.limit.unwrap_or(DEFAULT_GREP_LIMIT).max(1);
         let context = input.context.unwrap_or(0);
         let mut display_lines = Vec::new();
-        let mut match_count = 0usize;
+        let mut observed_matches = 0usize;
         let mut line_truncated = false;
         let mut byte_capped = false;
+        let mut limit_reached = false;
 
         let files = collect_files(&search_path)?;
         for file in files {
@@ -127,12 +129,17 @@ impl Tool for GrepTool {
                 Err(_) => continue,
             };
             let content_lines: Vec<&str> = content.split('\n').collect();
+            let display_path = display_path(&file, &search_path);
+            let mut file_display_lines = BTreeMap::<usize, GrepLine>::new();
             for (index, line) in content_lines.iter().enumerate() {
                 if !matcher.is_match(line) {
                     continue;
                 }
-                match_count += 1;
-                let display_path = display_path(&file, &search_path);
+                observed_matches += 1;
+                if observed_matches > limit {
+                    limit_reached = true;
+                    break;
+                }
                 let start = index.saturating_sub(context);
                 let end = (index + context).min(content_lines.len().saturating_sub(1));
                 for current in start..=end {
@@ -144,30 +151,42 @@ impl Tool for GrepTool {
                     } else {
                         LineRole::Context
                     };
+                    let line_number = current + 1;
                     let display_text = if role == LineRole::Match {
-                        format!("{display_path}:{}: {trimmed}", current + 1)
+                        format!("{display_path}:{line_number}: {trimmed}")
                     } else {
-                        format!("{display_path}-{}- {trimmed}", current + 1)
+                        format!("{display_path}-{line_number}- {trimmed}")
                     };
-                    display_lines.push(GrepLine {
+                    let next_line = GrepLine {
                         text: display_text,
                         path: display_path.clone(),
-                        line_number: current + 1,
+                        line_number,
                         role,
                         trimmed: was_truncated,
                         content: trimmed.clone(),
-                    });
-                }
-                if match_count >= limit {
-                    break;
+                    };
+                    match file_display_lines.get_mut(&line_number) {
+                        // Overlapping context windows can report the same line more than once.
+                        // Keep one row per file+line and upgrade context rows to match rows when needed.
+                        Some(existing)
+                            if matches!(existing.role, LineRole::Context)
+                                && matches!(role, LineRole::Match) =>
+                        {
+                            *existing = next_line;
+                        }
+                        Some(_) => {}
+                        None => {
+                            file_display_lines.insert(line_number, next_line);
+                        }
+                    }
                 }
             }
-            if match_count >= limit {
+            display_lines.extend(file_display_lines.into_values());
+            if limit_reached {
                 break;
             }
         }
 
-        let limit_reached = match_count >= limit;
         let header = format!(
             "[grep pattern={} path={} context={} limit={} truncated={} byte_limit={} ignore_case={} literal={}]",
             pattern,
@@ -249,7 +268,8 @@ impl Tool for GrepTool {
                 "glob": glob_pattern,
                 "context": context,
                 "limit": limit,
-                "match_count": match_count,
+                "match_count": observed_matches.min(limit),
+                "match_count_lower_bound": observed_matches,
                 "lines_collected": display_lines.len(),
                 "lines_returned": lines_returned,
                 "context_lines": context_lines,
@@ -298,6 +318,7 @@ fn collect_files(path: &Path) -> Result<Vec<PathBuf>> {
             files.push(entry.into_path());
         }
     }
+    files.sort_unstable();
     Ok(files)
 }
 
@@ -342,10 +363,8 @@ mod tests {
     fn context(root: &Path) -> ToolExecutionContext {
         ToolExecutionContext {
             workspace_root: root.to_path_buf(),
-            sandbox_root: None,
             workspace_only: true,
-            container_workdir: None,
-            model_context_window_tokens: None,
+            ..Default::default()
         }
     }
 
@@ -386,5 +405,45 @@ mod tests {
         assert!(entries.iter().any(|entry| {
             entry["line"].as_u64().unwrap() == 2 && entry["role"].as_str().unwrap() == "match"
         }));
+    }
+
+    #[tokio::test]
+    async fn grep_tool_deduplicates_overlapping_context_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        tokio::fs::write(
+            dir.path().join("sample.txt"),
+            "a\nmatch one\nmatch two\nz\n",
+        )
+        .await
+        .unwrap();
+
+        let result = GrepTool::new()
+            .execute(
+                ToolCallId::new(),
+                serde_json::to_value(GrepToolInput {
+                    pattern: "match".to_string(),
+                    path: None,
+                    glob: None,
+                    ignore_case: None,
+                    literal: None,
+                    context: Some(1),
+                    limit: None,
+                })
+                .unwrap(),
+                &context(dir.path()),
+            )
+            .await
+            .unwrap();
+
+        let metadata = result.metadata.unwrap();
+        let entries = metadata["entries"].as_array().unwrap();
+        let mut seen = std::collections::BTreeSet::new();
+        for entry in entries {
+            let key = (
+                entry["path"].as_str().unwrap().to_string(),
+                entry["line"].as_u64().unwrap(),
+            );
+            assert!(seen.insert(key), "duplicate line emitted in grep context");
+        }
     }
 }

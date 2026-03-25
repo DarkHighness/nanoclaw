@@ -67,19 +67,25 @@ impl Tool for GlobTool {
         let pattern = input.pattern.clone();
         let matcher = Glob::new(&pattern)?.compile_matcher();
         let limit = input.limit.unwrap_or(DEFAULT_GLOB_LIMIT).max(1);
+        let overflow_limit = limit + 1;
         let mut matches = Vec::new();
+        let mut files_scanned = 0usize;
 
         for file in collect_files(&root)? {
+            files_scanned += 1;
             let candidate = file.strip_prefix(&root).unwrap_or(file.as_path());
             if matcher.is_match(candidate) || matcher.is_match(&file) {
                 matches.push(display_path(&file, &root));
-                if matches.len() >= limit {
+                if matches.len() >= overflow_limit {
                     break;
                 }
             }
         }
 
-        let truncated = matches.len() >= limit;
+        let truncated = matches.len() > limit;
+        if truncated {
+            matches.truncate(limit);
+        }
         let header = format!(
             "[glob pattern={} path={} limit={} truncated={}]",
             pattern, requested_path, limit, truncated
@@ -117,6 +123,7 @@ impl Tool for GlobTool {
                 "requested_path": requested_path,
                 "pattern": pattern,
                 "limit": limit,
+                "files_scanned": files_scanned,
                 "match_count": matches.len(),
                 "truncated": truncated,
                 "header": header,
@@ -143,6 +150,7 @@ fn collect_files(path: &Path) -> Result<Vec<PathBuf>> {
             files.push(entry.into_path());
         }
     }
+    files.sort_unstable();
     Ok(files)
 }
 
@@ -188,10 +196,8 @@ mod tests {
                 .unwrap(),
                 &ToolExecutionContext {
                     workspace_root: dir.path().to_path_buf(),
-                    sandbox_root: None,
                     workspace_only: true,
-                    container_workdir: None,
-                    model_context_window_tokens: None,
+                    ..Default::default()
                 },
             )
             .await
@@ -214,5 +220,41 @@ mod tests {
                 .iter()
                 .any(|entry| { entry["path"].as_str().unwrap().ends_with("src/lib.rs") })
         );
+    }
+
+    #[tokio::test]
+    async fn glob_tool_marks_truncation_only_when_extra_matches_exist() {
+        let dir = tempfile::tempdir().unwrap();
+        tokio::fs::create_dir_all(dir.path().join("src"))
+            .await
+            .unwrap();
+        tokio::fs::write(dir.path().join("src/lib.rs"), "")
+            .await
+            .unwrap();
+        tokio::fs::write(dir.path().join("src/main.rs"), "")
+            .await
+            .unwrap();
+
+        let result = GlobTool::new()
+            .execute(
+                ToolCallId::new(),
+                serde_json::to_value(GlobToolInput {
+                    pattern: "src/**/*.rs".to_string(),
+                    path: None,
+                    limit: Some(2),
+                })
+                .unwrap(),
+                &ToolExecutionContext {
+                    workspace_root: dir.path().to_path_buf(),
+                    workspace_only: true,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+
+        let metadata = result.metadata.unwrap();
+        assert!(!metadata["truncated"].as_bool().unwrap());
+        assert_eq!(metadata["match_count"].as_u64().unwrap(), 2);
     }
 }
