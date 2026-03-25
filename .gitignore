@@ -1,0 +1,7 @@
+target
+**/target
+.cargo-home
+.env
+.env.local
+**/.env
+**/.env.local
