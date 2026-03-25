@@ -1,0 +1,1836 @@
+use crate::{
+    CompactionConfig, CompactionRequest, ConversationCompactor, HookAggregate, HookRunner,
+    LoopDetectionConfig, LoopSignalSeverity, ModelBackend, NoopRuntimeObserver, RuntimeCommand,
+    RuntimeObserver, RuntimeProgressEvent, RuntimeSession, ToolApprovalHandler,
+    ToolApprovalOutcome, ToolApprovalRequest, ToolLoopDetector, append_transcript_message,
+    estimate_prompt_tokens,
+};
+use agent_core_skills::SkillCatalog;
+use agent_core_store::RunStore;
+use agent_core_tools::{ToolExecutionContext, ToolRegistry};
+use agent_core_types::{
+    AgentCoreError, GateDecision, HookContext, HookEvent, HookRegistration, Message, MessagePart,
+    ModelEvent, ModelRequest, PermissionBehavior, PermissionDecision, RunEventEnvelope,
+    RunEventKind, ToolCall, ToolSpec, TurnId, new_opaque_id,
+};
+use anyhow::Result;
+use futures::StreamExt;
+use serde_json::json;
+use std::collections::BTreeMap;
+use std::sync::Arc;
+
+pub struct AgentRuntime {
+    backend: Arc<dyn ModelBackend>,
+    hook_runner: Arc<HookRunner>,
+    store: Arc<dyn RunStore>,
+    tool_registry: ToolRegistry,
+    tool_context: ToolExecutionContext,
+    tool_approval_handler: Arc<dyn ToolApprovalHandler>,
+    conversation_compactor: Arc<dyn ConversationCompactor>,
+    compaction_config: CompactionConfig,
+    tool_loop_detector: ToolLoopDetector,
+    base_instructions: Vec<String>,
+    hook_registrations: Vec<HookRegistration>,
+    session: RuntimeSession,
+}
+
+pub struct RunTurnOutcome {
+    pub turn_id: TurnId,
+    pub assistant_text: String,
+}
+
+impl AgentRuntime {
+    #[allow(clippy::too_many_arguments)]
+    #[must_use]
+    pub fn new(
+        backend: Arc<dyn ModelBackend>,
+        hook_runner: Arc<HookRunner>,
+        store: Arc<dyn RunStore>,
+        tool_registry: ToolRegistry,
+        tool_context: ToolExecutionContext,
+        tool_approval_handler: Arc<dyn ToolApprovalHandler>,
+        conversation_compactor: Arc<dyn ConversationCompactor>,
+        compaction_config: CompactionConfig,
+        loop_detection_config: LoopDetectionConfig,
+        base_instructions: Vec<String>,
+        hook_registrations: Vec<HookRegistration>,
+        _skill_catalog: SkillCatalog,
+    ) -> Self {
+        Self {
+            backend,
+            hook_runner,
+            store,
+            tool_registry,
+            tool_context,
+            tool_approval_handler,
+            conversation_compactor,
+            compaction_config,
+            tool_loop_detector: ToolLoopDetector::new(loop_detection_config),
+            base_instructions,
+            hook_registrations,
+            session: RuntimeSession::default(),
+        }
+    }
+
+    #[must_use]
+    pub fn run_id(&self) -> agent_core_types::RunId {
+        self.session.run_id.clone()
+    }
+
+    #[must_use]
+    pub fn session_id(&self) -> agent_core_types::SessionId {
+        self.session.session_id.clone()
+    }
+
+    #[must_use]
+    pub fn tool_registry_names(&self) -> Vec<String> {
+        self.tool_registry.names()
+    }
+
+    #[must_use]
+    pub fn tool_specs(&self) -> Vec<agent_core_types::ToolSpec> {
+        self.tool_registry.specs()
+    }
+
+    pub async fn end_session(&mut self, reason: Option<String>) -> Result<()> {
+        self.append_event(None, None, RunEventKind::SessionEnd { reason })
+            .await
+    }
+
+    pub async fn run_user_prompt(&mut self, prompt: impl Into<String>) -> Result<RunTurnOutcome> {
+        let mut observer = NoopRuntimeObserver;
+        self.run_user_prompt_with_observer(prompt, &mut observer)
+            .await
+    }
+
+    pub async fn compact_now(&mut self, instructions: Option<String>) -> Result<bool> {
+        let mut observer = NoopRuntimeObserver;
+        self.compact_visible_history(&TurnId::new(), "manual", instructions, &mut observer)
+            .await
+    }
+
+    pub async fn steer(
+        &mut self,
+        message: impl Into<String>,
+        reason: Option<String>,
+    ) -> Result<()> {
+        let mut observer = NoopRuntimeObserver;
+        self.steer_with_observer(message, reason, &mut observer)
+            .await
+    }
+
+    pub async fn steer_with_observer(
+        &mut self,
+        message: impl Into<String>,
+        reason: Option<String>,
+        observer: &mut dyn RuntimeObserver,
+    ) -> Result<()> {
+        let message = message.into();
+        let turn_id = TurnId::new();
+        // Steering is append-only runtime control: it becomes a new system message
+        // in the transcript instead of mutating the fixed preamble or prior history.
+        let event = append_transcript_message(
+            &mut self.session.transcript,
+            Message::system(message.clone()),
+            self.session.run_id.clone(),
+            self.session.session_id.clone(),
+            turn_id.clone(),
+        );
+        self.store.append(event).await?;
+        self.append_event(
+            Some(turn_id),
+            None,
+            RunEventKind::SteerApplied {
+                message: message.clone(),
+                reason: reason.clone(),
+            },
+        )
+        .await?;
+        observer.on_event(RuntimeProgressEvent::SteerApplied { message, reason })?;
+        Ok(())
+    }
+
+    pub async fn apply_control(
+        &mut self,
+        command: RuntimeCommand,
+    ) -> Result<Option<RunTurnOutcome>> {
+        let mut observer = NoopRuntimeObserver;
+        self.apply_control_with_observer(command, &mut observer)
+            .await
+    }
+
+    pub async fn apply_control_with_observer(
+        &mut self,
+        command: RuntimeCommand,
+        observer: &mut dyn RuntimeObserver,
+    ) -> Result<Option<RunTurnOutcome>> {
+        match command {
+            RuntimeCommand::Prompt { prompt } => self
+                .run_user_prompt_with_observer(prompt, observer)
+                .await
+                .map(Some),
+            RuntimeCommand::Steer { message, reason } => {
+                self.steer_with_observer(message, reason, observer).await?;
+                Ok(None)
+            }
+        }
+    }
+
+    pub async fn run_user_prompt_with_observer(
+        &mut self,
+        prompt: impl Into<String>,
+        observer: &mut dyn RuntimeObserver,
+    ) -> Result<RunTurnOutcome> {
+        let prompt = prompt.into();
+        let turn_id = TurnId::new();
+        let hooks = self.hook_registrations.clone();
+        let instructions = self.base_instructions.clone();
+
+        if !self.session.session_started {
+            let session_start_hooks = self
+                .run_hooks(
+                    &hooks,
+                    HookContext {
+                        event: HookEvent::SessionStart,
+                        run_id: self.session.run_id.clone(),
+                        session_id: self.session.session_id.clone(),
+                        turn_id: None,
+                        fields: [("reason".to_string(), "new_session".to_string())]
+                            .into_iter()
+                            .collect(),
+                        payload: json!({"reason":"new_session"}),
+                    },
+                )
+                .await?;
+            self.append_hook_context_messages(&turn_id, &session_start_hooks)
+                .await?;
+            self.append_event(
+                None,
+                None,
+                RunEventKind::SessionStart {
+                    reason: Some("new_session".to_string()),
+                },
+            )
+            .await?;
+            self.session.session_started = true;
+        }
+
+        if !instructions.is_empty() {
+            let instruction_hooks = self
+                .run_hooks(
+                    &hooks,
+                    HookContext {
+                        event: HookEvent::InstructionsLoaded,
+                        run_id: self.session.run_id.clone(),
+                        session_id: self.session.session_id.clone(),
+                        turn_id: Some(turn_id.clone()),
+                        fields: [("reason".to_string(), "runtime_instructions".to_string())]
+                            .into_iter()
+                            .collect(),
+                        payload: json!({"count": instructions.len()}),
+                    },
+                )
+                .await?;
+            self.append_hook_context_messages(&turn_id, &instruction_hooks)
+                .await?;
+            self.append_event(
+                Some(turn_id.clone()),
+                None,
+                RunEventKind::InstructionsLoaded {
+                    count: instructions.len(),
+                },
+            )
+            .await?;
+        }
+
+        let async_context = self.hook_runner.drain_async_context().await;
+        self.append_hook_context_messages(&turn_id, &async_context)
+            .await?;
+
+        let user_hooks = self
+            .run_hooks(
+                &hooks,
+                HookContext {
+                    event: HookEvent::UserPromptSubmit,
+                    run_id: self.session.run_id.clone(),
+                    session_id: self.session.session_id.clone(),
+                    turn_id: Some(turn_id.clone()),
+                    fields: BTreeMap::new(),
+                    payload: json!({ "prompt": prompt }),
+                },
+            )
+            .await?;
+        if matches!(user_hooks.gate_decision, Some(GateDecision::Block))
+            || !user_hooks.continue_allowed
+        {
+            return Err(AgentCoreError::HookBlocked(
+                user_hooks
+                    .gate_reason
+                    .or(user_hooks.stop_reason)
+                    .unwrap_or_else(|| "user prompt blocked".to_string()),
+            )
+            .into());
+        }
+        self.append_hook_context_messages(&turn_id, &user_hooks)
+            .await?;
+
+        let user_message = Message::user(prompt.clone());
+        let transcript_event = append_transcript_message(
+            &mut self.session.transcript,
+            user_message,
+            self.session.run_id.clone(),
+            self.session.session_id.clone(),
+            turn_id.clone(),
+        );
+        self.store.append(transcript_event).await?;
+        self.append_event(
+            Some(turn_id.clone()),
+            None,
+            RunEventKind::UserPromptSubmit {
+                prompt: prompt.clone(),
+            },
+        )
+        .await?;
+        observer.on_event(RuntimeProgressEvent::UserPromptAdded {
+            prompt: prompt.clone(),
+        })?;
+
+        let mut iteration = 0usize;
+        loop {
+            iteration = iteration.saturating_add(1);
+            let _ = self
+                .compact_if_needed(&turn_id, &instructions, observer)
+                .await?;
+            let request = ModelRequest {
+                run_id: self.session.run_id.clone(),
+                session_id: self.session.session_id.clone(),
+                turn_id: turn_id.clone(),
+                instructions: instructions.clone(),
+                messages: self.visible_transcript(),
+                tools: self.tool_registry.specs(),
+                additional_context: Vec::new(),
+                metadata: json!({}),
+            };
+            self.append_event(
+                Some(turn_id.clone()),
+                None,
+                RunEventKind::ModelRequestStarted {
+                    request: request.clone(),
+                },
+            )
+            .await?;
+            observer.on_event(RuntimeProgressEvent::ModelRequestStarted {
+                turn_id: turn_id.clone(),
+                iteration,
+            })?;
+
+            let mut stream = self.backend.stream_turn(request).await?;
+            let mut assistant_text = String::new();
+            let mut tool_calls = Vec::new();
+            let mut assistant_reasoning = Vec::new();
+            let mut assistant_message_id = None;
+            while let Some(event) = stream.next().await {
+                match event? {
+                    ModelEvent::TextDelta { delta } => {
+                        assistant_text.push_str(&delta);
+                        observer.on_event(RuntimeProgressEvent::AssistantTextDelta {
+                            delta,
+                            accumulated_text: assistant_text.clone(),
+                        })?;
+                    }
+                    ModelEvent::ToolCallRequested { call } => {
+                        tool_calls.push(call.clone());
+                        observer.on_event(RuntimeProgressEvent::ToolCallRequested { call })?;
+                    }
+                    ModelEvent::ResponseComplete {
+                        message_id,
+                        reasoning,
+                        ..
+                    } => {
+                        assistant_message_id = Some(message_id.unwrap_or_else(new_opaque_id));
+                        assistant_reasoning = reasoning;
+                    }
+                    ModelEvent::Error { message } => {
+                        return Err(AgentCoreError::ModelBackend(message).into());
+                    }
+                }
+            }
+
+            self.append_event(
+                Some(turn_id.clone()),
+                None,
+                RunEventKind::ModelResponseCompleted {
+                    assistant_text: assistant_text.clone(),
+                    tool_calls: tool_calls.clone(),
+                },
+            )
+            .await?;
+            observer.on_event(RuntimeProgressEvent::ModelResponseCompleted {
+                assistant_text: assistant_text.clone(),
+                tool_calls: tool_calls.clone(),
+            })?;
+
+            if !assistant_text.is_empty()
+                || !tool_calls.is_empty()
+                || !assistant_reasoning.is_empty()
+            {
+                let mut parts = Vec::new();
+                if !assistant_text.is_empty() {
+                    parts.push(MessagePart::text(assistant_text.clone()));
+                }
+                parts.extend(
+                    assistant_reasoning
+                        .iter()
+                        .cloned()
+                        .map(|reasoning| MessagePart::Reasoning { reasoning }),
+                );
+                parts.extend(
+                    tool_calls
+                        .iter()
+                        .cloned()
+                        .map(|call| MessagePart::ToolCall { call }),
+                );
+                let message = Message::assistant_parts(parts)
+                    .with_message_id(assistant_message_id.unwrap_or_else(new_opaque_id));
+                let event = append_transcript_message(
+                    &mut self.session.transcript,
+                    message,
+                    self.session.run_id.clone(),
+                    self.session.session_id.clone(),
+                    turn_id.clone(),
+                );
+                self.store.append(event).await?;
+            }
+
+            if !tool_calls.is_empty() {
+                for call in tool_calls {
+                    self.handle_tool_call(&hooks, &turn_id, call, observer)
+                        .await?;
+                }
+                let drained = self.hook_runner.drain_async_context().await;
+                self.append_hook_context_messages(&turn_id, &drained)
+                    .await?;
+                continue;
+            }
+
+            let stop_hooks = self
+                .run_hooks(
+                    &hooks,
+                    HookContext {
+                        event: HookEvent::Stop,
+                        run_id: self.session.run_id.clone(),
+                        session_id: self.session.session_id.clone(),
+                        turn_id: Some(turn_id.clone()),
+                        fields: [("reason".to_string(), "assistant_complete".to_string())]
+                            .into_iter()
+                            .collect(),
+                        payload: json!({ "assistant_text": assistant_text }),
+                    },
+                )
+                .await?;
+
+            if matches!(stop_hooks.gate_decision, Some(GateDecision::Block))
+                || !stop_hooks.continue_allowed
+            {
+                let reason = stop_hooks
+                    .gate_reason
+                    .clone()
+                    .or(stop_hooks.stop_reason.clone())
+                    .unwrap_or_else(|| "stop blocked".to_string());
+                self.append_event(
+                    Some(turn_id.clone()),
+                    None,
+                    RunEventKind::StopFailure {
+                        reason: Some(reason.clone()),
+                    },
+                )
+                .await?;
+                if stop_hooks.system_messages.is_empty() && stop_hooks.additional_context.is_empty()
+                {
+                    return Err(AgentCoreError::HookBlocked(reason).into());
+                }
+                self.append_hook_context_messages(&turn_id, &stop_hooks)
+                    .await?;
+                continue;
+            }
+
+            self.append_event(
+                Some(turn_id.clone()),
+                None,
+                RunEventKind::Stop {
+                    reason: Some("assistant_complete".to_string()),
+                },
+            )
+            .await?;
+            observer.on_event(RuntimeProgressEvent::TurnCompleted {
+                turn_id: turn_id.clone(),
+                assistant_text: assistant_text.clone(),
+            })?;
+            return Ok(RunTurnOutcome {
+                turn_id,
+                assistant_text,
+            });
+        }
+    }
+
+    async fn handle_tool_call(
+        &mut self,
+        hooks: &[HookRegistration],
+        turn_id: &TurnId,
+        call: ToolCall,
+        observer: &mut dyn RuntimeObserver,
+    ) -> Result<()> {
+        let tool_name = call.tool_name.clone();
+        let tool = self
+            .tool_registry
+            .get(&tool_name)
+            .ok_or_else(|| AgentCoreError::Tool(format!("tool not found: {tool_name}")))?;
+        let tool_spec = tool.spec();
+        let mut fields = BTreeMap::from([("tool_name".to_string(), tool_name.clone())]);
+        if let agent_core_types::ToolOrigin::Mcp { server_name } = &call.origin {
+            fields.insert("mcp_server_name".to_string(), server_name.clone());
+        }
+
+        let pre_hooks = self
+            .run_hooks(
+                hooks,
+                HookContext {
+                    event: HookEvent::PreToolUse,
+                    run_id: self.session.run_id.clone(),
+                    session_id: self.session.session_id.clone(),
+                    turn_id: Some(turn_id.clone()),
+                    fields: fields.clone(),
+                    payload: json!({ "tool_call": call.clone() }),
+                },
+            )
+            .await?;
+        self.append_hook_context_messages(turn_id, &pre_hooks)
+            .await?;
+
+        let mut approval_reasons = approval_reasons_for_tool(&tool_spec);
+        match pre_hooks
+            .permission_decision
+            .unwrap_or(PermissionDecision::Allow)
+        {
+            PermissionDecision::Deny => {
+                let error = AgentCoreError::ToolDenied(tool_name).to_string();
+                return self
+                    .record_tool_failure_result(hooks, turn_id, &call, observer, error)
+                    .await;
+            }
+            PermissionDecision::Ask => {
+                let permission_hooks = self
+                    .run_hooks(
+                        hooks,
+                        HookContext {
+                            event: HookEvent::PermissionRequest,
+                            run_id: self.session.run_id.clone(),
+                            session_id: self.session.session_id.clone(),
+                            turn_id: Some(turn_id.clone()),
+                            fields,
+                            payload: json!({ "tool_call": call.clone() }),
+                        },
+                    )
+                    .await?;
+                self.append_hook_context_messages(turn_id, &permission_hooks)
+                    .await?;
+                if matches!(
+                    permission_hooks.permission_behavior,
+                    Some(PermissionBehavior::Deny)
+                ) {
+                    let error = AgentCoreError::PermissionDenied(tool_name).to_string();
+                    return self
+                        .record_tool_failure_result(
+                            hooks,
+                            turn_id,
+                            &call,
+                            observer,
+                            permission_hooks.gate_reason.unwrap_or(error),
+                        )
+                        .await;
+                }
+                approval_reasons.push(
+                    permission_hooks
+                        .gate_reason
+                        .unwrap_or_else(|| "hook requested approval".to_string()),
+                );
+            }
+            PermissionDecision::Allow => {}
+        }
+
+        if !approval_reasons.is_empty() {
+            self.append_event(
+                Some(turn_id.clone()),
+                Some(call.id.clone()),
+                RunEventKind::ToolApprovalRequested {
+                    call: call.clone(),
+                    reasons: approval_reasons.clone(),
+                },
+            )
+            .await?;
+            observer.on_event(RuntimeProgressEvent::ToolApprovalRequested {
+                call: call.clone(),
+                reasons: approval_reasons.clone(),
+            })?;
+            let outcome = self
+                .tool_approval_handler
+                .decide(ToolApprovalRequest {
+                    call: call.clone(),
+                    spec: tool_spec,
+                    reasons: approval_reasons,
+                })
+                .await?;
+            match outcome {
+                ToolApprovalOutcome::Approve => {
+                    self.append_event(
+                        Some(turn_id.clone()),
+                        Some(call.id.clone()),
+                        RunEventKind::ToolApprovalResolved {
+                            call: call.clone(),
+                            approved: true,
+                            reason: None,
+                        },
+                    )
+                    .await?;
+                    observer.on_event(RuntimeProgressEvent::ToolApprovalResolved {
+                        call: call.clone(),
+                        approved: true,
+                        reason: None,
+                    })?;
+                }
+                ToolApprovalOutcome::Deny { reason } => {
+                    self.append_event(
+                        Some(turn_id.clone()),
+                        Some(call.id.clone()),
+                        RunEventKind::ToolApprovalResolved {
+                            call: call.clone(),
+                            approved: false,
+                            reason: reason.clone(),
+                        },
+                    )
+                    .await?;
+                    observer.on_event(RuntimeProgressEvent::ToolApprovalResolved {
+                        call: call.clone(),
+                        approved: false,
+                        reason: reason.clone(),
+                    })?;
+                    return self
+                        .record_tool_failure_result(
+                            hooks,
+                            turn_id,
+                            &call,
+                            observer,
+                            reason.unwrap_or_else(|| {
+                                AgentCoreError::PermissionDenied(tool_name.clone()).to_string()
+                            }),
+                        )
+                        .await;
+                }
+            }
+        }
+
+        self.append_event(
+            Some(turn_id.clone()),
+            Some(call.id.clone()),
+            RunEventKind::ToolCallStarted { call: call.clone() },
+        )
+        .await?;
+        observer.on_event(RuntimeProgressEvent::ToolCallStarted { call: call.clone() })?;
+
+        if let Some(signal) = self.tool_loop_detector.inspect(&call) {
+            let message = format!(
+                "loop_detector [{}] {}",
+                severity_label(signal.severity),
+                signal.reason
+            );
+            self.append_event(
+                Some(turn_id.clone()),
+                Some(call.id.clone()),
+                RunEventKind::Notification {
+                    source: "loop_detector".to_string(),
+                    message: message.clone(),
+                },
+            )
+            .await?;
+            if matches!(signal.severity, LoopSignalSeverity::Critical) {
+                // Critical loop signals are fed back as tool failures so the model can
+                // recover in-band instead of the runtime hard-aborting the whole turn.
+                return self
+                    .record_tool_failure_result(
+                        hooks,
+                        turn_id,
+                        &call,
+                        observer,
+                        format!("loop detector blocked tool call: {}", signal.reason),
+                    )
+                    .await;
+            }
+        }
+
+        match tool
+            .execute(call.id.clone(), call.arguments.clone(), &self.tool_context)
+            .await
+        {
+            Ok(mut result) => {
+                self.tool_loop_detector.record_result(&call, &result);
+                result.call_id = call.call_id.clone();
+                let event = append_transcript_message(
+                    &mut self.session.transcript,
+                    Message::tool_result(result.clone()),
+                    self.session.run_id.clone(),
+                    self.session.session_id.clone(),
+                    turn_id.clone(),
+                );
+                self.store.append(event).await?;
+                self.append_event(
+                    Some(turn_id.clone()),
+                    Some(call.id.clone()),
+                    RunEventKind::ToolCallCompleted {
+                        call: call.clone(),
+                        output: result.clone(),
+                    },
+                )
+                .await?;
+                observer.on_event(RuntimeProgressEvent::ToolCallCompleted {
+                    call: call.clone(),
+                    output: result.clone(),
+                })?;
+
+                let post_hooks = self
+                    .run_hooks(
+                        hooks,
+                        HookContext {
+                            event: HookEvent::PostToolUse,
+                            run_id: self.session.run_id.clone(),
+                            session_id: self.session.session_id.clone(),
+                            turn_id: Some(turn_id.clone()),
+                            fields: [("tool_name".to_string(), tool_name.clone())]
+                                .into_iter()
+                                .collect(),
+                            payload: json!({ "result": result }),
+                        },
+                    )
+                    .await?;
+                if matches!(post_hooks.gate_decision, Some(GateDecision::Block))
+                    || !post_hooks.continue_allowed
+                {
+                    return Err(AgentCoreError::HookBlocked(
+                        post_hooks
+                            .gate_reason
+                            .or(post_hooks.stop_reason)
+                            .unwrap_or_else(|| "post tool hook blocked".to_string()),
+                    )
+                    .into());
+                }
+                self.append_hook_context_messages(turn_id, &post_hooks)
+                    .await?;
+            }
+            Err(error) => {
+                self.tool_loop_detector
+                    .record_error(&call, &error.to_string());
+                self.record_tool_failure_result(hooks, turn_id, &call, observer, error.to_string())
+                    .await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn run_hooks(
+        &self,
+        hooks: &[HookRegistration],
+        context: HookContext,
+    ) -> Result<HookAggregate> {
+        self.hook_runner.run(hooks, context).await
+    }
+
+    async fn append_event(
+        &self,
+        turn_id: Option<TurnId>,
+        tool_call_id: Option<agent_core_types::ToolCallId>,
+        event: RunEventKind,
+    ) -> Result<()> {
+        self.store
+            .append(RunEventEnvelope::new(
+                self.session.run_id.clone(),
+                self.session.session_id.clone(),
+                turn_id,
+                tool_call_id,
+                event,
+            ))
+            .await?;
+        Ok(())
+    }
+
+    async fn append_hook_context_messages(
+        &mut self,
+        turn_id: &TurnId,
+        aggregate: &HookAggregate,
+    ) -> Result<()> {
+        for message in aggregate
+            .system_messages
+            .iter()
+            .chain(aggregate.additional_context.iter())
+        {
+            let event = append_transcript_message(
+                &mut self.session.transcript,
+                Message::system(message.clone()),
+                self.session.run_id.clone(),
+                self.session.session_id.clone(),
+                turn_id.clone(),
+            );
+            self.store.append(event).await?;
+        }
+        Ok(())
+    }
+
+    fn visible_message_indices(&self) -> Vec<usize> {
+        if let Some(summary_index) = self.session.compaction_summary_index {
+            let mut indices = Vec::with_capacity(
+                1 + self.session.retained_tail_indices.len() + self.session.transcript.len(),
+            );
+            indices.push(summary_index);
+            indices.extend(
+                self.session
+                    .retained_tail_indices
+                    .iter()
+                    .copied()
+                    .filter(|index| *index < summary_index),
+            );
+            indices.extend(self.session.post_summary_start..self.session.transcript.len());
+            indices
+        } else {
+            (0..self.session.transcript.len()).collect()
+        }
+    }
+
+    fn visible_transcript(&self) -> Vec<Message> {
+        self.visible_message_indices()
+            .into_iter()
+            .filter_map(|index| self.session.transcript.get(index).cloned())
+            .collect()
+    }
+
+    async fn compact_if_needed(
+        &mut self,
+        turn_id: &TurnId,
+        instructions: &[String],
+        observer: &mut dyn RuntimeObserver,
+    ) -> Result<bool> {
+        if !self.compaction_config.enabled {
+            return Ok(false);
+        }
+        let visible_messages = self.visible_transcript();
+        if visible_messages.len() < 3 {
+            return Ok(false);
+        }
+
+        let estimated_tokens =
+            estimate_prompt_tokens(instructions, &visible_messages, &self.tool_registry.specs());
+        if estimated_tokens < self.compaction_config.trigger_tokens {
+            return Ok(false);
+        }
+
+        self.compact_visible_history(turn_id, "auto", None, observer)
+            .await
+    }
+
+    async fn compact_visible_history(
+        &mut self,
+        turn_id: &TurnId,
+        reason: &str,
+        instructions: Option<String>,
+        observer: &mut dyn RuntimeObserver,
+    ) -> Result<bool> {
+        let visible_indices = self.visible_message_indices();
+        if visible_indices.len() < 2 {
+            return Ok(false);
+        }
+
+        let retain_count = self
+            .compaction_config
+            .preserve_recent_messages
+            .min(visible_indices.len().saturating_sub(1));
+        let split_at = visible_indices.len().saturating_sub(retain_count);
+        if split_at < 2 {
+            return Ok(false);
+        }
+        let source_indices = visible_indices[..split_at].to_vec();
+        let retained_tail_indices = visible_indices[split_at..].to_vec();
+        let source_messages = source_indices
+            .iter()
+            .filter_map(|index| self.session.transcript.get(*index).cloned())
+            .collect::<Vec<_>>();
+        if source_messages.len() < 2 {
+            return Ok(false);
+        }
+
+        let pre_hooks = self
+            .run_hooks(
+                &self.hook_registrations,
+                HookContext {
+                    event: HookEvent::PreCompact,
+                    run_id: self.session.run_id.clone(),
+                    session_id: self.session.session_id.clone(),
+                    turn_id: Some(turn_id.clone()),
+                    fields: [("reason".to_string(), reason.to_string())]
+                        .into_iter()
+                        .collect(),
+                    payload: json!({
+                        "reason": reason,
+                        "source_message_count": source_messages.len(),
+                        "retained_message_count": retained_tail_indices.len(),
+                    }),
+                },
+            )
+            .await?;
+        if matches!(pre_hooks.gate_decision, Some(GateDecision::Block))
+            || !pre_hooks.continue_allowed
+        {
+            return Ok(false);
+        }
+
+        let mut compaction_instructions = instructions;
+        if let Some(message) = pre_hooks.system_messages.first() {
+            compaction_instructions = Some(match compaction_instructions {
+                Some(existing) => format!("{existing}\n\n{message}"),
+                None => message.clone(),
+            });
+        }
+
+        let result = self
+            .conversation_compactor
+            .compact(CompactionRequest {
+                run_id: self.session.run_id.clone(),
+                session_id: self.session.session_id.clone(),
+                turn_id: turn_id.clone(),
+                messages: source_messages.clone(),
+                instructions: compaction_instructions,
+            })
+            .await?;
+
+        let summary_index = self.session.transcript.len();
+        let summary_message = Message::system(result.summary.clone());
+        let event = append_transcript_message(
+            &mut self.session.transcript,
+            summary_message,
+            self.session.run_id.clone(),
+            self.session.session_id.clone(),
+            turn_id.clone(),
+        );
+        self.store.append(event).await?;
+        self.session.compaction_summary_index = Some(summary_index);
+        self.session.retained_tail_indices = retained_tail_indices.clone();
+        self.session.post_summary_start = summary_index + 1;
+
+        self.append_event(
+            Some(turn_id.clone()),
+            None,
+            RunEventKind::CompactionCompleted {
+                reason: reason.to_string(),
+                source_message_count: source_messages.len(),
+                retained_message_count: retained_tail_indices.len(),
+                summary_chars: result.summary.chars().count(),
+            },
+        )
+        .await?;
+        observer.on_event(RuntimeProgressEvent::CompactionCompleted {
+            reason: reason.to_string(),
+            source_message_count: source_messages.len(),
+            retained_message_count: retained_tail_indices.len(),
+            summary: result.summary.clone(),
+        })?;
+
+        let post_hooks = self
+            .run_hooks(
+                &self.hook_registrations,
+                HookContext {
+                    event: HookEvent::PostCompact,
+                    run_id: self.session.run_id.clone(),
+                    session_id: self.session.session_id.clone(),
+                    turn_id: Some(turn_id.clone()),
+                    fields: [("reason".to_string(), reason.to_string())]
+                        .into_iter()
+                        .collect(),
+                    payload: json!({
+                        "reason": reason,
+                        "source_message_count": source_messages.len(),
+                        "retained_message_count": retained_tail_indices.len(),
+                        "summary": result.summary,
+                    }),
+                },
+            )
+            .await?;
+        self.append_hook_context_messages(turn_id, &post_hooks)
+            .await?;
+        Ok(true)
+    }
+
+    async fn record_tool_failure_result(
+        &mut self,
+        hooks: &[HookRegistration],
+        turn_id: &TurnId,
+        call: &ToolCall,
+        observer: &mut dyn RuntimeObserver,
+        error: String,
+    ) -> Result<()> {
+        let result = agent_core_types::ToolResult::error(
+            call.id.clone(),
+            call.tool_name.clone(),
+            error.clone(),
+        )
+        .with_call_id(call.call_id.clone());
+        let event = append_transcript_message(
+            &mut self.session.transcript,
+            Message::tool_result(result.clone()),
+            self.session.run_id.clone(),
+            self.session.session_id.clone(),
+            turn_id.clone(),
+        );
+        self.store.append(event).await?;
+        self.append_event(
+            Some(turn_id.clone()),
+            Some(call.id.clone()),
+            RunEventKind::ToolCallFailed {
+                call: call.clone(),
+                error: error.clone(),
+            },
+        )
+        .await?;
+        observer.on_event(RuntimeProgressEvent::ToolCallFailed {
+            call: call.clone(),
+            error: error.clone(),
+        })?;
+        let failure_hooks = self
+            .run_hooks(
+                hooks,
+                HookContext {
+                    event: HookEvent::PostToolUseFailure,
+                    run_id: self.session.run_id.clone(),
+                    session_id: self.session.session_id.clone(),
+                    turn_id: Some(turn_id.clone()),
+                    fields: [("tool_name".to_string(), call.tool_name.clone())]
+                        .into_iter()
+                        .collect(),
+                    payload: json!({ "error": error }),
+                },
+            )
+            .await?;
+        self.append_hook_context_messages(turn_id, &failure_hooks)
+            .await?;
+        Ok(())
+    }
+}
+
+fn severity_label(severity: LoopSignalSeverity) -> &'static str {
+    match severity {
+        LoopSignalSeverity::Warning => "warning",
+        LoopSignalSeverity::Critical => "critical",
+    }
+}
+
+fn approval_reasons_for_tool(spec: &ToolSpec) -> Vec<String> {
+    let mut reasons = Vec::new();
+    if tool_annotation_bool(spec, "destructiveHint").unwrap_or(true) {
+        reasons.push("tool is marked destructive".to_string());
+    }
+    if tool_annotation_bool(spec, "openWorldHint").unwrap_or(true) {
+        reasons.push("tool reaches outside the workspace or touches external systems".to_string());
+    }
+    reasons
+}
+
+fn tool_annotation_bool(spec: &ToolSpec, key: &str) -> Option<bool> {
+    spec.annotations
+        .get(key)
+        .and_then(serde_json::Value::as_bool)
+        .or_else(|| {
+            spec.annotations
+                .get("mcp_annotations")
+                .and_then(serde_json::Value::as_object)
+                .and_then(|value| value.get(key))
+                .and_then(serde_json::Value::as_bool)
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AgentRuntime;
+    use crate::{
+        AgentRuntimeBuilder, CompactionConfig, CompactionRequest, CompactionResult,
+        ConversationCompactor, DefaultCommandHookExecutor, HookRunner, ModelBackend,
+        NoopAgentHookEvaluator, ReqwestHttpHookExecutor, RuntimeCommand, RuntimeObserver,
+        RuntimeProgressEvent, ToolApprovalHandler, ToolApprovalOutcome, ToolApprovalRequest,
+    };
+    use agent_core_skills::{Skill, SkillCatalog};
+    use agent_core_store::{InMemoryRunStore, RunStore};
+    use agent_core_tools::{
+        ReadTool, Tool, ToolExecutionContext, ToolRegistry, mcp_tool_annotations,
+    };
+    use agent_core_types::{
+        HookContext, HookEvent, HookHandler, HookOutput, HookRegistration, Message, ModelEvent,
+        ModelRequest, PromptHookHandler, RunEventKind, ToolCall, ToolCallId, ToolOrigin,
+        ToolOutputMode, ToolResult, ToolSpec,
+    };
+    use anyhow::Result;
+    use async_trait::async_trait;
+    use futures::{StreamExt, stream, stream::BoxStream};
+    use serde_json::Value;
+    use std::collections::{BTreeMap, VecDeque};
+    use std::path::PathBuf;
+    use std::sync::{Arc, Mutex};
+
+    struct MockBackend;
+
+    #[derive(Clone, Default)]
+    struct RecordingBackend {
+        requests: Arc<Mutex<Vec<ModelRequest>>>,
+    }
+
+    impl RecordingBackend {
+        fn requests(&self) -> Vec<ModelRequest> {
+            self.requests.lock().unwrap().clone()
+        }
+    }
+
+    struct StaticPromptEvaluator;
+
+    struct StaticCompactor;
+
+    #[async_trait]
+    impl crate::PromptHookEvaluator for StaticPromptEvaluator {
+        async fn evaluate(&self, _prompt: &str, _context: HookContext) -> Result<HookOutput> {
+            Ok(HookOutput {
+                system_message: Some("hook system message".to_string()),
+                additional_context: vec!["hook additional context".to_string()],
+                ..HookOutput::default()
+            })
+        }
+    }
+
+    #[async_trait]
+    impl ConversationCompactor for StaticCompactor {
+        async fn compact(&self, request: CompactionRequest) -> Result<CompactionResult> {
+            Ok(CompactionResult {
+                summary: format!("summary for {} messages", request.messages.len()),
+            })
+        }
+    }
+
+    #[derive(Clone, Debug, Default)]
+    struct FailingTool;
+
+    #[async_trait]
+    impl Tool for FailingTool {
+        fn spec(&self) -> ToolSpec {
+            ToolSpec {
+                name: "fail".to_string(),
+                description: "Always fails".to_string(),
+                input_schema: serde_json::json!({"type":"object","properties":{}}),
+                output_mode: ToolOutputMode::Text,
+                origin: ToolOrigin::Local,
+                annotations: Default::default(),
+            }
+        }
+
+        async fn execute(
+            &self,
+            _call_id: ToolCallId,
+            _arguments: Value,
+            _ctx: &ToolExecutionContext,
+        ) -> Result<ToolResult> {
+            anyhow::bail!("boom")
+        }
+    }
+
+    #[derive(Clone, Debug, Default)]
+    struct DangerousTool;
+
+    #[async_trait]
+    impl Tool for DangerousTool {
+        fn spec(&self) -> ToolSpec {
+            ToolSpec {
+                name: "danger".to_string(),
+                description: "Mutates files".to_string(),
+                input_schema: serde_json::json!({"type":"object","properties":{}}),
+                output_mode: ToolOutputMode::Text,
+                origin: ToolOrigin::Local,
+                annotations: mcp_tool_annotations("Dangerous Tool", false, true, true, false),
+            }
+        }
+
+        async fn execute(
+            &self,
+            call_id: ToolCallId,
+            _arguments: Value,
+            _ctx: &ToolExecutionContext,
+        ) -> Result<ToolResult> {
+            Ok(ToolResult::text(call_id, "danger", "mutated"))
+        }
+    }
+
+    #[derive(Default)]
+    struct MockApprovalHandler {
+        requests: Mutex<Vec<ToolApprovalRequest>>,
+        outcomes: Mutex<VecDeque<ToolApprovalOutcome>>,
+    }
+
+    #[derive(Default)]
+    struct RecordingObserver {
+        events: Vec<RuntimeProgressEvent>,
+    }
+
+    impl RuntimeObserver for RecordingObserver {
+        fn on_event(&mut self, event: RuntimeProgressEvent) -> Result<()> {
+            self.events.push(event);
+            Ok(())
+        }
+    }
+
+    impl MockApprovalHandler {
+        fn with_outcomes(outcomes: impl IntoIterator<Item = ToolApprovalOutcome>) -> Self {
+            Self {
+                requests: Mutex::new(Vec::new()),
+                outcomes: Mutex::new(outcomes.into_iter().collect()),
+            }
+        }
+
+        fn requests(&self) -> Vec<ToolApprovalRequest> {
+            self.requests.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait]
+    impl ToolApprovalHandler for MockApprovalHandler {
+        async fn decide(&self, request: ToolApprovalRequest) -> Result<ToolApprovalOutcome> {
+            self.requests.lock().unwrap().push(request);
+            Ok(self
+                .outcomes
+                .lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or(ToolApprovalOutcome::Approve))
+        }
+    }
+
+    #[async_trait]
+    impl ModelBackend for MockBackend {
+        async fn stream_turn(
+            &self,
+            request: ModelRequest,
+        ) -> Result<BoxStream<'static, Result<ModelEvent>>> {
+            let user_text = request
+                .messages
+                .last()
+                .map(Message::text_content)
+                .unwrap_or_default();
+            if user_text.contains("tool")
+                && !request.messages.iter().any(|message| {
+                    message.parts.iter().any(|part| {
+                        matches!(part, agent_core_types::MessagePart::ToolResult { .. })
+                    })
+                })
+            {
+                let call = ToolCall {
+                    id: ToolCallId::new(),
+                    call_id: "call-read-1".to_string(),
+                    tool_name: "read".to_string(),
+                    arguments: serde_json::json!({"path":"sample.txt","limit":1}),
+                    origin: ToolOrigin::Local,
+                };
+                Ok(stream::iter(vec![
+                    Ok(ModelEvent::ToolCallRequested { call }),
+                    Ok(ModelEvent::ResponseComplete {
+                        stop_reason: Some("tool_use".to_string()),
+                        message_id: None,
+                        reasoning: Vec::new(),
+                    }),
+                ])
+                .boxed())
+            } else {
+                Ok(stream::iter(vec![
+                    Ok(ModelEvent::TextDelta {
+                        delta: "done".to_string(),
+                    }),
+                    Ok(ModelEvent::ResponseComplete {
+                        stop_reason: Some("stop".to_string()),
+                        message_id: None,
+                        reasoning: Vec::new(),
+                    }),
+                ])
+                .boxed())
+            }
+        }
+    }
+
+    #[async_trait]
+    impl ModelBackend for RecordingBackend {
+        async fn stream_turn(
+            &self,
+            request: ModelRequest,
+        ) -> Result<BoxStream<'static, Result<ModelEvent>>> {
+            self.requests.lock().unwrap().push(request);
+            Ok(stream::iter(vec![
+                Ok(ModelEvent::TextDelta {
+                    delta: "ok".to_string(),
+                }),
+                Ok(ModelEvent::ResponseComplete {
+                    stop_reason: Some("stop".to_string()),
+                    message_id: None,
+                    reasoning: Vec::new(),
+                }),
+            ])
+            .boxed())
+        }
+    }
+
+    #[tokio::test]
+    async fn runtime_handles_tool_loop() {
+        let dir = tempfile::tempdir().unwrap();
+        tokio::fs::write(dir.path().join("sample.txt"), "hello\nworld")
+            .await
+            .unwrap();
+        let mut registry = ToolRegistry::new();
+        registry.register(ReadTool::new());
+        let store = Arc::new(InMemoryRunStore::new());
+        let mut runtime: AgentRuntime = AgentRuntimeBuilder::new(Arc::new(MockBackend), store)
+            .hook_runner(Arc::new(HookRunner::default()))
+            .tool_registry(registry)
+            .tool_context(ToolExecutionContext {
+                workspace_root: dir.path().to_path_buf(),
+                sandbox_root: None,
+                workspace_only: true,
+                container_workdir: None,
+                model_context_window_tokens: Some(128_000),
+            })
+            .skill_catalog(SkillCatalog::default())
+            .build();
+
+        let outcome = runtime.run_user_prompt("please use tool").await.unwrap();
+        assert_eq!(outcome.assistant_text, "done");
+    }
+
+    struct ToolErrorRecoveringBackend;
+
+    #[async_trait]
+    impl ModelBackend for ToolErrorRecoveringBackend {
+        async fn stream_turn(
+            &self,
+            request: ModelRequest,
+        ) -> Result<BoxStream<'static, Result<ModelEvent>>> {
+            let has_tool_result = request.messages.iter().any(|message| {
+                message
+                    .parts
+                    .iter()
+                    .any(|part| matches!(part, agent_core_types::MessagePart::ToolResult { .. }))
+            });
+            if !has_tool_result {
+                let call = ToolCall {
+                    id: ToolCallId::new(),
+                    call_id: "call-fail-1".to_string(),
+                    tool_name: "fail".to_string(),
+                    arguments: serde_json::json!({}),
+                    origin: ToolOrigin::Local,
+                };
+                Ok(stream::iter(vec![
+                    Ok(ModelEvent::ToolCallRequested { call }),
+                    Ok(ModelEvent::ResponseComplete {
+                        stop_reason: Some("tool_use".to_string()),
+                        message_id: None,
+                        reasoning: Vec::new(),
+                    }),
+                ])
+                .boxed())
+            } else {
+                Ok(stream::iter(vec![
+                    Ok(ModelEvent::TextDelta {
+                        delta: "recovered".to_string(),
+                    }),
+                    Ok(ModelEvent::ResponseComplete {
+                        stop_reason: Some("stop".to_string()),
+                        message_id: None,
+                        reasoning: Vec::new(),
+                    }),
+                ])
+                .boxed())
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn runtime_continues_after_tool_error_result() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut registry = ToolRegistry::new();
+        registry.register(FailingTool);
+        let store = Arc::new(InMemoryRunStore::new());
+        let mut runtime: AgentRuntime =
+            AgentRuntimeBuilder::new(Arc::new(ToolErrorRecoveringBackend), store.clone())
+                .hook_runner(Arc::new(HookRunner::default()))
+                .tool_registry(registry)
+                .tool_context(ToolExecutionContext {
+                    workspace_root: dir.path().to_path_buf(),
+                    sandbox_root: None,
+                    workspace_only: true,
+                    container_workdir: None,
+                    model_context_window_tokens: Some(128_000),
+                })
+                .skill_catalog(SkillCatalog::default())
+                .build();
+
+        let outcome = runtime
+            .run_user_prompt("please use the failing tool")
+            .await
+            .unwrap();
+        assert_eq!(outcome.assistant_text, "recovered");
+
+        let events = store.events(&runtime.run_id()).await.unwrap();
+        assert!(events.iter().any(|event| {
+            matches!(
+                &event.event,
+                RunEventKind::ToolCallFailed { error, .. } if error == "boom"
+            )
+        }));
+        assert!(events.iter().any(|event| {
+            matches!(
+                &event.event,
+                RunEventKind::TranscriptMessage { message }
+                    if message.parts.iter().any(|part| matches!(
+                        part,
+                        agent_core_types::MessagePart::ToolResult { result }
+                            if result.is_error && result.text_content() == "boom"
+                ))
+            )
+        }));
+    }
+
+    struct ApprovalRecoveringBackend;
+
+    #[async_trait]
+    impl ModelBackend for ApprovalRecoveringBackend {
+        async fn stream_turn(
+            &self,
+            request: ModelRequest,
+        ) -> Result<BoxStream<'static, Result<ModelEvent>>> {
+            let has_tool_result = request.messages.iter().any(|message| {
+                message
+                    .parts
+                    .iter()
+                    .any(|part| matches!(part, agent_core_types::MessagePart::ToolResult { .. }))
+            });
+            if !has_tool_result {
+                let call = ToolCall {
+                    id: ToolCallId::new(),
+                    call_id: "call-danger-1".to_string(),
+                    tool_name: "danger".to_string(),
+                    arguments: serde_json::json!({"path":"sample.txt"}),
+                    origin: ToolOrigin::Local,
+                };
+                Ok(stream::iter(vec![
+                    Ok(ModelEvent::ToolCallRequested { call }),
+                    Ok(ModelEvent::ResponseComplete {
+                        stop_reason: Some("tool_use".to_string()),
+                        message_id: None,
+                        reasoning: Vec::new(),
+                    }),
+                ])
+                .boxed())
+            } else {
+                Ok(stream::iter(vec![
+                    Ok(ModelEvent::TextDelta {
+                        delta: "approval recovered".to_string(),
+                    }),
+                    Ok(ModelEvent::ResponseComplete {
+                        stop_reason: Some("stop".to_string()),
+                        message_id: None,
+                        reasoning: Vec::new(),
+                    }),
+                ])
+                .boxed())
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn runtime_continues_after_tool_approval_denied() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut registry = ToolRegistry::new();
+        registry.register(DangerousTool);
+        let approval_handler = Arc::new(MockApprovalHandler::with_outcomes([
+            ToolApprovalOutcome::Deny {
+                reason: Some("user denied dangerous tool".to_string()),
+            },
+        ]));
+        let store = Arc::new(InMemoryRunStore::new());
+        let mut runtime: AgentRuntime =
+            AgentRuntimeBuilder::new(Arc::new(ApprovalRecoveringBackend), store.clone())
+                .hook_runner(Arc::new(HookRunner::default()))
+                .tool_registry(registry)
+                .tool_context(ToolExecutionContext {
+                    workspace_root: dir.path().to_path_buf(),
+                    sandbox_root: None,
+                    workspace_only: true,
+                    container_workdir: None,
+                    model_context_window_tokens: Some(128_000),
+                })
+                .tool_approval_handler(approval_handler.clone())
+                .skill_catalog(SkillCatalog::default())
+                .build();
+
+        let outcome = runtime
+            .run_user_prompt("please use the dangerous tool")
+            .await
+            .unwrap();
+        assert_eq!(outcome.assistant_text, "approval recovered");
+
+        let requests = approval_handler.requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].call.tool_name, "danger");
+        assert!(
+            requests[0]
+                .reasons
+                .iter()
+                .any(|reason| reason.contains("destructive"))
+        );
+
+        let events = store.events(&runtime.run_id()).await.unwrap();
+        assert!(events.iter().any(|event| {
+            matches!(
+                &event.event,
+                RunEventKind::ToolApprovalRequested { call, .. } if call.tool_name == "danger"
+            )
+        }));
+        assert!(events.iter().any(|event| {
+            matches!(
+                &event.event,
+                RunEventKind::ToolApprovalResolved { call, approved, .. }
+                    if call.tool_name == "danger" && !approved
+            )
+        }));
+        assert!(events.iter().any(|event| {
+            matches!(
+                &event.event,
+                RunEventKind::TranscriptMessage { message }
+                    if message.parts.iter().any(|part| matches!(
+                        part,
+                        agent_core_types::MessagePart::ToolResult { result }
+                            if result.is_error
+                                && result.text_content() == "user denied dangerous tool"
+                    ))
+            )
+        }));
+    }
+
+    struct StreamingTextBackend;
+
+    #[async_trait]
+    impl ModelBackend for StreamingTextBackend {
+        async fn stream_turn(
+            &self,
+            _request: ModelRequest,
+        ) -> Result<BoxStream<'static, Result<ModelEvent>>> {
+            Ok(stream::iter(vec![
+                Ok(ModelEvent::TextDelta {
+                    delta: "hel".to_string(),
+                }),
+                Ok(ModelEvent::TextDelta {
+                    delta: "lo".to_string(),
+                }),
+                Ok(ModelEvent::ResponseComplete {
+                    stop_reason: Some("stop".to_string()),
+                    message_id: None,
+                    reasoning: Vec::new(),
+                }),
+            ])
+            .boxed())
+        }
+    }
+
+    #[tokio::test]
+    async fn runtime_notifies_observer_of_streaming_text_progress() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(InMemoryRunStore::new());
+        let mut runtime = AgentRuntimeBuilder::new(Arc::new(StreamingTextBackend), store)
+            .hook_runner(Arc::new(HookRunner::default()))
+            .tool_context(ToolExecutionContext {
+                workspace_root: dir.path().to_path_buf(),
+                sandbox_root: None,
+                workspace_only: true,
+                container_workdir: None,
+                model_context_window_tokens: Some(128_000),
+            })
+            .skill_catalog(SkillCatalog::default())
+            .build();
+        let mut observer = RecordingObserver::default();
+
+        let outcome = runtime
+            .run_user_prompt_with_observer("hello there", &mut observer)
+            .await
+            .unwrap();
+
+        assert_eq!(outcome.assistant_text, "hello");
+        assert!(observer.events.iter().any(|event| matches!(
+            event,
+            RuntimeProgressEvent::UserPromptAdded { prompt } if prompt == "hello there"
+        )));
+        assert!(observer.events.iter().any(|event| matches!(
+            event,
+            RuntimeProgressEvent::AssistantTextDelta {
+                delta,
+                accumulated_text
+            } if delta == "hel" && accumulated_text == "hel"
+        )));
+        assert!(observer.events.iter().any(|event| matches!(
+            event,
+            RuntimeProgressEvent::AssistantTextDelta {
+                delta,
+                accumulated_text
+            } if delta == "lo" && accumulated_text == "hello"
+        )));
+        assert!(observer.events.iter().any(|event| matches!(
+            event,
+            RuntimeProgressEvent::TurnCompleted { assistant_text, .. } if assistant_text == "hello"
+        )));
+    }
+
+    #[tokio::test]
+    async fn runtime_steer_appends_system_message_and_event() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(InMemoryRunStore::new());
+        let mut runtime = AgentRuntimeBuilder::new(Arc::new(StreamingTextBackend), store.clone())
+            .hook_runner(Arc::new(HookRunner::default()))
+            .tool_context(ToolExecutionContext {
+                workspace_root: dir.path().to_path_buf(),
+                sandbox_root: None,
+                workspace_only: true,
+                container_workdir: None,
+                model_context_window_tokens: Some(128_000),
+            })
+            .skill_catalog(SkillCatalog::default())
+            .build();
+        let mut observer = RecordingObserver::default();
+
+        runtime
+            .steer_with_observer(
+                "stay focused on tests",
+                Some("manual".to_string()),
+                &mut observer,
+            )
+            .await
+            .unwrap();
+
+        let transcript = store.replay_transcript(&runtime.run_id()).await.unwrap();
+        assert_eq!(transcript.len(), 1);
+        assert_eq!(transcript[0].role, agent_core_types::MessageRole::System);
+        assert_eq!(transcript[0].text_content(), "stay focused on tests");
+
+        let events = store.events(&runtime.run_id()).await.unwrap();
+        assert!(events.iter().any(|event| {
+            matches!(
+                &event.event,
+                RunEventKind::SteerApplied { message, reason }
+                    if message == "stay focused on tests"
+                        && reason.as_deref() == Some("manual")
+            )
+        }));
+        assert!(observer.events.iter().any(|event| matches!(
+            event,
+            RuntimeProgressEvent::SteerApplied { message, reason }
+                if message == "stay focused on tests" && reason.as_deref() == Some("manual")
+        )));
+    }
+
+    #[tokio::test]
+    async fn runtime_apply_control_runs_prompt_and_steer_commands() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(InMemoryRunStore::new());
+        let mut runtime = AgentRuntimeBuilder::new(Arc::new(StreamingTextBackend), store.clone())
+            .hook_runner(Arc::new(HookRunner::default()))
+            .tool_context(ToolExecutionContext {
+                workspace_root: dir.path().to_path_buf(),
+                sandbox_root: None,
+                workspace_only: true,
+                container_workdir: None,
+                model_context_window_tokens: Some(128_000),
+            })
+            .skill_catalog(SkillCatalog::default())
+            .build();
+
+        let steer = runtime
+            .apply_control(RuntimeCommand::Steer {
+                message: "prefer terse answers".to_string(),
+                reason: Some("queued".to_string()),
+            })
+            .await
+            .unwrap();
+        assert!(steer.is_none());
+
+        let prompt = runtime
+            .apply_control(RuntimeCommand::Prompt {
+                prompt: "hello".to_string(),
+            })
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(prompt.assistant_text, "hello");
+
+        let transcript = store.replay_transcript(&runtime.run_id()).await.unwrap();
+        assert_eq!(transcript[0].text_content(), "prefer terse answers");
+        assert_eq!(transcript[1].text_content(), "hello");
+        assert_eq!(transcript[2].text_content(), "hello");
+    }
+
+    #[tokio::test]
+    async fn runtime_keeps_dynamic_hook_context_append_only_and_disables_prompt_skill_matching() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(InMemoryRunStore::new());
+        let backend = Arc::new(RecordingBackend::default());
+        let skill_catalog = SkillCatalog::new(vec![Skill {
+            name: "pdf".to_string(),
+            description: "Use for PDF tasks".to_string(),
+            aliases: vec!["acrobat".to_string()],
+            body: "Use for PDF work.".to_string(),
+            root_dir: PathBuf::from("/tmp/pdf"),
+            tags: vec!["document".to_string()],
+            hooks: Vec::new(),
+            references: Vec::new(),
+            scripts: Vec::new(),
+            assets: Vec::new(),
+            metadata: BTreeMap::new(),
+            extension_metadata: BTreeMap::new(),
+        }]);
+        let hook_runner = Arc::new(HookRunner::with_services(
+            Arc::new(DefaultCommandHookExecutor::default()),
+            Arc::new(ReqwestHttpHookExecutor::default()),
+            Arc::new(StaticPromptEvaluator),
+            Arc::new(NoopAgentHookEvaluator),
+        ));
+        let mut runtime = AgentRuntimeBuilder::new(backend.clone(), store.clone())
+            .hook_runner(hook_runner)
+            .tool_context(ToolExecutionContext {
+                workspace_root: dir.path().to_path_buf(),
+                sandbox_root: None,
+                workspace_only: true,
+                container_workdir: None,
+                model_context_window_tokens: Some(128_000),
+            })
+            .instructions(vec!["static base instruction".to_string()])
+            .hooks(vec![HookRegistration {
+                name: "inject_context".to_string(),
+                event: HookEvent::UserPromptSubmit,
+                matcher: None,
+                handler: HookHandler::Prompt(PromptHookHandler {
+                    prompt: "ignored".to_string(),
+                }),
+                timeout_ms: None,
+            }])
+            .skill_catalog(skill_catalog)
+            .build();
+        let mut observer = RecordingObserver::default();
+
+        let _outcome = runtime
+            .run_user_prompt_with_observer("please use acrobat skill on this file", &mut observer)
+            .await
+            .unwrap();
+
+        let requests = backend.requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].instructions, vec!["static base instruction"]);
+        assert!(requests[0].additional_context.is_empty());
+        assert_eq!(requests[0].messages.len(), 3);
+        assert_eq!(
+            requests[0].messages[0].role,
+            agent_core_types::MessageRole::System
+        );
+        assert_eq!(
+            requests[0].messages[0].text_content(),
+            "hook system message"
+        );
+        assert_eq!(
+            requests[0].messages[1].role,
+            agent_core_types::MessageRole::System
+        );
+        assert_eq!(
+            requests[0].messages[1].text_content(),
+            "hook additional context"
+        );
+        assert_eq!(
+            requests[0].messages[2].role,
+            agent_core_types::MessageRole::User
+        );
+        assert_eq!(
+            requests[0].messages[2].text_content(),
+            "please use acrobat skill on this file"
+        );
+
+        let transcript = store.replay_transcript(&runtime.run_id()).await.unwrap();
+        assert_eq!(transcript.len(), 4);
+        assert_eq!(transcript[0].text_content(), "hook system message");
+        assert_eq!(transcript[1].text_content(), "hook additional context");
+        assert_eq!(
+            transcript[2].text_content(),
+            "please use acrobat skill on this file"
+        );
+        assert_eq!(transcript[3].text_content(), "ok");
+    }
+
+    #[tokio::test]
+    async fn runtime_auto_compacts_visible_history_before_request() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(InMemoryRunStore::new());
+        let backend = Arc::new(RecordingBackend::default());
+        let mut runtime = AgentRuntimeBuilder::new(backend.clone(), store.clone())
+            .hook_runner(Arc::new(HookRunner::default()))
+            .tool_context(ToolExecutionContext {
+                workspace_root: dir.path().to_path_buf(),
+                sandbox_root: None,
+                workspace_only: true,
+                container_workdir: None,
+                model_context_window_tokens: Some(128_000),
+            })
+            .instructions(vec!["static base instruction".to_string()])
+            .conversation_compactor(Arc::new(StaticCompactor))
+            .compaction_config(CompactionConfig {
+                enabled: true,
+                context_window_tokens: 64,
+                trigger_tokens: 1,
+                preserve_recent_messages: 1,
+            })
+            .build();
+
+        runtime.run_user_prompt("first turn").await.unwrap();
+        runtime.run_user_prompt("second turn").await.unwrap();
+
+        let requests = backend.requests();
+        assert!(requests.len() >= 2);
+        let last_request = requests.last().unwrap();
+        assert_eq!(last_request.instructions, vec!["static base instruction"]);
+        assert_eq!(
+            last_request.messages[0].role,
+            agent_core_types::MessageRole::System
+        );
+        assert!(
+            last_request.messages[0]
+                .text_content()
+                .starts_with("summary for ")
+        );
+        assert_eq!(last_request.messages.len(), 2);
+        assert_eq!(last_request.messages[1].text_content(), "second turn");
+
+        let events = store.events(&runtime.run_id()).await.unwrap();
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event.event, RunEventKind::CompactionCompleted { .. }))
+        );
+        assert!(events.iter().any(|event| {
+            matches!(
+                event.event,
+                RunEventKind::CompactionCompleted {
+                    source_message_count: 2,
+                    retained_message_count: 1,
+                    ..
+                }
+            )
+        }));
+    }
+}

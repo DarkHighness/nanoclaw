@@ -1,11 +1,13 @@
 [workspace]
 default-members = [
+    "crates/agent-core-runtime",
     "crates/agent-core-skills",
     "crates/agent-core-store",
     "crates/agent-core-tools",
     "crates/agent-core-types",
 ]
 members = [
+    "crates/agent-core-runtime",
     "crates/agent-core-skills",
     "crates/agent-core-store",
     "crates/agent-core-tools",
