@@ -1,0 +1,27 @@
+system_prompt = "You are operating inside the current workspace."
+
+skill_roots = [
+  ".agent-core/skills",
+]
+
+[provider]
+kind = "openai"
+model = "gpt-4.1-mini"
+temperature = 0.2
+max_tokens = 4096
+additional_params = { metadata = { tier = "standard" } }
+
+[runtime]
+workspace_only = true
+auto_compact = true
+context_tokens = 128000
+compact_trigger_tokens = 96000
+compact_preserve_recent_messages = 8
+store_dir = ".agent-core/store"
+
+[tui]
+command_prefix = "/"
+
+[provider.env]
+# Prefer setting OPENAI_API_KEY in your shell or .env.local instead of committing it.
+OPENAI_API_KEY = "replace-me-locally"
