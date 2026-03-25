@@ -423,10 +423,7 @@ impl CodeAgentTui {
                 self.ui_state.mutate(|state| {
                     state.push_transcript(format!("system> {message}"));
                     state.status = "Applied steer".to_string();
-                    state.push_activity(format!(
-                        "steer: {}",
-                        state::preview_text(&message, 48)
-                    ));
+                    state.push_activity(format!("steer: {}", state::preview_text(&message, 48)));
                 });
                 Ok(false)
             }
@@ -508,8 +505,7 @@ impl CodeAgentTui {
             inspector_title: "Guide".to_string(),
             inspector: vec![
                 "Ask for repo inspection, edits, tests, or debugging.".to_string(),
-                "Use /help, /tools, /skills, /steer, or /compact from the composer."
-                    .to_string(),
+                "Use /help, /tools, /skills, /steer, or /compact from the composer.".to_string(),
                 "Approvals stay in-line above the composer instead of replacing the screen."
                     .to_string(),
             ],

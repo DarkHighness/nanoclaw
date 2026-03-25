@@ -294,11 +294,11 @@ fn render_composer(frame: &mut ratatui::Frame<'_>, area: Rect, state: &TuiState)
             Style::default().fg(HEADER).add_modifier(Modifier::BOLD),
         ),
         Span::styled(" send  ", Style::default().fg(MUTED)),
-            Span::styled(
-                "/help",
-                Style::default().fg(USER).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" commands", Style::default().fg(MUTED)),
+        Span::styled(
+            "/help",
+            Style::default().fg(USER).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" commands", Style::default().fg(MUTED)),
     ]))
     .alignment(Alignment::Right)
     .style(Style::default().fg(MUTED).bg(PANEL_ALT_BG));
