@@ -19,7 +19,7 @@ use rig::message::{
 };
 use rig::providers::{anthropic, openai};
 use rig::streaming::{StreamedAssistantContent, StreamingCompletionResponse};
-use serde_json::Value;
+use serde_json::{Map, Value};
 use std::collections::{BTreeMap, VecDeque};
 use std::pin::Pin;
 use std::task::{Context, Poll};
@@ -45,6 +45,23 @@ pub struct RigRequestOptions {
     pub temperature: Option<f64>,
     pub max_tokens: Option<u64>,
     pub additional_params: Option<Value>,
+    pub prompt_cache_key: Option<String>,
+    pub prompt_cache_retention: Option<RigPromptCacheRetention>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RigPromptCacheRetention {
+    InMemory,
+    Hours24,
+}
+
+impl RigPromptCacheRetention {
+    fn as_api_value(self) -> &'static str {
+        match self {
+            Self::InMemory => "in_memory",
+            Self::Hours24 => "24h",
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -125,8 +142,12 @@ impl ModelBackend for RigModelBackend {
             .iter()
             .map(|tool| (tool.name.clone(), tool.origin.clone()))
             .collect::<BTreeMap<_, _>>();
-        let request =
-            to_completion_request(request, &self.request_options).map_err(RuntimeError::from)?;
+        let request = to_completion_request(
+            request,
+            &self.request_options,
+            &self.descriptor.provider.provider,
+        )
+        .map_err(RuntimeError::from)?;
         let stream = match &self.client {
             RigProviderClient::OpenAi(client) => stream_completion_to_model_events(
                 execute_streaming_completion(
@@ -223,6 +244,7 @@ fn build_anthropic_client(
 fn to_completion_request(
     request: ModelRequest,
     request_options: &RigRequestOptions,
+    provider_kind: &RigProviderKind,
 ) -> Result<CompletionRequest> {
     let mut messages = request
         .instructions
@@ -259,9 +281,47 @@ fn to_completion_request(
         temperature: request_options.temperature,
         max_tokens: request_options.max_tokens,
         tool_choice: None,
-        additional_params: request_options.additional_params.clone(),
+        additional_params: build_additional_params(request_options, provider_kind)?,
         output_schema: None,
     })
+}
+
+fn build_additional_params(
+    request_options: &RigRequestOptions,
+    provider_kind: &RigProviderKind,
+) -> Result<Option<Value>> {
+    let mut additional_params = request_options.additional_params.clone();
+    if !matches!(provider_kind, RigProviderKind::OpenAi) {
+        return Ok(additional_params);
+    }
+    if request_options.prompt_cache_key.is_none()
+        && request_options.prompt_cache_retention.is_none()
+    {
+        return Ok(additional_params);
+    }
+
+    let mut object = match additional_params.take() {
+        Some(Value::Object(object)) => object,
+        Some(_) => {
+            return Err(RigError::config(
+                "OpenAI prompt cache controls require additional_params to be a JSON object",
+            ));
+        }
+        None => Map::new(),
+    };
+    if let Some(prompt_cache_key) = &request_options.prompt_cache_key {
+        object.insert(
+            "prompt_cache_key".to_string(),
+            Value::String(prompt_cache_key.clone()),
+        );
+    }
+    if let Some(prompt_cache_retention) = request_options.prompt_cache_retention {
+        object.insert(
+            "prompt_cache_retention".to_string(),
+            Value::String(prompt_cache_retention.as_api_value().to_string()),
+        );
+    }
+    Ok(Some(Value::Object(object)))
 }
 
 fn to_rig_message(message: Message) -> Result<RigMessage> {
@@ -758,8 +818,10 @@ fn extract_reasoning<'a>(choice: impl IntoIterator<Item = &'a AssistantContent>)
 #[cfg(test)]
 mod tests {
     use super::{
-        RigRequestOptions, response_to_model_events, to_completion_request, to_rig_message,
+        RigPromptCacheRetention, RigRequestOptions, response_to_model_events,
+        to_completion_request, to_rig_message,
     };
+    use crate::RigProviderKind;
     use agent_core_types::{
         Message, MessagePart, ModelEvent, ModelRequest, RunId, SessionId, ToolCall, ToolCallId,
         ToolOrigin, ToolOutputMode, ToolResult, ToolSpec, TurnId,
@@ -811,6 +873,7 @@ mod tests {
                 additional_params: Some(json!({"metadata":{"tier":"priority"}})),
                 ..RigRequestOptions::default()
             },
+            &RigProviderKind::OpenAi,
         )
         .unwrap();
         assert_eq!(converted.tools.len(), 1);
@@ -819,6 +882,96 @@ mod tests {
             converted.additional_params,
             Some(json!({"metadata":{"tier":"priority"}}))
         );
+    }
+
+    #[test]
+    fn completion_request_includes_openai_prompt_cache_controls() {
+        let request = ModelRequest {
+            run_id: RunId::new(),
+            session_id: SessionId::new(),
+            turn_id: TurnId::new(),
+            instructions: vec!["Keep it short".to_string()],
+            messages: vec![Message::user("inspect the workspace")],
+            tools: Vec::new(),
+            additional_context: Vec::new(),
+            metadata: json!({}),
+        };
+
+        let converted = to_completion_request(
+            request,
+            &RigRequestOptions {
+                additional_params: Some(json!({"metadata":{"tier":"priority"}})),
+                prompt_cache_key: Some("workspace:main".to_string()),
+                prompt_cache_retention: Some(RigPromptCacheRetention::Hours24),
+                ..RigRequestOptions::default()
+            },
+            &RigProviderKind::OpenAi,
+        )
+        .unwrap();
+
+        assert_eq!(
+            converted.additional_params,
+            Some(json!({
+                "metadata": {"tier":"priority"},
+                "prompt_cache_key": "workspace:main",
+                "prompt_cache_retention": "24h"
+            }))
+        );
+    }
+
+    #[test]
+    fn completion_request_omits_openai_prompt_cache_controls_for_anthropic() {
+        let request = ModelRequest {
+            run_id: RunId::new(),
+            session_id: SessionId::new(),
+            turn_id: TurnId::new(),
+            instructions: vec!["Keep it short".to_string()],
+            messages: vec![Message::user("inspect the workspace")],
+            tools: Vec::new(),
+            additional_context: Vec::new(),
+            metadata: json!({}),
+        };
+
+        let converted = to_completion_request(
+            request,
+            &RigRequestOptions {
+                prompt_cache_key: Some("workspace:main".to_string()),
+                prompt_cache_retention: Some(RigPromptCacheRetention::Hours24),
+                ..RigRequestOptions::default()
+            },
+            &RigProviderKind::Anthropic,
+        )
+        .unwrap();
+
+        assert_eq!(converted.additional_params, None);
+    }
+
+    #[test]
+    fn completion_request_rejects_non_object_additional_params_when_prompt_cache_controls_are_set()
+    {
+        let request = ModelRequest {
+            run_id: RunId::new(),
+            session_id: SessionId::new(),
+            turn_id: TurnId::new(),
+            instructions: vec!["Keep it short".to_string()],
+            messages: vec![Message::user("inspect the workspace")],
+            tools: Vec::new(),
+            additional_context: Vec::new(),
+            metadata: json!({}),
+        };
+
+        let error = to_completion_request(
+            request,
+            &RigRequestOptions {
+                additional_params: Some(json!(["invalid"])),
+                prompt_cache_key: Some("workspace:main".to_string()),
+                ..RigRequestOptions::default()
+            },
+            &RigProviderKind::OpenAi,
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("prompt cache controls"));
     }
 
     #[test]

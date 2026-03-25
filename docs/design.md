@@ -224,6 +224,7 @@ Hosts embedding the substrate should define their own config layer, or none at a
 - `ToolExecutionContext` carries both host root policy (`workspace_root`, `worktree_root`, `additional_roots`) and per-call runtime scope (`run_id`, `session_id`, `turn_id`, `tool_name`, `tool_call_id`) so local tools can stay generic while still participating in audit and path-control flows.
 - Feature-enabled local code-intel tooling follows the same request families as LSP (`workspace/symbol`, `textDocument/documentSymbol`, `textDocument/definition`, `textDocument/references`), while keeping the backend host-pluggable instead of hardcoding one language server process contract.
 - Provider streaming passes through the `ModelBackend` boundary into runtime progress events, and hosts can consume those events however they want.
+- The `rig` adapter now exposes explicit OpenAI prompt-cache request controls (`prompt_cache_key`, `prompt_cache_retention`) instead of forcing hosts to smuggle them through opaque JSON. Those controls stay provider-scoped in the adapter layer and are omitted for non-OpenAI providers.
 - Startup assembly for the reference shell lives in a testable boot module, so that shell's config parsing, provider wiring, skill loading, and store fallback can be exercised without launching the full shell loop.
 - MCP `stdio` support is guarded by a real child-process integration test instead of only mock-client coverage.
 - The `rig` backend has provider-agnostic contract tests around schema coercion, message conversion, and event/origin propagation.

@@ -248,6 +248,20 @@ Implementation impact:
 - The runtime consults policy before invoking the approval handler. Policy can suppress hint-driven approval, force review for otherwise safe tools, or deny the call outright.
 - Hook-driven permission denial or review still wins over policy suppression, so higher-order host policy is not erased by a local allowlist shortcut.
 
+### 17. Prompt-cache controls should be typed provider request options, not opaque JSON folklore
+
+Reason:
+
+- OpenAI's prompt caching guide is explicit that cache hits depend on exact prefix reuse, optional `prompt_cache_key`, and a request-level `prompt_cache_retention` policy (`in_memory` vs `24h`).
+- Those knobs are provider-specific request controls, not runtime semantics. Exposing them only through a free-form `additional_params` JSON blob makes host code brittle and hides intent.
+- The runtime still needs stable preambles, append-only history, and deterministic tool ordering for cache reuse, but the concrete retention and cache-routing options belong in the provider adapter.
+
+Implementation impact:
+
+- `agent-core-rig` now exposes typed OpenAI request controls for `prompt_cache_key` and `prompt_cache_retention`.
+- The adapter merges those controls into OpenAI request payloads while leaving non-OpenAI providers unchanged.
+- If a host also passes `additional_params`, the typed cache controls are merged at the top level instead of forcing the host to handcraft provider JSON for a common optimization path.
+
 ## Remaining Gaps
 
 - MCP prompt arguments are discovered and displayed, but the TUI does not yet provide an argument-entry UX beyond the current basic command surface.
