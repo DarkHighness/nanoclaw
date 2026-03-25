@@ -5,8 +5,8 @@ pub use agent_core_runtime::{RuntimeCommand, RuntimeCommandQueue, RuntimeSubagen
 pub use agent_core_skills::{Skill, SkillCatalog, load_skill_from_dir, load_skill_roots};
 pub use agent_core_store::{FileRunStore, InMemoryRunStore, RunStore};
 pub use agent_core_tools::{
-    BashTool, EditTool, GlobTool, GrepTool, ListTool, ReadTool, Tool, ToolExecutionContext,
-    ToolRegistry, WriteTool,
+    BashTool, EditTool, GlobTool, GrepTool, ListTool, PatchTool, ReadTool, Tool,
+    ToolExecutionContext, ToolRegistry, WriteTool,
 };
 #[cfg(feature = "agentic-tools")]
 pub use agent_core_tools::{

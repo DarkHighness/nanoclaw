@@ -16,7 +16,8 @@ use agent_core_runtime::{
 };
 use agent_core_store::{FileRunStore, InMemoryRunStore, RunStore};
 use agent_core_tools::{
-    BashTool, EditTool, GlobTool, GrepTool, ReadTool, ToolExecutionContext, ToolRegistry, WriteTool,
+    BashTool, EditTool, GlobTool, GrepTool, ListTool, PatchTool, ReadTool, ToolExecutionContext,
+    ToolRegistry, WriteTool,
 };
 #[cfg(feature = "web-tools")]
 use agent_core_tools::{WebFetchTool, WebSearchTool};
@@ -105,8 +106,10 @@ async fn bootstrap_from_parts(
     tools.register(ReadTool::new());
     tools.register(WriteTool::new());
     tools.register(EditTool::new());
+    tools.register(PatchTool::new());
     tools.register(GlobTool::new());
     tools.register(GrepTool::new());
+    tools.register(ListTool::new());
     tools.register(BashTool::new());
     #[cfg(feature = "web-tools")]
     {

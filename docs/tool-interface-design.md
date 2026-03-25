@@ -40,9 +40,10 @@ For coding agents, that gap matters more than whether a tool "basically works."
 - `list`, `glob`, and `grep` should answer "where should I look?"
 - `read` should answer "what exactly is there right now?"
 - `edit` should answer "how do I change this exact region?"
-- a future `patch` tool should answer "how do I apply a larger structured diff?"
+- `write` should answer "how do I create or intentionally replace the whole file?"
+- `patch` should answer "how do I apply a larger staged multi-file diff?"
 
-Do not make `write` the universal edit escape hatch.
+Do not make `write` the universal edit escape hatch, and do not force every multi-file change through `edit`.
 
 ### 2. Reads must produce stable anchors
 
@@ -147,16 +148,76 @@ Outputs:
 - before/after snapshot ids
 - machine-readable metadata for host logging
 
-## Recommended Next Step
+### `write`
 
-The next tool addition should not be another ad hoc file mutator. It should be a dedicated `patch` surface for multi-file diffs, aligned with the OpenAI `apply_patch` model:
+Inputs:
 
-- single or batched file operations
-- explicit create/update/delete semantics
-- structured failure reporting per patch call
-- optional all-or-nothing host policy above the tool layer
+- `path`
+- `content`
+- `if_exists`
+- `if_missing`
+- `expected_snapshot`
 
-That would let `edit` stay small and precise, while `patch` absorbs larger refactors.
+Outputs:
+
+- concise create/replace summary
+- before/after snapshot ids
+- machine-readable metadata describing create-vs-overwrite and byte count
+
+The important design choice here is that `write` is now explicit about missing/existing-file policy. It is still a full-file mutator, but it no longer has to behave like a silent unconditional overwrite.
+
+### `patch`
+
+Inputs:
+
+- `operations`
+
+Each operation is one of:
+
+- `write`
+- `edit`
+- `delete`
+
+`patch` stages those operations in memory first, then commits them only if all operations succeed. That keeps the tool surface aligned with the multi-file diff role suggested by OpenAI and OpenCode, without forcing the runtime into partial-apply behavior.
+
+### `list`, `glob`, and `grep`
+
+These discovery tools now follow the same pattern:
+
+- stable text header in the human-readable output
+- bounded result counts
+- structured metadata arrays (`entries` / `matches`)
+- explicit truncation and limit flags
+
+That gives the model and the host a cleaner transition from discovery to `read`.
+
+### `bash`
+
+`bash` remains an open-world tool, but its contract is tighter now:
+
+- bounded output via `max_output_chars`
+- explicit `timeout_ms`
+- optional per-call environment overrides
+- truncation metadata for stdout and stderr
+
+That makes command execution more auditable and easier to reason about when the model is chaining shell output into later file reads.
+
+### `web_search` and `web_fetch`
+
+The optional web tools now mirror the local file tools more closely:
+
+- `web_search` supports per-call domain filtering and returns structured result metadata
+- `web_fetch` supports `start_index` continuation so the model can page through extracted text instead of re-fetching a growing blob
+
+### `todo_read`, `todo_write`, and `task`
+
+The agentic tools now also participate in the same grounding model:
+
+- `todo_read` returns a stable revision id
+- `todo_write` accepts an optional `expected_revision` plus `replace` / `merge` modes
+- `task` prefers explicit `prompt` / `agent` inputs, while preserving legacy aliases for compatibility
+
+These are not file tools, but the same principle applies: reads should expose a stable anchor, and writes/delegations should accept enough structure to validate follow-up actions.
 
 ## Sources
 

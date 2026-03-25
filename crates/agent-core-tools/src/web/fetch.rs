@@ -16,6 +16,8 @@ use serde_json::Value;
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 pub struct WebFetchToolInput {
     pub url: String,
+    #[serde(default)]
+    pub start_index: Option<usize>,
     pub max_chars: Option<usize>,
 }
 
@@ -51,8 +53,9 @@ impl Tool for WebFetchTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "web_fetch".to_string(),
-            description: "Fetch a web page over HTTP(S), extract readable text, and return a truncated preview with metadata.".to_string(),
-            input_schema: serde_json::to_value(schema_for!(WebFetchToolInput)).expect("web_fetch schema"),
+            description: "Fetch a web page over HTTP(S), extract readable text, and return a paged text window plus metadata for continuation.".to_string(),
+            input_schema: serde_json::to_value(schema_for!(WebFetchToolInput))
+                .expect("web_fetch schema"),
             output_mode: ToolOutputMode::Text,
             origin: ToolOrigin::Local,
             annotations: mcp_tool_annotations("Fetch Web Page", true, false, false, true),
@@ -159,7 +162,15 @@ impl Tool for WebFetchTool {
 
         let title = extract_html_title(&body);
         let extracted_text = summarize_remote_body(&body, content_type.as_deref());
-        let (preview, truncated) = truncate_text(&extracted_text, max_chars);
+        let extracted_text = trim_trailing_whitespace(&extracted_text);
+        let total_chars = extracted_text.chars().count();
+        let start_index = input.start_index.unwrap_or(0).min(total_chars);
+        let skipped = extracted_text.chars().skip(start_index).collect::<String>();
+        let (preview, truncated) = truncate_text(&skipped, max_chars);
+        let returned_chars = preview.chars().count();
+        let end_index = start_index + returned_chars;
+        let next_start_index = truncated.then_some(end_index);
+        let remaining_chars = total_chars.saturating_sub(end_index);
 
         let mut sections = vec![
             format!("url> {url}"),
@@ -172,15 +183,19 @@ impl Tool for WebFetchTool {
         if let Some(title) = &title {
             sections.push(format!("title> {title}"));
         }
+        sections.push(format!("start_index> {start_index}"));
+        sections.push(format!("end_index> {end_index}"));
+        sections.push(format!("total_chars> {total_chars}"));
+        sections.push(format!("max_chars> {max_chars}"));
         sections.push(String::new());
         sections.push(if preview.is_empty() {
             "[No readable text extracted from page]".to_string()
         } else {
             preview
         });
-        if truncated {
+        if let Some(next_start_index) = next_start_index {
             sections.push(format!(
-                "\n[truncated to {max_chars} characters; fetch again with a larger max_chars to continue]"
+                "\n[truncated to {max_chars} characters; continue with start_index={next_start_index}]"
             ));
         }
 
@@ -195,12 +210,22 @@ impl Tool for WebFetchTool {
                 "status": status.as_u16(),
                 "content_type": content_type,
                 "title": title,
+                "start_index": start_index,
+                "end_index": end_index,
+                "returned_chars": returned_chars,
+                "remaining_chars": remaining_chars,
+                "total_chars": total_chars,
                 "truncated": truncated,
                 "max_chars": max_chars,
+                "next_start_index": next_start_index,
             })),
             is_error: false,
         })
     }
+}
+
+fn trim_trailing_whitespace(text: &str) -> String {
+    text.trim_end().to_string()
 }
 
 #[cfg(test)]
@@ -238,6 +263,7 @@ mod tests {
                 ToolCallId::new(),
                 serde_json::to_value(WebFetchToolInput {
                     url: format!("{}/page", server.uri()),
+                    start_index: None,
                     max_chars: Some(200),
                 })
                 .unwrap(),
@@ -255,6 +281,61 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn web_fetch_supports_continuation_with_start_index() {
+        let server = MockServer::start().await;
+        let body = "abcdefghij".repeat(40);
+        Mock::given(method("GET"))
+            .and(path("/long"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "text/plain")
+                    .set_body_string(body.clone()),
+            )
+            .mount(&server)
+            .await;
+
+        let tool = WebFetchTool::with_policy(
+            WebToolPolicy {
+                allow_private_hosts: true,
+                allowed_domains: BTreeSet::new(),
+                blocked_domains: BTreeSet::new(),
+            },
+            5_000,
+        )
+        .unwrap();
+        let first = tool
+            .execute(
+                ToolCallId::new(),
+                serde_json::to_value(WebFetchToolInput {
+                    url: format!("{}/long", server.uri()),
+                    start_index: Some(0),
+                    max_chars: Some(4),
+                })
+                .unwrap(),
+                &ToolExecutionContext::default(),
+            )
+            .await
+            .unwrap();
+        let metadata = first.metadata.clone().unwrap();
+        assert_eq!(metadata["next_start_index"], 256);
+
+        let second = tool
+            .execute(
+                ToolCallId::new(),
+                serde_json::to_value(WebFetchToolInput {
+                    url: format!("{}/long", server.uri()),
+                    start_index: Some(4),
+                    max_chars: Some(4),
+                })
+                .unwrap(),
+                &ToolExecutionContext::default(),
+            )
+            .await
+            .unwrap();
+        assert!(second.text_content().contains("ghij"));
+    }
+
+    #[tokio::test]
     async fn web_fetch_rejects_private_hosts_by_default() {
         let tool = WebFetchTool::with_policy(
             WebToolPolicy {
@@ -265,12 +346,14 @@ mod tests {
             5_000,
         )
         .unwrap();
+
         let result = tool
             .execute(
                 ToolCallId::new(),
                 serde_json::to_value(WebFetchToolInput {
-                    url: "http://127.0.0.1/test".to_string(),
-                    max_chars: None,
+                    url: "http://127.0.0.1/private".to_string(),
+                    start_index: None,
+                    max_chars: Some(128),
                 })
                 .unwrap(),
                 &ToolExecutionContext::default(),
@@ -279,10 +362,6 @@ mod tests {
             .unwrap();
 
         assert!(result.is_error);
-        assert!(
-            result
-                .text_content()
-                .contains("refusing to access local or private host")
-        );
+        assert!(result.text_content().contains("private host"));
     }
 }

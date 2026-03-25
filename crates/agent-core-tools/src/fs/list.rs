@@ -49,6 +49,15 @@ impl EntryKind {
             Self::Other => "O",
         }
     }
+
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::File => "file",
+            Self::Directory => "directory",
+            Self::Symlink => "symlink",
+            Self::Other => "other",
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -123,31 +132,57 @@ impl Tool for ListTool {
             .filter(|entry| matches!(entry.kind, EntryKind::Other))
             .count();
 
-        let mut lines = if entries.is_empty() {
-            vec!["No entries found".to_string()]
+        let requested_path = input.path.as_deref().unwrap_or(".");
+        let header = format!(
+            "[list path={} recursive={} max_depth={} entries={} truncated={}]",
+            requested_path,
+            recursive,
+            max_depth,
+            entries.len(),
+            truncated
+        );
+
+        let mut output_lines = vec![header.clone()];
+        if entries.is_empty() {
+            output_lines.push("[No entries found]".to_string());
         } else {
-            entries
-                .iter()
-                .map(|entry| format!("[{}] {}", entry.kind.marker(), entry.path))
-                .collect::<Vec<_>>()
-        };
+            output_lines.extend(
+                entries
+                    .iter()
+                    .map(|entry| format!("[{}] {}", entry.kind.marker(), entry.path)),
+            );
+        }
         if truncated {
-            lines.push(format!(
-                "\n[{limit} entries limit reached. Narrow the path or increase limit.]"
+            output_lines.push(format!(
+                "[{limit} entries limit reached. Narrow the path or increase limit.]"
             ));
         }
+
+        let encoded_entries: Vec<Value> = entries
+            .iter()
+            .map(|entry| {
+                serde_json::json!({
+                    "path": entry.path,
+                    "kind": entry.kind.as_str(),
+                })
+            })
+            .collect();
 
         Ok(ToolResult {
             id: call_id,
             call_id: external_call_id,
             tool_name: "list".to_string(),
-            parts: vec![MessagePart::text(lines.join("\n"))],
+            parts: vec![MessagePart::text(output_lines.join("\n"))],
             metadata: Some(serde_json::json!({
                 "path": root,
+                "requested_path": requested_path,
                 "recursive": recursive,
                 "max_depth": max_depth,
+                "limit": limit,
                 "entry_count": entries.len(),
                 "truncated": truncated,
+                "header": header,
+                "entries": encoded_entries,
                 "counts": {
                     "files": file_count,
                     "directories": dir_count,
@@ -352,5 +387,15 @@ mod tests {
         let metadata = result.metadata.unwrap();
         assert_eq!(metadata["truncated"], true);
         assert_eq!(metadata["entry_count"], 2);
+        assert_eq!(metadata["limit"].as_u64().unwrap(), 2);
+        let entries = metadata["entries"].as_array().unwrap();
+        assert_eq!(entries.len(), 2);
+        assert!(
+            metadata["header"]
+                .as_str()
+                .unwrap()
+                .starts_with("[list path=")
+        );
+        assert_eq!(metadata["counts"]["files"].as_u64().unwrap(), 2);
     }
 }

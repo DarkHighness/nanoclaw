@@ -172,7 +172,11 @@ Reason:
 Implementation impact:
 
 - `read` now defaults to line-numbered output and surfaces a stable file snapshot id plus a slice hash for the visible range.
+- `write` now exposes create/overwrite policy plus optional `expected_snapshot` guards, instead of silently acting as an unconditional overwrite escape hatch.
 - `edit` now supports explicit `str_replace`, `replace_lines`, and `insert` commands, with optional `expected_snapshot` and `expected_selection_hash` guards.
+- `patch` now stages multi-file `write` / `edit` / `delete` operations in memory first, so a failed later operation does not partially commit earlier mutations.
+- `grep`, `glob`, and `list` now return stable text headers plus structured metadata arrays, so discovery tools line up better with the read/edit path.
+- `bash`, `web_fetch`, `web_search`, `todo_write`, and `task` now expose more structured inputs and metadata rather than relying on one-off text blobs alone.
 - Legacy `offset` / `limit` and `old_text` / `new_text` flows remain available as compatibility aliases while the substrate converges on the clearer contract.
 - The design choice for now is file-level and slice-level hashes, not per-line hashes, because they preserve stale-read detection without overwhelming the prompt with checksum noise.
 
@@ -183,4 +187,3 @@ Implementation impact:
 - The optional local `web_search` path is a bootstrap implementation. It does not yet match hosted-tool quality for ranking, citation richness, or location-aware search controls.
 - Optional `web_fetch` does not yet parse binary documents like PDFs into model-friendly text.
 - The new skill model removes heuristic activation, but richer explicit skill policy and versioning still need to be designed.
-- The current local tool surface still lacks a first-party structured `patch` tool for multi-file diffs. Today `edit` is better grounded, but larger refactors still need a cleaner diff-oriented path.

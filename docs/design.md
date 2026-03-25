@@ -69,6 +69,7 @@ Provides the local tool abstraction plus the core built-ins:
 - `read`
 - `write`
 - `edit`
+- `patch`
 - `glob`
 - `grep`
 - `list`
@@ -87,7 +88,9 @@ Provider-hosted tools and MCP tools enter through the same runtime tool boundary
 For code-editing tools specifically, the current substrate now treats file access as a two-step contract:
 
 - `read` exposes line-numbered views plus stable file snapshot ids and slice hashes
+- `write` exposes full-file create/replace with explicit missing/existing-file policy plus optional snapshot guards
 - `edit` exposes structured local mutations (`str_replace`, `replace_lines`, `insert`) with optional freshness guards
+- `patch` exposes staged multi-file `write` / `edit` / `delete` operations so larger refactors do not overload `edit` or `write`
 
 That contract is documented in detail in [tool-interface-design.md](/Users/twiliness/nanoclaw/docs/tool-interface-design.md).
 

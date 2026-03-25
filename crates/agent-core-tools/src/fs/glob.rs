@@ -54,8 +54,9 @@ impl Tool for GlobTool {
     ) -> Result<ToolResult> {
         let external_call_id = call_id.0.clone();
         let input: GlobToolInput = serde_json::from_value(arguments)?;
+        let requested_path = input.path.as_deref().unwrap_or(".");
         let root = resolve_tool_path_against_workspace_root(
-            input.path.as_deref().unwrap_or("."),
+            requested_path,
             ctx.effective_root(),
             ctx.container_workdir.as_deref(),
         )?;
@@ -63,7 +64,8 @@ impl Tool for GlobTool {
             assert_path_inside_root(&root, ctx.effective_root())?;
         }
 
-        let matcher = Glob::new(&input.pattern)?.compile_matcher();
+        let pattern = input.pattern.clone();
+        let matcher = Glob::new(&pattern)?.compile_matcher();
         let limit = input.limit.unwrap_or(DEFAULT_GLOB_LIMIT).max(1);
         let mut matches = Vec::new();
 
@@ -77,25 +79,48 @@ impl Tool for GlobTool {
             }
         }
 
-        let mut output = if matches.is_empty() {
-            "No matches found".to_string()
+        let truncated = matches.len() >= limit;
+        let header = format!(
+            "[glob pattern={} path={} limit={} truncated={}]",
+            pattern, requested_path, limit, truncated
+        );
+        let mut output_lines = vec![header.clone()];
+        if matches.is_empty() {
+            output_lines.push("[No matches found]".to_string());
         } else {
-            matches.join("\n")
-        };
-        if matches.len() >= limit {
-            output.push_str(&format!(
-                "\n\n[{limit} matches limit reached. Narrow the pattern or increase limit.]"
+            output_lines.extend(matches.iter().cloned());
+        }
+        if truncated {
+            output_lines.push(format!(
+                "[{limit} matches limit reached. Narrow the pattern or increase limit.]"
             ));
         }
+
+        // Glob currently only reports files, so the kind metadata is fixed.
+        let encoded_matches: Vec<Value> = matches
+            .iter()
+            .map(|path| {
+                serde_json::json!({
+                    "path": path,
+                    "kind": "file",
+                })
+            })
+            .collect();
 
         Ok(ToolResult {
             id: call_id,
             call_id: external_call_id,
             tool_name: "glob".to_string(),
-            parts: vec![MessagePart::text(output)],
+            parts: vec![MessagePart::text(output_lines.join("\n"))],
             metadata: Some(serde_json::json!({
-                "pattern": input.pattern,
+                "path": root,
+                "requested_path": requested_path,
+                "pattern": pattern,
+                "limit": limit,
                 "match_count": matches.len(),
+                "truncated": truncated,
+                "header": header,
+                "matches": encoded_matches,
             })),
             is_error: false,
         })
@@ -175,5 +200,19 @@ mod tests {
         let output = result.text_content();
         assert!(output.contains("src/lib.rs"));
         assert!(output.contains("src/main.rs"));
+        let metadata = result.metadata.unwrap();
+        assert_eq!(metadata["match_count"].as_u64().unwrap(), 2);
+        assert!(
+            metadata["header"]
+                .as_str()
+                .unwrap()
+                .contains("pattern=src/**/*.rs")
+        );
+        let matches_meta = metadata["matches"].as_array().unwrap();
+        assert!(
+            matches_meta
+                .iter()
+                .any(|entry| { entry["path"].as_str().unwrap().ends_with("src/lib.rs") })
+        );
     }
 }

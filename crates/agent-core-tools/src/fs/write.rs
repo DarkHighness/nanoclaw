@@ -1,6 +1,10 @@
 use crate::ToolExecutionContext;
 use crate::annotations::mcp_tool_annotations;
-use crate::fs::{assert_path_inside_root, resolve_tool_path_against_workspace_root};
+use crate::fs::{
+    WriteExistingBehavior, WriteMissingBehavior, WriteRequest, apply_write,
+    assert_path_inside_root, commit_text_file, load_optional_text_file,
+    resolve_tool_path_against_workspace_root,
+};
 use crate::registry::Tool;
 use agent_core_types::{MessagePart, ToolCallId, ToolOrigin, ToolOutputMode, ToolResult, ToolSpec};
 use anyhow::Result;
@@ -8,12 +12,17 @@ use async_trait::async_trait;
 use schemars::{JsonSchema, schema_for};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::fs;
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 pub struct WriteToolInput {
     pub path: String,
     pub content: String,
+    #[serde(default)]
+    pub if_exists: Option<WriteExistingBehavior>,
+    #[serde(default)]
+    pub if_missing: Option<WriteMissingBehavior>,
+    #[serde(default)]
+    pub expected_snapshot: Option<String>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -31,7 +40,7 @@ impl Tool for WriteTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "write".to_string(),
-            description: "Write content to a file. Creates parent directories and overwrites any existing file.".to_string(),
+            description: "Create or fully replace a UTF-8 text file. Supports overwrite/create policies plus optional expected_snapshot guards when replacing an existing file.".to_string(),
             input_schema: serde_json::to_value(schema_for!(WriteToolInput)).expect("write schema"),
             output_mode: ToolOutputMode::Text,
             origin: ToolOrigin::Local,
@@ -55,21 +64,128 @@ impl Tool for WriteTool {
         if ctx.workspace_only {
             assert_path_inside_root(&resolved, ctx.effective_root())?;
         }
-        if let Some(parent) = resolved.parent() {
-            fs::create_dir_all(parent).await?;
+
+        let existing = load_optional_text_file(&resolved).await?;
+        let outcome = apply_write(
+            existing.as_deref(),
+            &input.path,
+            &WriteRequest {
+                content: input.content,
+                if_exists: input.if_exists.unwrap_or_default(),
+                if_missing: input.if_missing.unwrap_or_default(),
+                expected_snapshot: input.expected_snapshot,
+            },
+        );
+
+        if outcome.is_error {
+            return Ok(ToolResult {
+                id: call_id,
+                call_id: external_call_id,
+                tool_name: "write".to_string(),
+                parts: vec![MessagePart::text(outcome.summary)],
+                metadata: Some(outcome.metadata),
+                is_error: true,
+            });
         }
-        fs::write(&resolved, input.content.as_bytes()).await?;
+
+        commit_text_file(&resolved, outcome.next_content.as_deref()).await?;
         Ok(ToolResult {
             id: call_id,
             call_id: external_call_id,
             tool_name: "write".to_string(),
             parts: vec![MessagePart::text(format!(
-                "Successfully wrote {} bytes to {}",
-                input.content.len(),
-                input.path
+                "{}\n[snapshot {} -> {}]",
+                outcome.summary,
+                outcome.snapshot_before.as_deref().unwrap_or("missing"),
+                outcome.snapshot_after.as_deref().unwrap_or("missing"),
             ))],
-            metadata: Some(serde_json::json!({ "path": resolved })),
+            metadata: Some(serde_json::json!({
+                "path": resolved,
+                "snapshot_before": outcome.snapshot_before,
+                "snapshot_after": outcome.snapshot_after,
+                "write": outcome.metadata,
+            })),
             is_error: false,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{WriteExistingBehavior, WriteMissingBehavior, WriteTool, WriteToolInput};
+    use crate::{Tool, ToolExecutionContext};
+    use agent_core_types::ToolCallId;
+
+    #[tokio::test]
+    async fn write_tool_creates_new_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let tool = WriteTool::new();
+        let result = tool
+            .execute(
+                ToolCallId::new(),
+                serde_json::to_value(WriteToolInput {
+                    path: "sample.txt".to_string(),
+                    content: "hello\n".to_string(),
+                    if_exists: None,
+                    if_missing: None,
+                    expected_snapshot: None,
+                })
+                .unwrap(),
+                &ToolExecutionContext {
+                    workspace_root: dir.path().to_path_buf(),
+                    sandbox_root: None,
+                    workspace_only: true,
+                    container_workdir: None,
+                    model_context_window_tokens: None,
+                },
+            )
+            .await
+            .unwrap();
+
+        assert!(!result.is_error);
+        assert_eq!(
+            tokio::fs::read_to_string(dir.path().join("sample.txt"))
+                .await
+                .unwrap(),
+            "hello\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn write_tool_can_refuse_overwrite_without_policy() {
+        let dir = tempfile::tempdir().unwrap();
+        tokio::fs::write(dir.path().join("sample.txt"), "hello\n")
+            .await
+            .unwrap();
+        let tool = WriteTool::new();
+        let result = tool
+            .execute(
+                ToolCallId::new(),
+                serde_json::to_value(WriteToolInput {
+                    path: "sample.txt".to_string(),
+                    content: "next\n".to_string(),
+                    if_exists: Some(WriteExistingBehavior::Error),
+                    if_missing: Some(WriteMissingBehavior::Create),
+                    expected_snapshot: None,
+                })
+                .unwrap(),
+                &ToolExecutionContext {
+                    workspace_root: dir.path().to_path_buf(),
+                    sandbox_root: None,
+                    workspace_only: true,
+                    container_workdir: None,
+                    model_context_window_tokens: None,
+                },
+            )
+            .await
+            .unwrap();
+
+        assert!(result.is_error);
+        assert_eq!(
+            tokio::fs::read_to_string(dir.path().join("sample.txt"))
+                .await
+                .unwrap(),
+            "hello\n"
+        );
     }
 }

@@ -109,7 +109,7 @@ impl SubagentExecutor for RuntimeSubagentExecutor {
                     steer,
                     Some(
                         request
-                            .agent_name
+                            .agent
                             .as_deref()
                             .map(|name| format!("task:{name}"))
                             .unwrap_or_else(|| "task".to_string()),
@@ -118,12 +118,12 @@ impl SubagentExecutor for RuntimeSubagentExecutor {
                 .await?;
         }
 
-        let outcome = runtime.run_user_prompt(request.task.clone()).await?;
+        let outcome = runtime.run_user_prompt(request.prompt.clone()).await?;
         Ok(SubagentResult {
             run_id: runtime.run_id().0,
             session_id: runtime.session_id().0,
             agent_name: request
-                .agent_name
+                .agent
                 .unwrap_or_else(|| "general-purpose".to_string()),
             assistant_text: outcome.assistant_text,
             allowed_tools: resolved_tools,
@@ -204,8 +204,8 @@ mod tests {
 
         let result = executor
             .run(SubagentRequest {
-                task: "inspect the repository".to_string(),
-                agent_name: Some("explore".to_string()),
+                prompt: "inspect the repository".to_string(),
+                agent: Some("explore".to_string()),
                 steer: Some("focus on tests".to_string()),
                 allowed_tools: Some(vec!["read".to_string()]),
             })

@@ -1,7 +1,7 @@
 //! Local tool abstraction plus the default built-in tool set.
 //!
 //! The default surface is intentionally small: `read`, `write`, `edit`,
-//! `glob`, `grep`, `list`, and `bash`. Non-essential tool bundles should be exposed
+//! `patch`, `glob`, `grep`, `list`, and `bash`. Non-essential tool bundles should be exposed
 //! through explicit Cargo features instead of silently expanding the default
 //! runtime surface.
 

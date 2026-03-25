@@ -118,8 +118,6 @@ Completed in this pass:
 
 ## Next Priority
 
-The next highest-value tooling gap is a dedicated structured `patch` tool for multi-file diffs, so larger edits stop overloading `edit` or `write`.
-
-After that, the next framework gaps are provider-native compaction support where upstream APIs expose structured state compaction, plus better run-store indexing and retention beyond the current JSONL scan model.
+The next framework gaps are provider-native compaction support where upstream APIs expose structured state compaction, plus better run-store indexing and retention beyond the current JSONL scan model.
 
 After that, the next capability gap is better approval policy composition, richer per-skill policy/configuration on top of the new hook-driven model, and a pluggable search backend with stronger ranking and citation metadata.

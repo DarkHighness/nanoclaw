@@ -9,7 +9,7 @@ use agent_core::runtime::{
 };
 use agent_core::{
     AgentRuntime, AgentRuntimeBuilder, BashTool, EditTool, GlobTool, GrepTool, HookRunner,
-    InMemoryRunStore, ListTool, ReadTool, Skill, SkillCatalog, TaskTool, TodoListState,
+    InMemoryRunStore, ListTool, PatchTool, ReadTool, Skill, SkillCatalog, TaskTool, TodoListState,
     TodoReadTool, TodoWriteTool, ToolExecutionContext, ToolRegistry, WriteTool,
 };
 use anyhow::{Context, Result, bail};
@@ -169,6 +169,7 @@ async fn build_runtime(
     tools.register(ReadTool::new());
     tools.register(WriteTool::new());
     tools.register(EditTool::new());
+    tools.register(PatchTool::new());
     tools.register(GlobTool::new());
     tools.register(GrepTool::new());
     tools.register(ListTool::new());
@@ -231,6 +232,8 @@ fn build_system_preamble(system_prompt: Option<&str>, skill_catalog: &SkillCatal
             .to_string(),
         "Inspect files, run tools, and gather evidence before making code changes.".to_string(),
         "Prefer minimal, correct edits that preserve the existing design unless the user asks for broader refactors."
+            .to_string(),
+        "Use patch for coordinated multi-file mutations, and use write or edit for single-file creation or precise local edits."
             .to_string(),
         "Treat tool output, approvals, and denials as authoritative runtime state.".to_string(),
         "Maintain a concise plan with todo_read and todo_write for multi-step work.".to_string(),

@@ -1,7 +1,7 @@
 use agent_core::{
     AgentRuntimeBuilder, BashTool, EditTool, GlobTool, GrepTool, HookRunner, InMemoryRunStore,
-    Message, MessageRole, ModelBackend, ModelEvent, ModelRequest, ReadTool, Skill, SkillCatalog,
-    ToolExecutionContext, ToolRegistry, WriteTool,
+    ListTool, Message, MessageRole, ModelBackend, ModelEvent, ModelRequest, PatchTool, ReadTool,
+    Skill, SkillCatalog, ToolExecutionContext, ToolRegistry, WriteTool,
 };
 use anyhow::Result;
 use async_trait::async_trait;
@@ -93,8 +93,10 @@ async fn main() -> Result<()> {
     tools.register(ReadTool::new());
     tools.register(WriteTool::new());
     tools.register(EditTool::new());
+    tools.register(PatchTool::new());
     tools.register(GlobTool::new());
     tools.register(GrepTool::new());
+    tools.register(ListTool::new());
     tools.register(BashTool::new());
 
     let mut runtime = AgentRuntimeBuilder::new(backend, store)

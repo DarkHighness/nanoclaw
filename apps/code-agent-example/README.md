@@ -5,7 +5,7 @@ compact `ratatui` terminal UI that still feels like a real product surface.
 
 It intentionally keeps the host layer thin:
 
-- core coding tools: `read`, `write`, `edit`, `glob`, `grep`, `list`, `bash`
+- core coding tools: `read`, `write`, `edit`, `patch`, `glob`, `grep`, `list`, `bash`
 - agentic tools: `todo_read`, `todo_write`, `task`
 - append-only runtime loop from `agent-core-runtime`
 - runtime steering and queued command support

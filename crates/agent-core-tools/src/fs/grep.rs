@@ -18,6 +18,32 @@ const DEFAULT_GREP_LIMIT: usize = 100;
 const DEFAULT_GREP_MAX_BYTES: usize = 50 * 1024;
 const GREP_MAX_LINE_LENGTH: usize = 400;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LineRole {
+    Match,
+    Context,
+}
+
+impl LineRole {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::Match => "match",
+            Self::Context => "context",
+        }
+    }
+}
+
+#[derive(Clone)]
+// Metadata helper that mirrors a displayed line so callers can reason about match vs context rows.
+struct GrepLine {
+    text: String,
+    path: String,
+    line_number: usize,
+    role: LineRole,
+    trimmed: bool,
+    content: String,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 pub struct GrepToolInput {
     pub pattern: String,
@@ -61,28 +87,29 @@ impl Tool for GrepTool {
     ) -> Result<ToolResult> {
         let external_call_id = call_id.0.clone();
         let input: GrepToolInput = serde_json::from_value(arguments)?;
+        let requested_path = input.path.as_deref().unwrap_or(".");
         let search_path = resolve_tool_path_against_workspace_root(
-            input.path.as_deref().unwrap_or("."),
+            requested_path,
             ctx.effective_root(),
             ctx.container_workdir.as_deref(),
         )?;
+        let search_path_string = search_path.to_string_lossy().to_string();
         if ctx.workspace_only {
             assert_path_inside_root(&search_path, ctx.effective_root())?;
         }
 
-        let matcher = build_pattern(
-            &input.pattern,
-            input.literal.unwrap_or(false),
-            input.ignore_case.unwrap_or(false),
-        )?;
-        let glob = input
-            .glob
+        let pattern = input.pattern.clone();
+        let literal = input.literal.unwrap_or(false);
+        let ignore_case = input.ignore_case.unwrap_or(false);
+        let matcher = build_pattern(&pattern, literal, ignore_case)?;
+        let glob_pattern = input.glob.clone();
+        let glob = glob_pattern
             .as_deref()
             .map(|pattern| Glob::new(pattern).map(|glob| glob.compile_matcher()))
             .transpose()?;
         let limit = input.limit.unwrap_or(DEFAULT_GREP_LIMIT).max(1);
         let context = input.context.unwrap_or(0);
-        let mut lines = Vec::new();
+        let mut display_lines = Vec::new();
         let mut match_count = 0usize;
         let mut line_truncated = false;
         let mut byte_capped = false;
@@ -112,11 +139,24 @@ impl Tool for GrepTool {
                     let source = content_lines[current].replace('\r', "");
                     let (trimmed, was_truncated) = truncate_line(&source, GREP_MAX_LINE_LENGTH);
                     line_truncated |= was_truncated;
-                    if current == index {
-                        lines.push(format!("{display_path}:{}: {trimmed}", current + 1));
+                    let role = if current == index {
+                        LineRole::Match
                     } else {
-                        lines.push(format!("{display_path}-{}- {trimmed}", current + 1));
-                    }
+                        LineRole::Context
+                    };
+                    let display_text = if role == LineRole::Match {
+                        format!("{display_path}:{}: {trimmed}", current + 1)
+                    } else {
+                        format!("{display_path}-{}- {trimmed}", current + 1)
+                    };
+                    display_lines.push(GrepLine {
+                        text: display_text,
+                        path: display_path.clone(),
+                        line_number: current + 1,
+                        role,
+                        trimmed: was_truncated,
+                        content: trimmed.clone(),
+                    });
                 }
                 if match_count >= limit {
                     break;
@@ -127,26 +167,37 @@ impl Tool for GrepTool {
             }
         }
 
-        if lines.is_empty() {
-            return Ok(ToolResult::text(call_id, "grep", "No matches found"));
-        }
-
-        let mut output = String::new();
-        for line in lines {
-            let next = if output.is_empty() {
-                line
-            } else {
-                format!("\n{line}")
-            };
-            if output.len() + next.len() > DEFAULT_GREP_MAX_BYTES {
-                byte_capped = true;
-                break;
+        let limit_reached = match_count >= limit;
+        let header = format!(
+            "[grep pattern={} path={} context={} limit={} truncated={} byte_limit={} ignore_case={} literal={}]",
+            pattern,
+            requested_path,
+            context,
+            limit,
+            limit_reached,
+            DEFAULT_GREP_MAX_BYTES,
+            ignore_case,
+            literal
+        );
+        let mut output = header.clone();
+        let mut emitted_lines = Vec::new();
+        if display_lines.is_empty() {
+            output.push_str("\n[No matches found]");
+        } else {
+            for line in &display_lines {
+                let next = format!("\n{}", line.text);
+                if output.len() + next.len() > DEFAULT_GREP_MAX_BYTES {
+                    byte_capped = true;
+                    break;
+                }
+                output.push_str(&next);
+                emitted_lines.push(line.clone());
             }
-            output.push_str(&next);
         }
+        let bytes_output = output.len();
 
         let mut notices = Vec::new();
-        if match_count >= limit {
+        if limit_reached {
             notices.push(format!(
                 "{limit} matches limit reached. Use limit={} for more, or refine pattern",
                 limit * 2
@@ -167,14 +218,50 @@ impl Tool for GrepTool {
             output.push_str(&format!("\n\n[{}]", notices.join(". ")));
         }
 
+        // Each entry mirrors a line that made it into the final output for downstream tooling.
+        let entries: Vec<Value> = emitted_lines
+            .iter()
+            .map(|line| {
+                serde_json::json!({
+                    "path": line.path,
+                    "line": line.line_number,
+                    "role": line.role.as_str(),
+                    "content": line.content,
+                    "trimmed": line.trimmed,
+                })
+            })
+            .collect();
+        let lines_returned = emitted_lines.len();
+        let context_lines = emitted_lines
+            .iter()
+            .filter(|line| matches!(line.role, LineRole::Context))
+            .count();
+
         Ok(ToolResult {
             id: call_id,
             call_id: external_call_id,
             tool_name: "grep".to_string(),
             parts: vec![MessagePart::text(output)],
             metadata: Some(serde_json::json!({
-                "pattern": input.pattern,
+                "path": search_path_string,
+                "requested_path": requested_path,
+                "pattern": pattern,
+                "glob": glob_pattern,
+                "context": context,
+                "limit": limit,
                 "match_count": match_count,
+                "lines_collected": display_lines.len(),
+                "lines_returned": lines_returned,
+                "context_lines": context_lines,
+                "limit_reached": limit_reached,
+                "byte_capped": byte_capped,
+                "line_truncated": line_truncated,
+                "bytes_output": bytes_output,
+                "byte_limit": DEFAULT_GREP_MAX_BYTES,
+                "header": header,
+                "ignore_case": ignore_case,
+                "literal": literal,
+                "entries": entries,
             })),
             is_error: false,
         })
@@ -242,5 +329,62 @@ fn format_bytes(bytes: usize) -> String {
         format!("{}KB", (bytes as f64 / 1024.0).round() as usize)
     } else {
         format!("{bytes}B")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{GrepTool, GrepToolInput};
+    use crate::{Tool, ToolExecutionContext};
+    use agent_core_types::ToolCallId;
+    use std::path::Path;
+
+    fn context(root: &Path) -> ToolExecutionContext {
+        ToolExecutionContext {
+            workspace_root: root.to_path_buf(),
+            sandbox_root: None,
+            workspace_only: true,
+            container_workdir: None,
+            model_context_window_tokens: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn grep_tool_reports_metadata_with_matches() {
+        let dir = tempfile::tempdir().unwrap();
+        tokio::fs::write(dir.path().join("sample.txt"), "alpha\nbeta\ngamma\n")
+            .await
+            .unwrap();
+
+        let result = GrepTool::new()
+            .execute(
+                ToolCallId::new(),
+                serde_json::to_value(GrepToolInput {
+                    pattern: "beta".to_string(),
+                    path: None,
+                    glob: None,
+                    ignore_case: None,
+                    literal: None,
+                    context: Some(1),
+                    limit: None,
+                })
+                .unwrap(),
+                &context(dir.path()),
+            )
+            .await
+            .unwrap();
+
+        let text = result.text_content();
+        assert!(text.starts_with("[grep pattern=beta"));
+        assert!(text.contains("sample.txt:2: beta"));
+        let metadata = result.metadata.unwrap();
+        assert_eq!(metadata["match_count"].as_u64().unwrap(), 1);
+        assert_eq!(metadata["lines_returned"].as_u64().unwrap(), 3);
+        assert!(metadata["header"].as_str().unwrap().contains("context=1"));
+        assert!(!metadata["ignore_case"].as_bool().unwrap());
+        let entries = metadata["entries"].as_array().unwrap();
+        assert!(entries.iter().any(|entry| {
+            entry["line"].as_u64().unwrap() == 2 && entry["role"].as_str().unwrap() == "match"
+        }));
     }
 }

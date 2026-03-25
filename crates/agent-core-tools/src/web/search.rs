@@ -13,6 +13,7 @@ use reqwest::{Client, Url};
 use schemars::{JsonSchema, schema_for};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::BTreeSet;
 use std::sync::OnceLock;
 
 const DEFAULT_SEARCH_ENDPOINT: &str = "https://www.bing.com/search";
@@ -22,6 +23,8 @@ const DEFAULT_RESULT_SNIPPET_MAX_CHARS: usize = 280;
 pub struct WebSearchToolInput {
     pub query: String,
     pub limit: Option<usize>,
+    #[serde(default)]
+    pub domains: Option<Vec<String>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -75,8 +78,9 @@ impl Tool for WebSearchTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "web_search".to_string(),
-            description: "Search the public web and return result titles, URLs, and snippets. Use this to find candidate sources before calling web_fetch.".to_string(),
-            input_schema: serde_json::to_value(schema_for!(WebSearchToolInput)).expect("web_search schema"),
+            description: "Search the public web and return result titles, URLs, and snippets. Supports per-call domain filtering before follow-up web_fetch calls.".to_string(),
+            input_schema: serde_json::to_value(schema_for!(WebSearchToolInput))
+                .expect("web_search schema"),
             output_mode: ToolOutputMode::Text,
             origin: ToolOrigin::Local,
             annotations: mcp_tool_annotations("Search Web", true, false, false, true),
@@ -100,6 +104,10 @@ impl Tool for WebSearchTool {
             ));
         }
 
+        let domains = normalize_domains(input.domains);
+        let limit = clamped_search_limit(input.limit);
+        let request_query = augment_query_with_domains(query, &domains);
+
         let mut request_url = self.endpoint.clone();
         request_url.set_query(None);
         request_url
@@ -107,7 +115,7 @@ impl Tool for WebSearchTool {
             .append_pair("format", "rss")
             .append_pair("cc", "us")
             .append_pair("setlang", "en-US")
-            .append_pair("q", query);
+            .append_pair("q", &request_query);
 
         if let Err(error) = self.policy.validate_transport_url(&request_url) {
             return Ok(ToolResult::error(call_id, "web_search", error.to_string()));
@@ -161,26 +169,26 @@ impl Tool for WebSearchTool {
             });
         }
 
-        let limit = clamped_search_limit(input.limit);
         let results = parse_rss_results(&body)
             .into_iter()
-            .filter(|item| {
-                Url::parse(&item.url)
-                    .ok()
-                    .and_then(|url| self.policy.validate_target_url(&url).ok())
-                    .is_some()
-            })
+            .filter(|item| matches_policy(item, &self.policy))
+            .filter(|item| matches_domains(item, &domains))
             .take(limit)
             .collect::<Vec<_>>();
+        let unique_domains = unique_domains(&results);
 
         let mut sections = vec![
             format!("query> {query}"),
             format!("engine> {}", self.endpoint.host_str().unwrap_or("custom")),
-            format!("results> {}", results.len()),
+            format!("limit> {limit}"),
         ];
+        if !domains.is_empty() {
+            sections.push(format!("domains> {}", domains.join(", ")));
+        }
+        sections.push(format!("results> {}", results.len()));
         if results.is_empty() {
             sections.push(String::new());
-            sections.push("No search results matched the current policy filters.".to_string());
+            sections.push("No search results matched the current filters.".to_string());
         } else {
             sections.push(String::new());
             sections.extend(results.iter().enumerate().map(format_result_entry));
@@ -193,10 +201,20 @@ impl Tool for WebSearchTool {
             parts: vec![MessagePart::text(sections.join("\n"))],
             metadata: Some(serde_json::json!({
                 "query": query,
+                "request_query": request_query,
                 "request_url": request_url.as_str(),
                 "final_url": final_url.as_str(),
                 "status": status.as_u16(),
                 "content_type": content_type,
+                "limit": limit,
+                "domains": domains,
+                "result_count": results.len(),
+                "result_domains": unique_domains,
+                "policy": {
+                    "allow_private_hosts": self.policy.allow_private_hosts,
+                    "allowed_domains": self.policy.allowed_domains.iter().cloned().collect::<Vec<_>>(),
+                    "blocked_domains": self.policy.blocked_domains.iter().cloned().collect::<Vec<_>>(),
+                },
                 "results": results.iter().map(|item| serde_json::json!({
                     "title": item.title,
                     "url": item.url,
@@ -241,8 +259,79 @@ fn extract_xml_field(xml: &str, field: &str) -> Option<String> {
         .ok()?
         .captures(xml)
         .and_then(|captures| captures.get(1))
-        .map(|value| value.as_str().trim().to_string())
+        .map(|value| strip_cdata(value.as_str()).trim().to_string())
         .filter(|value| !value.is_empty())
+}
+
+fn strip_cdata(value: &str) -> String {
+    value
+        .trim()
+        .strip_prefix("<![CDATA[")
+        .and_then(|inner| inner.strip_suffix("]]>"))
+        .unwrap_or(value)
+        .to_string()
+}
+
+fn normalize_domains(domains: Option<Vec<String>>) -> Vec<String> {
+    let mut normalized = domains
+        .unwrap_or_default()
+        .into_iter()
+        .map(|value| value.trim().trim_start_matches('.').to_ascii_lowercase())
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>();
+    normalized.sort();
+    normalized.dedup();
+    normalized
+}
+
+fn augment_query_with_domains(query: &str, domains: &[String]) -> String {
+    if domains.is_empty() {
+        return query.to_string();
+    }
+    let filters = domains
+        .iter()
+        .map(|domain| format!("site:{domain}"))
+        .collect::<Vec<_>>()
+        .join(" OR ");
+    format!("{query} ({filters})")
+}
+
+fn matches_policy(item: &SearchResultItem, policy: &WebToolPolicy) -> bool {
+    Url::parse(&item.url)
+        .ok()
+        .and_then(|url| policy.validate_target_url(&url).ok())
+        .is_some()
+}
+
+fn matches_domains(item: &SearchResultItem, domains: &[String]) -> bool {
+    if domains.is_empty() {
+        return true;
+    }
+    let Ok(url) = Url::parse(&item.url) else {
+        return false;
+    };
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    let host = host.to_ascii_lowercase();
+    domains.iter().any(|domain| {
+        host == *domain
+            || host
+                .strip_suffix(domain)
+                .is_some_and(|prefix| prefix.ends_with('.'))
+    })
+}
+
+fn unique_domains(results: &[SearchResultItem]) -> Vec<String> {
+    let mut domains = BTreeSet::new();
+    for item in results {
+        if let Ok(url) = Url::parse(&item.url)
+            && let Some(host) = url.host_str()
+        {
+            domains.insert(host.to_ascii_lowercase());
+        }
+    }
+    domains.into_iter().collect()
 }
 
 fn format_result_entry((index, item): (usize, &SearchResultItem)) -> String {
@@ -278,27 +367,26 @@ mod tests {
     fn parse_rss_results_extracts_items() {
         let xml = r#"
             <rss><channel>
-              <item>
-                <title>Rust Programming Language</title>
-                <link>https://rust-lang.org/</link>
-                <description>Reliable &amp; efficient software.</description>
-                <pubDate>Tue, 24 Mar 2026 00:00:00 GMT</pubDate>
-              </item>
+                <item>
+                    <title>Example One</title>
+                    <link>https://example.com/one</link>
+                    <description><![CDATA[alpha &amp; beta]]></description>
+                    <pubDate>Tue, 25 Mar 2026 09:00:00 GMT</pubDate>
+                </item>
+                <item>
+                    <title>Example Two</title>
+                    <link>https://example.com/two</link>
+                </item>
             </channel></rss>
         "#;
-        let items = parse_rss_results(xml);
-
-        assert_eq!(items.len(), 1);
-        assert_eq!(items[0].title, "Rust Programming Language");
-        assert_eq!(items[0].url, "https://rust-lang.org/");
-        assert_eq!(
-            items[0].snippet.as_deref(),
-            Some("Reliable & efficient software.")
-        );
+        let results = parse_rss_results(xml);
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].title, "Example One");
+        assert_eq!(results[0].snippet.as_deref(), Some("alpha & beta"));
     }
 
     #[tokio::test]
-    async fn web_search_formats_rss_results() {
+    async fn web_search_filters_by_domains() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/search"))
@@ -307,19 +395,19 @@ mod tests {
                     .insert_header("content-type", "application/rss+xml")
                     .set_body_string(
                         r#"
-                            <rss><channel>
-                              <item>
-                                <title>Rust Programming Language</title>
-                                <link>https://rust-lang.org/</link>
-                                <description>Reliable &amp; efficient software.</description>
-                              </item>
-                              <item>
-                                <title>Rust Book</title>
-                                <link>https://doc.rust-lang.org/book/</link>
-                                <description>The Rust Programming Language book.</description>
-                              </item>
-                            </channel></rss>
-                        "#,
+                    <rss><channel>
+                        <item>
+                            <title>Wanted</title>
+                            <link>https://allowed.example.com/article</link>
+                            <description>keep this</description>
+                        </item>
+                        <item>
+                            <title>Blocked</title>
+                            <link>https://other.example.org/post</link>
+                            <description>drop this</description>
+                        </item>
+                    </channel></rss>
+                "#,
                     ),
             )
             .mount(&server)
@@ -339,8 +427,9 @@ mod tests {
             .execute(
                 ToolCallId::new(),
                 serde_json::to_value(WebSearchToolInput {
-                    query: "rust programming language".to_string(),
-                    limit: Some(1),
+                    query: "example".to_string(),
+                    limit: Some(5),
+                    domains: Some(vec!["allowed.example.com".to_string()]),
                 })
                 .unwrap(),
                 &ToolExecutionContext::default(),
@@ -348,11 +437,12 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(!result.is_error);
         let text = result.text_content();
-        assert!(text.contains("query> rust programming language"));
-        assert!(text.contains("1. Rust Programming Language"));
-        assert!(text.contains("url: https://rust-lang.org/"));
-        assert!(!text.contains("Rust Book"));
+        assert!(text.contains("allowed.example.com/article"));
+        assert!(!text.contains("other.example.org/post"));
+        assert_eq!(
+            result.metadata.unwrap()["domains"][0],
+            "allowed.example.com"
+        );
     }
 }

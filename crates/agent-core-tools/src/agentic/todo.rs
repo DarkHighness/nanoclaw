@@ -45,6 +45,17 @@ impl TodoListState {
     pub async fn replace(&self, items: Vec<TodoItem>) {
         *self.items.lock().await = items;
     }
+
+    pub async fn merge(&self, items: Vec<TodoItem>) -> Vec<TodoItem> {
+        let mut guard = self.items.lock().await;
+        for item in items {
+            match guard.iter_mut().find(|existing| existing.id == item.id) {
+                Some(existing) => *existing = item,
+                None => guard.push(item),
+            }
+        }
+        guard.clone()
+    }
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
@@ -54,8 +65,19 @@ pub struct TodoReadInput {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum TodoWriteCommand {
+    Replace,
+    Merge,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 pub struct TodoWriteInput {
     pub items: Vec<TodoItem>,
+    #[serde(default)]
+    pub command: Option<TodoWriteCommand>,
+    #[serde(default)]
+    pub expected_revision: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -92,11 +114,23 @@ impl Tool for TodoReadTool {
     ) -> Result<ToolResult> {
         let external_call_id = call_id.0.clone();
         let input: TodoReadInput = serde_json::from_value(arguments)?;
-        let mut items = self.state.snapshot().await;
-        if !input.include_completed {
-            items.retain(|item| item.status != TodoStatus::Completed);
-        }
-        let text = render_todos(&items);
+        let snapshot = self.state.snapshot().await;
+        let revision = revision_for(&snapshot);
+        let items = if input.include_completed {
+            snapshot
+        } else {
+            snapshot
+                .into_iter()
+                .filter(|item| item.status != TodoStatus::Completed)
+                .collect()
+        };
+        let text = format!(
+            "[todo count={} revision={} include_completed={}]\n{}",
+            items.len(),
+            revision,
+            input.include_completed,
+            render_todos(&items)
+        );
         Ok(ToolResult {
             id: call_id,
             call_id: external_call_id,
@@ -105,6 +139,8 @@ impl Tool for TodoReadTool {
             metadata: Some(serde_json::json!({
                 "count": items.len(),
                 "include_completed": input.include_completed,
+                "revision": revision,
+                "items": items,
             })),
             is_error: false,
         })
@@ -128,7 +164,7 @@ impl Tool for TodoWriteTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "todo_write".to_string(),
-            description: "Replace the shared todo list with an updated set of todo items."
+            description: "Replace or merge the shared todo list. Supports expected_revision guards so callers can detect stale todo snapshots."
                 .to_string(),
             input_schema: serde_json::to_value(schema_for!(TodoWriteInput))
                 .expect("todo_write schema"),
@@ -146,12 +182,42 @@ impl Tool for TodoWriteTool {
     ) -> Result<ToolResult> {
         let external_call_id = call_id.0.clone();
         let input: TodoWriteInput = serde_json::from_value(arguments)?;
-        self.state.replace(input.items.clone()).await;
+        let before = self.state.snapshot().await;
+        let revision_before = revision_for(&before);
+        if let Some(expected_revision) = input.expected_revision.as_deref()
+            && expected_revision != revision_before
+        {
+            return Ok(ToolResult {
+                id: call_id,
+                call_id: external_call_id,
+                tool_name: "todo_write".to_string(),
+                parts: vec![MessagePart::text(format!(
+                    "Todo revision mismatch. Expected {expected_revision}, found {revision_before}. Re-read todos before writing."
+                ))],
+                metadata: Some(serde_json::json!({
+                    "expected_revision": expected_revision,
+                    "revision_before": revision_before,
+                })),
+                is_error: true,
+            });
+        }
 
+        let command = input.command.unwrap_or(TodoWriteCommand::Replace);
+        let updated = match command {
+            TodoWriteCommand::Replace => {
+                self.state.replace(input.items.clone()).await;
+                input.items
+            }
+            TodoWriteCommand::Merge => self.state.merge(input.items.clone()).await,
+        };
+        let revision_after = revision_for(&updated);
         let summary = format!(
-            "Updated todo list with {} item(s).\n{}",
-            input.items.len(),
-            render_todos(&input.items)
+            "[todo_write command={:?} count={} revision {} -> {}]\n{}",
+            command,
+            updated.len(),
+            revision_before,
+            revision_after,
+            render_todos(&updated)
         );
         Ok(ToolResult {
             id: call_id,
@@ -159,7 +225,11 @@ impl Tool for TodoWriteTool {
             tool_name: "todo_write".to_string(),
             parts: vec![MessagePart::text(summary)],
             metadata: Some(serde_json::json!({
-                "count": input.items.len(),
+                "command": command,
+                "count": updated.len(),
+                "revision_before": revision_before,
+                "revision_after": revision_after,
+                "items": updated,
             })),
             is_error: false,
         })
@@ -192,11 +262,15 @@ fn status_marker(status: &TodoStatus) -> &'static str {
     }
 }
 
+fn revision_for(items: &[TodoItem]) -> String {
+    crate::stable_text_hash(&serde_json::to_string(items).expect("todo revision json"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        TodoItem, TodoListState, TodoReadInput, TodoReadTool, TodoStatus, TodoWriteInput,
-        TodoWriteTool,
+        TodoItem, TodoListState, TodoReadInput, TodoReadTool, TodoStatus, TodoWriteCommand,
+        TodoWriteInput, TodoWriteTool,
     };
     use crate::{Tool, ToolExecutionContext};
     use agent_core_types::ToolCallId;
@@ -239,33 +313,32 @@ mod tests {
         let text = result.text_content();
         assert!(text.contains("runtime queue"));
         assert!(!text.contains("Inspect repository"));
+        assert!(text.contains("revision="));
     }
 
     #[tokio::test]
-    async fn todo_write_replaces_items() {
-        let state = TodoListState::new(Vec::new());
+    async fn todo_write_can_merge_by_id() {
+        let state = TodoListState::new(sample_items());
         let writer = TodoWriteTool::new(state.clone());
-        let reader = TodoReadTool::new(state.clone());
         writer
             .execute(
                 ToolCallId::new(),
                 serde_json::to_value(TodoWriteInput {
-                    items: sample_items(),
+                    items: vec![TodoItem {
+                        id: "t2".to_string(),
+                        content: "Implement runtime queue".to_string(),
+                        status: TodoStatus::Completed,
+                    }],
+                    command: Some(TodoWriteCommand::Merge),
+                    expected_revision: None,
                 })
                 .unwrap(),
                 &ToolExecutionContext::default(),
             )
             .await
             .unwrap();
-        assert_eq!(state.snapshot().await.len(), 2);
-        let result = reader
-            .execute(
-                ToolCallId::new(),
-                serde_json::json!({"include_completed": true}),
-                &ToolExecutionContext::default(),
-            )
-            .await
-            .unwrap();
-        assert!(result.text_content().contains("Inspect repository"));
+        let snapshot = state.snapshot().await;
+        assert_eq!(snapshot.len(), 2);
+        assert_eq!(snapshot[1].status, TodoStatus::Completed);
     }
 }
