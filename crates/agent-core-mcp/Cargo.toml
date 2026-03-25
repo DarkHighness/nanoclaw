@@ -1,0 +1,21 @@
+[package]
+name = "agent-core-mcp"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+agent-core-tools = { path = "../agent-core-tools" }
+agent-core-types = { path = "../agent-core-types" }
+anyhow.workspace = true
+async-trait.workspace = true
+futures.workspace = true
+http.workspace = true
+rmcp = { workspace = true, features = ["server", "transport-io"] }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -1,12 +1,19 @@
 [workspace]
 default-members = [
+    "crates/agent-core",
+    "crates/agent-core-mcp",
+    "crates/agent-core-rig",
     "crates/agent-core-runtime",
     "crates/agent-core-skills",
     "crates/agent-core-store",
     "crates/agent-core-tools",
     "crates/agent-core-types",
 ]
+exclude = ["apps/agent-core-tui", "apps/code-agent-example"]
 members = [
+    "crates/agent-core",
+    "crates/agent-core-mcp",
+    "crates/agent-core-rig",
     "crates/agent-core-runtime",
     "crates/agent-core-skills",
     "crates/agent-core-store",
