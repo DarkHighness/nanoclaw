@@ -1,5 +1,6 @@
 use agent_core_types::{Message, RunEventEnvelope, RunEventKind, RunId, SessionId};
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use thiserror::Error;
 
@@ -15,7 +16,7 @@ pub enum RunStoreError {
 
 pub type Result<T> = std::result::Result<T, RunStoreError>;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunSummary {
     pub run_id: RunId,
     pub first_timestamp_ms: u128,
@@ -26,7 +27,7 @@ pub struct RunSummary {
     pub last_user_prompt: Option<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunSearchResult {
     pub summary: RunSummary,
     pub matched_event_count: usize,
@@ -127,7 +128,7 @@ pub fn search_run_events(
     }
 }
 
-fn searchable_event_strings(event: &RunEventEnvelope) -> Vec<String> {
+pub(crate) fn searchable_event_strings(event: &RunEventEnvelope) -> Vec<String> {
     let mut values = vec![event.session_id.0.clone()];
     match &event.event {
         RunEventKind::SessionStart { reason }

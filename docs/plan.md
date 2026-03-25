@@ -128,3 +128,5 @@ Completed in this pass:
 - added argument-aware approval matchers over canonical JSON pointers, plus tool-name and origin matchers
 - kept shell approval handlers as the final UX boundary instead of hardcoding interactive prompts into runtime policy
 - added explicit OpenAI prompt-cache request controls in the provider adapter so hosts can use `prompt_cache_key` and `prompt_cache_retention` without pushing provider JSON shape into runtime code
+- upgraded `FileRunStore` to keep a mutable summary/search index sidecar next to append-only JSONL transcripts
+- added run-store retention controls by run age and run count, enforced on open and append

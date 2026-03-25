@@ -262,6 +262,21 @@ Implementation impact:
 - The adapter merges those controls into OpenAI request payloads while leaving non-OpenAI providers unchanged.
 - If a host also passes `additional_params`, the typed cache controls are merged at the top level instead of forcing the host to handcraft provider JSON for a common optimization path.
 
+### 18. JSONL transcripts should be paired with a small mutable index and maintenance policy
+
+Reason:
+
+- OpenClaw's session design separates a small mutable session store from append-only transcript JSONL, and its maintenance controls bound transcript artifacts by age, entry count, and disk use.
+- OpenClaw's memory/QMD indexing notes also reinforce a practical pattern: keep disk transcripts as the source of truth, then build a lighter index/summary layer that can be rebuilt if it drifts.
+- For an agent substrate, the main risk with raw JSONL-only storage is not durability but operational cost: every list/search call becomes a full scan, and old runs accumulate forever unless hosts reimplement pruning themselves.
+
+Implementation impact:
+
+- `FileRunStore` now keeps append-only `*.jsonl` transcripts as the durable record and writes a separate `runs.index.json` sidecar containing run summaries, lightweight search corpus text, and session-id bookkeeping.
+- On open, the store validates the sidecar against the transcript files and rebuilds it when the file set drifts, so crashes between transcript append and index write recover cleanly by rescanning disk.
+- List operations now read summaries from the sidecar, while search uses the sidecar as a prefilter before replaying candidate runs for exact preview generation.
+- Hosts can now opt into retention by maximum run count or maximum run age without changing the transcript contract or introducing a heavier mandatory database dependency.
+
 ## Remaining Gaps
 
 - MCP prompt arguments are discovered and displayed, but the TUI does not yet provide an argument-entry UX beyond the current basic command surface.

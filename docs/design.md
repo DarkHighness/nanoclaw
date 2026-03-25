@@ -145,9 +145,10 @@ The bridge layer converts remote MCP tool metadata into local runtime tool regis
 Provides run event storage and transcript replay. The workspace includes:
 
 - `InMemoryRunStore` for tests and lightweight embeddings
-- `FileRunStore` for JSONL-backed persistence
+- `FileRunStore` for JSONL-backed persistence plus a mutable summary/search index sidecar
 - run summaries for browsing and replay
 - simple run search over prompts, transcript text, tool usage, and other stored event fields
+- optional retention controls by run count or run age
 
 ### `apps/agent-core-tui`
 
@@ -232,7 +233,7 @@ Hosts embedding the substrate should define their own config layer, or none at a
 ## Deliberate Tradeoffs
 
 - The current compaction path is runtime-local and model-generated. It preserves append-only history and recent-message tails, but it does not yet integrate provider-native compaction APIs such as OpenAI Responses `/compact`.
-- The default persistent store is intentionally simple JSONL. It supports browsing, replay, search, and export, but it still does not provide indexed search, retention controls, or multi-process coordination.
+- The default persistent store still uses append-only JSONL transcripts as the durable source of truth, but now pairs them with a small mutable index sidecar for summaries, search prefiltering, and retention. It still does not provide multi-process coordination or a heavier full-text index backend.
 - The current approval flow now supports runtime-level rule composition in addition to shell-side prompts. Hosts can auto-allow, deny, or require review for matching tool/origin/argument patterns, but persistent allowlists and richer policy storage are still outer-host concerns.
 - Feature-enabled `web_search` is intentionally lightweight today. It does not yet provide hosted-tool quality ranking, citations, or user-location controls.
 - Feature-enabled `web_fetch` extracts readable HTML/text content, but binary documents such as PDFs are still summarized instead of fully parsed.
@@ -241,7 +242,7 @@ Hosts embedding the substrate should define their own config layer, or none at a
 
 The next clean extension points are:
 
-- richer run-store filtering, indexing, and retention
+- richer run-store filtering and stronger multi-process/index backends
 - richer provider request controls
 - provider-native compaction support where an upstream API can preserve more structured state
 - persistent approval policy storage and richer host-managed approval caches
