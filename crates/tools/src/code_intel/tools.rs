@@ -154,7 +154,7 @@ impl Tool for CodeSymbolSearchTool {
         arguments: Value,
         ctx: &ToolExecutionContext,
     ) -> Result<ToolResult> {
-        let external_call_id = call_id.to_string();
+        let external_call_id = types::CallId::from(&call_id);
         let input: CodeSymbolSearchInput = serde_json::from_value(arguments)?;
         let query = input.query.trim();
         if query.is_empty() {
@@ -176,7 +176,7 @@ impl Tool for CodeSymbolSearchTool {
         );
         Ok(ToolResult {
             id: call_id,
-            call_id: external_call_id.into(),
+            call_id: external_call_id,
             tool_name: "code_symbol_search".to_string(),
             parts: vec![MessagePart::text(text)],
             metadata: Some(json!({
@@ -211,7 +211,7 @@ impl Tool for CodeDocumentSymbolsTool {
         arguments: Value,
         ctx: &ToolExecutionContext,
     ) -> Result<ToolResult> {
-        let external_call_id = call_id.to_string();
+        let external_call_id = types::CallId::from(&call_id);
         let input: CodeDocumentSymbolsInput = serde_json::from_value(arguments)?;
         let limit = clamp_limit(input.limit);
         let resolved = resolve_tool_path_against_workspace_root(
@@ -238,7 +238,7 @@ impl Tool for CodeDocumentSymbolsTool {
         );
         Ok(ToolResult {
             id: call_id,
-            call_id: external_call_id.into(),
+            call_id: external_call_id,
             tool_name: "code_document_symbols".to_string(),
             parts: vec![MessagePart::text(text)],
             metadata: Some(json!({
@@ -274,7 +274,7 @@ impl Tool for CodeDefinitionsTool {
         arguments: Value,
         ctx: &ToolExecutionContext,
     ) -> Result<ToolResult> {
-        let external_call_id = call_id.to_string();
+        let external_call_id = types::CallId::from(&call_id);
         let input: CodeDefinitionsInput = serde_json::from_value(arguments)?;
         let symbol = input.symbol.trim();
         if symbol.is_empty() {
@@ -296,7 +296,7 @@ impl Tool for CodeDefinitionsTool {
         );
         Ok(ToolResult {
             id: call_id,
-            call_id: external_call_id.into(),
+            call_id: external_call_id,
             tool_name: "code_definitions".to_string(),
             parts: vec![MessagePart::text(text)],
             metadata: Some(json!({
@@ -331,7 +331,7 @@ impl Tool for CodeReferencesTool {
         arguments: Value,
         ctx: &ToolExecutionContext,
     ) -> Result<ToolResult> {
-        let external_call_id = call_id.to_string();
+        let external_call_id = types::CallId::from(&call_id);
         let input: CodeReferencesInput = serde_json::from_value(arguments)?;
         let symbol = input.symbol.trim();
         if symbol.is_empty() {
@@ -359,7 +359,7 @@ impl Tool for CodeReferencesTool {
         );
         Ok(ToolResult {
             id: call_id,
-            call_id: external_call_id.into(),
+            call_id: external_call_id,
             tool_name: "code_references".to_string(),
             parts: vec![MessagePart::text(text)],
             metadata: Some(json!({

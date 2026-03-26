@@ -110,7 +110,7 @@ impl Tool for TodoReadTool {
         arguments: Value,
         _ctx: &ToolExecutionContext,
     ) -> Result<ToolResult> {
-        let external_call_id = call_id.to_string();
+        let external_call_id = types::CallId::from(&call_id);
         let input: TodoReadInput = serde_json::from_value(arguments)?;
         let snapshot = self.state.snapshot().await;
         let revision = revision_for(&snapshot);
@@ -131,7 +131,7 @@ impl Tool for TodoReadTool {
         );
         Ok(ToolResult {
             id: call_id,
-            call_id: external_call_id.into(),
+            call_id: external_call_id,
             tool_name: "todo_read".to_string(),
             parts: vec![MessagePart::text(text)],
             metadata: Some(serde_json::json!({
@@ -178,7 +178,7 @@ impl Tool for TodoWriteTool {
         arguments: Value,
         _ctx: &ToolExecutionContext,
     ) -> Result<ToolResult> {
-        let external_call_id = call_id.to_string();
+        let external_call_id = types::CallId::from(&call_id);
         let input: TodoWriteInput = serde_json::from_value(arguments)?;
         let before = self.state.snapshot().await;
         let revision_before = revision_for(&before);
@@ -187,7 +187,7 @@ impl Tool for TodoWriteTool {
         {
             return Ok(ToolResult {
                 id: call_id,
-                call_id: external_call_id.into(),
+                call_id: external_call_id.clone(),
                 tool_name: "todo_write".to_string(),
                 parts: vec![MessagePart::text(format!(
                     "Todo revision mismatch. Expected {expected_revision}, found {revision_before}. Re-read todos before writing."
@@ -219,7 +219,7 @@ impl Tool for TodoWriteTool {
         );
         Ok(ToolResult {
             id: call_id,
-            call_id: external_call_id.into(),
+            call_id: external_call_id,
             tool_name: "todo_write".to_string(),
             parts: vec![MessagePart::text(summary)],
             metadata: Some(serde_json::json!({

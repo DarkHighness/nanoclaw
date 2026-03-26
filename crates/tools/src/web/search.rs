@@ -109,7 +109,7 @@ impl Tool for WebSearchTool {
         arguments: Value,
         _ctx: &ToolExecutionContext,
     ) -> Result<ToolResult> {
-        let external_call_id = call_id.to_string();
+        let external_call_id = types::CallId::from(&call_id);
         let input: WebSearchToolInput = serde_json::from_value(arguments)?;
         let query = input.query.trim();
         if query.is_empty() {
@@ -169,7 +169,7 @@ impl Tool for WebSearchTool {
         if !status.is_success() {
             return Ok(ToolResult {
                 id: call_id,
-                call_id: external_call_id.clone().into(),
+                call_id: external_call_id.clone(),
                 tool_name: "web_search".to_string(),
                 parts: vec![MessagePart::text(format!(
                     "query> {query}\nstatus> {status}\n\n{}",
@@ -243,7 +243,7 @@ impl Tool for WebSearchTool {
 
         Ok(ToolResult {
             id: call_id,
-            call_id: external_call_id.into(),
+            call_id: external_call_id,
             tool_name: "web_search".to_string(),
             parts: vec![MessagePart::text(sections.join("\n"))],
             metadata: Some(serde_json::json!({

@@ -67,7 +67,7 @@ impl Tool for ReadTool {
         arguments: Value,
         ctx: &ToolExecutionContext,
     ) -> Result<ToolResult> {
-        let external_call_id = call_id.to_string();
+        let external_call_id = types::CallId::from(&call_id);
         let input: ReadToolInput = serde_json::from_value(arguments)?;
         let resolved = resolve_tool_path_against_workspace_root(
             &input.path,
@@ -81,7 +81,7 @@ impl Tool for ReadTool {
         if let Some(mime) = sniff_image_mime(&bytes, &resolved) {
             return Ok(ToolResult {
                 id: call_id,
-                call_id: external_call_id.clone().into(),
+                call_id: external_call_id.clone(),
                 tool_name: "read".to_string(),
                 parts: vec![
                     MessagePart::text(format!("Read image file [{mime}]")),
@@ -117,7 +117,7 @@ impl Tool for ReadTool {
             );
             return Ok(ToolResult {
                 id: call_id,
-                call_id: external_call_id.into(),
+                call_id: external_call_id,
                 tool_name: "read".to_string(),
                 parts: vec![MessagePart::text(output)],
                 metadata: Some(serde_json::json!({
@@ -262,7 +262,7 @@ impl Tool for ReadTool {
 
         Ok(ToolResult {
             id: call_id,
-            call_id: external_call_id.into(),
+            call_id: external_call_id,
             tool_name: "read".to_string(),
             parts: vec![MessagePart::text(output)],
             metadata: Some(serde_json::json!({

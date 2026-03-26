@@ -85,7 +85,7 @@ impl Tool for GrepTool {
         arguments: Value,
         ctx: &ToolExecutionContext,
     ) -> Result<ToolResult> {
-        let external_call_id = call_id.to_string();
+        let external_call_id = types::CallId::from(&call_id);
         let input: GrepToolInput = serde_json::from_value(arguments)?;
         let requested_path = input.path.as_deref().unwrap_or(".");
         let search_path = resolve_tool_path_against_workspace_root(
@@ -257,7 +257,7 @@ impl Tool for GrepTool {
 
         Ok(ToolResult {
             id: call_id,
-            call_id: external_call_id.into(),
+            call_id: external_call_id,
             tool_name: "grep".to_string(),
             parts: vec![MessagePart::text(output)],
             metadata: Some(serde_json::json!({

@@ -115,7 +115,7 @@ impl Tool for PatchTool {
         arguments: Value,
         ctx: &ToolExecutionContext,
     ) -> Result<ToolResult> {
-        let external_call_id = call_id.to_string();
+        let external_call_id = types::CallId::from(&call_id);
         let input: PatchToolInput = serde_json::from_value(arguments)?;
         if input.operations.is_empty() {
             return Err(ToolError::invalid("patch requires at least one operation"));
@@ -467,7 +467,7 @@ impl Tool for PatchTool {
         }
         Ok(ToolResult {
             id: call_id,
-            call_id: external_call_id.into(),
+            call_id: external_call_id,
             tool_name: "patch".to_string(),
             parts: vec![MessagePart::text(text)],
             metadata: Some(json!({
@@ -521,7 +521,7 @@ async fn stage_entry_by_resolved(
 
 fn patch_error_result(
     call_id: ToolCallId,
-    external_call_id: String,
+    external_call_id: types::CallId,
     operation: &PatchOperation,
     operation_index: usize,
     operation_metadata: Vec<Value>,
@@ -530,7 +530,7 @@ fn patch_error_result(
 ) -> ToolResult {
     ToolResult {
         id: call_id,
-        call_id: external_call_id.into(),
+        call_id: external_call_id,
         tool_name: "patch".to_string(),
         parts: vec![MessagePart::text(summary)],
         metadata: Some(json!({

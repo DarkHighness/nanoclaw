@@ -84,7 +84,7 @@ impl Tool for ListTool {
         arguments: Value,
         ctx: &ToolExecutionContext,
     ) -> Result<ToolResult> {
-        let external_call_id = call_id.to_string();
+        let external_call_id = types::CallId::from(&call_id);
         let input: ListToolInput = serde_json::from_value(arguments)?;
         let recursive = input.recursive.unwrap_or(false);
         let max_depth = input
@@ -177,7 +177,7 @@ impl Tool for ListTool {
 
         Ok(ToolResult {
             id: call_id,
-            call_id: external_call_id.into(),
+            call_id: external_call_id,
             tool_name: "list".to_string(),
             parts: vec![MessagePart::text(output_lines.join("\n"))],
             metadata: Some(serde_json::json!({

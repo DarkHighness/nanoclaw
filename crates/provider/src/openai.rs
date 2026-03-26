@@ -212,28 +212,29 @@ pub(crate) async fn stream_openai_responses_turn(
                                 .get("name")
                                 .and_then(Value::as_str)
                                 .unwrap_or_default()
-                                .to_string();
+                                .to_owned();
                             let arguments = parse_openai_arguments(item.get("arguments"));
+                            let origin =
+                                tool_origins.get(tool_name.as_str()).cloned().unwrap_or_else(|| {
+                                    ToolOrigin::Provider {
+                                        provider: "openai".to_string(),
+                                    }
+                                });
                             yield ModelEvent::ToolCallRequested {
                                 call: ToolCall {
                                     id: ToolCallId::from(
                                         item.get("id")
                                             .and_then(Value::as_str)
-                                            .unwrap_or_default()
-                                            .to_string(),
+                                            .unwrap_or_default(),
                                     ),
                                     call_id: item
                                         .get("call_id")
                                         .and_then(Value::as_str)
                                         .map(CallId::from)
                                         .unwrap_or_else(CallId::new),
-                                    tool_name: tool_name.clone(),
+                                    tool_name,
                                     arguments,
-                                    origin: tool_origins.get(&tool_name).cloned().unwrap_or_else(|| {
-                                        ToolOrigin::Provider {
-                                            provider: "openai".to_string(),
-                                        }
-                                    }),
+                                    origin,
                                 },
                             };
                         }
@@ -523,27 +524,23 @@ fn parse_openai_tool_call_item(
         .get("name")
         .and_then(Value::as_str)
         .unwrap_or_default()
-        .to_string();
+        .to_owned();
+    let origin = tool_origins
+        .get(tool_name.as_str())
+        .cloned()
+        .unwrap_or_else(|| ToolOrigin::Provider {
+            provider: "openai".to_string(),
+        });
     Some(ToolCall {
-        id: ToolCallId::from(
-            item.get("id")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string(),
-        ),
+        id: ToolCallId::from(item.get("id").and_then(Value::as_str).unwrap_or_default()),
         call_id: item
             .get("call_id")
             .and_then(Value::as_str)
             .map(CallId::from)
             .unwrap_or_else(CallId::new),
-        tool_name: tool_name.clone(),
+        tool_name,
         arguments: parse_openai_arguments(item.get("arguments")),
-        origin: tool_origins
-            .get(&tool_name)
-            .cloned()
-            .unwrap_or_else(|| ToolOrigin::Provider {
-                provider: "openai".to_string(),
-            }),
+        origin,
     })
 }
 

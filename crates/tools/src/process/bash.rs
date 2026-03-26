@@ -267,7 +267,7 @@ async fn execute_run(
     input: BashToolInput,
     ctx: &ToolExecutionContext,
 ) -> Result<ToolResult> {
-    let external_call_id = call_id.to_string();
+    let external_call_id = types::CallId::from(&call_id);
     let command = resolve_command(&input)?;
     let cwd = resolve_cwd(&input, ctx)?;
     let shell = shell_or_default("/bin/sh");
@@ -301,7 +301,7 @@ async fn execute_run(
             );
             return Ok(ToolResult {
                 id: call_id,
-                call_id: external_call_id.into(),
+                call_id: external_call_id,
                 tool_name: "bash".to_string(),
                 parts: vec![MessagePart::text(format!(
                     "[bash cwd={} timeout_ms={} mode=run]\nCommand timed out after {timeout_ms}ms.\ncommand> {}",
@@ -329,7 +329,7 @@ async fn execute_run(
 
     Ok(ToolResult {
         id: call_id,
-        call_id: external_call_id.into(),
+        call_id: external_call_id,
         tool_name: "bash".to_string(),
         parts: vec![MessagePart::text(text)],
         metadata: Some(serde_json::json!({
@@ -360,7 +360,7 @@ async fn execute_start(
     input: BashToolInput,
     ctx: &ToolExecutionContext,
 ) -> Result<ToolResult> {
-    let external_call_id = call_id.to_string();
+    let external_call_id = types::CallId::from(&call_id);
     let command = resolve_command(&input)?;
     let cwd = resolve_cwd(&input, ctx)?;
     let shell = shell_or_default("/bin/sh");
@@ -426,7 +426,7 @@ async fn execute_start(
 
     Ok(ToolResult {
         id: call_id,
-        call_id: external_call_id.into(),
+        call_id: external_call_id,
         tool_name: "bash".to_string(),
         parts: vec![MessagePart::text(format!(
             "[bash session_id={} state=running mode=start]\ncommand> {}\ncwd> {}\ntimeout_ms> {}\n\nUse mode=\"poll\" with this session_id to collect output.\nUse mode=\"cancel\" to stop the session.",
@@ -450,7 +450,7 @@ async fn execute_start(
 }
 
 async fn execute_poll(call_id: ToolCallId, input: BashToolInput) -> Result<ToolResult> {
-    let external_call_id = call_id.to_string();
+    let external_call_id = types::CallId::from(&call_id);
     let session_id = resolve_session_id(&input)?;
     let max_output_chars = input
         .max_output_chars
@@ -498,7 +498,7 @@ async fn execute_poll(call_id: ToolCallId, input: BashToolInput) -> Result<ToolR
 
     Ok(ToolResult {
         id: call_id,
-        call_id: external_call_id.into(),
+        call_id: external_call_id,
         tool_name: "bash".to_string(),
         parts: vec![MessagePart::text(text)],
         metadata: Some(serde_json::json!({
@@ -543,7 +543,7 @@ async fn execute_poll(call_id: ToolCallId, input: BashToolInput) -> Result<ToolR
 }
 
 async fn execute_cancel(call_id: ToolCallId, input: BashToolInput) -> Result<ToolResult> {
-    let external_call_id = call_id.to_string();
+    let external_call_id = types::CallId::from(&call_id);
     let session_id = resolve_session_id(&input)?;
     let poll_wait_ms = input.poll_wait_ms.unwrap_or(1_000).min(MAX_POLL_WAIT_MS);
 
@@ -577,7 +577,7 @@ async fn execute_cancel(call_id: ToolCallId, input: BashToolInput) -> Result<Too
 
     Ok(ToolResult {
         id: call_id,
-        call_id: external_call_id.into(),
+        call_id: external_call_id,
         tool_name: "bash".to_string(),
         parts: vec![MessagePart::text(format!(
             "[bash session_id={} mode=cancel]\ncancellation_requested> {}\nstate> {}\nexit_code> {}\n",

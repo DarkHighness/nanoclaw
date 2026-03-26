@@ -499,16 +499,17 @@ impl AnthropicBlockState {
                 } else {
                     serde_json::from_str(&input_json).map_err(ProviderError::Json)?
                 };
+                let origin = tool_origins.get(name.as_str()).cloned().unwrap_or_else(|| {
+                    ToolOrigin::Provider {
+                        provider: "anthropic".to_string(),
+                    }
+                });
                 Ok(Some(AnthropicBlockOutput::ToolCall(ToolCall {
-                    id: ToolCallId::from(id.clone()),
-                    call_id: CallId::from(id.clone()),
-                    tool_name: name.clone(),
+                    id: ToolCallId::from(id.as_str()),
+                    call_id: CallId::from(id.as_str()),
+                    tool_name: name,
                     arguments,
-                    origin: tool_origins.get(&name).cloned().unwrap_or_else(|| {
-                        ToolOrigin::Provider {
-                            provider: "anthropic".to_string(),
-                        }
-                    }),
+                    origin,
                 })))
             }
             Self::Thinking {
