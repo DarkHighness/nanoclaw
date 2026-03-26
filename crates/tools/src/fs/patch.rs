@@ -1,5 +1,6 @@
 use crate::ToolExecutionContext;
 use crate::annotations::mcp_tool_annotations;
+use crate::file_activity::FileActivityObserver;
 use crate::fs::{
     TextEditOperation, WriteExistingBehavior, WriteMissingBehavior, WriteRequest, apply_delete,
     apply_text_edits, apply_write, commit_text_file, load_optional_text_file,
@@ -13,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 use types::{MessagePart, ToolCallId, ToolOrigin, ToolOutputMode, ToolResult, ToolSpec};
 
 const DIFF_PREVIEW_LINE_LIMIT: usize = 12;
@@ -60,8 +62,10 @@ pub struct PatchToolInput {
     pub operations: Vec<PatchOperation>,
 }
 
-#[derive(Clone, Debug, Default)]
-pub struct PatchTool;
+#[derive(Clone, Default)]
+pub struct PatchTool {
+    activity_observer: Option<Arc<dyn FileActivityObserver>>,
+}
 
 #[derive(Clone, Debug)]
 struct StagedFile {
@@ -74,7 +78,16 @@ struct StagedFile {
 impl PatchTool {
     #[must_use]
     pub fn new() -> Self {
-        Self
+        Self {
+            activity_observer: None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_file_activity_observer(activity_observer: Arc<dyn FileActivityObserver>) -> Self {
+        Self {
+            activity_observer: Some(activity_observer),
+        }
     }
 }
 
@@ -435,6 +448,15 @@ impl Tool for PatchTool {
 
         for entry in &changed_entries {
             commit_text_file(&entry.resolved_path, entry.content.as_deref()).await?;
+        }
+        if let Some(observer) = &self.activity_observer {
+            for entry in &changed_entries {
+                if entry.content.is_some() {
+                    observer.did_change(entry.resolved_path.clone());
+                } else {
+                    observer.did_remove(entry.resolved_path.clone());
+                }
+            }
         }
 
         let diff_previews: Vec<Value> = changed_entries

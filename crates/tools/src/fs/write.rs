@@ -1,4 +1,5 @@
 use crate::annotations::mcp_tool_annotations;
+use crate::file_activity::FileActivityObserver;
 use crate::fs::{
     WriteExistingBehavior, WriteMissingBehavior, WriteRequest, apply_write, commit_text_file,
     load_optional_text_file, resolve_tool_path_against_workspace_root,
@@ -9,6 +10,7 @@ use async_trait::async_trait;
 use schemars::{JsonSchema, schema_for};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::sync::Arc;
 use types::{MessagePart, ToolCallId, ToolOrigin, ToolOutputMode, ToolResult, ToolSpec};
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
@@ -23,13 +25,24 @@ pub struct WriteToolInput {
     pub expected_snapshot: Option<String>,
 }
 
-#[derive(Clone, Debug, Default)]
-pub struct WriteTool;
+#[derive(Clone, Default)]
+pub struct WriteTool {
+    activity_observer: Option<Arc<dyn FileActivityObserver>>,
+}
 
 impl WriteTool {
     #[must_use]
     pub fn new() -> Self {
-        Self
+        Self {
+            activity_observer: None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_file_activity_observer(activity_observer: Arc<dyn FileActivityObserver>) -> Self {
+        Self {
+            activity_observer: Some(activity_observer),
+        }
     }
 }
 
@@ -87,6 +100,9 @@ impl Tool for WriteTool {
         }
 
         commit_text_file(&resolved, outcome.next_content.as_deref()).await?;
+        if let Some(observer) = &self.activity_observer {
+            observer.did_change(resolved.clone());
+        }
         Ok(ToolResult {
             id: call_id,
             call_id: external_call_id,

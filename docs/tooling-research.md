@@ -200,6 +200,8 @@ Implementation impact:
 - The feature provides a `CodeIntelBackend` trait so hosts can plug in an LSP client, an external index, or another backend without changing the tool contract.
 - The default concrete backend is `WorkspaceTextCodeIntelBackend`, a lexical in-workspace indexer that proves the contract and keeps tests deterministic when no external code-intel daemon is available.
 - `code_references` uses the substrate's canonical `include_declaration` field directly, even when the underlying backend is LSP-shaped.
+- `code-agent` now layers a managed LSP backend on top of that trait. It follows the same operational shape `opencode` uses today: reuse one client per language server, send `didOpen` from file-view reads, and re-sync documents after write/edit/patch mutations before semantic follow-up queries.
+- The managed overlay keeps auto-install behind explicit host config. When no managed or preinstalled LSP executable is available, the tools still fall back to the lexical backend so hosts do not silently lose navigation coverage.
 
 ### 14. Tool contracts should carry async handles and normalized identities where execution is multi-hop
 

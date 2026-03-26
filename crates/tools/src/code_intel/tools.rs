@@ -1,7 +1,8 @@
 use crate::ToolExecutionContext;
 use crate::annotations::mcp_tool_annotations;
 use crate::code_intel::{
-    CodeIntelBackend, CodeReference, CodeSymbol, WorkspaceTextCodeIntelBackend,
+    CodeIntelBackend, CodeNavigationTarget, CodeReference, CodeSymbol,
+    WorkspaceTextCodeIntelBackend,
 };
 use crate::fs::resolve_tool_path_against_workspace_root;
 use crate::registry::Tool;
@@ -30,13 +31,27 @@ pub struct CodeDocumentSymbolsInput {
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 pub struct CodeDefinitionsInput {
-    pub symbol: String,
+    #[serde(default)]
+    pub symbol: Option<String>,
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub line: Option<usize>,
+    #[serde(default)]
+    pub column: Option<usize>,
     pub limit: Option<usize>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 pub struct CodeReferencesInput {
-    pub symbol: String,
+    #[serde(default)]
+    pub symbol: Option<String>,
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub line: Option<usize>,
+    #[serde(default)]
+    pub column: Option<usize>,
     pub limit: Option<usize>,
     #[serde(default)]
     pub include_declaration: Option<bool>,
@@ -258,8 +273,7 @@ impl Tool for CodeDefinitionsTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "code_definitions".into(),
-            description: "Resolve declaration locations for a symbol name across the workspace."
-                .to_string(),
+            description: "Resolve declaration locations either from a symbol name or from a file position (`path` + `line` + optional `column`) for semantic backends such as LSP.".to_string(),
             input_schema: serde_json::to_value(schema_for!(CodeDefinitionsInput))
                 .expect("code_definitions schema"),
             output_mode: ToolOutputMode::Text,
@@ -276,21 +290,18 @@ impl Tool for CodeDefinitionsTool {
     ) -> Result<ToolResult> {
         let external_call_id = types::CallId::from(&call_id);
         let input: CodeDefinitionsInput = serde_json::from_value(arguments)?;
-        let symbol = input.symbol.trim();
-        if symbol.is_empty() {
-            return Err(ToolError::invalid(
-                "code_definitions requires a non-empty symbol",
-            ));
-        }
+        let target = resolve_navigation_target(
+            input.symbol.as_deref(),
+            input.path.as_deref(),
+            input.line,
+            input.column,
+            ctx,
+        )?;
         let limit = clamp_limit(input.limit);
-        let symbols = self.backend.definitions(symbol, limit, ctx).await?;
+        let symbols = self.backend.definitions(&target, limit, ctx).await?;
         let text = format_symbols_output(
             "code_definitions",
-            &[
-                ("symbol".to_string(), symbol.to_string()),
-                ("limit".to_string(), limit.to_string()),
-                ("backend".to_string(), self.backend.name().to_string()),
-            ],
+            &format_navigation_tags(&target, limit, self.backend.name()),
             &symbols,
             "No matching declaration was found.",
         );
@@ -300,7 +311,7 @@ impl Tool for CodeDefinitionsTool {
             tool_name: "code_definitions".into(),
             parts: vec![MessagePart::text(text)],
             metadata: Some(json!({
-                "symbol": symbol,
+                "target": navigation_target_to_json(&target),
                 "limit": limit,
                 "backend": self.backend.name(),
                 "result_count": symbols.len(),
@@ -316,7 +327,7 @@ impl Tool for CodeReferencesTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "code_references".into(),
-            description: "Find lexical symbol references across the workspace with optional declaration inclusion.".to_string(),
+            description: "Find symbol references either from a symbol name or from a file position (`path` + `line` + optional `column`). Semantic backends use the position form for true LSP references.".to_string(),
             input_schema: serde_json::to_value(schema_for!(CodeReferencesInput))
                 .expect("code_references schema"),
             output_mode: ToolOutputMode::Text,
@@ -333,28 +344,28 @@ impl Tool for CodeReferencesTool {
     ) -> Result<ToolResult> {
         let external_call_id = types::CallId::from(&call_id);
         let input: CodeReferencesInput = serde_json::from_value(arguments)?;
-        let symbol = input.symbol.trim();
-        if symbol.is_empty() {
-            return Err(ToolError::invalid(
-                "code_references requires a non-empty symbol",
-            ));
-        }
+        let target = resolve_navigation_target(
+            input.symbol.as_deref(),
+            input.path.as_deref(),
+            input.line,
+            input.column,
+            ctx,
+        )?;
         let limit = clamp_limit(input.limit);
         let include_declaration = input.include_declaration.unwrap_or(false);
         let references = self
             .backend
-            .references(symbol, include_declaration, limit, ctx)
+            .references(&target, include_declaration, limit, ctx)
             .await?;
         let text = format_references_output(
-            &[
-                ("symbol".to_string(), symbol.to_string()),
-                ("limit".to_string(), limit.to_string()),
-                (
+            &{
+                let mut tags = format_navigation_tags(&target, limit, self.backend.name());
+                tags.push((
                     "include_declaration".to_string(),
                     include_declaration.to_string(),
-                ),
-                ("backend".to_string(), self.backend.name().to_string()),
-            ],
+                ));
+                tags
+            },
             &references,
         );
         Ok(ToolResult {
@@ -363,7 +374,7 @@ impl Tool for CodeReferencesTool {
             tool_name: "code_references".into(),
             parts: vec![MessagePart::text(text)],
             metadata: Some(json!({
-                "symbol": symbol,
+                "target": navigation_target_to_json(&target),
                 "limit": limit,
                 "include_declaration": include_declaration,
                 "backend": self.backend.name(),
@@ -379,6 +390,98 @@ fn clamp_limit(limit: Option<usize>) -> usize {
     limit
         .unwrap_or(DEFAULT_RESULT_LIMIT)
         .clamp(1, MAX_RESULT_LIMIT)
+}
+
+fn resolve_navigation_target(
+    symbol: Option<&str>,
+    path: Option<&str>,
+    line: Option<usize>,
+    column: Option<usize>,
+    ctx: &ToolExecutionContext,
+) -> Result<CodeNavigationTarget> {
+    if let Some(path) = path.map(str::trim).filter(|value| !value.is_empty()) {
+        let Some(line) = line else {
+            return Err(ToolError::invalid(
+                "position-based code-intel queries require line when path is provided",
+            ));
+        };
+        let resolved = resolve_tool_path_against_workspace_root(
+            path,
+            ctx.effective_root(),
+            ctx.container_workdir.as_deref(),
+        )?;
+        if ctx.workspace_only {
+            ctx.assert_path_allowed(&resolved)?;
+        }
+        let display_path = resolved
+            .strip_prefix(ctx.effective_root())
+            .unwrap_or(&resolved)
+            .to_string_lossy()
+            .replace('\\', "/");
+        return Ok(CodeNavigationTarget::Position {
+            path: resolved,
+            display_path,
+            line,
+            column: column.unwrap_or(1).max(1),
+        });
+    }
+
+    let symbol = symbol
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            ToolError::invalid("code-intel navigation requires either symbol or path+line(+column)")
+        })?;
+    Ok(CodeNavigationTarget::symbol(symbol))
+}
+
+fn format_navigation_tags(
+    target: &CodeNavigationTarget,
+    limit: usize,
+    backend_name: &str,
+) -> Vec<(String, String)> {
+    let mut tags = vec![
+        ("query_mode".to_string(), target.mode_label().to_string()),
+        ("limit".to_string(), limit.to_string()),
+        ("backend".to_string(), backend_name.to_string()),
+    ];
+    match target {
+        CodeNavigationTarget::Symbol(symbol) => {
+            tags.push(("symbol".to_string(), symbol.clone()));
+        }
+        CodeNavigationTarget::Position {
+            display_path,
+            line,
+            column,
+            ..
+        } => {
+            tags.push(("path".to_string(), display_path.clone()));
+            tags.push(("line".to_string(), line.to_string()));
+            tags.push(("column".to_string(), column.to_string()));
+        }
+    }
+    tags
+}
+
+fn navigation_target_to_json(target: &CodeNavigationTarget) -> Value {
+    match target {
+        CodeNavigationTarget::Symbol(symbol) => json!({
+            "mode": "symbol",
+            "symbol": symbol,
+        }),
+        CodeNavigationTarget::Position {
+            path,
+            display_path,
+            line,
+            column,
+        } => json!({
+            "mode": "position",
+            "path": path,
+            "display_path": display_path,
+            "line": line,
+            "column": column,
+        }),
+    }
 }
 
 fn format_symbols_output(
@@ -479,7 +582,8 @@ mod tests {
     use crate::Result;
     use crate::ToolExecutionContext;
     use crate::code_intel::{
-        CodeIntelBackend, CodeLocation, CodeReference, CodeSymbol, CodeSymbolKind,
+        CodeIntelBackend, CodeLocation, CodeNavigationTarget, CodeReference, CodeSymbol,
+        CodeSymbolKind,
     };
     use async_trait::async_trait;
     use serde_json::json;
@@ -528,7 +632,7 @@ mod tests {
 
         async fn definitions(
             &self,
-            _symbol: &str,
+            _target: &CodeNavigationTarget,
             _limit: usize,
             _ctx: &ToolExecutionContext,
         ) -> Result<Vec<CodeSymbol>> {
@@ -537,11 +641,12 @@ mod tests {
 
         async fn references(
             &self,
-            symbol: &str,
+            target: &CodeNavigationTarget,
             include_declaration: bool,
             _limit: usize,
             _ctx: &ToolExecutionContext,
         ) -> Result<Vec<CodeReference>> {
+            let symbol = target.symbol_name().unwrap_or("Engine");
             let mut refs = vec![CodeReference {
                 symbol: symbol.to_string(),
                 location: CodeLocation {
@@ -645,5 +750,29 @@ mod tests {
         assert!(definitions.text_content().contains("[code_definitions"));
         assert!(references.text_content().contains("[code_references"));
         assert!(references.text_content().contains("[definition]"));
+    }
+
+    #[tokio::test]
+    async fn definitions_tool_accepts_position_queries() {
+        let dir = tempfile::tempdir().unwrap();
+        let sample = dir.path().join("src/lib.rs");
+        std::fs::create_dir_all(sample.parent().unwrap()).unwrap();
+        std::fs::write(&sample, "pub struct Engine;\n").unwrap();
+
+        let result = CodeDefinitionsTool::with_backend(Arc::new(StubBackend))
+            .execute(
+                ToolCallId::new(),
+                json!({
+                    "path": "src/lib.rs",
+                    "line": 1,
+                    "column": 12
+                }),
+                &context(dir.path()),
+            )
+            .await
+            .unwrap();
+
+        assert!(result.text_content().contains("query_mode=position"));
+        assert!(result.text_content().contains("path=src/lib.rs"));
     }
 }

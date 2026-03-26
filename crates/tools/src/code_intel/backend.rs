@@ -2,7 +2,7 @@ use crate::{Result, ToolExecutionContext};
 use async_trait::async_trait;
 use serde::Serialize;
 use std::fmt::{Display, Formatter};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -68,6 +68,40 @@ pub struct CodeReference {
     pub is_definition: bool,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CodeNavigationTarget {
+    Symbol(String),
+    Position {
+        path: PathBuf,
+        display_path: String,
+        line: usize,
+        column: usize,
+    },
+}
+
+impl CodeNavigationTarget {
+    #[must_use]
+    pub fn symbol(symbol: impl Into<String>) -> Self {
+        Self::Symbol(symbol.into())
+    }
+
+    #[must_use]
+    pub fn mode_label(&self) -> &'static str {
+        match self {
+            Self::Symbol(_) => "symbol",
+            Self::Position { .. } => "position",
+        }
+    }
+
+    #[must_use]
+    pub fn symbol_name(&self) -> Option<&str> {
+        match self {
+            Self::Symbol(symbol) => Some(symbol.as_str()),
+            Self::Position { .. } => None,
+        }
+    }
+}
+
 #[async_trait]
 pub trait CodeIntelBackend: Send + Sync {
     /// Stable backend identifier for metadata and host-level auditing.
@@ -89,14 +123,14 @@ pub trait CodeIntelBackend: Send + Sync {
 
     async fn definitions(
         &self,
-        symbol: &str,
+        target: &CodeNavigationTarget,
         limit: usize,
         ctx: &ToolExecutionContext,
     ) -> Result<Vec<CodeSymbol>>;
 
     async fn references(
         &self,
-        symbol: &str,
+        target: &CodeNavigationTarget,
         include_declaration: bool,
         limit: usize,
         ctx: &ToolExecutionContext,

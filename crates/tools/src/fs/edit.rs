@@ -1,6 +1,7 @@
 use crate::Result;
 use crate::ToolExecutionContext;
 use crate::annotations::mcp_tool_annotations;
+use crate::file_activity::FileActivityObserver;
 use crate::fs::{
     TextEditOperation, apply_text_edits, commit_text_file, load_optional_text_file,
     resolve_tool_path_against_workspace_root,
@@ -10,6 +11,7 @@ use async_trait::async_trait;
 use schemars::{JsonSchema, schema_for};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::sync::Arc;
 use types::{MessagePart, ToolCallId, ToolOrigin, ToolOutputMode, ToolResult, ToolSpec};
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
@@ -20,13 +22,24 @@ pub struct EditToolInput {
     pub expected_snapshot: Option<String>,
 }
 
-#[derive(Clone, Debug, Default)]
-pub struct EditTool;
+#[derive(Clone, Default)]
+pub struct EditTool {
+    activity_observer: Option<Arc<dyn FileActivityObserver>>,
+}
 
 impl EditTool {
     #[must_use]
     pub fn new() -> Self {
-        Self
+        Self {
+            activity_observer: None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_file_activity_observer(activity_observer: Arc<dyn FileActivityObserver>) -> Self {
+        Self {
+            activity_observer: Some(activity_observer),
+        }
     }
 }
 
@@ -80,6 +93,9 @@ impl Tool for EditTool {
         }
 
         commit_text_file(&resolved, outcome.next_content.as_deref()).await?;
+        if let Some(observer) = &self.activity_observer {
+            observer.did_change(resolved.clone());
+        }
         Ok(ToolResult {
             id: call_id,
             call_id: external_call_id,

@@ -6,6 +6,7 @@ compact `ratatui` terminal UI that still feels like a real product surface.
 It intentionally keeps the host layer thin:
 
 - core coding tools: `read`, `write`, `edit`, `patch`, `glob`, `grep`, `list`, `bash`
+- optional code-intel tools: `code_symbol_search`, `code_document_symbols`, `code_definitions`, `code_references`
 - agentic tools: `todo_read`, `todo_write`, `task`
 - append-only runtime loop from `runtime`
 - runtime steering and queued command support
@@ -50,6 +51,9 @@ cargo run --manifest-path apps/Cargo.toml -p code-agent -- --provider anthropic
 - `CODE_AGENT_PROVIDER`: `openai` or `anthropic` (defaults to `openai`)
 - `CODE_AGENT_SYSTEM_PROMPT`: extra system prompt text appended to the built-in preamble
 - `CODE_AGENT_SKILL_ROOTS`: optional path-list of additional skill roots
+- `CODE_AGENT_LSP_ENABLED`: enable the managed LSP overlay for code-intel tools and file-open hooks (defaults to `true`)
+- `CODE_AGENT_LSP_AUTO_INSTALL`: allow automatic installation of supported LSP servers into the managed cache (defaults to `false`)
+- `CODE_AGENT_LSP_INSTALL_ROOT`: optional override for the managed LSP cache/install directory (defaults to `.agent-core/lsp` under the workspace)
 - `OPENAI_API_KEY` / `ANTHROPIC_API_KEY`: provider credentials
 - `OPENAI_BASE_URL` / `ANTHROPIC_BASE_URL`: provider-specific API base URL overrides
 
@@ -82,6 +86,30 @@ If no skill roots are provided, it loads any existing directories from:
 - `.codex/skills`
 - `.agent-core/skills`
 - `$HOME/.codex/skills`
+
+## Managed LSP
+
+`code-agent` now follows the same broad LSP lifecycle that `opencode` uses for its code-aware file tools:
+
+- reading a supported source file triggers a best-effort `didOpen`
+- write/edit/patch mutations trigger best-effort document sync so later semantic queries see fresh content
+- code-intel tools reuse the same per-language server session instead of spawning one process per query
+
+The difference is that `code-agent` also supports a managed install path when `CODE_AGENT_LSP_AUTO_INSTALL=true`.
+If auto-install is disabled or the required package manager is unavailable, the code-intel tools fall back to the built-in lexical workspace index.
+
+Current managed server matrix:
+
+- TypeScript / JavaScript: `typescript-language-server` via `npm`
+- Python: `python-lsp-server` (`pylsp`) via `python -m pip`
+- Go: `gopls` via `go install`
+- YAML: `yaml-language-server` via `npm`
+- Shell: `bash-language-server` via `npm`
+
+Current auto-start-only matrix when the executable is already on `PATH`:
+
+- Rust: `rust-analyzer`
+- C / C++ / Objective-C: `clangd`
 
 ## Commands
 

@@ -67,6 +67,18 @@ pub mod vars {
         "CODE_AGENT_SANDBOX_FAIL_IF_UNAVAILABLE",
         "Whether code-agent should fail closed when no enforcing sandbox backend is available.",
     );
+    pub const CODE_AGENT_LSP_ENABLED: EnvVar = EnvVar::new(
+        "CODE_AGENT_LSP_ENABLED",
+        "Whether code-agent should enable managed LSP-backed code-intel with lexical fallback.",
+    );
+    pub const CODE_AGENT_LSP_AUTO_INSTALL: EnvVar = EnvVar::new(
+        "CODE_AGENT_LSP_AUTO_INSTALL",
+        "Whether code-agent may auto-install supported LSP servers into the managed workspace cache.",
+    );
+    pub const CODE_AGENT_LSP_INSTALL_ROOT: EnvVar = EnvVar::new(
+        "CODE_AGENT_LSP_INSTALL_ROOT",
+        "Optional override for the managed LSP install/cache directory used by code-agent.",
+    );
 
     pub const AGENT_CORE_PROVIDER: EnvVar = EnvVar::new(
         "AGENT_CORE_PROVIDER",
@@ -162,6 +174,9 @@ pub mod vars {
         CODE_AGENT_SYSTEM_PROMPT,
         CODE_AGENT_SKILL_ROOTS,
         CODE_AGENT_SANDBOX_FAIL_IF_UNAVAILABLE,
+        CODE_AGENT_LSP_ENABLED,
+        CODE_AGENT_LSP_AUTO_INSTALL,
+        CODE_AGENT_LSP_INSTALL_ROOT,
         AGENT_CORE_PROVIDER,
         AGENT_CORE_MODEL,
         AGENT_CORE_BASE_URL,

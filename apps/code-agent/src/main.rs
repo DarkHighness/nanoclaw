@@ -9,10 +9,12 @@ use agent::runtime::{
     NoopToolApprovalPolicy, RuntimeSubagentExecutor, ToolApprovalHandler,
 };
 use agent::{
-    AgentRuntime, AgentRuntimeBuilder, BashTool, EditTool, GlobTool, GrepTool, HookRunner,
-    InMemoryRunStore, ListTool, ManagedPolicyProcessExecutor, PatchTool, ReadTool, SandboxPolicy,
-    Skill, SkillCatalog, TaskTool, TodoListState, TodoReadTool, TodoWriteTool,
-    ToolExecutionContext, ToolRegistry, WriteTool,
+    AgentRuntime, AgentRuntimeBuilder, BashTool, CodeDefinitionsTool, CodeDocumentSymbolsTool,
+    CodeIntelBackend, CodeReferencesTool, CodeSymbolSearchTool, EditTool, GlobTool, GrepTool,
+    HookRunner, InMemoryRunStore, ListTool, ManagedCodeIntelBackend, ManagedCodeIntelOptions,
+    ManagedPolicyProcessExecutor, PatchTool, ReadTool, SandboxPolicy, Skill, SkillCatalog,
+    TaskTool, TodoListState, TodoReadTool, TodoWriteTool, ToolExecutionContext, ToolRegistry,
+    WorkspaceTextCodeIntelBackend, WriteTool,
 };
 use agent_env::{EnvMap, vars};
 use anyhow::{Context, Result, bail};
@@ -58,6 +60,9 @@ struct AppOptions {
     system_prompt: Option<String>,
     skill_roots: Vec<PathBuf>,
     sandbox_fail_if_unavailable: bool,
+    lsp_enabled: bool,
+    lsp_auto_install: bool,
+    lsp_install_root: Option<PathBuf>,
     one_shot_prompt: Option<String>,
 }
 
@@ -81,6 +86,14 @@ impl AppOptions {
         let mut sandbox_fail_if_unavailable = env_map
             .get_bool_var(vars::CODE_AGENT_SANDBOX_FAIL_IF_UNAVAILABLE)
             .unwrap_or(false);
+        let lsp_enabled = env_map
+            .get_bool_var(vars::CODE_AGENT_LSP_ENABLED)
+            .unwrap_or(true);
+        let lsp_auto_install = env_map
+            .get_bool_var(vars::CODE_AGENT_LSP_AUTO_INSTALL)
+            .unwrap_or(false);
+        let lsp_install_root =
+            env_lookup(env_map, vars::CODE_AGENT_LSP_INSTALL_ROOT.key).map(PathBuf::from);
         let mut prompt_parts = Vec::new();
 
         let mut args = args.into_iter();
@@ -123,6 +136,9 @@ impl AppOptions {
             system_prompt,
             skill_roots,
             sandbox_fail_if_unavailable,
+            lsp_enabled,
+            lsp_auto_install,
+            lsp_install_root,
             one_shot_prompt,
         })
     }
@@ -230,12 +246,41 @@ async fn build_runtime(
         Arc::new(agent::runtime::NoopAgentHookEvaluator),
     ));
     let todo_state = TodoListState::default();
+    // Managed LSP helpers run outside the normal user-invoked tool approval path.
+    // Keep them behind explicit app-level config and use a separate host-managed
+    // process policy until background helper execution shares the same approval
+    // and sandbox contract as foreground tool calls.
+    let managed_code_intel = options.lsp_enabled.then(|| {
+        let mut lsp_options = ManagedCodeIntelOptions::for_workspace(workspace_root);
+        lsp_options.auto_install = options.lsp_auto_install;
+        if let Some(install_root) = &options.lsp_install_root {
+            lsp_options.install_root = install_root.clone();
+        }
+        Arc::new(ManagedCodeIntelBackend::new(
+            workspace_root.to_path_buf(),
+            lsp_options,
+            process_executor.clone(),
+            SandboxPolicy::permissive(),
+            SandboxPolicy::permissive(),
+        ))
+    });
+    let code_intel_backend: Arc<dyn CodeIntelBackend> = managed_code_intel
+        .clone()
+        .map(|backend| backend as Arc<dyn CodeIntelBackend>)
+        .unwrap_or_else(|| Arc::new(WorkspaceTextCodeIntelBackend::new()));
 
     let mut tools = ToolRegistry::new();
-    tools.register(ReadTool::new());
-    tools.register(WriteTool::new());
-    tools.register(EditTool::new());
-    tools.register(PatchTool::new());
+    if let Some(observer) = managed_code_intel.clone() {
+        tools.register(ReadTool::with_file_activity_observer(observer.clone()));
+        tools.register(WriteTool::with_file_activity_observer(observer.clone()));
+        tools.register(EditTool::with_file_activity_observer(observer.clone()));
+        tools.register(PatchTool::with_file_activity_observer(observer));
+    } else {
+        tools.register(ReadTool::new());
+        tools.register(WriteTool::new());
+        tools.register(EditTool::new());
+        tools.register(PatchTool::new());
+    }
     tools.register(GlobTool::new());
     tools.register(GrepTool::new());
     tools.register(ListTool::new());
@@ -243,6 +288,16 @@ async fn build_runtime(
         process_executor,
         sandbox_policy,
     ));
+    tools.register(CodeSymbolSearchTool::with_backend(
+        code_intel_backend.clone(),
+    ));
+    tools.register(CodeDocumentSymbolsTool::with_backend(
+        code_intel_backend.clone(),
+    ));
+    tools.register(CodeDefinitionsTool::with_backend(
+        code_intel_backend.clone(),
+    ));
+    tools.register(CodeReferencesTool::with_backend(code_intel_backend));
     tools.register(TodoReadTool::new(todo_state.clone()));
     tools.register(TodoWriteTool::new(todo_state));
     let subagent_executor = RuntimeSubagentExecutor::new(
@@ -456,6 +511,9 @@ fn print_help() {
     println!("  OPENAI_BASE_URL / ANTHROPIC_BASE_URL");
     println!("  CODE_AGENT_PROVIDER / CODE_AGENT_SYSTEM_PROMPT / CODE_AGENT_SKILL_ROOTS");
     println!("  CODE_AGENT_SANDBOX_FAIL_IF_UNAVAILABLE");
+    println!(
+        "  CODE_AGENT_LSP_ENABLED / CODE_AGENT_LSP_AUTO_INSTALL / CODE_AGENT_LSP_INSTALL_ROOT"
+    );
 }
 
 #[cfg(test)]
@@ -521,5 +579,28 @@ mod tests {
         assert_eq!(policy.mode, SandboxMode::WorkspaceWrite);
         assert_eq!(policy.network, NetworkPolicy::Off);
         assert!(policy.fail_if_unavailable);
+    }
+
+    #[tokio::test]
+    async fn loads_lsp_flags_from_env() {
+        let _guard = env_test_lock().lock().unwrap();
+        let dir = tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(".env"),
+            format!(
+                "OPENAI_API_KEY=test-key\nCODE_AGENT_LSP_ENABLED=false\nCODE_AGENT_LSP_AUTO_INSTALL=true\nCODE_AGENT_LSP_INSTALL_ROOT={}\n",
+                dir.path().join(".cache/lsp").display()
+            ),
+        )
+        .unwrap();
+        let env_map = EnvMap::from_workspace_dir(dir.path()).unwrap();
+        let options = AppOptions::from_env_and_args_iter(&env_map, Vec::<String>::new()).unwrap();
+
+        assert!(!options.lsp_enabled);
+        assert!(options.lsp_auto_install);
+        assert_eq!(
+            options.lsp_install_root,
+            Some(dir.path().join(".cache/lsp"))
+        );
     }
 }

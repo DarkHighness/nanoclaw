@@ -1,5 +1,6 @@
 use crate::ToolExecutionContext;
 use crate::annotations::mcp_tool_annotations;
+use crate::file_activity::FileActivityObserver;
 use crate::fs::{
     TextBuffer, format_numbered_lines, resolve_tool_path_against_workspace_root, stable_text_hash,
 };
@@ -10,6 +11,7 @@ use base64::Engine;
 use schemars::{JsonSchema, schema_for};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::sync::Arc;
 use tokio::fs;
 use types::{MessagePart, ToolCallId, ToolOrigin, ToolOutputMode, ToolResult, ToolSpec};
 
@@ -38,13 +40,24 @@ pub struct ReadToolInput {
     pub anchor_ignore_case: Option<bool>,
 }
 
-#[derive(Clone, Debug, Default)]
-pub struct ReadTool;
+#[derive(Clone, Default)]
+pub struct ReadTool {
+    activity_observer: Option<Arc<dyn FileActivityObserver>>,
+}
 
 impl ReadTool {
     #[must_use]
     pub fn new() -> Self {
-        Self
+        Self {
+            activity_observer: None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_file_activity_observer(activity_observer: Arc<dyn FileActivityObserver>) -> Self {
+        Self {
+            activity_observer: Some(activity_observer),
+        }
     }
 }
 
@@ -97,6 +110,9 @@ impl Tool for ReadTool {
 
         let text = String::from_utf8(bytes)
             .map_err(|_| ToolError::invalid("read: file is not valid UTF-8 or supported image"))?;
+        if let Some(observer) = &self.activity_observer {
+            observer.did_open(resolved.clone());
+        }
         if input.end_line.is_some() && input.line_count.is_some() {
             return Err(ToolError::invalid(
                 "read accepts either end_line or line_count, not both",

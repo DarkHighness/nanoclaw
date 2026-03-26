@@ -12,8 +12,8 @@ pub use tools::{
 #[cfg(feature = "code-intel")]
 pub use tools::{
     CodeDefinitionsTool, CodeDocumentSymbolsTool, CodeIntelBackend, CodeReference,
-    CodeReferencesTool, CodeSymbol, CodeSymbolKind, CodeSymbolSearchTool,
-    WorkspaceTextCodeIntelBackend,
+    CodeReferencesTool, CodeSymbol, CodeSymbolKind, CodeSymbolSearchTool, ManagedCodeIntelBackend,
+    ManagedCodeIntelOptions, WorkspaceTextCodeIntelBackend,
 };
 #[cfg(feature = "agentic-tools")]
 pub use tools::{TaskTool, TodoItem, TodoListState, TodoReadTool, TodoStatus, TodoWriteTool};

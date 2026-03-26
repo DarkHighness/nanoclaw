@@ -1,6 +1,6 @@
 use crate::ToolExecutionContext;
 use crate::code_intel::{
-    CodeIntelBackend, CodeLocation, CodeReference, CodeSymbol, CodeSymbolKind,
+    CodeIntelBackend, CodeLocation, CodeNavigationTarget, CodeReference, CodeSymbol, CodeSymbolKind,
 };
 use crate::{Result, ToolError};
 use async_trait::async_trait;
@@ -163,11 +163,14 @@ impl CodeIntelBackend for WorkspaceTextCodeIntelBackend {
 
     async fn definitions(
         &self,
-        symbol: &str,
+        target: &CodeNavigationTarget,
         limit: usize,
         ctx: &ToolExecutionContext,
     ) -> Result<Vec<CodeSymbol>> {
-        let query = symbol.trim();
+        let query = resolve_navigation_symbol(target)?.trim().to_string();
+        if query.is_empty() {
+            return Ok(Vec::new());
+        }
         let all_symbols = self.collect_workspace_symbols(ctx.effective_root())?;
         let mut symbols = all_symbols
             .iter()
@@ -187,12 +190,12 @@ impl CodeIntelBackend for WorkspaceTextCodeIntelBackend {
 
     async fn references(
         &self,
-        symbol: &str,
+        target: &CodeNavigationTarget,
         include_declaration: bool,
         limit: usize,
         ctx: &ToolExecutionContext,
     ) -> Result<Vec<CodeReference>> {
-        let query = symbol.trim();
+        let query = resolve_navigation_symbol(target)?;
         if query.is_empty() {
             return Ok(Vec::new());
         }
@@ -208,7 +211,7 @@ impl CodeIntelBackend for WorkspaceTextCodeIntelBackend {
                 )
             })
             .collect::<HashSet<_>>();
-        let pattern = build_symbol_regex(query)?;
+        let pattern = build_symbol_regex(&query)?;
         let mut refs = Vec::new();
         for path in self.workspace_files(ctx.effective_root()) {
             let source = match std::fs::read_to_string(&path) {
@@ -429,10 +432,87 @@ fn build_symbol_regex(symbol: &str) -> Result<Regex> {
     })
 }
 
+fn resolve_navigation_symbol(target: &CodeNavigationTarget) -> Result<String> {
+    match target {
+        CodeNavigationTarget::Symbol(symbol) => Ok(symbol.trim().to_string()),
+        CodeNavigationTarget::Position {
+            path, line, column, ..
+        } => symbol_at_position(path, *line, *column),
+    }
+}
+
+fn symbol_at_position(path: &Path, line: usize, column: usize) -> Result<String> {
+    let source = std::fs::read_to_string(path).map_err(|error| {
+        ToolError::invalid_state(format!(
+            "failed to read source file {}: {error}",
+            path.display()
+        ))
+    })?;
+    let Some(line_text) = source.lines().nth(line.saturating_sub(1)) else {
+        return Err(ToolError::invalid(format!(
+            "line {line} is outside {}",
+            path.display()
+        )));
+    };
+    let chars = line_text.char_indices().collect::<Vec<_>>();
+    if chars.is_empty() {
+        return Err(ToolError::invalid(format!(
+            "line {line} in {} is empty",
+            path.display()
+        )));
+    }
+    let requested_column = column.max(1);
+    let byte_index = chars
+        .iter()
+        .find_map(|(offset, _)| ((*offset + 1) >= requested_column).then_some(*offset))
+        .unwrap_or(line_text.len());
+    let (start, end) = identifier_bounds(line_text, byte_index);
+    if start == end {
+        return Err(ToolError::invalid(format!(
+            "no identifier found at {}:{}:{}",
+            path.display(),
+            line,
+            column
+        )));
+    }
+    Ok(line_text[start..end].to_string())
+}
+
+fn identifier_bounds(line: &str, byte_index: usize) -> (usize, usize) {
+    let bytes = line.as_bytes();
+    if bytes.is_empty() {
+        return (0, 0);
+    }
+
+    let mut cursor = byte_index.min(bytes.len());
+    if cursor == bytes.len() {
+        cursor = bytes.len().saturating_sub(1);
+    }
+    if !is_identifier_byte(bytes[cursor]) {
+        return (0, 0);
+    }
+
+    let mut start = cursor;
+    while start > 0 && is_identifier_byte(bytes[start - 1]) {
+        start -= 1;
+    }
+
+    let mut end = cursor + 1;
+    while end < bytes.len() && is_identifier_byte(bytes[end]) {
+        end += 1;
+    }
+    (start, end)
+}
+
+fn is_identifier_byte(ch: u8) -> bool {
+    ch.is_ascii_alphanumeric() || ch == b'_' || ch == b'$'
+}
+
 #[cfg(test)]
 mod tests {
     use super::{CodeIntelBackend, WorkspaceTextCodeIntelBackend};
     use crate::ToolExecutionContext;
+    use crate::code_intel::CodeNavigationTarget;
 
     fn context(root: &std::path::Path) -> ToolExecutionContext {
         ToolExecutionContext {
@@ -500,11 +580,21 @@ mod tests {
 
         let backend = WorkspaceTextCodeIntelBackend::new();
         let without_decl = backend
-            .references("compute_total", false, 16, &context(dir.path()))
+            .references(
+                &CodeNavigationTarget::symbol("compute_total"),
+                false,
+                16,
+                &context(dir.path()),
+            )
             .await
             .unwrap();
         let with_decl = backend
-            .references("compute_total", true, 16, &context(dir.path()))
+            .references(
+                &CodeNavigationTarget::symbol("compute_total"),
+                true,
+                16,
+                &context(dir.path()),
+            )
             .await
             .unwrap();
 
@@ -512,5 +602,33 @@ mod tests {
         assert!(!without_decl[0].is_definition);
         assert_eq!(with_decl.len(), 2);
         assert!(with_decl.iter().any(|entry| entry.is_definition));
+    }
+
+    #[tokio::test]
+    async fn position_queries_extract_identifier_under_cursor() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        let path = dir.path().join("src/lib.rs");
+        std::fs::write(
+            &path,
+            "fn compute_total() {}\nfn main() { let _ = compute_total(); }\n",
+        )
+        .unwrap();
+
+        let backend = WorkspaceTextCodeIntelBackend::new();
+        let target = CodeNavigationTarget::Position {
+            path: path.clone(),
+            display_path: "src/lib.rs".to_string(),
+            line: 2,
+            column: 29,
+        };
+        let definitions = backend
+            .definitions(&target, 8, &context(dir.path()))
+            .await
+            .unwrap();
+
+        assert_eq!(definitions.len(), 1);
+        assert_eq!(definitions[0].name, "compute_total");
+        assert_eq!(definitions[0].location.path, "src/lib.rs");
     }
 }
