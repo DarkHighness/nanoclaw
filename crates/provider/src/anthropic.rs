@@ -355,8 +355,8 @@ fn anthropic_tool_message(parts: Vec<MessagePart>) -> Result<Value> {
 
 fn tool_result_block(result: ToolResult) -> Value {
     // Anthropic tool results do not expose a separate structured payload field.
-    // Keep plain text results compact, but serialize a JSON envelope whenever a
-    // richer local result would otherwise be flattened away on the round-trip.
+    // Keep plain text results compact, but serialize the stable round-trip
+    // envelope whenever a richer local result would otherwise be flattened away.
     let text = tool_result_roundtrip_text(&result);
     json!({
         "type": "tool_result",

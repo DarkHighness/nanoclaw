@@ -838,6 +838,8 @@ fn openai_input_item_from_part(part: &MessagePart, role: MessageRole) -> Option<
         MessagePart::ToolResult { result } => Some(json!({
             "type": "function_call_output",
             "call_id": result.call_id,
+            // Responses currently treat tool output as text, so rich local tool
+            // results travel through the versioned round-trip envelope.
             "output": tool_result_roundtrip_text(result),
             "status": "completed",
         })),

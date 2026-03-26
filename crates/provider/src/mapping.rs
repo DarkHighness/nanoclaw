@@ -119,7 +119,32 @@ pub fn tool_result_roundtrip_text(result: &ToolResult) -> String {
         return result.text_content();
     }
 
+    // Some provider tool-result surfaces still only accept text. In that case we
+    // degrade rich local results to a stable JSON envelope instead of flattening
+    // them to prose. This keeps correlation ids, error state, multipart content,
+    // and structured payloads attached to the round-trip text.
     let mut envelope = Map::new();
+    envelope.insert(
+        "type".to_string(),
+        Value::String("agent_core_tool_result".to_string()),
+    );
+    envelope.insert(
+        "version".to_string(),
+        Value::Number(serde_json::Number::from(1)),
+    );
+    envelope.insert(
+        "id".to_string(),
+        Value::String(result.id.as_str().to_string()),
+    );
+    envelope.insert(
+        "call_id".to_string(),
+        Value::String(result.call_id.as_str().to_string()),
+    );
+    envelope.insert(
+        "tool_name".to_string(),
+        Value::String(result.tool_name.clone()),
+    );
+    envelope.insert("is_error".to_string(), Value::Bool(result.is_error));
     let summary_text = result.text_content();
     if !summary_text.is_empty() {
         envelope.insert("summary_text".to_string(), Value::String(summary_text));
@@ -212,6 +237,12 @@ mod tests {
         let rendered = tool_result_roundtrip_text(&result);
         let parsed: serde_json::Value = serde_json::from_str(&rendered).unwrap();
 
+        assert_eq!(parsed["type"], json!("agent_core_tool_result"));
+        assert_eq!(parsed["version"], json!(1));
+        assert_eq!(parsed["id"], json!("call_123"));
+        assert_eq!(parsed["call_id"], json!("opaque_123"));
+        assert_eq!(parsed["tool_name"], json!("list"));
+        assert_eq!(parsed["is_error"], json!(false));
         assert_eq!(parsed["summary_text"], json!("[list entries=1]"));
         assert_eq!(
             parsed["structured_content"]["entries"][0]["path"],
