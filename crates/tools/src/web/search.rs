@@ -8,7 +8,7 @@ use crate::{Result, ToolExecutionContext};
 use agent_env::vars;
 use async_trait::async_trait;
 use quick_xml::Reader;
-use quick_xml::events::{BytesStart, Event};
+use quick_xml::events::{BytesCData, BytesRef, BytesStart, BytesText, Event};
 use reqwest::{Client, Url};
 use schemars::{JsonSchema, schema_for};
 use serde::{Deserialize, Serialize};
@@ -62,6 +62,7 @@ pub enum WebSearchSourceMode {
 struct SearchResultItem {
     title: String,
     url: String,
+    raw_url: Option<String>,
     snippet: Option<String>,
     published_at: Option<String>,
     source_name: Option<String>,
@@ -75,6 +76,7 @@ struct SearchResultRecord {
     domain: Option<String>,
     title: String,
     url: String,
+    raw_url: Option<String>,
     snippet: Option<String>,
     published_at: Option<String>,
     source_name: Option<String>,
@@ -88,6 +90,7 @@ struct SearchSourceRecord {
     domain: Option<String>,
     title: String,
     url: String,
+    raw_url: Option<String>,
     snippet: Option<String>,
     published_at: Option<String>,
     source_name: Option<String>,
@@ -485,6 +488,7 @@ impl Tool for WebSearchTool {
                 domain: result_domain(&item.url),
                 title: item.title.clone(),
                 url: item.url.clone(),
+                raw_url: item.raw_url.clone(),
                 snippet: item.snippet.clone(),
                 published_at: item.published_at.clone(),
                 source_name: item.source_name.clone(),
@@ -627,6 +631,7 @@ impl Tool for WebSearchTool {
                     "domain": item.domain,
                     "title": item.title,
                     "url": item.url,
+                    "raw_url": item.raw_url,
                     "snippet": item.snippet,
                     "published_at": item.published_at,
                     "source_name": item.source_name,
@@ -638,6 +643,7 @@ impl Tool for WebSearchTool {
                     "domain": source.domain,
                     "title": source.title,
                     "url": source.url,
+                    "raw_url": source.raw_url,
                     "snippet": source.snippet,
                     "published_at": source.published_at,
                     "source_name": source.source_name,
@@ -705,12 +711,17 @@ fn parse_feed_results(xml: &str) -> Vec<SearchResultItem> {
             }
             Ok(Event::Text(text)) => {
                 if let (Some(builder), Some(field)) = (current_result.as_mut(), current_field) {
-                    append_feed_text(builder, field, text.as_ref());
+                    append_feed_text(builder, field, decode_feed_text(&text).as_ref());
                 }
             }
             Ok(Event::CData(text)) => {
                 if let (Some(builder), Some(field)) = (current_result.as_mut(), current_field) {
-                    append_feed_text(builder, field, text.as_ref());
+                    append_feed_text(builder, field, decode_feed_cdata(&text).as_ref());
+                }
+            }
+            Ok(Event::GeneralRef(reference)) => {
+                if let (Some(builder), Some(field)) = (current_result.as_mut(), current_field) {
+                    append_feed_entity(builder, field, decode_feed_ref(&reference).as_ref());
                 }
             }
             Ok(Event::End(event)) => {
@@ -757,10 +768,16 @@ fn feed_link_href(event: &BytesStart<'_>) -> Option<String> {
     for attribute in event.attributes().flatten() {
         match xml_name(attribute.key.as_ref()) {
             b"href" => {
-                href = Some(String::from_utf8_lossy(attribute.value.as_ref()).into_owned());
+                href = attribute
+                    .decode_and_unescape_value(event.decoder())
+                    .ok()
+                    .map(|value| value.into_owned());
             }
             b"rel" => {
-                rel = Some(String::from_utf8_lossy(attribute.value.as_ref()).into_owned());
+                rel = attribute
+                    .decode_and_unescape_value(event.decoder())
+                    .ok()
+                    .map(|value| value.into_owned());
             }
             _ => {}
         }
@@ -785,6 +802,38 @@ fn append_feed_text(builder: &mut FeedResultBuilder, field: FeedField, raw: &[u8
     target.push_str(&text);
 }
 
+fn append_feed_entity(builder: &mut FeedResultBuilder, field: FeedField, raw: &str) {
+    let target = match field {
+        FeedField::Title => &mut builder.title,
+        FeedField::Link => &mut builder.url,
+        FeedField::Snippet => &mut builder.snippet,
+        FeedField::PublishedAt => &mut builder.published_at,
+        FeedField::SourceName => &mut builder.source_name,
+    };
+    target.push('&');
+    target.push_str(raw);
+    target.push(';');
+}
+
+fn decode_feed_text(text: &BytesText<'_>) -> String {
+    text.xml_content()
+        .map(|value| value.into_owned())
+        .unwrap_or_else(|_| String::from_utf8_lossy(text.as_ref()).into_owned())
+}
+
+fn decode_feed_cdata(text: &BytesCData<'_>) -> String {
+    text.xml_content()
+        .map(|value| value.into_owned())
+        .unwrap_or_else(|_| String::from_utf8_lossy(text.as_ref()).into_owned())
+}
+
+fn decode_feed_ref(reference: &BytesRef<'_>) -> String {
+    reference
+        .xml_content()
+        .map(|value| value.into_owned())
+        .unwrap_or_else(|_| String::from_utf8_lossy(reference.as_ref()).into_owned())
+}
+
 fn clear_field(current_field: &mut Option<FeedField>, expected: FeedField) {
     if current_field.is_some_and(|field| field == expected) {
         *current_field = None;
@@ -793,7 +842,8 @@ fn clear_field(current_field: &mut Option<FeedField>, expected: FeedField) {
 
 fn finalize_feed_result(builder: FeedResultBuilder) -> Option<SearchResultItem> {
     let title = normalize_feed_field(&builder.title, false)?;
-    let url = normalize_feed_field(&builder.url, false)?;
+    let url = normalize_feed_url(&builder.url)?;
+    let (url, raw_url) = canonicalize_result_url(&url);
     let snippet = normalize_feed_field(&builder.snippet, true);
     let published_at = normalize_feed_field(&builder.published_at, false);
     let source_name = normalize_feed_field(&builder.source_name, false);
@@ -801,6 +851,7 @@ fn finalize_feed_result(builder: FeedResultBuilder) -> Option<SearchResultItem> 
     Some(SearchResultItem {
         title,
         url,
+        raw_url,
         snippet,
         published_at,
         source_name,
@@ -817,6 +868,19 @@ fn normalize_feed_field(value: &str, prefer_html: bool) -> Option<String> {
     } else {
         summarize_remote_body(&raw, None)
     };
+    (!normalized.is_empty()).then_some(normalized)
+}
+
+fn normalize_feed_url(value: &str) -> Option<String> {
+    let raw = decode_html_entities(value.trim());
+    if raw.is_empty() {
+        return None;
+    }
+
+    // Feed links often contain XML-escaped query strings. They need entity
+    // decoding plus whitespace cleanup, but not the prose-oriented body
+    // summarization path, which can legitimately rewrite punctuation.
+    let normalized = raw.split_whitespace().collect::<String>();
     (!normalized.is_empty()).then_some(normalized)
 }
 
@@ -858,6 +922,29 @@ fn normalize_markup_spacing(value: &str) -> String {
         normalized = normalized.replace(&format!(" {punctuation}"), punctuation);
     }
     normalized.replace("( ", "(")
+}
+
+fn canonicalize_result_url(url: &str) -> (String, Option<String>) {
+    let Ok(parsed) = Url::parse(url) else {
+        return (url.to_string(), None);
+    };
+    let Some(host) = parsed.host_str() else {
+        return (url.to_string(), None);
+    };
+    let host = host.to_ascii_lowercase();
+    let path = parsed.path().to_ascii_lowercase();
+    if !host.ends_with("bing.com") || !path.contains("apiclick") {
+        return (url.to_string(), None);
+    }
+
+    let target = parsed
+        .query_pairs()
+        .find_map(|(key, value)| (key == "url").then_some(value.into_owned()))
+        .filter(|value| Url::parse(value).is_ok());
+    match target {
+        Some(target) if target != url => (target, Some(url.to_string())),
+        _ => (url.to_string(), None),
+    }
 }
 
 fn normalize_locale(locale: Option<String>) -> SearchLocale {
@@ -1076,6 +1163,7 @@ fn build_search_sources(results: &[SearchResultRecord]) -> Vec<SearchSourceRecor
             domain: item.domain.clone(),
             title: item.title.clone(),
             url: item.url.clone(),
+            raw_url: item.raw_url.clone(),
             snippet: item.snippet.clone(),
             published_at: item.published_at.clone(),
             source_name: item.source_name.clone(),
@@ -1092,6 +1180,9 @@ fn format_result_entry(item: &SearchResultRecord) -> String {
         format!("citation: {}", item.citation_id),
         format!("url: {}", item.url),
     ];
+    if let Some(raw_url) = &item.raw_url {
+        entry.push(format!("raw_url: {raw_url}"));
+    }
     if let Some(domain) = &item.domain {
         entry.push(format!("domain: {domain}"));
     }
@@ -1226,6 +1317,28 @@ mod tests {
         let results = parse_feed_results(xml);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].source_name.as_deref(), Some("Example News"));
+    }
+
+    #[test]
+    fn parse_feed_results_canonicalizes_bing_apiclick_urls() {
+        let xml = r#"
+            <rss><channel>
+                <item>
+                    <title>Wrapped</title>
+                    <link>https://www.bing.com/news/apiclick.aspx?ref=FexRss&amp;url=https%3A%2F%2Fexample.com%2Farticle&amp;c=123</link>
+                </item>
+            </channel></rss>
+        "#;
+
+        let results = parse_feed_results(xml);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].url, "https://example.com/article");
+        assert_eq!(
+            results[0].raw_url.as_deref(),
+            Some(
+                "https://www.bing.com/news/apiclick.aspx?ref=FexRss&url=https%3A%2F%2Fexample.com%2Farticle&c=123"
+            )
+        );
     }
 
     #[test]
@@ -1390,6 +1503,77 @@ mod tests {
         let query = requests[0].url.query().unwrap_or_default();
         assert!(query.contains("cc=fr"));
         assert!(query.contains("setlang=fr-FR"));
+    }
+
+    #[tokio::test]
+    async fn web_search_filters_wrapped_results_by_canonical_domain() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/search"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "application/rss+xml")
+                    .set_body_string(
+                        r#"
+                    <rss><channel>
+                        <item>
+                            <title>Wrapped</title>
+                            <link>https://www.bing.com/news/apiclick.aspx?ref=FexRss&amp;url=https%3A%2F%2Fallowed.example.com%2Farticle&amp;c=123</link>
+                        </item>
+                        <item>
+                            <title>Other</title>
+                            <link>https://www.bing.com/news/apiclick.aspx?ref=FexRss&amp;url=https%3A%2F%2Fother.example.org%2Fpost&amp;c=456</link>
+                        </item>
+                    </channel></rss>
+                "#,
+                    ),
+            )
+            .mount(&server)
+            .await;
+
+        let tool = WebSearchTool::with_settings(
+            WebToolPolicy {
+                allow_private_hosts: true,
+                allowed_domains: BTreeSet::new(),
+                blocked_domains: BTreeSet::new(),
+            },
+            5_000,
+            Some(format!("{}/search", server.uri())),
+        )
+        .unwrap();
+        let result = tool
+            .execute(
+                ToolCallId::new(),
+                serde_json::to_value(WebSearchToolInput {
+                    query: "example".to_string(),
+                    limit: Some(5),
+                    offset: None,
+                    domains: Some(vec!["allowed.example.com".to_string()]),
+                    locale: None,
+                    freshness: None,
+                    source_mode: None,
+                })
+                .unwrap(),
+                &ToolExecutionContext::default(),
+            )
+            .await
+            .unwrap();
+
+        let text = result.text_content();
+        assert!(text.contains("https://allowed.example.com/article"));
+        assert!(text.contains("raw_url: https://www.bing.com/news/apiclick.aspx"));
+        assert!(!text.contains("other.example.org/post"));
+        let structured = result.structured_content.unwrap();
+        assert_eq!(
+            structured["results"][0]["url"],
+            "https://allowed.example.com/article"
+        );
+        assert!(
+            structured["results"][0]["raw_url"]
+                .as_str()
+                .unwrap()
+                .contains("bing.com/news/apiclick.aspx")
+        );
     }
 
     #[tokio::test]
