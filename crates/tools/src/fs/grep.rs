@@ -44,6 +44,36 @@ struct GrepLine {
     content: String,
 }
 
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+struct GrepOutputEntry {
+    path: String,
+    line: usize,
+    role: String,
+    content: String,
+    trimmed: bool,
+}
+
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+struct GrepToolOutput {
+    requested_path: String,
+    resolved_path: String,
+    pattern: String,
+    glob: Option<String>,
+    context: usize,
+    limit: usize,
+    match_count: usize,
+    match_count_lower_bound: usize,
+    lines_returned: usize,
+    context_lines: usize,
+    limit_reached: bool,
+    byte_capped: bool,
+    line_truncated: bool,
+    byte_limit: usize,
+    ignore_case: bool,
+    literal: bool,
+    entries: Vec<GrepOutputEntry>,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 pub struct GrepToolInput {
     pub pattern: String,
@@ -74,6 +104,9 @@ impl Tool for GrepTool {
             description: "Search file contents for a pattern. Returns matching lines with file paths and line numbers.".to_string(),
             input_schema: serde_json::to_value(schema_for!(GrepToolInput)).expect("grep schema"),
             output_mode: ToolOutputMode::Text,
+            output_schema: Some(
+                serde_json::to_value(schema_for!(GrepToolOutput)).expect("grep output schema"),
+            ),
             origin: ToolOrigin::Local,
             annotations: mcp_tool_annotations("Search File Contents", true, false, true, false),
         }
@@ -249,17 +282,49 @@ impl Tool for GrepTool {
                 })
             })
             .collect();
+        let structured_entries = emitted_lines
+            .iter()
+            .map(|line| GrepOutputEntry {
+                path: line.path.clone(),
+                line: line.line_number,
+                role: line.role.as_str().to_string(),
+                content: line.content.clone(),
+                trimmed: line.trimmed,
+            })
+            .collect::<Vec<_>>();
         let lines_returned = emitted_lines.len();
         let context_lines = emitted_lines
             .iter()
             .filter(|line| matches!(line.role, LineRole::Context))
             .count();
+        let structured_output = GrepToolOutput {
+            requested_path: requested_path.to_string(),
+            resolved_path: search_path_string.clone(),
+            pattern: pattern.clone(),
+            glob: glob_pattern.clone(),
+            context,
+            limit,
+            match_count: observed_matches.min(limit),
+            match_count_lower_bound: observed_matches,
+            lines_returned,
+            context_lines,
+            limit_reached,
+            byte_capped,
+            line_truncated,
+            byte_limit: DEFAULT_GREP_MAX_BYTES,
+            ignore_case,
+            literal,
+            entries: structured_entries,
+        };
 
         Ok(ToolResult {
             id: call_id,
             call_id: external_call_id,
             tool_name: "grep".to_string(),
             parts: vec![MessagePart::text(output)],
+            structured_content: Some(
+                serde_json::to_value(&structured_output).expect("grep structured output"),
+            ),
             metadata: Some(serde_json::json!({
                 "path": search_path_string,
                 "requested_path": requested_path,

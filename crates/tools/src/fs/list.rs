@@ -65,6 +65,33 @@ struct ListEntry {
     kind: EntryKind,
 }
 
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+struct ListOutputEntry {
+    path: String,
+    kind: String,
+}
+
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+struct ListOutputCounts {
+    files: usize,
+    directories: usize,
+    symlinks: usize,
+    others: usize,
+}
+
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+struct ListToolOutput {
+    requested_path: String,
+    resolved_path: String,
+    recursive: bool,
+    max_depth: usize,
+    limit: usize,
+    truncated: bool,
+    entry_count: usize,
+    counts: ListOutputCounts,
+    entries: Vec<ListOutputEntry>,
+}
+
 #[async_trait]
 impl Tool for ListTool {
     fn spec(&self) -> ToolSpec {
@@ -73,6 +100,9 @@ impl Tool for ListTool {
             description: "List files and directories under a workspace path. Respects ignore files and supports bounded recursive listing.".to_string(),
             input_schema: serde_json::to_value(schema_for!(ListToolInput)).expect("list schema"),
             output_mode: ToolOutputMode::Text,
+            output_schema: Some(
+                serde_json::to_value(schema_for!(ListToolOutput)).expect("list output schema"),
+            ),
             origin: ToolOrigin::Local,
             annotations: mcp_tool_annotations("List Files", true, false, true, false),
         }
@@ -174,12 +204,38 @@ impl Tool for ListTool {
                 })
             })
             .collect();
+        let structured_entries = entries
+            .iter()
+            .map(|entry| ListOutputEntry {
+                path: entry.path.clone(),
+                kind: entry.kind.as_str().to_string(),
+            })
+            .collect::<Vec<_>>();
+        let structured_output = ListToolOutput {
+            requested_path: requested_path.to_string(),
+            resolved_path: root.display().to_string(),
+            recursive,
+            max_depth,
+            limit,
+            truncated,
+            entry_count: entries.len(),
+            counts: ListOutputCounts {
+                files: file_count,
+                directories: dir_count,
+                symlinks: symlink_count,
+                others: other_count,
+            },
+            entries: structured_entries,
+        };
 
         Ok(ToolResult {
             id: call_id,
             call_id: external_call_id,
             tool_name: "list".to_string(),
             parts: vec![MessagePart::text(output_lines.join("\n"))],
+            structured_content: Some(
+                serde_json::to_value(&structured_output).expect("list structured output"),
+            ),
             metadata: Some(serde_json::json!({
                 "path": root,
                 "requested_path": requested_path,

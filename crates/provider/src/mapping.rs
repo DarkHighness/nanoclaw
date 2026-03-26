@@ -1,6 +1,6 @@
 use crate::{ProviderError, Result};
 use serde_json::{Map, Value};
-use types::{MessagePart, ReasoningContent, ToolSpec};
+use types::{MessagePart, ReasoningContent, ToolResult, ToolSpec};
 
 #[must_use]
 pub fn coerce_object_schema(schema: &Value) -> Value {
@@ -103,10 +103,40 @@ pub fn message_part_text(part: &MessagePart) -> Option<String> {
             uri: None,
             ..
         } => None,
-        MessagePart::ToolResult { result } => Some(result.text_content()),
+        MessagePart::ToolResult { result } => Some(tool_result_roundtrip_text(result)),
         MessagePart::ToolCall { call } => Some(stringify_json(&call.arguments)),
         MessagePart::Image { .. } => None,
     }
+}
+
+#[must_use]
+pub fn tool_result_roundtrip_text(result: &ToolResult) -> String {
+    let plain_text_only = result
+        .parts
+        .iter()
+        .all(|part| matches!(part, MessagePart::Text { .. }));
+    if plain_text_only && result.structured_content.is_none() && result.metadata.is_none() {
+        return result.text_content();
+    }
+
+    let mut envelope = Map::new();
+    let summary_text = result.text_content();
+    if !summary_text.is_empty() {
+        envelope.insert("summary_text".to_string(), Value::String(summary_text));
+    }
+    if !result.parts.is_empty() {
+        envelope.insert(
+            "content".to_string(),
+            serde_json::to_value(&result.parts).unwrap_or(Value::Null),
+        );
+    }
+    if let Some(structured_content) = &result.structured_content {
+        envelope.insert("structured_content".to_string(), structured_content.clone());
+    }
+    if let Some(metadata) = &result.metadata {
+        envelope.insert("metadata".to_string(), metadata.clone());
+    }
+    stringify_json(&Value::Object(envelope))
 }
 
 #[must_use]
@@ -121,10 +151,10 @@ pub fn tool_schema(spec: &ToolSpec) -> Value {
 
 #[cfg(test)]
 mod tests {
-    use super::{coerce_object_schema, tool_schema};
+    use super::{coerce_object_schema, tool_result_roundtrip_text, tool_schema};
     use serde_json::json;
     use std::collections::BTreeMap;
-    use types::{ToolOrigin, ToolOutputMode, ToolSpec};
+    use types::{MessagePart, ToolOrigin, ToolOutputMode, ToolResult, ToolSpec};
 
     #[test]
     fn coerce_object_schema_adds_missing_type_for_property_schemas() {
@@ -152,6 +182,7 @@ mod tests {
                 }
             }),
             output_mode: ToolOutputMode::Text,
+            output_schema: None,
             origin: ToolOrigin::Local,
             annotations: BTreeMap::new(),
         };
@@ -160,5 +191,32 @@ mod tests {
 
         assert_eq!(definition["name"], json!("read"));
         assert_eq!(definition["parameters"]["type"], json!("object"));
+    }
+
+    #[test]
+    fn tool_result_roundtrip_text_emits_structured_envelope_when_needed() {
+        let result = ToolResult {
+            id: "call_123".into(),
+            call_id: "opaque_123".into(),
+            tool_name: "list".to_string(),
+            parts: vec![MessagePart::text("[list entries=1]")],
+            structured_content: Some(json!({
+                "entries": [{"path": "src/lib.rs", "kind": "file"}]
+            })),
+            metadata: Some(json!({
+                "header": "[list entries=1]"
+            })),
+            is_error: false,
+        };
+
+        let rendered = tool_result_roundtrip_text(&result);
+        let parsed: serde_json::Value = serde_json::from_str(&rendered).unwrap();
+
+        assert_eq!(parsed["summary_text"], json!("[list entries=1]"));
+        assert_eq!(
+            parsed["structured_content"]["entries"][0]["path"],
+            json!("src/lib.rs")
+        );
+        assert_eq!(parsed["metadata"]["header"], json!("[list entries=1]"));
     }
 }

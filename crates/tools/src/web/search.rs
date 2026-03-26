@@ -98,6 +98,7 @@ impl Tool for WebSearchTool {
             input_schema: serde_json::to_value(schema_for!(WebSearchToolInput))
                 .expect("web_search schema"),
             output_mode: ToolOutputMode::Text,
+            output_schema: None,
             origin: ToolOrigin::Local,
             annotations: mcp_tool_annotations("Search Web", true, false, false, true),
         }
@@ -175,6 +176,7 @@ impl Tool for WebSearchTool {
                     "query> {query}\nstatus> {status}\n\n{}",
                     summarize_remote_body(&body, content_type.as_deref())
                 ))],
+                structured_content: None,
                 metadata: Some(serde_json::json!({
                     "query": query,
                     "status": status.as_u16(),
@@ -246,6 +248,7 @@ impl Tool for WebSearchTool {
             call_id: external_call_id,
             tool_name: "web_search".to_string(),
             parts: vec![MessagePart::text(sections.join("\n"))],
+            structured_content: None,
             metadata: Some(serde_json::json!({
                 "query": query,
                 "request_query": request_query,

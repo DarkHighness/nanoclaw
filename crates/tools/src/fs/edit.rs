@@ -38,6 +38,7 @@ impl Tool for EditTool {
             description: "Modify an existing UTF-8 file using one precise text edit operation. Use expected_snapshot or expected_selection_hash to guard against stale reads.".to_string(),
             input_schema: serde_json::to_value(schema_for!(EditToolInput)).expect("edit schema"),
             output_mode: ToolOutputMode::Text,
+            output_schema: None,
             origin: ToolOrigin::Local,
             annotations: mcp_tool_annotations("Edit File", false, true, true, false),
         }
@@ -74,6 +75,7 @@ impl Tool for EditTool {
                 call_id: external_call_id,
                 tool_name: "edit".to_string(),
                 parts: vec![MessagePart::text(outcome.summary)],
+                structured_content: None,
                 metadata: Some(outcome.metadata),
                 is_error: true,
             });
@@ -90,6 +92,7 @@ impl Tool for EditTool {
                 outcome.snapshot_before.as_deref().unwrap_or("missing"),
                 outcome.snapshot_after.as_deref().unwrap_or("missing"),
             ))],
+            structured_content: None,
             metadata: Some(serde_json::json!({
                 "path": resolved,
                 "snapshot_before": outcome.snapshot_before,

@@ -143,6 +143,7 @@ impl Tool for CodeSymbolSearchTool {
             input_schema: serde_json::to_value(schema_for!(CodeSymbolSearchInput))
                 .expect("code_symbol_search schema"),
             output_mode: ToolOutputMode::Text,
+            output_schema: None,
             origin: ToolOrigin::Local,
             annotations: mcp_tool_annotations("Code Symbol Search", true, false, true, false),
         }
@@ -179,6 +180,7 @@ impl Tool for CodeSymbolSearchTool {
             call_id: external_call_id,
             tool_name: "code_symbol_search".to_string(),
             parts: vec![MessagePart::text(text)],
+            structured_content: None,
             metadata: Some(json!({
                 "query": query,
                 "limit": limit,
@@ -200,6 +202,7 @@ impl Tool for CodeDocumentSymbolsTool {
             input_schema: serde_json::to_value(schema_for!(CodeDocumentSymbolsInput))
                 .expect("code_document_symbols schema"),
             output_mode: ToolOutputMode::Text,
+            output_schema: None,
             origin: ToolOrigin::Local,
             annotations: mcp_tool_annotations("Code Document Symbols", true, false, true, false),
         }
@@ -241,6 +244,7 @@ impl Tool for CodeDocumentSymbolsTool {
             call_id: external_call_id,
             tool_name: "code_document_symbols".to_string(),
             parts: vec![MessagePart::text(text)],
+            structured_content: None,
             metadata: Some(json!({
                 "path": resolved,
                 "limit": limit,
@@ -263,6 +267,7 @@ impl Tool for CodeDefinitionsTool {
             input_schema: serde_json::to_value(schema_for!(CodeDefinitionsInput))
                 .expect("code_definitions schema"),
             output_mode: ToolOutputMode::Text,
+            output_schema: None,
             origin: ToolOrigin::Local,
             annotations: mcp_tool_annotations("Code Definitions", true, false, true, false),
         }
@@ -299,6 +304,7 @@ impl Tool for CodeDefinitionsTool {
             call_id: external_call_id,
             tool_name: "code_definitions".to_string(),
             parts: vec![MessagePart::text(text)],
+            structured_content: None,
             metadata: Some(json!({
                 "symbol": symbol,
                 "limit": limit,
@@ -320,6 +326,7 @@ impl Tool for CodeReferencesTool {
             input_schema: serde_json::to_value(schema_for!(CodeReferencesInput))
                 .expect("code_references schema"),
             output_mode: ToolOutputMode::Text,
+            output_schema: None,
             origin: ToolOrigin::Local,
             annotations: mcp_tool_annotations("Code References", true, false, true, false),
         }
@@ -362,6 +369,7 @@ impl Tool for CodeReferencesTool {
             call_id: external_call_id,
             tool_name: "code_references".to_string(),
             parts: vec![MessagePart::text(text)],
+            structured_content: None,
             metadata: Some(json!({
                 "symbol": symbol,
                 "limit": limit,

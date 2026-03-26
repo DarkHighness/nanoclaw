@@ -114,6 +114,7 @@ impl Tool for TaskTool {
                 .to_string(),
             input_schema: serde_json::to_value(schema_for!(TaskToolInput)).expect("task schema"),
             output_mode: ToolOutputMode::Text,
+            output_schema: None,
             origin: ToolOrigin::Local,
             annotations: mcp_tool_annotations("Run Subagent Task", false, false, false, false),
         }
@@ -173,6 +174,7 @@ impl Tool for TaskTool {
             call_id: external_call_id,
             tool_name: "task".to_string(),
             parts: vec![MessagePart::text(rendered_text)],
+            structured_content: None,
             metadata: Some(serde_json::json!({
                 "run_id": output.run_id,
                 "session_id": output.session_id,

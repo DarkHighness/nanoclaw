@@ -104,6 +104,7 @@ impl Tool for PatchTool {
             description: "Apply a staged multi-file patch made of write, edit, delete, and move operations. Operations are validated against staged content first so a failed operation does not partially apply earlier changes.".to_string(),
             input_schema: serde_json::to_value(schema_for!(PatchToolInput)).expect("patch schema"),
             output_mode: ToolOutputMode::Text,
+            output_schema: None,
             origin: ToolOrigin::Local,
             annotations: mcp_tool_annotations("Apply Patch", false, true, true, false),
         }
@@ -470,6 +471,7 @@ impl Tool for PatchTool {
             call_id: external_call_id,
             tool_name: "patch".to_string(),
             parts: vec![MessagePart::text(text)],
+            structured_content: None,
             metadata: Some(json!({
                 "operation_count": input.operations.len(),
                 "changed_files": changed_entries
@@ -533,6 +535,7 @@ fn patch_error_result(
         call_id: external_call_id,
         tool_name: "patch".to_string(),
         parts: vec![MessagePart::text(summary)],
+        structured_content: None,
         metadata: Some(json!({
             "failed_path": operation.primary_path(),
             "failed_operation_index": operation_index,

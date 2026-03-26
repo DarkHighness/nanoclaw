@@ -289,6 +289,7 @@ impl Tool for BashTool {
             description: "Run shell commands in the workspace. Supports synchronous run, long-running background sessions with poll/continue, and cancellation.".to_string(),
             input_schema: serde_json::to_value(schema_for!(BashToolInput)).expect("bash schema"),
             output_mode: ToolOutputMode::Text,
+            output_schema: None,
             origin: ToolOrigin::Local,
             annotations: mcp_tool_annotations("Run Shell Command", false, true, false, true),
         }
@@ -365,6 +366,7 @@ async fn execute_run(
                     timeout_ms,
                     command
                 ))],
+                structured_content: None,
                 metadata: Some(serde_json::json!({
                     "mode": "run",
                     "cwd": cwd,
@@ -388,6 +390,7 @@ async fn execute_run(
         call_id: external_call_id,
         tool_name: "bash".to_string(),
         parts: vec![MessagePart::text(text)],
+        structured_content: None,
         metadata: Some(serde_json::json!({
             "mode": "run",
             "cwd": cwd,
@@ -499,6 +502,7 @@ async fn execute_start(
             cwd.display(),
             timeout_ms
         ))],
+        structured_content: None,
         metadata: Some(serde_json::json!({
             "mode": "start",
             "session_id": session_id.as_str(),
@@ -565,6 +569,7 @@ async fn execute_poll(call_id: ToolCallId, input: BashToolInput) -> Result<ToolR
         call_id: external_call_id,
         tool_name: "bash".to_string(),
         parts: vec![MessagePart::text(text)],
+        structured_content: None,
         metadata: Some(serde_json::json!({
             "mode": "poll",
             "session_id": session.id.as_str(),
@@ -653,6 +658,7 @@ async fn execute_cancel(call_id: ToolCallId, input: BashToolInput) -> Result<Too
                 .map(|code| code.to_string())
                 .unwrap_or_else(|| "running".to_string())
         ))],
+        structured_content: None,
         metadata: Some(serde_json::json!({
             "mode": "cancel",
             "session_id": session.id.as_str(),

@@ -56,6 +56,7 @@ impl Tool for ReadTool {
             description: "Read a file or image. Text files are returned as a line-numbered view with range paging (`start_line`/`end_line` or `line_count`) or anchor-based spans (`anchor_text`), plus snapshot ids for follow-up edits.".to_string(),
             input_schema: serde_json::to_value(schema_for!(ReadToolInput)).expect("read schema"),
             output_mode: ToolOutputMode::ContentParts,
+            output_schema: None,
             origin: ToolOrigin::Local,
             annotations: mcp_tool_annotations("Read File", true, false, true, false),
         }
@@ -90,6 +91,7 @@ impl Tool for ReadTool {
                         data_base64: base64::engine::general_purpose::STANDARD.encode(bytes),
                     },
                 ],
+                structured_content: None,
                 metadata: Some(serde_json::json!({ "path": resolved })),
                 is_error: false,
             });
@@ -120,6 +122,7 @@ impl Tool for ReadTool {
                 call_id: external_call_id,
                 tool_name: "read".to_string(),
                 parts: vec![MessagePart::text(output)],
+                structured_content: None,
                 metadata: Some(serde_json::json!({
                     "path": resolved,
                     "snapshot_id": snapshot_id,
@@ -265,6 +268,7 @@ impl Tool for ReadTool {
             call_id: external_call_id,
             tool_name: "read".to_string(),
             parts: vec![MessagePart::text(output)],
+            structured_content: None,
             metadata: Some(serde_json::json!({
                 "path": resolved,
                 "snapshot_id": snapshot_id,

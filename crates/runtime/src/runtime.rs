@@ -1344,6 +1344,7 @@ mod tests {
                 description: "Always fails".to_string(),
                 input_schema: serde_json::json!({"type":"object","properties":{}}),
                 output_mode: ToolOutputMode::Text,
+                output_schema: None,
                 origin: ToolOrigin::Local,
                 annotations: Default::default(),
             }
@@ -1370,6 +1371,7 @@ mod tests {
                 description: "Mutates files".to_string(),
                 input_schema: serde_json::json!({"type":"object","properties":{}}),
                 output_mode: ToolOutputMode::Text,
+                output_schema: None,
                 origin: ToolOrigin::Local,
                 annotations: mcp_tool_annotations("Dangerous Tool", false, true, true, false),
             }

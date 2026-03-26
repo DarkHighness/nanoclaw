@@ -41,6 +41,7 @@ impl Tool for WriteTool {
             description: "Create or fully replace a UTF-8 text file. Supports overwrite/create policies plus optional expected_snapshot guards when replacing an existing file.".to_string(),
             input_schema: serde_json::to_value(schema_for!(WriteToolInput)).expect("write schema"),
             output_mode: ToolOutputMode::Text,
+            output_schema: None,
             origin: ToolOrigin::Local,
             annotations: mcp_tool_annotations("Write File", false, true, true, false),
         }
@@ -81,6 +82,7 @@ impl Tool for WriteTool {
                 call_id: external_call_id,
                 tool_name: "write".to_string(),
                 parts: vec![MessagePart::text(outcome.summary)],
+                structured_content: None,
                 metadata: Some(outcome.metadata),
                 is_error: true,
             });
@@ -97,6 +99,7 @@ impl Tool for WriteTool {
                 outcome.snapshot_before.as_deref().unwrap_or("missing"),
                 outcome.snapshot_after.as_deref().unwrap_or("missing"),
             ))],
+            structured_content: None,
             metadata: Some(serde_json::json!({
                 "path": resolved,
                 "snapshot_before": outcome.snapshot_before,

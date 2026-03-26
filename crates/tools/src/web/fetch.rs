@@ -62,6 +62,7 @@ impl Tool for WebFetchTool {
             input_schema: serde_json::to_value(schema_for!(WebFetchToolInput))
                 .expect("web_fetch schema"),
             output_mode: ToolOutputMode::Text,
+            output_schema: None,
             origin: ToolOrigin::Local,
             annotations: mcp_tool_annotations("Fetch Web Page", true, false, false, true),
         }
@@ -138,6 +139,7 @@ impl Tool for WebFetchTool {
                         summary
                     }
                 ))],
+                structured_content: None,
                 metadata: Some(serde_json::json!({
                     "url": url.as_str(),
                     "final_url": final_url.as_str(),
@@ -162,6 +164,7 @@ impl Tool for WebFetchTool {
                     status,
                     content_type.as_deref().unwrap_or("unknown"),
                 ))],
+                structured_content: None,
                 metadata: Some(serde_json::json!({
                     "url": url.as_str(),
                     "final_url": final_url.as_str(),
@@ -191,6 +194,7 @@ impl Tool for WebFetchTool {
                 parts: vec![MessagePart::text(format!(
                     "url> {url}\nfinal_url> {final_url}\nstatus> {status}\nexpected_document_id> {expected_document_id}\nactual_document_id> {document_id}\n\nDocument id mismatch. The page content changed or a different resource was returned."
                 ))],
+                structured_content: None,
                 metadata: Some(serde_json::json!({
                     "url": url.as_str(),
                     "final_url": final_url.as_str(),
@@ -247,6 +251,7 @@ impl Tool for WebFetchTool {
             call_id: external_call_id,
             tool_name: "web_fetch".to_string(),
             parts: vec![MessagePart::text(sections.join("\n"))],
+            structured_content: None,
             metadata: Some(serde_json::json!({
                 "url": url.as_str(),
                 "final_url": final_url.as_str(),

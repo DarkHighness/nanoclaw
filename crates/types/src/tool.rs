@@ -24,6 +24,8 @@ pub struct ToolSpec {
     pub description: String,
     pub input_schema: Value,
     pub output_mode: ToolOutputMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_schema: Option<Value>,
     pub origin: ToolOrigin,
     #[serde(default)]
     pub annotations: BTreeMap<String, Value>,
@@ -46,6 +48,8 @@ pub struct ToolResult {
     pub call_id: CallId,
     pub tool_name: String,
     pub parts: Vec<MessagePart>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub structured_content: Option<Value>,
     pub metadata: Option<Value>,
     pub is_error: bool,
 }
@@ -58,6 +62,7 @@ impl ToolResult {
             call_id: CallId::new(),
             tool_name: tool_name.into(),
             parts: vec![MessagePart::text(text)],
+            structured_content: None,
             metadata: None,
             is_error: false,
         }
@@ -70,6 +75,7 @@ impl ToolResult {
             call_id: CallId::new(),
             tool_name: tool_name.into(),
             parts: vec![MessagePart::text(text)],
+            structured_content: None,
             metadata: None,
             is_error: true,
         }
@@ -78,6 +84,12 @@ impl ToolResult {
     #[must_use]
     pub fn with_call_id(mut self, call_id: impl Into<CallId>) -> Self {
         self.call_id = call_id.into();
+        self
+    }
+
+    #[must_use]
+    pub fn with_structured_content(mut self, structured_content: Value) -> Self {
+        self.structured_content = Some(structured_content);
         self
     }
 

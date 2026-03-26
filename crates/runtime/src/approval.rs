@@ -271,6 +271,7 @@ mod tests {
                 description: "Run commands".to_string(),
                 input_schema: json!({"type":"object"}),
                 output_mode: ToolOutputMode::Text,
+                output_schema: None,
                 origin: ToolOrigin::Local,
                 annotations: BTreeMap::new(),
             },

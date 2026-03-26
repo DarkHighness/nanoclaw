@@ -1,6 +1,6 @@
 use crate::{
     ProviderError, RequestOptions, Result, data_url, merge_top_level_object,
-    render_instruction_text, stringify_json, tool_schema,
+    render_instruction_text, stringify_json, tool_result_roundtrip_text, tool_schema,
 };
 use agent_env::vars;
 use async_stream::try_stream;
@@ -838,7 +838,7 @@ fn openai_input_item_from_part(part: &MessagePart, role: MessageRole) -> Option<
         MessagePart::ToolResult { result } => Some(json!({
             "type": "function_call_output",
             "call_id": result.call_id,
-            "output": result.text_content(),
+            "output": tool_result_roundtrip_text(result),
             "status": "completed",
         })),
         MessagePart::Reasoning { reasoning } if matches!(role, MessageRole::Assistant) => {

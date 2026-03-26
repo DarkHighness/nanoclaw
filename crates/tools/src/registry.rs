@@ -87,6 +87,7 @@ mod tests {
                 description: format!("tool {}", self.0),
                 input_schema: json!({"type":"object","properties":{}}),
                 output_mode: ToolOutputMode::Text,
+                output_schema: None,
                 origin: ToolOrigin::Local,
                 annotations: Default::default(),
             }
