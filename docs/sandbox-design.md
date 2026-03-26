@@ -294,7 +294,10 @@ Important implementation constraints:
 - host paths must be canonicalized before they are embedded into the profile because Seatbelt matches real paths, not shell-friendly aliases such as `/var`
 - unsupported platforms currently fall back to host execution unless `fail_if_unavailable` is set, so hosts can adopt typed policy wiring before every backend exists
 - the first Linux backend only inherits a curated set of system roots plus the host-selected roots, so user-space binaries outside those mounts remain blocked unless the host widens policy or uses a permissive executor
-- the first Linux backend intentionally stops at bubblewrap mount and namespace isolation; seccomp and finer-grained network allowlists remain follow-up work
+- `NetworkPolicy::AllowDomains` is implemented as a host-managed SOCKS proxy rather than pretending Seatbelt or bubblewrap can filter hostnames directly
+- on macOS, Seatbelt enforces proxy-only egress by allowing only localhost proxy ports while the host proxy enforces the domain allowlist
+- on Linux, the backend bind-mounts a host-owned Unix-socket proxy into the sandbox and uses an in-sandbox loopback bridge so `--unshare-net` still holds and traffic must traverse the allowlist proxy
+- the Linux backend now uses explicit seccomp profiles: full-network, no-network, and proxy-bridge mode
 
 ## Context and Dependency Placement
 
@@ -486,6 +489,10 @@ After the substrate contract is stable, hosts can implement stronger backends:
 - macOS seatbelt
 - Linux bubblewrap plus seccomp
 - Docker for container-oriented hosts
+
+The current repository also carries a Linux-specific CI workflow that installs
+`bubblewrap` and `socat` and runs the sandbox integration suite on a real Linux
+runner. That keeps the Linux backend from regressing into a compile-only path.
 
 The framework should not hard-code one backend as the semantic definition of sandboxing.
 

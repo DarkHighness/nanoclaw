@@ -1,0 +1,49 @@
+name: sandbox-linux
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/sandbox.yml"
+      - "crates/Cargo.toml"
+      - "crates/Cargo.lock"
+      - "crates/tools/Cargo.toml"
+      - "crates/tools/src/process/**"
+      - "crates/tools/tests/sandbox_integration.rs"
+  push:
+    paths:
+      - ".github/workflows/sandbox.yml"
+      - "crates/Cargo.toml"
+      - "crates/Cargo.lock"
+      - "crates/tools/Cargo.toml"
+      - "crates/tools/src/process/**"
+      - "crates/tools/tests/sandbox_integration.rs"
+
+jobs:
+  linux-sandbox-integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install sandbox runtime dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap socat
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crates -> crates/target
+
+      - name: Verify bubblewrap availability
+        run: |
+          command -v bwrap
+          bwrap --version
+          command -v socat
+
+      - name: Run Linux sandbox integration tests
+        run: cargo test --manifest-path crates/Cargo.toml -p tools --test sandbox_integration -- --nocapture

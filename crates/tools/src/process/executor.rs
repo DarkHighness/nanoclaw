@@ -2,6 +2,8 @@ use crate::{Result, ToolError, ToolExecutionContext};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+#[cfg(target_os = "linux")]
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::process::Command;
 use types::{CallId, RunId, SessionId, TurnId};
 
@@ -232,9 +234,11 @@ impl ProcessExecutor for ManagedPolicyProcessExecutor {
 }
 
 fn prepare_with_available_backends(
-    request: ExecRequest,
+    mut request: ExecRequest,
     availability: BackendAvailability,
 ) -> Result<Command> {
+    attach_allow_domains_proxy_support(&mut request)?;
+
     #[cfg(target_os = "macos")]
     if let Some(path) = availability.macos_seatbelt.as_deref() {
         return super::executor_macos::prepare_macos_seatbelt_command(request, path);
@@ -251,6 +255,92 @@ fn prepare_with_available_backends(
     } else {
         HostProcessExecutor.prepare(request)
     }
+}
+
+fn attach_allow_domains_proxy_support(request: &mut ExecRequest) -> Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        maybe_attach_macos_allow_domains_proxy(request)?;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        maybe_attach_linux_allow_domains_proxy(request)?;
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn maybe_attach_macos_allow_domains_proxy(request: &mut ExecRequest) -> Result<()> {
+    let NetworkPolicy::AllowDomains(domains) = &request.sandbox_policy.network else {
+        return Ok(());
+    };
+    if super::executor_macos::has_allow_domains_proxy_config(&request.env) {
+        return Ok(());
+    }
+    let allowlist = super::network_proxy::DomainAllowlist::new(domains.clone())
+        .map_err(|error| ToolError::invalid_state(error.to_string()))?;
+    let endpoint = super::network_proxy::start_retained_proxy(
+        super::network_proxy::ProxyConfig::localhost(allowlist),
+    )
+    .map_err(|error| ToolError::invalid_state(error.to_string()))?;
+    request.env.extend(endpoint.env_vars());
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn maybe_attach_linux_allow_domains_proxy(request: &mut ExecRequest) -> Result<()> {
+    let NetworkPolicy::AllowDomains(domains) = &request.sandbox_policy.network else {
+        return Ok(());
+    };
+    if request
+        .env
+        .contains_key(super::executor_linux::LINUX_ALLOW_DOMAINS_PROXY_SOCKET_PATH_ENV)
+    {
+        return Ok(());
+    }
+
+    let allowlist = super::network_proxy::DomainAllowlist::new(domains.clone())
+        .map_err(|error| ToolError::invalid_state(error.to_string()))?;
+    let socket_path = default_linux_allow_domains_socket_path();
+    let endpoint = super::network_proxy::start_retained_proxy(super::network_proxy::ProxyConfig {
+        allowlist,
+        bind: super::network_proxy::ProxyBindTarget::UnixSocket(socket_path.clone()),
+    })
+    .map_err(|error| ToolError::invalid_state(error.to_string()))?;
+    let super::network_proxy::ProxyEndpoint::UnixSocket(host_socket_path) = endpoint else {
+        return Err(ToolError::invalid_state(
+            "Linux allow-domains proxy must be a Unix-socket endpoint",
+        ));
+    };
+
+    request.env.insert(
+        super::executor_linux::LINUX_ALLOW_DOMAINS_PROXY_SOCKET_PATH_ENV.to_string(),
+        host_socket_path.display().to_string(),
+    );
+    request.env.insert(
+        super::executor_linux::LINUX_ALLOW_DOMAINS_PROXY_SOCKET_SANDBOX_PATH_ENV.to_string(),
+        host_socket_path.display().to_string(),
+    );
+    request.env.insert(
+        super::executor_linux::LINUX_ALLOW_DOMAINS_PROXY_URL_ENV.to_string(),
+        format!(
+            "socks5h://127.0.0.1:{}",
+            super::executor_linux::LINUX_ALLOW_DOMAINS_PROXY_BRIDGE_PORT
+        ),
+    );
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn default_linux_allow_domains_socket_path() -> PathBuf {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    std::env::temp_dir().join(format!(
+        "nanoclaw-proxy-{}-{unique}.sock",
+        std::process::id()
+    ))
 }
 
 fn detect_available_backends() -> BackendAvailability {
