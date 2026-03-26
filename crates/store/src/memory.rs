@@ -10,7 +10,7 @@ use types::{Message, RunEventEnvelope, RunId, SessionId};
 
 #[derive(Clone, Default)]
 pub struct InMemoryRunStore {
-    events: Arc<RwLock<HashMap<String, Vec<RunEventEnvelope>>>>,
+    events: Arc<RwLock<HashMap<RunId, Vec<RunEventEnvelope>>>>,
 }
 
 impl InMemoryRunStore {
@@ -24,10 +24,7 @@ impl InMemoryRunStore {
 impl EventSink for InMemoryRunStore {
     async fn append(&self, event: RunEventEnvelope) -> Result<()> {
         let mut guard = self.events.write().expect("in-memory run store write lock");
-        guard
-            .entry(event.run_id.to_string())
-            .or_default()
-            .push(event);
+        guard.entry(event.run_id.clone()).or_default().push(event);
         Ok(())
     }
 }
@@ -38,9 +35,7 @@ impl RunStore for InMemoryRunStore {
         let guard = self.events.read().expect("in-memory run store read lock");
         let mut runs = guard
             .iter()
-            .filter_map(|(run_id, events)| {
-                summarize_run_events(&RunId::from(run_id.clone()), events)
-            })
+            .filter_map(|(run_id, events)| summarize_run_events(run_id, events))
             .collect::<Vec<_>>();
         runs.sort_by(|left, right| {
             right
@@ -56,7 +51,7 @@ impl RunStore for InMemoryRunStore {
         let mut runs = guard
             .iter()
             .filter_map(|(run_id, events)| {
-                let summary = summarize_run_events(&RunId::from(run_id.clone()), events)?;
+                let summary = summarize_run_events(run_id, events)?;
                 search_run_events(&summary, events, query)
             })
             .collect::<Vec<_>>();
@@ -83,9 +78,9 @@ impl RunStore for InMemoryRunStore {
     async fn events(&self, run_id: &RunId) -> Result<Vec<RunEventEnvelope>> {
         let guard = self.events.read().expect("in-memory run store read lock");
         guard
-            .get(run_id.as_str())
+            .get(run_id)
             .cloned()
-            .ok_or_else(|| RunStoreError::RunNotFound(run_id.to_string()))
+            .ok_or_else(|| RunStoreError::RunNotFound(run_id.clone()))
     }
 
     async fn session_ids(&self, run_id: &RunId) -> Result<Vec<SessionId>> {

@@ -46,7 +46,7 @@ struct IndexedRunRecord {
     // Session ids must preserve first-seen order because hosts may use the
     // sequence to reconstruct hand-offs across attached sessions. A sorted set
     // makes the durable transcript look different from the original stream.
-    session_ids: Vec<String>,
+    session_ids: Vec<SessionId>,
     // The sidecar keeps only a bounded search corpus for prefiltering. The
     // append-only JSONL transcript remains the source of truth for replay and
     // exact preview generation.
@@ -56,7 +56,7 @@ struct IndexedRunRecord {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct FileRunStoreIndex {
     version: u32,
-    runs: BTreeMap<String, IndexedRunRecord>,
+    runs: BTreeMap<RunId, IndexedRunRecord>,
 }
 
 impl Default for FileRunStoreIndex {
@@ -149,22 +149,23 @@ impl EventSink for FileRunStore {
 
         let pruned = {
             let mut index = self.index.write().expect("file run store write lock");
-            let record = index
-                .runs
-                .entry(event.run_id.to_string())
-                .or_insert_with(|| IndexedRunRecord {
-                    summary: RunSummary {
-                        run_id: event.run_id.clone(),
-                        first_timestamp_ms: event.timestamp_ms,
-                        last_timestamp_ms: event.timestamp_ms,
-                        event_count: 0,
-                        session_count: 0,
-                        transcript_message_count: 0,
-                        last_user_prompt: None,
-                    },
-                    session_ids: Vec::new(),
-                    search_corpus: String::new(),
-                });
+            let record =
+                index
+                    .runs
+                    .entry(event.run_id.clone())
+                    .or_insert_with(|| IndexedRunRecord {
+                        summary: RunSummary {
+                            run_id: event.run_id.clone(),
+                            first_timestamp_ms: event.timestamp_ms,
+                            last_timestamp_ms: event.timestamp_ms,
+                            event_count: 0,
+                            session_count: 0,
+                            transcript_message_count: 0,
+                            last_user_prompt: None,
+                        },
+                        session_ids: Vec::new(),
+                        search_corpus: String::new(),
+                    });
             apply_event_to_record(record, &event);
             select_runs_to_prune(&index, &self.options.retention, current_timestamp_ms())
         };
@@ -273,7 +274,7 @@ impl RunStore for FileRunStore {
     async fn events(&self, run_id: &RunId) -> Result<Vec<RunEventEnvelope>> {
         let path = self.run_path(run_id);
         if !fs::try_exists(&path).await? {
-            return Err(RunStoreError::RunNotFound(run_id.to_string()));
+            return Err(RunStoreError::RunNotFound(run_id.clone()));
         }
         self.load_events_from_path(&path).await
     }
@@ -281,14 +282,10 @@ impl RunStore for FileRunStore {
     async fn session_ids(&self, run_id: &RunId) -> Result<Vec<SessionId>> {
         let cached = {
             let index = self.index.read().expect("file run store read lock");
-            index.runs.get(run_id.as_str()).map(|record| {
-                record
-                    .session_ids
-                    .iter()
-                    .cloned()
-                    .map(SessionId::from)
-                    .collect::<Vec<_>>()
-            })
+            index
+                .runs
+                .get(run_id)
+                .map(|record| record.session_ids.clone())
         };
         if let Some(session_ids) = cached {
             return Ok(session_ids);
@@ -297,7 +294,7 @@ impl RunStore for FileRunStore {
         let mut seen = HashSet::new();
         let mut ordered = Vec::new();
         for event in self.events(run_id).await? {
-            if seen.insert(event.session_id.to_string()) {
+            if seen.insert(event.session_id.clone()) {
                 ordered.push(event.session_id);
             }
         }
@@ -313,7 +310,7 @@ fn apply_event_to_record(record: &mut IndexedRunRecord, event: &RunEventEnvelope
     record.summary.first_timestamp_ms = record.summary.first_timestamp_ms.min(event.timestamp_ms);
     record.summary.last_timestamp_ms = record.summary.last_timestamp_ms.max(event.timestamp_ms);
     record.summary.event_count += 1;
-    if push_unique_session_id(&mut record.session_ids, event.session_id.as_str()) {
+    if push_unique_session_id(&mut record.session_ids, &event.session_id) {
         record.summary.session_count = record.session_ids.len();
     }
     if matches!(&event.event, RunEventKind::TranscriptMessage { .. }) {
@@ -327,11 +324,11 @@ fn apply_event_to_record(record: &mut IndexedRunRecord, event: &RunEventEnvelope
     }
 }
 
-fn push_unique_session_id(session_ids: &mut Vec<String>, session_id: &str) -> bool {
+fn push_unique_session_id(session_ids: &mut Vec<SessionId>, session_id: &SessionId) -> bool {
     if session_ids.iter().any(|existing| existing == session_id) {
         return false;
     }
-    session_ids.push(session_id.to_string());
+    session_ids.push(session_id.clone());
     true
 }
 
@@ -379,7 +376,7 @@ fn select_runs_to_prune(
     index: &FileRunStoreIndex,
     retention: &RunStoreRetentionPolicy,
     now_ms: u128,
-) -> Vec<String> {
+) -> Vec<RunId> {
     let mut prune = BTreeSet::new();
     if let Some(max_age) = retention.max_age {
         let max_age_ms = max_age.as_millis();
@@ -421,7 +418,7 @@ async fn load_or_rebuild_index(root_dir: &Path) -> Result<FileRunStoreIndex> {
     rebuild_index(root_dir, run_files).await
 }
 
-async fn rebuild_index(root_dir: &Path, run_files: BTreeSet<String>) -> Result<FileRunStoreIndex> {
+async fn rebuild_index(root_dir: &Path, run_files: BTreeSet<RunId>) -> Result<FileRunStoreIndex> {
     let mut index = FileRunStoreIndex::default();
     for run_id in run_files {
         let path = root_dir.join(format!("{run_id}.jsonl"));
@@ -451,7 +448,7 @@ fn indexed_record_from_events(events: Vec<RunEventEnvelope>) -> Option<IndexedRu
     let summary = summarize_run_events(&run_id, &events)?;
     let mut session_ids = Vec::new();
     for event in &events {
-        push_unique_session_id(&mut session_ids, event.session_id.as_str());
+        push_unique_session_id(&mut session_ids, &event.session_id);
     }
     let mut search_corpus = String::new();
     for event in &events {
@@ -466,7 +463,7 @@ fn indexed_record_from_events(events: Vec<RunEventEnvelope>) -> Option<IndexedRu
     })
 }
 
-async fn list_run_file_ids(root_dir: &Path) -> Result<BTreeSet<String>> {
+async fn list_run_file_ids(root_dir: &Path) -> Result<BTreeSet<RunId>> {
     let mut ids = BTreeSet::new();
     let mut entries = fs::read_dir(root_dir).await?;
     while let Some(entry) = entries.next_entry().await? {
@@ -481,7 +478,7 @@ async fn list_run_file_ids(root_dir: &Path) -> Result<BTreeSet<String>> {
             continue;
         }
         if let Some(stem) = path.file_stem().and_then(|value| value.to_str()) {
-            ids.insert(stem.to_string());
+            ids.insert(RunId::from(stem));
         }
     }
     Ok(ids)
@@ -496,7 +493,7 @@ async fn persist_index_file(root_dir: &Path, index: &FileRunStoreIndex) -> Resul
     Ok(())
 }
 
-async fn delete_run_file(root_dir: &Path, run_id: &str) -> Result<()> {
+async fn delete_run_file(root_dir: &Path, run_id: &RunId) -> Result<()> {
     let path = root_dir.join(format!("{run_id}.jsonl"));
     if fs::try_exists(&path).await? {
         fs::remove_file(path).await?;

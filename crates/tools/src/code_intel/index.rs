@@ -325,18 +325,18 @@ fn parse_symbol_from_line(line: &str) -> Option<(CodeSymbolKind, String)> {
 
     if let Some(captures) = definition_regex().captures(trimmed) {
         let keyword = captures.name("kw")?.as_str();
-        let name = captures.name("name")?.as_str().to_string();
+        let name = captures.name("name")?.as_str().to_owned();
         return Some((map_keyword_kind(keyword, &name), name));
     }
 
     if let Some(captures) = type_alias_regex().captures(trimmed) {
-        let name = captures.name("name")?.as_str().to_string();
+        let name = captures.name("name")?.as_str().to_owned();
         return Some((CodeSymbolKind::TypeAlias, name));
     }
 
     if let Some(captures) = variable_regex().captures(trimmed) {
         let keyword = captures.name("kw")?.as_str();
-        let name = captures.name("name")?.as_str().to_string();
+        let name = captures.name("name")?.as_str().to_owned();
         let kind = if keyword == "const" || is_all_caps_name(&name) {
             CodeSymbolKind::Constant
         } else {
@@ -346,7 +346,7 @@ fn parse_symbol_from_line(line: &str) -> Option<(CodeSymbolKind, String)> {
     }
 
     if let Some(captures) = go_func_regex().captures(trimmed) {
-        let name = captures.name("name")?.as_str().to_string();
+        let name = captures.name("name")?.as_str().to_owned();
         return Some((CodeSymbolKind::Function, name));
     }
 

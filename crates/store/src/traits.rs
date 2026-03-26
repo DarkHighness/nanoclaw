@@ -7,7 +7,7 @@ use types::{Message, RunEventEnvelope, RunEventKind, RunId, SessionId};
 #[derive(Debug, Error)]
 pub enum RunStoreError {
     #[error("run not found: {0}")]
-    RunNotFound(String),
+    RunNotFound(RunId),
     #[error("run store IO error: {0}")]
     Io(#[from] std::io::Error),
     #[error("run store JSON error: {0}")]
@@ -49,7 +49,7 @@ pub fn summarize_run_events(run_id: &RunId, events: &[RunEventEnvelope]) -> Opti
     for event in events {
         first_timestamp_ms = first_timestamp_ms.min(event.timestamp_ms);
         last_timestamp_ms = last_timestamp_ms.max(event.timestamp_ms);
-        session_ids.insert(event.session_id.to_string());
+        session_ids.insert(event.session_id.clone());
         if matches!(&event.event, RunEventKind::TranscriptMessage { .. }) {
             transcript_message_count += 1;
         }
