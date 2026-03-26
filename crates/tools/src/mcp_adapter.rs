@@ -43,7 +43,7 @@ impl Tool for McpToolAdapter {
         result.id = call_id.clone();
         // Runtime transcripts and compaction index tool results by the local call id.
         // Keep upstream ids in metadata so audits can still correlate remote traces.
-        result.call_id = call_id.to_string().into();
+        result.call_id = (&call_id).into();
         result.tool_name = self.spec.name.clone();
         result.metadata = Some(augment_metadata(
             result.metadata,

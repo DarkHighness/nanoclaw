@@ -70,3 +70,27 @@ define_id!(TurnId);
 define_id!(ToolCallId);
 define_id!(CallId);
 define_id!(ResponseId);
+
+impl From<ToolCallId> for CallId {
+    fn from(value: ToolCallId) -> Self {
+        Self::from(value.into_inner())
+    }
+}
+
+impl From<&ToolCallId> for CallId {
+    fn from(value: &ToolCallId) -> Self {
+        Self::from(value.as_str())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CallId, ToolCallId};
+
+    #[test]
+    fn tool_call_id_converts_to_call_id_without_stringly_call_site_code() {
+        let tool_call_id = ToolCallId::from("tool-call-1");
+        let call_id = CallId::from(&tool_call_id);
+        assert_eq!(call_id.as_str(), tool_call_id.as_str());
+    }
+}
