@@ -10,5 +10,7 @@ pub trait FileActivityObserver: Send + Sync {
 
     fn did_change(&self, path: PathBuf);
 
+    fn did_save(&self, path: PathBuf);
+
     fn did_remove(&self, path: PathBuf);
 }

@@ -102,6 +102,7 @@ impl Tool for WriteTool {
         commit_text_file(&resolved, outcome.next_content.as_deref()).await?;
         if let Some(observer) = &self.activity_observer {
             observer.did_change(resolved.clone());
+            observer.did_save(resolved.clone());
         }
         Ok(ToolResult {
             id: call_id,

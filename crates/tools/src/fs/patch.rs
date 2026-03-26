@@ -453,6 +453,7 @@ impl Tool for PatchTool {
             for entry in &changed_entries {
                 if entry.content.is_some() {
                     observer.did_change(entry.resolved_path.clone());
+                    observer.did_save(entry.resolved_path.clone());
                 } else {
                     observer.did_remove(entry.resolved_path.clone());
                 }

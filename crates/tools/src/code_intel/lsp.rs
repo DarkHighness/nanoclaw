@@ -1,6 +1,9 @@
+mod protocol;
+mod support;
+
 use crate::code_intel::{
-    CodeIntelBackend, CodeLocation, CodeNavigationTarget, CodeReference, CodeSymbol,
-    CodeSymbolKind, WorkspaceTextCodeIntelBackend,
+    CodeIntelBackend, CodeNavigationTarget, CodeReference, CodeSymbol,
+    WorkspaceTextCodeIntelBackend,
 };
 use crate::file_activity::FileActivityObserver;
 use crate::process::{
@@ -8,23 +11,43 @@ use crate::process::{
 };
 use crate::{Result, ToolError, ToolExecutionContext, stable_text_hash};
 use async_trait::async_trait;
+use notify::{
+    Config as NotifyConfig, Event as NotifyEvent, RecommendedWatcher, RecursiveMode, Watcher,
+};
+use protocol::{
+    DiagnosticEntry, configuration_response, file_uri_from_path, file_uri_to_path,
+    identifier_at_position, parse_diagnostic_entry, parse_document_symbols,
+    parse_locations_as_references, parse_locations_as_symbols, parse_workspace_symbols,
+    read_lsp_message, zero_based_position,
+};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use support::{
+    InstallStrategy, LanguageServerSpec, ServerFamily, WatchRegistration, WorkspaceWatchEvent,
+    build_cargo_install_args, build_npm_install_args, build_pip_install_args,
+    collect_high_priority_files, collect_preload_candidates, collect_workspace_events,
+    extract_watch_registrations, is_high_priority_file, language_id_for_path,
+    managed_executable_path, preload_limit_for_server, server_family, server_spec_for_path,
+    should_exclude_workspace_path, should_preload_path,
+};
 use tokio::fs;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin};
-use tokio::sync::{Mutex as AsyncMutex, oneshot};
-use tokio::time::timeout;
+use tokio::sync::{Mutex as AsyncMutex, mpsc, oneshot};
+use tokio::time::{Instant, sleep, timeout};
 use tracing::{debug, info, warn};
 
 const INITIALIZE_TIMEOUT: Duration = Duration::from_secs(20);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 const INSTALL_TIMEOUT: Duration = Duration::from_secs(300);
+const READY_TIMEOUT: Duration = Duration::from_secs(30);
+const READY_POLL_INTERVAL: Duration = Duration::from_millis(500);
+const WATCH_DEBOUNCE: Duration = Duration::from_millis(300);
 
 #[derive(Clone, Debug)]
 pub struct ManagedCodeIntelOptions {
@@ -79,6 +102,10 @@ impl FileActivityObserver for ManagedCodeIntelBackend {
 
     fn did_change(&self, path: PathBuf) {
         self.runtime.spawn_sync(path, FileSyncEvent::Change);
+    }
+
+    fn did_save(&self, path: PathBuf) {
+        self.runtime.spawn_sync(path, FileSyncEvent::Save);
     }
 
     fn did_remove(&self, path: PathBuf) {
@@ -157,6 +184,8 @@ struct ManagedLspRuntime {
     install_policy: SandboxPolicy,
     slots: Mutex<BTreeMap<&'static str, Arc<SessionSlot>>>,
     logged_unavailable: Mutex<BTreeSet<&'static str>>,
+    watcher_started: AtomicBool,
+    watcher: Mutex<Option<RecommendedWatcher>>,
 }
 
 impl ManagedLspRuntime {
@@ -175,6 +204,8 @@ impl ManagedLspRuntime {
             install_policy,
             slots: Mutex::new(BTreeMap::new()),
             logged_unavailable: Mutex::new(BTreeSet::new()),
+            watcher_started: AtomicBool::new(false),
+            watcher: Mutex::new(None),
         }
     }
 
@@ -182,6 +213,10 @@ impl ManagedLspRuntime {
         if !self.options.enabled {
             return;
         }
+        if let Err(error) = self.ensure_watcher_started() {
+            debug!("managed LSP watcher disabled: {error}");
+        }
+
         let runtime = Arc::clone(self);
         tokio::spawn(async move {
             if let Err(error) = runtime.handle_file_event(path.clone(), event).await {
@@ -193,10 +228,18 @@ impl ManagedLspRuntime {
         });
     }
 
-    async fn handle_file_event(&self, path: PathBuf, event: FileSyncEvent) -> Result<()> {
+    async fn handle_file_event(
+        self: &Arc<Self>,
+        path: PathBuf,
+        event: FileSyncEvent,
+    ) -> Result<()> {
         match event {
             FileSyncEvent::Open | FileSyncEvent::Change => {
                 self.ensure_document_synced(&path).await?;
+            }
+            FileSyncEvent::Save => {
+                self.ensure_document_synced(&path).await?;
+                self.notify_document_saved(&path).await?;
             }
             FileSyncEvent::Remove => {
                 self.close_document(&path).await?;
@@ -205,7 +248,116 @@ impl ManagedLspRuntime {
         Ok(())
     }
 
-    async fn workspace_symbols(&self, query: &str, limit: usize) -> Result<Vec<CodeSymbol>> {
+    fn ensure_watcher_started(self: &Arc<Self>) -> Result<()> {
+        if !self.options.enabled {
+            return Ok(());
+        }
+        if self
+            .watcher_started
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            return Ok(());
+        }
+
+        let (tx, mut rx) = mpsc::unbounded_channel::<notify::Result<NotifyEvent>>();
+        let mut watcher = notify::recommended_watcher(move |event| {
+            let _ = tx.send(event);
+        })
+        .map_err(|error| {
+            ToolError::invalid_state(format!(
+                "failed to create managed LSP workspace watcher: {error}"
+            ))
+        })?;
+        watcher
+            .configure(NotifyConfig::default())
+            .map_err(|error| {
+                ToolError::invalid_state(format!(
+                    "failed to configure managed LSP workspace watcher: {error}"
+                ))
+            })?;
+        watcher
+            .watch(&self.workspace_root, RecursiveMode::Recursive)
+            .map_err(|error| {
+                ToolError::invalid_state(format!(
+                    "failed to watch workspace {} for managed LSP updates: {error}",
+                    self.workspace_root.display()
+                ))
+            })?;
+        *self.watcher.lock().expect("LSP watcher lock") = Some(watcher);
+
+        let runtime = Arc::clone(self);
+        tokio::spawn(async move {
+            let mut pending = BTreeMap::<PathBuf, WorkspaceWatchEvent>::new();
+            let timer = sleep(Duration::MAX);
+            tokio::pin!(timer);
+
+            loop {
+                tokio::select! {
+                    maybe_event = rx.recv() => {
+                        let Some(event) = maybe_event else {
+                            break;
+                        };
+                        match event {
+                            Ok(event) => {
+                                for (path, kind) in collect_workspace_events(&event) {
+                                    if should_exclude_workspace_path(&path) {
+                                        continue;
+                                    }
+                                    pending
+                                        .entry(path)
+                                        .and_modify(|existing| *existing = existing.merge(kind))
+                                        .or_insert(kind);
+                                }
+                                if !pending.is_empty() {
+                                    timer.as_mut().reset(Instant::now() + WATCH_DEBOUNCE);
+                                }
+                            }
+                            Err(error) => {
+                                debug!("managed LSP watcher event dropped: {error}");
+                            }
+                        }
+                    }
+                    _ = &mut timer, if !pending.is_empty() => {
+                        let events = std::mem::take(&mut pending);
+                        for (path, kind) in events {
+                            if let Err(error) = runtime.handle_workspace_watch_event(path.clone(), kind).await {
+                                debug!(
+                                    "managed LSP workspace event ignored for {}: {error}",
+                                    path.display()
+                                );
+                            }
+                        }
+                        timer.as_mut().reset(Instant::now() + Duration::MAX);
+                    }
+                }
+            }
+        });
+
+        Ok(())
+    }
+
+    async fn notify_document_saved(self: &Arc<Self>, path: &Path) -> Result<()> {
+        let Some(session) = self.ensure_session_for_path(path).await? else {
+            return Ok(());
+        };
+        session
+            .notify(
+                "textDocument/didSave",
+                json!({
+                    "textDocument": {
+                        "uri": file_uri_from_path(path)
+                    }
+                }),
+            )
+            .await
+    }
+
+    async fn workspace_symbols(
+        self: &Arc<Self>,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<CodeSymbol>> {
         if !self.options.enabled {
             return Ok(Vec::new());
         }
@@ -227,16 +379,19 @@ impl ManagedLspRuntime {
         Ok(symbols)
     }
 
-    async fn document_symbols(&self, path: &Path, limit: usize) -> Result<Vec<CodeSymbol>> {
+    async fn document_symbols(
+        self: &Arc<Self>,
+        path: &Path,
+        limit: usize,
+    ) -> Result<Vec<CodeSymbol>> {
         let Some(session) = self.ensure_session_for_path(path).await? else {
             return Ok(Vec::new());
         };
         self.ensure_document_synced(path).await?;
-        let uri = file_uri_from_path(path);
         let response = session
             .request(
                 "textDocument/documentSymbol",
-                json!({ "textDocument": { "uri": uri } }),
+                json!({ "textDocument": { "uri": file_uri_from_path(path) } }),
             )
             .await?;
         let mut symbols = parse_document_symbols(&response, &self.workspace_root, path);
@@ -245,7 +400,7 @@ impl ManagedLspRuntime {
     }
 
     async fn definitions(
-        &self,
+        self: &Arc<Self>,
         target: &CodeNavigationTarget,
         limit: usize,
     ) -> Result<Vec<CodeSymbol>> {
@@ -271,7 +426,7 @@ impl ManagedLspRuntime {
                     &response,
                     &self.workspace_root,
                     &symbol_name,
-                    CodeSymbolKind::Unknown,
+                    crate::code_intel::CodeSymbolKind::Unknown,
                 );
                 symbols.truncate(limit);
                 Ok(symbols)
@@ -291,7 +446,7 @@ impl ManagedLspRuntime {
     }
 
     async fn references(
-        &self,
+        self: &Arc<Self>,
         target: &CodeNavigationTarget,
         include_declaration: bool,
         limit: usize,
@@ -333,13 +488,20 @@ impl ManagedLspRuntime {
                     .try_lock()
                     .ok()
                     .and_then(|state| state.as_ref().cloned())
+                    .filter(|session| session.is_alive() && session.is_ready())
             })
             .collect()
     }
 
-    async fn ensure_session_for_path(&self, path: &Path) -> Result<Option<Arc<LspSession>>> {
+    async fn ensure_session_for_path(
+        self: &Arc<Self>,
+        path: &Path,
+    ) -> Result<Option<Arc<LspSession>>> {
         if !self.options.enabled {
             return Ok(None);
+        }
+        if let Err(error) = self.ensure_watcher_started() {
+            debug!("managed LSP watcher unavailable: {error}");
         }
         let Some(spec) = server_spec_for_path(path) else {
             return Ok(None);
@@ -353,10 +515,13 @@ impl ManagedLspRuntime {
         };
 
         // One async mutex per language server prevents duplicate installs or process spawns
-        // when multiple file-open hooks and semantic queries race the same server.
+        // when file hooks and semantic queries race the same server.
         let mut state = slot.state.lock().await;
         if let Some(session) = state.as_ref() {
-            return Ok(Some(session.clone()));
+            if session.is_alive() {
+                return Ok(Some(session.clone()));
+            }
+            *state = None;
         }
 
         let command = match self.resolve_command(spec).await {
@@ -366,21 +531,20 @@ impl ManagedLspRuntime {
                 return Ok(None);
             }
         };
-        let session = Arc::new(
-            LspSession::start(
-                spec,
-                self.workspace_root.clone(),
-                command,
-                self.process_executor.clone(),
-                self.server_policy.clone(),
-            )
-            .await?,
-        );
+        let session = LspSession::start(
+            spec,
+            self.workspace_root.clone(),
+            command,
+            self.process_executor.clone(),
+            self.server_policy.clone(),
+        )
+        .await?;
+        self.spawn_session_warmup(session.clone());
         *state = Some(session.clone());
         Ok(Some(session))
     }
 
-    async fn ensure_document_synced(&self, path: &Path) -> Result<()> {
+    async fn ensure_document_synced(self: &Arc<Self>, path: &Path) -> Result<()> {
         let Some(session) = self.ensure_session_for_path(path).await? else {
             return Ok(());
         };
@@ -396,7 +560,7 @@ impl ManagedLspRuntime {
         session.sync_document(path, language_id, content).await
     }
 
-    async fn close_document(&self, path: &Path) -> Result<()> {
+    async fn close_document(self: &Arc<Self>, path: &Path) -> Result<()> {
         let Some(spec) = server_spec_for_path(path) else {
             return Ok(());
         };
@@ -410,6 +574,80 @@ impl ManagedLspRuntime {
         let state = slot.state.lock().await;
         if let Some(session) = state.as_ref() {
             session.close_document(path).await?;
+        }
+        Ok(())
+    }
+
+    fn spawn_session_warmup(self: &Arc<Self>, session: Arc<LspSession>) {
+        let runtime = Arc::clone(self);
+        tokio::spawn(async move {
+            if let Err(error) = runtime.warmup_session(session.clone()).await {
+                debug!(
+                    "managed LSP warmup skipped for {}: {error}",
+                    session.spec.id
+                );
+            }
+        });
+    }
+
+    async fn warmup_session(self: &Arc<Self>, session: Arc<LspSession>) -> Result<()> {
+        if !session.start_warmup() {
+            return Ok(());
+        }
+
+        for path in collect_high_priority_files(&self.workspace_root, session.spec) {
+            session.open_document_path(path.as_path()).await?;
+        }
+
+        let preload_limit = preload_limit_for_server(session.spec);
+        if preload_limit > 0 {
+            for path in
+                collect_preload_candidates(&self.workspace_root, session.spec, preload_limit)
+            {
+                session.open_document_path(path.as_path()).await?;
+            }
+        }
+
+        session.wait_for_ready().await
+    }
+
+    async fn handle_workspace_watch_event(
+        self: &Arc<Self>,
+        path: PathBuf,
+        kind: WorkspaceWatchEvent,
+    ) -> Result<()> {
+        if kind != WorkspaceWatchEvent::Deleted && (!path.exists() || !path.is_file()) {
+            return Ok(());
+        }
+
+        for session in self.ready_sessions() {
+            if !session.should_track_workspace_path(path.as_path(), kind) {
+                continue;
+            }
+
+            match kind {
+                WorkspaceWatchEvent::Changed if session.is_document_open(path.as_path()) => {
+                    if let Err(error) = session.sync_document_from_disk(path.as_path()).await {
+                        debug!(
+                            "managed LSP didChange for {} failed: {error}",
+                            path.display()
+                        );
+                    }
+                }
+                WorkspaceWatchEvent::Deleted => {
+                    let _ = session.close_document(path.as_path()).await;
+                }
+                WorkspaceWatchEvent::Created => {
+                    if should_preload_path(path.as_path(), session.spec)
+                        || is_high_priority_file(path.as_path(), session.spec)
+                    {
+                        let _ = session.open_document_path(path.as_path()).await;
+                    }
+                }
+                WorkspaceWatchEvent::Changed => {}
+            }
+
+            let _ = session.notify_watched_file(path.as_path(), kind).await;
         }
         Ok(())
     }
@@ -485,9 +723,7 @@ impl ManagedLspRuntime {
                 ExecRequest {
                     program: find_executable("go")
                         .ok_or_else(|| {
-                            ToolError::invalid_state(
-                                "go is required for managed gopls installation",
-                            )
+                            ToolError::invalid_state("go is required for managed Go LSP installs")
                         })?
                         .display()
                         .to_string(),
@@ -510,7 +746,7 @@ impl ManagedLspRuntime {
                     .or_else(|| find_executable("python"))
                     .ok_or_else(|| {
                         ToolError::invalid_state(
-                            "python3 or python is required for managed Python LSP installation",
+                            "python3 or python is required for managed Python LSP installs",
                         )
                     })?;
                 ExecRequest {
@@ -597,6 +833,7 @@ impl ManagedLspRuntime {
 enum FileSyncEvent {
     Open,
     Change,
+    Save,
     Remove,
 }
 
@@ -613,6 +850,11 @@ struct LspSession {
     next_id: AtomicI64,
     pending: Arc<Mutex<BTreeMap<i64, oneshot::Sender<std::result::Result<Value, String>>>>>,
     documents: Mutex<BTreeMap<PathBuf, OpenDocument>>,
+    diagnostics: Mutex<BTreeMap<PathBuf, Vec<DiagnosticEntry>>>,
+    watch_registrations: Mutex<Vec<WatchRegistration>>,
+    alive: AtomicBool,
+    ready: AtomicBool,
+    warmup_started: AtomicBool,
 }
 
 impl LspSession {
@@ -622,7 +864,7 @@ impl LspSession {
         command: ResolvedCommand,
         process_executor: Arc<dyn ProcessExecutor>,
         sandbox_policy: SandboxPolicy,
-    ) -> Result<Self> {
+    ) -> Result<Arc<Self>> {
         let request = ExecRequest {
             program: command.program.display().to_string(),
             args: command.args,
@@ -657,7 +899,7 @@ impl LspSession {
             ToolError::invalid_state(format!("LSP server {} did not expose stderr", spec.id))
         })?;
 
-        let session = Self {
+        let session = Arc::new(Self {
             spec,
             workspace_root: workspace_root.clone(),
             child: Mutex::new(child),
@@ -665,29 +907,54 @@ impl LspSession {
             next_id: AtomicI64::new(1),
             pending: Arc::new(Mutex::new(BTreeMap::new())),
             documents: Mutex::new(BTreeMap::new()),
-        };
+            diagnostics: Mutex::new(BTreeMap::new()),
+            watch_registrations: Mutex::new(Vec::new()),
+            alive: AtomicBool::new(true),
+            ready: AtomicBool::new(false),
+            warmup_started: AtomicBool::new(false),
+        });
         session.spawn_reader(stdout);
         session.spawn_stderr(stderr);
-        session.initialize().await?;
+        if let Err(error) = session.initialize().await {
+            session.mark_dead("initialize failed");
+            return Err(error);
+        }
         Ok(session)
     }
 
-    fn spawn_reader(&self, stdout: tokio::process::ChildStdout) {
-        let pending = Arc::clone(&self.pending);
-        let server_id = self.spec.id;
+    fn spawn_reader(self: &Arc<Self>, stdout: tokio::process::ChildStdout) {
+        let session = Arc::clone(self);
         tokio::spawn(async move {
             let mut reader = BufReader::new(stdout);
             loop {
                 let message = read_lsp_message(&mut reader).await;
                 let Some(message) = message.transpose() else {
+                    session.mark_dead("reader closed");
                     break;
                 };
                 let Ok(message) = message else {
-                    warn!("managed LSP reader for {} stopped with error", server_id);
+                    warn!(
+                        "managed LSP reader for {} stopped with error",
+                        session.spec.id
+                    );
+                    session.mark_dead("reader failed");
                     break;
                 };
+
+                if message.get("id").is_some() && message.get("method").is_some() {
+                    session.handle_server_request(message).await;
+                    continue;
+                }
+                if message.get("method").is_some() {
+                    session.handle_server_notification(message);
+                    continue;
+                }
                 if let Some(id) = message.get("id").and_then(Value::as_i64) {
-                    let sender = pending.lock().expect("LSP pending map lock").remove(&id);
+                    let sender = session
+                        .pending
+                        .lock()
+                        .expect("LSP pending map lock")
+                        .remove(&id);
                     if let Some(sender) = sender {
                         let response = if let Some(error) = message.get("error") {
                             Err(error.to_string())
@@ -698,10 +965,11 @@ impl LspSession {
                     }
                 }
             }
+            session.fail_pending_requests("managed LSP transport stopped");
         });
     }
 
-    fn spawn_stderr(&self, stderr: tokio::process::ChildStderr) {
+    fn spawn_stderr(self: &Arc<Self>, stderr: tokio::process::ChildStderr) {
         let server_id = self.spec.id;
         tokio::spawn(async move {
             let mut reader = BufReader::new(stderr);
@@ -717,14 +985,14 @@ impl LspSession {
         });
     }
 
-    async fn initialize(&self) -> Result<()> {
+    async fn initialize(self: &Arc<Self>) -> Result<()> {
         let root_uri = file_uri_from_path(&self.workspace_root);
         let root_name = self
             .workspace_root
             .file_name()
             .and_then(|value| value.to_str())
             .unwrap_or("workspace");
-        let result = timeout(
+        timeout(
             INITIALIZE_TIMEOUT,
             self.request(
                 "initialize",
@@ -734,12 +1002,21 @@ impl LspSession {
                     "rootPath": self.workspace_root.display().to_string(),
                     "workspaceFolders": [{ "uri": root_uri, "name": root_name }],
                     "capabilities": {
-                        "workspace": { "symbol": {} },
+                        "workspace": {
+                            "configuration": true,
+                            "didChangeConfiguration": { "dynamicRegistration": true },
+                            "didChangeWatchedFiles": {
+                                "dynamicRegistration": true,
+                                "relativePatternSupport": true
+                            },
+                            "symbol": {}
+                        },
                         "textDocument": {
                             "definition": { "linkSupport": true },
                             "references": {},
                             "documentSymbol": { "hierarchicalDocumentSymbolSupport": true },
                             "synchronization": { "didSave": true },
+                            "publishDiagnostics": { "versionSupport": true }
                         }
                     }
                 }),
@@ -752,13 +1029,244 @@ impl LspSession {
                 self.spec.id
             ))
         })??;
-        let _ = result;
         self.notify("initialized", json!({})).await?;
         info!("managed LSP server {} initialized", self.spec.id);
         Ok(())
     }
 
+    fn is_alive(&self) -> bool {
+        self.alive.load(Ordering::SeqCst)
+    }
+
+    fn is_ready(&self) -> bool {
+        self.ready.load(Ordering::SeqCst)
+    }
+
+    fn start_warmup(&self) -> bool {
+        self.warmup_started
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+    }
+
+    fn is_document_open(&self, path: &Path) -> bool {
+        self.documents
+            .lock()
+            .expect("LSP document map lock")
+            .contains_key(path)
+    }
+
+    fn clear_diagnostics(&self, path: &Path) {
+        self.diagnostics
+            .lock()
+            .expect("LSP diagnostics map lock")
+            .remove(path);
+    }
+
+    fn mark_dead(&self, reason: &str) {
+        if self.alive.swap(false, Ordering::SeqCst) {
+            self.ready.store(false, Ordering::SeqCst);
+            debug!("managed LSP {} marked dead: {reason}", self.spec.id);
+        }
+    }
+
+    fn fail_pending_requests(&self, reason: &str) {
+        let pending = std::mem::take(&mut *self.pending.lock().expect("LSP pending map lock"));
+        for (_, sender) in pending {
+            let _ = sender.send(Err(reason.to_string()));
+        }
+    }
+
+    async fn wait_for_ready(self: &Arc<Self>) -> Result<()> {
+        let deadline = Instant::now() + READY_TIMEOUT;
+        loop {
+            if self.ping_server().await.is_ok() {
+                self.ready.store(true, Ordering::SeqCst);
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                self.mark_dead("readiness timeout");
+                return Err(ToolError::invalid_state(format!(
+                    "timed out waiting for managed LSP {} readiness",
+                    self.spec.id
+                )));
+            }
+            sleep(READY_POLL_INTERVAL).await;
+        }
+    }
+
+    async fn ping_server(&self) -> Result<()> {
+        if matches!(server_family(self.spec), ServerFamily::TypeScript) {
+            let typescript_path = {
+                let documents = self.documents.lock().expect("LSP document map lock");
+                documents
+                    .keys()
+                    .find(|path| {
+                        matches!(
+                            language_id_for_path(path.as_path()),
+                            Some(
+                                "typescript" | "typescriptreact" | "javascript" | "javascriptreact"
+                            )
+                        )
+                    })
+                    .cloned()
+            };
+            if let Some(path) = typescript_path {
+                let _ = self
+                    .request(
+                        "textDocument/documentSymbol",
+                        json!({ "textDocument": { "uri": file_uri_from_path(path.as_path()) } }),
+                    )
+                    .await?;
+                return Ok(());
+            }
+        }
+
+        let _ = self
+            .request("workspace/symbol", json!({ "query": "" }))
+            .await?;
+        Ok(())
+    }
+
+    async fn handle_server_request(self: &Arc<Self>, message: Value) {
+        let id = message.get("id").cloned().unwrap_or(Value::Null);
+        let method = message
+            .get("method")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let params = message.get("params").cloned().unwrap_or(Value::Null);
+        let response = match method {
+            "client/registerCapability" => {
+                self.update_watch_registrations(&params);
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": Value::Null,
+                })
+            }
+            "workspace/configuration" => json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": configuration_response(&params),
+            }),
+            "workspace/applyEdit" => json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": { "applied": false },
+            }),
+            _ => json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "error": {
+                    "code": -32601,
+                    "message": format!("unsupported client request: {method}"),
+                }
+            }),
+        };
+        if let Err(error) = self.write_message(&response).await {
+            debug!(
+                "managed LSP {} failed to answer server request {}: {error}",
+                self.spec.id, method
+            );
+        }
+    }
+
+    fn handle_server_notification(&self, message: Value) {
+        let method = message
+            .get("method")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let params = message.get("params").cloned().unwrap_or(Value::Null);
+        match method {
+            "textDocument/publishDiagnostics" => self.apply_diagnostics(&params),
+            "window/showMessage" => {
+                if let Some(payload) = params.get("message").and_then(Value::as_str) {
+                    debug!("LSP server message [{}] {payload}", self.spec.id);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn apply_diagnostics(&self, params: &Value) {
+        let Some(uri) = params.get("uri").and_then(Value::as_str) else {
+            return;
+        };
+        let Some(path) = file_uri_to_path(uri) else {
+            return;
+        };
+        let diagnostics = params
+            .get("diagnostics")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|entry| parse_diagnostic_entry(entry, path.as_path(), &self.workspace_root))
+            .collect::<Vec<_>>();
+        self.diagnostics
+            .lock()
+            .expect("LSP diagnostics map lock")
+            .insert(path, diagnostics);
+    }
+
+    fn update_watch_registrations(&self, params: &Value) {
+        *self
+            .watch_registrations
+            .lock()
+            .expect("LSP watch registrations lock") = extract_watch_registrations(params);
+    }
+
+    fn should_track_workspace_path(&self, path: &Path, kind: WorkspaceWatchEvent) -> bool {
+        let registrations = self
+            .watch_registrations
+            .lock()
+            .expect("LSP watch registrations lock");
+        if registrations.is_empty() {
+            return true;
+        }
+        registrations
+            .iter()
+            .any(|registration| registration.matches(&self.workspace_root, path, kind))
+    }
+
+    async fn open_document_path(&self, path: &Path) -> Result<()> {
+        self.sync_document_from_disk(path).await
+    }
+
+    async fn sync_document_from_disk(&self, path: &Path) -> Result<()> {
+        if !path.exists() || !path.is_file() {
+            return Ok(());
+        }
+        let Some(language_id) = language_id_for_path(path) else {
+            return Ok(());
+        };
+        let content = fs::read_to_string(path).await.map_err(|error| {
+            ToolError::invalid_state(format!(
+                "failed to read {} for LSP sync: {error}",
+                path.display()
+            ))
+        })?;
+        self.sync_document(path, language_id, content).await
+    }
+
+    async fn notify_watched_file(&self, path: &Path, kind: WorkspaceWatchEvent) -> Result<()> {
+        self.notify(
+            "workspace/didChangeWatchedFiles",
+            json!({
+                "changes": [{
+                    "uri": file_uri_from_path(path),
+                    "type": kind.lsp_kind(),
+                }]
+            }),
+        )
+        .await
+    }
+
     async fn request(&self, method: &str, params: Value) -> Result<Value> {
+        if !self.is_alive() {
+            return Err(ToolError::invalid_state(format!(
+                "managed LSP {} is not alive",
+                self.spec.id
+            )));
+        }
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = oneshot::channel();
         self.pending
@@ -781,18 +1289,23 @@ impl LspSession {
         timeout(REQUEST_TIMEOUT, rx)
             .await
             .map_err(|_| {
+                self.mark_dead("request timeout");
                 ToolError::invalid_state(format!(
                     "timed out waiting for LSP {} response to {}",
                     self.spec.id, method
                 ))
             })?
             .map_err(|_| {
+                self.mark_dead("response channel dropped");
                 ToolError::invalid_state(format!(
                     "managed LSP {} dropped the response channel for {}",
                     self.spec.id, method
                 ))
             })?
-            .map_err(|error| ToolError::invalid_state(error))
+            .map_err(|error| {
+                self.mark_dead("server returned transport error");
+                ToolError::invalid_state(error)
+            })
     }
 
     async fn notify(&self, method: &str, params: Value) -> Result<()> {
@@ -805,24 +1318,33 @@ impl LspSession {
     }
 
     async fn write_message(&self, message: &Value) -> Result<()> {
+        if !self.is_alive() {
+            return Err(ToolError::invalid_state(format!(
+                "managed LSP {} is not alive",
+                self.spec.id
+            )));
+        }
         let body = serde_json::to_vec(message).map_err(|error| {
             ToolError::invalid_state(format!("failed to serialize LSP payload: {error}"))
         })?;
         let header = format!("Content-Length: {}\r\n\r\n", body.len());
         let mut stdin = self.stdin.lock().await;
         stdin.write_all(header.as_bytes()).await.map_err(|error| {
+            self.mark_dead("stdin header write failed");
             ToolError::invalid_state(format!(
                 "failed to write LSP header to {}: {error}",
                 self.spec.id
             ))
         })?;
         stdin.write_all(&body).await.map_err(|error| {
+            self.mark_dead("stdin body write failed");
             ToolError::invalid_state(format!(
                 "failed to write LSP body to {}: {error}",
                 self.spec.id
             ))
         })?;
         stdin.flush().await.map_err(|error| {
+            self.mark_dead("stdin flush failed");
             ToolError::invalid_state(format!(
                 "failed to flush LSP payload to {}: {error}",
                 self.spec.id
@@ -904,6 +1426,7 @@ impl LspSession {
             .lock()
             .expect("LSP document map lock")
             .remove(path);
+        self.clear_diagnostics(path);
         if removed.is_none() {
             return Ok(());
         }
@@ -917,6 +1440,9 @@ impl LspSession {
 
 impl Drop for LspSession {
     fn drop(&mut self) {
+        // Drop can run while the async runtime is tearing down, so the full shutdown/exit
+        // handshake is not reliable here. Runtime-driven close paths should emit normal LSP
+        // notifications earlier; drop only prevents orphaned helper processes.
         if let Ok(mut child) = self.child.lock() {
             let _ = child.start_kill();
         }
@@ -934,433 +1460,6 @@ struct ResolvedCommand {
     program: PathBuf,
     args: Vec<String>,
     env: BTreeMap<String, String>,
-}
-
-#[derive(Clone, Copy)]
-struct LanguageServerSpec {
-    id: &'static str,
-    install_id: &'static str,
-    command: &'static str,
-    args: &'static [&'static str],
-    install: Option<InstallStrategy>,
-}
-
-#[derive(Clone, Copy)]
-struct LanguageSupport {
-    language_id: &'static str,
-    server: &'static LanguageServerSpec,
-    extensions: &'static [&'static str],
-    file_names: &'static [&'static str],
-    file_name_prefixes: &'static [&'static str],
-}
-
-impl LanguageSupport {
-    fn matches(&self, signature: &PathSignature) -> bool {
-        signature.extension.as_deref().is_some_and(|extension| {
-            self.extensions
-                .iter()
-                .any(|candidate| *candidate == extension)
-        }) || signature.file_name.as_deref().is_some_and(|file_name| {
-            self.file_names
-                .iter()
-                .any(|candidate| *candidate == file_name)
-                || self
-                    .file_name_prefixes
-                    .iter()
-                    .any(|candidate| file_name.starts_with(candidate))
-        })
-    }
-}
-
-#[derive(Default)]
-struct PathSignature {
-    extension: Option<String>,
-    file_name: Option<String>,
-}
-
-impl PathSignature {
-    fn from_path(path: &Path) -> Self {
-        Self {
-            extension: lowercase_extension(path),
-            file_name: lowercase_file_name(path),
-        }
-    }
-}
-
-#[derive(Clone, Copy)]
-enum InstallStrategy {
-    Npm { packages: &'static [&'static str] },
-    Go { module: &'static str },
-    Pip { packages: &'static [&'static str] },
-    Cargo { package: &'static str },
-}
-
-const TYPESCRIPT_SPEC: LanguageServerSpec = LanguageServerSpec {
-    id: "typescript",
-    install_id: "typescript",
-    command: "typescript-language-server",
-    args: &["--stdio"],
-    install: Some(InstallStrategy::Npm {
-        packages: &["typescript", "typescript-language-server"],
-    }),
-};
-
-const HTML_SPEC: LanguageServerSpec = LanguageServerSpec {
-    id: "html",
-    install_id: "html",
-    command: "vscode-html-language-server",
-    args: &["--stdio"],
-    install: Some(InstallStrategy::Npm {
-        packages: &["vscode-langservers-extracted"],
-    }),
-};
-
-const CSS_SPEC: LanguageServerSpec = LanguageServerSpec {
-    id: "css",
-    install_id: "css",
-    command: "vscode-css-language-server",
-    args: &["--stdio"],
-    install: Some(InstallStrategy::Npm {
-        packages: &["vscode-langservers-extracted"],
-    }),
-};
-
-const JSON_SPEC: LanguageServerSpec = LanguageServerSpec {
-    id: "json",
-    install_id: "json",
-    command: "vscode-json-language-server",
-    args: &["--stdio"],
-    install: Some(InstallStrategy::Npm {
-        packages: &["vscode-langservers-extracted"],
-    }),
-};
-
-const PYTHON_SPEC: LanguageServerSpec = LanguageServerSpec {
-    id: "python",
-    install_id: "python",
-    command: "pylsp",
-    args: &[],
-    install: Some(InstallStrategy::Pip {
-        packages: &["python-lsp-server"],
-    }),
-};
-
-const GO_SPEC: LanguageServerSpec = LanguageServerSpec {
-    id: "go",
-    install_id: "go",
-    command: "gopls",
-    args: &[],
-    install: Some(InstallStrategy::Go {
-        module: "golang.org/x/tools/gopls@latest",
-    }),
-};
-
-const YAML_SPEC: LanguageServerSpec = LanguageServerSpec {
-    id: "yaml",
-    install_id: "yaml",
-    command: "yaml-language-server",
-    args: &["--stdio"],
-    install: Some(InstallStrategy::Npm {
-        packages: &["yaml-language-server"],
-    }),
-};
-
-const SHELL_SPEC: LanguageServerSpec = LanguageServerSpec {
-    id: "shell",
-    install_id: "shell",
-    command: "bash-language-server",
-    args: &["start"],
-    install: Some(InstallStrategy::Npm {
-        packages: &["bash-language-server"],
-    }),
-};
-
-const DOCKERFILE_SPEC: LanguageServerSpec = LanguageServerSpec {
-    id: "dockerfile",
-    install_id: "dockerfile",
-    command: "docker-langserver",
-    args: &["--stdio"],
-    install: Some(InstallStrategy::Npm {
-        packages: &["dockerfile-language-server-nodejs"],
-    }),
-};
-
-const PHP_SPEC: LanguageServerSpec = LanguageServerSpec {
-    id: "php",
-    install_id: "php",
-    command: "intelephense",
-    args: &["--stdio"],
-    install: Some(InstallStrategy::Npm {
-        packages: &["intelephense"],
-    }),
-};
-
-const TOML_SPEC: LanguageServerSpec = LanguageServerSpec {
-    id: "toml",
-    install_id: "toml",
-    command: "taplo",
-    args: &["lsp", "stdio"],
-    install: Some(InstallStrategy::Cargo {
-        package: "taplo-cli",
-    }),
-};
-
-const SQL_SPEC: LanguageServerSpec = LanguageServerSpec {
-    id: "sql",
-    install_id: "sql",
-    command: "sqls",
-    args: &[],
-    install: Some(InstallStrategy::Go {
-        module: "github.com/sqls-server/sqls@latest",
-    }),
-};
-
-const RUST_SPEC: LanguageServerSpec = LanguageServerSpec {
-    id: "rust",
-    install_id: "rust",
-    command: "rust-analyzer",
-    args: &[],
-    install: None,
-};
-
-const JAVA_SPEC: LanguageServerSpec = LanguageServerSpec {
-    id: "java",
-    install_id: "java",
-    command: "jdtls",
-    args: &[],
-    install: None,
-};
-
-const CLANGD_SPEC: LanguageServerSpec = LanguageServerSpec {
-    id: "clangd",
-    install_id: "clangd",
-    command: "clangd",
-    args: &[],
-    install: None,
-};
-
-// Language recognition is intentionally separate from server installation and launching.
-// Several language ids can share one server binary, while install support remains a property
-// of the server itself rather than of the file-extension matching layer.
-const SUPPORTED_LANGUAGES: &[LanguageSupport] = &[
-    LanguageSupport {
-        language_id: "typescript",
-        server: &TYPESCRIPT_SPEC,
-        extensions: &["ts", "mts", "cts"],
-        file_names: &[],
-        file_name_prefixes: &[],
-    },
-    LanguageSupport {
-        language_id: "typescriptreact",
-        server: &TYPESCRIPT_SPEC,
-        extensions: &["tsx"],
-        file_names: &[],
-        file_name_prefixes: &[],
-    },
-    LanguageSupport {
-        language_id: "javascript",
-        server: &TYPESCRIPT_SPEC,
-        extensions: &["js", "mjs", "cjs"],
-        file_names: &[],
-        file_name_prefixes: &[],
-    },
-    LanguageSupport {
-        language_id: "javascriptreact",
-        server: &TYPESCRIPT_SPEC,
-        extensions: &["jsx"],
-        file_names: &[],
-        file_name_prefixes: &[],
-    },
-    LanguageSupport {
-        language_id: "html",
-        server: &HTML_SPEC,
-        extensions: &["html", "htm", "xhtml"],
-        file_names: &[],
-        file_name_prefixes: &[],
-    },
-    LanguageSupport {
-        language_id: "css",
-        server: &CSS_SPEC,
-        extensions: &["css"],
-        file_names: &[],
-        file_name_prefixes: &[],
-    },
-    LanguageSupport {
-        language_id: "scss",
-        server: &CSS_SPEC,
-        extensions: &["scss"],
-        file_names: &[],
-        file_name_prefixes: &[],
-    },
-    LanguageSupport {
-        language_id: "sass",
-        server: &CSS_SPEC,
-        extensions: &["sass"],
-        file_names: &[],
-        file_name_prefixes: &[],
-    },
-    LanguageSupport {
-        language_id: "less",
-        server: &CSS_SPEC,
-        extensions: &["less"],
-        file_names: &[],
-        file_name_prefixes: &[],
-    },
-    LanguageSupport {
-        language_id: "json",
-        server: &JSON_SPEC,
-        extensions: &["json"],
-        file_names: &[],
-        file_name_prefixes: &[],
-    },
-    LanguageSupport {
-        language_id: "jsonc",
-        server: &JSON_SPEC,
-        extensions: &["jsonc", "code-workspace"],
-        file_names: &[],
-        file_name_prefixes: &[],
-    },
-    LanguageSupport {
-        language_id: "python",
-        server: &PYTHON_SPEC,
-        extensions: &["py", "pyi"],
-        file_names: &[],
-        file_name_prefixes: &[],
-    },
-    LanguageSupport {
-        language_id: "go",
-        server: &GO_SPEC,
-        extensions: &["go"],
-        file_names: &[],
-        file_name_prefixes: &[],
-    },
-    LanguageSupport {
-        language_id: "go.mod",
-        server: &GO_SPEC,
-        extensions: &[],
-        file_names: &["go.mod"],
-        file_name_prefixes: &[],
-    },
-    LanguageSupport {
-        language_id: "go.sum",
-        server: &GO_SPEC,
-        extensions: &[],
-        file_names: &["go.sum"],
-        file_name_prefixes: &[],
-    },
-    LanguageSupport {
-        language_id: "go.work",
-        server: &GO_SPEC,
-        extensions: &[],
-        file_names: &["go.work"],
-        file_name_prefixes: &[],
-    },
-    LanguageSupport {
-        language_id: "yaml",
-        server: &YAML_SPEC,
-        extensions: &["yaml", "yml"],
-        file_names: &[],
-        file_name_prefixes: &[],
-    },
-    LanguageSupport {
-        language_id: "shellscript",
-        server: &SHELL_SPEC,
-        extensions: &["sh", "bash", "zsh", "ksh"],
-        file_names: &[
-            ".bashrc",
-            ".bash_profile",
-            ".profile",
-            ".zshrc",
-            ".zprofile",
-            ".kshrc",
-        ],
-        file_name_prefixes: &[],
-    },
-    LanguageSupport {
-        language_id: "dockerfile",
-        server: &DOCKERFILE_SPEC,
-        extensions: &["dockerfile"],
-        file_names: &["dockerfile", "containerfile"],
-        file_name_prefixes: &["dockerfile.", "containerfile."],
-    },
-    LanguageSupport {
-        language_id: "php",
-        server: &PHP_SPEC,
-        extensions: &["php", "phtml"],
-        file_names: &[],
-        file_name_prefixes: &[],
-    },
-    LanguageSupport {
-        language_id: "toml",
-        server: &TOML_SPEC,
-        extensions: &["toml"],
-        file_names: &[],
-        file_name_prefixes: &[],
-    },
-    LanguageSupport {
-        language_id: "sql",
-        server: &SQL_SPEC,
-        extensions: &["sql"],
-        file_names: &[],
-        file_name_prefixes: &[],
-    },
-    LanguageSupport {
-        language_id: "rust",
-        server: &RUST_SPEC,
-        extensions: &["rs"],
-        file_names: &[],
-        file_name_prefixes: &[],
-    },
-    LanguageSupport {
-        language_id: "java",
-        server: &JAVA_SPEC,
-        extensions: &["java"],
-        file_names: &[],
-        file_name_prefixes: &[],
-    },
-    LanguageSupport {
-        language_id: "c",
-        server: &CLANGD_SPEC,
-        extensions: &["c", "h"],
-        file_names: &[],
-        file_name_prefixes: &[],
-    },
-    LanguageSupport {
-        language_id: "cpp",
-        server: &CLANGD_SPEC,
-        extensions: &["cc", "cpp", "cxx", "c++", "hpp", "hh", "hxx"],
-        file_names: &[],
-        file_name_prefixes: &[],
-    },
-    LanguageSupport {
-        language_id: "objective-c",
-        server: &CLANGD_SPEC,
-        extensions: &["m"],
-        file_names: &[],
-        file_name_prefixes: &[],
-    },
-    LanguageSupport {
-        language_id: "objective-cpp",
-        server: &CLANGD_SPEC,
-        extensions: &["mm"],
-        file_names: &[],
-        file_name_prefixes: &[],
-    },
-];
-
-fn language_support_for_path(path: &Path) -> Option<&'static LanguageSupport> {
-    let signature = PathSignature::from_path(path);
-    SUPPORTED_LANGUAGES
-        .iter()
-        .find(|support| support.matches(&signature))
-}
-
-fn server_spec_for_path(path: &Path) -> Option<&'static LanguageServerSpec> {
-    language_support_for_path(path).map(|support| support.server)
-}
-
-fn language_id_for_path(path: &Path) -> Option<&'static str> {
-    language_support_for_path(path).map(|support| support.language_id)
 }
 
 fn resolve_existing_command(
@@ -1382,290 +1481,12 @@ fn resolve_existing_command(
     })
 }
 
-fn managed_executable_path(install_root: &Path, spec: &'static LanguageServerSpec) -> PathBuf {
-    let server_root = install_root.join(spec.install_id);
-    match spec.install {
-        Some(InstallStrategy::Npm { .. }) => server_root
-            .join("node_modules")
-            .join(".bin")
-            .join(spec.command),
-        Some(InstallStrategy::Go { .. })
-        | Some(InstallStrategy::Pip { .. })
-        | Some(InstallStrategy::Cargo { .. }) => server_root.join("bin").join(spec.command),
-        None => server_root.join(spec.command),
-    }
-}
-
-fn build_npm_install_args(server_root: &Path, packages: &[&str]) -> Vec<String> {
-    let mut args = vec![
-        "install".to_string(),
-        "--prefix".to_string(),
-        server_root.display().to_string(),
-        "--no-save".to_string(),
-    ];
-    args.extend(packages.iter().map(|value| (*value).to_string()));
-    args
-}
-
-fn build_pip_install_args(server_root: &Path, packages: &[&str]) -> Vec<String> {
-    let mut args = vec![
-        "-m".to_string(),
-        "pip".to_string(),
-        "install".to_string(),
-        "--upgrade".to_string(),
-        "--prefix".to_string(),
-        server_root.display().to_string(),
-    ];
-    args.extend(packages.iter().map(|value| (*value).to_string()));
-    args
-}
-
-fn build_cargo_install_args(server_root: &Path, package: &str) -> Vec<String> {
-    vec![
-        "install".to_string(),
-        "--root".to_string(),
-        server_root.display().to_string(),
-        "--locked".to_string(),
-        package.to_string(),
-    ]
-}
-
-fn lowercase_extension(path: &Path) -> Option<String> {
-    path.extension()?.to_str().map(str::to_ascii_lowercase)
-}
-
-fn lowercase_file_name(path: &Path) -> Option<String> {
-    path.file_name()?.to_str().map(str::to_ascii_lowercase)
-}
-
 fn find_executable(name: &str) -> Option<PathBuf> {
     let path_var = env::var_os("PATH")?;
     env::split_paths(&path_var).find_map(|dir| {
         let candidate = dir.join(name);
         candidate.is_file().then_some(candidate)
     })
-}
-
-async fn read_lsp_message(
-    reader: &mut BufReader<tokio::process::ChildStdout>,
-) -> std::io::Result<Option<Value>> {
-    let mut content_length = None;
-    loop {
-        let mut line = String::new();
-        let read = reader.read_line(&mut line).await?;
-        if read == 0 {
-            return Ok(None);
-        }
-        let line = line.trim_end_matches(['\r', '\n']);
-        if line.is_empty() {
-            break;
-        }
-        if let Some(value) = line.strip_prefix("Content-Length:") {
-            content_length = value.trim().parse::<usize>().ok();
-        }
-    }
-
-    let Some(content_length) = content_length else {
-        return Ok(None);
-    };
-    let mut body = vec![0; content_length];
-    reader.read_exact(&mut body).await?;
-    serde_json::from_slice(&body)
-        .map(Some)
-        .map_err(std::io::Error::other)
-}
-
-fn parse_workspace_symbols(value: &Value, workspace_root: &Path) -> Vec<CodeSymbol> {
-    value
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|entry| {
-            let name = entry.get("name")?.as_str()?.to_string();
-            let location = parse_location_like(entry.get("location")?, workspace_root)?;
-            Some(CodeSymbol {
-                name,
-                kind: parse_symbol_kind(entry.get("kind")),
-                location,
-                signature: entry
-                    .get("detail")
-                    .and_then(Value::as_str)
-                    .map(ToOwned::to_owned),
-            })
-        })
-        .collect()
-}
-
-fn parse_document_symbols(
-    value: &Value,
-    workspace_root: &Path,
-    document_path: &Path,
-) -> Vec<CodeSymbol> {
-    let mut symbols = Vec::new();
-    let Some(entries) = value.as_array() else {
-        return symbols;
-    };
-    for entry in entries {
-        collect_document_symbols(entry, workspace_root, document_path, &mut symbols);
-    }
-    symbols.sort_by(|left, right| {
-        (
-            left.location.path.as_str(),
-            left.location.line,
-            left.location.column,
-            left.name.as_str(),
-        )
-            .cmp(&(
-                right.location.path.as_str(),
-                right.location.line,
-                right.location.column,
-                right.name.as_str(),
-            ))
-    });
-    symbols
-}
-
-fn collect_document_symbols(
-    entry: &Value,
-    workspace_root: &Path,
-    document_path: &Path,
-    output: &mut Vec<CodeSymbol>,
-) {
-    if let Some(symbol) = parse_document_symbol(entry, workspace_root, document_path) {
-        output.push(symbol);
-    }
-    if let Some(children) = entry.get("children").and_then(Value::as_array) {
-        for child in children {
-            collect_document_symbols(child, workspace_root, document_path, output);
-        }
-    }
-}
-
-fn parse_document_symbol(
-    entry: &Value,
-    workspace_root: &Path,
-    document_path: &Path,
-) -> Option<CodeSymbol> {
-    let name = entry.get("name")?.as_str()?.to_string();
-    let uri = entry
-        .get("uri")
-        .and_then(Value::as_str)
-        .map(ToOwned::to_owned)
-        .unwrap_or_else(|| file_uri_from_path(document_path));
-    let selection_range = entry
-        .get("selectionRange")
-        .or_else(|| entry.get("range"))
-        .or_else(|| entry.pointer("/location/range"))?;
-    let location = parse_uri_and_range(uri.as_str(), selection_range, workspace_root)?;
-    Some(CodeSymbol {
-        name,
-        kind: parse_symbol_kind(entry.get("kind")),
-        location,
-        signature: entry
-            .get("detail")
-            .and_then(Value::as_str)
-            .map(ToOwned::to_owned),
-    })
-}
-
-fn parse_locations_as_symbols(
-    value: &Value,
-    workspace_root: &Path,
-    symbol_name: &str,
-    kind: CodeSymbolKind,
-) -> Vec<CodeSymbol> {
-    collect_locations(value, workspace_root)
-        .into_iter()
-        .map(|location| CodeSymbol {
-            name: symbol_name.to_string(),
-            kind,
-            location,
-            signature: None,
-        })
-        .collect()
-}
-
-async fn parse_locations_as_references(
-    value: &Value,
-    workspace_root: &Path,
-    symbol_name: &str,
-) -> Vec<CodeReference> {
-    let mut references = Vec::new();
-    for location in collect_locations(value, workspace_root) {
-        let absolute_path = workspace_root.join(&location.path);
-        let line_text = fs::read_to_string(&absolute_path)
-            .await
-            .ok()
-            .and_then(|source| {
-                source
-                    .lines()
-                    .nth(location.line.saturating_sub(1))
-                    .map(compact_line)
-            })
-            .unwrap_or_default();
-        references.push(CodeReference {
-            symbol: symbol_name.to_string(),
-            location,
-            line_text,
-            is_definition: false,
-        });
-    }
-    references
-}
-
-fn collect_locations(value: &Value, workspace_root: &Path) -> Vec<CodeLocation> {
-    match value {
-        Value::Array(entries) => entries
-            .iter()
-            .filter_map(|entry| parse_location_like(entry, workspace_root))
-            .collect(),
-        Value::Object(_) => parse_location_like(value, workspace_root)
-            .into_iter()
-            .collect(),
-        _ => Vec::new(),
-    }
-}
-
-fn parse_location_like(value: &Value, workspace_root: &Path) -> Option<CodeLocation> {
-    if let Some(uri) = value.get("uri").and_then(Value::as_str) {
-        let range = value.get("range")?;
-        return parse_uri_and_range(uri, range, workspace_root);
-    }
-    if let Some(uri) = value.get("targetUri").and_then(Value::as_str) {
-        let range = value
-            .get("targetSelectionRange")
-            .or_else(|| value.get("targetRange"))?;
-        return parse_uri_and_range(uri, range, workspace_root);
-    }
-    None
-}
-
-fn parse_uri_and_range(uri: &str, range: &Value, workspace_root: &Path) -> Option<CodeLocation> {
-    let path = file_uri_to_path(uri)?;
-    let display_path = display_path(workspace_root, &path);
-    let line = range.pointer("/start/line")?.as_u64()? as usize + 1;
-    let column = range.pointer("/start/character")?.as_u64()? as usize + 1;
-    Some(CodeLocation {
-        path: display_path,
-        line,
-        column,
-    })
-}
-
-fn parse_symbol_kind(value: Option<&Value>) -> CodeSymbolKind {
-    match value.and_then(Value::as_u64).unwrap_or_default() {
-        2 | 3 | 4 => CodeSymbolKind::Module,
-        5 => CodeSymbolKind::Class,
-        6 | 9 | 12 | 24 => CodeSymbolKind::Function,
-        10 | 22 => CodeSymbolKind::Enum,
-        11 => CodeSymbolKind::Interface,
-        13 | 15 | 16 | 17 | 18 | 20 | 21 | 25 => CodeSymbolKind::Variable,
-        14 => CodeSymbolKind::Constant,
-        19 => CodeSymbolKind::Struct,
-        23 => CodeSymbolKind::Struct,
-        26 => CodeSymbolKind::TypeAlias,
-        _ => CodeSymbolKind::Unknown,
-    }
 }
 
 fn merge_symbols(
@@ -1692,54 +1513,6 @@ fn merge_symbols(
     merged
 }
 
-fn file_uri_from_path(path: &Path) -> String {
-    let path = path.to_string_lossy();
-    let mut encoded = String::with_capacity(path.len() + 8);
-    encoded.push_str("file://");
-    for byte in path.as_bytes() {
-        let ch = *byte as char;
-        if ch.is_ascii_alphanumeric() || matches!(ch, '/' | '-' | '_' | '.' | '~') {
-            encoded.push(ch);
-        } else {
-            encoded.push('%');
-            encoded.push_str(&format!("{byte:02X}"));
-        }
-    }
-    encoded
-}
-
-fn file_uri_to_path(uri: &str) -> Option<PathBuf> {
-    let raw = uri.strip_prefix("file://")?;
-    let mut decoded = Vec::with_capacity(raw.len());
-    let bytes = raw.as_bytes();
-    let mut index = 0usize;
-    while index < bytes.len() {
-        if bytes[index] == b'%' && index + 2 < bytes.len() {
-            let hex = std::str::from_utf8(&bytes[index + 1..index + 3]).ok()?;
-            decoded.push(u8::from_str_radix(hex, 16).ok()?);
-            index += 3;
-        } else {
-            decoded.push(bytes[index]);
-            index += 1;
-        }
-    }
-    Some(PathBuf::from(String::from_utf8(decoded).ok()?))
-}
-
-fn display_path(root: &Path, path: &Path) -> String {
-    path.strip_prefix(root)
-        .unwrap_or(path)
-        .to_string_lossy()
-        .replace('\\', "/")
-}
-
-fn zero_based_position(line: usize, column: usize) -> Value {
-    json!({
-        "line": line.saturating_sub(1),
-        "character": column.saturating_sub(1),
-    })
-}
-
 fn symbol_name_for_target(target: &CodeNavigationTarget) -> Option<String> {
     match target {
         CodeNavigationTarget::Symbol(symbol) => Some(symbol.trim().to_string()),
@@ -1749,290 +1522,10 @@ fn symbol_name_for_target(target: &CodeNavigationTarget) -> Option<String> {
     }
 }
 
-fn identifier_at_position(path: &Path, line: usize, column: usize) -> Option<String> {
-    let source = std::fs::read_to_string(path).ok()?;
-    let line_text = source.lines().nth(line.saturating_sub(1))?;
-    let cursor = column.saturating_sub(1).min(line_text.len());
-    let bytes = line_text.as_bytes();
-    if bytes.is_empty() {
-        return None;
-    }
-
-    let mut start = cursor.min(bytes.len().saturating_sub(1));
-    while start > 0 && is_identifier_byte(bytes[start - 1]) {
-        start -= 1;
-    }
-    let mut end = cursor.min(bytes.len());
-    while end < bytes.len() && is_identifier_byte(bytes[end]) {
-        end += 1;
-    }
-    (start < end).then(|| line_text[start..end].to_string())
-}
-
-fn is_identifier_byte(byte: u8) -> bool {
-    byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'$'
-}
-
-fn compact_line(line: &str) -> String {
-    let compact = line.trim();
-    let mut shortened = compact.chars().take(240).collect::<String>();
-    if compact.chars().count() > 240 {
-        shortened.push_str("...");
-    }
-    shortened
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{
-        CLANGD_SPEC, DOCKERFILE_SPEC, GO_SPEC, HTML_SPEC, JAVA_SPEC, JSON_SPEC, PHP_SPEC,
-        PYTHON_SPEC, RUST_SPEC, SHELL_SPEC, SQL_SPEC, TOML_SPEC, TYPESCRIPT_SPEC, YAML_SPEC,
-        build_cargo_install_args, build_npm_install_args, build_pip_install_args,
-        file_uri_from_path, file_uri_to_path, identifier_at_position, language_id_for_path,
-        managed_executable_path, merge_symbols, parse_location_like, parse_symbol_kind,
-        server_spec_for_path,
-    };
+    use super::merge_symbols;
     use crate::code_intel::{CodeLocation, CodeSymbol, CodeSymbolKind};
-    use serde_json::json;
-    use std::path::Path;
-
-    #[test]
-    fn spec_detection_covers_supported_languages() {
-        assert_eq!(
-            server_spec_for_path(Path::new("src/app.ts")).unwrap().id,
-            TYPESCRIPT_SPEC.id
-        );
-        assert_eq!(
-            server_spec_for_path(Path::new("templates/index.html"))
-                .unwrap()
-                .id,
-            HTML_SPEC.id
-        );
-        assert_eq!(
-            server_spec_for_path(Path::new("config/settings.json"))
-                .unwrap()
-                .id,
-            JSON_SPEC.id
-        );
-        assert_eq!(
-            server_spec_for_path(Path::new("src/main.py")).unwrap().id,
-            PYTHON_SPEC.id
-        );
-        assert_eq!(
-            server_spec_for_path(Path::new("src/main.go")).unwrap().id,
-            GO_SPEC.id
-        );
-        assert_eq!(
-            server_spec_for_path(Path::new("src/lib.rs")).unwrap().id,
-            RUST_SPEC.id
-        );
-        assert_eq!(
-            server_spec_for_path(Path::new("src/config.yaml"))
-                .unwrap()
-                .id,
-            YAML_SPEC.id
-        );
-        assert_eq!(
-            server_spec_for_path(Path::new("src/build.sh")).unwrap().id,
-            SHELL_SPEC.id
-        );
-        assert_eq!(
-            server_spec_for_path(Path::new(".bashrc")).unwrap().id,
-            SHELL_SPEC.id
-        );
-        assert_eq!(
-            server_spec_for_path(Path::new("Dockerfile")).unwrap().id,
-            DOCKERFILE_SPEC.id
-        );
-        assert_eq!(
-            server_spec_for_path(Path::new("php/index.php")).unwrap().id,
-            PHP_SPEC.id
-        );
-        assert_eq!(
-            server_spec_for_path(Path::new("Cargo.toml")).unwrap().id,
-            TOML_SPEC.id
-        );
-        assert_eq!(
-            server_spec_for_path(Path::new("queries/report.sql"))
-                .unwrap()
-                .id,
-            SQL_SPEC.id
-        );
-        assert_eq!(
-            server_spec_for_path(Path::new("src/main.cpp")).unwrap().id,
-            CLANGD_SPEC.id
-        );
-        assert_eq!(
-            server_spec_for_path(Path::new("src/Main.java")).unwrap().id,
-            JAVA_SPEC.id
-        );
-    }
-
-    #[test]
-    fn language_ids_match_supported_extensions() {
-        assert_eq!(
-            language_id_for_path(Path::new("x.tsx")),
-            Some("typescriptreact")
-        );
-        assert_eq!(
-            language_id_for_path(Path::new("x.jsx")),
-            Some("javascriptreact")
-        );
-        assert_eq!(
-            language_id_for_path(Path::new("styles/app.scss")),
-            Some("scss")
-        );
-        assert_eq!(
-            language_id_for_path(Path::new("settings.code-workspace")),
-            Some("jsonc")
-        );
-        assert_eq!(language_id_for_path(Path::new("x.yaml")), Some("yaml"));
-        assert_eq!(language_id_for_path(Path::new("x.go")), Some("go"));
-        assert_eq!(language_id_for_path(Path::new("go.mod")), Some("go.mod"));
-        assert_eq!(
-            language_id_for_path(Path::new("Dockerfile.dev")),
-            Some("dockerfile")
-        );
-        assert_eq!(
-            language_id_for_path(Path::new("src/main.m")),
-            Some("objective-c")
-        );
-    }
-
-    #[test]
-    fn language_detection_is_separate_from_server_installation() {
-        assert_eq!(
-            server_spec_for_path(Path::new("frontend/app.ts"))
-                .unwrap()
-                .id,
-            TYPESCRIPT_SPEC.id
-        );
-        assert_eq!(
-            server_spec_for_path(Path::new("frontend/app.jsx"))
-                .unwrap()
-                .id,
-            TYPESCRIPT_SPEC.id
-        );
-        assert_eq!(
-            language_id_for_path(Path::new("frontend/app.ts")),
-            Some("typescript")
-        );
-        assert_eq!(
-            language_id_for_path(Path::new("frontend/app.jsx")),
-            Some("javascriptreact")
-        );
-    }
-
-    #[test]
-    fn uri_round_trip_preserves_workspace_paths() {
-        let path = Path::new("/tmp/hello world/src/lib.rs");
-        let uri = file_uri_from_path(path);
-        assert_eq!(file_uri_to_path(&uri).unwrap(), path);
-    }
-
-    #[test]
-    fn identifier_lookup_reads_symbol_under_cursor() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("src.rs");
-        std::fs::write(&path, "fn compute_total() { compute_total(); }\n").unwrap();
-        assert_eq!(
-            identifier_at_position(&path, 1, 5).unwrap(),
-            "compute_total"
-        );
-        assert_eq!(
-            identifier_at_position(&path, 1, 23).unwrap(),
-            "compute_total"
-        );
-    }
-
-    #[test]
-    fn managed_binary_paths_match_installer_layouts() {
-        let root = Path::new("/tmp/nanoclaw-lsp");
-        assert_eq!(
-            managed_executable_path(root, &TYPESCRIPT_SPEC),
-            root.join("typescript/node_modules/.bin/typescript-language-server")
-        );
-        assert_eq!(
-            managed_executable_path(root, &HTML_SPEC),
-            root.join("html/node_modules/.bin/vscode-html-language-server")
-        );
-        assert_eq!(
-            managed_executable_path(root, &PYTHON_SPEC),
-            root.join("python/bin/pylsp")
-        );
-        assert_eq!(
-            managed_executable_path(root, &GO_SPEC),
-            root.join("go/bin/gopls")
-        );
-        assert_eq!(
-            managed_executable_path(root, &TOML_SPEC),
-            root.join("toml/bin/taplo")
-        );
-        assert_eq!(
-            managed_executable_path(root, &SQL_SPEC),
-            root.join("sql/bin/sqls")
-        );
-    }
-
-    #[test]
-    fn installer_args_include_prefix_install_root() {
-        let root = Path::new("/tmp/server");
-        assert_eq!(
-            build_npm_install_args(root, &["typescript", "typescript-language-server"]),
-            vec![
-                "install",
-                "--prefix",
-                "/tmp/server",
-                "--no-save",
-                "typescript",
-                "typescript-language-server",
-            ]
-        );
-        assert_eq!(
-            build_pip_install_args(root, &["python-lsp-server"]),
-            vec![
-                "-m",
-                "pip",
-                "install",
-                "--upgrade",
-                "--prefix",
-                "/tmp/server",
-                "python-lsp-server",
-            ]
-        );
-        assert_eq!(
-            build_cargo_install_args(root, "taplo-cli"),
-            vec!["install", "--root", "/tmp/server", "--locked", "taplo-cli",]
-        );
-    }
-
-    #[test]
-    fn parser_supports_location_links() {
-        let workspace_root = Path::new("/tmp/work");
-        let entry = json!({
-            "targetUri": "file:///tmp/work/src/lib.rs",
-            "targetSelectionRange": {
-                "start": { "line": 9, "character": 4 }
-            }
-        });
-        let location = parse_location_like(&entry, workspace_root).unwrap();
-        assert_eq!(location.path, "src/lib.rs");
-        assert_eq!(location.line, 10);
-        assert_eq!(location.column, 5);
-    }
-
-    #[test]
-    fn symbol_kind_mapping_handles_common_lsp_kinds() {
-        assert_eq!(
-            parse_symbol_kind(Some(&json!(12))),
-            CodeSymbolKind::Function
-        );
-        assert_eq!(parse_symbol_kind(Some(&json!(23))), CodeSymbolKind::Struct);
-        assert_eq!(
-            parse_symbol_kind(Some(&json!(14))),
-            CodeSymbolKind::Constant
-        );
-    }
 
     #[test]
     fn merge_dedupes_semantic_and_lexical_results() {
