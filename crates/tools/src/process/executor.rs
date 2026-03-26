@@ -225,6 +225,21 @@ impl ManagedPolicyProcessExecutor {
     }
 }
 
+#[must_use]
+pub fn platform_sandbox_backend_available() -> bool {
+    let availability = detect_available_backends();
+    #[cfg(target_os = "macos")]
+    {
+        return availability.macos_seatbelt.is_some();
+    }
+    #[cfg(target_os = "linux")]
+    {
+        return availability.linux_bwrap.is_some();
+    }
+    #[allow(unreachable_code)]
+    false
+}
+
 impl ProcessExecutor for ManagedPolicyProcessExecutor {
     fn prepare(&self, request: ExecRequest) -> Result<Command> {
         if !request.sandbox_policy.requires_enforcement() {

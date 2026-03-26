@@ -10,7 +10,7 @@ use std::thread;
 use tempfile::tempdir;
 use tools::{
     ExecRequest, ExecutionOrigin, ManagedPolicyProcessExecutor, ProcessExecutor, ProcessStdio,
-    RuntimeScope, SandboxPolicy, ToolExecutionContext,
+    RuntimeScope, SandboxPolicy, ToolExecutionContext, platform_sandbox_backend_available,
 };
 
 #[cfg(target_os = "linux")]
@@ -22,25 +22,7 @@ const LINUX_ALLOW_DOMAINS_PROXY_SOCKET_SANDBOX_PATH_ENV: &str =
 const LINUX_ALLOW_DOMAINS_PROXY_URL_ENV: &str = "NANOCLAW_SANDBOX_PROXY_URL";
 
 fn platform_backend_is_available() -> bool {
-    #[cfg(target_os = "macos")]
-    {
-        Path::new("/usr/bin/sandbox-exec").exists()
-    }
-    #[cfg(target_os = "linux")]
-    {
-        [
-            "/usr/bin/bwrap",
-            "/bin/bwrap",
-            "/usr/bin/bubblewrap",
-            "/bin/bubblewrap",
-        ]
-        .iter()
-        .any(|path| Path::new(path).exists())
-    }
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-    {
-        false
-    }
+    platform_sandbox_backend_available()
 }
 
 #[cfg(target_os = "linux")]

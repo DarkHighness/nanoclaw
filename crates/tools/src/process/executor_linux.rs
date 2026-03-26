@@ -13,6 +13,8 @@ use std::io::{Seek, Write};
 use std::mem::size_of;
 use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
+use std::process::{Command as StdCommand, Stdio as StdStdio};
+use std::sync::OnceLock;
 use tempfile::tempfile;
 use tokio::process::Command;
 
@@ -36,6 +38,7 @@ const LINUX_SYSTEM_READONLY_ROOTS: &[&str] = &[
     "/nix/store",
     "/run/current-system/sw",
 ];
+static LINUX_BWRAP_EXECUTABLE: OnceLock<Option<PathBuf>> = OnceLock::new();
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum LinuxSeccompProfile {
@@ -52,11 +55,28 @@ struct AllowDomainsProxyBridge {
 }
 
 pub(super) fn find_bwrap_executable() -> Option<PathBuf> {
+    LINUX_BWRAP_EXECUTABLE
+        .get_or_init(detect_bwrap_executable)
+        .clone()
+}
+
+fn find_socat_executable() -> Option<PathBuf> {
+    find_first_usable_executable(LINUX_SOCAT_CANDIDATES, |_| true)
+}
+
+fn detect_bwrap_executable() -> Option<PathBuf> {
+    find_first_usable_executable(LINUX_BWRAP_CANDIDATES, probe_bwrap_runtime)
+}
+
+fn find_first_usable_executable(
+    candidates: &[&str],
+    is_usable: impl Fn(&Path) -> bool,
+) -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
     for directory in std::env::split_paths(&path) {
-        for candidate in LINUX_BWRAP_CANDIDATES {
+        for candidate in candidates {
             let resolved = directory.join(candidate);
-            if resolved.is_file() {
+            if resolved.is_file() && is_usable(&resolved) {
                 return Some(resolved);
             }
         }
@@ -64,17 +84,27 @@ pub(super) fn find_bwrap_executable() -> Option<PathBuf> {
     None
 }
 
-fn find_socat_executable() -> Option<PathBuf> {
-    let path = std::env::var_os("PATH")?;
-    for directory in std::env::split_paths(&path) {
-        for candidate in LINUX_SOCAT_CANDIDATES {
-            let resolved = directory.join(candidate);
-            if resolved.is_file() {
-                return Some(resolved);
-            }
-        }
-    }
-    None
+fn probe_bwrap_runtime(bwrap_path: &Path) -> bool {
+    // Linux distributions often ship `bwrap` even when the surrounding
+    // container/kernel forbids unprivileged user namespaces. Treating binary
+    // presence as availability makes fail-closed policies report a later child
+    // process crash instead of "no backend is available", so probe the actual
+    // namespace boundary once before selecting Bubblewrap.
+    matches!(
+        StdCommand::new(bwrap_path)
+            .arg("--ro-bind")
+            .arg("/")
+            .arg("/")
+            .arg("--")
+            .arg("/bin/sh")
+            .arg("-lc")
+            .arg("true")
+            .stdin(StdStdio::null())
+            .stdout(StdStdio::null())
+            .stderr(StdStdio::null())
+            .status(),
+        Ok(status) if status.success()
+    )
 }
 
 pub(super) fn prepare_linux_bwrap_command(
@@ -679,4 +709,19 @@ fn ensure_policy_mount_source_exists(path: &Path, label: &str) -> Result<()> {
 
 fn add_bind_mount(command: &mut Command, flag: &str, source: &Path, dest: &Path) {
     command.arg(flag).arg(source).arg(dest);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::probe_bwrap_runtime;
+
+    #[test]
+    fn bwrap_probe_accepts_zero_exit_status() {
+        assert!(probe_bwrap_runtime(std::path::Path::new("/bin/true")));
+    }
+
+    #[test]
+    fn bwrap_probe_rejects_non_zero_exit_status() {
+        assert!(!probe_bwrap_runtime(std::path::Path::new("/bin/false")));
+    }
 }
