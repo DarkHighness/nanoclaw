@@ -372,6 +372,16 @@ secret materialization.
 The host resolves `api_key_env` recursively for nested service configs, so `embedding`,
 `query_expansion`, and `rerank` can all stay declarative.
 
+When the expansion model is qmd-style, the preferred output contract is typed query lines:
+
+```text
+lex: authentication configuration
+vec: how to configure authentication settings
+hyde: Authentication is configured by setting AUTH_SECRET in the environment.
+```
+
+`lex:` lines feed sparse retrieval, while `vec:` and `hyde:` feed semantic retrieval.
+
 ### Search pipeline
 
 The retrieval pipeline should follow the qmd lesson directly:
@@ -386,6 +396,7 @@ The retrieval pipeline should follow the qmd lesson directly:
 8. fuse ranked lists with weighted Reciprocal Rank Fusion and top-rank bonus
 9. optionally rerank the top candidate window with a service-backed reranker
 10. blend rerank and retrieval scores by position so top exact matches remain sticky
+11. optionally apply MMR-style diversity selection over the final candidate pool
 
 Suggested initial merge config:
 
@@ -398,6 +409,8 @@ rrf_k = 60
 top_rank_bonus_first = 0.05
 top_rank_bonus_other = 0.02
 rerank_top_k = 30
+mmr_lambda = 0.65
+mmr_pool_k = 20
 ```
 
 Important behaviors:
@@ -405,6 +418,7 @@ Important behaviors:
 - if embedding lookup fails, fall back to lexical search
 - if query expansion fails, continue with the original query only
 - if reranking fails, continue with retrieval-only ordering
+- if MMR is disabled, preserve raw reranked order
 - if a chunk has only lexical or only vector score, it still participates
 - `memory_get` remains fully deterministic because it reads the source file
 
@@ -413,16 +427,17 @@ Important behaviors:
 The implemented slice now includes:
 
 - model-family-aware embedding prompt formatting
+- typed `lex:` / `vec:` / `hyde:` query expansion parsing
 - weighted original-query plus expansion-query retrieval
 - weighted Reciprocal Rank Fusion with top-rank bonus
 - optional service-backed query expansion
 - optional service-backed reranking with position-aware blending
+- optional MMR-style duplicate suppression over the final pool
 
 ### Future qmd-aligned features
 
 Follow-on work still worth doing:
 
-- optional MMR for duplicate suppression
 - optional indexing of exported session summaries from the run store
 - optional background sync timers
 

@@ -139,6 +139,10 @@ pub struct HybridWeights {
     pub top_rank_bonus_other: f64,
     #[serde(default = "default_rerank_top_k")]
     pub rerank_top_k: usize,
+    #[serde(default)]
+    pub mmr_lambda: Option<f64>,
+    #[serde(default = "default_mmr_pool_k")]
+    pub mmr_pool_k: usize,
 }
 
 impl Default for HybridWeights {
@@ -151,6 +155,8 @@ impl Default for HybridWeights {
             top_rank_bonus_first: default_top_rank_bonus_first(),
             top_rank_bonus_other: default_top_rank_bonus_other(),
             rerank_top_k: default_rerank_top_k(),
+            mmr_lambda: None,
+            mmr_pool_k: default_mmr_pool_k(),
         }
     }
 }
@@ -225,6 +231,10 @@ fn default_top_rank_bonus_other() -> f64 {
 
 fn default_rerank_top_k() -> usize {
     30
+}
+
+fn default_mmr_pool_k() -> usize {
+    20
 }
 
 fn default_embedding_batch_size() -> usize {
