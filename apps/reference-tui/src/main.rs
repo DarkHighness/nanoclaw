@@ -16,13 +16,14 @@ async fn main() -> Result<()> {
 }
 
 fn init_tracing(workspace_root: &Path) -> Result<WorkerGuard> {
-    let log_dir = AgentWorkspaceLayout::new(workspace_root).logs_dir();
-    std::fs::create_dir_all(&log_dir).with_context(|| {
+    let layout = AgentWorkspaceLayout::new(workspace_root);
+    layout.ensure_standard_layout().with_context(|| {
         format!(
-            "failed to create tracing log directory at {}",
-            log_dir.display()
+            "failed to materialize workspace state layout at {}",
+            layout.state_dir().display()
         )
     })?;
+    let log_dir = layout.logs_dir();
     let file_appender = tracing_appender::rolling::never(log_dir, "reference-tui.log");
     let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
     let env_filter = EnvFilter::try_new(agent_env::log_filter_or_default(

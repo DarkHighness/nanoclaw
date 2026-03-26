@@ -48,12 +48,11 @@ cargo run --manifest-path apps/Cargo.toml -p code-agent -- --provider anthropic
 
 - The app automatically loads `.env` and `.env.local` from the current workspace.
 - Precedence is: command-line flags > process environment > `.env.local` > `.env`.
-- `CODE_AGENT_PROVIDER`: `openai` or `anthropic` (defaults to `openai`)
-- `CODE_AGENT_SYSTEM_PROMPT`: extra system prompt text appended to the built-in preamble
-- `CODE_AGENT_SKILL_ROOTS`: optional path-list of additional skill roots
+- Shared core settings come from `.nanoclaw/config/core.toml` plus `NANOCLAW_CORE_*` env overrides.
+- App-local settings come from `.nanoclaw/apps/code-agent.toml`.
 - `CODE_AGENT_LSP_ENABLED`: enable the managed LSP overlay for code-intel tools and file-open hooks (defaults to `true`)
 - `CODE_AGENT_LSP_AUTO_INSTALL`: allow automatic installation of supported LSP servers into the managed cache (defaults to `false`)
-- `CODE_AGENT_LSP_INSTALL_ROOT`: optional override for the managed LSP cache/install directory (defaults to `.agent-core/lsp` under the workspace)
+- `CODE_AGENT_LSP_INSTALL_ROOT`: optional override for the managed LSP cache/install directory (defaults to `.nanoclaw/tools/lsp` under the workspace)
 - `OPENAI_API_KEY` / `ANTHROPIC_API_KEY`: provider credentials
 - `OPENAI_BASE_URL` / `ANTHROPIC_BASE_URL`: provider-specific API base URL overrides
 
@@ -68,24 +67,33 @@ The built-in model defaults are:
 - OpenAI: `gpt-5.4`
 - Anthropic: `claude-sonnet-4-6`
 
-The app only chooses the provider at the app-config layer. Model selection is fixed in code per
-provider, and API credentials and endpoint overrides stay provider-native:
+The code-agent reads provider/model/system prompt/plugin selection from the
+shared core config layer. Provider credentials and endpoint overrides stay
+provider-native:
 
 - process environment
 - `.env.local`
 - `.env`
 
-In other words, use `OPENAI_API_KEY` / `OPENAI_BASE_URL` for OpenAI and
-`ANTHROPIC_API_KEY` / `ANTHROPIC_BASE_URL` for Anthropic. The example does not define its own
-generic `MODEL` or `BASE_URL` env layer. At startup it injects `.env` values into the process
-environment before building the runtime, so the provider adapter can consume the provider-native
-variables directly.
+Use `OPENAI_API_KEY` / `OPENAI_BASE_URL` for OpenAI and `ANTHROPIC_API_KEY` /
+`ANTHROPIC_BASE_URL` for Anthropic. Shared runtime knobs such as provider,
+model, skill roots, plugin roots, and sandbox fallback now live under the
+`NANOCLAW_CORE_*` namespace or in `.nanoclaw/config/core.toml`.
 
 If no skill roots are provided, it loads any existing directories from:
 
 - `.codex/skills`
 - `.nanoclaw/skills`
 - `$HOME/.codex/skills`
+
+The app now materializes the standard workspace state layout on startup:
+
+- `.nanoclaw/logs`
+- `.nanoclaw/store`
+- `.nanoclaw/skills`
+- `.nanoclaw/tools/lsp`
+- `.nanoclaw/plugins`
+- `.nanoclaw/apps`
 
 ## Managed LSP
 

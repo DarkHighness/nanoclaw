@@ -6,7 +6,7 @@ Status: completed in this pass
 
 Completed:
 
-- Added declarative config loading from `agent-core.toml`
+- Added declarative config loading from `.nanoclaw/config/core.toml`
 - Added environment override support for provider/runtime/TUI settings
 - Added configured skill roots and base instructions
 - Replaced the TUI `DemoBackend` path with a real provider backend
@@ -113,7 +113,7 @@ Completed in this pass:
 
 - added a real child-process integration test for MCP `stdio` servers, covering catalog, tool calls, prompts, and resources
 - added provider-agnostic backend contract tests for schema coercion, rich message mapping, and tool-call event propagation
-- added example `agent-core.toml` configurations for OpenAI and Anthropic workspaces
+- added example `.nanoclaw/config/core.toml` configurations for OpenAI and Anthropic workspaces
 - documented targeted regression commands alongside the existing full-workspace test path
 
 ## Next Priority

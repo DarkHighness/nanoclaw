@@ -76,7 +76,7 @@ impl CommandHookExecutor for DefaultCommandHookExecutor {
     async fn execute(&self, command: &str, context: HookContext) -> Result<HookOutput> {
         let mut env = self.extra_env.clone();
         env.insert(
-            "AGENT_CORE_HOOK_PAYLOAD".to_string(),
+            "NANOCLAW_CORE_HOOK_PAYLOAD".to_string(),
             serde_json::to_string(&context).unwrap_or_default(),
         );
         let mut process = self
@@ -184,7 +184,7 @@ mod tests {
             logged[0].args,
             vec!["-lc", "printf '{\"system_message\":\"ok\"}'"]
         );
-        assert!(logged[0].env.contains_key("AGENT_CORE_HOOK_PAYLOAD"));
+        assert!(logged[0].env.contains_key("NANOCLAW_CORE_HOOK_PAYLOAD"));
         assert_eq!(logged[0].runtime_scope.run_id, Some(run_id.clone()));
         assert_eq!(
             logged[0].runtime_scope,

@@ -1,4 +1,4 @@
-//! Shared environment variable access for substrate crates and host apps.
+//! Shared environment variable access for substrate crates and core config.
 //!
 //! This crate keeps env-key knowledge in one place so behavior changes are
 //! coordinated across runtimes, tools, and shells.
@@ -50,155 +50,121 @@ pub mod vars {
         "RUST_LOG",
         "Tracing filter directive used by host apps when initializing structured logs.",
     );
-
-    pub const CODE_AGENT_PROVIDER: EnvVar = EnvVar::new(
-        "CODE_AGENT_PROVIDER",
-        "Code-agent provider selection (`openai` or `anthropic`).",
+    pub const NANOCLAW_CORE_PROVIDER: EnvVar = EnvVar::new(
+        "NANOCLAW_CORE_PROVIDER",
+        "Provider override for Nanoclaw core config loading.",
     );
-    pub const CODE_AGENT_SYSTEM_PROMPT: EnvVar = EnvVar::new(
-        "CODE_AGENT_SYSTEM_PROMPT",
-        "Extra system prompt appended for the code-agent app.",
+    pub const NANOCLAW_CORE_MODEL: EnvVar = EnvVar::new(
+        "NANOCLAW_CORE_MODEL",
+        "Model override for Nanoclaw core config loading.",
     );
-    pub const CODE_AGENT_SKILL_ROOTS: EnvVar = EnvVar::new(
-        "CODE_AGENT_SKILL_ROOTS",
-        "OS-path-list of additional skill roots for the code-agent app.",
+    pub const NANOCLAW_CORE_BASE_URL: EnvVar = EnvVar::new(
+        "NANOCLAW_CORE_BASE_URL",
+        "Provider base URL override for Nanoclaw core config loading.",
     );
-    pub const CODE_AGENT_SANDBOX_FAIL_IF_UNAVAILABLE: EnvVar = EnvVar::new(
-        "CODE_AGENT_SANDBOX_FAIL_IF_UNAVAILABLE",
-        "Whether code-agent should fail closed when no enforcing sandbox backend is available.",
+    pub const NANOCLAW_CORE_TEMPERATURE: EnvVar = EnvVar::new(
+        "NANOCLAW_CORE_TEMPERATURE",
+        "Sampling temperature override for Nanoclaw core config loading.",
     );
-    pub const CODE_AGENT_LSP_ENABLED: EnvVar = EnvVar::new(
-        "CODE_AGENT_LSP_ENABLED",
-        "Whether code-agent should enable managed LSP-backed code-intel with lexical fallback.",
+    pub const NANOCLAW_CORE_MAX_TOKENS: EnvVar = EnvVar::new(
+        "NANOCLAW_CORE_MAX_TOKENS",
+        "Max output token override for Nanoclaw core config loading.",
     );
-    pub const CODE_AGENT_LSP_AUTO_INSTALL: EnvVar = EnvVar::new(
-        "CODE_AGENT_LSP_AUTO_INSTALL",
-        "Whether code-agent may auto-install supported LSP servers into the managed workspace cache.",
-    );
-    pub const CODE_AGENT_LSP_INSTALL_ROOT: EnvVar = EnvVar::new(
-        "CODE_AGENT_LSP_INSTALL_ROOT",
-        "Optional override for the managed LSP install/cache directory used by code-agent.",
-    );
-    pub const CODE_AGENT_PLUGIN_ROOTS: EnvVar = EnvVar::new(
-        "CODE_AGENT_PLUGIN_ROOTS",
-        "OS-path-list of plugin roots for the code-agent app.",
-    );
-    pub const CODE_AGENT_PLUGIN_MEMORY_SLOT: EnvVar = EnvVar::new(
-        "CODE_AGENT_PLUGIN_MEMORY_SLOT",
-        "Plugin memory slot override for the code-agent app (e.g. `memory-core`, `memory-embed`, `none`).",
-    );
-
-    pub const AGENT_CORE_PROVIDER: EnvVar = EnvVar::new(
-        "AGENT_CORE_PROVIDER",
-        "Provider override for reference-tui config loading.",
-    );
-    pub const AGENT_CORE_MODEL: EnvVar = EnvVar::new(
-        "AGENT_CORE_MODEL",
-        "Model override for reference-tui config loading.",
-    );
-    pub const AGENT_CORE_BASE_URL: EnvVar = EnvVar::new(
-        "AGENT_CORE_BASE_URL",
-        "Provider base URL override for reference-tui config loading.",
-    );
-    pub const AGENT_CORE_TEMPERATURE: EnvVar = EnvVar::new(
-        "AGENT_CORE_TEMPERATURE",
-        "Sampling temperature override for reference-tui config loading.",
-    );
-    pub const AGENT_CORE_MAX_TOKENS: EnvVar = EnvVar::new(
-        "AGENT_CORE_MAX_TOKENS",
-        "Max output token override for reference-tui config loading.",
-    );
-    pub const AGENT_CORE_PROVIDER_ADDITIONAL_PARAMS_JSON: EnvVar = EnvVar::new(
-        "AGENT_CORE_PROVIDER_ADDITIONAL_PARAMS_JSON",
+    pub const NANOCLAW_CORE_PROVIDER_ADDITIONAL_PARAMS_JSON: EnvVar = EnvVar::new(
+        "NANOCLAW_CORE_PROVIDER_ADDITIONAL_PARAMS_JSON",
         "JSON object merged into provider request parameters.",
     );
-    pub const AGENT_CORE_WORKSPACE_ONLY: EnvVar = EnvVar::new(
-        "AGENT_CORE_WORKSPACE_ONLY",
+    pub const NANOCLAW_CORE_WORKSPACE_ONLY: EnvVar = EnvVar::new(
+        "NANOCLAW_CORE_WORKSPACE_ONLY",
         "Whether tools are restricted to workspace paths.",
     );
-    pub const AGENT_CORE_AUTO_COMPACT: EnvVar = EnvVar::new(
-        "AGENT_CORE_AUTO_COMPACT",
+    pub const NANOCLAW_CORE_AUTO_COMPACT: EnvVar = EnvVar::new(
+        "NANOCLAW_CORE_AUTO_COMPACT",
         "Whether runtime auto-compaction is enabled.",
     );
-    pub const AGENT_CORE_CONTEXT_TOKENS: EnvVar = EnvVar::new(
-        "AGENT_CORE_CONTEXT_TOKENS",
+    pub const NANOCLAW_CORE_CONTEXT_TOKENS: EnvVar = EnvVar::new(
+        "NANOCLAW_CORE_CONTEXT_TOKENS",
         "Context window token budget for runtime compaction.",
     );
-    pub const AGENT_CORE_COMPACT_TRIGGER_TOKENS: EnvVar = EnvVar::new(
-        "AGENT_CORE_COMPACT_TRIGGER_TOKENS",
+    pub const NANOCLAW_CORE_COMPACT_TRIGGER_TOKENS: EnvVar = EnvVar::new(
+        "NANOCLAW_CORE_COMPACT_TRIGGER_TOKENS",
         "Token threshold to trigger compaction.",
     );
-    pub const AGENT_CORE_COMPACT_PRESERVE_RECENT_MESSAGES: EnvVar = EnvVar::new(
-        "AGENT_CORE_COMPACT_PRESERVE_RECENT_MESSAGES",
+    pub const NANOCLAW_CORE_COMPACT_PRESERVE_RECENT_MESSAGES: EnvVar = EnvVar::new(
+        "NANOCLAW_CORE_COMPACT_PRESERVE_RECENT_MESSAGES",
         "Recent message count preserved by compaction.",
     );
-    pub const AGENT_CORE_STORE_DIR: EnvVar = EnvVar::new(
-        "AGENT_CORE_STORE_DIR",
-        "Run-store directory override for reference-tui.",
+    pub const NANOCLAW_CORE_STORE_DIR: EnvVar = EnvVar::new(
+        "NANOCLAW_CORE_STORE_DIR",
+        "Run-store directory override for Nanoclaw core config loading.",
     );
-    pub const AGENT_CORE_SANDBOX_FAIL_IF_UNAVAILABLE: EnvVar = EnvVar::new(
-        "AGENT_CORE_SANDBOX_FAIL_IF_UNAVAILABLE",
-        "Whether reference-tui should fail closed when no enforcing sandbox backend is available.",
+    pub const NANOCLAW_CORE_SANDBOX_FAIL_IF_UNAVAILABLE: EnvVar = EnvVar::new(
+        "NANOCLAW_CORE_SANDBOX_FAIL_IF_UNAVAILABLE",
+        "Whether Nanoclaw core should fail closed when no enforcing sandbox backend is available.",
     );
-    pub const AGENT_CORE_COMMAND_PREFIX: EnvVar = EnvVar::new(
-        "AGENT_CORE_COMMAND_PREFIX",
-        "Slash-command prefix for TUI command parsing.",
+    pub const NANOCLAW_CORE_SYSTEM_PROMPT: EnvVar = EnvVar::new(
+        "NANOCLAW_CORE_SYSTEM_PROMPT",
+        "Additional system prompt override for Nanoclaw core config loading.",
     );
-    pub const AGENT_CORE_SYSTEM_PROMPT: EnvVar = EnvVar::new(
-        "AGENT_CORE_SYSTEM_PROMPT",
-        "Additional system prompt override for reference-tui.",
+    pub const NANOCLAW_CORE_SKILL_ROOTS: EnvVar = EnvVar::new(
+        "NANOCLAW_CORE_SKILL_ROOTS",
+        "OS-path-list of skill roots for Nanoclaw core config loading.",
     );
-    pub const AGENT_CORE_SKILL_ROOTS: EnvVar = EnvVar::new(
-        "AGENT_CORE_SKILL_ROOTS",
-        "OS-path-list of skill roots for reference-tui.",
+    pub const NANOCLAW_CORE_PLUGIN_ROOTS: EnvVar = EnvVar::new(
+        "NANOCLAW_CORE_PLUGIN_ROOTS",
+        "OS-path-list of plugin roots for Nanoclaw core config loading.",
+    );
+    pub const NANOCLAW_CORE_PLUGIN_MEMORY_SLOT: EnvVar = EnvVar::new(
+        "NANOCLAW_CORE_PLUGIN_MEMORY_SLOT",
+        "Plugin memory slot override for the Nanoclaw core plugin graph.",
     );
 
-    pub const AGENT_CORE_WEB_ALLOW_PRIVATE_HOSTS: EnvVar = EnvVar::new(
-        "AGENT_CORE_WEB_ALLOW_PRIVATE_HOSTS",
+    pub const NANOCLAW_CORE_WEB_ALLOW_PRIVATE_HOSTS: EnvVar = EnvVar::new(
+        "NANOCLAW_CORE_WEB_ALLOW_PRIVATE_HOSTS",
         "Allow web tools to access local/private network hosts.",
     );
-    pub const AGENT_CORE_WEB_ALLOWED_DOMAINS: EnvVar = EnvVar::new(
-        "AGENT_CORE_WEB_ALLOWED_DOMAINS",
+    pub const NANOCLAW_CORE_WEB_ALLOWED_DOMAINS: EnvVar = EnvVar::new(
+        "NANOCLAW_CORE_WEB_ALLOWED_DOMAINS",
         "Comma-separated web-tool domain allowlist.",
     );
-    pub const AGENT_CORE_WEB_BLOCKED_DOMAINS: EnvVar = EnvVar::new(
-        "AGENT_CORE_WEB_BLOCKED_DOMAINS",
+    pub const NANOCLAW_CORE_WEB_BLOCKED_DOMAINS: EnvVar = EnvVar::new(
+        "NANOCLAW_CORE_WEB_BLOCKED_DOMAINS",
         "Comma-separated web-tool domain blocklist.",
     );
-    pub const AGENT_CORE_WEB_SEARCH_ENDPOINT: EnvVar = EnvVar::new(
-        "AGENT_CORE_WEB_SEARCH_ENDPOINT",
+    pub const NANOCLAW_CORE_WEB_SEARCH_ENDPOINT: EnvVar = EnvVar::new(
+        "NANOCLAW_CORE_WEB_SEARCH_ENDPOINT",
         "HTTP/HTTPS search endpoint override for the lightweight web_search tool.",
     );
-    pub const AGENT_CORE_WEB_SEARCH_BACKEND: EnvVar = EnvVar::new(
-        "AGENT_CORE_WEB_SEARCH_BACKEND",
+    pub const NANOCLAW_CORE_WEB_SEARCH_BACKEND: EnvVar = EnvVar::new(
+        "NANOCLAW_CORE_WEB_SEARCH_BACKEND",
         "Search backend selection for the local web_search tool (`auto`, `bing_rss`, `brave_api`, `exa_api`, or `duckduckgo_html`). Defaults to `auto` when unset.",
     );
-    pub const AGENT_CORE_WEB_SEARCH_API_ENDPOINT: EnvVar = EnvVar::new(
-        "AGENT_CORE_WEB_SEARCH_API_ENDPOINT",
+    pub const NANOCLAW_CORE_WEB_SEARCH_API_ENDPOINT: EnvVar = EnvVar::new(
+        "NANOCLAW_CORE_WEB_SEARCH_API_ENDPOINT",
         "Legacy HTTP/HTTPS API endpoint override for hosted web_search backends.",
     );
-    pub const AGENT_CORE_WEB_SEARCH_API_KEY: EnvVar = EnvVar::new(
-        "AGENT_CORE_WEB_SEARCH_API_KEY",
+    pub const NANOCLAW_CORE_WEB_SEARCH_API_KEY: EnvVar = EnvVar::new(
+        "NANOCLAW_CORE_WEB_SEARCH_API_KEY",
         "Legacy API key for hosted web_search backends.",
     );
-    pub const AGENT_CORE_WEB_SEARCH_BRAVE_API_ENDPOINT: EnvVar = EnvVar::new(
-        "AGENT_CORE_WEB_SEARCH_BRAVE_API_ENDPOINT",
+    pub const NANOCLAW_CORE_WEB_SEARCH_BRAVE_API_ENDPOINT: EnvVar = EnvVar::new(
+        "NANOCLAW_CORE_WEB_SEARCH_BRAVE_API_ENDPOINT",
         "HTTP/HTTPS API endpoint override for the Brave hosted web_search backend.",
     );
-    pub const AGENT_CORE_WEB_SEARCH_BRAVE_API_KEY: EnvVar = EnvVar::new(
-        "AGENT_CORE_WEB_SEARCH_BRAVE_API_KEY",
+    pub const NANOCLAW_CORE_WEB_SEARCH_BRAVE_API_KEY: EnvVar = EnvVar::new(
+        "NANOCLAW_CORE_WEB_SEARCH_BRAVE_API_KEY",
         "API key for the Brave hosted web_search backend.",
     );
-    pub const AGENT_CORE_WEB_SEARCH_EXA_API_ENDPOINT: EnvVar = EnvVar::new(
-        "AGENT_CORE_WEB_SEARCH_EXA_API_ENDPOINT",
+    pub const NANOCLAW_CORE_WEB_SEARCH_EXA_API_ENDPOINT: EnvVar = EnvVar::new(
+        "NANOCLAW_CORE_WEB_SEARCH_EXA_API_ENDPOINT",
         "HTTP/HTTPS API endpoint override for the Exa hosted web_search backend.",
     );
-    pub const AGENT_CORE_WEB_SEARCH_EXA_API_KEY: EnvVar = EnvVar::new(
-        "AGENT_CORE_WEB_SEARCH_EXA_API_KEY",
+    pub const NANOCLAW_CORE_WEB_SEARCH_EXA_API_KEY: EnvVar = EnvVar::new(
+        "NANOCLAW_CORE_WEB_SEARCH_EXA_API_KEY",
         "API key for the Exa hosted web_search backend.",
     );
-    pub const AGENT_CORE_WEB_SEARCH_DUCKDUCKGO_ENDPOINT: EnvVar = EnvVar::new(
-        "AGENT_CORE_WEB_SEARCH_DUCKDUCKGO_ENDPOINT",
+    pub const NANOCLAW_CORE_WEB_SEARCH_DUCKDUCKGO_ENDPOINT: EnvVar = EnvVar::new(
+        "NANOCLAW_CORE_WEB_SEARCH_DUCKDUCKGO_ENDPOINT",
         "HTTP/HTTPS HTML endpoint override for the DuckDuckGo fallback web_search backend.",
     );
 
@@ -210,43 +176,35 @@ pub mod vars {
         ANTHROPIC_API_KEY,
         ANTHROPIC_BASE_URL,
         RUST_LOG,
-        CODE_AGENT_PROVIDER,
-        CODE_AGENT_SYSTEM_PROMPT,
-        CODE_AGENT_SKILL_ROOTS,
-        CODE_AGENT_SANDBOX_FAIL_IF_UNAVAILABLE,
-        CODE_AGENT_LSP_ENABLED,
-        CODE_AGENT_LSP_AUTO_INSTALL,
-        CODE_AGENT_LSP_INSTALL_ROOT,
-        CODE_AGENT_PLUGIN_ROOTS,
-        CODE_AGENT_PLUGIN_MEMORY_SLOT,
-        AGENT_CORE_PROVIDER,
-        AGENT_CORE_MODEL,
-        AGENT_CORE_BASE_URL,
-        AGENT_CORE_TEMPERATURE,
-        AGENT_CORE_MAX_TOKENS,
-        AGENT_CORE_PROVIDER_ADDITIONAL_PARAMS_JSON,
-        AGENT_CORE_WORKSPACE_ONLY,
-        AGENT_CORE_AUTO_COMPACT,
-        AGENT_CORE_CONTEXT_TOKENS,
-        AGENT_CORE_COMPACT_TRIGGER_TOKENS,
-        AGENT_CORE_COMPACT_PRESERVE_RECENT_MESSAGES,
-        AGENT_CORE_STORE_DIR,
-        AGENT_CORE_SANDBOX_FAIL_IF_UNAVAILABLE,
-        AGENT_CORE_COMMAND_PREFIX,
-        AGENT_CORE_SYSTEM_PROMPT,
-        AGENT_CORE_SKILL_ROOTS,
-        AGENT_CORE_WEB_ALLOW_PRIVATE_HOSTS,
-        AGENT_CORE_WEB_ALLOWED_DOMAINS,
-        AGENT_CORE_WEB_BLOCKED_DOMAINS,
-        AGENT_CORE_WEB_SEARCH_ENDPOINT,
-        AGENT_CORE_WEB_SEARCH_BACKEND,
-        AGENT_CORE_WEB_SEARCH_API_ENDPOINT,
-        AGENT_CORE_WEB_SEARCH_API_KEY,
-        AGENT_CORE_WEB_SEARCH_BRAVE_API_ENDPOINT,
-        AGENT_CORE_WEB_SEARCH_BRAVE_API_KEY,
-        AGENT_CORE_WEB_SEARCH_EXA_API_ENDPOINT,
-        AGENT_CORE_WEB_SEARCH_EXA_API_KEY,
-        AGENT_CORE_WEB_SEARCH_DUCKDUCKGO_ENDPOINT,
+        NANOCLAW_CORE_PROVIDER,
+        NANOCLAW_CORE_MODEL,
+        NANOCLAW_CORE_BASE_URL,
+        NANOCLAW_CORE_TEMPERATURE,
+        NANOCLAW_CORE_MAX_TOKENS,
+        NANOCLAW_CORE_PROVIDER_ADDITIONAL_PARAMS_JSON,
+        NANOCLAW_CORE_WORKSPACE_ONLY,
+        NANOCLAW_CORE_AUTO_COMPACT,
+        NANOCLAW_CORE_CONTEXT_TOKENS,
+        NANOCLAW_CORE_COMPACT_TRIGGER_TOKENS,
+        NANOCLAW_CORE_COMPACT_PRESERVE_RECENT_MESSAGES,
+        NANOCLAW_CORE_STORE_DIR,
+        NANOCLAW_CORE_SANDBOX_FAIL_IF_UNAVAILABLE,
+        NANOCLAW_CORE_SYSTEM_PROMPT,
+        NANOCLAW_CORE_SKILL_ROOTS,
+        NANOCLAW_CORE_PLUGIN_ROOTS,
+        NANOCLAW_CORE_PLUGIN_MEMORY_SLOT,
+        NANOCLAW_CORE_WEB_ALLOW_PRIVATE_HOSTS,
+        NANOCLAW_CORE_WEB_ALLOWED_DOMAINS,
+        NANOCLAW_CORE_WEB_BLOCKED_DOMAINS,
+        NANOCLAW_CORE_WEB_SEARCH_ENDPOINT,
+        NANOCLAW_CORE_WEB_SEARCH_BACKEND,
+        NANOCLAW_CORE_WEB_SEARCH_API_ENDPOINT,
+        NANOCLAW_CORE_WEB_SEARCH_API_KEY,
+        NANOCLAW_CORE_WEB_SEARCH_BRAVE_API_ENDPOINT,
+        NANOCLAW_CORE_WEB_SEARCH_BRAVE_API_KEY,
+        NANOCLAW_CORE_WEB_SEARCH_EXA_API_ENDPOINT,
+        NANOCLAW_CORE_WEB_SEARCH_EXA_API_KEY,
+        NANOCLAW_CORE_WEB_SEARCH_DUCKDUCKGO_ENDPOINT,
     ];
 }
 

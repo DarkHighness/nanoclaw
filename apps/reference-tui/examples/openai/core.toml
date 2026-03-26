@@ -20,9 +20,6 @@ compact_trigger_tokens = 96000
 compact_preserve_recent_messages = 8
 store_dir = ".nanoclaw/store"
 
-[tui]
-command_prefix = "/"
-
 [provider.env]
 # Prefer setting OPENAI_API_KEY in your shell or .env.local instead of committing it.
 OPENAI_API_KEY = "replace-me-locally"

@@ -307,7 +307,7 @@ async fn build_store(config: &AgentCoreConfig, workspace_root: &Path) -> Result<
 fn build_backend(config: &AgentCoreConfig) -> Result<ProviderBackend> {
     let model = config.provider.model.clone().ok_or_else(|| {
         anyhow!(
-            "missing provider model; set `provider.model` in agent-core.toml or `AGENT_CORE_MODEL`"
+            "missing provider model; set `provider.model` in `.nanoclaw/config/core.toml` or `NANOCLAW_CORE_MODEL`"
         )
     })?;
     let provider_kind = resolved_provider_kind(config, &model);
@@ -630,8 +630,14 @@ Use this skill when asked.
         )
         .await
         .unwrap();
+        fs::create_dir_all(dir.path().join(".nanoclaw/config"))
+            .await
+            .unwrap();
+        fs::create_dir_all(dir.path().join(".nanoclaw/apps"))
+            .await
+            .unwrap();
         fs::write(
-            dir.path().join("agent-core.toml"),
+            crate::config::core_config_path(dir.path()),
             r#"
                 system_prompt = "Keep answers short."
                 skill_roots = ["skills"]
@@ -646,7 +652,13 @@ Use this skill when asked.
                 [runtime]
                 workspace_only = true
                 store_dir = ".nanoclaw/custom-store"
-
+            "#,
+        )
+        .await
+        .unwrap();
+        fs::write(
+            AgentCoreConfig::app_config_path(dir.path()),
+            r#"
                 [tui]
                 command_prefix = ":"
             "#,
@@ -784,8 +796,11 @@ Use this skill when asked.
         )
         .await
         .unwrap();
+        fs::create_dir_all(dir.path().join(".nanoclaw/config"))
+            .await
+            .unwrap();
         fs::write(
-            dir.path().join("agent-core.toml"),
+            crate::config::core_config_path(dir.path()),
             r#"
                 [provider]
                 kind = "openai"
@@ -822,8 +837,11 @@ Use this skill when asked.
     #[tokio::test]
     async fn falls_back_to_memory_store_when_store_path_is_not_directory() {
         let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join(".nanoclaw/config"))
+            .await
+            .unwrap();
         fs::write(
-            dir.path().join("agent-core.toml"),
+            crate::config::core_config_path(dir.path()),
             r#"
                 [provider]
                 kind = "openai"

@@ -134,8 +134,8 @@ That matches the OpenClaw control-plane lesson and gives us a clean way to ship 
 
 ### Host config
 
-Plugin enablement lives inside the workspace config, resolved from `agent-core.toml`
-first and then `.nanoclaw/config.toml`:
+Plugin enablement lives inside the shared core workspace config at
+`.nanoclaw/config/core.toml`:
 
 ```toml
 [plugins]
@@ -165,7 +165,7 @@ Notes:
 - slot selection is explicit and deterministic
 - plugin-specific config remains nested TOML, not free-form JSON
 - mutable host state no longer uses `.agent-core`; worktree-local state lives under
-  `.nanoclaw/` (`logs/`, `store/`, `skills/`, `memory/`)
+  `.nanoclaw/` (`config/`, `logs/`, `store/`, `skills/`, `tools/lsp/`, `plugins/`, `apps/`, `memory/`)
 
 ### Plugin root
 
@@ -436,12 +436,13 @@ This is now the active boot model in both `apps/reference-tui` and `apps/code-ag
 
 Boot does:
 
-1. load workspace config from `agent-core.toml` or `.nanoclaw/config.toml`
-2. resolve plugin activation plan
-3. load skills from plan skill roots
-4. load hooks from plan hook files plus skill metadata
-5. connect MCP servers from plan
-6. activate selected drivers such as `memory`
+1. load shared core config from `.nanoclaw/config/core.toml`
+2. load app-local config from `.nanoclaw/apps/<app>.toml`
+3. resolve plugin activation plan
+4. load skills from plan skill roots
+5. load hooks from plan hook files plus skill metadata
+6. connect MCP servers from plan
+7. activate selected drivers such as `memory`
 7. register resulting local tools into `ToolRegistry`
 
 The runtime builder API can stay unchanged.

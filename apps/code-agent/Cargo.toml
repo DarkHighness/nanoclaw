@@ -7,6 +7,7 @@ version = "0.1.0"
 [dependencies]
 agent-env = { path = "../../crates/env" }
 agent = { path = "../../crates/core", features = ["agentic-tools", "code-intel"] }
+nanoclaw-config = { path = "../../crates/config" }
 anyhow = "1.0.100"
 async-trait = "0.1.89"
 crossterm = "0.29.0"
@@ -16,6 +17,7 @@ tracing-appender = "0.2.3"
 tracing-subscriber = { version = "0.3.20", features = ["env-filter", "fmt"] }
 toml = "0.8.23"
 serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.145"
 
 [dev-dependencies]
 tempfile = "3.23.0"

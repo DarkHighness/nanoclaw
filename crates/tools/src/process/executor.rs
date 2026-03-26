@@ -9,7 +9,7 @@ use std::process::Stdio;
 use tokio::process::Command;
 use types::{CallId, RunId, SessionId, TurnId};
 
-const DEFAULT_PROTECTED_DIRS: &[&str] = &[".git", ".agent-core", ".codex"];
+const DEFAULT_PROTECTED_DIRS: &[&str] = &[".git", ".nanoclaw", ".codex"];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SandboxMode {
@@ -548,7 +548,7 @@ mod tests {
             policy
                 .filesystem
                 .protected_paths
-                .contains(&workspace.path().join(".agent-core"))
+                .contains(&workspace.path().join(".nanoclaw"))
         );
     }
 

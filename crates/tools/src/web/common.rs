@@ -85,10 +85,10 @@ impl WebToolPolicy {
     pub(crate) fn from_env() -> Self {
         Self {
             allow_private_hosts: agent_env::read_bool_flag(
-                vars::AGENT_CORE_WEB_ALLOW_PRIVATE_HOSTS,
+                vars::NANOCLAW_CORE_WEB_ALLOW_PRIVATE_HOSTS,
             ),
-            allowed_domains: parse_domain_list(vars::AGENT_CORE_WEB_ALLOWED_DOMAINS),
-            blocked_domains: parse_domain_list(vars::AGENT_CORE_WEB_BLOCKED_DOMAINS),
+            allowed_domains: parse_domain_list(vars::NANOCLAW_CORE_WEB_ALLOWED_DOMAINS),
+            blocked_domains: parse_domain_list(vars::NANOCLAW_CORE_WEB_BLOCKED_DOMAINS),
         }
     }
 

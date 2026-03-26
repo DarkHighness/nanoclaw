@@ -1479,7 +1479,7 @@ mod tests {
         assert!(text.contains("resolved_default_backend> exa_api"));
         assert!(text.contains("backend> exa_api"));
         assert!(text.contains("backend> brave_api"));
-        assert!(text.contains("missing_requirement> AGENT_CORE_WEB_SEARCH_BRAVE_API_KEY"));
+        assert!(text.contains("missing_requirement> NANOCLAW_CORE_WEB_SEARCH_BRAVE_API_KEY"));
         let structured = result.structured_content.unwrap();
         assert_eq!(structured["default_selector"], "auto");
         assert_eq!(structured["resolved_default_backend"], "exa_api");
@@ -1492,7 +1492,7 @@ mod tests {
         assert_eq!(structured["backends"][1]["configured"], false);
         assert_eq!(
             structured["backends"][1]["missing_requirement"],
-            "AGENT_CORE_WEB_SEARCH_BRAVE_API_KEY"
+            "NANOCLAW_CORE_WEB_SEARCH_BRAVE_API_KEY"
         );
     }
 

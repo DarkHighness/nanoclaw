@@ -1,64 +1,30 @@
-//! Shell-local configuration loading for the independent reference TUI crate.
+//! App-specific config merging for the reference TUI shell.
 //!
-//! This module is intentionally private to the reference shell. Substrate hosts
-//! should define their own configuration layer, or none at all.
+//! Core substrate behavior is loaded from `nanoclaw-config`, while this module
+//! owns only the reference shell's private TOML/env surface.
 
-use agent::{AgentWorkspaceLayout, mcp::McpServerConfig};
-use agent_env::{EnvMap, vars};
+use agent::mcp::McpServerConfig;
+use agent_env::{EnvMap, EnvVar};
 use anyhow::Result;
+use nanoclaw_config::{
+    CoreConfig, PluginsConfig, ProviderConfig, RuntimeConfig, app_config_path,
+    load_optional_app_config,
+};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ProviderKind {
-    #[serde(rename = "openai")]
-    OpenAi,
-    #[serde(rename = "anthropic")]
-    Anthropic,
-}
+const REFERENCE_TUI_APP_NAME: &str = "reference-tui";
+const REFERENCE_TUI_COMMAND_PREFIX: EnvVar = EnvVar::new(
+    "NANOCLAW_REFERENCE_TUI_COMMAND_PREFIX",
+    "Slash-command prefix override for the reference-tui app.",
+);
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-pub struct ProviderConfig {
-    pub kind: Option<ProviderKind>,
-    pub model: Option<String>,
-    pub base_url: Option<String>,
-    pub temperature: Option<f64>,
-    pub max_tokens: Option<u64>,
-    pub additional_params: Option<Value>,
-    #[serde(default)]
-    pub env: BTreeMap<String, String>,
-}
+pub use nanoclaw_config::ProviderKind;
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(default)]
-pub struct RuntimeConfig {
-    pub workspace_only: bool,
-    pub auto_compact: bool,
-    #[serde(default)]
-    pub context_tokens: Option<usize>,
-    #[serde(default)]
-    pub compact_trigger_tokens: Option<usize>,
-    #[serde(default)]
-    pub compact_preserve_recent_messages: Option<usize>,
-    #[serde(default)]
-    pub store_dir: Option<String>,
-    pub sandbox_fail_if_unavailable: bool,
-}
-
-impl Default for RuntimeConfig {
-    fn default() -> Self {
-        Self {
-            workspace_only: true,
-            auto_compact: true,
-            context_tokens: Some(128_000),
-            compact_trigger_tokens: Some(96_000),
-            compact_preserve_recent_messages: Some(8),
-            store_dir: None,
-            sandbox_fail_if_unavailable: false,
-        }
-    }
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn core_config_path(dir: impl AsRef<Path>) -> PathBuf {
+    nanoclaw_config::core_config_path(dir)
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -75,141 +41,38 @@ impl Default for TuiConfig {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct PluginSlotsConfig {
-    #[serde(default)]
-    pub memory: Option<String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
-pub struct PluginEntryConfig {
-    #[serde(default)]
-    pub enabled: Option<bool>,
-    #[serde(default)]
-    pub config: BTreeMap<String, toml::Value>,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct PluginsConfig {
-    pub enabled: bool,
-    pub roots: Vec<String>,
-    pub include_builtin: bool,
-    pub allow: Vec<String>,
-    pub deny: Vec<String>,
-    pub entries: BTreeMap<String, PluginEntryConfig>,
-    pub slots: PluginSlotsConfig,
-}
-
-impl Default for PluginsConfig {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            roots: Vec::new(),
-            include_builtin: true,
-            allow: Vec::new(),
-            deny: Vec::new(),
-            entries: BTreeMap::new(),
-            slots: PluginSlotsConfig::default(),
-        }
-    }
-}
-
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
-pub struct AgentCoreConfig {
-    #[serde(default)]
-    pub runtime: RuntimeConfig,
-    #[serde(default)]
-    pub provider: ProviderConfig,
-    #[serde(default)]
-    pub mcp_servers: Vec<McpServerConfig>,
-    #[serde(default)]
-    pub hook_env: BTreeMap<String, String>,
-    #[serde(default)]
+#[serde(default)]
+struct ReferenceTuiAppConfig {
     pub tui: TuiConfig,
-    #[serde(default)]
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct AgentCoreConfig {
+    pub runtime: RuntimeConfig,
+    pub provider: ProviderConfig,
+    pub mcp_servers: Vec<McpServerConfig>,
+    pub hook_env: BTreeMap<String, String>,
+    pub tui: TuiConfig,
     pub system_prompt: Option<String>,
-    #[serde(default)]
     pub skill_roots: Vec<String>,
-    #[serde(default)]
     pub plugins: PluginsConfig,
 }
 
 impl AgentCoreConfig {
     pub fn load_from_dir(dir: impl AsRef<Path>) -> Result<Self> {
         let dir = dir.as_ref();
-        let mut config = load_config_file(dir)?;
+        let core = CoreConfig::load_from_dir(dir)?;
+        let mut app =
+            load_optional_app_config::<ReferenceTuiAppConfig>(dir, REFERENCE_TUI_APP_NAME)?;
         let env_map = EnvMap::from_workspace_dir(dir)?;
+        if let Some(value) = env_map.get_non_empty_var(REFERENCE_TUI_COMMAND_PREFIX) {
+            app.tui.command_prefix = value;
+        }
 
-        if let Some(value) = env_map.get_non_empty_var(vars::AGENT_CORE_PROVIDER) {
-            config.provider.kind = match value.trim().to_ascii_lowercase().as_str() {
-                "openai" => Some(ProviderKind::OpenAi),
-                "anthropic" => Some(ProviderKind::Anthropic),
-                _ => config.provider.kind,
-            };
-        }
-        if let Some(value) = env_map.get_non_empty_var(vars::AGENT_CORE_MODEL) {
-            config.provider.model = Some(value);
-        }
-        if let Some(value) = env_map.get_non_empty_var(vars::AGENT_CORE_BASE_URL) {
-            config.provider.base_url = Some(value);
-        }
-        if let Some(parsed) = env_map.get_parsed_var::<f64>(vars::AGENT_CORE_TEMPERATURE) {
-            config.provider.temperature = Some(parsed);
-        }
-        if let Some(parsed) = env_map.get_parsed_var::<u64>(vars::AGENT_CORE_MAX_TOKENS) {
-            config.provider.max_tokens = Some(parsed);
-        }
-        if let Some(value) = env_map.get_raw_var(vars::AGENT_CORE_PROVIDER_ADDITIONAL_PARAMS_JSON)
-            && let Ok(parsed) = serde_json::from_str::<Value>(value)
-        {
-            config.provider.additional_params = Some(parsed);
-        }
-        if let Some(parsed) = env_map.get_bool_var(vars::AGENT_CORE_WORKSPACE_ONLY) {
-            config.runtime.workspace_only = parsed;
-        }
-        if let Some(parsed) = env_map.get_bool_var(vars::AGENT_CORE_AUTO_COMPACT) {
-            config.runtime.auto_compact = parsed;
-        }
-        if let Some(parsed) = env_map.get_parsed_var::<usize>(vars::AGENT_CORE_CONTEXT_TOKENS) {
-            config.runtime.context_tokens = Some(parsed);
-        }
-        if let Some(parsed) =
-            env_map.get_parsed_var::<usize>(vars::AGENT_CORE_COMPACT_TRIGGER_TOKENS)
-        {
-            config.runtime.compact_trigger_tokens = Some(parsed);
-        }
-        if let Some(parsed) =
-            env_map.get_parsed_var::<usize>(vars::AGENT_CORE_COMPACT_PRESERVE_RECENT_MESSAGES)
-        {
-            config.runtime.compact_preserve_recent_messages = Some(parsed);
-        }
-        if let Some(value) = env_map.get_non_empty_var(vars::AGENT_CORE_STORE_DIR) {
-            config.runtime.store_dir = Some(value);
-        }
-        if let Some(parsed) = env_map.get_bool_var(vars::AGENT_CORE_SANDBOX_FAIL_IF_UNAVAILABLE) {
-            config.runtime.sandbox_fail_if_unavailable = parsed;
-        }
-        if let Some(value) = env_map.get_non_empty_var(vars::AGENT_CORE_COMMAND_PREFIX) {
-            config.tui.command_prefix = value;
-        }
-        if let Some(value) = env_map.get_non_empty_var(vars::AGENT_CORE_SYSTEM_PROMPT) {
-            config.system_prompt = Some(value);
-        }
-        if let Some(value) = env_map.get_raw_var(vars::AGENT_CORE_SKILL_ROOTS) {
-            config.skill_roots = split_env_paths(value);
-        }
-        for (key, value) in env_map.iter() {
-            if key.starts_with("AGENT_CORE_HOOK_ENV_") {
-                config.hook_env.insert(
-                    key.trim_start_matches("AGENT_CORE_HOOK_ENV_").to_string(),
-                    value.clone(),
-                );
-            }
-        }
-        dedup_skill_roots(&mut config.skill_roots);
-        dedup_paths(&mut config.plugins.roots);
-        Ok(config)
+        let mut merged = Self::from_core(core);
+        merged.tui = app.tui;
+        Ok(merged)
     }
 
     pub fn with_override(mut self, update: impl FnOnce(&mut Self)) -> Self {
@@ -218,74 +81,54 @@ impl AgentCoreConfig {
     }
 
     #[must_use]
-    pub fn config_path(dir: impl AsRef<Path>) -> Option<PathBuf> {
-        AgentWorkspaceLayout::new(dir).config_path()
+    pub fn app_config_path(dir: impl AsRef<Path>) -> PathBuf {
+        app_config_path(dir, REFERENCE_TUI_APP_NAME)
     }
 
     #[must_use]
     pub fn resolved_skill_roots(&self, dir: impl AsRef<Path>) -> Vec<PathBuf> {
-        self.skill_roots
-            .iter()
-            .map(|entry| resolve_relative_path(dir.as_ref(), entry))
-            .collect()
+        self.as_core_config().resolved_skill_roots(dir)
     }
 
     #[must_use]
     pub fn resolved_store_dir(&self, dir: impl AsRef<Path>) -> PathBuf {
-        self.runtime
-            .store_dir
-            .as_deref()
-            .map(|entry| resolve_relative_path(dir.as_ref(), entry))
-            .unwrap_or_else(|| AgentWorkspaceLayout::new(dir).store_dir())
+        self.as_core_config().resolved_store_dir(dir)
     }
 
     #[must_use]
     pub fn resolved_plugin_roots(&self, dir: impl AsRef<Path>) -> Vec<PathBuf> {
-        self.plugins
-            .roots
-            .iter()
-            .map(|entry| resolve_relative_path(dir.as_ref(), entry))
-            .collect()
+        self.as_core_config().resolved_plugin_roots(dir)
     }
-}
 
-fn load_config_file(dir: &Path) -> Result<AgentCoreConfig> {
-    let Some(path) = AgentCoreConfig::config_path(dir) else {
-        return Ok(AgentCoreConfig::default());
-    };
-    let raw = std::fs::read_to_string(&path)?;
-    Ok(toml::from_str(&raw)?)
-}
+    fn from_core(core: CoreConfig) -> Self {
+        Self {
+            runtime: core.runtime,
+            provider: core.provider,
+            mcp_servers: core.mcp_servers,
+            hook_env: core.hook_env,
+            tui: TuiConfig::default(),
+            system_prompt: core.system_prompt,
+            skill_roots: core.skill_roots,
+            plugins: core.plugins,
+        }
+    }
 
-fn split_env_paths(value: &str) -> Vec<String> {
-    agent_env::split_path_list(value)
-        .into_iter()
-        .map(|path| path.to_string_lossy().to_string())
-        .collect()
-}
-
-fn dedup_skill_roots(values: &mut Vec<String>) {
-    dedup_paths(values);
-}
-
-fn dedup_paths(values: &mut Vec<String>) {
-    let mut seen = BTreeSet::new();
-    values.retain(|entry| seen.insert(entry.to_string()));
-}
-
-fn resolve_relative_path(base_dir: &Path, value: &str) -> PathBuf {
-    let path = PathBuf::from(value);
-    if path.is_absolute() {
-        path
-    } else {
-        base_dir.join(path)
+    fn as_core_config(&self) -> CoreConfig {
+        CoreConfig {
+            runtime: self.runtime.clone(),
+            provider: self.provider.clone(),
+            mcp_servers: self.mcp_servers.clone(),
+            hook_env: self.hook_env.clone(),
+            system_prompt: self.system_prompt.clone(),
+            skill_roots: self.skill_roots.clone(),
+            plugins: self.plugins.clone(),
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{AgentCoreConfig, ProviderKind};
-    use agent::AgentWorkspaceLayout;
+    use super::{AgentCoreConfig, ProviderKind, REFERENCE_TUI_COMMAND_PREFIX};
     use std::path::PathBuf;
     use std::sync::{Mutex, OnceLock};
     use tempfile::tempdir;
@@ -297,38 +140,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn loads_dotenv_precedence() {
+    async fn merges_core_and_reference_tui_configs() {
         let _guard = env_test_lock().lock().unwrap();
         let dir = tempdir().unwrap();
-        fs::write(
-            dir.path().join(".env"),
-            "AGENT_CORE_MODEL=from_env\nAGENT_CORE_WORKSPACE_ONLY=false\nAGENT_CORE_SANDBOX_FAIL_IF_UNAVAILABLE=true\n",
-        )
-        .await
-        .unwrap();
-        fs::write(
-            dir.path().join(".env.local"),
-            "AGENT_CORE_MODEL=from_local\nAGENT_CORE_COMPACT_PRESERVE_RECENT_MESSAGES=6\n",
-        )
-        .await
-        .unwrap();
-
-        let config = AgentCoreConfig::load_from_dir(dir.path()).unwrap();
-        assert_eq!(config.provider.model.as_deref(), Some("from_local"));
-        assert_eq!(config.runtime.compact_preserve_recent_messages, Some(6));
-        assert!(!config.runtime.workspace_only);
-        assert!(config.runtime.sandbox_fail_if_unavailable);
-    }
-
-    #[tokio::test]
-    async fn loads_toml_config_and_resolves_skill_roots() {
-        let _guard = env_test_lock().lock().unwrap();
-        let dir = tempdir().unwrap();
-        fs::create_dir_all(AgentWorkspaceLayout::new(dir.path()).state_dir())
+        fs::create_dir_all(dir.path().join(".nanoclaw/config"))
+            .await
+            .unwrap();
+        fs::create_dir_all(dir.path().join(".nanoclaw/apps"))
             .await
             .unwrap();
         fs::write(
-            dir.path().join("agent-core.toml"),
+            super::core_config_path(dir.path()),
             r#"
                 system_prompt = "Work carefully and be concise."
                 skill_roots = ["skills", "/tmp/global-skills"]
@@ -346,9 +168,6 @@ mod tests {
                 store_dir = ".nanoclaw/custom-store"
                 sandbox_fail_if_unavailable = true
 
-                [tui]
-                command_prefix = ":"
-
                 [plugins]
                 roots = ["plugins", "/tmp/global-plugins"]
                 allow = ["memory-core"]
@@ -362,6 +181,15 @@ mod tests {
 
                 [plugins.entries.memory-core.config]
                 vector_store = { kind = "sqlite", path = ".nanoclaw/memory/indexes/test.sqlite" }
+            "#,
+        )
+        .await
+        .unwrap();
+        fs::write(
+            AgentCoreConfig::app_config_path(dir.path()),
+            r#"
+                [tui]
+                command_prefix = ":"
             "#,
         )
         .await
@@ -423,34 +251,39 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn accepts_openai_provider_alias_in_toml() {
+    async fn core_env_overrides_flow_through_merged_config() {
         let _guard = env_test_lock().lock().unwrap();
         let dir = tempdir().unwrap();
         fs::write(
-            dir.path().join("agent-core.toml"),
-            r#"
-                [provider]
-                kind = "openai"
-                model = "gpt-4.1-mini"
-            "#,
+            dir.path().join(".env"),
+            "NANOCLAW_CORE_MODEL=from_env\nNANOCLAW_CORE_WORKSPACE_ONLY=false\nNANOCLAW_CORE_SANDBOX_FAIL_IF_UNAVAILABLE=true\n",
+        )
+        .await
+        .unwrap();
+        fs::write(
+            dir.path().join(".env.local"),
+            "NANOCLAW_CORE_MODEL=from_local\nNANOCLAW_CORE_COMPACT_PRESERVE_RECENT_MESSAGES=6\n",
         )
         .await
         .unwrap();
 
         let config = AgentCoreConfig::load_from_dir(dir.path()).unwrap();
-        assert_eq!(config.provider.kind, Some(ProviderKind::OpenAi));
+        assert_eq!(config.provider.model.as_deref(), Some("from_local"));
+        assert_eq!(config.runtime.compact_preserve_recent_messages, Some(6));
+        assert!(!config.runtime.workspace_only);
+        assert!(config.runtime.sandbox_fail_if_unavailable);
     }
 
     #[tokio::test]
-    async fn runtime_and_tui_tables_can_override_partial_fields() {
+    async fn reference_tui_command_prefix_can_be_overridden_from_env() {
         let _guard = env_test_lock().lock().unwrap();
         let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join(".nanoclaw/apps"))
+            .await
+            .unwrap();
         fs::write(
-            dir.path().join("agent-core.toml"),
+            AgentCoreConfig::app_config_path(dir.path()),
             r#"
-                [runtime]
-                store_dir = ".nanoclaw/store"
-
                 [tui]
                 command_prefix = ":"
             "#,
@@ -458,69 +291,14 @@ mod tests {
         .await
         .unwrap();
 
-        let config = AgentCoreConfig::load_from_dir(dir.path()).unwrap();
-        assert!(config.runtime.workspace_only);
-        assert!(!config.runtime.sandbox_fail_if_unavailable);
-        assert_eq!(config.runtime.store_dir.as_deref(), Some(".nanoclaw/store"));
-        assert_eq!(config.tui.command_prefix, ":");
-    }
-
-    #[tokio::test]
-    async fn provider_additional_params_can_be_overridden_from_env_json() {
-        let _guard = env_test_lock().lock().unwrap();
-        let dir = tempdir().unwrap();
-        fs::write(
-            dir.path().join("agent-core.toml"),
-            r#"
-                [provider]
-                model = "gpt-4.1-mini"
-                additional_params = { metadata = { tier = "standard" } }
-            "#,
-        )
-        .await
-        .unwrap();
-
         unsafe {
-            std::env::set_var(
-                "AGENT_CORE_PROVIDER_ADDITIONAL_PARAMS_JSON",
-                r#"{"metadata":{"tier":"priority"},"response_format":{"type":"json_object"}}"#,
-            );
+            std::env::set_var(REFERENCE_TUI_COMMAND_PREFIX.key, "!");
         }
         let config = AgentCoreConfig::load_from_dir(dir.path()).unwrap();
         unsafe {
-            std::env::remove_var("AGENT_CORE_PROVIDER_ADDITIONAL_PARAMS_JSON");
+            std::env::remove_var(REFERENCE_TUI_COMMAND_PREFIX.key);
         }
 
-        assert_eq!(
-            config.provider.additional_params,
-            Some(serde_json::json!({
-                "metadata": { "tier": "priority" },
-                "response_format": { "type": "json_object" }
-            }))
-        );
-    }
-
-    #[tokio::test]
-    async fn system_prompt_can_be_overridden_from_env() {
-        let _guard = env_test_lock().lock().unwrap();
-        let dir = tempdir().unwrap();
-        fs::write(
-            dir.path().join("agent-core.toml"),
-            r#"
-                system_prompt = "from config"
-            "#,
-        )
-        .await
-        .unwrap();
-
-        unsafe {
-            std::env::set_var("AGENT_CORE_SYSTEM_PROMPT", "from env");
-        }
-        let config = AgentCoreConfig::load_from_dir(dir.path()).unwrap();
-        unsafe {
-            std::env::remove_var("AGENT_CORE_SYSTEM_PROMPT");
-        }
-
-        assert_eq!(config.system_prompt.as_deref(), Some("from env"));
+        assert_eq!(config.tui.command_prefix, "!");
     }
 }

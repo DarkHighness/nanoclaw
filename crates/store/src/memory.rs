@@ -5,13 +5,16 @@ use crate::{
     searchable_event_strings, summarize_run_events,
 };
 use async_trait::async_trait;
-use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use dashmap::DashMap;
+use std::sync::Arc;
 use types::{Message, RunEventEnvelope, RunId, SessionId};
 
 #[derive(Clone, Default)]
 pub struct InMemoryRunStore {
-    events: Arc<RwLock<HashMap<RunId, Vec<RunEventEnvelope>>>>,
+    // Run streams append and enumerate concurrently during transcript replay,
+    // search, and memory export. A sharded map removes the global store lock
+    // while keeping each run's event vector behavior unchanged.
+    events: Arc<DashMap<RunId, Vec<RunEventEnvelope>>>,
 }
 
 impl InMemoryRunStore {
@@ -24,8 +27,10 @@ impl InMemoryRunStore {
 #[async_trait]
 impl EventSink for InMemoryRunStore {
     async fn append(&self, event: RunEventEnvelope) -> Result<()> {
-        let mut guard = self.events.write().expect("in-memory run store write lock");
-        guard.entry(event.run_id.clone()).or_default().push(event);
+        self.events
+            .entry(event.run_id.clone())
+            .or_default()
+            .push(event);
         Ok(())
     }
 }
@@ -33,10 +38,10 @@ impl EventSink for InMemoryRunStore {
 #[async_trait]
 impl RunStore for InMemoryRunStore {
     async fn list_runs(&self) -> Result<Vec<RunSummary>> {
-        let guard = self.events.read().expect("in-memory run store read lock");
-        let mut runs = guard
+        let mut runs = self
+            .events
             .iter()
-            .filter_map(|(run_id, events)| summarize_run_events(run_id, events))
+            .filter_map(|entry| summarize_run_events(entry.key(), entry.value()))
             .collect::<Vec<_>>();
         runs.sort_by(|left, right| {
             right
@@ -48,12 +53,12 @@ impl RunStore for InMemoryRunStore {
     }
 
     async fn search_runs(&self, query: &str) -> Result<Vec<RunSearchResult>> {
-        let guard = self.events.read().expect("in-memory run store read lock");
-        let mut runs = guard
+        let mut runs = self
+            .events
             .iter()
-            .filter_map(|(run_id, events)| {
-                let summary = summarize_run_events(run_id, events)?;
-                search_run_events(&summary, events, query)
+            .filter_map(|entry| {
+                let summary = summarize_run_events(entry.key(), entry.value())?;
+                search_run_events(&summary, entry.value(), query)
             })
             .collect::<Vec<_>>();
         runs.sort_by(|left, right| {
@@ -77,10 +82,9 @@ impl RunStore for InMemoryRunStore {
     }
 
     async fn events(&self, run_id: &RunId) -> Result<Vec<RunEventEnvelope>> {
-        let guard = self.events.read().expect("in-memory run store read lock");
-        guard
+        self.events
             .get(run_id)
-            .cloned()
+            .map(|entry| entry.value().clone())
             .ok_or_else(|| RunStoreError::RunNotFound(run_id.clone()))
     }
 
@@ -106,14 +110,14 @@ impl RunStore for InMemoryRunStore {
         &self,
         request: RunMemoryExportRequest,
     ) -> Result<Vec<RunMemoryExportRecord>> {
-        let guard = self.events.read().expect("in-memory run store read lock");
-        let mut records = guard
+        let mut records = self
+            .events
             .iter()
-            .filter_map(|(run_id, events)| {
+            .filter_map(|entry| {
                 Some(RunMemoryExportRecord {
-                    summary: summarize_run_events(run_id, events)?,
-                    session_ids: collect_session_ids(events),
-                    search_corpus: build_search_corpus(events),
+                    summary: summarize_run_events(entry.key(), entry.value())?,
+                    session_ids: collect_session_ids(entry.value()),
+                    search_corpus: build_search_corpus(entry.value()),
                 })
             })
             .collect::<Vec<_>>();

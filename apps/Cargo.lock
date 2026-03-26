@@ -692,8 +692,10 @@ dependencies = [
  "anyhow",
  "async-trait",
  "crossterm 0.29.0",
+ "nanoclaw-config",
  "ratatui",
  "serde",
+ "serde_json",
  "tempfile",
  "tokio",
  "toml",
@@ -3753,6 +3755,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2195bf6aa996a481483b29d62a7663eed3fe39600c460e323f8ff41e90bdd89b"
 
 [[package]]
+name = "nanoclaw-config"
+version = "0.1.0"
+dependencies = [
+ "agent",
+ "agent-env",
+ "anyhow",
+ "serde",
+ "serde_json",
+ "toml",
+]
+
+[[package]]
 name = "ndarray"
 version = "0.16.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4599,6 +4613,7 @@ dependencies = [
  "async-trait",
  "crossterm 0.29.0",
  "futures",
+ "nanoclaw-config",
  "ratatui",
  "runtime",
  "serde",
@@ -5478,6 +5493,7 @@ name = "store"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "dashmap",
  "futures",
  "serde",
  "serde_json",
@@ -5999,6 +6015,7 @@ dependencies = [
  "agent-env",
  "async-trait",
  "base64",
+ "dashmap",
  "globset",
  "ignore",
  "libc",

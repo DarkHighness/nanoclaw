@@ -11,6 +11,7 @@ web-tools = ["agent/web-tools", "tools/web-tools"]
 [dependencies]
 agent-env = { path = "../../crates/env" }
 agent = { path = "../../crates/core" }
+nanoclaw-config = { path = "../../crates/config" }
 runtime = { path = "../../crates/runtime" }
 store = { path = "../../crates/store" }
 tools = { path = "../../crates/tools" }

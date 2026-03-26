@@ -1,5 +1,6 @@
 [workspace]
 default-members = [
+    "config",
     "core",
     "env",
     "inference",
@@ -14,6 +15,7 @@ default-members = [
     "types",
 ]
 members = [
+    "config",
     "core",
     "env",
     "inference",
@@ -42,6 +44,7 @@ async-stream = "0.3.6"
 async-trait = "0.1.89"
 base64 = "0.22.1"
 crossterm = "0.29.0"
+dashmap = "6.1.0"
 dotenvy = "0.15.7"
 eventsource-stream = "0.2.3"
 futures = "0.3.31"

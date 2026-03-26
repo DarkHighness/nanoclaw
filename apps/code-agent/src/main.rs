@@ -1,6 +1,7 @@
+mod config;
 mod tui;
 
-use agent::plugins::{PluginEntryConfig, PluginSlotsConfig};
+use crate::config::CodeAgentConfig;
 use agent::provider::{
     BackendDescriptor, OpenAiResponsesOptions, OpenAiServerCompaction, ProviderBackend,
     ProviderDescriptor, RequestOptions,
@@ -19,7 +20,8 @@ use agent::{
 };
 use agent_env::{EnvMap, vars};
 use anyhow::{Context, Result, bail};
-use serde::Deserialize;
+use nanoclaw_config::{PluginsConfig, ProviderKind, resolved_provider_kind};
+use serde_json::Value;
 use std::collections::BTreeMap;
 use std::env;
 use std::fmt;
@@ -59,9 +61,14 @@ impl fmt::Display for SelectedProvider {
 struct AppOptions {
     provider: SelectedProvider,
     model: String,
+    base_url: Option<String>,
+    temperature: Option<f64>,
+    max_tokens: Option<u64>,
+    additional_params: Option<Value>,
+    provider_env: BTreeMap<String, String>,
     system_prompt: Option<String>,
     skill_roots: Vec<PathBuf>,
-    plugins: CodeAgentPluginsConfig,
+    plugins: PluginsConfig,
     sandbox_fail_if_unavailable: bool,
     lsp_enabled: bool,
     lsp_auto_install: bool,
@@ -79,46 +86,18 @@ impl AppOptions {
         env_map: &EnvMap,
         args: impl IntoIterator<Item = String>,
     ) -> Result<Self> {
-        let workspace_config = load_workspace_config(workspace_root)?;
-        let mut provider = env_lookup(env_map, vars::CODE_AGENT_PROVIDER.key)
-            .as_deref()
-            .map(parse_provider)
-            .transpose()?;
-        let mut system_prompt = workspace_config.system_prompt;
-        if let Some(value) = env_lookup(env_map, vars::CODE_AGENT_SYSTEM_PROMPT.key) {
-            system_prompt = Some(value);
-        }
-        let mut skill_roots =
-            if let Some(value) = env_lookup(env_map, vars::CODE_AGENT_SKILL_ROOTS.key) {
-                split_path_list(value)
-            } else {
-                workspace_config
-                    .skill_roots
-                    .iter()
-                    .map(|value| resolve_path(workspace_root, value))
-                    .collect::<Vec<_>>()
-            };
-        let mut plugins = workspace_config.plugins;
-        if let Some(value) = env_lookup(env_map, vars::CODE_AGENT_PLUGIN_ROOTS.key) {
-            plugins.roots = split_path_list(value)
-                .into_iter()
-                .map(|path| path.to_string_lossy().to_string())
-                .collect();
-        }
-        if let Some(value) = env_lookup(env_map, vars::CODE_AGENT_PLUGIN_MEMORY_SLOT.key) {
-            plugins.slots.memory = Some(value);
-        }
-        let mut sandbox_fail_if_unavailable = env_map
-            .get_bool_var(vars::CODE_AGENT_SANDBOX_FAIL_IF_UNAVAILABLE)
-            .unwrap_or(false);
-        let lsp_enabled = env_map
-            .get_bool_var(vars::CODE_AGENT_LSP_ENABLED)
-            .unwrap_or(true);
-        let lsp_auto_install = env_map
-            .get_bool_var(vars::CODE_AGENT_LSP_AUTO_INSTALL)
-            .unwrap_or(false);
-        let lsp_install_root =
-            env_lookup(env_map, vars::CODE_AGENT_LSP_INSTALL_ROOT.key).map(PathBuf::from);
+        let workspace_config = CodeAgentConfig::load_from_dir(workspace_root, env_map)?;
+        let mut provider = None;
+        let provider_from_config =
+            selected_provider_from_kind(resolved_provider_kind(&workspace_config.core));
+        let mut system_prompt = workspace_config.core.system_prompt.clone();
+        let mut skill_roots = workspace_config.core.resolved_skill_roots(workspace_root);
+        let mut plugins = workspace_config.core.plugins.clone();
+        let mut sandbox_fail_if_unavailable =
+            workspace_config.core.runtime.sandbox_fail_if_unavailable;
+        let lsp_enabled = workspace_config.lsp_enabled;
+        let lsp_auto_install = workspace_config.lsp_auto_install;
+        let lsp_install_root = workspace_config.lsp_install_root.clone();
         let mut prompt_parts = Vec::new();
 
         let mut args = args.into_iter();
@@ -154,16 +133,28 @@ impl AppOptions {
             }
         }
 
-        let has_openai = env_lookup(env_map, vars::OPENAI_API_KEY.key).is_some();
-        let has_anthropic = env_lookup(env_map, vars::ANTHROPIC_API_KEY.key).is_some();
-        let provider = provider.unwrap_or(SelectedProvider::OpenAi);
-        ensure_api_key_available(provider, has_openai, has_anthropic)?;
-        let model = default_model(provider).to_string();
+        let provider = provider.unwrap_or(provider_from_config);
+        ensure_api_key_available(provider, &workspace_config.core.provider.env, env_map)?;
+        let model = if provider != provider_from_config {
+            default_model(provider).to_string()
+        } else {
+            workspace_config
+                .core
+                .provider
+                .model
+                .clone()
+                .unwrap_or_else(|| default_model(provider).to_string())
+        };
         let one_shot_prompt = (!prompt_parts.is_empty()).then(|| prompt_parts.join(" "));
 
         Ok(Self {
             provider,
             model,
+            base_url: workspace_config.core.provider.base_url.clone(),
+            temperature: workspace_config.core.provider.temperature,
+            max_tokens: workspace_config.core.provider.max_tokens,
+            additional_params: workspace_config.core.provider.additional_params.clone(),
+            provider_env: workspace_config.core.provider.env.clone(),
             system_prompt,
             skill_roots,
             plugins,
@@ -173,42 +164,6 @@ impl AppOptions {
             lsp_install_root,
             one_shot_prompt,
         })
-    }
-}
-
-#[derive(Clone, Debug, Deserialize, Default)]
-struct WorkspaceConfig {
-    #[serde(default)]
-    system_prompt: Option<String>,
-    #[serde(default)]
-    skill_roots: Vec<String>,
-    #[serde(default)]
-    plugins: CodeAgentPluginsConfig,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-#[serde(default)]
-struct CodeAgentPluginsConfig {
-    enabled: bool,
-    roots: Vec<String>,
-    include_builtin: bool,
-    allow: Vec<String>,
-    deny: Vec<String>,
-    entries: BTreeMap<String, PluginEntryConfig>,
-    slots: PluginSlotsConfig,
-}
-
-impl Default for CodeAgentPluginsConfig {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            roots: Vec::new(),
-            include_builtin: true,
-            allow: Vec::new(),
-            deny: Vec::new(),
-            entries: BTreeMap::new(),
-            slots: PluginSlotsConfig::default(),
-        }
     }
 }
 
@@ -228,13 +183,14 @@ fn main() -> Result<()> {
 }
 
 fn init_tracing(workspace_root: &Path) -> Result<WorkerGuard> {
-    let log_dir = AgentWorkspaceLayout::new(workspace_root).logs_dir();
-    std::fs::create_dir_all(&log_dir).with_context(|| {
+    let layout = AgentWorkspaceLayout::new(workspace_root);
+    layout.ensure_standard_layout().with_context(|| {
         format!(
-            "failed to create tracing log directory at {}",
-            log_dir.display()
+            "failed to materialize workspace state layout at {}",
+            layout.state_dir().display()
         )
     })?;
+    let log_dir = layout.logs_dir();
     let file_appender = tracing_appender::rolling::never(log_dir, "code-agent.log");
     let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
     let env_filter = EnvFilter::try_new(agent_env::log_filter_or_default(
@@ -445,6 +401,9 @@ fn build_backend(options: &AppOptions) -> Result<ProviderBackend> {
         SelectedProvider::Anthropic => ProviderDescriptor::anthropic(options.model.clone()),
     });
     let request_options = RequestOptions {
+        temperature: options.temperature,
+        max_tokens: options.max_tokens,
+        additional_params: options.additional_params.clone(),
         openai_responses: matches!(options.provider, SelectedProvider::OpenAi).then(|| {
             OpenAiResponsesOptions {
                 chain_previous_response: true,
@@ -456,10 +415,11 @@ fn build_backend(options: &AppOptions) -> Result<ProviderBackend> {
         }),
         ..RequestOptions::default()
     };
-    Ok(ProviderBackend::from_settings(
+    Ok(ProviderBackend::from_settings_with_api_key(
         descriptor,
         request_options,
-        None,
+        options.base_url.clone(),
+        configured_provider_api_key(options),
     )?)
 }
 
@@ -530,30 +490,23 @@ fn push_if_exists(roots: &mut Vec<PathBuf>, path: PathBuf) {
     }
 }
 
-fn split_path_list(value: String) -> Vec<PathBuf> {
-    agent_env::split_path_list(&value)
-}
-
-fn load_workspace_config(workspace_root: &Path) -> Result<WorkspaceConfig> {
-    let Some(path) = AgentWorkspaceLayout::new(workspace_root).config_path() else {
-        return Ok(WorkspaceConfig::default());
-    };
-    let raw = std::fs::read_to_string(&path)
-        .with_context(|| format!("failed to read workspace config {}", path.display()))?;
-    toml::from_str(&raw)
-        .with_context(|| format!("failed to parse workspace config {}", path.display()))
-}
-
 fn build_plugin_activation_plan(
     workspace_root: &Path,
-    plugins: &CodeAgentPluginsConfig,
+    plugins: &PluginsConfig,
 ) -> Result<agent::plugins::PluginActivationPlan> {
     let resolver = agent::PluginBootResolverConfig {
         enabled: plugins.enabled,
         roots: plugins
             .roots
             .iter()
-            .map(|value| resolve_path(workspace_root, value))
+            .map(|value| {
+                let path = PathBuf::from(value);
+                if path.is_absolute() {
+                    path
+                } else {
+                    workspace_root.join(path)
+                }
+            })
             .collect::<Vec<_>>(),
         include_builtin: plugins.include_builtin,
         allow: plugins.allow.clone(),
@@ -564,22 +517,9 @@ fn build_plugin_activation_plan(
     agent::build_plugin_activation_plan(workspace_root, &resolver)
 }
 
-fn resolve_path(base_dir: &Path, value: &str) -> PathBuf {
-    let path = PathBuf::from(value);
-    if path.is_absolute() {
-        path
-    } else {
-        base_dir.join(path)
-    }
-}
-
 fn inject_process_env(env_map: &EnvMap) {
     // This runs before the Tokio runtime starts, so mutating process env is safe here.
     env_map.apply_to_process();
-}
-
-fn env_lookup(env_map: &EnvMap, name: &str) -> Option<String> {
-    env_map.get_non_empty(name)
 }
 
 fn next_arg(args: &mut impl Iterator<Item = String>, flag: &str) -> Result<String> {
@@ -603,11 +543,30 @@ fn parse_bool_flag(value: &str) -> Result<bool> {
     }
 }
 
+fn selected_provider_from_kind(kind: ProviderKind) -> SelectedProvider {
+    match kind {
+        ProviderKind::OpenAi => SelectedProvider::OpenAi,
+        ProviderKind::Anthropic => SelectedProvider::Anthropic,
+    }
+}
+
+fn configured_provider_api_key(options: &AppOptions) -> Option<String> {
+    let env_key = match options.provider {
+        SelectedProvider::OpenAi => "OPENAI_API_KEY",
+        SelectedProvider::Anthropic => "ANTHROPIC_API_KEY",
+    };
+    options.provider_env.get(env_key).cloned()
+}
+
 fn ensure_api_key_available(
     provider: SelectedProvider,
-    has_openai: bool,
-    has_anthropic: bool,
+    provider_env: &BTreeMap<String, String>,
+    env_map: &EnvMap,
 ) -> Result<()> {
+    let has_openai = provider_env.contains_key("OPENAI_API_KEY")
+        || env_map.get_non_empty(vars::OPENAI_API_KEY.key).is_some();
+    let has_anthropic = provider_env.contains_key("ANTHROPIC_API_KEY")
+        || env_map.get_non_empty(vars::ANTHROPIC_API_KEY.key).is_some();
     match provider {
         SelectedProvider::OpenAi if !has_openai => {
             bail!("missing OPENAI_API_KEY for provider openai")
@@ -649,9 +608,7 @@ fn print_help() {
     println!("  .env and .env.local in the current workspace are loaded automatically");
     println!("  OPENAI_API_KEY / ANTHROPIC_API_KEY");
     println!("  OPENAI_BASE_URL / ANTHROPIC_BASE_URL");
-    println!("  CODE_AGENT_PROVIDER / CODE_AGENT_SYSTEM_PROMPT / CODE_AGENT_SKILL_ROOTS");
-    println!("  CODE_AGENT_PLUGIN_ROOTS / CODE_AGENT_PLUGIN_MEMORY_SLOT");
-    println!("  CODE_AGENT_SANDBOX_FAIL_IF_UNAVAILABLE");
+    println!("  NANOCLAW_CORE_* for shared core runtime settings");
     println!(
         "  CODE_AGENT_LSP_ENABLED / CODE_AGENT_LSP_AUTO_INSTALL / CODE_AGENT_LSP_INSTALL_ROOT"
     );
@@ -696,7 +653,7 @@ mod tests {
         let dir = tempdir().unwrap();
         std::fs::write(
             dir.path().join(".env"),
-            "OPENAI_API_KEY=test-key\nCODE_AGENT_SANDBOX_FAIL_IF_UNAVAILABLE=false\n",
+            "OPENAI_API_KEY=test-key\nNANOCLAW_CORE_SANDBOX_FAIL_IF_UNAVAILABLE=false\n",
         )
         .unwrap();
         let env_map = EnvMap::from_workspace_dir(dir.path()).unwrap();
@@ -721,29 +678,5 @@ mod tests {
         assert_eq!(policy.mode, SandboxMode::WorkspaceWrite);
         assert_eq!(policy.network, NetworkPolicy::Off);
         assert!(policy.fail_if_unavailable);
-    }
-
-    #[tokio::test]
-    async fn loads_lsp_flags_from_env() {
-        let _guard = env_test_lock().lock().unwrap();
-        let dir = tempdir().unwrap();
-        std::fs::write(
-            dir.path().join(".env"),
-            format!(
-                "OPENAI_API_KEY=test-key\nCODE_AGENT_LSP_ENABLED=false\nCODE_AGENT_LSP_AUTO_INSTALL=true\nCODE_AGENT_LSP_INSTALL_ROOT={}\n",
-                dir.path().join(".cache/lsp").display()
-            ),
-        )
-        .unwrap();
-        let env_map = EnvMap::from_workspace_dir(dir.path()).unwrap();
-        let options =
-            AppOptions::from_env_and_args_iter(dir.path(), &env_map, Vec::<String>::new()).unwrap();
-
-        assert!(!options.lsp_enabled);
-        assert!(options.lsp_auto_install);
-        assert_eq!(
-            options.lsp_install_root,
-            Some(dir.path().join(".cache/lsp"))
-        );
     }
 }

@@ -62,7 +62,9 @@ impl ManagedCodeIntelOptions {
         Self {
             enabled: true,
             auto_install: false,
-            install_root: workspace_root.join(".agent-core/lsp"),
+            // Managed language-server state is host-generated mutable data, so
+            // it belongs under the standard `.nanoclaw/tools/` workspace layout.
+            install_root: workspace_root.join(".nanoclaw/tools/lsp"),
         }
     }
 }

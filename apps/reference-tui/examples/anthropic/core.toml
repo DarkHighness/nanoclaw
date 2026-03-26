@@ -5,8 +5,8 @@ skill_roots = [
 ]
 
 [provider]
-kind = "openai"
-model = "gpt-4.1-mini"
+kind = "anthropic"
+model = "claude-3-7-sonnet-latest"
 temperature = 0.2
 max_tokens = 4096
 additional_params = { metadata = { tier = "standard" } }
@@ -20,23 +20,6 @@ compact_trigger_tokens = 96000
 compact_preserve_recent_messages = 8
 store_dir = ".nanoclaw/store"
 
-[tui]
-command_prefix = "/"
-
-[hook_env]
-PROJECT_NAME = "nanoclaw"
-
-[[mcp_servers]]
-name = "filesystem"
-transport = "stdio"
-command = "uvx"
-args = ["mcp-server-filesystem", "."]
-cwd = "."
-
-[[mcp_servers]]
-name = "remote-docs"
-transport = "streamable_http"
-url = "http://localhost:8000/mcp"
-
-[mcp_servers.headers]
-Authorization = "Bearer replace-me"
+[provider.env]
+# Prefer setting ANTHROPIC_API_KEY in your shell or .env.local instead of committing it.
+ANTHROPIC_API_KEY = "replace-me-locally"

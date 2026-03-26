@@ -104,7 +104,7 @@ Implementation impact:
 
 - `tools` now provides first-party `web_search` and `web_fetch` as an optional feature bundle instead of part of the mandatory default tool set.
 - `web_fetch` accepts only `http`/`https`, blocks local or private hosts by default, and extracts readable text from HTML or other text-like responses.
-- `web_search` is intentionally lightweight and backend-pluggable. The default bootstrap path uses an RSS search endpoint for discovery and can be overridden with `AGENT_CORE_WEB_SEARCH_ENDPOINT`.
+- `web_search` is intentionally lightweight and backend-pluggable. The default bootstrap path uses an RSS search endpoint for discovery and can be overridden with `NANOCLAW_CORE_WEB_SEARCH_ENDPOINT`.
 - Domain allow/block lists are available through environment variables so operators can narrow outbound access before a richer approval UX lands.
 
 ### 8. Approval should live at the runtime boundary, not inside individual tools

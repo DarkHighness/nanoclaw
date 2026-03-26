@@ -1,3 +1,5 @@
+mod session_registry;
+
 use crate::annotations::mcp_tool_annotations;
 use crate::fs::resolve_tool_path_against_workspace_root;
 use crate::process::{
@@ -11,10 +13,10 @@ use async_trait::async_trait;
 use schemars::{JsonSchema, schema_for};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::fmt;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, OnceLock, RwLock};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::Child;
@@ -25,6 +27,8 @@ use tracing::{debug, warn};
 use types::{
     MessagePart, ToolCallId, ToolOrigin, ToolOutputMode, ToolResult, ToolSpec, new_opaque_id,
 };
+
+use self::session_registry::{get_session, insert_session};
 
 const DEFAULT_TIMEOUT_MS: u64 = 30_000;
 const DEFAULT_MAX_OUTPUT_CHARS: usize = 32 * 1024;
@@ -358,9 +362,6 @@ impl BashSession {
     }
 }
 
-type SessionRegistry = HashMap<BashSessionId, Arc<BashSession>>;
-static BASH_SESSIONS: OnceLock<RwLock<SessionRegistry>> = OnceLock::new();
-
 impl BashTool {
     #[must_use]
     pub fn new() -> Self {
@@ -422,10 +423,6 @@ impl Tool for BashTool {
             BashExecutionMode::Cancel => execute_cancel(call_id, input).await,
         }
     }
-}
-
-fn bash_sessions() -> &'static RwLock<SessionRegistry> {
-    BASH_SESSIONS.get_or_init(|| RwLock::new(HashMap::new()))
 }
 
 async fn execute_run(
@@ -634,13 +631,7 @@ async fn execute_start(
         cancel_tx: Arc::new(Mutex::new(Some(cancel_tx))),
     });
 
-    {
-        let mut registry = bash_sessions()
-            .write()
-            .expect("bash session registry write lock");
-        prune_completed_sessions(&mut registry);
-        registry.insert(session_id.clone(), session.clone());
-    }
+    insert_session(session.clone());
 
     tokio::spawn(async move {
         run_background_command(
@@ -701,12 +692,7 @@ async fn execute_poll(call_id: ToolCallId, input: BashToolInput) -> Result<ToolR
     let stdout_start_char = input.stdout_start_char.unwrap_or(0);
     let stderr_start_char = input.stderr_start_char.unwrap_or(0);
 
-    let session = {
-        let registry = bash_sessions()
-            .read()
-            .expect("bash session registry read lock");
-        registry.get(&session_id).cloned()
-    };
+    let session = get_session(&session_id);
     let Some(session) = session else {
         return Ok(ToolResult::error(
             call_id,
@@ -810,12 +796,7 @@ async fn execute_cancel(call_id: ToolCallId, input: BashToolInput) -> Result<Too
     let session_id = resolve_session_id(&input)?;
     let poll_wait_ms = input.poll_wait_ms.unwrap_or(1_000).min(MAX_POLL_WAIT_MS);
 
-    let session = {
-        let registry = bash_sessions()
-            .read()
-            .expect("bash session registry read lock");
-        registry.get(&session_id).cloned()
-    };
+    let session = get_session(&session_id);
     let Some(session) = session else {
         return Ok(ToolResult::error(
             call_id,
@@ -878,26 +859,6 @@ async fn execute_cancel(call_id: ToolCallId, input: BashToolInput) -> Result<Too
         })),
         is_error: false,
     })
-}
-
-fn prune_completed_sessions(registry: &mut SessionRegistry) {
-    if registry.len() < MAX_TRACKED_BASH_SESSIONS {
-        return;
-    }
-    let mut completed = registry
-        .iter()
-        .filter_map(|(session_id, session)| {
-            session
-                .completed_timestamp()
-                .map(|finished_at| (session_id.clone(), finished_at))
-        })
-        .collect::<Vec<_>>();
-    completed.sort_by_key(|(_, finished_at)| *finished_at);
-
-    let remove_count = registry.len().saturating_sub(MAX_TRACKED_BASH_SESSIONS) + 1;
-    for (session_id, _) in completed.into_iter().take(remove_count) {
-        registry.remove(&session_id);
-    }
 }
 
 async fn run_background_command(

@@ -98,17 +98,19 @@ impl WebSearchBackendKind {
         match self {
             Self::BingRss => "bing_rss backend is not registered",
             Self::BraveApi => {
-                "AGENT_CORE_WEB_SEARCH_BRAVE_API_KEY is required for the brave_api backend"
+                "NANOCLAW_CORE_WEB_SEARCH_BRAVE_API_KEY is required for the brave_api backend"
             }
-            Self::ExaApi => "AGENT_CORE_WEB_SEARCH_EXA_API_KEY is required for the exa_api backend",
+            Self::ExaApi => {
+                "NANOCLAW_CORE_WEB_SEARCH_EXA_API_KEY is required for the exa_api backend"
+            }
             Self::DuckDuckGoHtml => "duckduckgo_html backend is not registered",
         }
     }
 
     pub(super) fn missing_requirement(self) -> Option<&'static str> {
         match self {
-            Self::BraveApi => Some("AGENT_CORE_WEB_SEARCH_BRAVE_API_KEY"),
-            Self::ExaApi => Some("AGENT_CORE_WEB_SEARCH_EXA_API_KEY"),
+            Self::BraveApi => Some("NANOCLAW_CORE_WEB_SEARCH_BRAVE_API_KEY"),
+            Self::ExaApi => Some("NANOCLAW_CORE_WEB_SEARCH_EXA_API_KEY"),
             Self::BingRss | Self::DuckDuckGoHtml => None,
         }
     }
@@ -138,7 +140,7 @@ pub(super) struct WebSearchBackendRegistry {
 impl WebSearchBackendRegistry {
     pub(super) fn from_env() -> Result<Self> {
         let default_selector = parse_backend_selector(
-            agent_env::get_non_empty(vars::AGENT_CORE_WEB_SEARCH_BACKEND).as_deref(),
+            agent_env::get_non_empty(vars::NANOCLAW_CORE_WEB_SEARCH_BACKEND).as_deref(),
         )?
         .unwrap_or(WebSearchBackendSelector::Auto);
 
@@ -146,7 +148,7 @@ impl WebSearchBackendRegistry {
         backends.insert(
             WebSearchBackendKind::BingRss,
             Arc::new(BingRssSearchBackend::new(parse_backend_url(
-                agent_env::get_non_empty(vars::AGENT_CORE_WEB_SEARCH_ENDPOINT),
+                agent_env::get_non_empty(vars::NANOCLAW_CORE_WEB_SEARCH_ENDPOINT),
                 DEFAULT_SEARCH_ENDPOINT,
                 "search endpoint",
             )?)),
@@ -154,22 +156,25 @@ impl WebSearchBackendRegistry {
         backends.insert(
             WebSearchBackendKind::DuckDuckGoHtml,
             Arc::new(DuckDuckGoHtmlSearchBackend::new(parse_backend_url(
-                agent_env::get_non_empty(vars::AGENT_CORE_WEB_SEARCH_DUCKDUCKGO_ENDPOINT),
+                agent_env::get_non_empty(vars::NANOCLAW_CORE_WEB_SEARCH_DUCKDUCKGO_ENDPOINT),
                 DEFAULT_DUCKDUCKGO_HTML_ENDPOINT,
                 "DuckDuckGo HTML endpoint",
             )?)),
         );
 
-        if let Some(api_key) = agent_env::get_non_empty(vars::AGENT_CORE_WEB_SEARCH_BRAVE_API_KEY)
-            .or_else(|| agent_env::get_non_empty(vars::AGENT_CORE_WEB_SEARCH_API_KEY))
+        if let Some(api_key) =
+            agent_env::get_non_empty(vars::NANOCLAW_CORE_WEB_SEARCH_BRAVE_API_KEY)
+                .or_else(|| agent_env::get_non_empty(vars::NANOCLAW_CORE_WEB_SEARCH_API_KEY))
         {
             backends.insert(
                 WebSearchBackendKind::BraveApi,
                 Arc::new(BraveApiSearchBackend::new(
                     parse_backend_url(
-                        agent_env::get_non_empty(vars::AGENT_CORE_WEB_SEARCH_BRAVE_API_ENDPOINT)
+                        agent_env::get_non_empty(vars::NANOCLAW_CORE_WEB_SEARCH_BRAVE_API_ENDPOINT)
                             .or_else(|| {
-                                agent_env::get_non_empty(vars::AGENT_CORE_WEB_SEARCH_API_ENDPOINT)
+                                agent_env::get_non_empty(
+                                    vars::NANOCLAW_CORE_WEB_SEARCH_API_ENDPOINT,
+                                )
                             }),
                         DEFAULT_BRAVE_API_BASE_URL,
                         "Brave API endpoint",
@@ -179,12 +184,13 @@ impl WebSearchBackendRegistry {
             );
         }
 
-        if let Some(api_key) = agent_env::get_non_empty(vars::AGENT_CORE_WEB_SEARCH_EXA_API_KEY) {
+        if let Some(api_key) = agent_env::get_non_empty(vars::NANOCLAW_CORE_WEB_SEARCH_EXA_API_KEY)
+        {
             backends.insert(
                 WebSearchBackendKind::ExaApi,
                 Arc::new(ExaApiSearchBackend::new(
                     parse_backend_url(
-                        agent_env::get_non_empty(vars::AGENT_CORE_WEB_SEARCH_EXA_API_ENDPOINT),
+                        agent_env::get_non_empty(vars::NANOCLAW_CORE_WEB_SEARCH_EXA_API_ENDPOINT),
                         DEFAULT_EXA_API_BASE_URL,
                         "Exa API endpoint",
                     )?,

@@ -35,6 +35,15 @@ The directory layout follows that split directly:
 - `crates/core`, `crates/runtime`, `crates/tools`, `crates/provider`, `crates/mcp`, `crates/store`, `crates/skills`, `crates/types`
 - `apps/reference-tui`, `apps/code-agent`
 
+Every workspace now also has a standard mutable-state layout under `.nanoclaw/`:
+
+- `logs/`: host tracing output
+- `store/`: run persistence
+- `skills/`: workspace-local skill packs
+- `tools/lsp/`: managed language-server cache and install roots
+- `plugins/`: workspace-local plugin bundles
+- `apps/`: app-specific state that should stay isolated from the shared substrate roots
+
 The umbrella crate keeps the Rust package name `agent` even though its directory is `crates/core`, because a package literally named `core` would collide with Rust's standard `core` crate.
 
 ## Base Composition
@@ -133,17 +142,18 @@ Inside the reference shell, operator commands include:
 
 ## Reference Shell Configuration
 
-The file/env config layer applies only to the removable reference shell, and it now lives as a private module inside that shell crate.
+The shared core config now lives in the reusable `nanoclaw-config` crate. The
+reference shell merges that shared core layer with its own app-local config.
 
 `apps/reference-tui` reads:
 
-- `agent-core.toml`
-- `.nanoclaw/config.toml`
+- `.nanoclaw/config/core.toml`
+- `.nanoclaw/apps/reference-tui.toml`
 - `.env`
 - `.env.local`
 - process environment variables
 
-Key shell-level knobs:
+Key shared core knobs:
 
 - `provider.kind`, `provider.model`, `provider.base_url`
 - `provider.temperature`, `provider.max_tokens`, `provider.additional_params`
@@ -158,11 +168,18 @@ Key shell-level knobs:
 - `runtime.store_dir`
 - `hook_env`
 
+Reference-shell-only knobs:
+
+- `tui.command_prefix`
+
 Examples:
 
-- shell config template: [agent-core.toml.example](/Users/twiliness/nanoclaw/apps/reference-tui/examples/agent-core.toml.example)
-- OpenAI example: [openai example](/Users/twiliness/nanoclaw/apps/reference-tui/examples/openai/agent-core.toml)
-- Anthropic example: [anthropic example](/Users/twiliness/nanoclaw/apps/reference-tui/examples/anthropic/agent-core.toml)
+- core config template: [core.toml.example](/home/twiliness/nanoclaw/apps/reference-tui/examples/core.toml.example)
+- reference-tui config template: [reference-tui.toml.example](/home/twiliness/nanoclaw/apps/reference-tui/examples/reference-tui.toml.example)
+- OpenAI core example: [openai core](/home/twiliness/nanoclaw/apps/reference-tui/examples/openai/core.toml)
+- OpenAI app example: [openai app](/home/twiliness/nanoclaw/apps/reference-tui/examples/openai/reference-tui.toml)
+- Anthropic core example: [anthropic core](/home/twiliness/nanoclaw/apps/reference-tui/examples/anthropic/core.toml)
+- Anthropic app example: [anthropic app](/home/twiliness/nanoclaw/apps/reference-tui/examples/anthropic/reference-tui.toml)
 
 ## Example Code Agent
 

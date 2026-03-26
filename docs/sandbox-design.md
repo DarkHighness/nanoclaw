@@ -374,8 +374,8 @@ The first host-facing knob wired in this repository is whether a missing
 enforcing backend is a hard error or a best-effort fallback:
 
 - `reference-tui` exposes `[runtime].sandbox_fail_if_unavailable` and
-  `AGENT_CORE_SANDBOX_FAIL_IF_UNAVAILABLE`
-- `code-agent` exposes `CODE_AGENT_SANDBOX_FAIL_IF_UNAVAILABLE` and
+  `NANOCLAW_CORE_SANDBOX_FAIL_IF_UNAVAILABLE`
+- `code-agent` exposes the same shared core knob plus
   `--sandbox-fail-if-unavailable <true|false>`
 
 That keeps the user-visible contract narrow while the backend matrix is still
