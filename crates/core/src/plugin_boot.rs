@@ -101,20 +101,9 @@ pub fn activate_driver_requests(
             }
             "builtin.memory-embed" => {
                 let mut table = request.config.clone();
-                // Keep plugin manifests declarative by allowing env indirection for secrets.
-                if let Some(toml::Value::Table(embedding)) = table.get_mut("embedding")
-                    && let Some(api_key_env) = embedding
-                        .remove("api_key_env")
-                        .and_then(|value| value.as_str().map(ToOwned::to_owned))
-                {
-                    let api_key = env_map.get_non_empty(&api_key_env).ok_or_else(|| {
-                        anyhow!(
-                            "missing embedding API key env `{api_key_env}` for plugin `{}`",
-                            request.plugin_id
-                        )
-                    })?;
-                    embedding.insert("api_key".to_string(), toml::Value::String(api_key));
-                }
+                // Keep plugin manifests declarative by allowing env indirection for secrets in
+                // any nested service config (`embedding`, `query_expansion`, `rerank`, etc.).
+                materialize_api_key_envs(&mut table, &env_map, &request.plugin_id)?;
                 let config: MemoryEmbedConfig =
                     toml::Value::Table(table).try_into().with_context(|| {
                         format!("failed to parse config for plugin `{}`", request.plugin_id)
@@ -145,6 +134,30 @@ pub fn activate_driver_requests(
     }
 
     Ok(outcome)
+}
+
+fn materialize_api_key_envs(
+    table: &mut toml::map::Map<String, toml::Value>,
+    env_map: &agent_env::EnvMap,
+    plugin_id: &str,
+) -> Result<()> {
+    if let Some(api_key_env) = table
+        .remove("api_key_env")
+        .and_then(|value| value.as_str().map(ToOwned::to_owned))
+    {
+        let api_key = env_map.get_non_empty(&api_key_env).ok_or_else(|| {
+            anyhow!("missing API key env `{api_key_env}` for plugin `{plugin_id}` service config")
+        })?;
+        table.insert("api_key".to_string(), toml::Value::String(api_key));
+    }
+
+    for (_, value) in table.iter_mut() {
+        if let toml::Value::Table(child) = value {
+            materialize_api_key_envs(child, env_map, plugin_id)?;
+        }
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]

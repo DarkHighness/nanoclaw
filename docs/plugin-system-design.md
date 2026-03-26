@@ -437,7 +437,7 @@ do not drift on:
 - builtin plugin-root inclusion
 - discovery-to-activation-plan resolution
 - builtin memory driver activation
-- `embedding.api_key_env` secret materialization
+- nested service `api_key_env` secret materialization
 - host-specific unknown-driver policy (`warn` vs `error`)
 
 ## Compatibility Strategy

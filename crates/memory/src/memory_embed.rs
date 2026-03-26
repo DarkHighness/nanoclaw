@@ -1,24 +1,41 @@
 use crate::{
-    EmbeddingConfig, MemoryBackend, MemoryDocument, MemoryEmbedConfig, MemoryGetRequest,
-    MemorySearchHit, MemorySearchRequest, MemorySearchResponse, MemorySyncStatus, Result,
-    chunk_corpus, lexical_score, load_memory_corpus,
+    EmbeddingConfig, LlmServiceConfig, MemoryBackend, MemoryDocument, MemoryEmbedConfig,
+    MemoryGetRequest, MemorySearchHit, MemorySearchRequest, MemorySearchResponse, MemorySyncStatus,
+    QueryExpansionConfig, RerankConfig, Result, chunk_corpus, lexical_score, load_memory_corpus,
 };
 use async_trait::async_trait;
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue};
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::cmp::Ordering;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
-const INDEX_SCHEMA_VERSION: u32 = 1;
+const INDEX_SCHEMA_VERSION: u32 = 2;
 const INDEX_BACKEND_ID: &str = "memory-embed";
+const OPENAI_COMPATIBLE_BASE_URL: &str = "https://api.openai.com/v1";
 
 #[async_trait]
 pub trait EmbeddingClient: Send + Sync {
     async fn embed(&self, model: &str, texts: &[String]) -> Result<Vec<Vec<f32>>>;
+}
+
+#[async_trait]
+pub trait QueryExpansionClient: Send + Sync {
+    async fn expand(&self, model: &str, query: &str, variants: usize) -> Result<Vec<String>>;
+}
+
+#[async_trait]
+pub trait RerankClient: Send + Sync {
+    async fn rerank(
+        &self,
+        model: &str,
+        query: &str,
+        documents: &[RerankDocument],
+    ) -> Result<Vec<f64>>;
 }
 
 #[derive(Clone)]
@@ -30,37 +47,114 @@ pub struct HttpEmbeddingClient {
 
 impl HttpEmbeddingClient {
     pub fn from_config(config: &EmbeddingConfig) -> Result<Self> {
-        let api_key = config.api_key.as_deref().ok_or_else(|| {
-            crate::MemoryError::invalid("memory-embed requires embedding.api_key")
-        })?;
-        let mut headers = HeaderMap::new();
-        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-        headers.insert(
-            AUTHORIZATION,
-            HeaderValue::from_str(&format!("Bearer {api_key}"))
-                .map_err(|error| crate::MemoryError::invalid(error.to_string()))?,
-        );
-        for (key, value) in &config.headers {
-            headers.insert(
-                HeaderName::from_bytes(key.as_bytes())
-                    .map_err(|error| crate::MemoryError::invalid(error.to_string()))?,
-                HeaderValue::from_str(value)
-                    .map_err(|error| crate::MemoryError::invalid(error.to_string()))?,
-            );
-        }
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_millis(config.timeout_ms))
-            .default_headers(headers)
-            .build()
-            .map_err(|error| crate::MemoryError::invalid(error.to_string()))?;
-        let base_url = config
-            .base_url
-            .clone()
-            .unwrap_or_else(|| "https://api.openai.com/v1".to_string());
         Ok(Self {
             model: config.model.clone(),
-            client,
-            base_url,
+            client: http_client_from_service_parts(
+                config.api_key.as_deref(),
+                &config.headers,
+                config.timeout_ms,
+            )?,
+            base_url: config
+                .base_url
+                .clone()
+                .unwrap_or_else(|| OPENAI_COMPATIBLE_BASE_URL.to_string()),
+        })
+    }
+}
+
+#[derive(Clone)]
+struct HttpChatClient {
+    model: String,
+    client: reqwest::Client,
+    base_url: String,
+}
+
+impl HttpChatClient {
+    fn from_config(config: &LlmServiceConfig) -> Result<Self> {
+        Ok(Self {
+            model: config.model.clone(),
+            client: http_client_from_service_parts(
+                config.api_key.as_deref(),
+                &config.headers,
+                config.timeout_ms,
+            )?,
+            base_url: config
+                .base_url
+                .clone()
+                .unwrap_or_else(|| OPENAI_COMPATIBLE_BASE_URL.to_string()),
+        })
+    }
+
+    async fn complete_json(
+        &self,
+        model: &str,
+        system_prompt: &str,
+        user_prompt: &str,
+    ) -> Result<String> {
+        let response = self
+            .client
+            .post(format!(
+                "{}/chat/completions",
+                self.base_url.trim_end_matches('/')
+            ))
+            .json(&json!({
+                "model": if model.is_empty() { &self.model } else { model },
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": system_prompt,
+                    },
+                    {
+                        "role": "user",
+                        "content": user_prompt,
+                    }
+                ],
+                "temperature": 0.0,
+            }))
+            .send()
+            .await
+            .map_err(|error| crate::MemoryError::invalid(error.to_string()))?;
+        if !response.status().is_success() {
+            return Err(crate::MemoryError::invalid(format!(
+                "generation service returned HTTP {}",
+                response.status()
+            )));
+        }
+        let payload: ChatCompletionResponse = response
+            .json()
+            .await
+            .map_err(|error| crate::MemoryError::invalid(error.to_string()))?;
+        let content = payload
+            .choices
+            .first()
+            .and_then(|choice| extract_chat_content(&choice.message.content))
+            .ok_or_else(|| crate::MemoryError::invalid("generation service returned no content"))?;
+        Ok(content)
+    }
+}
+
+#[derive(Clone)]
+pub struct HttpQueryExpansionClient {
+    inner: HttpChatClient,
+}
+
+impl HttpQueryExpansionClient {
+    pub fn from_config(config: &QueryExpansionConfig) -> Result<Self> {
+        Ok(Self {
+            inner: HttpChatClient::from_config(&config.service)?,
+        })
+    }
+}
+
+#[derive(Clone)]
+pub struct HttpRerankClient {
+    inner: HttpChatClient,
+}
+
+impl HttpRerankClient {
+    pub fn from_config(config: &RerankConfig) -> Result<Self> {
+        Ok(Self {
+            inner: HttpChatClient::from_config(&config.service)?,
         })
     }
 }
@@ -73,6 +167,21 @@ struct EmbeddingResponseItem {
 #[derive(Clone, Debug, Deserialize)]
 struct EmbeddingResponse {
     data: Vec<EmbeddingResponseItem>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct ChatCompletionChoice {
+    message: ChatCompletionMessage,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct ChatCompletionMessage {
+    content: Value,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct ChatCompletionResponse {
+    choices: Vec<ChatCompletionChoice>,
 }
 
 #[async_trait]
@@ -112,6 +221,73 @@ impl EmbeddingClient for HttpEmbeddingClient {
     }
 }
 
+#[async_trait]
+impl QueryExpansionClient for HttpQueryExpansionClient {
+    async fn expand(&self, model: &str, query: &str, variants: usize) -> Result<Vec<String>> {
+        if variants == 0 {
+            return Ok(Vec::new());
+        }
+        let payload = self
+            .inner
+            .complete_json(
+                model,
+                "You expand retrieval queries. Return strict JSON with key `queries` whose value is an array of concise alternate phrasings. Do not include explanations, numbering, or the original query.",
+                &format!(
+                    "Original query: {query}\nRequested variants: {variants}\nReturn JSON only."
+                ),
+            )
+            .await?;
+        parse_json_relaxed::<QueryExpansionPayload>(&payload).map(|parsed| parsed.queries)
+    }
+}
+
+#[async_trait]
+impl RerankClient for HttpRerankClient {
+    async fn rerank(
+        &self,
+        model: &str,
+        query: &str,
+        documents: &[RerankDocument],
+    ) -> Result<Vec<f64>> {
+        if documents.is_empty() {
+            return Ok(Vec::new());
+        }
+        let payload = self
+            .inner
+            .complete_json(
+                model,
+                "You rerank retrieval candidates. Return strict JSON with key `scores`, an array of floats between 0 and 1 aligned to the candidate order. Do not include any explanation.",
+                &format!(
+                    "Query: {query}\nCandidates: {}\nReturn JSON only.",
+                    serde_json::to_string(documents)
+                        .map_err(|error| crate::MemoryError::invalid(error.to_string()))?
+                ),
+            )
+            .await?;
+        let parsed = parse_json_relaxed::<RerankPayload>(&payload)?;
+        if parsed.scores.len() != documents.len() {
+            return Err(crate::MemoryError::invalid(format!(
+                "rerank service returned {} scores for {} candidates",
+                parsed.scores.len(),
+                documents.len()
+            )));
+        }
+        Ok(parsed.scores)
+    }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct QueryExpansionPayload {
+    #[serde(default)]
+    queries: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct RerankPayload {
+    #[serde(default)]
+    scores: Vec<f64>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct PersistedChunkEmbedding {
     chunk_id: String,
@@ -143,10 +319,44 @@ struct CachedMemoryEmbedIndex {
     chunks: BTreeMap<String, PersistedChunkEmbedding>,
 }
 
+#[derive(Clone, Debug)]
+struct WeightedQuery {
+    text: String,
+    weight: f64,
+    is_original: bool,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum RankedStreamKind {
+    Lexical,
+    Vector,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct RerankDocument {
+    title: String,
+    path: String,
+    text: String,
+}
+
+#[derive(Clone, Debug)]
+struct CandidateAccumulator {
+    chunk: crate::MemoryCorpusChunk,
+    title: String,
+    lexical_score: f64,
+    vector_score: f64,
+    retrieval_score: f64,
+    final_score: f64,
+    rerank_score: Option<f64>,
+    matched_streams: usize,
+}
+
 pub struct MemoryEmbedBackend {
     workspace_root: PathBuf,
     config: MemoryEmbedConfig,
     client: Arc<dyn EmbeddingClient>,
+    query_expander: Option<Arc<dyn QueryExpansionClient>>,
+    reranker: Option<Arc<dyn RerankClient>>,
     state: RwLock<Option<CachedMemoryEmbedIndex>>,
 }
 
@@ -161,8 +371,21 @@ impl MemoryEmbedBackend {
             workspace_root,
             config,
             client,
+            query_expander: None,
+            reranker: None,
             state: RwLock::new(None),
         }
+    }
+
+    #[must_use]
+    pub fn with_optional_clients(
+        mut self,
+        query_expander: Option<Arc<dyn QueryExpansionClient>>,
+        reranker: Option<Arc<dyn RerankClient>>,
+    ) -> Self {
+        self.query_expander = query_expander;
+        self.reranker = reranker;
+        self
     }
 
     pub fn from_http_config(workspace_root: PathBuf, config: MemoryEmbedConfig) -> Result<Self> {
@@ -170,11 +393,24 @@ impl MemoryEmbedBackend {
             .embedding
             .clone()
             .ok_or_else(|| crate::MemoryError::invalid("memory-embed requires embedding config"))?;
+        let query_expander = config
+            .query_expansion
+            .as_ref()
+            .map(HttpQueryExpansionClient::from_config)
+            .transpose()?
+            .map(|client| Arc::new(client) as Arc<dyn QueryExpansionClient>);
+        let reranker = config
+            .rerank
+            .as_ref()
+            .map(HttpRerankClient::from_config)
+            .transpose()?
+            .map(|client| Arc::new(client) as Arc<dyn RerankClient>);
         Ok(Self::new(
             workspace_root,
             config,
             Arc::new(HttpEmbeddingClient::from_config(&embedding)?),
-        ))
+        )
+        .with_optional_clients(query_expander, reranker))
     }
 
     async fn ensure_chunk_index(
@@ -182,8 +418,6 @@ impl MemoryEmbedBackend {
         corpus: &crate::MemoryCorpus,
         chunks: &[crate::MemoryCorpusChunk],
     ) -> Result<CachedMemoryEmbedIndex> {
-        // The persisted cache is keyed by chunk identity, not file path alone, so a restart can
-        // reuse previous embeddings while content changes still invalidate the affected windows.
         let mut cached =
             if let Some(index) = self.state.read().expect("memory-embed read lock").clone() {
                 index
@@ -201,6 +435,7 @@ impl MemoryEmbedBackend {
         let snapshots_changed = cached.document_snapshots != current_snapshots;
         let mut changed = fingerprint_changed || snapshots_changed;
         changed |= self.trim_cached_chunks(chunks, &mut cached);
+        let titles = document_titles(corpus);
         let missing = chunks
             .iter()
             .filter(|chunk| !cached.chunks.contains_key(&chunk_id(chunk)))
@@ -208,7 +443,7 @@ impl MemoryEmbedBackend {
             .collect::<Vec<_>>();
 
         if !missing.is_empty() {
-            for entry in self.embed_missing_chunks(&missing).await? {
+            for entry in self.embed_missing_chunks(&missing, &titles).await? {
                 cached.chunks.insert(entry.chunk_id.clone(), entry);
             }
             changed = true;
@@ -236,7 +471,7 @@ impl MemoryEmbedBackend {
         if persisted.backend != INDEX_BACKEND_ID {
             return Ok(CachedMemoryEmbedIndex::default());
         }
-        if persisted.schema_version != 0 && persisted.schema_version != INDEX_SCHEMA_VERSION {
+        if persisted.schema_version != INDEX_SCHEMA_VERSION {
             return Ok(CachedMemoryEmbedIndex::default());
         }
         Ok(CachedMemoryEmbedIndex {
@@ -266,6 +501,7 @@ impl MemoryEmbedBackend {
     async fn embed_missing_chunks(
         &self,
         missing: &[crate::MemoryCorpusChunk],
+        titles: &BTreeMap<String, String>,
     ) -> Result<Vec<PersistedChunkEmbedding>> {
         if missing.is_empty() {
             return Ok(Vec::new());
@@ -276,23 +512,23 @@ impl MemoryEmbedBackend {
             .as_ref()
             .map(|embedding| embedding.batch_size.max(1))
             .unwrap_or(16);
+        let model = self.embedding_model();
         let mut entries = Vec::with_capacity(missing.len());
         for group in missing.chunks(batch_size) {
             let texts = group
                 .iter()
-                .map(|chunk| chunk.text.clone())
+                .map(|chunk| {
+                    format_document_embedding_input(
+                        model,
+                        titles
+                            .get(&chunk.path)
+                            .map(String::as_str)
+                            .unwrap_or("Memory"),
+                        &chunk.text,
+                    )
+                })
                 .collect::<Vec<_>>();
-            let embeddings = self
-                .client
-                .embed(
-                    self.config
-                        .embedding
-                        .as_ref()
-                        .map(|cfg| cfg.model.as_str())
-                        .unwrap_or(""),
-                    &texts,
-                )
-                .await?;
+            let embeddings = self.client.embed(model, &texts).await?;
             if embeddings.len() != group.len() {
                 return Err(crate::MemoryError::invalid(format!(
                     "embedding service returned {} vectors for {} chunks",
@@ -386,6 +622,186 @@ impl MemoryEmbedBackend {
                 .join(".agent-core/memory/memory-embed.json")
         })
     }
+
+    fn embedding_model(&self) -> &str {
+        self.config
+            .embedding
+            .as_ref()
+            .map(|config| config.model.as_str())
+            .unwrap_or("")
+    }
+
+    async fn expand_queries(&self, query: &str) -> (Vec<WeightedQuery>, bool, bool) {
+        let Some(config) = self.config.query_expansion.as_ref() else {
+            return (
+                vec![WeightedQuery {
+                    text: query.to_string(),
+                    weight: 1.0,
+                    is_original: true,
+                }],
+                false,
+                false,
+            );
+        };
+        if config.variants == 0 || self.query_expander.is_none() {
+            return (
+                vec![WeightedQuery {
+                    text: query.to_string(),
+                    weight: 1.0,
+                    is_original: true,
+                }],
+                false,
+                false,
+            );
+        }
+        let result = self
+            .query_expander
+            .as_ref()
+            .expect("query expander checked above")
+            .expand(&config.service.model, query, config.variants)
+            .await;
+        match result {
+            Ok(expansions) => {
+                let mut seen = BTreeSet::from([normalize_query(query)]);
+                let mut weighted = Vec::new();
+                let mut unique_expansions = Vec::new();
+                for expansion in expansions {
+                    let normalized = normalize_query(&expansion);
+                    if normalized.is_empty() || !seen.insert(normalized) {
+                        continue;
+                    }
+                    unique_expansions.push(expansion.trim().to_string());
+                }
+                weighted.push(WeightedQuery {
+                    text: query.to_string(),
+                    weight: if unique_expansions.is_empty() {
+                        1.0
+                    } else {
+                        2.0
+                    },
+                    is_original: true,
+                });
+                weighted.extend(unique_expansions.into_iter().map(|text| WeightedQuery {
+                    text,
+                    weight: 1.0,
+                    is_original: false,
+                }));
+                let expansion_used = weighted.len() > 1;
+                (weighted, expansion_used, false)
+            }
+            Err(_) => (
+                vec![WeightedQuery {
+                    text: query.to_string(),
+                    weight: 1.0,
+                    is_original: true,
+                }],
+                false,
+                true,
+            ),
+        }
+    }
+
+    async fn embed_query_vectors(
+        &self,
+        weighted_queries: &[WeightedQuery],
+    ) -> Result<BTreeMap<String, Vec<f32>>> {
+        let unique_queries = weighted_queries
+            .iter()
+            .map(|weighted| weighted.text.clone())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        if unique_queries.is_empty() {
+            return Ok(BTreeMap::new());
+        }
+        let model = self.embedding_model();
+        let payloads = unique_queries
+            .iter()
+            .map(|query| format_query_embedding_input(model, query))
+            .collect::<Vec<_>>();
+        let embeddings = self.client.embed(model, &payloads).await?;
+        if embeddings.len() != unique_queries.len() {
+            return Err(crate::MemoryError::invalid(format!(
+                "embedding service returned {} vectors for {} query variants",
+                embeddings.len(),
+                unique_queries.len()
+            )));
+        }
+        Ok(unique_queries
+            .into_iter()
+            .zip(embeddings.into_iter())
+            .collect())
+    }
+
+    fn candidate_limit(&self, requested_limit: usize) -> usize {
+        let expanded_limit = requested_limit
+            .max(1)
+            .saturating_mul(self.config.hybrid.candidate_multiplier.max(1));
+        expanded_limit.max(self.config.hybrid.rerank_top_k.max(1))
+    }
+
+    async fn maybe_rerank(
+        &self,
+        query: &str,
+        mut candidates: Vec<CandidateAccumulator>,
+    ) -> Result<(Vec<CandidateAccumulator>, bool, bool)> {
+        for candidate in &mut candidates {
+            candidate.final_score = candidate.retrieval_score;
+        }
+        let Some(config) = self.config.rerank.as_ref() else {
+            return Ok((candidates, false, false));
+        };
+        let Some(reranker) = self.reranker.as_ref() else {
+            return Ok((candidates, false, false));
+        };
+        if candidates.is_empty() {
+            return Ok((candidates, false, false));
+        }
+
+        let rerank_limit = self.config.hybrid.rerank_top_k.max(1).min(candidates.len());
+        let mut rerank_pool = candidates
+            .iter()
+            .take(rerank_limit)
+            .cloned()
+            .collect::<Vec<_>>();
+        let documents = rerank_pool
+            .iter()
+            .map(|candidate| RerankDocument {
+                title: candidate.title.clone(),
+                path: candidate.chunk.path.clone(),
+                text: candidate.chunk.text.clone(),
+            })
+            .collect::<Vec<_>>();
+
+        let rerank_scores = match reranker
+            .rerank(&config.service.model, query, &documents)
+            .await
+        {
+            Ok(scores) => scores,
+            Err(_) => return Ok((candidates, false, true)),
+        };
+        if rerank_scores.len() != rerank_pool.len() {
+            return Ok((candidates, false, true));
+        }
+        let max_retrieval = rerank_pool
+            .iter()
+            .map(|candidate| candidate.retrieval_score)
+            .fold(0.0f64, f64::max)
+            .max(f64::EPSILON);
+        for (position, (candidate, rerank_score)) in rerank_pool
+            .iter_mut()
+            .zip(rerank_scores.into_iter())
+            .enumerate()
+        {
+            let normalized_retrieval = candidate.retrieval_score / max_retrieval;
+            let (retrieval_weight, rerank_weight) = rerank_blend_weights(position);
+            let clamped_rerank = rerank_score.clamp(0.0, 1.0);
+            candidate.rerank_score = Some(clamped_rerank);
+            candidate.final_score =
+                (normalized_retrieval * retrieval_weight) + (clamped_rerank * rerank_weight);
+        }
+        Ok((rerank_pool, true, false))
+    }
 }
 
 #[async_trait]
@@ -411,74 +827,117 @@ impl MemoryBackend for MemoryEmbedBackend {
             .min(50);
         let prefix = req.path_prefix.map(|value| value.trim().to_string());
         let cached = self.ensure_chunk_index(&corpus, &chunks).await?;
-        let query_embedding = self
-            .client
-            .embed(
-                self.config
-                    .embedding
-                    .as_ref()
-                    .map(|cfg| cfg.model.as_str())
-                    .unwrap_or(""),
-                &[req.query.clone()],
-            )
-            .await;
-        let (query_vector, fallback_used) = match query_embedding {
-            Ok(mut embeddings) if embeddings.len() == 1 => (embeddings.pop(), false),
-            _ => (None, true),
+        let titles = document_titles(&corpus);
+        let filtered_chunks = chunks
+            .iter()
+            .filter(|chunk| {
+                prefix
+                    .as_deref()
+                    .is_none_or(|path_prefix| chunk.path.starts_with(path_prefix))
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        let chunk_map = filtered_chunks
+            .iter()
+            .cloned()
+            .map(|chunk| (chunk_id(&chunk), chunk))
+            .collect::<BTreeMap<_, _>>();
+
+        let (weighted_queries, expansion_used, expansion_fallback) =
+            self.expand_queries(&req.query).await;
+        let query_vectors = self.embed_query_vectors(&weighted_queries).await.ok();
+        let fallback_used = query_vectors.is_none();
+        let vector_weight = if fallback_used {
+            0.0
+        } else {
+            self.config.hybrid.vector_weight.max(0.0)
         };
+        let text_weight = if fallback_used {
+            1.0
+        } else {
+            self.config.hybrid.text_weight.max(0.0)
+        };
+        let candidate_limit = self.candidate_limit(limit);
+        let mut candidates = BTreeMap::<String, CandidateAccumulator>::new();
 
-        let mut hits = Vec::new();
-        let vector_weight = self.config.hybrid.vector_weight.max(0.0);
-        let text_weight = self.config.hybrid.text_weight.max(0.0);
-        let weight_sum = (vector_weight + text_weight).max(f64::EPSILON);
-
-        for chunk in &chunks {
-            if let Some(prefix) = prefix.as_deref()
-                && !chunk.path.starts_with(prefix)
+        for weighted_query in &weighted_queries {
+            let lexical_ranked =
+                ranked_lexical_list(&filtered_chunks, &weighted_query.text, candidate_limit);
+            apply_ranked_list(
+                &mut candidates,
+                &chunk_map,
+                &titles,
+                lexical_ranked,
+                RankedStreamKind::Lexical,
+                weighted_query,
+                text_weight,
+                &self.config,
+            );
+            if let Some(query_vectors) = query_vectors.as_ref()
+                && let Some(query_vector) = query_vectors.get(&weighted_query.text)
             {
-                continue;
+                let vector_ranked =
+                    ranked_vector_list(&filtered_chunks, &cached, query_vector, candidate_limit);
+                apply_ranked_list(
+                    &mut candidates,
+                    &chunk_map,
+                    &titles,
+                    vector_ranked,
+                    RankedStreamKind::Vector,
+                    weighted_query,
+                    vector_weight,
+                    &self.config,
+                );
             }
-            let lexical = lexical_score(&req.query, &chunk.text);
-            let vector = match (&query_vector, cached.chunks.get(&chunk_id(chunk))) {
-                (Some(query), Some(entry)) => cosine_similarity(query, &entry.embedding),
-                _ => 0.0,
-            };
-            let score = if fallback_used {
-                lexical
-            } else {
-                ((vector_weight * vector) + (text_weight * lexical)) / weight_sum
-            };
-            if score <= 0.0 {
-                continue;
-            }
-            let mut metadata = BTreeMap::new();
-            metadata.insert("lexical_score".to_string(), json!(lexical));
-            metadata.insert("vector_score".to_string(), json!(vector));
-            if let Some(embedding) = &self.config.embedding {
-                metadata.insert("model".to_string(), json!(embedding.model));
-                metadata.insert("provider".to_string(), json!(embedding.provider));
-            }
-            metadata.insert("snapshot_id".to_string(), json!(chunk.snapshot_id));
-            hits.push(MemorySearchHit {
-                hit_id: format!("{}:{}", chunk.path, chunk.start_line),
-                path: chunk.path.clone(),
-                start_line: chunk.start_line,
-                end_line: chunk.end_line,
-                score,
-                snippet: render_embed_snippet(&chunk.text, self.config.search.max_snippet_chars),
-                metadata,
-            });
         }
 
-        hits.sort_by(|left, right| {
-            right
-                .score
-                .partial_cmp(&left.score)
-                .unwrap_or(Ordering::Equal)
-                .then_with(|| left.path.cmp(&right.path))
-                .then_with(|| left.start_line.cmp(&right.start_line))
-        });
-        hits.truncate(limit);
+        let mut ranked = candidates.into_values().collect::<Vec<_>>();
+        ranked.sort_by(compare_candidates_by_retrieval);
+        let (mut ranked, rerank_used, rerank_fallback) =
+            self.maybe_rerank(&req.query, ranked).await?;
+        ranked.sort_by(compare_candidates_by_final_score);
+        ranked.truncate(limit);
+
+        let hits = ranked
+            .into_iter()
+            .map(|candidate| {
+                let mut metadata = BTreeMap::new();
+                metadata.insert("lexical_score".to_string(), json!(candidate.lexical_score));
+                metadata.insert("vector_score".to_string(), json!(candidate.vector_score));
+                metadata.insert(
+                    "retrieval_score".to_string(),
+                    json!(candidate.retrieval_score),
+                );
+                metadata.insert(
+                    "matched_streams".to_string(),
+                    json!(candidate.matched_streams),
+                );
+                if let Some(rerank_score) = candidate.rerank_score {
+                    metadata.insert("rerank_score".to_string(), json!(rerank_score));
+                }
+                if let Some(embedding) = &self.config.embedding {
+                    metadata.insert("model".to_string(), json!(embedding.model));
+                    metadata.insert("provider".to_string(), json!(embedding.provider));
+                }
+                metadata.insert(
+                    "snapshot_id".to_string(),
+                    json!(candidate.chunk.snapshot_id),
+                );
+                metadata.insert("title".to_string(), json!(candidate.title));
+                MemorySearchHit {
+                    hit_id: format!("{}:{}", candidate.chunk.path, candidate.chunk.start_line),
+                    path: candidate.chunk.path.clone(),
+                    start_line: candidate.chunk.start_line,
+                    end_line: candidate.chunk.end_line,
+                    score: candidate.final_score,
+                    snippet: render_embed_snippet(
+                        &candidate.chunk.text,
+                        self.config.search.max_snippet_chars,
+                    ),
+                    metadata,
+                }
+            })
+            .collect::<Vec<_>>();
 
         let mut metadata = BTreeMap::new();
         metadata.insert(
@@ -487,6 +946,12 @@ impl MemoryBackend for MemoryEmbedBackend {
         );
         metadata.insert("cached_chunks".to_string(), json!(cached.chunks.len()));
         metadata.insert("fallback_used".to_string(), json!(fallback_used));
+        metadata.insert("expansion_used".to_string(), json!(expansion_used));
+        metadata.insert("expansion_fallback".to_string(), json!(expansion_fallback));
+        metadata.insert("query_variants".to_string(), json!(weighted_queries.len()));
+        metadata.insert("candidate_limit".to_string(), json!(candidate_limit));
+        metadata.insert("rerank_used".to_string(), json!(rerank_used));
+        metadata.insert("rerank_fallback".to_string(), json!(rerank_fallback));
         metadata.insert(
             "index_path".to_string(),
             json!(self.index_path().to_string_lossy().to_string()),
@@ -510,9 +975,122 @@ impl MemoryBackend for MemoryEmbedBackend {
     }
 }
 
+fn http_client_from_service_parts(
+    api_key: Option<&str>,
+    headers: &BTreeMap<String, String>,
+    timeout_ms: u64,
+) -> Result<reqwest::Client> {
+    let mut default_headers = HeaderMap::new();
+    default_headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    if let Some(api_key) = api_key {
+        default_headers.insert(
+            AUTHORIZATION,
+            HeaderValue::from_str(&format!("Bearer {api_key}"))
+                .map_err(|error| crate::MemoryError::invalid(error.to_string()))?,
+        );
+    }
+    for (key, value) in headers {
+        default_headers.insert(
+            HeaderName::from_bytes(key.as_bytes())
+                .map_err(|error| crate::MemoryError::invalid(error.to_string()))?,
+            HeaderValue::from_str(value)
+                .map_err(|error| crate::MemoryError::invalid(error.to_string()))?,
+        );
+    }
+    reqwest::Client::builder()
+        .timeout(std::time::Duration::from_millis(timeout_ms))
+        .default_headers(default_headers)
+        .build()
+        .map_err(|error| crate::MemoryError::invalid(error.to_string()))
+}
+
+fn extract_chat_content(content: &Value) -> Option<String> {
+    match content {
+        Value::String(value) => Some(value.clone()),
+        Value::Array(items) => {
+            let text = items
+                .iter()
+                .filter_map(|item| match item {
+                    Value::Object(map) => map.get("text").and_then(Value::as_str),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("");
+            (!text.is_empty()).then_some(text)
+        }
+        Value::Object(map) => map
+            .get("text")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned),
+        _ => None,
+    }
+}
+
+fn parse_json_relaxed<T: DeserializeOwned>(raw: &str) -> Result<T> {
+    serde_json::from_str(raw).or_else(|_| {
+        extract_json_candidate(raw)
+            .ok_or_else(|| crate::MemoryError::invalid("response did not contain JSON"))
+            .and_then(|candidate| serde_json::from_str(candidate).map_err(Into::into))
+    })
+}
+
+fn extract_json_candidate(raw: &str) -> Option<&str> {
+    let object = raw
+        .find('{')
+        .zip(raw.rfind('}'))
+        .map(|(start, end)| &raw[start..=end]);
+    let array = raw
+        .find('[')
+        .zip(raw.rfind(']'))
+        .map(|(start, end)| &raw[start..=end]);
+    object.or(array)
+}
+
+fn normalize_query(value: &str) -> String {
+    value.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn format_query_embedding_input(model: &str, query: &str) -> String {
+    match embedding_prompt_style(model) {
+        EmbeddingPromptStyle::Plain => query.to_string(),
+        EmbeddingPromptStyle::EmbeddingGemma => {
+            format!("task: search result | query: {}", query.trim())
+        }
+        EmbeddingPromptStyle::Qwen3 => format!(
+            "Instruct: Given a search query, retrieve relevant passages that answer the query\nQuery: {}",
+            query.trim()
+        ),
+    }
+}
+
+fn format_document_embedding_input(model: &str, title: &str, text: &str) -> String {
+    match embedding_prompt_style(model) {
+        EmbeddingPromptStyle::Plain | EmbeddingPromptStyle::Qwen3 => text.to_string(),
+        EmbeddingPromptStyle::EmbeddingGemma => {
+            format!("title: {} | text: {}", title.trim(), text.trim())
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum EmbeddingPromptStyle {
+    Plain,
+    EmbeddingGemma,
+    Qwen3,
+}
+
+fn embedding_prompt_style(model: &str) -> EmbeddingPromptStyle {
+    let normalized = model.to_ascii_lowercase();
+    if normalized.contains("embeddinggemma") {
+        EmbeddingPromptStyle::EmbeddingGemma
+    } else if normalized.contains("qwen3-embedding") {
+        EmbeddingPromptStyle::Qwen3
+    } else {
+        EmbeddingPromptStyle::Plain
+    }
+}
+
 fn chunk_id(chunk: &crate::MemoryCorpusChunk) -> String {
-    // Chunk ids must be deterministic across process restarts so the on-disk cache can reuse
-    // embeddings, but they also need to incorporate the snapshot boundary to invalidate edits.
     let mut digest = Sha256::new();
     digest.update(chunk.path.as_bytes());
     digest.update(b":");
@@ -521,11 +1099,7 @@ fn chunk_id(chunk: &crate::MemoryCorpusChunk) -> String {
     digest.update(chunk.start_line.to_string().as_bytes());
     digest.update(b":");
     digest.update(chunk.end_line.to_string().as_bytes());
-    let output = digest.finalize();
-    output[..12]
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>()
+    stable_digest(&digest.finalize())
 }
 
 fn document_snapshots(corpus: &crate::MemoryCorpus) -> BTreeMap<String, String> {
@@ -536,12 +1110,174 @@ fn document_snapshots(corpus: &crate::MemoryCorpus) -> BTreeMap<String, String> 
         .collect()
 }
 
+fn document_titles(corpus: &crate::MemoryCorpus) -> BTreeMap<String, String> {
+    corpus
+        .documents
+        .iter()
+        .map(|document| (document.path.clone(), document_title(document)))
+        .collect()
+}
+
+fn document_title(document: &crate::MemoryCorpusDocument) -> String {
+    document
+        .lines
+        .iter()
+        .find_map(|line| line.strip_prefix('#').map(str::trim))
+        .filter(|title| !title.is_empty())
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| {
+            document
+                .path
+                .rsplit('/')
+                .next()
+                .unwrap_or("Memory")
+                .trim_end_matches(".md")
+                .to_string()
+        })
+}
+
 fn stable_digest(value: &[u8]) -> String {
     let digest = Sha256::digest(value);
     digest[..12]
         .iter()
         .map(|byte| format!("{byte:02x}"))
-        .collect()
+        .collect::<String>()
+}
+
+fn ranked_lexical_list(
+    chunks: &[crate::MemoryCorpusChunk],
+    query: &str,
+    limit: usize,
+) -> Vec<(String, f64)> {
+    let mut ranked = chunks
+        .iter()
+        .filter_map(|chunk| {
+            let score = lexical_score(query, &chunk.text);
+            (score > 0.0).then(|| (chunk_id(chunk), score))
+        })
+        .collect::<Vec<_>>();
+    ranked.sort_by(compare_ranked_score);
+    ranked.truncate(limit);
+    ranked
+}
+
+fn ranked_vector_list(
+    chunks: &[crate::MemoryCorpusChunk],
+    cached: &CachedMemoryEmbedIndex,
+    query_vector: &[f32],
+    limit: usize,
+) -> Vec<(String, f64)> {
+    let mut ranked = chunks
+        .iter()
+        .filter_map(|chunk| {
+            let score = cached
+                .chunks
+                .get(&chunk_id(chunk))
+                .map(|entry| cosine_similarity(query_vector, &entry.embedding))
+                .unwrap_or(0.0);
+            (score > 0.0).then(|| (chunk_id(chunk), score))
+        })
+        .collect::<Vec<_>>();
+    ranked.sort_by(compare_ranked_score);
+    ranked.truncate(limit);
+    ranked
+}
+
+fn compare_ranked_score(left: &(String, f64), right: &(String, f64)) -> Ordering {
+    right
+        .1
+        .partial_cmp(&left.1)
+        .unwrap_or(Ordering::Equal)
+        .then_with(|| left.0.cmp(&right.0))
+}
+
+fn apply_ranked_list(
+    candidates: &mut BTreeMap<String, CandidateAccumulator>,
+    chunk_map: &BTreeMap<String, crate::MemoryCorpusChunk>,
+    titles: &BTreeMap<String, String>,
+    ranked: Vec<(String, f64)>,
+    stream_kind: RankedStreamKind,
+    weighted_query: &WeightedQuery,
+    stream_weight: f64,
+    config: &MemoryEmbedConfig,
+) {
+    if stream_weight <= 0.0 {
+        return;
+    }
+    for (rank, (chunk_id, score)) in ranked.into_iter().enumerate() {
+        let Some(chunk) = chunk_map.get(&chunk_id) else {
+            continue;
+        };
+        let entry = candidates
+            .entry(chunk_id.clone())
+            .or_insert_with(|| CandidateAccumulator {
+                chunk: chunk.clone(),
+                title: titles
+                    .get(&chunk.path)
+                    .cloned()
+                    .unwrap_or_else(|| "Memory".to_string()),
+                lexical_score: 0.0,
+                vector_score: 0.0,
+                retrieval_score: 0.0,
+                final_score: 0.0,
+                rerank_score: None,
+                matched_streams: 0,
+            });
+        match stream_kind {
+            RankedStreamKind::Lexical => entry.lexical_score = entry.lexical_score.max(score),
+            RankedStreamKind::Vector => entry.vector_score = entry.vector_score.max(score),
+        }
+        entry.matched_streams += 1;
+        entry.retrieval_score +=
+            (weighted_query.weight * stream_weight) / (config.hybrid.rrf_k + rank + 1) as f64;
+        if weighted_query.is_original {
+            if rank == 0 {
+                entry.retrieval_score += config.hybrid.top_rank_bonus_first;
+            } else if rank < 3 {
+                entry.retrieval_score += config.hybrid.top_rank_bonus_other;
+            }
+        }
+    }
+}
+
+fn compare_candidates_by_retrieval(
+    left: &CandidateAccumulator,
+    right: &CandidateAccumulator,
+) -> Ordering {
+    right
+        .retrieval_score
+        .partial_cmp(&left.retrieval_score)
+        .unwrap_or(Ordering::Equal)
+        .then_with(|| left.chunk.path.cmp(&right.chunk.path))
+        .then_with(|| left.chunk.start_line.cmp(&right.chunk.start_line))
+}
+
+fn compare_candidates_by_final_score(
+    left: &CandidateAccumulator,
+    right: &CandidateAccumulator,
+) -> Ordering {
+    right
+        .final_score
+        .partial_cmp(&left.final_score)
+        .unwrap_or(Ordering::Equal)
+        .then_with(|| {
+            right
+                .retrieval_score
+                .partial_cmp(&left.retrieval_score)
+                .unwrap_or(Ordering::Equal)
+        })
+        .then_with(|| left.chunk.path.cmp(&right.chunk.path))
+        .then_with(|| left.chunk.start_line.cmp(&right.chunk.start_line))
+}
+
+fn rerank_blend_weights(position: usize) -> (f64, f64) {
+    if position < 3 {
+        (0.75, 0.25)
+    } else if position < 10 {
+        (0.60, 0.40)
+    } else {
+        (0.40, 0.60)
+    }
 }
 
 fn cosine_similarity(left: &[f32], right: &[f32]) -> f64 {
@@ -578,9 +1314,16 @@ fn render_embed_snippet(text: &str, max_chars: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{EmbeddingClient, MemoryEmbedBackend};
-    use crate::{EmbeddingConfig, MemoryBackend, MemoryEmbedConfig, MemorySearchRequest};
+    use super::{
+        EmbeddingClient, MemoryEmbedBackend, QueryExpansionClient, RerankClient, RerankDocument,
+        format_document_embedding_input, format_query_embedding_input, rerank_blend_weights,
+    };
+    use crate::{
+        EmbeddingConfig, MemoryBackend, MemoryEmbedConfig, MemorySearchRequest,
+        QueryExpansionConfig, RerankConfig, config::LlmServiceConfig,
+    };
     use async_trait::async_trait;
+    use serde_json::Value;
     use std::collections::BTreeMap;
     use std::sync::{Arc, Mutex};
     use tempfile::tempdir;
@@ -588,23 +1331,59 @@ mod tests {
 
     #[derive(Default)]
     struct MockEmbeddingClient {
-        calls: Mutex<Vec<usize>>,
+        calls: Mutex<Vec<Vec<String>>>,
     }
 
     #[async_trait]
     impl EmbeddingClient for MockEmbeddingClient {
         async fn embed(&self, _model: &str, texts: &[String]) -> crate::Result<Vec<Vec<f32>>> {
-            self.calls.lock().unwrap().push(texts.len());
+            self.calls.lock().unwrap().push(texts.to_vec());
             Ok(texts
                 .iter()
                 .map(|text| {
-                    if text.contains("semantic") || text.contains("query") {
+                    if text.contains("semantic")
+                        || text.contains("query")
+                        || text.contains("canary")
+                        || text.contains("phased rollout")
+                    {
                         vec![1.0, 0.0]
                     } else {
                         vec![0.0, 1.0]
                     }
                 })
                 .collect())
+        }
+    }
+
+    struct FixedQueryExpansionClient {
+        variants: Vec<String>,
+    }
+
+    #[async_trait]
+    impl QueryExpansionClient for FixedQueryExpansionClient {
+        async fn expand(
+            &self,
+            _model: &str,
+            _query: &str,
+            _variants: usize,
+        ) -> crate::Result<Vec<String>> {
+            Ok(self.variants.clone())
+        }
+    }
+
+    struct FixedRerankClient {
+        scores: Vec<f64>,
+    }
+
+    #[async_trait]
+    impl RerankClient for FixedRerankClient {
+        async fn rerank(
+            &self,
+            _model: &str,
+            _query: &str,
+            _documents: &[RerankDocument],
+        ) -> crate::Result<Vec<f64>> {
+            Ok(self.scores.clone())
         }
     }
 
@@ -658,12 +1437,13 @@ mod tests {
             MemoryEmbedBackend::new(dir.path().to_path_buf(), config.clone(), client.clone());
         backend.sync().await.unwrap();
         let first_calls = client.calls.lock().unwrap().clone();
-        assert_eq!(first_calls, vec![1]);
+        assert_eq!(first_calls.len(), 1);
+        assert_eq!(first_calls[0].len(), 1);
 
         let backend = MemoryEmbedBackend::new(dir.path().to_path_buf(), config, client.clone());
         backend.sync().await.unwrap();
         let second_calls = client.calls.lock().unwrap().clone();
-        assert_eq!(second_calls, vec![1]);
+        assert_eq!(second_calls.len(), 1);
     }
 
     #[tokio::test]
@@ -678,7 +1458,7 @@ mod tests {
         let backend =
             MemoryEmbedBackend::new(dir.path().to_path_buf(), config.clone(), client.clone());
         backend.sync().await.unwrap();
-        assert_eq!(client.calls.lock().unwrap().clone(), vec![1]);
+        assert_eq!(client.calls.lock().unwrap().len(), 1);
 
         fs::create_dir_all(dir.path().join("memory")).await.unwrap();
         fs::write(dir.path().join("memory/new.md"), "semantic beta")
@@ -687,7 +1467,7 @@ mod tests {
 
         let restarted = MemoryEmbedBackend::new(dir.path().to_path_buf(), config, client.clone());
         restarted.sync().await.unwrap();
-        assert_eq!(client.calls.lock().unwrap().clone(), vec![1, 1]);
+        assert_eq!(client.calls.lock().unwrap().len(), 2);
     }
 
     #[tokio::test]
@@ -718,6 +1498,113 @@ mod tests {
 
         let backend = MemoryEmbedBackend::new(dir.path().to_path_buf(), config, client.clone());
         backend.sync().await.unwrap();
-        assert_eq!(client.calls.lock().unwrap().clone(), vec![2, 2, 1]);
+        let calls = client.calls.lock().unwrap().clone();
+        assert_eq!(
+            calls.iter().map(Vec::len).collect::<Vec<_>>(),
+            vec![2, 2, 1]
+        );
+    }
+
+    #[tokio::test]
+    async fn qmd_query_expansion_and_rerank_can_flip_top_candidate() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("MEMORY.md"), "canary deploy checklist")
+            .await
+            .unwrap();
+        fs::create_dir_all(dir.path().join("memory")).await.unwrap();
+        fs::write(
+            dir.path().join("memory/rollout.md"),
+            "phased rollout plan for production",
+        )
+        .await
+        .unwrap();
+
+        let client = Arc::new(MockEmbeddingClient::default());
+        let config = MemoryEmbedConfig {
+            query_expansion: Some(QueryExpansionConfig {
+                service: LlmServiceConfig {
+                    provider: "mock".to_string(),
+                    model: "mock-expander".to_string(),
+                    base_url: None,
+                    api_key: None,
+                    headers: BTreeMap::new(),
+                    timeout_ms: 30_000,
+                },
+                variants: 1,
+            }),
+            rerank: Some(RerankConfig {
+                service: LlmServiceConfig {
+                    provider: "mock".to_string(),
+                    model: "mock-reranker".to_string(),
+                    base_url: None,
+                    api_key: None,
+                    headers: BTreeMap::new(),
+                    timeout_ms: 30_000,
+                },
+            }),
+            ..MemoryEmbedConfig::default()
+        };
+        let backend = MemoryEmbedBackend::new(dir.path().to_path_buf(), config, client)
+            .with_optional_clients(
+                Some(Arc::new(FixedQueryExpansionClient {
+                    variants: vec!["phased rollout".to_string()],
+                })),
+                Some(Arc::new(FixedRerankClient {
+                    scores: vec![0.0, 1.0],
+                })),
+            );
+
+        let response = backend
+            .search(MemorySearchRequest {
+                query: "canary deploy".to_string(),
+                limit: Some(2),
+                path_prefix: None,
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(response.hits.len(), 2);
+        assert_eq!(response.hits[0].path, "memory/rollout.md");
+        assert_eq!(
+            response
+                .metadata
+                .get("expansion_used")
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            response
+                .metadata
+                .get("rerank_used")
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn qmd_embedding_prompt_formats_match_model_family() {
+        assert_eq!(
+            format_query_embedding_input("embeddinggemma-300m", "redis failover"),
+            "task: search result | query: redis failover"
+        );
+        assert_eq!(
+            format_document_embedding_input(
+                "embeddinggemma-300m",
+                "Memory",
+                "semantic recall target"
+            ),
+            "title: Memory | text: semantic recall target"
+        );
+        assert!(
+            format_query_embedding_input("Qwen3-Embedding-0.6B", "redis failover")
+                .starts_with("Instruct: Given a search query")
+        );
+    }
+
+    #[test]
+    fn rerank_blending_preserves_retrieval_priority_near_top() {
+        assert_eq!(rerank_blend_weights(0), (0.75, 0.25));
+        assert_eq!(rerank_blend_weights(5), (0.60, 0.40));
+        assert_eq!(rerank_blend_weights(12), (0.40, 0.60));
     }
 }

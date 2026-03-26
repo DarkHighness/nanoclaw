@@ -95,12 +95,50 @@ pub struct EmbeddingConfig {
     pub timeout_ms: u64,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LlmServiceConfig {
+    pub provider: String,
+    pub model: String,
+    #[serde(default)]
+    pub base_url: Option<String>,
+    #[serde(default)]
+    pub api_key: Option<String>,
+    #[serde(default)]
+    pub headers: BTreeMap<String, String>,
+    #[serde(default = "default_generation_timeout_ms")]
+    pub timeout_ms: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QueryExpansionConfig {
+    #[serde(flatten)]
+    pub service: LlmServiceConfig,
+    #[serde(default = "default_query_expansion_variants")]
+    pub variants: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RerankConfig {
+    #[serde(flatten)]
+    pub service: LlmServiceConfig,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct HybridWeights {
     #[serde(default = "default_vector_weight")]
     pub vector_weight: f64,
     #[serde(default = "default_text_weight")]
     pub text_weight: f64,
+    #[serde(default = "default_candidate_multiplier")]
+    pub candidate_multiplier: usize,
+    #[serde(default = "default_rrf_k")]
+    pub rrf_k: usize,
+    #[serde(default = "default_top_rank_bonus_first")]
+    pub top_rank_bonus_first: f64,
+    #[serde(default = "default_top_rank_bonus_other")]
+    pub top_rank_bonus_other: f64,
+    #[serde(default = "default_rerank_top_k")]
+    pub rerank_top_k: usize,
 }
 
 impl Default for HybridWeights {
@@ -108,6 +146,11 @@ impl Default for HybridWeights {
         Self {
             vector_weight: default_vector_weight(),
             text_weight: default_text_weight(),
+            candidate_multiplier: default_candidate_multiplier(),
+            rrf_k: default_rrf_k(),
+            top_rank_bonus_first: default_top_rank_bonus_first(),
+            top_rank_bonus_other: default_top_rank_bonus_other(),
+            rerank_top_k: default_rerank_top_k(),
         }
     }
 }
@@ -122,6 +165,10 @@ pub struct MemoryEmbedConfig {
     pub search: MemorySearchConfig,
     #[serde(default)]
     pub embedding: Option<EmbeddingConfig>,
+    #[serde(default)]
+    pub query_expansion: Option<QueryExpansionConfig>,
+    #[serde(default)]
+    pub rerank: Option<RerankConfig>,
     #[serde(default)]
     pub hybrid: HybridWeights,
     #[serde(default)]
@@ -160,12 +207,40 @@ fn default_text_weight() -> f64 {
     0.35
 }
 
+fn default_candidate_multiplier() -> usize {
+    6
+}
+
+fn default_rrf_k() -> usize {
+    60
+}
+
+fn default_top_rank_bonus_first() -> f64 {
+    0.05
+}
+
+fn default_top_rank_bonus_other() -> f64 {
+    0.02
+}
+
+fn default_rerank_top_k() -> usize {
+    30
+}
+
 fn default_embedding_batch_size() -> usize {
     16
 }
 
 fn default_embedding_timeout_ms() -> u64 {
     30_000
+}
+
+fn default_generation_timeout_ms() -> u64 {
+    30_000
+}
+
+fn default_query_expansion_variants() -> usize {
+    1
 }
 
 impl MemoryEmbedConfig {

@@ -353,10 +353,24 @@ provider = "openai-compatible"
 model = "text-embedding-3-small"
 base_url = "https://api.openai.com/v1"
 api_key_env = "OPENAI_API_KEY"
+
+[plugins.entries.memory-embed.config.query_expansion]
+provider = "openai-compatible"
+model = "gpt-4.1-mini"
+api_key_env = "OPENAI_API_KEY"
+variants = 1
+
+[plugins.entries.memory-embed.config.rerank]
+provider = "openai-compatible"
+model = "gpt-4.1-mini"
+api_key_env = "OPENAI_API_KEY"
 ```
 
 This keeps the configuration surface in TOML while still using the shared env-resolution crate for
 secret materialization.
+
+The host resolves `api_key_env` recursively for nested service configs, so `embedding`,
+`query_expansion`, and `rerank` can all stay declarative.
 
 ### Search pipeline
 
@@ -366,10 +380,12 @@ The retrieval pipeline should follow the qmd lesson directly:
 2. compare persisted document snapshots and config fingerprint
 3. lazily sync only missing or invalidated chunk embeddings into the sidecar cache
 4. batch embedding requests by `embedding.batch_size`
-5. embed the query
-6. compute lexical scores for all candidate chunks
-7. merge lexical and vector scores with configured weights
-8. optionally apply rerank or diversity logic later
+5. format embedding payloads according to the embedding model family
+6. optionally expand the query through a service-backed expansion stage
+7. run lexical and vector retrieval in parallel for the original query plus any expansions
+8. fuse ranked lists with weighted Reciprocal Rank Fusion and top-rank bonus
+9. optionally rerank the top candidate window with a service-backed reranker
+10. blend rerank and retrieval scores by position so top exact matches remain sticky
 
 Suggested initial merge config:
 
@@ -377,26 +393,38 @@ Suggested initial merge config:
 [plugins.entries.memory-embed.config.hybrid]
 vector_weight = 0.65
 text_weight = 0.35
-candidate_multiplier = 4
-fallback = "lexical"
+candidate_multiplier = 6
+rrf_k = 60
+top_rank_bonus_first = 0.05
+top_rank_bonus_other = 0.02
+rerank_top_k = 30
 ```
 
 Important behaviors:
 
 - if embedding lookup fails, fall back to lexical search
+- if query expansion fails, continue with the original query only
+- if reranking fails, continue with retrieval-only ordering
 - if a chunk has only lexical or only vector score, it still participates
 - `memory_get` remains fully deterministic because it reads the source file
 
+### Current qmd-aligned features
+
+The implemented slice now includes:
+
+- model-family-aware embedding prompt formatting
+- weighted original-query plus expansion-query retrieval
+- weighted Reciprocal Rank Fusion with top-rank bonus
+- optional service-backed query expansion
+- optional service-backed reranking with position-aware blending
+
 ### Future qmd-aligned features
 
-These should be explicit follow-on work, not hidden in the first slice:
+Follow-on work still worth doing:
 
-- optional reranking
 - optional MMR for duplicate suppression
 - optional indexing of exported session summaries from the run store
 - optional background sync timers
-
-The first implementation only needs hybrid search plus robust fallback.
 
 ## Tool Contract
 
