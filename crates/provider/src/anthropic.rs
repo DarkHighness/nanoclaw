@@ -382,7 +382,7 @@ fn classify_anthropic_error(status: u16, body: &str) -> Result<runtime::RuntimeE
 enum AnthropicBlockState {
     Text,
     ToolUse {
-        id: String,
+        id: ToolCallId,
         name: String,
         input_json: String,
     },
@@ -411,7 +411,7 @@ impl AnthropicBlockState {
                     .get("id")
                     .and_then(Value::as_str)
                     .ok_or_else(|| ProviderError::protocol("Anthropic tool_use block missing id"))?
-                    .to_string(),
+                    .into(),
                 name: block
                     .get("name")
                     .and_then(Value::as_str)
@@ -505,8 +505,8 @@ impl AnthropicBlockState {
                     }
                 });
                 Ok(Some(AnthropicBlockOutput::ToolCall(ToolCall {
-                    id: ToolCallId::from(id.as_str()),
-                    call_id: CallId::from(id.as_str()),
+                    call_id: CallId::from(&id),
+                    id,
                     tool_name: name,
                     arguments,
                     origin,
