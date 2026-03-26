@@ -2,13 +2,11 @@ use crate::annotations::mcp_tool_annotations;
 use crate::registry::Tool;
 use crate::web::common::{
     DEFAULT_HTTP_TIMEOUT_MS, RedirectValidationScope, WebToolPolicy, clamped_search_limit,
-    decode_html_entities, default_http_client, summarize_remote_body, truncate_text,
+    default_http_client, summarize_remote_body, truncate_text,
 };
 use crate::{Result, ToolExecutionContext};
 use agent_env::vars;
 use async_trait::async_trait;
-use quick_xml::Reader;
-use quick_xml::events::{BytesCData, BytesRef, BytesStart, BytesText, Event};
 use reqwest::{Client, Url};
 use schemars::{JsonSchema, schema_for};
 use serde::{Deserialize, Serialize};
@@ -22,8 +20,19 @@ use time::OffsetDateTime;
 use time::format_description::well_known::{Rfc2822, Rfc3339};
 use types::{MessagePart, ToolCallId, ToolOrigin, ToolOutputMode, ToolResult, ToolSpec};
 
+mod engines;
+
+use engines::bing::BingRssSearchBackend;
+#[cfg(test)]
+use engines::bing::parse_feed_results;
+use engines::brave::BraveApiSearchBackend;
+
 const DEFAULT_SEARCH_ENDPOINT: &str = "https://www.bing.com/search";
+const DEFAULT_BRAVE_API_BASE_URL: &str = "https://api.search.brave.com";
 const DEFAULT_RESULT_SNIPPET_MAX_CHARS: usize = 280;
+const BRAVE_WEB_PAGE_SIZE: usize = 20;
+const BRAVE_NEWS_PAGE_SIZE: usize = 50;
+const BRAVE_MAX_PAGE_OFFSET: usize = 9;
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 pub struct WebSearchToolInput {
@@ -64,6 +73,7 @@ struct SearchResultItem {
     url: String,
     raw_url: Option<String>,
     snippet: Option<String>,
+    extra_snippets: Vec<String>,
     published_at: Option<String>,
     source_name: Option<String>,
 }
@@ -78,6 +88,8 @@ struct SearchResultRecord {
     url: String,
     raw_url: Option<String>,
     snippet: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    extra_snippets: Vec<String>,
     published_at: Option<String>,
     source_name: Option<String>,
 }
@@ -92,6 +104,8 @@ struct SearchSourceRecord {
     url: String,
     raw_url: Option<String>,
     snippet: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    extra_snippets: Vec<String>,
     published_at: Option<String>,
     source_name: Option<String>,
 }
@@ -132,11 +146,16 @@ struct WebSearchToolOutput {
     engine: String,
     request_url: String,
     final_url: String,
+    request_urls: Vec<String>,
+    final_urls: Vec<String>,
+    response_pages: usize,
+    backend_offset_base: usize,
     status: u16,
     content_type: Option<String>,
     limit: usize,
     offset: usize,
     next_offset: Option<usize>,
+    more_results_available: Option<bool>,
     domains: Vec<String>,
     result_count: usize,
     total_matches: usize,
@@ -161,6 +180,8 @@ struct WebSearchRequest {
     locale: SearchLocale,
     freshness: WebSearchFreshness,
     source_mode: WebSearchSourceMode,
+    limit: usize,
+    offset: usize,
 }
 
 #[derive(Clone, Debug, Serialize, JsonSchema, PartialEq, Eq)]
@@ -168,34 +189,26 @@ struct WebSearchBackendCapabilities {
     locale: bool,
     freshness: bool,
     source_mode: bool,
+    pagination: bool,
+    extra_snippets: bool,
 }
 
 #[derive(Clone, Debug)]
 struct SearchBackendResponse {
-    request_url: Url,
-    final_url: Url,
+    request_urls: Vec<Url>,
+    final_urls: Vec<Url>,
+    offset_base: usize,
     status: u16,
     content_type: Option<String>,
     body: String,
     results: Vec<SearchResultItem>,
+    more_results_available: Option<bool>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum FeedField {
-    Title,
-    Link,
-    Snippet,
-    PublishedAt,
-    SourceName,
-}
-
-#[derive(Clone, Debug, Default)]
-struct FeedResultBuilder {
-    title: String,
-    url: String,
-    snippet: String,
-    published_at: String,
-    source_name: String,
+enum WebSearchBackendKind {
+    BingRss,
+    BraveApi,
 }
 
 #[async_trait]
@@ -206,97 +219,12 @@ trait WebSearchBackend: Send + Sync {
     // Callers can ask for freshness/source modes today, while result metadata
     // exposes which knobs the active backend can actually honor.
     fn capabilities(&self) -> WebSearchBackendCapabilities;
-    fn build_request_url(&self, request: &WebSearchRequest) -> Result<Url>;
-    fn parse_results(&self, body: &str) -> Result<Vec<SearchResultItem>>;
-
     async fn search(
         &self,
         client: &Client,
-        _request: &WebSearchRequest,
-        request_url: Url,
-    ) -> Result<SearchBackendResponse> {
-        let response = client.get(request_url.clone()).send().await?;
-        let final_url = response.url().clone();
-        let status = response.status().as_u16();
-        let content_type = response
-            .headers()
-            .get(reqwest::header::CONTENT_TYPE)
-            .and_then(|value| value.to_str().ok())
-            .map(str::to_string);
-        let body = response.text().await?;
-        let results = if (200..300).contains(&status) {
-            self.parse_results(&body)?
-        } else {
-            Vec::new()
-        };
-        Ok(SearchBackendResponse {
-            request_url,
-            final_url,
-            status,
-            content_type,
-            body,
-            results,
-        })
-    }
-}
-
-#[derive(Clone, Debug)]
-struct BingRssSearchBackend {
-    endpoint: Url,
-}
-
-impl BingRssSearchBackend {
-    fn new(endpoint: Url) -> Self {
-        Self { endpoint }
-    }
-
-    fn supports_native_news_path(&self) -> bool {
-        // Bing exposes a distinct RSS-compatible news endpoint. We only switch
-        // paths for the known hosted fallback so custom test/server overrides
-        // keep their caller-provided path contract.
-        self.endpoint.host_str().is_some_and(|host| {
-            host.eq_ignore_ascii_case("www.bing.com") || host.eq_ignore_ascii_case("bing.com")
-        })
-    }
-}
-
-impl WebSearchBackend for BingRssSearchBackend {
-    fn backend_name(&self) -> &'static str {
-        "bing_rss"
-    }
-
-    fn retrieval_mode(&self) -> &'static str {
-        "rss"
-    }
-
-    fn capabilities(&self) -> WebSearchBackendCapabilities {
-        WebSearchBackendCapabilities {
-            locale: true,
-            freshness: false,
-            source_mode: self.supports_native_news_path(),
-        }
-    }
-
-    fn build_request_url(&self, request: &WebSearchRequest) -> Result<Url> {
-        let mut request_url = self.endpoint.clone();
-        if matches!(request.source_mode, WebSearchSourceMode::News)
-            && self.supports_native_news_path()
-        {
-            request_url.set_path("/news/search");
-        }
-        request_url.set_query(None);
-        request_url
-            .query_pairs_mut()
-            .append_pair("format", "rss")
-            .append_pair("cc", &request.locale.country)
-            .append_pair("setlang", &request.locale.language)
-            .append_pair("q", &request.query);
-        Ok(request_url)
-    }
-
-    fn parse_results(&self, body: &str) -> Result<Vec<SearchResultItem>> {
-        Ok(parse_feed_results(body))
-    }
+        policy: &WebToolPolicy,
+        request: &WebSearchRequest,
+    ) -> Result<SearchBackendResponse>;
 }
 
 #[derive(Clone)]
@@ -315,12 +243,30 @@ impl Default for WebSearchTool {
 impl WebSearchTool {
     #[must_use]
     pub fn new() -> Self {
-        Self::with_settings(
-            WebToolPolicy::default(),
-            DEFAULT_HTTP_TIMEOUT_MS,
-            agent_env::get_non_empty(vars::AGENT_CORE_WEB_SEARCH_ENDPOINT),
-        )
-        .expect("web search client")
+        Self::with_env_settings(WebToolPolicy::default(), DEFAULT_HTTP_TIMEOUT_MS)
+            .expect("web search client")
+    }
+
+    pub(crate) fn with_env_settings(policy: WebToolPolicy, timeout_ms: u64) -> Result<Self> {
+        match parse_backend_kind(agent_env::get_non_empty(
+            vars::AGENT_CORE_WEB_SEARCH_BACKEND,
+        ))? {
+            WebSearchBackendKind::BingRss => Self::with_settings(
+                policy,
+                timeout_ms,
+                agent_env::get_non_empty(vars::AGENT_CORE_WEB_SEARCH_ENDPOINT),
+            ),
+            WebSearchBackendKind::BraveApi => Self::with_brave_backend(
+                policy,
+                timeout_ms,
+                agent_env::get_non_empty(vars::AGENT_CORE_WEB_SEARCH_API_ENDPOINT),
+                agent_env::get_non_empty(vars::AGENT_CORE_WEB_SEARCH_API_KEY).ok_or_else(|| {
+                    crate::ToolError::invalid(
+                        "AGENT_CORE_WEB_SEARCH_API_KEY is required for the brave_api backend",
+                    )
+                })?,
+            ),
+        }
     }
 
     pub(crate) fn with_settings(
@@ -335,6 +281,25 @@ impl WebSearchTool {
             Arc::new(BingRssSearchBackend::new(Url::parse(&endpoint).map_err(
                 |error| crate::ToolError::invalid(format!("invalid search endpoint: {error}")),
             )?)),
+        )
+    }
+
+    pub(crate) fn with_brave_backend(
+        policy: WebToolPolicy,
+        timeout_ms: u64,
+        endpoint: Option<String>,
+        api_key: String,
+    ) -> Result<Self> {
+        let endpoint = endpoint.unwrap_or_else(|| DEFAULT_BRAVE_API_BASE_URL.to_string());
+        Self::with_backend(
+            policy,
+            timeout_ms,
+            Arc::new(BraveApiSearchBackend::new(
+                Url::parse(&endpoint).map_err(|error| {
+                    crate::ToolError::invalid(format!("invalid Brave API endpoint: {error}"))
+                })?,
+                api_key,
+            )),
         )
     }
 
@@ -399,21 +364,13 @@ impl Tool for WebSearchTool {
             locale: normalize_locale(input.locale),
             freshness: normalize_freshness(input.freshness),
             source_mode: normalize_source_mode(input.source_mode),
+            limit: clamped_search_limit(input.limit),
+            offset: input.offset.unwrap_or(0),
         };
-        let limit = clamped_search_limit(input.limit);
-        let offset = input.offset.unwrap_or(0);
-        let request_url = match self.backend.build_request_url(&request) {
-            Ok(request_url) => request_url,
-            Err(error) => return Ok(ToolResult::error(call_id, "web_search", error.to_string())),
-        };
-
-        if let Err(error) = self.policy.validate_transport_url(&request_url) {
-            return Ok(ToolResult::error(call_id, "web_search", error.to_string()));
-        }
 
         let response = match self
             .backend
-            .search(&self.client, &request, request_url.clone())
+            .search(&self.client, &self.policy, &request)
             .await
         {
             Ok(response) => response,
@@ -426,14 +383,26 @@ impl Tool for WebSearchTool {
             }
         };
         let SearchBackendResponse {
-            request_url,
-            final_url,
+            request_urls,
+            final_urls,
+            offset_base,
             status,
             content_type,
             body,
             results,
+            more_results_available,
         } = response;
         let backend_capabilities = self.backend.capabilities();
+        let request_url = request_urls
+            .first()
+            .cloned()
+            .unwrap_or_else(|| Url::parse("https://example.invalid/search").expect("static url"));
+        let final_url = final_urls
+            .last()
+            .cloned()
+            .unwrap_or_else(|| request_url.clone());
+        let limit = request.limit;
+        let offset = request.offset;
 
         if !(200..300).contains(&status) {
             return Ok(ToolResult {
@@ -458,6 +427,10 @@ impl Tool for WebSearchTool {
                     "content_type": content_type,
                     "request_url": request_url.as_str(),
                     "final_url": final_url.as_str(),
+                    "request_urls": request_urls.iter().map(Url::as_str).collect::<Vec<_>>(),
+                    "final_urls": final_urls.iter().map(Url::as_str).collect::<Vec<_>>(),
+                    "response_pages": request_urls.len(),
+                    "backend_offset_base": offset_base,
                 })),
                 is_error: true,
             });
@@ -471,10 +444,11 @@ impl Tool for WebSearchTool {
         let (filtered_results, freshness_filter) =
             apply_freshness_filter(filtered_results, &request.freshness);
         let filtered_total = filtered_results.len();
-        let offset = offset.min(filtered_total);
+        let total_matches = offset_base + filtered_total;
+        let relative_offset = offset.saturating_sub(offset_base).min(filtered_total);
         let paged_results = filtered_results
             .iter()
-            .skip(offset)
+            .skip(relative_offset)
             .take(limit)
             .cloned()
             .collect::<Vec<_>>();
@@ -490,6 +464,7 @@ impl Tool for WebSearchTool {
                 url: item.url.clone(),
                 raw_url: item.raw_url.clone(),
                 snippet: item.snippet.clone(),
+                extra_snippets: item.extra_snippets.clone(),
                 published_at: item.published_at.clone(),
                 source_name: item.source_name.clone(),
             })
@@ -500,8 +475,10 @@ impl Tool for WebSearchTool {
             .iter()
             .map(|source| source.citation_id.clone())
             .collect::<Vec<_>>();
-        let next_offset = (offset + result_records.len() < filtered_total)
-            .then_some(offset + result_records.len());
+        let consumed_results = offset + result_records.len();
+        let next_offset = (consumed_results < total_matches
+            || more_results_available.unwrap_or(false))
+        .then_some(consumed_results);
         let retrieved_at_unix_s = unix_timestamp_s();
         let policy_output = WebSearchPolicyOutput {
             allow_private_hosts: self.policy.allow_private_hosts,
@@ -520,14 +497,25 @@ impl Tool for WebSearchTool {
             engine: request_url.host_str().unwrap_or("custom").to_string(),
             request_url: request_url.as_str().to_string(),
             final_url: final_url.as_str().to_string(),
+            request_urls: request_urls
+                .iter()
+                .map(|url| url.as_str().to_string())
+                .collect(),
+            final_urls: final_urls
+                .iter()
+                .map(|url| url.as_str().to_string())
+                .collect(),
+            response_pages: request_urls.len(),
+            backend_offset_base: offset_base,
             status,
             content_type: content_type.clone(),
             limit,
             offset,
             next_offset,
+            more_results_available,
             domains: domains.clone(),
             result_count: result_records.len(),
-            total_matches: filtered_total,
+            total_matches,
             result_domains: unique_domains.clone(),
             citation_ids: citation_ids.clone(),
             retrieved_at_unix_s,
@@ -536,6 +524,8 @@ impl Tool for WebSearchTool {
             results: result_records.clone(),
             sources: sources.clone(),
         };
+        let structured_output_value =
+            serde_json::to_value(&structured_output).expect("web_search structured output");
 
         let mut sections = vec![
             format!("query> {query}"),
@@ -552,7 +542,7 @@ impl Tool for WebSearchTool {
             sections.push(format!("domains> {}", domains.join(", ")));
         }
         sections.push(format!("results> {}", result_records.len()));
-        sections.push(format!("total_matches> {filtered_total}"));
+        sections.push(format!("total_matches> {total_matches}"));
         sections.push(format!("citations> {}", citation_ids.len()));
         sections.push(format!(
             "freshness_mode> {}",
@@ -587,341 +577,52 @@ impl Tool for WebSearchTool {
             call_id: external_call_id,
             tool_name: "web_search".to_string(),
             parts: vec![MessagePart::text(sections.join("\n"))],
-            structured_content: Some(
-                serde_json::to_value(&structured_output).expect("web_search structured output"),
-            ),
-            metadata: Some(serde_json::json!({
-                "query": query,
-                "request_query": request.query,
-                "locale": request.locale.language,
-                "freshness": request.freshness,
-                "source_mode": request.source_mode,
-                "backend": self.backend.backend_name(),
-                "retrieval_mode": self.backend.retrieval_mode(),
-                "backend_capabilities": backend_capabilities,
-                "request_url": request_url.as_str(),
-                "final_url": final_url.as_str(),
-                "status": status,
-                "content_type": content_type,
-                "limit": limit,
-                "offset": offset,
-                "next_offset": next_offset,
-                "domains": domains,
-                "result_count": result_records.len(),
-                "total_matches": filtered_total,
-                "result_domains": unique_domains,
-                "citation_ids": citation_ids,
-                "retrieved_at_unix_s": retrieved_at_unix_s,
-                "policy": {
-                    "allow_private_hosts": self.policy.allow_private_hosts,
-                    "allowed_domains": self.policy.allowed_domains.iter().cloned().collect::<Vec<_>>(),
-                    "blocked_domains": self.policy.blocked_domains.iter().cloned().collect::<Vec<_>>(),
-                },
-                "freshness_filter": {
-                    "requested": freshness_filter.requested,
-                    "mode": freshness_filter.mode,
-                    "cutoff_unix_s": freshness_filter.cutoff_unix_s,
-                    "dropped_results": freshness_filter.dropped_results,
-                    "kept_without_timestamp": freshness_filter.kept_without_timestamp,
-                },
-                "results": result_records.iter().map(|item| serde_json::json!({
-                    "id": item.id,
-                    "citation_id": item.citation_id,
-                    "rank": item.rank,
-                    "domain": item.domain,
-                    "title": item.title,
-                    "url": item.url,
-                    "raw_url": item.raw_url,
-                    "snippet": item.snippet,
-                    "published_at": item.published_at,
-                    "source_name": item.source_name,
-                })).collect::<Vec<_>>(),
-                "sources": sources.iter().map(|source| serde_json::json!({
-                    "citation_id": source.citation_id,
-                    "result_id": source.result_id,
-                    "rank": source.rank,
-                    "domain": source.domain,
-                    "title": source.title,
-                    "url": source.url,
-                    "raw_url": source.raw_url,
-                    "snippet": source.snippet,
-                    "published_at": source.published_at,
-                    "source_name": source.source_name,
-                })).collect::<Vec<_>>(),
-            })),
+            structured_content: Some(structured_output_value.clone()),
+            metadata: Some(structured_output_value),
             is_error: false,
         })
     }
-}
-
-fn parse_feed_results(xml: &str) -> Vec<SearchResultItem> {
-    // Search fallbacks still bootstrap from XML feeds, but we do not treat feed
-    // parsing itself as a regex contract. Namespaces, CDATA, and Atom link
-    // attributes are common enough that a real token stream is the safer boundary.
-    let mut reader = Reader::from_str(xml);
-    reader.config_mut().trim_text(true);
-
-    let mut results = Vec::new();
-    let mut current_result = None;
-    let mut current_field = None;
-    let mut buffer = Vec::new();
-
-    loop {
-        match reader.read_event_into(&mut buffer) {
-            Ok(Event::Start(event)) => {
-                let event_name = event.name();
-                let name = xml_name(event_name.as_ref());
-                match name {
-                    b"item" | b"entry" => {
-                        current_result = Some(FeedResultBuilder::default());
-                        current_field = None;
-                    }
-                    b"title" if current_result.is_some() => current_field = Some(FeedField::Title),
-                    b"description" | b"summary" | b"content" if current_result.is_some() => {
-                        current_field = Some(FeedField::Snippet);
-                    }
-                    b"pubDate" | b"published" | b"updated" if current_result.is_some() => {
-                        current_field = Some(FeedField::PublishedAt);
-                    }
-                    b"Source" | b"source" if current_result.is_some() => {
-                        current_field = Some(FeedField::SourceName);
-                    }
-                    b"link" if current_result.is_some() => {
-                        if let Some(builder) = current_result.as_mut()
-                            && builder.url.is_empty()
-                            && let Some(href) = feed_link_href(&event)
-                        {
-                            builder.url = href;
-                        }
-                        current_field = Some(FeedField::Link);
-                    }
-                    _ => {}
-                }
-            }
-            Ok(Event::Empty(event)) => {
-                let event_name = event.name();
-                let name = xml_name(event_name.as_ref());
-                if matches!(name, b"link")
-                    && let Some(builder) = current_result.as_mut()
-                    && builder.url.is_empty()
-                    && let Some(href) = feed_link_href(&event)
-                {
-                    builder.url = href;
-                }
-            }
-            Ok(Event::Text(text)) => {
-                if let (Some(builder), Some(field)) = (current_result.as_mut(), current_field) {
-                    append_feed_text(builder, field, decode_feed_text(&text).as_ref());
-                }
-            }
-            Ok(Event::CData(text)) => {
-                if let (Some(builder), Some(field)) = (current_result.as_mut(), current_field) {
-                    append_feed_text(builder, field, decode_feed_cdata(&text).as_ref());
-                }
-            }
-            Ok(Event::GeneralRef(reference)) => {
-                if let (Some(builder), Some(field)) = (current_result.as_mut(), current_field) {
-                    append_feed_entity(builder, field, decode_feed_ref(&reference).as_ref());
-                }
-            }
-            Ok(Event::End(event)) => {
-                let event_name = event.name();
-                let name = xml_name(event_name.as_ref());
-                match name {
-                    b"item" | b"entry" => {
-                        if let Some(builder) = current_result.take()
-                            && let Some(result) = finalize_feed_result(builder)
-                        {
-                            results.push(result);
-                        }
-                        current_field = None;
-                    }
-                    b"title" => clear_field(&mut current_field, FeedField::Title),
-                    b"link" => clear_field(&mut current_field, FeedField::Link),
-                    b"description" | b"summary" | b"content" => {
-                        clear_field(&mut current_field, FeedField::Snippet);
-                    }
-                    b"pubDate" | b"published" | b"updated" => {
-                        clear_field(&mut current_field, FeedField::PublishedAt);
-                    }
-                    b"Source" | b"source" => clear_field(&mut current_field, FeedField::SourceName),
-                    _ => {}
-                }
-            }
-            Ok(Event::Eof) => break,
-            Err(_) => break,
-            _ => {}
-        }
-        buffer.clear();
-    }
-
-    results
-}
-
-fn xml_name(name: &[u8]) -> &[u8] {
-    name.rsplit(|byte| *byte == b':').next().unwrap_or(name)
-}
-
-fn feed_link_href(event: &BytesStart<'_>) -> Option<String> {
-    let mut href = None;
-    let mut rel = None;
-    for attribute in event.attributes().flatten() {
-        match xml_name(attribute.key.as_ref()) {
-            b"href" => {
-                href = attribute
-                    .decode_and_unescape_value(event.decoder())
-                    .ok()
-                    .map(|value| value.into_owned());
-            }
-            b"rel" => {
-                rel = attribute
-                    .decode_and_unescape_value(event.decoder())
-                    .ok()
-                    .map(|value| value.into_owned());
-            }
-            _ => {}
-        }
-    }
-
-    let rel = rel.unwrap_or_else(|| "alternate".to_string());
-    if !matches!(rel.as_str(), "alternate" | "self") {
-        return None;
-    }
-    href.filter(|value| !value.is_empty())
-}
-
-fn append_feed_text(builder: &mut FeedResultBuilder, field: FeedField, raw: &[u8]) {
-    let text = String::from_utf8_lossy(raw);
-    let target = match field {
-        FeedField::Title => &mut builder.title,
-        FeedField::Link => &mut builder.url,
-        FeedField::Snippet => &mut builder.snippet,
-        FeedField::PublishedAt => &mut builder.published_at,
-        FeedField::SourceName => &mut builder.source_name,
-    };
-    target.push_str(&text);
-}
-
-fn append_feed_entity(builder: &mut FeedResultBuilder, field: FeedField, raw: &str) {
-    let target = match field {
-        FeedField::Title => &mut builder.title,
-        FeedField::Link => &mut builder.url,
-        FeedField::Snippet => &mut builder.snippet,
-        FeedField::PublishedAt => &mut builder.published_at,
-        FeedField::SourceName => &mut builder.source_name,
-    };
-    target.push('&');
-    target.push_str(raw);
-    target.push(';');
-}
-
-fn decode_feed_text(text: &BytesText<'_>) -> String {
-    text.xml_content()
-        .map(|value| value.into_owned())
-        .unwrap_or_else(|_| String::from_utf8_lossy(text.as_ref()).into_owned())
-}
-
-fn decode_feed_cdata(text: &BytesCData<'_>) -> String {
-    text.xml_content()
-        .map(|value| value.into_owned())
-        .unwrap_or_else(|_| String::from_utf8_lossy(text.as_ref()).into_owned())
-}
-
-fn decode_feed_ref(reference: &BytesRef<'_>) -> String {
-    reference
-        .xml_content()
-        .map(|value| value.into_owned())
-        .unwrap_or_else(|_| String::from_utf8_lossy(reference.as_ref()).into_owned())
-}
-
-fn clear_field(current_field: &mut Option<FeedField>, expected: FeedField) {
-    if current_field.is_some_and(|field| field == expected) {
-        *current_field = None;
-    }
-}
-
-fn finalize_feed_result(builder: FeedResultBuilder) -> Option<SearchResultItem> {
-    let title = normalize_feed_field(&builder.title, false)?;
-    let url = normalize_feed_url(&builder.url)?;
-    let (url, raw_url) = canonicalize_result_url(&url);
-    let snippet = normalize_feed_field(&builder.snippet, true);
-    let published_at = normalize_feed_field(&builder.published_at, false);
-    let source_name = normalize_feed_field(&builder.source_name, false);
-
-    Some(SearchResultItem {
-        title,
-        url,
-        raw_url,
-        snippet,
-        published_at,
-        source_name,
-    })
-}
-
-fn normalize_feed_field(value: &str, prefer_html: bool) -> Option<String> {
-    let raw = decode_html_entities(value.trim());
-    if raw.is_empty() {
-        return None;
-    }
-    let normalized = if prefer_html && looks_like_markup_fragment(&raw) {
-        summarize_markup_fragment(&raw)
-    } else {
-        summarize_remote_body(&raw, None)
-    };
-    (!normalized.is_empty()).then_some(normalized)
-}
-
-fn normalize_feed_url(value: &str) -> Option<String> {
-    let raw = decode_html_entities(value.trim());
-    if raw.is_empty() {
-        return None;
-    }
-
-    // Feed links often contain XML-escaped query strings. They need entity
-    // decoding plus whitespace cleanup, but not the prose-oriented body
-    // summarization path, which can legitimately rewrite punctuation.
-    let normalized = raw.split_whitespace().collect::<String>();
-    (!normalized.is_empty()).then_some(normalized)
 }
 
 fn looks_like_markup_fragment(value: &str) -> bool {
     value.contains('<') && value.contains('>')
 }
 
-fn summarize_markup_fragment(fragment: &str) -> String {
-    let wrapped = format!("<fragment>{fragment}</fragment>");
-    let mut reader = Reader::from_str(&wrapped);
-    reader.config_mut().trim_text(true);
-
-    let mut text = String::new();
-    let mut buffer = Vec::new();
-
-    loop {
-        match reader.read_event_into(&mut buffer) {
-            Ok(Event::Text(value)) => {
-                text.push_str(&String::from_utf8_lossy(value.as_ref()));
-                text.push(' ');
-            }
-            Ok(Event::CData(value)) => {
-                text.push_str(&String::from_utf8_lossy(value.as_ref()));
-                text.push(' ');
-            }
-            Ok(Event::Eof) => break,
-            Err(_) => return summarize_remote_body(fragment, None),
-            _ => {}
-        }
-        buffer.clear();
+fn parse_backend_kind(value: Option<String>) -> Result<WebSearchBackendKind> {
+    match value
+        .as_deref()
+        .map(str::trim)
+        .filter(|candidate| !candidate.is_empty())
+    {
+        None | Some("bing") | Some("bing_rss") => Ok(WebSearchBackendKind::BingRss),
+        Some("brave") | Some("brave_api") => Ok(WebSearchBackendKind::BraveApi),
+        Some(other) => Err(crate::ToolError::invalid(format!(
+            "unsupported web search backend `{other}`"
+        ))),
     }
-
-    normalize_markup_spacing(&summarize_remote_body(&text, None))
 }
 
-fn normalize_markup_spacing(value: &str) -> String {
-    let mut normalized = value.to_string();
-    for punctuation in [".", ",", "!", "?", ";", ":", ")", "]"] {
-        normalized = normalized.replace(&format!(" {punctuation}"), punctuation);
+async fn send_search_request(
+    client: &Client,
+    policy: &WebToolPolicy,
+    request_url: Url,
+    api_key: Option<&str>,
+) -> Result<(Url, u16, Option<String>, String)> {
+    policy.validate_transport_url(&request_url)?;
+    let mut request = client.get(request_url.clone());
+    if let Some(api_key) = api_key {
+        request = request.header("X-Subscription-Token", api_key);
     }
-    normalized.replace("( ", "(")
+    let response = request.send().await?;
+    let final_url = response.url().clone();
+    let status = response.status().as_u16();
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+    let body = response.text().await?;
+    Ok((final_url, status, content_type, body))
 }
 
 fn canonicalize_result_url(url: &str) -> (String, Option<String>) {
@@ -1165,6 +866,7 @@ fn build_search_sources(results: &[SearchResultRecord]) -> Vec<SearchSourceRecor
             url: item.url.clone(),
             raw_url: item.raw_url.clone(),
             snippet: item.snippet.clone(),
+            extra_snippets: item.extra_snippets.clone(),
             published_at: item.published_at.clone(),
             source_name: item.source_name.clone(),
         });
@@ -1196,6 +898,12 @@ fn format_result_entry(item: &SearchResultRecord) -> String {
         } else {
             format!("snippet: {snippet}")
         });
+    }
+    if !item.extra_snippets.is_empty() {
+        entry.push(format!(
+            "extra_snippets: {}",
+            item.extra_snippets.join(" | ")
+        ));
     }
     if let Some(published_at) = &item.published_at {
         entry.push(format!("published_at: {published_at}"));
@@ -1244,14 +952,14 @@ fn unix_timestamp_s() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        BingRssSearchBackend, SearchLocale, WebSearchBackend, WebSearchFreshness, WebSearchRequest,
+        BingRssSearchBackend, SearchLocale, WebSearchFreshness, WebSearchRequest,
         WebSearchSourceMode, WebSearchTool, WebSearchToolInput, parse_feed_results,
     };
     use crate::web::common::WebToolPolicy;
     use crate::{Tool, ToolExecutionContext};
     use std::collections::BTreeSet;
     use types::ToolCallId;
-    use wiremock::matchers::{method, path};
+    use wiremock::matchers::{method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     #[test]
@@ -1353,10 +1061,157 @@ mod tests {
             },
             freshness: WebSearchFreshness::AnyTime,
             source_mode: WebSearchSourceMode::News,
+            limit: 5,
+            offset: 0,
         };
 
         let request_url = backend.build_request_url(&request).unwrap();
         assert_eq!(request_url.path(), "/news/search");
+    }
+
+    #[test]
+    fn backend_kind_parser_accepts_supported_aliases() {
+        assert_eq!(
+            super::parse_backend_kind(None).unwrap(),
+            super::WebSearchBackendKind::BingRss
+        );
+        assert_eq!(
+            super::parse_backend_kind(Some("bing".to_string())).unwrap(),
+            super::WebSearchBackendKind::BingRss
+        );
+        assert_eq!(
+            super::parse_backend_kind(Some("brave".to_string())).unwrap(),
+            super::WebSearchBackendKind::BraveApi
+        );
+        assert!(super::parse_backend_kind(Some("duckduckgo".to_string())).is_err());
+    }
+
+    fn brave_results(start: usize, end: usize) -> Vec<serde_json::Value> {
+        (start..=end)
+            .map(|index| {
+                serde_json::json!({
+                    "title": format!("Result {index}"),
+                    "url": format!("https://example.com/{index}"),
+                    "description": format!("summary {index}"),
+                    "extra_snippets": [
+                        format!("follow-up {index}"),
+                        format!("detail {index}")
+                    ],
+                    "page_age": "2026-03-25T09:00:00Z",
+                    "meta_url": {
+                        "hostname": "example.com"
+                    }
+                })
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn web_search_brave_backend_translates_offsets_into_hosted_pages() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/res/v1/web/search"))
+            .and(query_param("offset", "1"))
+            .and(query_param("count", "20"))
+            .and(query_param("country", "US"))
+            .and(query_param("search_lang", "en"))
+            .and(query_param("freshness", "pw"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "application/json")
+                    .set_body_string(
+                        serde_json::json!({
+                            "query": { "more_results_available": true },
+                            "web": { "results": brave_results(21, 40) }
+                        })
+                        .to_string(),
+                    ),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/res/v1/web/search"))
+            .and(query_param("offset", "2"))
+            .and(query_param("count", "20"))
+            .and(query_param("country", "US"))
+            .and(query_param("search_lang", "en"))
+            .and(query_param("freshness", "pw"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "application/json")
+                    .set_body_string(
+                        serde_json::json!({
+                            "query": { "more_results_available": false },
+                            "web": { "results": brave_results(41, 60) }
+                        })
+                        .to_string(),
+                    ),
+            )
+            .mount(&server)
+            .await;
+
+        let tool = WebSearchTool::with_brave_backend(
+            WebToolPolicy {
+                allow_private_hosts: true,
+                allowed_domains: BTreeSet::new(),
+                blocked_domains: BTreeSet::new(),
+            },
+            5_000,
+            Some(server.uri()),
+            "test-token".to_string(),
+        )
+        .unwrap();
+        let result = tool
+            .execute(
+                ToolCallId::new(),
+                serde_json::to_value(WebSearchToolInput {
+                    query: "example".to_string(),
+                    limit: Some(5),
+                    offset: Some(38),
+                    domains: None,
+                    locale: None,
+                    freshness: Some(WebSearchFreshness::PastWeek),
+                    source_mode: None,
+                })
+                .unwrap(),
+                &ToolExecutionContext::default(),
+            )
+            .await
+            .unwrap();
+
+        let text = result.text_content();
+        assert!(text.contains("Result 39"));
+        assert!(text.contains("Result 43"));
+        assert!(text.contains("extra_snippets: follow-up 39 | detail 39"));
+
+        let structured = result.structured_content.unwrap();
+        assert_eq!(structured["backend"], "brave_api");
+        assert_eq!(structured["retrieval_mode"], "json_api");
+        assert_eq!(structured["backend_capabilities"]["pagination"], true);
+        assert_eq!(structured["backend_capabilities"]["extra_snippets"], true);
+        assert_eq!(structured["response_pages"], 2);
+        assert_eq!(structured["backend_offset_base"], 20);
+        assert_eq!(structured["results"][0]["rank"], 39);
+        assert_eq!(structured["results"][0]["title"], "Result 39");
+        assert_eq!(
+            structured["results"][0]["extra_snippets"][0],
+            "follow-up 39"
+        );
+        assert_eq!(structured["results"][4]["title"], "Result 43");
+        assert_eq!(structured["more_results_available"], false);
+        assert_eq!(structured["request_urls"].as_array().unwrap().len(), 2);
+
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 2);
+        for request in &requests {
+            assert_eq!(
+                request
+                    .headers
+                    .get("x-subscription-token")
+                    .and_then(|value| value.to_str().ok()),
+                Some("test-token")
+            );
+        }
     }
 
     #[tokio::test]

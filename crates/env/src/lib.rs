@@ -141,6 +141,18 @@ pub mod vars {
         "AGENT_CORE_WEB_SEARCH_ENDPOINT",
         "HTTP/HTTPS search endpoint override for the lightweight web_search tool.",
     );
+    pub const AGENT_CORE_WEB_SEARCH_BACKEND: EnvVar = EnvVar::new(
+        "AGENT_CORE_WEB_SEARCH_BACKEND",
+        "Search backend selection for the local web_search tool (`bing_rss` or `brave_api`).",
+    );
+    pub const AGENT_CORE_WEB_SEARCH_API_ENDPOINT: EnvVar = EnvVar::new(
+        "AGENT_CORE_WEB_SEARCH_API_ENDPOINT",
+        "HTTP/HTTPS API endpoint override for hosted web_search backends.",
+    );
+    pub const AGENT_CORE_WEB_SEARCH_API_KEY: EnvVar = EnvVar::new(
+        "AGENT_CORE_WEB_SEARCH_API_KEY",
+        "API key for hosted web_search backends.",
+    );
 
     pub const ALL: &[EnvVar] = &[
         SHELL,
@@ -172,6 +184,9 @@ pub mod vars {
         AGENT_CORE_WEB_ALLOWED_DOMAINS,
         AGENT_CORE_WEB_BLOCKED_DOMAINS,
         AGENT_CORE_WEB_SEARCH_ENDPOINT,
+        AGENT_CORE_WEB_SEARCH_BACKEND,
+        AGENT_CORE_WEB_SEARCH_API_ENDPOINT,
+        AGENT_CORE_WEB_SEARCH_API_KEY,
     ];
 }
 
