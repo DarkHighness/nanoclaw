@@ -1,9 +1,11 @@
 use crate::{Result, ToolError, ToolExecutionContext};
+#[cfg(target_os = "linux")]
+use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeMap, BTreeSet};
+#[cfg(target_os = "linux")]
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-#[cfg(target_os = "linux")]
-use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::process::Command;
 use types::{CallId, RunId, SessionId, TurnId};
 
@@ -237,6 +239,15 @@ fn prepare_with_available_backends(
     mut request: ExecRequest,
     availability: BackendAvailability,
 ) -> Result<Command> {
+    if matches!(
+        request.sandbox_policy.network,
+        NetworkPolicy::AllowDomains(_)
+    ) && !allow_domains_backend_available(&availability)
+    {
+        return Err(ToolError::invalid_state(
+            "domain-scoped network policy requires a compatible enforcing sandbox backend",
+        ));
+    }
     attach_allow_domains_proxy_support(&mut request)?;
 
     #[cfg(target_os = "macos")]
@@ -255,6 +266,19 @@ fn prepare_with_available_backends(
     } else {
         HostProcessExecutor.prepare(request)
     }
+}
+
+fn allow_domains_backend_available(availability: &BackendAvailability) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        return availability.macos_seatbelt.is_some();
+    }
+    #[cfg(target_os = "linux")]
+    {
+        return availability.linux_bwrap.is_some();
+    }
+    #[allow(unreachable_code)]
+    false
 }
 
 fn attach_allow_domains_proxy_support(request: &mut ExecRequest) -> Result<()> {
@@ -301,7 +325,7 @@ fn maybe_attach_linux_allow_domains_proxy(request: &mut ExecRequest) -> Result<(
 
     let allowlist = super::network_proxy::DomainAllowlist::new(domains.clone())
         .map_err(|error| ToolError::invalid_state(error.to_string()))?;
-    let socket_path = default_linux_allow_domains_socket_path();
+    let socket_path = default_linux_allow_domains_socket_path(domains);
     let endpoint = super::network_proxy::start_retained_proxy(super::network_proxy::ProxyConfig {
         allowlist,
         bind: super::network_proxy::ProxyBindTarget::UnixSocket(socket_path.clone()),
@@ -332,15 +356,11 @@ fn maybe_attach_linux_allow_domains_proxy(request: &mut ExecRequest) -> Result<(
 }
 
 #[cfg(target_os = "linux")]
-fn default_linux_allow_domains_socket_path() -> PathBuf {
-    let unique = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    std::env::temp_dir().join(format!(
-        "nanoclaw-proxy-{}-{unique}.sock",
-        std::process::id()
-    ))
+fn default_linux_allow_domains_socket_path(domains: &[String]) -> PathBuf {
+    let mut hasher = DefaultHasher::new();
+    domains.hash(&mut hasher);
+    let hash = hasher.finish();
+    std::env::temp_dir().join(format!("nanoclaw-proxy-{}-{hash}.sock", std::process::id()))
 }
 
 fn detect_available_backends() -> BackendAvailability {
@@ -631,6 +651,42 @@ mod tests {
         .unwrap();
 
         assert_eq!(command.as_std().get_program(), "/bin/echo");
+    }
+
+    #[test]
+    fn allow_domains_policy_never_falls_back_without_backend() {
+        let workspace = tempdir().unwrap();
+        let err = prepare_with_available_backends(
+            ExecRequest {
+                program: "/bin/echo".to_string(),
+                args: vec!["hello".to_string()],
+                cwd: Some(workspace.path().to_path_buf()),
+                env: BTreeMap::new(),
+                stdin: ProcessStdio::Null,
+                stdout: ProcessStdio::Null,
+                stderr: ProcessStdio::Null,
+                kill_on_drop: true,
+                origin: ExecutionOrigin::BashTool,
+                runtime_scope: RuntimeScope::default(),
+                sandbox_policy: SandboxPolicy {
+                    mode: SandboxMode::WorkspaceWrite,
+                    filesystem: FilesystemPolicy {
+                        readable_roots: vec![workspace.path().to_path_buf()],
+                        writable_roots: vec![workspace.path().to_path_buf()],
+                        protected_paths: vec![],
+                    },
+                    network: NetworkPolicy::AllowDomains(vec!["example.com".to_string()]),
+                    host_escape: HostEscapePolicy::Deny,
+                    fail_if_unavailable: false,
+                },
+            },
+            BackendAvailability::default(),
+        )
+        .unwrap_err();
+
+        assert!(err.to_string().contains(
+            "domain-scoped network policy requires a compatible enforcing sandbox backend"
+        ));
     }
 
     #[cfg(target_os = "macos")]

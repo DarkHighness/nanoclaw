@@ -1,5 +1,11 @@
 use std::collections::BTreeMap;
+#[cfg(target_os = "macos")]
+use std::io::{Read, Write};
+#[cfg(target_os = "macos")]
+use std::net::{SocketAddr, TcpListener};
 use std::path::Path;
+#[cfg(target_os = "macos")]
+use std::thread;
 
 use tempfile::tempdir;
 use tools::{
@@ -80,6 +86,48 @@ async fn run_shell_command(
     Ok(process.output().await?)
 }
 
+#[cfg(target_os = "macos")]
+async fn run_direct_command(
+    executor: &ManagedPolicyProcessExecutor,
+    workspace_root: &Path,
+    policy: SandboxPolicy,
+    env: BTreeMap<String, String>,
+    program: &str,
+    args: Vec<String>,
+) -> Result<std::process::Output, Box<dyn std::error::Error>> {
+    let mut process = executor.prepare(ExecRequest {
+        program: program.to_string(),
+        args,
+        cwd: Some(workspace_root.to_path_buf()),
+        env,
+        stdin: ProcessStdio::Null,
+        stdout: ProcessStdio::Piped,
+        stderr: ProcessStdio::Piped,
+        kill_on_drop: true,
+        origin: ExecutionOrigin::HostUtility {
+            name: "sandbox-integration-test".to_string(),
+        },
+        runtime_scope: RuntimeScope::default(),
+        sandbox_policy: policy,
+    })?;
+    Ok(process.output().await?)
+}
+
+#[cfg(target_os = "macos")]
+fn spawn_http_ok_server() -> (SocketAddr, thread::JoinHandle<()>) {
+    let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0))).unwrap();
+    let addr = listener.local_addr().unwrap();
+    let worker = thread::spawn(move || {
+        let (mut stream, _peer) = listener.accept().unwrap();
+        let mut request = [0u8; 1024];
+        let _ = stream.read(&mut request);
+        stream
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+            .unwrap();
+    });
+    (addr, worker)
+}
+
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 #[tokio::test]
 async fn sandbox_backend_allows_workspace_writes() {
@@ -136,9 +184,47 @@ async fn sandbox_backend_blocks_protected_workspace_paths() {
     assert!(!workspace.path().join(".git/blocked.txt").exists());
 }
 
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn macos_allow_domains_routes_http_through_local_proxy() {
+    use tools::NetworkPolicy;
+
+    if !platform_backend_is_available() {
+        eprintln!("skipping sandbox integration test because no backend is available");
+        return;
+    }
+
+    let workspace = tempdir().unwrap();
+    let (server_addr, _worker) = spawn_http_ok_server();
+    let executor = ManagedPolicyProcessExecutor::new();
+    let mut policy = workspace_policy(workspace.path());
+    policy.network = NetworkPolicy::AllowDomains(vec!["localhost".to_string()]);
+
+    let output = run_direct_command(
+        &executor,
+        workspace.path(),
+        policy,
+        BTreeMap::new(),
+        "/usr/bin/curl",
+        vec![
+            "-fsS".to_string(),
+            format!("http://localhost:{}/", server_addr.port()),
+        ],
+    )
+    .await
+    .unwrap();
+
+    assert!(
+        output.status.success(),
+        "macOS allow-domains curl should succeed: stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "ok");
+}
+
 #[cfg(target_os = "linux")]
 #[tokio::test]
-async fn linux_allow_domains_requires_proxy_bridge_metadata() {
+async fn linux_allow_domains_rejects_invalid_proxy_bridge_metadata() {
     use tools::NetworkPolicy;
 
     if !linux_allow_domains_runtime_is_available() {
@@ -150,11 +236,15 @@ async fn linux_allow_domains_requires_proxy_bridge_metadata() {
     let executor = ManagedPolicyProcessExecutor::new();
     let mut policy = workspace_policy(workspace.path());
     policy.network = NetworkPolicy::AllowDomains(vec!["example.com".to_string()]);
+    let mut env = BTreeMap::new();
+    env.insert(
+        LINUX_ALLOW_DOMAINS_PROXY_SOCKET_PATH_ENV.to_string(),
+        String::new(),
+    );
 
-    let result =
-        run_shell_command(&executor, workspace.path(), policy, BTreeMap::new(), "true").await;
+    let result = run_shell_command(&executor, workspace.path(), policy, env, "true").await;
 
-    let err = result.expect_err("allow-domains without bridge metadata should fail");
+    let err = result.expect_err("allow-domains with invalid bridge metadata should fail");
     assert!(
         err.to_string()
             .contains(LINUX_ALLOW_DOMAINS_PROXY_SOCKET_PATH_ENV),

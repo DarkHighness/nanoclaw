@@ -8,6 +8,17 @@ use std::path::{Path, PathBuf};
 use tokio::process::Command;
 
 pub(super) const MACOS_SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
+const MACOS_SYSTEM_READONLY_ROOTS: &[&str] = &[
+    "/System",
+    "/usr",
+    "/bin",
+    "/sbin",
+    "/Library",
+    "/etc",
+    "/private/etc",
+    "/var/db",
+    "/private/var/db",
+];
 const PROXY_ENV_KEYS: &[&str] = &[
     "ALL_PROXY",
     "all_proxy",
@@ -123,6 +134,16 @@ fn build_macos_seatbelt_profile(
     match policy.mode {
         SandboxMode::DangerFullAccess => lines.push("(allow file*)".to_string()),
         SandboxMode::ReadOnly | SandboxMode::WorkspaceWrite => {
+            // Common tooling needs to read curated system config and trust
+            // stores outside the workspace. Linux already exposes a readonly
+            // system view through bind mounts; macOS needs the same baseline or
+            // networked tools fail before they ever reach the localhost proxy.
+            for root in MACOS_SYSTEM_READONLY_ROOTS {
+                lines.push(format!(
+                    "(allow file-read* file-map-executable file-test-existence (subpath \"{}\"))",
+                    escape_sbpl_path(Path::new(root))
+                ));
+            }
             for root in &policy.filesystem.readable_roots {
                 lines.push(format!(
                     "(allow file-read* file-map-executable file-test-existence (subpath \"{}\"))",
@@ -212,9 +233,12 @@ fn configure_allow_domains_proxy_env(
                 "domain-scoped network policy on macOS requires loopback proxy endpoint; got `{key}` host `{host}`",
             )));
         }
-        if let Some(port) = port {
-            loopback_ports.push(port);
-        }
+        let Some(port) = port else {
+            return Err(ToolError::invalid_state(format!(
+                "domain-scoped network policy on macOS requires proxy env `{key}` to include an explicit loopback port",
+            )));
+        };
+        loopback_ports.push(port);
     }
     if !has_proxy_env {
         return Err(ToolError::invalid_state(

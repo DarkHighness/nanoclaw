@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::collections::btree_map::Entry;
 use std::fmt;
 use std::io::{self, Read, Write};
 use std::net::{IpAddr, Shutdown, SocketAddr, TcpListener, TcpStream};
@@ -253,15 +254,49 @@ fn retained_proxies() -> &'static Mutex<Vec<ProxyHandle>> {
     RETAINED.get_or_init(|| Mutex::new(Vec::new()))
 }
 
+fn retained_proxy_endpoints() -> &'static Mutex<BTreeMap<String, ProxyEndpoint>> {
+    static RETAINED: OnceLock<Mutex<BTreeMap<String, ProxyEndpoint>>> = OnceLock::new();
+    RETAINED.get_or_init(|| Mutex::new(BTreeMap::new()))
+}
+
 #[allow(dead_code)]
 pub fn start_retained_proxy(config: ProxyConfig) -> Result<ProxyEndpoint, ProxyError> {
-    let handle = ProxyManager::start(config)?;
-    let endpoint = handle.endpoint().clone();
-    retained_proxies()
+    let key = retained_proxy_key(&config);
+    if let Some(endpoint) = retained_proxy_endpoints()
         .lock()
         .expect("retained proxy registry poisoned")
-        .push(handle);
-    Ok(endpoint)
+        .get(&key)
+        .cloned()
+    {
+        return Ok(endpoint);
+    }
+
+    let handle = ProxyManager::start(config)?;
+    let endpoint = handle.endpoint().clone();
+    match retained_proxy_endpoints()
+        .lock()
+        .expect("retained proxy registry poisoned")
+        .entry(key)
+    {
+        Entry::Occupied(entry) => Ok(entry.get().clone()),
+        Entry::Vacant(entry) => {
+            entry.insert(endpoint.clone());
+            retained_proxies()
+                .lock()
+                .expect("retained proxy registry poisoned")
+                .push(handle);
+            Ok(endpoint)
+        }
+    }
+}
+
+fn retained_proxy_key(config: &ProxyConfig) -> String {
+    let domains = config.allowlist.domains().join(",");
+    match &config.bind {
+        ProxyBindTarget::LocalhostTcp(_) => format!("tcp:{domains}"),
+        #[cfg(unix)]
+        ProxyBindTarget::UnixSocket(path) => format!("unix:{}:{domains}", path.display()),
+    }
 }
 
 fn run_tcp_accept_loop(
