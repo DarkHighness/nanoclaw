@@ -64,6 +64,7 @@ struct SearchResultItem {
     url: String,
     snippet: Option<String>,
     published_at: Option<String>,
+    source_name: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, JsonSchema)]
@@ -76,6 +77,7 @@ struct SearchResultRecord {
     url: String,
     snippet: Option<String>,
     published_at: Option<String>,
+    source_name: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, JsonSchema)]
@@ -88,6 +90,7 @@ struct SearchSourceRecord {
     url: String,
     snippet: Option<String>,
     published_at: Option<String>,
+    source_name: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, JsonSchema)]
@@ -180,6 +183,7 @@ enum FeedField {
     Link,
     Snippet,
     PublishedAt,
+    SourceName,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -188,6 +192,7 @@ struct FeedResultBuilder {
     url: String,
     snippet: String,
     published_at: String,
+    source_name: String,
 }
 
 #[async_trait]
@@ -241,6 +246,15 @@ impl BingRssSearchBackend {
     fn new(endpoint: Url) -> Self {
         Self { endpoint }
     }
+
+    fn supports_native_news_path(&self) -> bool {
+        // Bing exposes a distinct RSS-compatible news endpoint. We only switch
+        // paths for the known hosted fallback so custom test/server overrides
+        // keep their caller-provided path contract.
+        self.endpoint.host_str().is_some_and(|host| {
+            host.eq_ignore_ascii_case("www.bing.com") || host.eq_ignore_ascii_case("bing.com")
+        })
+    }
 }
 
 impl WebSearchBackend for BingRssSearchBackend {
@@ -256,12 +270,17 @@ impl WebSearchBackend for BingRssSearchBackend {
         WebSearchBackendCapabilities {
             locale: true,
             freshness: false,
-            source_mode: false,
+            source_mode: self.supports_native_news_path(),
         }
     }
 
     fn build_request_url(&self, request: &WebSearchRequest) -> Result<Url> {
         let mut request_url = self.endpoint.clone();
+        if matches!(request.source_mode, WebSearchSourceMode::News)
+            && self.supports_native_news_path()
+        {
+            request_url.set_path("/news/search");
+        }
         request_url.set_query(None);
         request_url
             .query_pairs_mut()
@@ -468,6 +487,7 @@ impl Tool for WebSearchTool {
                 url: item.url.clone(),
                 snippet: item.snippet.clone(),
                 published_at: item.published_at.clone(),
+                source_name: item.source_name.clone(),
             })
             .collect::<Vec<_>>();
         let unique_domains = unique_domains(&result_records);
@@ -609,6 +629,7 @@ impl Tool for WebSearchTool {
                     "url": item.url,
                     "snippet": item.snippet,
                     "published_at": item.published_at,
+                    "source_name": item.source_name,
                 })).collect::<Vec<_>>(),
                 "sources": sources.iter().map(|source| serde_json::json!({
                     "citation_id": source.citation_id,
@@ -619,6 +640,7 @@ impl Tool for WebSearchTool {
                     "url": source.url,
                     "snippet": source.snippet,
                     "published_at": source.published_at,
+                    "source_name": source.source_name,
                 })).collect::<Vec<_>>(),
             })),
             is_error: false,
@@ -654,6 +676,9 @@ fn parse_feed_results(xml: &str) -> Vec<SearchResultItem> {
                     }
                     b"pubDate" | b"published" | b"updated" if current_result.is_some() => {
                         current_field = Some(FeedField::PublishedAt);
+                    }
+                    b"Source" | b"source" if current_result.is_some() => {
+                        current_field = Some(FeedField::SourceName);
                     }
                     b"link" if current_result.is_some() => {
                         if let Some(builder) = current_result.as_mut()
@@ -708,6 +733,7 @@ fn parse_feed_results(xml: &str) -> Vec<SearchResultItem> {
                     b"pubDate" | b"published" | b"updated" => {
                         clear_field(&mut current_field, FeedField::PublishedAt);
                     }
+                    b"Source" | b"source" => clear_field(&mut current_field, FeedField::SourceName),
                     _ => {}
                 }
             }
@@ -754,6 +780,7 @@ fn append_feed_text(builder: &mut FeedResultBuilder, field: FeedField, raw: &[u8
         FeedField::Link => &mut builder.url,
         FeedField::Snippet => &mut builder.snippet,
         FeedField::PublishedAt => &mut builder.published_at,
+        FeedField::SourceName => &mut builder.source_name,
     };
     target.push_str(&text);
 }
@@ -769,12 +796,14 @@ fn finalize_feed_result(builder: FeedResultBuilder) -> Option<SearchResultItem> 
     let url = normalize_feed_field(&builder.url, false)?;
     let snippet = normalize_feed_field(&builder.snippet, true);
     let published_at = normalize_feed_field(&builder.published_at, false);
+    let source_name = normalize_feed_field(&builder.source_name, false);
 
     Some(SearchResultItem {
         title,
         url,
         snippet,
         published_at,
+        source_name,
     })
 }
 
@@ -1049,6 +1078,7 @@ fn build_search_sources(results: &[SearchResultRecord]) -> Vec<SearchSourceRecor
             url: item.url.clone(),
             snippet: item.snippet.clone(),
             published_at: item.published_at.clone(),
+            source_name: item.source_name.clone(),
         });
     }
 
@@ -1064,6 +1094,9 @@ fn format_result_entry(item: &SearchResultRecord) -> String {
     ];
     if let Some(domain) = &item.domain {
         entry.push(format!("domain: {domain}"));
+    }
+    if let Some(source_name) = &item.source_name {
+        entry.push(format!("source: {source_name}"));
     }
     if let Some(snippet) = &item.snippet {
         let (snippet, truncated) = truncate_text(snippet, DEFAULT_RESULT_SNIPPET_MAX_CHARS);
@@ -1120,8 +1153,8 @@ fn unix_timestamp_s() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        WebSearchFreshness, WebSearchSourceMode, WebSearchTool, WebSearchToolInput,
-        parse_feed_results,
+        BingRssSearchBackend, SearchLocale, WebSearchBackend, WebSearchFreshness, WebSearchRequest,
+        WebSearchSourceMode, WebSearchTool, WebSearchToolInput, parse_feed_results,
     };
     use crate::web::common::WebToolPolicy;
     use crate::{Tool, ToolExecutionContext};
@@ -1174,6 +1207,43 @@ mod tests {
             results[0].published_at.as_deref(),
             Some("2026-03-25T09:00:00Z")
         );
+    }
+
+    #[test]
+    fn parse_feed_results_extracts_news_source_name() {
+        let xml = r#"
+            <rss xmlns:News="https://www.bing.com/news/search?q=openai&amp;format=rss">
+              <channel>
+                <item>
+                  <title>OpenAI</title>
+                  <link>https://example.com/openai</link>
+                  <News:Source>Example News</News:Source>
+                </item>
+              </channel>
+            </rss>
+        "#;
+
+        let results = parse_feed_results(xml);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].source_name.as_deref(), Some("Example News"));
+    }
+
+    #[test]
+    fn bing_backend_uses_news_feed_path_for_news_mode() {
+        let backend =
+            BingRssSearchBackend::new(reqwest::Url::parse("https://www.bing.com/search").unwrap());
+        let request = WebSearchRequest {
+            query: "openai".to_string(),
+            locale: SearchLocale {
+                language: "en-US".to_string(),
+                country: "us".to_string(),
+            },
+            freshness: WebSearchFreshness::AnyTime,
+            source_mode: WebSearchSourceMode::News,
+        };
+
+        let request_url = backend.build_request_url(&request).unwrap();
+        assert_eq!(request_url.path(), "/news/search");
     }
 
     #[tokio::test]
