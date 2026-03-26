@@ -13,6 +13,8 @@ name = "agent"
 version = "0.1.0"
 dependencies = [
  "mcp",
+ "memory",
+ "plugins",
  "provider",
  "runtime",
  "skills",
@@ -1214,6 +1216,25 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8ca58f447f06ed17d5fc4043ce1b10dd205e060fb3ce5b979b8ed8e59ff3f79"
 
 [[package]]
+name = "memory"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "globset",
+ "ignore",
+ "regex",
+ "reqwest 0.12.28",
+ "schemars",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror",
+ "tokio",
+ "tools",
+ "types",
+]
+
+[[package]]
 name = "mime"
 version = "0.3.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1351,6 +1372,17 @@ name = "pin-utils"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8b870d8c151b6f2fb93e84a13146138f05d02ed11c7e7c54f8826aaaf7c9f184"
+
+[[package]]
+name = "plugins"
+version = "0.1.0"
+dependencies = [
+ "mcp",
+ "serde",
+ "thiserror",
+ "toml",
+ "types",
+]
 
 [[package]]
 name = "potential_utf"
@@ -2080,6 +2112,7 @@ dependencies = [
  "serde_yaml",
  "thiserror",
  "tokio",
+ "toml",
  "types",
 ]
 

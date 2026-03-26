@@ -75,6 +75,46 @@ impl Default for TuiConfig {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct PluginSlotsConfig {
+    #[serde(default)]
+    pub memory: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
+pub struct PluginEntryConfig {
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    #[serde(default)]
+    pub config: BTreeMap<String, toml::Value>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PluginsConfig {
+    pub enabled: bool,
+    pub roots: Vec<String>,
+    pub include_builtin: bool,
+    pub allow: Vec<String>,
+    pub deny: Vec<String>,
+    pub entries: BTreeMap<String, PluginEntryConfig>,
+    pub slots: PluginSlotsConfig,
+}
+
+impl Default for PluginsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            roots: Vec::new(),
+            include_builtin: true,
+            allow: Vec::new(),
+            deny: Vec::new(),
+            entries: BTreeMap::new(),
+            slots: PluginSlotsConfig::default(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct AgentCoreConfig {
     #[serde(default)]
@@ -91,6 +131,8 @@ pub struct AgentCoreConfig {
     pub system_prompt: Option<String>,
     #[serde(default)]
     pub skill_roots: Vec<String>,
+    #[serde(default)]
+    pub plugins: PluginsConfig,
 }
 
 impl AgentCoreConfig {
@@ -163,6 +205,7 @@ impl AgentCoreConfig {
             }
         }
         dedup_skill_roots(&mut config.skill_roots);
+        dedup_paths(&mut config.plugins.roots);
         Ok(config)
     }
 
@@ -195,6 +238,15 @@ impl AgentCoreConfig {
             .map(|entry| resolve_relative_path(dir.as_ref(), entry))
             .unwrap_or_else(|| dir.as_ref().join(".agent-core/store"))
     }
+
+    #[must_use]
+    pub fn resolved_plugin_roots(&self, dir: impl AsRef<Path>) -> Vec<PathBuf> {
+        self.plugins
+            .roots
+            .iter()
+            .map(|entry| resolve_relative_path(dir.as_ref(), entry))
+            .collect()
+    }
 }
 
 fn load_config_file(dir: &Path) -> Result<AgentCoreConfig> {
@@ -213,6 +265,10 @@ fn split_env_paths(value: &str) -> Vec<String> {
 }
 
 fn dedup_skill_roots(values: &mut Vec<String>) {
+    dedup_paths(values);
+}
+
+fn dedup_paths(values: &mut Vec<String>) {
     let mut seen = BTreeSet::new();
     values.retain(|entry| seen.insert(entry.to_string()));
 }
@@ -289,6 +345,20 @@ mod tests {
 
                 [tui]
                 command_prefix = ":"
+
+                [plugins]
+                roots = ["plugins", "/tmp/global-plugins"]
+                allow = ["memory-core"]
+                include_builtin = true
+
+                [plugins.slots]
+                memory = "memory-core"
+
+                [plugins.entries.memory-core]
+                enabled = true
+
+                [plugins.entries.memory-core.config]
+                index_path = ".agent-core/memory/index.sqlite"
             "#,
         )
         .await
@@ -318,6 +388,28 @@ mod tests {
         let skill_roots = config.resolved_skill_roots(dir.path());
         assert_eq!(skill_roots[0], dir.path().join("skills"));
         assert_eq!(skill_roots[1], PathBuf::from("/tmp/global-skills"));
+        let plugin_roots = config.resolved_plugin_roots(dir.path());
+        assert_eq!(plugin_roots[0], dir.path().join("plugins"));
+        assert_eq!(plugin_roots[1], PathBuf::from("/tmp/global-plugins"));
+        assert_eq!(config.plugins.allow, vec!["memory-core".to_string()]);
+        assert_eq!(config.plugins.slots.memory.as_deref(), Some("memory-core"));
+        assert_eq!(
+            config
+                .plugins
+                .entries
+                .get("memory-core")
+                .and_then(|entry| entry.enabled),
+            Some(true)
+        );
+        assert_eq!(
+            config
+                .plugins
+                .entries
+                .get("memory-core")
+                .and_then(|entry| entry.config.get("index_path"))
+                .and_then(toml::Value::as_str),
+            Some(".agent-core/memory/index.sqlite")
+        );
         assert_eq!(
             config.resolved_store_dir(dir.path()),
             dir.path().join(".agent-core/custom-store")

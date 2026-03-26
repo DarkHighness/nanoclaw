@@ -1,0 +1,7 @@
+id = "memory-core"
+version = "0.1.0"
+name = "Memory Core"
+description = "Markdown memory with local lexical retrieval"
+kind = "memory"
+enabled_by_default = true
+driver = "builtin.memory-core"

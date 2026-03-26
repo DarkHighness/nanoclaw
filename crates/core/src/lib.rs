@@ -9,6 +9,8 @@ mod builder;
 mod prelude;
 
 pub use mcp;
+pub use memory;
+pub use plugins;
 pub use provider;
 pub use runtime;
 pub use skills;

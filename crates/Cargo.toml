@@ -2,7 +2,9 @@
 default-members = [
     "core",
     "env",
+    "memory",
     "mcp",
+    "plugins",
     "provider",
     "runtime",
     "skills",
@@ -13,7 +15,9 @@ default-members = [
 members = [
     "core",
     "env",
+    "memory",
     "mcp",
+    "plugins",
     "provider",
     "runtime",
     "skills",

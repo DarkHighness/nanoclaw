@@ -1,0 +1,181 @@
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+use std::path::PathBuf;
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MemoryChunkingConfig {
+    #[serde(default = "default_chunk_target_tokens")]
+    pub target_tokens: usize,
+    #[serde(default = "default_chunk_overlap_tokens")]
+    pub overlap_tokens: usize,
+}
+
+impl Default for MemoryChunkingConfig {
+    fn default() -> Self {
+        Self {
+            target_tokens: default_chunk_target_tokens(),
+            overlap_tokens: default_chunk_overlap_tokens(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MemorySearchConfig {
+    #[serde(default = "default_max_results")]
+    pub max_results: usize,
+    #[serde(default = "default_max_snippet_chars")]
+    pub max_snippet_chars: usize,
+    #[serde(default = "default_context_lines")]
+    pub context_lines: usize,
+}
+
+impl Default for MemorySearchConfig {
+    fn default() -> Self {
+        Self {
+            max_results: default_max_results(),
+            max_snippet_chars: default_max_snippet_chars(),
+            context_lines: default_context_lines(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MemoryCorpusConfig {
+    #[serde(default = "default_include_globs")]
+    pub include_globs: Vec<String>,
+    #[serde(default)]
+    pub extra_paths: Vec<PathBuf>,
+}
+
+impl Default for MemoryCorpusConfig {
+    fn default() -> Self {
+        Self {
+            include_globs: default_include_globs(),
+            extra_paths: Vec::new(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MemoryCoreConfig {
+    #[serde(default)]
+    pub corpus: MemoryCorpusConfig,
+    #[serde(default)]
+    pub chunking: MemoryChunkingConfig,
+    #[serde(default)]
+    pub search: MemorySearchConfig,
+    #[serde(default)]
+    pub index_path: Option<PathBuf>,
+}
+
+impl Default for MemoryCoreConfig {
+    fn default() -> Self {
+        Self {
+            corpus: MemoryCorpusConfig::default(),
+            chunking: MemoryChunkingConfig::default(),
+            search: MemorySearchConfig::default(),
+            index_path: None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EmbeddingConfig {
+    pub provider: String,
+    pub model: String,
+    #[serde(default)]
+    pub base_url: Option<String>,
+    #[serde(default)]
+    pub api_key: Option<String>,
+    #[serde(default)]
+    pub headers: BTreeMap<String, String>,
+    #[serde(default = "default_embedding_batch_size")]
+    pub batch_size: usize,
+    #[serde(default = "default_embedding_timeout_ms")]
+    pub timeout_ms: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct HybridWeights {
+    #[serde(default = "default_vector_weight")]
+    pub vector_weight: f64,
+    #[serde(default = "default_text_weight")]
+    pub text_weight: f64,
+}
+
+impl Default for HybridWeights {
+    fn default() -> Self {
+        Self {
+            vector_weight: default_vector_weight(),
+            text_weight: default_text_weight(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
+pub struct MemoryEmbedConfig {
+    #[serde(default)]
+    pub corpus: MemoryCorpusConfig,
+    #[serde(default)]
+    pub chunking: MemoryChunkingConfig,
+    #[serde(default)]
+    pub search: MemorySearchConfig,
+    #[serde(default)]
+    pub embedding: Option<EmbeddingConfig>,
+    #[serde(default)]
+    pub hybrid: HybridWeights,
+    #[serde(default)]
+    pub index_path: Option<PathBuf>,
+}
+
+fn default_chunk_target_tokens() -> usize {
+    400
+}
+
+fn default_chunk_overlap_tokens() -> usize {
+    80
+}
+
+fn default_max_results() -> usize {
+    6
+}
+
+fn default_max_snippet_chars() -> usize {
+    700
+}
+
+fn default_context_lines() -> usize {
+    1
+}
+
+fn default_include_globs() -> Vec<String> {
+    vec!["MEMORY.md".to_string(), "memory/**/*.md".to_string()]
+}
+
+fn default_vector_weight() -> f64 {
+    0.65
+}
+
+fn default_text_weight() -> f64 {
+    0.35
+}
+
+fn default_embedding_batch_size() -> usize {
+    16
+}
+
+fn default_embedding_timeout_ms() -> u64 {
+    30_000
+}
+
+impl MemoryEmbedConfig {
+    #[must_use]
+    pub fn as_core_config(&self) -> MemoryCoreConfig {
+        MemoryCoreConfig {
+            corpus: self.corpus.clone(),
+            chunking: self.chunking.clone(),
+            search: self.search.clone(),
+            index_path: self.index_path.clone(),
+        }
+    }
+}

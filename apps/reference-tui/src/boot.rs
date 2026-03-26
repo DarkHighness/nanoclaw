@@ -6,17 +6,26 @@ use agent::mcp::{
     ConnectedMcpServer, McpConnectOptions, McpServerConfig, McpTransportConfig,
     catalog_tools_as_registry_entries, connect_and_catalog_mcp_servers_with_options,
 };
+use agent::memory::{
+    MemoryCoreBackend, MemoryCoreConfig, MemoryEmbedBackend, MemoryEmbedConfig, MemoryGetTool,
+    MemorySearchTool,
+};
+use agent::plugins::{
+    DriverActivationRequest, PluginActivationPlan, PluginDiagnosticLevel, PluginEntryConfig,
+    PluginResolverConfig, PluginSlotsConfig, build_activation_plan, discover_plugins,
+};
 use agent::provider::{
     BackendDescriptor, OpenAiResponsesOptions, OpenAiServerCompaction, ProviderBackend,
     ProviderDescriptor, RequestOptions,
 };
 use agent::skills::{Skill, load_skill_roots};
-use agent_env::vars;
+use agent_env::{EnvMap, vars};
 use anyhow::{Context, Result, anyhow};
 use runtime::{
     AgentRuntime, AgentRuntimeBuilder, CompactionConfig, DefaultCommandHookExecutor, HookRunner,
     ModelConversationCompactor,
 };
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use store::{FileRunStore, InMemoryRunStore, RunStore};
@@ -91,7 +100,9 @@ async fn bootstrap_from_parts(
     workspace_root: PathBuf,
     config: AgentCoreConfig,
 ) -> Result<BootArtifacts> {
-    let skill_roots = resolved_skill_roots(&config, &workspace_root);
+    let plugin_plan = build_plugin_activation_plan(&config, &workspace_root)
+        .context("failed to build plugin activation plan")?;
+    let skill_roots = resolved_skill_roots(&config, &workspace_root, &plugin_plan);
 
     let store_handle = build_store(&config, &workspace_root).await?;
     let store = store_handle.store.clone();
@@ -125,9 +136,13 @@ async fn bootstrap_from_parts(
         tools.register(WebFetchTool::new());
     }
 
-    let mcp_servers = resolve_mcp_servers(&config.mcp_servers, &workspace_root);
+    let driver_outcome =
+        activate_driver_requests(&plugin_plan.driver_activations, &workspace_root, &mut tools)?;
+    let mut mcp_server_configs = config.mcp_servers.clone();
+    mcp_server_configs.extend(plugin_plan.mcp_servers.clone());
+    let mcp_servers = resolve_mcp_servers(&mcp_server_configs, &workspace_root);
     let connected_mcp_servers = connect_and_catalog_mcp_servers_with_options(
-        &mcp_servers,
+        &dedup_mcp_servers(mcp_servers),
         McpConnectOptions {
             process_executor,
             ..Default::default()
@@ -148,11 +163,14 @@ async fn bootstrap_from_parts(
         .await
         .context("failed to load configured skill roots")?;
     let skills = skill_catalog.all().to_vec();
-    let instructions = build_runtime_preamble(&config, &skill_catalog);
+    let instructions = build_runtime_preamble(&config, &skill_catalog, &plugin_plan.instructions);
+    let mut runtime_hooks = plugin_plan.hooks.clone();
+    runtime_hooks.extend(driver_outcome.hooks.clone());
     let skill_hooks = skills
         .iter()
         .flat_map(|skill| skill.hooks.clone())
         .collect::<Vec<_>>();
+    runtime_hooks.extend(skill_hooks.clone());
     let skill_names = skills
         .iter()
         .map(|skill| skill.name.clone())
@@ -183,7 +201,7 @@ async fn bootstrap_from_parts(
             preserve_recent_messages: compact_preserve_recent_messages,
         })
         .instructions(instructions)
-        .hooks(skill_hooks)
+        .hooks(runtime_hooks)
         .skill_catalog(skill_catalog)
         .build();
     let startup_summary = build_startup_summary(
@@ -196,6 +214,8 @@ async fn bootstrap_from_parts(
         &skill_names,
         &connected_mcp_servers,
         &config,
+        &plugin_plan,
+        &driver_outcome.warnings,
     );
 
     Ok(BootArtifacts {
@@ -216,6 +236,7 @@ async fn bootstrap_from_parts(
 fn build_runtime_preamble(
     config: &AgentCoreConfig,
     skill_catalog: &agent::skills::SkillCatalog,
+    plugin_instructions: &[String],
 ) -> Vec<String> {
     let mut preamble = DEFAULT_AGENT_PREAMBLE
         .iter()
@@ -226,6 +247,7 @@ fn build_runtime_preamble(
             preamble.push(system_prompt.to_string());
         }
     }
+    preamble.extend(plugin_instructions.iter().cloned());
     if let Some(skill_manifest) = skill_catalog.prompt_manifest() {
         preamble.push(skill_manifest);
     }
@@ -323,6 +345,8 @@ fn build_startup_summary(
     skill_names: &[String],
     mcp_servers: &[ConnectedMcpServer],
     config: &AgentCoreConfig,
+    plugin_plan: &PluginActivationPlan,
+    driver_warnings: &[String],
 ) -> TuiStartupSummary {
     let local_tools = tool_specs
         .iter()
@@ -340,6 +364,15 @@ fn build_startup_summary(
             tool_specs.len()
         ),
         format!("skills: {}", skill_names.len()),
+        format!(
+            "plugins: {} enabled / {} total",
+            plugin_plan
+                .plugin_states
+                .iter()
+                .filter(|state| state.enabled)
+                .count(),
+            plugin_plan.plugin_states.len()
+        ),
         format!("mcp servers: {}", mcp_servers.len()),
         format!("command prefix: {}", config.tui.command_prefix),
         format!(
@@ -361,6 +394,19 @@ fn build_startup_summary(
     ];
     if let Some(warning) = &store_handle.warning {
         sidebar.push(format!("warning: {warning}"));
+    }
+    if let Some(memory_slot) = plugin_plan.slots.memory.as_deref() {
+        sidebar.push(format!("memory slot: {memory_slot}"));
+    }
+    for diagnostic in &plugin_plan.diagnostics {
+        let level = match diagnostic.level {
+            PluginDiagnosticLevel::Warning => "plugin warning",
+            PluginDiagnosticLevel::Error => "plugin error",
+        };
+        sidebar.push(format!("{level}: {}", diagnostic.message));
+    }
+    for warning in driver_warnings {
+        sidebar.push(format!("driver warning: {warning}"));
     }
     if !skill_names.is_empty() {
         sidebar.push(format!("skill names: {}", preview_list(skill_names, 4)));
@@ -421,15 +467,129 @@ fn resolved_provider_kind(config: &AgentCoreConfig, model: &str) -> ProviderKind
     }
 }
 
-fn resolved_skill_roots(config: &AgentCoreConfig, workspace_root: &Path) -> Vec<PathBuf> {
+fn resolved_skill_roots(
+    config: &AgentCoreConfig,
+    workspace_root: &Path,
+    plugin_plan: &PluginActivationPlan,
+) -> Vec<PathBuf> {
     let mut roots = config.resolved_skill_roots(workspace_root);
+    roots.extend(plugin_plan.skill_roots.clone());
     if roots.is_empty() {
         let default_root = workspace_root.join(".agent-core/skills");
         if default_root.exists() {
             roots.push(default_root);
         }
     }
+    roots.sort();
+    roots.dedup();
     roots
+}
+
+fn build_plugin_activation_plan(
+    config: &AgentCoreConfig,
+    workspace_root: &Path,
+) -> Result<PluginActivationPlan> {
+    let mut roots = config.resolved_plugin_roots(workspace_root);
+    if config.plugins.include_builtin {
+        roots.push(workspace_root.join("builtin-plugins"));
+    }
+    roots.sort();
+    roots.dedup();
+    let discovery = discover_plugins(&roots)?;
+    let resolver = PluginResolverConfig {
+        enabled: config.plugins.enabled,
+        allow: config.plugins.allow.clone(),
+        deny: config.plugins.deny.clone(),
+        entries: config
+            .plugins
+            .entries
+            .iter()
+            .map(|(id, entry)| {
+                (
+                    id.clone(),
+                    PluginEntryConfig {
+                        enabled: entry.enabled,
+                        config: entry.config.clone().into_iter().collect(),
+                    },
+                )
+            })
+            .collect::<BTreeMap<_, _>>(),
+        slots: PluginSlotsConfig {
+            memory: config.plugins.slots.memory.clone(),
+        },
+    };
+    Ok(build_activation_plan(discovery, &resolver))
+}
+
+#[derive(Default)]
+struct DriverActivationOutcome {
+    hooks: Vec<types::HookRegistration>,
+    warnings: Vec<String>,
+}
+
+fn activate_driver_requests(
+    requests: &[DriverActivationRequest],
+    workspace_root: &Path,
+    tools: &mut ToolRegistry,
+) -> Result<DriverActivationOutcome> {
+    let mut outcome = DriverActivationOutcome::default();
+    let env_map = EnvMap::from_workspace_dir(workspace_root)
+        .context("failed to resolve environment for plugin driver activation")?;
+
+    for request in requests {
+        match request.driver_id.as_str() {
+            "builtin.memory-core" => {
+                let config: MemoryCoreConfig = toml::Value::Table(request.config.clone())
+                    .try_into()
+                    .with_context(|| {
+                        format!("failed to parse config for plugin `{}`", request.plugin_id)
+                    })?;
+                let backend =
+                    Arc::new(MemoryCoreBackend::new(workspace_root.to_path_buf(), config));
+                tools.register_arc(Arc::new(MemorySearchTool::new(backend.clone())));
+                tools.register_arc(Arc::new(MemoryGetTool::new(backend)));
+            }
+            "builtin.memory-embed" => {
+                let mut table = request.config.clone();
+                if let Some(toml::Value::Table(embedding)) = table.get_mut("embedding")
+                    && let Some(api_key_env) = embedding
+                        .remove("api_key_env")
+                        .and_then(|value| value.as_str().map(ToOwned::to_owned))
+                {
+                    let api_key = env_map.get_non_empty(&api_key_env).ok_or_else(|| {
+                        anyhow!(
+                            "missing embedding API key env `{api_key_env}` for plugin `{}`",
+                            request.plugin_id
+                        )
+                    })?;
+                    embedding.insert("api_key".to_string(), toml::Value::String(api_key));
+                }
+                let config: MemoryEmbedConfig =
+                    toml::Value::Table(table).try_into().with_context(|| {
+                        format!("failed to parse config for plugin `{}`", request.plugin_id)
+                    })?;
+                let backend = Arc::new(
+                    MemoryEmbedBackend::from_http_config(workspace_root.to_path_buf(), config)
+                        .with_context(|| {
+                            format!(
+                                "failed to initialize memory-embed backend for plugin `{}`",
+                                request.plugin_id
+                            )
+                        })?,
+                );
+                tools.register_arc(Arc::new(MemorySearchTool::new(backend.clone())));
+                tools.register_arc(Arc::new(MemoryGetTool::new(backend)));
+            }
+            other => {
+                outcome.warnings.push(format!(
+                    "plugin `{}` references unknown driver `{other}`",
+                    request.plugin_id
+                ));
+            }
+        }
+    }
+
+    Ok(outcome)
 }
 
 fn resolve_mcp_servers(configs: &[McpServerConfig], workspace_root: &Path) -> Vec<McpServerConfig> {
@@ -448,6 +608,14 @@ fn resolve_mcp_servers(configs: &[McpServerConfig], workspace_root: &Path) -> Ve
         .collect()
 }
 
+fn dedup_mcp_servers(servers: Vec<McpServerConfig>) -> Vec<McpServerConfig> {
+    let mut by_name = BTreeMap::new();
+    for server in servers {
+        by_name.entry(server.name.clone()).or_insert(server);
+    }
+    by_name.into_values().collect()
+}
+
 fn resolve_path(base_dir: &Path, value: &str) -> PathBuf {
     let path = PathBuf::from(value);
     if path.is_absolute() {
@@ -460,7 +628,8 @@ fn resolve_path(base_dir: &Path, value: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::{
-        DEFAULT_AGENT_PREAMBLE, bootstrap_from_dir, build_runtime_preamble, resolved_skill_roots,
+        DEFAULT_AGENT_PREAMBLE, bootstrap_from_dir, build_plugin_activation_plan,
+        build_runtime_preamble, resolved_skill_roots,
     };
     use crate::config::{AgentCoreConfig, ProviderKind};
     use agent::skills::load_skill_roots;
@@ -587,11 +756,13 @@ Use this skill when asked.
             config.system_prompt = Some("Project-specific prompt.".to_string());
             config.skill_roots = vec!["skills".to_string()];
         });
-        let skill_catalog = load_skill_roots(&resolved_skill_roots(&config, dir.path()))
-            .await
-            .unwrap();
+        let plugin_plan = build_plugin_activation_plan(&config, dir.path()).unwrap();
+        let skill_catalog =
+            load_skill_roots(&resolved_skill_roots(&config, dir.path(), &plugin_plan))
+                .await
+                .unwrap();
 
-        let preamble = build_runtime_preamble(&config, &skill_catalog);
+        let preamble = build_runtime_preamble(&config, &skill_catalog, &plugin_plan.instructions);
 
         assert_eq!(preamble[0], DEFAULT_AGENT_PREAMBLE[0]);
         assert_eq!(preamble[1], DEFAULT_AGENT_PREAMBLE[1]);
@@ -604,6 +775,65 @@ Use this skill when asked.
             preamble
                 .iter()
                 .any(|line| line.contains("Available workspace skills are listed below."))
+        );
+    }
+
+    #[tokio::test]
+    async fn boot_registers_memory_tools_from_builtin_plugin_slot() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(
+            dir.path()
+                .join("builtin-plugins/memory-core/.nanoclaw-plugin"),
+        )
+        .await
+        .unwrap();
+        fs::write(dir.path().join("MEMORY.md"), "workspace preference")
+            .await
+            .unwrap();
+        fs::write(
+            dir.path()
+                .join("builtin-plugins/memory-core/.nanoclaw-plugin/plugin.toml"),
+            r#"
+                id = "memory-core"
+                kind = "memory"
+                enabled_by_default = false
+                driver = "builtin.memory-core"
+            "#,
+        )
+        .await
+        .unwrap();
+        fs::write(
+            dir.path().join("agent-core.toml"),
+            r#"
+                [provider]
+                kind = "openai"
+                model = "gpt-4.1-mini"
+
+                [provider.env]
+                OPENAI_API_KEY = "test-key"
+
+                [plugins.slots]
+                memory = "memory-core"
+            "#,
+        )
+        .await
+        .unwrap();
+
+        let artifacts = bootstrap_from_dir(dir.path()).await.unwrap();
+        let tool_specs = artifacts.runtime.tool_specs();
+        let tool_names = tool_specs
+            .into_iter()
+            .map(|tool| tool.name)
+            .collect::<Vec<_>>();
+
+        assert!(tool_names.contains(&"memory_search".to_string()));
+        assert!(tool_names.contains(&"memory_get".to_string()));
+        assert!(
+            artifacts
+                .startup_summary
+                .sidebar
+                .iter()
+                .any(|line| line.contains("memory slot: memory-core"))
         );
     }
 
