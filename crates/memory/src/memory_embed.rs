@@ -13,6 +13,9 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
+const INDEX_SCHEMA_VERSION: u32 = 1;
+const INDEX_BACKEND_ID: &str = "memory-embed";
+
 #[async_trait]
 pub trait EmbeddingClient: Send + Sync {
     async fn embed(&self, model: &str, texts: &[String]) -> Result<Vec<Vec<f32>>>;
@@ -116,17 +119,27 @@ struct PersistedChunkEmbedding {
     snapshot_id: String,
     start_line: usize,
     end_line: usize,
+    text: String,
     embedding: Vec<f32>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 struct PersistedMemoryEmbedIndex {
+    #[serde(default)]
+    schema_version: u32,
+    #[serde(default)]
     backend: String,
+    #[serde(default)]
+    config_fingerprint: String,
+    #[serde(default)]
+    document_snapshots: BTreeMap<String, String>,
     chunks: Vec<PersistedChunkEmbedding>,
 }
 
 #[derive(Clone, Debug, Default)]
 struct CachedMemoryEmbedIndex {
+    config_fingerprint: String,
+    document_snapshots: BTreeMap<String, String>,
     chunks: BTreeMap<String, PersistedChunkEmbedding>,
 }
 
@@ -166,6 +179,7 @@ impl MemoryEmbedBackend {
 
     async fn ensure_chunk_index(
         &self,
+        corpus: &crate::MemoryCorpus,
         chunks: &[crate::MemoryCorpusChunk],
     ) -> Result<CachedMemoryEmbedIndex> {
         // The persisted cache is keyed by chunk identity, not file path alone, so a restart can
@@ -176,6 +190,17 @@ impl MemoryEmbedBackend {
             } else {
                 self.load_persisted_index().await?
             };
+        let current_snapshots = document_snapshots(corpus);
+        let current_fingerprint = self.config_fingerprint()?;
+        let fingerprint_changed = cached.config_fingerprint != current_fingerprint;
+        if fingerprint_changed {
+            // Embeddings are model-dependent. A changed embedding config invalidates all vectors
+            // even when chunk boundaries and snapshots are unchanged.
+            cached.chunks.clear();
+        }
+        let snapshots_changed = cached.document_snapshots != current_snapshots;
+        let mut changed = fingerprint_changed || snapshots_changed;
+        changed |= self.trim_cached_chunks(chunks, &mut cached);
         let missing = chunks
             .iter()
             .filter(|chunk| !cached.chunks.contains_key(&chunk_id(chunk)))
@@ -183,35 +208,15 @@ impl MemoryEmbedBackend {
             .collect::<Vec<_>>();
 
         if !missing.is_empty() {
-            let texts = missing
-                .iter()
-                .map(|chunk| chunk.text.clone())
-                .collect::<Vec<_>>();
-            let embeddings = self
-                .client
-                .embed(
-                    self.config
-                        .embedding
-                        .as_ref()
-                        .map(|cfg| cfg.model.as_str())
-                        .unwrap_or(""),
-                    &texts,
-                )
-                .await?;
-            for (chunk, embedding) in missing.iter().zip(embeddings.into_iter()) {
-                let entry = PersistedChunkEmbedding {
-                    chunk_id: chunk_id(chunk),
-                    path: chunk.path.clone(),
-                    snapshot_id: chunk.snapshot_id.clone(),
-                    start_line: chunk.start_line,
-                    end_line: chunk.end_line,
-                    embedding,
-                };
+            for entry in self.embed_missing_chunks(&missing).await? {
                 cached.chunks.insert(entry.chunk_id.clone(), entry);
             }
+            changed = true;
+        }
+        cached.config_fingerprint = current_fingerprint;
+        cached.document_snapshots = current_snapshots;
+        if changed {
             self.persist_index(chunks, &cached).await?;
-        } else {
-            self.trim_cached_chunks(chunks, &mut cached).await?;
         }
 
         *self.state.write().expect("memory-embed write lock") = Some(cached.clone());
@@ -228,7 +233,15 @@ impl MemoryEmbedBackend {
             Err(error) => return Err(error.into()),
         };
         let persisted: PersistedMemoryEmbedIndex = serde_json::from_str(&raw)?;
+        if persisted.backend != INDEX_BACKEND_ID {
+            return Ok(CachedMemoryEmbedIndex::default());
+        }
+        if persisted.schema_version != 0 && persisted.schema_version != INDEX_SCHEMA_VERSION {
+            return Ok(CachedMemoryEmbedIndex::default());
+        }
         Ok(CachedMemoryEmbedIndex {
+            config_fingerprint: persisted.config_fingerprint,
+            document_snapshots: persisted.document_snapshots,
             chunks: persisted
                 .chunks
                 .into_iter()
@@ -237,20 +250,110 @@ impl MemoryEmbedBackend {
         })
     }
 
-    async fn trim_cached_chunks(
+    fn trim_cached_chunks(
         &self,
         chunks: &[crate::MemoryCorpusChunk],
         cached: &mut CachedMemoryEmbedIndex,
-    ) -> Result<()> {
+    ) -> bool {
         let valid_ids = chunks.iter().map(chunk_id).collect::<Vec<_>>();
         let before = cached.chunks.len();
         cached
             .chunks
             .retain(|chunk_id, _| valid_ids.iter().any(|valid| valid == chunk_id));
-        if cached.chunks.len() != before {
-            self.persist_index(chunks, cached).await?;
+        cached.chunks.len() != before
+    }
+
+    async fn embed_missing_chunks(
+        &self,
+        missing: &[crate::MemoryCorpusChunk],
+    ) -> Result<Vec<PersistedChunkEmbedding>> {
+        if missing.is_empty() {
+            return Ok(Vec::new());
         }
-        Ok(())
+        let batch_size = self
+            .config
+            .embedding
+            .as_ref()
+            .map(|embedding| embedding.batch_size.max(1))
+            .unwrap_or(16);
+        let mut entries = Vec::with_capacity(missing.len());
+        for group in missing.chunks(batch_size) {
+            let texts = group
+                .iter()
+                .map(|chunk| chunk.text.clone())
+                .collect::<Vec<_>>();
+            let embeddings = self
+                .client
+                .embed(
+                    self.config
+                        .embedding
+                        .as_ref()
+                        .map(|cfg| cfg.model.as_str())
+                        .unwrap_or(""),
+                    &texts,
+                )
+                .await?;
+            if embeddings.len() != group.len() {
+                return Err(crate::MemoryError::invalid(format!(
+                    "embedding service returned {} vectors for {} chunks",
+                    embeddings.len(),
+                    group.len()
+                )));
+            }
+            for (chunk, embedding) in group.iter().zip(embeddings.into_iter()) {
+                entries.push(PersistedChunkEmbedding {
+                    chunk_id: chunk_id(chunk),
+                    path: chunk.path.clone(),
+                    snapshot_id: chunk.snapshot_id.clone(),
+                    start_line: chunk.start_line,
+                    end_line: chunk.end_line,
+                    text: chunk.text.clone(),
+                    embedding,
+                });
+            }
+        }
+        Ok(entries)
+    }
+
+    fn config_fingerprint(&self) -> Result<String> {
+        #[derive(Serialize)]
+        struct FingerprintInput<'a> {
+            include_globs: &'a Vec<String>,
+            extra_paths: Vec<String>,
+            target_tokens: usize,
+            overlap_tokens: usize,
+            embedding_provider: Option<&'a str>,
+            embedding_model: Option<&'a str>,
+            embedding_base_url: Option<&'a str>,
+            embedding_headers: Option<&'a BTreeMap<String, String>>,
+        }
+
+        let payload = FingerprintInput {
+            include_globs: &self.config.corpus.include_globs,
+            extra_paths: self
+                .config
+                .corpus
+                .extra_paths
+                .iter()
+                .map(|path| path.to_string_lossy().to_string())
+                .collect(),
+            target_tokens: self.config.chunking.target_tokens,
+            overlap_tokens: self.config.chunking.overlap_tokens,
+            embedding_provider: self
+                .config
+                .embedding
+                .as_ref()
+                .map(|cfg| cfg.provider.as_str()),
+            embedding_model: self.config.embedding.as_ref().map(|cfg| cfg.model.as_str()),
+            embedding_base_url: self
+                .config
+                .embedding
+                .as_ref()
+                .and_then(|cfg| cfg.base_url.as_deref()),
+            embedding_headers: self.config.embedding.as_ref().map(|cfg| &cfg.headers),
+        };
+        let encoded = serde_json::to_vec(&payload)?;
+        Ok(stable_digest(&encoded))
     }
 
     async fn persist_index(
@@ -260,7 +363,10 @@ impl MemoryEmbedBackend {
     ) -> Result<()> {
         let valid_ids = chunks.iter().map(chunk_id).collect::<Vec<_>>();
         let persisted = PersistedMemoryEmbedIndex {
-            backend: "memory-embed".to_string(),
+            schema_version: INDEX_SCHEMA_VERSION,
+            backend: INDEX_BACKEND_ID.to_string(),
+            config_fingerprint: cached.config_fingerprint.clone(),
+            document_snapshots: cached.document_snapshots.clone(),
             chunks: valid_ids
                 .iter()
                 .filter_map(|chunk_id| cached.chunks.get(chunk_id).cloned())
@@ -287,11 +393,11 @@ impl MemoryBackend for MemoryEmbedBackend {
     async fn sync(&self) -> Result<MemorySyncStatus> {
         let corpus = load_memory_corpus(&self.workspace_root, &self.config.corpus).await?;
         let chunks = chunk_corpus(&corpus, &self.config.chunking);
-        let cached = self.ensure_chunk_index(&chunks).await?;
+        self.ensure_chunk_index(&corpus, &chunks).await?;
         Ok(MemorySyncStatus {
-            backend: "memory-embed".to_string(),
+            backend: INDEX_BACKEND_ID.to_string(),
             indexed_documents: corpus.documents.len(),
-            indexed_lines: corpus.total_lines().max(cached.chunks.len()),
+            indexed_lines: corpus.total_lines(),
         })
     }
 
@@ -304,7 +410,7 @@ impl MemoryBackend for MemoryEmbedBackend {
             .max(1)
             .min(50);
         let prefix = req.path_prefix.map(|value| value.trim().to_string());
-        let cached = self.ensure_chunk_index(&chunks).await?;
+        let cached = self.ensure_chunk_index(&corpus, &chunks).await?;
         let query_embedding = self
             .client
             .embed(
@@ -385,8 +491,13 @@ impl MemoryBackend for MemoryEmbedBackend {
             "index_path".to_string(),
             json!(self.index_path().to_string_lossy().to_string()),
         );
+        metadata.insert("schema_version".to_string(), json!(INDEX_SCHEMA_VERSION));
+        metadata.insert(
+            "config_fingerprint".to_string(),
+            json!(cached.config_fingerprint),
+        );
         Ok(MemorySearchResponse {
-            backend: "memory-embed".to_string(),
+            backend: INDEX_BACKEND_ID.to_string(),
             hits,
             metadata,
         })
@@ -415,6 +526,22 @@ fn chunk_id(chunk: &crate::MemoryCorpusChunk) -> String {
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>()
+}
+
+fn document_snapshots(corpus: &crate::MemoryCorpus) -> BTreeMap<String, String> {
+    corpus
+        .documents
+        .iter()
+        .map(|document| (document.path.clone(), document.snapshot_id.clone()))
+        .collect()
+}
+
+fn stable_digest(value: &[u8]) -> String {
+    let digest = Sha256::digest(value);
+    digest[..12]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 fn cosine_similarity(left: &[f32], right: &[f32]) -> f64 {
@@ -452,8 +579,9 @@ fn render_embed_snippet(text: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::{EmbeddingClient, MemoryEmbedBackend};
-    use crate::{MemoryBackend, MemoryEmbedConfig, MemorySearchRequest};
+    use crate::{EmbeddingConfig, MemoryBackend, MemoryEmbedConfig, MemorySearchRequest};
     use async_trait::async_trait;
+    use std::collections::BTreeMap;
     use std::sync::{Arc, Mutex};
     use tempfile::tempdir;
     use tokio::fs;
@@ -536,5 +664,60 @@ mod tests {
         backend.sync().await.unwrap();
         let second_calls = client.calls.lock().unwrap().clone();
         assert_eq!(second_calls, vec![1]);
+    }
+
+    #[tokio::test]
+    async fn sync_after_content_change_only_embeds_new_chunks() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("MEMORY.md"), "semantic alpha")
+            .await
+            .unwrap();
+        let client = Arc::new(MockEmbeddingClient::default());
+        let config = MemoryEmbedConfig::default();
+
+        let backend =
+            MemoryEmbedBackend::new(dir.path().to_path_buf(), config.clone(), client.clone());
+        backend.sync().await.unwrap();
+        assert_eq!(client.calls.lock().unwrap().clone(), vec![1]);
+
+        fs::create_dir_all(dir.path().join("memory")).await.unwrap();
+        fs::write(dir.path().join("memory/new.md"), "semantic beta")
+            .await
+            .unwrap();
+
+        let restarted = MemoryEmbedBackend::new(dir.path().to_path_buf(), config, client.clone());
+        restarted.sync().await.unwrap();
+        assert_eq!(client.calls.lock().unwrap().clone(), vec![1, 1]);
+    }
+
+    #[tokio::test]
+    async fn sync_batches_missing_chunks_by_embedding_batch_size() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("memory")).await.unwrap();
+        for index in 0..5 {
+            fs::write(
+                dir.path().join("memory").join(format!("d{index}.md")),
+                format!("semantic chunk {index}"),
+            )
+            .await
+            .unwrap();
+        }
+        let client = Arc::new(MockEmbeddingClient::default());
+        let config = MemoryEmbedConfig {
+            embedding: Some(EmbeddingConfig {
+                provider: "mock".to_string(),
+                model: "mock-small".to_string(),
+                base_url: None,
+                api_key: None,
+                headers: BTreeMap::new(),
+                batch_size: 2,
+                timeout_ms: 30_000,
+            }),
+            ..MemoryEmbedConfig::default()
+        };
+
+        let backend = MemoryEmbedBackend::new(dir.path().to_path_buf(), config, client.clone());
+        backend.sync().await.unwrap();
+        assert_eq!(client.calls.lock().unwrap().clone(), vec![2, 2, 1]);
     }
 }

@@ -6,20 +6,15 @@ use agent::mcp::{
     ConnectedMcpServer, McpConnectOptions, McpServerConfig, McpTransportConfig,
     catalog_tools_as_registry_entries, connect_and_catalog_mcp_servers_with_options,
 };
-use agent::memory::{
-    MemoryCoreBackend, MemoryCoreConfig, MemoryEmbedBackend, MemoryEmbedConfig, MemoryGetTool,
-    MemorySearchTool,
-};
 use agent::plugins::{
-    DriverActivationRequest, PluginActivationPlan, PluginDiagnosticLevel, PluginEntryConfig,
-    PluginResolverConfig, PluginSlotsConfig, build_activation_plan, discover_plugins,
+    PluginActivationPlan, PluginDiagnosticLevel, PluginEntryConfig, PluginSlotsConfig,
 };
 use agent::provider::{
     BackendDescriptor, OpenAiResponsesOptions, OpenAiServerCompaction, ProviderBackend,
     ProviderDescriptor, RequestOptions,
 };
 use agent::skills::{Skill, load_skill_roots};
-use agent_env::{EnvMap, vars};
+use agent_env::vars;
 use anyhow::{Context, Result, anyhow};
 use runtime::{
     AgentRuntime, AgentRuntimeBuilder, CompactionConfig, DefaultCommandHookExecutor, HookRunner,
@@ -136,8 +131,12 @@ async fn bootstrap_from_parts(
         tools.register(WebFetchTool::new());
     }
 
-    let driver_outcome =
-        activate_driver_requests(&plugin_plan.driver_activations, &workspace_root, &mut tools)?;
+    let driver_outcome = agent::activate_driver_requests(
+        &plugin_plan.driver_activations,
+        &workspace_root,
+        &mut tools,
+        agent::UnknownDriverPolicy::Warn,
+    )?;
     let mut mcp_server_configs = config.mcp_servers.clone();
     mcp_server_configs.extend(plugin_plan.mcp_servers.clone());
     let mcp_servers = resolve_mcp_servers(&mcp_server_configs, &workspace_root);
@@ -165,7 +164,6 @@ async fn bootstrap_from_parts(
     let skills = skill_catalog.all().to_vec();
     let instructions = build_runtime_preamble(&config, &skill_catalog, &plugin_plan.instructions);
     let mut runtime_hooks = plugin_plan.hooks.clone();
-    runtime_hooks.extend(driver_outcome.hooks.clone());
     let skill_hooks = skills
         .iter()
         .flat_map(|skill| skill.hooks.clone())
@@ -489,15 +487,10 @@ fn build_plugin_activation_plan(
     config: &AgentCoreConfig,
     workspace_root: &Path,
 ) -> Result<PluginActivationPlan> {
-    let mut roots = config.resolved_plugin_roots(workspace_root);
-    if config.plugins.include_builtin {
-        roots.push(workspace_root.join("builtin-plugins"));
-    }
-    roots.sort();
-    roots.dedup();
-    let discovery = discover_plugins(&roots)?;
-    let resolver = PluginResolverConfig {
+    let resolver = agent::PluginBootResolverConfig {
         enabled: config.plugins.enabled,
+        roots: config.resolved_plugin_roots(workspace_root),
+        include_builtin: config.plugins.include_builtin,
         allow: config.plugins.allow.clone(),
         deny: config.plugins.deny.clone(),
         entries: config
@@ -518,78 +511,7 @@ fn build_plugin_activation_plan(
             memory: config.plugins.slots.memory.clone(),
         },
     };
-    Ok(build_activation_plan(discovery, &resolver))
-}
-
-#[derive(Default)]
-struct DriverActivationOutcome {
-    hooks: Vec<types::HookRegistration>,
-    warnings: Vec<String>,
-}
-
-fn activate_driver_requests(
-    requests: &[DriverActivationRequest],
-    workspace_root: &Path,
-    tools: &mut ToolRegistry,
-) -> Result<DriverActivationOutcome> {
-    let mut outcome = DriverActivationOutcome::default();
-    let env_map = EnvMap::from_workspace_dir(workspace_root)
-        .context("failed to resolve environment for plugin driver activation")?;
-
-    for request in requests {
-        match request.driver_id.as_str() {
-            "builtin.memory-core" => {
-                let config: MemoryCoreConfig = toml::Value::Table(request.config.clone())
-                    .try_into()
-                    .with_context(|| {
-                        format!("failed to parse config for plugin `{}`", request.plugin_id)
-                    })?;
-                let backend =
-                    Arc::new(MemoryCoreBackend::new(workspace_root.to_path_buf(), config));
-                tools.register_arc(Arc::new(MemorySearchTool::new(backend.clone())));
-                tools.register_arc(Arc::new(MemoryGetTool::new(backend)));
-            }
-            "builtin.memory-embed" => {
-                let mut table = request.config.clone();
-                if let Some(toml::Value::Table(embedding)) = table.get_mut("embedding")
-                    && let Some(api_key_env) = embedding
-                        .remove("api_key_env")
-                        .and_then(|value| value.as_str().map(ToOwned::to_owned))
-                {
-                    let api_key = env_map.get_non_empty(&api_key_env).ok_or_else(|| {
-                        anyhow!(
-                            "missing embedding API key env `{api_key_env}` for plugin `{}`",
-                            request.plugin_id
-                        )
-                    })?;
-                    embedding.insert("api_key".to_string(), toml::Value::String(api_key));
-                }
-                let config: MemoryEmbedConfig =
-                    toml::Value::Table(table).try_into().with_context(|| {
-                        format!("failed to parse config for plugin `{}`", request.plugin_id)
-                    })?;
-                let backend = Arc::new(
-                    MemoryEmbedBackend::from_http_config(workspace_root.to_path_buf(), config)
-                        .with_context(|| {
-                            format!(
-                                "failed to initialize memory-embed backend for plugin `{}`",
-                                request.plugin_id
-                            )
-                        })?,
-                );
-                tools.register_arc(Arc::new(MemorySearchTool::new(backend.clone())));
-                tools.register_arc(Arc::new(MemoryGetTool::new(backend)));
-            }
-            other => {
-                outcome.warnings.push(format!(
-                    "plugin `{}` references unknown driver `{other}`",
-                    request.plugin_id
-                ));
-            }
-        }
-    }
-
-    Ok(outcome)
+    agent::build_plugin_activation_plan(workspace_root, &resolver)
 }
 
 fn resolve_mcp_servers(configs: &[McpServerConfig], workspace_root: &Path) -> Vec<McpServerConfig> {

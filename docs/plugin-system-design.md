@@ -430,6 +430,16 @@ Boot does:
 
 The runtime builder API can stay unchanged.
 
+The current codebase centralizes the shared parts of that flow in
+`crates/core/src/plugin_boot.rs` so `apps/reference-tui` and `apps/code-agent`
+do not drift on:
+
+- builtin plugin-root inclusion
+- discovery-to-activation-plan resolution
+- builtin memory driver activation
+- `embedding.api_key_env` secret materialization
+- host-specific unknown-driver policy (`warn` vs `error`)
+
 ## Compatibility Strategy
 
 The existing top-level host config is still useful. We should not break it immediately.
@@ -501,6 +511,11 @@ It should not pretend that third-party plugin content is sandboxed.
 
 - move `apps/code-agent` boot to the same plugin activation path
 - persist `memory-embed` chunk embeddings for restart-safe incremental reuse
+
+### Slice 6
+
+- extract shared host boot helpers into the `agent` umbrella crate
+- keep host-specific policy outside the helper where behavior genuinely differs
 
 ## Sources
 

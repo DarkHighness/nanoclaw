@@ -6,6 +6,7 @@
 //! one inseparable runtime unit.
 
 mod builder;
+mod plugin_boot;
 mod prelude;
 
 pub use mcp;
@@ -19,4 +20,5 @@ pub use tools;
 pub use types;
 
 pub use builder::*;
+pub use plugin_boot::*;
 pub use prelude::*;

@@ -331,7 +331,10 @@ The current implementation maintains a local sidecar cache at
 That cache stores:
 
 - chunk identity derived from path plus snapshot window
+- document snapshot ids for freshness checks
+- config fingerprint for embedding-invalidating changes
 - chunk embedding vectors
+- chunk text plus line metadata for stable hit reconstruction
 - enough line metadata to map hits back to the source Markdown corpus
 
 Embedding generation comes from a configured provider, not from an in-process model runtime.
@@ -360,11 +363,13 @@ secret materialization.
 The retrieval pipeline should follow the qmd lesson directly:
 
 1. chunk the Markdown corpus into stable windows
-2. lazily sync missing chunk embeddings into the sidecar cache
-3. embed the query
-4. compute lexical scores for all candidate chunks
-5. merge lexical and vector scores with configured weights
-6. optionally apply rerank or diversity logic later
+2. compare persisted document snapshots and config fingerprint
+3. lazily sync only missing or invalidated chunk embeddings into the sidecar cache
+4. batch embedding requests by `embedding.batch_size`
+5. embed the query
+6. compute lexical scores for all candidate chunks
+7. merge lexical and vector scores with configured weights
+8. optionally apply rerank or diversity logic later
 
 Suggested initial merge config:
 

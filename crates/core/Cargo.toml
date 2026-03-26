@@ -14,6 +14,7 @@ code-intel = ["tools/code-intel"]
 web-tools = ["tools/web-tools"]
 
 [dependencies]
+agent-env = { path = "../env" }
 memory = { path = "../memory" }
 mcp = { path = "../mcp" }
 plugins = { path = "../plugins" }
@@ -23,9 +24,12 @@ skills = { path = "../skills" }
 store = { path = "../store" }
 tools = { path = "../tools" }
 types = { path = "../types" }
+anyhow.workspace = true
+toml.workspace = true
 
 [dev-dependencies]
 anyhow.workspace = true
 async-trait.workspace = true
 futures.workspace = true
+tempfile.workspace = true
 tokio.workspace = true

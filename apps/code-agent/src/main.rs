@@ -1,13 +1,6 @@
 mod tui;
 
-use agent::memory::{
-    MemoryCoreBackend, MemoryCoreConfig, MemoryEmbedBackend, MemoryEmbedConfig, MemoryGetTool,
-    MemorySearchTool,
-};
-use agent::plugins::{
-    DriverActivationRequest, PluginEntryConfig, PluginResolverConfig, PluginSlotsConfig,
-    build_activation_plan, discover_plugins,
-};
+use agent::plugins::{PluginEntryConfig, PluginSlotsConfig};
 use agent::provider::{
     BackendDescriptor, OpenAiResponsesOptions, OpenAiServerCompaction, ProviderBackend,
     ProviderDescriptor, RequestOptions,
@@ -23,7 +16,7 @@ use agent::{
     WriteTool,
 };
 use agent_env::{EnvMap, vars};
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::env;
@@ -301,11 +294,11 @@ async fn build_runtime(
     // Driver-backed plugins expand into normal local tools here so the runtime and subagent
     // surfaces stay identical regardless of whether a capability came from builtin boot code or a
     // plugin slot selection.
-    activate_driver_requests(
+    agent::activate_driver_requests(
         &plugin_plan.driver_activations,
         workspace_root,
-        &EnvMap::from_workspace_dir(workspace_root)?,
         &mut tools,
+        agent::UnknownDriverPolicy::Error,
     )?;
     let subagent_executor = RuntimeSubagentExecutor::new(
         backend.clone(),
@@ -460,86 +453,20 @@ fn build_plugin_activation_plan(
     workspace_root: &Path,
     plugins: &CodeAgentPluginsConfig,
 ) -> Result<agent::plugins::PluginActivationPlan> {
-    let mut roots = plugins
-        .roots
-        .iter()
-        .map(|value| resolve_path(workspace_root, value))
-        .collect::<Vec<_>>();
-    if plugins.include_builtin {
-        roots.push(workspace_root.join("builtin-plugins"));
-    }
-    roots.sort();
-    roots.dedup();
-    let discovery = discover_plugins(&roots)?;
-    let resolver = PluginResolverConfig {
+    let resolver = agent::PluginBootResolverConfig {
         enabled: plugins.enabled,
+        roots: plugins
+            .roots
+            .iter()
+            .map(|value| resolve_path(workspace_root, value))
+            .collect::<Vec<_>>(),
+        include_builtin: plugins.include_builtin,
         allow: plugins.allow.clone(),
         deny: plugins.deny.clone(),
         entries: plugins.entries.clone(),
         slots: plugins.slots.clone(),
     };
-    Ok(build_activation_plan(discovery, &resolver))
-}
-
-fn activate_driver_requests(
-    requests: &[DriverActivationRequest],
-    workspace_root: &Path,
-    env_map: &EnvMap,
-    tools: &mut ToolRegistry,
-) -> Result<()> {
-    for request in requests {
-        match request.driver_id.as_str() {
-            "builtin.memory-core" => {
-                let config: MemoryCoreConfig = toml::Value::Table(request.config.clone())
-                    .try_into()
-                    .with_context(|| {
-                        format!("failed to parse config for plugin `{}`", request.plugin_id)
-                    })?;
-                let backend =
-                    Arc::new(MemoryCoreBackend::new(workspace_root.to_path_buf(), config));
-                tools.register_arc(Arc::new(MemorySearchTool::new(backend.clone())));
-                tools.register_arc(Arc::new(MemoryGetTool::new(backend)));
-            }
-            "builtin.memory-embed" => {
-                let mut table = request.config.clone();
-                // Plugin manifests stay declarative. Secret material is resolved by the host at
-                // activation time so TOML never has to contain raw API keys.
-                if let Some(toml::Value::Table(embedding)) = table.get_mut("embedding")
-                    && let Some(api_key_env) = embedding
-                        .remove("api_key_env")
-                        .and_then(|value| value.as_str().map(ToOwned::to_owned))
-                {
-                    let api_key = env_map.get_non_empty(&api_key_env).ok_or_else(|| {
-                        anyhow!(
-                            "missing embedding API key env `{api_key_env}` for plugin `{}`",
-                            request.plugin_id
-                        )
-                    })?;
-                    embedding.insert("api_key".to_string(), toml::Value::String(api_key));
-                }
-                let config: MemoryEmbedConfig =
-                    toml::Value::Table(table).try_into().with_context(|| {
-                        format!("failed to parse config for plugin `{}`", request.plugin_id)
-                    })?;
-                let backend = Arc::new(
-                    MemoryEmbedBackend::from_http_config(workspace_root.to_path_buf(), config)
-                        .with_context(|| {
-                            format!(
-                                "failed to initialize memory-embed backend for plugin `{}`",
-                                request.plugin_id
-                            )
-                        })?,
-                );
-                tools.register_arc(Arc::new(MemorySearchTool::new(backend.clone())));
-                tools.register_arc(Arc::new(MemoryGetTool::new(backend)));
-            }
-            other => bail!(
-                "plugin `{}` references unknown driver `{other}`",
-                request.plugin_id
-            ),
-        }
-    }
-    Ok(())
+    agent::build_plugin_activation_plan(workspace_root, &resolver)
 }
 
 fn resolve_path(base_dir: &Path, value: &str) -> PathBuf {
