@@ -3,7 +3,7 @@ use crate::{
 };
 use rusqlite::{Connection, params};
 use serde::Serialize;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 const CHUNKS_TABLE: &str = "chunks";
@@ -37,6 +37,13 @@ pub(crate) struct LexicalSearchMatch {
 struct PersistedLexicalIndexMeta {
     schema_version: u32,
     config_fingerprint: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum RefreshPlan {
+    Ready,
+    Rebuild,
+    Incremental { changed_paths: BTreeSet<String> },
 }
 
 #[derive(Clone, Debug)]
@@ -76,44 +83,88 @@ impl LexicalIndex {
     ) -> Result<ResolvedStatePath> {
         let artifact_path = self.artifact_path()?;
         let lifecycle = self.layout.load_lifecycle(self.backend_id)?;
-        let needs_rebuild = lifecycle.as_ref().is_none_or(|entry| {
-            entry.backend != self.backend_id
-                || entry.status != MemorySidecarStatus::Ready
-                || entry.schema_version != self.schema_version
-                || entry.config_fingerprint != config_fingerprint
-                || entry.document_snapshots != *document_snapshots
-                || entry.artifact_path != artifact_path.relative_display()
-        }) || !artifact_path.absolute_path().exists();
-
-        if !needs_rebuild {
-            return Ok(artifact_path);
+        match self.refresh_plan(
+            &artifact_path,
+            lifecycle.as_ref(),
+            config_fingerprint,
+            document_snapshots,
+        ) {
+            RefreshPlan::Ready => return Ok(artifact_path),
+            RefreshPlan::Rebuild => {
+                self.layout.write_lifecycle(
+                    self.backend_id,
+                    MemorySidecarLifecycle {
+                        backend: self.backend_id.to_string(),
+                        status: MemorySidecarStatus::Rebuilding,
+                        schema_version: self.schema_version,
+                        config_fingerprint: config_fingerprint.to_string(),
+                        indexed_chunk_count: chunks.len(),
+                        indexed_document_count: document_snapshots.len(),
+                        exported_run_count,
+                        artifact_path: artifact_path.relative_display(),
+                        document_snapshots: document_snapshots.clone(),
+                        ..MemorySidecarLifecycle::default()
+                    },
+                )?;
+                replace_sqlite_index(
+                    artifact_path.absolute_path().to_path_buf(),
+                    chunks.to_vec(),
+                    PersistedLexicalIndexMeta {
+                        schema_version: self.schema_version,
+                        config_fingerprint: config_fingerprint.to_string(),
+                    },
+                )
+                .await?;
+            }
+            RefreshPlan::Incremental { changed_paths } => {
+                self.layout.write_lifecycle(
+                    self.backend_id,
+                    MemorySidecarLifecycle {
+                        backend: self.backend_id.to_string(),
+                        status: MemorySidecarStatus::Rebuilding,
+                        schema_version: self.schema_version,
+                        config_fingerprint: config_fingerprint.to_string(),
+                        indexed_chunk_count: chunks.len(),
+                        indexed_document_count: document_snapshots.len(),
+                        exported_run_count,
+                        artifact_path: artifact_path.relative_display(),
+                        document_snapshots: document_snapshots.clone(),
+                        ..MemorySidecarLifecycle::default()
+                    },
+                )?;
+                let changed_chunks = chunks_for_paths(chunks, &changed_paths);
+                // Snapshot drift is usually a small document-local edit. Refreshing
+                // only the affected paths keeps lexical sidecars hot while still
+                // falling back to a full rebuild if the SQLite artifact is stale.
+                if let Err(refresh_error) = refresh_sqlite_index(
+                    artifact_path.absolute_path().to_path_buf(),
+                    changed_paths.into_iter().collect(),
+                    changed_chunks,
+                    PersistedLexicalIndexMeta {
+                        schema_version: self.schema_version,
+                        config_fingerprint: config_fingerprint.to_string(),
+                    },
+                )
+                .await
+                {
+                    replace_sqlite_index(
+                        artifact_path.absolute_path().to_path_buf(),
+                        chunks.to_vec(),
+                        PersistedLexicalIndexMeta {
+                            schema_version: self.schema_version,
+                            config_fingerprint: config_fingerprint.to_string(),
+                        },
+                    )
+                    .await
+                    .map_err(|rebuild_error| {
+                        crate::MemoryError::invalid(format!(
+                            "memory lexical incremental refresh failed: {refresh_error}; \
+                             full rebuild fallback also failed: {rebuild_error}"
+                        ))
+                    })?;
+                }
+            }
         }
-
-        self.layout.write_lifecycle(
-            self.backend_id,
-            MemorySidecarLifecycle {
-                backend: self.backend_id.to_string(),
-                status: MemorySidecarStatus::Rebuilding,
-                schema_version: self.schema_version,
-                config_fingerprint: config_fingerprint.to_string(),
-                indexed_chunk_count: chunks.len(),
-                indexed_document_count: document_snapshots.len(),
-                exported_run_count,
-                artifact_path: artifact_path.relative_display(),
-                document_snapshots: document_snapshots.clone(),
-                ..MemorySidecarLifecycle::default()
-            },
-        )?;
-
-        replace_sqlite_index(
-            artifact_path.absolute_path().to_path_buf(),
-            chunks.to_vec(),
-            PersistedLexicalIndexMeta {
-                schema_version: self.schema_version,
-                config_fingerprint: config_fingerprint.to_string(),
-            },
-        )
-        .await?;
 
         self.layout.write_lifecycle(
             self.backend_id,
@@ -132,6 +183,37 @@ impl LexicalIndex {
         )?;
 
         Ok(artifact_path)
+    }
+
+    fn refresh_plan(
+        &self,
+        artifact_path: &ResolvedStatePath,
+        lifecycle: Option<&MemorySidecarLifecycle>,
+        config_fingerprint: &str,
+        document_snapshots: &BTreeMap<String, String>,
+    ) -> RefreshPlan {
+        let Some(existing) = lifecycle else {
+            return RefreshPlan::Rebuild;
+        };
+        if existing.backend != self.backend_id
+            || existing.status != MemorySidecarStatus::Ready
+            || existing.schema_version != self.schema_version
+            || existing.config_fingerprint != config_fingerprint
+            || existing.artifact_path != artifact_path.relative_display()
+            || !artifact_path.absolute_path().exists()
+        {
+            return RefreshPlan::Rebuild;
+        }
+        if existing.document_snapshots == *document_snapshots {
+            RefreshPlan::Ready
+        } else {
+            RefreshPlan::Incremental {
+                changed_paths: changed_document_paths(
+                    &existing.document_snapshots,
+                    document_snapshots,
+                ),
+            }
+        }
     }
 
     pub(crate) async fn search_ranked(
@@ -176,6 +258,21 @@ async fn replace_sqlite_index(
         })?
 }
 
+async fn refresh_sqlite_index(
+    path: PathBuf,
+    changed_paths: Vec<String>,
+    chunks: Vec<LexicalIndexChunk>,
+    meta: PersistedLexicalIndexMeta,
+) -> Result<()> {
+    tokio::task::spawn_blocking(move || {
+        refresh_sqlite_index_blocking(&path, &changed_paths, &chunks, &meta)
+    })
+    .await
+    .map_err(|error| {
+        crate::MemoryError::invalid(format!("memory lexical sqlite task failed: {error}"))
+    })?
+}
+
 fn replace_sqlite_index_blocking(
     path: &Path,
     chunks: &[LexicalIndexChunk],
@@ -192,10 +289,54 @@ fn replace_sqlite_index_blocking(
     transaction
         .execute(&format!("DELETE FROM {FTS_TABLE}"), [])
         .map_err(map_sqlite_error)?;
-    transaction
-        .execute(&format!("DELETE FROM {META_TABLE}"), [])
-        .map_err(map_sqlite_error)?;
+    replace_sqlite_meta(&transaction, meta)?;
+    insert_chunks(&transaction, chunks)?;
+    transaction.commit().map_err(map_sqlite_error)?;
+    Ok(())
+}
 
+fn refresh_sqlite_index_blocking(
+    path: &Path,
+    changed_paths: &[String],
+    chunks: &[LexicalIndexChunk],
+    meta: &PersistedLexicalIndexMeta,
+) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut connection = open_sqlite(path)?;
+    let transaction = connection.transaction().map_err(map_sqlite_error)?;
+    delete_chunks_for_paths(&transaction, changed_paths)?;
+    replace_sqlite_meta(&transaction, meta)?;
+    insert_chunks(&transaction, chunks)?;
+    transaction.commit().map_err(map_sqlite_error)?;
+    Ok(())
+}
+
+fn delete_chunks_for_paths(
+    transaction: &rusqlite::Transaction<'_>,
+    paths: &[String],
+) -> Result<()> {
+    if paths.is_empty() {
+        return Ok(());
+    }
+    let mut chunk_delete = transaction
+        .prepare(&format!("DELETE FROM {CHUNKS_TABLE} WHERE path = ?1"))
+        .map_err(map_sqlite_error)?;
+    let mut fts_delete = transaction
+        .prepare(&format!("DELETE FROM {FTS_TABLE} WHERE path = ?1"))
+        .map_err(map_sqlite_error)?;
+    for path in paths {
+        chunk_delete.execute([path]).map_err(map_sqlite_error)?;
+        fts_delete.execute([path]).map_err(map_sqlite_error)?;
+    }
+    Ok(())
+}
+
+fn insert_chunks(
+    transaction: &rusqlite::Transaction<'_>,
+    chunks: &[LexicalIndexChunk],
+) -> Result<()> {
     let mut chunk_statement = transaction
         .prepare(&format!(
             "INSERT INTO {CHUNKS_TABLE} \
@@ -232,6 +373,16 @@ fn replace_sqlite_index_blocking(
             ])
             .map_err(map_sqlite_error)?;
     }
+    Ok(())
+}
+
+fn replace_sqlite_meta(
+    transaction: &rusqlite::Transaction<'_>,
+    meta: &PersistedLexicalIndexMeta,
+) -> Result<()> {
+    transaction
+        .execute(&format!("DELETE FROM {META_TABLE}"), [])
+        .map_err(map_sqlite_error)?;
     let encoded_meta = serde_json::to_string(meta)?;
     transaction
         .execute(
@@ -239,9 +390,6 @@ fn replace_sqlite_index_blocking(
             params![META_KEY, encoded_meta],
         )
         .map_err(map_sqlite_error)?;
-    drop(chunk_statement);
-    drop(fts_statement);
-    transaction.commit().map_err(map_sqlite_error)?;
     Ok(())
 }
 
@@ -417,4 +565,172 @@ fn stable_hash(value: &str) -> String {
 
 fn map_sqlite_error(error: rusqlite::Error) -> crate::MemoryError {
     crate::MemoryError::invalid(format!("memory lexical sqlite error: {error}"))
+}
+
+fn changed_document_paths(
+    previous: &BTreeMap<String, String>,
+    current: &BTreeMap<String, String>,
+) -> BTreeSet<String> {
+    let mut changed = current
+        .iter()
+        .filter(|(path, snapshot)| previous.get(*path) != Some(*snapshot))
+        .map(|(path, _)| path.clone())
+        .collect::<BTreeSet<_>>();
+    changed.extend(
+        previous
+            .keys()
+            .filter(|path| !current.contains_key(*path))
+            .cloned(),
+    );
+    changed
+}
+
+fn chunks_for_paths(
+    chunks: &[LexicalIndexChunk],
+    paths: &BTreeSet<String>,
+) -> Vec<LexicalIndexChunk> {
+    chunks
+        .iter()
+        .filter(|chunk| paths.contains(&chunk.path))
+        .cloned()
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{LexicalIndex, LexicalIndexChunk, changed_document_paths};
+    use rusqlite::Connection;
+    use std::collections::BTreeMap;
+    use tempfile::tempdir;
+
+    const TEST_BACKEND: &str = "memory-test-lexical";
+    const TEST_INDEX_PATH: &str = ".nanoclaw/memory/indexes/memory-test-lexical.sqlite";
+
+    #[test]
+    fn changed_document_paths_tracks_added_removed_and_modified_documents() {
+        let previous = BTreeMap::from([
+            ("MEMORY.md".to_string(), "snap-a".to_string()),
+            ("memory/keep.md".to_string(), "snap-b".to_string()),
+            ("memory/remove.md".to_string(), "snap-c".to_string()),
+        ]);
+        let current = BTreeMap::from([
+            ("MEMORY.md".to_string(), "snap-a2".to_string()),
+            ("memory/keep.md".to_string(), "snap-b".to_string()),
+            ("memory/add.md".to_string(), "snap-d".to_string()),
+        ]);
+
+        let changed = changed_document_paths(&previous, &current);
+
+        assert_eq!(
+            changed.into_iter().collect::<Vec<_>>(),
+            vec![
+                "MEMORY.md".to_string(),
+                "memory/add.md".to_string(),
+                "memory/remove.md".to_string(),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn ensure_ready_incrementally_refreshes_changed_paths_only() {
+        let dir = tempdir().unwrap();
+        let index = LexicalIndex::new(dir.path(), TEST_BACKEND, TEST_INDEX_PATH, 1);
+        let config = "cfg-1";
+        let initial_snapshots = BTreeMap::from([
+            ("MEMORY.md".to_string(), "snap-a".to_string()),
+            ("memory/keep.md".to_string(), "snap-b".to_string()),
+            ("memory/remove.md".to_string(), "snap-c".to_string()),
+        ]);
+        let initial_chunks = vec![
+            lexical_chunk("chunk-a", "MEMORY.md", "snap-a", 1, 1, "alpha only"),
+            lexical_chunk("chunk-b", "memory/keep.md", "snap-b", 1, 1, "beta stable"),
+            lexical_chunk(
+                "chunk-c",
+                "memory/remove.md",
+                "snap-c",
+                1,
+                1,
+                "gamma removed",
+            ),
+        ];
+
+        let artifact = index
+            .ensure_ready(config, &initial_snapshots, &initial_chunks, 0)
+            .await
+            .unwrap();
+        let keep_rowid_before = rowid_for_chunk(artifact.absolute_path(), "chunk-b");
+
+        let updated_snapshots = BTreeMap::from([
+            ("MEMORY.md".to_string(), "snap-a2".to_string()),
+            ("memory/keep.md".to_string(), "snap-b".to_string()),
+            ("memory/add.md".to_string(), "snap-d".to_string()),
+        ]);
+        let updated_chunks = vec![
+            lexical_chunk("chunk-a2", "MEMORY.md", "snap-a2", 1, 1, "alpha refreshed"),
+            lexical_chunk("chunk-b", "memory/keep.md", "snap-b", 1, 1, "beta stable"),
+            lexical_chunk("chunk-d", "memory/add.md", "snap-d", 1, 1, "delta added"),
+        ];
+
+        index
+            .ensure_ready(config, &updated_snapshots, &updated_chunks, 0)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            rowid_for_chunk(artifact.absolute_path(), "chunk-b"),
+            keep_rowid_before
+        );
+        assert!(
+            index
+                .search_hits("refreshed", None, 5)
+                .await
+                .unwrap()
+                .iter()
+                .any(|entry| entry.path == "MEMORY.md")
+        );
+        assert!(
+            index
+                .search_hits("removed", None, 5)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            index
+                .search_hits("delta", None, 5)
+                .await
+                .unwrap()
+                .iter()
+                .any(|entry| entry.path == "memory/add.md")
+        );
+    }
+
+    fn lexical_chunk(
+        chunk_id: &str,
+        path: &str,
+        snapshot_id: &str,
+        start_line: usize,
+        end_line: usize,
+        text: &str,
+    ) -> LexicalIndexChunk {
+        LexicalIndexChunk {
+            chunk_id: chunk_id.to_string(),
+            path: path.to_string(),
+            snapshot_id: snapshot_id.to_string(),
+            start_line,
+            end_line,
+            text: text.to_string(),
+        }
+    }
+
+    fn rowid_for_chunk(path: &std::path::Path, chunk_id: &str) -> i64 {
+        let connection = Connection::open(path).unwrap();
+        connection
+            .query_row(
+                "SELECT rowid FROM chunks WHERE chunk_id = ?1",
+                [chunk_id],
+                |row| row.get(0),
+            )
+            .unwrap()
+    }
 }
