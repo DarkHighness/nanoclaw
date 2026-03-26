@@ -5,6 +5,7 @@ use async_trait::async_trait;
 use schemars::{JsonSchema, schema_for};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::fmt;
 use std::sync::{Arc, Mutex};
 use types::{MessagePart, ToolCallId, ToolOrigin, ToolOutputMode, ToolResult, ToolSpec};
 
@@ -17,8 +18,30 @@ pub enum TodoStatus {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(transparent)]
+pub struct TodoId(String);
+
+impl fmt::Display for TodoId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl From<&str> for TodoId {
+    fn from(value: &str) -> Self {
+        Self(value.to_owned())
+    }
+}
+
+impl From<String> for TodoId {
+    fn from(value: String) -> Self {
+        Self(value)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct TodoItem {
-    pub id: String,
+    pub id: TodoId,
     pub content: String,
     pub status: TodoStatus,
 }
@@ -276,12 +299,12 @@ mod tests {
     fn sample_items() -> Vec<TodoItem> {
         vec![
             TodoItem {
-                id: "t1".to_string(),
+                id: TodoId::from("t1"),
                 content: "Inspect repository".to_string(),
                 status: TodoStatus::Completed,
             },
             TodoItem {
-                id: "t2".to_string(),
+                id: TodoId::from("t2"),
                 content: "Implement runtime queue".to_string(),
                 status: TodoStatus::InProgress,
             },
@@ -323,7 +346,7 @@ mod tests {
                 ToolCallId::new(),
                 serde_json::to_value(TodoWriteInput {
                     items: vec![TodoItem {
-                        id: "t2".to_string(),
+                        id: TodoId::from("t2"),
                         content: "Implement runtime queue".to_string(),
                         status: TodoStatus::Completed,
                     }],

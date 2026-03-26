@@ -1,6 +1,7 @@
 use tokio::sync::mpsc;
 use types::new_opaque_id;
 
+use std::fmt;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -15,8 +16,23 @@ pub enum RuntimeCommand {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RuntimeCommandId(String);
+
+impl RuntimeCommandId {
+    fn new() -> Self {
+        Self(new_opaque_id())
+    }
+}
+
+impl fmt::Display for RuntimeCommandId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QueuedRuntimeCommand {
-    pub id: String,
+    pub id: RuntimeCommandId,
     pub command: RuntimeCommand,
 }
 
@@ -41,7 +57,7 @@ impl RuntimeCommandQueue {
 
     pub async fn push(&self, command: RuntimeCommand) -> QueuedRuntimeCommand {
         let queued = QueuedRuntimeCommand {
-            id: new_opaque_id(),
+            id: RuntimeCommandId::new(),
             command,
         };
         // Queue coordination is message-passing, not shared mutable state. A
