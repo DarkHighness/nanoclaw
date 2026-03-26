@@ -1,134 +1,194 @@
-# Design Plan
+# Implementation Review Plan
 
-## Phase 1: Bootable Runtime
+Date: 2026-03-26
 
-Status: completed in this pass
+## Status
 
-Completed:
+This file replaces the earlier design-pass notes after a repository-wide review of
+`docs/` against the current implementation.
 
-- Added declarative config loading from `.nanoclaw/config/core.toml`
-- Added environment override support for provider/runtime/TUI settings
-- Added configured skill roots and base instructions
-- Replaced the TUI `DemoBackend` path with a real provider backend
-- Added real MCP client support for `stdio` and `streamable_http`
-- Registered MCP tools into the same runtime tool registry as local tools
-- Passed configured `hook_env` variables into command hooks
-- Added root documentation and example configuration
+Archived documents now live under:
 
-Exit criteria:
+- `docs/archive/2026-03-26/`
 
-- the TUI can start from a config file
-- a real provider can answer turns
-- configured MCP tools can participate in tool loops
+That archive preserves the earlier architecture, tooling, sandbox, plugin, and
+memory design notes as historical context. This file is the current working plan.
 
-## Phase 2: UX Hardening
+## Review Basis
 
-Status: completed
+The findings below are based on:
 
-Targets:
+- reading every document that previously lived under `docs/`
+- checking the corresponding implementations in `crates/` and `apps/`
+- running workspace tests for both `crates/` and `apps/`
 
-- stream model text into the TUI instead of waiting for whole completion responses
-- show loaded provider, skills, and MCP servers in the sidebar
-- surface startup failures with operator-friendly diagnostics
-- add smoke tests around config-driven startup
-- expose MCP prompts and resources through explicit TUI commands
+## What Is Implemented
 
-Completed in this pass:
+The main substrate direction described by the earlier docs is already real code,
+not just design intent.
 
-- added TUI commands for MCP server, prompt, and resource discovery
-- added user-controlled prompt/resource loading into the input area
-- surfaced tool behavior hints in the `/tools` listing
-- added interactive approval prompts for destructive and open-world tools in the TUI
-- added session-scoped allow/deny caching for repeated tool approvals
-- added a startup overview sidebar plus `/status` to restore shell diagnostics
-- improved startup observability for provider, store, tools, skills, and MCP connections
-- added `/runs` and `/run <id-prefix>` so persisted sessions can be browsed and replayed
-- streamed model text through runtime progress events into live TUI rendering
-- extracted startup assembly into a reusable boot module and added config-driven smoke tests
+Implemented and materially working:
 
-## Phase 3: Runtime Fidelity
+- config-driven host boot, provider selection, and runtime assembly
+- append-only transcript flow, compaction, and provider continuation handling
+- persistent run storage with JSONL transcripts plus `runs.index.json`
+- plugin discovery, validation, enablement, slot selection, and activation planning
+- builtin memory-slot activation for `memory-core` and `memory-embed`
+- `skill.toml` precedence with YAML frontmatter fallback
+- shared sandbox policy and process-executor wiring across `bash`, command hooks,
+  and MCP `stdio`
+- structured file-tool contracts for `read`, `write`, `edit`, `patch`, `list`,
+  `glob`, and `grep`
+- structured outputs for many local tools, MCP tool `output_schema` propagation,
+  and typed tool lifecycle events for hosts
+- web tooling with redirect validation, DOM-based extraction, backend registry,
+  and backend inspection
+- `memory-embed` hybrid retrieval with vector-store backends, query expansion,
+  reranking, MMR, runtime exports, and lifecycle manifests
 
-Status: in progress
+## Implemented But Not Aligned With The Original Plan
 
-Targets:
+### 1. `memory-core` is a simplified implementation
 
-- preserve richer MCP prompt/resource content instead of flattening to plain text
-- support provider-specific request knobs through config `additional_params`
-- improve tool origin and metadata propagation across loops
-- introduce a persistent run store implementation
+The old memory design targeted a local SQLite FTS5 / BM25 sidecar for
+`memory-core`.
 
-Completed in this pass:
+Current behavior is simpler:
 
-- tool executor failures now become error tool results and stay inside the model loop
-- MCP prompt/resource payloads are preserved as structured messages and parts in the MCP layer
-- OpenAI tool execution now follows the Responses API path and preserves stable `message_id` and `call_id` values
-- added first-party local `web_search` and `web_fetch` tools as an optional `web-tools` feature bundle
-- added basic outbound web safety controls: scheme validation, private-host blocking, domain allow/block lists
-- added unit tests for HTML extraction and search-result parsing
-- added a runtime-level `ToolApprovalHandler` abstraction with interactive TUI wiring
-- approval denials now become error tool results instead of aborting the whole turn
-- added a persistent `FileRunStore` and made the TUI prefer file-backed storage by default
-- added config/env control for the run-store directory with in-memory fallback on initialization failure
-- added run-store summaries so the TUI can list and replay saved runs
-- added run-store search and TUI export commands for stored events and transcripts
-- made provider bootstrap honor `provider.env` API keys and relaxed config parsing for partial runtime/TUI tables
-- wired `provider.additional_params` through config, env override, and backend request construction
-- moved dynamic hook output onto append-only transcript history instead of mutable pre-history request fields
-- added append-only context compaction with automatic trigger thresholds and manual `/compact`
-- compaction now preserves a recent raw-message tail instead of flattening the whole visible history into one summary
-- added config/env control for context window size, compaction trigger, and retained recent message count
-- redesigned the local file-tool contract so `read` returns line-numbered views with snapshot ids and slice hashes
-- expanded `edit` from legacy exact replace into explicit `str_replace`, `replace_lines`, and `insert` commands with optional stale-read guards
+- corpus is loaded on demand
+- chunks are created in memory
+- lexical scoring is computed in process
+- there is no dedicated lexical SQLite index for `memory-core`
 
-## Phase 4: Skill System Maturity
+This is a simplification, not an optimization. It keeps the default backend
+small and deterministic, but it does not meet the earlier “local index” design
+target.
 
-Status: in progress
+### 2. Plugin driver activation is host-coded, not registry-driven
 
-Targets:
+The old plugin design proposed a small compiled driver registry with
+`PluginDriverFactory`.
 
-- replace naive string matching with policy-driven activation
-- support per-skill config and versioning
-- expose loaded skill metadata in the TUI
-- add tests for mixed skill and hook execution
+Current behavior is narrower:
 
-Completed in this pass:
+- plugin discovery and activation planning are generic
+- driver activation in host boot is a `match` over known builtin driver ids
 
-- added skill aliases to frontmatter/loading
-- added `/skills [query]` and `/skill <name-or-alias>` to inspect loaded skill metadata in the TUI
-- replaced prompt-string skill activation with a stable skill catalog preamble plus hook-driven behavior
-- removed built-in heuristic skill matching from the runtime path so skill specialization now comes from hooks or explicit file reads
+This is also a simplification. It is acceptable while `memory-core` and
+`memory-embed` are the only driver-backed plugins, but it is not the generic
+registry described in the design note.
 
-## Phase 5: Operational Readiness
+### 3. Sandbox abstraction is narrower than planned
 
-Status: in progress
+The old sandbox design proposed a trait that directly modeled multiple process
+shapes (`run`, `spawn`, `spawn_stdio`).
 
-Targets:
+Current behavior centralizes policy and process construction through
+`ExecRequest`, but the executor surface is:
 
-- add integration tests for MCP stdio servers
-- add provider-agnostic backend contract tests
-- add workspace examples for OpenAI and Anthropic
-- document deployment and local development workflows
+- `prepare(ExecRequest) -> Command`
 
-Completed in this pass:
+The behavior is aligned enough for shared enforcement, but the abstraction is a
+simpler substrate than the original design text proposed.
 
-- added a real child-process integration test for MCP `stdio` servers, covering catalog, tool calls, prompts, and resources
-- added provider-agnostic backend contract tests for schema coercion, rich message mapping, and tool-call event propagation
-- added example `.nanoclaw/config/core.toml` configurations for OpenAI and Anthropic workspaces
-- documented targeted regression commands alongside the existing full-workspace test path
+### 4. Legacy config compatibility is merged directly, not materialized as a synthetic plugin
 
-## Next Priority
+The old plugin compatibility strategy said top-level `skill_roots` and
+`mcp_servers` should be converted into an implicit synthetic plugin.
 
-The next framework gaps are standalone provider-native compaction windows where upstream APIs return opaque compacted items, plus better run-store indexing and retention beyond the current JSONL scan model.
+Current behavior preserves compatibility by direct merge during host boot:
 
-After that, the next capability gap is better approval policy composition, richer per-skill policy/configuration on top of the new hook-driven model, and a pluggable search backend with stronger ranking and citation metadata.
+- config skill roots are merged with `plugin_plan.skill_roots`
+- config MCP servers are extended with `plugin_plan.mcp_servers`
 
-Completed in this pass:
+This is functionally compatible, but the control-plane representation is simpler
+than the documented target.
 
-- added runtime-level approval policy composition with ordered allow/ask/deny rules
-- added argument-aware approval matchers over canonical JSON pointers, plus tool-name and origin matchers
-- kept shell approval handlers as the final UX boundary instead of hardcoding interactive prompts into runtime policy
-- added explicit OpenAI prompt-cache request controls in the provider adapter so hosts can use `prompt_cache_key` and `prompt_cache_retention` without pushing provider JSON shape into runtime code
-- added provider-managed OpenAI Responses continuation support so runtime can carry `response_id` forward and send only append-only transcript deltas after the first turn
-- added OpenAI server-side compaction hints through `context_management` on the native Responses path, while keeping local runtime compaction as the provider-agnostic fallback
-- upgraded `FileRunStore` to keep a mutable summary/search index sidecar next to append-only JSONL transcripts
-- added run-store retention controls by run age and run count, enforced on open and append
+## Documents That Became Stale
+
+The following archived notes no longer describe the current repository state
+accurately and should be treated as historical references, not current status
+documents:
+
+- `tool-interface-design.md`
+- `tooling-industrial-alignment.md`
+
+The main drift is that these notes still describe several items as “not yet
+implemented” even though the code now has them:
+
+- `ToolSpec.output_schema`
+- `ToolResult.structured_content`
+- MCP `output_schema` and structured tool-result propagation
+- typed host-facing tool lifecycle events
+- redirect-safe web policy
+- DOM-based web extraction
+- pluggable web-search backend selection and backend inspection
+
+The provider edge still degrades rich tool results to text for providers that
+need text-only transport, but even there the implementation is stronger than the
+old docs claimed because the downgrade path now wraps rich data in a stable JSON
+envelope instead of flattening everything to prose.
+
+## Test Findings
+
+Two tests currently fail, and both failures are around sandbox expectations that
+appear to have drifted after implementation changes:
+
+### `crates/`
+
+- `tools::process::executor::tests::sandbox_backend_status_reports_unavailable_when_restrictive_policy_has_no_backend`
+
+The test assumes default empty backend availability must always produce
+`Unavailable`. The implementation now performs platform probing and may resolve a
+real backend dynamically.
+
+### `apps/`
+
+- `reference_tui::boot::tests::bootstraps_runtime_from_configured_workspace`
+
+The test expects the sidebar text to include
+`sandbox: workspace-write, network off, best effort`, but the current summary
+string now renders either:
+
+- `enforced via <backend>`
+- `backend required but unavailable (...)`
+- `best effort host fallback (...)`
+
+This looks like test drift, not a core feature regression.
+
+## Optimization Opportunities
+
+### Priority 0
+
+- update repository docs so current status markers match shipped behavior
+- fix the two sandbox-related test failures so CI matches the real behavior
+
+### Priority 1
+
+- decide whether `memory-core` should stay intentionally lightweight or be
+  brought up to the original SQLite FTS5 / BM25 design target
+- if the lightweight design is intentional, update memory docs to say so
+  explicitly
+
+### Priority 2
+
+- move plugin driver activation from host-level `match` statements to a real
+  compiled driver registry if more driver-backed plugins are expected
+- continue improving provider-native structured tool-result transport so fewer
+  providers need the JSON-envelope text fallback
+
+### Priority 3
+
+- add per-hit provenance improvements where useful, especially in memory and web
+  retrieval paths
+- keep the active plan short and operational, and archive future design passes
+  instead of letting status notes accumulate contradictory state
+
+## Immediate Next Steps
+
+1. Refresh tests and docs around sandbox status and startup summary wording.
+2. Rewrite the archived tooling-status notes into current-state documentation.
+3. Make an explicit architectural call on `memory-core`:
+   lightweight lexical backend vs SQLite FTS5 lexical index.
+4. Revisit plugin driver activation only if the repository adds more compiled
+   plugin kinds than the current memory slot.
