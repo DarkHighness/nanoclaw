@@ -1,8 +1,8 @@
 use crate::annotations::mcp_tool_annotations;
 use crate::registry::Tool;
 use crate::web::common::{
-    DEFAULT_HTTP_TIMEOUT_MS, WebToolPolicy, clamped_search_limit, decode_html_entities,
-    default_http_client, summarize_remote_body, truncate_text,
+    DEFAULT_HTTP_TIMEOUT_MS, RedirectValidationScope, WebToolPolicy, clamped_search_limit,
+    decode_html_entities, default_http_client, summarize_remote_body, truncate_text,
 };
 use crate::{Result, ToolExecutionContext};
 use agent_env::vars;
@@ -110,7 +110,14 @@ impl WebSearchTool {
     ) -> Result<Self> {
         let endpoint = endpoint.unwrap_or_else(|| DEFAULT_SEARCH_ENDPOINT.to_string());
         Ok(Self {
-            client: default_http_client(timeout_ms)?,
+            // Search result allowlists apply to returned links, not to the configured
+            // search backend. Redirects still need transport checks so the engine
+            // cannot bounce the request into private network space.
+            client: default_http_client(
+                timeout_ms,
+                policy.clone(),
+                RedirectValidationScope::Transport,
+            )?,
             policy,
             endpoint: Url::parse(&endpoint).map_err(|error| {
                 crate::ToolError::invalid(format!("invalid search endpoint: {error}"))

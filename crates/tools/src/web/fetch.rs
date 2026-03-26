@@ -1,8 +1,9 @@
 use crate::annotations::mcp_tool_annotations;
 use crate::registry::Tool;
 use crate::web::common::{
-    DEFAULT_HTTP_TIMEOUT_MS, WebToolPolicy, clamped_fetch_max_chars, default_http_client,
-    extract_html_title, is_text_content_type, summarize_remote_body, truncate_text,
+    DEFAULT_HTTP_TIMEOUT_MS, RedirectValidationScope, WebToolPolicy, clamped_fetch_max_chars,
+    default_http_client, extract_html_title, is_text_content_type, summarize_remote_body,
+    truncate_text,
 };
 use crate::{Result, ToolExecutionContext};
 use async_trait::async_trait;
@@ -71,7 +72,11 @@ impl WebFetchTool {
 
     pub(crate) fn with_policy(policy: WebToolPolicy, timeout_ms: u64) -> Result<Self> {
         Ok(Self {
-            client: default_http_client(timeout_ms)?,
+            client: default_http_client(
+                timeout_ms,
+                policy.clone(),
+                RedirectValidationScope::Target,
+            )?,
             policy,
         })
     }
@@ -518,6 +523,60 @@ mod tests {
 
         assert!(result.is_error);
         assert!(result.text_content().contains("private host"));
+    }
+
+    #[tokio::test]
+    async fn web_fetch_rejects_redirects_to_blocked_hosts() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/start"))
+            .respond_with(
+                ResponseTemplate::new(302)
+                    .insert_header("location", format!("{}/blocked", server.uri())),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/blocked"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "text/plain")
+                    .set_body_string("should not be reached"),
+            )
+            .mount(&server)
+            .await;
+
+        let start_url = format!("{}/start", server.uri()).replace("127.0.0.1", "localhost");
+        let tool = WebFetchTool::with_policy(
+            WebToolPolicy {
+                allow_private_hosts: true,
+                allowed_domains: BTreeSet::new(),
+                blocked_domains: BTreeSet::from(["127.0.0.1".to_string()]),
+            },
+            5_000,
+        )
+        .unwrap();
+
+        let result = tool
+            .execute(
+                ToolCallId::new(),
+                serde_json::to_value(WebFetchToolInput {
+                    url: start_url,
+                    start_index: None,
+                    max_chars: Some(128),
+                    expected_document_id: None,
+                })
+                .unwrap(),
+                &ToolExecutionContext::default(),
+            )
+            .await
+            .unwrap();
+
+        assert!(result.is_error);
+        assert!(result.text_content().contains("error following redirect"));
+        let received_requests = server.received_requests().await.unwrap();
+        assert_eq!(received_requests.len(), 1);
+        assert_eq!(received_requests[0].url.path(), "/start");
     }
 
     #[tokio::test]

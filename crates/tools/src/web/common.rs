@@ -12,7 +12,14 @@ pub(crate) const DEFAULT_FETCH_MAX_CHARS: usize = 20_000;
 pub(crate) const MAX_FETCH_MAX_CHARS: usize = 200_000;
 pub(crate) const DEFAULT_SEARCH_LIMIT: usize = 5;
 pub(crate) const MAX_SEARCH_LIMIT: usize = 10;
+pub(crate) const DEFAULT_HTTP_REDIRECT_LIMIT: usize = 5;
 const DEFAULT_WEB_USER_AGENT: &str = "nanoclaw/0.1";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RedirectValidationScope {
+    Transport,
+    Target,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct WebToolPolicy {
@@ -79,9 +86,28 @@ impl WebToolPolicy {
     }
 }
 
-pub(crate) fn default_http_client(timeout_ms: u64) -> Result<Client> {
+pub(crate) fn default_http_client(
+    timeout_ms: u64,
+    policy: WebToolPolicy,
+    redirect_scope: RedirectValidationScope,
+) -> Result<Client> {
+    // Redirect destinations have to be validated before reqwest follows them.
+    // Checking only the eventual response URL would still allow intermediate
+    // hops to reach private or disallowed hosts.
+    let redirect_policy = Policy::custom(move |attempt| {
+        match validate_redirect_attempt(
+            &policy,
+            redirect_scope,
+            attempt.url(),
+            attempt.previous().len(),
+        ) {
+            Ok(()) => attempt.follow(),
+            Err(error) => attempt.error(error),
+        }
+    });
+
     Ok(Client::builder()
-        .redirect(Policy::limited(5))
+        .redirect(redirect_policy)
         .timeout(Duration::from_millis(timeout_ms.max(1)))
         .user_agent(DEFAULT_WEB_USER_AGENT)
         .build()?)
@@ -240,6 +266,24 @@ pub(crate) fn looks_like_html_document(body: &str) -> bool {
         || (normalized.contains("<title") && normalized.contains("<p"))
 }
 
+pub(crate) fn validate_redirect_attempt(
+    policy: &WebToolPolicy,
+    scope: RedirectValidationScope,
+    next_url: &Url,
+    previous_len: usize,
+) -> Result<()> {
+    if previous_len > DEFAULT_HTTP_REDIRECT_LIMIT {
+        return Err(ToolError::invalid(format!(
+            "too many redirects; limit is {DEFAULT_HTTP_REDIRECT_LIMIT}"
+        )));
+    }
+
+    match scope {
+        RedirectValidationScope::Transport => policy.validate_transport_url(next_url),
+        RedirectValidationScope::Target => policy.validate_target_url(next_url),
+    }
+}
+
 fn parse_domain_list(variable: EnvVar) -> BTreeSet<String> {
     agent_env::get_non_empty(variable)
         .unwrap_or_default()
@@ -331,7 +375,10 @@ fn normalize_whitespace(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{WebToolPolicy, decode_html_entities, html_to_text};
+    use super::{
+        RedirectValidationScope, WebToolPolicy, decode_html_entities, html_to_text,
+        validate_redirect_attempt,
+    };
     use reqwest::Url;
     use std::collections::BTreeSet;
 
@@ -378,6 +425,90 @@ mod tests {
             policy
                 .validate_target_url(&Url::parse("https://other.test").unwrap())
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn redirect_transport_scope_ignores_target_allowlists() {
+        let policy = WebToolPolicy {
+            allow_private_hosts: false,
+            allowed_domains: BTreeSet::from(["example.com".to_string()]),
+            blocked_domains: BTreeSet::from(["blocked.example.com".to_string()]),
+        };
+
+        assert!(
+            validate_redirect_attempt(
+                &policy,
+                RedirectValidationScope::Transport,
+                &Url::parse("https://search.example.net/redirect").unwrap(),
+                1,
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_redirect_attempt(
+                &policy,
+                RedirectValidationScope::Transport,
+                &Url::parse("http://127.0.0.1/internal").unwrap(),
+                1,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn redirect_target_scope_reuses_target_policy_checks() {
+        let policy = WebToolPolicy {
+            allow_private_hosts: true,
+            allowed_domains: BTreeSet::from(["example.com".to_string()]),
+            blocked_domains: BTreeSet::from(["blocked.example.com".to_string()]),
+        };
+
+        assert!(
+            validate_redirect_attempt(
+                &policy,
+                RedirectValidationScope::Target,
+                &Url::parse("https://docs.example.com/page").unwrap(),
+                1,
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_redirect_attempt(
+                &policy,
+                RedirectValidationScope::Target,
+                &Url::parse("https://blocked.example.com/page").unwrap(),
+                1,
+            )
+            .is_err()
+        );
+        assert!(
+            validate_redirect_attempt(
+                &policy,
+                RedirectValidationScope::Target,
+                &Url::parse("https://other.test/page").unwrap(),
+                1,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn redirect_validation_enforces_hop_limit() {
+        let policy = WebToolPolicy {
+            allow_private_hosts: true,
+            allowed_domains: BTreeSet::new(),
+            blocked_domains: BTreeSet::new(),
+        };
+
+        assert!(
+            validate_redirect_attempt(
+                &policy,
+                RedirectValidationScope::Transport,
+                &Url::parse("https://example.com/next").unwrap(),
+                super::DEFAULT_HTTP_REDIRECT_LIMIT + 1,
+            )
+            .is_err()
         );
     }
 }
