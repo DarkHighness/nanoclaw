@@ -564,7 +564,7 @@ Use this skill when asked.
                 .tool_specs()
                 .iter()
                 .filter(|tool| matches!(tool.origin, ToolOrigin::Local))
-                .any(|tool| tool.name == "web_fetch")
+                .any(|tool| tool.name == types::ToolName::from("web_fetch"))
         );
         #[cfg(not(feature = "web-tools"))]
         assert!(
@@ -573,7 +573,7 @@ Use this skill when asked.
                 .tool_specs()
                 .iter()
                 .filter(|tool| matches!(tool.origin, ToolOrigin::Local))
-                .any(|tool| tool.name == "web_fetch")
+                .any(|tool| tool.name == types::ToolName::from("web_fetch"))
         );
         assert!(artifacts.store.list_runs().await.unwrap().is_empty());
     }

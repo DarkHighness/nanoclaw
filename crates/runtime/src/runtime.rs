@@ -87,7 +87,11 @@ impl AgentRuntime {
 
     #[must_use]
     pub fn tool_registry_names(&self) -> Vec<String> {
-        self.tool_registry.names()
+        self.tool_registry
+            .names()
+            .into_iter()
+            .map(|name| name.to_string())
+            .collect()
     }
 
     #[must_use]
@@ -553,10 +557,10 @@ impl AgentRuntime {
         let tool_name = call.tool_name.clone();
         let tool = self
             .tool_registry
-            .get(&tool_name)
+            .get(tool_name.as_str())
             .ok_or_else(|| AgentCoreError::Tool(format!("tool not found: {tool_name}")))?;
         let tool_spec = tool.spec();
-        let mut fields = BTreeMap::from([("tool_name".to_string(), tool_name.clone())]);
+        let mut fields = BTreeMap::from([("tool_name".to_string(), tool_name.to_string())]);
         if let types::ToolOrigin::Mcp { server_name } = &call.origin {
             fields.insert("mcp_server_name".to_string(), server_name.clone());
         }
@@ -585,7 +589,7 @@ impl AgentRuntime {
             .unwrap_or(PermissionDecision::Allow)
         {
             PermissionDecision::Deny => {
-                let error = AgentCoreError::ToolDenied(tool_name).to_string();
+                let error = AgentCoreError::ToolDenied(tool_name.to_string()).to_string();
                 return self
                     .record_tool_failure_result(hooks, turn_id, &call, observer, error)
                     .await;
@@ -610,7 +614,7 @@ impl AgentRuntime {
                     permission_hooks.permission_behavior,
                     Some(PermissionBehavior::Deny)
                 ) {
-                    let error = AgentCoreError::PermissionDenied(tool_name).to_string();
+                    let error = AgentCoreError::PermissionDenied(tool_name.to_string()).to_string();
                     return self
                         .record_tool_failure_result(
                             hooks,
@@ -652,7 +656,7 @@ impl AgentRuntime {
             }
             ToolApprovalPolicyDecision::Deny { reason } => {
                 let error = reason.unwrap_or_else(|| {
-                    AgentCoreError::PermissionDenied(tool_name.clone()).to_string()
+                    AgentCoreError::PermissionDenied(tool_name.to_string()).to_string()
                 });
                 return self
                     .record_tool_failure_result(hooks, turn_id, &call, observer, error)
@@ -726,7 +730,7 @@ impl AgentRuntime {
                             &call,
                             observer,
                             reason.unwrap_or_else(|| {
-                                AgentCoreError::PermissionDenied(tool_name.clone()).to_string()
+                                AgentCoreError::PermissionDenied(tool_name.to_string()).to_string()
                             }),
                         )
                         .await;
@@ -828,7 +832,7 @@ impl AgentRuntime {
                             run_id: self.session.run_id.clone(),
                             session_id: self.session.session_id.clone(),
                             turn_id: Some(turn_id.clone()),
-                            fields: [("tool_name".to_string(), tool_name.clone())]
+                            fields: [("tool_name".to_string(), tool_name.to_string())]
                                 .into_iter()
                                 .collect(),
                             payload: json!({ "result": result }),
@@ -1200,6 +1204,7 @@ impl AgentRuntime {
                     turn_id: Some(turn_id.clone()),
                     fields: [("tool_name".to_string(), call.tool_name.clone())]
                         .into_iter()
+                        .map(|(key, value)| (key, value.to_string()))
                         .collect(),
                     payload: json!({ "error": error }),
                 },
@@ -1340,7 +1345,7 @@ mod tests {
     impl Tool for FailingTool {
         fn spec(&self) -> ToolSpec {
             ToolSpec {
-                name: "fail".to_string(),
+                name: "fail".into(),
                 description: "Always fails".to_string(),
                 input_schema: serde_json::json!({"type":"object","properties":{}}),
                 output_mode: ToolOutputMode::Text,
@@ -1366,7 +1371,7 @@ mod tests {
     impl Tool for DangerousTool {
         fn spec(&self) -> ToolSpec {
             ToolSpec {
-                name: "danger".to_string(),
+                name: "danger".into(),
                 description: "Mutates files".to_string(),
                 input_schema: serde_json::json!({"type":"object","properties":{}}),
                 output_mode: ToolOutputMode::Text,
@@ -1451,7 +1456,7 @@ mod tests {
                 let call = ToolCall {
                     id: ToolCallId::new(),
                     call_id: "call-read-1".into(),
-                    tool_name: "read".to_string(),
+                    tool_name: "read".into(),
                     arguments: serde_json::json!({"path":"sample.txt","line_count":1}),
                     origin: ToolOrigin::Local,
                 };
@@ -1709,7 +1714,7 @@ mod tests {
                 let call = ToolCall {
                     id: ToolCallId::new(),
                     call_id: "call-fail-1".into(),
-                    tool_name: "fail".to_string(),
+                    tool_name: "fail".into(),
                     arguments: serde_json::json!({}),
                     origin: ToolOrigin::Local,
                 };
@@ -1803,7 +1808,7 @@ mod tests {
                 let call = ToolCall {
                     id: ToolCallId::new(),
                     call_id: "call-danger-1".into(),
-                    tool_name: "danger".to_string(),
+                    tool_name: "danger".into(),
                     arguments: serde_json::json!({"path":"sample.txt"}),
                     origin: ToolOrigin::Local,
                 };
@@ -1867,7 +1872,7 @@ mod tests {
 
         let requests = approval_handler.requests();
         assert_eq!(requests.len(), 1);
-        assert_eq!(requests[0].call.tool_name, "danger");
+        assert_eq!(requests[0].call.tool_name, types::ToolName::from("danger"));
         assert!(
             requests[0]
                 .reasons
@@ -1879,14 +1884,15 @@ mod tests {
         assert!(events.iter().any(|event| {
             matches!(
                 &event.event,
-                RunEventKind::ToolApprovalRequested { call, .. } if call.tool_name == "danger"
+                RunEventKind::ToolApprovalRequested { call, .. }
+                    if call.tool_name == types::ToolName::from("danger")
             )
         }));
         assert!(events.iter().any(|event| {
             matches!(
                 &event.event,
                 RunEventKind::ToolApprovalResolved { call, approved, .. }
-                    if call.tool_name == "danger" && !approved
+                    if call.tool_name == types::ToolName::from("danger") && !approved
             )
         }));
         assert!(events.iter().any(|event| {
@@ -1915,7 +1921,7 @@ mod tests {
         ]));
         let policy = Arc::new(ToolApprovalRuleSet::new(vec![ToolApprovalRule::allow(
             ToolApprovalMatcher {
-                tool_names: ["danger".to_string()].into_iter().collect(),
+                tool_names: [types::ToolName::from("danger")].into_iter().collect(),
                 origins: vec![crate::ToolOriginMatcher::Local],
                 argument_matchers: vec![ToolArgumentMatcher::String {
                     pointer: "/path".to_string(),
@@ -1964,7 +1970,7 @@ mod tests {
         ]));
         let policy = Arc::new(ToolApprovalRuleSet::new(vec![ToolApprovalRule::ask(
             ToolApprovalMatcher {
-                tool_names: ["read".to_string()].into_iter().collect(),
+                tool_names: [types::ToolName::from("read")].into_iter().collect(),
                 origins: vec![crate::ToolOriginMatcher::Local],
                 argument_matchers: vec![ToolArgumentMatcher::String {
                     pointer: "/path".to_string(),

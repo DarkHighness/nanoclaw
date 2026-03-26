@@ -1,4 +1,4 @@
-use crate::{MessageId, ReasoningId, ToolCall, ToolCallId, ToolResult};
+use crate::{MessageId, ReasoningId, ToolCall, ToolCallId, ToolName, ToolResult};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -160,7 +160,7 @@ impl Message {
             parts: vec![MessagePart::ToolResult {
                 result: result.clone(),
             }],
-            name: Some(result.tool_name.clone()),
+            name: Some(result.tool_name.to_string()),
             message_id: MessageId::new(),
             metadata: Default::default(),
         }
@@ -169,7 +169,7 @@ impl Message {
     #[must_use]
     pub fn tool_text(
         call_id: ToolCallId,
-        name: impl Into<String>,
+        name: impl Into<ToolName>,
         text: impl Into<String>,
     ) -> Self {
         let tool_name = name.into();

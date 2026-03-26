@@ -69,7 +69,7 @@ struct ListEntry {
 impl Tool for ListTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
-            name: "list".to_string(),
+            name: "list".into(),
             description: "List files and directories under a workspace path. Respects ignore files and supports bounded recursive listing.".to_string(),
             input_schema: serde_json::to_value(schema_for!(ListToolInput)).expect("list schema"),
             output_mode: ToolOutputMode::Text,
@@ -178,7 +178,7 @@ impl Tool for ListTool {
         Ok(ToolResult {
             id: call_id,
             call_id: external_call_id,
-            tool_name: "list".to_string(),
+            tool_name: "list".into(),
             parts: vec![MessagePart::text(output_lines.join("\n"))],
             metadata: Some(serde_json::json!({
                 "path": root,

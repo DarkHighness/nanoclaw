@@ -138,7 +138,7 @@ impl CodeReferencesTool {
 impl Tool for CodeSymbolSearchTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
-            name: "code_symbol_search".to_string(),
+            name: "code_symbol_search".into(),
             description: "Search for symbol declarations across the workspace. Returns symbol kind, path, line/column, and declaration signature.".to_string(),
             input_schema: serde_json::to_value(schema_for!(CodeSymbolSearchInput))
                 .expect("code_symbol_search schema"),
@@ -177,7 +177,7 @@ impl Tool for CodeSymbolSearchTool {
         Ok(ToolResult {
             id: call_id,
             call_id: external_call_id,
-            tool_name: "code_symbol_search".to_string(),
+            tool_name: "code_symbol_search".into(),
             parts: vec![MessagePart::text(text)],
             metadata: Some(json!({
                 "query": query,
@@ -195,7 +195,7 @@ impl Tool for CodeSymbolSearchTool {
 impl Tool for CodeDocumentSymbolsTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
-            name: "code_document_symbols".to_string(),
+            name: "code_document_symbols".into(),
             description: "List symbol declarations in one source file. Returns symbol kind, line/column, and declaration signature.".to_string(),
             input_schema: serde_json::to_value(schema_for!(CodeDocumentSymbolsInput))
                 .expect("code_document_symbols schema"),
@@ -239,7 +239,7 @@ impl Tool for CodeDocumentSymbolsTool {
         Ok(ToolResult {
             id: call_id,
             call_id: external_call_id,
-            tool_name: "code_document_symbols".to_string(),
+            tool_name: "code_document_symbols".into(),
             parts: vec![MessagePart::text(text)],
             metadata: Some(json!({
                 "path": resolved,
@@ -257,7 +257,7 @@ impl Tool for CodeDocumentSymbolsTool {
 impl Tool for CodeDefinitionsTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
-            name: "code_definitions".to_string(),
+            name: "code_definitions".into(),
             description: "Resolve declaration locations for a symbol name across the workspace."
                 .to_string(),
             input_schema: serde_json::to_value(schema_for!(CodeDefinitionsInput))
@@ -297,7 +297,7 @@ impl Tool for CodeDefinitionsTool {
         Ok(ToolResult {
             id: call_id,
             call_id: external_call_id,
-            tool_name: "code_definitions".to_string(),
+            tool_name: "code_definitions".into(),
             parts: vec![MessagePart::text(text)],
             metadata: Some(json!({
                 "symbol": symbol,
@@ -315,7 +315,7 @@ impl Tool for CodeDefinitionsTool {
 impl Tool for CodeReferencesTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
-            name: "code_references".to_string(),
+            name: "code_references".into(),
             description: "Find lexical symbol references across the workspace with optional declaration inclusion.".to_string(),
             input_schema: serde_json::to_value(schema_for!(CodeReferencesInput))
                 .expect("code_references schema"),
@@ -360,7 +360,7 @@ impl Tool for CodeReferencesTool {
         Ok(ToolResult {
             id: call_id,
             call_id: external_call_id,
-            tool_name: "code_references".to_string(),
+            tool_name: "code_references".into(),
             parts: vec![MessagePart::text(text)],
             metadata: Some(json!({
                 "symbol": symbol,

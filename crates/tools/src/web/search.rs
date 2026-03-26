@@ -84,7 +84,9 @@ impl WebSearchTool {
         Ok(Self {
             client: default_http_client(timeout_ms)?,
             policy,
-            endpoint: Url::parse(&endpoint)?,
+            endpoint: Url::parse(&endpoint).map_err(|error| {
+                crate::ToolError::invalid(format!("invalid search endpoint: {error}"))
+            })?,
         })
     }
 }
@@ -93,7 +95,7 @@ impl WebSearchTool {
 impl Tool for WebSearchTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
-            name: "web_search".to_string(),
+            name: "web_search".into(),
             description: "Search the public web and return result titles, URLs, and snippets. Supports per-call domain filtering before follow-up web_fetch calls.".to_string(),
             input_schema: serde_json::to_value(schema_for!(WebSearchToolInput))
                 .expect("web_search schema"),
@@ -170,7 +172,7 @@ impl Tool for WebSearchTool {
             return Ok(ToolResult {
                 id: call_id,
                 call_id: external_call_id.clone(),
-                tool_name: "web_search".to_string(),
+                tool_name: "web_search".into(),
                 parts: vec![MessagePart::text(format!(
                     "query> {query}\nstatus> {status}\n\n{}",
                     summarize_remote_body(&body, content_type.as_deref())
@@ -244,7 +246,7 @@ impl Tool for WebSearchTool {
         Ok(ToolResult {
             id: call_id,
             call_id: external_call_id,
-            tool_name: "web_search".to_string(),
+            tool_name: "web_search".into(),
             parts: vec![MessagePart::text(sections.join("\n"))],
             metadata: Some(serde_json::json!({
                 "query": query,

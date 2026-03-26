@@ -16,7 +16,7 @@ use tracing::debug;
 use types::{
     AgentCoreError, CallId, Message, MessageId, MessagePart, MessageRole, ModelEvent, ModelRequest,
     ProviderContinuation, Reasoning, ReasoningContent, ReasoningId, ResponseId, ToolCall,
-    ToolCallId, ToolOrigin,
+    ToolCallId, ToolName, ToolOrigin,
 };
 
 #[derive(Clone, Debug, Default)]
@@ -208,11 +208,11 @@ pub(crate) async fn stream_openai_responses_turn(
                     match item.get("type").and_then(Value::as_str) {
                         Some("function_call") => {
                             saw_tool_call = true;
-                            let tool_name = item
+                            let tool_name: ToolName = item
                                 .get("name")
                                 .and_then(Value::as_str)
                                 .unwrap_or_default()
-                                .to_owned();
+                                .into();
                             let arguments = parse_openai_arguments(item.get("arguments"));
                             let origin =
                                 tool_origins.get(tool_name.as_str()).cloned().unwrap_or_else(|| {
@@ -515,16 +515,16 @@ fn build_openai_realtime_request_event(
 
 fn parse_openai_tool_call_item(
     item: &Value,
-    tool_origins: &BTreeMap<String, ToolOrigin>,
+    tool_origins: &BTreeMap<ToolName, ToolOrigin>,
 ) -> Option<ToolCall> {
     if item.get("type").and_then(Value::as_str) != Some("function_call") {
         return None;
     }
-    let tool_name = item
+    let tool_name: ToolName = item
         .get("name")
         .and_then(Value::as_str)
         .unwrap_or_default()
-        .to_owned();
+        .into();
     let origin = tool_origins
         .get(tool_name.as_str())
         .cloned()
@@ -938,7 +938,7 @@ mod tests {
     use tokio_tungstenite::tungstenite::Message as WsMessage;
     use types::{
         AgentCoreError, Message, ModelEvent, ModelRequest, ProviderContinuation, ResponseId, RunId,
-        SessionId, TurnId,
+        SessionId, ToolName, TurnId,
     };
     use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -1149,7 +1149,7 @@ mod tests {
         assert!(matches!(
             &events[1],
             Ok(ModelEvent::ToolCallRequested { call })
-                if call.tool_name == "read" && call.call_id.as_str() == "call_ws_1"
+                if call.tool_name == ToolName::from("read") && call.call_id.as_str() == "call_ws_1"
         ));
         assert!(matches!(
             events.last(),
@@ -1203,7 +1203,7 @@ mod tests {
         assert!(matches!(
             &events[1],
             Ok(ModelEvent::ToolCallRequested { call })
-                if call.tool_name == "read" && call.call_id.as_str() == "call_1"
+                if call.tool_name == ToolName::from("read") && call.call_id.as_str() == "call_1"
         ));
         assert!(matches!(
             events.last(),

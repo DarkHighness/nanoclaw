@@ -134,7 +134,9 @@ pub fn estimate_prompt_tokens(
         .sum::<usize>();
     chars += tools
         .iter()
-        .map(|tool| tool.name.len() + tool.description.len() + tool.input_schema.to_string().len())
+        .map(|tool| {
+            tool.name.as_str().len() + tool.description.len() + tool.input_schema.to_string().len()
+        })
         .sum::<usize>();
     chars.div_ceil(4)
 }

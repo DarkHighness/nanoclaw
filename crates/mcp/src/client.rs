@@ -408,7 +408,7 @@ fn tool_spec_from_rmcp(server_name: &str, tool: Tool) -> Result<ToolSpec> {
     }
 
     Ok(ToolSpec {
-        name: tool.name.to_string(),
+        name: tool.name.to_string().into(),
         description: tool
             .description
             .map(|value| value.to_string())
@@ -431,7 +431,7 @@ fn tool_result_from_rmcp(tool_name: &str, result: rmcp::model::CallToolResult) -
     ToolResult {
         id: ToolCallId::new(),
         call_id: new_opaque_id().into(),
-        tool_name: tool_name.to_string(),
+        tool_name: tool_name.to_string().into(),
         parts: rmcp_content_to_parts(result.content),
         metadata,
         is_error: result.is_error.unwrap_or(false),

@@ -21,7 +21,7 @@ pub async fn catalog_tools_as_registry_entries(
                     let tool_name = tool_name.clone();
                     Box::pin(async move {
                         client
-                            .call_tool(&tool_name, arguments)
+                            .call_tool(tool_name.as_str(), arguments)
                             .await
                             .map_err(|error| ToolError::invalid_state(error.to_string()))
                             .map(|mut tool_result: ToolResult| {

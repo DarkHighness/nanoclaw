@@ -424,7 +424,9 @@ fn build_symbol_regex(symbol: &str) -> Result<Regex> {
     } else {
         escaped
     };
-    Regex::new(&pattern).with_context(|| format!("invalid symbol pattern for `{symbol}`"))
+    Regex::new(&pattern).map_err(|error| {
+        ToolError::invalid(format!("invalid symbol pattern for `{symbol}`: {error}"))
+    })
 }
 
 #[cfg(test)]

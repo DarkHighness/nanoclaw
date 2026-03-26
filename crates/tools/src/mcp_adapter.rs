@@ -48,9 +48,9 @@ impl Tool for McpToolAdapter {
         result.metadata = Some(augment_metadata(
             result.metadata,
             upstream_call_id.as_str(),
-            &upstream_tool_name,
+            upstream_tool_name.as_str(),
             call_id.as_str(),
-            &self.spec.name,
+            self.spec.name.as_str(),
         ));
         Ok(result)
     }
@@ -94,7 +94,7 @@ mod tests {
 
     fn test_spec() -> ToolSpec {
         ToolSpec {
-            name: "remote_echo".to_string(),
+            name: "remote_echo".into(),
             description: "test".to_string(),
             input_schema: json!({"type": "object"}),
             output_mode: ToolOutputMode::Text,
@@ -114,7 +114,7 @@ mod tests {
                     Ok(ToolResult {
                         id: ToolCallId::from("upstream-id"),
                         call_id: "remote-call-1".into(),
-                        tool_name: "other-name".to_string(),
+                        tool_name: "other-name".into(),
                         parts: vec![MessagePart::text("ok")],
                         metadata: Some(json!({"raw": true})),
                         is_error: false,
@@ -134,7 +134,7 @@ mod tests {
             .unwrap();
         assert_eq!(result.id, call_id);
         assert_eq!(result.call_id.as_str(), "local-call-1");
-        assert_eq!(result.tool_name, "remote_echo");
+        assert_eq!(result.tool_name, types::ToolName::from("remote_echo"));
         assert_eq!(
             result.metadata.unwrap()["mcp_adapter"]["upstream_call_id"],
             "remote-call-1"
@@ -150,7 +150,7 @@ mod tests {
                     Ok(ToolResult {
                         id: ToolCallId::new(),
                         call_id: "remote-call-2".into(),
-                        tool_name: "remote_echo".to_string(),
+                        tool_name: "remote_echo".into(),
                         parts: vec![MessagePart::text("ok")],
                         metadata: Some(json!("plain")),
                         is_error: false,

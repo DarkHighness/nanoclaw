@@ -37,7 +37,7 @@ impl WriteTool {
 impl Tool for WriteTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
-            name: "write".to_string(),
+            name: "write".into(),
             description: "Create or fully replace a UTF-8 text file. Supports overwrite/create policies plus optional expected_snapshot guards when replacing an existing file.".to_string(),
             input_schema: serde_json::to_value(schema_for!(WriteToolInput)).expect("write schema"),
             output_mode: ToolOutputMode::Text,
@@ -79,7 +79,7 @@ impl Tool for WriteTool {
             return Ok(ToolResult {
                 id: call_id,
                 call_id: external_call_id,
-                tool_name: "write".to_string(),
+                tool_name: "write".into(),
                 parts: vec![MessagePart::text(outcome.summary)],
                 metadata: Some(outcome.metadata),
                 is_error: true,
@@ -90,7 +90,7 @@ impl Tool for WriteTool {
         Ok(ToolResult {
             id: call_id,
             call_id: external_call_id,
-            tool_name: "write".to_string(),
+            tool_name: "write".into(),
             parts: vec![MessagePart::text(format!(
                 "{}\n[snapshot {} -> {}]",
                 outcome.summary,

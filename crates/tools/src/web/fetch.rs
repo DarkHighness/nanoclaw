@@ -57,7 +57,7 @@ impl WebFetchTool {
 impl Tool for WebFetchTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
-            name: "web_fetch".to_string(),
+            name: "web_fetch".into(),
             description: "Fetch a web page over HTTP(S), extract readable text, and return a paged text window plus metadata for continuation.".to_string(),
             input_schema: serde_json::to_value(schema_for!(WebFetchToolInput))
                 .expect("web_fetch schema"),
@@ -127,7 +127,7 @@ impl Tool for WebFetchTool {
             return Ok(ToolResult {
                 id: call_id,
                 call_id: external_call_id.clone(),
-                tool_name: "web_fetch".to_string(),
+                tool_name: "web_fetch".into(),
                 parts: vec![MessagePart::text(format!(
                     "url> {url}\nfinal_url> {final_url}\nstatus> {}\n\n{}",
                     status,
@@ -156,7 +156,7 @@ impl Tool for WebFetchTool {
             return Ok(ToolResult {
                 id: call_id,
                 call_id: external_call_id.clone(),
-                tool_name: "web_fetch".to_string(),
+                tool_name: "web_fetch".into(),
                 parts: vec![MessagePart::text(format!(
                     "url> {url}\nfinal_url> {final_url}\nstatus> {}\ncontent_type> {}\n\nFetched a non-text response. Text extraction is currently limited to text, HTML, JSON, XML, and similar content types.",
                     status,
@@ -187,7 +187,7 @@ impl Tool for WebFetchTool {
             return Ok(ToolResult {
                 id: call_id,
                 call_id: external_call_id,
-                tool_name: "web_fetch".to_string(),
+                tool_name: "web_fetch".into(),
                 parts: vec![MessagePart::text(format!(
                     "url> {url}\nfinal_url> {final_url}\nstatus> {status}\nexpected_document_id> {expected_document_id}\nactual_document_id> {document_id}\n\nDocument id mismatch. The page content changed or a different resource was returned."
                 ))],
@@ -245,7 +245,7 @@ impl Tool for WebFetchTool {
         Ok(ToolResult {
             id: call_id,
             call_id: external_call_id,
-            tool_name: "web_fetch".to_string(),
+            tool_name: "web_fetch".into(),
             parts: vec![MessagePart::text(sections.join("\n"))],
             metadata: Some(serde_json::json!({
                 "url": url.as_str(),

@@ -1,6 +1,6 @@
 use crate::{Result, fs::assert_path_inside_allowed_roots};
 use std::path::{Path, PathBuf};
-use types::{CallId, RunId, SessionId, TurnId};
+use types::{CallId, RunId, SessionId, ToolName, TurnId};
 
 #[derive(Clone, Debug, Default)]
 pub struct ToolExecutionContext {
@@ -14,7 +14,7 @@ pub struct ToolExecutionContext {
     pub run_id: Option<RunId>,
     pub session_id: Option<SessionId>,
     pub turn_id: Option<TurnId>,
-    pub tool_name: Option<String>,
+    pub tool_name: Option<ToolName>,
     pub tool_call_id: Option<CallId>,
 }
 
@@ -55,7 +55,7 @@ impl ToolExecutionContext {
         run_id: RunId,
         session_id: SessionId,
         turn_id: TurnId,
-        tool_name: impl Into<String>,
+        tool_name: impl Into<ToolName>,
         tool_call_id: impl Into<CallId>,
     ) -> Self {
         let mut scoped = self.clone();
@@ -71,7 +71,7 @@ impl ToolExecutionContext {
 #[cfg(test)]
 mod tests {
     use super::ToolExecutionContext;
-    use types::{CallId, RunId, SessionId, TurnId};
+    use types::{CallId, RunId, SessionId, ToolName, TurnId};
 
     #[test]
     fn accessible_roots_include_workspace_worktree_and_additional_roots() {
@@ -117,7 +117,7 @@ mod tests {
         assert_eq!(scoped.run_id.unwrap().as_str(), "run_1");
         assert_eq!(scoped.session_id.unwrap().as_str(), "session_1");
         assert_eq!(scoped.turn_id.unwrap().as_str(), "turn_1");
-        assert_eq!(scoped.tool_name.unwrap(), "read");
+        assert_eq!(scoped.tool_name.unwrap(), ToolName::from("read"));
         assert_eq!(scoped.tool_call_id.unwrap(), CallId::from("call_1"));
     }
 }

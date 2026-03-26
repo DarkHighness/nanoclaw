@@ -165,7 +165,7 @@ pub(crate) fn searchable_event_strings(event: &RunEventEnvelope) -> Vec<String> 
                     .collect::<Vec<_>>()
                     .join("\n"),
             );
-            values.extend(request.tools.iter().map(|tool| tool.name.clone()));
+            values.extend(request.tools.iter().map(|tool| tool.name.to_string()));
         }
         RunEventKind::CompactionCompleted {
             reason,
@@ -184,7 +184,7 @@ pub(crate) fn searchable_event_strings(event: &RunEventEnvelope) -> Vec<String> 
             ..
         } => {
             values.push(assistant_text.clone());
-            values.extend(tool_calls.iter().map(|call| call.tool_name.clone()));
+            values.extend(tool_calls.iter().map(|call| call.tool_name.to_string()));
         }
         RunEventKind::HookInvoked { hook_name, .. } => {
             values.push(hook_name.clone());
@@ -205,28 +205,28 @@ pub(crate) fn searchable_event_strings(event: &RunEventEnvelope) -> Vec<String> 
             values.push(message.text_content());
         }
         RunEventKind::ToolApprovalRequested { call, reasons } => {
-            values.push(call.tool_name.clone());
+            values.push(call.tool_name.to_string());
             values.extend(reasons.clone());
         }
         RunEventKind::ToolApprovalResolved { call, reason, .. } => {
-            values.push(call.tool_name.clone());
+            values.push(call.tool_name.to_string());
             if let Some(reason) = reason {
                 values.push(reason.clone());
             }
         }
         RunEventKind::ToolCallStarted { call } => {
-            values.push(call.tool_name.clone());
+            values.push(call.tool_name.to_string());
             values.push(call.arguments.to_string());
         }
         RunEventKind::ToolCallCompleted { call, output } => {
-            values.push(call.tool_name.clone());
+            values.push(call.tool_name.to_string());
             values.push(output.text_content());
             if let Some(metadata) = &output.metadata {
                 values.push(metadata.to_string());
             }
         }
         RunEventKind::ToolCallFailed { call, error } => {
-            values.push(call.tool_name.clone());
+            values.push(call.tool_name.to_string());
             values.push(error.clone());
         }
         RunEventKind::Notification { source, message } => {

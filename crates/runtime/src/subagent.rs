@@ -10,7 +10,7 @@ use tools::{
     SubagentExecutor, SubagentRequest, SubagentResult, ToolError, ToolExecutionContext,
     ToolRegistry,
 };
-use types::HookRegistration;
+use types::{HookRegistration, ToolName};
 
 const DEFAULT_EXCLUDED_CHILD_TOOLS: &[&str] = &["task", "todo_read", "todo_write"];
 
@@ -68,8 +68,8 @@ impl RuntimeSubagentExecutor {
 
     fn resolve_child_tools(
         &self,
-        requested: Option<&[String]>,
-    ) -> Result<(ToolRegistry, Vec<String>)> {
+        requested: Option<&[ToolName]>,
+    ) -> Result<(ToolRegistry, Vec<ToolName>)> {
         let allowed_names = if let Some(requested) = requested {
             requested.to_vec()
         } else {
@@ -221,19 +221,19 @@ mod tests {
                 prompt: "inspect the repository".to_string(),
                 agent: Some("explore".to_string()),
                 steer: Some("focus on tests".to_string()),
-                allowed_tools: Some(vec!["read".to_string()]),
+                allowed_tools: Some(vec![ToolName::from("read")]),
             })
             .await
             .unwrap();
 
         assert_eq!(result.agent_name, "explore");
         assert_eq!(result.assistant_text, "child ok");
-        assert_eq!(result.allowed_tools, vec!["read"]);
+        assert_eq!(result.allowed_tools, vec![ToolName::from("read")]);
 
         let requests = backend.requests.lock().unwrap().clone();
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].tools.len(), 1);
-        assert_eq!(requests[0].tools[0].name, "read");
+        assert_eq!(requests[0].tools[0].name, ToolName::from("read"));
         assert_eq!(requests[0].instructions, vec!["static instruction"]);
         assert_eq!(requests[0].messages.len(), 2);
         assert_eq!(requests[0].messages[0].role, types::MessageRole::System);

@@ -3,7 +3,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use types::{ToolCallId, ToolResult, ToolSpec};
+use types::{ToolCallId, ToolName, ToolResult, ToolSpec};
 
 #[async_trait]
 pub trait Tool: Send + Sync {
@@ -18,7 +18,7 @@ pub trait Tool: Send + Sync {
 
 #[derive(Clone, Default)]
 pub struct ToolRegistry {
-    tools: BTreeMap<String, Arc<dyn Tool>>,
+    tools: BTreeMap<ToolName, Arc<dyn Tool>>,
 }
 
 impl ToolRegistry {
@@ -49,12 +49,12 @@ impl ToolRegistry {
     }
 
     #[must_use]
-    pub fn names(&self) -> Vec<String> {
+    pub fn names(&self) -> Vec<ToolName> {
         self.tools.keys().cloned().collect()
     }
 
     #[must_use]
-    pub fn filtered_by_names(&self, allowed_names: &[String]) -> Self {
+    pub fn filtered_by_names(&self, allowed_names: &[ToolName]) -> Self {
         let allowed = allowed_names
             .iter()
             .collect::<std::collections::BTreeSet<_>>();
@@ -74,7 +74,7 @@ mod tests {
     use crate::{Result, ToolExecutionContext};
     use async_trait::async_trait;
     use serde_json::{Value, json};
-    use types::{ToolCallId, ToolOrigin, ToolOutputMode, ToolResult, ToolSpec};
+    use types::{ToolCallId, ToolName, ToolOrigin, ToolOutputMode, ToolResult, ToolSpec};
 
     #[derive(Clone)]
     struct NamedTool(&'static str);
@@ -83,7 +83,7 @@ mod tests {
     impl Tool for NamedTool {
         fn spec(&self) -> ToolSpec {
             ToolSpec {
-                name: self.0.to_string(),
+                name: ToolName::from(self.0),
                 description: format!("tool {}", self.0),
                 input_schema: json!({"type":"object","properties":{}}),
                 output_mode: ToolOutputMode::Text,
@@ -109,12 +109,19 @@ mod tests {
         registry.register(NamedTool("bash"));
         registry.register(NamedTool("read"));
 
-        assert_eq!(registry.names(), vec!["bash", "read", "write"]);
+        assert_eq!(
+            registry
+                .names()
+                .into_iter()
+                .map(|name| name.to_string())
+                .collect::<Vec<_>>(),
+            vec!["bash", "read", "write"]
+        );
         assert_eq!(
             registry
                 .specs()
                 .into_iter()
-                .map(|tool| tool.name)
+                .map(|tool| tool.name.to_string())
                 .collect::<Vec<_>>(),
             vec!["bash", "read", "write"]
         );
@@ -127,7 +134,15 @@ mod tests {
         registry.register(NamedTool("bash"));
         registry.register(NamedTool("read"));
 
-        let filtered = registry.filtered_by_names(&["read".to_string(), "write".to_string()]);
-        assert_eq!(filtered.names(), vec!["read", "write"]);
+        let filtered =
+            registry.filtered_by_names(&[ToolName::from("read"), ToolName::from("write")]);
+        assert_eq!(
+            filtered
+                .names()
+                .into_iter()
+                .map(|name| name.to_string())
+                .collect::<Vec<_>>(),
+            vec!["read", "write"]
+        );
     }
 }

@@ -34,7 +34,7 @@ impl EditTool {
 impl Tool for EditTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
-            name: "edit".to_string(),
+            name: "edit".into(),
             description: "Modify an existing UTF-8 file using one precise text edit operation. Use expected_snapshot or expected_selection_hash to guard against stale reads.".to_string(),
             input_schema: serde_json::to_value(schema_for!(EditToolInput)).expect("edit schema"),
             output_mode: ToolOutputMode::Text,
@@ -72,7 +72,7 @@ impl Tool for EditTool {
             return Ok(ToolResult {
                 id: call_id,
                 call_id: external_call_id,
-                tool_name: "edit".to_string(),
+                tool_name: "edit".into(),
                 parts: vec![MessagePart::text(outcome.summary)],
                 metadata: Some(outcome.metadata),
                 is_error: true,
@@ -83,7 +83,7 @@ impl Tool for EditTool {
         Ok(ToolResult {
             id: call_id,
             call_id: external_call_id,
-            tool_name: "edit".to_string(),
+            tool_name: "edit".into(),
             parts: vec![MessagePart::text(format!(
                 "{}\n[snapshot {} -> {}]",
                 outcome.summary,

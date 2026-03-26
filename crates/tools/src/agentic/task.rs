@@ -11,7 +11,8 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::sync::OnceLock;
 use types::{
-    MessagePart, RunId, SessionId, ToolCallId, ToolOrigin, ToolOutputMode, ToolResult, ToolSpec,
+    MessagePart, RunId, SessionId, ToolCallId, ToolName, ToolOrigin, ToolOutputMode, ToolResult,
+    ToolSpec,
 };
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
@@ -23,7 +24,7 @@ pub struct TaskToolInput {
     #[serde(default)]
     pub steer: Option<String>,
     #[serde(default)]
-    pub allowed_tools: Option<Vec<String>>,
+    pub allowed_tools: Option<Vec<ToolName>>,
 }
 
 #[derive(Clone, Debug)]
@@ -31,7 +32,7 @@ pub struct SubagentRequest {
     pub prompt: String,
     pub agent: Option<String>,
     pub steer: Option<String>,
-    pub allowed_tools: Option<Vec<String>>,
+    pub allowed_tools: Option<Vec<ToolName>>,
 }
 
 #[derive(Clone, Debug)]
@@ -40,7 +41,7 @@ pub struct SubagentResult {
     pub session_id: SessionId,
     pub agent_name: String,
     pub assistant_text: String,
-    pub allowed_tools: Vec<String>,
+    pub allowed_tools: Vec<ToolName>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -109,7 +110,7 @@ fn resolve_agent(input: &TaskToolInput) -> Option<String> {
 impl Tool for TaskTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
-            name: "task".to_string(),
+            name: ToolName::from("task"),
             description: "Delegate a scoped prompt to a subagent and return its summary output plus run identifiers."
                 .to_string(),
             input_schema: serde_json::to_value(schema_for!(TaskToolInput)).expect("task schema"),
@@ -171,13 +172,13 @@ impl Tool for TaskTool {
         Ok(ToolResult {
             id: call_id,
             call_id: external_call_id,
-            tool_name: "task".to_string(),
+            tool_name: "task".into(),
             parts: vec![MessagePart::text(rendered_text)],
             metadata: Some(serde_json::json!({
                 "run_id": output.run_id,
                 "session_id": output.session_id,
                 "agent_name": output.agent_name,
-                "allowed_tools": output.allowed_tools,
+                "allowed_tools": output.allowed_tools.iter().map(ToString::to_string).collect::<Vec<_>>(),
                 "status": status,
                 "summary": summary_line,
                 "artifacts": normalized.artifacts,
@@ -341,7 +342,7 @@ mod tests {
     use crate::{Tool, ToolExecutionContext};
     use async_trait::async_trait;
     use std::sync::{Arc, Mutex};
-    use types::ToolCallId;
+    use types::{RunId, SessionId, ToolCallId, ToolName};
 
     #[derive(Default)]
     struct FakeSubagentExecutor {
@@ -353,11 +354,11 @@ mod tests {
         async fn run(&self, request: SubagentRequest) -> Result<SubagentResult> {
             self.requests.lock().unwrap().push(request);
             Ok(SubagentResult {
-                run_id: "run-child-1".to_string(),
-                session_id: "session-child-1".to_string(),
+                run_id: RunId::from("run-child-1"),
+                session_id: SessionId::from("session-child-1"),
                 agent_name: "explorer".to_string(),
                 assistant_text: "subagent completed".to_string(),
-                allowed_tools: vec!["read".to_string(), "glob".to_string()],
+                allowed_tools: vec![ToolName::from("read"), ToolName::from("glob")],
             })
         }
     }
@@ -373,7 +374,7 @@ mod tests {
                     prompt: Some("inspect repository".to_string()),
                     agent: Some("explorer".to_string()),
                     steer: Some("focus on test files".to_string()),
-                    allowed_tools: Some(vec!["read".to_string(), "glob".to_string()]),
+                    allowed_tools: Some(vec![ToolName::from("read"), ToolName::from("glob")]),
                 })
                 .unwrap(),
                 &ToolExecutionContext::default(),
@@ -390,7 +391,7 @@ mod tests {
         assert_eq!(requests[0].steer.as_deref(), Some("focus on test files"));
         assert_eq!(
             requests[0].allowed_tools,
-            Some(vec!["read".to_string(), "glob".to_string()])
+            Some(vec![ToolName::from("read"), ToolName::from("glob")])
         );
     }
 
@@ -402,11 +403,11 @@ mod tests {
     impl SubagentExecutor for StructuredResponseExecutor {
         async fn run(&self, _request: SubagentRequest) -> Result<SubagentResult> {
             Ok(SubagentResult {
-                run_id: "run-child-2".to_string(),
-                session_id: "session-child-2".to_string(),
+                run_id: RunId::from("run-child-2"),
+                session_id: SessionId::from("session-child-2"),
                 agent_name: "worker".to_string(),
                 assistant_text: self.response_text.clone(),
-                allowed_tools: vec!["read".to_string()],
+                allowed_tools: vec![ToolName::from("read")],
             })
         }
     }

@@ -52,7 +52,7 @@ impl ReadTool {
 impl Tool for ReadTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
-            name: "read".to_string(),
+            name: "read".into(),
             description: "Read a file or image. Text files are returned as a line-numbered view with range paging (`start_line`/`end_line` or `line_count`) or anchor-based spans (`anchor_text`), plus snapshot ids for follow-up edits.".to_string(),
             input_schema: serde_json::to_value(schema_for!(ReadToolInput)).expect("read schema"),
             output_mode: ToolOutputMode::ContentParts,
@@ -82,7 +82,7 @@ impl Tool for ReadTool {
             return Ok(ToolResult {
                 id: call_id,
                 call_id: external_call_id.clone(),
-                tool_name: "read".to_string(),
+                tool_name: "read".into(),
                 parts: vec![
                     MessagePart::text(format!("Read image file [{mime}]")),
                     MessagePart::Image {
@@ -118,7 +118,7 @@ impl Tool for ReadTool {
             return Ok(ToolResult {
                 id: call_id,
                 call_id: external_call_id,
-                tool_name: "read".to_string(),
+                tool_name: "read".into(),
                 parts: vec![MessagePart::text(output)],
                 metadata: Some(serde_json::json!({
                     "path": resolved,
@@ -263,7 +263,7 @@ impl Tool for ReadTool {
         Ok(ToolResult {
             id: call_id,
             call_id: external_call_id,
-            tool_name: "read".to_string(),
+            tool_name: "read".into(),
             parts: vec![MessagePart::text(output)],
             metadata: Some(serde_json::json!({
                 "path": resolved,

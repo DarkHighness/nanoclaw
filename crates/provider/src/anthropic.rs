@@ -13,7 +13,8 @@ use std::collections::BTreeMap;
 use tracing::debug;
 use types::{
     AgentCoreError, CallId, MessageId, MessagePart, MessageRole, ModelEvent, ModelRequest,
-    Reasoning, ReasoningContent, ReasoningId, ToolCall, ToolCallId, ToolOrigin, ToolResult,
+    Reasoning, ReasoningContent, ReasoningId, ToolCall, ToolCallId, ToolName, ToolOrigin,
+    ToolResult,
 };
 
 const DEFAULT_ANTHROPIC_MAX_TOKENS: u64 = 4_096;
@@ -383,7 +384,7 @@ enum AnthropicBlockState {
     Text,
     ToolUse {
         id: ToolCallId,
-        name: String,
+        name: ToolName,
         input_json: String,
     },
     Thinking {
@@ -418,7 +419,7 @@ impl AnthropicBlockState {
                     .ok_or_else(|| {
                         ProviderError::protocol("Anthropic tool_use block missing name")
                     })?
-                    .to_string(),
+                    .into(),
                 input_json: block
                     .get("input")
                     .filter(|value| !value.is_null() && *value != &json!({}))
@@ -485,7 +486,7 @@ impl AnthropicBlockState {
 
     fn finish(
         self,
-        tool_origins: BTreeMap<String, ToolOrigin>,
+        tool_origins: BTreeMap<ToolName, ToolOrigin>,
     ) -> Result<Option<AnthropicBlockOutput>> {
         match self {
             Self::Text => Ok(None),
@@ -536,8 +537,8 @@ mod tests {
     use futures::StreamExt;
     use serde_json::{Value, json};
     use types::{
-        Message, ModelEvent, ModelRequest, RunId, SessionId, ToolOrigin, ToolOutputMode, ToolSpec,
-        TurnId,
+        Message, ModelEvent, ModelRequest, RunId, SessionId, ToolName, ToolOrigin, ToolOutputMode,
+        ToolSpec, TurnId,
     };
     use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -550,7 +551,7 @@ mod tests {
             instructions: vec!["You are a coding agent.".to_string()],
             messages: vec![Message::user("inspect the repo")],
             tools: vec![ToolSpec {
-                name: "read".to_string(),
+                name: "read".into(),
                 description: "Read a file".to_string(),
                 input_schema: json!({"properties":{"path":{"type":"string"}}}),
                 output_mode: ToolOutputMode::Text,
@@ -641,7 +642,7 @@ mod tests {
         assert!(matches!(
             &events[1],
             Ok(ModelEvent::ToolCallRequested { call })
-                if call.tool_name == "read"
+                if call.tool_name == ToolName::from("read")
                     && call.call_id.as_str() == "toolu_1"
                     && call.arguments == json!({"path":"README.md"})
         ));

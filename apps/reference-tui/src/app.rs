@@ -706,7 +706,7 @@ enum SessionApprovalDecision {
 impl ToolApprovalCacheKey {
     fn from_request(request: &ToolApprovalRequest) -> Self {
         Self {
-            tool_name: request.call.tool_name.clone(),
+            tool_name: request.call.tool_name.to_string(),
             origin_key: tool_origin_cache_key(&request.call.origin),
         }
     }
@@ -1336,12 +1336,12 @@ mod tests {
             call: ToolCall {
                 id: ToolCallId::new(),
                 call_id: "call-1".into(),
-                tool_name: tool_name.to_string(),
+                tool_name: tool_name.to_string().into(),
                 arguments: json!({"path":"sample.txt"}),
                 origin: origin.clone(),
             },
             spec: ToolSpec {
-                name: tool_name.to_string(),
+                name: tool_name.to_string().into(),
                 description: "sample".to_string(),
                 input_schema: json!({"type":"object"}),
                 output_mode: ToolOutputMode::Text,

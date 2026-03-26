@@ -34,7 +34,7 @@ impl GlobTool {
 impl Tool for GlobTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
-            name: "glob".to_string(),
+            name: "glob".into(),
             description:
                 "Find files under a directory using a glob pattern such as **/*.rs or src/**/*.ts."
                     .to_string(),
@@ -115,7 +115,7 @@ impl Tool for GlobTool {
         Ok(ToolResult {
             id: call_id,
             call_id: external_call_id,
-            tool_name: "glob".to_string(),
+            tool_name: "glob".into(),
             parts: vec![MessagePart::text(output_lines.join("\n"))],
             metadata: Some(serde_json::json!({
                 "path": root,

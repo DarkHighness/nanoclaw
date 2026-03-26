@@ -19,7 +19,7 @@ pub(crate) struct ApprovalPrompt {
 impl ApprovalPrompt {
     pub(crate) fn from_request(request: &ToolApprovalRequest) -> Self {
         Self {
-            tool_name: request.call.tool_name.clone(),
+            tool_name: request.call.tool_name.to_string(),
             origin: tool_origin_label(&request.call.origin),
             reasons: request.reasons.clone(),
             arguments_preview: truncate_preview(&request.call.arguments.to_string(), 14, 72),

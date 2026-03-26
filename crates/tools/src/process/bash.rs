@@ -296,7 +296,7 @@ impl BashTool {
 impl Tool for BashTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
-            name: "bash".to_string(),
+            name: "bash".into(),
             description: "Run shell commands in the workspace. Supports synchronous run, long-running background sessions with poll/continue, and cancellation.".to_string(),
             input_schema: serde_json::to_value(schema_for!(BashToolInput)).expect("bash schema"),
             output_mode: ToolOutputMode::Text,
@@ -369,7 +369,7 @@ async fn execute_run(
             return Ok(ToolResult {
                 id: call_id,
                 call_id: external_call_id,
-                tool_name: "bash".to_string(),
+                tool_name: "bash".into(),
                 parts: vec![MessagePart::text(format!(
                     "[bash cwd={} timeout_ms={} mode=run]\nCommand timed out after {timeout_ms}ms.\ncommand> {}",
                     cwd.display(),
@@ -397,7 +397,7 @@ async fn execute_run(
     Ok(ToolResult {
         id: call_id,
         call_id: external_call_id,
-        tool_name: "bash".to_string(),
+        tool_name: "bash".into(),
         parts: vec![MessagePart::text(text)],
         metadata: Some(serde_json::json!({
             "mode": "run",
@@ -502,7 +502,7 @@ async fn execute_start(
     Ok(ToolResult {
         id: call_id,
         call_id: external_call_id,
-        tool_name: "bash".to_string(),
+        tool_name: "bash".into(),
         parts: vec![MessagePart::text(format!(
             "[bash session_id={} state=running mode=start]\ncommand> {}\ncwd> {}\ntimeout_ms> {}\n\nUse mode=\"poll\" with this session_id to collect output.\nUse mode=\"cancel\" to stop the session.",
             session_id,
@@ -574,7 +574,7 @@ async fn execute_poll(call_id: ToolCallId, input: BashToolInput) -> Result<ToolR
     Ok(ToolResult {
         id: call_id,
         call_id: external_call_id,
-        tool_name: "bash".to_string(),
+        tool_name: "bash".into(),
         parts: vec![MessagePart::text(text)],
         metadata: Some(serde_json::json!({
             "mode": "poll",
@@ -653,7 +653,7 @@ async fn execute_cancel(call_id: ToolCallId, input: BashToolInput) -> Result<Too
     Ok(ToolResult {
         id: call_id,
         call_id: external_call_id,
-        tool_name: "bash".to_string(),
+        tool_name: "bash".into(),
         parts: vec![MessagePart::text(format!(
             "[bash session_id={} mode=cancel]\ncancellation_requested> {}\nstate> {}\nexit_code> {}\n",
             session.id,
@@ -814,7 +814,7 @@ fn runtime_scope_from_context(ctx: &ToolExecutionContext) -> RuntimeScope {
         run_id: ctx.run_id.clone(),
         session_id: ctx.session_id.clone(),
         turn_id: ctx.turn_id.clone(),
-        tool_name: ctx.tool_name.clone(),
+        tool_name: ctx.tool_name.clone().map(|name| name.to_string()),
         tool_call_id: ctx.tool_call_id.clone(),
     }
 }

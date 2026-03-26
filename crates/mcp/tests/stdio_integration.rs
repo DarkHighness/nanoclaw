@@ -63,7 +63,7 @@ async fn stdio_server_supports_catalog_tool_prompt_and_resource_round_trips() {
 
     assert_eq!(server.catalog.tools.len(), 1);
     let tool = &server.catalog.tools[0];
-    assert_eq!(tool.name, "inspect_context");
+    assert_eq!(tool.name, types::ToolName::from("inspect_context"));
     assert_eq!(
         tool.origin,
         ToolOrigin::Mcp {

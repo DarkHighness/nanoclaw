@@ -120,7 +120,7 @@ impl TodoReadTool {
 impl Tool for TodoReadTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
-            name: "todo_read".to_string(),
+            name: "todo_read".into(),
             description: "Read the shared todo list for the current agent session.".to_string(),
             input_schema: serde_json::to_value(schema_for!(TodoReadInput))
                 .expect("todo_read schema"),
@@ -158,7 +158,7 @@ impl Tool for TodoReadTool {
         Ok(ToolResult {
             id: call_id,
             call_id: external_call_id,
-            tool_name: "todo_read".to_string(),
+            tool_name: "todo_read".into(),
             parts: vec![MessagePart::text(text)],
             metadata: Some(serde_json::json!({
                 "count": items.len(),
@@ -187,7 +187,7 @@ impl TodoWriteTool {
 impl Tool for TodoWriteTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
-            name: "todo_write".to_string(),
+            name: "todo_write".into(),
             description: "Replace or merge the shared todo list. Supports expected_revision guards so callers can detect stale todo snapshots."
                 .to_string(),
             input_schema: serde_json::to_value(schema_for!(TodoWriteInput))
@@ -214,7 +214,7 @@ impl Tool for TodoWriteTool {
             return Ok(ToolResult {
                 id: call_id,
                 call_id: external_call_id.clone(),
-                tool_name: "todo_write".to_string(),
+                tool_name: "todo_write".into(),
                 parts: vec![MessagePart::text(format!(
                     "Todo revision mismatch. Expected {expected_revision}, found {revision_before}. Re-read todos before writing."
                 ))],
@@ -246,7 +246,7 @@ impl Tool for TodoWriteTool {
         Ok(ToolResult {
             id: call_id,
             call_id: external_call_id,
-            tool_name: "todo_write".to_string(),
+            tool_name: "todo_write".into(),
             parts: vec![MessagePart::text(summary)],
             metadata: Some(serde_json::json!({
                 "command": command,
@@ -293,7 +293,7 @@ fn revision_for(items: &[TodoItem]) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        TodoItem, TodoListState, TodoReadInput, TodoReadTool, TodoStatus, TodoWriteCommand,
+        TodoId, TodoItem, TodoListState, TodoReadInput, TodoReadTool, TodoStatus, TodoWriteCommand,
         TodoWriteInput, TodoWriteTool,
     };
     use crate::{Tool, ToolExecutionContext};

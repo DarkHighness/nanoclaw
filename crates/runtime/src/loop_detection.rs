@@ -238,7 +238,7 @@ mod tests {
         ToolCall {
             id: ToolCallId::new(),
             call_id: "call-1".into(),
-            tool_name: tool_name.to_string(),
+            tool_name: tool_name.into(),
             arguments,
             origin: ToolOrigin::Local,
         }

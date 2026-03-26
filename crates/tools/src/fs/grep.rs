@@ -70,7 +70,7 @@ impl GrepTool {
 impl Tool for GrepTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
-            name: "grep".to_string(),
+            name: "grep".into(),
             description: "Search file contents for a pattern. Returns matching lines with file paths and line numbers.".to_string(),
             input_schema: serde_json::to_value(schema_for!(GrepToolInput)).expect("grep schema"),
             output_mode: ToolOutputMode::Text,
@@ -258,7 +258,7 @@ impl Tool for GrepTool {
         Ok(ToolResult {
             id: call_id,
             call_id: external_call_id,
-            tool_name: "grep".to_string(),
+            tool_name: "grep".into(),
             parts: vec![MessagePart::text(output)],
             metadata: Some(serde_json::json!({
                 "path": search_path_string,

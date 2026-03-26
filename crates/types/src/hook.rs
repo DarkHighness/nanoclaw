@@ -1,4 +1,4 @@
-use crate::{RunId, SessionId, TurnId};
+use crate::{RunId, SessionId, ToolName, TurnId};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -84,7 +84,7 @@ pub struct PromptHookHandler {
 pub struct AgentHookHandler {
     pub prompt: String,
     #[serde(default)]
-    pub allowed_tools: Vec<String>,
+    pub allowed_tools: Vec<ToolName>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

@@ -144,7 +144,7 @@ mod tests {
     #[test]
     fn tool_schema_uses_coerced_schema() {
         let spec = ToolSpec {
-            name: "read".to_string(),
+            name: "read".into(),
             description: "Read a file".to_string(),
             input_schema: json!({
                 "properties": {

@@ -3,7 +3,7 @@ use async_trait::async_trait;
 use reqwest::Url;
 use serde_json::Value;
 use std::collections::BTreeSet;
-use types::{ToolCall, ToolSpec};
+use types::{ToolCall, ToolName, ToolSpec};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ToolApprovalRequest {
@@ -127,7 +127,7 @@ impl ToolArgumentMatcher {
 
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct ToolApprovalMatcher {
-    pub tool_names: BTreeSet<String>,
+    pub tool_names: BTreeSet<ToolName>,
     pub origins: Vec<ToolOriginMatcher>,
     pub argument_matchers: Vec<ToolArgumentMatcher>,
 }
@@ -255,19 +255,19 @@ mod tests {
     };
     use serde_json::json;
     use std::collections::{BTreeMap, BTreeSet};
-    use types::{ToolCall, ToolCallId, ToolOrigin, ToolOutputMode, ToolSpec};
+    use types::{ToolCall, ToolCallId, ToolName, ToolOrigin, ToolOutputMode, ToolSpec};
 
     fn request(arguments: serde_json::Value) -> ToolApprovalRequest {
         ToolApprovalRequest {
             call: ToolCall {
                 id: ToolCallId::new(),
                 call_id: "call_1".into(),
-                tool_name: "bash".to_string(),
+                tool_name: "bash".into(),
                 arguments,
                 origin: ToolOrigin::Local,
             },
             spec: ToolSpec {
-                name: "bash".to_string(),
+                name: "bash".into(),
                 description: "Run commands".to_string(),
                 input_schema: json!({"type":"object"}),
                 output_mode: ToolOutputMode::Text,
@@ -281,7 +281,7 @@ mod tests {
     #[test]
     fn rule_set_matches_tool_origin_and_argument_prefix() {
         let mut tool_names = BTreeSet::new();
-        tool_names.insert("bash".to_string());
+        tool_names.insert(ToolName::from("bash"));
         let rules = ToolApprovalRuleSet::new(vec![ToolApprovalRule::ask(
             ToolApprovalMatcher {
                 tool_names,
@@ -308,7 +308,7 @@ mod tests {
     fn rule_set_can_match_url_hosts() {
         let rules = ToolApprovalRuleSet::new(vec![ToolApprovalRule::deny(
             ToolApprovalMatcher {
-                tool_names: ["web_fetch".to_string()].into_iter().collect(),
+                tool_names: [ToolName::from("web_fetch")].into_iter().collect(),
                 origins: vec![ToolOriginMatcher::Local],
                 argument_matchers: vec![ToolArgumentMatcher::UrlHost {
                     pointer: "/url".to_string(),
@@ -318,8 +318,8 @@ mod tests {
             "blocked internal host",
         )]);
         let mut request = request(json!({"url":"https://ops.example.internal/health"}));
-        request.call.tool_name = "web_fetch".to_string();
-        request.spec.name = "web_fetch".to_string();
+        request.call.tool_name = "web_fetch".into();
+        request.spec.name = "web_fetch".into();
 
         let decision = rules.decide(&request);
 
@@ -336,7 +336,7 @@ mod tests {
         let rules = ToolApprovalRuleSet::new(vec![
             ToolApprovalRule::allow(
                 ToolApprovalMatcher {
-                    tool_names: ["bash".to_string()].into_iter().collect(),
+                    tool_names: [ToolName::from("bash")].into_iter().collect(),
                     origins: vec![ToolOriginMatcher::Local],
                     argument_matchers: vec![ToolArgumentMatcher::String {
                         pointer: "/command".to_string(),
@@ -347,7 +347,7 @@ mod tests {
             ),
             ToolApprovalRule::deny(
                 ToolApprovalMatcher {
-                    tool_names: ["bash".to_string()].into_iter().collect(),
+                    tool_names: [ToolName::from("bash")].into_iter().collect(),
                     origins: vec![ToolOriginMatcher::Local],
                     argument_matchers: vec![ToolArgumentMatcher::Exists {
                         pointer: "/command".to_string(),

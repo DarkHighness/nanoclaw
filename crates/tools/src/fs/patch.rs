@@ -100,7 +100,7 @@ impl PatchOperation {
 impl Tool for PatchTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
-            name: "patch".to_string(),
+            name: "patch".into(),
             description: "Apply a staged multi-file patch made of write, edit, delete, and move operations. Operations are validated against staged content first so a failed operation does not partially apply earlier changes.".to_string(),
             input_schema: serde_json::to_value(schema_for!(PatchToolInput)).expect("patch schema"),
             output_mode: ToolOutputMode::Text,
@@ -468,7 +468,7 @@ impl Tool for PatchTool {
         Ok(ToolResult {
             id: call_id,
             call_id: external_call_id,
-            tool_name: "patch".to_string(),
+            tool_name: "patch".into(),
             parts: vec![MessagePart::text(text)],
             metadata: Some(json!({
                 "operation_count": input.operations.len(),
@@ -531,7 +531,7 @@ fn patch_error_result(
     ToolResult {
         id: call_id,
         call_id: external_call_id,
-        tool_name: "patch".to_string(),
+        tool_name: "patch".into(),
         parts: vec![MessagePart::text(summary)],
         metadata: Some(json!({
             "failed_path": operation.primary_path(),
