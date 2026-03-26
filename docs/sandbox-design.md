@@ -282,14 +282,19 @@ Concrete enforcement backends may sit behind it:
 
 The backend boundary stays hidden behind the executor so the runtime and tools do not learn platform-specific details.
 
-The first enforcing implementation in this repository is a macOS Seatbelt-backed executor hidden behind `ManagedPolicyProcessExecutor`.
+The first enforcing implementations in this repository live behind `ManagedPolicyProcessExecutor`:
+
+- macOS uses Seatbelt via `sandbox-exec`
+- Linux uses bubblewrap via `bwrap`
 
 Important implementation constraints:
 
 - it uses `sandbox-exec` with a generated profile rooted in `import "system.sb"` rather than trying to re-specify every dyld and system capability manually
+- the Linux backend uses bubblewrap mount bindings in explicit order: read-only roots first, writable roots second, and protected paths rebound read-only last so control directories stay immutable inside writable workspaces
 - host paths must be canonicalized before they are embedded into the profile because Seatbelt matches real paths, not shell-friendly aliases such as `/var`
 - unsupported platforms currently fall back to host execution unless `fail_if_unavailable` is set, so hosts can adopt typed policy wiring before every backend exists
-- the first backend only inherits Apple system executable paths plus the host-selected roots, so user-space binaries outside those roots remain blocked unless the host widens policy or uses a permissive executor
+- the first Linux backend only inherits a curated set of system roots plus the host-selected roots, so user-space binaries outside those mounts remain blocked unless the host widens policy or uses a permissive executor
+- the first Linux backend intentionally stops at bubblewrap mount and namespace isolation; seccomp and finer-grained network allowlists remain follow-up work
 
 ## Context and Dependency Placement
 

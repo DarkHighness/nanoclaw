@@ -6,8 +6,6 @@ use tokio::process::Command;
 use types::{CallId, RunId, SessionId, TurnId};
 
 const DEFAULT_PROTECTED_DIRS: &[&str] = &[".git", ".agent-core", ".codex"];
-#[cfg(target_os = "macos")]
-const MACOS_SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SandboxMode {
@@ -89,10 +87,9 @@ impl SandboxPolicy {
             },
             network: NetworkPolicy::Off,
             host_escape: HostEscapePolicy::Deny,
-            // Hosts can tighten this later once the Linux and container
-            // backends land. Keeping the first rollout best-effort avoids
-            // turning "no backend yet" into a surprising total loss of local
-            // process execution on unsupported platforms.
+            // Hosts can tighten this later once every platform backend exists.
+            // The substrate should not silently claim fail-closed isolation on a
+            // platform where it only knows how to fall back to host execution.
             fail_if_unavailable: false,
         }
     }
@@ -141,7 +138,7 @@ pub enum ProcessStdio {
 }
 
 impl ProcessStdio {
-    fn into_stdio(self) -> Stdio {
+    pub(super) fn into_stdio(self) -> Stdio {
         match self {
             Self::Inherit => Stdio::inherit(),
             Self::Null => Stdio::null(),
@@ -188,15 +185,22 @@ impl ProcessExecutor for HostProcessExecutor {
             command.envs(request.env);
         }
 
-        // Phase 1 centralizes child-process construction under one boundary
-        // without changing behavior. Enforcing backends will interpret
-        // `sandbox_policy` here later instead of at every call site.
+        // Phase 1 centralized child-process construction under one boundary.
+        // The permissive executor intentionally keeps current behavior while
+        // still carrying origin and policy metadata through the same request
+        // shape the enforcing backends consume.
         let _ = request.origin;
         let _ = request.runtime_scope;
         let _ = request.sandbox_policy;
 
         Ok(command)
     }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct BackendAvailability {
+    macos_seatbelt: Option<PathBuf>,
+    linux_bwrap: Option<PathBuf>,
 }
 
 #[derive(Default)]
@@ -217,134 +221,49 @@ impl ProcessExecutor for ManagedPolicyProcessExecutor {
             return self.host.prepare(request);
         }
 
-        #[cfg(target_os = "macos")]
-        {
-            if Path::new(MACOS_SANDBOX_EXEC).exists() {
-                return prepare_macos_seatbelt_command(request);
-            }
-        }
-
-        if request.sandbox_policy.fail_if_unavailable {
-            Err(ToolError::invalid_state(
-                "sandbox policy requires an enforcing backend, but no compatible backend is available",
-            ))
-        } else {
-            self.host.prepare(request)
-        }
+        prepare_with_available_backends(request, detect_available_backends())
     }
 }
 
-#[cfg(target_os = "macos")]
-fn prepare_macos_seatbelt_command(request: ExecRequest) -> Result<Command> {
-    if matches!(
-        request.sandbox_policy.network,
-        NetworkPolicy::AllowDomains(_)
-    ) {
-        return Err(ToolError::invalid_state(
-            "macOS Seatbelt backend does not yet support domain-scoped network policies",
-        ));
+fn prepare_with_available_backends(
+    request: ExecRequest,
+    availability: BackendAvailability,
+) -> Result<Command> {
+    #[cfg(target_os = "macos")]
+    if let Some(path) = availability.macos_seatbelt.as_deref() {
+        return super::executor_macos::prepare_macos_seatbelt_command(request, path);
+    }
+    #[cfg(target_os = "linux")]
+    if let Some(path) = availability.linux_bwrap.as_deref() {
+        return super::executor_linux::prepare_linux_bwrap_command(request, path);
     }
 
-    let cwd = canonicalize_optional_path(request.cwd.as_deref())?;
-    let filesystem = canonicalize_filesystem_policy(&request.sandbox_policy.filesystem)?;
-    let effective_policy = SandboxPolicy {
-        filesystem,
-        ..request.sandbox_policy.clone()
-    };
-    let effective_cwd = resolve_effective_cwd(cwd, &effective_policy)?;
-    let profile = build_macos_seatbelt_profile(&effective_policy)?;
-
-    let mut command = Command::new(MACOS_SANDBOX_EXEC);
-    command
-        .arg("-p")
-        .arg(profile)
-        .arg(&request.program)
-        .args(&request.args)
-        .stdin(request.stdin.into_stdio())
-        .stdout(request.stdout.into_stdio())
-        .stderr(request.stderr.into_stdio())
-        .kill_on_drop(request.kill_on_drop);
-
-    if let Some(cwd) = effective_cwd {
-        command.current_dir(cwd);
+    if request.sandbox_policy.fail_if_unavailable {
+        Err(ToolError::invalid_state(
+            "sandbox policy requires an enforcing backend, but no compatible backend is available",
+        ))
+    } else {
+        HostProcessExecutor.prepare(request)
     }
-    if !request.env.is_empty() {
-        command.envs(request.env);
-    }
-
-    let _ = request.origin;
-    let _ = request.runtime_scope;
-
-    Ok(command)
 }
 
-#[cfg(target_os = "macos")]
-fn build_macos_seatbelt_profile(policy: &SandboxPolicy) -> Result<String> {
-    let mut lines = vec![
-        "(version 1)".to_string(),
-        "(deny default)".to_string(),
-        // `system.sb` is the stable Apple-provided base profile that keeps
-        // dyld, sysctl, mach, and standard system-path access coherent. The
-        // generated rules below then narrow host-visible workspace roots on top
-        // of that baseline instead of trying to hand-maintain a fragile clone
-        // of Apple's system allowances.
-        "(import \"system.sb\")".to_string(),
-        "(allow process*)".to_string(),
-    ];
-
-    if !policy.filesystem.readable_roots.is_empty()
-        || !policy.filesystem.writable_roots.is_empty()
-        || !policy.filesystem.protected_paths.is_empty()
+fn detect_available_backends() -> BackendAvailability {
+    let mut availability = BackendAvailability::default();
+    #[cfg(target_os = "macos")]
     {
-        // Seatbelt evaluates real paths rather than the user-facing `/var`
-        // aliases the shell often exposes, so every host path is canonicalized
-        // before it is embedded into the generated profile.
-        lines.push("(allow file-read-metadata)".to_string());
+        availability.macos_seatbelt = super::executor_macos::sandbox_exec_path();
     }
-
-    for ancestor in policy_path_ancestors(policy) {
-        lines.push(format!(
-            "(allow file-read-metadata (literal \"{}\"))",
-            escape_sbpl_path(&ancestor)
-        ));
+    #[cfg(target_os = "linux")]
+    {
+        availability.linux_bwrap = super::executor_linux::find_bwrap_executable();
     }
-
-    match policy.mode {
-        SandboxMode::DangerFullAccess => lines.push("(allow file*)".to_string()),
-        SandboxMode::ReadOnly | SandboxMode::WorkspaceWrite => {
-            for root in &policy.filesystem.readable_roots {
-                lines.push(format!(
-                    "(allow file-read* file-map-executable file-test-existence (subpath \"{}\"))",
-                    escape_sbpl_path(root)
-                ));
-            }
-            if matches!(policy.mode, SandboxMode::WorkspaceWrite) {
-                for root in &policy.filesystem.writable_roots {
-                    lines.push(format!(
-                        "(allow file* (subpath \"{}\"))",
-                        escape_sbpl_path(root)
-                    ));
-                }
-            }
-        }
-    }
-
-    for protected in &policy.filesystem.protected_paths {
-        lines.push(format!(
-            "(deny file-write* (subpath \"{}\"))",
-            escape_sbpl_path(protected)
-        ));
-    }
-
-    if matches!(policy.network, NetworkPolicy::Full) {
-        lines.push("(allow network*)".to_string());
-    }
-
-    Ok(lines.join(" "))
+    availability
 }
 
-#[cfg(target_os = "macos")]
-fn resolve_effective_cwd(cwd: Option<PathBuf>, policy: &SandboxPolicy) -> Result<Option<PathBuf>> {
+pub(super) fn resolve_effective_cwd(
+    cwd: Option<PathBuf>,
+    policy: &SandboxPolicy,
+) -> Result<Option<PathBuf>> {
     let roots = accessible_roots(policy);
     match cwd {
         Some(cwd) if roots.is_empty() || path_is_inside_any_root(&cwd, &roots) => Ok(Some(cwd)),
@@ -362,8 +281,9 @@ fn resolve_effective_cwd(cwd: Option<PathBuf>, policy: &SandboxPolicy) -> Result
     }
 }
 
-#[cfg(target_os = "macos")]
-fn canonicalize_filesystem_policy(policy: &FilesystemPolicy) -> Result<FilesystemPolicy> {
+pub(super) fn canonicalize_filesystem_policy(
+    policy: &FilesystemPolicy,
+) -> Result<FilesystemPolicy> {
     Ok(FilesystemPolicy {
         readable_roots: dedup_paths(
             policy
@@ -389,13 +309,11 @@ fn canonicalize_filesystem_policy(policy: &FilesystemPolicy) -> Result<Filesyste
     })
 }
 
-#[cfg(target_os = "macos")]
-fn canonicalize_optional_path(path: Option<&Path>) -> Result<Option<PathBuf>> {
+pub(super) fn canonicalize_optional_path(path: Option<&Path>) -> Result<Option<PathBuf>> {
     path.map(canonicalize_policy_path).transpose()
 }
 
-#[cfg(target_os = "macos")]
-fn canonicalize_policy_path(path: &Path) -> Result<PathBuf> {
+pub(super) fn canonicalize_policy_path(path: &Path) -> Result<PathBuf> {
     if path.exists() {
         return std::fs::canonicalize(path).map_err(|source| {
             ToolError::invalid_state(format!(
@@ -437,40 +355,14 @@ fn canonicalize_policy_path(path: &Path) -> Result<PathBuf> {
     Ok(normalized)
 }
 
-#[cfg(target_os = "macos")]
-fn accessible_roots(policy: &SandboxPolicy) -> Vec<PathBuf> {
+pub(super) fn accessible_roots(policy: &SandboxPolicy) -> Vec<PathBuf> {
     let mut roots = policy.filesystem.writable_roots.clone();
     roots.extend(policy.filesystem.readable_roots.iter().cloned());
     dedup_paths(roots)
 }
 
-#[cfg(target_os = "macos")]
-fn path_is_inside_any_root(path: &Path, roots: &[PathBuf]) -> bool {
+pub(super) fn path_is_inside_any_root(path: &Path, roots: &[PathBuf]) -> bool {
     roots.iter().any(|root| path.starts_with(root))
-}
-
-#[cfg(target_os = "macos")]
-fn policy_path_ancestors(policy: &SandboxPolicy) -> Vec<PathBuf> {
-    let mut ancestors = BTreeSet::new();
-    for path in policy
-        .filesystem
-        .readable_roots
-        .iter()
-        .chain(policy.filesystem.writable_roots.iter())
-        .chain(policy.filesystem.protected_paths.iter())
-    {
-        for ancestor in path.ancestors() {
-            ancestors.insert(ancestor.to_path_buf());
-        }
-    }
-    ancestors.into_iter().collect()
-}
-
-#[cfg(target_os = "macos")]
-fn escape_sbpl_path(path: &Path) -> String {
-    path.to_string_lossy()
-        .replace('\\', "\\\\")
-        .replace('"', "\\\"")
 }
 
 fn dedup_paths(paths: Vec<PathBuf>) -> Vec<PathBuf> {
@@ -484,9 +376,9 @@ fn dedup_paths(paths: Vec<PathBuf>) -> Vec<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::{
-        ExecRequest, ExecutionOrigin, FilesystemPolicy, HostEscapePolicy,
+        BackendAvailability, ExecRequest, ExecutionOrigin, FilesystemPolicy, HostEscapePolicy,
         ManagedPolicyProcessExecutor, NetworkPolicy, ProcessExecutor, ProcessStdio, RuntimeScope,
-        SandboxMode, SandboxPolicy,
+        SandboxMode, SandboxPolicy, prepare_with_available_backends,
     };
     use crate::ToolExecutionContext;
     use std::collections::BTreeMap;
@@ -574,6 +466,77 @@ mod tests {
         assert_eq!(command.as_std().get_program(), "/bin/echo");
     }
 
+    #[test]
+    fn managed_policy_executor_can_fail_closed_when_no_backend_is_available() {
+        let workspace = tempdir().unwrap();
+        let err = prepare_with_available_backends(
+            ExecRequest {
+                program: "/bin/echo".to_string(),
+                args: vec!["hello".to_string()],
+                cwd: Some(workspace.path().to_path_buf()),
+                env: BTreeMap::new(),
+                stdin: ProcessStdio::Null,
+                stdout: ProcessStdio::Null,
+                stderr: ProcessStdio::Null,
+                kill_on_drop: true,
+                origin: ExecutionOrigin::BashTool,
+                runtime_scope: RuntimeScope::default(),
+                sandbox_policy: SandboxPolicy {
+                    mode: SandboxMode::WorkspaceWrite,
+                    filesystem: FilesystemPolicy {
+                        readable_roots: vec![workspace.path().to_path_buf()],
+                        writable_roots: vec![workspace.path().to_path_buf()],
+                        protected_paths: vec![],
+                    },
+                    network: NetworkPolicy::Off,
+                    host_escape: HostEscapePolicy::Deny,
+                    fail_if_unavailable: true,
+                },
+            },
+            BackendAvailability::default(),
+        )
+        .unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("sandbox policy requires an enforcing backend")
+        );
+    }
+
+    #[test]
+    fn managed_policy_executor_can_fall_back_when_backend_is_unavailable() {
+        let workspace = tempdir().unwrap();
+        let command = prepare_with_available_backends(
+            ExecRequest {
+                program: "/bin/echo".to_string(),
+                args: vec!["hello".to_string()],
+                cwd: Some(workspace.path().to_path_buf()),
+                env: BTreeMap::new(),
+                stdin: ProcessStdio::Null,
+                stdout: ProcessStdio::Null,
+                stderr: ProcessStdio::Null,
+                kill_on_drop: true,
+                origin: ExecutionOrigin::BashTool,
+                runtime_scope: RuntimeScope::default(),
+                sandbox_policy: SandboxPolicy {
+                    mode: SandboxMode::WorkspaceWrite,
+                    filesystem: FilesystemPolicy {
+                        readable_roots: vec![workspace.path().to_path_buf()],
+                        writable_roots: vec![workspace.path().to_path_buf()],
+                        protected_paths: vec![],
+                    },
+                    network: NetworkPolicy::Off,
+                    host_escape: HostEscapePolicy::Deny,
+                    fail_if_unavailable: false,
+                },
+            },
+            BackendAvailability::default(),
+        )
+        .unwrap();
+
+        assert_eq!(command.as_std().get_program(), "/bin/echo");
+    }
+
     #[cfg(target_os = "macos")]
     #[test]
     fn managed_policy_executor_wraps_restrictive_requests_with_sandbox_exec() {
@@ -589,9 +552,8 @@ mod tests {
             host_escape: HostEscapePolicy::Deny,
             fail_if_unavailable: true,
         };
-        let executor = ManagedPolicyProcessExecutor::new();
-        let command = executor
-            .prepare(ExecRequest {
+        let command = super::super::executor_macos::prepare_macos_seatbelt_command(
+            ExecRequest {
                 program: "/bin/echo".to_string(),
                 args: vec!["hello".to_string()],
                 cwd: Some(workspace.path().to_path_buf()),
@@ -603,12 +565,14 @@ mod tests {
                 origin: ExecutionOrigin::BashTool,
                 runtime_scope: RuntimeScope::default(),
                 sandbox_policy: policy,
-            })
-            .unwrap();
+            },
+            std::path::Path::new(super::super::executor_macos::MACOS_SANDBOX_EXEC),
+        )
+        .unwrap();
 
         assert_eq!(
             command.as_std().get_program(),
-            std::ffi::OsStr::new(super::MACOS_SANDBOX_EXEC)
+            std::ffi::OsStr::new(super::super::executor_macos::MACOS_SANDBOX_EXEC)
         );
         let args = command
             .as_std()
@@ -630,5 +594,75 @@ mod tests {
         );
         assert_eq!(args[2], "/bin/echo");
         assert_eq!(args[3], "hello");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_bwrap_backend_mounts_read_write_then_protected_paths_in_order_and_attaches_seccomp() {
+        let workspace = tempdir().unwrap();
+        std::fs::create_dir_all(workspace.path().join(".git")).unwrap();
+        let policy = SandboxPolicy {
+            mode: SandboxMode::WorkspaceWrite,
+            filesystem: FilesystemPolicy {
+                readable_roots: vec![workspace.path().to_path_buf()],
+                writable_roots: vec![workspace.path().to_path_buf()],
+                protected_paths: vec![workspace.path().join(".git")],
+            },
+            network: NetworkPolicy::Off,
+            host_escape: HostEscapePolicy::Deny,
+            fail_if_unavailable: true,
+        };
+
+        let command = super::super::executor_linux::prepare_linux_bwrap_command(
+            ExecRequest {
+                program: "/bin/echo".to_string(),
+                args: vec!["hello".to_string()],
+                cwd: Some(workspace.path().to_path_buf()),
+                env: BTreeMap::new(),
+                stdin: ProcessStdio::Null,
+                stdout: ProcessStdio::Null,
+                stderr: ProcessStdio::Null,
+                kill_on_drop: true,
+                origin: ExecutionOrigin::BashTool,
+                runtime_scope: RuntimeScope::default(),
+                sandbox_policy: policy,
+            },
+            std::path::Path::new("/usr/bin/bwrap"),
+        )
+        .unwrap();
+
+        assert_eq!(
+            command.as_std().get_program(),
+            std::ffi::OsStr::new("/usr/bin/bwrap")
+        );
+        let args = command
+            .as_std()
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        let bind_index = args
+            .windows(3)
+            .position(|window| {
+                window[0] == "--bind"
+                    && window[1] == workspace.path().display().to_string()
+                    && window[2] == workspace.path().display().to_string()
+            })
+            .expect("workspace bind should be present");
+        let protected_index = args
+            .windows(3)
+            .position(|window| {
+                window[0] == "--ro-bind"
+                    && window[1] == workspace.path().join(".git").display().to_string()
+                    && window[2] == workspace.path().join(".git").display().to_string()
+            })
+            .expect("protected path bind should be present");
+        let seccomp_index = args
+            .windows(2)
+            .position(|window| window[0] == "--seccomp")
+            .expect("seccomp fd should be present");
+        assert!(args.contains(&"--unshare-net".to_string()));
+        assert!(bind_index < protected_index);
+        assert!(seccomp_index < args.iter().position(|arg| arg == "--").unwrap());
+        assert_eq!(args.last().map(String::as_str), Some("hello"));
     }
 }
