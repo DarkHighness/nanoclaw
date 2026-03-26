@@ -8,6 +8,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "provider", rename_all = "snake_case")]
+pub enum ProviderContinuation {
+    OpenAiResponses { response_id: String },
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ModelRequest {
     pub run_id: RunId,
     pub session_id: SessionId,
@@ -16,6 +22,8 @@ pub struct ModelRequest {
     pub messages: Vec<Message>,
     pub tools: Vec<ToolSpec>,
     pub additional_context: Vec<String>,
+    #[serde(default)]
+    pub continuation: Option<ProviderContinuation>,
     #[serde(default)]
     pub metadata: Value,
 }
@@ -33,6 +41,8 @@ pub enum ModelEvent {
         stop_reason: Option<String>,
         #[serde(default)]
         message_id: Option<String>,
+        #[serde(default)]
+        continuation: Option<ProviderContinuation>,
         reasoning: Vec<Reasoning>,
     },
     Error {
@@ -68,6 +78,8 @@ pub enum RunEventKind {
     ModelResponseCompleted {
         assistant_text: String,
         tool_calls: Vec<ToolCall>,
+        #[serde(default)]
+        continuation: Option<ProviderContinuation>,
     },
     HookInvoked {
         hook_name: String,

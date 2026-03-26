@@ -10,6 +10,8 @@ pub enum AgentCoreError {
     PermissionDenied(String),
     #[error("model backend error: {0}")]
     ModelBackend(String),
+    #[error("provider continuation lost: {0}")]
+    ProviderContinuationLost(String),
     #[error("tool error: {0}")]
     Tool(String),
 }

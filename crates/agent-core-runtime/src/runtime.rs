@@ -1,17 +1,17 @@
 use crate::{
     CompactionConfig, CompactionRequest, ConversationCompactor, HookAggregate, HookRunner,
     LoopDetectionConfig, LoopSignalSeverity, ModelBackend, NoopRuntimeObserver, Result,
-    RuntimeCommand, RuntimeObserver, RuntimeProgressEvent, RuntimeSession, ToolApprovalHandler,
-    ToolApprovalOutcome, ToolApprovalPolicy, ToolApprovalPolicyDecision, ToolApprovalRequest,
-    ToolLoopDetector, append_transcript_message, estimate_prompt_tokens,
+    RuntimeCommand, RuntimeError, RuntimeObserver, RuntimeProgressEvent, RuntimeSession,
+    ToolApprovalHandler, ToolApprovalOutcome, ToolApprovalPolicy, ToolApprovalPolicyDecision,
+    ToolApprovalRequest, ToolLoopDetector, append_transcript_message, estimate_prompt_tokens,
 };
 use agent_core_skills::SkillCatalog;
 use agent_core_store::RunStore;
 use agent_core_tools::{ToolExecutionContext, ToolRegistry};
 use agent_core_types::{
     AgentCoreError, GateDecision, HookContext, HookEvent, HookRegistration, Message, MessagePart,
-    ModelEvent, ModelRequest, PermissionBehavior, PermissionDecision, RunEventEnvelope,
-    RunEventKind, ToolCall, ToolSpec, TurnId, new_opaque_id,
+    ModelEvent, ModelRequest, PermissionBehavior, PermissionDecision, ProviderContinuation,
+    RunEventEnvelope, RunEventKind, ToolCall, ToolSpec, TurnId, new_opaque_id,
 };
 use futures::StreamExt;
 use serde_json::json;
@@ -303,16 +303,7 @@ impl AgentRuntime {
             let _ = self
                 .compact_if_needed(&turn_id, &instructions, observer)
                 .await?;
-            let request = ModelRequest {
-                run_id: self.session.run_id.clone(),
-                session_id: self.session.session_id.clone(),
-                turn_id: turn_id.clone(),
-                instructions: instructions.clone(),
-                messages: self.visible_transcript(),
-                tools: self.tool_registry.specs(),
-                additional_context: Vec::new(),
-                metadata: json!({}),
-            };
+            let mut request = self.build_model_request(&turn_id, &instructions, false);
             self.append_event(
                 Some(turn_id.clone()),
                 None,
@@ -326,11 +317,42 @@ impl AgentRuntime {
                 iteration,
             })?;
 
-            let mut stream = self.backend.stream_turn(request).await?;
+            let used_continuation = request.continuation.is_some();
+            let mut stream = match self.backend.stream_turn(request.clone()).await {
+                Ok(stream) => stream,
+                Err(error) if used_continuation && is_provider_continuation_lost(&error) => {
+                    self.reset_provider_continuation();
+                    self.append_event(
+                        Some(turn_id.clone()),
+                        None,
+                        RunEventKind::Notification {
+                            source: "provider_state".to_string(),
+                            message: error.to_string(),
+                        },
+                    )
+                    .await?;
+                    request = self.build_model_request(&turn_id, &instructions, true);
+                    self.append_event(
+                        Some(turn_id.clone()),
+                        None,
+                        RunEventKind::ModelRequestStarted {
+                            request: request.clone(),
+                        },
+                    )
+                    .await?;
+                    observer.on_event(RuntimeProgressEvent::ModelRequestStarted {
+                        turn_id: turn_id.clone(),
+                        iteration,
+                    })?;
+                    self.backend.stream_turn(request).await?
+                }
+                Err(error) => return Err(error),
+            };
             let mut assistant_text = String::new();
             let mut tool_calls = Vec::new();
             let mut assistant_reasoning = Vec::new();
             let mut assistant_message_id = None;
+            let mut provider_continuation = None;
             while let Some(event) = stream.next().await {
                 match event? {
                     ModelEvent::TextDelta { delta } => {
@@ -346,10 +368,12 @@ impl AgentRuntime {
                     }
                     ModelEvent::ResponseComplete {
                         message_id,
+                        continuation,
                         reasoning,
                         ..
                     } => {
                         assistant_message_id = Some(message_id.unwrap_or_else(new_opaque_id));
+                        provider_continuation = continuation;
                         assistant_reasoning = reasoning;
                     }
                     ModelEvent::Error { message } => {
@@ -364,6 +388,7 @@ impl AgentRuntime {
                 RunEventKind::ModelResponseCompleted {
                     assistant_text: assistant_text.clone(),
                     tool_calls: tool_calls.clone(),
+                    continuation: provider_continuation.clone(),
                 },
             )
             .await?;
@@ -403,6 +428,7 @@ impl AgentRuntime {
                 );
                 self.store.append(event).await?;
             }
+            self.update_provider_continuation(provider_continuation);
 
             if !tool_calls.is_empty() {
                 for call in tool_calls {
@@ -860,6 +886,64 @@ impl AgentRuntime {
             .collect()
     }
 
+    fn build_model_request(
+        &self,
+        turn_id: &TurnId,
+        instructions: &[String],
+        force_full_transcript: bool,
+    ) -> ModelRequest {
+        let (messages, continuation) = if force_full_transcript {
+            (self.visible_transcript(), None)
+        } else {
+            self.request_window()
+        };
+        ModelRequest {
+            run_id: self.session.run_id.clone(),
+            session_id: self.session.session_id.clone(),
+            turn_id: turn_id.clone(),
+            instructions: instructions.to_vec(),
+            messages,
+            tools: self.tool_registry.specs(),
+            additional_context: Vec::new(),
+            continuation,
+            metadata: json!({}),
+        }
+    }
+
+    fn request_window(&self) -> (Vec<Message>, Option<ProviderContinuation>) {
+        let capabilities = self.backend.capabilities();
+        if !capabilities.provider_managed_history {
+            return (self.visible_transcript(), None);
+        }
+
+        let Some(continuation) = self.session.provider_continuation.clone() else {
+            return (self.visible_transcript(), None);
+        };
+
+        // Provider-managed chaining references the prior upstream response and
+        // sends only append-only transcript growth after that response. This
+        // avoids reserializing the visible transcript while keeping runtime
+        // history itself immutable on disk and in memory.
+        let start = self
+            .session
+            .provider_transcript_cursor
+            .min(self.session.transcript.len());
+        (
+            self.session.transcript[start..].to_vec(),
+            Some(continuation),
+        )
+    }
+
+    fn update_provider_continuation(&mut self, continuation: Option<ProviderContinuation>) {
+        self.session.provider_continuation = continuation;
+        self.session.provider_transcript_cursor = self.session.transcript.len();
+    }
+
+    fn reset_provider_continuation(&mut self) {
+        self.session.provider_continuation = None;
+        self.session.provider_transcript_cursor = 0;
+    }
+
     async fn compact_if_needed(
         &mut self,
         turn_id: &TurnId,
@@ -867,6 +951,11 @@ impl AgentRuntime {
         observer: &mut dyn RuntimeObserver,
     ) -> Result<bool> {
         if !self.compaction_config.enabled {
+            return Ok(false);
+        }
+        if self.backend.capabilities().provider_managed_history
+            && self.session.provider_continuation.is_some()
+        {
             return Ok(false);
         }
         let visible_messages = self.visible_transcript();
@@ -968,6 +1057,11 @@ impl AgentRuntime {
             turn_id.clone(),
         );
         self.store.append(event).await?;
+        // A local compaction rewrites the request window into a new synthetic
+        // summary/tail boundary. Any upstream `previous_response_id` chain now
+        // refers to a different history shape, so the next provider request
+        // must restart from the compacted visible transcript.
+        self.reset_provider_continuation();
         self.session.compaction_summary_index = Some(summary_index);
         self.session.retained_tail_indices = retained_tail_indices.clone();
         self.session.post_summary_start = summary_index + 1;
@@ -1078,6 +1172,13 @@ fn severity_label(severity: LoopSignalSeverity) -> &'static str {
     }
 }
 
+fn is_provider_continuation_lost(error: &RuntimeError) -> bool {
+    matches!(
+        error,
+        RuntimeError::AgentCore(AgentCoreError::ProviderContinuationLost(_))
+    )
+}
+
 fn approval_reasons_for_tool(spec: &ToolSpec) -> Vec<String> {
     let mut reasons = Vec::new();
     if tool_annotation_bool(spec, "destructiveHint").unwrap_or(true) {
@@ -1108,10 +1209,10 @@ mod tests {
     use crate::{
         AgentRuntimeBuilder, CompactionConfig, CompactionRequest, CompactionResult,
         ConversationCompactor, DefaultCommandHookExecutor, HookRunner, ModelBackend,
-        NoopAgentHookEvaluator, ReqwestHttpHookExecutor, Result, RuntimeCommand, RuntimeObserver,
-        RuntimeProgressEvent, StringMatcher, ToolApprovalHandler, ToolApprovalMatcher,
-        ToolApprovalOutcome, ToolApprovalRequest, ToolApprovalRule, ToolApprovalRuleSet,
-        ToolArgumentMatcher,
+        ModelBackendCapabilities, NoopAgentHookEvaluator, ReqwestHttpHookExecutor, Result,
+        RuntimeCommand, RuntimeObserver, RuntimeProgressEvent, StringMatcher, ToolApprovalHandler,
+        ToolApprovalMatcher, ToolApprovalOutcome, ToolApprovalRequest, ToolApprovalRule,
+        ToolApprovalRuleSet, ToolArgumentMatcher,
     };
     use agent_core_skills::{Skill, SkillCatalog};
     use agent_core_store::{InMemoryRunStore, RunStore};
@@ -1119,9 +1220,9 @@ mod tests {
         ReadTool, Tool, ToolError, ToolExecutionContext, ToolRegistry, mcp_tool_annotations,
     };
     use agent_core_types::{
-        HookContext, HookEvent, HookHandler, HookOutput, HookRegistration, Message, ModelEvent,
-        ModelRequest, PromptHookHandler, RunEventKind, ToolCall, ToolCallId, ToolOrigin,
-        ToolOutputMode, ToolResult, ToolSpec,
+        AgentCoreError, HookContext, HookEvent, HookHandler, HookOutput, HookRegistration, Message,
+        ModelEvent, ModelRequest, PromptHookHandler, ProviderContinuation, RunEventKind, ToolCall,
+        ToolCallId, ToolOrigin, ToolOutputMode, ToolResult, ToolSpec,
     };
     use async_trait::async_trait;
     use futures::{StreamExt, stream, stream::BoxStream};
@@ -1140,6 +1241,25 @@ mod tests {
     impl RecordingBackend {
         fn requests(&self) -> Vec<ModelRequest> {
             self.requests.lock().unwrap().clone()
+        }
+    }
+
+    #[derive(Clone, Default)]
+    struct ContinuingBackend {
+        requests: Arc<Mutex<Vec<ModelRequest>>>,
+        fail_first_continuation: Arc<Mutex<bool>>,
+    }
+
+    impl ContinuingBackend {
+        fn requests(&self) -> Vec<ModelRequest> {
+            self.requests.lock().unwrap().clone()
+        }
+
+        fn with_failed_continuation() -> Self {
+            Self {
+                requests: Arc::new(Mutex::new(Vec::new())),
+                fail_first_continuation: Arc::new(Mutex::new(true)),
+            }
         }
     }
 
@@ -1293,6 +1413,7 @@ mod tests {
                     Ok(ModelEvent::ResponseComplete {
                         stop_reason: Some("tool_use".to_string()),
                         message_id: None,
+                        continuation: None,
                         reasoning: Vec::new(),
                     }),
                 ])
@@ -1305,6 +1426,7 @@ mod tests {
                     Ok(ModelEvent::ResponseComplete {
                         stop_reason: Some("stop".to_string()),
                         message_id: None,
+                        continuation: None,
                         reasoning: Vec::new(),
                     }),
                 ])
@@ -1327,6 +1449,50 @@ mod tests {
                 Ok(ModelEvent::ResponseComplete {
                     stop_reason: Some("stop".to_string()),
                     message_id: None,
+                    continuation: None,
+                    reasoning: Vec::new(),
+                }),
+            ])
+            .boxed())
+        }
+    }
+
+    #[async_trait]
+    impl ModelBackend for ContinuingBackend {
+        fn capabilities(&self) -> ModelBackendCapabilities {
+            ModelBackendCapabilities {
+                provider_managed_history: true,
+                provider_native_compaction: true,
+            }
+        }
+
+        async fn stream_turn(
+            &self,
+            request: ModelRequest,
+        ) -> Result<BoxStream<'static, Result<ModelEvent>>> {
+            self.requests.lock().unwrap().push(request.clone());
+            if request.continuation.is_some() {
+                let mut fail_first = self.fail_first_continuation.lock().unwrap();
+                if *fail_first {
+                    *fail_first = false;
+                    return Err(AgentCoreError::ProviderContinuationLost(
+                        "provider lost previous_response_id".to_string(),
+                    )
+                    .into());
+                }
+            }
+
+            let response_index = self.requests.lock().unwrap().len();
+            Ok(stream::iter(vec![
+                Ok(ModelEvent::TextDelta {
+                    delta: format!("response {response_index}"),
+                }),
+                Ok(ModelEvent::ResponseComplete {
+                    stop_reason: Some("stop".to_string()),
+                    message_id: Some(format!("msg_{response_index}")),
+                    continuation: Some(ProviderContinuation::OpenAiResponses {
+                        response_id: format!("resp_{response_index}"),
+                    }),
                     reasoning: Vec::new(),
                 }),
             ])
@@ -1359,6 +1525,125 @@ mod tests {
         assert_eq!(outcome.assistant_text, "done");
     }
 
+    #[tokio::test]
+    async fn runtime_uses_provider_continuation_for_follow_up_turns() {
+        let dir = tempfile::tempdir().unwrap();
+        let backend = Arc::new(ContinuingBackend::default());
+        let store = Arc::new(InMemoryRunStore::new());
+        let mut runtime: AgentRuntime = AgentRuntimeBuilder::new(backend.clone(), store)
+            .hook_runner(Arc::new(HookRunner::default()))
+            .tool_context(ToolExecutionContext {
+                workspace_root: dir.path().to_path_buf(),
+                workspace_only: true,
+                model_context_window_tokens: Some(128_000),
+                ..Default::default()
+            })
+            .skill_catalog(SkillCatalog::default())
+            .build();
+
+        runtime.run_user_prompt("first task").await.unwrap();
+        runtime.run_user_prompt("second task").await.unwrap();
+
+        let requests = backend.requests();
+        assert_eq!(requests.len(), 2);
+        assert!(requests[0].continuation.is_none());
+        assert_eq!(requests[0].messages.len(), 1);
+        assert_eq!(requests[0].messages[0].text_content(), "first task");
+        assert_eq!(
+            requests[1].continuation,
+            Some(ProviderContinuation::OpenAiResponses {
+                response_id: "resp_1".to_string(),
+            })
+        );
+        assert_eq!(requests[1].messages.len(), 1);
+        assert_eq!(requests[1].messages[0].text_content(), "second task");
+    }
+
+    #[tokio::test]
+    async fn runtime_retries_full_transcript_when_provider_continuation_is_lost() {
+        let dir = tempfile::tempdir().unwrap();
+        let backend = Arc::new(ContinuingBackend::with_failed_continuation());
+        let store = Arc::new(InMemoryRunStore::new());
+        let mut runtime: AgentRuntime = AgentRuntimeBuilder::new(backend.clone(), store.clone())
+            .hook_runner(Arc::new(HookRunner::default()))
+            .tool_context(ToolExecutionContext {
+                workspace_root: dir.path().to_path_buf(),
+                workspace_only: true,
+                model_context_window_tokens: Some(128_000),
+                ..Default::default()
+            })
+            .skill_catalog(SkillCatalog::default())
+            .build();
+
+        runtime.run_user_prompt("first task").await.unwrap();
+        runtime.run_user_prompt("second task").await.unwrap();
+
+        let requests = backend.requests();
+        assert_eq!(requests.len(), 3);
+        assert_eq!(
+            requests[1].continuation,
+            Some(ProviderContinuation::OpenAiResponses {
+                response_id: "resp_1".to_string(),
+            })
+        );
+        assert!(requests[2].continuation.is_none());
+        assert!(
+            requests[2].messages.len() >= 3,
+            "fallback request should resend visible transcript"
+        );
+        let events = store.events(&runtime.run_id()).await.unwrap();
+        assert!(events.iter().any(|event| {
+            matches!(
+                &event.event,
+                RunEventKind::Notification { source, message }
+                    if source == "provider_state"
+                        && message.contains("provider continuation lost")
+            )
+        }));
+    }
+
+    #[tokio::test]
+    async fn local_compaction_resets_provider_continuation() {
+        let dir = tempfile::tempdir().unwrap();
+        let backend = Arc::new(ContinuingBackend::default());
+        let store = Arc::new(InMemoryRunStore::new());
+        let mut runtime: AgentRuntime = AgentRuntimeBuilder::new(backend.clone(), store)
+            .hook_runner(Arc::new(HookRunner::default()))
+            .conversation_compactor(Arc::new(StaticCompactor))
+            .compaction_config(CompactionConfig {
+                enabled: true,
+                context_window_tokens: 64,
+                trigger_tokens: 32,
+                preserve_recent_messages: 1,
+            })
+            .tool_context(ToolExecutionContext {
+                workspace_root: dir.path().to_path_buf(),
+                workspace_only: true,
+                model_context_window_tokens: Some(128_000),
+                ..Default::default()
+            })
+            .skill_catalog(SkillCatalog::default())
+            .build();
+
+        runtime.run_user_prompt("first task").await.unwrap();
+        runtime
+            .steer("keep explanations brief", Some("test".to_string()))
+            .await
+            .unwrap();
+        assert!(runtime.compact_now(None).await.unwrap());
+        runtime.run_user_prompt("second task").await.unwrap();
+
+        let requests = backend.requests();
+        assert_eq!(requests.len(), 2);
+        assert!(requests[1].continuation.is_none());
+        assert!(
+            requests[1]
+                .messages
+                .iter()
+                .any(|message| message.text_content().contains("summary for 2 messages"))
+        );
+    }
+
     struct ToolErrorRecoveringBackend;
 
     #[async_trait]
@@ -1386,6 +1671,7 @@ mod tests {
                     Ok(ModelEvent::ResponseComplete {
                         stop_reason: Some("tool_use".to_string()),
                         message_id: None,
+                        continuation: None,
                         reasoning: Vec::new(),
                     }),
                 ])
@@ -1398,6 +1684,7 @@ mod tests {
                     Ok(ModelEvent::ResponseComplete {
                         stop_reason: Some("stop".to_string()),
                         message_id: None,
+                        continuation: None,
                         reasoning: Vec::new(),
                     }),
                 ])
@@ -1478,6 +1765,7 @@ mod tests {
                     Ok(ModelEvent::ResponseComplete {
                         stop_reason: Some("tool_use".to_string()),
                         message_id: None,
+                        continuation: None,
                         reasoning: Vec::new(),
                     }),
                 ])
@@ -1490,6 +1778,7 @@ mod tests {
                     Ok(ModelEvent::ResponseComplete {
                         stop_reason: Some("stop".to_string()),
                         message_id: None,
+                        continuation: None,
                         reasoning: Vec::new(),
                     }),
                 ])
@@ -1692,6 +1981,7 @@ mod tests {
                 Ok(ModelEvent::ResponseComplete {
                     stop_reason: Some("stop".to_string()),
                     message_id: None,
+                    continuation: None,
                     reasoning: Vec::new(),
                 }),
             ])

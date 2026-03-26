@@ -118,7 +118,7 @@ Completed in this pass:
 
 ## Next Priority
 
-The next framework gaps are provider-native compaction support where upstream APIs expose structured state compaction, plus better run-store indexing and retention beyond the current JSONL scan model.
+The next framework gaps are standalone provider-native compaction windows where upstream APIs return opaque compacted items, plus better run-store indexing and retention beyond the current JSONL scan model.
 
 After that, the next capability gap is better approval policy composition, richer per-skill policy/configuration on top of the new hook-driven model, and a pluggable search backend with stronger ranking and citation metadata.
 
@@ -128,5 +128,7 @@ Completed in this pass:
 - added argument-aware approval matchers over canonical JSON pointers, plus tool-name and origin matchers
 - kept shell approval handlers as the final UX boundary instead of hardcoding interactive prompts into runtime policy
 - added explicit OpenAI prompt-cache request controls in the provider adapter so hosts can use `prompt_cache_key` and `prompt_cache_retention` without pushing provider JSON shape into runtime code
+- added provider-managed OpenAI Responses continuation support so runtime can carry `response_id` forward and send only append-only transcript deltas after the first turn
+- added OpenAI server-side compaction hints through `context_management` on the native Responses path, while keeping local runtime compaction as the provider-agnostic fallback
 - upgraded `FileRunStore` to keep a mutable summary/search index sidecar next to append-only JSONL transcripts
 - added run-store retention controls by run age and run count, enforced on open and append

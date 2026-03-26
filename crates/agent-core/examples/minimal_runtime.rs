@@ -37,6 +37,7 @@ impl ModelBackend for EchoBackend {
             Ok(ModelEvent::ResponseComplete {
                 stop_reason: Some("completed".to_string()),
                 message_id: Some("example-response-1".to_string()),
+                continuation: None,
                 reasoning: Vec::new(),
             }),
         ])))

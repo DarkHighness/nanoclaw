@@ -122,6 +122,7 @@ Owns provider-backed model execution. It translates `agent-core-types` requests 
 - Anthropic
 
 The OpenAI path is aligned with the Responses API shape. The adapter preserves stable `message_id` and `call_id` fields so provider state can be audited without leaking provider-specific naming into the rest of the runtime.
+When hosts enable OpenAI response chaining, the adapter also preserves `response_id` as runtime continuation state, uses top-level Responses `instructions`, and can attach `context_management` compaction hints without forcing the runtime layer to speak provider JSON directly.
 
 ### `agent-core-mcp`
 
@@ -226,13 +227,15 @@ Hosts embedding the substrate should define their own config layer, or none at a
 - Feature-enabled local code-intel tooling follows the same request families as LSP (`workspace/symbol`, `textDocument/documentSymbol`, `textDocument/definition`, `textDocument/references`), while keeping the backend host-pluggable instead of hardcoding one language server process contract.
 - Provider streaming passes through the `ModelBackend` boundary into runtime progress events, and hosts can consume those events however they want.
 - The `rig` adapter now exposes explicit OpenAI prompt-cache request controls (`prompt_cache_key`, `prompt_cache_retention`) instead of forcing hosts to smuggle them through opaque JSON. Those controls stay provider-scoped in the adapter layer and are omitted for non-OpenAI providers.
+- The runtime now distinguishes between full visible-transcript requests and provider-managed continuation windows. When an upstream provider exposes durable response chaining, runtime can send only append-only transcript growth while still keeping its own transcript immutable and fully auditable.
+- The OpenAI adapter now has a native Responses streaming path for stateful turns. That path preserves `response_id`, maps `previous_response_id` retries back into runtime continuation handling, and can emit server-side compaction hints through `context_management`.
 - Startup assembly for the reference shell lives in a testable boot module, so that shell's config parsing, provider wiring, skill loading, and store fallback can be exercised without launching the full shell loop.
 - MCP `stdio` support is guarded by a real child-process integration test instead of only mock-client coverage.
 - The `rig` backend has provider-agnostic contract tests around schema coercion, message conversion, and event/origin propagation.
 
 ## Deliberate Tradeoffs
 
-- The current compaction path is runtime-local and model-generated. It preserves append-only history and recent-message tails, but it does not yet integrate provider-native compaction APIs such as OpenAI Responses `/compact`.
+- Local runtime compaction and OpenAI server-side compaction now coexist, but only the request-hint path is integrated. The standalone OpenAI `/responses/compact` window is still not mapped into first-class runtime transcript items, because the substrate does not yet preserve opaque provider-only compaction items as replayable message objects.
 - The default persistent store still uses append-only JSONL transcripts as the durable source of truth, but now pairs them with a small mutable index sidecar for summaries, search prefiltering, and retention. It still does not provide multi-process coordination or a heavier full-text index backend.
 - The current approval flow now supports runtime-level rule composition in addition to shell-side prompts. Hosts can auto-allow, deny, or require review for matching tool/origin/argument patterns, but persistent allowlists and richer policy storage are still outer-host concerns.
 - Feature-enabled `web_search` is intentionally lightweight today. It does not yet provide hosted-tool quality ranking, citations, or user-location controls.
@@ -244,7 +247,7 @@ The next clean extension points are:
 
 - richer run-store filtering and stronger multi-process/index backends
 - richer provider request controls
-- provider-native compaction support where an upstream API can preserve more structured state
+- standalone provider-native compaction windows where an upstream API can preserve more structured state than a local summary string
 - persistent approval policy storage and richer host-managed approval caches
 - richer loop-detection policies and model-aware progress heuristics
 - richer explicit skill policy and package controls

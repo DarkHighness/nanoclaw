@@ -176,6 +176,7 @@ pub(crate) fn searchable_event_strings(event: &RunEventEnvelope) -> Vec<String> 
         RunEventKind::ModelResponseCompleted {
             assistant_text,
             tool_calls,
+            ..
         } => {
             values.push(assistant_text.clone());
             values.extend(tool_calls.iter().map(|call| call.tool_name.clone()));

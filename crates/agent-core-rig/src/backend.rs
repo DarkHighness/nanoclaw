@@ -1,8 +1,11 @@
 use crate::{
-    Result, RigError, RigProviderCapabilities, RigProviderDescriptor, RigProviderKind,
-    to_rig_tool_definition,
+    OpenAiTransport, Result, RigError, RigOpenAiResponsesOptions, RigProviderCapabilities,
+    RigProviderDescriptor, RigProviderKind, build_openai_transport, openai_capabilities,
+    stream_openai_responses_turn, to_rig_tool_definition,
 };
-use agent_core_runtime::{ModelBackend, Result as RuntimeResult, RuntimeError};
+use agent_core_runtime::{
+    ModelBackend, ModelBackendCapabilities, Result as RuntimeResult, RuntimeError,
+};
 use agent_core_types::{
     AgentCoreError, Message, MessagePart, MessageRole, ModelEvent, ModelRequest, Reasoning,
     ReasoningContent as AgentReasoningContent, ToolCall, ToolCallId, ToolOrigin, new_opaque_id,
@@ -17,7 +20,7 @@ use rig::message::{
     Reasoning as RigReasoning, ReasoningContent as RigReasoningContent,
     ToolResultContent as RigToolResultContent, UserContent,
 };
-use rig::providers::{anthropic, openai};
+use rig::providers::anthropic;
 use rig::streaming::{StreamedAssistantContent, StreamingCompletionResponse};
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, VecDeque};
@@ -47,6 +50,7 @@ pub struct RigRequestOptions {
     pub additional_params: Option<Value>,
     pub prompt_cache_key: Option<String>,
     pub prompt_cache_retention: Option<RigPromptCacheRetention>,
+    pub openai_responses: Option<RigOpenAiResponsesOptions>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -56,7 +60,7 @@ pub enum RigPromptCacheRetention {
 }
 
 impl RigPromptCacheRetention {
-    fn as_api_value(self) -> &'static str {
+    pub(crate) fn as_api_value(self) -> &'static str {
         match self {
             Self::InMemory => "in_memory",
             Self::Hours24 => "24h",
@@ -66,7 +70,7 @@ impl RigPromptCacheRetention {
 
 #[derive(Clone)]
 enum RigProviderClient {
-    OpenAi(openai::Client),
+    OpenAi(OpenAiTransport),
     Anthropic(anthropic::Client),
 }
 
@@ -98,13 +102,20 @@ impl RigModelBackend {
     }
 
     pub fn from_settings_with_api_key(
-        descriptor: RigBackendDescriptor,
+        mut descriptor: RigBackendDescriptor,
         request_options: RigRequestOptions,
         base_url: Option<String>,
         api_key: Option<String>,
     ) -> Result<Self> {
+        if matches!(descriptor.provider.provider, RigProviderKind::OpenAi) {
+            let capabilities = openai_capabilities(&request_options);
+            descriptor.capabilities.provider_managed_history =
+                capabilities.provider_managed_history;
+            descriptor.capabilities.provider_native_compaction =
+                capabilities.provider_native_compaction;
+        }
         let client = match descriptor.provider.provider {
-            RigProviderKind::OpenAi => RigProviderClient::OpenAi(build_openai_client(
+            RigProviderKind::OpenAi => RigProviderClient::OpenAi(build_openai_transport(
                 base_url.as_deref(),
                 api_key.as_deref(),
             )?),
@@ -133,40 +144,49 @@ impl RigModelBackend {
 
 #[async_trait]
 impl ModelBackend for RigModelBackend {
+    fn capabilities(&self) -> ModelBackendCapabilities {
+        match self.descriptor.provider.provider {
+            RigProviderKind::OpenAi => openai_capabilities(&self.request_options),
+            RigProviderKind::Anthropic => ModelBackendCapabilities::default(),
+        }
+    }
+
     async fn stream_turn(
         &self,
         request: ModelRequest,
     ) -> RuntimeResult<BoxStream<'static, RuntimeResult<ModelEvent>>> {
-        let tool_origins = request
-            .tools
-            .iter()
-            .map(|tool| (tool.name.clone(), tool.origin.clone()))
-            .collect::<BTreeMap<_, _>>();
-        let request = to_completion_request(
-            request,
-            &self.request_options,
-            &self.descriptor.provider.provider,
-        )
-        .map_err(RuntimeError::from)?;
         let stream = match &self.client {
-            RigProviderClient::OpenAi(client) => stream_completion_to_model_events(
-                execute_streaming_completion(
-                    client.completion_model(self.descriptor.provider.model.clone()),
-                    request.clone(),
-                )
-                .await
-                .map_err(RuntimeError::from)?,
-                tool_origins.clone(),
-            ),
-            RigProviderClient::Anthropic(client) => stream_completion_to_model_events(
-                execute_streaming_completion(
-                    client.completion_model(self.descriptor.provider.model.clone()),
+            RigProviderClient::OpenAi(transport) => {
+                return stream_openai_responses_turn(
+                    transport.clone(),
+                    self.descriptor.provider.model.clone(),
                     request,
+                    self.request_options.clone(),
                 )
-                .await
-                .map_err(RuntimeError::from)?,
-                tool_origins,
-            ),
+                .await;
+            }
+            RigProviderClient::Anthropic(client) => {
+                let tool_origins = request
+                    .tools
+                    .iter()
+                    .map(|tool| (tool.name.clone(), tool.origin.clone()))
+                    .collect::<BTreeMap<_, _>>();
+                let request = to_completion_request(
+                    request,
+                    &self.request_options,
+                    &self.descriptor.provider.provider,
+                )
+                .map_err(RuntimeError::from)?;
+                stream_completion_to_model_events(
+                    execute_streaming_completion(
+                        client.completion_model(self.descriptor.provider.model.clone()),
+                        request,
+                    )
+                    .await
+                    .map_err(RuntimeError::from)?,
+                    tool_origins,
+                )
+            }
         };
         Ok(stream)
     }
@@ -183,34 +203,6 @@ where
         .stream(request)
         .await
         .map_err(|error| RigError::provider(error.to_string()))
-}
-
-fn build_openai_client(
-    base_url: Option<&str>,
-    api_key_override: Option<&str>,
-) -> Result<openai::Client> {
-    let base_url = base_url
-        .map(ToOwned::to_owned)
-        .or_else(|| std::env::var("OPENAI_BASE_URL").ok());
-    if let Some(api_key) = api_key_override {
-        let mut builder = openai::Client::builder().api_key(api_key);
-        if let Some(base_url) = base_url.as_deref() {
-            builder = builder.base_url(base_url);
-        }
-        return builder
-            .build()
-            .map_err(|error| RigError::config(error.to_string()));
-    }
-    if let Some(base_url) = base_url.as_deref() {
-        let api_key = std::env::var("OPENAI_API_KEY")
-            .map_err(|_| RigError::config("OPENAI_API_KEY not set"))?;
-        return openai::Client::builder()
-            .api_key(api_key)
-            .base_url(base_url)
-            .build()
-            .map_err(|error| RigError::config(error.to_string()));
-    }
-    Ok(openai::Client::from_env())
 }
 
 fn build_anthropic_client(
@@ -241,7 +233,7 @@ fn build_anthropic_client(
     Ok(anthropic::Client::from_env())
 }
 
-fn to_completion_request(
+pub(crate) fn to_completion_request(
     request: ModelRequest,
     request_options: &RigRequestOptions,
     provider_kind: &RigProviderKind,
@@ -654,6 +646,7 @@ fn response_to_model_events(
             .to_string(),
         ),
         message_id: None,
+        continuation: None,
         reasoning,
     });
     events
@@ -717,6 +710,7 @@ where
                             .to_string(),
                         ),
                         message_id: stream.inner.message_id.clone(),
+                        continuation: None,
                         reasoning: extract_reasoning(stream.inner.choice.iter()),
                     })));
                 }
@@ -864,6 +858,7 @@ mod tests {
                 annotations: BTreeMap::new(),
             }],
             additional_context: vec!["repo: nanoclaw".to_string()],
+            continuation: None,
             metadata: json!({}),
         };
 
@@ -894,6 +889,7 @@ mod tests {
             messages: vec![Message::user("inspect the workspace")],
             tools: Vec::new(),
             additional_context: Vec::new(),
+            continuation: None,
             metadata: json!({}),
         };
 
@@ -929,6 +925,7 @@ mod tests {
             messages: vec![Message::user("inspect the workspace")],
             tools: Vec::new(),
             additional_context: Vec::new(),
+            continuation: None,
             metadata: json!({}),
         };
 
@@ -957,6 +954,7 @@ mod tests {
             messages: vec![Message::user("inspect the workspace")],
             tools: Vec::new(),
             additional_context: Vec::new(),
+            continuation: None,
             metadata: json!({}),
         };
 

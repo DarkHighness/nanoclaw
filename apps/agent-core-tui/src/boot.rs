@@ -7,7 +7,8 @@ use agent_core::mcp::{
     connect_and_catalog_mcp_servers,
 };
 use agent_core::rig::{
-    RigBackendDescriptor, RigModelBackend, RigProviderDescriptor, RigRequestOptions,
+    RigBackendDescriptor, RigModelBackend, RigOpenAiResponsesOptions, RigOpenAiServerCompaction,
+    RigProviderDescriptor, RigRequestOptions,
 };
 use agent_core::skills::{Skill, load_skill_roots};
 use agent_core_runtime::{
@@ -253,13 +254,28 @@ fn build_backend(config: &AgentCoreConfig) -> Result<RigModelBackend> {
         ProviderKind::Anthropic => RigProviderDescriptor::anthropic(model),
     });
 
+    // The reference shell opts into Responses-native state chaining for OpenAI
+    // so the substrate path is exercised by default instead of only in tests.
+    let request_options = RigRequestOptions {
+        temperature: config.provider.temperature,
+        max_tokens: config.provider.max_tokens,
+        additional_params: config.provider.additional_params.clone(),
+        openai_responses: matches!(provider_kind, ProviderKind::OpenAi).then(|| {
+            RigOpenAiResponsesOptions {
+                chain_previous_response: true,
+                store: Some(true),
+                server_compaction: config
+                    .runtime
+                    .compact_trigger_tokens
+                    .map(|compact_threshold| RigOpenAiServerCompaction { compact_threshold }),
+            }
+        }),
+        ..RigRequestOptions::default()
+    };
+
     Ok(RigModelBackend::from_settings_with_api_key(
         descriptor,
-        RigRequestOptions {
-            temperature: config.provider.temperature,
-            max_tokens: config.provider.max_tokens,
-            additional_params: config.provider.additional_params.clone(),
-        },
+        request_options,
         config.provider.base_url.clone(),
         configured_provider_api_key(config, &provider_kind),
     )?)

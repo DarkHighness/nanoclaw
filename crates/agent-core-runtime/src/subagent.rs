@@ -182,6 +182,7 @@ mod tests {
                 Ok(ModelEvent::ResponseComplete {
                     stop_reason: Some("stop".to_string()),
                     message_id: None,
+                    continuation: None,
                     reasoning: Vec::new(),
                 }),
             ])

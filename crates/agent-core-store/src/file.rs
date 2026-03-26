@@ -15,7 +15,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::Mutex;
 
 const INDEX_FILE_NAME: &str = "runs.index.json";
-const INDEX_VERSION: u32 = 1;
+const INDEX_VERSION: u32 = 2;
 const MAX_SEARCH_CORPUS_CHARS: usize = 16_384;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -40,7 +40,10 @@ pub struct FileRunStore {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct IndexedRunRecord {
     summary: RunSummary,
-    session_ids: BTreeSet<String>,
+    // Session ids must preserve first-seen order because hosts may use the
+    // sequence to reconstruct hand-offs across attached sessions. A sorted set
+    // makes the durable transcript look different from the original stream.
+    session_ids: Vec<String>,
     // The sidecar keeps only a bounded search corpus for prefiltering. The
     // append-only JSONL transcript remains the source of truth for replay and
     // exact preview generation.
@@ -147,7 +150,7 @@ impl EventSink for FileRunStore {
                     transcript_message_count: 0,
                     last_user_prompt: None,
                 },
-                session_ids: BTreeSet::new(),
+                session_ids: Vec::new(),
                 search_corpus: String::new(),
             });
         apply_event_to_record(record, &event);
@@ -261,7 +264,7 @@ fn apply_event_to_record(record: &mut IndexedRunRecord, event: &RunEventEnvelope
     record.summary.first_timestamp_ms = record.summary.first_timestamp_ms.min(event.timestamp_ms);
     record.summary.last_timestamp_ms = record.summary.last_timestamp_ms.max(event.timestamp_ms);
     record.summary.event_count += 1;
-    if record.session_ids.insert(event.session_id.0.clone()) {
+    if push_unique_session_id(&mut record.session_ids, &event.session_id.0) {
         record.summary.session_count = record.session_ids.len();
     }
     if matches!(&event.event, RunEventKind::TranscriptMessage { .. }) {
@@ -273,6 +276,14 @@ fn apply_event_to_record(record: &mut IndexedRunRecord, event: &RunEventEnvelope
     for value in searchable_event_strings(event) {
         append_search_text(&mut record.search_corpus, &value);
     }
+}
+
+fn push_unique_session_id(session_ids: &mut Vec<String>, session_id: &str) -> bool {
+    if session_ids.iter().any(|existing| existing == session_id) {
+        return false;
+    }
+    session_ids.push(session_id.to_string());
+    true
 }
 
 fn append_search_text(search_corpus: &mut String, value: &str) {
@@ -384,10 +395,10 @@ async fn load_events_from_path(path: &Path) -> Result<Vec<RunEventEnvelope>> {
 fn indexed_record_from_events(events: Vec<RunEventEnvelope>) -> Option<IndexedRunRecord> {
     let run_id = events.first()?.run_id.clone();
     let summary = summarize_run_events(&run_id, &events)?;
-    let session_ids = events
-        .iter()
-        .map(|event| event.session_id.0.clone())
-        .collect::<BTreeSet<_>>();
+    let mut session_ids = Vec::new();
+    for event in &events {
+        push_unique_session_id(&mut session_ids, &event.session_id.0);
+    }
     let mut search_corpus = String::new();
     for event in &events {
         for value in searchable_event_strings(event) {

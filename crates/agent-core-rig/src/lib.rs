@@ -7,8 +7,10 @@ mod backend;
 mod capabilities;
 mod error;
 mod mapping;
+mod openai_responses;
 
 pub use backend::*;
 pub use capabilities::*;
 pub use error::*;
 pub use mapping::*;
+pub use openai_responses::*;

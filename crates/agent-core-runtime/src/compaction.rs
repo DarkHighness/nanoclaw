@@ -85,6 +85,7 @@ impl ConversationCompactor for ModelConversationCompactor {
                 messages: request.messages,
                 tools: Vec::new(),
                 additional_context: Vec::new(),
+                continuation: None,
                 metadata: json!({ "agent_core": { "purpose": "compaction" } }),
             })
             .await?;

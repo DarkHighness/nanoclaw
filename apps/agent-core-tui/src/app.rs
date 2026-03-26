@@ -915,6 +915,7 @@ fn format_run_event_line(event: &RunEventEnvelope) -> String {
         RunEventKind::ModelResponseCompleted {
             assistant_text,
             tool_calls,
+            ..
         } => format!(
             "model_response text={} tool_calls={}",
             preview_text(assistant_text, 24),

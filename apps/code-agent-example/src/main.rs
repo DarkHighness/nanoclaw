@@ -1,11 +1,12 @@
 mod tui;
 
 use agent_core::rig::{
-    RigBackendDescriptor, RigModelBackend, RigProviderDescriptor, RigRequestOptions,
+    RigBackendDescriptor, RigModelBackend, RigOpenAiResponsesOptions, RigOpenAiServerCompaction,
+    RigProviderDescriptor, RigRequestOptions,
 };
 use agent_core::runtime::{
-    CompactionConfig, LoopDetectionConfig, ModelConversationCompactor, RuntimeSubagentExecutor,
-    ToolApprovalHandler,
+    CompactionConfig, LoopDetectionConfig, ModelConversationCompactor, NoopToolApprovalPolicy,
+    RuntimeSubagentExecutor, ToolApprovalHandler,
 };
 use agent_core::{
     AgentRuntime, AgentRuntimeBuilder, BashTool, EditTool, GlobTool, GrepTool, HookRunner,
@@ -184,6 +185,7 @@ async fn build_runtime(
         tools.clone(),
         tool_context.clone(),
         approval_handler.clone(),
+        Arc::new(NoopToolApprovalPolicy),
         compactor.clone(),
         CompactionConfig {
             enabled: true,
@@ -224,9 +226,21 @@ fn build_backend(options: &AppOptions) -> Result<RigModelBackend> {
         SelectedProvider::OpenAi => RigProviderDescriptor::openai(options.model.clone()),
         SelectedProvider::Anthropic => RigProviderDescriptor::anthropic(options.model.clone()),
     });
+    let request_options = RigRequestOptions {
+        openai_responses: matches!(options.provider, SelectedProvider::OpenAi).then(|| {
+            RigOpenAiResponsesOptions {
+                chain_previous_response: true,
+                store: Some(true),
+                server_compaction: Some(RigOpenAiServerCompaction {
+                    compact_threshold: DEFAULT_TRIGGER_TOKENS,
+                }),
+            }
+        }),
+        ..RigRequestOptions::default()
+    };
     Ok(RigModelBackend::from_settings(
         descriptor,
-        RigRequestOptions::default(),
+        request_options,
         None,
     )?)
 }

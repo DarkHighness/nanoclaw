@@ -277,6 +277,22 @@ Implementation impact:
 - List operations now read summaries from the sidecar, while search uses the sidecar as a prefilter before replaying candidate runs for exact preview generation.
 - Hosts can now opt into retention by maximum run count or maximum run age without changing the transcript contract or introducing a heavier mandatory database dependency.
 
+### 19. OpenAI Responses state should be modeled as provider continuation, not hidden backend trivia
+
+Reason:
+
+- OpenAI's conversation-state guide is explicit that `previous_response_id` is a first-class continuation primitive, and that follow-up turns should pass only the new user input when that chain is active.
+- The same guide also notes that Responses `instructions` are request-level guidance rather than ordinary chat items. Re-encoding fixed instructions as system messages during `previous_response_id` chaining would accumulate duplicate prompt state instead of replacing the active top-level instructions for the next turn.
+- OpenAI's compaction guide distinguishes between local/manual transcript summarization and server-side `context_management` compaction. The server-side path works best when the runtime keeps the upstream response chain intact, while the standalone `/responses/compact` path returns opaque compacted items that should be passed forward as-is.
+- OpenClaw's session and compaction notes reinforce the substrate lesson here: local append-only transcript history remains the durable source of truth, but provider-side continuation state can still be used as a transport optimization and should be reset explicitly when the local visible-history shape changes.
+
+Implementation impact:
+
+- `agent-core-types` now carries `ProviderContinuation` in `ModelRequest` and `ModelEvent::ResponseComplete`, so provider-managed state is explicit at the runtime boundary instead of being smuggled through opaque metadata.
+- `agent-core-runtime` now tracks the last provider continuation plus a transcript cursor. When provider-managed history is enabled, runtime sends only append-only transcript growth after the last successful upstream response; if the provider reports `previous_response_not_found`, runtime clears the chain and retries once with the full visible transcript.
+- The OpenAI adapter now uses a native Responses streaming request path so it can preserve `response_id`, send top-level `instructions`, keep `prompt_cache_*` controls intact, and attach `context_management` compaction hints without waiting for generic adapter support.
+- Local runtime compaction now explicitly resets provider continuation state, because once runtime rewrites the visible request window into a new summary/tail boundary, the old upstream response chain no longer matches the local context shape.
+
 ## Remaining Gaps
 
 - MCP prompt arguments are discovered and displayed, but the TUI does not yet provide an argument-entry UX beyond the current basic command surface.
@@ -284,3 +300,4 @@ Implementation impact:
 - The optional local `web_search` path is a bootstrap implementation. It does not yet match hosted-tool quality for ranking, citation richness, or location-aware search controls.
 - Optional `web_fetch` does not yet parse binary documents like PDFs into model-friendly text.
 - The new skill model removes heuristic activation, but richer explicit skill policy and versioning still need to be designed.
+- OpenAI server-side compaction hints are now supported on the create path, but the standalone `/responses/compact` output window is still not preserved as first-class opaque runtime transcript items.
