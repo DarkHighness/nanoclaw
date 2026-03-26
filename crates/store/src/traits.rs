@@ -34,6 +34,21 @@ pub struct RunSearchResult {
     pub preview_matches: Vec<String>,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunMemoryExportRequest {
+    #[serde(default)]
+    pub max_runs: Option<usize>,
+    #[serde(default)]
+    pub max_search_corpus_chars: Option<usize>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunMemoryExportRecord {
+    pub summary: RunSummary,
+    pub session_ids: Vec<SessionId>,
+    pub search_corpus: String,
+}
+
 #[must_use]
 pub fn summarize_run_events(run_id: &RunId, events: &[RunEventEnvelope]) -> Option<RunSummary> {
     if events.is_empty() {
@@ -238,6 +253,34 @@ pub(crate) fn searchable_event_strings(event: &RunEventEnvelope) -> Vec<String> 
     values
 }
 
+pub(crate) fn append_search_corpus_line(search_corpus: &mut String, value: &str) {
+    let normalized = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    if normalized.is_empty() {
+        return;
+    }
+    if !search_corpus.is_empty() {
+        search_corpus.push('\n');
+    }
+    search_corpus.push_str(&normalized);
+}
+
+pub(crate) fn keep_recent_chars(search_corpus: &str, max_chars: usize) -> String {
+    if max_chars == 0 {
+        return String::new();
+    }
+    let total_chars = search_corpus.chars().count();
+    if total_chars <= max_chars {
+        return search_corpus.to_string();
+    }
+
+    // Memory exports intentionally keep the newest tail because downstream
+    // indexing should prefer the latest operational context over stale prelude.
+    search_corpus
+        .chars()
+        .skip(total_chars - max_chars)
+        .collect::<String>()
+}
+
 fn preview_text(value: &str, max_chars: usize) -> String {
     let collapsed = value.split_whitespace().collect::<Vec<_>>().join(" ");
     if collapsed.chars().count() <= max_chars {
@@ -265,4 +308,8 @@ pub trait RunStore: EventSink {
     async fn events(&self, run_id: &RunId) -> Result<Vec<RunEventEnvelope>>;
     async fn session_ids(&self, run_id: &RunId) -> Result<Vec<SessionId>>;
     async fn replay_transcript(&self, run_id: &RunId) -> Result<Vec<Message>>;
+    async fn export_for_memory(
+        &self,
+        request: RunMemoryExportRequest,
+    ) -> Result<Vec<RunMemoryExportRecord>>;
 }

@@ -2,6 +2,7 @@
 default-members = [
     "core",
     "env",
+    "inference",
     "memory",
     "mcp",
     "plugins",
@@ -15,6 +16,7 @@ default-members = [
 members = [
     "core",
     "env",
+    "inference",
     "memory",
     "mcp",
     "plugins",
@@ -63,3 +65,4 @@ tracing = "0.1.41"
 uuid = { version = "1.18.1", features = ["serde", "v4"] }
 wiremock = "0.6.5"
 agent-env = { path = "env" }
+inference = { path = "inference" }

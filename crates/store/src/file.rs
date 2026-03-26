@@ -1,6 +1,7 @@
 use crate::replay::replay_transcript;
 use crate::{
-    EventSink, Result, RunSearchResult, RunStore, RunStoreError, RunSummary, search_run_events,
+    EventSink, Result, RunMemoryExportRecord, RunMemoryExportRequest, RunSearchResult, RunStore,
+    RunStoreError, RunSummary, append_search_corpus_line, keep_recent_chars, search_run_events,
     searchable_event_strings, summarize_run_events,
 };
 use async_trait::async_trait;
@@ -304,6 +305,44 @@ impl RunStore for FileRunStore {
     async fn replay_transcript(&self, run_id: &RunId) -> Result<Vec<Message>> {
         Ok(replay_transcript(&self.events(run_id).await?))
     }
+
+    async fn export_for_memory(
+        &self,
+        request: RunMemoryExportRequest,
+    ) -> Result<Vec<RunMemoryExportRecord>> {
+        let index = self.index.read().expect("file run store read lock");
+        let mut records = index
+            .runs
+            .values()
+            .map(|record| RunMemoryExportRecord {
+                summary: record.summary.clone(),
+                session_ids: record.session_ids.clone(),
+                search_corpus: record.search_corpus.clone(),
+            })
+            .collect::<Vec<_>>();
+        records.sort_by(|left, right| {
+            right
+                .summary
+                .last_timestamp_ms
+                .cmp(&left.summary.last_timestamp_ms)
+                .then_with(|| {
+                    left.summary
+                        .run_id
+                        .as_str()
+                        .cmp(right.summary.run_id.as_str())
+                })
+        });
+
+        if let Some(max_runs) = request.max_runs {
+            records.truncate(max_runs);
+        }
+        if let Some(max_chars) = request.max_search_corpus_chars {
+            for record in &mut records {
+                record.search_corpus = keep_recent_chars(&record.search_corpus, max_chars);
+            }
+        }
+        Ok(records)
+    }
 }
 
 fn apply_event_to_record(record: &mut IndexedRunRecord, event: &RunEventEnvelope) {
@@ -333,18 +372,10 @@ fn push_unique_session_id(session_ids: &mut Vec<SessionId>, session_id: &Session
 }
 
 fn append_search_text(search_corpus: &mut String, value: &str) {
-    let normalized = value.split_whitespace().collect::<Vec<_>>().join(" ");
-    if normalized.is_empty() {
-        return;
-    }
-    if !search_corpus.is_empty() {
-        search_corpus.push('\n');
-    }
-    search_corpus.push_str(&normalized);
+    append_search_corpus_line(search_corpus, value);
     let total_chars = search_corpus.chars().count();
     if total_chars > MAX_SEARCH_CORPUS_CHARS {
-        let keep_from = total_chars - MAX_SEARCH_CORPUS_CHARS;
-        *search_corpus = search_corpus.chars().skip(keep_from).collect::<String>();
+        *search_corpus = keep_recent_chars(search_corpus, MAX_SEARCH_CORPUS_CHARS);
     }
 }
 
@@ -514,7 +545,7 @@ mod tests {
         FileRunStore, FileRunStoreOptions, RunStoreRetentionPolicy, append_search_text,
         current_timestamp_ms,
     };
-    use crate::{EventSink, RunStore};
+    use crate::{EventSink, RunMemoryExportRequest, RunStore};
     use std::time::Duration;
     use types::{Message, RunEventEnvelope, RunEventKind, RunId, SessionId};
 
@@ -745,5 +776,36 @@ mod tests {
         let mut corpus = String::new();
         append_search_text(&mut corpus, &"x".repeat(20_000));
         assert!(corpus.chars().count() <= 16_384);
+    }
+
+    #[tokio::test]
+    async fn exports_runs_for_memory_from_index_sidecar() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = FileRunStore::open(dir.path()).await.unwrap();
+        let run_id = RunId::new();
+        let session_id = SessionId::new();
+        store
+            .append(RunEventEnvelope::new(
+                run_id.clone(),
+                session_id,
+                None,
+                None,
+                RunEventKind::UserPromptSubmit {
+                    prompt: "ship release".to_string(),
+                },
+            ))
+            .await
+            .unwrap();
+
+        let exports = store
+            .export_for_memory(RunMemoryExportRequest {
+                max_runs: Some(1),
+                max_search_corpus_chars: Some(64),
+            })
+            .await
+            .unwrap();
+        assert_eq!(exports.len(), 1);
+        assert_eq!(exports[0].summary.run_id, run_id);
+        assert!(exports[0].search_corpus.contains("ship release"));
     }
 }

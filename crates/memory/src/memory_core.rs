@@ -1,18 +1,21 @@
 use crate::{
     MemoryBackend, MemoryCoreConfig, MemoryDocument, MemoryGetRequest, MemorySearchHit,
     MemorySearchRequest, MemorySearchResponse, MemorySyncStatus, Result, chunk_corpus,
-    load_memory_corpus,
+    load_configured_memory_corpus,
 };
 use async_trait::async_trait;
 use serde_json::json;
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::sync::Arc;
+use store::RunStore;
 use tools::format_numbered_lines;
 
 pub struct MemoryCoreBackend {
     workspace_root: PathBuf,
     config: MemoryCoreConfig,
+    run_store: Option<Arc<dyn RunStore>>,
 }
 
 impl MemoryCoreBackend {
@@ -21,14 +24,26 @@ impl MemoryCoreBackend {
         Self {
             workspace_root,
             config,
+            run_store: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_run_store(mut self, run_store: Arc<dyn RunStore>) -> Self {
+        self.run_store = Some(run_store);
+        self
     }
 }
 
 #[async_trait]
 impl MemoryBackend for MemoryCoreBackend {
     async fn sync(&self) -> Result<MemorySyncStatus> {
-        let corpus = load_memory_corpus(&self.workspace_root, &self.config.corpus).await?;
+        let (corpus, _) = load_configured_memory_corpus(
+            &self.workspace_root,
+            &self.config.corpus,
+            self.run_store.as_ref(),
+        )
+        .await?;
         Ok(MemorySyncStatus {
             backend: "memory-core".to_string(),
             indexed_documents: corpus.documents.len(),
@@ -37,7 +52,12 @@ impl MemoryBackend for MemoryCoreBackend {
     }
 
     async fn search(&self, req: MemorySearchRequest) -> Result<MemorySearchResponse> {
-        let corpus = load_memory_corpus(&self.workspace_root, &self.config.corpus).await?;
+        let (corpus, runtime_exports) = load_configured_memory_corpus(
+            &self.workspace_root,
+            &self.config.corpus,
+            self.run_store.as_ref(),
+        )
+        .await?;
         let chunks = chunk_corpus(&corpus, &self.config.chunking);
         let query_terms = tokenize_query(&req.query);
         let limit = req
@@ -85,6 +105,13 @@ impl MemoryBackend for MemoryCoreBackend {
             "indexed_documents".to_string(),
             json!(corpus.documents.len()),
         );
+        metadata.insert(
+            "runtime_exported_runs".to_string(),
+            json!(runtime_exports.exported_runs),
+        );
+        if let Some(output_dir) = runtime_exports.output_dir {
+            metadata.insert("runtime_export_dir".to_string(), json!(output_dir));
+        }
         metadata.insert("fallback_used".to_string(), json!(false));
         Ok(MemorySearchResponse {
             backend: "memory-core".to_string(),
@@ -94,7 +121,12 @@ impl MemoryBackend for MemoryCoreBackend {
     }
 
     async fn get(&self, req: MemoryGetRequest) -> Result<MemoryDocument> {
-        let corpus = load_memory_corpus(&self.workspace_root, &self.config.corpus).await?;
+        let (corpus, _) = load_configured_memory_corpus(
+            &self.workspace_root,
+            &self.config.corpus,
+            self.run_store.as_ref(),
+        )
+        .await?;
         let requested = normalize_path(&req.path);
         let document = corpus
             .documents

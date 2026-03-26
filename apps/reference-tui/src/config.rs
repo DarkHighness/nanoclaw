@@ -358,7 +358,7 @@ mod tests {
                 enabled = true
 
                 [plugins.entries.memory-core.config]
-                index_path = ".agent-core/memory/index.sqlite"
+                index_path = ".nanoclaw/memory/index.sqlite"
             "#,
         )
         .await
@@ -408,7 +408,7 @@ mod tests {
                 .get("memory-core")
                 .and_then(|entry| entry.config.get("index_path"))
                 .and_then(toml::Value::as_str),
-            Some(".agent-core/memory/index.sqlite")
+            Some(".nanoclaw/memory/index.sqlite")
         );
         assert_eq!(
             config.resolved_store_dir(dir.path()),

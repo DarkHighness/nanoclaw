@@ -11,6 +11,7 @@ mod corpus;
 mod error;
 mod memory_core;
 mod memory_embed;
+mod runtime_exports;
 mod tools;
 
 pub use backend::*;
@@ -19,4 +20,5 @@ pub use corpus::*;
 pub use error::*;
 pub use memory_core::*;
 pub use memory_embed::*;
+pub use runtime_exports::*;
 pub use tools::*;

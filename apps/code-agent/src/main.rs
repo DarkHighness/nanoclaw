@@ -297,6 +297,7 @@ async fn build_runtime(
     agent::activate_driver_requests(
         &plugin_plan.driver_activations,
         workspace_root,
+        Some(store.clone()),
         &mut tools,
         agent::UnknownDriverPolicy::Error,
     )?;

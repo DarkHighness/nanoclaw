@@ -1,5 +1,5 @@
+use inference::{EmbeddingConfig, QueryExpansionConfig, RerankConfig};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -40,11 +40,39 @@ impl Default for MemorySearchConfig {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MemoryRuntimeExportConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_runtime_export_output_dir")]
+    pub output_dir: PathBuf,
+    #[serde(default = "default_runtime_export_max_runs")]
+    pub max_runs: usize,
+    #[serde(default = "default_runtime_export_include_search_corpus")]
+    pub include_search_corpus: bool,
+    #[serde(default = "default_runtime_export_max_search_corpus_chars")]
+    pub max_search_corpus_chars: usize,
+}
+
+impl Default for MemoryRuntimeExportConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            output_dir: default_runtime_export_output_dir(),
+            max_runs: default_runtime_export_max_runs(),
+            include_search_corpus: default_runtime_export_include_search_corpus(),
+            max_search_corpus_chars: default_runtime_export_max_search_corpus_chars(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MemoryCorpusConfig {
     #[serde(default = "default_include_globs")]
     pub include_globs: Vec<String>,
     #[serde(default)]
     pub extra_paths: Vec<PathBuf>,
+    #[serde(default)]
+    pub runtime_export: MemoryRuntimeExportConfig,
 }
 
 impl Default for MemoryCorpusConfig {
@@ -52,6 +80,27 @@ impl Default for MemoryCorpusConfig {
         Self {
             include_globs: default_include_globs(),
             extra_paths: Vec::new(),
+            runtime_export: MemoryRuntimeExportConfig::default(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MemoryBackgroundSyncConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_background_sync_run_on_start")]
+    pub run_on_start: bool,
+    #[serde(default = "default_background_sync_interval_ms")]
+    pub interval_ms: u64,
+}
+
+impl Default for MemoryBackgroundSyncConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            run_on_start: default_background_sync_run_on_start(),
+            interval_ms: default_background_sync_interval_ms(),
         }
     }
 }
@@ -65,6 +114,8 @@ pub struct MemoryCoreConfig {
     #[serde(default)]
     pub search: MemorySearchConfig,
     #[serde(default)]
+    pub background_sync: MemoryBackgroundSyncConfig,
+    #[serde(default)]
     pub index_path: Option<PathBuf>,
 }
 
@@ -74,53 +125,10 @@ impl Default for MemoryCoreConfig {
             corpus: MemoryCorpusConfig::default(),
             chunking: MemoryChunkingConfig::default(),
             search: MemorySearchConfig::default(),
+            background_sync: MemoryBackgroundSyncConfig::default(),
             index_path: None,
         }
     }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct EmbeddingConfig {
-    pub provider: String,
-    pub model: String,
-    #[serde(default)]
-    pub base_url: Option<String>,
-    #[serde(default)]
-    pub api_key: Option<String>,
-    #[serde(default)]
-    pub headers: BTreeMap<String, String>,
-    #[serde(default = "default_embedding_batch_size")]
-    pub batch_size: usize,
-    #[serde(default = "default_embedding_timeout_ms")]
-    pub timeout_ms: u64,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LlmServiceConfig {
-    pub provider: String,
-    pub model: String,
-    #[serde(default)]
-    pub base_url: Option<String>,
-    #[serde(default)]
-    pub api_key: Option<String>,
-    #[serde(default)]
-    pub headers: BTreeMap<String, String>,
-    #[serde(default = "default_generation_timeout_ms")]
-    pub timeout_ms: u64,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct QueryExpansionConfig {
-    #[serde(flatten)]
-    pub service: LlmServiceConfig,
-    #[serde(default = "default_query_expansion_variants")]
-    pub variants: usize,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RerankConfig {
-    #[serde(flatten)]
-    pub service: LlmServiceConfig,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -170,6 +178,8 @@ pub struct MemoryEmbedConfig {
     #[serde(default)]
     pub search: MemorySearchConfig,
     #[serde(default)]
+    pub background_sync: MemoryBackgroundSyncConfig,
+    #[serde(default)]
     pub embedding: Option<EmbeddingConfig>,
     #[serde(default)]
     pub query_expansion: Option<QueryExpansionConfig>,
@@ -205,6 +215,30 @@ fn default_include_globs() -> Vec<String> {
     vec!["MEMORY.md".to_string(), "memory/**/*.md".to_string()]
 }
 
+fn default_runtime_export_output_dir() -> PathBuf {
+    PathBuf::from(".nanoclaw/memory/runtime")
+}
+
+fn default_runtime_export_max_runs() -> usize {
+    24
+}
+
+fn default_runtime_export_include_search_corpus() -> bool {
+    true
+}
+
+fn default_runtime_export_max_search_corpus_chars() -> usize {
+    4_096
+}
+
+fn default_background_sync_run_on_start() -> bool {
+    true
+}
+
+fn default_background_sync_interval_ms() -> u64 {
+    300_000
+}
+
 fn default_vector_weight() -> f64 {
     0.65
 }
@@ -237,22 +271,6 @@ fn default_mmr_pool_k() -> usize {
     20
 }
 
-fn default_embedding_batch_size() -> usize {
-    16
-}
-
-fn default_embedding_timeout_ms() -> u64 {
-    30_000
-}
-
-fn default_generation_timeout_ms() -> u64 {
-    30_000
-}
-
-fn default_query_expansion_variants() -> usize {
-    1
-}
-
 impl MemoryEmbedConfig {
     #[must_use]
     pub fn as_core_config(&self) -> MemoryCoreConfig {
@@ -260,6 +278,7 @@ impl MemoryEmbedConfig {
             corpus: self.corpus.clone(),
             chunking: self.chunking.clone(),
             search: self.search.clone(),
+            background_sync: self.background_sync.clone(),
             index_path: self.index_path.clone(),
         }
     }

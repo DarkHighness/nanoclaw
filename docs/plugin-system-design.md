@@ -116,6 +116,10 @@ So the rule is:
 - executable plugin behavior comes only from compiled driver factories registered by the host binary
 - future third-party executable extensions should prefer out-of-process boundaries such as MCP, not in-process dynamic loading
 
+Code that is generic across multiple drivers should still live outside a specific plugin crate.
+For example, embedding / expansion / rerank client contracts belong in `crates/inference`, while
+the memory drivers consume that substrate instead of owning it.
+
 ### 5. Slots for exclusive capability families
 
 Most plugin contributions are additive. Some are exclusive.

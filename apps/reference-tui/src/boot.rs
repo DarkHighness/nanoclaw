@@ -134,6 +134,7 @@ async fn bootstrap_from_parts(
     let driver_outcome = agent::activate_driver_requests(
         &plugin_plan.driver_activations,
         &workspace_root,
+        Some(store.clone()),
         &mut tools,
         agent::UnknownDriverPolicy::Warn,
     )?;

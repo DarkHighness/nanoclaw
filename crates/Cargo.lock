@@ -16,6 +16,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "futures",
+ "inference",
  "mcp",
  "memory",
  "plugins",
@@ -27,6 +28,7 @@ dependencies = [
  "tokio",
  "toml",
  "tools",
+ "tracing",
  "types",
 ]
 
@@ -908,6 +910,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "inference"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "ipnet"
 version = "2.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1013,12 +1027,13 @@ dependencies = [
  "async-trait",
  "globset",
  "ignore",
+ "inference",
  "regex",
- "reqwest 0.12.28",
  "schemars",
  "serde",
  "serde_json",
  "sha2",
+ "store",
  "tempfile",
  "thiserror",
  "tokio",

@@ -222,7 +222,7 @@ The slot-specific config lives under the selected plugin entry:
 ```toml
 [plugins.entries.memory-core.config]
 include = ["MEMORY.md", "memory/**/*.md"]
-index_path = ".agent-core/memory/memory-core.sqlite"
+index_path = ".nanoclaw/memory/memory-core.sqlite"
 
 [plugins.entries.memory-core.config.chunking]
 target_tokens = 400
@@ -314,6 +314,10 @@ So the design target is:
 - configurable embedding provider
 - qmd-inspired ranking pipeline
 
+Its service-facing embedding / expansion / rerank contracts should not live in the memory crate
+itself. Those generic clients now belong in `crates/inference`, while `crates/memory` focuses on
+corpus loading, chunking, ranking, and tool-facing memory behavior.
+
 ### Why a second plugin instead of more flags
 
 This split is operationally meaningful:
@@ -326,7 +330,7 @@ Encoding that as two plugins keeps slot selection honest and keeps each plugin c
 ### Backend model
 
 The current implementation maintains a local sidecar cache at
-`.agent-core/memory/memory-embed.json` unless `index_path` overrides it.
+`.nanoclaw/memory/memory-embed.json` unless `index_path` overrides it.
 
 That cache stores:
 
@@ -434,12 +438,31 @@ The implemented slice now includes:
 - optional service-backed reranking with position-aware blending
 - optional MMR-style duplicate suppression over the final pool
 
-### Future qmd-aligned features
+### Runtime-backed memory features
 
-Follow-on work still worth doing:
+The implemented slice now also supports:
 
-- optional indexing of exported session summaries from the run store
-- optional background sync timers
+- optional indexing of exported run/session summaries from the run store
+- optional background sync timers for driver-backed memory plugins
+
+Those are configured through TOML:
+
+```toml
+[plugins.entries.memory-embed.config.corpus.runtime_export]
+enabled = true
+output_dir = ".nanoclaw/memory/runtime"
+max_runs = 24
+include_search_corpus = true
+max_search_corpus_chars = 4096
+
+[plugins.entries.memory-embed.config.background_sync]
+enabled = true
+run_on_start = true
+interval_ms = 300000
+```
+
+Runtime exports are materialized as Markdown sidecars under the current workspace so every agent
+or worktree keeps its own memory state boundary instead of sharing a legacy global host path.
 
 ## Tool Contract
 

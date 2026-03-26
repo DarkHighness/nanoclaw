@@ -109,7 +109,8 @@ pub async fn load_memory_corpus(
             .strip_prefix(workspace_root)
             .map_err(|_| MemoryError::PathOutsideWorkspace(absolute_path.display().to_string()))?;
         let relative_path = normalize_relative_path(relative);
-        if !include_set.is_match(relative) && !is_extra_path(config, relative) {
+        if !include_set.is_match(relative) && !is_extra_path(workspace_root, config, &absolute_path)
+        {
             continue;
         }
         let text = fs::read_to_string(&absolute_path).await?;
@@ -215,12 +216,24 @@ fn stable_hash(value: &str) -> String {
         .collect::<String>()
 }
 
-fn is_extra_path(config: &MemoryCorpusConfig, relative: &Path) -> bool {
+fn is_extra_path(workspace_root: &Path, config: &MemoryCorpusConfig, absolute_path: &Path) -> bool {
     config
         .extra_paths
         .iter()
-        .filter(|path| !path.is_absolute())
-        .any(|path| relative == path)
+        .map(|path| {
+            if path.is_absolute() {
+                path.clone()
+            } else {
+                workspace_root.join(path)
+            }
+        })
+        .any(|path| {
+            if path.is_dir() {
+                absolute_path.starts_with(&path)
+            } else {
+                absolute_path == path
+            }
+        })
 }
 
 #[cfg(test)]

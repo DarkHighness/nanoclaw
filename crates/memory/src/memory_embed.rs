@@ -1,330 +1,24 @@
 use crate::{
-    EmbeddingConfig, LlmServiceConfig, MemoryBackend, MemoryDocument, MemoryEmbedConfig,
-    MemoryGetRequest, MemorySearchHit, MemorySearchRequest, MemorySearchResponse, MemorySyncStatus,
-    QueryExpansionConfig, RerankConfig, Result, chunk_corpus, lexical_score, load_memory_corpus,
+    MemoryBackend, MemoryDocument, MemoryEmbedConfig, MemoryGetRequest, MemorySearchHit,
+    MemorySearchRequest, MemorySearchResponse, MemorySyncStatus, Result, chunk_corpus,
+    lexical_score, load_configured_memory_corpus,
 };
 use async_trait::async_trait;
-use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue};
-use serde::de::DeserializeOwned;
+use inference::{
+    EmbeddingClient, ExpandedQueryKind, HttpEmbeddingClient, HttpQueryExpansionClient,
+    HttpRerankClient, QueryExpansionClient, RerankClient, RerankDocument,
+};
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
+use store::RunStore;
 
 const INDEX_SCHEMA_VERSION: u32 = 2;
 const INDEX_BACKEND_ID: &str = "memory-embed";
-const OPENAI_COMPATIBLE_BASE_URL: &str = "https://api.openai.com/v1";
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum ExpandedQueryKind {
-    Lex,
-    Vec,
-    Hyde,
-    Hybrid,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ExpandedQuery {
-    pub kind: ExpandedQueryKind,
-    pub query: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct RerankJudgment {
-    pub relevant: bool,
-    pub confidence: f64,
-}
-
-#[async_trait]
-pub trait EmbeddingClient: Send + Sync {
-    async fn embed(&self, model: &str, texts: &[String]) -> Result<Vec<Vec<f32>>>;
-}
-
-#[async_trait]
-pub trait QueryExpansionClient: Send + Sync {
-    async fn expand(&self, model: &str, query: &str, variants: usize)
-    -> Result<Vec<ExpandedQuery>>;
-}
-
-#[async_trait]
-pub trait RerankClient: Send + Sync {
-    async fn rerank(
-        &self,
-        model: &str,
-        query: &str,
-        documents: &[RerankDocument],
-    ) -> Result<Vec<RerankJudgment>>;
-}
-
-#[derive(Clone)]
-pub struct HttpEmbeddingClient {
-    model: String,
-    client: reqwest::Client,
-    base_url: String,
-}
-
-impl HttpEmbeddingClient {
-    pub fn from_config(config: &EmbeddingConfig) -> Result<Self> {
-        Ok(Self {
-            model: config.model.clone(),
-            client: http_client_from_service_parts(
-                config.api_key.as_deref(),
-                &config.headers,
-                config.timeout_ms,
-            )?,
-            base_url: config
-                .base_url
-                .clone()
-                .unwrap_or_else(|| OPENAI_COMPATIBLE_BASE_URL.to_string()),
-        })
-    }
-}
-
-#[derive(Clone)]
-struct HttpChatClient {
-    model: String,
-    client: reqwest::Client,
-    base_url: String,
-}
-
-impl HttpChatClient {
-    fn from_config(config: &LlmServiceConfig) -> Result<Self> {
-        Ok(Self {
-            model: config.model.clone(),
-            client: http_client_from_service_parts(
-                config.api_key.as_deref(),
-                &config.headers,
-                config.timeout_ms,
-            )?,
-            base_url: config
-                .base_url
-                .clone()
-                .unwrap_or_else(|| OPENAI_COMPATIBLE_BASE_URL.to_string()),
-        })
-    }
-
-    async fn complete_json(
-        &self,
-        model: &str,
-        system_prompt: &str,
-        user_prompt: &str,
-    ) -> Result<String> {
-        let response = self
-            .client
-            .post(format!(
-                "{}/chat/completions",
-                self.base_url.trim_end_matches('/')
-            ))
-            .json(&json!({
-                "model": if model.is_empty() { &self.model } else { model },
-                "messages": [
-                    {
-                        "role": "system",
-                        "content": system_prompt,
-                    },
-                    {
-                        "role": "user",
-                        "content": user_prompt,
-                    }
-                ],
-                "temperature": 0.0,
-            }))
-            .send()
-            .await
-            .map_err(|error| crate::MemoryError::invalid(error.to_string()))?;
-        if !response.status().is_success() {
-            return Err(crate::MemoryError::invalid(format!(
-                "generation service returned HTTP {}",
-                response.status()
-            )));
-        }
-        let payload: ChatCompletionResponse = response
-            .json()
-            .await
-            .map_err(|error| crate::MemoryError::invalid(error.to_string()))?;
-        let content = payload
-            .choices
-            .first()
-            .and_then(|choice| extract_chat_content(&choice.message.content))
-            .ok_or_else(|| crate::MemoryError::invalid("generation service returned no content"))?;
-        Ok(content)
-    }
-}
-
-#[derive(Clone)]
-pub struct HttpQueryExpansionClient {
-    inner: HttpChatClient,
-}
-
-impl HttpQueryExpansionClient {
-    pub fn from_config(config: &QueryExpansionConfig) -> Result<Self> {
-        Ok(Self {
-            inner: HttpChatClient::from_config(&config.service)?,
-        })
-    }
-}
-
-#[derive(Clone)]
-pub struct HttpRerankClient {
-    inner: HttpChatClient,
-}
-
-impl HttpRerankClient {
-    pub fn from_config(config: &RerankConfig) -> Result<Self> {
-        Ok(Self {
-            inner: HttpChatClient::from_config(&config.service)?,
-        })
-    }
-}
-
-#[derive(Clone, Debug, Deserialize)]
-struct EmbeddingResponseItem {
-    embedding: Vec<f32>,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-struct EmbeddingResponse {
-    data: Vec<EmbeddingResponseItem>,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-struct ChatCompletionChoice {
-    message: ChatCompletionMessage,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-struct ChatCompletionMessage {
-    content: Value,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-struct ChatCompletionResponse {
-    choices: Vec<ChatCompletionChoice>,
-}
-
-#[async_trait]
-impl EmbeddingClient for HttpEmbeddingClient {
-    async fn embed(&self, model: &str, texts: &[String]) -> Result<Vec<Vec<f32>>> {
-        if texts.is_empty() {
-            return Ok(Vec::new());
-        }
-        let response = self
-            .client
-            .post(format!(
-                "{}/embeddings",
-                self.base_url.trim_end_matches('/')
-            ))
-            .json(&json!({
-                "model": if model.is_empty() { &self.model } else { model },
-                "input": texts,
-            }))
-            .send()
-            .await
-            .map_err(|error| crate::MemoryError::invalid(error.to_string()))?;
-        if !response.status().is_success() {
-            return Err(crate::MemoryError::invalid(format!(
-                "embedding service returned HTTP {}",
-                response.status()
-            )));
-        }
-        let payload: EmbeddingResponse = response
-            .json()
-            .await
-            .map_err(|error| crate::MemoryError::invalid(error.to_string()))?;
-        Ok(payload
-            .data
-            .into_iter()
-            .map(|item| item.embedding)
-            .collect())
-    }
-}
-
-#[async_trait]
-impl QueryExpansionClient for HttpQueryExpansionClient {
-    async fn expand(
-        &self,
-        model: &str,
-        query: &str,
-        variants: usize,
-    ) -> Result<Vec<ExpandedQuery>> {
-        if variants == 0 {
-            return Ok(Vec::new());
-        }
-        let payload = self
-            .inner
-            .complete_json(
-                model,
-                "You expand retrieval queries for hybrid search. Return only typed search lines using the prefixes `lex:`, `vec:`, or `hyde:`. Do not include explanations, bullets, numbering, or the original query. Prefer concise keyword-heavy `lex:` lines, natural-language `vec:` lines, and at most one short hypothetical-answer `hyde:` line.",
-                &format!(
-                    "/no_think Expand this search query: {query}\nRequested semantic variations: {variants}"
-                ),
-            )
-            .await?;
-        parse_expanded_queries(&payload)
-    }
-}
-
-#[async_trait]
-impl RerankClient for HttpRerankClient {
-    async fn rerank(
-        &self,
-        model: &str,
-        query: &str,
-        documents: &[RerankDocument],
-    ) -> Result<Vec<RerankJudgment>> {
-        if documents.is_empty() {
-            return Ok(Vec::new());
-        }
-        let payload = self
-            .inner
-            .complete_json(
-                model,
-                "You rerank retrieval candidates. Return strict JSON with key `judgments`, an array aligned to candidate order. Each item must contain `relevant` (boolean) and `confidence` (float between 0 and 1). Do not include explanations.",
-                &format!(
-                    "Query: {query}\nCandidates: {}\nReturn JSON only.",
-                    serde_json::to_string(documents)
-                        .map_err(|error| crate::MemoryError::invalid(error.to_string()))?
-                ),
-            )
-            .await?;
-        let parsed = parse_json_relaxed::<RerankPayload>(&payload)?;
-        if parsed.judgments.len() != documents.len() {
-            return Err(crate::MemoryError::invalid(format!(
-                "rerank service returned {} judgments for {} candidates",
-                parsed.judgments.len(),
-                documents.len()
-            )));
-        }
-        Ok(parsed.judgments)
-    }
-}
-
-#[derive(Clone, Debug, Deserialize)]
-struct QueryExpansionPayload {
-    #[serde(default)]
-    queries: Vec<ExpandedQueryPayload>,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-#[serde(untagged)]
-enum ExpandedQueryPayload {
-    Typed {
-        #[serde(rename = "type")]
-        kind: ExpandedQueryKind,
-        query: String,
-    },
-    Raw(String),
-}
-
-#[derive(Clone, Debug, Deserialize)]
-struct RerankPayload {
-    #[serde(default)]
-    judgments: Vec<RerankJudgment>,
-}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct PersistedChunkEmbedding {
@@ -371,13 +65,6 @@ enum RankedStreamKind {
     Vector,
 }
 
-#[derive(Clone, Debug, Serialize)]
-pub struct RerankDocument {
-    title: String,
-    path: String,
-    text: String,
-}
-
 #[derive(Clone, Debug)]
 struct CandidateAccumulator {
     chunk_id: String,
@@ -398,6 +85,7 @@ pub struct MemoryEmbedBackend {
     client: Arc<dyn EmbeddingClient>,
     query_expander: Option<Arc<dyn QueryExpansionClient>>,
     reranker: Option<Arc<dyn RerankClient>>,
+    run_store: Option<Arc<dyn RunStore>>,
     state: RwLock<Option<CachedMemoryEmbedIndex>>,
 }
 
@@ -414,6 +102,7 @@ impl MemoryEmbedBackend {
             client,
             query_expander: None,
             reranker: None,
+            run_store: None,
             state: RwLock::new(None),
         }
     }
@@ -429,6 +118,12 @@ impl MemoryEmbedBackend {
         self
     }
 
+    #[must_use]
+    pub fn with_run_store(mut self, run_store: Arc<dyn RunStore>) -> Self {
+        self.run_store = Some(run_store);
+        self
+    }
+
     pub fn from_http_config(workspace_root: PathBuf, config: MemoryEmbedConfig) -> Result<Self> {
         let embedding = config
             .embedding
@@ -438,18 +133,20 @@ impl MemoryEmbedBackend {
             .query_expansion
             .as_ref()
             .map(HttpQueryExpansionClient::from_config)
-            .transpose()?
+            .transpose()
+            .map_err(map_inference_error)?
             .map(|client| Arc::new(client) as Arc<dyn QueryExpansionClient>);
         let reranker = config
             .rerank
             .as_ref()
             .map(HttpRerankClient::from_config)
-            .transpose()?
+            .transpose()
+            .map_err(map_inference_error)?
             .map(|client| Arc::new(client) as Arc<dyn RerankClient>);
         Ok(Self::new(
             workspace_root,
             config,
-            Arc::new(HttpEmbeddingClient::from_config(&embedding)?),
+            Arc::new(HttpEmbeddingClient::from_config(&embedding).map_err(map_inference_error)?),
         )
         .with_optional_clients(query_expander, reranker))
     }
@@ -569,7 +266,11 @@ impl MemoryEmbedBackend {
                     )
                 })
                 .collect::<Vec<_>>();
-            let embeddings = self.client.embed(model, &texts).await?;
+            let embeddings = self
+                .client
+                .embed(model, &texts)
+                .await
+                .map_err(map_inference_error)?;
             if embeddings.len() != group.len() {
                 return Err(crate::MemoryError::invalid(format!(
                     "embedding service returned {} vectors for {} chunks",
@@ -660,7 +361,7 @@ impl MemoryEmbedBackend {
     fn index_path(&self) -> PathBuf {
         self.config.index_path.clone().unwrap_or_else(|| {
             self.workspace_root
-                .join(".agent-core/memory/memory-embed.json")
+                .join(".nanoclaw/memory/memory-embed.json")
         })
     }
 
@@ -702,7 +403,8 @@ impl MemoryEmbedBackend {
             .as_ref()
             .expect("query expander checked above")
             .expand(&config.service.model, query, config.variants)
-            .await;
+            .await
+            .map_err(map_inference_error);
         match result {
             Ok(expansions) => {
                 let mut seen =
@@ -776,7 +478,11 @@ impl MemoryEmbedBackend {
             .iter()
             .map(|query_key| format_query_variant_embedding_input(model, query_key))
             .collect::<Vec<_>>();
-        let embeddings = self.client.embed(model, &payloads).await?;
+        let embeddings = self
+            .client
+            .embed(model, &payloads)
+            .await
+            .map_err(map_inference_error)?;
         if embeddings.len() != unique_queries.len() {
             return Err(crate::MemoryError::invalid(format!(
                 "embedding service returned {} vectors for {} query variants",
@@ -833,6 +539,7 @@ impl MemoryEmbedBackend {
         let judgments = match reranker
             .rerank(&config.service.model, query, &documents)
             .await
+            .map_err(map_inference_error)
         {
             Ok(judgments) => judgments,
             Err(_) => return Ok((candidates, false, true)),
@@ -869,7 +576,12 @@ impl MemoryEmbedBackend {
 #[async_trait]
 impl MemoryBackend for MemoryEmbedBackend {
     async fn sync(&self) -> Result<MemorySyncStatus> {
-        let corpus = load_memory_corpus(&self.workspace_root, &self.config.corpus).await?;
+        let (corpus, _) = load_configured_memory_corpus(
+            &self.workspace_root,
+            &self.config.corpus,
+            self.run_store.as_ref(),
+        )
+        .await?;
         let chunks = chunk_corpus(&corpus, &self.config.chunking);
         self.ensure_chunk_index(&corpus, &chunks).await?;
         Ok(MemorySyncStatus {
@@ -880,7 +592,12 @@ impl MemoryBackend for MemoryEmbedBackend {
     }
 
     async fn search(&self, req: MemorySearchRequest) -> Result<MemorySearchResponse> {
-        let corpus = load_memory_corpus(&self.workspace_root, &self.config.corpus).await?;
+        let (corpus, runtime_exports) = load_configured_memory_corpus(
+            &self.workspace_root,
+            &self.config.corpus,
+            self.run_store.as_ref(),
+        )
+        .await?;
         let chunks = chunk_corpus(&corpus, &self.config.chunking);
         let limit = req
             .limit
@@ -1025,6 +742,13 @@ impl MemoryBackend for MemoryEmbedBackend {
             "indexed_documents".to_string(),
             json!(corpus.documents.len()),
         );
+        metadata.insert(
+            "runtime_exported_runs".to_string(),
+            json!(runtime_exports.exported_runs),
+        );
+        if let Some(output_dir) = runtime_exports.output_dir {
+            metadata.insert("runtime_export_dir".to_string(), json!(output_dir));
+        }
         metadata.insert("cached_chunks".to_string(), json!(cached.chunks.len()));
         metadata.insert("fallback_used".to_string(), json!(fallback_used));
         metadata.insert("expansion_used".to_string(), json!(expansion_used));
@@ -1055,138 +779,25 @@ impl MemoryBackend for MemoryEmbedBackend {
     }
 
     async fn get(&self, req: MemoryGetRequest) -> Result<MemoryDocument> {
-        crate::MemoryCoreBackend::new(self.workspace_root.clone(), self.config.as_core_config())
-            .get(req)
-            .await
-    }
-}
-
-fn http_client_from_service_parts(
-    api_key: Option<&str>,
-    headers: &BTreeMap<String, String>,
-    timeout_ms: u64,
-) -> Result<reqwest::Client> {
-    let mut default_headers = HeaderMap::new();
-    default_headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-    if let Some(api_key) = api_key {
-        default_headers.insert(
-            AUTHORIZATION,
-            HeaderValue::from_str(&format!("Bearer {api_key}"))
-                .map_err(|error| crate::MemoryError::invalid(error.to_string()))?,
+        let backend = crate::MemoryCoreBackend::new(
+            self.workspace_root.clone(),
+            self.config.as_core_config(),
         );
+        let backend = if let Some(run_store) = self.run_store.as_ref() {
+            backend.with_run_store(run_store.clone())
+        } else {
+            backend
+        };
+        backend.get(req).await
     }
-    for (key, value) in headers {
-        default_headers.insert(
-            HeaderName::from_bytes(key.as_bytes())
-                .map_err(|error| crate::MemoryError::invalid(error.to_string()))?,
-            HeaderValue::from_str(value)
-                .map_err(|error| crate::MemoryError::invalid(error.to_string()))?,
-        );
-    }
-    reqwest::Client::builder()
-        .timeout(std::time::Duration::from_millis(timeout_ms))
-        .default_headers(default_headers)
-        .build()
-        .map_err(|error| crate::MemoryError::invalid(error.to_string()))
-}
-
-fn extract_chat_content(content: &Value) -> Option<String> {
-    match content {
-        Value::String(value) => Some(value.clone()),
-        Value::Array(items) => {
-            let text = items
-                .iter()
-                .filter_map(|item| match item {
-                    Value::Object(map) => map.get("text").and_then(Value::as_str),
-                    _ => None,
-                })
-                .collect::<Vec<_>>()
-                .join("");
-            (!text.is_empty()).then_some(text)
-        }
-        Value::Object(map) => map
-            .get("text")
-            .and_then(Value::as_str)
-            .map(ToOwned::to_owned),
-        _ => None,
-    }
-}
-
-fn parse_json_relaxed<T: DeserializeOwned>(raw: &str) -> Result<T> {
-    serde_json::from_str(raw).or_else(|_| {
-        extract_json_candidate(raw)
-            .ok_or_else(|| crate::MemoryError::invalid("response did not contain JSON"))
-            .and_then(|candidate| serde_json::from_str(candidate).map_err(Into::into))
-    })
-}
-
-fn extract_json_candidate(raw: &str) -> Option<&str> {
-    let object = raw
-        .find('{')
-        .zip(raw.rfind('}'))
-        .map(|(start, end)| &raw[start..=end]);
-    let array = raw
-        .find('[')
-        .zip(raw.rfind(']'))
-        .map(|(start, end)| &raw[start..=end]);
-    object.or(array)
 }
 
 fn normalize_query(value: &str) -> String {
     value.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-fn parse_expanded_queries(raw: &str) -> Result<Vec<ExpandedQuery>> {
-    if let Ok(payload) = parse_json_relaxed::<QueryExpansionPayload>(raw) {
-        let mut out = Vec::new();
-        for query in payload.queries {
-            match query {
-                ExpandedQueryPayload::Typed { kind, query } => {
-                    if !normalize_query(&query).is_empty() {
-                        out.push(ExpandedQuery { kind, query });
-                    }
-                }
-                ExpandedQueryPayload::Raw(line) => {
-                    if let Some(parsed) = parse_typed_query_line(&line) {
-                        out.push(parsed);
-                    }
-                }
-            }
-        }
-        if !out.is_empty() {
-            return Ok(out);
-        }
-    }
-
-    let parsed = raw
-        .lines()
-        .filter_map(parse_typed_query_line)
-        .collect::<Vec<_>>();
-    if parsed.is_empty() {
-        return Err(crate::MemoryError::invalid(
-            "query expansion did not return any typed lex:/vec:/hyde: lines",
-        ));
-    }
-    Ok(parsed)
-}
-
-fn parse_typed_query_line(line: &str) -> Option<ExpandedQuery> {
-    let trimmed = line.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    let (prefix, query) = trimmed.split_once(':')?;
-    let kind = match prefix.trim().to_ascii_lowercase().as_str() {
-        "lex" => ExpandedQueryKind::Lex,
-        "vec" => ExpandedQueryKind::Vec,
-        "hyde" => ExpandedQueryKind::Hyde,
-        _ => return None,
-    };
-    let query = query.trim();
-    (!query.is_empty()).then(|| ExpandedQuery {
-        kind,
-        query: query.to_string(),
-    })
+fn map_inference_error(error: inference::InferenceError) -> crate::MemoryError {
+    crate::MemoryError::invalid(error.to_string())
 }
 
 fn query_vector_key(kind: ExpandedQueryKind, query: &str) -> String {
@@ -1597,17 +1208,17 @@ fn render_embed_snippet(text: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        CachedMemoryEmbedIndex, CandidateAccumulator, EmbeddingClient, ExpandedQuery,
-        ExpandedQueryKind, MemoryEmbedBackend, PersistedChunkEmbedding, QueryExpansionClient,
-        RerankClient, RerankDocument, RerankJudgment, format_document_embedding_input,
-        format_query_embedding_input, maybe_apply_mmr, parse_typed_query_line,
+        CachedMemoryEmbedIndex, CandidateAccumulator, MemoryEmbedBackend, PersistedChunkEmbedding,
+        format_document_embedding_input, format_query_embedding_input, maybe_apply_mmr,
         rerank_blend_weights,
     };
-    use crate::{
-        EmbeddingConfig, MemoryBackend, MemoryEmbedConfig, MemorySearchRequest,
-        QueryExpansionConfig, RerankConfig, config::LlmServiceConfig,
-    };
+    use crate::{MemoryBackend, MemoryEmbedConfig, MemorySearchRequest};
     use async_trait::async_trait;
+    use inference::{
+        EmbeddingClient, EmbeddingConfig, ExpandedQuery, ExpandedQueryKind, LlmServiceConfig,
+        QueryExpansionClient, QueryExpansionConfig, RerankClient, RerankConfig, RerankDocument,
+        RerankJudgment, parse_expanded_queries,
+    };
     use serde_json::Value;
     use std::collections::BTreeMap;
     use std::sync::{Arc, Mutex};
@@ -1621,7 +1232,7 @@ mod tests {
 
     #[async_trait]
     impl EmbeddingClient for MockEmbeddingClient {
-        async fn embed(&self, _model: &str, texts: &[String]) -> crate::Result<Vec<Vec<f32>>> {
+        async fn embed(&self, _model: &str, texts: &[String]) -> inference::Result<Vec<Vec<f32>>> {
             self.calls.lock().unwrap().push(texts.to_vec());
             Ok(texts
                 .iter()
@@ -1651,7 +1262,7 @@ mod tests {
             _model: &str,
             _query: &str,
             _variants: usize,
-        ) -> crate::Result<Vec<ExpandedQuery>> {
+        ) -> inference::Result<Vec<ExpandedQuery>> {
             Ok(self.variants.clone())
         }
     }
@@ -1667,7 +1278,7 @@ mod tests {
             _model: &str,
             _query: &str,
             _documents: &[RerankDocument],
-        ) -> crate::Result<Vec<RerankJudgment>> {
+        ) -> inference::Result<Vec<RerankJudgment>> {
             Ok(self.judgments.clone())
         }
     }
@@ -1886,10 +1497,13 @@ mod tests {
 
     #[test]
     fn typed_query_lines_parse_into_qmd_query_kinds() {
-        let lex = parse_typed_query_line("lex: authentication config").unwrap();
-        let vec = parse_typed_query_line("vec: how do I configure authentication").unwrap();
-        let hyde =
-            parse_typed_query_line("hyde: Authentication is configured with AUTH_SECRET").unwrap();
+        let parsed = parse_expanded_queries(
+            "lex: authentication config\nvec: how do I configure authentication\nhyde: Authentication is configured with AUTH_SECRET",
+        )
+        .unwrap();
+        let lex = &parsed[0];
+        let vec = &parsed[1];
+        let hyde = &parsed[2];
 
         assert_eq!(lex.kind, ExpandedQueryKind::Lex);
         assert_eq!(vec.kind, ExpandedQueryKind::Vec);

@@ -15,6 +15,7 @@ web-tools = ["tools/web-tools"]
 
 [dependencies]
 agent-env = { path = "../env" }
+inference = { path = "../inference" }
 memory = { path = "../memory" }
 mcp = { path = "../mcp" }
 plugins = { path = "../plugins" }
@@ -25,7 +26,9 @@ store = { path = "../store" }
 tools = { path = "../tools" }
 types = { path = "../types" }
 anyhow.workspace = true
+tokio.workspace = true
 toml.workspace = true
+tracing.workspace = true
 
 [dev-dependencies]
 anyhow.workspace = true

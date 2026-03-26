@@ -14,6 +14,7 @@ version = "0.1.0"
 dependencies = [
  "agent-env",
  "anyhow",
+ "inference",
  "mcp",
  "memory",
  "plugins",
@@ -21,8 +22,10 @@ dependencies = [
  "runtime",
  "skills",
  "store",
+ "tokio",
  "toml",
  "tools",
+ "tracing",
  "types",
 ]
 
@@ -1062,6 +1065,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "inference"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "instability"
 version = "0.3.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1227,12 +1241,13 @@ dependencies = [
  "async-trait",
  "globset",
  "ignore",
+ "inference",
  "regex",
- "reqwest 0.12.28",
  "schemars",
  "serde",
  "serde_json",
  "sha2",
+ "store",
  "thiserror",
  "tokio",
  "tools",

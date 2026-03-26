@@ -133,7 +133,7 @@ cwd = "."
                 config: Map::from_iter([
                     (
                         "index_path".to_string(),
-                        toml::Value::String(".agent-core/memory.db".to_string()),
+                        toml::Value::String(".nanoclaw/memory.db".to_string()),
                     ),
                     (
                         "search".to_string(),
@@ -155,7 +155,7 @@ cwd = "."
                 .config
                 .get("index_path")
                 .and_then(toml::Value::as_str),
-            Some(".agent-core/memory.db")
+            Some(".nanoclaw/memory.db")
         );
         let limit = plan.driver_activations[0]
             .config

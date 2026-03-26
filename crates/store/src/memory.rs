@@ -1,7 +1,8 @@
 use crate::replay::replay_transcript;
 use crate::{
-    EventSink, Result, RunSearchResult, RunStore, RunStoreError, RunSummary, search_run_events,
-    summarize_run_events,
+    EventSink, Result, RunMemoryExportRecord, RunMemoryExportRequest, RunSearchResult, RunStore,
+    RunStoreError, RunSummary, append_search_corpus_line, keep_recent_chars, search_run_events,
+    searchable_event_strings, summarize_run_events,
 };
 use async_trait::async_trait;
 use std::collections::HashMap;
@@ -100,12 +101,78 @@ impl RunStore for InMemoryRunStore {
     async fn replay_transcript(&self, run_id: &RunId) -> Result<Vec<Message>> {
         Ok(replay_transcript(&self.events(run_id).await?))
     }
+
+    async fn export_for_memory(
+        &self,
+        request: RunMemoryExportRequest,
+    ) -> Result<Vec<RunMemoryExportRecord>> {
+        let guard = self.events.read().expect("in-memory run store read lock");
+        let mut records = guard
+            .iter()
+            .filter_map(|(run_id, events)| {
+                Some(RunMemoryExportRecord {
+                    summary: summarize_run_events(run_id, events)?,
+                    session_ids: collect_session_ids(events),
+                    search_corpus: build_search_corpus(events),
+                })
+            })
+            .collect::<Vec<_>>();
+        sort_memory_export_records(&mut records);
+
+        if let Some(max_runs) = request.max_runs {
+            records.truncate(max_runs);
+        }
+        if let Some(max_chars) = request.max_search_corpus_chars {
+            for record in &mut records {
+                record.search_corpus = keep_recent_chars(&record.search_corpus, max_chars);
+            }
+        }
+        Ok(records)
+    }
+}
+
+fn collect_session_ids(events: &[RunEventEnvelope]) -> Vec<SessionId> {
+    let mut seen = Vec::new();
+    for event in events {
+        if !seen
+            .iter()
+            .any(|value: &SessionId| value == &event.session_id)
+        {
+            seen.push(event.session_id.clone());
+        }
+    }
+    seen
+}
+
+fn build_search_corpus(events: &[RunEventEnvelope]) -> String {
+    let mut corpus = String::new();
+    for event in events {
+        for value in searchable_event_strings(event) {
+            append_search_corpus_line(&mut corpus, &value);
+        }
+    }
+    corpus
+}
+
+fn sort_memory_export_records(records: &mut [RunMemoryExportRecord]) {
+    records.sort_by(|left, right| {
+        right
+            .summary
+            .last_timestamp_ms
+            .cmp(&left.summary.last_timestamp_ms)
+            .then_with(|| {
+                left.summary
+                    .run_id
+                    .as_str()
+                    .cmp(right.summary.run_id.as_str())
+            })
+    });
 }
 
 #[cfg(test)]
 mod tests {
     use super::InMemoryRunStore;
-    use crate::{EventSink, RunStore};
+    use crate::{EventSink, RunMemoryExportRequest, RunStore};
     use types::{Message, RunEventEnvelope, RunEventKind, RunId, SessionId};
 
     #[tokio::test]
@@ -220,5 +287,35 @@ mod tests {
                 .iter()
                 .any(|line| line.contains("release"))
         );
+    }
+
+    #[tokio::test]
+    async fn exports_runs_for_memory_newest_first() {
+        let store = InMemoryRunStore::new();
+        let run_id = RunId::new();
+        let session_id = SessionId::new();
+        store
+            .append(RunEventEnvelope::new(
+                run_id.clone(),
+                session_id,
+                None,
+                None,
+                RunEventKind::UserPromptSubmit {
+                    prompt: "deploy release".to_string(),
+                },
+            ))
+            .await
+            .unwrap();
+
+        let exports = store
+            .export_for_memory(RunMemoryExportRequest {
+                max_runs: Some(1),
+                max_search_corpus_chars: Some(64),
+            })
+            .await
+            .unwrap();
+        assert_eq!(exports.len(), 1);
+        assert_eq!(exports[0].summary.run_id, run_id);
+        assert!(exports[0].search_corpus.contains("deploy release"));
     }
 }
