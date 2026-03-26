@@ -43,6 +43,25 @@ impl EditTool {
     }
 }
 
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum EditToolOutput {
+    Success {
+        requested_path: String,
+        resolved_path: String,
+        summary: String,
+        snapshot_before: Option<String>,
+        snapshot_after: Option<String>,
+        edit: Value,
+    },
+    Error {
+        requested_path: String,
+        resolved_path: String,
+        summary: String,
+        edit: Value,
+    },
+}
+
 #[async_trait]
 impl Tool for EditTool {
     fn spec(&self) -> ToolSpec {
@@ -51,6 +70,9 @@ impl Tool for EditTool {
             description: "Modify an existing UTF-8 file using one precise text edit operation. Use expected_snapshot or expected_selection_hash to guard against stale reads.".to_string(),
             input_schema: serde_json::to_value(schema_for!(EditToolInput)).expect("edit schema"),
             output_mode: ToolOutputMode::Text,
+            output_schema: Some(
+                serde_json::to_value(schema_for!(EditToolOutput)).expect("edit output schema"),
+            ),
             origin: ToolOrigin::Local,
             annotations: mcp_tool_annotations("Edit File", false, true, true, false),
         }
@@ -82,11 +104,20 @@ impl Tool for EditTool {
         )?;
 
         if outcome.is_error {
+            let structured_output = EditToolOutput::Error {
+                requested_path: input.path.clone(),
+                resolved_path: resolved.display().to_string(),
+                summary: outcome.summary.clone(),
+                edit: outcome.metadata.clone(),
+            };
             return Ok(ToolResult {
                 id: call_id,
                 call_id: external_call_id,
                 tool_name: "edit".into(),
                 parts: vec![MessagePart::text(outcome.summary)],
+                structured_content: Some(
+                    serde_json::to_value(structured_output).expect("edit error output"),
+                ),
                 metadata: Some(outcome.metadata),
                 is_error: true,
             });
@@ -97,6 +128,14 @@ impl Tool for EditTool {
             observer.did_change(resolved.clone());
             observer.did_save(resolved.clone());
         }
+        let structured_output = EditToolOutput::Success {
+            requested_path: input.path.clone(),
+            resolved_path: resolved.display().to_string(),
+            summary: outcome.summary.clone(),
+            snapshot_before: outcome.snapshot_before.clone(),
+            snapshot_after: outcome.snapshot_after.clone(),
+            edit: outcome.metadata.clone(),
+        };
         Ok(ToolResult {
             id: call_id,
             call_id: external_call_id,
@@ -107,6 +146,9 @@ impl Tool for EditTool {
                 outcome.snapshot_before.as_deref().unwrap_or("missing"),
                 outcome.snapshot_after.as_deref().unwrap_or("missing"),
             ))],
+            structured_content: Some(
+                serde_json::to_value(structured_output).expect("edit success output"),
+            ),
             metadata: Some(serde_json::json!({
                 "path": resolved,
                 "snapshot_before": outcome.snapshot_before,
@@ -154,6 +196,9 @@ mod tests {
             .unwrap();
 
         assert!(!result.is_error);
+        let structured = result.structured_content.unwrap();
+        assert_eq!(structured["kind"], "success");
+        assert_eq!(structured["edit"]["command"], "edit");
         assert_eq!(
             tokio::fs::read_to_string(path).await.unwrap(),
             "hello agent\n"
@@ -229,6 +274,12 @@ mod tests {
             .unwrap();
 
         assert!(result.is_error);
+        let structured = result.structured_content.unwrap();
+        assert_eq!(structured["kind"], "error");
+        assert_eq!(
+            structured["edit"]["expected_snapshot"],
+            stable_text_hash("other")
+        );
         assert_eq!(
             tokio::fs::read_to_string(path).await.unwrap(),
             "alpha\nbeta\n"

@@ -26,7 +26,7 @@ use std::sync::{Arc, RwLock};
 use store::{RunSearchResult, RunStore, RunSummary};
 use types::{
     Message, MessagePart, MessageRole, RunEventEnvelope, RunEventKind, RunId, SessionId,
-    ToolOrigin, ToolSpec,
+    ToolLifecycleEventKind, ToolOrigin, ToolSpec,
 };
 
 pub struct RuntimeTui {
@@ -663,19 +663,31 @@ impl RuntimeObserver for LiveRenderObserver<'_> {
                     )
                 };
             }
-            RuntimeProgressEvent::ToolCallStarted { call } => {
-                self.state.status = format!("Running tool `{}`...", call.tool_name);
-            }
-            RuntimeProgressEvent::ToolCallCompleted { call, .. } => {
-                self.state.status = format!("Tool `{}` completed", call.tool_name);
-            }
-            RuntimeProgressEvent::ToolCallFailed { call, error } => {
-                self.state.status = format!(
-                    "Tool `{}` failed: {}",
-                    call.tool_name,
-                    preview_text(&error, 64)
-                );
-            }
+            RuntimeProgressEvent::ToolLifecycle { event } => match event.event {
+                ToolLifecycleEventKind::Started { call } => {
+                    self.state.status = format!("Running tool `{}`...", call.tool_name);
+                }
+                ToolLifecycleEventKind::Completed { call, .. } => {
+                    self.state.status = format!("Tool `{}` completed", call.tool_name);
+                }
+                ToolLifecycleEventKind::Failed { call, error } => {
+                    self.state.status = format!(
+                        "Tool `{}` failed: {}",
+                        call.tool_name,
+                        preview_text(&error, 64)
+                    );
+                }
+                ToolLifecycleEventKind::Cancelled { call, reason } => {
+                    self.state.status = format!(
+                        "Tool `{}` cancelled{}",
+                        call.tool_name,
+                        reason
+                            .as_deref()
+                            .map(|value| format!(": {}", preview_text(value, 64)))
+                            .unwrap_or_default()
+                    );
+                }
+            },
             RuntimeProgressEvent::TurnCompleted { .. } => {
                 self.active_assistant_line = None;
                 self.state.status = "Turn complete".to_string();
@@ -1345,6 +1357,7 @@ mod tests {
                 description: "sample".to_string(),
                 input_schema: json!({"type":"object"}),
                 output_mode: ToolOutputMode::Text,
+                output_schema: None,
                 origin,
                 annotations: BTreeMap::new(),
             },

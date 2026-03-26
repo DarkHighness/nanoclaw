@@ -75,6 +75,23 @@ struct StagedFile {
     content: Option<String>,
 }
 
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum PatchToolOutput {
+    Success {
+        operation_count: usize,
+        changed_files: Vec<String>,
+        operations: Vec<Value>,
+        file_diffs: Vec<Value>,
+    },
+    Error {
+        failed_path: String,
+        failed_operation_index: usize,
+        applied_operations: Vec<Value>,
+        failed_operation: Value,
+    },
+}
+
 impl PatchTool {
     #[must_use]
     pub fn new() -> Self {
@@ -117,6 +134,9 @@ impl Tool for PatchTool {
             description: "Apply a staged multi-file patch made of write, edit, delete, and move operations. Operations are validated against staged content first so a failed operation does not partially apply earlier changes.".to_string(),
             input_schema: serde_json::to_value(schema_for!(PatchToolInput)).expect("patch schema"),
             output_mode: ToolOutputMode::Text,
+            output_schema: Some(
+                serde_json::to_value(schema_for!(PatchToolOutput)).expect("patch output schema"),
+            ),
             origin: ToolOrigin::Local,
             annotations: mcp_tool_annotations("Apply Patch", false, true, true, false),
         }
@@ -493,6 +513,18 @@ impl Tool for PatchTool {
             call_id: external_call_id,
             tool_name: "patch".into(),
             parts: vec![MessagePart::text(text)],
+            structured_content: Some(
+                serde_json::to_value(PatchToolOutput::Success {
+                    operation_count: input.operations.len(),
+                    changed_files: changed_entries
+                        .iter()
+                        .map(|entry| entry.display_path.clone())
+                        .collect(),
+                    operations: operation_metadata.clone(),
+                    file_diffs: diff_previews.clone(),
+                })
+                .expect("patch success output"),
+            ),
             metadata: Some(json!({
                 "operation_count": input.operations.len(),
                 "changed_files": changed_entries
@@ -551,21 +583,31 @@ fn patch_error_result(
     summary: String,
     diagnostic: Value,
 ) -> ToolResult {
+    let failed_operation = json!({
+        "index": operation_index,
+        "command": operation.command_name(),
+        "input": compact_operation(operation),
+        "diagnostic": diagnostic,
+    });
     ToolResult {
         id: call_id,
         call_id: external_call_id,
         tool_name: "patch".into(),
         parts: vec![MessagePart::text(summary)],
+        structured_content: Some(
+            serde_json::to_value(PatchToolOutput::Error {
+                failed_path: operation.primary_path().to_string(),
+                failed_operation_index: operation_index,
+                applied_operations: operation_metadata.clone(),
+                failed_operation: failed_operation.clone(),
+            })
+            .expect("patch error output"),
+        ),
         metadata: Some(json!({
             "failed_path": operation.primary_path(),
             "failed_operation_index": operation_index,
             "applied_operations": operation_metadata,
-            "failed_operation": {
-                "index": operation_index,
-                "command": operation.command_name(),
-                "input": compact_operation(operation),
-                "diagnostic": diagnostic,
-            },
+            "failed_operation": failed_operation,
         })),
         is_error: true,
     }
@@ -731,6 +773,10 @@ mod tests {
             .unwrap();
 
         assert!(!result.is_error);
+        let structured = result.structured_content.unwrap();
+        assert_eq!(structured["kind"], "success");
+        assert_eq!(structured["operation_count"], 2);
+        assert_eq!(structured["changed_files"].as_array().unwrap().len(), 2);
         assert_eq!(
             tokio::fs::read_to_string(dir.path().join("sample.txt"))
                 .await
@@ -785,6 +831,9 @@ mod tests {
             .unwrap();
 
         assert!(result.is_error);
+        let structured = result.structured_content.clone().unwrap();
+        assert_eq!(structured["kind"], "error");
+        assert_eq!(structured["failed_operation_index"], 2);
         let metadata = result.metadata.unwrap();
         assert_eq!(metadata["failed_operation_index"].as_u64().unwrap(), 2);
         assert_eq!(
@@ -829,6 +878,8 @@ mod tests {
             .unwrap();
 
         assert!(!result.is_error);
+        let structured = result.structured_content.clone().unwrap();
+        assert_eq!(structured["operations"][0]["command"], "move");
         assert!(
             !tokio::fs::try_exists(dir.path().join("old.txt"))
                 .await

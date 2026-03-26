@@ -1,6 +1,6 @@
 use crate::{
-    EventId, HookEvent, HookOutput, Message, MessageId, Reasoning, ResponseId, RunId, SessionId,
-    ToolCall, ToolCallId, ToolSpec, TurnId,
+    CallId, EventId, HookEvent, HookOutput, Message, MessageId, Reasoning, ResponseId, RunId,
+    SessionId, ToolCall, ToolCallId, ToolName, ToolSpec, TurnId,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -47,6 +47,39 @@ pub enum ModelEvent {
     Error {
         message: String,
     },
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "phase", rename_all = "snake_case")]
+pub enum ToolLifecycleEventKind {
+    Started {
+        call: ToolCall,
+    },
+    Completed {
+        call: ToolCall,
+        output: crate::ToolResult,
+    },
+    Failed {
+        call: ToolCall,
+        error: String,
+    },
+    Cancelled {
+        call: ToolCall,
+        reason: Option<String>,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ToolLifecycleEventEnvelope {
+    pub id: EventId,
+    pub run_id: RunId,
+    pub session_id: SessionId,
+    pub turn_id: Option<TurnId>,
+    pub tool_call_id: ToolCallId,
+    pub call_id: CallId,
+    pub tool_name: ToolName,
+    pub timestamp_ms: u128,
+    pub event: ToolLifecycleEventKind,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -158,5 +191,91 @@ impl RunEventEnvelope {
                 .map_or(0, |value| value.as_millis()),
             event,
         }
+    }
+
+    #[must_use]
+    pub fn tool_lifecycle_event(&self) -> Option<ToolLifecycleEventEnvelope> {
+        // Live host observers and persisted run history need to agree on the
+        // same event identity. This projection reuses the stored RunEventEnvelope
+        // ids instead of manufacturing a second tool-event namespace.
+        let lifecycle = match &self.event {
+            RunEventKind::ToolCallStarted { call } => {
+                ToolLifecycleEventKind::Started { call: call.clone() }
+            }
+            RunEventKind::ToolCallCompleted { call, output } => ToolLifecycleEventKind::Completed {
+                call: call.clone(),
+                output: output.clone(),
+            },
+            RunEventKind::ToolCallFailed { call, error } => ToolLifecycleEventKind::Failed {
+                call: call.clone(),
+                error: error.clone(),
+            },
+            _ => return None,
+        };
+
+        let (tool_call_id, call_id, tool_name) = match &lifecycle {
+            ToolLifecycleEventKind::Started { call }
+            | ToolLifecycleEventKind::Completed { call, .. }
+            | ToolLifecycleEventKind::Failed { call, .. }
+            | ToolLifecycleEventKind::Cancelled { call, .. } => (
+                self.tool_call_id.clone().unwrap_or_else(|| call.id.clone()),
+                call.call_id.clone(),
+                call.tool_name.clone(),
+            ),
+        };
+
+        Some(ToolLifecycleEventEnvelope {
+            id: self.id.clone(),
+            run_id: self.run_id.clone(),
+            session_id: self.session_id.clone(),
+            turn_id: self.turn_id.clone(),
+            tool_call_id,
+            call_id,
+            tool_name,
+            timestamp_ms: self.timestamp_ms,
+            event: lifecycle,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{RunEventEnvelope, RunEventKind, ToolLifecycleEventKind};
+    use crate::{ToolCall, ToolCallId, ToolName, ToolOrigin, ToolResult};
+
+    #[test]
+    fn run_event_maps_tool_completion_to_lifecycle_envelope() {
+        let call = ToolCall {
+            id: ToolCallId::new(),
+            call_id: "call-read-1".into(),
+            tool_name: "read".into(),
+            arguments: serde_json::json!({"path":"sample.txt"}),
+            origin: ToolOrigin::Local,
+        };
+        let output =
+            ToolResult::text(call.id.clone(), "read", "ok").with_call_id(call.call_id.clone());
+        let envelope = RunEventEnvelope::new(
+            "run_1".into(),
+            "session_1".into(),
+            Some("turn_1".into()),
+            Some(call.id.clone()),
+            RunEventKind::ToolCallCompleted {
+                call: call.clone(),
+                output: output.clone(),
+            },
+        );
+
+        let lifecycle = envelope
+            .tool_lifecycle_event()
+            .expect("tool lifecycle event");
+        assert_eq!(lifecycle.id, envelope.id);
+        assert_eq!(lifecycle.tool_call_id, call.id);
+        assert_eq!(lifecycle.call_id, call.call_id);
+        assert_eq!(lifecycle.tool_name, ToolName::from("read"));
+        assert!(matches!(
+            lifecycle.event,
+            ToolLifecycleEventKind::Completed { call: mapped_call, output: mapped_output }
+                if mapped_call.tool_name == ToolName::from("read") && mapped_output.text_content() == "ok"
+        ));
     }
 }

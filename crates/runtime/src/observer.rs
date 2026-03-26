@@ -1,5 +1,5 @@
 use crate::Result;
-use types::{ToolCall, ToolResult, TurnId};
+use types::{ToolCall, ToolLifecycleEventEnvelope, TurnId};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum RuntimeProgressEvent {
@@ -39,16 +39,11 @@ pub enum RuntimeProgressEvent {
         approved: bool,
         reason: Option<String>,
     },
-    ToolCallStarted {
-        call: ToolCall,
-    },
-    ToolCallCompleted {
-        call: ToolCall,
-        output: ToolResult,
-    },
-    ToolCallFailed {
-        call: ToolCall,
-        error: String,
+    // Host-facing tool lifecycle events reuse the same event ids and normalized
+    // call ids that are persisted in the run store, so live UIs can correlate
+    // streaming updates with durable history without reparsing transcript text.
+    ToolLifecycle {
+        event: ToolLifecycleEventEnvelope,
     },
     TurnCompleted {
         turn_id: TurnId,

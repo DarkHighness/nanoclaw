@@ -98,6 +98,7 @@ mod tests {
             description: "test".to_string(),
             input_schema: json!({"type": "object"}),
             output_mode: ToolOutputMode::Text,
+            output_schema: None,
             origin: ToolOrigin::Mcp {
                 server_name: "test-server".to_string(),
             },
@@ -116,6 +117,7 @@ mod tests {
                         call_id: "remote-call-1".into(),
                         tool_name: "other-name".into(),
                         parts: vec![MessagePart::text("ok")],
+                        structured_content: None,
                         metadata: Some(json!({"raw": true})),
                         is_error: false,
                     })
@@ -152,6 +154,7 @@ mod tests {
                         call_id: "remote-call-2".into(),
                         tool_name: "remote_echo".into(),
                         parts: vec![MessagePart::text("ok")],
+                        structured_content: None,
                         metadata: Some(json!("plain")),
                         is_error: false,
                     })

@@ -16,7 +16,8 @@ use tracing::{debug, info, warn};
 use types::{
     AgentCoreError, GateDecision, HookContext, HookEvent, HookRegistration, Message, MessageId,
     MessagePart, ModelEvent, ModelRequest, PermissionBehavior, PermissionDecision,
-    ProviderContinuation, RunEventEnvelope, RunEventKind, ToolCall, ToolSpec, TurnId,
+    ProviderContinuation, RunEventEnvelope, RunEventKind, ToolCall, ToolLifecycleEventEnvelope,
+    ToolSpec, TurnId,
 };
 
 pub struct AgentRuntime {
@@ -738,13 +739,16 @@ impl AgentRuntime {
             }
         }
 
-        self.append_event(
-            Some(turn_id.clone()),
-            Some(call.id.clone()),
-            RunEventKind::ToolCallStarted { call: call.clone() },
-        )
-        .await?;
-        observer.on_event(RuntimeProgressEvent::ToolCallStarted { call: call.clone() })?;
+        let lifecycle_event = self
+            .append_tool_lifecycle_event(
+                turn_id,
+                &call,
+                RunEventKind::ToolCallStarted { call: call.clone() },
+            )
+            .await?;
+        observer.on_event(RuntimeProgressEvent::ToolLifecycle {
+            event: lifecycle_event,
+        })?;
 
         if let Some(signal) = self.tool_loop_detector.inspect(&call) {
             let message = format!(
@@ -810,18 +814,18 @@ impl AgentRuntime {
                     turn_id.clone(),
                 );
                 self.store.append(event).await?;
-                self.append_event(
-                    Some(turn_id.clone()),
-                    Some(call.id.clone()),
-                    RunEventKind::ToolCallCompleted {
-                        call: call.clone(),
-                        output: result.clone(),
-                    },
-                )
-                .await?;
-                observer.on_event(RuntimeProgressEvent::ToolCallCompleted {
-                    call: call.clone(),
-                    output: result.clone(),
+                let lifecycle_event = self
+                    .append_tool_lifecycle_event(
+                        turn_id,
+                        &call,
+                        RunEventKind::ToolCallCompleted {
+                            call: call.clone(),
+                            output: result.clone(),
+                        },
+                    )
+                    .await?;
+                observer.on_event(RuntimeProgressEvent::ToolLifecycle {
+                    event: lifecycle_event,
                 })?;
 
                 let post_hooks = self
@@ -888,6 +892,29 @@ impl AgentRuntime {
             ))
             .await?;
         Ok(())
+    }
+
+    async fn append_tool_lifecycle_event(
+        &self,
+        turn_id: &TurnId,
+        call: &ToolCall,
+        event: RunEventKind,
+    ) -> Result<ToolLifecycleEventEnvelope> {
+        // Tool lifecycle updates are one of the few events that outer hosts
+        // often need both live and durably. Build the canonical RunEventEnvelope
+        // once, append it, then project the host-facing typed event from it.
+        let envelope = RunEventEnvelope::new(
+            self.session.run_id.clone(),
+            self.session.session_id.clone(),
+            Some(turn_id.clone()),
+            Some(call.id.clone()),
+            event,
+        );
+        let lifecycle = envelope
+            .tool_lifecycle_event()
+            .expect("tool lifecycle event");
+        self.store.append(envelope).await?;
+        Ok(lifecycle)
     }
 
     async fn append_hook_context_messages(
@@ -1181,18 +1208,18 @@ impl AgentRuntime {
             turn_id.clone(),
         );
         self.store.append(event).await?;
-        self.append_event(
-            Some(turn_id.clone()),
-            Some(call.id.clone()),
-            RunEventKind::ToolCallFailed {
-                call: call.clone(),
-                error: error.clone(),
-            },
-        )
-        .await?;
-        observer.on_event(RuntimeProgressEvent::ToolCallFailed {
-            call: call.clone(),
-            error: error.clone(),
+        let lifecycle_event = self
+            .append_tool_lifecycle_event(
+                turn_id,
+                call,
+                RunEventKind::ToolCallFailed {
+                    call: call.clone(),
+                    error: error.clone(),
+                },
+            )
+            .await?;
+        observer.on_event(RuntimeProgressEvent::ToolLifecycle {
+            event: lifecycle_event,
         })?;
         let failure_hooks = self
             .run_hooks(
@@ -1279,7 +1306,8 @@ mod tests {
     use types::{
         AgentCoreError, HookContext, HookEvent, HookHandler, HookOutput, HookRegistration, Message,
         ModelEvent, ModelRequest, PromptHookHandler, ProviderContinuation, RunEventKind, ToolCall,
-        ToolCallId, ToolOrigin, ToolOutputMode, ToolResult, ToolSpec,
+        ToolCallId, ToolLifecycleEventEnvelope, ToolLifecycleEventKind, ToolOrigin, ToolOutputMode,
+        ToolResult, ToolSpec,
     };
 
     struct MockBackend;
@@ -1349,6 +1377,7 @@ mod tests {
                 description: "Always fails".to_string(),
                 input_schema: serde_json::json!({"type":"object","properties":{}}),
                 output_mode: ToolOutputMode::Text,
+                output_schema: None,
                 origin: ToolOrigin::Local,
                 annotations: Default::default(),
             }
@@ -1375,6 +1404,7 @@ mod tests {
                 description: "Mutates files".to_string(),
                 input_schema: serde_json::json!({"type":"object","properties":{}}),
                 output_mode: ToolOutputMode::Text,
+                output_schema: None,
                 origin: ToolOrigin::Local,
                 annotations: mcp_tool_annotations("Dangerous Tool", false, true, true, false),
             }
@@ -1575,6 +1605,82 @@ mod tests {
 
         let outcome = runtime.run_user_prompt("please use tool").await.unwrap();
         assert_eq!(outcome.assistant_text, "done");
+    }
+
+    #[tokio::test]
+    async fn observer_tool_lifecycle_events_share_store_event_ids() {
+        let dir = tempfile::tempdir().unwrap();
+        tokio::fs::write(dir.path().join("sample.txt"), "hello\nworld")
+            .await
+            .unwrap();
+        let mut registry = ToolRegistry::new();
+        registry.register(ReadTool::new());
+        let store = Arc::new(InMemoryRunStore::new());
+        let mut runtime: AgentRuntime =
+            AgentRuntimeBuilder::new(Arc::new(MockBackend), store.clone())
+                .hook_runner(Arc::new(HookRunner::default()))
+                .tool_registry(registry)
+                .tool_context(ToolExecutionContext {
+                    workspace_root: dir.path().to_path_buf(),
+                    workspace_only: true,
+                    model_context_window_tokens: Some(128_000),
+                    ..Default::default()
+                })
+                .skill_catalog(SkillCatalog::default())
+                .build();
+        let mut observer = RecordingObserver::default();
+
+        let outcome = runtime
+            .run_user_prompt_with_observer("please use tool", &mut observer)
+            .await
+            .unwrap();
+        assert_eq!(outcome.assistant_text, "done");
+
+        let observed_lifecycle = observer
+            .events
+            .iter()
+            .filter_map(|event| match event {
+                RuntimeProgressEvent::ToolLifecycle { event } => Some(event.clone()),
+                _ => None,
+            })
+            .collect::<Vec<ToolLifecycleEventEnvelope>>();
+        assert_eq!(observed_lifecycle.len(), 2);
+        assert!(matches!(
+            observed_lifecycle[0].event,
+            ToolLifecycleEventKind::Started { .. }
+        ));
+        assert!(matches!(
+            observed_lifecycle[1].event,
+            ToolLifecycleEventKind::Completed { .. }
+        ));
+
+        let stored_lifecycle = store
+            .events(&runtime.run_id())
+            .await
+            .unwrap()
+            .into_iter()
+            .filter_map(|event| event.tool_lifecycle_event())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            observed_lifecycle
+                .iter()
+                .map(|event| event.id.clone())
+                .collect::<Vec<_>>(),
+            stored_lifecycle
+                .iter()
+                .map(|event| event.id.clone())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            observed_lifecycle
+                .iter()
+                .map(|event| event.tool_call_id.clone())
+                .collect::<Vec<_>>(),
+            stored_lifecycle
+                .iter()
+                .map(|event| event.tool_call_id.clone())
+                .collect::<Vec<_>>()
+        );
     }
 
     #[tokio::test]

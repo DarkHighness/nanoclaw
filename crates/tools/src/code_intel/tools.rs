@@ -57,6 +57,44 @@ pub struct CodeReferencesInput {
     pub include_declaration: Option<bool>,
 }
 
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+struct CodeSymbolSearchToolOutput {
+    query: String,
+    limit: usize,
+    backend: String,
+    result_count: usize,
+    symbols: Vec<CodeSymbol>,
+}
+
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+struct CodeDocumentSymbolsToolOutput {
+    requested_path: String,
+    resolved_path: String,
+    limit: usize,
+    backend: String,
+    result_count: usize,
+    symbols: Vec<CodeSymbol>,
+}
+
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+struct CodeDefinitionsToolOutput {
+    symbol: String,
+    limit: usize,
+    backend: String,
+    result_count: usize,
+    definitions: Vec<CodeSymbol>,
+}
+
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+struct CodeReferencesToolOutput {
+    symbol: String,
+    limit: usize,
+    include_declaration: bool,
+    backend: String,
+    result_count: usize,
+    references: Vec<CodeReference>,
+}
+
 #[derive(Clone)]
 pub struct CodeSymbolSearchTool {
     backend: Arc<dyn CodeIntelBackend>,
@@ -158,6 +196,10 @@ impl Tool for CodeSymbolSearchTool {
             input_schema: serde_json::to_value(schema_for!(CodeSymbolSearchInput))
                 .expect("code_symbol_search schema"),
             output_mode: ToolOutputMode::Text,
+            output_schema: Some(
+                serde_json::to_value(schema_for!(CodeSymbolSearchToolOutput))
+                    .expect("code_symbol_search output schema"),
+            ),
             origin: ToolOrigin::Local,
             annotations: mcp_tool_annotations("Code Symbol Search", true, false, true, false),
         }
@@ -189,11 +231,22 @@ impl Tool for CodeSymbolSearchTool {
             &symbols,
             "No symbols matched the current query.",
         );
+        let structured_output = CodeSymbolSearchToolOutput {
+            query: query.to_string(),
+            limit,
+            backend: self.backend.name().to_string(),
+            result_count: symbols.len(),
+            symbols: symbols.clone(),
+        };
         Ok(ToolResult {
             id: call_id,
             call_id: external_call_id,
             tool_name: "code_symbol_search".into(),
             parts: vec![MessagePart::text(text)],
+            structured_content: Some(
+                serde_json::to_value(structured_output)
+                    .expect("code_symbol_search structured output"),
+            ),
             metadata: Some(json!({
                 "query": query,
                 "limit": limit,
@@ -215,6 +268,10 @@ impl Tool for CodeDocumentSymbolsTool {
             input_schema: serde_json::to_value(schema_for!(CodeDocumentSymbolsInput))
                 .expect("code_document_symbols schema"),
             output_mode: ToolOutputMode::Text,
+            output_schema: Some(
+                serde_json::to_value(schema_for!(CodeDocumentSymbolsToolOutput))
+                    .expect("code_document_symbols output schema"),
+            ),
             origin: ToolOrigin::Local,
             annotations: mcp_tool_annotations("Code Document Symbols", true, false, true, false),
         }
@@ -229,6 +286,7 @@ impl Tool for CodeDocumentSymbolsTool {
         let external_call_id = types::CallId::from(&call_id);
         let input: CodeDocumentSymbolsInput = serde_json::from_value(arguments)?;
         let limit = clamp_limit(input.limit);
+        let requested_path = input.path.clone();
         let resolved = resolve_tool_path_against_workspace_root(
             &input.path,
             ctx.effective_root(),
@@ -244,18 +302,30 @@ impl Tool for CodeDocumentSymbolsTool {
         let text = format_symbols_output(
             "code_document_symbols",
             &[
-                ("path".to_string(), input.path),
+                ("path".to_string(), requested_path.clone()),
                 ("limit".to_string(), limit.to_string()),
                 ("backend".to_string(), self.backend.name().to_string()),
             ],
             &symbols,
             "No declarations were found in the requested document.",
         );
+        let structured_output = CodeDocumentSymbolsToolOutput {
+            requested_path,
+            resolved_path: resolved.display().to_string(),
+            limit,
+            backend: self.backend.name().to_string(),
+            result_count: symbols.len(),
+            symbols: symbols.clone(),
+        };
         Ok(ToolResult {
             id: call_id,
             call_id: external_call_id,
             tool_name: "code_document_symbols".into(),
             parts: vec![MessagePart::text(text)],
+            structured_content: Some(
+                serde_json::to_value(structured_output)
+                    .expect("code_document_symbols structured output"),
+            ),
             metadata: Some(json!({
                 "path": resolved,
                 "limit": limit,
@@ -277,6 +347,10 @@ impl Tool for CodeDefinitionsTool {
             input_schema: serde_json::to_value(schema_for!(CodeDefinitionsInput))
                 .expect("code_definitions schema"),
             output_mode: ToolOutputMode::Text,
+            output_schema: Some(
+                serde_json::to_value(schema_for!(CodeDefinitionsToolOutput))
+                    .expect("code_definitions output schema"),
+            ),
             origin: ToolOrigin::Local,
             annotations: mcp_tool_annotations("Code Definitions", true, false, true, false),
         }
@@ -305,11 +379,22 @@ impl Tool for CodeDefinitionsTool {
             &symbols,
             "No matching declaration was found.",
         );
+        let structured_output = CodeDefinitionsToolOutput {
+            symbol: format_navigation_target_label(&target),
+            limit,
+            backend: self.backend.name().to_string(),
+            result_count: symbols.len(),
+            definitions: symbols.clone(),
+        };
         Ok(ToolResult {
             id: call_id,
             call_id: external_call_id,
             tool_name: "code_definitions".into(),
             parts: vec![MessagePart::text(text)],
+            structured_content: Some(
+                serde_json::to_value(structured_output)
+                    .expect("code_definitions structured output"),
+            ),
             metadata: Some(json!({
                 "target": navigation_target_to_json(&target),
                 "limit": limit,
@@ -331,6 +416,10 @@ impl Tool for CodeReferencesTool {
             input_schema: serde_json::to_value(schema_for!(CodeReferencesInput))
                 .expect("code_references schema"),
             output_mode: ToolOutputMode::Text,
+            output_schema: Some(
+                serde_json::to_value(schema_for!(CodeReferencesToolOutput))
+                    .expect("code_references output schema"),
+            ),
             origin: ToolOrigin::Local,
             annotations: mcp_tool_annotations("Code References", true, false, true, false),
         }
@@ -368,11 +457,22 @@ impl Tool for CodeReferencesTool {
             },
             &references,
         );
+        let structured_output = CodeReferencesToolOutput {
+            symbol: format_navigation_target_label(&target),
+            limit,
+            include_declaration,
+            backend: self.backend.name().to_string(),
+            result_count: references.len(),
+            references: references.clone(),
+        };
         Ok(ToolResult {
             id: call_id,
             call_id: external_call_id,
             tool_name: "code_references".into(),
             parts: vec![MessagePart::text(text)],
+            structured_content: Some(
+                serde_json::to_value(structured_output).expect("code_references structured output"),
+            ),
             metadata: Some(json!({
                 "target": navigation_target_to_json(&target),
                 "limit": limit,
@@ -481,6 +581,18 @@ fn navigation_target_to_json(target: &CodeNavigationTarget) -> Value {
             "line": line,
             "column": column,
         }),
+    }
+}
+
+fn format_navigation_target_label(target: &CodeNavigationTarget) -> String {
+    match target {
+        CodeNavigationTarget::Symbol(symbol) => symbol.clone(),
+        CodeNavigationTarget::Position {
+            display_path,
+            line,
+            column,
+            ..
+        } => format!("{display_path}:{line}:{column}"),
     }
 }
 
@@ -698,6 +810,9 @@ mod tests {
         let text = result.text_content();
         assert!(text.contains("[code_symbol_search"));
         assert!(text.contains("Engine [struct]"));
+        let structured = result.structured_content.unwrap();
+        assert_eq!(structured["query"], "Engine");
+        assert_eq!(structured["symbols"][0]["name"], "Engine");
     }
 
     #[tokio::test]
@@ -719,6 +834,9 @@ mod tests {
             .await
             .unwrap();
         assert!(result.text_content().contains("results=1"));
+        let structured = result.structured_content.unwrap();
+        assert_eq!(structured["requested_path"], "src/lib.rs");
+        assert_eq!(structured["symbols"][0]["location"]["path"], "src/lib.rs");
     }
 
     #[tokio::test]
@@ -750,6 +868,17 @@ mod tests {
         assert!(definitions.text_content().contains("[code_definitions"));
         assert!(references.text_content().contains("[code_references"));
         assert!(references.text_content().contains("[definition]"));
+        let definitions_structured = definitions.structured_content.unwrap();
+        assert_eq!(definitions_structured["definitions"][0]["name"], "Engine");
+        let references_structured = references.structured_content.unwrap();
+        assert_eq!(references_structured["include_declaration"], true);
+        assert_eq!(
+            references_structured["references"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
     }
 
     #[tokio::test]

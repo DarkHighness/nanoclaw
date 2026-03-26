@@ -1,10 +1,11 @@
 use crate::{Result, ToolExecutionContext};
 use async_trait::async_trait;
+use schemars::JsonSchema;
 use serde::Serialize;
 use std::fmt::{Display, Formatter};
 use std::path::{Path, PathBuf};
 
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum CodeSymbolKind {
     Function,
@@ -45,14 +46,14 @@ impl Display for CodeSymbolKind {
     }
 }
 
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, JsonSchema)]
 pub struct CodeLocation {
     pub path: String,
     pub line: usize,
     pub column: usize,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, JsonSchema)]
 pub struct CodeSymbol {
     pub name: String,
     pub kind: CodeSymbolKind,
@@ -60,7 +61,7 @@ pub struct CodeSymbol {
     pub signature: Option<String>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, JsonSchema)]
 pub struct CodeReference {
     pub symbol: String,
     pub location: CodeLocation,

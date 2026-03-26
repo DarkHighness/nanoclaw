@@ -1,8 +1,10 @@
 use crate::annotations::mcp_tool_annotations;
 use crate::registry::Tool;
 use crate::web::common::{
-    DEFAULT_HTTP_TIMEOUT_MS, WebToolPolicy, clamped_fetch_max_chars, default_http_client,
-    extract_html_title, is_text_content_type, summarize_remote_body, truncate_text,
+    DEFAULT_HTTP_TIMEOUT_MS, RedirectValidationScope, WebDocumentBlockRecord, WebDocumentLink,
+    WebToolPolicy, clamped_fetch_max_chars, default_http_client, extract_html_document,
+    extract_html_title, is_html_content_type, is_text_content_type, summarize_remote_body,
+    truncate_text,
 };
 use crate::{Result, ToolExecutionContext};
 use async_trait::async_trait;
@@ -12,6 +14,7 @@ use schemars::{JsonSchema, schema_for};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use std::collections::BTreeSet;
 use std::fmt::Write as _;
 use std::time::{SystemTime, UNIX_EPOCH};
 use types::{MessagePart, ToolCallId, ToolOrigin, ToolOutputMode, ToolResult, ToolSpec};
@@ -32,6 +35,37 @@ pub struct WebFetchTool {
     policy: WebToolPolicy,
 }
 
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+struct WebFetchToolOutput {
+    url: String,
+    final_url: String,
+    status: u16,
+    content_type: Option<String>,
+    extraction_kind: String,
+    document_id: String,
+    title: Option<String>,
+    start_index: usize,
+    end_index: usize,
+    returned_chars: usize,
+    remaining_chars: usize,
+    total_chars: usize,
+    truncated: bool,
+    max_chars: usize,
+    next_start_index: Option<usize>,
+    preview_text: String,
+    retrieved_at_unix_s: u64,
+    etag: Option<String>,
+    last_modified: Option<String>,
+    cache_control: Option<String>,
+    content_language: Option<String>,
+    block_count: usize,
+    link_count: usize,
+    window_block_ids: Vec<String>,
+    window_citation_ids: Vec<String>,
+    document_blocks: Vec<WebDocumentBlockRecord>,
+    document_links: Vec<WebDocumentLink>,
+}
+
 impl Default for WebFetchTool {
     fn default() -> Self {
         Self::new()
@@ -47,7 +81,11 @@ impl WebFetchTool {
 
     pub(crate) fn with_policy(policy: WebToolPolicy, timeout_ms: u64) -> Result<Self> {
         Ok(Self {
-            client: default_http_client(timeout_ms)?,
+            client: default_http_client(
+                timeout_ms,
+                policy.clone(),
+                RedirectValidationScope::Target,
+            )?,
             policy,
         })
     }
@@ -62,6 +100,10 @@ impl Tool for WebFetchTool {
             input_schema: serde_json::to_value(schema_for!(WebFetchToolInput))
                 .expect("web_fetch schema"),
             output_mode: ToolOutputMode::Text,
+            output_schema: Some(
+                serde_json::to_value(schema_for!(WebFetchToolOutput))
+                    .expect("web_fetch output schema"),
+            ),
             origin: ToolOrigin::Local,
             annotations: mcp_tool_annotations("Fetch Web Page", true, false, false, true),
         }
@@ -138,6 +180,7 @@ impl Tool for WebFetchTool {
                         summary
                     }
                 ))],
+                structured_content: None,
                 metadata: Some(serde_json::json!({
                     "url": url.as_str(),
                     "final_url": final_url.as_str(),
@@ -162,6 +205,7 @@ impl Tool for WebFetchTool {
                     status,
                     content_type.as_deref().unwrap_or("unknown"),
                 ))],
+                structured_content: None,
                 metadata: Some(serde_json::json!({
                     "url": url.as_str(),
                     "final_url": final_url.as_str(),
@@ -178,7 +222,25 @@ impl Tool for WebFetchTool {
         }
 
         let title = extract_html_title(&body);
-        let extracted_text = summarize_remote_body(&body, content_type.as_deref());
+        let (extraction_kind, document_blocks, document_links, extracted_text) =
+            if is_html_content_type(content_type.as_deref())
+                || crate::web::common::looks_like_html_document(&body)
+            {
+                let extracted_document = extract_html_document(&body, Some(&final_url));
+                (
+                    "dom".to_string(),
+                    extracted_document.blocks,
+                    extracted_document.links,
+                    extracted_document.text,
+                )
+            } else {
+                (
+                    "plain_text".to_string(),
+                    Vec::new(),
+                    Vec::new(),
+                    summarize_remote_body(&body, content_type.as_deref()),
+                )
+            };
         let extracted_text = trim_trailing_whitespace(&extracted_text);
         let document_id = stable_document_id(final_url.as_str(), &extracted_text);
         if let Some(expected_document_id) = input.expected_document_id.as_deref()
@@ -191,6 +253,7 @@ impl Tool for WebFetchTool {
                 parts: vec![MessagePart::text(format!(
                     "url> {url}\nfinal_url> {final_url}\nstatus> {status}\nexpected_document_id> {expected_document_id}\nactual_document_id> {document_id}\n\nDocument id mismatch. The page content changed or a different resource was returned."
                 ))],
+                structured_content: None,
                 metadata: Some(serde_json::json!({
                     "url": url.as_str(),
                     "final_url": final_url.as_str(),
@@ -213,6 +276,48 @@ impl Tool for WebFetchTool {
         let end_index = start_index + returned_chars;
         let next_start_index = truncated.then_some(end_index);
         let remaining_chars = total_chars.saturating_sub(end_index);
+        let retrieved_at_unix_s = unix_timestamp_s();
+        let window_block_ids = document_blocks
+            .iter()
+            .filter(|block| block.end_index > start_index && block.start_index < end_index)
+            .map(|block| block.id.clone())
+            .collect::<Vec<_>>();
+        let window_citation_ids = document_blocks
+            .iter()
+            .filter(|block| block.end_index > start_index && block.start_index < end_index)
+            .flat_map(|block| block.citation_ids.iter().cloned())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        let structured_output = WebFetchToolOutput {
+            url: url.as_str().to_string(),
+            final_url: final_url.as_str().to_string(),
+            status: status.as_u16(),
+            content_type: content_type.clone(),
+            extraction_kind: extraction_kind.clone(),
+            document_id: document_id.clone(),
+            title: title.clone(),
+            start_index,
+            end_index,
+            returned_chars,
+            remaining_chars,
+            total_chars,
+            truncated,
+            max_chars,
+            next_start_index,
+            preview_text: preview.clone(),
+            retrieved_at_unix_s,
+            etag: etag.clone(),
+            last_modified: last_modified.clone(),
+            cache_control: cache_control.clone(),
+            content_language: content_language.clone(),
+            block_count: document_blocks.len(),
+            link_count: document_links.len(),
+            window_block_ids: window_block_ids.clone(),
+            window_citation_ids: window_citation_ids.clone(),
+            document_blocks: document_blocks.clone(),
+            document_links: document_links.clone(),
+        };
 
         let mut sections = vec![
             format!("url> {url}"),
@@ -226,6 +331,11 @@ impl Tool for WebFetchTool {
         if let Some(title) = &title {
             sections.push(format!("title> {title}"));
         }
+        sections.push(format!("extraction_kind> {extraction_kind}"));
+        sections.push(format!("blocks> {}", document_blocks.len()));
+        sections.push(format!("links> {}", document_links.len()));
+        sections.push(format!("window_blocks> {}", window_block_ids.len()));
+        sections.push(format!("window_citations> {}", window_citation_ids.len()));
         sections.push(format!("start_index> {start_index}"));
         sections.push(format!("end_index> {end_index}"));
         sections.push(format!("total_chars> {total_chars}"));
@@ -247,17 +357,27 @@ impl Tool for WebFetchTool {
             call_id: external_call_id,
             tool_name: "web_fetch".into(),
             parts: vec![MessagePart::text(sections.join("\n"))],
+            structured_content: Some(
+                serde_json::to_value(&structured_output).expect("web_fetch structured output"),
+            ),
             metadata: Some(serde_json::json!({
                 "url": url.as_str(),
                 "final_url": final_url.as_str(),
                 "status": status.as_u16(),
                 "content_type": content_type,
+                "extraction_kind": extraction_kind,
                 "document_id": document_id,
                 "etag": etag,
                 "last_modified": last_modified,
                 "cache_control": cache_control,
                 "content_language": content_language,
                 "title": title,
+                "block_count": document_blocks.len(),
+                "link_count": document_links.len(),
+                "window_block_ids": window_block_ids,
+                "window_citation_ids": window_citation_ids,
+                "document_blocks": document_blocks,
+                "document_links": document_links,
                 "start_index": start_index,
                 "end_index": end_index,
                 "returned_chars": returned_chars,
@@ -266,7 +386,7 @@ impl Tool for WebFetchTool {
                 "truncated": truncated,
                 "max_chars": max_chars,
                 "next_start_index": next_start_index,
-                "retrieved_at_unix_s": unix_timestamp_s(),
+                "retrieved_at_unix_s": retrieved_at_unix_s,
             })),
             is_error: false,
         })
@@ -323,7 +443,7 @@ mod tests {
         Mock::given(method("GET"))
             .and(path("/page"))
             .respond_with(ResponseTemplate::new(200).insert_header("content-type", "text/html").set_body_string(
-                r#"<html><head><title>Example Page</title><script>bad()</script></head><body><h1>Hello</h1><p>World &amp; friends.</p></body></html>"#,
+                r#"<html><head><title>Example Page</title><script>bad()</script></head><body><h1>Hello</h1><p>World &amp; <a href="/friends">friends</a>.</p></body></html>"#,
             ))
             .mount(&server)
             .await;
@@ -355,9 +475,32 @@ mod tests {
         assert!(!result.is_error);
         let text = result.text_content();
         assert!(text.contains("title> Example Page"));
-        assert!(text.contains("Hello"));
+        assert!(text.contains("# Hello"));
         assert!(text.contains("World & friends."));
         assert!(!text.contains("bad()"));
+        let structured = result.structured_content.unwrap();
+        assert_eq!(structured["title"], "Example Page");
+        assert_eq!(structured["extraction_kind"], "dom");
+        assert_eq!(structured["block_count"], 2);
+        assert_eq!(structured["link_count"], 1);
+        assert_eq!(structured["window_block_ids"][0], "blk_0001");
+        assert_eq!(structured["window_block_ids"][1], "blk_0002");
+        assert_eq!(
+            structured["window_citation_ids"][0],
+            structured["document_links"][0]["id"]
+        );
+        assert_eq!(
+            structured["document_blocks"][1]["citation_ids"][0],
+            structured["document_links"][0]["id"]
+        );
+        assert_eq!(
+            structured["document_links"][0]["href"],
+            format!("{}/friends", server.uri())
+        );
+        assert_eq!(
+            structured["preview_text"].as_str().unwrap(),
+            "# Hello\n\nWorld & friends."
+        );
     }
 
     #[tokio::test]
@@ -405,6 +548,9 @@ mod tests {
                 .unwrap()
                 .starts_with("doc_")
         );
+        let structured = first.structured_content.clone().unwrap();
+        assert_eq!(structured["next_start_index"], 256);
+        assert_eq!(structured["returned_chars"], 256);
 
         let second = tool
             .execute(
@@ -452,6 +598,60 @@ mod tests {
 
         assert!(result.is_error);
         assert!(result.text_content().contains("private host"));
+    }
+
+    #[tokio::test]
+    async fn web_fetch_rejects_redirects_to_blocked_hosts() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/start"))
+            .respond_with(
+                ResponseTemplate::new(302)
+                    .insert_header("location", format!("{}/blocked", server.uri())),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/blocked"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "text/plain")
+                    .set_body_string("should not be reached"),
+            )
+            .mount(&server)
+            .await;
+
+        let start_url = format!("{}/start", server.uri()).replace("127.0.0.1", "localhost");
+        let tool = WebFetchTool::with_policy(
+            WebToolPolicy {
+                allow_private_hosts: true,
+                allowed_domains: BTreeSet::new(),
+                blocked_domains: BTreeSet::from(["127.0.0.1".to_string()]),
+            },
+            5_000,
+        )
+        .unwrap();
+
+        let result = tool
+            .execute(
+                ToolCallId::new(),
+                serde_json::to_value(WebFetchToolInput {
+                    url: start_url,
+                    start_index: None,
+                    max_chars: Some(128),
+                    expected_document_id: None,
+                })
+                .unwrap(),
+                &ToolExecutionContext::default(),
+            )
+            .await
+            .unwrap();
+
+        assert!(result.is_error);
+        assert!(result.text_content().contains("error following redirect"));
+        let received_requests = server.received_requests().await.unwrap();
+        assert_eq!(received_requests.len(), 1);
+        assert_eq!(received_requests[0].url.path(), "/start");
     }
 
     #[tokio::test]

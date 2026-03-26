@@ -30,6 +30,24 @@ impl GlobTool {
     }
 }
 
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+struct GlobOutputMatch {
+    path: String,
+    kind: String,
+}
+
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+struct GlobToolOutput {
+    requested_path: String,
+    resolved_path: String,
+    pattern: String,
+    limit: usize,
+    truncated: bool,
+    files_scanned: usize,
+    match_count: usize,
+    matches: Vec<GlobOutputMatch>,
+}
+
 #[async_trait]
 impl Tool for GlobTool {
     fn spec(&self) -> ToolSpec {
@@ -40,6 +58,9 @@ impl Tool for GlobTool {
                     .to_string(),
             input_schema: serde_json::to_value(schema_for!(GlobToolInput)).expect("glob schema"),
             output_mode: ToolOutputMode::Text,
+            output_schema: Some(
+                serde_json::to_value(schema_for!(GlobToolOutput)).expect("glob output schema"),
+            ),
             origin: ToolOrigin::Local,
             annotations: mcp_tool_annotations("Find Files", true, false, true, false),
         }
@@ -111,12 +132,32 @@ impl Tool for GlobTool {
                 })
             })
             .collect();
+        let structured_matches = matches
+            .iter()
+            .map(|path| GlobOutputMatch {
+                path: path.clone(),
+                kind: "file".to_string(),
+            })
+            .collect::<Vec<_>>();
+        let structured_output = GlobToolOutput {
+            requested_path: requested_path.to_string(),
+            resolved_path: root.display().to_string(),
+            pattern: pattern.clone(),
+            limit,
+            truncated,
+            files_scanned,
+            match_count: matches.len(),
+            matches: structured_matches,
+        };
 
         Ok(ToolResult {
             id: call_id,
             call_id: external_call_id,
             tool_name: "glob".into(),
             parts: vec![MessagePart::text(output_lines.join("\n"))],
+            structured_content: Some(
+                serde_json::to_value(&structured_output).expect("glob structured output"),
+            ),
             metadata: Some(serde_json::json!({
                 "path": root,
                 "requested_path": requested_path,

@@ -8,7 +8,7 @@ version.workspace = true
 default = []
 agentic-tools = []
 code-intel = []
-web-tools = ["dep:reqwest"]
+web-tools = ["dep:reqwest", "dep:scraper", "dep:quick-xml", "dep:time"]
 
 [dependencies]
 agent-env.workspace = true
@@ -20,10 +20,13 @@ ignore.workspace = true
 notify.workspace = true
 regex.workspace = true
 reqwest = { workspace = true, optional = true }
+scraper = { workspace = true, optional = true }
+quick-xml = { workspace = true, optional = true }
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
+time = { workspace = true, optional = true }
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true

@@ -61,6 +61,50 @@ impl ReadTool {
     }
 }
 
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+struct ReadOutputAnchor {
+    text: String,
+    context: usize,
+    occurrence: usize,
+    ignore_case: bool,
+    line: Option<usize>,
+}
+
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum ReadToolOutput {
+    Window {
+        requested_path: String,
+        resolved_path: String,
+        snapshot_id: String,
+        selection_hash: String,
+        start_line: usize,
+        end_line: usize,
+        output_lines: usize,
+        total_lines: usize,
+        remaining_lines: usize,
+        annotate_lines: bool,
+        next_start_line: Option<usize>,
+        anchor: Option<ReadOutputAnchor>,
+        empty: bool,
+    },
+    Image {
+        requested_path: String,
+        resolved_path: String,
+        mime_type: String,
+        byte_length: usize,
+    },
+    Notice {
+        requested_path: String,
+        resolved_path: String,
+        snapshot_id: String,
+        start_line: usize,
+        total_lines: usize,
+        max_bytes: usize,
+        message: String,
+    },
+}
+
 #[async_trait]
 impl Tool for ReadTool {
     fn spec(&self) -> ToolSpec {
@@ -69,6 +113,9 @@ impl Tool for ReadTool {
             description: "Read a file or image. Text files are returned as a line-numbered view with range paging (`start_line`/`end_line` or `line_count`) or anchor-based spans (`anchor_text`), plus snapshot ids for follow-up edits.".to_string(),
             input_schema: serde_json::to_value(schema_for!(ReadToolInput)).expect("read schema"),
             output_mode: ToolOutputMode::ContentParts,
+            output_schema: Some(
+                serde_json::to_value(schema_for!(ReadToolOutput)).expect("read output schema"),
+            ),
             origin: ToolOrigin::Local,
             annotations: mcp_tool_annotations("Read File", true, false, true, false),
         }
@@ -92,6 +139,7 @@ impl Tool for ReadTool {
         }
         let bytes = fs::read(&resolved).await?;
         if let Some(mime) = sniff_image_mime(&bytes, &resolved) {
+            let byte_length = bytes.len();
             return Ok(ToolResult {
                 id: call_id,
                 call_id: external_call_id.clone(),
@@ -103,6 +151,15 @@ impl Tool for ReadTool {
                         data_base64: base64::engine::general_purpose::STANDARD.encode(bytes),
                     },
                 ],
+                structured_content: Some(
+                    serde_json::to_value(ReadToolOutput::Image {
+                        requested_path: input.path.clone(),
+                        resolved_path: resolved.display().to_string(),
+                        mime_type: mime.to_string(),
+                        byte_length,
+                    })
+                    .expect("read image output"),
+                ),
                 metadata: Some(serde_json::json!({ "path": resolved })),
                 is_error: false,
             });
@@ -131,11 +188,29 @@ impl Tool for ReadTool {
                 "[read path={} lines=0/0 snapshot={}]\n[File is empty]",
                 input.path, snapshot_id
             );
+            let structured_output = ReadToolOutput::Window {
+                requested_path: input.path.clone(),
+                resolved_path: resolved.display().to_string(),
+                snapshot_id: snapshot_id.clone(),
+                selection_hash: stable_text_hash(""),
+                start_line: 0,
+                end_line: 0,
+                output_lines: 0,
+                total_lines: 0,
+                remaining_lines: 0,
+                annotate_lines,
+                next_start_line: None,
+                anchor: None,
+                empty: true,
+            };
             return Ok(ToolResult {
                 id: call_id,
                 call_id: external_call_id,
                 tool_name: "read".into(),
                 parts: vec![MessagePart::text(output)],
+                structured_content: Some(
+                    serde_json::to_value(structured_output).expect("read empty output"),
+                ),
                 metadata: Some(serde_json::json!({
                     "path": resolved,
                     "snapshot_id": snapshot_id,
@@ -225,7 +300,32 @@ impl Tool for ReadTool {
                         "[Line {} is {size}, exceeds {limit} limit. Use start_line={} with a smaller line_count to continue.]",
                         start_line, start_line
                     );
-                    return Ok(ToolResult::text(call_id, "read", notice));
+                    return Ok(ToolResult {
+                        id: call_id,
+                        call_id: external_call_id,
+                        tool_name: "read".into(),
+                        parts: vec![MessagePart::text(notice.clone())],
+                        structured_content: Some(
+                            serde_json::to_value(ReadToolOutput::Notice {
+                                requested_path: input.path.clone(),
+                                resolved_path: resolved.display().to_string(),
+                                snapshot_id: snapshot_id.clone(),
+                                start_line,
+                                total_lines,
+                                max_bytes: budget,
+                                message: notice,
+                            })
+                            .expect("read notice output"),
+                        ),
+                        metadata: Some(serde_json::json!({
+                            "path": resolved,
+                            "snapshot_id": snapshot_id,
+                            "start_line": start_line,
+                            "total_lines": total_lines,
+                            "byte_limit": budget,
+                        })),
+                        is_error: false,
+                    });
                 }
                 if used_bytes + line_len > budget {
                     break;
@@ -258,11 +358,12 @@ impl Tool for ReadTool {
             ));
         }
         let remaining_lines = total_lines.saturating_sub(start_line + consumed - 1);
+        let next_start_line = (remaining_lines > 0).then_some(start_line + consumed);
         if remaining_lines > 0 {
-            let next_start_line = start_line + consumed;
             if input.line_count.is_some() || input.end_line.is_some() || forced_end_line.is_some() {
                 output.push_str(&format!(
-                    "\n\n[{remaining_lines} more lines in file. Use start_line={next_start_line} to continue.]"
+                    "\n\n[{remaining_lines} more lines in file. Use start_line={} to continue.]",
+                    next_start_line.expect("next start line")
                 ));
             } else {
                 output.push_str(&format!(
@@ -271,16 +372,43 @@ impl Tool for ReadTool {
                     end_line,
                     total_lines,
                     format_bytes(budget),
-                    next_start_line
+                    next_start_line.expect("next start line")
                 ));
             }
         }
+        let anchor = input.anchor_text.as_ref().map(|value| ReadOutputAnchor {
+            text: value.clone(),
+            context: input.anchor_context.unwrap_or(DEFAULT_ANCHOR_CONTEXT),
+            occurrence: input.anchor_occurrence.unwrap_or(1),
+            ignore_case: input.anchor_ignore_case.unwrap_or(false),
+            line: anchor_line,
+        });
+        let structured_output = ReadToolOutput::Window {
+            requested_path: input.path.clone(),
+            resolved_path: resolved.display().to_string(),
+            snapshot_id: snapshot_id.clone(),
+            selection_hash: selection_hash.clone(),
+            start_line,
+            end_line,
+            output_lines: consumed,
+            total_lines,
+            remaining_lines,
+            annotate_lines,
+            next_start_line,
+            anchor: anchor.clone(),
+            empty: false,
+        };
 
         Ok(ToolResult {
             id: call_id,
             call_id: external_call_id,
             tool_name: "read".into(),
             parts: vec![MessagePart::text(output)],
+            // The text or image body stays in `parts`; structured content carries
+            // the stable window anchors that follow-up edits and pagination rely on.
+            structured_content: Some(
+                serde_json::to_value(structured_output).expect("read window output"),
+            ),
             metadata: Some(serde_json::json!({
                 "path": resolved,
                 "snapshot_id": snapshot_id,
@@ -291,15 +419,8 @@ impl Tool for ReadTool {
                 "total_lines": total_lines,
                 "remaining_lines": remaining_lines,
                 "annotate_lines": annotate_lines,
-                "anchor": input.anchor_text.as_ref().map(|value| {
-                    serde_json::json!({
-                        "text": value,
-                        "context": input.anchor_context.unwrap_or(DEFAULT_ANCHOR_CONTEXT),
-                        "occurrence": input.anchor_occurrence.unwrap_or(1),
-                        "ignore_case": input.anchor_ignore_case.unwrap_or(false),
-                        "line": anchor_line,
-                    })
-                }),
+                "next_start_line": next_start_line,
+                "anchor": anchor.map(|value| serde_json::to_value(value).expect("read anchor metadata")),
             })),
             is_error: false,
         })
@@ -428,6 +549,10 @@ mod tests {
         assert!(text.contains("[read path=sample.txt lines=2-3 / 3 snapshot="));
         assert!(text.contains(" 2 | beta"));
         assert!(text.contains(" 3 | gamma"));
+        let structured = result.structured_content.unwrap();
+        assert_eq!(structured["kind"], "window");
+        assert!(structured["selection_hash"].as_str().unwrap().len() >= 12);
+        assert_eq!(structured["next_start_line"], serde_json::json!(null));
     }
 
     #[tokio::test]
@@ -482,6 +607,8 @@ mod tests {
         let text = result.text_content();
         assert!(text.contains("lines=2-4 / 4"));
         assert!(text.contains(" 3 | fn target_symbol() {}"));
+        let structured = result.structured_content.clone().unwrap();
+        assert_eq!(structured["anchor"]["line"], 3);
         let metadata = result.metadata.unwrap();
         assert_eq!(metadata["anchor"]["line"].as_u64().unwrap(), 3);
     }

@@ -161,6 +161,38 @@ pub mod vars {
         "AGENT_CORE_WEB_SEARCH_ENDPOINT",
         "HTTP/HTTPS search endpoint override for the lightweight web_search tool.",
     );
+    pub const AGENT_CORE_WEB_SEARCH_BACKEND: EnvVar = EnvVar::new(
+        "AGENT_CORE_WEB_SEARCH_BACKEND",
+        "Search backend selection for the local web_search tool (`auto`, `bing_rss`, `brave_api`, `exa_api`, or `duckduckgo_html`). Defaults to `auto` when unset.",
+    );
+    pub const AGENT_CORE_WEB_SEARCH_API_ENDPOINT: EnvVar = EnvVar::new(
+        "AGENT_CORE_WEB_SEARCH_API_ENDPOINT",
+        "Legacy HTTP/HTTPS API endpoint override for hosted web_search backends.",
+    );
+    pub const AGENT_CORE_WEB_SEARCH_API_KEY: EnvVar = EnvVar::new(
+        "AGENT_CORE_WEB_SEARCH_API_KEY",
+        "Legacy API key for hosted web_search backends.",
+    );
+    pub const AGENT_CORE_WEB_SEARCH_BRAVE_API_ENDPOINT: EnvVar = EnvVar::new(
+        "AGENT_CORE_WEB_SEARCH_BRAVE_API_ENDPOINT",
+        "HTTP/HTTPS API endpoint override for the Brave hosted web_search backend.",
+    );
+    pub const AGENT_CORE_WEB_SEARCH_BRAVE_API_KEY: EnvVar = EnvVar::new(
+        "AGENT_CORE_WEB_SEARCH_BRAVE_API_KEY",
+        "API key for the Brave hosted web_search backend.",
+    );
+    pub const AGENT_CORE_WEB_SEARCH_EXA_API_ENDPOINT: EnvVar = EnvVar::new(
+        "AGENT_CORE_WEB_SEARCH_EXA_API_ENDPOINT",
+        "HTTP/HTTPS API endpoint override for the Exa hosted web_search backend.",
+    );
+    pub const AGENT_CORE_WEB_SEARCH_EXA_API_KEY: EnvVar = EnvVar::new(
+        "AGENT_CORE_WEB_SEARCH_EXA_API_KEY",
+        "API key for the Exa hosted web_search backend.",
+    );
+    pub const AGENT_CORE_WEB_SEARCH_DUCKDUCKGO_ENDPOINT: EnvVar = EnvVar::new(
+        "AGENT_CORE_WEB_SEARCH_DUCKDUCKGO_ENDPOINT",
+        "HTTP/HTTPS HTML endpoint override for the DuckDuckGo fallback web_search backend.",
+    );
 
     pub const ALL: &[EnvVar] = &[
         SHELL,
@@ -197,6 +229,14 @@ pub mod vars {
         AGENT_CORE_WEB_ALLOWED_DOMAINS,
         AGENT_CORE_WEB_BLOCKED_DOMAINS,
         AGENT_CORE_WEB_SEARCH_ENDPOINT,
+        AGENT_CORE_WEB_SEARCH_BACKEND,
+        AGENT_CORE_WEB_SEARCH_API_ENDPOINT,
+        AGENT_CORE_WEB_SEARCH_API_KEY,
+        AGENT_CORE_WEB_SEARCH_BRAVE_API_ENDPOINT,
+        AGENT_CORE_WEB_SEARCH_BRAVE_API_KEY,
+        AGENT_CORE_WEB_SEARCH_EXA_API_ENDPOINT,
+        AGENT_CORE_WEB_SEARCH_EXA_API_KEY,
+        AGENT_CORE_WEB_SEARCH_DUCKDUCKGO_ENDPOINT,
     ];
 }
 

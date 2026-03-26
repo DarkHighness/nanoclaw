@@ -1,6 +1,6 @@
 use crate::{
     ProviderError, RequestOptions, Result, coerce_object_schema, merge_top_level_object,
-    message_part_text, render_instruction_text,
+    message_part_text, render_instruction_text, tool_result_roundtrip_text,
 };
 use agent_env::vars;
 use async_stream::try_stream;
@@ -355,6 +355,10 @@ fn anthropic_tool_message(parts: Vec<MessagePart>) -> Result<Value> {
 }
 
 fn tool_result_block(result: ToolResult) -> Value {
+    // Anthropic tool results do not expose a separate structured payload field.
+    // Keep plain text results compact, but serialize the stable round-trip
+    // envelope whenever a richer local result would otherwise be flattened away.
+    let text = tool_result_roundtrip_text(&result);
     json!({
         "type": "tool_result",
         "tool_use_id": result.call_id,
@@ -362,7 +366,7 @@ fn tool_result_block(result: ToolResult) -> Value {
         "content": [
             {
                 "type": "text",
-                "text": result.text_content(),
+                "text": text,
             }
         ]
     })
@@ -555,6 +559,7 @@ mod tests {
                 description: "Read a file".to_string(),
                 input_schema: json!({"properties":{"path":{"type":"string"}}}),
                 output_mode: ToolOutputMode::Text,
+                output_schema: None,
                 origin: ToolOrigin::Local,
                 annotations: Default::default(),
             }],

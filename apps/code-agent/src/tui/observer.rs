@@ -1,5 +1,6 @@
 use super::state::{SharedUiState, preview_text};
 use agent::runtime::{Result as RuntimeResult, RuntimeObserver, RuntimeProgressEvent};
+use agent::types::ToolLifecycleEventKind;
 
 pub(crate) struct SharedRenderObserver {
     ui_state: SharedUiState,
@@ -101,26 +102,39 @@ impl RuntimeObserver for SharedRenderObserver {
                     ));
                 }
             }
-            RuntimeProgressEvent::ToolCallStarted { call } => {
-                state.status = format!("Running {}", call.tool_name);
-                state.push_activity(format!("running {}", call.tool_name));
-            }
-            RuntimeProgressEvent::ToolCallCompleted { call, output } => {
-                state.status = format!("Completed {}", call.tool_name);
-                state.push_activity(format!(
-                    "{} -> {}",
-                    call.tool_name,
-                    preview_text(&output.text_content(), 44)
-                ));
-            }
-            RuntimeProgressEvent::ToolCallFailed { call, error } => {
-                state.status = format!("{} failed", call.tool_name);
-                state.push_activity(format!(
-                    "{} failed: {}",
-                    call.tool_name,
-                    preview_text(&error, 44)
-                ));
-            }
+            RuntimeProgressEvent::ToolLifecycle { event } => match event.event {
+                ToolLifecycleEventKind::Started { call } => {
+                    state.status = format!("Running {}", call.tool_name);
+                    state.push_activity(format!("running {}", call.tool_name));
+                }
+                ToolLifecycleEventKind::Completed { call, output } => {
+                    state.status = format!("Completed {}", call.tool_name);
+                    state.push_activity(format!(
+                        "{} -> {}",
+                        call.tool_name,
+                        preview_text(&output.text_content(), 44)
+                    ));
+                }
+                ToolLifecycleEventKind::Failed { call, error } => {
+                    state.status = format!("{} failed", call.tool_name);
+                    state.push_activity(format!(
+                        "{} failed: {}",
+                        call.tool_name,
+                        preview_text(&error, 44)
+                    ));
+                }
+                ToolLifecycleEventKind::Cancelled { call, reason } => {
+                    state.status = format!("{} cancelled", call.tool_name);
+                    state.push_activity(format!(
+                        "{} cancelled{}",
+                        call.tool_name,
+                        reason
+                            .as_deref()
+                            .map(|value| format!(": {}", preview_text(value, 44)))
+                            .unwrap_or_default()
+                    ));
+                }
+            },
             RuntimeProgressEvent::TurnCompleted { .. } => {
                 self.active_assistant_line = None;
                 state.status = "Turn complete".to_string();

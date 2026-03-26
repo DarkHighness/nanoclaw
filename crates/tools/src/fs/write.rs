@@ -46,6 +46,25 @@ impl WriteTool {
     }
 }
 
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum WriteToolOutput {
+    Success {
+        requested_path: String,
+        resolved_path: String,
+        summary: String,
+        snapshot_before: Option<String>,
+        snapshot_after: Option<String>,
+        write: Value,
+    },
+    Error {
+        requested_path: String,
+        resolved_path: String,
+        summary: String,
+        write: Value,
+    },
+}
+
 #[async_trait]
 impl Tool for WriteTool {
     fn spec(&self) -> ToolSpec {
@@ -54,6 +73,9 @@ impl Tool for WriteTool {
             description: "Create or fully replace a UTF-8 text file. Supports overwrite/create policies plus optional expected_snapshot guards when replacing an existing file.".to_string(),
             input_schema: serde_json::to_value(schema_for!(WriteToolInput)).expect("write schema"),
             output_mode: ToolOutputMode::Text,
+            output_schema: Some(
+                serde_json::to_value(schema_for!(WriteToolOutput)).expect("write output schema"),
+            ),
             origin: ToolOrigin::Local,
             annotations: mcp_tool_annotations("Write File", false, true, true, false),
         }
@@ -89,11 +111,20 @@ impl Tool for WriteTool {
         );
 
         if outcome.is_error {
+            let structured_output = WriteToolOutput::Error {
+                requested_path: input.path.clone(),
+                resolved_path: resolved.display().to_string(),
+                summary: outcome.summary.clone(),
+                write: outcome.metadata.clone(),
+            };
             return Ok(ToolResult {
                 id: call_id,
                 call_id: external_call_id,
                 tool_name: "write".into(),
                 parts: vec![MessagePart::text(outcome.summary)],
+                structured_content: Some(
+                    serde_json::to_value(structured_output).expect("write error output"),
+                ),
                 metadata: Some(outcome.metadata),
                 is_error: true,
             });
@@ -104,6 +135,14 @@ impl Tool for WriteTool {
             observer.did_change(resolved.clone());
             observer.did_save(resolved.clone());
         }
+        let structured_output = WriteToolOutput::Success {
+            requested_path: input.path.clone(),
+            resolved_path: resolved.display().to_string(),
+            summary: outcome.summary.clone(),
+            snapshot_before: outcome.snapshot_before.clone(),
+            snapshot_after: outcome.snapshot_after.clone(),
+            write: outcome.metadata.clone(),
+        };
         Ok(ToolResult {
             id: call_id,
             call_id: external_call_id,
@@ -114,6 +153,9 @@ impl Tool for WriteTool {
                 outcome.snapshot_before.as_deref().unwrap_or("missing"),
                 outcome.snapshot_after.as_deref().unwrap_or("missing"),
             ))],
+            structured_content: Some(
+                serde_json::to_value(structured_output).expect("write success output"),
+            ),
             metadata: Some(serde_json::json!({
                 "path": resolved,
                 "snapshot_before": outcome.snapshot_before,
@@ -156,6 +198,9 @@ mod tests {
             .unwrap();
 
         assert!(!result.is_error);
+        let structured = result.structured_content.unwrap();
+        assert_eq!(structured["kind"], "success");
+        assert_eq!(structured["write"]["created"], true);
         assert_eq!(
             tokio::fs::read_to_string(dir.path().join("sample.txt"))
                 .await
@@ -192,6 +237,9 @@ mod tests {
             .unwrap();
 
         assert!(result.is_error);
+        let structured = result.structured_content.unwrap();
+        assert_eq!(structured["kind"], "error");
+        assert_eq!(structured["write"]["if_exists"], "error");
         assert_eq!(
             tokio::fs::read_to_string(dir.path().join("sample.txt"))
                 .await

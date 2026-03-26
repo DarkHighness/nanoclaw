@@ -126,6 +126,104 @@ struct OutputWindow {
     next_start_char: Option<usize>,
 }
 
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+struct BashRunStreamOutput {
+    text: String,
+    chars: usize,
+    truncated: bool,
+}
+
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+struct BashOutputWindowResult {
+    text: String,
+    start_char: usize,
+    end_char: usize,
+    total_chars: usize,
+    truncated: bool,
+    remaining_chars: usize,
+    next_start_char: Option<usize>,
+}
+
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum BashToolOutput {
+    Run {
+        command: String,
+        cwd: String,
+        shell: String,
+        timeout_ms: u64,
+        max_output_chars: usize,
+        exit_code: Option<i32>,
+        timed_out: bool,
+        stdout: BashRunStreamOutput,
+        stderr: BashRunStreamOutput,
+        env_keys: Vec<String>,
+    },
+    Start {
+        session_id: String,
+        state: String,
+        command: String,
+        cwd: String,
+        shell: String,
+        timeout_ms: u64,
+        started_at_unix_s: u64,
+        env_keys: Vec<String>,
+    },
+    Poll {
+        session_id: String,
+        state: String,
+        exit_code: Option<i32>,
+        timed_out: bool,
+        cancelled: bool,
+        error: Option<String>,
+        started_at_unix_s: u64,
+        finished_at_unix_s: Option<u64>,
+        command: String,
+        cwd: String,
+        shell: String,
+        timeout_ms: u64,
+        poll_wait_ms: u64,
+        max_output_chars: usize,
+        stdout: BashOutputWindowResult,
+        stderr: BashOutputWindowResult,
+        env_keys: Vec<String>,
+    },
+    Cancel {
+        session_id: String,
+        cancellation_requested: bool,
+        state: String,
+        exit_code: Option<i32>,
+        timed_out: bool,
+        cancelled: bool,
+        error: Option<String>,
+        finished_at_unix_s: Option<u64>,
+    },
+}
+
+impl From<&OutputSlice> for BashRunStreamOutput {
+    fn from(value: &OutputSlice) -> Self {
+        Self {
+            text: value.text.clone(),
+            chars: value.original_chars,
+            truncated: value.truncated,
+        }
+    }
+}
+
+impl From<&OutputWindow> for BashOutputWindowResult {
+    fn from(value: &OutputWindow) -> Self {
+        Self {
+            text: value.text.clone(),
+            start_char: value.start_char,
+            end_char: value.end_char,
+            total_chars: value.total_chars,
+            truncated: value.truncated,
+            remaining_chars: value.remaining_chars,
+            next_start_char: value.next_start_char,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 enum SessionStatus {
     Running,
@@ -300,6 +398,9 @@ impl Tool for BashTool {
             description: "Run shell commands in the workspace. Supports synchronous run, long-running background sessions with poll/continue, and cancellation.".to_string(),
             input_schema: serde_json::to_value(schema_for!(BashToolInput)).expect("bash schema"),
             output_mode: ToolOutputMode::Text,
+            output_schema: Some(
+                serde_json::to_value(schema_for!(BashToolOutput)).expect("bash output schema"),
+            ),
             origin: ToolOrigin::Local,
             annotations: mcp_tool_annotations("Run Shell Command", false, true, false, true),
         }
@@ -366,6 +467,11 @@ async fn execute_run(
                 timeout_ms,
                 "bash run command timed out"
             );
+            let env_keys = input
+                .env
+                .as_ref()
+                .map(|env| env.keys().cloned().collect::<Vec<_>>())
+                .unwrap_or_default();
             return Ok(ToolResult {
                 id: call_id,
                 call_id: external_call_id,
@@ -376,6 +482,29 @@ async fn execute_run(
                     timeout_ms,
                     command
                 ))],
+                structured_content: Some(
+                    serde_json::to_value(BashToolOutput::Run {
+                        command: command.clone(),
+                        cwd: cwd.display().to_string(),
+                        shell: shell.clone(),
+                        timeout_ms,
+                        max_output_chars,
+                        exit_code: None,
+                        timed_out: true,
+                        stdout: BashRunStreamOutput {
+                            text: String::new(),
+                            chars: 0,
+                            truncated: false,
+                        },
+                        stderr: BashRunStreamOutput {
+                            text: String::new(),
+                            chars: 0,
+                            truncated: false,
+                        },
+                        env_keys: env_keys.clone(),
+                    })
+                    .expect("bash run timeout output"),
+                ),
                 metadata: Some(serde_json::json!({
                     "mode": "run",
                     "cwd": cwd,
@@ -383,6 +512,7 @@ async fn execute_run(
                     "command": command,
                     "timeout_ms": timeout_ms,
                     "timed_out": true,
+                    "env": env_keys,
                 })),
                 is_error: true,
             });
@@ -393,12 +523,32 @@ async fn execute_run(
     let stderr = truncate_output(&String::from_utf8_lossy(&output.stderr), max_output_chars);
     let exit_code = output.status.code().unwrap_or(-1);
     let text = render_output(&command, &cwd, exit_code, timeout_ms, &stdout, &stderr);
+    let env_keys = input
+        .env
+        .as_ref()
+        .map(|env| env.keys().cloned().collect::<Vec<_>>())
+        .unwrap_or_default();
 
     Ok(ToolResult {
         id: call_id,
         call_id: external_call_id,
         tool_name: "bash".into(),
         parts: vec![MessagePart::text(text)],
+        structured_content: Some(
+            serde_json::to_value(BashToolOutput::Run {
+                command: command.clone(),
+                cwd: cwd.display().to_string(),
+                shell: shell.clone(),
+                timeout_ms,
+                max_output_chars,
+                exit_code: Some(exit_code),
+                timed_out: false,
+                stdout: BashRunStreamOutput::from(&stdout),
+                stderr: BashRunStreamOutput::from(&stderr),
+                env_keys: env_keys.clone(),
+            })
+            .expect("bash run output"),
+        ),
         metadata: Some(serde_json::json!({
             "mode": "run",
             "cwd": cwd,
@@ -416,7 +566,7 @@ async fn execute_run(
                 "chars": stderr.original_chars,
                 "truncated": stderr.truncated,
             },
-            "env": input.env.as_ref().map(|env| env.keys().cloned().collect::<Vec<_>>()),
+            "env": env_keys,
         })),
         is_error: !output.status.success(),
     })
@@ -489,7 +639,7 @@ async fn execute_start(
             .write()
             .expect("bash session registry write lock");
         prune_completed_sessions(&mut registry);
-        registry.insert(session_id.clone(), session);
+        registry.insert(session_id.clone(), session.clone());
     }
 
     tokio::spawn(async move {
@@ -510,6 +660,19 @@ async fn execute_start(
             cwd.display(),
             timeout_ms
         ))],
+        structured_content: Some(
+            serde_json::to_value(BashToolOutput::Start {
+                session_id: session_id.as_str().to_string(),
+                state: "running".to_string(),
+                command: command.clone(),
+                cwd: cwd.display().to_string(),
+                shell: shell.clone(),
+                timeout_ms,
+                started_at_unix_s,
+                env_keys: session.env_keys.clone(),
+            })
+            .expect("bash start output"),
+        ),
         metadata: Some(serde_json::json!({
             "mode": "start",
             "session_id": session_id.as_str(),
@@ -576,6 +739,31 @@ async fn execute_poll(call_id: ToolCallId, input: BashToolInput) -> Result<ToolR
         call_id: external_call_id,
         tool_name: "bash".into(),
         parts: vec![MessagePart::text(text)],
+        // The text rendering is for the transcript. Structured output is derived
+        // from the same window snapshots so hosts can continue polling without
+        // scraping prose.
+        structured_content: Some(
+            serde_json::to_value(BashToolOutput::Poll {
+                session_id: session.id.as_str().to_string(),
+                state: status.state.to_string(),
+                exit_code: status.exit_code,
+                timed_out: status.timed_out,
+                cancelled: status.cancelled,
+                error: status.error.clone(),
+                started_at_unix_s: session.started_at_unix_s,
+                finished_at_unix_s: status.finished_at_unix_s,
+                command: session.command.clone(),
+                cwd: session.cwd.display().to_string(),
+                shell: session.shell.clone(),
+                timeout_ms: session.timeout_ms,
+                poll_wait_ms,
+                max_output_chars,
+                stdout: BashOutputWindowResult::from(&stdout),
+                stderr: BashOutputWindowResult::from(&stderr),
+                env_keys: session.env_keys.clone(),
+            })
+            .expect("bash poll output"),
+        ),
         metadata: Some(serde_json::json!({
             "mode": "poll",
             "session_id": session.id.as_str(),
@@ -664,6 +852,19 @@ async fn execute_cancel(call_id: ToolCallId, input: BashToolInput) -> Result<Too
                 .map(|code| code.to_string())
                 .unwrap_or_else(|| "running".to_string())
         ))],
+        structured_content: Some(
+            serde_json::to_value(BashToolOutput::Cancel {
+                session_id: session.id.as_str().to_string(),
+                cancellation_requested,
+                state: status.state.to_string(),
+                exit_code: status.exit_code,
+                timed_out: status.timed_out,
+                cancelled: status.cancelled,
+                error: status.error.clone(),
+                finished_at_unix_s: status.finished_at_unix_s,
+            })
+            .expect("bash cancel output"),
+        ),
         metadata: Some(serde_json::json!({
             "mode": "cancel",
             "session_id": session.id.as_str(),
@@ -1014,6 +1215,9 @@ mod tests {
 
         assert!(!result.is_error);
         assert!(result.text_content().contains("stdout>\nhello"));
+        let structured = result.structured_content.unwrap();
+        assert_eq!(structured["kind"], "run");
+        assert_eq!(structured["stdout"]["text"], "hello");
     }
 
     #[tokio::test]
@@ -1050,6 +1254,8 @@ mod tests {
 
         assert!(!result.is_error);
         assert!(result.text_content().contains("stdout>\nvalue"));
+        let structured = result.structured_content.unwrap();
+        assert_eq!(structured["env_keys"][0], "PATCH_ENV");
     }
 
     #[tokio::test]
@@ -1130,6 +1336,9 @@ mod tests {
             .as_str()
             .unwrap()
             .to_string();
+        let start_structured = start.structured_content.unwrap();
+        assert_eq!(start_structured["kind"], "start");
+        assert_eq!(start_structured["session_id"], session_id);
         let poll = tool
             .execute(
                 ToolCallId::new(),
@@ -1151,6 +1360,9 @@ mod tests {
             .await
             .unwrap();
         assert!(poll.text_content().contains("state="));
+        let poll_structured = poll.structured_content.clone().unwrap();
+        assert_eq!(poll_structured["kind"], "poll");
+        assert_eq!(poll_structured["session_id"], session_id.clone());
 
         let cancel = tool
             .execute(
@@ -1174,6 +1386,9 @@ mod tests {
             .unwrap();
         assert!(!cancel.is_error);
         assert!(cancel.text_content().contains("cancellation_requested>"));
+        let cancel_structured = cancel.structured_content.unwrap();
+        assert_eq!(cancel_structured["kind"], "cancel");
+        assert_eq!(cancel_structured["cancellation_requested"], true);
 
         let final_poll = tool
             .execute(
@@ -1256,6 +1471,8 @@ mod tests {
             .unwrap();
 
         assert!(poll.text_content().contains("stdout>\ncd"));
+        let structured = poll.structured_content.unwrap();
+        assert_eq!(structured["stdout"]["next_start_char"], 4);
         let metadata = poll.metadata.unwrap();
         assert_eq!(metadata["stdout"]["next_start_char"], 4);
     }
