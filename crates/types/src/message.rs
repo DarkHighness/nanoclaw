@@ -1,4 +1,4 @@
-use crate::{MessageId, ToolCall, ToolCallId, ToolResult};
+use crate::{MessageId, ReasoningId, ToolCall, ToolCallId, ToolResult};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -78,7 +78,7 @@ pub enum ReasoningContent {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Reasoning {
     #[serde(default)]
-    pub id: Option<String>,
+    pub id: Option<ReasoningId>,
     pub content: Vec<ReasoningContent>,
 }
 

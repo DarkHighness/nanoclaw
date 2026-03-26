@@ -13,7 +13,7 @@ use std::collections::BTreeMap;
 use tracing::debug;
 use types::{
     AgentCoreError, CallId, MessageId, MessagePart, MessageRole, ModelEvent, ModelRequest,
-    Reasoning, ReasoningContent, ToolCall, ToolCallId, ToolOrigin, ToolResult,
+    Reasoning, ReasoningContent, ReasoningId, ToolCall, ToolCallId, ToolOrigin, ToolResult,
 };
 
 const DEFAULT_ANTHROPIC_MAX_TOKENS: u64 = 4_096;
@@ -387,7 +387,7 @@ enum AnthropicBlockState {
         input_json: String,
     },
     Thinking {
-        id: Option<String>,
+        id: Option<ReasoningId>,
         text: String,
         signature: Option<String>,
     },
@@ -429,7 +429,7 @@ impl AnthropicBlockState {
                 id: block
                     .get("id")
                     .and_then(Value::as_str)
-                    .map(ToOwned::to_owned),
+                    .map(ReasoningId::from),
                 text: String::new(),
                 signature: None,
             }),

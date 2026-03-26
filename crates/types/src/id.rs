@@ -70,6 +70,7 @@ define_id!(TurnId);
 define_id!(ToolCallId);
 define_id!(CallId);
 define_id!(ResponseId);
+define_id!(ReasoningId);
 
 impl From<ToolCallId> for CallId {
     fn from(value: ToolCallId) -> Self {

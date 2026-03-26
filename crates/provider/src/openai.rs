@@ -15,8 +15,8 @@ use tokio_tungstenite::tungstenite::protocol::Message as WsMessage;
 use tracing::debug;
 use types::{
     AgentCoreError, CallId, Message, MessageId, MessagePart, MessageRole, ModelEvent, ModelRequest,
-    ProviderContinuation, Reasoning, ReasoningContent, ResponseId, ToolCall, ToolCallId,
-    ToolOrigin,
+    ProviderContinuation, Reasoning, ReasoningContent, ReasoningId, ResponseId, ToolCall,
+    ToolCallId, ToolOrigin,
 };
 
 #[derive(Clone, Debug, Default)]
@@ -257,7 +257,7 @@ pub(crate) async fn stream_openai_responses_turn(
                                 id: item
                                     .get("id")
                                     .and_then(Value::as_str)
-                                    .map(ToOwned::to_owned),
+                                    .map(ReasoningId::from),
                                 content,
                             });
                         }
@@ -564,7 +564,7 @@ fn parse_openai_reasoning_item(item: &Value) -> Option<Reasoning> {
         id: item
             .get("id")
             .and_then(Value::as_str)
-            .map(ToOwned::to_owned),
+            .map(ReasoningId::from),
         content,
     })
 }
@@ -862,7 +862,7 @@ fn openai_input_item_from_part(part: &MessagePart, role: MessageRole) -> Option<
             }
             let mut item = Map::new();
             item.insert("type".to_string(), Value::String("reasoning".to_string()));
-            item.insert("id".to_string(), Value::String(id));
+            item.insert("id".to_string(), Value::String(id.to_string()));
             item.insert("summary".to_string(), Value::Array(summary));
             if let Some(encrypted_content) = encrypted_content {
                 item.insert(
