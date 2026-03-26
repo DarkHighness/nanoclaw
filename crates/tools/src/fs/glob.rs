@@ -80,9 +80,7 @@ impl Tool for GlobTool {
             ctx.effective_root(),
             ctx.container_workdir.as_deref(),
         )?;
-        if ctx.workspace_only {
-            ctx.assert_path_allowed(&root)?;
-        }
+        ctx.assert_path_read_allowed(&root)?;
 
         let pattern = input.pattern.clone();
         let matcher = Glob::new(&pattern)?.compile_matcher();

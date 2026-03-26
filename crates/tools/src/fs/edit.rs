@@ -91,9 +91,7 @@ impl Tool for EditTool {
             ctx.effective_root(),
             ctx.container_workdir.as_deref(),
         )?;
-        if ctx.workspace_only {
-            ctx.assert_path_allowed(&resolved)?;
-        }
+        ctx.assert_path_write_allowed(&resolved)?;
 
         let existing = load_optional_text_file(&resolved).await?;
         let outcome = apply_text_edits(
@@ -283,6 +281,45 @@ mod tests {
         assert_eq!(
             tokio::fs::read_to_string(path).await.unwrap(),
             "alpha\nbeta\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn edit_tool_rejects_protected_workspace_state_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".nanoclaw").join("state.toml");
+        tokio::fs::create_dir_all(path.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(&path, "alpha = 1\n").await.unwrap();
+
+        let err = EditTool::new()
+            .execute(
+                ToolCallId::new(),
+                serde_json::to_value(EditToolInput {
+                    path: ".nanoclaw/state.toml".to_string(),
+                    operation: TextEditOperation::StrReplace {
+                        old_text: "1".to_string(),
+                        new_text: "2".to_string(),
+                        replace_all: false,
+                    },
+                    expected_snapshot: None,
+                })
+                .unwrap(),
+                &ToolExecutionContext {
+                    workspace_root: dir.path().to_path_buf(),
+                    worktree_root: Some(dir.path().to_path_buf()),
+                    workspace_only: true,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap_err();
+
+        assert!(err.to_string().contains("protected path"));
+        assert_eq!(
+            tokio::fs::read_to_string(path).await.unwrap(),
+            "alpha = 1\n"
         );
     }
 }

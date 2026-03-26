@@ -20,6 +20,9 @@ The sandbox is no longer modeled as a `bash` implementation detail under
 - `crates/tools` consumes `sandbox` for process tools such as `bash`.
 - `tools::process` remains only as a compatibility facade so existing imports do
   not have to migrate atomically.
+- model-visible file tools also consume `sandbox` path checks, so `.git`,
+  `.nanoclaw`, and other protected subpaths are governed by the same top-level
+  policy instead of ad hoc tool-local rules.
 
 That dependency direction matters because read, write, patch, MCP stdio
 processes, hook commands, and host utilities can all depend on the same
@@ -80,3 +83,7 @@ process-boundary behavior.
 `tools::process` should only own tool-specific process behavior such as the
 interactive `bash` session protocol. It should not grow platform sandbox logic
 again.
+
+Likewise, filesystem tools should not open-code their own protected-path rules.
+They should ask `sandbox` whether a path is readable or writable under the
+effective policy, so process sandboxing and file-tool sandboxing stay aligned.

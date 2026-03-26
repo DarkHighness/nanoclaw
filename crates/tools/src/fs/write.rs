@@ -94,9 +94,7 @@ impl Tool for WriteTool {
             ctx.effective_root(),
             ctx.container_workdir.as_deref(),
         )?;
-        if ctx.workspace_only {
-            ctx.assert_path_allowed(&resolved)?;
-        }
+        ctx.assert_path_write_allowed(&resolved)?;
 
         let existing = load_optional_text_file(&resolved).await?;
         let outcome = apply_write(
@@ -245,6 +243,43 @@ mod tests {
                 .await
                 .unwrap(),
             "hello\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn write_tool_rejects_protected_workspace_state_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        tokio::fs::create_dir_all(dir.path().join(".nanoclaw"))
+            .await
+            .unwrap();
+        let tool = WriteTool::new();
+
+        let err = tool
+            .execute(
+                ToolCallId::new(),
+                serde_json::to_value(WriteToolInput {
+                    path: ".nanoclaw/state.toml".to_string(),
+                    content: "x = 1\n".to_string(),
+                    if_exists: None,
+                    if_missing: None,
+                    expected_snapshot: None,
+                })
+                .unwrap(),
+                &ToolExecutionContext {
+                    workspace_root: dir.path().to_path_buf(),
+                    worktree_root: Some(dir.path().to_path_buf()),
+                    workspace_only: true,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap_err();
+
+        assert!(err.to_string().contains("protected path"));
+        assert!(
+            !tokio::fs::try_exists(dir.path().join(".nanoclaw/state.toml"))
+                .await
+                .unwrap()
         );
     }
 }

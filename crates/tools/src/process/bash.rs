@@ -965,9 +965,7 @@ fn resolve_cwd(input: &BashToolInput, ctx: &ToolExecutionContext) -> Result<Path
         ctx.effective_root(),
         ctx.container_workdir.as_deref(),
     )?;
-    if ctx.workspace_only {
-        ctx.assert_path_allowed(&cwd)?;
-    }
+    ctx.assert_path_read_allowed(&cwd)?;
     Ok(cwd)
 }
 
@@ -1123,10 +1121,7 @@ fn unix_timestamp_s() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{BashExecutionMode, BashTool, BashToolInput};
-    use crate::{
-        ExecRequest, HostProcessExecutor, ProcessExecutor, Result as ToolResult, Tool,
-        ToolExecutionContext,
-    };
+    use crate::{ExecRequest, HostProcessExecutor, ProcessExecutor, Tool, ToolExecutionContext};
     use std::collections::BTreeMap;
     use std::sync::{Arc, Mutex};
     use tokio::process::Command;
@@ -1139,7 +1134,7 @@ mod tests {
     }
 
     impl ProcessExecutor for RecordingExecutor {
-        fn prepare(&self, request: ExecRequest) -> ToolResult<Command> {
+        fn prepare(&self, request: ExecRequest) -> sandbox::Result<Command> {
             self.requests.lock().unwrap().push(request.clone());
             self.inner.prepare(request)
         }

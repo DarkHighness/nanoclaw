@@ -1,4 +1,4 @@
-use crate::{Result, fs::assert_path_inside_allowed_roots};
+use crate::Result;
 use std::path::{Path, PathBuf};
 use types::{CallId, RunId, SessionId, ToolName, TurnId};
 
@@ -35,8 +35,10 @@ impl ToolExecutionContext {
 
     #[must_use]
     pub fn accessible_roots(&self) -> Vec<&Path> {
-        // Tools should validate against the same root set the host/runtime
-        // exposes, instead of open-coding path policy per tool implementation.
+        // This remains a useful debug/introspection view for host code, but
+        // tool enforcement should go through the sandbox-derived access checks
+        // below so protected subpaths such as `.nanoclaw` stay consistent with
+        // process sandboxing.
         let mut roots = vec![self.effective_root()];
         if let Some(worktree_root) = self.worktree_root.as_deref() {
             roots.push(worktree_root);
@@ -45,8 +47,31 @@ impl ToolExecutionContext {
         roots
     }
 
+    #[must_use]
+    pub fn sandbox_policy(&self) -> sandbox::SandboxPolicy {
+        self.sandbox_scope().recommended_policy()
+    }
+
+    pub fn assert_path_read_allowed(&self, path: &Path) -> Result<()> {
+        sandbox::assert_filesystem_access(
+            &self.sandbox_policy(),
+            path,
+            sandbox::FilesystemAccess::Read,
+        )?;
+        Ok(())
+    }
+
+    pub fn assert_path_write_allowed(&self, path: &Path) -> Result<()> {
+        sandbox::assert_filesystem_access(
+            &self.sandbox_policy(),
+            path,
+            sandbox::FilesystemAccess::Write,
+        )?;
+        Ok(())
+    }
+
     pub fn assert_path_allowed(&self, path: &Path) -> Result<()> {
-        assert_path_inside_allowed_roots(path, self.accessible_roots())
+        self.assert_path_read_allowed(path)
     }
 
     #[must_use]
@@ -129,5 +154,28 @@ mod tests {
         assert_eq!(scoped.turn_id.unwrap().as_str(), "turn_1");
         assert_eq!(scoped.tool_name.unwrap(), ToolName::from("read"));
         assert_eq!(scoped.tool_call_id.unwrap(), CallId::from("call_1"));
+    }
+
+    #[test]
+    fn sandbox_access_checks_protect_internal_state_paths() {
+        let workspace = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(workspace.path().join(".nanoclaw")).unwrap();
+        let context = ToolExecutionContext {
+            workspace_root: workspace.path().to_path_buf(),
+            worktree_root: Some(workspace.path().to_path_buf()),
+            workspace_only: true,
+            ..Default::default()
+        };
+
+        assert!(
+            context
+                .assert_path_read_allowed(&workspace.path().join(".nanoclaw/state.toml"))
+                .is_ok()
+        );
+        assert!(
+            context
+                .assert_path_write_allowed(&workspace.path().join(".nanoclaw/state.toml"))
+                .is_err()
+        );
     }
 }

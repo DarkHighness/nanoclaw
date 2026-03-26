@@ -313,10 +313,8 @@ impl Tool for PatchTool {
                         ctx.effective_root(),
                         ctx.container_workdir.as_deref(),
                     )?;
-                    if ctx.workspace_only {
-                        ctx.assert_path_allowed(&from_resolved)?;
-                        ctx.assert_path_allowed(&to_resolved)?;
-                    }
+                    ctx.assert_path_write_allowed(&from_resolved)?;
+                    ctx.assert_path_write_allowed(&to_resolved)?;
                     if from_resolved == to_resolved {
                         return Ok(patch_error_result(
                             call_id,
@@ -549,9 +547,7 @@ async fn stage_entry(
         ctx.effective_root(),
         ctx.container_workdir.as_deref(),
     )?;
-    if ctx.workspace_only {
-        ctx.assert_path_allowed(&resolved)?;
-    }
+    ctx.assert_path_write_allowed(&resolved)?;
     stage_entry_by_resolved(path, resolved, staged).await
 }
 
@@ -934,5 +930,38 @@ mod tests {
         assert!(output.contains("@@ -2,1 +2,1 @@"));
         assert!(output.contains("-beta"));
         assert!(output.contains("+gamma"));
+    }
+
+    #[tokio::test]
+    async fn patch_tool_rejects_protected_workspace_state_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        tokio::fs::create_dir_all(dir.path().join(".nanoclaw"))
+            .await
+            .unwrap();
+
+        let err = PatchTool::new()
+            .execute(
+                ToolCallId::new(),
+                serde_json::to_value(PatchToolInput {
+                    operations: vec![PatchOperation::Write {
+                        path: ".nanoclaw/state.toml".to_string(),
+                        content: "x = 1\n".to_string(),
+                        if_exists: None,
+                        if_missing: None,
+                        expected_snapshot: None,
+                    }],
+                })
+                .unwrap(),
+                &ToolExecutionContext {
+                    workspace_root: dir.path().to_path_buf(),
+                    worktree_root: Some(dir.path().to_path_buf()),
+                    workspace_only: true,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap_err();
+
+        assert!(err.to_string().contains("protected path"));
     }
 }

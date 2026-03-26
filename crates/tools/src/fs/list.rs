@@ -129,9 +129,7 @@ impl Tool for ListTool {
             ctx.effective_root(),
             ctx.container_workdir.as_deref(),
         )?;
-        if ctx.workspace_only {
-            ctx.assert_path_allowed(&root)?;
-        }
+        ctx.assert_path_read_allowed(&root)?;
 
         let mut entries = if root.is_file() {
             let path = normalize_requested_file_path(requested_path, &root);

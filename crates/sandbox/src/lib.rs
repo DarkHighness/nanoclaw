@@ -11,7 +11,7 @@ pub use manager::{
     sandbox_backend_status,
 };
 pub use policy::{
-    ExecRequest, ExecutionOrigin, FilesystemPolicy, HostEscapePolicy, HostProcessExecutor,
-    NetworkPolicy, ProcessExecutor, ProcessStdio, RuntimeScope, SandboxMode, SandboxPolicy,
-    SandboxScope,
+    ExecRequest, ExecutionOrigin, FilesystemAccess, FilesystemPolicy, HostEscapePolicy,
+    HostProcessExecutor, NetworkPolicy, ProcessExecutor, ProcessStdio, RuntimeScope, SandboxMode,
+    SandboxPolicy, SandboxScope, assert_filesystem_access,
 };

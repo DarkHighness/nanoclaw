@@ -127,9 +127,7 @@ impl Tool for GrepTool {
             ctx.container_workdir.as_deref(),
         )?;
         let search_path_string = search_path.to_string_lossy().to_string();
-        if ctx.workspace_only {
-            ctx.assert_path_allowed(&search_path)?;
-        }
+        ctx.assert_path_read_allowed(&search_path)?;
 
         let pattern = input.pattern.clone();
         let literal = input.literal.unwrap_or(false);

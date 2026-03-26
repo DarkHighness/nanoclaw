@@ -134,9 +134,7 @@ impl Tool for ReadTool {
             ctx.effective_root(),
             ctx.container_workdir.as_deref(),
         )?;
-        if ctx.workspace_only {
-            ctx.assert_path_allowed(&resolved)?;
-        }
+        ctx.assert_path_read_allowed(&resolved)?;
         let bytes = fs::read(&resolved).await?;
         if let Some(mime) = sniff_image_mime(&bytes, &resolved) {
             let byte_length = bytes.len();

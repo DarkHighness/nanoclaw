@@ -34,6 +34,12 @@ pub enum HostEscapePolicy {
     HostManaged,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FilesystemAccess {
+    Read,
+    Write,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SandboxPolicy {
     pub mode: SandboxMode,
@@ -129,6 +135,46 @@ impl SandboxScope {
     pub fn recommended_policy(&self) -> SandboxPolicy {
         SandboxPolicy::recommended_for_scope(self)
     }
+}
+
+pub fn assert_filesystem_access(
+    policy: &SandboxPolicy,
+    path: &Path,
+    access: FilesystemAccess,
+) -> Result<()> {
+    let filesystem = canonicalize_filesystem_policy(&policy.filesystem)?;
+    let path = canonicalize_policy_path(path)?;
+
+    if matches!(access, FilesystemAccess::Write)
+        && path_is_inside_any_root(&path, &filesystem.protected_paths)
+    {
+        return Err(SandboxError::invalid_state(format!(
+            "sandbox denies write access to protected path {}",
+            path.display()
+        )));
+    }
+
+    let allowed_roots = match access {
+        FilesystemAccess::Read => accessible_roots_for_filesystem(&filesystem),
+        FilesystemAccess::Write => filesystem.writable_roots,
+    };
+    if allowed_roots.is_empty() || path_is_inside_any_root(&path, &allowed_roots) {
+        return Ok(());
+    }
+
+    let action = match access {
+        FilesystemAccess::Read => "read",
+        FilesystemAccess::Write => "write",
+    };
+    let allowed = allowed_roots
+        .iter()
+        .map(|root| root.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    Err(SandboxError::invalid_state(format!(
+        "sandbox denies {action} access to {}; allowed roots: [{allowed}]",
+        path.display()
+    )))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -310,9 +356,7 @@ pub(crate) fn canonicalize_policy_path(path: &Path) -> Result<PathBuf> {
 }
 
 pub(crate) fn accessible_roots(policy: &SandboxPolicy) -> Vec<PathBuf> {
-    let mut roots = policy.filesystem.writable_roots.clone();
-    roots.extend(policy.filesystem.readable_roots.iter().cloned());
-    dedup_paths(roots)
+    accessible_roots_for_filesystem(&policy.filesystem)
 }
 
 pub(crate) fn path_is_inside_any_root(path: &Path, roots: &[PathBuf]) -> bool {
@@ -327,9 +371,18 @@ fn dedup_paths(paths: Vec<PathBuf>) -> Vec<PathBuf> {
     unique.into_iter().collect()
 }
 
+fn accessible_roots_for_filesystem(filesystem: &FilesystemPolicy) -> Vec<PathBuf> {
+    let mut roots = filesystem.writable_roots.clone();
+    roots.extend(filesystem.readable_roots.iter().cloned());
+    dedup_paths(roots)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{HostEscapePolicy, NetworkPolicy, SandboxMode, SandboxPolicy, SandboxScope};
+    use super::{
+        FilesystemAccess, HostEscapePolicy, NetworkPolicy, SandboxMode, SandboxPolicy,
+        SandboxScope, assert_filesystem_access,
+    };
     use tempfile::tempdir;
 
     #[test]
@@ -386,6 +439,49 @@ mod tests {
         assert_eq!(
             SandboxPolicy::recommended_for_scope(&scope),
             SandboxPolicy::permissive()
+        );
+    }
+
+    #[test]
+    fn write_access_rejects_protected_paths() {
+        let workspace = tempdir().unwrap();
+        let scope = SandboxScope {
+            workspace_root: workspace.path().to_path_buf(),
+            worktree_root: Some(workspace.path().to_path_buf()),
+            workspace_only: true,
+            ..Default::default()
+        };
+        let policy = SandboxPolicy::recommended_for_scope(&scope);
+        std::fs::create_dir_all(workspace.path().join(".nanoclaw")).unwrap();
+
+        let err = assert_filesystem_access(
+            &policy,
+            &workspace.path().join(".nanoclaw/state.toml"),
+            FilesystemAccess::Write,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("protected path"));
+    }
+
+    #[test]
+    fn read_access_allows_protected_paths_inside_workspace_roots() {
+        let workspace = tempdir().unwrap();
+        let scope = SandboxScope {
+            workspace_root: workspace.path().to_path_buf(),
+            worktree_root: Some(workspace.path().to_path_buf()),
+            workspace_only: true,
+            ..Default::default()
+        };
+        let policy = SandboxPolicy::recommended_for_scope(&scope);
+        std::fs::create_dir_all(workspace.path().join(".nanoclaw")).unwrap();
+
+        assert!(
+            assert_filesystem_access(
+                &policy,
+                &workspace.path().join(".nanoclaw/state.toml"),
+                FilesystemAccess::Read,
+            )
+            .is_ok()
         );
     }
 }

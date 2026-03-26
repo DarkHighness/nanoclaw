@@ -292,9 +292,7 @@ impl Tool for CodeDocumentSymbolsTool {
             ctx.effective_root(),
             ctx.container_workdir.as_deref(),
         )?;
-        if ctx.workspace_only {
-            ctx.assert_path_allowed(&resolved)?;
-        }
+        ctx.assert_path_read_allowed(&resolved)?;
         let symbols = self
             .backend
             .document_symbols(resolved.as_path(), limit, ctx)
@@ -510,9 +508,7 @@ fn resolve_navigation_target(
             ctx.effective_root(),
             ctx.container_workdir.as_deref(),
         )?;
-        if ctx.workspace_only {
-            ctx.assert_path_allowed(&resolved)?;
-        }
+        ctx.assert_path_read_allowed(&resolved)?;
         let display_path = resolved
             .strip_prefix(ctx.effective_root())
             .unwrap_or(&resolved)
