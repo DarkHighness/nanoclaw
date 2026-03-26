@@ -32,6 +32,30 @@ pub struct WebFetchTool {
     policy: WebToolPolicy,
 }
 
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+struct WebFetchToolOutput {
+    url: String,
+    final_url: String,
+    status: u16,
+    content_type: Option<String>,
+    document_id: String,
+    title: Option<String>,
+    start_index: usize,
+    end_index: usize,
+    returned_chars: usize,
+    remaining_chars: usize,
+    total_chars: usize,
+    truncated: bool,
+    max_chars: usize,
+    next_start_index: Option<usize>,
+    preview_text: String,
+    retrieved_at_unix_s: u64,
+    etag: Option<String>,
+    last_modified: Option<String>,
+    cache_control: Option<String>,
+    content_language: Option<String>,
+}
+
 impl Default for WebFetchTool {
     fn default() -> Self {
         Self::new()
@@ -62,7 +86,10 @@ impl Tool for WebFetchTool {
             input_schema: serde_json::to_value(schema_for!(WebFetchToolInput))
                 .expect("web_fetch schema"),
             output_mode: ToolOutputMode::Text,
-            output_schema: None,
+            output_schema: Some(
+                serde_json::to_value(schema_for!(WebFetchToolOutput))
+                    .expect("web_fetch output schema"),
+            ),
             origin: ToolOrigin::Local,
             annotations: mcp_tool_annotations("Fetch Web Page", true, false, false, true),
         }
@@ -217,6 +244,29 @@ impl Tool for WebFetchTool {
         let end_index = start_index + returned_chars;
         let next_start_index = truncated.then_some(end_index);
         let remaining_chars = total_chars.saturating_sub(end_index);
+        let retrieved_at_unix_s = unix_timestamp_s();
+        let structured_output = WebFetchToolOutput {
+            url: url.as_str().to_string(),
+            final_url: final_url.as_str().to_string(),
+            status: status.as_u16(),
+            content_type: content_type.clone(),
+            document_id: document_id.clone(),
+            title: title.clone(),
+            start_index,
+            end_index,
+            returned_chars,
+            remaining_chars,
+            total_chars,
+            truncated,
+            max_chars,
+            next_start_index,
+            preview_text: preview.clone(),
+            retrieved_at_unix_s,
+            etag: etag.clone(),
+            last_modified: last_modified.clone(),
+            cache_control: cache_control.clone(),
+            content_language: content_language.clone(),
+        };
 
         let mut sections = vec![
             format!("url> {url}"),
@@ -251,7 +301,9 @@ impl Tool for WebFetchTool {
             call_id: external_call_id,
             tool_name: "web_fetch".to_string(),
             parts: vec![MessagePart::text(sections.join("\n"))],
-            structured_content: None,
+            structured_content: Some(
+                serde_json::to_value(&structured_output).expect("web_fetch structured output"),
+            ),
             metadata: Some(serde_json::json!({
                 "url": url.as_str(),
                 "final_url": final_url.as_str(),
@@ -271,7 +323,7 @@ impl Tool for WebFetchTool {
                 "truncated": truncated,
                 "max_chars": max_chars,
                 "next_start_index": next_start_index,
-                "retrieved_at_unix_s": unix_timestamp_s(),
+                "retrieved_at_unix_s": retrieved_at_unix_s,
             })),
             is_error: false,
         })
@@ -363,6 +415,12 @@ mod tests {
         assert!(text.contains("Hello"));
         assert!(text.contains("World & friends."));
         assert!(!text.contains("bad()"));
+        let structured = result.structured_content.unwrap();
+        assert_eq!(structured["title"], "Example Page");
+        assert_eq!(
+            structured["preview_text"].as_str().unwrap(),
+            "Hello\nWorld & friends."
+        );
     }
 
     #[tokio::test]
@@ -410,6 +468,9 @@ mod tests {
                 .unwrap()
                 .starts_with("doc_")
         );
+        let structured = first.structured_content.clone().unwrap();
+        assert_eq!(structured["next_start_index"], 256);
+        assert_eq!(structured["returned_chars"], 256);
 
         let second = tool
             .execute(

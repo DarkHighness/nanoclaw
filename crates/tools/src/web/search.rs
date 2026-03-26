@@ -40,7 +40,7 @@ struct SearchResultItem {
     published_at: Option<String>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, JsonSchema)]
 struct SearchResultRecord {
     id: String,
     rank: usize,
@@ -49,6 +49,34 @@ struct SearchResultRecord {
     url: String,
     snippet: Option<String>,
     published_at: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+struct WebSearchPolicyOutput {
+    allow_private_hosts: bool,
+    allowed_domains: Vec<String>,
+    blocked_domains: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+struct WebSearchToolOutput {
+    query: String,
+    request_query: String,
+    engine: String,
+    request_url: String,
+    final_url: String,
+    status: u16,
+    content_type: Option<String>,
+    limit: usize,
+    offset: usize,
+    next_offset: Option<usize>,
+    domains: Vec<String>,
+    result_count: usize,
+    total_matches: usize,
+    result_domains: Vec<String>,
+    retrieved_at_unix_s: u64,
+    policy: WebSearchPolicyOutput,
+    results: Vec<SearchResultRecord>,
 }
 
 #[derive(Clone, Debug)]
@@ -84,7 +112,9 @@ impl WebSearchTool {
         Ok(Self {
             client: default_http_client(timeout_ms)?,
             policy,
-            endpoint: Url::parse(&endpoint)?,
+            endpoint: Url::parse(&endpoint).map_err(|error| {
+                crate::ToolError::invalid(format!("invalid search endpoint: {error}"))
+            })?,
         })
     }
 }
@@ -98,7 +128,10 @@ impl Tool for WebSearchTool {
             input_schema: serde_json::to_value(schema_for!(WebSearchToolInput))
                 .expect("web_search schema"),
             output_mode: ToolOutputMode::Text,
-            output_schema: None,
+            output_schema: Some(
+                serde_json::to_value(schema_for!(WebSearchToolOutput))
+                    .expect("web_search output schema"),
+            ),
             origin: ToolOrigin::Local,
             annotations: mcp_tool_annotations("Search Web", true, false, false, true),
         }
@@ -218,6 +251,30 @@ impl Tool for WebSearchTool {
         let next_offset = (offset + result_records.len() < filtered_total)
             .then_some(offset + result_records.len());
         let retrieved_at_unix_s = unix_timestamp_s();
+        let policy_output = WebSearchPolicyOutput {
+            allow_private_hosts: self.policy.allow_private_hosts,
+            allowed_domains: self.policy.allowed_domains.iter().cloned().collect(),
+            blocked_domains: self.policy.blocked_domains.iter().cloned().collect(),
+        };
+        let structured_output = WebSearchToolOutput {
+            query: query.to_string(),
+            request_query: request_query.clone(),
+            engine: self.endpoint.host_str().unwrap_or("custom").to_string(),
+            request_url: request_url.as_str().to_string(),
+            final_url: final_url.as_str().to_string(),
+            status: status.as_u16(),
+            content_type: content_type.clone(),
+            limit,
+            offset,
+            next_offset,
+            domains: domains.clone(),
+            result_count: result_records.len(),
+            total_matches: filtered_total,
+            result_domains: unique_domains.clone(),
+            retrieved_at_unix_s,
+            policy: policy_output,
+            results: result_records.clone(),
+        };
 
         let mut sections = vec![
             format!("query> {query}"),
@@ -248,7 +305,9 @@ impl Tool for WebSearchTool {
             call_id: external_call_id,
             tool_name: "web_search".to_string(),
             parts: vec![MessagePart::text(sections.join("\n"))],
-            structured_content: None,
+            structured_content: Some(
+                serde_json::to_value(&structured_output).expect("web_search structured output"),
+            ),
             metadata: Some(serde_json::json!({
                 "query": query,
                 "request_query": request_query,
@@ -527,6 +586,12 @@ mod tests {
         let text = result.text_content();
         assert!(text.contains("allowed.example.com/article"));
         assert!(!text.contains("other.example.org/post"));
+        let structured = result.structured_content.clone().unwrap();
+        assert_eq!(structured["domains"][0], "allowed.example.com");
+        assert_eq!(
+            structured["results"][0]["url"],
+            "https://allowed.example.com/article"
+        );
         assert_eq!(
             result.metadata.unwrap()["domains"][0],
             "allowed.example.com"
@@ -580,6 +645,9 @@ mod tests {
             .unwrap();
 
         assert!(result.text_content().contains("Two"));
+        let structured = result.structured_content.clone().unwrap();
+        assert_eq!(structured["offset"], 1);
+        assert_eq!(structured["next_offset"], 2);
         let metadata = result.metadata.unwrap();
         assert_eq!(metadata["offset"], 1);
         assert_eq!(metadata["next_offset"], 2);
