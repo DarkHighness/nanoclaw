@@ -44,6 +44,7 @@ ratatui = "0.29.0"
 regex = "1.12.2"
 reqwest = { version = "0.12.24", default-features = false, features = ["brotli", "charset", "deflate", "gzip", "json", "rustls-tls", "stream"] }
 scraper = "0.24.0"
+quick-xml = "0.38.3"
 rmcp = { version = "1.2.0", default-features = false, features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest", "elicitation"] }
 schemars = { version = "1.0.4", features = ["derive"] }
 serde = { version = "1.0.228", features = ["derive"] }
