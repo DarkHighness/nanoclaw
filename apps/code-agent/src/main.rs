@@ -10,8 +10,9 @@ use agent::runtime::{
 };
 use agent::{
     AgentRuntime, AgentRuntimeBuilder, BashTool, EditTool, GlobTool, GrepTool, HookRunner,
-    InMemoryRunStore, ListTool, PatchTool, ReadTool, Skill, SkillCatalog, TaskTool, TodoListState,
-    TodoReadTool, TodoWriteTool, ToolExecutionContext, ToolRegistry, WriteTool,
+    HostProcessExecutor, InMemoryRunStore, ListTool, PatchTool, ReadTool, Skill, SkillCatalog,
+    TaskTool, TodoListState, TodoReadTool, TodoWriteTool, ToolExecutionContext, ToolRegistry,
+    WriteTool,
 };
 use agent_env::{EnvMap, vars};
 use anyhow::{Context, Result, bail};
@@ -198,6 +199,7 @@ async fn build_runtime(
         enabled: true,
         ..LoopDetectionConfig::default()
     };
+    let process_executor = Arc::new(HostProcessExecutor);
     let todo_state = TodoListState::default();
 
     let mut tools = ToolRegistry::new();
@@ -208,7 +210,7 @@ async fn build_runtime(
     tools.register(GlobTool::new());
     tools.register(GrepTool::new());
     tools.register(ListTool::new());
-    tools.register(BashTool::new());
+    tools.register(BashTool::with_process_executor(process_executor));
     tools.register(TodoReadTool::new(todo_state.clone()));
     tools.register(TodoWriteTool::new(todo_state));
     let subagent_executor = RuntimeSubagentExecutor::new(

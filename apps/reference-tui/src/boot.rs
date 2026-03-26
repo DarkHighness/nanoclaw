@@ -3,8 +3,8 @@ use crate::{
     config::{AgentCoreConfig, ProviderKind},
 };
 use agent::mcp::{
-    ConnectedMcpServer, McpServerConfig, McpTransportConfig, catalog_tools_as_registry_entries,
-    connect_and_catalog_mcp_servers,
+    ConnectedMcpServer, McpConnectOptions, McpServerConfig, McpTransportConfig,
+    catalog_tools_as_registry_entries, connect_and_catalog_mcp_servers_with_options,
 };
 use agent::provider::{
     BackendDescriptor, OpenAiResponsesOptions, OpenAiServerCompaction, ProviderBackend,
@@ -21,8 +21,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use store::{FileRunStore, InMemoryRunStore, RunStore};
 use tools::{
-    BashTool, EditTool, GlobTool, GrepTool, ListTool, PatchTool, ReadTool, ToolExecutionContext,
-    ToolRegistry, WriteTool,
+    BashTool, EditTool, GlobTool, GrepTool, HostProcessExecutor, ListTool, PatchTool, ReadTool,
+    ToolExecutionContext, ToolRegistry, WriteTool,
 };
 #[cfg(feature = "web-tools")]
 use tools::{WebFetchTool, WebSearchTool};
@@ -99,8 +99,12 @@ async fn bootstrap_from_parts(
     let backend =
         Arc::new(build_backend(&config).context("failed to initialize provider backend")?);
     let provider_summary = provider_summary(&config, &backend);
+    let process_executor = Arc::new(HostProcessExecutor);
     let hook_runner = Arc::new(HookRunner::with_services(
-        Arc::new(DefaultCommandHookExecutor::new(config.hook_env.clone())),
+        Arc::new(DefaultCommandHookExecutor::with_process_executor(
+            config.hook_env.clone(),
+            process_executor.clone(),
+        )),
         Arc::new(runtime::ReqwestHttpHookExecutor::default()),
         Arc::new(runtime::NoopPromptHookEvaluator),
         Arc::new(runtime::NoopAgentHookEvaluator),
@@ -114,7 +118,7 @@ async fn bootstrap_from_parts(
     tools.register(GlobTool::new());
     tools.register(GrepTool::new());
     tools.register(ListTool::new());
-    tools.register(BashTool::new());
+    tools.register(BashTool::with_process_executor(process_executor.clone()));
     #[cfg(feature = "web-tools")]
     {
         tools.register(WebSearchTool::new());
@@ -122,9 +126,15 @@ async fn bootstrap_from_parts(
     }
 
     let mcp_servers = resolve_mcp_servers(&config.mcp_servers, &workspace_root);
-    let connected_mcp_servers = connect_and_catalog_mcp_servers(&mcp_servers)
-        .await
-        .context("failed to connect configured MCP servers")?;
+    let connected_mcp_servers = connect_and_catalog_mcp_servers_with_options(
+        &mcp_servers,
+        McpConnectOptions {
+            process_executor,
+            ..Default::default()
+        },
+    )
+    .await
+    .context("failed to connect configured MCP servers")?;
     for server in &connected_mcp_servers {
         for adapter in catalog_tools_as_registry_entries(server.client.clone())
             .await

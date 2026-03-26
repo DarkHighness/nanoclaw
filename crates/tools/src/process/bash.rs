@@ -1,20 +1,23 @@
-use crate::ToolExecutionContext;
 use crate::annotations::mcp_tool_annotations;
 use crate::fs::resolve_tool_path_against_workspace_root;
+use crate::process::{
+    ExecRequest, ExecutionOrigin, HostProcessExecutor, ProcessExecutor, ProcessStdio, RuntimeScope,
+    SandboxPolicy,
+};
 use crate::registry::Tool;
-use crate::{Result, ToolError};
+use crate::{Result, ToolError, ToolExecutionContext};
 use agent_env::shell_or_default;
 use async_trait::async_trait;
 use schemars::{JsonSchema, schema_for};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
+use std::fmt;
 use std::path::PathBuf;
-use std::process::Stdio;
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncRead, AsyncReadExt};
-use tokio::process::{Child, Command};
+use tokio::process::Child;
 use tokio::sync::{Notify, oneshot};
 use tokio::task::JoinHandle;
 use tokio::time::{sleep, timeout};
@@ -29,6 +32,31 @@ const MAX_ALLOWED_OUTPUT_CHARS: usize = 256 * 1024;
 const DEFAULT_POLL_WAIT_MS: u64 = 0;
 const MAX_POLL_WAIT_MS: u64 = 30_000;
 const MAX_TRACKED_BASH_SESSIONS: usize = 128;
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct BashSessionId(String);
+
+impl BashSessionId {
+    fn new() -> Self {
+        Self(format!("bash-{}", new_opaque_id()))
+    }
+
+    fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for BashSessionId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl From<&str> for BashSessionId {
+    fn from(value: &str) -> Self {
+        Self(value.to_owned())
+    }
+}
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -62,8 +90,23 @@ pub struct BashToolInput {
     pub env: Option<BTreeMap<String, String>>,
 }
 
-#[derive(Clone, Debug, Default)]
-pub struct BashTool;
+#[derive(Clone)]
+pub struct BashTool {
+    process_executor: Arc<dyn ProcessExecutor>,
+    sandbox_policy: SandboxPolicy,
+}
+
+impl fmt::Debug for BashTool {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("BashTool").finish_non_exhaustive()
+    }
+}
+
+impl Default for BashTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 #[derive(Clone, Debug)]
 struct OutputSlice {
@@ -133,7 +176,7 @@ struct SessionStatusSnapshot {
 
 #[derive(Debug)]
 struct BashSession {
-    id: String,
+    id: BashSessionId,
     command: String,
     cwd: PathBuf,
     shell: String,
@@ -217,13 +260,24 @@ impl BashSession {
     }
 }
 
-type SessionRegistry = HashMap<String, Arc<BashSession>>;
+type SessionRegistry = HashMap<BashSessionId, Arc<BashSession>>;
 static BASH_SESSIONS: OnceLock<RwLock<SessionRegistry>> = OnceLock::new();
 
 impl BashTool {
     #[must_use]
     pub fn new() -> Self {
-        Self
+        Self {
+            process_executor: Arc::new(HostProcessExecutor),
+            sandbox_policy: SandboxPolicy::default(),
+        }
+    }
+
+    #[must_use]
+    pub fn with_process_executor(process_executor: Arc<dyn ProcessExecutor>) -> Self {
+        Self {
+            process_executor,
+            sandbox_policy: SandboxPolicy::default(),
+        }
     }
 }
 
@@ -248,8 +302,8 @@ impl Tool for BashTool {
     ) -> Result<ToolResult> {
         let input: BashToolInput = serde_json::from_value(arguments)?;
         match input.mode.unwrap_or(BashExecutionMode::Run) {
-            BashExecutionMode::Run => execute_run(call_id, input, ctx).await,
-            BashExecutionMode::Start => execute_start(call_id, input, ctx).await,
+            BashExecutionMode::Run => execute_run(self, call_id, input, ctx).await,
+            BashExecutionMode::Start => execute_start(self, call_id, input, ctx).await,
             BashExecutionMode::Poll | BashExecutionMode::Continue => {
                 execute_poll(call_id, input).await
             }
@@ -263,6 +317,7 @@ fn bash_sessions() -> &'static RwLock<SessionRegistry> {
 }
 
 async fn execute_run(
+    tool: &BashTool,
     call_id: ToolCallId,
     input: BashToolInput,
     ctx: &ToolExecutionContext,
@@ -277,18 +332,19 @@ async fn execute_run(
         .clamp(1, MAX_ALLOWED_OUTPUT_CHARS);
     let timeout_ms = input.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS).max(1);
 
-    let mut child = Command::new(&shell);
-    child
-        .arg("-lc")
-        .arg(&command)
-        .current_dir(&cwd)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true);
-    if let Some(env) = &input.env {
-        child.envs(env);
-    }
+    let mut child = tool.process_executor.prepare(ExecRequest {
+        program: shell.clone(),
+        args: vec!["-lc".to_string(), command.clone()],
+        cwd: Some(cwd.clone()),
+        env: input.env.clone().unwrap_or_default(),
+        stdin: ProcessStdio::Null,
+        stdout: ProcessStdio::Piped,
+        stderr: ProcessStdio::Piped,
+        kill_on_drop: true,
+        origin: ExecutionOrigin::BashTool,
+        runtime_scope: runtime_scope_from_context(ctx),
+        sandbox_policy: tool.sandbox_policy.clone(),
+    })?;
 
     let future = child.output();
     let output = match timeout(Duration::from_millis(timeout_ms), future).await {
@@ -356,6 +412,7 @@ async fn execute_run(
 }
 
 async fn execute_start(
+    tool: &BashTool,
     call_id: ToolCallId,
     input: BashToolInput,
     ctx: &ToolExecutionContext,
@@ -369,19 +426,26 @@ async fn execute_start(
     let env_keys = env.keys().cloned().collect::<Vec<_>>();
     let started_at_unix_s = unix_timestamp_s();
 
-    let mut child = Command::new(&shell);
-    child
-        .arg("-lc")
-        .arg(&command)
-        .current_dir(&cwd)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .envs(env);
-
-    let child = child.spawn()?;
-    let session_id = format!("bash-{}", new_opaque_id());
+    let child = tool
+        .process_executor
+        .prepare(ExecRequest {
+            program: shell.clone(),
+            args: vec!["-lc".to_string(), command.clone()],
+            cwd: Some(cwd.clone()),
+            env,
+            stdin: ProcessStdio::Null,
+            stdout: ProcessStdio::Piped,
+            stderr: ProcessStdio::Piped,
+            kill_on_drop: true,
+            origin: ExecutionOrigin::BashTool,
+            runtime_scope: runtime_scope_from_context(ctx),
+            sandbox_policy: tool.sandbox_policy.clone(),
+        })?
+        .spawn()?;
+    // Keep the protocol surface stringly for compatibility, but use a typed
+    // id inside the registry so poll/cancel paths cannot accidentally mix bash
+    // session ids with unrelated strings.
+    let session_id = BashSessionId::new();
     debug!(
         session_id = %session_id,
         cwd = %cwd.display(),
@@ -437,7 +501,7 @@ async fn execute_start(
         ))],
         metadata: Some(serde_json::json!({
             "mode": "start",
-            "session_id": session_id,
+            "session_id": session_id.as_str(),
             "state": "running",
             "command": command,
             "cwd": cwd,
@@ -503,7 +567,7 @@ async fn execute_poll(call_id: ToolCallId, input: BashToolInput) -> Result<ToolR
         parts: vec![MessagePart::text(text)],
         metadata: Some(serde_json::json!({
             "mode": "poll",
-            "session_id": session.id,
+            "session_id": session.id.as_str(),
             "state": status.state,
             "exit_code": status.exit_code,
             "timed_out": status.timed_out,
@@ -591,7 +655,7 @@ async fn execute_cancel(call_id: ToolCallId, input: BashToolInput) -> Result<Too
         ))],
         metadata: Some(serde_json::json!({
             "mode": "cancel",
-            "session_id": session.id,
+            "session_id": session.id.as_str(),
             "cancellation_requested": cancellation_requested,
             "state": status.state,
             "exit_code": status.exit_code,
@@ -712,12 +776,13 @@ fn resolve_command(input: &BashToolInput) -> Result<String> {
         .ok_or_else(|| ToolError::invalid("bash requires a non-empty `command` for this mode"))
 }
 
-fn resolve_session_id(input: &BashToolInput) -> Result<String> {
+fn resolve_session_id(input: &BashToolInput) -> Result<BashSessionId> {
     input
         .session_id
         .as_ref()
-        .map(|value| value.trim().to_string())
+        .map(|value| value.trim())
         .filter(|value| !value.is_empty())
+        .map(BashSessionId::from)
         .ok_or_else(|| ToolError::invalid("bash requires a non-empty `session_id` for this mode"))
 }
 
@@ -731,6 +796,16 @@ fn resolve_cwd(input: &BashToolInput, ctx: &ToolExecutionContext) -> Result<Path
         ctx.assert_path_allowed(&cwd)?;
     }
     Ok(cwd)
+}
+
+fn runtime_scope_from_context(ctx: &ToolExecutionContext) -> RuntimeScope {
+    RuntimeScope {
+        run_id: ctx.run_id.clone(),
+        session_id: ctx.session_id.clone(),
+        turn_id: ctx.turn_id.clone(),
+        tool_name: ctx.tool_name.clone(),
+        tool_call_id: ctx.tool_call_id.clone(),
+    }
 }
 
 fn slice_output_window(output: &str, start_char: usize, max_chars: usize) -> OutputWindow {
@@ -875,9 +950,27 @@ fn unix_timestamp_s() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{BashExecutionMode, BashTool, BashToolInput};
-    use crate::{Tool, ToolExecutionContext};
+    use crate::{
+        ExecRequest, HostProcessExecutor, ProcessExecutor, Result as ToolResult, Tool,
+        ToolExecutionContext,
+    };
     use std::collections::BTreeMap;
+    use std::sync::{Arc, Mutex};
+    use tokio::process::Command;
     use types::ToolCallId;
+
+    #[derive(Clone)]
+    struct RecordingExecutor {
+        inner: Arc<dyn ProcessExecutor>,
+        requests: Arc<Mutex<Vec<ExecRequest>>>,
+    }
+
+    impl ProcessExecutor for RecordingExecutor {
+        fn prepare(&self, request: ExecRequest) -> ToolResult<Command> {
+            self.requests.lock().unwrap().push(request.clone());
+            self.inner.prepare(request)
+        }
+    }
 
     #[tokio::test]
     async fn bash_tool_captures_stdout() {
@@ -946,6 +1039,51 @@ mod tests {
 
         assert!(!result.is_error);
         assert!(result.text_content().contains("stdout>\nvalue"));
+    }
+
+    #[tokio::test]
+    async fn bash_tool_routes_shell_launch_through_process_executor() {
+        let dir = tempfile::tempdir().unwrap();
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let tool = BashTool::with_process_executor(Arc::new(RecordingExecutor {
+            inner: Arc::new(HostProcessExecutor),
+            requests: requests.clone(),
+        }));
+        let result = tool
+            .execute(
+                ToolCallId::new(),
+                serde_json::to_value(BashToolInput {
+                    mode: None,
+                    command: Some("printf hello".to_string()),
+                    session_id: None,
+                    cwd: Some(".".to_string()),
+                    timeout_ms: Some(5_000),
+                    poll_wait_ms: None,
+                    stdout_start_char: None,
+                    stderr_start_char: None,
+                    max_output_chars: None,
+                    env: Some(BTreeMap::from([(
+                        "TEST_ENV".to_string(),
+                        "value".to_string(),
+                    )])),
+                })
+                .unwrap(),
+                &ToolExecutionContext {
+                    workspace_root: dir.path().to_path_buf(),
+                    workspace_only: true,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+
+        assert!(!result.is_error);
+        let logged = requests.lock().unwrap();
+        assert_eq!(logged.len(), 1);
+        assert_eq!(logged[0].origin, crate::ExecutionOrigin::BashTool);
+        assert_eq!(logged[0].args[0], "-lc");
+        assert_eq!(logged[0].args[1], "printf hello");
+        assert_eq!(logged[0].env["TEST_ENV"], "value");
     }
 
     #[tokio::test]

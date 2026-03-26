@@ -104,6 +104,7 @@ For code-editing tools specifically, the current foundation now treats file acce
 - `patch` exposes staged multi-file `write` / `edit` / `delete` operations so larger refactors do not overload `edit` or `write`
 
 That contract is documented in detail in [tool-interface-design.md](/Users/twiliness/nanoclaw/docs/tool-interface-design.md).
+The local process boundary and sandbox model are documented separately in [sandbox-design.md](/Users/twiliness/nanoclaw/docs/sandbox-design.md).
 
 ### `skills`
 

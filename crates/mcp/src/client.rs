@@ -15,7 +15,9 @@ use rmcp::transport::{StreamableHttpClientTransport, TokioChildProcess};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
-use tokio::process::Command;
+use tools::{
+    ExecRequest, ExecutionOrigin, HostProcessExecutor, ProcessExecutor, ProcessStdio, SandboxPolicy,
+};
 use tracing::{debug, info};
 use types::{
     Message, MessagePart, MessageRole, ToolCallId, ToolOrigin, ToolOutputMode, ToolResult,
@@ -32,19 +34,51 @@ pub trait McpClient: Send + Sync {
     async fn get_prompt(&self, name: &str, arguments: Value) -> Result<McpPrompt>;
 }
 
+#[derive(Clone)]
+pub struct McpConnectOptions {
+    pub process_executor: Arc<dyn ProcessExecutor>,
+    pub sandbox_policy: SandboxPolicy,
+}
+
+impl Default for McpConnectOptions {
+    fn default() -> Self {
+        Self {
+            process_executor: Arc::new(HostProcessExecutor),
+            sandbox_policy: SandboxPolicy::default(),
+        }
+    }
+}
+
 pub async fn connect_mcp_server(config: &McpServerConfig) -> Result<Arc<dyn McpClient>> {
-    Ok(Arc::new(RmcpClient::connect(config).await?))
+    connect_mcp_server_with_options(config, McpConnectOptions::default()).await
 }
 
 pub async fn connect_mcp_servers(configs: &[McpServerConfig]) -> Result<Vec<Arc<dyn McpClient>>> {
+    connect_mcp_servers_with_options(configs, McpConnectOptions::default()).await
+}
+
+pub async fn connect_mcp_server_with_options(
+    config: &McpServerConfig,
+    options: McpConnectOptions,
+) -> Result<Arc<dyn McpClient>> {
+    Ok(Arc::new(RmcpClient::connect(config, &options).await?))
+}
+
+pub async fn connect_mcp_servers_with_options(
+    configs: &[McpServerConfig],
+    options: McpConnectOptions,
+) -> Result<Vec<Arc<dyn McpClient>>> {
     info!(server_count = configs.len(), "connecting MCP servers");
     let tasks = configs
         .iter()
         .cloned()
         .enumerate()
-        .map(|(index, config)| async move {
-            let client = connect_mcp_server(&config).await?;
-            Ok::<_, McpError>((index, client))
+        .map(|(index, config)| {
+            let options = options.clone();
+            async move {
+                let client = connect_mcp_server_with_options(&config, options).await?;
+                Ok::<_, McpError>((index, client))
+            }
         })
         .collect::<Vec<_>>();
     run_indexed_tasks_ordered(tasks, MCP_CONNECT_CONCURRENCY_LIMIT).await
@@ -52,6 +86,13 @@ pub async fn connect_mcp_servers(configs: &[McpServerConfig]) -> Result<Vec<Arc<
 
 pub async fn connect_and_catalog_mcp_servers(
     configs: &[McpServerConfig],
+) -> Result<Vec<ConnectedMcpServer>> {
+    connect_and_catalog_mcp_servers_with_options(configs, McpConnectOptions::default()).await
+}
+
+pub async fn connect_and_catalog_mcp_servers_with_options(
+    configs: &[McpServerConfig],
+    options: McpConnectOptions,
 ) -> Result<Vec<ConnectedMcpServer>> {
     info!(
         server_count = configs.len(),
@@ -61,17 +102,20 @@ pub async fn connect_and_catalog_mcp_servers(
         .iter()
         .cloned()
         .enumerate()
-        .map(|(index, config)| async move {
-            let client = connect_mcp_server(&config).await?;
-            let catalog = client.catalog().await?;
-            Ok::<_, McpError>((
-                index,
-                ConnectedMcpServer {
-                    server_name: config.name,
-                    client,
-                    catalog,
-                },
-            ))
+        .map(|(index, config)| {
+            let options = options.clone();
+            async move {
+                let client = connect_mcp_server_with_options(&config, options).await?;
+                let catalog = client.catalog().await?;
+                Ok::<_, McpError>((
+                    index,
+                    ConnectedMcpServer {
+                        server_name: config.name,
+                        client,
+                        catalog,
+                    },
+                ))
+            }
         })
         .collect::<Vec<_>>();
     run_indexed_tasks_ordered(tasks, MCP_CONNECT_CONCURRENCY_LIMIT).await
@@ -109,7 +153,7 @@ pub struct RmcpClient {
 }
 
 impl RmcpClient {
-    async fn connect(config: &McpServerConfig) -> Result<Self> {
+    async fn connect(config: &McpServerConfig, options: &McpConnectOptions) -> Result<Self> {
         debug!(
             server = %config.name,
             transport = match &config.transport {
@@ -124,7 +168,10 @@ impl RmcpClient {
                 args,
                 env,
                 cwd,
-            } => connect_stdio_transport(command, args, env, cwd.as_deref()).await?,
+            } => {
+                connect_stdio_transport(&config.name, command, args, env, cwd.as_deref(), options)
+                    .await?
+            }
             McpTransportConfig::StreamableHttp { url, headers } => {
                 connect_streamable_http_transport(url, headers).await?
             }
@@ -277,17 +324,31 @@ impl McpClient for MockMcpClient {
 }
 
 async fn connect_stdio_transport(
+    server_name: &str,
     command: &str,
     args: &[String],
     env: &BTreeMap<String, String>,
     cwd: Option<&str>,
+    options: &McpConnectOptions,
 ) -> Result<rmcp::service::RunningService<rmcp::RoleClient, ()>> {
-    let mut process = Command::new(command);
-    process.args(args);
-    process.envs(env);
-    if let Some(cwd) = cwd {
-        process.current_dir(cwd);
-    }
+    let process = options
+        .process_executor
+        .prepare(ExecRequest {
+            program: command.to_string(),
+            args: args.to_vec(),
+            cwd: cwd.map(Into::into),
+            env: env.clone(),
+            stdin: ProcessStdio::Piped,
+            stdout: ProcessStdio::Piped,
+            stderr: ProcessStdio::Inherit,
+            kill_on_drop: true,
+            origin: ExecutionOrigin::McpStdioServer {
+                server_name: server_name.to_string(),
+            },
+            runtime_scope: Default::default(),
+            sandbox_policy: options.sandbox_policy.clone(),
+        })
+        .map_err(|error| McpError::transport(error.to_string()))?;
     let transport =
         TokioChildProcess::new(process).map_err(|error| McpError::transport(error.to_string()))?;
     ().serve(transport)

@@ -1,9 +1,28 @@
-use mcp::{McpServerConfig, McpTransportConfig, connect_and_catalog_mcp_servers};
+use mcp::{
+    McpConnectOptions, McpServerConfig, McpTransportConfig,
+    connect_and_catalog_mcp_servers_with_options,
+};
 use serde_json::json;
 use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex};
 use tempfile::tempdir;
+use tokio::process::Command;
 use tokio::time::{Duration, timeout};
+use tools::{ExecRequest, HostProcessExecutor, ProcessExecutor, Result as ToolResult};
 use types::{MessagePart, ToolOrigin};
+
+#[derive(Clone)]
+struct RecordingExecutor {
+    inner: Arc<dyn ProcessExecutor>,
+    requests: Arc<Mutex<Vec<ExecRequest>>>,
+}
+
+impl ProcessExecutor for RecordingExecutor {
+    fn prepare(&self, request: ExecRequest) -> ToolResult<Command> {
+        self.requests.lock().unwrap().push(request.clone());
+        self.inner.prepare(request)
+    }
+}
 
 #[tokio::test]
 async fn stdio_server_supports_catalog_tool_prompt_and_resource_round_trips() {
@@ -19,9 +38,20 @@ async fn stdio_server_supports_catalog_tool_prompt_and_resource_round_trips() {
         },
     };
 
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let process_executor = Arc::new(RecordingExecutor {
+        inner: Arc::new(HostProcessExecutor),
+        requests: requests.clone(),
+    });
     let servers = timeout(
         Duration::from_secs(10),
-        connect_and_catalog_mcp_servers(&[config]),
+        connect_and_catalog_mcp_servers_with_options(
+            &[config],
+            McpConnectOptions {
+                process_executor,
+                ..Default::default()
+            },
+        ),
     )
     .await
     .expect("fixture server connect timed out")
@@ -118,4 +148,15 @@ async fn stdio_server_supports_catalog_tool_prompt_and_resource_round_trips() {
             if text.as_deref() == Some("# Fixture Guide\n\nThis is fixture content.")
                 && mime_type.as_deref() == Some("text/markdown")
     ));
+
+    let logged = requests.lock().unwrap();
+    assert_eq!(logged.len(), 1);
+    assert_eq!(
+        logged[0].origin,
+        tools::ExecutionOrigin::McpStdioServer {
+            server_name: "fixture".to_string()
+        }
+    );
+    assert_eq!(logged[0].program, env!("CARGO_BIN_EXE_test_stdio_server"));
+    assert_eq!(logged[0].cwd.as_deref(), Some(fixture_cwd.path()));
 }

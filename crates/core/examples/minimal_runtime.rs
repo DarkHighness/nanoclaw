@@ -9,6 +9,7 @@ use futures::stream::{self, BoxStream};
 use runtime::Result as RuntimeResult;
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use tools::HostProcessExecutor;
 
 struct EchoBackend;
 
@@ -90,6 +91,7 @@ async fn main() -> Result<()> {
         Some("Prefer append-only history and explicit tool use over hidden client heuristics."),
         &skill_catalog,
     );
+    let process_executor = Arc::new(HostProcessExecutor);
 
     let mut tools = ToolRegistry::new();
     tools.register(ReadTool::new());
@@ -99,7 +101,7 @@ async fn main() -> Result<()> {
     tools.register(GlobTool::new());
     tools.register(GrepTool::new());
     tools.register(ListTool::new());
-    tools.register(BashTool::new());
+    tools.register(BashTool::with_process_executor(process_executor));
 
     let mut runtime = AgentRuntimeBuilder::new(backend, store)
         .hook_runner(Arc::new(HookRunner::default()))
