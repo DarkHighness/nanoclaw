@@ -19,6 +19,9 @@ pub enum TodoStatus {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(transparent)]
+// Todo ids stay local to the todo tool surface, but typing them prevents the
+// plan state from degenerating into generic strings while preserving the same
+// JSON shape the tool already exposes to models and hosts.
 pub struct TodoId(String);
 
 impl fmt::Display for TodoId {
