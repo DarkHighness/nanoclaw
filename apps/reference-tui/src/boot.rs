@@ -25,7 +25,7 @@ use tools::{
     ToolExecutionContext, ToolRegistry, WriteTool,
 };
 #[cfg(feature = "web-tools")]
-use tools::{WebFetchTool, WebSearchTool};
+use tools::{WebFetchTool, WebSearchBackendsTool, WebSearchTool};
 use tracing::{info, warn};
 use types::ToolOrigin;
 
@@ -122,6 +122,7 @@ async fn bootstrap_from_parts(
     #[cfg(feature = "web-tools")]
     {
         tools.register(WebSearchTool::new());
+        tools.register(WebSearchBackendsTool::new());
         tools.register(WebFetchTool::new());
     }
 

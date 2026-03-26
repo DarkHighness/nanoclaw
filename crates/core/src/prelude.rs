@@ -17,5 +17,5 @@ pub use tools::{
 #[cfg(feature = "agentic-tools")]
 pub use tools::{TaskTool, TodoItem, TodoListState, TodoReadTool, TodoStatus, TodoWriteTool};
 #[cfg(feature = "web-tools")]
-pub use tools::{WebFetchTool, WebSearchTool};
+pub use tools::{WebFetchTool, WebSearchBackendsTool, WebSearchTool};
 pub use types::*;

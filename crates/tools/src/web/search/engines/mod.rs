@@ -1,6 +1,6 @@
 use super::{
     DEFAULT_BRAVE_API_BASE_URL, DEFAULT_DUCKDUCKGO_HTML_ENDPOINT, DEFAULT_EXA_API_BASE_URL,
-    DEFAULT_SEARCH_ENDPOINT, WebSearchBackend,
+    DEFAULT_SEARCH_ENDPOINT, WebSearchBackend, WebSearchBackendCapabilities, WebSearchBackendType,
 };
 use crate::{Result, ToolError};
 use agent_env::vars;
@@ -36,6 +36,64 @@ impl WebSearchBackendKind {
         }
     }
 
+    pub(super) fn retrieval_mode(self) -> &'static str {
+        match self {
+            Self::BingRss => "rss",
+            Self::BraveApi | Self::ExaApi => "json_api",
+            Self::DuckDuckGoHtml => "html_scrape",
+        }
+    }
+
+    pub(super) fn backend_type(self) -> WebSearchBackendType {
+        match self {
+            Self::BingRss => WebSearchBackendType::RssFeed,
+            Self::BraveApi | Self::ExaApi => WebSearchBackendType::HostedApi,
+            Self::DuckDuckGoHtml => WebSearchBackendType::HtmlScrape,
+        }
+    }
+
+    pub(super) fn capabilities(self) -> WebSearchBackendCapabilities {
+        match self {
+            Self::BingRss => WebSearchBackendCapabilities {
+                locale: true,
+                freshness: false,
+                source_mode: true,
+                pagination: false,
+                extra_snippets: false,
+            },
+            Self::BraveApi => WebSearchBackendCapabilities {
+                locale: true,
+                freshness: true,
+                source_mode: true,
+                pagination: true,
+                extra_snippets: true,
+            },
+            Self::ExaApi => WebSearchBackendCapabilities {
+                locale: true,
+                freshness: true,
+                source_mode: true,
+                pagination: false,
+                extra_snippets: true,
+            },
+            Self::DuckDuckGoHtml => WebSearchBackendCapabilities {
+                locale: false,
+                freshness: false,
+                source_mode: false,
+                pagination: true,
+                extra_snippets: false,
+            },
+        }
+    }
+
+    pub(super) fn selector_aliases(self) -> &'static [&'static str] {
+        match self {
+            Self::BingRss => &["bing", "bing_rss"],
+            Self::BraveApi => &["brave", "brave_api"],
+            Self::ExaApi => &["exa", "exa_api"],
+            Self::DuckDuckGoHtml => &["duckduckgo", "duckduckgo_html", "ddg"],
+        }
+    }
+
     fn unavailable_message(self) -> &'static str {
         match self {
             Self::BingRss => "bing_rss backend is not registered",
@@ -44,6 +102,14 @@ impl WebSearchBackendKind {
             }
             Self::ExaApi => "AGENT_CORE_WEB_SEARCH_EXA_API_KEY is required for the exa_api backend",
             Self::DuckDuckGoHtml => "duckduckgo_html backend is not registered",
+        }
+    }
+
+    pub(super) fn missing_requirement(self) -> Option<&'static str> {
+        match self {
+            Self::BraveApi => Some("AGENT_CORE_WEB_SEARCH_BRAVE_API_KEY"),
+            Self::ExaApi => Some("AGENT_CORE_WEB_SEARCH_EXA_API_KEY"),
+            Self::BingRss | Self::DuckDuckGoHtml => None,
         }
     }
 }
@@ -164,18 +230,49 @@ impl WebSearchBackendRegistry {
             .collect()
     }
 
+    pub(super) fn default_selector(&self) -> WebSearchBackendSelector {
+        self.default_selector
+    }
+
+    pub(super) fn resolved_default_kind(&self) -> Option<WebSearchBackendKind> {
+        self.resolve_selector_kind(self.default_selector)
+    }
+
+    pub(super) fn contains(&self, kind: WebSearchBackendKind) -> bool {
+        self.backends.contains_key(&kind)
+    }
+
+    pub(super) fn get(&self, kind: WebSearchBackendKind) -> Option<Arc<dyn WebSearchBackend>> {
+        self.backends.get(&kind).cloned()
+    }
+
+    pub(super) fn known_backend_kinds(
+        &self,
+        include_unconfigured: bool,
+    ) -> Vec<WebSearchBackendKind> {
+        Self::auto_priority()
+            .into_iter()
+            .filter(|kind| include_unconfigured || self.contains(*kind))
+            .collect()
+    }
+
+    pub(super) fn auto_priority_rank(kind: WebSearchBackendKind) -> usize {
+        Self::auto_priority()
+            .into_iter()
+            .position(|candidate| candidate == kind)
+            .map(|index| index + 1)
+            .expect("known backend kind")
+    }
+
     pub(super) fn resolve(
         &self,
         requested: Option<&str>,
     ) -> Result<(WebSearchBackendSelector, Arc<dyn WebSearchBackend>)> {
         let selector = parse_backend_selector(requested)?.unwrap_or(self.default_selector);
         self.ensure_selector_available(selector)?;
-        let kind = match selector {
-            WebSearchBackendSelector::Auto => self.resolve_auto_kind().ok_or_else(|| {
-                ToolError::invalid("no configured web search backends are available")
-            })?,
-            WebSearchBackendSelector::Kind(kind) => kind,
-        };
+        let kind = self
+            .resolve_selector_kind(selector)
+            .ok_or_else(|| ToolError::invalid("no configured web search backends are available"))?;
         let backend = self
             .backends
             .get(&kind)
@@ -202,6 +299,16 @@ impl WebSearchBackendRegistry {
                     Err(ToolError::invalid(kind.unavailable_message()))
                 }
             }
+        }
+    }
+
+    fn resolve_selector_kind(
+        &self,
+        selector: WebSearchBackendSelector,
+    ) -> Option<WebSearchBackendKind> {
+        match selector {
+            WebSearchBackendSelector::Auto => self.resolve_auto_kind(),
+            WebSearchBackendSelector::Kind(kind) => self.contains(kind).then_some(kind),
         }
     }
 

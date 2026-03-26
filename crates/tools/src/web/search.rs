@@ -124,6 +124,14 @@ struct WebSearchPolicyOutput {
     blocked_domains: Vec<String>,
 }
 
+#[derive(Clone, Copy, Debug, Serialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum WebSearchBackendType {
+    HostedApi,
+    RssFeed,
+    HtmlScrape,
+}
+
 #[derive(Clone, Debug, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 enum WebSearchFreshnessMode {
@@ -138,6 +146,34 @@ struct WebSearchFreshnessOutput {
     cutoff_unix_s: Option<i64>,
     dropped_results: usize,
     kept_without_timestamp: usize,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
+pub struct WebSearchBackendsToolInput {
+    #[serde(default = "default_true")]
+    pub include_unconfigured: bool,
+}
+
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+struct WebSearchBackendCatalogRecord {
+    name: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    selector_aliases: Vec<String>,
+    backend_type: WebSearchBackendType,
+    configured: bool,
+    selected_by_default: bool,
+    auto_priority: usize,
+    retrieval_mode: String,
+    capabilities: WebSearchBackendCapabilities,
+    missing_requirement: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+struct WebSearchBackendsToolOutput {
+    default_selector: String,
+    resolved_default_backend: Option<String>,
+    available_backends: Vec<String>,
+    backends: Vec<WebSearchBackendCatalogRecord>,
 }
 
 #[derive(Clone, Debug, Serialize, JsonSchema)]
@@ -193,7 +229,7 @@ struct WebSearchRequest {
     offset: usize,
 }
 
-#[derive(Clone, Debug, Serialize, JsonSchema, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Serialize, JsonSchema, PartialEq, Eq)]
 struct WebSearchBackendCapabilities {
     locale: bool,
     freshness: bool,
@@ -237,7 +273,18 @@ pub struct WebSearchTool {
     backend_registry: WebSearchBackendRegistry,
 }
 
+#[derive(Clone)]
+pub struct WebSearchBackendsTool {
+    backend_registry: WebSearchBackendRegistry,
+}
+
 impl Default for WebSearchTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Default for WebSearchBackendsTool {
     fn default() -> Self {
         Self::new()
     }
@@ -359,6 +406,24 @@ impl WebSearchTool {
             policy,
             backend_registry,
         })
+    }
+}
+
+impl WebSearchBackendsTool {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::with_env_settings().expect("web search backend catalog")
+    }
+
+    pub(crate) fn with_env_settings() -> Result<Self> {
+        Ok(Self {
+            backend_registry: WebSearchBackendRegistry::from_env()?,
+        })
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    fn with_backend_registry(backend_registry: WebSearchBackendRegistry) -> Self {
+        Self { backend_registry }
     }
 }
 
@@ -640,8 +705,142 @@ impl Tool for WebSearchTool {
     }
 }
 
+#[async_trait]
+impl Tool for WebSearchBackendsTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "web_search_backends".to_string(),
+            description: "Inspect known web_search backends, configured availability, capability coverage, and default selection order.".to_string(),
+            input_schema: serde_json::to_value(schema_for!(WebSearchBackendsToolInput))
+                .expect("web_search_backends schema"),
+            output_mode: ToolOutputMode::Text,
+            output_schema: Some(
+                serde_json::to_value(schema_for!(WebSearchBackendsToolOutput))
+                    .expect("web_search_backends output schema"),
+            ),
+            origin: ToolOrigin::Local,
+            annotations: mcp_tool_annotations("List Search Backends", true, false, true, false),
+        }
+    }
+
+    async fn execute(
+        &self,
+        call_id: ToolCallId,
+        arguments: Value,
+        _ctx: &ToolExecutionContext,
+    ) -> Result<ToolResult> {
+        let input: WebSearchBackendsToolInput = serde_json::from_value(arguments)?;
+        let default_selector = self.backend_registry.default_selector();
+        let resolved_default_backend = self
+            .backend_registry
+            .resolved_default_kind()
+            .map(|kind| kind.backend_name().to_string());
+        let available_backends = self.backend_registry.available_backend_names();
+        let backends = self
+            .backend_registry
+            .known_backend_kinds(input.include_unconfigured)
+            .into_iter()
+            .map(|kind| {
+                // Catalog data must exist even for backends that are not configured
+                // in the current runtime, so the registry combines static backend
+                // declarations with live instances when available.
+                let live_backend = self.backend_registry.get(kind);
+                let retrieval_mode = live_backend
+                    .as_ref()
+                    .map(|backend| backend.retrieval_mode())
+                    .unwrap_or_else(|| kind.retrieval_mode())
+                    .to_string();
+                let capabilities = live_backend
+                    .as_ref()
+                    .map(|backend| backend.capabilities())
+                    .unwrap_or_else(|| kind.capabilities());
+
+                WebSearchBackendCatalogRecord {
+                    name: kind.backend_name().to_string(),
+                    selector_aliases: kind
+                        .selector_aliases()
+                        .iter()
+                        .map(|alias| (*alias).to_string())
+                        .collect(),
+                    backend_type: kind.backend_type(),
+                    configured: self.backend_registry.contains(kind),
+                    selected_by_default: resolved_default_backend
+                        .as_deref()
+                        .is_some_and(|name| name == kind.backend_name()),
+                    auto_priority: WebSearchBackendRegistry::auto_priority_rank(kind),
+                    retrieval_mode,
+                    capabilities,
+                    missing_requirement: (!self.backend_registry.contains(kind))
+                        .then(|| kind.missing_requirement().map(str::to_string))
+                        .flatten(),
+                }
+            })
+            .collect::<Vec<_>>();
+        let structured_output = WebSearchBackendsToolOutput {
+            default_selector: default_selector.name().to_string(),
+            resolved_default_backend: resolved_default_backend.clone(),
+            available_backends: available_backends.clone(),
+            backends: backends.clone(),
+        };
+        let structured_output_value = serde_json::to_value(&structured_output)
+            .expect("web_search_backends structured output");
+
+        let mut sections = vec![
+            format!("default_selector> {}", default_selector.name()),
+            format!(
+                "resolved_default_backend> {}",
+                resolved_default_backend.as_deref().unwrap_or("none")
+            ),
+            format!("available_backends> {}", available_backends.join(", ")),
+            String::new(),
+        ];
+        for backend in &backends {
+            sections.push(format!("backend> {}", backend.name));
+            sections.push(format!("configured> {}", backend.configured));
+            sections.push(format!(
+                "selected_by_default> {}",
+                backend.selected_by_default
+            ));
+            sections.push(format!("auto_priority> {}", backend.auto_priority));
+            sections.push(format!(
+                "selector_aliases> {}",
+                backend.selector_aliases.join(", ")
+            ));
+            sections.push(format!(
+                "type> {}",
+                format_backend_type(&backend.backend_type)
+            ));
+            sections.push(format!("retrieval_mode> {}", backend.retrieval_mode));
+            sections.push(format!(
+                "capabilities> {}",
+                format_backend_capabilities(&backend.capabilities)
+            ));
+            if let Some(missing_requirement) = &backend.missing_requirement {
+                sections.push(format!("missing_requirement> {missing_requirement}"));
+            }
+            sections.push(String::new());
+        }
+
+        Ok(ToolResult {
+            id: call_id.clone(),
+            call_id: types::CallId::from(&call_id),
+            tool_name: "web_search_backends".to_string(),
+            parts: vec![MessagePart::text(
+                sections.join("\n").trim_end().to_string(),
+            )],
+            structured_content: Some(structured_output_value.clone()),
+            metadata: Some(structured_output_value),
+            is_error: false,
+        })
+    }
+}
+
 fn looks_like_markup_fragment(value: &str) -> bool {
     value.contains('<') && value.contains('>')
+}
+
+const fn default_true() -> bool {
+    true
 }
 
 async fn send_search_request(
@@ -775,6 +974,38 @@ fn format_freshness_mode(mode: &WebSearchFreshnessMode) -> &'static str {
     match mode {
         WebSearchFreshnessMode::NotRequested => "not_requested",
         WebSearchFreshnessMode::BestEffort => "best_effort",
+    }
+}
+
+fn format_backend_type(backend_type: &WebSearchBackendType) -> &'static str {
+    match backend_type {
+        WebSearchBackendType::HostedApi => "hosted_api",
+        WebSearchBackendType::RssFeed => "rss_feed",
+        WebSearchBackendType::HtmlScrape => "html_scrape",
+    }
+}
+
+fn format_backend_capabilities(capabilities: &WebSearchBackendCapabilities) -> String {
+    let mut supported = Vec::new();
+    if capabilities.locale {
+        supported.push("locale");
+    }
+    if capabilities.freshness {
+        supported.push("freshness");
+    }
+    if capabilities.source_mode {
+        supported.push("source_mode");
+    }
+    if capabilities.pagination {
+        supported.push("pagination");
+    }
+    if capabilities.extra_snippets {
+        supported.push("extra_snippets");
+    }
+    if supported.is_empty() {
+        "none".to_string()
+    } else {
+        supported.join(", ")
     }
 }
 
@@ -1028,9 +1259,9 @@ mod tests {
         parse_backend_selector,
     };
     use super::{
-        BingRssSearchBackend, ExaApiSearchBackend, SearchLocale, WebSearchFreshness,
-        WebSearchRequest, WebSearchSourceMode, WebSearchTool, WebSearchToolInput,
-        parse_feed_results,
+        BingRssSearchBackend, ExaApiSearchBackend, SearchLocale, WebSearchBackendsTool,
+        WebSearchFreshness, WebSearchRequest, WebSearchSourceMode, WebSearchTool,
+        WebSearchToolInput, parse_feed_results,
     };
     use crate::web::common::WebToolPolicy;
     use crate::{Tool, ToolExecutionContext};
@@ -1210,6 +1441,59 @@ mod tests {
         let (selector, backend) = registry.resolve(None).unwrap();
         assert_eq!(selector, WebSearchBackendSelector::Auto);
         assert_eq!(backend.backend_name(), "exa_api");
+    }
+
+    #[tokio::test]
+    async fn web_search_backends_reports_catalog_and_default_resolution() {
+        let registry = WebSearchBackendRegistry::from_backends(
+            WebSearchBackendSelector::Auto,
+            vec![
+                (
+                    WebSearchBackendKind::BingRss,
+                    Arc::new(BingRssSearchBackend::new(
+                        reqwest::Url::parse("https://www.bing.com/search").unwrap(),
+                    )) as Arc<dyn super::WebSearchBackend>,
+                ),
+                (
+                    WebSearchBackendKind::ExaApi,
+                    Arc::new(ExaApiSearchBackend::new(
+                        reqwest::Url::parse("https://api.exa.ai").unwrap(),
+                        "token".to_string(),
+                    )) as Arc<dyn super::WebSearchBackend>,
+                ),
+            ],
+        );
+        let tool = WebSearchBackendsTool::with_backend_registry(registry);
+        let result = tool
+            .execute(
+                ToolCallId::new(),
+                serde_json::json!({}),
+                &ToolExecutionContext::default(),
+            )
+            .await
+            .unwrap();
+
+        assert!(!result.is_error);
+        let text = result.text_content();
+        assert!(text.contains("default_selector> auto"));
+        assert!(text.contains("resolved_default_backend> exa_api"));
+        assert!(text.contains("backend> exa_api"));
+        assert!(text.contains("backend> brave_api"));
+        assert!(text.contains("missing_requirement> AGENT_CORE_WEB_SEARCH_BRAVE_API_KEY"));
+        let structured = result.structured_content.unwrap();
+        assert_eq!(structured["default_selector"], "auto");
+        assert_eq!(structured["resolved_default_backend"], "exa_api");
+        assert_eq!(structured["available_backends"][0], "exa_api");
+        assert_eq!(structured["available_backends"][1], "bing_rss");
+        assert_eq!(structured["backends"][0]["name"], "exa_api");
+        assert_eq!(structured["backends"][0]["configured"], true);
+        assert_eq!(structured["backends"][0]["selected_by_default"], true);
+        assert_eq!(structured["backends"][1]["name"], "brave_api");
+        assert_eq!(structured["backends"][1]["configured"], false);
+        assert_eq!(
+            structured["backends"][1]["missing_requirement"],
+            "AGENT_CORE_WEB_SEARCH_BRAVE_API_KEY"
+        );
     }
 
     fn brave_results(start: usize, end: usize) -> Vec<serde_json::Value> {
