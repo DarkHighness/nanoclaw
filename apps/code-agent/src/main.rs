@@ -10,6 +10,7 @@ use agent::runtime::{
     CompactionConfig, DefaultCommandHookExecutor, LoopDetectionConfig, ModelConversationCompactor,
     NoopToolApprovalPolicy, RuntimeSubagentExecutor, ToolApprovalHandler,
 };
+use agent::tools::{SandboxBackendStatus, ensure_sandbox_policy_supported};
 use agent::{
     AgentRuntime, AgentRuntimeBuilder, AgentWorkspaceLayout, BashTool, CodeDefinitionsTool,
     CodeDocumentSymbolsTool, CodeIntelBackend, CodeReferencesTool, CodeSymbolSearchTool, EditTool,
@@ -27,6 +28,7 @@ use std::env;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use tracing::{info, warn};
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::EnvFilter;
 use tui::{CodeAgentTui, make_tui_support};
@@ -208,7 +210,32 @@ fn init_tracing(workspace_root: &Path) -> Result<WorkerGuard> {
 
 async fn async_main(workspace_root: PathBuf, options: AppOptions) -> Result<()> {
     let (ui_state, approval_bridge, approval_handler) = make_tui_support();
-    let (runtime, skills) = build_runtime(&options, &workspace_root, approval_handler).await?;
+    let tool_context = build_tool_context(&workspace_root);
+    let sandbox_policy = build_sandbox_policy(&options, &tool_context);
+    let sandbox_status = ensure_sandbox_policy_supported(&sandbox_policy)
+        .context("sandbox policy cannot be enforced on this host")?;
+    match &sandbox_status {
+        SandboxBackendStatus::Available { kind } => {
+            info!(backend = kind.as_str(), "sandbox backend available");
+        }
+        SandboxBackendStatus::Unavailable { reason } => {
+            warn!(
+                "sandbox enforcement unavailable; local processes will fall back to host execution: {reason}"
+            );
+            eprintln!(
+                "warning: sandbox enforcement unavailable; local processes will fall back to host execution: {reason}"
+            );
+        }
+        SandboxBackendStatus::NotRequired => {}
+    }
+    let (runtime, skills) = build_runtime(
+        &options,
+        &workspace_root,
+        approval_handler,
+        tool_context,
+        sandbox_policy,
+    )
+    .await?;
     let provider_label = options.provider.to_string();
     let model = options.model.clone();
     let initial_prompt = options.one_shot_prompt.clone();
@@ -230,6 +257,8 @@ async fn build_runtime(
     options: &AppOptions,
     workspace_root: &Path,
     approval_handler: Arc<dyn ToolApprovalHandler>,
+    tool_context: ToolExecutionContext,
+    sandbox_policy: SandboxPolicy,
 ) -> Result<(AgentRuntime, Vec<Skill>)> {
     let backend = Arc::new(build_backend(options)?);
     let store = Arc::new(InMemoryRunStore::new());
@@ -251,19 +280,11 @@ async fn build_runtime(
         &skill_catalog,
         &plugin_plan.instructions,
     );
-    let tool_context = ToolExecutionContext {
-        workspace_root: workspace_root.to_path_buf(),
-        worktree_root: Some(workspace_root.to_path_buf()),
-        workspace_only: true,
-        model_context_window_tokens: Some(DEFAULT_CONTEXT_TOKENS),
-        ..Default::default()
-    };
     let compactor = Arc::new(ModelConversationCompactor::new(backend.clone()));
     let loop_detection_config = LoopDetectionConfig {
         enabled: true,
         ..LoopDetectionConfig::default()
     };
-    let sandbox_policy = build_sandbox_policy(options, &tool_context);
     let process_executor = Arc::new(ManagedPolicyProcessExecutor::new());
     let hook_runner = Arc::new(HookRunner::with_services(
         Arc::new(
@@ -393,6 +414,16 @@ fn build_sandbox_policy(
     // operator decide whether missing enforcement backends are tolerable.
     SandboxPolicy::recommended_for_context(tool_context)
         .with_fail_if_unavailable(options.sandbox_fail_if_unavailable)
+}
+
+fn build_tool_context(workspace_root: &Path) -> ToolExecutionContext {
+    ToolExecutionContext {
+        workspace_root: workspace_root.to_path_buf(),
+        worktree_root: Some(workspace_root.to_path_buf()),
+        workspace_only: true,
+        model_context_window_tokens: Some(DEFAULT_CONTEXT_TOKENS),
+        ..Default::default()
+    }
 }
 
 fn build_backend(options: &AppOptions) -> Result<ProviderBackend> {

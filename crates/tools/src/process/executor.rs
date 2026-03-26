@@ -213,6 +213,52 @@ struct BackendAvailability {
     linux_bwrap: Option<PathBuf>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SandboxBackendKind {
+    MacOsSeatbelt,
+    LinuxBubblewrap,
+}
+
+impl SandboxBackendKind {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::MacOsSeatbelt => "macos-seatbelt",
+            Self::LinuxBubblewrap => "linux-bwrap",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SandboxBackendStatus {
+    NotRequired,
+    Available { kind: SandboxBackendKind },
+    Unavailable { reason: String },
+}
+
+impl SandboxBackendStatus {
+    #[must_use]
+    pub fn is_available(&self) -> bool {
+        matches!(self, Self::Available { .. })
+    }
+
+    #[must_use]
+    pub fn kind(&self) -> Option<SandboxBackendKind> {
+        match self {
+            Self::Available { kind } => Some(*kind),
+            Self::NotRequired | Self::Unavailable { .. } => None,
+        }
+    }
+
+    #[must_use]
+    pub fn reason(&self) -> Option<&str> {
+        match self {
+            Self::Unavailable { reason } => Some(reason.as_str()),
+            Self::NotRequired | Self::Available { .. } => None,
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct ManagedPolicyProcessExecutor {
     host: HostProcessExecutor,
@@ -238,6 +284,23 @@ pub fn platform_sandbox_backend_available() -> bool {
     }
     #[allow(unreachable_code)]
     false
+}
+
+#[must_use]
+pub fn sandbox_backend_status(policy: &SandboxPolicy) -> SandboxBackendStatus {
+    sandbox_backend_status_with_availability(policy, detect_available_backends())
+}
+
+pub fn ensure_sandbox_policy_supported(policy: &SandboxPolicy) -> Result<SandboxBackendStatus> {
+    let status = sandbox_backend_status(policy);
+    if policy.fail_if_unavailable {
+        if let SandboxBackendStatus::Unavailable { reason } = &status {
+            return Err(ToolError::invalid_state(format!(
+                "sandbox policy requires an enforcing backend, but {reason}"
+            )));
+        }
+    }
+    Ok(status)
 }
 
 impl ProcessExecutor for ManagedPolicyProcessExecutor {
@@ -275,11 +338,64 @@ fn prepare_with_available_backends(
     }
 
     if request.sandbox_policy.fail_if_unavailable {
-        Err(ToolError::invalid_state(
-            "sandbox policy requires an enforcing backend, but no compatible backend is available",
-        ))
+        let status =
+            sandbox_backend_status_with_availability(&request.sandbox_policy, availability);
+        let reason = status
+            .reason()
+            .unwrap_or("no compatible backend is available");
+        Err(ToolError::invalid_state(format!(
+            "sandbox policy requires an enforcing backend, but {reason}"
+        )))
     } else {
         HostProcessExecutor.prepare(request)
+    }
+}
+
+fn sandbox_backend_status_with_availability(
+    policy: &SandboxPolicy,
+    availability: BackendAvailability,
+) -> SandboxBackendStatus {
+    if !policy.requires_enforcement() {
+        return SandboxBackendStatus::NotRequired;
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        return availability
+            .macos_seatbelt
+            .map(|_| SandboxBackendStatus::Available {
+                kind: SandboxBackendKind::MacOsSeatbelt,
+            })
+            .unwrap_or_else(|| SandboxBackendStatus::Unavailable {
+                reason: "`sandbox-exec` is unavailable on this host".to_string(),
+            });
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        if availability.linux_bwrap.is_some() {
+            return SandboxBackendStatus::Available {
+                kind: SandboxBackendKind::LinuxBubblewrap,
+            };
+        }
+        return match super::executor_linux::linux_bwrap_status() {
+            super::executor_linux::LinuxBubblewrapStatus::Available(_) => {
+                SandboxBackendStatus::Available {
+                    kind: SandboxBackendKind::LinuxBubblewrap,
+                }
+            }
+            super::executor_linux::LinuxBubblewrapStatus::Unavailable { reason } => {
+                SandboxBackendStatus::Unavailable { reason }
+            }
+        };
+    }
+
+    #[allow(unreachable_code)]
+    SandboxBackendStatus::Unavailable {
+        reason: format!(
+            "no enforcing sandbox backend is implemented for {}",
+            std::env::consts::OS
+        ),
     }
 }
 
@@ -518,7 +634,8 @@ mod tests {
     use super::{
         BackendAvailability, ExecRequest, ExecutionOrigin, FilesystemPolicy, HostEscapePolicy,
         ManagedPolicyProcessExecutor, NetworkPolicy, ProcessExecutor, ProcessStdio, RuntimeScope,
-        SandboxMode, SandboxPolicy, prepare_with_available_backends,
+        SandboxBackendStatus, SandboxMode, SandboxPolicy, prepare_with_available_backends,
+        sandbox_backend_status_with_availability,
     };
     use crate::ToolExecutionContext;
     use std::collections::BTreeMap;
@@ -580,6 +697,38 @@ mod tests {
             SandboxPolicy::recommended_for_context(&context),
             SandboxPolicy::permissive()
         );
+    }
+
+    #[test]
+    fn sandbox_backend_status_is_not_required_for_permissive_policy() {
+        assert_eq!(
+            sandbox_backend_status_with_availability(
+                &SandboxPolicy::permissive(),
+                BackendAvailability::default(),
+            ),
+            SandboxBackendStatus::NotRequired
+        );
+    }
+
+    #[test]
+    fn sandbox_backend_status_reports_unavailable_when_restrictive_policy_has_no_backend() {
+        let workspace = tempdir().unwrap();
+        let policy = SandboxPolicy {
+            mode: SandboxMode::WorkspaceWrite,
+            filesystem: FilesystemPolicy {
+                readable_roots: vec![workspace.path().to_path_buf()],
+                writable_roots: vec![workspace.path().to_path_buf()],
+                protected_paths: vec![],
+            },
+            network: NetworkPolicy::Off,
+            host_escape: HostEscapePolicy::Deny,
+            fail_if_unavailable: true,
+        };
+
+        assert!(matches!(
+            sandbox_backend_status_with_availability(&policy, BackendAvailability::default()),
+            SandboxBackendStatus::Unavailable { .. }
+        ));
     }
 
     #[test]

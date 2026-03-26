@@ -291,9 +291,11 @@ Important implementation constraints:
 
 - it uses `sandbox-exec` with a generated profile rooted in `import "system.sb"` rather than trying to re-specify every dyld and system capability manually
 - the Linux backend uses bubblewrap mount bindings in explicit order: read-only roots first, writable roots second, and protected paths rebound read-only last so control directories stay immutable inside writable workspaces
+- Linux bubblewrap availability must be probed with a real namespace attempt instead of checking whether `bwrap` is present in `PATH`, because container or LSM policy may ship the binary while still forbidding unprivileged namespace creation
 - host paths must be canonicalized before they are embedded into the profile because Seatbelt matches real paths, not shell-friendly aliases such as `/var`
 - unsupported platforms currently fall back to host execution unless `fail_if_unavailable` is set, so hosts can adopt typed policy wiring before every backend exists
 - the first Linux backend only inherits a curated set of system roots plus the host-selected roots, so user-space binaries outside those mounts remain blocked unless the host widens policy or uses a permissive executor
+- this repository does not currently fall back to a Landlock-only Linux backend for writable workspaces because today's Landlock ABI cannot preserve "workspace writable, but `.git`/`.nanoclaw` read-only" protected-path semantics under a broad writable root
 - `NetworkPolicy::AllowDomains` is implemented as a host-managed SOCKS proxy rather than pretending Seatbelt or bubblewrap can filter hostnames directly
 - on macOS, Seatbelt enforces proxy-only egress by allowing only localhost proxy ports while the host proxy enforces the domain allowlist
 - on Linux, the backend bind-mounts a host-owned Unix-socket proxy into the sandbox and uses an in-sandbox loopback bridge so `--unshare-net` still holds and traffic must traverse the allowlist proxy

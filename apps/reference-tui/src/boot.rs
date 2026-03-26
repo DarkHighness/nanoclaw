@@ -27,7 +27,8 @@ use std::sync::Arc;
 use store::{FileRunStore, InMemoryRunStore, RunStore};
 use tools::{
     BashTool, EditTool, GlobTool, GrepTool, ListTool, ManagedPolicyProcessExecutor, PatchTool,
-    ReadTool, SandboxPolicy, ToolExecutionContext, ToolRegistry, WriteTool,
+    ReadTool, SandboxBackendStatus, SandboxPolicy, ToolExecutionContext, ToolRegistry, WriteTool,
+    ensure_sandbox_policy_supported,
 };
 #[cfg(feature = "web-tools")]
 use tools::{WebFetchTool, WebSearchBackendsTool, WebSearchTool};
@@ -114,6 +115,19 @@ async fn bootstrap_from_parts(
         ..Default::default()
     };
     let sandbox_policy = build_sandbox_policy(&config, &tool_context);
+    let sandbox_status = ensure_sandbox_policy_supported(&sandbox_policy)
+        .context("sandbox policy cannot be enforced on this host")?;
+    match &sandbox_status {
+        SandboxBackendStatus::Available { kind } => {
+            info!(backend = kind.as_str(), "sandbox backend available");
+        }
+        SandboxBackendStatus::Unavailable { reason } => {
+            warn!(
+                "sandbox enforcement unavailable; local processes will fall back to host execution: {reason}"
+            );
+        }
+        SandboxBackendStatus::NotRequired => {}
+    }
     let process_executor = Arc::new(ManagedPolicyProcessExecutor::new());
     let hook_runner = Arc::new(HookRunner::with_services(
         Arc::new(
@@ -227,6 +241,7 @@ async fn bootstrap_from_parts(
         &plugin_plan,
         &driver_outcome.warnings,
         &sandbox_policy,
+        &sandbox_status,
     );
 
     Ok(BootArtifacts {
@@ -375,6 +390,7 @@ fn build_startup_summary(
     plugin_plan: &PluginActivationPlan,
     driver_warnings: &[String],
     sandbox_policy: &SandboxPolicy,
+    sandbox_status: &SandboxBackendStatus,
 ) -> TuiStartupSummary {
     let local_tools = tool_specs
         .iter()
@@ -403,7 +419,10 @@ fn build_startup_summary(
         ),
         format!("mcp servers: {}", mcp_servers.len()),
         format!("command prefix: {}", config.tui.command_prefix),
-        format!("sandbox: {}", sandbox_summary(sandbox_policy)),
+        format!(
+            "sandbox: {}",
+            sandbox_summary(sandbox_policy, sandbox_status)
+        ),
         format!(
             "compaction: {}",
             if config.runtime.auto_compact {
@@ -464,7 +483,7 @@ fn build_startup_summary(
     }
 }
 
-fn sandbox_summary(policy: &SandboxPolicy) -> String {
+fn sandbox_summary(policy: &SandboxPolicy, status: &SandboxBackendStatus) -> String {
     let mode = match policy.mode {
         tools::SandboxMode::ReadOnly => "read-only",
         tools::SandboxMode::WorkspaceWrite => "workspace-write",
@@ -477,10 +496,15 @@ fn sandbox_summary(policy: &SandboxPolicy) -> String {
         }
         tools::NetworkPolicy::Full => "network full".to_string(),
     };
-    let availability = if policy.fail_if_unavailable {
-        "require backend"
-    } else {
-        "best effort"
+    let availability = match status {
+        SandboxBackendStatus::Available { kind } => format!("enforced via {}", kind.as_str()),
+        SandboxBackendStatus::Unavailable { reason } if policy.fail_if_unavailable => {
+            format!("backend required but unavailable ({reason})")
+        }
+        SandboxBackendStatus::Unavailable { reason } => {
+            format!("best effort host fallback ({reason})")
+        }
+        SandboxBackendStatus::NotRequired => "no enforcing backend required".to_string(),
     };
     format!("{mode}, {network}, {availability}")
 }
@@ -609,7 +633,7 @@ mod tests {
     use agent::skills::load_skill_roots;
     use tempfile::tempdir;
     use tokio::fs;
-    use tools::{NetworkPolicy, SandboxMode, ToolExecutionContext};
+    use tools::{NetworkPolicy, SandboxBackendStatus, SandboxMode, ToolExecutionContext};
     use types::{ToolName, ToolOrigin};
 
     #[tokio::test]
@@ -921,8 +945,13 @@ Use this skill when asked.
         assert_eq!(policy.network, NetworkPolicy::Off);
         assert!(policy.fail_if_unavailable);
         assert_eq!(
-            sandbox_summary(&policy),
-            "workspace-write, network off, require backend"
+            sandbox_summary(
+                &policy,
+                &SandboxBackendStatus::Unavailable {
+                    reason: "no backend".to_string()
+                }
+            ),
+            "workspace-write, network off, backend required but unavailable (no backend)"
         );
     }
 }
