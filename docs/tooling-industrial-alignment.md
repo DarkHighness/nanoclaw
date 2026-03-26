@@ -9,6 +9,33 @@ It focuses on three contract surfaces that materially affect code-agent reliabil
 
 The question here is not whether the current tools "work." The question is whether they encode the same safety, grounding, and recovery properties that show up across current industrial agent stacks and the better tool-use papers.
 
+## Status Markers
+
+This note now keeps an explicit split between what has already shipped and what is still a gap.
+
+### (a) Implemented In The Current Substrate
+
+- File-tool inputs are already in the industrial envelope: grounded reads, explicit mutation modes, freshness guards, and staged patch application.
+- `bash` already follows a handle-based execution model rather than one-shot rerun-only semantics.
+- Runtime approval and approval-policy matching already live at the shared execution boundary instead of inside individual tools.
+- `ToolName` is now a shared substrate type rather than a loose string, so approval rules, registry keys, provider mappings, and subagent allowlists all talk about the same semantic identifier.
+- Optional `code-intel`, `web-tools`, and `agentic-tools` bundles compile against the same shared tool-identity contract instead of each carrying their own stringly-typed tool-name path.
+
+### (b) Not Yet Implemented
+
+- Tool outputs are still not first-class typed payloads with an explicit `output_schema`.
+- Provider adapters still degrade most tool results to text summaries when crossing the provider boundary.
+- Web retrieval is still bootstrap quality rather than production-quality retrieval.
+- Redirect policy is still under-specified compared with the standard implied by current hosted stacks.
+- The substrate still does not emit a fully typed host-facing tool event stream that makes transcript parsing optional.
+
+### (c) Improvement Space
+
+- Promote tool outputs to structured contracts, not just structured metadata.
+- Move web extraction from regex-heavy cleanup to DOM/readability-based extraction with stronger provenance and citation support.
+- Introduce a real pluggable search backend boundary so locale, freshness, and source mode become request semantics instead of backend folklore.
+- Keep design notes like this one updated whenever a gap moves from “planned” to “implemented,” so the document remains an operational status note rather than a stale comparison.
+
 ## Scope And Baselines
 
 The comparison below uses the current local implementation as the primary subject:

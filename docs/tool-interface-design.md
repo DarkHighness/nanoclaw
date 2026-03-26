@@ -229,6 +229,37 @@ The agentic tools now also participate in the same grounding model:
 
 These are not file tools, but the same principle applies: reads should expose a stable anchor, and writes/delegations should accept enough structure to validate follow-up actions.
 
+## Status Markers
+
+This note is not just aspirational. The current substrate should keep the shipping line explicit.
+
+### (a) Implemented In The Current Substrate
+
+- `read`, `write`, `edit`, and `patch` now follow one grounding model instead of four unrelated contracts.
+- `read` emits line-oriented views with snapshot and slice-hash anchors.
+- `write` exposes explicit missing/existing-file policy plus optional snapshot guards.
+- `edit` supports structured `str_replace`, `replace_lines`, and `insert` commands.
+- `patch` is the staged multi-file mutator instead of overloading `write` or `edit`.
+- `list`, `glob`, and `grep` already emit structured metadata alongside readable summaries.
+- `bash` already supports handle-based continuation with `start` / `poll` / `cancel`.
+- Tool identities now use a shared `ToolName` type internally, so registry lookup, approval matching, provider mapping, and subagent allowlists do not need to round-trip through raw strings before reaching a real text boundary.
+
+### (b) Not Yet Implemented
+
+- `ToolSpec` still lacks a first-class `output_schema`.
+- The canonical result contract still does not expose a separate structured output field parallel to human-readable text.
+- Provider adapters still flatten most tool results to text when they leave the substrate, so multipart or strongly typed result payloads are not preserved end-to-end.
+- The current design does not yet expose per-tool typed host events that completely avoid transcript-text parsing.
+- The current web tools still do not provide industrial-grade citation objects or binary-document extraction.
+
+### (c) Improvement Space
+
+- Add `output_schema` plus canonical structured tool results, then keep those results intact across provider round-trips.
+- Reapply web policy checks to redirect destinations, not only the originally requested URL.
+- Replace regex-heavy HTML cleanup with DOM/readability extraction that preserves headings, code blocks, links, and tables.
+- Strengthen tool result rendering so hosts can present summaries and structured payloads without reparsing prose.
+- Extend the same explicit status markers to future optional tool bundles when their contracts become materially more complex.
+
 ## Sources
 
 - OpenAI Apply Patch: [developers.openai.com/api/docs/guides/tools-apply-patch](https://developers.openai.com/api/docs/guides/tools-apply-patch/)

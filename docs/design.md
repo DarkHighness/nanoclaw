@@ -254,6 +254,10 @@ Hosts embedding the foundation should define their own config layer, or none at 
 
 ## Deliberate Tradeoffs
 
+- (a) Implemented: the foundation now has a coherent local tool substrate with grounded file contracts, runtime-level approval policy, feature-gated optional tool bundles, typed `call_id`/`message_id`, and typed `ToolName` propagation across registry, runtime, provider, and subagent paths.
+- (b) Not yet implemented: first-class structured tool outputs with `output_schema`, provider-preserved structured tool results, industrial-grade retrieval/citation flow, and provider-native standalone compaction windows are still open work.
+- (c) Improvement space: web retrieval quality, richer host-facing typed events, stronger output schemas, and tighter cross-provider structured result preservation remain the main places where the substrate can move from “solid foundation” to “best-in-class industrial baseline.”
+
 - Local runtime compaction and OpenAI server-side compaction now coexist, but only the request-hint path is integrated. The standalone OpenAI `/responses/compact` window is still not mapped into first-class runtime transcript items, because the foundation does not yet preserve opaque provider-only compaction items as replayable message objects.
 - The default persistent store still uses append-only JSONL transcripts as the durable source of truth, but now pairs them with a small mutable index sidecar for summaries, search prefiltering, and retention. It still does not provide multi-process coordination or a heavier full-text index backend.
 - The current approval flow now supports runtime-level rule composition in addition to shell-side prompts. Hosts can auto-allow, deny, or require review for matching tool/origin/argument patterns, but persistent allowlists and richer policy storage are still outer-host concerns.
