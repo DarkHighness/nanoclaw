@@ -26,13 +26,18 @@ use engines::bing::BingRssSearchBackend;
 #[cfg(test)]
 use engines::bing::parse_feed_results;
 use engines::brave::BraveApiSearchBackend;
+use engines::duckduckgo::DuckDuckGoHtmlSearchBackend;
+use engines::exa::ExaApiSearchBackend;
 
 const DEFAULT_SEARCH_ENDPOINT: &str = "https://www.bing.com/search";
 const DEFAULT_BRAVE_API_BASE_URL: &str = "https://api.search.brave.com";
+const DEFAULT_EXA_API_BASE_URL: &str = "https://api.exa.ai";
+const DEFAULT_DUCKDUCKGO_HTML_ENDPOINT: &str = "https://html.duckduckgo.com/html/";
 const DEFAULT_RESULT_SNIPPET_MAX_CHARS: usize = 280;
 const BRAVE_WEB_PAGE_SIZE: usize = 20;
 const BRAVE_NEWS_PAGE_SIZE: usize = 50;
 const BRAVE_MAX_PAGE_OFFSET: usize = 9;
+const EXA_MAX_RESULTS: usize = 100;
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 pub struct WebSearchToolInput {
@@ -209,6 +214,8 @@ struct SearchBackendResponse {
 enum WebSearchBackendKind {
     BingRss,
     BraveApi,
+    ExaApi,
+    DuckDuckGoHtml,
 }
 
 #[async_trait]
@@ -259,12 +266,31 @@ impl WebSearchTool {
             WebSearchBackendKind::BraveApi => Self::with_brave_backend(
                 policy,
                 timeout_ms,
-                agent_env::get_non_empty(vars::AGENT_CORE_WEB_SEARCH_API_ENDPOINT),
-                agent_env::get_non_empty(vars::AGENT_CORE_WEB_SEARCH_API_KEY).ok_or_else(|| {
-                    crate::ToolError::invalid(
-                        "AGENT_CORE_WEB_SEARCH_API_KEY is required for the brave_api backend",
-                    )
-                })?,
+                agent_env::get_non_empty(vars::AGENT_CORE_WEB_SEARCH_BRAVE_API_ENDPOINT)
+                    .or_else(|| agent_env::get_non_empty(vars::AGENT_CORE_WEB_SEARCH_API_ENDPOINT)),
+                agent_env::get_non_empty(vars::AGENT_CORE_WEB_SEARCH_BRAVE_API_KEY)
+                    .or_else(|| agent_env::get_non_empty(vars::AGENT_CORE_WEB_SEARCH_API_KEY))
+                    .ok_or_else(|| {
+                        crate::ToolError::invalid(
+                            "AGENT_CORE_WEB_SEARCH_BRAVE_API_KEY is required for the brave_api backend",
+                        )
+                    })?,
+            ),
+            WebSearchBackendKind::ExaApi => Self::with_exa_backend(
+                policy,
+                timeout_ms,
+                agent_env::get_non_empty(vars::AGENT_CORE_WEB_SEARCH_EXA_API_ENDPOINT),
+                agent_env::get_non_empty(vars::AGENT_CORE_WEB_SEARCH_EXA_API_KEY)
+                    .ok_or_else(|| {
+                        crate::ToolError::invalid(
+                            "AGENT_CORE_WEB_SEARCH_EXA_API_KEY is required for the exa_api backend",
+                        )
+                    })?,
+            ),
+            WebSearchBackendKind::DuckDuckGoHtml => Self::with_duckduckgo_backend(
+                policy,
+                timeout_ms,
+                agent_env::get_non_empty(vars::AGENT_CORE_WEB_SEARCH_DUCKDUCKGO_ENDPOINT),
             ),
         }
     }
@@ -299,6 +325,42 @@ impl WebSearchTool {
                     crate::ToolError::invalid(format!("invalid Brave API endpoint: {error}"))
                 })?,
                 api_key,
+            )),
+        )
+    }
+
+    pub(crate) fn with_exa_backend(
+        policy: WebToolPolicy,
+        timeout_ms: u64,
+        endpoint: Option<String>,
+        api_key: String,
+    ) -> Result<Self> {
+        let endpoint = endpoint.unwrap_or_else(|| DEFAULT_EXA_API_BASE_URL.to_string());
+        Self::with_backend(
+            policy,
+            timeout_ms,
+            Arc::new(ExaApiSearchBackend::new(
+                Url::parse(&endpoint).map_err(|error| {
+                    crate::ToolError::invalid(format!("invalid Exa API endpoint: {error}"))
+                })?,
+                api_key,
+            )),
+        )
+    }
+
+    pub(crate) fn with_duckduckgo_backend(
+        policy: WebToolPolicy,
+        timeout_ms: u64,
+        endpoint: Option<String>,
+    ) -> Result<Self> {
+        let endpoint = endpoint.unwrap_or_else(|| DEFAULT_DUCKDUCKGO_HTML_ENDPOINT.to_string());
+        Self::with_backend(
+            policy,
+            timeout_ms,
+            Arc::new(DuckDuckGoHtmlSearchBackend::new(
+                Url::parse(&endpoint).map_err(|error| {
+                    crate::ToolError::invalid(format!("invalid DuckDuckGo HTML endpoint: {error}"))
+                })?,
             )),
         )
     }
@@ -596,6 +658,10 @@ fn parse_backend_kind(value: Option<String>) -> Result<WebSearchBackendKind> {
     {
         None | Some("bing") | Some("bing_rss") => Ok(WebSearchBackendKind::BingRss),
         Some("brave") | Some("brave_api") => Ok(WebSearchBackendKind::BraveApi),
+        Some("exa") | Some("exa_api") => Ok(WebSearchBackendKind::ExaApi),
+        Some("duckduckgo") | Some("duckduckgo_html") | Some("ddg") => {
+            Ok(WebSearchBackendKind::DuckDuckGoHtml)
+        }
         Some(other) => Err(crate::ToolError::invalid(format!(
             "unsupported web search backend `{other}`"
         ))),
@@ -625,6 +691,31 @@ async fn send_search_request(
     Ok((final_url, status, content_type, body))
 }
 
+async fn send_search_json_request(
+    client: &Client,
+    policy: &WebToolPolicy,
+    request_url: Url,
+    api_key_header: (&str, &str),
+    body_json: Value,
+) -> Result<(Url, u16, Option<String>, String)> {
+    policy.validate_transport_url(&request_url)?;
+    let response = client
+        .post(request_url.clone())
+        .header(api_key_header.0, api_key_header.1)
+        .json(&body_json)
+        .send()
+        .await?;
+    let final_url = response.url().clone();
+    let status = response.status().as_u16();
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+    let body = response.text().await?;
+    Ok((final_url, status, content_type, body))
+}
+
 fn canonicalize_result_url(url: &str) -> (String, Option<String>) {
     let Ok(parsed) = Url::parse(url) else {
         return (url.to_string(), None);
@@ -634,14 +725,19 @@ fn canonicalize_result_url(url: &str) -> (String, Option<String>) {
     };
     let host = host.to_ascii_lowercase();
     let path = parsed.path().to_ascii_lowercase();
-    if !host.ends_with("bing.com") || !path.contains("apiclick") {
-        return (url.to_string(), None);
+    let target = if host.ends_with("bing.com") && path.contains("apiclick") {
+        parsed
+            .query_pairs()
+            .find_map(|(key, value)| (key == "url").then_some(value.into_owned()))
+    } else if host.ends_with("duckduckgo.com") && path == "/l/" {
+        parsed
+            .query_pairs()
+            .find_map(|(key, value)| (key == "uddg").then_some(value.into_owned()))
+    } else {
+        None
     }
+    .filter(|value| Url::parse(value).is_ok());
 
-    let target = parsed
-        .query_pairs()
-        .find_map(|(key, value)| (key == "url").then_some(value.into_owned()))
-        .filter(|value| Url::parse(value).is_ok());
     match target {
         Some(target) if target != url => (target, Some(url.to_string())),
         _ => (url.to_string(), None),
@@ -959,7 +1055,7 @@ mod tests {
     use crate::{Tool, ToolExecutionContext};
     use std::collections::BTreeSet;
     use types::ToolCallId;
-    use wiremock::matchers::{method, path, query_param};
+    use wiremock::matchers::{body_partial_json, header, method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     #[test]
@@ -1083,7 +1179,15 @@ mod tests {
             super::parse_backend_kind(Some("brave".to_string())).unwrap(),
             super::WebSearchBackendKind::BraveApi
         );
-        assert!(super::parse_backend_kind(Some("duckduckgo".to_string())).is_err());
+        assert_eq!(
+            super::parse_backend_kind(Some("exa".to_string())).unwrap(),
+            super::WebSearchBackendKind::ExaApi
+        );
+        assert_eq!(
+            super::parse_backend_kind(Some("ddg".to_string())).unwrap(),
+            super::WebSearchBackendKind::DuckDuckGoHtml
+        );
+        assert!(super::parse_backend_kind(Some("google".to_string())).is_err());
     }
 
     fn brave_results(start: usize, end: usize) -> Vec<serde_json::Value> {
@@ -1212,6 +1316,219 @@ mod tests {
                 Some("test-token")
             );
         }
+    }
+
+    #[tokio::test]
+    async fn web_search_exa_backend_overfetches_for_offset_windows() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/search"))
+            .and(header("x-api-key", "exa-token"))
+            .and(body_partial_json(serde_json::json!({
+                "query": "openai",
+                "numResults": 4,
+                "category": "news",
+                "summary": true,
+                "highlights": true,
+            })))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "application/json")
+                    .set_body_string(
+                        serde_json::json!({
+                            "results": [
+                                {
+                                    "title": "One",
+                                    "url": "https://example.com/1",
+                                    "summary": "summary 1",
+                                    "highlights": ["highlight 1a", "highlight 1b"],
+                                    "publishedDate": "2026-03-25T09:00:00Z"
+                                },
+                                {
+                                    "title": "Two",
+                                    "url": "https://example.com/2",
+                                    "summary": "summary 2",
+                                    "highlights": ["highlight 2a"],
+                                    "publishedDate": "2026-03-25T09:00:00Z"
+                                },
+                                {
+                                    "title": "Three",
+                                    "url": "https://example.com/3",
+                                    "summary": "summary 3",
+                                    "highlights": ["highlight 3a", "highlight 3b"],
+                                    "publishedDate": "2026-03-25T09:00:00Z"
+                                },
+                                {
+                                    "title": "Four",
+                                    "url": "https://example.com/4",
+                                    "summary": "summary 4",
+                                    "highlights": ["highlight 4a"],
+                                    "publishedDate": "2026-03-25T09:00:00Z"
+                                }
+                            ]
+                        })
+                        .to_string(),
+                    ),
+            )
+            .mount(&server)
+            .await;
+
+        let tool = WebSearchTool::with_exa_backend(
+            WebToolPolicy {
+                allow_private_hosts: true,
+                allowed_domains: BTreeSet::new(),
+                blocked_domains: BTreeSet::new(),
+            },
+            5_000,
+            Some(server.uri()),
+            "exa-token".to_string(),
+        )
+        .unwrap();
+        let result = tool
+            .execute(
+                ToolCallId::new(),
+                serde_json::to_value(WebSearchToolInput {
+                    query: "openai".to_string(),
+                    limit: Some(2),
+                    offset: Some(2),
+                    domains: None,
+                    locale: None,
+                    freshness: Some(WebSearchFreshness::PastWeek),
+                    source_mode: Some(WebSearchSourceMode::News),
+                })
+                .unwrap(),
+                &ToolExecutionContext::default(),
+            )
+            .await
+            .unwrap();
+
+        let text = result.text_content();
+        assert!(text.contains("Three"));
+        assert!(text.contains("Four"));
+        let structured = result.structured_content.unwrap();
+        assert_eq!(structured["backend"], "exa_api");
+        assert_eq!(structured["results"][0]["rank"], 3);
+        assert_eq!(structured["results"][0]["title"], "Three");
+        assert_eq!(
+            structured["results"][0]["extra_snippets"][0],
+            "highlight 3b"
+        );
+        assert_eq!(structured["backend_capabilities"]["extra_snippets"], true);
+    }
+
+    #[tokio::test]
+    async fn web_search_duckduckgo_backend_parses_html_results() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/html/"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "text/html")
+                    .set_body_string(
+                        r#"
+                        <html><body>
+                          <div class="result results_links">
+                            <a class="result__a" href="https://duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Falpha">Alpha</a>
+                            <div class="result__snippet">alpha snippet</div>
+                            <span class="result__url">example.com</span>
+                          </div>
+                          <div class="result results_links">
+                            <a class="result__a" href="https://example.org/beta">Beta</a>
+                            <div class="result__snippet">beta snippet</div>
+                            <span class="result__url">example.org</span>
+                          </div>
+                        </body></html>
+                        "#,
+                    ),
+            )
+            .mount(&server)
+            .await;
+
+        let tool = WebSearchTool::with_duckduckgo_backend(
+            WebToolPolicy {
+                allow_private_hosts: true,
+                allowed_domains: BTreeSet::new(),
+                blocked_domains: BTreeSet::new(),
+            },
+            5_000,
+            Some(format!("{}/html/", server.uri())),
+        )
+        .unwrap();
+        let result = tool
+            .execute(
+                ToolCallId::new(),
+                serde_json::to_value(WebSearchToolInput {
+                    query: "openai".to_string(),
+                    limit: Some(2),
+                    offset: Some(0),
+                    domains: None,
+                    locale: None,
+                    freshness: None,
+                    source_mode: None,
+                })
+                .unwrap(),
+                &ToolExecutionContext::default(),
+            )
+            .await
+            .unwrap();
+
+        let text = result.text_content();
+        assert!(text.contains("https://example.com/alpha"));
+        assert!(text.contains("raw_url: https://duckduckgo.com/l/?uddg="));
+        let structured = result.structured_content.unwrap();
+        assert_eq!(structured["backend"], "duckduckgo_html");
+        assert_eq!(structured["results"][0]["url"], "https://example.com/alpha");
+    }
+
+    #[tokio::test]
+    async fn web_search_duckduckgo_backend_rejects_challenge_pages() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/html/"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "text/html")
+                    .set_body_string(
+                        r#"
+                        <html><body>
+                          <div class="anomaly-modal__title">Unfortunately, bots use DuckDuckGo too.</div>
+                        </body></html>
+                        "#,
+                    ),
+            )
+            .mount(&server)
+            .await;
+
+        let tool = WebSearchTool::with_duckduckgo_backend(
+            WebToolPolicy {
+                allow_private_hosts: true,
+                allowed_domains: BTreeSet::new(),
+                blocked_domains: BTreeSet::new(),
+            },
+            5_000,
+            Some(format!("{}/html/", server.uri())),
+        )
+        .unwrap();
+        let result = tool
+            .execute(
+                ToolCallId::new(),
+                serde_json::to_value(WebSearchToolInput {
+                    query: "openai".to_string(),
+                    limit: Some(2),
+                    offset: Some(0),
+                    domains: None,
+                    locale: None,
+                    freshness: None,
+                    source_mode: None,
+                })
+                .unwrap(),
+                &ToolExecutionContext::default(),
+            )
+            .await
+            .unwrap();
+
+        assert!(result.is_error);
+        assert!(result.text_content().contains("bot challenge"));
     }
 
     #[tokio::test]
