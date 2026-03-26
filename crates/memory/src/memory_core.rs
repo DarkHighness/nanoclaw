@@ -79,13 +79,26 @@ impl MemoryCoreBackend {
         let artifact_path = layout.resolve_index_path(None, Self::default_index_relative_path())?;
         let expected_fingerprint = self.config_fingerprint()?;
         let mut lifecycle = layout.load_lifecycle(INDEX_BACKEND_ID)?;
-        let needs_sync = lifecycle.as_ref().is_none_or(|entry| {
+        let mut needs_sync = lifecycle.as_ref().is_none_or(|entry| {
             entry.backend != INDEX_BACKEND_ID
                 || entry.status != MemorySidecarStatus::Ready
                 || entry.schema_version != INDEX_SCHEMA_VERSION
                 || entry.config_fingerprint != expected_fingerprint
                 || entry.artifact_path != artifact_path.relative_display()
         }) || !artifact_path.absolute_path().exists();
+
+        if !needs_sync && let Some(existing) = lifecycle.as_ref() {
+            let (corpus, _) = load_configured_memory_corpus(
+                &self.workspace_root,
+                &self.config.corpus,
+                self.run_store.as_ref(),
+            )
+            .await?;
+            // The SQLite file is only a derived cache. Even when the lifecycle
+            // manifest still looks structurally valid, treat any Markdown
+            // snapshot drift as stale and rebuild from source-of-truth files.
+            needs_sync = document_snapshots(&corpus) != existing.document_snapshots;
+        }
 
         if needs_sync {
             self.sync().await?;
@@ -752,6 +765,46 @@ mod tests {
             .unwrap();
         assert_eq!(response.hits.len(), 1);
         assert_eq!(response.hits[0].path, "MEMORY.md");
+    }
+
+    #[tokio::test]
+    async fn search_rebuilds_when_corpus_snapshots_drift() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("MEMORY.md"), "alpha rollout notes")
+            .await
+            .unwrap();
+
+        let backend = MemoryCoreBackend::new(dir.path().to_path_buf(), MemoryCoreConfig::default());
+        backend
+            .search(MemorySearchRequest {
+                query: "alpha".to_string(),
+                limit: Some(3),
+                path_prefix: None,
+            })
+            .await
+            .unwrap();
+
+        fs::write(dir.path().join("MEMORY.md"), "beta rollout notes")
+            .await
+            .unwrap();
+
+        let response = backend
+            .search(MemorySearchRequest {
+                query: "beta".to_string(),
+                limit: Some(3),
+                path_prefix: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(response.hits.len(), 1);
+        assert_eq!(response.hits[0].path, "MEMORY.md");
+
+        let layout = MemoryStateLayout::new(dir.path());
+        let lifecycle = layout.load_lifecycle("memory-core").unwrap().unwrap();
+        assert_eq!(
+            lifecycle.document_snapshots.get("MEMORY.md").cloned(),
+            Some(super::stable_hash("beta rollout notes"))
+        );
     }
 
     #[tokio::test]
