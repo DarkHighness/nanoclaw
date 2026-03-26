@@ -2,6 +2,7 @@ use crate::{
     InteractiveToolApprovalHandler, RuntimeTui, TuiStartupSummary,
     config::{AgentCoreConfig, ProviderKind},
 };
+use agent::AgentWorkspaceLayout;
 use agent::mcp::{
     ConnectedMcpServer, McpConnectOptions, McpServerConfig, McpTransportConfig,
     catalog_tools_as_registry_entries, connect_and_catalog_mcp_servers_with_options,
@@ -474,7 +475,7 @@ fn resolved_skill_roots(
     let mut roots = config.resolved_skill_roots(workspace_root);
     roots.extend(plugin_plan.skill_roots.clone());
     if roots.is_empty() {
-        let default_root = workspace_root.join(".agent-core/skills");
+        let default_root = AgentWorkspaceLayout::new(workspace_root).skills_dir();
         if default_root.exists() {
             roots.push(default_root);
         }
@@ -593,7 +594,7 @@ Use this skill when asked.
 
                 [runtime]
                 workspace_only = true
-                store_dir = ".agent-core/custom-store"
+                store_dir = ".nanoclaw/custom-store"
 
                 [tui]
                 command_prefix = ":"
@@ -611,10 +612,10 @@ Use this skill when asked.
             artifacts.store_label,
             format!(
                 "file {}",
-                dir.path().join(".agent-core/custom-store").display()
+                dir.path().join(".nanoclaw/custom-store").display()
             )
         );
-        assert!(dir.path().join(".agent-core/custom-store").is_dir());
+        assert!(dir.path().join(".nanoclaw/custom-store").is_dir());
         assert!(
             artifacts
                 .startup_summary

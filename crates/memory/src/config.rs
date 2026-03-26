@@ -105,6 +105,42 @@ impl Default for MemoryBackgroundSyncConfig {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum MemoryVectorStoreKind {
+    #[default]
+    Sqlite,
+    #[serde(alias = "lancerdb")]
+    Lancedb,
+}
+
+impl MemoryVectorStoreKind {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Sqlite => "sqlite",
+            Self::Lancedb => "lancedb",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MemoryVectorStoreConfig {
+    #[serde(default)]
+    pub kind: MemoryVectorStoreKind,
+    #[serde(default)]
+    pub path: Option<PathBuf>,
+}
+
+impl Default for MemoryVectorStoreConfig {
+    fn default() -> Self {
+        Self {
+            kind: MemoryVectorStoreKind::default(),
+            path: None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MemoryCoreConfig {
     #[serde(default)]
@@ -115,8 +151,6 @@ pub struct MemoryCoreConfig {
     pub search: MemorySearchConfig,
     #[serde(default)]
     pub background_sync: MemoryBackgroundSyncConfig,
-    #[serde(default)]
-    pub index_path: Option<PathBuf>,
 }
 
 impl Default for MemoryCoreConfig {
@@ -126,7 +160,6 @@ impl Default for MemoryCoreConfig {
             chunking: MemoryChunkingConfig::default(),
             search: MemorySearchConfig::default(),
             background_sync: MemoryBackgroundSyncConfig::default(),
-            index_path: None,
         }
     }
 }
@@ -188,7 +221,7 @@ pub struct MemoryEmbedConfig {
     #[serde(default)]
     pub hybrid: HybridWeights,
     #[serde(default)]
-    pub index_path: Option<PathBuf>,
+    pub vector_store: MemoryVectorStoreConfig,
 }
 
 fn default_chunk_target_tokens() -> usize {
@@ -279,7 +312,6 @@ impl MemoryEmbedConfig {
             chunking: self.chunking.clone(),
             search: self.search.clone(),
             background_sync: self.background_sync.clone(),
-            index_path: self.index_path.clone(),
         }
     }
 }

@@ -1,55 +1,28 @@
+use crate::vector_store::{CachedMemoryEmbedIndex, MemoryVectorStore, PersistedChunkEmbedding};
 use crate::{
     MemoryBackend, MemoryDocument, MemoryEmbedConfig, MemoryGetRequest, MemorySearchHit,
-    MemorySearchRequest, MemorySearchResponse, MemorySyncStatus, Result, chunk_corpus,
-    lexical_score, load_configured_memory_corpus,
+    MemorySearchRequest, MemorySearchResponse, MemorySidecarLifecycle, MemorySidecarStatus,
+    MemoryStateLayout, MemorySyncStatus, Result, chunk_corpus, lexical_score,
+    load_configured_memory_corpus,
 };
 use async_trait::async_trait;
 use inference::{
     EmbeddingClient, ExpandedQueryKind, HttpEmbeddingClient, HttpQueryExpansionClient,
     HttpRerankClient, QueryExpansionClient, RerankClient, RerankDocument,
 };
-use serde::{Deserialize, Serialize};
+use rayon::prelude::*;
+use serde::Serialize;
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use store::RunStore;
+use wide::f32x8;
 
 const INDEX_SCHEMA_VERSION: u32 = 2;
 const INDEX_BACKEND_ID: &str = "memory-embed";
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct PersistedChunkEmbedding {
-    chunk_id: String,
-    path: String,
-    snapshot_id: String,
-    start_line: usize,
-    end_line: usize,
-    text: String,
-    embedding: Vec<f32>,
-}
-
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-struct PersistedMemoryEmbedIndex {
-    #[serde(default)]
-    schema_version: u32,
-    #[serde(default)]
-    backend: String,
-    #[serde(default)]
-    config_fingerprint: String,
-    #[serde(default)]
-    document_snapshots: BTreeMap<String, String>,
-    chunks: Vec<PersistedChunkEmbedding>,
-}
-
-#[derive(Clone, Debug, Default)]
-struct CachedMemoryEmbedIndex {
-    config_fingerprint: String,
-    document_snapshots: BTreeMap<String, String>,
-    chunks: BTreeMap<String, PersistedChunkEmbedding>,
-}
 
 #[derive(Clone, Debug)]
 struct WeightedQuery {
@@ -75,6 +48,7 @@ struct CandidateAccumulator {
     retrieval_score: f64,
     final_score: f64,
     rerank_score: Option<f64>,
+    rerank_relevant: Option<bool>,
     matched_streams: usize,
     applied_mmr: bool,
 }
@@ -86,25 +60,30 @@ pub struct MemoryEmbedBackend {
     query_expander: Option<Arc<dyn QueryExpansionClient>>,
     reranker: Option<Arc<dyn RerankClient>>,
     run_store: Option<Arc<dyn RunStore>>,
+    vector_store: MemoryVectorStore,
     state: RwLock<Option<CachedMemoryEmbedIndex>>,
 }
 
 impl MemoryEmbedBackend {
-    #[must_use]
     pub fn new(
         workspace_root: PathBuf,
         config: MemoryEmbedConfig,
         client: Arc<dyn EmbeddingClient>,
-    ) -> Self {
-        Self {
+    ) -> Result<Self> {
+        let vector_store = MemoryVectorStore::from_config(
+            &MemoryStateLayout::new(&workspace_root),
+            &config.vector_store,
+        )?;
+        Ok(Self {
             workspace_root,
             config,
             client,
             query_expander: None,
             reranker: None,
             run_store: None,
+            vector_store,
             state: RwLock::new(None),
-        }
+        })
     }
 
     #[must_use]
@@ -147,7 +126,7 @@ impl MemoryEmbedBackend {
             workspace_root,
             config,
             Arc::new(HttpEmbeddingClient::from_config(&embedding).map_err(map_inference_error)?),
-        )
+        )?
         .with_optional_clients(query_expander, reranker))
     }
 
@@ -172,16 +151,23 @@ impl MemoryEmbedBackend {
         }
         let snapshots_changed = cached.document_snapshots != current_snapshots;
         let mut changed = fingerprint_changed || snapshots_changed;
-        changed |= self.trim_cached_chunks(chunks, &mut cached);
+        let removed_chunk_ids = if fingerprint_changed {
+            BTreeSet::new()
+        } else {
+            self.trim_cached_chunks(chunks, &mut cached)
+        };
+        changed |= !removed_chunk_ids.is_empty();
         let titles = document_titles(corpus);
         let missing = chunks
             .iter()
             .filter(|chunk| !cached.chunks.contains_key(&chunk_id(chunk)))
             .cloned()
             .collect::<Vec<_>>();
+        let mut inserted_chunks = BTreeMap::new();
 
         if !missing.is_empty() {
             for entry in self.embed_missing_chunks(&missing, &titles).await? {
+                inserted_chunks.insert(entry.chunk_id.clone(), entry.clone());
                 cached.chunks.insert(entry.chunk_id.clone(), entry);
             }
             changed = true;
@@ -189,7 +175,14 @@ impl MemoryEmbedBackend {
         cached.config_fingerprint = current_fingerprint;
         cached.document_snapshots = current_snapshots;
         if changed {
-            self.persist_index(chunks, &cached).await?;
+            if fingerprint_changed {
+                self.persist_index(&cached).await?;
+            } else {
+                self.persist_incremental(&cached, &inserted_chunks, &removed_chunk_ids)
+                    .await?;
+            }
+        } else {
+            self.write_lifecycle(&cached, MemorySidecarStatus::Ready)?;
         }
 
         *self.state.write().expect("memory-embed write lock") = Some(cached.clone());
@@ -197,29 +190,20 @@ impl MemoryEmbedBackend {
     }
 
     async fn load_persisted_index(&self) -> Result<CachedMemoryEmbedIndex> {
-        let path = self.index_path();
-        let raw = match tokio::fs::read_to_string(&path).await {
-            Ok(raw) => raw,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(CachedMemoryEmbedIndex::default());
-            }
-            Err(error) => return Err(error.into()),
-        };
-        let persisted: PersistedMemoryEmbedIndex = serde_json::from_str(&raw)?;
-        if persisted.backend != INDEX_BACKEND_ID {
+        let Some(persisted) = self.state_layout().load_lifecycle(INDEX_BACKEND_ID)? else {
             return Ok(CachedMemoryEmbedIndex::default());
-        }
-        if persisted.schema_version != INDEX_SCHEMA_VERSION {
+        };
+        if persisted.backend != INDEX_BACKEND_ID
+            || persisted.status != MemorySidecarStatus::Ready
+            || persisted.schema_version != INDEX_SCHEMA_VERSION
+            || persisted.vector_store != self.vector_store.kind().as_str()
+        {
             return Ok(CachedMemoryEmbedIndex::default());
         }
         Ok(CachedMemoryEmbedIndex {
             config_fingerprint: persisted.config_fingerprint,
             document_snapshots: persisted.document_snapshots,
-            chunks: persisted
-                .chunks
-                .into_iter()
-                .map(|entry| (entry.chunk_id.clone(), entry))
-                .collect(),
+            chunks: self.vector_store.load_chunks().await?,
         })
     }
 
@@ -227,13 +211,18 @@ impl MemoryEmbedBackend {
         &self,
         chunks: &[crate::MemoryCorpusChunk],
         cached: &mut CachedMemoryEmbedIndex,
-    ) -> bool {
-        let valid_ids = chunks.iter().map(chunk_id).collect::<Vec<_>>();
-        let before = cached.chunks.len();
+    ) -> BTreeSet<String> {
+        let valid_ids = chunks.iter().map(chunk_id).collect::<HashSet<_>>();
+        let removed = cached
+            .chunks
+            .keys()
+            .filter(|chunk_id| !valid_ids.contains(chunk_id.as_str()))
+            .cloned()
+            .collect::<BTreeSet<_>>();
         cached
             .chunks
-            .retain(|chunk_id, _| valid_ids.iter().any(|valid| valid == chunk_id));
-        cached.chunks.len() != before
+            .retain(|chunk_id, _| valid_ids.contains(chunk_id.as_str()));
+        removed
     }
 
     async fn embed_missing_chunks(
@@ -334,35 +323,53 @@ impl MemoryEmbedBackend {
         Ok(stable_digest(&encoded))
     }
 
-    async fn persist_index(
-        &self,
-        chunks: &[crate::MemoryCorpusChunk],
-        cached: &CachedMemoryEmbedIndex,
-    ) -> Result<()> {
-        let valid_ids = chunks.iter().map(chunk_id).collect::<Vec<_>>();
-        let persisted = PersistedMemoryEmbedIndex {
-            schema_version: INDEX_SCHEMA_VERSION,
-            backend: INDEX_BACKEND_ID.to_string(),
-            config_fingerprint: cached.config_fingerprint.clone(),
-            document_snapshots: cached.document_snapshots.clone(),
-            chunks: valid_ids
-                .iter()
-                .filter_map(|chunk_id| cached.chunks.get(chunk_id).cloned())
-                .collect(),
-        };
-        let path = self.index_path();
-        if let Some(parent) = path.parent() {
-            tokio::fs::create_dir_all(parent).await?;
-        }
-        tokio::fs::write(&path, serde_json::to_vec_pretty(&persisted)?).await?;
-        Ok(())
+    async fn persist_index(&self, cached: &CachedMemoryEmbedIndex) -> Result<()> {
+        self.write_lifecycle(cached, MemorySidecarStatus::Rebuilding)?;
+        self.vector_store.replace_chunks(&cached.chunks).await?;
+        self.write_lifecycle(cached, MemorySidecarStatus::Ready)
     }
 
-    fn index_path(&self) -> PathBuf {
-        self.config.index_path.clone().unwrap_or_else(|| {
-            self.workspace_root
-                .join(".nanoclaw/memory/memory-embed.json")
-        })
+    async fn persist_incremental(
+        &self,
+        cached: &CachedMemoryEmbedIndex,
+        inserted_chunks: &BTreeMap<String, PersistedChunkEmbedding>,
+        removed_chunk_ids: &BTreeSet<String>,
+    ) -> Result<()> {
+        self.write_lifecycle(cached, MemorySidecarStatus::Rebuilding)?;
+        if !removed_chunk_ids.is_empty() {
+            self.vector_store.delete_chunks(removed_chunk_ids).await?;
+        }
+        if !inserted_chunks.is_empty() {
+            self.vector_store.upsert_chunks(inserted_chunks).await?;
+        }
+        self.write_lifecycle(cached, MemorySidecarStatus::Ready)
+    }
+
+    fn state_layout(&self) -> MemoryStateLayout {
+        MemoryStateLayout::new(&self.workspace_root)
+    }
+
+    fn write_lifecycle(
+        &self,
+        cached: &CachedMemoryEmbedIndex,
+        status: MemorySidecarStatus,
+    ) -> Result<()> {
+        self.state_layout().write_lifecycle(
+            INDEX_BACKEND_ID,
+            MemorySidecarLifecycle {
+                backend: INDEX_BACKEND_ID.to_string(),
+                status,
+                vector_store: self.vector_store.kind().as_str().to_string(),
+                schema_version: INDEX_SCHEMA_VERSION,
+                config_fingerprint: cached.config_fingerprint.clone(),
+                indexed_chunk_count: cached.chunks.len(),
+                indexed_document_count: cached.document_snapshots.len(),
+                artifact_path: self.vector_store.artifact_path().relative_display(),
+                document_snapshots: cached.document_snapshots.clone(),
+                ..MemorySidecarLifecycle::default()
+            },
+        )?;
+        Ok(())
     }
 
     fn embedding_model(&self) -> &str {
@@ -559,15 +566,18 @@ impl MemoryEmbedBackend {
         {
             let normalized_retrieval = candidate.retrieval_score / max_retrieval;
             let (retrieval_weight, rerank_weight) = rerank_blend_weights(position);
-            let rerank_score = if judgment.relevant {
-                judgment.confidence
+            // Rerank is the only stage that can explicitly veto a high-retrieval
+            // false positive. Encode it as a signed signal so "irrelevant"
+            // judgments actively demote instead of merely withholding a bonus.
+            let rerank_signal = if judgment.relevant {
+                judgment.confidence.clamp(0.0, 1.0)
             } else {
-                0.0
+                -judgment.confidence.clamp(0.0, 1.0)
             };
-            let clamped_rerank = rerank_score.clamp(0.0, 1.0);
-            candidate.rerank_score = Some(clamped_rerank);
+            candidate.rerank_relevant = Some(judgment.relevant);
+            candidate.rerank_score = Some(rerank_signal);
             candidate.final_score =
-                (normalized_retrieval * retrieval_weight) + (clamped_rerank * rerank_weight);
+                (normalized_retrieval * retrieval_weight) + (rerank_signal * rerank_weight);
         }
         Ok((rerank_pool, true, false))
     }
@@ -638,6 +648,8 @@ impl MemoryBackend for MemoryEmbedBackend {
         };
         let candidate_limit = self.candidate_limit(limit);
         let mut candidates = BTreeMap::<String, CandidateAccumulator>::new();
+        let mut vector_store_native_used = false;
+        let mut vector_store_native_fallback = false;
 
         for weighted_query in &weighted_queries {
             if matches!(
@@ -665,12 +677,31 @@ impl MemoryBackend for MemoryEmbedBackend {
                 if let Some(query_vectors) = query_vectors.as_ref()
                     && let Some(query_vector) = query_vectors.get(&query_key)
                 {
-                    let vector_ranked = ranked_vector_list(
-                        &filtered_chunks,
-                        &cached,
-                        query_vector,
-                        candidate_limit,
-                    );
+                    let vector_ranked = match self
+                        .vector_store
+                        .search(query_vector, prefix.as_deref(), candidate_limit)
+                        .await
+                    {
+                        Ok(Some(ranked)) => {
+                            vector_store_native_used = true;
+                            ranked
+                        }
+                        Ok(None) => ranked_vector_list(
+                            &filtered_chunks,
+                            &cached,
+                            query_vector,
+                            candidate_limit,
+                        ),
+                        Err(_) => {
+                            vector_store_native_fallback = true;
+                            ranked_vector_list(
+                                &filtered_chunks,
+                                &cached,
+                                query_vector,
+                                candidate_limit,
+                            )
+                        }
+                    };
                     apply_ranked_list(
                         &mut candidates,
                         &chunk_map,
@@ -712,6 +743,9 @@ impl MemoryBackend for MemoryEmbedBackend {
                 metadata.insert("mmr_applied".to_string(), json!(candidate.applied_mmr));
                 if let Some(rerank_score) = candidate.rerank_score {
                     metadata.insert("rerank_score".to_string(), json!(rerank_score));
+                }
+                if let Some(rerank_relevant) = candidate.rerank_relevant {
+                    metadata.insert("rerank_relevant".to_string(), json!(rerank_relevant));
                 }
                 if let Some(embedding) = &self.config.embedding {
                     metadata.insert("model".to_string(), json!(embedding.model));
@@ -763,8 +797,20 @@ impl MemoryBackend for MemoryEmbedBackend {
             json!(self.config.hybrid.mmr_lambda),
         );
         metadata.insert(
-            "index_path".to_string(),
-            json!(self.index_path().to_string_lossy().to_string()),
+            "vector_store_path".to_string(),
+            json!(self.vector_store.artifact_path().relative_display()),
+        );
+        metadata.insert(
+            "vector_store_kind".to_string(),
+            json!(self.vector_store.kind().as_str()),
+        );
+        metadata.insert(
+            "vector_store_native_used".to_string(),
+            json!(vector_store_native_used),
+        );
+        metadata.insert(
+            "vector_store_native_fallback".to_string(),
+            json!(vector_store_native_fallback),
         );
         metadata.insert("schema_version".to_string(), json!(INDEX_SCHEMA_VERSION));
         metadata.insert(
@@ -932,18 +978,21 @@ fn ranked_vector_list(
     query_vector: &[f32],
     limit: usize,
 ) -> Vec<(String, f64)> {
+    // Vector scoring is the dominant CPU path in hybrid retrieval. We parallelize
+    // chunk scoring so large corpora can saturate available cores.
     let mut ranked = chunks
-        .iter()
+        .par_iter()
         .filter_map(|chunk| {
+            let id = chunk_id(chunk);
             let score = cached
                 .chunks
-                .get(&chunk_id(chunk))
+                .get(&id)
                 .map(|entry| cosine_similarity(query_vector, &entry.embedding))
                 .unwrap_or(0.0);
-            (score > 0.0).then(|| (chunk_id(chunk), score))
+            (score > 0.0).then_some((id, score))
         })
         .collect::<Vec<_>>();
-    ranked.sort_by(compare_ranked_score);
+    ranked.par_sort_unstable_by(compare_ranked_score);
     ranked.truncate(limit);
     ranked
 }
@@ -987,6 +1036,7 @@ fn apply_ranked_list(
                 retrieval_score: 0.0,
                 final_score: 0.0,
                 rerank_score: None,
+                rerank_relevant: None,
                 matched_streams: 0,
                 applied_mmr: false,
             });
@@ -1024,9 +1074,15 @@ fn compare_candidates_by_final_score(
     right: &CandidateAccumulator,
 ) -> Ordering {
     right
-        .final_score
-        .partial_cmp(&left.final_score)
-        .unwrap_or(Ordering::Equal)
+        .rerank_relevant
+        .unwrap_or(false)
+        .cmp(&left.rerank_relevant.unwrap_or(false))
+        .then_with(|| {
+            right
+                .final_score
+                .partial_cmp(&left.final_score)
+                .unwrap_or(Ordering::Equal)
+        })
         .then_with(|| {
             right
                 .retrieval_score
@@ -1177,19 +1233,51 @@ fn cosine_similarity(left: &[f32], right: &[f32]) -> f64 {
     if left.len() != right.len() || left.is_empty() {
         return 0.0;
     }
-    let mut dot = 0.0f64;
-    let mut left_norm = 0.0f64;
-    let mut right_norm = 0.0f64;
-    for (lhs, rhs) in left.iter().zip(right.iter()) {
-        dot += f64::from(*lhs) * f64::from(*rhs);
-        left_norm += f64::from(*lhs) * f64::from(*lhs);
-        right_norm += f64::from(*rhs) * f64::from(*rhs);
+    const LANES: usize = 8;
+    let mut dot = f32x8::from([0.0; LANES]);
+    let mut left_norm = f32x8::from([0.0; LANES]);
+    let mut right_norm = f32x8::from([0.0; LANES]);
+    let mut index = 0usize;
+
+    while index + LANES <= left.len() {
+        let lhs = f32x8::from([
+            left[index],
+            left[index + 1],
+            left[index + 2],
+            left[index + 3],
+            left[index + 4],
+            left[index + 5],
+            left[index + 6],
+            left[index + 7],
+        ]);
+        let rhs = f32x8::from([
+            right[index],
+            right[index + 1],
+            right[index + 2],
+            right[index + 3],
+            right[index + 4],
+            right[index + 5],
+            right[index + 6],
+            right[index + 7],
+        ]);
+        dot += lhs * rhs;
+        left_norm += lhs * lhs;
+        right_norm += rhs * rhs;
+        index += LANES;
     }
-    let denom = left_norm.sqrt() * right_norm.sqrt();
+    let mut dot_sum = f64::from(dot.reduce_add());
+    let mut left_norm_sum = f64::from(left_norm.reduce_add());
+    let mut right_norm_sum = f64::from(right_norm.reduce_add());
+    for (lhs, rhs) in left[index..].iter().zip(&right[index..]) {
+        dot_sum += f64::from(*lhs) * f64::from(*rhs);
+        left_norm_sum += f64::from(*lhs) * f64::from(*lhs);
+        right_norm_sum += f64::from(*rhs) * f64::from(*rhs);
+    }
+    let denom = left_norm_sum.sqrt() * right_norm_sum.sqrt();
     if denom <= f64::EPSILON {
         0.0
     } else {
-        dot / denom
+        dot_sum / denom
     }
 }
 
@@ -1208,11 +1296,15 @@ fn render_embed_snippet(text: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        CachedMemoryEmbedIndex, CandidateAccumulator, MemoryEmbedBackend, PersistedChunkEmbedding,
+        CachedMemoryEmbedIndex, CandidateAccumulator, MemoryEmbedBackend,
         format_document_embedding_input, format_query_embedding_input, maybe_apply_mmr,
         rerank_blend_weights,
     };
-    use crate::{MemoryBackend, MemoryEmbedConfig, MemorySearchRequest};
+    use crate::vector_store::PersistedChunkEmbedding as MemoryVectorChunkRecord;
+    use crate::{
+        MemoryBackend, MemoryEmbedConfig, MemorySearchRequest, MemorySidecarStatus,
+        MemoryStateLayout,
+    };
     use async_trait::async_trait;
     use inference::{
         EmbeddingClient, EmbeddingConfig, ExpandedQuery, ExpandedQueryKind, LlmServiceConfig,
@@ -1298,7 +1390,8 @@ mod tests {
             dir.path().to_path_buf(),
             MemoryEmbedConfig::default(),
             Arc::new(MockEmbeddingClient::default()),
-        );
+        )
+        .unwrap();
         let response = backend
             .search(MemorySearchRequest {
                 query: "query".to_string(),
@@ -1330,16 +1423,46 @@ mod tests {
         let config = MemoryEmbedConfig::default();
 
         let backend =
-            MemoryEmbedBackend::new(dir.path().to_path_buf(), config.clone(), client.clone());
+            MemoryEmbedBackend::new(dir.path().to_path_buf(), config.clone(), client.clone())
+                .unwrap();
         backend.sync().await.unwrap();
         let first_calls = client.calls.lock().unwrap().clone();
         assert_eq!(first_calls.len(), 1);
         assert_eq!(first_calls[0].len(), 1);
 
-        let backend = MemoryEmbedBackend::new(dir.path().to_path_buf(), config, client.clone());
+        let backend =
+            MemoryEmbedBackend::new(dir.path().to_path_buf(), config, client.clone()).unwrap();
         backend.sync().await.unwrap();
         let second_calls = client.calls.lock().unwrap().clone();
         assert_eq!(second_calls.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn sync_writes_ready_lifecycle_manifest() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("MEMORY.md"), "semantic recall target")
+            .await
+            .unwrap();
+        let backend = MemoryEmbedBackend::new(
+            dir.path().to_path_buf(),
+            MemoryEmbedConfig::default(),
+            Arc::new(MockEmbeddingClient::default()),
+        )
+        .unwrap();
+
+        backend.sync().await.unwrap();
+
+        let lifecycle = MemoryStateLayout::new(dir.path())
+            .load_lifecycle("memory-embed")
+            .unwrap()
+            .unwrap();
+        assert_eq!(lifecycle.status, MemorySidecarStatus::Ready);
+        assert_eq!(lifecycle.vector_store, "sqlite");
+        assert_eq!(
+            lifecycle.artifact_path,
+            ".nanoclaw/memory/indexes/memory-embed.sqlite"
+        );
+        assert_eq!(lifecycle.indexed_document_count, 1);
     }
 
     #[tokio::test]
@@ -1352,7 +1475,8 @@ mod tests {
         let config = MemoryEmbedConfig::default();
 
         let backend =
-            MemoryEmbedBackend::new(dir.path().to_path_buf(), config.clone(), client.clone());
+            MemoryEmbedBackend::new(dir.path().to_path_buf(), config.clone(), client.clone())
+                .unwrap();
         backend.sync().await.unwrap();
         assert_eq!(client.calls.lock().unwrap().len(), 1);
 
@@ -1361,7 +1485,8 @@ mod tests {
             .await
             .unwrap();
 
-        let restarted = MemoryEmbedBackend::new(dir.path().to_path_buf(), config, client.clone());
+        let restarted =
+            MemoryEmbedBackend::new(dir.path().to_path_buf(), config, client.clone()).unwrap();
         restarted.sync().await.unwrap();
         assert_eq!(client.calls.lock().unwrap().len(), 2);
     }
@@ -1392,7 +1517,8 @@ mod tests {
             ..MemoryEmbedConfig::default()
         };
 
-        let backend = MemoryEmbedBackend::new(dir.path().to_path_buf(), config, client.clone());
+        let backend =
+            MemoryEmbedBackend::new(dir.path().to_path_buf(), config, client.clone()).unwrap();
         backend.sync().await.unwrap();
         let calls = client.calls.lock().unwrap().clone();
         assert_eq!(
@@ -1441,6 +1567,7 @@ mod tests {
             ..MemoryEmbedConfig::default()
         };
         let backend = MemoryEmbedBackend::new(dir.path().to_path_buf(), config, client)
+            .unwrap()
             .with_optional_clients(
                 Some(Arc::new(FixedQueryExpansionClient {
                     variants: vec![
@@ -1516,7 +1643,7 @@ mod tests {
             chunks: BTreeMap::from([
                 (
                     "a".to_string(),
-                    PersistedChunkEmbedding {
+                    MemoryVectorChunkRecord {
                         chunk_id: "a".to_string(),
                         path: "MEMORY.md".to_string(),
                         snapshot_id: "s1".to_string(),
@@ -1528,7 +1655,7 @@ mod tests {
                 ),
                 (
                     "b".to_string(),
-                    PersistedChunkEmbedding {
+                    MemoryVectorChunkRecord {
                         chunk_id: "b".to_string(),
                         path: "MEMORY.md".to_string(),
                         snapshot_id: "s1".to_string(),
@@ -1540,7 +1667,7 @@ mod tests {
                 ),
                 (
                     "c".to_string(),
-                    PersistedChunkEmbedding {
+                    MemoryVectorChunkRecord {
                         chunk_id: "c".to_string(),
                         path: "memory/other.md".to_string(),
                         snapshot_id: "s2".to_string(),
@@ -1569,6 +1696,7 @@ mod tests {
                 retrieval_score: 0.9,
                 final_score: 0.9,
                 rerank_score: None,
+                rerank_relevant: None,
                 matched_streams: 2,
                 applied_mmr: false,
             },
@@ -1587,6 +1715,7 @@ mod tests {
                 retrieval_score: 0.85,
                 final_score: 0.85,
                 rerank_score: None,
+                rerank_relevant: None,
                 matched_streams: 2,
                 applied_mmr: false,
             },
@@ -1605,6 +1734,7 @@ mod tests {
                 retrieval_score: 0.7,
                 final_score: 0.7,
                 rerank_score: None,
+                rerank_relevant: None,
                 matched_streams: 1,
                 applied_mmr: false,
             },

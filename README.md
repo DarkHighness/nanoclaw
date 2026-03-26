@@ -138,7 +138,7 @@ The file/env config layer applies only to the removable reference shell, and it 
 `apps/reference-tui` reads:
 
 - `agent-core.toml`
-- `.agent-core/config.toml`
+- `.nanoclaw/config.toml`
 - `.env`
 - `.env.local`
 - process environment variables

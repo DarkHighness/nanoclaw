@@ -8,6 +8,7 @@
 mod builder;
 mod plugin_boot;
 mod prelude;
+mod workspace_layout;
 
 pub use inference;
 pub use mcp;
@@ -23,3 +24,4 @@ pub use types;
 pub use builder::*;
 pub use plugin_boot::*;
 pub use prelude::*;
+pub use workspace_layout::*;

@@ -3,15 +3,13 @@
 //! This module is intentionally private to the reference shell. Substrate hosts
 //! should define their own configuration layer, or none at all.
 
-use agent::mcp::McpServerConfig;
+use agent::{AgentWorkspaceLayout, mcp::McpServerConfig};
 use agent_env::{EnvMap, vars};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-
-const CONFIG_FILE_CANDIDATES: &[&str] = &["agent-core.toml", ".agent-core/config.toml"];
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ProviderKind {
@@ -216,10 +214,7 @@ impl AgentCoreConfig {
 
     #[must_use]
     pub fn config_path(dir: impl AsRef<Path>) -> Option<PathBuf> {
-        CONFIG_FILE_CANDIDATES
-            .iter()
-            .map(|candidate| dir.as_ref().join(candidate))
-            .find(|candidate| candidate.exists())
+        AgentWorkspaceLayout::new(dir).config_path()
     }
 
     #[must_use]
@@ -236,7 +231,7 @@ impl AgentCoreConfig {
             .store_dir
             .as_deref()
             .map(|entry| resolve_relative_path(dir.as_ref(), entry))
-            .unwrap_or_else(|| dir.as_ref().join(".agent-core/store"))
+            .unwrap_or_else(|| AgentWorkspaceLayout::new(dir).store_dir())
     }
 
     #[must_use]
@@ -285,6 +280,7 @@ fn resolve_relative_path(base_dir: &Path, value: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::{AgentCoreConfig, ProviderKind};
+    use agent::AgentWorkspaceLayout;
     use std::path::PathBuf;
     use std::sync::{Mutex, OnceLock};
     use tempfile::tempdir;
@@ -322,7 +318,7 @@ mod tests {
     async fn loads_toml_config_and_resolves_skill_roots() {
         let _guard = env_test_lock().lock().unwrap();
         let dir = tempdir().unwrap();
-        fs::create_dir_all(dir.path().join(".agent-core"))
+        fs::create_dir_all(AgentWorkspaceLayout::new(dir.path()).state_dir())
             .await
             .unwrap();
         fs::write(
@@ -341,7 +337,7 @@ mod tests {
                 [runtime]
                 workspace_only = false
                 compact_preserve_recent_messages = 5
-                store_dir = ".agent-core/custom-store"
+                store_dir = ".nanoclaw/custom-store"
 
                 [tui]
                 command_prefix = ":"
@@ -358,7 +354,7 @@ mod tests {
                 enabled = true
 
                 [plugins.entries.memory-core.config]
-                index_path = ".nanoclaw/memory/index.sqlite"
+                vector_store = { kind = "sqlite", path = ".nanoclaw/memory/indexes/test.sqlite" }
             "#,
         )
         .await
@@ -377,7 +373,7 @@ mod tests {
         assert_eq!(config.runtime.compact_preserve_recent_messages, Some(5));
         assert_eq!(
             config.runtime.store_dir.as_deref(),
-            Some(".agent-core/custom-store")
+            Some(".nanoclaw/custom-store")
         );
         assert_eq!(config.tui.command_prefix, ":");
         assert_eq!(
@@ -406,13 +402,15 @@ mod tests {
                 .plugins
                 .entries
                 .get("memory-core")
-                .and_then(|entry| entry.config.get("index_path"))
+                .and_then(|entry| entry.config.get("vector_store"))
+                .and_then(toml::Value::as_table)
+                .and_then(|table| table.get("path"))
                 .and_then(toml::Value::as_str),
-            Some(".nanoclaw/memory/index.sqlite")
+            Some(".nanoclaw/memory/indexes/test.sqlite")
         );
         assert_eq!(
             config.resolved_store_dir(dir.path()),
-            dir.path().join(".agent-core/custom-store")
+            dir.path().join(".nanoclaw/custom-store")
         );
     }
 
@@ -443,7 +441,7 @@ mod tests {
             dir.path().join("agent-core.toml"),
             r#"
                 [runtime]
-                store_dir = ".agent-core/store"
+                store_dir = ".nanoclaw/store"
 
                 [tui]
                 command_prefix = ":"
@@ -454,10 +452,7 @@ mod tests {
 
         let config = AgentCoreConfig::load_from_dir(dir.path()).unwrap();
         assert!(config.runtime.workspace_only);
-        assert_eq!(
-            config.runtime.store_dir.as_deref(),
-            Some(".agent-core/store")
-        );
+        assert_eq!(config.runtime.store_dir.as_deref(), Some(".nanoclaw/store"));
         assert_eq!(config.tui.command_prefix, ":");
     }
 

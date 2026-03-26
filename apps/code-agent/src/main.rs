@@ -10,10 +10,10 @@ use agent::runtime::{
     RuntimeSubagentExecutor, ToolApprovalHandler,
 };
 use agent::{
-    AgentRuntime, AgentRuntimeBuilder, BashTool, EditTool, GlobTool, GrepTool, HookRunner,
-    HostProcessExecutor, InMemoryRunStore, ListTool, PatchTool, ReadTool, Skill, SkillCatalog,
-    TaskTool, TodoListState, TodoReadTool, TodoWriteTool, ToolExecutionContext, ToolRegistry,
-    WriteTool,
+    AgentRuntime, AgentRuntimeBuilder, AgentWorkspaceLayout, BashTool, EditTool, GlobTool,
+    GrepTool, HookRunner, HostProcessExecutor, InMemoryRunStore, ListTool, PatchTool, ReadTool,
+    Skill, SkillCatalog, TaskTool, TodoListState, TodoReadTool, TodoWriteTool,
+    ToolExecutionContext, ToolRegistry, WriteTool,
 };
 use agent_env::{EnvMap, vars};
 use anyhow::{Context, Result, bail};
@@ -32,8 +32,6 @@ const DEFAULT_ANTHROPIC_MODEL: &str = "claude-sonnet-4-6";
 const DEFAULT_CONTEXT_TOKENS: usize = 128_000;
 const DEFAULT_TRIGGER_TOKENS: usize = 96_000;
 const DEFAULT_PRESERVE_RECENT_MESSAGES: usize = 8;
-const CONFIG_FILE_CANDIDATES: &[&str] = &["agent-core.toml", ".agent-core/config.toml"];
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SelectedProvider {
     OpenAi,
@@ -197,7 +195,7 @@ fn main() -> Result<()> {
 }
 
 fn init_tracing(workspace_root: &Path) -> Result<WorkerGuard> {
-    let log_dir = workspace_root.join(".agent-core/logs");
+    let log_dir = AgentWorkspaceLayout::new(workspace_root).logs_dir();
     std::fs::create_dir_all(&log_dir).with_context(|| {
         format!(
             "failed to create tracing log directory at {}",
@@ -419,7 +417,10 @@ fn resolve_skill_roots(
 fn default_skill_roots(workspace_root: &Path) -> Vec<PathBuf> {
     let mut roots = Vec::new();
     push_if_exists(&mut roots, workspace_root.join(".codex/skills"));
-    push_if_exists(&mut roots, workspace_root.join(".agent-core/skills"));
+    push_if_exists(
+        &mut roots,
+        AgentWorkspaceLayout::new(workspace_root).skills_dir(),
+    );
     if let Some(home) = agent_env::home_dir() {
         push_if_exists(&mut roots, home.join(".codex/skills"));
     }
@@ -437,11 +438,7 @@ fn split_path_list(value: String) -> Vec<PathBuf> {
 }
 
 fn load_workspace_config(workspace_root: &Path) -> Result<WorkspaceConfig> {
-    let Some(path) = CONFIG_FILE_CANDIDATES
-        .iter()
-        .map(|candidate| workspace_root.join(candidate))
-        .find(|candidate| candidate.exists())
-    else {
+    let Some(path) = AgentWorkspaceLayout::new(workspace_root).config_path() else {
         return Ok(WorkspaceConfig::default());
     };
     let raw = std::fs::read_to_string(&path)

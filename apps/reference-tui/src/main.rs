@@ -1,3 +1,4 @@
+use agent::AgentWorkspaceLayout;
 use anyhow::{Context, Result};
 use std::path::Path;
 use tracing_appender::non_blocking::WorkerGuard;
@@ -15,7 +16,7 @@ async fn main() -> Result<()> {
 }
 
 fn init_tracing(workspace_root: &Path) -> Result<WorkerGuard> {
-    let log_dir = workspace_root.join(".agent-core/logs");
+    let log_dir = AgentWorkspaceLayout::new(workspace_root).logs_dir();
     std::fs::create_dir_all(&log_dir).with_context(|| {
         format!(
             "failed to create tracing log directory at {}",

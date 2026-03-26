@@ -9,16 +9,25 @@ inference = { path = "../inference" }
 store = { path = "../store" }
 tools = { path = "../tools" }
 types = { path = "../types" }
+arrow-array.workspace = true
+arrow-schema.workspace = true
 async-trait.workspace = true
+futures.workspace = true
 globset.workspace = true
 ignore.workspace = true
+lancedb.workspace = true
+rayon.workspace = true
 regex.workspace = true
+rusqlite.workspace = true
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
+sqlite-vec.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
+toml.workspace = true
+wide.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

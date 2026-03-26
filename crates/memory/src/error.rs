@@ -6,6 +6,10 @@ pub enum MemoryError {
     Io(#[from] std::io::Error),
     #[error("memory JSON error: {0}")]
     Json(#[from] serde_json::Error),
+    #[error("memory TOML decode error: {0}")]
+    TomlDecode(#[from] toml::de::Error),
+    #[error("memory TOML encode error: {0}")]
+    TomlEncode(#[from] toml::ser::Error),
     #[error("memory regex error: {0}")]
     Regex(#[from] regex::Error),
     #[error("memory glob error: {0}")]

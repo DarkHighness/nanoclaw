@@ -12,7 +12,9 @@ mod error;
 mod memory_core;
 mod memory_embed;
 mod runtime_exports;
+mod state;
 mod tools;
+mod vector_store;
 
 pub use backend::*;
 pub use config::*;
@@ -21,4 +23,5 @@ pub use error::*;
 pub use memory_core::*;
 pub use memory_embed::*;
 pub use runtime_exports::*;
+pub use state::*;
 pub use tools::*;

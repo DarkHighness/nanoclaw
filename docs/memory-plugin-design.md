@@ -100,6 +100,19 @@ That means:
 - configured extra Markdown roots are allowed if the plugin enables them
 - arbitrary workspace files are not treated as memory
 
+## Workspace-local memory state layout
+
+Every agent/worktree resolves `MemoryStateLayout::new(workspace_root)` at boot. The layout
+enforces a single workspace-local `.nanoclaw/memory` directory, rejects any `..`-path components,
+and keeps every agent’s memory state isolated from the legacy `.agent-core` bucket. The layout
+offers three pre-defined subpaths:
+
+- `indexes/`: vector artifacts such as `memory-embed.sqlite`, LanceDB tables, and JSON caches
+- `runtime/`: Markdown runtime exports and their document snapshots used to keep exported text fresh
+- `lifecycle/`: TOML manifests that track the backend id, schema version, config fingerprint, indexed document counts, artifact path, and `MemorySidecarStatus`
+
+Each lifecycle manifest follows the `MemorySidecarStatus` contract (`Ready`, `Rebuilding`, `Skipped`). Drivers write `Rebuilding` before a refresh, `Ready` once the sidecar is persisted, and `Skipped` when the source data (run store exports or chunk embedding requests) is disabled. Restarts reuse the manifest to decide whether to rebuild or safely reuse a cached sidecar.
+
 ### Shared result shape
 
 `memory_search` should return bounded, citation-ready hits:
@@ -221,8 +234,7 @@ The slot-specific config lives under the selected plugin entry:
 
 ```toml
 [plugins.entries.memory-core.config]
-include = ["MEMORY.md", "memory/**/*.md"]
-index_path = ".nanoclaw/memory/memory-core.sqlite"
+corpus.include_globs = ["MEMORY.md", "memory/**/*.md"]
 
 [plugins.entries.memory-core.config.chunking]
 target_tokens = 400
@@ -329,8 +341,9 @@ Encoding that as two plugins keeps slot selection honest and keeps each plugin c
 
 ### Backend model
 
-The current implementation maintains a local sidecar cache at
-`.nanoclaw/memory/memory-embed.json` unless `index_path` overrides it.
+The current implementation keeps vector artifacts under
+`.nanoclaw/memory/indexes/` and tracks them through lifecycle manifests under
+`.nanoclaw/memory/lifecycle/`.
 
 That cache stores:
 
@@ -340,6 +353,11 @@ That cache stores:
 - chunk embedding vectors
 - chunk text plus line metadata for stable hit reconstruction
 - enough line metadata to map hits back to the source Markdown corpus
+
+`memory-embed` supports two vector-store backends:
+
+- `sqlite`: persists authoritative chunk rows in SQLite and uses `sqlite-vec` for native KNN when no path-prefix filter is active
+- `lancedb`: persists chunk records in LanceDB and can run native vector search even when the query is constrained to a workspace path prefix
 
 Embedding generation comes from a configured provider, not from an in-process model runtime.
 
@@ -438,6 +456,32 @@ The implemented slice now includes:
 - optional service-backed reranking with position-aware blending
 - optional MMR-style duplicate suppression over the final pool
 
+### Vector store backends
+
+The durable vector/artifact layer now has two backends selectable through
+`MemoryVectorStoreConfig`:
+
+- `sqlite`: built on the sqlite-vec extension. The backend registers the extension via
+  `sqlite3_auto_extension(sqlite3_vec_init)` and manages two tables (`chunk_embeddings` for chunk
+  metadata and `chunk_vectors` for the vector index). Native vector queries (`MATCH vec_f32(...)`)
+  run entirely inside SQLite and return cosine distances as `1.0 - distance`. Prefix-filtered
+  queries fall back to the in-memory scorer because sqlite-vec does not accept arbitrary path
+  predicates.
+- `lancedb`: persists chunk metadata with Arrow record batches and exposes LanceDB’s cosine
+  distance search. Path prefixes are applied via `only_if("path LIKE 'prefix%' ESCAPE '\\\\'")`, and
+  scoring uses `DistanceType::Cosine`.
+
+Both backends expose `MemoryVectorStore::search`, which can decline a request by returning `None`
+when the native backend cannot satisfy the query shape (for example, a sqlite-vec query that also
+needs a path-prefix filter). In that case `memory-embed` falls back to its Rayon-powered in-memory
+ranking pipeline (`chunks.par_iter()`
+with `Wide`/`f32x8` cosine calculations) so retrieval still works while keeping native search fast
+when available.
+
+When new chunks arrive, the backend either incrementally upserts/deletes affected rows or rebuilds
+the store, then writes the lifecycle manifest describing the backend id, artifact path, schema
+version, config fingerprint, document/chunk counts, and status flags so future boots can detect
+whether the sidecar needs rebuilding.
 ### Runtime-backed memory features
 
 The implemented slice now also supports:

@@ -134,7 +134,8 @@ That matches the OpenClaw control-plane lesson and gives us a clean way to ship 
 
 ### Host config
 
-Plugin enablement lives inside `agent-core.toml`:
+Plugin enablement lives inside the workspace config, resolved from `agent-core.toml`
+first and then `.nanoclaw/config.toml`:
 
 ```toml
 [plugins]
@@ -163,6 +164,8 @@ Notes:
 - `deny` always wins over `allow`
 - slot selection is explicit and deterministic
 - plugin-specific config remains nested TOML, not free-form JSON
+- mutable host state no longer uses `.agent-core`; worktree-local state lives under
+  `.nanoclaw/` (`logs/`, `store/`, `skills/`, `memory/`)
 
 ### Plugin root
 
@@ -418,13 +421,22 @@ The intended control flow is:
 
 That means the manifest never "executes code" by itself. It selects compiled code that the host already knows how to construct.
 
+## Workspace memory layout requirements
+
+Because memory plugins manage persistent state, the host now enforces a workspace-local `.nanoclaw/memory`
+directory for every agent/worktree. Plugin discovery rejects roots that would escape the workspace via `..`,
+and the agent resolves three canonical subpaths (`indexes/`, `runtime/`, `lifecycle/`) through
+`MemoryStateLayout`. Lifecycle manifests describe which backend owns each artifact, how many chunks or runs
+it indexed, and whether it is `Ready`, `Rebuilding`, or `Skipped`, so the plugin system can reuse or rebuild
+sidecars deterministically without relying on a global host path.
+
 ## Host Boot Integration
 
 This is now the active boot model in both `apps/reference-tui` and `apps/code-agent`.
 
 Boot does:
 
-1. load `agent-core.toml`
+1. load workspace config from `agent-core.toml` or `.nanoclaw/config.toml`
 2. resolve plugin activation plan
 3. load skills from plan skill roots
 4. load hooks from plan hook files plus skill metadata
