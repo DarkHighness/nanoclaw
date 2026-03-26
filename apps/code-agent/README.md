@@ -98,18 +98,35 @@ If no skill roots are provided, it loads any existing directories from:
 The difference is that `code-agent` also supports a managed install path when `CODE_AGENT_LSP_AUTO_INSTALL=true`.
 If auto-install is disabled or the required package manager is unavailable, the code-intel tools fall back to the built-in lexical workspace index.
 
-Current managed server matrix:
+The implementation now keeps two layers separate on purpose:
+
+- language recognition decides whether a file can participate in semantic sync and which `languageId` it should use
+- server management decides whether the matching LSP can be started from `PATH`, auto-installed into the managed cache, or only used in fallback mode
+
+Current managed install matrix:
 
 - TypeScript / JavaScript: `typescript-language-server` via `npm`
+- HTML: `vscode-html-language-server` via `npm`
+- CSS / SCSS / Sass / Less: `vscode-css-language-server` via `npm`
+- JSON / JSONC: `vscode-json-language-server` via `npm`
 - Python: `python-lsp-server` (`pylsp`) via `python -m pip`
 - Go: `gopls` via `go install`
 - YAML: `yaml-language-server` via `npm`
 - Shell: `bash-language-server` via `npm`
+- Dockerfile / Containerfile: `docker-langserver` via `npm`
+- PHP: `intelephense` via `npm`
+- TOML: `taplo` via `cargo install`
+- SQL: `sqls` via `go install`
 
 Current auto-start-only matrix when the executable is already on `PATH`:
 
 - Rust: `rust-analyzer`
+- Java: `jdtls`
 - C / C++ / Objective-C: `clangd`
+
+Current recognized file/language matrix also covers a few editor-important filename cases that do
+not have useful extensions, including `Dockerfile*`, `Containerfile*`, `go.mod`, `go.sum`,
+`go.work`, and common shell rc files such as `.bashrc` and `.zshrc`.
 
 ## Commands
 

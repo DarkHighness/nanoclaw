@@ -441,7 +441,7 @@ impl ManagedLspRuntime {
             )));
         };
 
-        let server_root = self.options.install_root.join(spec.id);
+        let server_root = self.options.install_root.join(spec.install_id);
         std::fs::create_dir_all(&server_root).map_err(|error| {
             ToolError::invalid_state(format!(
                 "failed to create managed LSP install root {}: {error}",
@@ -529,6 +529,28 @@ impl ManagedLspRuntime {
                     sandbox_policy: self.install_policy.clone(),
                 }
             }
+            InstallStrategy::Cargo { package } => ExecRequest {
+                program: find_executable("cargo")
+                    .ok_or_else(|| {
+                        ToolError::invalid_state(
+                            "cargo is required for managed cargo-based LSP installs",
+                        )
+                    })?
+                    .display()
+                    .to_string(),
+                args: build_cargo_install_args(&server_root, package),
+                cwd: Some(server_root.clone()),
+                env: BTreeMap::new(),
+                stdin: ProcessStdio::Null,
+                stdout: ProcessStdio::Piped,
+                stderr: ProcessStdio::Piped,
+                kill_on_drop: true,
+                origin: ExecutionOrigin::HostUtility {
+                    name: format!("lsp-install-{}", spec.id),
+                },
+                runtime_scope: RuntimeScope::default(),
+                sandbox_policy: self.install_policy.clone(),
+            },
         };
 
         info!(
@@ -917,9 +939,52 @@ struct ResolvedCommand {
 #[derive(Clone, Copy)]
 struct LanguageServerSpec {
     id: &'static str,
+    install_id: &'static str,
     command: &'static str,
     args: &'static [&'static str],
     install: Option<InstallStrategy>,
+}
+
+#[derive(Clone, Copy)]
+struct LanguageSupport {
+    language_id: &'static str,
+    server: &'static LanguageServerSpec,
+    extensions: &'static [&'static str],
+    file_names: &'static [&'static str],
+    file_name_prefixes: &'static [&'static str],
+}
+
+impl LanguageSupport {
+    fn matches(&self, signature: &PathSignature) -> bool {
+        signature.extension.as_deref().is_some_and(|extension| {
+            self.extensions
+                .iter()
+                .any(|candidate| *candidate == extension)
+        }) || signature.file_name.as_deref().is_some_and(|file_name| {
+            self.file_names
+                .iter()
+                .any(|candidate| *candidate == file_name)
+                || self
+                    .file_name_prefixes
+                    .iter()
+                    .any(|candidate| file_name.starts_with(candidate))
+        })
+    }
+}
+
+#[derive(Default)]
+struct PathSignature {
+    extension: Option<String>,
+    file_name: Option<String>,
+}
+
+impl PathSignature {
+    fn from_path(path: &Path) -> Self {
+        Self {
+            extension: lowercase_extension(path),
+            file_name: lowercase_file_name(path),
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -927,10 +992,12 @@ enum InstallStrategy {
     Npm { packages: &'static [&'static str] },
     Go { module: &'static str },
     Pip { packages: &'static [&'static str] },
+    Cargo { package: &'static str },
 }
 
 const TYPESCRIPT_SPEC: LanguageServerSpec = LanguageServerSpec {
     id: "typescript",
+    install_id: "typescript",
     command: "typescript-language-server",
     args: &["--stdio"],
     install: Some(InstallStrategy::Npm {
@@ -938,8 +1005,39 @@ const TYPESCRIPT_SPEC: LanguageServerSpec = LanguageServerSpec {
     }),
 };
 
+const HTML_SPEC: LanguageServerSpec = LanguageServerSpec {
+    id: "html",
+    install_id: "html",
+    command: "vscode-html-language-server",
+    args: &["--stdio"],
+    install: Some(InstallStrategy::Npm {
+        packages: &["vscode-langservers-extracted"],
+    }),
+};
+
+const CSS_SPEC: LanguageServerSpec = LanguageServerSpec {
+    id: "css",
+    install_id: "css",
+    command: "vscode-css-language-server",
+    args: &["--stdio"],
+    install: Some(InstallStrategy::Npm {
+        packages: &["vscode-langservers-extracted"],
+    }),
+};
+
+const JSON_SPEC: LanguageServerSpec = LanguageServerSpec {
+    id: "json",
+    install_id: "json",
+    command: "vscode-json-language-server",
+    args: &["--stdio"],
+    install: Some(InstallStrategy::Npm {
+        packages: &["vscode-langservers-extracted"],
+    }),
+};
+
 const PYTHON_SPEC: LanguageServerSpec = LanguageServerSpec {
     id: "python",
+    install_id: "python",
     command: "pylsp",
     args: &[],
     install: Some(InstallStrategy::Pip {
@@ -949,6 +1047,7 @@ const PYTHON_SPEC: LanguageServerSpec = LanguageServerSpec {
 
 const GO_SPEC: LanguageServerSpec = LanguageServerSpec {
     id: "go",
+    install_id: "go",
     command: "gopls",
     args: &[],
     install: Some(InstallStrategy::Go {
@@ -958,6 +1057,7 @@ const GO_SPEC: LanguageServerSpec = LanguageServerSpec {
 
 const YAML_SPEC: LanguageServerSpec = LanguageServerSpec {
     id: "yaml",
+    install_id: "yaml",
     command: "yaml-language-server",
     args: &["--stdio"],
     install: Some(InstallStrategy::Npm {
@@ -967,6 +1067,7 @@ const YAML_SPEC: LanguageServerSpec = LanguageServerSpec {
 
 const SHELL_SPEC: LanguageServerSpec = LanguageServerSpec {
     id: "shell",
+    install_id: "shell",
     command: "bash-language-server",
     args: &["start"],
     install: Some(InstallStrategy::Npm {
@@ -974,51 +1075,292 @@ const SHELL_SPEC: LanguageServerSpec = LanguageServerSpec {
     }),
 };
 
+const DOCKERFILE_SPEC: LanguageServerSpec = LanguageServerSpec {
+    id: "dockerfile",
+    install_id: "dockerfile",
+    command: "docker-langserver",
+    args: &["--stdio"],
+    install: Some(InstallStrategy::Npm {
+        packages: &["dockerfile-language-server-nodejs"],
+    }),
+};
+
+const PHP_SPEC: LanguageServerSpec = LanguageServerSpec {
+    id: "php",
+    install_id: "php",
+    command: "intelephense",
+    args: &["--stdio"],
+    install: Some(InstallStrategy::Npm {
+        packages: &["intelephense"],
+    }),
+};
+
+const TOML_SPEC: LanguageServerSpec = LanguageServerSpec {
+    id: "toml",
+    install_id: "toml",
+    command: "taplo",
+    args: &["lsp", "stdio"],
+    install: Some(InstallStrategy::Cargo {
+        package: "taplo-cli",
+    }),
+};
+
+const SQL_SPEC: LanguageServerSpec = LanguageServerSpec {
+    id: "sql",
+    install_id: "sql",
+    command: "sqls",
+    args: &[],
+    install: Some(InstallStrategy::Go {
+        module: "github.com/sqls-server/sqls@latest",
+    }),
+};
+
 const RUST_SPEC: LanguageServerSpec = LanguageServerSpec {
     id: "rust",
+    install_id: "rust",
     command: "rust-analyzer",
+    args: &[],
+    install: None,
+};
+
+const JAVA_SPEC: LanguageServerSpec = LanguageServerSpec {
+    id: "java",
+    install_id: "java",
+    command: "jdtls",
     args: &[],
     install: None,
 };
 
 const CLANGD_SPEC: LanguageServerSpec = LanguageServerSpec {
     id: "clangd",
+    install_id: "clangd",
     command: "clangd",
     args: &[],
     install: None,
 };
 
+// Language recognition is intentionally separate from server installation and launching.
+// Several language ids can share one server binary, while install support remains a property
+// of the server itself rather than of the file-extension matching layer.
+const SUPPORTED_LANGUAGES: &[LanguageSupport] = &[
+    LanguageSupport {
+        language_id: "typescript",
+        server: &TYPESCRIPT_SPEC,
+        extensions: &["ts", "mts", "cts"],
+        file_names: &[],
+        file_name_prefixes: &[],
+    },
+    LanguageSupport {
+        language_id: "typescriptreact",
+        server: &TYPESCRIPT_SPEC,
+        extensions: &["tsx"],
+        file_names: &[],
+        file_name_prefixes: &[],
+    },
+    LanguageSupport {
+        language_id: "javascript",
+        server: &TYPESCRIPT_SPEC,
+        extensions: &["js", "mjs", "cjs"],
+        file_names: &[],
+        file_name_prefixes: &[],
+    },
+    LanguageSupport {
+        language_id: "javascriptreact",
+        server: &TYPESCRIPT_SPEC,
+        extensions: &["jsx"],
+        file_names: &[],
+        file_name_prefixes: &[],
+    },
+    LanguageSupport {
+        language_id: "html",
+        server: &HTML_SPEC,
+        extensions: &["html", "htm", "xhtml"],
+        file_names: &[],
+        file_name_prefixes: &[],
+    },
+    LanguageSupport {
+        language_id: "css",
+        server: &CSS_SPEC,
+        extensions: &["css"],
+        file_names: &[],
+        file_name_prefixes: &[],
+    },
+    LanguageSupport {
+        language_id: "scss",
+        server: &CSS_SPEC,
+        extensions: &["scss"],
+        file_names: &[],
+        file_name_prefixes: &[],
+    },
+    LanguageSupport {
+        language_id: "sass",
+        server: &CSS_SPEC,
+        extensions: &["sass"],
+        file_names: &[],
+        file_name_prefixes: &[],
+    },
+    LanguageSupport {
+        language_id: "less",
+        server: &CSS_SPEC,
+        extensions: &["less"],
+        file_names: &[],
+        file_name_prefixes: &[],
+    },
+    LanguageSupport {
+        language_id: "json",
+        server: &JSON_SPEC,
+        extensions: &["json"],
+        file_names: &[],
+        file_name_prefixes: &[],
+    },
+    LanguageSupport {
+        language_id: "jsonc",
+        server: &JSON_SPEC,
+        extensions: &["jsonc", "code-workspace"],
+        file_names: &[],
+        file_name_prefixes: &[],
+    },
+    LanguageSupport {
+        language_id: "python",
+        server: &PYTHON_SPEC,
+        extensions: &["py", "pyi"],
+        file_names: &[],
+        file_name_prefixes: &[],
+    },
+    LanguageSupport {
+        language_id: "go",
+        server: &GO_SPEC,
+        extensions: &["go"],
+        file_names: &[],
+        file_name_prefixes: &[],
+    },
+    LanguageSupport {
+        language_id: "go.mod",
+        server: &GO_SPEC,
+        extensions: &[],
+        file_names: &["go.mod"],
+        file_name_prefixes: &[],
+    },
+    LanguageSupport {
+        language_id: "go.sum",
+        server: &GO_SPEC,
+        extensions: &[],
+        file_names: &["go.sum"],
+        file_name_prefixes: &[],
+    },
+    LanguageSupport {
+        language_id: "go.work",
+        server: &GO_SPEC,
+        extensions: &[],
+        file_names: &["go.work"],
+        file_name_prefixes: &[],
+    },
+    LanguageSupport {
+        language_id: "yaml",
+        server: &YAML_SPEC,
+        extensions: &["yaml", "yml"],
+        file_names: &[],
+        file_name_prefixes: &[],
+    },
+    LanguageSupport {
+        language_id: "shellscript",
+        server: &SHELL_SPEC,
+        extensions: &["sh", "bash", "zsh", "ksh"],
+        file_names: &[
+            ".bashrc",
+            ".bash_profile",
+            ".profile",
+            ".zshrc",
+            ".zprofile",
+            ".kshrc",
+        ],
+        file_name_prefixes: &[],
+    },
+    LanguageSupport {
+        language_id: "dockerfile",
+        server: &DOCKERFILE_SPEC,
+        extensions: &["dockerfile"],
+        file_names: &["dockerfile", "containerfile"],
+        file_name_prefixes: &["dockerfile.", "containerfile."],
+    },
+    LanguageSupport {
+        language_id: "php",
+        server: &PHP_SPEC,
+        extensions: &["php", "phtml"],
+        file_names: &[],
+        file_name_prefixes: &[],
+    },
+    LanguageSupport {
+        language_id: "toml",
+        server: &TOML_SPEC,
+        extensions: &["toml"],
+        file_names: &[],
+        file_name_prefixes: &[],
+    },
+    LanguageSupport {
+        language_id: "sql",
+        server: &SQL_SPEC,
+        extensions: &["sql"],
+        file_names: &[],
+        file_name_prefixes: &[],
+    },
+    LanguageSupport {
+        language_id: "rust",
+        server: &RUST_SPEC,
+        extensions: &["rs"],
+        file_names: &[],
+        file_name_prefixes: &[],
+    },
+    LanguageSupport {
+        language_id: "java",
+        server: &JAVA_SPEC,
+        extensions: &["java"],
+        file_names: &[],
+        file_name_prefixes: &[],
+    },
+    LanguageSupport {
+        language_id: "c",
+        server: &CLANGD_SPEC,
+        extensions: &["c", "h"],
+        file_names: &[],
+        file_name_prefixes: &[],
+    },
+    LanguageSupport {
+        language_id: "cpp",
+        server: &CLANGD_SPEC,
+        extensions: &["cc", "cpp", "cxx", "c++", "hpp", "hh", "hxx"],
+        file_names: &[],
+        file_name_prefixes: &[],
+    },
+    LanguageSupport {
+        language_id: "objective-c",
+        server: &CLANGD_SPEC,
+        extensions: &["m"],
+        file_names: &[],
+        file_name_prefixes: &[],
+    },
+    LanguageSupport {
+        language_id: "objective-cpp",
+        server: &CLANGD_SPEC,
+        extensions: &["mm"],
+        file_names: &[],
+        file_name_prefixes: &[],
+    },
+];
+
+fn language_support_for_path(path: &Path) -> Option<&'static LanguageSupport> {
+    let signature = PathSignature::from_path(path);
+    SUPPORTED_LANGUAGES
+        .iter()
+        .find(|support| support.matches(&signature))
+}
+
 fn server_spec_for_path(path: &Path) -> Option<&'static LanguageServerSpec> {
-    let ext = path.extension()?.to_str()?.to_ascii_lowercase();
-    match ext.as_str() {
-        "ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs" | "mts" | "cts" => Some(&TYPESCRIPT_SPEC),
-        "py" | "pyi" => Some(&PYTHON_SPEC),
-        "go" => Some(&GO_SPEC),
-        "yaml" | "yml" => Some(&YAML_SPEC),
-        "sh" | "bash" | "zsh" | "ksh" => Some(&SHELL_SPEC),
-        "rs" => Some(&RUST_SPEC),
-        "c" | "h" | "cc" | "cpp" | "cxx" | "hpp" | "hh" | "hxx" | "m" | "mm" => Some(&CLANGD_SPEC),
-        _ => None,
-    }
+    language_support_for_path(path).map(|support| support.server)
 }
 
 fn language_id_for_path(path: &Path) -> Option<&'static str> {
-    let ext = path.extension()?.to_str()?.to_ascii_lowercase();
-    match ext.as_str() {
-        "ts" | "mts" | "cts" => Some("typescript"),
-        "tsx" => Some("typescriptreact"),
-        "js" | "mjs" | "cjs" => Some("javascript"),
-        "jsx" => Some("javascriptreact"),
-        "py" | "pyi" => Some("python"),
-        "go" => Some("go"),
-        "yaml" | "yml" => Some("yaml"),
-        "sh" | "bash" | "zsh" | "ksh" => Some("shellscript"),
-        "rs" => Some("rust"),
-        "c" => Some("c"),
-        "h" => Some("c"),
-        "cc" | "cpp" | "cxx" | "hpp" | "hh" | "hxx" | "m" | "mm" => Some("cpp"),
-        _ => None,
-    }
+    language_support_for_path(path).map(|support| support.language_id)
 }
 
 fn resolve_existing_command(
@@ -1041,15 +1383,15 @@ fn resolve_existing_command(
 }
 
 fn managed_executable_path(install_root: &Path, spec: &'static LanguageServerSpec) -> PathBuf {
-    let server_root = install_root.join(spec.id);
+    let server_root = install_root.join(spec.install_id);
     match spec.install {
         Some(InstallStrategy::Npm { .. }) => server_root
             .join("node_modules")
             .join(".bin")
             .join(spec.command),
-        Some(InstallStrategy::Go { .. }) | Some(InstallStrategy::Pip { .. }) => {
-            server_root.join("bin").join(spec.command)
-        }
+        Some(InstallStrategy::Go { .. })
+        | Some(InstallStrategy::Pip { .. })
+        | Some(InstallStrategy::Cargo { .. }) => server_root.join("bin").join(spec.command),
         None => server_root.join(spec.command),
     }
 }
@@ -1076,6 +1418,24 @@ fn build_pip_install_args(server_root: &Path, packages: &[&str]) -> Vec<String> 
     ];
     args.extend(packages.iter().map(|value| (*value).to_string()));
     args
+}
+
+fn build_cargo_install_args(server_root: &Path, package: &str) -> Vec<String> {
+    vec![
+        "install".to_string(),
+        "--root".to_string(),
+        server_root.display().to_string(),
+        "--locked".to_string(),
+        package.to_string(),
+    ]
+}
+
+fn lowercase_extension(path: &Path) -> Option<String> {
+    path.extension()?.to_str().map(str::to_ascii_lowercase)
+}
+
+fn lowercase_file_name(path: &Path) -> Option<String> {
+    path.file_name()?.to_str().map(str::to_ascii_lowercase)
 }
 
 fn find_executable(name: &str) -> Option<PathBuf> {
@@ -1425,10 +1785,12 @@ fn compact_line(line: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        CLANGD_SPEC, GO_SPEC, PYTHON_SPEC, RUST_SPEC, SHELL_SPEC, TYPESCRIPT_SPEC, YAML_SPEC,
-        build_npm_install_args, build_pip_install_args, file_uri_from_path, file_uri_to_path,
-        identifier_at_position, language_id_for_path, managed_executable_path, merge_symbols,
-        parse_location_like, parse_symbol_kind, server_spec_for_path,
+        CLANGD_SPEC, DOCKERFILE_SPEC, GO_SPEC, HTML_SPEC, JAVA_SPEC, JSON_SPEC, PHP_SPEC,
+        PYTHON_SPEC, RUST_SPEC, SHELL_SPEC, SQL_SPEC, TOML_SPEC, TYPESCRIPT_SPEC, YAML_SPEC,
+        build_cargo_install_args, build_npm_install_args, build_pip_install_args,
+        file_uri_from_path, file_uri_to_path, identifier_at_position, language_id_for_path,
+        managed_executable_path, merge_symbols, parse_location_like, parse_symbol_kind,
+        server_spec_for_path,
     };
     use crate::code_intel::{CodeLocation, CodeSymbol, CodeSymbolKind};
     use serde_json::json;
@@ -1439,6 +1801,18 @@ mod tests {
         assert_eq!(
             server_spec_for_path(Path::new("src/app.ts")).unwrap().id,
             TYPESCRIPT_SPEC.id
+        );
+        assert_eq!(
+            server_spec_for_path(Path::new("templates/index.html"))
+                .unwrap()
+                .id,
+            HTML_SPEC.id
+        );
+        assert_eq!(
+            server_spec_for_path(Path::new("config/settings.json"))
+                .unwrap()
+                .id,
+            JSON_SPEC.id
         );
         assert_eq!(
             server_spec_for_path(Path::new("src/main.py")).unwrap().id,
@@ -1463,8 +1837,34 @@ mod tests {
             SHELL_SPEC.id
         );
         assert_eq!(
+            server_spec_for_path(Path::new(".bashrc")).unwrap().id,
+            SHELL_SPEC.id
+        );
+        assert_eq!(
+            server_spec_for_path(Path::new("Dockerfile")).unwrap().id,
+            DOCKERFILE_SPEC.id
+        );
+        assert_eq!(
+            server_spec_for_path(Path::new("php/index.php")).unwrap().id,
+            PHP_SPEC.id
+        );
+        assert_eq!(
+            server_spec_for_path(Path::new("Cargo.toml")).unwrap().id,
+            TOML_SPEC.id
+        );
+        assert_eq!(
+            server_spec_for_path(Path::new("queries/report.sql"))
+                .unwrap()
+                .id,
+            SQL_SPEC.id
+        );
+        assert_eq!(
             server_spec_for_path(Path::new("src/main.cpp")).unwrap().id,
             CLANGD_SPEC.id
+        );
+        assert_eq!(
+            server_spec_for_path(Path::new("src/Main.java")).unwrap().id,
+            JAVA_SPEC.id
         );
     }
 
@@ -1478,8 +1878,49 @@ mod tests {
             language_id_for_path(Path::new("x.jsx")),
             Some("javascriptreact")
         );
+        assert_eq!(
+            language_id_for_path(Path::new("styles/app.scss")),
+            Some("scss")
+        );
+        assert_eq!(
+            language_id_for_path(Path::new("settings.code-workspace")),
+            Some("jsonc")
+        );
         assert_eq!(language_id_for_path(Path::new("x.yaml")), Some("yaml"));
         assert_eq!(language_id_for_path(Path::new("x.go")), Some("go"));
+        assert_eq!(language_id_for_path(Path::new("go.mod")), Some("go.mod"));
+        assert_eq!(
+            language_id_for_path(Path::new("Dockerfile.dev")),
+            Some("dockerfile")
+        );
+        assert_eq!(
+            language_id_for_path(Path::new("src/main.m")),
+            Some("objective-c")
+        );
+    }
+
+    #[test]
+    fn language_detection_is_separate_from_server_installation() {
+        assert_eq!(
+            server_spec_for_path(Path::new("frontend/app.ts"))
+                .unwrap()
+                .id,
+            TYPESCRIPT_SPEC.id
+        );
+        assert_eq!(
+            server_spec_for_path(Path::new("frontend/app.jsx"))
+                .unwrap()
+                .id,
+            TYPESCRIPT_SPEC.id
+        );
+        assert_eq!(
+            language_id_for_path(Path::new("frontend/app.ts")),
+            Some("typescript")
+        );
+        assert_eq!(
+            language_id_for_path(Path::new("frontend/app.jsx")),
+            Some("javascriptreact")
+        );
     }
 
     #[test]
@@ -1512,12 +1953,24 @@ mod tests {
             root.join("typescript/node_modules/.bin/typescript-language-server")
         );
         assert_eq!(
+            managed_executable_path(root, &HTML_SPEC),
+            root.join("html/node_modules/.bin/vscode-html-language-server")
+        );
+        assert_eq!(
             managed_executable_path(root, &PYTHON_SPEC),
             root.join("python/bin/pylsp")
         );
         assert_eq!(
             managed_executable_path(root, &GO_SPEC),
             root.join("go/bin/gopls")
+        );
+        assert_eq!(
+            managed_executable_path(root, &TOML_SPEC),
+            root.join("toml/bin/taplo")
+        );
+        assert_eq!(
+            managed_executable_path(root, &SQL_SPEC),
+            root.join("sql/bin/sqls")
         );
     }
 
@@ -1546,6 +1999,10 @@ mod tests {
                 "/tmp/server",
                 "python-lsp-server",
             ]
+        );
+        assert_eq!(
+            build_cargo_install_args(root, "taplo-cli"),
+            vec!["install", "--root", "/tmp/server", "--locked", "taplo-cli",]
         );
     }
 
