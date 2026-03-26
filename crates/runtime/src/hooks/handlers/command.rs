@@ -56,6 +56,19 @@ impl DefaultCommandHookExecutor {
             sandbox_policy: SandboxPolicy::default(),
         }
     }
+
+    #[must_use]
+    pub fn with_process_executor_and_policy(
+        extra_env: BTreeMap<String, String>,
+        process_executor: Arc<dyn ProcessExecutor>,
+        sandbox_policy: SandboxPolicy,
+    ) -> Self {
+        Self {
+            extra_env,
+            process_executor,
+            sandbox_policy,
+        }
+    }
 }
 
 #[async_trait]

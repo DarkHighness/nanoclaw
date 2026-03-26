@@ -279,6 +279,17 @@ impl BashTool {
             sandbox_policy: SandboxPolicy::default(),
         }
     }
+
+    #[must_use]
+    pub fn with_process_executor_and_policy(
+        process_executor: Arc<dyn ProcessExecutor>,
+        sandbox_policy: SandboxPolicy,
+    ) -> Self {
+        Self {
+            process_executor,
+            sandbox_policy,
+        }
+    }
 }
 
 #[async_trait]

@@ -21,8 +21,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use store::{FileRunStore, InMemoryRunStore, RunStore};
 use tools::{
-    BashTool, EditTool, GlobTool, GrepTool, HostProcessExecutor, ListTool, PatchTool, ReadTool,
-    ToolExecutionContext, ToolRegistry, WriteTool,
+    BashTool, EditTool, GlobTool, GrepTool, ListTool, ManagedPolicyProcessExecutor, PatchTool,
+    ReadTool, SandboxPolicy, ToolExecutionContext, ToolRegistry, WriteTool,
 };
 #[cfg(feature = "web-tools")]
 use tools::{WebFetchTool, WebSearchTool};
@@ -99,12 +99,23 @@ async fn bootstrap_from_parts(
     let backend =
         Arc::new(build_backend(&config).context("failed to initialize provider backend")?);
     let provider_summary = provider_summary(&config, &backend);
-    let process_executor = Arc::new(HostProcessExecutor);
+    let tool_context = ToolExecutionContext {
+        workspace_root: workspace_root.clone(),
+        worktree_root: Some(workspace_root.clone()),
+        workspace_only: config.runtime.workspace_only,
+        model_context_window_tokens: Some(context_tokens(&config)),
+        ..Default::default()
+    };
+    let sandbox_policy = SandboxPolicy::recommended_for_context(&tool_context);
+    let process_executor = Arc::new(ManagedPolicyProcessExecutor::new());
     let hook_runner = Arc::new(HookRunner::with_services(
-        Arc::new(DefaultCommandHookExecutor::with_process_executor(
-            config.hook_env.clone(),
-            process_executor.clone(),
-        )),
+        Arc::new(
+            DefaultCommandHookExecutor::with_process_executor_and_policy(
+                config.hook_env.clone(),
+                process_executor.clone(),
+                sandbox_policy.clone(),
+            ),
+        ),
         Arc::new(runtime::ReqwestHttpHookExecutor::default()),
         Arc::new(runtime::NoopPromptHookEvaluator),
         Arc::new(runtime::NoopAgentHookEvaluator),
@@ -118,7 +129,10 @@ async fn bootstrap_from_parts(
     tools.register(GlobTool::new());
     tools.register(GrepTool::new());
     tools.register(ListTool::new());
-    tools.register(BashTool::with_process_executor(process_executor.clone()));
+    tools.register(BashTool::with_process_executor_and_policy(
+        process_executor.clone(),
+        sandbox_policy.clone(),
+    ));
     #[cfg(feature = "web-tools")]
     {
         tools.register(WebSearchTool::new());
@@ -130,6 +144,7 @@ async fn bootstrap_from_parts(
         &mcp_servers,
         McpConnectOptions {
             process_executor,
+            sandbox_policy: sandbox_policy.clone(),
             ..Default::default()
         },
     )
@@ -157,7 +172,7 @@ async fn bootstrap_from_parts(
         .iter()
         .map(|skill| skill.name.clone())
         .collect::<Vec<_>>();
-    let context_tokens = config.runtime.context_tokens.unwrap_or(128_000);
+    let context_tokens = context_tokens(&config);
     let compact_trigger_tokens = config
         .runtime
         .compact_trigger_tokens
@@ -167,13 +182,7 @@ async fn bootstrap_from_parts(
     let runtime = AgentRuntimeBuilder::new(backend.clone(), store.clone())
         .hook_runner(hook_runner)
         .tool_registry(tools)
-        .tool_context(ToolExecutionContext {
-            workspace_root: workspace_root.clone(),
-            worktree_root: Some(workspace_root.clone()),
-            workspace_only: config.runtime.workspace_only,
-            model_context_window_tokens: Some(context_tokens),
-            ..Default::default()
-        })
+        .tool_context(tool_context)
         .tool_approval_handler(Arc::new(InteractiveToolApprovalHandler::default()))
         .conversation_compactor(Arc::new(ModelConversationCompactor::new(backend.clone())))
         .compaction_config(CompactionConfig {
@@ -211,6 +220,10 @@ async fn bootstrap_from_parts(
         store_label: store_handle.label,
         store_warning: store_handle.warning,
     })
+}
+
+fn context_tokens(config: &AgentCoreConfig) -> usize {
+    config.runtime.context_tokens.unwrap_or(128_000)
 }
 
 fn build_runtime_preamble(

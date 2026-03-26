@@ -282,6 +282,15 @@ Concrete enforcement backends may sit behind it:
 
 The backend boundary stays hidden behind the executor so the runtime and tools do not learn platform-specific details.
 
+The first enforcing implementation in this repository is a macOS Seatbelt-backed executor hidden behind `ManagedPolicyProcessExecutor`.
+
+Important implementation constraints:
+
+- it uses `sandbox-exec` with a generated profile rooted in `import "system.sb"` rather than trying to re-specify every dyld and system capability manually
+- host paths must be canonicalized before they are embedded into the profile because Seatbelt matches real paths, not shell-friendly aliases such as `/var`
+- unsupported platforms currently fall back to host execution unless `fail_if_unavailable` is set, so hosts can adopt typed policy wiring before every backend exists
+- the first backend only inherits Apple system executable paths plus the host-selected roots, so user-space binaries outside those roots remain blocked unless the host widens policy or uses a permissive executor
+
 ## Context and Dependency Placement
 
 ### `ToolExecutionContext` stays small
@@ -347,6 +356,8 @@ This matches the desired low-friction local coding posture:
 - normal local build and test commands work if they do not require network
 - accidental mutation of sensitive control paths stays blocked
 - open-world exfiltration is substantially harder by default
+
+Hosts can derive this posture directly from `ToolExecutionContext` when `workspace_only` is enabled. When a host explicitly disables workspace-only path policy, the current implementation keeps local child-process execution permissive instead of silently inventing a narrower boundary than the rest of the host surface advertises.
 
 ## Execution Surfaces
 

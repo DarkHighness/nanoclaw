@@ -5,17 +5,18 @@ use agent::provider::{
     ProviderDescriptor, RequestOptions,
 };
 use agent::runtime::{
-    CompactionConfig, LoopDetectionConfig, ModelConversationCompactor, NoopToolApprovalPolicy,
-    RuntimeSubagentExecutor, ToolApprovalHandler,
+    CompactionConfig, DefaultCommandHookExecutor, LoopDetectionConfig, ModelConversationCompactor,
+    NoopToolApprovalPolicy, RuntimeSubagentExecutor, ToolApprovalHandler,
 };
 use agent::{
     AgentRuntime, AgentRuntimeBuilder, BashTool, EditTool, GlobTool, GrepTool, HookRunner,
-    HostProcessExecutor, InMemoryRunStore, ListTool, PatchTool, ReadTool, Skill, SkillCatalog,
-    TaskTool, TodoListState, TodoReadTool, TodoWriteTool, ToolExecutionContext, ToolRegistry,
-    WriteTool,
+    InMemoryRunStore, ListTool, ManagedPolicyProcessExecutor, PatchTool, ReadTool, SandboxPolicy,
+    Skill, SkillCatalog, TaskTool, TodoListState, TodoReadTool, TodoWriteTool,
+    ToolExecutionContext, ToolRegistry, WriteTool,
 };
 use agent_env::{EnvMap, vars};
 use anyhow::{Context, Result, bail};
+use std::collections::BTreeMap;
 use std::env;
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -176,7 +177,6 @@ async fn build_runtime(
 ) -> Result<(AgentRuntime, Vec<Skill>)> {
     let backend = Arc::new(build_backend(options)?);
     let store = Arc::new(InMemoryRunStore::new());
-    let hook_runner = Arc::new(HookRunner::default());
     let skill_roots = resolve_skill_roots(&options.skill_roots, workspace_root);
     let skill_catalog = agent::skills::load_skill_roots(&skill_roots)
         .await
@@ -199,7 +199,20 @@ async fn build_runtime(
         enabled: true,
         ..LoopDetectionConfig::default()
     };
-    let process_executor = Arc::new(HostProcessExecutor);
+    let sandbox_policy = SandboxPolicy::recommended_for_context(&tool_context);
+    let process_executor = Arc::new(ManagedPolicyProcessExecutor::new());
+    let hook_runner = Arc::new(HookRunner::with_services(
+        Arc::new(
+            DefaultCommandHookExecutor::with_process_executor_and_policy(
+                BTreeMap::new(),
+                process_executor.clone(),
+                sandbox_policy.clone(),
+            ),
+        ),
+        Arc::new(agent::runtime::ReqwestHttpHookExecutor::default()),
+        Arc::new(agent::runtime::NoopPromptHookEvaluator),
+        Arc::new(agent::runtime::NoopAgentHookEvaluator),
+    ));
     let todo_state = TodoListState::default();
 
     let mut tools = ToolRegistry::new();
@@ -210,7 +223,10 @@ async fn build_runtime(
     tools.register(GlobTool::new());
     tools.register(GrepTool::new());
     tools.register(ListTool::new());
-    tools.register(BashTool::with_process_executor(process_executor));
+    tools.register(BashTool::with_process_executor_and_policy(
+        process_executor,
+        sandbox_policy,
+    ));
     tools.register(TodoReadTool::new(todo_state.clone()));
     tools.register(TodoWriteTool::new(todo_state));
     let subagent_executor = RuntimeSubagentExecutor::new(

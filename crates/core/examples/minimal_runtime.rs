@@ -1,7 +1,7 @@
 use agent::{
     AgentRuntimeBuilder, BashTool, EditTool, GlobTool, GrepTool, HookRunner, InMemoryRunStore,
     ListTool, Message, MessageRole, ModelBackend, ModelEvent, ModelRequest, PatchTool, ReadTool,
-    Skill, SkillCatalog, ToolExecutionContext, ToolRegistry, WriteTool,
+    SandboxPolicy, Skill, SkillCatalog, ToolExecutionContext, ToolRegistry, WriteTool,
 };
 use anyhow::Result;
 use async_trait::async_trait;
@@ -9,7 +9,7 @@ use futures::stream::{self, BoxStream};
 use runtime::Result as RuntimeResult;
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use tools::HostProcessExecutor;
+use tools::ManagedPolicyProcessExecutor;
 
 struct EchoBackend;
 
@@ -91,7 +91,15 @@ async fn main() -> Result<()> {
         Some("Prefer append-only history and explicit tool use over hidden client heuristics."),
         &skill_catalog,
     );
-    let process_executor = Arc::new(HostProcessExecutor);
+    let tool_context = ToolExecutionContext {
+        workspace_root: workspace_root.clone(),
+        workspace_only: true,
+        model_context_window_tokens: Some(128_000),
+        worktree_root: Some(std::env::current_dir()?),
+        ..Default::default()
+    };
+    let sandbox_policy = SandboxPolicy::recommended_for_context(&tool_context);
+    let process_executor = Arc::new(ManagedPolicyProcessExecutor::new());
 
     let mut tools = ToolRegistry::new();
     tools.register(ReadTool::new());
@@ -101,18 +109,15 @@ async fn main() -> Result<()> {
     tools.register(GlobTool::new());
     tools.register(GrepTool::new());
     tools.register(ListTool::new());
-    tools.register(BashTool::with_process_executor(process_executor));
+    tools.register(BashTool::with_process_executor_and_policy(
+        process_executor,
+        sandbox_policy,
+    ));
 
     let mut runtime = AgentRuntimeBuilder::new(backend, store)
         .hook_runner(Arc::new(HookRunner::default()))
         .tool_registry(tools)
-        .tool_context(ToolExecutionContext {
-            workspace_root,
-            workspace_only: true,
-            model_context_window_tokens: Some(128_000),
-            worktree_root: Some(std::env::current_dir()?),
-            ..Default::default()
-        })
+        .tool_context(tool_context)
         .instructions(system_preamble)
         .skill_catalog(skill_catalog)
         .build();
