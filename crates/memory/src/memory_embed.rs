@@ -337,20 +337,37 @@ impl MemoryEmbedBackend {
             .map(|embedding| embedding.batch_size.max(1))
             .unwrap_or(16);
         let model = self.embedding_model();
+        let mut payload_chunks = BTreeMap::<String, Vec<&crate::MemoryCorpusChunk>>::new();
+        let mut payloads = BTreeMap::<String, String>::new();
+        for chunk in missing {
+            let payload = format_document_embedding_input(
+                model,
+                titles
+                    .get(&chunk.path)
+                    .map(String::as_str)
+                    .unwrap_or("Memory"),
+                &chunk.text,
+            );
+            let signature = embedding_input_signature(
+                model,
+                titles
+                    .get(&chunk.path)
+                    .map(String::as_str)
+                    .unwrap_or("Memory"),
+                &chunk.text,
+            );
+            payload_chunks
+                .entry(signature.clone())
+                .or_default()
+                .push(chunk);
+            payloads.entry(signature).or_insert(payload);
+        }
+        let unique_payloads = payloads.into_iter().collect::<Vec<_>>();
         let mut entries = Vec::with_capacity(missing.len());
-        for group in missing.chunks(batch_size) {
+        for group in unique_payloads.chunks(batch_size) {
             let texts = group
                 .iter()
-                .map(|chunk| {
-                    format_document_embedding_input(
-                        model,
-                        titles
-                            .get(&chunk.path)
-                            .map(String::as_str)
-                            .unwrap_or("Memory"),
-                        &chunk.text,
-                    )
-                })
+                .map(|(_, payload)| payload.clone())
                 .collect::<Vec<_>>();
             let embeddings = self
                 .client
@@ -359,21 +376,23 @@ impl MemoryEmbedBackend {
                 .map_err(map_inference_error)?;
             if embeddings.len() != group.len() {
                 return Err(crate::MemoryError::invalid(format!(
-                    "embedding service returned {} vectors for {} chunks",
+                    "embedding service returned {} vectors for {} unique chunks",
                     embeddings.len(),
                     group.len()
                 )));
             }
-            for (chunk, embedding) in group.iter().zip(embeddings.into_iter()) {
-                entries.push(PersistedChunkEmbedding {
-                    chunk_id: chunk_id(chunk),
-                    path: chunk.path.clone(),
-                    snapshot_id: chunk.snapshot_id.clone(),
-                    start_line: chunk.start_line,
-                    end_line: chunk.end_line,
-                    text: chunk.text.clone(),
-                    embedding,
-                });
+            for ((signature, _), embedding) in group.iter().zip(embeddings.into_iter()) {
+                for chunk in payload_chunks.get(signature).into_iter().flatten() {
+                    entries.push(PersistedChunkEmbedding {
+                        chunk_id: chunk_id(chunk),
+                        path: chunk.path.clone(),
+                        snapshot_id: chunk.snapshot_id.clone(),
+                        start_line: chunk.start_line,
+                        end_line: chunk.end_line,
+                        text: chunk.text.clone(),
+                        embedding: embedding.clone(),
+                    });
+                }
             }
         }
         Ok(entries)
@@ -1710,6 +1729,31 @@ mod tests {
         let second_calls = client.calls.lock().unwrap().clone();
         assert_eq!(second_calls.len(), 2);
         assert_eq!(second_calls[1].len(), 1);
+    }
+
+    #[tokio::test]
+    async fn sync_deduplicates_identical_embedding_payloads() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("memory")).await.unwrap();
+        fs::write(dir.path().join("memory/first.md"), "semantic duplicate")
+            .await
+            .unwrap();
+        fs::write(dir.path().join("memory/second.md"), "semantic duplicate")
+            .await
+            .unwrap();
+        let client = Arc::new(MockEmbeddingClient::default());
+
+        let backend = MemoryEmbedBackend::new(
+            dir.path().to_path_buf(),
+            MemoryEmbedConfig::default(),
+            client.clone(),
+        )
+        .unwrap();
+        backend.sync().await.unwrap();
+
+        let calls = client.calls.lock().unwrap().clone();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0], vec!["semantic duplicate".to_string()]);
     }
 
     #[tokio::test]
