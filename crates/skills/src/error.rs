@@ -6,6 +6,8 @@ pub enum SkillError {
     Io(#[from] std::io::Error),
     #[error("skill YAML error: {0}")]
     Yaml(#[from] serde_yaml::Error),
+    #[error("skill TOML error: {0}")]
+    Toml(#[from] toml::de::Error),
     #[error("skill regex error: {0}")]
     Regex(#[from] regex::Error),
     #[error("failed to read {path}: {source}")]

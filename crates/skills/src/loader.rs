@@ -34,10 +34,26 @@ impl Skill {
 pub async fn load_skill_from_dir(dir: impl AsRef<Path>) -> Result<Skill> {
     let dir = dir.as_ref();
     let skill_path = dir.join("SKILL.md");
+    let skill_toml_path = dir.join("skill.toml");
     let raw = fs::read_to_string(&skill_path)
         .await
         .map_err(|source| SkillError::read_path(skill_path.display().to_string(), source))?;
-    let (frontmatter, body) = parse_frontmatter(&raw)?;
+    let (frontmatter, body) = if skill_toml_path.exists() {
+        let raw_toml = fs::read_to_string(&skill_toml_path)
+            .await
+            .map_err(|source| {
+                SkillError::read_path(skill_toml_path.display().to_string(), source)
+            })?;
+        // During migration, a skill may provide `skill.toml` while still carrying
+        // legacy YAML frontmatter in `SKILL.md`. Keep TOML as the metadata source
+        // of truth but strip optional frontmatter from the instruction body.
+        (
+            parse_skill_toml(&raw_toml)?,
+            strip_optional_frontmatter(&raw).to_string(),
+        )
+    } else {
+        parse_frontmatter(&raw)?
+    };
     Ok(Skill {
         name: frontmatter.name,
         description: frontmatter.description,
@@ -126,6 +142,28 @@ fn parse_frontmatter(raw: &str) -> Result<(SkillFrontmatter, String)> {
         ));
     }
     Ok((parsed, body.to_string()))
+}
+
+fn parse_skill_toml(raw: &str) -> Result<SkillFrontmatter> {
+    let parsed: SkillFrontmatter = toml::from_str(raw)?;
+    validate_required_skill_fields(&parsed)?;
+    Ok(parsed)
+}
+
+fn strip_optional_frontmatter(raw: &str) -> &str {
+    let re = Regex::new(r"(?s)\A---\n(.*?)\n---\n?(.*)\z").expect("frontmatter regex");
+    re.captures(raw)
+        .and_then(|captures| captures.get(2).map(|value| value.as_str()))
+        .unwrap_or(raw)
+}
+
+fn validate_required_skill_fields(frontmatter: &SkillFrontmatter) -> Result<()> {
+    if frontmatter.name.trim().is_empty() || frontmatter.description.trim().is_empty() {
+        return Err(SkillError::invalid_format(
+            "skill metadata requires non-empty name and description",
+        ));
+    }
+    Ok(())
 }
 
 async fn collect_child_paths(dir: PathBuf) -> Result<Vec<PathBuf>> {
@@ -235,6 +273,71 @@ Use for PDF work.
         let output = run_indexed_tasks_ordered(tasks, 2).await.unwrap();
         assert_eq!(output, (0usize..10).collect::<Vec<_>>());
         assert!(peak.load(Ordering::SeqCst) <= 2);
+    }
+
+    #[tokio::test]
+    async fn skill_toml_takes_precedence_over_yaml_frontmatter() {
+        let dir = tempdir().unwrap();
+        let skill_dir = dir.path().join("review");
+        fs::create_dir_all(&skill_dir).await.unwrap();
+
+        fs::write(
+            skill_dir.join("skill.toml"),
+            r#"
+                name = "review"
+                description = "Use for review tasks"
+                aliases = ["rvw"]
+            "#,
+        )
+        .await
+        .unwrap();
+
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            r#"---
+name: wrong-name
+description: wrong description
+---
+
+Use for high-signal reviews.
+"#,
+        )
+        .await
+        .unwrap();
+
+        let skill = load_skill_from_dir(&skill_dir).await.unwrap();
+        assert_eq!(skill.name, "review");
+        assert_eq!(skill.description, "Use for review tasks");
+        assert_eq!(skill.aliases, vec!["rvw".to_string()]);
+        assert!(skill.body.contains("Use for high-signal reviews."));
+        assert!(!skill.body.contains("wrong-name"));
+    }
+
+    #[tokio::test]
+    async fn falls_back_to_yaml_frontmatter_when_skill_toml_is_missing() {
+        let dir = tempdir().unwrap();
+        let skill_dir = dir.path().join("fallback");
+        fs::create_dir_all(&skill_dir).await.unwrap();
+
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            r#"---
+name: fallback
+description: legacy metadata source
+aliases: [old]
+---
+
+Legacy body.
+"#,
+        )
+        .await
+        .unwrap();
+
+        let skill = load_skill_from_dir(&skill_dir).await.unwrap();
+        assert_eq!(skill.name, "fallback");
+        assert_eq!(skill.description, "legacy metadata source");
+        assert_eq!(skill.aliases, vec!["old".to_string()]);
+        assert!(skill.body.contains("Legacy body."));
     }
 
     fn update_peak(peak: &AtomicUsize, candidate: usize) {

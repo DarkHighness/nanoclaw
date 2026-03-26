@@ -84,7 +84,7 @@ variables directly.
 If no skill roots are provided, it loads any existing directories from:
 
 - `.codex/skills`
-- `.agent-core/skills`
+- `.nanoclaw/skills`
 - `$HOME/.codex/skills`
 
 ## Managed LSP

@@ -1,7 +1,7 @@
 system_prompt = "You are operating inside the current workspace."
 
 skill_roots = [
-  ".agent-core/skills",
+  ".nanoclaw/skills",
 ]
 
 [provider]
@@ -18,7 +18,7 @@ auto_compact = true
 context_tokens = 128000
 compact_trigger_tokens = 96000
 compact_preserve_recent_messages = 8
-store_dir = ".agent-core/store"
+store_dir = ".nanoclaw/store"
 
 [tui]
 command_prefix = "/"

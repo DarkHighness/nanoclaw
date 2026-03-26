@@ -1,0 +1,7 @@
+id = "memory-embed"
+version = "0.1.0"
+name = "Memory Embed"
+description = "Markdown memory with hybrid lexical and embedding retrieval"
+kind = "memory"
+enabled_by_default = false
+driver = "builtin.memory-embed"

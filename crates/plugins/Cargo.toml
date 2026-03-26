@@ -1,17 +1,14 @@
 [package]
-name = "skills"
+name = "plugins"
 edition.workspace = true
 license.workspace = true
 version.workspace = true
 
 [dependencies]
+mcp = { path = "../mcp" }
 types = { path = "../types" }
-futures.workspace = true
-regex.workspace = true
 serde.workspace = true
-serde_yaml.workspace = true
 thiserror.workspace = true
-tokio.workspace = true
 toml.workspace = true
 
 [dev-dependencies]

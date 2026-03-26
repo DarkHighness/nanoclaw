@@ -6,9 +6,14 @@
 //! one inseparable runtime unit.
 
 mod builder;
+mod plugin_boot;
 mod prelude;
+mod workspace_layout;
 
+pub use inference;
 pub use mcp;
+pub use memory;
+pub use plugins;
 pub use provider;
 pub use runtime;
 pub use skills;
@@ -17,4 +22,6 @@ pub use tools;
 pub use types;
 
 pub use builder::*;
+pub use plugin_boot::*;
 pub use prelude::*;
+pub use workspace_layout::*;

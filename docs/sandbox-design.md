@@ -356,7 +356,7 @@ The recommended default for code-oriented hosts is:
   - explicitly added writable roots
 - protected paths:
   - `.git`
-  - future agent-private state such as `.agent-core`
+  - future agent-private state such as `.nanoclaw`
   - any host-private credential directories the host opts in
 - `NetworkPolicy::Off`
 - `HostEscapePolicy::Deny`

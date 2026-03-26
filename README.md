@@ -138,7 +138,7 @@ The file/env config layer applies only to the removable reference shell, and it 
 `apps/reference-tui` reads:
 
 - `agent-core.toml`
-- `.agent-core/config.toml`
+- `.nanoclaw/config.toml`
 - `.env`
 - `.env.local`
 - process environment variables
@@ -177,6 +177,8 @@ cargo run --manifest-path apps/Cargo.toml -p code-agent
 
 - architecture: [docs/design.md](/Users/twiliness/nanoclaw/docs/design.md)
 - design plan: [docs/plan.md](/Users/twiliness/nanoclaw/docs/plan.md)
+- plugin system design: [docs/plugin-system-design.md](/Users/twiliness/.codex/worktrees/035f/nanoclaw/docs/plugin-system-design.md)
+- memory plugin design: [docs/memory-plugin-design.md](/Users/twiliness/.codex/worktrees/035f/nanoclaw/docs/memory-plugin-design.md)
 - tool interface design: [docs/tool-interface-design.md](/Users/twiliness/nanoclaw/docs/tool-interface-design.md)
 - tooling research: [docs/tooling-research.md](/Users/twiliness/nanoclaw/docs/tooling-research.md)
 

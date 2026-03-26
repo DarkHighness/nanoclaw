@@ -2,7 +2,10 @@
 default-members = [
     "core",
     "env",
+    "inference",
+    "memory",
     "mcp",
+    "plugins",
     "provider",
     "runtime",
     "skills",
@@ -13,7 +16,10 @@ default-members = [
 members = [
     "core",
     "env",
+    "inference",
+    "memory",
     "mcp",
+    "plugins",
     "provider",
     "runtime",
     "skills",
@@ -30,6 +36,8 @@ version = "0.1.0"
 
 [workspace.dependencies]
 anyhow = "1.0.100"
+arrow-array = "57.2"
+arrow-schema = "57.2"
 async-stream = "0.3.6"
 async-trait = "0.1.89"
 base64 = "0.22.1"
@@ -42,12 +50,15 @@ http = "1.3.1"
 ignore = "0.4.25"
 libc = "0.2.183"
 notify = "8.2.0"
+lancedb = "0.27.1"
 ratatui = "0.29.0"
+rayon = "1.11.0"
 regex = "1.12.2"
 reqwest = { version = "0.12.24", default-features = false, features = ["brotli", "charset", "deflate", "gzip", "json", "rustls-tls", "stream"] }
 scraper = "0.24.0"
 quick-xml = "0.38.3"
 rmcp = { version = "1.2.0", default-features = false, features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest", "elicitation"] }
+rusqlite = { version = "0.39.0", features = ["bundled"] }
 schemars = { version = "1.0.4", features = ["derive"] }
 seccompiler = "0.5.0"
 serde = { version = "1.0.228", features = ["derive"] }
@@ -55,6 +66,7 @@ serde_json = "1.0.145"
 serde_yaml = "0.9.34"
 sha2 = "0.10.9"
 time = { version = "0.3.44", features = ["formatting", "parsing"] }
+sqlite-vec = "0.1.8-alpha.1"
 tempfile = "3.23.0"
 thiserror = "2.0.17"
 tokio = { version = "1.48.0", features = ["fs", "io-util", "macros", "process", "rt-multi-thread", "sync", "time"] }
@@ -63,5 +75,7 @@ tokio-tungstenite = { version = "0.28.0", default-features = false, features = [
 toml = "0.8.23"
 tracing = "0.1.41"
 uuid = { version = "1.18.1", features = ["serde", "v4"] }
+wide = "1.2.0"
 wiremock = "0.6.5"
 agent-env = { path = "env" }
+inference = { path = "inference" }

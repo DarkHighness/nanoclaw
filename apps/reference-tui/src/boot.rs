@@ -2,9 +2,13 @@ use crate::{
     InteractiveToolApprovalHandler, RuntimeTui, TuiStartupSummary,
     config::{AgentCoreConfig, ProviderKind},
 };
+use agent::AgentWorkspaceLayout;
 use agent::mcp::{
     ConnectedMcpServer, McpConnectOptions, McpServerConfig, McpTransportConfig,
     catalog_tools_as_registry_entries, connect_and_catalog_mcp_servers_with_options,
+};
+use agent::plugins::{
+    PluginActivationPlan, PluginDiagnosticLevel, PluginEntryConfig, PluginSlotsConfig,
 };
 use agent::provider::{
     BackendDescriptor, OpenAiResponsesOptions, OpenAiServerCompaction, ProviderBackend,
@@ -17,6 +21,7 @@ use runtime::{
     AgentRuntime, AgentRuntimeBuilder, CompactionConfig, DefaultCommandHookExecutor, HookRunner,
     ModelConversationCompactor,
 };
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use store::{FileRunStore, InMemoryRunStore, RunStore};
@@ -91,7 +96,9 @@ async fn bootstrap_from_parts(
     workspace_root: PathBuf,
     config: AgentCoreConfig,
 ) -> Result<BootArtifacts> {
-    let skill_roots = resolved_skill_roots(&config, &workspace_root);
+    let plugin_plan = build_plugin_activation_plan(&config, &workspace_root)
+        .context("failed to build plugin activation plan")?;
+    let skill_roots = resolved_skill_roots(&config, &workspace_root, &plugin_plan);
 
     let store_handle = build_store(&config, &workspace_root).await?;
     let store = store_handle.store.clone();
@@ -140,9 +147,18 @@ async fn bootstrap_from_parts(
         tools.register(WebFetchTool::new());
     }
 
-    let mcp_servers = resolve_mcp_servers(&config.mcp_servers, &workspace_root);
+    let driver_outcome = agent::activate_driver_requests(
+        &plugin_plan.driver_activations,
+        &workspace_root,
+        Some(store.clone()),
+        &mut tools,
+        agent::UnknownDriverPolicy::Warn,
+    )?;
+    let mut mcp_server_configs = config.mcp_servers.clone();
+    mcp_server_configs.extend(plugin_plan.mcp_servers.clone());
+    let mcp_servers = resolve_mcp_servers(&mcp_server_configs, &workspace_root);
     let connected_mcp_servers = connect_and_catalog_mcp_servers_with_options(
-        &mcp_servers,
+        &dedup_mcp_servers(mcp_servers),
         McpConnectOptions {
             process_executor,
             sandbox_policy: sandbox_policy.clone(),
@@ -164,11 +180,13 @@ async fn bootstrap_from_parts(
         .await
         .context("failed to load configured skill roots")?;
     let skills = skill_catalog.all().to_vec();
-    let instructions = build_runtime_preamble(&config, &skill_catalog);
+    let instructions = build_runtime_preamble(&config, &skill_catalog, &plugin_plan.instructions);
+    let mut runtime_hooks = plugin_plan.hooks.clone();
     let skill_hooks = skills
         .iter()
         .flat_map(|skill| skill.hooks.clone())
         .collect::<Vec<_>>();
+    runtime_hooks.extend(skill_hooks.clone());
     let skill_names = skills
         .iter()
         .map(|skill| skill.name.clone())
@@ -193,7 +211,7 @@ async fn bootstrap_from_parts(
             preserve_recent_messages: compact_preserve_recent_messages,
         })
         .instructions(instructions)
-        .hooks(skill_hooks)
+        .hooks(runtime_hooks)
         .skill_catalog(skill_catalog)
         .build();
     let startup_summary = build_startup_summary(
@@ -206,6 +224,8 @@ async fn bootstrap_from_parts(
         &skill_names,
         &connected_mcp_servers,
         &config,
+        &plugin_plan,
+        &driver_outcome.warnings,
         &sandbox_policy,
     );
 
@@ -243,6 +263,7 @@ fn build_sandbox_policy(
 fn build_runtime_preamble(
     config: &AgentCoreConfig,
     skill_catalog: &agent::skills::SkillCatalog,
+    plugin_instructions: &[String],
 ) -> Vec<String> {
     let mut preamble = DEFAULT_AGENT_PREAMBLE
         .iter()
@@ -253,6 +274,7 @@ fn build_runtime_preamble(
             preamble.push(system_prompt.to_string());
         }
     }
+    preamble.extend(plugin_instructions.iter().cloned());
     if let Some(skill_manifest) = skill_catalog.prompt_manifest() {
         preamble.push(skill_manifest);
     }
@@ -350,6 +372,8 @@ fn build_startup_summary(
     skill_names: &[String],
     mcp_servers: &[ConnectedMcpServer],
     config: &AgentCoreConfig,
+    plugin_plan: &PluginActivationPlan,
+    driver_warnings: &[String],
     sandbox_policy: &SandboxPolicy,
 ) -> TuiStartupSummary {
     let local_tools = tool_specs
@@ -368,6 +392,15 @@ fn build_startup_summary(
             tool_specs.len()
         ),
         format!("skills: {}", skill_names.len()),
+        format!(
+            "plugins: {} enabled / {} total",
+            plugin_plan
+                .plugin_states
+                .iter()
+                .filter(|state| state.enabled)
+                .count(),
+            plugin_plan.plugin_states.len()
+        ),
         format!("mcp servers: {}", mcp_servers.len()),
         format!("command prefix: {}", config.tui.command_prefix),
         format!("sandbox: {}", sandbox_summary(sandbox_policy)),
@@ -390,6 +423,19 @@ fn build_startup_summary(
     ];
     if let Some(warning) = &store_handle.warning {
         sidebar.push(format!("warning: {warning}"));
+    }
+    if let Some(memory_slot) = plugin_plan.slots.memory.as_deref() {
+        sidebar.push(format!("memory slot: {memory_slot}"));
+    }
+    for diagnostic in &plugin_plan.diagnostics {
+        let level = match diagnostic.level {
+            PluginDiagnosticLevel::Warning => "plugin warning",
+            PluginDiagnosticLevel::Error => "plugin error",
+        };
+        sidebar.push(format!("{level}: {}", diagnostic.message));
+    }
+    for warning in driver_warnings {
+        sidebar.push(format!("driver warning: {warning}"));
     }
     if !skill_names.is_empty() {
         sidebar.push(format!("skill names: {}", preview_list(skill_names, 4)));
@@ -471,15 +517,53 @@ fn resolved_provider_kind(config: &AgentCoreConfig, model: &str) -> ProviderKind
     }
 }
 
-fn resolved_skill_roots(config: &AgentCoreConfig, workspace_root: &Path) -> Vec<PathBuf> {
+fn resolved_skill_roots(
+    config: &AgentCoreConfig,
+    workspace_root: &Path,
+    plugin_plan: &PluginActivationPlan,
+) -> Vec<PathBuf> {
     let mut roots = config.resolved_skill_roots(workspace_root);
+    roots.extend(plugin_plan.skill_roots.clone());
     if roots.is_empty() {
-        let default_root = workspace_root.join(".agent-core/skills");
+        let default_root = AgentWorkspaceLayout::new(workspace_root).skills_dir();
         if default_root.exists() {
             roots.push(default_root);
         }
     }
+    roots.sort();
+    roots.dedup();
     roots
+}
+
+fn build_plugin_activation_plan(
+    config: &AgentCoreConfig,
+    workspace_root: &Path,
+) -> Result<PluginActivationPlan> {
+    let resolver = agent::PluginBootResolverConfig {
+        enabled: config.plugins.enabled,
+        roots: config.resolved_plugin_roots(workspace_root),
+        include_builtin: config.plugins.include_builtin,
+        allow: config.plugins.allow.clone(),
+        deny: config.plugins.deny.clone(),
+        entries: config
+            .plugins
+            .entries
+            .iter()
+            .map(|(id, entry)| {
+                (
+                    id.clone(),
+                    PluginEntryConfig {
+                        enabled: entry.enabled,
+                        config: entry.config.clone().into_iter().collect(),
+                    },
+                )
+            })
+            .collect::<BTreeMap<_, _>>(),
+        slots: PluginSlotsConfig {
+            memory: config.plugins.slots.memory.clone(),
+        },
+    };
+    agent::build_plugin_activation_plan(workspace_root, &resolver)
 }
 
 fn resolve_mcp_servers(configs: &[McpServerConfig], workspace_root: &Path) -> Vec<McpServerConfig> {
@@ -498,6 +582,14 @@ fn resolve_mcp_servers(configs: &[McpServerConfig], workspace_root: &Path) -> Ve
         .collect()
 }
 
+fn dedup_mcp_servers(servers: Vec<McpServerConfig>) -> Vec<McpServerConfig> {
+    let mut by_name = BTreeMap::new();
+    for server in servers {
+        by_name.entry(server.name.clone()).or_insert(server);
+    }
+    by_name.into_values().collect()
+}
+
 fn resolve_path(base_dir: &Path, value: &str) -> PathBuf {
     let path = PathBuf::from(value);
     if path.is_absolute() {
@@ -510,15 +602,15 @@ fn resolve_path(base_dir: &Path, value: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::{
-        DEFAULT_AGENT_PREAMBLE, bootstrap_from_dir, build_runtime_preamble, build_sandbox_policy,
-        resolved_skill_roots, sandbox_summary,
+        DEFAULT_AGENT_PREAMBLE, bootstrap_from_dir, build_plugin_activation_plan,
+        build_runtime_preamble, build_sandbox_policy, resolved_skill_roots, sandbox_summary,
     };
     use crate::config::{AgentCoreConfig, ProviderKind};
     use agent::skills::load_skill_roots;
     use tempfile::tempdir;
     use tokio::fs;
     use tools::{NetworkPolicy, SandboxMode, ToolExecutionContext};
-    use types::ToolOrigin;
+    use types::{ToolName, ToolOrigin};
 
     #[tokio::test]
     async fn bootstraps_runtime_from_configured_workspace() {
@@ -553,7 +645,7 @@ Use this skill when asked.
 
                 [runtime]
                 workspace_only = true
-                store_dir = ".agent-core/custom-store"
+                store_dir = ".nanoclaw/custom-store"
 
                 [tui]
                 command_prefix = ":"
@@ -571,10 +663,10 @@ Use this skill when asked.
             artifacts.store_label,
             format!(
                 "file {}",
-                dir.path().join(".agent-core/custom-store").display()
+                dir.path().join(".nanoclaw/custom-store").display()
             )
         );
-        assert!(dir.path().join(".agent-core/custom-store").is_dir());
+        assert!(dir.path().join(".nanoclaw/custom-store").is_dir());
         assert!(
             artifacts
                 .startup_summary
@@ -646,11 +738,13 @@ Use this skill when asked.
             config.system_prompt = Some("Project-specific prompt.".to_string());
             config.skill_roots = vec!["skills".to_string()];
         });
-        let skill_catalog = load_skill_roots(&resolved_skill_roots(&config, dir.path()))
-            .await
-            .unwrap();
+        let plugin_plan = build_plugin_activation_plan(&config, dir.path()).unwrap();
+        let skill_catalog =
+            load_skill_roots(&resolved_skill_roots(&config, dir.path(), &plugin_plan))
+                .await
+                .unwrap();
 
-        let preamble = build_runtime_preamble(&config, &skill_catalog);
+        let preamble = build_runtime_preamble(&config, &skill_catalog, &plugin_plan.instructions);
 
         assert_eq!(preamble[0], DEFAULT_AGENT_PREAMBLE[0]);
         assert_eq!(preamble[1], DEFAULT_AGENT_PREAMBLE[1]);
@@ -663,6 +757,65 @@ Use this skill when asked.
             preamble
                 .iter()
                 .any(|line| line.contains("Available workspace skills are listed below."))
+        );
+    }
+
+    #[tokio::test]
+    async fn boot_registers_memory_tools_from_builtin_plugin_slot() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(
+            dir.path()
+                .join("builtin-plugins/memory-core/.nanoclaw-plugin"),
+        )
+        .await
+        .unwrap();
+        fs::write(dir.path().join("MEMORY.md"), "workspace preference")
+            .await
+            .unwrap();
+        fs::write(
+            dir.path()
+                .join("builtin-plugins/memory-core/.nanoclaw-plugin/plugin.toml"),
+            r#"
+                id = "memory-core"
+                kind = "memory"
+                enabled_by_default = false
+                driver = "builtin.memory-core"
+            "#,
+        )
+        .await
+        .unwrap();
+        fs::write(
+            dir.path().join("agent-core.toml"),
+            r#"
+                [provider]
+                kind = "openai"
+                model = "gpt-4.1-mini"
+
+                [provider.env]
+                OPENAI_API_KEY = "test-key"
+
+                [plugins.slots]
+                memory = "memory-core"
+            "#,
+        )
+        .await
+        .unwrap();
+
+        let artifacts = bootstrap_from_dir(dir.path()).await.unwrap();
+        let tool_specs = artifacts.runtime.tool_specs();
+        let tool_names = tool_specs
+            .into_iter()
+            .map(|tool| tool.name)
+            .collect::<Vec<_>>();
+
+        assert!(tool_names.contains(&ToolName::from("memory_search")));
+        assert!(tool_names.contains(&ToolName::from("memory_get")));
+        assert!(
+            artifacts
+                .startup_summary
+                .sidebar
+                .iter()
+                .any(|line| line.contains("memory slot: memory-core"))
         );
     }
 
