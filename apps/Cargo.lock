@@ -258,7 +258,9 @@ dependencies = [
  "async-trait",
  "crossterm 0.29.0",
  "ratatui",
+ "serde",
  "tokio",
+ "toml",
  "tracing-appender",
  "tracing-subscriber",
 ]

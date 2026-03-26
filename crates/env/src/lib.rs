@@ -63,6 +63,14 @@ pub mod vars {
         "CODE_AGENT_SKILL_ROOTS",
         "OS-path-list of additional skill roots for the code-agent app.",
     );
+    pub const CODE_AGENT_PLUGIN_ROOTS: EnvVar = EnvVar::new(
+        "CODE_AGENT_PLUGIN_ROOTS",
+        "OS-path-list of plugin roots for the code-agent app.",
+    );
+    pub const CODE_AGENT_PLUGIN_MEMORY_SLOT: EnvVar = EnvVar::new(
+        "CODE_AGENT_PLUGIN_MEMORY_SLOT",
+        "Plugin memory slot override for the code-agent app (e.g. `memory-core`, `memory-embed`, `none`).",
+    );
 
     pub const AGENT_CORE_PROVIDER: EnvVar = EnvVar::new(
         "AGENT_CORE_PROVIDER",
@@ -153,6 +161,8 @@ pub mod vars {
         CODE_AGENT_PROVIDER,
         CODE_AGENT_SYSTEM_PROMPT,
         CODE_AGENT_SKILL_ROOTS,
+        CODE_AGENT_PLUGIN_ROOTS,
+        CODE_AGENT_PLUGIN_MEMORY_SLOT,
         AGENT_CORE_PROVIDER,
         AGENT_CORE_MODEL,
         AGENT_CORE_BASE_URL,

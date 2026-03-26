@@ -416,9 +416,9 @@ That means the manifest never "executes code" by itself. It selects compiled cod
 
 ## Host Boot Integration
 
-`apps/reference-tui` and `apps/code-agent` should stop wiring `skill_roots`, `mcp_servers`, and memory setup independently.
+This is now the active boot model in both `apps/reference-tui` and `apps/code-agent`.
 
-Instead, boot should do:
+Boot does:
 
 1. load `agent-core.toml`
 2. resolve plugin activation plan
@@ -496,6 +496,11 @@ It should not pretend that third-party plugin content is sandboxed.
 
 - add driver registry and memory slot integration
 - ship builtin `memory-core` and `memory-embed` manifests
+
+### Slice 5
+
+- move `apps/code-agent` boot to the same plugin activation path
+- persist `memory-embed` chunk embeddings for restart-safe incremental reuse
 
 ## Sources
 

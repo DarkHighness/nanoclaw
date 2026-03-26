@@ -325,39 +325,45 @@ Encoding that as two plugins keeps slot selection honest and keeps each plugin c
 
 ### Backend model
 
-`memory-embed` should maintain a local sidecar index with:
+The current implementation maintains a local sidecar cache at
+`.agent-core/memory/memory-embed.json` unless `index_path` overrides it.
 
-- SQLite metadata tables
-- FTS5 lexical index
-- vector storage for chunk embeddings
+That cache stores:
+
+- chunk identity derived from path plus snapshot window
+- chunk embedding vectors
+- enough line metadata to map hits back to the source Markdown corpus
 
 Embedding generation comes from a configured provider, not from an in-process model runtime.
 
+This is intentionally the smallest durable slice. A later upgrade can replace the JSON sidecar
+with a richer SQLite or FTS-backed index without changing the plugin slot contract.
+
 ### Provider config
 
-To keep config TOML-native while still allowing secrets, use a typed secret reference:
+To keep config TOML-native while still avoiding checked-in secrets, the host resolves an
+environment variable name during driver activation:
 
 ```toml
 [plugins.entries.memory-embed.config.embedding]
 provider = "openai-compatible"
 model = "text-embedding-3-small"
 base_url = "https://api.openai.com/v1"
-
-[plugins.entries.memory-embed.config.embedding.api_key]
-from_env = "OPENAI_API_KEY"
+api_key_env = "OPENAI_API_KEY"
 ```
 
-This keeps the configuration surface in TOML while still using the shared env-resolution crate for secret materialization.
+This keeps the configuration surface in TOML while still using the shared env-resolution crate for
+secret materialization.
 
 ### Search pipeline
 
 The retrieval pipeline should follow the qmd lesson directly:
 
-1. chunk query into an embedding request
-2. retrieve lexical candidates from FTS
-3. retrieve vector candidates from the embedding index
-4. union by chunk id
-5. compute a weighted merged score
+1. chunk the Markdown corpus into stable windows
+2. lazily sync missing chunk embeddings into the sidecar cache
+3. embed the query
+4. compute lexical scores for all candidate chunks
+5. merge lexical and vector scores with configured weights
 6. optionally apply rerank or diversity logic later
 
 Suggested initial merge config:
