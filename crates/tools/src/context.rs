@@ -105,18 +105,18 @@ mod tests {
         };
 
         let scoped = base.with_runtime_scope(
-            RunId("run_1".to_string()),
-            SessionId("session_1".to_string()),
-            TurnId("turn_1".to_string()),
+            RunId::from("run_1"),
+            SessionId::from("session_1"),
+            TurnId::from("turn_1"),
             "read",
             "call_1",
         );
 
         assert_eq!(scoped.workspace_root, base.workspace_root);
         assert!(scoped.workspace_only);
-        assert_eq!(scoped.run_id.unwrap().0, "run_1");
-        assert_eq!(scoped.session_id.unwrap().0, "session_1");
-        assert_eq!(scoped.turn_id.unwrap().0, "turn_1");
+        assert_eq!(scoped.run_id.unwrap().as_str(), "run_1");
+        assert_eq!(scoped.session_id.unwrap().as_str(), "session_1");
+        assert_eq!(scoped.turn_id.unwrap().as_str(), "turn_1");
         assert_eq!(scoped.tool_name.unwrap(), "read");
         assert_eq!(scoped.tool_call_id.unwrap(), CallId::from("call_1"));
     }

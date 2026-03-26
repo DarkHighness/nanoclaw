@@ -5,7 +5,6 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::time::{SystemTime, UNIX_EPOCH};
-use uuid::Uuid;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "provider", rename_all = "snake_case")]
@@ -149,7 +148,7 @@ impl RunEventEnvelope {
         event: RunEventKind,
     ) -> Self {
         Self {
-            id: EventId(Uuid::new_v4().to_string()),
+            id: EventId::new(),
             run_id,
             session_id,
             turn_id,

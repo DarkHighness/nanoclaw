@@ -115,7 +115,7 @@ impl Tool for PatchTool {
         arguments: Value,
         ctx: &ToolExecutionContext,
     ) -> Result<ToolResult> {
-        let external_call_id = call_id.0.clone();
+        let external_call_id = call_id.to_string();
         let input: PatchToolInput = serde_json::from_value(arguments)?;
         if input.operations.is_empty() {
             return Err(ToolError::invalid("patch requires at least one operation"));

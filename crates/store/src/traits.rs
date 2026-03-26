@@ -49,7 +49,7 @@ pub fn summarize_run_events(run_id: &RunId, events: &[RunEventEnvelope]) -> Opti
     for event in events {
         first_timestamp_ms = first_timestamp_ms.min(event.timestamp_ms);
         last_timestamp_ms = last_timestamp_ms.max(event.timestamp_ms);
-        session_ids.insert(event.session_id.0.clone());
+        session_ids.insert(event.session_id.to_string());
         if matches!(&event.event, RunEventKind::TranscriptMessage { .. }) {
             transcript_message_count += 1;
         }
@@ -88,8 +88,13 @@ pub fn search_run_events(
     let mut matches = Vec::new();
     let mut matched_event_count = 0;
 
-    if summary.run_id.0.to_lowercase().contains(&query_lower) {
-        matches.push(format!("run id: {}", summary.run_id.0));
+    if summary
+        .run_id
+        .as_str()
+        .to_lowercase()
+        .contains(&query_lower)
+    {
+        matches.push(format!("run id: {}", summary.run_id));
     }
     if let Some(prompt) = &summary.last_user_prompt {
         if prompt.to_lowercase().contains(&query_lower) {
@@ -129,7 +134,7 @@ pub fn search_run_events(
 }
 
 pub(crate) fn searchable_event_strings(event: &RunEventEnvelope) -> Vec<String> {
-    let mut values = vec![event.session_id.0.clone()];
+    let mut values = vec![event.session_id.to_string()];
     match &event.event {
         RunEventKind::SessionStart { reason }
         | RunEventKind::Stop { reason }

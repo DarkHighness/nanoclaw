@@ -254,9 +254,7 @@ impl RuntimeTui {
                     .iter()
                     .find(|summary| summary.run_id == run_id)
                     .cloned()
-                    .ok_or_else(|| {
-                        anyhow::anyhow!("run missing from store listing: {}", run_id.0)
-                    })?;
+                    .ok_or_else(|| anyhow::anyhow!("run missing from store listing: {}", run_id))?;
                 let events = self.store.events(&run_id).await?;
                 let session_ids = self.store.session_ids(&run_id).await?;
                 state.transcript = self.replay_run_lines(&run_id).await?;
@@ -264,7 +262,7 @@ impl RuntimeTui {
                 state.sidebar_title = "Run".to_string();
                 state.status = format!(
                     "Loaded run {} with {} transcript messages",
-                    preview_id(&run_id.0),
+                    preview_id(run_id.as_str()),
                     summary.transcript_message_count
                 );
                 Ok(false)
@@ -277,14 +275,14 @@ impl RuntimeTui {
                     .write_output_file(&path, encode_run_events_jsonl(&events)?)
                     .await?;
                 state.sidebar = vec![
-                    format!("exported run: {}", run_id.0),
+                    format!("exported run: {}", run_id),
                     format!("path: {}", output_path.display()),
                     format!("events: {}", events.len()),
                 ];
                 state.sidebar_title = "Export".to_string();
                 state.status = format!(
                     "Exported run {} to {}",
-                    preview_id(&run_id.0),
+                    preview_id(run_id.as_str()),
                     output_path.display()
                 );
                 Ok(false)
@@ -300,14 +298,14 @@ impl RuntimeTui {
                 };
                 let output_path = self.write_output_file(&path, content).await?;
                 state.sidebar = vec![
-                    format!("exported transcript: {}", run_id.0),
+                    format!("exported transcript: {}", run_id),
                     format!("path: {}", output_path.display()),
                     format!("lines: {}", transcript.len()),
                 ];
                 state.sidebar_title = "Export".to_string();
                 state.status = format!(
                     "Exported transcript {} to {}",
-                    preview_id(&run_id.0),
+                    preview_id(run_id.as_str()),
                     output_path.display()
                 );
                 Ok(false)
@@ -816,7 +814,7 @@ fn format_run_summary_line(summary: &RunSummary) -> String {
         .unwrap_or_else(|| "no prompt yet".to_string());
     format!(
         "{}  msg={} ev={} sess={}  {}",
-        preview_id(&summary.run_id.0),
+        preview_id(summary.run_id.as_str()),
         summary.transcript_message_count,
         summary.event_count,
         summary.session_count,
@@ -843,7 +841,7 @@ fn format_run_sidebar(
     events: &[RunEventEnvelope],
 ) -> Vec<String> {
     let mut sidebar = vec![
-        format!("run: {}", summary.run_id.0),
+        format!("run: {}", summary.run_id),
         format!("events: {}", summary.event_count),
         format!("messages: {}", summary.transcript_message_count),
         format!("sessions: {}", summary.session_count),
@@ -856,7 +854,7 @@ fn format_run_sidebar(
             "session ids: {}",
             session_ids
                 .iter()
-                .map(|session_id| preview_id(&session_id.0))
+                .map(|session_id| preview_id(session_id.as_str()))
                 .collect::<Vec<_>>()
                 .join(", ")
         ));
@@ -965,13 +963,16 @@ fn format_run_event_line(event: &RunEventEnvelope) -> String {
 }
 
 fn resolve_run_reference(runs: &[RunSummary], run_ref: &str) -> anyhow::Result<RunId> {
-    if let Some(run) = runs.iter().find(|summary| summary.run_id.0 == run_ref) {
+    if let Some(run) = runs
+        .iter()
+        .find(|summary| summary.run_id.as_str() == run_ref)
+    {
         return Ok(run.run_id.clone());
     }
 
     let matches = runs
         .iter()
-        .filter(|summary| summary.run_id.0.starts_with(run_ref))
+        .filter(|summary| summary.run_id.as_str().starts_with(run_ref))
         .collect::<Vec<_>>();
     match matches.as_slice() {
         [] => Err(anyhow::anyhow!("unknown run id or prefix: {run_ref}")),
@@ -981,7 +982,7 @@ fn resolve_run_reference(runs: &[RunSummary], run_ref: &str) -> anyhow::Result<R
             matches
                 .iter()
                 .take(6)
-                .map(|run| preview_id(&run.run_id.0))
+                .map(|run| preview_id(run.run_id.as_str()))
                 .collect::<Vec<_>>()
                 .join(", ")
         )),
@@ -1404,7 +1405,7 @@ mod tests {
     fn resolves_unique_run_prefix() {
         let runs = vec![
             RunSummary {
-                run_id: RunId("abc12345".to_string()),
+                run_id: RunId::from("abc12345"),
                 first_timestamp_ms: 1,
                 last_timestamp_ms: 2,
                 event_count: 3,
@@ -1413,7 +1414,7 @@ mod tests {
                 last_user_prompt: Some("first".to_string()),
             },
             RunSummary {
-                run_id: RunId("def67890".to_string()),
+                run_id: RunId::from("def67890"),
                 first_timestamp_ms: 4,
                 last_timestamp_ms: 5,
                 event_count: 6,
@@ -1425,7 +1426,7 @@ mod tests {
 
         assert_eq!(
             resolve_run_reference(&runs, "abc").unwrap(),
-            RunId("abc12345".to_string())
+            RunId::from("abc12345")
         );
     }
 
@@ -1433,7 +1434,7 @@ mod tests {
     fn rejects_ambiguous_run_prefix() {
         let runs = vec![
             RunSummary {
-                run_id: RunId("abc12345".to_string()),
+                run_id: RunId::from("abc12345"),
                 first_timestamp_ms: 1,
                 last_timestamp_ms: 2,
                 event_count: 3,
@@ -1442,7 +1443,7 @@ mod tests {
                 last_user_prompt: None,
             },
             RunSummary {
-                run_id: RunId("abc67890".to_string()),
+                run_id: RunId::from("abc67890"),
                 first_timestamp_ms: 4,
                 last_timestamp_ms: 5,
                 event_count: 6,

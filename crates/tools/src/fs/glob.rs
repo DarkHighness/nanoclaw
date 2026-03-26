@@ -51,7 +51,7 @@ impl Tool for GlobTool {
         arguments: Value,
         ctx: &ToolExecutionContext,
     ) -> Result<ToolResult> {
-        let external_call_id = call_id.0.clone();
+        let external_call_id = call_id.to_string();
         let input: GlobToolInput = serde_json::from_value(arguments)?;
         let requested_path = input.path.as_deref().unwrap_or(".");
         let root = resolve_tool_path_against_workspace_root(

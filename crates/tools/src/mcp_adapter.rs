@@ -43,13 +43,13 @@ impl Tool for McpToolAdapter {
         result.id = call_id.clone();
         // Runtime transcripts and compaction index tool results by the local call id.
         // Keep upstream ids in metadata so audits can still correlate remote traces.
-        result.call_id = call_id.0.clone().into();
+        result.call_id = call_id.to_string().into();
         result.tool_name = self.spec.name.clone();
         result.metadata = Some(augment_metadata(
             result.metadata,
             upstream_call_id.as_str(),
             &upstream_tool_name,
-            &call_id.0,
+            call_id.as_str(),
             &self.spec.name,
         ));
         Ok(result)
@@ -112,7 +112,7 @@ mod tests {
             Arc::new(|_call_id, _arguments| {
                 Box::pin(async move {
                     Ok(ToolResult {
-                        id: ToolCallId("upstream-id".to_string()),
+                        id: ToolCallId::from("upstream-id"),
                         call_id: "remote-call-1".into(),
                         tool_name: "other-name".to_string(),
                         parts: vec![MessagePart::text("ok")],
@@ -123,7 +123,7 @@ mod tests {
             }),
         );
 
-        let call_id = ToolCallId("local-call-1".to_string());
+        let call_id = ToolCallId::from("local-call-1");
         let result = adapter
             .execute(
                 call_id.clone(),
@@ -132,7 +132,7 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(result.id.0, call_id.0);
+        assert_eq!(result.id, call_id);
         assert_eq!(result.call_id.as_str(), "local-call-1");
         assert_eq!(result.tool_name, "remote_echo");
         assert_eq!(
@@ -161,7 +161,7 @@ mod tests {
 
         let result = adapter
             .execute(
-                ToolCallId("local-call-2".to_string()),
+                ToolCallId::from("local-call-2"),
                 json!({}),
                 &ToolExecutionContext::default(),
             )

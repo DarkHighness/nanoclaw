@@ -108,7 +108,7 @@ impl FileRunStore {
     }
 
     fn run_path(&self, run_id: &RunId) -> PathBuf {
-        self.root_dir.join(format!("{}.jsonl", run_id.0))
+        self.root_dir.join(format!("{}.jsonl", run_id.as_str()))
     }
 
     async fn load_events_from_path(&self, path: &Path) -> Result<Vec<RunEventEnvelope>> {
@@ -151,7 +151,7 @@ impl EventSink for FileRunStore {
             let mut index = self.index.write().expect("file run store write lock");
             let record = index
                 .runs
-                .entry(event.run_id.as_str().to_string())
+                .entry(event.run_id.to_string())
                 .or_insert_with(|| IndexedRunRecord {
                     summary: RunSummary {
                         run_id: event.run_id.clone(),
@@ -273,7 +273,7 @@ impl RunStore for FileRunStore {
     async fn events(&self, run_id: &RunId) -> Result<Vec<RunEventEnvelope>> {
         let path = self.run_path(run_id);
         if !fs::try_exists(&path).await? {
-            return Err(RunStoreError::RunNotFound(run_id.as_str().to_string()));
+            return Err(RunStoreError::RunNotFound(run_id.to_string()));
         }
         self.load_events_from_path(&path).await
     }
@@ -297,7 +297,7 @@ impl RunStore for FileRunStore {
         let mut seen = HashSet::new();
         let mut ordered = Vec::new();
         for event in self.events(run_id).await? {
-            if seen.insert(event.session_id.as_str().to_string()) {
+            if seen.insert(event.session_id.to_string()) {
                 ordered.push(event.session_id);
             }
         }
@@ -313,7 +313,7 @@ fn apply_event_to_record(record: &mut IndexedRunRecord, event: &RunEventEnvelope
     record.summary.first_timestamp_ms = record.summary.first_timestamp_ms.min(event.timestamp_ms);
     record.summary.last_timestamp_ms = record.summary.last_timestamp_ms.max(event.timestamp_ms);
     record.summary.event_count += 1;
-    if push_unique_session_id(&mut record.session_ids, &event.session_id.0) {
+    if push_unique_session_id(&mut record.session_ids, event.session_id.as_str()) {
         record.summary.session_count = record.session_ids.len();
     }
     if matches!(&event.event, RunEventKind::TranscriptMessage { .. }) {
@@ -352,7 +352,12 @@ fn append_search_text(search_corpus: &mut String, value: &str) {
 }
 
 fn record_matches_query(record: &IndexedRunRecord, query_lower: &str) -> bool {
-    record.summary.run_id.0.to_lowercase().contains(query_lower)
+    record
+        .summary
+        .run_id
+        .as_str()
+        .to_lowercase()
+        .contains(query_lower)
         || record
             .summary
             .last_user_prompt
@@ -366,7 +371,7 @@ fn sort_run_summaries(runs: &mut [RunSummary]) {
         right
             .last_timestamp_ms
             .cmp(&left.last_timestamp_ms)
-            .then_with(|| left.run_id.0.cmp(&right.run_id.0))
+            .then_with(|| left.run_id.as_str().cmp(right.run_id.as_str()))
     });
 }
 
@@ -446,7 +451,7 @@ fn indexed_record_from_events(events: Vec<RunEventEnvelope>) -> Option<IndexedRu
     let summary = summarize_run_events(&run_id, &events)?;
     let mut session_ids = Vec::new();
     for event in &events {
-        push_unique_session_id(&mut session_ids, &event.session_id.0);
+        push_unique_session_id(&mut session_ids, event.session_id.as_str());
     }
     let mut search_corpus = String::new();
     for event in &events {

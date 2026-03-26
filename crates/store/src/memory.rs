@@ -25,7 +25,7 @@ impl EventSink for InMemoryRunStore {
     async fn append(&self, event: RunEventEnvelope) -> Result<()> {
         let mut guard = self.events.write().expect("in-memory run store write lock");
         guard
-            .entry(event.run_id.as_str().to_string())
+            .entry(event.run_id.to_string())
             .or_default()
             .push(event);
         Ok(())
@@ -85,7 +85,7 @@ impl RunStore for InMemoryRunStore {
         guard
             .get(run_id.as_str())
             .cloned()
-            .ok_or_else(|| RunStoreError::RunNotFound(run_id.as_str().to_string()))
+            .ok_or_else(|| RunStoreError::RunNotFound(run_id.to_string()))
     }
 
     async fn session_ids(&self, run_id: &RunId) -> Result<Vec<SessionId>> {

@@ -9,8 +9,9 @@ pub fn new_opaque_id() -> String {
 
 macro_rules! define_id {
     ($name:ident) => {
-        #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-        pub struct $name(pub String);
+        #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+        #[serde(transparent)]
+        pub struct $name(String);
 
         impl $name {
             #[must_use]

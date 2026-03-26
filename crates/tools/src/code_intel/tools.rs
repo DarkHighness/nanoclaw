@@ -154,7 +154,7 @@ impl Tool for CodeSymbolSearchTool {
         arguments: Value,
         ctx: &ToolExecutionContext,
     ) -> Result<ToolResult> {
-        let external_call_id = call_id.0.clone();
+        let external_call_id = call_id.to_string();
         let input: CodeSymbolSearchInput = serde_json::from_value(arguments)?;
         let query = input.query.trim();
         if query.is_empty() {
@@ -211,7 +211,7 @@ impl Tool for CodeDocumentSymbolsTool {
         arguments: Value,
         ctx: &ToolExecutionContext,
     ) -> Result<ToolResult> {
-        let external_call_id = call_id.0.clone();
+        let external_call_id = call_id.to_string();
         let input: CodeDocumentSymbolsInput = serde_json::from_value(arguments)?;
         let limit = clamp_limit(input.limit);
         let resolved = resolve_tool_path_against_workspace_root(
@@ -274,7 +274,7 @@ impl Tool for CodeDefinitionsTool {
         arguments: Value,
         ctx: &ToolExecutionContext,
     ) -> Result<ToolResult> {
-        let external_call_id = call_id.0.clone();
+        let external_call_id = call_id.to_string();
         let input: CodeDefinitionsInput = serde_json::from_value(arguments)?;
         let symbol = input.symbol.trim();
         if symbol.is_empty() {
@@ -331,7 +331,7 @@ impl Tool for CodeReferencesTool {
         arguments: Value,
         ctx: &ToolExecutionContext,
     ) -> Result<ToolResult> {
-        let external_call_id = call_id.0.clone();
+        let external_call_id = call_id.to_string();
         let input: CodeReferencesInput = serde_json::from_value(arguments)?;
         let symbol = input.symbol.trim();
         if symbol.is_empty() {

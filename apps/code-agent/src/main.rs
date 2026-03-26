@@ -16,6 +16,7 @@ use agent::{
 use agent_env::{EnvMap, vars};
 use anyhow::{Context, Result, bail};
 use std::env;
+use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tracing_appender::non_blocking::WorkerGuard;
@@ -39,6 +40,12 @@ impl SelectedProvider {
             Self::OpenAi => "openai",
             Self::Anthropic => "anthropic",
         }
+    }
+}
+
+impl fmt::Display for SelectedProvider {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
     }
 }
 
@@ -144,7 +151,7 @@ fn init_tracing(workspace_root: &Path) -> Result<WorkerGuard> {
 async fn async_main(workspace_root: PathBuf, options: AppOptions) -> Result<()> {
     let (ui_state, approval_bridge, approval_handler) = make_tui_support();
     let (runtime, skills) = build_runtime(&options, &workspace_root, approval_handler).await?;
-    let provider_label = options.provider.as_str().to_string();
+    let provider_label = options.provider.to_string();
     let model = options.model.clone();
     let initial_prompt = options.one_shot_prompt.clone();
     CodeAgentTui::new(

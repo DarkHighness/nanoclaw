@@ -267,7 +267,7 @@ async fn execute_run(
     input: BashToolInput,
     ctx: &ToolExecutionContext,
 ) -> Result<ToolResult> {
-    let external_call_id = call_id.0.clone();
+    let external_call_id = call_id.to_string();
     let command = resolve_command(&input)?;
     let cwd = resolve_cwd(&input, ctx)?;
     let shell = shell_or_default("/bin/sh");
@@ -360,7 +360,7 @@ async fn execute_start(
     input: BashToolInput,
     ctx: &ToolExecutionContext,
 ) -> Result<ToolResult> {
-    let external_call_id = call_id.0.clone();
+    let external_call_id = call_id.to_string();
     let command = resolve_command(&input)?;
     let cwd = resolve_cwd(&input, ctx)?;
     let shell = shell_or_default("/bin/sh");
@@ -450,7 +450,7 @@ async fn execute_start(
 }
 
 async fn execute_poll(call_id: ToolCallId, input: BashToolInput) -> Result<ToolResult> {
-    let external_call_id = call_id.0.clone();
+    let external_call_id = call_id.to_string();
     let session_id = resolve_session_id(&input)?;
     let max_output_chars = input
         .max_output_chars
@@ -543,7 +543,7 @@ async fn execute_poll(call_id: ToolCallId, input: BashToolInput) -> Result<ToolR
 }
 
 async fn execute_cancel(call_id: ToolCallId, input: BashToolInput) -> Result<ToolResult> {
-    let external_call_id = call_id.0.clone();
+    let external_call_id = call_id.to_string();
     let session_id = resolve_session_id(&input)?;
     let poll_wait_ms = input.poll_wait_ms.unwrap_or(1_000).min(MAX_POLL_WAIT_MS);
 

@@ -110,7 +110,7 @@ impl Tool for TodoReadTool {
         arguments: Value,
         _ctx: &ToolExecutionContext,
     ) -> Result<ToolResult> {
-        let external_call_id = call_id.0.clone();
+        let external_call_id = call_id.to_string();
         let input: TodoReadInput = serde_json::from_value(arguments)?;
         let snapshot = self.state.snapshot().await;
         let revision = revision_for(&snapshot);
@@ -178,7 +178,7 @@ impl Tool for TodoWriteTool {
         arguments: Value,
         _ctx: &ToolExecutionContext,
     ) -> Result<ToolResult> {
-        let external_call_id = call_id.0.clone();
+        let external_call_id = call_id.to_string();
         let input: TodoWriteInput = serde_json::from_value(arguments)?;
         let before = self.state.snapshot().await;
         let revision_before = revision_for(&before);

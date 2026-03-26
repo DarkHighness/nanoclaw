@@ -320,7 +320,7 @@ fn build_startup_summary(
         .count();
     let mcp_tools = tool_specs.len().saturating_sub(local_tools);
     let mut sidebar = vec![
-        format!("run: {}", preview_id(&run_id.0)),
+        format!("run: {}", preview_id(run_id.as_str())),
         format!("workspace: {}", workspace_root.display()),
         format!("provider: {provider_summary}"),
         format!("store: {}", store_handle.label),

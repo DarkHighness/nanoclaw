@@ -49,7 +49,7 @@ impl Tool for EditTool {
         arguments: Value,
         ctx: &ToolExecutionContext,
     ) -> Result<ToolResult> {
-        let external_call_id = call_id.0.clone();
+        let external_call_id = call_id.to_string();
         let input: EditToolInput = serde_json::from_value(arguments)?;
         let resolved = resolve_tool_path_against_workspace_root(
             &input.path,

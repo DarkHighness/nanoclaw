@@ -125,7 +125,7 @@ impl Tool for TaskTool {
         arguments: Value,
         _ctx: &ToolExecutionContext,
     ) -> Result<ToolResult> {
-        let external_call_id = call_id.0.clone();
+        let external_call_id = call_id.to_string();
         let input: TaskToolInput = serde_json::from_value(arguments)?;
         let request = SubagentRequest {
             prompt: resolve_prompt(&input)?,

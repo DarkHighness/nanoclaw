@@ -109,7 +109,7 @@ impl Tool for WebSearchTool {
         arguments: Value,
         _ctx: &ToolExecutionContext,
     ) -> Result<ToolResult> {
-        let external_call_id = call_id.0.clone();
+        let external_call_id = call_id.to_string();
         let input: WebSearchToolInput = serde_json::from_value(arguments)?;
         let query = input.query.trim();
         if query.is_empty() {

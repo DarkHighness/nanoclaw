@@ -73,7 +73,7 @@ impl Tool for WebFetchTool {
         arguments: Value,
         _ctx: &ToolExecutionContext,
     ) -> Result<ToolResult> {
-        let external_call_id = call_id.0.clone();
+        let external_call_id = call_id.to_string();
         let input: WebFetchToolInput = serde_json::from_value(arguments)?;
         let url = match reqwest::Url::parse(input.url.trim()) {
             Ok(url) => url,

@@ -391,7 +391,7 @@ pub(crate) async fn stream_openai_realtime_turn(
                     };
                     if let Some(call) = parse_openai_tool_call_item(item, &tool_origins) {
                         saw_tool_call = true;
-                        emitted_tool_call_ids.insert(call.id.as_str().to_string());
+                        emitted_tool_call_ids.insert(call.id.to_string());
                         yield ModelEvent::ToolCallRequested { call };
                         continue;
                     }
@@ -428,7 +428,7 @@ pub(crate) async fn stream_openai_realtime_turn(
                     if let Some(items) = response.get("output").and_then(Value::as_array) {
                         for item in items {
                             if let Some(call) = parse_openai_tool_call_item(item, &tool_origins) {
-                                let call_id = call.id.as_str().to_string();
+                                let call_id = call.id.to_string();
                                 if emitted_tool_call_ids.insert(call_id) {
                                     saw_tool_call = true;
                                     yield ModelEvent::ToolCallRequested { call };

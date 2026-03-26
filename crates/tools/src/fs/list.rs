@@ -84,7 +84,7 @@ impl Tool for ListTool {
         arguments: Value,
         ctx: &ToolExecutionContext,
     ) -> Result<ToolResult> {
-        let external_call_id = call_id.0.clone();
+        let external_call_id = call_id.to_string();
         let input: ListToolInput = serde_json::from_value(arguments)?;
         let recursive = input.recursive.unwrap_or(false);
         let max_depth = input
