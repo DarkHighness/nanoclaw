@@ -18,16 +18,14 @@ done
 
 [ "$needs_format" -eq 1 ] || exit 0
 
-# Format every Rust surface we maintain separately so commits cannot bypass the
-# independent app manifests that sit outside the root workspace.
-cargo fmt --all
-
-if [ -f apps/agent-core-tui/Cargo.toml ]; then
-    cargo fmt --manifest-path apps/agent-core-tui/Cargo.toml --all
+# Format every Rust workspace we maintain separately so commits cannot bypass
+# the substrate workspace or the independent app workspace.
+if [ -f crates/Cargo.toml ]; then
+    cargo fmt --manifest-path crates/Cargo.toml --all
 fi
 
-if [ -f apps/code-agent-example/Cargo.toml ]; then
-    cargo fmt --manifest-path apps/code-agent-example/Cargo.toml --all
+if [ -f apps/Cargo.toml ]; then
+    cargo fmt --manifest-path apps/Cargo.toml --all
 fi
 
 tmpfile=$(mktemp)
@@ -41,4 +39,3 @@ if [ -n "$changed_files" ]; then
     printf '%s\n' "$changed_files" >&2
     exit 1
 fi
-
