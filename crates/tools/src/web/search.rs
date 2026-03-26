@@ -15,6 +15,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
+use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 use types::{MessagePart, ToolCallId, ToolOrigin, ToolOutputMode, ToolResult, ToolSpec};
@@ -30,6 +31,29 @@ pub struct WebSearchToolInput {
     pub offset: Option<usize>,
     #[serde(default)]
     pub domains: Option<Vec<String>>,
+    #[serde(default)]
+    pub locale: Option<String>,
+    #[serde(default)]
+    pub freshness: Option<WebSearchFreshness>,
+    #[serde(default)]
+    pub source_mode: Option<WebSearchSourceMode>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WebSearchFreshness {
+    AnyTime,
+    PastDay,
+    PastWeek,
+    PastMonth,
+    PastYear,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WebSearchSourceMode {
+    General,
+    News,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -62,6 +86,12 @@ struct WebSearchPolicyOutput {
 struct WebSearchToolOutput {
     query: String,
     request_query: String,
+    locale: String,
+    freshness: WebSearchFreshness,
+    source_mode: WebSearchSourceMode,
+    backend: String,
+    retrieval_mode: String,
+    backend_capabilities: WebSearchBackendCapabilities,
     engine: String,
     request_url: String,
     final_url: String,
@@ -80,10 +110,128 @@ struct WebSearchToolOutput {
 }
 
 #[derive(Clone, Debug)]
+struct SearchLocale {
+    language: String,
+    country: String,
+}
+
+#[derive(Clone, Debug)]
+struct WebSearchRequest {
+    query: String,
+    locale: SearchLocale,
+    freshness: WebSearchFreshness,
+    source_mode: WebSearchSourceMode,
+}
+
+#[derive(Clone, Debug, Serialize, JsonSchema, PartialEq, Eq)]
+struct WebSearchBackendCapabilities {
+    locale: bool,
+    freshness: bool,
+    source_mode: bool,
+}
+
+#[derive(Clone, Debug)]
+struct SearchBackendResponse {
+    request_url: Url,
+    final_url: Url,
+    status: u16,
+    content_type: Option<String>,
+    body: String,
+    results: Vec<SearchResultItem>,
+}
+
+#[async_trait]
+trait WebSearchBackend: Send + Sync {
+    fn backend_name(&self) -> &'static str;
+    fn retrieval_mode(&self) -> &'static str;
+    // The request contract is intentionally richer than the bundled RSS fallback.
+    // Callers can ask for freshness/source modes today, while result metadata
+    // exposes which knobs the active backend can actually honor.
+    fn capabilities(&self) -> WebSearchBackendCapabilities;
+    fn build_request_url(&self, request: &WebSearchRequest) -> Result<Url>;
+    fn parse_results(&self, body: &str) -> Result<Vec<SearchResultItem>>;
+
+    async fn search(
+        &self,
+        client: &Client,
+        _request: &WebSearchRequest,
+        request_url: Url,
+    ) -> Result<SearchBackendResponse> {
+        let response = client.get(request_url.clone()).send().await?;
+        let final_url = response.url().clone();
+        let status = response.status().as_u16();
+        let content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string);
+        let body = response.text().await?;
+        let results = if (200..300).contains(&status) {
+            self.parse_results(&body)?
+        } else {
+            Vec::new()
+        };
+        Ok(SearchBackendResponse {
+            request_url,
+            final_url,
+            status,
+            content_type,
+            body,
+            results,
+        })
+    }
+}
+
+#[derive(Clone, Debug)]
+struct BingRssSearchBackend {
+    endpoint: Url,
+}
+
+impl BingRssSearchBackend {
+    fn new(endpoint: Url) -> Self {
+        Self { endpoint }
+    }
+}
+
+impl WebSearchBackend for BingRssSearchBackend {
+    fn backend_name(&self) -> &'static str {
+        "bing_rss"
+    }
+
+    fn retrieval_mode(&self) -> &'static str {
+        "rss"
+    }
+
+    fn capabilities(&self) -> WebSearchBackendCapabilities {
+        WebSearchBackendCapabilities {
+            locale: true,
+            freshness: false,
+            source_mode: false,
+        }
+    }
+
+    fn build_request_url(&self, request: &WebSearchRequest) -> Result<Url> {
+        let mut request_url = self.endpoint.clone();
+        request_url.set_query(None);
+        request_url
+            .query_pairs_mut()
+            .append_pair("format", "rss")
+            .append_pair("cc", &request.locale.country)
+            .append_pair("setlang", &request.locale.language)
+            .append_pair("q", &request.query);
+        Ok(request_url)
+    }
+
+    fn parse_results(&self, body: &str) -> Result<Vec<SearchResultItem>> {
+        Ok(parse_rss_results(body))
+    }
+}
+
+#[derive(Clone)]
 pub struct WebSearchTool {
     client: Client,
     policy: WebToolPolicy,
-    endpoint: Url,
+    backend: Arc<dyn WebSearchBackend>,
 }
 
 impl Default for WebSearchTool {
@@ -109,6 +257,20 @@ impl WebSearchTool {
         endpoint: Option<String>,
     ) -> Result<Self> {
         let endpoint = endpoint.unwrap_or_else(|| DEFAULT_SEARCH_ENDPOINT.to_string());
+        Self::with_backend(
+            policy,
+            timeout_ms,
+            Arc::new(BingRssSearchBackend::new(Url::parse(&endpoint).map_err(
+                |error| crate::ToolError::invalid(format!("invalid search endpoint: {error}")),
+            )?)),
+        )
+    }
+
+    fn with_backend(
+        policy: WebToolPolicy,
+        timeout_ms: u64,
+        backend: Arc<dyn WebSearchBackend>,
+    ) -> Result<Self> {
         Ok(Self {
             // Search result allowlists apply to returned links, not to the configured
             // search backend. Redirects still need transport checks so the engine
@@ -119,9 +281,7 @@ impl WebSearchTool {
                 RedirectValidationScope::Transport,
             )?,
             policy,
-            endpoint: Url::parse(&endpoint).map_err(|error| {
-                crate::ToolError::invalid(format!("invalid search endpoint: {error}"))
-            })?,
+            backend,
         })
     }
 }
@@ -162,24 +322,28 @@ impl Tool for WebSearchTool {
         }
 
         let domains = normalize_domains(input.domains);
+        let request = WebSearchRequest {
+            query: augment_query_with_domains(query, &domains),
+            locale: normalize_locale(input.locale),
+            freshness: normalize_freshness(input.freshness),
+            source_mode: normalize_source_mode(input.source_mode),
+        };
         let limit = clamped_search_limit(input.limit);
         let offset = input.offset.unwrap_or(0);
-        let request_query = augment_query_with_domains(query, &domains);
-
-        let mut request_url = self.endpoint.clone();
-        request_url.set_query(None);
-        request_url
-            .query_pairs_mut()
-            .append_pair("format", "rss")
-            .append_pair("cc", "us")
-            .append_pair("setlang", "en-US")
-            .append_pair("q", &request_query);
+        let request_url = match self.backend.build_request_url(&request) {
+            Ok(request_url) => request_url,
+            Err(error) => return Ok(ToolResult::error(call_id, "web_search", error.to_string())),
+        };
 
         if let Err(error) = self.policy.validate_transport_url(&request_url) {
             return Ok(ToolResult::error(call_id, "web_search", error.to_string()));
         }
 
-        let response = match self.client.get(request_url.clone()).send().await {
+        let response = match self
+            .backend
+            .search(&self.client, &request, request_url.clone())
+            .await
+        {
             Ok(response) => response,
             Err(error) => {
                 return Ok(ToolResult::error(
@@ -189,25 +353,17 @@ impl Tool for WebSearchTool {
                 ));
             }
         };
-        let status = response.status();
-        let final_url = response.url().clone();
-        let content_type = response
-            .headers()
-            .get(reqwest::header::CONTENT_TYPE)
-            .and_then(|value| value.to_str().ok())
-            .map(str::to_string);
-        let body = match response.text().await {
-            Ok(body) => body,
-            Err(error) => {
-                return Ok(ToolResult::error(
-                    call_id,
-                    "web_search",
-                    format!("Failed to read search results for `{query}`: {error}"),
-                ));
-            }
-        };
+        let SearchBackendResponse {
+            request_url,
+            final_url,
+            status,
+            content_type,
+            body,
+            results,
+        } = response;
+        let backend_capabilities = self.backend.capabilities();
 
-        if !status.is_success() {
+        if !(200..300).contains(&status) {
             return Ok(ToolResult {
                 id: call_id,
                 call_id: external_call_id.clone(),
@@ -219,7 +375,14 @@ impl Tool for WebSearchTool {
                 structured_content: None,
                 metadata: Some(serde_json::json!({
                     "query": query,
-                    "status": status.as_u16(),
+                    "request_query": request.query,
+                    "locale": request.locale.language,
+                    "freshness": request.freshness,
+                    "source_mode": request.source_mode,
+                    "backend": self.backend.backend_name(),
+                    "retrieval_mode": self.backend.retrieval_mode(),
+                    "backend_capabilities": backend_capabilities,
+                    "status": status,
                     "content_type": content_type,
                     "request_url": request_url.as_str(),
                     "final_url": final_url.as_str(),
@@ -228,7 +391,7 @@ impl Tool for WebSearchTool {
             });
         }
 
-        let filtered_results = parse_rss_results(&body)
+        let filtered_results = results
             .into_iter()
             .filter(|item| matches_policy(item, &self.policy))
             .filter(|item| matches_domains(item, &domains))
@@ -265,11 +428,17 @@ impl Tool for WebSearchTool {
         };
         let structured_output = WebSearchToolOutput {
             query: query.to_string(),
-            request_query: request_query.clone(),
-            engine: self.endpoint.host_str().unwrap_or("custom").to_string(),
+            request_query: request.query.clone(),
+            locale: request.locale.language.clone(),
+            freshness: request.freshness.clone(),
+            source_mode: request.source_mode.clone(),
+            backend: self.backend.backend_name().to_string(),
+            retrieval_mode: self.backend.retrieval_mode().to_string(),
+            backend_capabilities: backend_capabilities.clone(),
+            engine: request_url.host_str().unwrap_or("custom").to_string(),
             request_url: request_url.as_str().to_string(),
             final_url: final_url.as_str().to_string(),
-            status: status.as_u16(),
+            status,
             content_type: content_type.clone(),
             limit,
             offset,
@@ -285,7 +454,12 @@ impl Tool for WebSearchTool {
 
         let mut sections = vec![
             format!("query> {query}"),
-            format!("engine> {}", self.endpoint.host_str().unwrap_or("custom")),
+            format!("backend> {}", self.backend.backend_name()),
+            format!("retrieval_mode> {}", self.backend.retrieval_mode()),
+            format!("locale> {}", request.locale.language),
+            format!("freshness> {}", format_freshness(&request.freshness)),
+            format!("source_mode> {}", format_source_mode(&request.source_mode)),
+            format!("engine> {}", request_url.host_str().unwrap_or("custom")),
             format!("limit> {limit}"),
             format!("offset> {offset}"),
         ];
@@ -317,10 +491,16 @@ impl Tool for WebSearchTool {
             ),
             metadata: Some(serde_json::json!({
                 "query": query,
-                "request_query": request_query,
+                "request_query": request.query,
+                "locale": request.locale.language,
+                "freshness": request.freshness,
+                "source_mode": request.source_mode,
+                "backend": self.backend.backend_name(),
+                "retrieval_mode": self.backend.retrieval_mode(),
+                "backend_capabilities": backend_capabilities,
                 "request_url": request_url.as_str(),
                 "final_url": final_url.as_str(),
-                "status": status.as_u16(),
+                "status": status,
                 "content_type": content_type,
                 "limit": limit,
                 "offset": offset,
@@ -393,6 +573,57 @@ fn strip_cdata(value: &str) -> String {
         .and_then(|inner| inner.strip_suffix("]]>"))
         .unwrap_or(value)
         .to_string()
+}
+
+fn normalize_locale(locale: Option<String>) -> SearchLocale {
+    let raw = locale.unwrap_or_else(|| "en-US".to_string());
+    let normalized = raw.trim().replace('_', "-");
+    let mut parts = normalized
+        .split('-')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>();
+    if parts.is_empty() {
+        return SearchLocale {
+            language: "en-US".to_string(),
+            country: "us".to_string(),
+        };
+    }
+
+    let language = parts.remove(0).to_ascii_lowercase();
+    let country = parts
+        .first()
+        .map(|part| part.to_ascii_uppercase())
+        .unwrap_or_else(|| "US".to_string());
+
+    SearchLocale {
+        language: format!("{language}-{country}"),
+        country: country.to_ascii_lowercase(),
+    }
+}
+
+fn normalize_freshness(freshness: Option<WebSearchFreshness>) -> WebSearchFreshness {
+    freshness.unwrap_or(WebSearchFreshness::AnyTime)
+}
+
+fn normalize_source_mode(source_mode: Option<WebSearchSourceMode>) -> WebSearchSourceMode {
+    source_mode.unwrap_or(WebSearchSourceMode::General)
+}
+
+fn format_freshness(freshness: &WebSearchFreshness) -> &'static str {
+    match freshness {
+        WebSearchFreshness::AnyTime => "any_time",
+        WebSearchFreshness::PastDay => "past_day",
+        WebSearchFreshness::PastWeek => "past_week",
+        WebSearchFreshness::PastMonth => "past_month",
+        WebSearchFreshness::PastYear => "past_year",
+    }
+}
+
+fn format_source_mode(source_mode: &WebSearchSourceMode) -> &'static str {
+    match source_mode {
+        WebSearchSourceMode::General => "general",
+        WebSearchSourceMode::News => "news",
+    }
 }
 
 fn normalize_domains(domains: Option<Vec<String>>) -> Vec<String> {
@@ -507,7 +738,10 @@ fn unix_timestamp_s() -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{WebSearchTool, WebSearchToolInput, parse_rss_results};
+    use super::{
+        WebSearchFreshness, WebSearchSourceMode, WebSearchTool, WebSearchToolInput,
+        parse_rss_results,
+    };
     use crate::web::common::WebToolPolicy;
     use crate::{Tool, ToolExecutionContext};
     use std::collections::BTreeSet;
@@ -583,6 +817,9 @@ mod tests {
                     limit: Some(5),
                     offset: None,
                     domains: Some(vec!["allowed.example.com".to_string()]),
+                    locale: None,
+                    freshness: None,
+                    source_mode: None,
                 })
                 .unwrap(),
                 &ToolExecutionContext::default(),
@@ -594,6 +831,14 @@ mod tests {
         assert!(text.contains("allowed.example.com/article"));
         assert!(!text.contains("other.example.org/post"));
         let structured = result.structured_content.clone().unwrap();
+        assert_eq!(structured["backend"], "bing_rss");
+        assert_eq!(structured["retrieval_mode"], "rss");
+        assert_eq!(structured["locale"], "en-US");
+        assert_eq!(structured["freshness"], "any_time");
+        assert_eq!(structured["source_mode"], "general");
+        assert_eq!(structured["backend_capabilities"]["locale"], true);
+        assert_eq!(structured["backend_capabilities"]["freshness"], false);
+        assert_eq!(structured["backend_capabilities"]["source_mode"], false);
         assert_eq!(structured["domains"][0], "allowed.example.com");
         assert_eq!(
             structured["results"][0]["url"],
@@ -603,6 +848,63 @@ mod tests {
             result.metadata.unwrap()["domains"][0],
             "allowed.example.com"
         );
+    }
+
+    #[tokio::test]
+    async fn web_search_uses_requested_locale_in_backend_request() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/search"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "application/rss+xml")
+                    .set_body_string("<rss><channel></channel></rss>"),
+            )
+            .mount(&server)
+            .await;
+
+        let tool = WebSearchTool::with_settings(
+            WebToolPolicy {
+                allow_private_hosts: true,
+                allowed_domains: BTreeSet::new(),
+                blocked_domains: BTreeSet::new(),
+            },
+            5_000,
+            Some(format!("{}/search", server.uri())),
+        )
+        .unwrap();
+        let result = tool
+            .execute(
+                ToolCallId::new(),
+                serde_json::to_value(WebSearchToolInput {
+                    query: "bonjour".to_string(),
+                    limit: Some(5),
+                    offset: None,
+                    domains: None,
+                    locale: Some("fr-FR".to_string()),
+                    freshness: Some(WebSearchFreshness::PastWeek),
+                    source_mode: Some(WebSearchSourceMode::News),
+                })
+                .unwrap(),
+                &ToolExecutionContext::default(),
+            )
+            .await
+            .unwrap();
+
+        let structured = result.structured_content.unwrap();
+        assert_eq!(structured["locale"], "fr-FR");
+        assert_eq!(structured["freshness"], "past_week");
+        assert_eq!(structured["source_mode"], "news");
+        assert_eq!(structured["backend"], "bing_rss");
+        let request_url = structured["request_url"].as_str().unwrap();
+        assert!(request_url.contains("cc=fr"));
+        assert!(request_url.contains("setlang=fr-FR"));
+
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1);
+        let query = requests[0].url.query().unwrap_or_default();
+        assert!(query.contains("cc=fr"));
+        assert!(query.contains("setlang=fr-FR"));
     }
 
     #[tokio::test]
@@ -644,6 +946,9 @@ mod tests {
                     limit: Some(1),
                     offset: Some(1),
                     domains: None,
+                    locale: None,
+                    freshness: None,
+                    source_mode: None,
                 })
                 .unwrap(),
                 &ToolExecutionContext::default(),
