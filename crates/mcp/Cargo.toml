@@ -5,6 +5,7 @@ license.workspace = true
 version.workspace = true
 
 [dependencies]
+sandbox.workspace = true
 tools = { path = "../tools" }
 types = { path = "../types" }
 anyhow.workspace = true

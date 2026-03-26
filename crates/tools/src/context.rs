@@ -50,6 +50,16 @@ impl ToolExecutionContext {
     }
 
     #[must_use]
+    pub fn sandbox_scope(&self) -> sandbox::SandboxScope {
+        sandbox::SandboxScope {
+            workspace_root: self.effective_root().to_path_buf(),
+            worktree_root: self.worktree_root.clone(),
+            additional_roots: self.additional_roots.clone(),
+            workspace_only: self.workspace_only,
+        }
+    }
+
+    #[must_use]
     pub fn with_runtime_scope(
         &self,
         run_id: RunId,

@@ -23,6 +23,8 @@ pub enum ToolError {
     #[cfg(feature = "web-tools")]
     #[error("tool HTTP error: {0}")]
     Http(#[from] reqwest::Error),
+    #[error("tool sandbox error: {0}")]
+    Sandbox(#[from] sandbox::SandboxError),
 }
 
 pub type Result<T> = std::result::Result<T, ToolError>;

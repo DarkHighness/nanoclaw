@@ -9,6 +9,7 @@ default-members = [
     "plugins",
     "provider",
     "runtime",
+    "sandbox",
     "skills",
     "store",
     "tools",
@@ -24,6 +25,7 @@ members = [
     "plugins",
     "provider",
     "runtime",
+    "sandbox",
     "skills",
     "store",
     "tools",
@@ -82,3 +84,4 @@ wide = "1.2.0"
 wiremock = "0.6.5"
 agent-env = { path = "env" }
 inference = { path = "inference" }
+sandbox = { path = "sandbox" }

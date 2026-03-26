@@ -3601,6 +3601,7 @@ dependencies = [
  "futures",
  "http",
  "rmcp",
+ "sandbox",
  "serde",
  "serde_json",
  "thiserror",
@@ -4962,6 +4963,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "sandbox"
+version = "0.1.0"
+dependencies = [
+ "dashmap",
+ "libc",
+ "seccompiler",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "types",
+]
+
+[[package]]
 name = "schannel"
 version = "0.1.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6019,18 +6034,16 @@ dependencies = [
  "dashmap",
  "globset",
  "ignore",
- "libc",
  "notify",
  "quick-xml",
  "regex",
  "reqwest 0.12.28",
+ "sandbox",
  "schemars 1.2.1",
  "scraper",
- "seccompiler",
  "serde",
  "serde_json",
  "sha2",
- "tempfile",
  "thiserror",
  "time",
  "tokio",

@@ -98,7 +98,7 @@ async fn main() -> Result<()> {
         worktree_root: Some(std::env::current_dir()?),
         ..Default::default()
     };
-    let sandbox_policy = SandboxPolicy::recommended_for_context(&tool_context);
+    let sandbox_policy = tool_context.sandbox_scope().recommended_policy();
     let process_executor = Arc::new(ManagedPolicyProcessExecutor::new());
 
     let mut tools = ToolRegistry::new();

@@ -28,7 +28,7 @@ use store::{FileRunStore, InMemoryRunStore, RunStore};
 use tools::{
     BashTool, EditTool, GlobTool, GrepTool, ListTool, ManagedPolicyProcessExecutor, PatchTool,
     ReadTool, SandboxBackendStatus, SandboxPolicy, ToolExecutionContext, ToolRegistry, WriteTool,
-    ensure_sandbox_policy_supported,
+    describe_sandbox_policy, ensure_sandbox_policy_supported,
 };
 #[cfg(feature = "web-tools")]
 use tools::{WebFetchTool, WebSearchBackendsTool, WebSearchTool};
@@ -271,7 +271,9 @@ fn build_sandbox_policy(
     // hard error or a best-effort fallback. Filesystem and network posture
     // still derive from the tool context so runtime path policy and local
     // process policy do not drift apart.
-    SandboxPolicy::recommended_for_context(tool_context)
+    tool_context
+        .sandbox_scope()
+        .recommended_policy()
         .with_fail_if_unavailable(config.runtime.sandbox_fail_if_unavailable)
 }
 
@@ -421,7 +423,7 @@ fn build_startup_summary(
         format!("command prefix: {}", config.tui.command_prefix),
         format!(
             "sandbox: {}",
-            sandbox_summary(sandbox_policy, sandbox_status)
+            describe_sandbox_policy(sandbox_policy, sandbox_status)
         ),
         format!(
             "compaction: {}",
@@ -481,32 +483,6 @@ fn build_startup_summary(
         sidebar,
         status: "Ready. /status restores the startup overview.".to_string(),
     }
-}
-
-fn sandbox_summary(policy: &SandboxPolicy, status: &SandboxBackendStatus) -> String {
-    let mode = match policy.mode {
-        tools::SandboxMode::ReadOnly => "read-only",
-        tools::SandboxMode::WorkspaceWrite => "workspace-write",
-        tools::SandboxMode::DangerFullAccess => "danger-full-access",
-    };
-    let network = match &policy.network {
-        tools::NetworkPolicy::Off => "network off".to_string(),
-        tools::NetworkPolicy::AllowDomains(domains) => {
-            format!("network allowlist({})", domains.join(","))
-        }
-        tools::NetworkPolicy::Full => "network full".to_string(),
-    };
-    let availability = match status {
-        SandboxBackendStatus::Available { kind } => format!("enforced via {}", kind.as_str()),
-        SandboxBackendStatus::Unavailable { reason } if policy.fail_if_unavailable => {
-            format!("backend required but unavailable ({reason})")
-        }
-        SandboxBackendStatus::Unavailable { reason } => {
-            format!("best effort host fallback ({reason})")
-        }
-        SandboxBackendStatus::NotRequired => "no enforcing backend required".to_string(),
-    };
-    format!("{mode}, {network}, {availability}")
 }
 
 fn preview_list(items: &[String], max_items: usize) -> String {
@@ -627,7 +603,8 @@ fn resolve_path(base_dir: &Path, value: &str) -> PathBuf {
 mod tests {
     use super::{
         DEFAULT_AGENT_PREAMBLE, bootstrap_from_dir, build_plugin_activation_plan,
-        build_runtime_preamble, build_sandbox_policy, resolved_skill_roots, sandbox_summary,
+        build_runtime_preamble, build_sandbox_policy, describe_sandbox_policy,
+        resolved_skill_roots,
     };
     use crate::config::{AgentCoreConfig, ProviderKind};
     use agent::skills::load_skill_roots;
@@ -729,7 +706,7 @@ Use this skill when asked.
                 .startup_summary
                 .sidebar
                 .iter()
-                .any(|line| line.contains("sandbox: workspace-write, network off, best effort"))
+                .any(|line| line.contains("sandbox: workspace-write, network off, "))
         );
         #[cfg(feature = "web-tools")]
         assert!(
@@ -945,7 +922,7 @@ Use this skill when asked.
         assert_eq!(policy.network, NetworkPolicy::Off);
         assert!(policy.fail_if_unavailable);
         assert_eq!(
-            sandbox_summary(
+            describe_sandbox_policy(
                 &policy,
                 &SandboxBackendStatus::Unavailable {
                     reason: "no backend".to_string()

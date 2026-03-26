@@ -1,7 +1,4 @@
-#[path = "../src/process/network_proxy.rs"]
-mod network_proxy;
-
-use network_proxy::{DomainAllowlist, ProxyBindTarget, ProxyConfig, ProxyManager};
+use sandbox::network_proxy::{DomainAllowlist, ProxyBindTarget, ProxyConfig, ProxyManager};
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::{Arc, Barrier};
@@ -261,7 +258,12 @@ fn read_socks_reply_code(stream: &mut impl Read) -> std::io::Result<u8> {
             let mut skip = vec![0u8; len[0] as usize + 2];
             stream.read_exact(&mut skip)?;
         }
-        _ => {}
+        _ => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "invalid socks reply address type",
+            ));
+        }
     }
     Ok(header[1])
 }
@@ -277,19 +279,14 @@ fn connect_with_retry(addr: SocketAddr) -> std::io::Result<TcpStream> {
             }
         }
     }
-    Err(last_error.unwrap_or_else(|| {
-        std::io::Error::new(
-            std::io::ErrorKind::TimedOut,
-            "proxy did not become reachable",
-        )
-    }))
+    Err(last_error.unwrap())
 }
 
 #[cfg(unix)]
-fn connect_unix_with_retry(path: &std::path::Path) -> std::io::Result<UnixStream> {
+fn connect_unix_with_retry(socket_path: &std::path::Path) -> std::io::Result<UnixStream> {
     let mut last_error = None;
     for _ in 0..20 {
-        match UnixStream::connect(path) {
+        match UnixStream::connect(socket_path) {
             Ok(stream) => return Ok(stream),
             Err(error) => {
                 last_error = Some(error);
@@ -297,10 +294,5 @@ fn connect_unix_with_retry(path: &std::path::Path) -> std::io::Result<UnixStream
             }
         }
     }
-    Err(last_error.unwrap_or_else(|| {
-        std::io::Error::new(
-            std::io::ErrorKind::TimedOut,
-            "unix proxy did not become reachable",
-        )
-    }))
+    Err(last_error.unwrap())
 }

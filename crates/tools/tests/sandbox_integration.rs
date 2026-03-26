@@ -40,7 +40,10 @@ fn workspace_policy(workspace_root: &Path) -> SandboxPolicy {
         workspace_only: true,
         ..Default::default()
     };
-    SandboxPolicy::recommended_for_context(&tool_context).with_fail_if_unavailable(true)
+    tool_context
+        .sandbox_scope()
+        .recommended_policy()
+        .with_fail_if_unavailable(true)
 }
 
 async fn run_shell_command(

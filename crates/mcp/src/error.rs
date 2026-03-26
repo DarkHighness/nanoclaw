@@ -14,6 +14,8 @@ pub enum McpError {
     Protocol(String),
     #[error("MCP transport error: {0}")]
     Transport(String),
+    #[error("MCP sandbox error: {0}")]
+    Sandbox(#[from] sandbox::SandboxError),
 }
 
 pub type Result<T> = std::result::Result<T, McpError>;

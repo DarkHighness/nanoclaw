@@ -412,7 +412,9 @@ fn build_sandbox_policy(
 ) -> SandboxPolicy {
     // `code-agent` keeps the workspace-derived sandbox posture but lets the
     // operator decide whether missing enforcement backends are tolerable.
-    SandboxPolicy::recommended_for_context(tool_context)
+    tool_context
+        .sandbox_scope()
+        .recommended_policy()
         .with_fail_if_unavailable(options.sandbox_fail_if_unavailable)
 }
 

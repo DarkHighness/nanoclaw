@@ -136,7 +136,7 @@ appear to have drifted after implementation changes:
 
 ### `crates/`
 
-- `tools::process::executor::tests::sandbox_backend_status_reports_unavailable_when_restrictive_policy_has_no_backend`
+- `sandbox::manager::tests::sandbox_backend_status_reports_unavailable_when_restrictive_policy_has_no_backend`
 
 The test assumes default empty backend availability must always produce
 `Unavailable`. The implementation now performs platform probing and may resolve a
