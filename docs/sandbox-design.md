@@ -298,6 +298,9 @@ Important implementation constraints:
 - on macOS, Seatbelt enforces proxy-only egress by allowing only localhost proxy ports while the host proxy enforces the domain allowlist
 - on Linux, the backend bind-mounts a host-owned Unix-socket proxy into the sandbox and uses an in-sandbox loopback bridge so `--unshare-net` still holds and traffic must traverse the allowlist proxy
 - the Linux backend now uses explicit seccomp profiles: full-network, no-network, and proxy-bridge mode
+- retained allowlist proxies are process-scoped and keyed by normalized policy so long-lived hosts reuse stable endpoints instead of restarting proxies for reordered domain lists
+- retained proxy startup is serialized under the registry lock to avoid Unix-socket bind races when multiple commands hit the same allowlist at once
+- the built-in proxy now caps concurrent relays to keep a connection burst from turning into unbounded helper threads; saturation drops new connections instead of widening the boundary or exhausting the host
 
 ## Context and Dependency Placement
 

@@ -325,7 +325,10 @@ fn maybe_attach_linux_allow_domains_proxy(request: &mut ExecRequest) -> Result<(
 
     let allowlist = super::network_proxy::DomainAllowlist::new(domains.clone())
         .map_err(|error| ToolError::invalid_state(error.to_string()))?;
-    let socket_path = default_linux_allow_domains_socket_path(domains);
+    // The retained proxy cache is keyed by normalized allowlist semantics, so
+    // the Linux socket path has to follow the same normalization or long-lived
+    // hosts will leak duplicate proxies for reordered/case-varied domain lists.
+    let socket_path = default_linux_allow_domains_socket_path(allowlist.domains());
     let endpoint = super::network_proxy::start_retained_proxy(super::network_proxy::ProxyConfig {
         allowlist,
         bind: super::network_proxy::ProxyBindTarget::UnixSocket(socket_path.clone()),
@@ -357,8 +360,14 @@ fn maybe_attach_linux_allow_domains_proxy(request: &mut ExecRequest) -> Result<(
 
 #[cfg(target_os = "linux")]
 fn default_linux_allow_domains_socket_path(domains: &[String]) -> PathBuf {
+    let mut normalized = domains
+        .iter()
+        .map(|domain| domain.trim().trim_matches('.').to_ascii_lowercase())
+        .collect::<Vec<_>>();
+    normalized.sort();
+    normalized.dedup();
     let mut hasher = DefaultHasher::new();
-    domains.hash(&mut hasher);
+    normalized.hash(&mut hasher);
     let hash = hasher.finish();
     std::env::temp_dir().join(format!("nanoclaw-proxy-{}-{hash}.sock", std::process::id()))
 }
@@ -687,6 +696,21 @@ mod tests {
         assert!(err.to_string().contains(
             "domain-scoped network policy requires a compatible enforcing sandbox backend"
         ));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_allow_domains_socket_path_is_stable_for_normalized_allowlists() {
+        let first = super::default_linux_allow_domains_socket_path(&[
+            "Example.COM".to_string(),
+            "api.example.com".to_string(),
+        ]);
+        let second = super::default_linux_allow_domains_socket_path(&[
+            "api.example.com".to_string(),
+            "example.com".to_string(),
+        ]);
+
+        assert_eq!(first, second);
     }
 
     #[cfg(target_os = "macos")]

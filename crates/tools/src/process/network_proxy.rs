@@ -1,5 +1,4 @@
 use std::collections::BTreeMap;
-use std::collections::btree_map::Entry;
 use std::fmt;
 use std::io::{self, Read, Write};
 use std::net::{IpAddr, Shutdown, SocketAddr, TcpListener, TcpStream};
@@ -30,6 +29,7 @@ const SOCKS_REPLY_GENERAL_FAILURE: u8 = 0x01;
 const SOCKS_REPLY_CONNECTION_NOT_ALLOWED: u8 = 0x02;
 const SOCKS_REPLY_COMMAND_NOT_SUPPORTED: u8 = 0x07;
 const SOCKS_REPLY_ADDRESS_TYPE_NOT_SUPPORTED: u8 = 0x08;
+const MAX_CONCURRENT_PROXY_CONNECTIONS: usize = 128;
 
 #[derive(Debug)]
 pub enum ProxyError {
@@ -248,46 +248,40 @@ impl ProxyManager {
     }
 }
 
-#[allow(dead_code)]
-fn retained_proxies() -> &'static Mutex<Vec<ProxyHandle>> {
-    static RETAINED: OnceLock<Mutex<Vec<ProxyHandle>>> = OnceLock::new();
-    RETAINED.get_or_init(|| Mutex::new(Vec::new()))
+struct RetainedProxy {
+    endpoint: ProxyEndpoint,
+    _handle: ProxyHandle,
 }
 
-fn retained_proxy_endpoints() -> &'static Mutex<BTreeMap<String, ProxyEndpoint>> {
-    static RETAINED: OnceLock<Mutex<BTreeMap<String, ProxyEndpoint>>> = OnceLock::new();
+fn retained_proxies() -> &'static Mutex<BTreeMap<String, RetainedProxy>> {
+    static RETAINED: OnceLock<Mutex<BTreeMap<String, RetainedProxy>>> = OnceLock::new();
     RETAINED.get_or_init(|| Mutex::new(BTreeMap::new()))
 }
 
 #[allow(dead_code)]
 pub fn start_retained_proxy(config: ProxyConfig) -> Result<ProxyEndpoint, ProxyError> {
     let key = retained_proxy_key(&config);
-    if let Some(endpoint) = retained_proxy_endpoints()
+    let mut retained = retained_proxies()
         .lock()
-        .expect("retained proxy registry poisoned")
-        .get(&key)
-        .cloned()
-    {
-        return Ok(endpoint);
+        .expect("retained proxy registry poisoned");
+    if let Some(proxy) = retained.get(&key) {
+        return Ok(proxy.endpoint.clone());
     }
 
+    // Retained proxies are process-scoped infrastructure, not per-command
+    // children. Starting them under the registry lock avoids a race where two
+    // concurrent callers both bind the same Unix-socket path and the loser
+    // tears down the winner's public socket file on drop.
     let handle = ProxyManager::start(config)?;
     let endpoint = handle.endpoint().clone();
-    match retained_proxy_endpoints()
-        .lock()
-        .expect("retained proxy registry poisoned")
-        .entry(key)
-    {
-        Entry::Occupied(entry) => Ok(entry.get().clone()),
-        Entry::Vacant(entry) => {
-            entry.insert(endpoint.clone());
-            retained_proxies()
-                .lock()
-                .expect("retained proxy registry poisoned")
-                .push(handle);
-            Ok(endpoint)
-        }
-    }
+    retained.insert(
+        key,
+        RetainedProxy {
+            endpoint: endpoint.clone(),
+            _handle: handle,
+        },
+    );
+    Ok(endpoint)
 }
 
 fn retained_proxy_key(config: &ProxyConfig) -> String {
@@ -304,13 +298,23 @@ fn run_tcp_accept_loop(
     shutdown: Arc<AtomicBool>,
     allowlist: DomainAllowlist,
 ) {
+    let active_connections = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     while !shutdown.load(Ordering::Relaxed) {
         match listener.accept() {
             Ok((client, _peer)) => {
+                let Some(connection_permit) = try_acquire_connection_slot(&active_connections)
+                else {
+                    // Saturation must fail closed. Dropping the connection
+                    // immediately keeps the proxy from amplifying a connection
+                    // flood into unbounded relay threads.
+                    let _ = client.shutdown(Shutdown::Both);
+                    continue;
+                };
                 let allowlist = allowlist.clone();
                 let _ = thread::Builder::new()
                     .name("nanoclaw-network-proxy-client".to_string())
                     .spawn(move || {
+                        let _permit = connection_permit;
                         let _ = handle_tcp_client(client, &allowlist);
                     });
             }
@@ -333,13 +337,20 @@ fn run_unix_accept_loop(
     shutdown: Arc<AtomicBool>,
     allowlist: DomainAllowlist,
 ) {
+    let active_connections = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     while !shutdown.load(Ordering::Relaxed) {
         match listener.accept() {
             Ok((client, _peer)) => {
+                let Some(connection_permit) = try_acquire_connection_slot(&active_connections)
+                else {
+                    let _ = client.shutdown(Shutdown::Both);
+                    continue;
+                };
                 let allowlist = allowlist.clone();
                 let _ = thread::Builder::new()
                     .name("nanoclaw-network-proxy-client".to_string())
                     .spawn(move || {
+                        let _permit = connection_permit;
                         let _ = handle_unix_client(client, &allowlist);
                     });
             }
@@ -352,6 +363,40 @@ fn run_unix_accept_loop(
                 }
                 thread::sleep(Duration::from_millis(20));
             }
+        }
+    }
+}
+
+struct ConnectionPermit {
+    active_connections: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl Drop for ConnectionPermit {
+    fn drop(&mut self) {
+        self.active_connections.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+fn try_acquire_connection_slot(
+    active_connections: &Arc<std::sync::atomic::AtomicUsize>,
+) -> Option<ConnectionPermit> {
+    let mut current = active_connections.load(Ordering::Relaxed);
+    loop {
+        if current >= MAX_CONCURRENT_PROXY_CONNECTIONS {
+            return None;
+        }
+        match active_connections.compare_exchange_weak(
+            current,
+            current + 1,
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        ) {
+            Ok(_) => {
+                return Some(ConnectionPermit {
+                    active_connections: Arc::clone(active_connections),
+                });
+            }
+            Err(updated) => current = updated,
         }
     }
 }
@@ -603,10 +648,18 @@ fn normalize_domain(value: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{DomainAllowlist, ProxyBindTarget, ProxyConfig, ProxyManager};
+    use super::{
+        DomainAllowlist, ProxyBindTarget, ProxyConfig, ProxyEndpoint, ProxyManager,
+        start_retained_proxy,
+    };
+    use std::io::{Read, Write};
     use std::net::SocketAddr;
     #[cfg(unix)]
-    use std::path::PathBuf;
+    use std::{os::unix::net::UnixStream, path::PathBuf};
+    use std::{
+        thread,
+        time::{Duration, SystemTime, UNIX_EPOCH},
+    };
     use tempfile::tempdir;
 
     #[test]
@@ -651,5 +704,85 @@ mod tests {
         .unwrap();
         assert!(handle.env_vars().is_empty());
         handle.shutdown().unwrap();
+    }
+
+    #[test]
+    fn retained_proxy_parallel_tcp_starts_reuse_one_endpoint() {
+        let domain = unique_test_domain("parallel-retained");
+        let config = ProxyConfig::localhost(DomainAllowlist::new(vec![domain]).unwrap());
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
+        let mut workers = Vec::new();
+        for _ in 0..8 {
+            let barrier = std::sync::Arc::clone(&barrier);
+            let config = config.clone();
+            workers.push(thread::spawn(move || {
+                barrier.wait();
+                start_retained_proxy(config).unwrap()
+            }));
+        }
+
+        let endpoints = workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap())
+            .collect::<Vec<_>>();
+        let first = endpoints.first().cloned().unwrap();
+        assert!(endpoints.iter().all(|endpoint| endpoint == &first));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn retained_proxy_parallel_unix_starts_keep_socket_reachable() {
+        let socket_dir = tempdir().unwrap();
+        let socket_path = PathBuf::from(socket_dir.path()).join("parallel.sock");
+        let domain = unique_test_domain("parallel-unix");
+        let config = ProxyConfig {
+            allowlist: DomainAllowlist::new(vec![domain]).unwrap(),
+            bind: ProxyBindTarget::UnixSocket(socket_path.clone()),
+        };
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
+        let mut workers = Vec::new();
+        for _ in 0..8 {
+            let barrier = std::sync::Arc::clone(&barrier);
+            let config = config.clone();
+            workers.push(thread::spawn(move || {
+                barrier.wait();
+                start_retained_proxy(config).unwrap()
+            }));
+        }
+
+        let endpoints = workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap())
+            .collect::<Vec<_>>();
+        let first = endpoints.first().cloned().unwrap();
+        assert!(endpoints.iter().all(|endpoint| endpoint == &first));
+        assert_eq!(first, ProxyEndpoint::UnixSocket(socket_path.clone()));
+
+        let mut last_error = None;
+        for _ in 0..20 {
+            match UnixStream::connect(&socket_path) {
+                Ok(mut stream) => {
+                    stream.write_all(&[0x05, 0x01, 0x00]).unwrap();
+                    let mut method = [0u8; 2];
+                    stream.read_exact(&mut method).unwrap();
+                    assert_eq!(method, [0x05, 0x00]);
+                    return;
+                }
+                Err(error) => {
+                    last_error = Some(error);
+                    thread::sleep(Duration::from_millis(10));
+                }
+            }
+        }
+
+        panic!("retained unix proxy socket was not reachable: {last_error:?}");
+    }
+
+    fn unique_test_domain(prefix: &str) -> String {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        format!("{prefix}-{nanos}.example.test")
     }
 }

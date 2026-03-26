@@ -4,6 +4,7 @@ mod network_proxy;
 use network_proxy::{DomainAllowlist, ProxyBindTarget, ProxyConfig, ProxyManager};
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::sync::{Arc, Barrier};
 use std::thread;
 use std::time::Duration;
 #[cfg(unix)]
@@ -70,6 +71,41 @@ fn unix_socket_proxy_endpoint_enforces_allowlist() {
     proxy.shutdown().unwrap();
 }
 
+#[test]
+fn socks5h_proxy_handles_parallel_clients_without_cross_talk() {
+    let connection_count = 24;
+    let (target_addr, _target_worker) = spawn_parallel_echo_server(connection_count);
+    let allowlist = DomainAllowlist::new(vec!["localhost".to_string()]).unwrap();
+    let mut proxy = ProxyManager::start(ProxyConfig::localhost(allowlist)).unwrap();
+    let proxy_addr = proxy.endpoint().bind_tcp_addr().unwrap();
+    let start_barrier = Arc::new(Barrier::new(connection_count));
+    let mut workers = Vec::new();
+
+    for index in 0..connection_count {
+        let start_barrier = Arc::clone(&start_barrier);
+        workers.push(thread::spawn(move || {
+            start_barrier.wait();
+            let mut stream = connect_over_socks5h(proxy_addr, "localhost", target_addr.port())
+                .expect("proxy connection should succeed");
+            let payload = format!("{index:04}");
+            stream
+                .write_all(payload.as_bytes())
+                .expect("client payload write should succeed");
+            let mut response = [0u8; 4];
+            stream
+                .read_exact(&mut response)
+                .expect("client response should succeed");
+            assert_eq!(response, *b"pong");
+        }));
+    }
+
+    for worker in workers {
+        worker.join().unwrap();
+    }
+
+    proxy.shutdown().unwrap();
+}
+
 fn spawn_echo_server() -> (SocketAddr, thread::JoinHandle<()>) {
     let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0))).unwrap();
     let addr = listener.local_addr().unwrap();
@@ -79,6 +115,27 @@ fn spawn_echo_server() -> (SocketAddr, thread::JoinHandle<()>) {
         stream.read_exact(&mut payload).unwrap();
         assert_eq!(&payload, b"ping");
         stream.write_all(b"pong").unwrap();
+    });
+    (addr, worker)
+}
+
+fn spawn_parallel_echo_server(expected_connections: usize) -> (SocketAddr, thread::JoinHandle<()>) {
+    let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0))).unwrap();
+    let addr = listener.local_addr().unwrap();
+    let worker = thread::spawn(move || {
+        let mut connection_workers = Vec::new();
+        for _ in 0..expected_connections {
+            let (mut stream, _peer) = listener.accept().unwrap();
+            connection_workers.push(thread::spawn(move || {
+                let mut payload = [0u8; 4];
+                stream.read_exact(&mut payload).unwrap();
+                thread::sleep(Duration::from_millis(10));
+                stream.write_all(b"pong").unwrap();
+            }));
+        }
+        for worker in connection_workers {
+            worker.join().unwrap();
+        }
     });
     (addr, worker)
 }
