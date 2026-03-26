@@ -1,7 +1,7 @@
 use crate::annotations::mcp_tool_annotations;
 use crate::registry::Tool;
 use crate::web::common::{
-    DEFAULT_HTTP_TIMEOUT_MS, RedirectValidationScope, WebDocumentBlock, WebDocumentLink,
+    DEFAULT_HTTP_TIMEOUT_MS, RedirectValidationScope, WebDocumentBlockRecord, WebDocumentLink,
     WebToolPolicy, clamped_fetch_max_chars, default_http_client, extract_html_document,
     extract_html_title, is_html_content_type, is_text_content_type, summarize_remote_body,
     truncate_text,
@@ -14,6 +14,7 @@ use schemars::{JsonSchema, schema_for};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use std::collections::BTreeSet;
 use std::fmt::Write as _;
 use std::time::{SystemTime, UNIX_EPOCH};
 use types::{MessagePart, ToolCallId, ToolOrigin, ToolOutputMode, ToolResult, ToolSpec};
@@ -59,7 +60,9 @@ struct WebFetchToolOutput {
     content_language: Option<String>,
     block_count: usize,
     link_count: usize,
-    document_blocks: Vec<WebDocumentBlock>,
+    window_block_ids: Vec<String>,
+    window_citation_ids: Vec<String>,
+    document_blocks: Vec<WebDocumentBlockRecord>,
     document_links: Vec<WebDocumentLink>,
 }
 
@@ -274,6 +277,18 @@ impl Tool for WebFetchTool {
         let next_start_index = truncated.then_some(end_index);
         let remaining_chars = total_chars.saturating_sub(end_index);
         let retrieved_at_unix_s = unix_timestamp_s();
+        let window_block_ids = document_blocks
+            .iter()
+            .filter(|block| block.end_index > start_index && block.start_index < end_index)
+            .map(|block| block.id.clone())
+            .collect::<Vec<_>>();
+        let window_citation_ids = document_blocks
+            .iter()
+            .filter(|block| block.end_index > start_index && block.start_index < end_index)
+            .flat_map(|block| block.citation_ids.iter().cloned())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
         let structured_output = WebFetchToolOutput {
             url: url.as_str().to_string(),
             final_url: final_url.as_str().to_string(),
@@ -298,6 +313,8 @@ impl Tool for WebFetchTool {
             content_language: content_language.clone(),
             block_count: document_blocks.len(),
             link_count: document_links.len(),
+            window_block_ids: window_block_ids.clone(),
+            window_citation_ids: window_citation_ids.clone(),
             document_blocks: document_blocks.clone(),
             document_links: document_links.clone(),
         };
@@ -317,6 +334,8 @@ impl Tool for WebFetchTool {
         sections.push(format!("extraction_kind> {extraction_kind}"));
         sections.push(format!("blocks> {}", document_blocks.len()));
         sections.push(format!("links> {}", document_links.len()));
+        sections.push(format!("window_blocks> {}", window_block_ids.len()));
+        sections.push(format!("window_citations> {}", window_citation_ids.len()));
         sections.push(format!("start_index> {start_index}"));
         sections.push(format!("end_index> {end_index}"));
         sections.push(format!("total_chars> {total_chars}"));
@@ -355,6 +374,8 @@ impl Tool for WebFetchTool {
                 "title": title,
                 "block_count": document_blocks.len(),
                 "link_count": document_links.len(),
+                "window_block_ids": window_block_ids,
+                "window_citation_ids": window_citation_ids,
                 "document_blocks": document_blocks,
                 "document_links": document_links,
                 "start_index": start_index,
@@ -422,7 +443,7 @@ mod tests {
         Mock::given(method("GET"))
             .and(path("/page"))
             .respond_with(ResponseTemplate::new(200).insert_header("content-type", "text/html").set_body_string(
-                r#"<html><head><title>Example Page</title><script>bad()</script></head><body><h1>Hello</h1><p>World &amp; friends.</p></body></html>"#,
+                r#"<html><head><title>Example Page</title><script>bad()</script></head><body><h1>Hello</h1><p>World &amp; <a href="/friends">friends</a>.</p></body></html>"#,
             ))
             .mount(&server)
             .await;
@@ -461,6 +482,21 @@ mod tests {
         assert_eq!(structured["title"], "Example Page");
         assert_eq!(structured["extraction_kind"], "dom");
         assert_eq!(structured["block_count"], 2);
+        assert_eq!(structured["link_count"], 1);
+        assert_eq!(structured["window_block_ids"][0], "blk_0001");
+        assert_eq!(structured["window_block_ids"][1], "blk_0002");
+        assert_eq!(
+            structured["window_citation_ids"][0],
+            structured["document_links"][0]["id"]
+        );
+        assert_eq!(
+            structured["document_blocks"][1]["citation_ids"][0],
+            structured["document_links"][0]["id"]
+        );
+        assert_eq!(
+            structured["document_links"][0]["href"],
+            format!("{}/friends", server.uri())
+        );
         assert_eq!(
             structured["preview_text"].as_str().unwrap(),
             "# Hello\n\nWorld & friends."

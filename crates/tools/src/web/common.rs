@@ -5,7 +5,9 @@ use reqwest::{Client, Url, redirect::Policy};
 use schemars::JsonSchema;
 use scraper::{ElementRef, Html, Selector};
 use serde::Serialize;
-use std::collections::BTreeSet;
+use sha2::{Digest, Sha256};
+use std::collections::{BTreeMap, BTreeSet};
+use std::fmt::Write as _;
 use std::net::IpAddr;
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -33,16 +35,27 @@ pub(crate) struct WebToolPolicy {
 
 #[derive(Clone, Debug, Default, Serialize, JsonSchema)]
 pub(crate) struct ExtractedWebDocument {
-    pub blocks: Vec<WebDocumentBlock>,
+    pub blocks: Vec<WebDocumentBlockRecord>,
     pub links: Vec<WebDocumentLink>,
     pub text: String,
 }
 
 #[derive(Clone, Debug, Serialize, JsonSchema)]
 pub(crate) struct WebDocumentLink {
+    pub id: String,
     pub href: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub(crate) struct WebDocumentBlockRecord {
+    pub id: String,
+    pub start_index: usize,
+    pub end_index: usize,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub citation_ids: Vec<String>,
+    pub content: WebDocumentBlock,
 }
 
 #[derive(Clone, Debug, Serialize, JsonSchema)]
@@ -53,6 +66,12 @@ pub(crate) enum WebDocumentBlock {
     List { ordered: bool, items: Vec<String> },
     CodeBlock { text: String },
     Table { rows: Vec<Vec<String>> },
+}
+
+#[derive(Clone, Debug)]
+struct CollectedDocumentBlock {
+    content: WebDocumentBlock,
+    link_hrefs: Vec<String>,
 }
 
 impl Default for WebToolPolicy {
@@ -275,15 +294,20 @@ pub(crate) fn extract_html_document(html: &str, base_url: Option<&Url>) -> Extra
         .next()
         .unwrap_or_else(|| document.root_element());
 
-    let mut blocks = Vec::new();
-    collect_document_blocks(&root, &mut blocks);
+    let mut collected_blocks = Vec::new();
+    collect_document_blocks(&root, base_url, &mut collected_blocks);
 
     let mut links = Vec::new();
     let mut seen_links = BTreeSet::new();
     collect_document_links(&root, base_url, &mut seen_links, &mut links);
+    let link_ids_by_href = links
+        .iter()
+        .map(|link| (link.href.clone(), link.id.clone()))
+        .collect::<BTreeMap<_, _>>();
+    let (text, blocks) = render_document_blocks(&collected_blocks, &link_ids_by_href);
 
     ExtractedWebDocument {
-        text: render_document_blocks(&blocks),
+        text,
         blocks,
         links,
     }
@@ -309,16 +333,24 @@ fn table_cell_selector() -> &'static Selector {
     TABLE_CELL_SELECTOR.get_or_init(|| Selector::parse("th, td").expect("table cell selector"))
 }
 
-fn collect_document_blocks(root: &ElementRef<'_>, blocks: &mut Vec<WebDocumentBlock>) {
+fn collect_document_blocks(
+    root: &ElementRef<'_>,
+    base_url: Option<&Url>,
+    blocks: &mut Vec<CollectedDocumentBlock>,
+) {
     for child in root.children() {
         let Some(element) = ElementRef::wrap(child) else {
             continue;
         };
-        push_element_blocks(&element, blocks);
+        push_element_blocks(&element, base_url, blocks);
     }
 }
 
-fn push_element_blocks(element: &ElementRef<'_>, blocks: &mut Vec<WebDocumentBlock>) {
+fn push_element_blocks(
+    element: &ElementRef<'_>,
+    base_url: Option<&Url>,
+    blocks: &mut Vec<CollectedDocumentBlock>,
+) {
     let name = element.value().name();
     if is_hidden_html_tag(name) {
         return;
@@ -332,13 +364,19 @@ fn push_element_blocks(element: &ElementRef<'_>, blocks: &mut Vec<WebDocumentBlo
                     .strip_prefix('h')
                     .and_then(|value| value.parse::<u8>().ok())
                     .unwrap_or(1);
-                blocks.push(WebDocumentBlock::Heading { level, text });
+                blocks.push(CollectedDocumentBlock {
+                    content: WebDocumentBlock::Heading { level, text },
+                    link_hrefs: collect_element_link_hrefs(element, base_url),
+                });
             }
         }
         "p" | "blockquote" => {
             let text = normalize_descendant_text(element);
             if !text.is_empty() {
-                blocks.push(WebDocumentBlock::Paragraph { text });
+                blocks.push(CollectedDocumentBlock {
+                    content: WebDocumentBlock::Paragraph { text },
+                    link_hrefs: collect_element_link_hrefs(element, base_url),
+                });
             }
         }
         "ul" | "ol" => {
@@ -350,16 +388,22 @@ fn push_element_blocks(element: &ElementRef<'_>, blocks: &mut Vec<WebDocumentBlo
                 .filter(|text| !text.is_empty())
                 .collect::<Vec<_>>();
             if !items.is_empty() {
-                blocks.push(WebDocumentBlock::List {
-                    ordered: name == "ol",
-                    items,
+                blocks.push(CollectedDocumentBlock {
+                    content: WebDocumentBlock::List {
+                        ordered: name == "ol",
+                        items,
+                    },
+                    link_hrefs: collect_element_link_hrefs(element, base_url),
                 });
             }
         }
         "pre" => {
             let text = extract_preformatted_text(element);
             if !text.is_empty() {
-                blocks.push(WebDocumentBlock::CodeBlock { text });
+                blocks.push(CollectedDocumentBlock {
+                    content: WebDocumentBlock::CodeBlock { text },
+                    link_hrefs: collect_element_link_hrefs(element, base_url),
+                });
             }
         }
         "table" => {
@@ -374,10 +418,13 @@ fn push_element_blocks(element: &ElementRef<'_>, blocks: &mut Vec<WebDocumentBlo
                 .filter(|row| !row.is_empty())
                 .collect::<Vec<_>>();
             if !rows.is_empty() {
-                blocks.push(WebDocumentBlock::Table { rows });
+                blocks.push(CollectedDocumentBlock {
+                    content: WebDocumentBlock::Table { rows },
+                    link_hrefs: collect_element_link_hrefs(element, base_url),
+                });
             }
         }
-        _ => collect_document_blocks(element, blocks),
+        _ => collect_document_blocks(element, base_url, blocks),
     }
 }
 
@@ -397,10 +444,27 @@ fn collect_document_links(
         }
         let text = normalize_descendant_text(&link);
         links.push(WebDocumentLink {
+            id: stable_document_link_id(&href),
             href,
             text: (!text.is_empty()).then_some(text),
         });
     }
+}
+
+fn collect_element_link_hrefs(element: &ElementRef<'_>, base_url: Option<&Url>) -> Vec<String> {
+    let mut hrefs = Vec::new();
+    let mut seen = BTreeSet::new();
+    for link in element.select(link_selector()) {
+        let Some(raw_href) = link.value().attr("href") else {
+            continue;
+        };
+        let href = resolve_document_href(raw_href, base_url);
+        if href.is_empty() || !seen.insert(href.clone()) {
+            continue;
+        }
+        hrefs.push(href);
+    }
+    hrefs
 }
 
 fn resolve_document_href(href: &str, base_url: Option<&Url>) -> String {
@@ -419,7 +483,7 @@ fn resolve_document_href(href: &str, base_url: Option<&Url>) -> String {
 }
 
 fn normalize_descendant_text(element: &ElementRef<'_>) -> String {
-    normalize_whitespace(&element.text().collect::<Vec<_>>().join(" "))
+    normalize_inline_text(&element.text().collect::<Vec<_>>().join(" "))
 }
 
 fn extract_preformatted_text(element: &ElementRef<'_>) -> String {
@@ -441,15 +505,44 @@ fn extract_preformatted_text(element: &ElementRef<'_>) -> String {
     }
 }
 
-fn render_document_blocks(blocks: &[WebDocumentBlock]) -> String {
-    blocks
-        .iter()
-        .map(render_document_block)
-        .filter(|text| !text.is_empty())
-        .collect::<Vec<_>>()
-        .join("\n\n")
-        .trim()
-        .to_string()
+fn render_document_blocks(
+    blocks: &[CollectedDocumentBlock],
+    link_ids_by_href: &BTreeMap<String, String>,
+) -> (String, Vec<WebDocumentBlockRecord>) {
+    let mut rendered = String::new();
+    let mut rendered_chars = 0usize;
+    let mut records = Vec::new();
+
+    for (index, block) in blocks.iter().enumerate() {
+        let block_text = render_document_block(&block.content);
+        if block_text.is_empty() {
+            continue;
+        }
+        if !rendered.is_empty() {
+            rendered.push_str("\n\n");
+            rendered_chars += 2;
+        }
+
+        let start_index = rendered_chars;
+        rendered.push_str(&block_text);
+        rendered_chars += block_text.chars().count();
+        let end_index = rendered_chars;
+        let citation_ids = block
+            .link_hrefs
+            .iter()
+            .filter_map(|href| link_ids_by_href.get(href).cloned())
+            .collect::<Vec<_>>();
+
+        records.push(WebDocumentBlockRecord {
+            id: format!("blk_{:04}", index + 1),
+            start_index,
+            end_index,
+            citation_ids,
+            content: block.content.clone(),
+        });
+    }
+
+    (rendered, records)
 }
 
 fn render_document_block(block: &WebDocumentBlock) -> String {
@@ -477,6 +570,17 @@ fn render_document_block(block: &WebDocumentBlock) -> String {
             .collect::<Vec<_>>()
             .join("\n"),
     }
+}
+
+fn stable_document_link_id(href: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(href.as_bytes());
+    let digest = hasher.finalize();
+    let mut output = String::from("wlnk_");
+    for byte in digest.iter().take(8) {
+        let _ = write!(&mut output, "{byte:02x}");
+    }
+    output
 }
 
 fn is_hidden_html_tag(name: &str) -> bool {
@@ -593,6 +697,20 @@ fn normalize_whitespace(value: &str) -> String {
         .join("\n")
 }
 
+fn normalize_inline_text(value: &str) -> String {
+    static TRAILING_SPACE_BEFORE_PUNCT_RE: OnceLock<Regex> = OnceLock::new();
+    static LEADING_SPACE_AFTER_OPEN_RE: OnceLock<Regex> = OnceLock::new();
+
+    let normalized = normalize_whitespace(value);
+    let without_trailing_space = TRAILING_SPACE_BEFORE_PUNCT_RE
+        .get_or_init(|| Regex::new(r"\s+([,.;:!?)\]])").expect("punctuation spacing regex"))
+        .replace_all(&normalized, "$1");
+    LEADING_SPACE_AFTER_OPEN_RE
+        .get_or_init(|| Regex::new(r"([(\[])\s+").expect("opening punctuation spacing regex"))
+        .replace_all(&without_trailing_space, "$1")
+        .to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -636,13 +754,23 @@ mod tests {
             Some(&Url::parse("https://example.com/guide").unwrap()),
         );
 
+        assert!(document.links[0].id.starts_with("wlnk_"));
         assert_eq!(document.links[0].href, "https://example.com/docs");
         assert_eq!(document.links[0].text.as_deref(), Some("the docs"));
         assert!(matches!(
-            document.blocks[0],
+            document.blocks[0].content,
             WebDocumentBlock::Heading { level: 2, .. }
         ));
-        assert!(matches!(document.blocks[2], WebDocumentBlock::Table { .. }));
+        assert_eq!(
+            document.blocks[1].citation_ids,
+            vec![document.links[0].id.clone()]
+        );
+        assert!(matches!(
+            document.blocks[2].content,
+            WebDocumentBlock::Table { .. }
+        ));
+        assert_eq!(document.blocks[0].start_index, 0);
+        assert!(document.blocks[1].start_index >= document.blocks[0].end_index);
         assert!(document.text.contains("Name | Value"));
     }
 

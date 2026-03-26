@@ -243,6 +243,7 @@ Hosts embedding the foundation should define their own config layer, or none at 
 - Local tool annotations use MCP hint names so local and remote tools can be rendered consistently in one registry.
 - Feature-enabled local web tooling follows the same two-step pattern as hosted agent stacks: `web_search` for discovery, then `web_fetch` for retrieval.
 - `web_search` now goes through a provider boundary instead of hardcoding the Bing RSS bootstrap path as the contract. The request surface carries locale, freshness, and source mode explicitly, while backend metadata makes fallback capability gaps visible.
+- `web_fetch` now keeps extracted block ranges and citation ids alongside the flattened text window, so pagination and source attribution can follow the structured extraction instead of reparsing transcript prose.
 - `ToolExecutionContext` carries both host root policy (`workspace_root`, `worktree_root`, `additional_roots`) and per-call runtime scope (`run_id`, `session_id`, `turn_id`, `tool_name`, `tool_call_id`) so local tools can stay generic while still participating in audit and path-control flows.
 - Feature-enabled local code-intel tooling follows the same request families as LSP (`workspace/symbol`, `textDocument/documentSymbol`, `textDocument/definition`, `textDocument/references`), while keeping the backend host-pluggable instead of hardcoding one language server process contract.
 - Provider streaming passes through the `ModelBackend` boundary into runtime progress events, and hosts can consume those events however they want.
