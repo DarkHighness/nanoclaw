@@ -22,7 +22,7 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 use std::io::{self, Stdout, Write};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, RwLock};
 use store::{RunSearchResult, RunStore, RunSummary};
 use types::{
     Message, MessagePart, MessageRole, RunEventEnvelope, RunEventKind, RunId, SessionId,
@@ -627,14 +627,11 @@ impl RuntimeObserver for LiveRenderObserver<'_> {
                     format!("Continuing tool loop (iteration {iteration})...")
                 };
             }
-            RuntimeProgressEvent::AssistantTextDelta {
-                accumulated_text, ..
-            } => {
-                let line = format!("assistant> {accumulated_text}");
+            RuntimeProgressEvent::AssistantTextDelta { delta } => {
                 if let Some(index) = self.active_assistant_line {
-                    self.state.transcript[index] = line;
+                    self.state.transcript[index].push_str(&delta);
                 } else {
-                    self.state.transcript.push(line);
+                    self.state.transcript.push(format!("assistant> {delta}"));
                     self.active_assistant_line = Some(self.state.transcript.len() - 1);
                 }
                 self.state.status = "Streaming response...".to_string();
@@ -693,7 +690,7 @@ impl RuntimeObserver for LiveRenderObserver<'_> {
 
 #[derive(Default)]
 pub struct InteractiveToolApprovalHandler {
-    session_decisions: Mutex<BTreeMap<ToolApprovalCacheKey, SessionApprovalDecision>>,
+    session_decisions: RwLock<BTreeMap<ToolApprovalCacheKey, SessionApprovalDecision>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -731,7 +728,7 @@ impl SessionApprovalDecision {
 impl InteractiveToolApprovalHandler {
     fn cached_outcome(&self, request: &ToolApprovalRequest) -> Option<ToolApprovalOutcome> {
         self.session_decisions
-            .lock()
+            .read()
             .unwrap()
             .get(&ToolApprovalCacheKey::from_request(request))
             .copied()
@@ -740,7 +737,7 @@ impl InteractiveToolApprovalHandler {
 
     fn remember_outcome(&self, request: &ToolApprovalRequest, decision: SessionApprovalDecision) {
         self.session_decisions
-            .lock()
+            .write()
             .unwrap()
             .insert(ToolApprovalCacheKey::from_request(request), decision);
     }

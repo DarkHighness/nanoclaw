@@ -5,6 +5,7 @@ use crate::web::common::{
     default_http_client, summarize_remote_body, truncate_text,
 };
 use crate::{Result, ToolExecutionContext};
+use agent_env::vars;
 use async_trait::async_trait;
 use regex::Regex;
 use reqwest::{Client, Url};
@@ -69,7 +70,7 @@ impl WebSearchTool {
         Self::with_settings(
             WebToolPolicy::default(),
             DEFAULT_HTTP_TIMEOUT_MS,
-            std::env::var("AGENT_CORE_WEB_SEARCH_ENDPOINT").ok(),
+            agent_env::get_non_empty(vars::AGENT_CORE_WEB_SEARCH_ENDPOINT),
         )
         .expect("web search client")
     }

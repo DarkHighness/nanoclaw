@@ -1,17 +1,12 @@
 [package]
-name = "skills"
+name = "agent-env"
 edition.workspace = true
 license.workspace = true
 version.workspace = true
 
 [dependencies]
-types = { path = "../types" }
-futures.workspace = true
-regex.workspace = true
-serde.workspace = true
-serde_yaml.workspace = true
+dotenvy.workspace = true
 thiserror.workspace = true
-tokio.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

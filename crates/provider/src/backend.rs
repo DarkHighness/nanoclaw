@@ -1,12 +1,13 @@
 use crate::{
-    AnthropicTransport, OpenAiResponsesOptions, OpenAiTransport, ProviderCapabilities,
-    ProviderDescriptor, ProviderKind, Result, build_anthropic_transport, build_openai_transport,
-    openai_capabilities, stream_anthropic_turn, stream_openai_responses_turn,
+    AnthropicTransport, OpenAiResponsesOptions, OpenAiTransport, OpenAiTransportMode,
+    ProviderCapabilities, ProviderDescriptor, ProviderKind, Result, build_anthropic_transport,
+    build_openai_transport, openai_capabilities, stream_anthropic_turn, stream_openai_turn,
 };
 use async_trait::async_trait;
 use futures::stream::BoxStream;
 use runtime::{ModelBackend, ModelBackendCapabilities, Result as RuntimeResult};
 use serde_json::Value;
+use tracing::debug;
 use types::ModelRequest;
 
 #[derive(Clone, Debug)]
@@ -32,6 +33,7 @@ pub struct RequestOptions {
     pub additional_params: Option<Value>,
     pub prompt_cache_key: Option<String>,
     pub prompt_cache_retention: Option<PromptCacheRetention>,
+    pub openai_transport: Option<OpenAiTransportMode>,
     pub openai_responses: Option<OpenAiResponsesOptions>,
 }
 
@@ -141,9 +143,16 @@ impl ModelBackend for ProviderBackend {
         &self,
         request: ModelRequest,
     ) -> RuntimeResult<BoxStream<'static, RuntimeResult<types::ModelEvent>>> {
+        debug!(
+            provider = ?self.descriptor.provider.kind,
+            model = %self.descriptor.provider.model,
+            message_count = request.messages.len(),
+            tool_count = request.tools.len(),
+            "starting provider stream turn"
+        );
         match &self.transport {
             ProviderTransport::OpenAi(transport) => {
-                stream_openai_responses_turn(
+                stream_openai_turn(
                     transport.clone(),
                     self.descriptor.provider.model.clone(),
                     request,
@@ -170,7 +179,8 @@ mod tests {
         BackendDescriptor, OpenAiResponsesOptions, PromptCacheRetention, ProviderBackend,
         ProviderDescriptor, RequestOptions,
     };
-    use crate::OpenAiServerCompaction;
+    use crate::{OpenAiServerCompaction, OpenAiTransportMode};
+    use runtime::ModelBackend;
 
     #[test]
     fn openai_backend_surfaces_provider_managed_history_capabilities() {
@@ -193,5 +203,30 @@ mod tests {
         .unwrap_err();
 
         assert!(backend.to_string().contains("OPENAI_API_KEY"));
+    }
+
+    #[test]
+    fn websocket_transport_disables_openai_continuation_capabilities() {
+        let backend = ProviderBackend::from_settings_with_api_key(
+            BackendDescriptor::new(ProviderDescriptor::openai("gpt-realtime")),
+            RequestOptions {
+                openai_transport: Some(OpenAiTransportMode::RealtimeWebSocket),
+                openai_responses: Some(OpenAiResponsesOptions {
+                    chain_previous_response: true,
+                    store: Some(true),
+                    server_compaction: Some(OpenAiServerCompaction {
+                        compact_threshold: 200_000,
+                    }),
+                }),
+                ..RequestOptions::default()
+            },
+            Some("https://example.invalid/v1".to_string()),
+            Some("test-key".to_string()),
+        )
+        .unwrap();
+
+        let capabilities = backend.capabilities();
+        assert!(!capabilities.provider_managed_history);
+        assert!(!capabilities.provider_native_compaction);
     }
 }

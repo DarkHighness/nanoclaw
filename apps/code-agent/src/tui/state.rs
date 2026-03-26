@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, RwLock};
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct GitSnapshot {
@@ -154,7 +154,7 @@ fn bump_scroll(value: &mut u16, delta: i16) {
 }
 
 #[derive(Clone, Default)]
-pub(crate) struct SharedUiState(Arc<Mutex<TuiState>>);
+pub(crate) struct SharedUiState(Arc<RwLock<TuiState>>);
 
 impl SharedUiState {
     pub(crate) fn new() -> Self {
@@ -162,22 +162,22 @@ impl SharedUiState {
     }
 
     pub(crate) fn snapshot(&self) -> TuiState {
-        self.0.lock().unwrap().clone()
+        self.0.read().unwrap().clone()
     }
 
     pub(crate) fn replace(&self, state: TuiState) {
-        *self.0.lock().unwrap() = state;
+        *self.0.write().unwrap() = state;
     }
 
     pub(crate) fn mutate<F>(&self, f: F)
     where
         F: FnOnce(&mut TuiState),
     {
-        f(&mut self.0.lock().unwrap());
+        f(&mut self.0.write().unwrap());
     }
 
     pub(crate) fn take_input(&self) -> String {
-        std::mem::take(&mut self.0.lock().unwrap().input)
+        std::mem::take(&mut self.0.write().unwrap().input)
     }
 }
 

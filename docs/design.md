@@ -208,6 +208,16 @@ Hosts embedding the foundation should treat this as an example of one applicatio
   progress-aware loop detection, stop conditions, approvals, and hook decisions instead of a small
   hardcoded cycle budget.
 
+## Concurrency And Performance Rules
+
+- Channel ownership should reflect the execution model. When there is a single consumer, that owner should hold the receiver directly instead of placing the receiver behind a mutex.
+- `tokio::sync::Mutex` and `tokio::sync::RwLock` are reserved for state that truly has to remain locked across `.await`. Plain in-memory registries, caches, and snapshots should prefer synchronous locks or task ownership.
+- Long-lived I/O sessions such as shells, transports, or background workers should move toward task-plus-channel coordination instead of accumulating `Arc<Mutex<_>>` fields.
+- Startup/discovery flows such as MCP connection, skill loading, and replay-heavy search should use bounded concurrency rather than accidental serial loops, while preserving stable output order when callers depend on it.
+- Streaming paths should avoid cloning ever-growing buffers on every delta. Observers should accumulate deltas locally instead of forcing the runtime to clone the full assistant buffer on each token.
+- Environment variable metadata and lookup rules live in `crates/env`, including descriptions for every supported key. Provider adapters and host apps should consume that shared surface instead of scattering raw env access.
+- Structured `tracing` is part of the substrate contract. Hosts decide where logs are written, but runtime/provider/tool/store layers should emit enough spans and events to diagnose retries, continuation loss, approvals, tool churn, and background session behavior.
+
 ## Reference Shell Configuration
 
 The repository still includes a declarative config layer, but that layer belongs to the removable reference shell rather than the runtime foundation.

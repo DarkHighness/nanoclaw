@@ -2,6 +2,7 @@ use crate::{
     ProviderError, RequestOptions, Result, coerce_object_schema, merge_top_level_object,
     message_part_text, render_instruction_text,
 };
+use agent_env::vars;
 use async_stream::try_stream;
 use eventsource_stream::Eventsource;
 use futures::{StreamExt, TryStreamExt, stream::BoxStream};
@@ -9,6 +10,7 @@ use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE};
 use runtime::Result as RuntimeResult;
 use serde_json::{Map, Value, json};
 use std::collections::BTreeMap;
+use tracing::debug;
 use types::{
     AgentCoreError, CallId, MessageId, MessagePart, MessageRole, ModelEvent, ModelRequest,
     Reasoning, ReasoningContent, ToolCall, ToolCallId, ToolOrigin, ToolResult,
@@ -35,12 +37,12 @@ pub(crate) fn build_anthropic_transport(
 ) -> Result<AnthropicTransport> {
     let base_url = base_url
         .map(ToOwned::to_owned)
-        .or_else(|| std::env::var("ANTHROPIC_BASE_URL").ok())
+        .or_else(|| agent_env::get_non_empty(vars::ANTHROPIC_BASE_URL))
         .unwrap_or_else(|| "https://api.anthropic.com/v1".to_string());
     let api_key = api_key_override
         .map(ToOwned::to_owned)
-        .or_else(|| std::env::var("ANTHROPIC_API_KEY").ok())
-        .ok_or_else(|| ProviderError::config("ANTHROPIC_API_KEY not set"))?;
+        .or_else(|| agent_env::get_non_empty(vars::ANTHROPIC_API_KEY))
+        .ok_or_else(|| ProviderError::config(format!("{} not set", vars::ANTHROPIC_API_KEY.key)))?;
     Ok(AnthropicTransport {
         api_key,
         base_url,
@@ -54,6 +56,13 @@ pub(crate) async fn stream_anthropic_turn(
     request: ModelRequest,
     request_options: RequestOptions,
 ) -> RuntimeResult<BoxStream<'static, RuntimeResult<ModelEvent>>> {
+    debug!(
+        provider = "anthropic",
+        model = %model,
+        message_count = request.messages.len(),
+        tool_count = request.tools.len(),
+        "starting Anthropic stream turn"
+    );
     let tool_origins = request
         .tools
         .iter()

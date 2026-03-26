@@ -4,19 +4,22 @@ use crate::{
     searchable_event_strings, summarize_run_events,
 };
 use async_trait::async_trait;
+use futures::{StreamExt, stream};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::fs::{self, OpenOptions};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::Mutex;
+use tracing::{debug, info};
 use types::{Message, RunEventEnvelope, RunEventKind, RunId, SessionId};
 
 const INDEX_FILE_NAME: &str = "runs.index.json";
 const INDEX_VERSION: u32 = 2;
 const MAX_SEARCH_CORPUS_CHARS: usize = 16_384;
+const SEARCH_REPLAY_CONCURRENCY_LIMIT: usize = 8;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RunStoreRetentionPolicy {
@@ -33,7 +36,7 @@ pub struct FileRunStoreOptions {
 pub struct FileRunStore {
     root_dir: PathBuf,
     write_lock: Arc<Mutex<()>>,
-    index: Arc<Mutex<FileRunStoreIndex>>,
+    index: Arc<RwLock<FileRunStoreIndex>>,
     options: FileRunStoreOptions,
 }
 
@@ -75,6 +78,7 @@ impl FileRunStore {
         options: FileRunStoreOptions,
     ) -> Result<Self> {
         let root_dir = root_dir.into();
+        info!(root = %root_dir.display(), "opening file run store");
         fs::create_dir_all(&root_dir).await?;
         let mut index = load_or_rebuild_index(&root_dir).await?;
         let pruned = select_runs_to_prune(&index, &options.retention, current_timestamp_ms());
@@ -82,11 +86,18 @@ impl FileRunStore {
             delete_run_file(&root_dir, run_id).await?;
             index.runs.remove(run_id);
         }
+        if !pruned.is_empty() {
+            info!(
+                root = %root_dir.display(),
+                pruned_runs = pruned.len(),
+                "applied run-store retention during open"
+            );
+        }
         persist_index_file(&root_dir, &index).await?;
         Ok(Self {
             root_dir,
             write_lock: Arc::new(Mutex::new(())),
-            index: Arc::new(Mutex::new(index)),
+            index: Arc::new(RwLock::new(index)),
             options,
         })
     }
@@ -136,31 +147,46 @@ impl EventSink for FileRunStore {
         file.write_all(b"\n").await?;
         file.flush().await?;
 
-        let mut index = self.index.lock().await;
-        let record = index
-            .runs
-            .entry(event.run_id.0.clone())
-            .or_insert_with(|| IndexedRunRecord {
-                summary: RunSummary {
-                    run_id: event.run_id.clone(),
-                    first_timestamp_ms: event.timestamp_ms,
-                    last_timestamp_ms: event.timestamp_ms,
-                    event_count: 0,
-                    session_count: 0,
-                    transcript_message_count: 0,
-                    last_user_prompt: None,
-                },
-                session_ids: Vec::new(),
-                search_corpus: String::new(),
-            });
-        apply_event_to_record(record, &event);
+        let pruned = {
+            let mut index = self.index.write().expect("file run store write lock");
+            let record = index
+                .runs
+                .entry(event.run_id.as_str().to_string())
+                .or_insert_with(|| IndexedRunRecord {
+                    summary: RunSummary {
+                        run_id: event.run_id.clone(),
+                        first_timestamp_ms: event.timestamp_ms,
+                        last_timestamp_ms: event.timestamp_ms,
+                        event_count: 0,
+                        session_count: 0,
+                        transcript_message_count: 0,
+                        last_user_prompt: None,
+                    },
+                    session_ids: Vec::new(),
+                    search_corpus: String::new(),
+                });
+            apply_event_to_record(record, &event);
+            select_runs_to_prune(&index, &self.options.retention, current_timestamp_ms())
+        };
 
-        let pruned = select_runs_to_prune(&index, &self.options.retention, current_timestamp_ms());
         for run_id in &pruned {
             delete_run_file(&self.root_dir, run_id).await?;
-            index.runs.remove(run_id);
         }
-        self.persist_index(&index).await?;
+        if !pruned.is_empty() {
+            debug!(
+                root = %self.root_dir.display(),
+                pruned_runs = pruned.len(),
+                "applied run-store retention after append"
+            );
+        }
+        let index_snapshot = {
+            let mut index = self.index.write().expect("file run store write lock");
+            for run_id in &pruned {
+                index.runs.remove(run_id);
+            }
+            index.clone()
+        };
+        self.persist_index(&index_snapshot).await?;
         Ok(())
     }
 }
@@ -168,7 +194,7 @@ impl EventSink for FileRunStore {
 #[async_trait]
 impl RunStore for FileRunStore {
     async fn list_runs(&self) -> Result<Vec<RunSummary>> {
-        let index = self.index.lock().await;
+        let index = self.index.read().expect("file run store read lock");
         let mut runs = index
             .runs
             .values()
@@ -195,7 +221,7 @@ impl RunStore for FileRunStore {
 
         let query_lower = query.to_lowercase();
         let candidate_summaries = {
-            let index = self.index.lock().await;
+            let index = self.index.read().expect("file run store read lock");
             index
                 .runs
                 .values()
@@ -204,13 +230,26 @@ impl RunStore for FileRunStore {
                 .collect::<Vec<_>>()
         };
 
-        let mut runs = Vec::new();
-        for summary in candidate_summaries {
-            let events = self.events(&summary.run_id).await?;
-            if let Some(result) = search_run_events(&summary, &events, query) {
-                runs.push(result);
+        // Candidate summaries are already prefiltered by the sidecar index, so
+        // the expensive step here is replaying JSONL event streams. Bound that
+        // replay fan-out instead of serializing each run one by one.
+        let query = query.to_string();
+        let mut runs = stream::iter(candidate_summaries.into_iter().map(|summary| {
+            let store = self.clone();
+            let query = query.clone();
+            async move {
+                let events = store.events(&summary.run_id).await?;
+                Ok::<_, RunStoreError>(search_run_events(&summary, &events, &query))
             }
-        }
+        }))
+        .buffer_unordered(SEARCH_REPLAY_CONCURRENCY_LIMIT)
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .collect::<std::result::Result<Vec<_>, _>>()?
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
         runs.sort_by(|left, right| {
             right
                 .matched_event_count
@@ -221,7 +260,12 @@ impl RunStore for FileRunStore {
                         .last_timestamp_ms
                         .cmp(&left.summary.last_timestamp_ms)
                 })
-                .then_with(|| left.summary.run_id.0.cmp(&right.summary.run_id.0))
+                .then_with(|| {
+                    left.summary
+                        .run_id
+                        .as_str()
+                        .cmp(right.summary.run_id.as_str())
+                })
         });
         Ok(runs)
     }
@@ -229,26 +273,31 @@ impl RunStore for FileRunStore {
     async fn events(&self, run_id: &RunId) -> Result<Vec<RunEventEnvelope>> {
         let path = self.run_path(run_id);
         if !fs::try_exists(&path).await? {
-            return Err(RunStoreError::RunNotFound(run_id.0.clone()));
+            return Err(RunStoreError::RunNotFound(run_id.as_str().to_string()));
         }
         self.load_events_from_path(&path).await
     }
 
     async fn session_ids(&self, run_id: &RunId) -> Result<Vec<SessionId>> {
-        let index = self.index.lock().await;
-        if let Some(record) = index.runs.get(&run_id.0) {
-            return Ok(record
-                .session_ids
-                .iter()
-                .cloned()
-                .map(SessionId)
-                .collect::<Vec<_>>());
+        let cached = {
+            let index = self.index.read().expect("file run store read lock");
+            index.runs.get(run_id.as_str()).map(|record| {
+                record
+                    .session_ids
+                    .iter()
+                    .cloned()
+                    .map(SessionId::from)
+                    .collect::<Vec<_>>()
+            })
+        };
+        if let Some(session_ids) = cached {
+            return Ok(session_ids);
         }
 
         let mut seen = HashSet::new();
         let mut ordered = Vec::new();
         for event in self.events(run_id).await? {
-            if seen.insert(event.session_id.0.clone()) {
+            if seen.insert(event.session_id.as_str().to_string()) {
                 ordered.push(event.session_id);
             }
         }

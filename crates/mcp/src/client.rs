@@ -3,6 +3,7 @@ use crate::{
     McpServerConfig, McpTransportConfig, Result,
 };
 use async_trait::async_trait;
+use futures::{StreamExt, TryStreamExt, stream};
 use http::{HeaderName, HeaderValue};
 use rmcp::ServiceExt;
 use rmcp::model::{
@@ -13,13 +14,15 @@ use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig
 use rmcp::transport::{StreamableHttpClientTransport, TokioChildProcess};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tokio::process::Command;
-use tokio::sync::Mutex;
+use tracing::{debug, info};
 use types::{
     Message, MessagePart, MessageRole, ToolCallId, ToolOrigin, ToolOutputMode, ToolResult,
     ToolSpec, new_opaque_id,
 };
+
+const MCP_CONNECT_CONCURRENCY_LIMIT: usize = 8;
 
 #[async_trait]
 pub trait McpClient: Send + Sync {
@@ -34,37 +37,87 @@ pub async fn connect_mcp_server(config: &McpServerConfig) -> Result<Arc<dyn McpC
 }
 
 pub async fn connect_mcp_servers(configs: &[McpServerConfig]) -> Result<Vec<Arc<dyn McpClient>>> {
-    let mut clients = Vec::new();
-    for config in configs {
-        clients.push(connect_mcp_server(config).await?);
-    }
-    Ok(clients)
+    info!(server_count = configs.len(), "connecting MCP servers");
+    let tasks = configs
+        .iter()
+        .cloned()
+        .enumerate()
+        .map(|(index, config)| async move {
+            let client = connect_mcp_server(&config).await?;
+            Ok::<_, McpError>((index, client))
+        })
+        .collect::<Vec<_>>();
+    run_indexed_tasks_ordered(tasks, MCP_CONNECT_CONCURRENCY_LIMIT).await
 }
 
 pub async fn connect_and_catalog_mcp_servers(
     configs: &[McpServerConfig],
 ) -> Result<Vec<ConnectedMcpServer>> {
-    let mut servers = Vec::new();
-    for config in configs {
-        let client = connect_mcp_server(config).await?;
-        let catalog = client.catalog().await?;
-        servers.push(ConnectedMcpServer {
-            server_name: config.name.clone(),
-            client,
-            catalog,
-        });
-    }
-    Ok(servers)
+    info!(
+        server_count = configs.len(),
+        "connecting and cataloging MCP servers"
+    );
+    let tasks = configs
+        .iter()
+        .cloned()
+        .enumerate()
+        .map(|(index, config)| async move {
+            let client = connect_mcp_server(&config).await?;
+            let catalog = client.catalog().await?;
+            Ok::<_, McpError>((
+                index,
+                ConnectedMcpServer {
+                    server_name: config.name,
+                    client,
+                    catalog,
+                },
+            ))
+        })
+        .collect::<Vec<_>>();
+    run_indexed_tasks_ordered(tasks, MCP_CONNECT_CONCURRENCY_LIMIT).await
+}
+
+async fn run_indexed_tasks_ordered<T, E, Fut>(
+    tasks: Vec<Fut>,
+    concurrency_limit: usize,
+) -> std::result::Result<Vec<T>, E>
+where
+    Fut: std::future::Future<Output = std::result::Result<(usize, T), E>>,
+{
+    // Connections and remote catalogs can block on network/child-process startup.
+    // We bound parallelism to avoid startup stampedes while still eliminating
+    // obvious N-by-N serial waits.
+    let mut indexed = stream::iter(tasks)
+        .buffer_unordered(concurrency_limit.max(1))
+        .try_collect::<Vec<_>>()
+        .await?;
+
+    // Callers expect outputs to align with the original config order even though
+    // each task completes out of order under bounded parallelism.
+    indexed.sort_by_key(|(index, _)| *index);
+    Ok(indexed.into_iter().map(|(_, value)| value).collect())
 }
 
 pub struct RmcpClient {
     server_name: String,
     peer: rmcp::Peer<rmcp::RoleClient>,
+    // The running RMCP service is retained only to keep the transport task
+    // alive for the peer. Nothing in the current substrate mutates it after
+    // connect, so a synchronous mutex is sufficient and avoids async-lock
+    // overhead on a non-awaiting code path.
     _service: Mutex<rmcp::service::RunningService<rmcp::RoleClient, ()>>,
 }
 
 impl RmcpClient {
     async fn connect(config: &McpServerConfig) -> Result<Self> {
+        debug!(
+            server = %config.name,
+            transport = match &config.transport {
+                McpTransportConfig::Stdio { .. } => "stdio",
+                McpTransportConfig::StreamableHttp { .. } => "streamable_http",
+            },
+            "connecting MCP server"
+        );
         let service = match &config.transport {
             McpTransportConfig::Stdio {
                 command,
@@ -512,4 +565,69 @@ fn prompt_message_to_message(message: &PromptMessage) -> Message {
         },
     };
     Message::new(role, vec![part])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::run_indexed_tasks_ordered;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::time::{Duration, sleep};
+
+    #[tokio::test]
+    async fn indexed_runner_preserves_input_order() {
+        let tasks = (0usize..6)
+            .map(|index| async move {
+                let delay = (6 - index) as u64 * 5;
+                sleep(Duration::from_millis(delay)).await;
+                Ok::<_, ()>((index, format!("item-{index}")))
+            })
+            .collect::<Vec<_>>();
+
+        let values = run_indexed_tasks_ordered(tasks, 3).await.unwrap();
+        assert_eq!(
+            values,
+            vec![
+                "item-0".to_string(),
+                "item-1".to_string(),
+                "item-2".to_string(),
+                "item-3".to_string(),
+                "item-4".to_string(),
+                "item-5".to_string(),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn indexed_runner_respects_concurrency_bound() {
+        let active = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+        let tasks = (0usize..12)
+            .map(|index| {
+                let active = active.clone();
+                let peak = peak.clone();
+                async move {
+                    let now = active.fetch_add(1, Ordering::SeqCst) + 1;
+                    update_peak(&peak, now);
+                    sleep(Duration::from_millis(10)).await;
+                    active.fetch_sub(1, Ordering::SeqCst);
+                    Ok::<_, ()>((index, index))
+                }
+            })
+            .collect::<Vec<_>>();
+
+        let values = run_indexed_tasks_ordered(tasks, 3).await.unwrap();
+        assert_eq!(values, (0usize..12).collect::<Vec<_>>());
+        assert!(peak.load(Ordering::SeqCst) <= 3);
+    }
+
+    fn update_peak(peak: &AtomicUsize, candidate: usize) {
+        let mut current = peak.load(Ordering::SeqCst);
+        while candidate > current {
+            match peak.compare_exchange(current, candidate, Ordering::SeqCst, Ordering::SeqCst) {
+                Ok(_) => break,
+                Err(observed) => current = observed,
+            }
+        }
+    }
 }

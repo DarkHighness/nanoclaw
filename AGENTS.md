@@ -30,11 +30,15 @@ If a future reader would have to reverse-engineer why a piece of code exists, ad
 - Runtime coordination primitives such as steer and queue belong in the runtime layer, not as normal tools.
 - Tool surfaces should stay minimal by default; non-essential bundles belong behind Cargo features.
 - Global fixed iteration budgets are not the primary control model. Prefer explicit stop conditions and progress-aware loop detection.
+- Prefer ownership and message passing over `Arc<Mutex<_>>`. If a single consumer owns a channel receiver, keep the receiver on that owner instead of wrapping it in a mutex.
+- Use async locks only when guarded state must survive across `.await`. Plain in-memory state with short critical sections should use synchronous locks or owned task state.
+- Independent async startup and discovery work should run with bounded concurrency. Preserve output ordering deliberately instead of serializing by accident.
+- Environment-variable definitions and lookups belong in `crates/env`. Do not scatter raw env-key access across substrate crates.
+- Substrate crates should emit structured `tracing` events for turn lifecycle, provider requests, tool execution, retries, background sessions, and degradation paths.
 
 ## Git Hooks
 
 - Install hooks with `scripts/install-git-hooks.sh` after cloning or whenever local git config is reset.
 - The repository hook path is `.githooks`.
-- `pre-commit` formats the root workspace and the independent app manifests, then stops if formatting changed staged files.
+- `pre-commit` formats the `crates/` substrate workspace and the `apps/` host-app workspace, then stops if formatting changed staged files.
 - `commit-msg` accepts only Conventional Commit subjects such as `feat(runtime): ...` or `docs: ...`.
-

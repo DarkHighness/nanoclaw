@@ -1,9 +1,12 @@
 use crate::frontmatter::SkillFrontmatter;
 use crate::{Result, SkillError};
+use futures::{StreamExt, TryStreamExt, stream};
 use regex::Regex;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use tokio::fs;
+
+const SKILL_LOAD_CONCURRENCY_LIMIT: usize = 8;
 
 #[derive(Clone, Debug)]
 pub struct Skill {
@@ -52,7 +55,7 @@ pub async fn load_skill_from_dir(dir: impl AsRef<Path>) -> Result<Skill> {
 }
 
 pub async fn load_skill_roots(roots: &[PathBuf]) -> Result<crate::SkillCatalog> {
-    let mut skills = Vec::new();
+    let mut skill_dirs = Vec::new();
     for root in roots {
         if !root.exists() {
             continue;
@@ -63,11 +66,44 @@ pub async fn load_skill_roots(roots: &[PathBuf]) -> Result<crate::SkillCatalog> 
         while let Some(entry) = entries.next_entry().await? {
             let path = entry.path();
             if entry.file_type().await?.is_dir() && path.join("SKILL.md").exists() {
-                skills.push(load_skill_from_dir(&path).await?);
+                skill_dirs.push(path);
             }
         }
     }
+    skill_dirs.sort();
+    skill_dirs.dedup();
+
+    let tasks = skill_dirs
+        .into_iter()
+        .enumerate()
+        .map(|(index, path)| async move {
+            let skill = load_skill_from_dir(&path).await?;
+            Ok::<_, SkillError>((index, skill))
+        })
+        .collect::<Vec<_>>();
+    let skills = run_indexed_tasks_ordered(tasks, SKILL_LOAD_CONCURRENCY_LIMIT).await?;
     Ok(crate::SkillCatalog::new(skills))
+}
+
+async fn run_indexed_tasks_ordered<T, E, Fut>(
+    tasks: Vec<Fut>,
+    concurrency_limit: usize,
+) -> std::result::Result<Vec<T>, E>
+where
+    Fut: std::future::Future<Output = std::result::Result<(usize, T), E>>,
+{
+    // Skill packages often touch many files (frontmatter, references, scripts).
+    // Bounded parallel loading removes obvious serialization while avoiding a
+    // large number of simultaneous filesystem operations.
+    let mut indexed = stream::iter(tasks)
+        .buffer_unordered(concurrency_limit.max(1))
+        .try_collect::<Vec<_>>()
+        .await?;
+
+    // Skill selection and manifest generation should remain deterministic
+    // regardless of filesystem traversal order or task completion timing.
+    indexed.sort_by_key(|(index, _)| *index);
+    Ok(indexed.into_iter().map(|(_, value)| value).collect())
 }
 
 fn parse_frontmatter(raw: &str) -> Result<(SkillFrontmatter, String)> {
@@ -107,9 +143,12 @@ async fn collect_child_paths(dir: PathBuf) -> Result<Vec<PathBuf>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{load_skill_from_dir, load_skill_roots};
+    use super::{load_skill_from_dir, load_skill_roots, run_indexed_tasks_ordered};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use tempfile::tempdir;
     use tokio::fs;
+    use tokio::time::{Duration, sleep};
 
     #[tokio::test]
     async fn loads_standard_skill_layout() {
@@ -173,5 +212,38 @@ Use for PDF work.
         assert!(manifest.contains("- pdf: Use for PDF tasks"));
         assert!(manifest.contains("aliases=acrobat"));
         assert!(manifest.contains("path="));
+    }
+
+    #[tokio::test]
+    async fn indexed_runner_is_ordered_and_bounded() {
+        let active = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+        let tasks = (0usize..10)
+            .map(|index| {
+                let active = active.clone();
+                let peak = peak.clone();
+                async move {
+                    let now = active.fetch_add(1, Ordering::SeqCst) + 1;
+                    update_peak(&peak, now);
+                    sleep(Duration::from_millis((10 - index) as u64)).await;
+                    active.fetch_sub(1, Ordering::SeqCst);
+                    Ok::<_, ()>((index, index))
+                }
+            })
+            .collect::<Vec<_>>();
+
+        let output = run_indexed_tasks_ordered(tasks, 2).await.unwrap();
+        assert_eq!(output, (0usize..10).collect::<Vec<_>>());
+        assert!(peak.load(Ordering::SeqCst) <= 2);
+    }
+
+    fn update_peak(peak: &AtomicUsize, candidate: usize) {
+        let mut current = peak.load(Ordering::SeqCst);
+        while candidate > current {
+            match peak.compare_exchange(current, candidate, Ordering::SeqCst, Ordering::SeqCst) {
+                Ok(_) => break,
+                Err(observed) => current = observed,
+            }
+        }
     }
 }

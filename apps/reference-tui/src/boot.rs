@@ -11,6 +11,7 @@ use agent::provider::{
     ProviderDescriptor, RequestOptions,
 };
 use agent::skills::{Skill, load_skill_roots};
+use agent_env::vars;
 use anyhow::{Context, Result, anyhow};
 use runtime::{
     AgentRuntime, AgentRuntimeBuilder, CompactionConfig, DefaultCommandHookExecutor, HookRunner,
@@ -25,6 +26,7 @@ use tools::{
 };
 #[cfg(feature = "web-tools")]
 use tools::{WebFetchTool, WebSearchTool};
+use tracing::{info, warn};
 use types::ToolOrigin;
 
 const DEFAULT_AGENT_PREAMBLE: &[&str] = &[
@@ -79,6 +81,7 @@ impl BootArtifacts {
 
 pub async fn bootstrap_from_dir(dir: impl AsRef<Path>) -> Result<BootArtifacts> {
     let workspace_root = dir.as_ref().to_path_buf();
+    info!(workspace = %workspace_root.display(), "bootstrapping reference TUI");
     let config = AgentCoreConfig::load_from_dir(&workspace_root)
         .context("failed to load agent-core config")?;
     bootstrap_from_parts(workspace_root, config).await
@@ -232,7 +235,7 @@ async fn build_store(config: &AgentCoreConfig, workspace_root: &Path) -> Result<
                 "failed to initialize file run store at {}: {error}",
                 store_dir.display()
             );
-            eprintln!("warning: {warning}; falling back to in-memory store");
+            warn!("{warning}; falling back to in-memory store");
             Ok(StoreHandle {
                 store: Arc::new(InMemoryRunStore::new()),
                 label: "memory fallback".to_string(),
@@ -399,9 +402,9 @@ fn resolved_provider_kind(config: &AgentCoreConfig, model: &str) -> ProviderKind
         return ProviderKind::Anthropic;
     }
     let has_openai = config.provider.env.contains_key("OPENAI_API_KEY")
-        || std::env::var("OPENAI_API_KEY").is_ok();
+        || agent_env::has_non_empty(vars::OPENAI_API_KEY);
     let has_anthropic = config.provider.env.contains_key("ANTHROPIC_API_KEY")
-        || std::env::var("ANTHROPIC_API_KEY").is_ok();
+        || agent_env::has_non_empty(vars::ANTHROPIC_API_KEY);
     match (has_openai, has_anthropic) {
         (false, true) => ProviderKind::Anthropic,
         _ => ProviderKind::OpenAi,

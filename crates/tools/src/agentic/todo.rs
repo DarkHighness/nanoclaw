@@ -5,8 +5,7 @@ use async_trait::async_trait;
 use schemars::{JsonSchema, schema_for};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::sync::Arc;
-use tokio::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use types::{MessagePart, ToolCallId, ToolOrigin, ToolOutputMode, ToolResult, ToolSpec};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -38,15 +37,15 @@ impl TodoListState {
     }
 
     pub async fn snapshot(&self) -> Vec<TodoItem> {
-        self.items.lock().await.clone()
+        self.items.lock().expect("todo list lock").clone()
     }
 
     pub async fn replace(&self, items: Vec<TodoItem>) {
-        *self.items.lock().await = items;
+        *self.items.lock().expect("todo list lock") = items;
     }
 
     pub async fn merge(&self, items: Vec<TodoItem>) -> Vec<TodoItem> {
-        let mut guard = self.items.lock().await;
+        let mut guard = self.items.lock().expect("todo list lock");
         for item in items {
             match guard.iter_mut().find(|existing| existing.id == item.id) {
                 Some(existing) => *existing = item,

@@ -2,12 +2,17 @@ use crate::{
     ProviderError, RequestOptions, Result, data_url, merge_top_level_object,
     render_instruction_text, stringify_json, tool_schema,
 };
+use agent_env::vars;
 use async_stream::try_stream;
 use eventsource_stream::Eventsource;
-use futures::{StreamExt, TryStreamExt, stream::BoxStream};
+use futures::{SinkExt, StreamExt, TryStreamExt, stream::BoxStream};
 use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE};
 use serde_json::{Map, Value, json};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
+use tokio_tungstenite::connect_async;
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+use tokio_tungstenite::tungstenite::protocol::Message as WsMessage;
+use tracing::debug;
 use types::{
     AgentCoreError, CallId, Message, MessageId, MessagePart, MessageRole, ModelEvent, ModelRequest,
     ProviderContinuation, Reasoning, ReasoningContent, ResponseId, ToolCall, ToolCallId,
@@ -19,6 +24,13 @@ pub struct OpenAiResponsesOptions {
     pub chain_previous_response: bool,
     pub store: Option<bool>,
     pub server_compaction: Option<OpenAiServerCompaction>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum OpenAiTransportMode {
+    #[default]
+    ResponsesHttp,
+    RealtimeWebSocket,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -49,6 +61,31 @@ impl OpenAiTransport {
     pub(crate) fn responses_url(&self) -> String {
         format!("{}/responses", self.base_url.trim_end_matches('/'))
     }
+
+    pub(crate) fn realtime_ws_url(&self, model: &str) -> Result<String> {
+        let mut url = reqwest::Url::parse(&self.base_url)
+            .map_err(|error| ProviderError::config(error.to_string()))?;
+        let path = format!("{}/realtime", url.path().trim_end_matches('/'));
+        url.set_path(&path);
+        match url.scheme() {
+            "https" => {
+                url.set_scheme("wss")
+                    .map_err(|_| ProviderError::config("failed to set wss scheme"))?;
+            }
+            "http" => {
+                url.set_scheme("ws")
+                    .map_err(|_| ProviderError::config("failed to set ws scheme"))?;
+            }
+            "wss" | "ws" => {}
+            other => {
+                return Err(ProviderError::config(format!(
+                    "unsupported OpenAI base URL scheme `{other}` for websocket transport"
+                )));
+            }
+        }
+        url.query_pairs_mut().append_pair("model", model);
+        Ok(url.to_string())
+    }
 }
 
 pub(crate) fn build_openai_transport(
@@ -57,12 +94,12 @@ pub(crate) fn build_openai_transport(
 ) -> Result<OpenAiTransport> {
     let base_url = base_url
         .map(ToOwned::to_owned)
-        .or_else(|| std::env::var("OPENAI_BASE_URL").ok())
+        .or_else(|| agent_env::get_non_empty(vars::OPENAI_BASE_URL))
         .unwrap_or_else(|| "https://api.openai.com/v1".to_string());
     let api_key = api_key_override
         .map(ToOwned::to_owned)
-        .or_else(|| std::env::var("OPENAI_API_KEY").ok())
-        .ok_or_else(|| ProviderError::config("OPENAI_API_KEY not set"))?;
+        .or_else(|| agent_env::get_non_empty(vars::OPENAI_API_KEY))
+        .ok_or_else(|| ProviderError::config(format!("{} not set", vars::OPENAI_API_KEY.key)))?;
     Ok(OpenAiTransport {
         api_key,
         base_url,
@@ -71,15 +108,32 @@ pub(crate) fn build_openai_transport(
 }
 
 pub(crate) fn openai_capabilities(options: &RequestOptions) -> runtime::ModelBackendCapabilities {
+    let openai_options = options.openai_responses.as_ref();
+    let websocket_transport = matches!(
+        options.openai_transport,
+        Some(OpenAiTransportMode::RealtimeWebSocket)
+    );
     runtime::ModelBackendCapabilities {
-        provider_managed_history: options
-            .openai_responses
-            .as_ref()
-            .is_some_and(|options| options.chain_previous_response),
-        provider_native_compaction: options
-            .openai_responses
-            .as_ref()
-            .is_some_and(|options| options.server_compaction.is_some()),
+        provider_managed_history: !websocket_transport
+            && openai_options.is_some_and(|options| options.chain_previous_response),
+        provider_native_compaction: !websocket_transport
+            && openai_options.is_some_and(|options| options.server_compaction.is_some()),
+    }
+}
+
+pub(crate) async fn stream_openai_turn(
+    transport: OpenAiTransport,
+    model: String,
+    request: ModelRequest,
+    request_options: RequestOptions,
+) -> runtime::Result<BoxStream<'static, runtime::Result<ModelEvent>>> {
+    if matches!(
+        request_options.openai_transport,
+        Some(OpenAiTransportMode::RealtimeWebSocket)
+    ) {
+        stream_openai_realtime_turn(transport, model, request, request_options).await
+    } else {
+        stream_openai_responses_turn(transport, model, request, request_options).await
     }
 }
 
@@ -89,6 +143,13 @@ pub(crate) async fn stream_openai_responses_turn(
     request: ModelRequest,
     request_options: RequestOptions,
 ) -> runtime::Result<BoxStream<'static, runtime::Result<ModelEvent>>> {
+    debug!(
+        transport = "responses_http",
+        model = %model,
+        message_count = request.messages.len(),
+        tool_count = request.tools.len(),
+        "starting OpenAI Responses turn"
+    );
     let tool_origins = request
         .tools
         .iter()
@@ -237,6 +298,285 @@ pub(crate) async fn stream_openai_responses_turn(
             reasoning,
         };
     }))
+}
+
+pub(crate) async fn stream_openai_realtime_turn(
+    transport: OpenAiTransport,
+    model: String,
+    request: ModelRequest,
+    request_options: RequestOptions,
+) -> runtime::Result<BoxStream<'static, runtime::Result<ModelEvent>>> {
+    debug!(
+        transport = "realtime_websocket",
+        model = %model,
+        message_count = request.messages.len(),
+        tool_count = request.tools.len(),
+        "starting OpenAI realtime turn"
+    );
+    if request.continuation.is_some() {
+        // Realtime websocket sessions are currently modeled as single-turn exchanges in this substrate path.
+        // That means Responses continuation ids cannot be resumed over this transport yet.
+        return Err(
+            ProviderError::config(
+                "OpenAI realtime websocket mode does not support `previous_response_id` continuation in this implementation",
+            )
+            .into(),
+        );
+    }
+
+    let tool_origins = request
+        .tools
+        .iter()
+        .map(|tool| (tool.name.clone(), tool.origin.clone()))
+        .collect::<BTreeMap<_, _>>();
+    let websocket_model = model.clone();
+    let request_event = build_openai_realtime_request_event(model, request, &request_options)
+        .map_err(runtime::RuntimeError::from)?;
+    let ws_url = transport.realtime_ws_url(&websocket_model)?;
+    let mut ws_request = ws_url
+        .into_client_request()
+        .map_err(|error| ProviderError::request(error.to_string()))?;
+    ws_request.headers_mut().insert(
+        "Authorization",
+        format!("Bearer {}", transport.api_key).parse().map_err(
+            |error: reqwest::header::InvalidHeaderValue| ProviderError::request(error.to_string()),
+        )?,
+    );
+    ws_request.headers_mut().insert(
+        "OpenAI-Beta",
+        "realtime=v1"
+            .parse()
+            .map_err(|error: reqwest::header::InvalidHeaderValue| {
+                ProviderError::request(error.to_string())
+            })?,
+    );
+
+    Ok(Box::pin(try_stream! {
+        let (ws_stream, _) = connect_async(ws_request)
+            .await
+            .map_err(|error| runtime::RuntimeError::from(ProviderError::request(error.to_string())))?;
+        let (mut ws_sink, mut ws_source) = ws_stream.split();
+
+        ws_sink
+            .send(WsMessage::Text(request_event.to_string().into()))
+            .await
+            .map_err(|error| runtime::RuntimeError::from(ProviderError::request(error.to_string())))?;
+
+        let mut saw_tool_call = false;
+        let mut reasoning = Vec::new();
+        let mut message_id = None;
+        let mut response_id = None;
+        let mut emitted_tool_call_ids = HashSet::<String>::new();
+
+        while let Some(frame) = ws_source.next().await {
+            let frame = frame
+                .map_err(|error| runtime::RuntimeError::from(ProviderError::request(error.to_string())))?;
+            let WsMessage::Text(text) = frame else {
+                if matches!(frame, WsMessage::Close(_)) {
+                    break;
+                }
+                continue;
+            };
+
+            let chunk: Value = serde_json::from_str(&text).map_err(runtime::RuntimeError::from)?;
+            match chunk.get("type").and_then(Value::as_str) {
+                Some("response.output_text.delta") | Some("response.refusal.delta") => {
+                    if let Some(delta) = chunk.get("delta").and_then(Value::as_str) {
+                        yield ModelEvent::TextDelta { delta: delta.to_string() };
+                    }
+                }
+                Some("response.output_item.done") => {
+                    let Some(item) = chunk.get("item") else {
+                        continue;
+                    };
+                    if let Some(call) = parse_openai_tool_call_item(item, &tool_origins) {
+                        saw_tool_call = true;
+                        emitted_tool_call_ids.insert(call.id.as_str().to_string());
+                        yield ModelEvent::ToolCallRequested { call };
+                        continue;
+                    }
+                    if let Some(parsed_reasoning) = parse_openai_reasoning_item(item) {
+                        reasoning.push(parsed_reasoning);
+                    }
+                    if let Some(parsed_message_id) = parse_openai_message_id(item) {
+                        message_id = Some(parsed_message_id);
+                    }
+                }
+                Some("response.done") => {
+                    let Some(response) = chunk.get("response") else {
+                        break;
+                    };
+                    if response
+                        .get("status")
+                        .and_then(Value::as_str)
+                        == Some("failed")
+                    {
+                        let message = response
+                            .get("error")
+                            .and_then(|error| error.get("message"))
+                            .and_then(Value::as_str)
+                            .unwrap_or("OpenAI realtime response failed");
+                        Err::<(), runtime::RuntimeError>(
+                            AgentCoreError::ModelBackend(message.to_string()).into(),
+                        )?;
+                    }
+                    response_id = response
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .map(ResponseId::from);
+
+                    if let Some(items) = response.get("output").and_then(Value::as_array) {
+                        for item in items {
+                            if let Some(call) = parse_openai_tool_call_item(item, &tool_origins) {
+                                let call_id = call.id.as_str().to_string();
+                                if emitted_tool_call_ids.insert(call_id) {
+                                    saw_tool_call = true;
+                                    yield ModelEvent::ToolCallRequested { call };
+                                }
+                                continue;
+                            }
+                            if message_id.is_none() {
+                                message_id = parse_openai_message_id(item);
+                            }
+                            if let Some(parsed_reasoning) = parse_openai_reasoning_item(item) {
+                                reasoning.push(parsed_reasoning);
+                            }
+                        }
+                    }
+                    break;
+                }
+                Some("error") => {
+                    let message = chunk
+                        .get("error")
+                        .and_then(|error| error.get("message"))
+                        .and_then(Value::as_str)
+                        .unwrap_or("OpenAI realtime socket error");
+                    Err::<(), runtime::RuntimeError>(
+                        AgentCoreError::ModelBackend(message.to_string()).into(),
+                    )?;
+                }
+                _ => {}
+            }
+        }
+
+        yield ModelEvent::ResponseComplete {
+            stop_reason: Some(if saw_tool_call { "tool_use" } else { "stop" }.to_string()),
+            message_id: Some(message_id.unwrap_or_else(MessageId::new)),
+            continuation: response_id
+                .map(|response_id| ProviderContinuation::OpenAiResponses { response_id }),
+            reasoning,
+        };
+    }))
+}
+
+fn build_openai_realtime_request_event(
+    model: String,
+    request: ModelRequest,
+    request_options: &RequestOptions,
+) -> Result<Value> {
+    let instructions = render_instruction_text(&request.instructions);
+    let mut response = Map::new();
+    response.insert("model".to_string(), Value::String(model));
+    response.insert(
+        "modalities".to_string(),
+        Value::Array(vec![Value::String("text".to_string())]),
+    );
+    if let Some(instructions) = instructions {
+        response.insert("instructions".to_string(), Value::String(instructions));
+    }
+    if let Some(temperature) = request_options.temperature {
+        response.insert("temperature".to_string(), json!(temperature));
+    }
+    if let Some(max_tokens) = request_options.max_tokens {
+        response.insert("max_output_tokens".to_string(), json!(max_tokens));
+    }
+    if !request.tools.is_empty() {
+        response.insert(
+            "tools".to_string(),
+            Value::Array(request.tools.iter().map(tool_schema).collect()),
+        );
+    }
+    let input = serialize_openai_input_items(&request.messages)?;
+    if !input.is_empty() {
+        response.insert("input".to_string(), Value::Array(input));
+    }
+    merge_top_level_object(
+        &mut response,
+        request_options.additional_params.as_ref(),
+        "OpenAI",
+    )?;
+
+    Ok(json!({
+        "type": "response.create",
+        "response": response,
+    }))
+}
+
+fn parse_openai_tool_call_item(
+    item: &Value,
+    tool_origins: &BTreeMap<String, ToolOrigin>,
+) -> Option<ToolCall> {
+    if item.get("type").and_then(Value::as_str) != Some("function_call") {
+        return None;
+    }
+    let tool_name = item
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    Some(ToolCall {
+        id: ToolCallId::from(
+            item.get("id")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+        ),
+        call_id: item
+            .get("call_id")
+            .and_then(Value::as_str)
+            .map(CallId::from)
+            .unwrap_or_else(CallId::new),
+        tool_name: tool_name.clone(),
+        arguments: parse_openai_arguments(item.get("arguments")),
+        origin: tool_origins
+            .get(&tool_name)
+            .cloned()
+            .unwrap_or_else(|| ToolOrigin::Provider {
+                provider: "openai".to_string(),
+            }),
+    })
+}
+
+fn parse_openai_reasoning_item(item: &Value) -> Option<Reasoning> {
+    if item.get("type").and_then(Value::as_str) != Some("reasoning") {
+        return None;
+    }
+    let content = item
+        .get("summary")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|summary| summary.get("text").and_then(Value::as_str))
+        .map(|text| ReasoningContent::Summary(text.to_string()))
+        .collect::<Vec<_>>();
+    let mut content = content;
+    if let Some(encrypted) = item.get("encrypted_content").and_then(Value::as_str) {
+        content.push(ReasoningContent::Encrypted(encrypted.to_string()));
+    }
+    Some(Reasoning {
+        id: item
+            .get("id")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned),
+        content,
+    })
+}
+
+fn parse_openai_message_id(item: &Value) -> Option<MessageId> {
+    if item.get("type").and_then(Value::as_str) != Some("message") {
+        return None;
+    }
+    item.get("id").and_then(Value::as_str).map(MessageId::from)
 }
 
 fn build_openai_responses_body(
@@ -589,12 +929,16 @@ fn classify_openai_error(status: u16, body: &str) -> Result<runtime::RuntimeErro
 #[cfg(test)]
 mod tests {
     use super::{
-        OpenAiResponsesOptions, OpenAiServerCompaction, build_openai_responses_body,
-        classify_openai_error, stream_openai_responses_turn,
+        OpenAiResponsesOptions, OpenAiServerCompaction, OpenAiTransportMode,
+        build_openai_realtime_request_event, build_openai_responses_body, classify_openai_error,
+        stream_openai_realtime_turn, stream_openai_responses_turn,
     };
     use crate::{PromptCacheRetention, RequestOptions};
-    use futures::StreamExt;
+    use futures::{SinkExt, StreamExt};
     use serde_json::{Value, json};
+    use tokio::net::TcpListener;
+    use tokio_tungstenite::accept_async;
+    use tokio_tungstenite::tungstenite::Message as WsMessage;
     use types::{
         AgentCoreError, Message, ModelEvent, ModelRequest, ProviderContinuation, ResponseId, RunId,
         SessionId, TurnId,
@@ -693,6 +1037,130 @@ mod tests {
             error,
             runtime::RuntimeError::AgentCore(AgentCoreError::ProviderContinuationLost(message))
                 if message == "expired"
+        ));
+    }
+
+    #[test]
+    fn realtime_request_event_uses_response_create_envelope() {
+        let event = build_openai_realtime_request_event(
+            "gpt-realtime".to_string(),
+            base_request(),
+            &RequestOptions::default(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            event.get("type"),
+            Some(&Value::String("response.create".to_string()))
+        );
+        assert_eq!(
+            event
+                .get("response")
+                .and_then(|response| response.get("model")),
+            Some(&Value::String("gpt-realtime".to_string()))
+        );
+        assert_eq!(
+            event
+                .get("response")
+                .and_then(|response| response.get("modalities")),
+            Some(&Value::Array(vec![Value::String("text".to_string())]))
+        );
+    }
+
+    #[tokio::test]
+    async fn realtime_stream_emits_tool_calls_and_continuation() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut websocket = accept_async(stream).await.unwrap();
+
+            let request_frame = websocket.next().await.unwrap().unwrap();
+            let request_text = match request_frame {
+                WsMessage::Text(text) => text.to_string(),
+                other => panic!("expected text websocket frame, got {other:?}"),
+            };
+            let request_json: Value = serde_json::from_str(&request_text).unwrap();
+            assert_eq!(request_json["type"], json!("response.create"));
+
+            websocket
+                .send(WsMessage::Text(
+                    json!({"type":"response.output_text.delta","delta":"hel"})
+                        .to_string()
+                        .into(),
+                ))
+                .await
+                .unwrap();
+            websocket
+                .send(WsMessage::Text(
+                    json!({
+                        "type":"response.output_item.done",
+                        "item":{
+                            "type":"function_call",
+                            "id":"fc_ws_1",
+                            "call_id":"call_ws_1",
+                            "name":"read",
+                            "arguments":"{\"path\":\"README.md\"}"
+                        }
+                    })
+                    .to_string()
+                    .into(),
+                ))
+                .await
+                .unwrap();
+            websocket
+                .send(WsMessage::Text(
+                    json!({
+                        "type":"response.done",
+                        "response":{
+                            "id":"resp_ws_1",
+                            "status":"completed",
+                            "output":[{"type":"message","id":"msg_ws_1"}]
+                        }
+                    })
+                    .to_string()
+                    .into(),
+                ))
+                .await
+                .unwrap();
+        });
+
+        let stream = stream_openai_realtime_turn(
+            super::OpenAiTransport {
+                api_key: "test-key".to_string(),
+                base_url: format!("http://{addr}/v1"),
+                http_client: reqwest::Client::new(),
+            },
+            "gpt-realtime".to_string(),
+            base_request(),
+            RequestOptions {
+                openai_transport: Some(OpenAiTransportMode::RealtimeWebSocket),
+                ..RequestOptions::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        let events = stream.collect::<Vec<_>>().await;
+        server.await.unwrap();
+
+        assert!(matches!(
+            &events[0],
+            Ok(ModelEvent::TextDelta { delta }) if delta == "hel"
+        ));
+        assert!(matches!(
+            &events[1],
+            Ok(ModelEvent::ToolCallRequested { call })
+                if call.tool_name == "read" && call.call_id.as_str() == "call_ws_1"
+        ));
+        assert!(matches!(
+            events.last(),
+            Some(Ok(ModelEvent::ResponseComplete {
+                message_id: Some(message_id),
+                continuation: Some(ProviderContinuation::OpenAiResponses { response_id }),
+                ..
+            })) if message_id.as_str() == "msg_ws_1" && response_id.as_str() == "resp_ws_1"
         ));
     }
 

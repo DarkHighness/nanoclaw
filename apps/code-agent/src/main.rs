@@ -13,11 +13,13 @@ use agent::{
     InMemoryRunStore, ListTool, PatchTool, ReadTool, Skill, SkillCatalog, TaskTool, TodoListState,
     TodoReadTool, TodoWriteTool, ToolExecutionContext, ToolRegistry, WriteTool,
 };
+use agent_env::{EnvMap, vars};
 use anyhow::{Context, Result, bail};
-use std::collections::BTreeMap;
 use std::env;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use tracing_appender::non_blocking::WorkerGuard;
+use tracing_subscriber::EnvFilter;
 use tui::{CodeAgentTui, make_tui_support};
 
 const DEFAULT_OPENAI_MODEL: &str = "gpt-5.4";
@@ -50,13 +52,13 @@ struct AppOptions {
 }
 
 impl AppOptions {
-    fn from_env_and_args(env_map: &BTreeMap<String, String>) -> Result<Self> {
-        let mut provider = env_lookup(&env_map, "CODE_AGENT_PROVIDER")
+    fn from_env_and_args(env_map: &EnvMap) -> Result<Self> {
+        let mut provider = env_lookup(env_map, vars::CODE_AGENT_PROVIDER.key)
             .as_deref()
             .map(parse_provider)
             .transpose()?;
-        let mut system_prompt = env_lookup(&env_map, "CODE_AGENT_SYSTEM_PROMPT");
-        let mut skill_roots = env_lookup(&env_map, "CODE_AGENT_SKILL_ROOTS")
+        let mut system_prompt = env_lookup(env_map, vars::CODE_AGENT_SYSTEM_PROMPT.key);
+        let mut skill_roots = env_lookup(env_map, vars::CODE_AGENT_SKILL_ROOTS.key)
             .map(split_path_list)
             .unwrap_or_default();
         let mut prompt_parts = Vec::new();
@@ -84,8 +86,8 @@ impl AppOptions {
             }
         }
 
-        let has_openai = env_lookup(&env_map, "OPENAI_API_KEY").is_some();
-        let has_anthropic = env_lookup(&env_map, "ANTHROPIC_API_KEY").is_some();
+        let has_openai = env_lookup(env_map, vars::OPENAI_API_KEY.key).is_some();
+        let has_anthropic = env_lookup(env_map, vars::ANTHROPIC_API_KEY.key).is_some();
         let provider = provider.unwrap_or(SelectedProvider::OpenAi);
         ensure_api_key_available(provider, has_openai, has_anthropic)?;
         let model = default_model(provider).to_string();
@@ -103,8 +105,9 @@ impl AppOptions {
 
 fn main() -> Result<()> {
     let workspace_root = env::current_dir().context("failed to resolve current workspace")?;
-    let env_map = load_env_map(&workspace_root)?;
+    let env_map = EnvMap::from_workspace_dir(&workspace_root)?;
     inject_process_env(&env_map);
+    let _tracing_guard = init_tracing(&workspace_root)?;
     let options = AppOptions::from_env_and_args(&env_map)?;
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -113,6 +116,29 @@ fn main() -> Result<()> {
         .context("failed to build tokio runtime")?;
     let local = tokio::task::LocalSet::new();
     runtime.block_on(local.run_until(async_main(workspace_root, options)))
+}
+
+fn init_tracing(workspace_root: &Path) -> Result<WorkerGuard> {
+    let log_dir = workspace_root.join(".agent-core/logs");
+    std::fs::create_dir_all(&log_dir).with_context(|| {
+        format!(
+            "failed to create tracing log directory at {}",
+            log_dir.display()
+        )
+    })?;
+    let file_appender = tracing_appender::rolling::never(log_dir, "code-agent.log");
+    let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
+    let env_filter = EnvFilter::try_new(agent_env::log_filter_or_default(
+        "info,runtime=debug,provider=debug",
+    ))
+    .context("failed to parse tracing filter")?;
+    tracing_subscriber::fmt()
+        .with_ansi(false)
+        .with_env_filter(env_filter)
+        .with_writer(non_blocking)
+        .try_init()
+        .map_err(|error| anyhow::anyhow!("failed to initialize tracing subscriber: {error}"))?;
+    Ok(guard)
 }
 
 async fn async_main(workspace_root: PathBuf, options: AppOptions) -> Result<()> {
@@ -287,8 +313,8 @@ fn default_skill_roots(workspace_root: &Path) -> Vec<PathBuf> {
     let mut roots = Vec::new();
     push_if_exists(&mut roots, workspace_root.join(".codex/skills"));
     push_if_exists(&mut roots, workspace_root.join(".agent-core/skills"));
-    if let Some(home) = env::var_os("HOME") {
-        push_if_exists(&mut roots, PathBuf::from(home).join(".codex/skills"));
+    if let Some(home) = agent_env::home_dir() {
+        push_if_exists(&mut roots, home.join(".codex/skills"));
     }
     roots
 }
@@ -300,42 +326,16 @@ fn push_if_exists(roots: &mut Vec<PathBuf>, path: PathBuf) {
 }
 
 fn split_path_list(value: String) -> Vec<PathBuf> {
-    env::split_paths(&value).collect()
+    agent_env::split_path_list(&value)
 }
 
-fn load_env_map(workspace_root: &Path) -> Result<BTreeMap<String, String>> {
-    let mut env_map = BTreeMap::new();
-    load_dotenv_file(workspace_root.join(".env"), &mut env_map)?;
-    load_dotenv_file(workspace_root.join(".env.local"), &mut env_map)?;
-    env_map.extend(env::vars());
-    Ok(env_map)
+fn inject_process_env(env_map: &EnvMap) {
+    // This runs before the Tokio runtime starts, so mutating process env is safe here.
+    env_map.apply_to_process();
 }
 
-fn load_dotenv_file(path: PathBuf, target: &mut BTreeMap<String, String>) -> Result<()> {
-    if !path.exists() {
-        return Ok(());
-    }
-    for entry in dotenvy::from_path_iter(path)? {
-        let (key, value) = entry?;
-        target.insert(key, value);
-    }
-    Ok(())
-}
-
-fn inject_process_env(env_map: &BTreeMap<String, String>) {
-    for (key, value) in env_map {
-        // This runs before the Tokio runtime starts, so mutating process env is safe here.
-        unsafe {
-            env::set_var(key, value);
-        }
-    }
-}
-
-fn env_lookup(env_map: &BTreeMap<String, String>, name: &str) -> Option<String> {
-    env_map
-        .get(name)
-        .cloned()
-        .filter(|value| !value.trim().is_empty())
+fn env_lookup(env_map: &EnvMap, name: &str) -> Option<String> {
+    env_map.get_non_empty(name)
 }
 
 fn next_arg(args: &mut impl Iterator<Item = String>, flag: &str) -> Result<String> {

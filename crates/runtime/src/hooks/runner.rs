@@ -3,8 +3,8 @@ use crate::{
     NoopAgentHookEvaluator, NoopPromptHookEvaluator, PromptHookEvaluator, ReqwestHttpHookExecutor,
     Result, matches_hook,
 };
-use std::sync::Arc;
-use tokio::sync::{Mutex, mpsc};
+use std::sync::{Arc, Mutex};
+use tokio::sync::mpsc;
 use types::{
     GateDecision, HookContext, HookDecision, HookHandler, HookOutput, HookRegistration,
     PermissionBehavior, PermissionDecision,
@@ -80,13 +80,15 @@ pub struct HookRunner {
     http_executor: Arc<dyn HttpHookExecutor>,
     prompt_evaluator: Arc<dyn PromptHookEvaluator>,
     agent_evaluator: Arc<dyn AgentHookEvaluator>,
-    async_tx: mpsc::UnboundedSender<HookOutput>,
-    async_rx: Mutex<mpsc::UnboundedReceiver<HookOutput>>,
+    async_tx: mpsc::Sender<HookOutput>,
+    async_rx: Mutex<mpsc::Receiver<HookOutput>>,
 }
+
+const ASYNC_HOOK_BUFFER_CAPACITY: usize = 64;
 
 impl Default for HookRunner {
     fn default() -> Self {
-        let (async_tx, async_rx) = mpsc::unbounded_channel();
+        let (async_tx, async_rx) = mpsc::channel(ASYNC_HOOK_BUFFER_CAPACITY);
         Self {
             command_executor: Arc::new(DefaultCommandHookExecutor::default()),
             http_executor: Arc::new(ReqwestHttpHookExecutor::default()),
@@ -106,7 +108,10 @@ impl HookRunner {
         prompt_evaluator: Arc<dyn PromptHookEvaluator>,
         agent_evaluator: Arc<dyn AgentHookEvaluator>,
     ) -> Self {
-        let (async_tx, async_rx) = mpsc::unbounded_channel();
+        // Asynchronous hooks are decoupled from the main turn loop, but the
+        // queue is still bounded so a stalled host cannot accumulate unbounded
+        // side-channel context in memory.
+        let (async_tx, async_rx) = mpsc::channel(ASYNC_HOOK_BUFFER_CAPACITY);
         Self {
             command_executor,
             http_executor,
@@ -119,7 +124,10 @@ impl HookRunner {
 
     pub async fn drain_async_context(&self) -> HookAggregate {
         let mut aggregate = HookAggregate::default();
-        let mut guard = self.async_rx.lock().await;
+        // The receiver is single-consumer and drained with non-blocking
+        // `try_recv`, so a synchronous mutex is cheaper than an async mutex
+        // here and never crosses an `.await`.
+        let mut guard = self.async_rx.lock().expect("hook async receiver lock");
         while let Ok(output) = guard.try_recv() {
             aggregate.absorb(output);
         }
@@ -150,10 +158,12 @@ impl HookRunner {
                     let context = context.clone();
                     tokio::spawn(async move {
                         if let Ok(output) = command_executor.execute(&command_text, context).await {
-                            let _ = tx.send(HookOutput {
-                                decision: None,
-                                ..output
-                            });
+                            let _ = tx
+                                .send(HookOutput {
+                                    decision: None,
+                                    ..output
+                                })
+                                .await;
                         }
                     });
                 }

@@ -5,8 +5,7 @@ use crate::{
 };
 use async_trait::async_trait;
 use std::collections::HashMap;
-use std::sync::Arc;
-use tokio::sync::RwLock;
+use std::sync::{Arc, RwLock};
 use types::{Message, RunEventEnvelope, RunId, SessionId};
 
 #[derive(Clone, Default)]
@@ -24,8 +23,11 @@ impl InMemoryRunStore {
 #[async_trait]
 impl EventSink for InMemoryRunStore {
     async fn append(&self, event: RunEventEnvelope) -> Result<()> {
-        let mut guard = self.events.write().await;
-        guard.entry(event.run_id.0.clone()).or_default().push(event);
+        let mut guard = self.events.write().expect("in-memory run store write lock");
+        guard
+            .entry(event.run_id.as_str().to_string())
+            .or_default()
+            .push(event);
         Ok(())
     }
 }
@@ -33,26 +35,28 @@ impl EventSink for InMemoryRunStore {
 #[async_trait]
 impl RunStore for InMemoryRunStore {
     async fn list_runs(&self) -> Result<Vec<RunSummary>> {
-        let guard = self.events.read().await;
+        let guard = self.events.read().expect("in-memory run store read lock");
         let mut runs = guard
             .iter()
-            .filter_map(|(run_id, events)| summarize_run_events(&RunId(run_id.clone()), events))
+            .filter_map(|(run_id, events)| {
+                summarize_run_events(&RunId::from(run_id.clone()), events)
+            })
             .collect::<Vec<_>>();
         runs.sort_by(|left, right| {
             right
                 .last_timestamp_ms
                 .cmp(&left.last_timestamp_ms)
-                .then_with(|| left.run_id.0.cmp(&right.run_id.0))
+                .then_with(|| left.run_id.as_str().cmp(right.run_id.as_str()))
         });
         Ok(runs)
     }
 
     async fn search_runs(&self, query: &str) -> Result<Vec<RunSearchResult>> {
-        let guard = self.events.read().await;
+        let guard = self.events.read().expect("in-memory run store read lock");
         let mut runs = guard
             .iter()
             .filter_map(|(run_id, events)| {
-                let summary = summarize_run_events(&RunId(run_id.clone()), events)?;
+                let summary = summarize_run_events(&RunId::from(run_id.clone()), events)?;
                 search_run_events(&summary, events, query)
             })
             .collect::<Vec<_>>();
@@ -66,17 +70,22 @@ impl RunStore for InMemoryRunStore {
                         .last_timestamp_ms
                         .cmp(&left.summary.last_timestamp_ms)
                 })
-                .then_with(|| left.summary.run_id.0.cmp(&right.summary.run_id.0))
+                .then_with(|| {
+                    left.summary
+                        .run_id
+                        .as_str()
+                        .cmp(right.summary.run_id.as_str())
+                })
         });
         Ok(runs)
     }
 
     async fn events(&self, run_id: &RunId) -> Result<Vec<RunEventEnvelope>> {
-        let guard = self.events.read().await;
+        let guard = self.events.read().expect("in-memory run store read lock");
         guard
-            .get(&run_id.0)
+            .get(run_id.as_str())
             .cloned()
-            .ok_or_else(|| RunStoreError::RunNotFound(run_id.0.clone()))
+            .ok_or_else(|| RunStoreError::RunNotFound(run_id.as_str().to_string()))
     }
 
     async fn session_ids(&self, run_id: &RunId) -> Result<Vec<SessionId>> {

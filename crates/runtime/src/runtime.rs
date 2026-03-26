@@ -12,6 +12,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use store::RunStore;
 use tools::{ToolExecutionContext, ToolRegistry};
+use tracing::{debug, info, warn};
 use types::{
     AgentCoreError, GateDecision, HookContext, HookEvent, HookRegistration, Message, MessageId,
     MessagePart, ModelEvent, ModelRequest, PermissionBehavior, PermissionDecision,
@@ -187,6 +188,13 @@ impl AgentRuntime {
         let turn_id = TurnId::new();
         let hooks = self.hook_registrations.clone();
         let instructions = self.base_instructions.clone();
+        info!(
+            run_id = %self.session.run_id,
+            session_id = %self.session.session_id,
+            turn_id = %turn_id,
+            prompt_chars = prompt.chars().count(),
+            "starting user turn"
+        );
 
         if !self.session.session_started {
             let session_start_hooks = self
@@ -312,6 +320,15 @@ impl AgentRuntime {
                 },
             )
             .await?;
+            debug!(
+                run_id = %self.session.run_id,
+                turn_id = %turn_id,
+                iteration,
+                uses_provider_continuation = request.continuation.is_some(),
+                message_count = request.messages.len(),
+                tool_count = request.tools.len(),
+                "starting model request"
+            );
             observer.on_event(RuntimeProgressEvent::ModelRequestStarted {
                 turn_id: turn_id.clone(),
                 iteration,
@@ -321,6 +338,13 @@ impl AgentRuntime {
             let mut stream = match self.backend.stream_turn(request.clone()).await {
                 Ok(stream) => stream,
                 Err(error) if used_continuation && is_provider_continuation_lost(&error) => {
+                    warn!(
+                        run_id = %self.session.run_id,
+                        turn_id = %turn_id,
+                        iteration,
+                        error = %error,
+                        "provider continuation was rejected; retrying with rebuilt transcript"
+                    );
                     self.reset_provider_continuation();
                     self.append_event(
                         Some(turn_id.clone()),
@@ -357,10 +381,7 @@ impl AgentRuntime {
                 match event? {
                     ModelEvent::TextDelta { delta } => {
                         assistant_text.push_str(&delta);
-                        observer.on_event(RuntimeProgressEvent::AssistantTextDelta {
-                            delta,
-                            accumulated_text: assistant_text.clone(),
-                        })?;
+                        observer.on_event(RuntimeProgressEvent::AssistantTextDelta { delta })?;
                     }
                     ModelEvent::ToolCallRequested { call } => {
                         tool_calls.push(call.clone());
@@ -392,6 +413,14 @@ impl AgentRuntime {
                 },
             )
             .await?;
+            debug!(
+                run_id = %self.session.run_id,
+                turn_id = %turn_id,
+                iteration,
+                assistant_chars = assistant_text.chars().count(),
+                tool_call_count = tool_calls.len(),
+                "completed model response"
+            );
             observer.on_event(RuntimeProgressEvent::ModelResponseCompleted {
                 assistant_text: assistant_text.clone(),
                 tool_calls: tool_calls.clone(),
@@ -432,6 +461,13 @@ impl AgentRuntime {
 
             if !tool_calls.is_empty() {
                 for call in tool_calls {
+                    debug!(
+                        run_id = %self.session.run_id,
+                        turn_id = %turn_id,
+                        tool_name = %call.tool_name,
+                        call_id = %call.call_id,
+                        "dispatching tool call"
+                    );
                     self.handle_tool_call(&hooks, &turn_id, call, observer)
                         .await?;
                 }
@@ -490,6 +526,12 @@ impl AgentRuntime {
                 },
             )
             .await?;
+            info!(
+                run_id = %self.session.run_id,
+                turn_id = %turn_id,
+                assistant_chars = assistant_text.chars().count(),
+                "completed user turn"
+            );
             observer.on_event(RuntimeProgressEvent::TurnCompleted {
                 turn_id: turn_id.clone(),
                 assistant_text: assistant_text.clone(),
@@ -718,6 +760,13 @@ impl AgentRuntime {
             if matches!(signal.severity, LoopSignalSeverity::Critical) {
                 // Critical loop signals are fed back as tool failures so the model can
                 // recover in-band instead of the runtime hard-aborting the whole turn.
+                warn!(
+                    run_id = %self.session.run_id,
+                    turn_id = %turn_id,
+                    tool_name = %call.tool_name,
+                    reason = %signal.reason,
+                    "loop detector blocked tool execution"
+                );
                 return self
                     .record_tool_failure_result(
                         hooks,
@@ -2015,17 +2064,11 @@ mod tests {
         )));
         assert!(observer.events.iter().any(|event| matches!(
             event,
-            RuntimeProgressEvent::AssistantTextDelta {
-                delta,
-                accumulated_text
-            } if delta == "hel" && accumulated_text == "hel"
+            RuntimeProgressEvent::AssistantTextDelta { delta } if delta == "hel"
         )));
         assert!(observer.events.iter().any(|event| matches!(
             event,
-            RuntimeProgressEvent::AssistantTextDelta {
-                delta,
-                accumulated_text
-            } if delta == "lo" && accumulated_text == "hello"
+            RuntimeProgressEvent::AssistantTextDelta { delta } if delta == "lo"
         )));
         assert!(observer.events.iter().any(|event| matches!(
             event,

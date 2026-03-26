@@ -1,4 +1,5 @@
 use crate::{Result, ToolError};
+use agent_env::{self, EnvVar, vars};
 use regex::Regex;
 use reqwest::{Client, Url, redirect::Policy};
 use std::collections::BTreeSet;
@@ -30,9 +31,11 @@ impl WebToolPolicy {
     #[must_use]
     pub(crate) fn from_env() -> Self {
         Self {
-            allow_private_hosts: parse_env_flag("AGENT_CORE_WEB_ALLOW_PRIVATE_HOSTS"),
-            allowed_domains: parse_domain_list("AGENT_CORE_WEB_ALLOWED_DOMAINS"),
-            blocked_domains: parse_domain_list("AGENT_CORE_WEB_BLOCKED_DOMAINS"),
+            allow_private_hosts: agent_env::read_bool_flag(
+                vars::AGENT_CORE_WEB_ALLOW_PRIVATE_HOSTS,
+            ),
+            allowed_domains: parse_domain_list(vars::AGENT_CORE_WEB_ALLOWED_DOMAINS),
+            blocked_domains: parse_domain_list(vars::AGENT_CORE_WEB_BLOCKED_DOMAINS),
         }
     }
 
@@ -237,21 +240,8 @@ pub(crate) fn looks_like_html_document(body: &str) -> bool {
         || (normalized.contains("<title") && normalized.contains("<p"))
 }
 
-fn parse_env_flag(key: &str) -> bool {
-    matches!(
-        std::env::var(key)
-            .ok()
-            .as_deref()
-            .map(str::trim)
-            .map(str::to_ascii_lowercase)
-            .as_deref(),
-        Some("1" | "true" | "yes" | "on")
-    )
-}
-
-fn parse_domain_list(key: &str) -> BTreeSet<String> {
-    std::env::var(key)
-        .ok()
+fn parse_domain_list(variable: EnvVar) -> BTreeSet<String> {
+    agent_env::get_non_empty(variable)
         .unwrap_or_default()
         .split(',')
         .map(str::trim)

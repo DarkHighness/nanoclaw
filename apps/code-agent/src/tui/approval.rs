@@ -5,7 +5,7 @@ use agent::runtime::{
     ToolApprovalRequest,
 };
 use async_trait::async_trait;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, RwLock};
 use tokio::sync::oneshot;
 
 #[derive(Clone, Debug)]
@@ -35,7 +35,7 @@ struct ApprovalBridgeState {
 
 #[derive(Clone, Default)]
 pub(crate) struct ApprovalBridge {
-    inner: Arc<Mutex<ApprovalBridgeState>>,
+    inner: Arc<RwLock<ApprovalBridgeState>>,
 }
 
 impl ApprovalBridge {
@@ -44,17 +44,17 @@ impl ApprovalBridge {
         prompt: ApprovalPrompt,
         responder: oneshot::Sender<ToolApprovalOutcome>,
     ) {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.write().unwrap();
         inner.prompt = Some(prompt);
         inner.responder = Some(responder);
     }
 
     pub(crate) fn snapshot(&self) -> Option<ApprovalPrompt> {
-        self.inner.lock().unwrap().prompt.clone()
+        self.inner.read().unwrap().prompt.clone()
     }
 
     pub(crate) fn respond(&self, outcome: ToolApprovalOutcome) -> bool {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.write().unwrap();
         let responder = inner.responder.take();
         inner.prompt = None;
         if let Some(responder) = responder {

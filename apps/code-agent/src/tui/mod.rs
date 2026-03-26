@@ -273,7 +273,7 @@ impl CodeAgentTui {
         }
         self.sync_queue_depth().await;
         if self.turn_task.is_none() {
-            if let Some(queued) = self.command_queue.pop_next().await {
+            if let Some(queued) = self.command_queue.pop_next() {
                 self.sync_queue_depth().await;
                 self.start_command(queued.command).await;
             }

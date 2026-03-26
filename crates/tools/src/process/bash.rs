@@ -3,6 +3,7 @@ use crate::annotations::mcp_tool_annotations;
 use crate::fs::resolve_tool_path_against_workspace_root;
 use crate::registry::Tool;
 use crate::{Result, ToolError};
+use agent_env::shell_or_default;
 use async_trait::async_trait;
 use schemars::{JsonSchema, schema_for};
 use serde::{Deserialize, Serialize};
@@ -10,13 +11,14 @@ use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::process::Stdio;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::{Child, Command};
 use tokio::sync::{Notify, oneshot};
 use tokio::task::JoinHandle;
 use tokio::time::{sleep, timeout};
+use tracing::{debug, warn};
 use types::{
     MessagePart, ToolCallId, ToolOrigin, ToolOutputMode, ToolResult, ToolSpec, new_opaque_id,
 };
@@ -204,17 +206,19 @@ impl BashSession {
         stdout_start_char: usize,
         stderr_start_char: usize,
     ) -> (OutputWindow, OutputWindow) {
-        let stdout = String::from_utf8_lossy(&self.stdout.lock().expect("stdout lock")).to_string();
-        let stderr = String::from_utf8_lossy(&self.stderr.lock().expect("stderr lock")).to_string();
+        let stdout = self.stdout.lock().expect("stdout lock");
+        let stderr = self.stderr.lock().expect("stderr lock");
+        let stdout = String::from_utf8_lossy(&stdout);
+        let stderr = String::from_utf8_lossy(&stderr);
         (
-            slice_output_window(&stdout, stdout_start_char, max_output_chars),
-            slice_output_window(&stderr, stderr_start_char, max_output_chars),
+            slice_output_window(stdout.as_ref(), stdout_start_char, max_output_chars),
+            slice_output_window(stderr.as_ref(), stderr_start_char, max_output_chars),
         )
     }
 }
 
 type SessionRegistry = HashMap<String, Arc<BashSession>>;
-static BASH_SESSIONS: OnceLock<Mutex<SessionRegistry>> = OnceLock::new();
+static BASH_SESSIONS: OnceLock<RwLock<SessionRegistry>> = OnceLock::new();
 
 impl BashTool {
     #[must_use]
@@ -254,8 +258,8 @@ impl Tool for BashTool {
     }
 }
 
-fn bash_sessions() -> &'static Mutex<SessionRegistry> {
-    BASH_SESSIONS.get_or_init(|| Mutex::new(HashMap::new()))
+fn bash_sessions() -> &'static RwLock<SessionRegistry> {
+    BASH_SESSIONS.get_or_init(|| RwLock::new(HashMap::new()))
 }
 
 async fn execute_run(
@@ -266,7 +270,7 @@ async fn execute_run(
     let external_call_id = call_id.0.clone();
     let command = resolve_command(&input)?;
     let cwd = resolve_cwd(&input, ctx)?;
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+    let shell = shell_or_default("/bin/sh");
     let max_output_chars = input
         .max_output_chars
         .unwrap_or(DEFAULT_MAX_OUTPUT_CHARS)
@@ -290,6 +294,11 @@ async fn execute_run(
     let output = match timeout(Duration::from_millis(timeout_ms), future).await {
         Ok(result) => result?,
         Err(_) => {
+            warn!(
+                cwd = %cwd.display(),
+                timeout_ms,
+                "bash run command timed out"
+            );
             return Ok(ToolResult {
                 id: call_id,
                 call_id: external_call_id.into(),
@@ -354,7 +363,7 @@ async fn execute_start(
     let external_call_id = call_id.0.clone();
     let command = resolve_command(&input)?;
     let cwd = resolve_cwd(&input, ctx)?;
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+    let shell = shell_or_default("/bin/sh");
     let timeout_ms = input.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS).max(1);
     let env = input.env.unwrap_or_default();
     let env_keys = env.keys().cloned().collect::<Vec<_>>();
@@ -373,6 +382,12 @@ async fn execute_start(
 
     let child = child.spawn()?;
     let session_id = format!("bash-{}", new_opaque_id());
+    debug!(
+        session_id = %session_id,
+        cwd = %cwd.display(),
+        timeout_ms,
+        "started background bash session"
+    );
     let stdout = Arc::new(Mutex::new(Vec::<u8>::new()));
     let stderr = Arc::new(Mutex::new(Vec::<u8>::new()));
     let status = Arc::new(Mutex::new(SessionStatus::Running));
@@ -395,7 +410,9 @@ async fn execute_start(
     });
 
     {
-        let mut registry = bash_sessions().lock().expect("bash session registry lock");
+        let mut registry = bash_sessions()
+            .write()
+            .expect("bash session registry write lock");
         prune_completed_sessions(&mut registry);
         registry.insert(session_id.clone(), session);
     }
@@ -447,7 +464,9 @@ async fn execute_poll(call_id: ToolCallId, input: BashToolInput) -> Result<ToolR
     let stderr_start_char = input.stderr_start_char.unwrap_or(0);
 
     let session = {
-        let registry = bash_sessions().lock().expect("bash session registry lock");
+        let registry = bash_sessions()
+            .read()
+            .expect("bash session registry read lock");
         registry.get(&session_id).cloned()
     };
     let Some(session) = session else {
@@ -468,6 +487,13 @@ async fn execute_poll(call_id: ToolCallId, input: BashToolInput) -> Result<ToolR
     let status = session.snapshot_status();
     let (stdout, stderr) =
         session.output_windows(max_output_chars, stdout_start_char, stderr_start_char);
+    debug!(
+        session_id = %session.id,
+        state = status.state,
+        stdout_start = stdout.start_char,
+        stderr_start = stderr.start_char,
+        "polled bash session"
+    );
     let text = render_poll_output(&session, &status, &stdout, &stderr, max_output_chars);
 
     Ok(ToolResult {
@@ -522,7 +548,9 @@ async fn execute_cancel(call_id: ToolCallId, input: BashToolInput) -> Result<Too
     let poll_wait_ms = input.poll_wait_ms.unwrap_or(1_000).min(MAX_POLL_WAIT_MS);
 
     let session = {
-        let registry = bash_sessions().lock().expect("bash session registry lock");
+        let registry = bash_sessions()
+            .read()
+            .expect("bash session registry read lock");
         registry.get(&session_id).cloned()
     };
     let Some(session) = session else {
@@ -534,6 +562,11 @@ async fn execute_cancel(call_id: ToolCallId, input: BashToolInput) -> Result<Too
     };
 
     let cancellation_requested = session.cancel();
+    debug!(
+        session_id = %session.id,
+        cancellation_requested,
+        "requested bash session cancellation"
+    );
     if poll_wait_ms > 0 && session.is_running() {
         tokio::select! {
             _ = session.completion.notified() => {}

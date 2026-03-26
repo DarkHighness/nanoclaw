@@ -36,14 +36,11 @@ impl RuntimeObserver for SharedRenderObserver {
                 state.status = "Planning next action".to_string();
                 state.push_activity(format!("user prompt: {}", preview_text(&prompt, 40)));
             }
-            RuntimeProgressEvent::AssistantTextDelta {
-                accumulated_text, ..
-            } => {
-                let line = format!("assistant> {accumulated_text}");
+            RuntimeProgressEvent::AssistantTextDelta { delta } => {
                 if let Some(index) = self.active_assistant_line {
-                    state.transcript[index] = line;
+                    state.transcript[index].push_str(&delta);
                 } else {
-                    state.push_transcript(line);
+                    state.push_transcript(format!("assistant> {delta}"));
                     self.active_assistant_line = Some(state.transcript.len() - 1);
                 }
                 state.transcript_scroll = u16::MAX;

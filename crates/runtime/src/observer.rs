@@ -22,7 +22,6 @@ pub enum RuntimeProgressEvent {
     },
     AssistantTextDelta {
         delta: String,
-        accumulated_text: String,
     },
     ToolCallRequested {
         call: ToolCall,

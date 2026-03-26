@@ -4,10 +4,11 @@
 //! should define their own configuration layer, or none at all.
 
 use agent::mcp::McpServerConfig;
+use agent_env::{EnvMap, vars};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 const CONFIG_FILE_CANDIDATES: &[&str] = &["agent-core.toml", ".agent-core/config.toml"];
@@ -96,80 +97,72 @@ impl AgentCoreConfig {
     pub fn load_from_dir(dir: impl AsRef<Path>) -> Result<Self> {
         let dir = dir.as_ref();
         let mut config = load_config_file(dir)?;
-        let mut env_map = BTreeMap::new();
-        load_dotenv_file(dir.join(".env"), &mut env_map)?;
-        load_dotenv_file(dir.join(".env.local"), &mut env_map)?;
-        env_map.extend(std::env::vars());
+        let env_map = EnvMap::from_workspace_dir(dir)?;
 
-        if let Some(value) = env_map.get("AGENT_CORE_PROVIDER") {
+        if let Some(value) = env_map.get_non_empty_var(vars::AGENT_CORE_PROVIDER) {
             config.provider.kind = match value.trim().to_ascii_lowercase().as_str() {
                 "openai" => Some(ProviderKind::OpenAi),
                 "anthropic" => Some(ProviderKind::Anthropic),
                 _ => config.provider.kind,
             };
         }
-        if let Some(value) = env_map.get("AGENT_CORE_MODEL") {
-            config.provider.model = Some(value.clone());
+        if let Some(value) = env_map.get_non_empty_var(vars::AGENT_CORE_MODEL) {
+            config.provider.model = Some(value);
         }
-        if let Some(value) = env_map.get("AGENT_CORE_BASE_URL") {
-            config.provider.base_url = Some(value.clone());
+        if let Some(value) = env_map.get_non_empty_var(vars::AGENT_CORE_BASE_URL) {
+            config.provider.base_url = Some(value);
         }
-        if let Some(value) = env_map.get("AGENT_CORE_TEMPERATURE")
-            && let Ok(parsed) = value.parse::<f64>()
-        {
+        if let Some(parsed) = env_map.get_parsed_var::<f64>(vars::AGENT_CORE_TEMPERATURE) {
             config.provider.temperature = Some(parsed);
         }
-        if let Some(value) = env_map.get("AGENT_CORE_MAX_TOKENS")
-            && let Ok(parsed) = value.parse::<u64>()
-        {
+        if let Some(parsed) = env_map.get_parsed_var::<u64>(vars::AGENT_CORE_MAX_TOKENS) {
             config.provider.max_tokens = Some(parsed);
         }
-        if let Some(value) = env_map.get("AGENT_CORE_PROVIDER_ADDITIONAL_PARAMS_JSON")
+        if let Some(value) = env_map.get_raw_var(vars::AGENT_CORE_PROVIDER_ADDITIONAL_PARAMS_JSON)
             && let Ok(parsed) = serde_json::from_str::<Value>(value)
         {
             config.provider.additional_params = Some(parsed);
         }
-        if let Some(value) = env_map.get("AGENT_CORE_WORKSPACE_ONLY") {
-            config.runtime.workspace_only = matches!(value.as_str(), "1" | "true" | "TRUE");
+        if let Some(parsed) = env_map.get_bool_var(vars::AGENT_CORE_WORKSPACE_ONLY) {
+            config.runtime.workspace_only = parsed;
         }
-        if let Some(value) = env_map.get("AGENT_CORE_AUTO_COMPACT") {
-            config.runtime.auto_compact = matches!(value.as_str(), "1" | "true" | "TRUE");
+        if let Some(parsed) = env_map.get_bool_var(vars::AGENT_CORE_AUTO_COMPACT) {
+            config.runtime.auto_compact = parsed;
         }
-        if let Some(value) = env_map.get("AGENT_CORE_CONTEXT_TOKENS")
-            && let Ok(parsed) = value.parse::<usize>()
-        {
+        if let Some(parsed) = env_map.get_parsed_var::<usize>(vars::AGENT_CORE_CONTEXT_TOKENS) {
             config.runtime.context_tokens = Some(parsed);
         }
-        if let Some(value) = env_map.get("AGENT_CORE_COMPACT_TRIGGER_TOKENS")
-            && let Ok(parsed) = value.parse::<usize>()
+        if let Some(parsed) =
+            env_map.get_parsed_var::<usize>(vars::AGENT_CORE_COMPACT_TRIGGER_TOKENS)
         {
             config.runtime.compact_trigger_tokens = Some(parsed);
         }
-        if let Some(value) = env_map.get("AGENT_CORE_COMPACT_PRESERVE_RECENT_MESSAGES")
-            && let Ok(parsed) = value.parse::<usize>()
+        if let Some(parsed) =
+            env_map.get_parsed_var::<usize>(vars::AGENT_CORE_COMPACT_PRESERVE_RECENT_MESSAGES)
         {
             config.runtime.compact_preserve_recent_messages = Some(parsed);
         }
-        if let Some(value) = env_map.get("AGENT_CORE_STORE_DIR") {
-            config.runtime.store_dir = Some(value.clone());
+        if let Some(value) = env_map.get_non_empty_var(vars::AGENT_CORE_STORE_DIR) {
+            config.runtime.store_dir = Some(value);
         }
-        if let Some(value) = env_map.get("AGENT_CORE_COMMAND_PREFIX") {
-            config.tui.command_prefix = value.clone();
+        if let Some(value) = env_map.get_non_empty_var(vars::AGENT_CORE_COMMAND_PREFIX) {
+            config.tui.command_prefix = value;
         }
-        if let Some(value) = env_map.get("AGENT_CORE_SYSTEM_PROMPT") {
-            config.system_prompt = Some(value.clone());
+        if let Some(value) = env_map.get_non_empty_var(vars::AGENT_CORE_SYSTEM_PROMPT) {
+            config.system_prompt = Some(value);
         }
-        if let Some(value) = env_map.get("AGENT_CORE_SKILL_ROOTS") {
+        if let Some(value) = env_map.get_raw_var(vars::AGENT_CORE_SKILL_ROOTS) {
             config.skill_roots = split_env_paths(value);
         }
-        for (key, value) in env_map {
+        for (key, value) in env_map.iter() {
             if key.starts_with("AGENT_CORE_HOOK_ENV_") {
                 config.hook_env.insert(
                     key.trim_start_matches("AGENT_CORE_HOOK_ENV_").to_string(),
-                    value,
+                    value.clone(),
                 );
             }
         }
+        dedup_skill_roots(&mut config.skill_roots);
         Ok(config)
     }
 
@@ -204,17 +197,6 @@ impl AgentCoreConfig {
     }
 }
 
-fn load_dotenv_file(path: PathBuf, target: &mut BTreeMap<String, String>) -> Result<()> {
-    if !path.exists() {
-        return Ok(());
-    }
-    for item in dotenvy::from_path_iter(path)? {
-        let (key, value) = item?;
-        target.insert(key, value);
-    }
-    Ok(())
-}
-
 fn load_config_file(dir: &Path) -> Result<AgentCoreConfig> {
     let Some(path) = AgentCoreConfig::config_path(dir) else {
         return Ok(AgentCoreConfig::default());
@@ -224,9 +206,15 @@ fn load_config_file(dir: &Path) -> Result<AgentCoreConfig> {
 }
 
 fn split_env_paths(value: &str) -> Vec<String> {
-    std::env::split_paths(value)
+    agent_env::split_path_list(value)
+        .into_iter()
         .map(|path| path.to_string_lossy().to_string())
         .collect()
+}
+
+fn dedup_skill_roots(values: &mut Vec<String>) {
+    let mut seen = BTreeSet::new();
+    values.retain(|entry| seen.insert(entry.to_string()));
 }
 
 fn resolve_relative_path(base_dir: &Path, value: &str) -> PathBuf {
