@@ -1,8 +1,9 @@
 use crate::annotations::mcp_tool_annotations;
 use crate::registry::Tool;
 use crate::web::common::{
-    DEFAULT_HTTP_TIMEOUT_MS, RedirectValidationScope, WebToolPolicy, clamped_fetch_max_chars,
-    default_http_client, extract_html_title, is_text_content_type, summarize_remote_body,
+    DEFAULT_HTTP_TIMEOUT_MS, RedirectValidationScope, WebDocumentBlock, WebDocumentLink,
+    WebToolPolicy, clamped_fetch_max_chars, default_http_client, extract_html_document,
+    extract_html_title, is_html_content_type, is_text_content_type, summarize_remote_body,
     truncate_text,
 };
 use crate::{Result, ToolExecutionContext};
@@ -39,6 +40,7 @@ struct WebFetchToolOutput {
     final_url: String,
     status: u16,
     content_type: Option<String>,
+    extraction_kind: String,
     document_id: String,
     title: Option<String>,
     start_index: usize,
@@ -55,6 +57,10 @@ struct WebFetchToolOutput {
     last_modified: Option<String>,
     cache_control: Option<String>,
     content_language: Option<String>,
+    block_count: usize,
+    link_count: usize,
+    document_blocks: Vec<WebDocumentBlock>,
+    document_links: Vec<WebDocumentLink>,
 }
 
 impl Default for WebFetchTool {
@@ -213,7 +219,25 @@ impl Tool for WebFetchTool {
         }
 
         let title = extract_html_title(&body);
-        let extracted_text = summarize_remote_body(&body, content_type.as_deref());
+        let (extraction_kind, document_blocks, document_links, extracted_text) =
+            if is_html_content_type(content_type.as_deref())
+                || crate::web::common::looks_like_html_document(&body)
+            {
+                let extracted_document = extract_html_document(&body, Some(&final_url));
+                (
+                    "dom".to_string(),
+                    extracted_document.blocks,
+                    extracted_document.links,
+                    extracted_document.text,
+                )
+            } else {
+                (
+                    "plain_text".to_string(),
+                    Vec::new(),
+                    Vec::new(),
+                    summarize_remote_body(&body, content_type.as_deref()),
+                )
+            };
         let extracted_text = trim_trailing_whitespace(&extracted_text);
         let document_id = stable_document_id(final_url.as_str(), &extracted_text);
         if let Some(expected_document_id) = input.expected_document_id.as_deref()
@@ -255,6 +279,7 @@ impl Tool for WebFetchTool {
             final_url: final_url.as_str().to_string(),
             status: status.as_u16(),
             content_type: content_type.clone(),
+            extraction_kind: extraction_kind.clone(),
             document_id: document_id.clone(),
             title: title.clone(),
             start_index,
@@ -271,6 +296,10 @@ impl Tool for WebFetchTool {
             last_modified: last_modified.clone(),
             cache_control: cache_control.clone(),
             content_language: content_language.clone(),
+            block_count: document_blocks.len(),
+            link_count: document_links.len(),
+            document_blocks: document_blocks.clone(),
+            document_links: document_links.clone(),
         };
 
         let mut sections = vec![
@@ -285,6 +314,9 @@ impl Tool for WebFetchTool {
         if let Some(title) = &title {
             sections.push(format!("title> {title}"));
         }
+        sections.push(format!("extraction_kind> {extraction_kind}"));
+        sections.push(format!("blocks> {}", document_blocks.len()));
+        sections.push(format!("links> {}", document_links.len()));
         sections.push(format!("start_index> {start_index}"));
         sections.push(format!("end_index> {end_index}"));
         sections.push(format!("total_chars> {total_chars}"));
@@ -314,12 +346,17 @@ impl Tool for WebFetchTool {
                 "final_url": final_url.as_str(),
                 "status": status.as_u16(),
                 "content_type": content_type,
+                "extraction_kind": extraction_kind,
                 "document_id": document_id,
                 "etag": etag,
                 "last_modified": last_modified,
                 "cache_control": cache_control,
                 "content_language": content_language,
                 "title": title,
+                "block_count": document_blocks.len(),
+                "link_count": document_links.len(),
+                "document_blocks": document_blocks,
+                "document_links": document_links,
                 "start_index": start_index,
                 "end_index": end_index,
                 "returned_chars": returned_chars,
@@ -417,14 +454,16 @@ mod tests {
         assert!(!result.is_error);
         let text = result.text_content();
         assert!(text.contains("title> Example Page"));
-        assert!(text.contains("Hello"));
+        assert!(text.contains("# Hello"));
         assert!(text.contains("World & friends."));
         assert!(!text.contains("bad()"));
         let structured = result.structured_content.unwrap();
         assert_eq!(structured["title"], "Example Page");
+        assert_eq!(structured["extraction_kind"], "dom");
+        assert_eq!(structured["block_count"], 2);
         assert_eq!(
             structured["preview_text"].as_str().unwrap(),
-            "Hello\nWorld & friends."
+            "# Hello\n\nWorld & friends."
         );
     }
 

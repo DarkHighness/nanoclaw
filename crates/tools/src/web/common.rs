@@ -2,6 +2,9 @@ use crate::{Result, ToolError};
 use agent_env::{self, EnvVar, vars};
 use regex::Regex;
 use reqwest::{Client, Url, redirect::Policy};
+use schemars::JsonSchema;
+use scraper::{ElementRef, Html, Selector};
+use serde::Serialize;
 use std::collections::BTreeSet;
 use std::net::IpAddr;
 use std::sync::OnceLock;
@@ -26,6 +29,30 @@ pub(crate) struct WebToolPolicy {
     pub allow_private_hosts: bool,
     pub allowed_domains: BTreeSet<String>,
     pub blocked_domains: BTreeSet<String>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, JsonSchema)]
+pub(crate) struct ExtractedWebDocument {
+    pub blocks: Vec<WebDocumentBlock>,
+    pub links: Vec<WebDocumentLink>,
+    pub text: String,
+}
+
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub(crate) struct WebDocumentLink {
+    pub href: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub(crate) enum WebDocumentBlock {
+    Heading { level: u8, text: String },
+    Paragraph { text: String },
+    List { ordered: bool, items: Vec<String> },
+    CodeBlock { text: String },
+    Table { rows: Vec<Vec<String>> },
 }
 
 impl Default for WebToolPolicy {
@@ -161,37 +188,7 @@ pub(crate) fn extract_html_title(html: &str) -> Option<String> {
 
 #[must_use]
 pub(crate) fn html_to_text(html: &str) -> String {
-    static COMMENT_RE: OnceLock<Regex> = OnceLock::new();
-    static STRIP_BLOCK_RE: OnceLock<Regex> = OnceLock::new();
-    static BREAK_RE: OnceLock<Regex> = OnceLock::new();
-    static LI_RE: OnceLock<Regex> = OnceLock::new();
-    static TAG_RE: OnceLock<Regex> = OnceLock::new();
-
-    let without_comments = COMMENT_RE
-        .get_or_init(|| Regex::new(r"(?is)<!--.*?-->").expect("comment regex"))
-        .replace_all(html, " ");
-    let without_hidden = STRIP_BLOCK_RE
-        .get_or_init(|| {
-            Regex::new(
-                r"(?is)<script[^>]*>.*?</script>|<style[^>]*>.*?</style>|<noscript[^>]*>.*?</noscript>|<svg[^>]*>.*?</svg>|<canvas[^>]*>.*?</canvas>|<iframe[^>]*>.*?</iframe>|<template[^>]*>.*?</template>|<head[^>]*>.*?</head>",
-            )
-            .expect("strip regex")
-        })
-        .replace_all(&without_comments, " ");
-    let with_breaks = BREAK_RE
-        .get_or_init(|| {
-            Regex::new(r"(?is)</?(p|div|section|article|header|footer|main|aside|nav|table|tr|h[1-6]|br)[^>]*>")
-                .expect("break regex")
-        })
-        .replace_all(&without_hidden, "\n");
-    let with_list_markers = LI_RE
-        .get_or_init(|| Regex::new(r"(?is)<li[^>]*>").expect("li regex"))
-        .replace_all(&with_breaks, "\n- ");
-    let stripped = TAG_RE
-        .get_or_init(|| Regex::new(r"(?is)<[^>]+>").expect("tag regex"))
-        .replace_all(&with_list_markers, " ");
-
-    normalize_whitespace(&decode_html_entities(&stripped))
+    extract_html_document(html, None).text
 }
 
 #[must_use]
@@ -264,6 +261,229 @@ pub(crate) fn looks_like_html_document(body: &str) -> bool {
         || normalized.starts_with("<head")
         || normalized.starts_with("<body")
         || (normalized.contains("<title") && normalized.contains("<p"))
+}
+
+#[must_use]
+pub(crate) fn extract_html_document(html: &str, base_url: Option<&Url>) -> ExtractedWebDocument {
+    // Keep extraction deterministic and auditable: we derive a block-oriented
+    // document model directly from the DOM instead of running opaque readability
+    // scoring. That preserves structure for agents and hosts without hiding why
+    // a given heading, list, code block, or table survived extraction.
+    let document = Html::parse_document(html);
+    let root = document
+        .select(body_selector())
+        .next()
+        .unwrap_or_else(|| document.root_element());
+
+    let mut blocks = Vec::new();
+    collect_document_blocks(&root, &mut blocks);
+
+    let mut links = Vec::new();
+    let mut seen_links = BTreeSet::new();
+    collect_document_links(&root, base_url, &mut seen_links, &mut links);
+
+    ExtractedWebDocument {
+        text: render_document_blocks(&blocks),
+        blocks,
+        links,
+    }
+}
+
+fn body_selector() -> &'static Selector {
+    static BODY_SELECTOR: OnceLock<Selector> = OnceLock::new();
+    BODY_SELECTOR.get_or_init(|| Selector::parse("body").expect("body selector"))
+}
+
+fn link_selector() -> &'static Selector {
+    static LINK_SELECTOR: OnceLock<Selector> = OnceLock::new();
+    LINK_SELECTOR.get_or_init(|| Selector::parse("a[href]").expect("link selector"))
+}
+
+fn table_row_selector() -> &'static Selector {
+    static TABLE_ROW_SELECTOR: OnceLock<Selector> = OnceLock::new();
+    TABLE_ROW_SELECTOR.get_or_init(|| Selector::parse("tr").expect("table row selector"))
+}
+
+fn table_cell_selector() -> &'static Selector {
+    static TABLE_CELL_SELECTOR: OnceLock<Selector> = OnceLock::new();
+    TABLE_CELL_SELECTOR.get_or_init(|| Selector::parse("th, td").expect("table cell selector"))
+}
+
+fn collect_document_blocks(root: &ElementRef<'_>, blocks: &mut Vec<WebDocumentBlock>) {
+    for child in root.children() {
+        let Some(element) = ElementRef::wrap(child) else {
+            continue;
+        };
+        push_element_blocks(&element, blocks);
+    }
+}
+
+fn push_element_blocks(element: &ElementRef<'_>, blocks: &mut Vec<WebDocumentBlock>) {
+    let name = element.value().name();
+    if is_hidden_html_tag(name) {
+        return;
+    }
+
+    match name {
+        "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => {
+            let text = normalize_descendant_text(element);
+            if !text.is_empty() {
+                let level = name
+                    .strip_prefix('h')
+                    .and_then(|value| value.parse::<u8>().ok())
+                    .unwrap_or(1);
+                blocks.push(WebDocumentBlock::Heading { level, text });
+            }
+        }
+        "p" | "blockquote" => {
+            let text = normalize_descendant_text(element);
+            if !text.is_empty() {
+                blocks.push(WebDocumentBlock::Paragraph { text });
+            }
+        }
+        "ul" | "ol" => {
+            let items = element
+                .children()
+                .filter_map(ElementRef::wrap)
+                .filter(|child| child.value().name() == "li")
+                .map(|child| normalize_descendant_text(&child))
+                .filter(|text| !text.is_empty())
+                .collect::<Vec<_>>();
+            if !items.is_empty() {
+                blocks.push(WebDocumentBlock::List {
+                    ordered: name == "ol",
+                    items,
+                });
+            }
+        }
+        "pre" => {
+            let text = extract_preformatted_text(element);
+            if !text.is_empty() {
+                blocks.push(WebDocumentBlock::CodeBlock { text });
+            }
+        }
+        "table" => {
+            let rows = element
+                .select(table_row_selector())
+                .map(|row| {
+                    row.select(table_cell_selector())
+                        .map(|cell| normalize_descendant_text(&cell))
+                        .filter(|text| !text.is_empty())
+                        .collect::<Vec<_>>()
+                })
+                .filter(|row| !row.is_empty())
+                .collect::<Vec<_>>();
+            if !rows.is_empty() {
+                blocks.push(WebDocumentBlock::Table { rows });
+            }
+        }
+        _ => collect_document_blocks(element, blocks),
+    }
+}
+
+fn collect_document_links(
+    root: &ElementRef<'_>,
+    base_url: Option<&Url>,
+    seen_links: &mut BTreeSet<String>,
+    links: &mut Vec<WebDocumentLink>,
+) {
+    for link in root.select(link_selector()) {
+        let Some(raw_href) = link.value().attr("href") else {
+            continue;
+        };
+        let href = resolve_document_href(raw_href, base_url);
+        if href.is_empty() || !seen_links.insert(href.clone()) {
+            continue;
+        }
+        let text = normalize_descendant_text(&link);
+        links.push(WebDocumentLink {
+            href,
+            text: (!text.is_empty()).then_some(text),
+        });
+    }
+}
+
+fn resolve_document_href(href: &str, base_url: Option<&Url>) -> String {
+    let href = href.trim();
+    if href.is_empty() {
+        return String::new();
+    }
+    if let Some(base_url) = base_url
+        && let Ok(resolved) = base_url.join(href)
+    {
+        return resolved.to_string();
+    }
+    Url::parse(href)
+        .map(|url| url.to_string())
+        .unwrap_or_else(|_| href.to_string())
+}
+
+fn normalize_descendant_text(element: &ElementRef<'_>) -> String {
+    normalize_whitespace(&element.text().collect::<Vec<_>>().join(" "))
+}
+
+fn extract_preformatted_text(element: &ElementRef<'_>) -> String {
+    let normalized = element
+        .text()
+        .collect::<Vec<_>>()
+        .join("")
+        .replace("\r\n", "\n");
+    let trimmed = normalized.trim_matches('\n');
+    let lines = trimmed
+        .lines()
+        .map(str::trim_end)
+        .collect::<Vec<_>>()
+        .join("\n");
+    if lines.trim().is_empty() {
+        String::new()
+    } else {
+        lines
+    }
+}
+
+fn render_document_blocks(blocks: &[WebDocumentBlock]) -> String {
+    blocks
+        .iter()
+        .map(render_document_block)
+        .filter(|text| !text.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n")
+        .trim()
+        .to_string()
+}
+
+fn render_document_block(block: &WebDocumentBlock) -> String {
+    match block {
+        WebDocumentBlock::Heading { level, text } => {
+            format!("{} {text}", "#".repeat((*level).into()))
+        }
+        WebDocumentBlock::Paragraph { text } => text.clone(),
+        WebDocumentBlock::List { ordered, items } => items
+            .iter()
+            .enumerate()
+            .map(|(index, item)| {
+                if *ordered {
+                    format!("{}. {item}", index + 1)
+                } else {
+                    format!("- {item}")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+        WebDocumentBlock::CodeBlock { text } => format!("```text\n{text}\n```"),
+        WebDocumentBlock::Table { rows } => rows
+            .iter()
+            .map(|row| row.join(" | "))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    }
+}
+
+fn is_hidden_html_tag(name: &str) -> bool {
+    matches!(
+        name,
+        "head" | "script" | "style" | "noscript" | "svg" | "canvas" | "iframe" | "template"
+    )
 }
 
 pub(crate) fn validate_redirect_attempt(
@@ -376,8 +596,8 @@ fn normalize_whitespace(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        RedirectValidationScope, WebToolPolicy, decode_html_entities, html_to_text,
-        validate_redirect_attempt,
+        RedirectValidationScope, WebDocumentBlock, WebToolPolicy, decode_html_entities,
+        extract_html_document, html_to_text, validate_redirect_attempt,
     };
     use reqwest::Url;
     use std::collections::BTreeSet;
@@ -387,15 +607,43 @@ mod tests {
         let html = r#"
             <html>
               <head><title>ignored</title><script>alert(1)</script></head>
-              <body><h1>Hello&nbsp;world</h1><p>alpha <b>beta</b></p><ul><li>item</li></ul></body>
+              <body><h1>Hello&nbsp;world</h1><p>alpha <b>beta</b></p><ul><li>item</li></ul><pre>let x = 1;</pre></body>
             </html>
         "#;
 
         let text = html_to_text(html);
-        assert!(text.contains("Hello world"));
+        assert!(text.contains("# Hello world"));
         assert!(text.contains("alpha beta"));
         assert!(text.contains("- item"));
+        assert!(text.contains("```text\nlet x = 1;\n```"));
         assert!(!text.contains("alert"));
+    }
+
+    #[test]
+    fn extract_html_document_preserves_links_and_block_types() {
+        let html = r#"
+            <html>
+              <body>
+                <h2>Overview</h2>
+                <p>See <a href="/docs">the docs</a>.</p>
+                <table><tr><th>Name</th><th>Value</th></tr><tr><td>alpha</td><td>1</td></tr></table>
+              </body>
+            </html>
+        "#;
+
+        let document = extract_html_document(
+            html,
+            Some(&Url::parse("https://example.com/guide").unwrap()),
+        );
+
+        assert_eq!(document.links[0].href, "https://example.com/docs");
+        assert_eq!(document.links[0].text.as_deref(), Some("the docs"));
+        assert!(matches!(
+            document.blocks[0],
+            WebDocumentBlock::Heading { level: 2, .. }
+        ));
+        assert!(matches!(document.blocks[2], WebDocumentBlock::Table { .. }));
+        assert!(document.text.contains("Name | Value"));
     }
 
     #[test]
