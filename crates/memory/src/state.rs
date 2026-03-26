@@ -8,6 +8,7 @@ pub const MEMORY_STATE_ROOT_RELATIVE: &str = ".nanoclaw/memory";
 pub const MEMORY_RUNTIME_EXPORTS_RELATIVE: &str = ".nanoclaw/memory/runtime";
 pub const MEMORY_INDEXES_RELATIVE: &str = ".nanoclaw/memory/indexes";
 pub const MEMORY_LIFECYCLE_RELATIVE: &str = ".nanoclaw/memory/lifecycle";
+pub const MEMORY_CORE_SQLITE_INDEX_RELATIVE: &str = ".nanoclaw/memory/indexes/memory-core.sqlite";
 pub const MEMORY_EMBED_SQLITE_INDEX_RELATIVE: &str = ".nanoclaw/memory/indexes/memory-embed.sqlite";
 pub const MEMORY_EMBED_LANCEDB_DIR_RELATIVE: &str = ".nanoclaw/memory/indexes/memory-embed-lancedb";
 
