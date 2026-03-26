@@ -1,4 +1,5 @@
 use crate::lexical_index::{self, LexicalIndex, LexicalIndexChunk};
+use crate::retrieval_policy;
 use crate::{
     MEMORY_CORE_SQLITE_INDEX_RELATIVE, MemoryBackend, MemoryCoreConfig, MemoryDocument,
     MemoryGetRequest, MemorySearchHit, MemorySearchRequest, MemorySearchResponse,
@@ -121,6 +122,7 @@ impl MemoryBackend for MemoryCoreBackend {
             .unwrap_or(self.config.search.max_results)
             .max(1)
             .min(50);
+        let candidate_limit = limit.saturating_mul(4).min(200);
         let prefix = req
             .path_prefix
             .as_deref()
@@ -132,31 +134,43 @@ impl MemoryBackend for MemoryCoreBackend {
         let lifecycle = self.load_index_lifecycle()?;
         let mut hits = self
             .lexical_index
-            .search_hits(&req.query, prefix.as_deref(), limit)
+            .search_hits(&req.query, prefix.as_deref(), candidate_limit)
             .await?
             .into_iter()
             .map(|entry| {
+                let signals = retrieval_policy::path_scoring_signals(&entry.path);
                 let lexical_score = if entry.path == "MEMORY.md" {
                     (entry.score - 0.15).max(0.0)
                 } else {
                     entry.score
                 };
+                let retrieval_score = entry.score * signals.recency_multiplier;
                 let mut metadata = BTreeMap::new();
                 metadata.insert("snapshot_id".to_string(), json!(entry.snapshot_id));
                 metadata.insert("bm25_rank".to_string(), json!(entry.raw_rank));
                 metadata.insert("lexical_score".to_string(), json!(lexical_score));
+                metadata.insert("memory_layer".to_string(), json!(signals.memory_layer));
+                metadata.insert(
+                    "recency_multiplier".to_string(),
+                    json!(signals.recency_multiplier),
+                );
+                metadata.insert("retrieval_score".to_string(), json!(retrieval_score));
+                if let Some(document_date) = signals.document_date {
+                    metadata.insert("document_date".to_string(), json!(document_date));
+                }
                 MemorySearchHit {
                     hit_id: entry.chunk_id,
                     path: entry.path,
                     start_line: entry.start_line,
                     end_line: entry.end_line,
-                    score: entry.score,
+                    score: retrieval_score,
                     snippet: render_snippet(&entry.snippet, self.config.search.max_snippet_chars),
                     metadata,
                 }
             })
             .collect::<Vec<_>>();
         hits.sort_by(compare_hit_score);
+        hits.truncate(limit);
 
         let mut metadata = BTreeMap::new();
         metadata.insert("query".to_string(), json!(req.query));
@@ -172,6 +186,7 @@ impl MemoryBackend for MemoryCoreBackend {
             "runtime_exported_runs".to_string(),
             json!(runtime_exports.exported_runs),
         );
+        metadata.insert("candidate_limit".to_string(), json!(candidate_limit));
         if let Some(output_dir) = runtime_exports.output_dir {
             metadata.insert("runtime_export_dir".to_string(), json!(output_dir));
         }
@@ -300,6 +315,7 @@ mod tests {
     use rusqlite::Connection;
     use std::path::Path;
     use tempfile::tempdir;
+    use time::{Duration, OffsetDateTime};
     use tokio::fs;
 
     #[tokio::test]
@@ -466,5 +482,48 @@ mod tests {
         assert_eq!(document.resolved_start_line, 2);
         assert_eq!(document.resolved_end_line, 2);
         assert_eq!(document.text, " 2 | line2");
+    }
+
+    #[tokio::test]
+    async fn search_prefers_recent_daily_logs_over_stale_ones() {
+        let dir = tempdir().unwrap();
+        let today = OffsetDateTime::now_utc().date();
+        let stale = today - Duration::days(120);
+        fs::create_dir_all(dir.path().join("memory")).await.unwrap();
+        fs::write(
+            dir.path().join("memory").join(format!("{stale}.md")),
+            "rollout checklist",
+        )
+        .await
+        .unwrap();
+        fs::write(
+            dir.path().join("memory").join(format!("{today}.md")),
+            "rollout checklist",
+        )
+        .await
+        .unwrap();
+
+        let backend = MemoryCoreBackend::new(dir.path().to_path_buf(), MemoryCoreConfig::default());
+        let response = backend
+            .search(MemorySearchRequest {
+                query: "rollout".to_string(),
+                limit: Some(2),
+                path_prefix: Some("memory/".to_string()),
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(response.hits[0].path, format!("memory/{today}.md"));
+        assert_eq!(
+            response.hits[0]
+                .metadata
+                .get("memory_layer")
+                .and_then(serde_json::Value::as_str),
+            Some("daily-log")
+        );
+        assert!(
+            response.hits[0].score > response.hits[1].score,
+            "recent daily log should outrank stale daily log after decay"
+        );
     }
 }

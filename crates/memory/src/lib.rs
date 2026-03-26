@@ -12,6 +12,7 @@ mod error;
 mod lexical_index;
 mod memory_core;
 mod memory_embed;
+mod retrieval_policy;
 mod runtime_exports;
 mod state;
 mod tools;

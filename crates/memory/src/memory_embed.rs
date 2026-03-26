@@ -1,4 +1,5 @@
 use crate::lexical_index::{self, LexicalIndex, LexicalIndexChunk};
+use crate::retrieval_policy;
 use crate::vector_store::{CachedMemoryEmbedIndex, MemoryVectorStore, PersistedChunkEmbedding};
 use crate::{
     MemoryBackend, MemoryDocument, MemoryEmbedConfig, MemoryGetRequest, MemorySearchHit,
@@ -47,8 +48,12 @@ struct CandidateAccumulator {
     chunk_id: String,
     chunk: crate::MemoryCorpusChunk,
     title: String,
+    memory_layer: &'static str,
+    document_date: Option<String>,
+    recency_multiplier: f64,
     lexical_score: f64,
     vector_score: f64,
+    base_retrieval_score: f64,
     retrieval_score: f64,
     final_score: f64,
     rerank_score: Option<f64>,
@@ -842,6 +847,7 @@ impl MemoryBackend for MemoryEmbedBackend {
         }
 
         let mut ranked = candidates.into_values().collect::<Vec<_>>();
+        apply_temporal_scoring(&mut ranked);
         ranked.sort_by(compare_candidates_by_retrieval);
         let (mut ranked, rerank_used, rerank_fallback) =
             self.maybe_rerank(&req.query, ranked).await?;
@@ -858,9 +864,21 @@ impl MemoryBackend for MemoryEmbedBackend {
                 metadata.insert("lexical_score".to_string(), json!(candidate.lexical_score));
                 metadata.insert("vector_score".to_string(), json!(candidate.vector_score));
                 metadata.insert(
+                    "base_retrieval_score".to_string(),
+                    json!(candidate.base_retrieval_score),
+                );
+                metadata.insert(
                     "retrieval_score".to_string(),
                     json!(candidate.retrieval_score),
                 );
+                metadata.insert("memory_layer".to_string(), json!(candidate.memory_layer));
+                metadata.insert(
+                    "recency_multiplier".to_string(),
+                    json!(candidate.recency_multiplier),
+                );
+                if let Some(document_date) = &candidate.document_date {
+                    metadata.insert("document_date".to_string(), json!(document_date));
+                }
                 metadata.insert(
                     "matched_streams".to_string(),
                     json!(candidate.matched_streams),
@@ -1163,27 +1181,41 @@ fn apply_ranked_list(
                     .unwrap_or_else(|| "Memory".to_string()),
                 lexical_score: 0.0,
                 vector_score: 0.0,
+                base_retrieval_score: 0.0,
                 retrieval_score: 0.0,
                 final_score: 0.0,
                 rerank_score: None,
                 rerank_relevant: None,
                 matched_streams: 0,
                 applied_mmr: false,
+                memory_layer: "workspace-note",
+                document_date: None,
+                recency_multiplier: 1.0,
             });
         match stream_kind {
             RankedStreamKind::Lexical => entry.lexical_score = entry.lexical_score.max(score),
             RankedStreamKind::Vector => entry.vector_score = entry.vector_score.max(score),
         }
         entry.matched_streams += 1;
-        entry.retrieval_score +=
+        entry.base_retrieval_score +=
             (weighted_query.weight * stream_weight) / (config.hybrid.rrf_k + rank + 1) as f64;
         if weighted_query.is_original {
             if rank == 0 {
-                entry.retrieval_score += config.hybrid.top_rank_bonus_first;
+                entry.base_retrieval_score += config.hybrid.top_rank_bonus_first;
             } else if rank < 3 {
-                entry.retrieval_score += config.hybrid.top_rank_bonus_other;
+                entry.base_retrieval_score += config.hybrid.top_rank_bonus_other;
             }
         }
+    }
+}
+
+fn apply_temporal_scoring(candidates: &mut [CandidateAccumulator]) {
+    for candidate in candidates {
+        let signals = retrieval_policy::path_scoring_signals(&candidate.chunk.path);
+        candidate.memory_layer = signals.memory_layer;
+        candidate.document_date = signals.document_date;
+        candidate.recency_multiplier = signals.recency_multiplier;
+        candidate.retrieval_score = candidate.base_retrieval_score * candidate.recency_multiplier;
     }
 }
 
@@ -1445,6 +1477,7 @@ mod tests {
     use std::collections::BTreeMap;
     use std::sync::{Arc, Mutex};
     use tempfile::tempdir;
+    use time::{Duration, OffsetDateTime};
     use tokio::fs;
 
     #[derive(Default)]
@@ -1757,6 +1790,54 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn search_prefers_recent_daily_logs_after_temporal_decay() {
+        let dir = tempdir().unwrap();
+        let today = OffsetDateTime::now_utc().date();
+        let stale = today - Duration::days(120);
+        fs::create_dir_all(dir.path().join("memory")).await.unwrap();
+        fs::write(
+            dir.path().join("memory").join(format!("{stale}.md")),
+            "browserless rollout recap",
+        )
+        .await
+        .unwrap();
+        fs::write(
+            dir.path().join("memory").join(format!("{today}.md")),
+            "browserless rollout recap",
+        )
+        .await
+        .unwrap();
+
+        let backend = MemoryEmbedBackend::new(
+            dir.path().to_path_buf(),
+            MemoryEmbedConfig::default(),
+            Arc::new(ZeroEmbeddingClient),
+        )
+        .unwrap();
+        let response = backend
+            .search(MemorySearchRequest {
+                query: "browserless".to_string(),
+                limit: Some(2),
+                path_prefix: Some("memory/".to_string()),
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(response.hits[0].path, format!("memory/{today}.md"));
+        assert_eq!(
+            response.hits[0]
+                .metadata
+                .get("memory_layer")
+                .and_then(Value::as_str),
+            Some("daily-log")
+        );
+        assert!(
+            response.hits[0].score > response.hits[1].score,
+            "recent daily log should outrank stale daily log after decay"
+        );
+    }
+
+    #[tokio::test]
     async fn sync_batches_missing_chunks_by_embedding_batch_size() {
         let dir = tempdir().unwrap();
         fs::create_dir_all(dir.path().join("memory")).await.unwrap();
@@ -1964,6 +2045,10 @@ mod tests {
                 rerank_relevant: None,
                 matched_streams: 2,
                 applied_mmr: false,
+                memory_layer: "workspace-note",
+                document_date: None,
+                recency_multiplier: 1.0,
+                base_retrieval_score: 0.9,
             },
             CandidateAccumulator {
                 chunk_id: "b".to_string(),
@@ -1983,6 +2068,10 @@ mod tests {
                 rerank_relevant: None,
                 matched_streams: 2,
                 applied_mmr: false,
+                memory_layer: "workspace-note",
+                document_date: None,
+                recency_multiplier: 1.0,
+                base_retrieval_score: 0.85,
             },
             CandidateAccumulator {
                 chunk_id: "c".to_string(),
@@ -2002,6 +2091,10 @@ mod tests {
                 rerank_relevant: None,
                 matched_streams: 1,
                 applied_mmr: false,
+                memory_layer: "workspace-note",
+                document_date: None,
+                recency_multiplier: 1.0,
+                base_retrieval_score: 0.7,
             },
         ];
         let config = MemoryEmbedConfig {
