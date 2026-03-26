@@ -1,55 +1,41 @@
+use crate::lexical_index::{self, LexicalIndex, LexicalIndexChunk};
 use crate::{
     MEMORY_CORE_SQLITE_INDEX_RELATIVE, MemoryBackend, MemoryCoreConfig, MemoryDocument,
     MemoryGetRequest, MemorySearchHit, MemorySearchRequest, MemorySearchResponse,
-    MemorySidecarLifecycle, MemorySidecarStatus, MemoryStateLayout, MemorySyncStatus, Result,
-    chunk_corpus, load_configured_memory_corpus,
+    MemoryStateLayout, MemorySyncStatus, Result, chunk_corpus, load_configured_memory_corpus,
 };
 use async_trait::async_trait;
-use rusqlite::{Connection, params};
-use serde::Serialize;
 use serde_json::json;
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use store::RunStore;
 use tools::format_numbered_lines;
 
 const INDEX_BACKEND_ID: &str = "memory-core";
 const INDEX_SCHEMA_VERSION: u32 = 1;
-const CHUNKS_TABLE: &str = "chunks";
-const FTS_TABLE: &str = "chunks_fts";
-const META_TABLE: &str = "meta";
-const META_KEY: &str = "memory_core_index_meta_v1";
-#[derive(Clone, Debug)]
-struct IndexedChunk {
-    chunk_id: String,
-    path: String,
-    snapshot_id: String,
-    start_line: usize,
-    end_line: usize,
-    text: String,
-}
-
-#[derive(Clone, Debug, Serialize)]
-struct PersistedIndexMeta {
-    schema_version: u32,
-    config_fingerprint: String,
-}
 
 pub struct MemoryCoreBackend {
     workspace_root: PathBuf,
     config: MemoryCoreConfig,
     run_store: Option<Arc<dyn RunStore>>,
+    lexical_index: LexicalIndex,
 }
 
 impl MemoryCoreBackend {
     #[must_use]
     pub fn new(workspace_root: PathBuf, config: MemoryCoreConfig) -> Self {
         Self {
-            workspace_root,
+            workspace_root: workspace_root.clone(),
             config,
             run_store: None,
+            lexical_index: LexicalIndex::new(
+                &workspace_root,
+                INDEX_BACKEND_ID,
+                MEMORY_CORE_SQLITE_INDEX_RELATIVE,
+                INDEX_SCHEMA_VERSION,
+            ),
         }
     }
 
@@ -64,50 +50,35 @@ impl MemoryCoreBackend {
     }
 
     fn config_fingerprint(&self) -> Result<String> {
-        Ok(stable_hash(&serde_json::to_string(&json!({
+        lexical_index::config_fingerprint(&json!({
             "corpus": &self.config.corpus,
             "chunking": &self.config.chunking,
-        }))?))
+        }))
     }
 
-    fn default_index_relative_path() -> &'static Path {
-        Path::new(MEMORY_CORE_SQLITE_INDEX_RELATIVE)
-    }
-
-    async fn ensure_index_ready(&self) -> Result<MemorySidecarLifecycle> {
-        let layout = self.state_layout();
-        let artifact_path = layout.resolve_index_path(None, Self::default_index_relative_path())?;
-        let expected_fingerprint = self.config_fingerprint()?;
-        let mut lifecycle = layout.load_lifecycle(INDEX_BACKEND_ID)?;
-        let mut needs_sync = lifecycle.as_ref().is_none_or(|entry| {
-            entry.backend != INDEX_BACKEND_ID
-                || entry.status != MemorySidecarStatus::Ready
-                || entry.schema_version != INDEX_SCHEMA_VERSION
-                || entry.config_fingerprint != expected_fingerprint
-                || entry.artifact_path != artifact_path.relative_display()
-        }) || !artifact_path.absolute_path().exists();
-
-        if !needs_sync && let Some(existing) = lifecycle.as_ref() {
-            let (corpus, _) = load_configured_memory_corpus(
-                &self.workspace_root,
-                &self.config.corpus,
-                self.run_store.as_ref(),
+    async fn ensure_index_ready(
+        &self,
+        corpus: &crate::MemoryCorpus,
+        chunks: &[crate::MemoryCorpusChunk],
+        exported_run_count: usize,
+    ) -> Result<()> {
+        self.lexical_index
+            .ensure_ready(
+                &self.config_fingerprint()?,
+                &document_snapshots(corpus),
+                &lexical_index_chunks(chunks),
+                exported_run_count,
             )
             .await?;
-            // The SQLite file is only a derived cache. Even when the lifecycle
-            // manifest still looks structurally valid, treat any Markdown
-            // snapshot drift as stale and rebuild from source-of-truth files.
-            needs_sync = document_snapshots(&corpus) != existing.document_snapshots;
-        }
+        Ok(())
+    }
 
-        if needs_sync {
-            self.sync().await?;
-            lifecycle = layout.load_lifecycle(INDEX_BACKEND_ID)?;
-        }
-
-        lifecycle.ok_or_else(|| {
-            crate::MemoryError::invalid("memory-core lifecycle manifest missing after sync")
-        })
+    fn load_index_lifecycle(&self) -> Result<crate::MemorySidecarLifecycle> {
+        self.state_layout()
+            .load_lifecycle(INDEX_BACKEND_ID)?
+            .ok_or_else(|| {
+                crate::MemoryError::invalid("memory-core lifecycle manifest missing after sync")
+            })
     }
 }
 
@@ -122,55 +93,9 @@ impl MemoryBackend for MemoryCoreBackend {
         .await?;
         let indexed_documents = corpus.documents.len();
         let indexed_lines = corpus.total_lines();
-        let lifecycle = self.state_layout();
-        let artifact_path =
-            lifecycle.resolve_index_path(None, Self::default_index_relative_path())?;
-        let config_fingerprint = self.config_fingerprint()?;
-        let indexed_chunks = build_indexed_chunks(&corpus, &self.config);
-        let indexed_chunk_count = indexed_chunks.len();
-        let document_snapshots = document_snapshots(&corpus);
-
-        lifecycle.write_lifecycle(
-            INDEX_BACKEND_ID,
-            MemorySidecarLifecycle {
-                backend: INDEX_BACKEND_ID.to_string(),
-                status: MemorySidecarStatus::Rebuilding,
-                schema_version: INDEX_SCHEMA_VERSION,
-                config_fingerprint: config_fingerprint.clone(),
-                indexed_chunk_count,
-                indexed_document_count: indexed_documents,
-                exported_run_count: runtime_exports.exported_runs,
-                artifact_path: artifact_path.relative_display(),
-                document_snapshots: document_snapshots.clone(),
-                ..MemorySidecarLifecycle::default()
-            },
-        )?;
-
-        replace_sqlite_index(
-            artifact_path.absolute_path().to_path_buf(),
-            indexed_chunks,
-            PersistedIndexMeta {
-                schema_version: INDEX_SCHEMA_VERSION,
-                config_fingerprint: config_fingerprint.clone(),
-            },
-        )
-        .await?;
-
-        lifecycle.write_lifecycle(
-            INDEX_BACKEND_ID,
-            MemorySidecarLifecycle {
-                backend: INDEX_BACKEND_ID.to_string(),
-                status: MemorySidecarStatus::Ready,
-                schema_version: INDEX_SCHEMA_VERSION,
-                config_fingerprint,
-                indexed_chunk_count,
-                indexed_document_count: indexed_documents,
-                exported_run_count: runtime_exports.exported_runs,
-                artifact_path: artifact_path.relative_display(),
-                document_snapshots,
-                ..MemorySidecarLifecycle::default()
-            },
-        )?;
+        let chunks = chunk_corpus(&corpus, &self.config.chunking);
+        self.ensure_index_ready(&corpus, &chunks, runtime_exports.exported_runs)
+            .await?;
 
         Ok(MemorySyncStatus {
             backend: INDEX_BACKEND_ID.to_string(),
@@ -184,9 +109,13 @@ impl MemoryBackend for MemoryCoreBackend {
         // the derived retrieval index. Search lazily bootstraps the sidecar when
         // it is missing or config-invalid so the default plugin still works
         // without a separate indexing command.
-        let lifecycle = self.ensure_index_ready().await?;
-        let layout = self.state_layout();
-        let artifact_path = layout.resolve_index_path(None, Self::default_index_relative_path())?;
+        let (corpus, runtime_exports) = load_configured_memory_corpus(
+            &self.workspace_root,
+            &self.config.corpus,
+            self.run_store.as_ref(),
+        )
+        .await?;
+        let chunks = chunk_corpus(&corpus, &self.config.chunking);
         let limit = req
             .limit
             .unwrap_or(self.config.search.max_results)
@@ -198,14 +127,36 @@ impl MemoryBackend for MemoryCoreBackend {
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(ToOwned::to_owned);
-        let hits = search_sqlite_index(
-            artifact_path.absolute_path().to_path_buf(),
-            req.query.clone(),
-            prefix,
-            limit,
-            self.config.search.max_snippet_chars,
-        )
-        .await?;
+        self.ensure_index_ready(&corpus, &chunks, runtime_exports.exported_runs)
+            .await?;
+        let lifecycle = self.load_index_lifecycle()?;
+        let mut hits = self
+            .lexical_index
+            .search_hits(&req.query, prefix.as_deref(), limit)
+            .await?
+            .into_iter()
+            .map(|entry| {
+                let lexical_score = if entry.path == "MEMORY.md" {
+                    (entry.score - 0.15).max(0.0)
+                } else {
+                    entry.score
+                };
+                let mut metadata = BTreeMap::new();
+                metadata.insert("snapshot_id".to_string(), json!(entry.snapshot_id));
+                metadata.insert("bm25_rank".to_string(), json!(entry.raw_rank));
+                metadata.insert("lexical_score".to_string(), json!(lexical_score));
+                MemorySearchHit {
+                    hit_id: entry.chunk_id,
+                    path: entry.path,
+                    start_line: entry.start_line,
+                    end_line: entry.end_line,
+                    score: entry.score,
+                    snippet: render_snippet(&entry.snippet, self.config.search.max_snippet_chars),
+                    metadata,
+                }
+            })
+            .collect::<Vec<_>>();
+        hits.sort_by(compare_hit_score);
 
         let mut metadata = BTreeMap::new();
         metadata.insert("query".to_string(), json!(req.query));
@@ -219,15 +170,10 @@ impl MemoryBackend for MemoryCoreBackend {
         );
         metadata.insert(
             "runtime_exported_runs".to_string(),
-            json!(lifecycle.exported_run_count),
+            json!(runtime_exports.exported_runs),
         );
-        if let Some(runtime_exports) = layout.load_lifecycle("runtime-exports")?
-            && !runtime_exports.artifact_path.is_empty()
-        {
-            metadata.insert(
-                "runtime_export_dir".to_string(),
-                json!(runtime_exports.artifact_path),
-            );
+        if let Some(output_dir) = runtime_exports.output_dir {
+            metadata.insert("runtime_export_dir".to_string(), json!(output_dir));
         }
         metadata.insert("fallback_used".to_string(), json!(false));
 
@@ -283,19 +229,16 @@ impl MemoryBackend for MemoryCoreBackend {
     }
 }
 
-fn build_indexed_chunks(
-    corpus: &crate::MemoryCorpus,
-    config: &MemoryCoreConfig,
-) -> Vec<IndexedChunk> {
-    chunk_corpus(corpus, &config.chunking)
-        .into_iter()
-        .map(|chunk| IndexedChunk {
-            chunk_id: hit_id(&chunk.path, chunk.start_line),
-            path: chunk.path,
-            snapshot_id: chunk.snapshot_id,
+fn lexical_index_chunks(chunks: &[crate::MemoryCorpusChunk]) -> Vec<LexicalIndexChunk> {
+    chunks
+        .iter()
+        .map(|chunk| LexicalIndexChunk {
+            chunk_id: chunk_id(chunk),
+            path: chunk.path.clone(),
+            snapshot_id: chunk.snapshot_id.clone(),
             start_line: chunk.start_line,
             end_line: chunk.end_line,
-            text: chunk.text,
+            text: chunk.text.clone(),
         })
         .collect()
 }
@@ -306,319 +249,6 @@ fn document_snapshots(corpus: &crate::MemoryCorpus) -> BTreeMap<String, String> 
         .iter()
         .map(|doc| (doc.path.clone(), doc.snapshot_id.clone()))
         .collect()
-}
-
-async fn replace_sqlite_index(
-    path: PathBuf,
-    chunks: Vec<IndexedChunk>,
-    meta: PersistedIndexMeta,
-) -> Result<()> {
-    tokio::task::spawn_blocking(move || replace_sqlite_index_blocking(&path, &chunks, &meta))
-        .await
-        .map_err(|error| {
-            crate::MemoryError::invalid(format!("memory-core sqlite task failed: {error}"))
-        })?
-}
-
-fn replace_sqlite_index_blocking(
-    path: &Path,
-    chunks: &[IndexedChunk],
-    meta: &PersistedIndexMeta,
-) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let mut connection = open_sqlite(path)?;
-    let transaction = connection.transaction().map_err(map_sqlite_error)?;
-    transaction
-        .execute(&format!("DELETE FROM {CHUNKS_TABLE}"), [])
-        .map_err(map_sqlite_error)?;
-    transaction
-        .execute(&format!("DELETE FROM {FTS_TABLE}"), [])
-        .map_err(map_sqlite_error)?;
-    transaction
-        .execute(&format!("DELETE FROM {META_TABLE}"), [])
-        .map_err(map_sqlite_error)?;
-
-    let mut chunk_statement = transaction
-        .prepare(&format!(
-            "INSERT INTO {CHUNKS_TABLE} \
-             (chunk_id, path, snapshot_id, start_line, end_line, text) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)"
-        ))
-        .map_err(map_sqlite_error)?;
-    let mut fts_statement = transaction
-        .prepare(&format!(
-            "INSERT INTO {FTS_TABLE} \
-             (text, chunk_id, path, snapshot_id, start_line, end_line) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)"
-        ))
-        .map_err(map_sqlite_error)?;
-    for chunk in chunks {
-        chunk_statement
-            .execute(params![
-                chunk.chunk_id,
-                chunk.path,
-                chunk.snapshot_id,
-                chunk.start_line as u32,
-                chunk.end_line as u32,
-                chunk.text,
-            ])
-            .map_err(map_sqlite_error)?;
-        fts_statement
-            .execute(params![
-                chunk.text,
-                chunk.chunk_id,
-                chunk.path,
-                chunk.snapshot_id,
-                chunk.start_line as u32,
-                chunk.end_line as u32,
-            ])
-            .map_err(map_sqlite_error)?;
-    }
-    let encoded_meta = serde_json::to_string(meta)?;
-    transaction
-        .execute(
-            &format!("INSERT INTO {META_TABLE} (key, value) VALUES (?1, ?2)"),
-            params![META_KEY, encoded_meta],
-        )
-        .map_err(map_sqlite_error)?;
-    drop(chunk_statement);
-    drop(fts_statement);
-    transaction.commit().map_err(map_sqlite_error)?;
-    Ok(())
-}
-
-async fn search_sqlite_index(
-    path: PathBuf,
-    query: String,
-    path_prefix: Option<String>,
-    limit: usize,
-    max_snippet_chars: usize,
-) -> Result<Vec<MemorySearchHit>> {
-    tokio::task::spawn_blocking(move || {
-        search_sqlite_index_blocking(
-            &path,
-            &query,
-            path_prefix.as_deref(),
-            limit,
-            max_snippet_chars,
-        )
-    })
-    .await
-    .map_err(|error| {
-        crate::MemoryError::invalid(format!("memory-core sqlite task failed: {error}"))
-    })?
-}
-
-fn search_sqlite_index_blocking(
-    path: &Path,
-    query: &str,
-    path_prefix: Option<&str>,
-    limit: usize,
-    max_snippet_chars: usize,
-) -> Result<Vec<MemorySearchHit>> {
-    if !path.exists() {
-        return Ok(Vec::new());
-    }
-    let Some(fts_query) = build_fts_query(query) else {
-        return Ok(Vec::new());
-    };
-    let connection = open_sqlite(path)?;
-    let sql = if path_prefix.is_some() {
-        format!(
-            "SELECT chunk_id, path, snapshot_id, start_line, end_line, text, \
-                    snippet({FTS_TABLE}, 0, '', '', '...', 32) AS snippet, \
-                    bm25({FTS_TABLE}) AS rank \
-               FROM {FTS_TABLE} \
-              WHERE {FTS_TABLE} MATCH ?1 \
-                AND path LIKE ?2 ESCAPE '\\' \
-              ORDER BY rank ASC \
-              LIMIT ?3"
-        )
-    } else {
-        format!(
-            "SELECT chunk_id, path, snapshot_id, start_line, end_line, text, \
-                    snippet({FTS_TABLE}, 0, '', '', '...', 32) AS snippet, \
-                    bm25({FTS_TABLE}) AS rank \
-               FROM {FTS_TABLE} \
-              WHERE {FTS_TABLE} MATCH ?1 \
-              ORDER BY rank ASC \
-              LIMIT ?2"
-        )
-    };
-    let mut statement = connection.prepare(&sql).map_err(map_sqlite_error)?;
-    let escaped_prefix = path_prefix.map(|prefix| format!("{}%", escape_sql_like_prefix(prefix)));
-    let mut rows = if let Some(prefix) = escaped_prefix {
-        statement
-            .query(params![fts_query, prefix, limit as u32])
-            .map_err(map_sqlite_error)?
-    } else {
-        statement
-            .query(params![fts_query, limit as u32])
-            .map_err(map_sqlite_error)?
-    };
-    let mut hits = Vec::new();
-    while let Some(row) = rows.next().map_err(map_sqlite_error)? {
-        let hit_id: String = row.get(0).map_err(map_sqlite_error)?;
-        let path: String = row.get(1).map_err(map_sqlite_error)?;
-        let snapshot_id: String = row.get(2).map_err(map_sqlite_error)?;
-        let start_line = row.get::<_, u32>(3).map_err(map_sqlite_error)? as usize;
-        let end_line = row.get::<_, u32>(4).map_err(map_sqlite_error)? as usize;
-        let text: String = row.get(5).map_err(map_sqlite_error)?;
-        let snippet: Option<String> = row.get(6).map_err(map_sqlite_error)?;
-        let raw_rank: f64 = row.get(7).map_err(map_sqlite_error)?;
-        let lexical_score = bm25_rank_to_score(raw_rank);
-        let score = if path == "MEMORY.md" {
-            (lexical_score + 0.15).min(1.0)
-        } else {
-            lexical_score
-        };
-        let mut metadata = BTreeMap::new();
-        metadata.insert(
-            "snapshot_id".to_string(),
-            serde_json::Value::String(snapshot_id),
-        );
-        metadata.insert("bm25_rank".to_string(), json!(raw_rank));
-        metadata.insert("lexical_score".to_string(), json!(lexical_score));
-        hits.push(MemorySearchHit {
-            hit_id,
-            path,
-            start_line,
-            end_line,
-            score,
-            snippet: render_snippet(
-                &snippet
-                    .filter(|value| !value.trim().is_empty())
-                    .unwrap_or(text),
-                max_snippet_chars,
-            ),
-            metadata,
-        });
-    }
-    hits.sort_by(compare_hit_score);
-    Ok(hits)
-}
-
-fn open_sqlite(path: &Path) -> Result<Connection> {
-    let connection = Connection::open(path).map_err(map_sqlite_error)?;
-    connection
-        .execute_batch("PRAGMA busy_timeout = 5000; PRAGMA journal_mode = WAL;")
-        .map_err(map_sqlite_error)?;
-    connection
-        .execute_batch(&format!(
-            "CREATE TABLE IF NOT EXISTS {META_TABLE} (\
-               key TEXT PRIMARY KEY, \
-               value TEXT NOT NULL\
-             );\
-             CREATE TABLE IF NOT EXISTS {CHUNKS_TABLE} (\
-               chunk_id TEXT PRIMARY KEY, \
-               path TEXT NOT NULL, \
-               snapshot_id TEXT NOT NULL, \
-               start_line INTEGER NOT NULL, \
-               end_line INTEGER NOT NULL, \
-               text TEXT NOT NULL\
-             );\
-             CREATE INDEX IF NOT EXISTS idx_memory_core_chunks_path \
-               ON {CHUNKS_TABLE}(path);\
-             CREATE VIRTUAL TABLE IF NOT EXISTS {FTS_TABLE} USING fts5(\
-               text, \
-               chunk_id UNINDEXED, \
-               path UNINDEXED, \
-               snapshot_id UNINDEXED, \
-               start_line UNINDEXED, \
-               end_line UNINDEXED\
-             );"
-        ))
-        .map_err(map_sqlite_error)?;
-    Ok(connection)
-}
-
-fn build_fts_query(raw: &str) -> Option<String> {
-    let tokens = raw
-        .split(|ch: char| !(ch.is_alphanumeric() || ch == '_'))
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(|value| value.replace('"', ""))
-        .collect::<Vec<_>>();
-    if tokens.is_empty() {
-        return None;
-    }
-    Some(
-        tokens
-            .into_iter()
-            .map(|token| format!("\"{token}\""))
-            .collect::<Vec<_>>()
-            .join(" AND "),
-    )
-}
-
-fn bm25_rank_to_score(rank: f64) -> f64 {
-    if !rank.is_finite() {
-        return 1.0 / 1000.0;
-    }
-    if rank < 0.0 {
-        let relevance = -rank;
-        return relevance / (1.0 + relevance);
-    }
-    1.0 / (1.0 + rank)
-}
-
-fn escape_sql_like_prefix(value: &str) -> String {
-    value
-        .replace('\\', "\\\\")
-        .replace('%', "\\%")
-        .replace('_', "\\_")
-}
-
-fn stable_hash(value: &str) -> String {
-    use sha2::Digest;
-
-    let digest = sha2::Sha256::digest(value.as_bytes());
-    digest[..6]
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>()
-}
-
-fn map_sqlite_error(error: rusqlite::Error) -> crate::MemoryError {
-    crate::MemoryError::invalid(format!("memory-core sqlite error: {error}"))
-}
-
-fn tokenize_query(query: &str) -> Vec<String> {
-    query
-        .split(|ch: char| !ch.is_alphanumeric())
-        .map(|value| value.to_lowercase())
-        .filter(|value| !value.is_empty())
-        .collect::<Vec<_>>()
-}
-
-pub(crate) fn lexical_score(query: &str, text: &str) -> f64 {
-    score_text(text, &tokenize_query(query))
-}
-
-fn score_text(text: &str, terms: &[String]) -> f64 {
-    if terms.is_empty() {
-        return 0.0;
-    }
-    let text = text.to_lowercase();
-    let mut score = 0.0;
-    let mut seen = 0usize;
-    for term in terms {
-        let count = text.matches(term).count();
-        if count == 0 {
-            continue;
-        }
-        score += count as f64;
-        seen += 1;
-    }
-    if seen == 0 {
-        return 0.0;
-    }
-    let recall = seen as f64 / terms.len() as f64;
-    // Favor chunks that cover more of the query, then add a small frequency
-    // term so repeated exact tokens still separate otherwise similar chunks.
-    (recall * 2.0) + (score * 0.1)
 }
 
 fn render_snippet(text: &str, max_chars: usize) -> String {
@@ -642,8 +272,18 @@ fn compare_hit_score(left: &MemorySearchHit, right: &MemorySearchHit) -> Orderin
         .then_with(|| left.start_line.cmp(&right.start_line))
 }
 
-fn hit_id(path: &str, line: usize) -> String {
-    stable_hash(&format!("{path}:{line}"))
+fn stable_hash(value: &str) -> String {
+    use sha2::Digest;
+
+    let digest = sha2::Sha256::digest(value.as_bytes());
+    digest[..6]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>()
+}
+
+fn chunk_id(chunk: &crate::MemoryCorpusChunk) -> String {
+    stable_hash(&format!("{}:{}", chunk.path, chunk.start_line))
 }
 
 fn normalize_path(value: &str) -> String {

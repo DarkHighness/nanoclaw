@@ -1,9 +1,9 @@
+use crate::lexical_index::{self, LexicalIndex, LexicalIndexChunk};
 use crate::vector_store::{CachedMemoryEmbedIndex, MemoryVectorStore, PersistedChunkEmbedding};
 use crate::{
     MemoryBackend, MemoryDocument, MemoryEmbedConfig, MemoryGetRequest, MemorySearchHit,
     MemorySearchRequest, MemorySearchResponse, MemorySidecarLifecycle, MemorySidecarStatus,
-    MemoryStateLayout, MemorySyncStatus, Result, chunk_corpus, lexical_score,
-    load_configured_memory_corpus,
+    MemoryStateLayout, MemorySyncStatus, Result, chunk_corpus, load_configured_memory_corpus,
 };
 use async_trait::async_trait;
 use inference::{
@@ -23,6 +23,10 @@ use wide::f32x8;
 
 const INDEX_SCHEMA_VERSION: u32 = 2;
 const INDEX_BACKEND_ID: &str = "memory-embed";
+const LEXICAL_INDEX_BACKEND_ID: &str = "memory-embed-lexical";
+const LEXICAL_INDEX_SCHEMA_VERSION: u32 = 1;
+const MEMORY_EMBED_LEXICAL_SQLITE_INDEX_RELATIVE: &str =
+    ".nanoclaw/memory/indexes/memory-embed-lexical.sqlite";
 
 #[derive(Clone, Debug)]
 struct WeightedQuery {
@@ -61,6 +65,7 @@ pub struct MemoryEmbedBackend {
     reranker: Option<Arc<dyn RerankClient>>,
     run_store: Option<Arc<dyn RunStore>>,
     vector_store: MemoryVectorStore,
+    lexical_index: LexicalIndex,
     state: RwLock<Option<CachedMemoryEmbedIndex>>,
 }
 
@@ -75,13 +80,19 @@ impl MemoryEmbedBackend {
             &config.vector_store,
         )?;
         Ok(Self {
-            workspace_root,
+            workspace_root: workspace_root.clone(),
             config,
             client,
             query_expander: None,
             reranker: None,
             run_store: None,
             vector_store,
+            lexical_index: LexicalIndex::new(
+                &workspace_root,
+                LEXICAL_INDEX_BACKEND_ID,
+                MEMORY_EMBED_LEXICAL_SQLITE_INDEX_RELATIVE,
+                LEXICAL_INDEX_SCHEMA_VERSION,
+            ),
             state: RwLock::new(None),
         })
     }
@@ -187,6 +198,26 @@ impl MemoryEmbedBackend {
 
         *self.state.write().expect("memory-embed write lock") = Some(cached.clone());
         Ok(cached)
+    }
+
+    async fn ensure_lexical_index(
+        &self,
+        corpus: &crate::MemoryCorpus,
+        chunks: &[crate::MemoryCorpusChunk],
+        exported_run_count: usize,
+    ) -> Result<()> {
+        self.lexical_index
+            .ensure_ready(
+                &lexical_index::config_fingerprint(&json!({
+                    "corpus": &self.config.corpus,
+                    "chunking": &self.config.chunking,
+                }))?,
+                &document_snapshots(corpus),
+                &lexical_index_chunks(chunks),
+                exported_run_count,
+            )
+            .await?;
+        Ok(())
     }
 
     async fn load_persisted_index(&self) -> Result<CachedMemoryEmbedIndex> {
@@ -586,13 +617,15 @@ impl MemoryEmbedBackend {
 #[async_trait]
 impl MemoryBackend for MemoryEmbedBackend {
     async fn sync(&self) -> Result<MemorySyncStatus> {
-        let (corpus, _) = load_configured_memory_corpus(
+        let (corpus, runtime_exports) = load_configured_memory_corpus(
             &self.workspace_root,
             &self.config.corpus,
             self.run_store.as_ref(),
         )
         .await?;
         let chunks = chunk_corpus(&corpus, &self.config.chunking);
+        self.ensure_lexical_index(&corpus, &chunks, runtime_exports.exported_runs)
+            .await?;
         self.ensure_chunk_index(&corpus, &chunks).await?;
         Ok(MemorySyncStatus {
             backend: INDEX_BACKEND_ID.to_string(),
@@ -615,6 +648,8 @@ impl MemoryBackend for MemoryEmbedBackend {
             .max(1)
             .min(50);
         let prefix = req.path_prefix.map(|value| value.trim().to_string());
+        self.ensure_lexical_index(&corpus, &chunks, runtime_exports.exported_runs)
+            .await?;
         let cached = self.ensure_chunk_index(&corpus, &chunks).await?;
         let titles = document_titles(&corpus);
         let filtered_chunks = chunks
@@ -656,8 +691,13 @@ impl MemoryBackend for MemoryEmbedBackend {
                 weighted_query.kind,
                 ExpandedQueryKind::Hybrid | ExpandedQueryKind::Lex
             ) {
-                let lexical_ranked =
-                    ranked_lexical_list(&filtered_chunks, &weighted_query.text, candidate_limit);
+                let lexical_ranked = self
+                    .lexical_index
+                    .search_ranked(&weighted_query.text, prefix.as_deref(), candidate_limit)
+                    .await?
+                    .into_iter()
+                    .map(|entry| (entry.chunk_id, entry.score))
+                    .collect::<Vec<_>>();
                 apply_ranked_list(
                     &mut candidates,
                     &chunk_map,
@@ -812,6 +852,10 @@ impl MemoryBackend for MemoryEmbedBackend {
             "vector_store_native_fallback".to_string(),
             json!(vector_store_native_fallback),
         );
+        metadata.insert(
+            "lexical_index_path".to_string(),
+            json!(self.lexical_index.artifact_path()?.relative_display()),
+        );
         metadata.insert("schema_version".to_string(), json!(INDEX_SCHEMA_VERSION));
         metadata.insert(
             "config_fingerprint".to_string(),
@@ -955,21 +999,18 @@ fn stable_digest(value: &[u8]) -> String {
         .collect::<String>()
 }
 
-fn ranked_lexical_list(
-    chunks: &[crate::MemoryCorpusChunk],
-    query: &str,
-    limit: usize,
-) -> Vec<(String, f64)> {
-    let mut ranked = chunks
+fn lexical_index_chunks(chunks: &[crate::MemoryCorpusChunk]) -> Vec<LexicalIndexChunk> {
+    chunks
         .iter()
-        .filter_map(|chunk| {
-            let score = lexical_score(query, &chunk.text);
-            (score > 0.0).then(|| (chunk_id(chunk), score))
+        .map(|chunk| LexicalIndexChunk {
+            chunk_id: chunk_id(chunk),
+            path: chunk.path.clone(),
+            snapshot_id: chunk.snapshot_id.clone(),
+            start_line: chunk.start_line,
+            end_line: chunk.end_line,
+            text: chunk.text.clone(),
         })
-        .collect::<Vec<_>>();
-    ranked.sort_by(compare_ranked_score);
-    ranked.truncate(limit);
-    ranked
+        .collect()
 }
 
 fn ranked_vector_list(
@@ -1343,6 +1384,15 @@ mod tests {
         }
     }
 
+    struct ZeroEmbeddingClient;
+
+    #[async_trait]
+    impl EmbeddingClient for ZeroEmbeddingClient {
+        async fn embed(&self, _model: &str, texts: &[String]) -> inference::Result<Vec<Vec<f32>>> {
+            Ok(texts.iter().map(|_| vec![0.0, 0.0]).collect())
+        }
+    }
+
     struct FixedQueryExpansionClient {
         variants: Vec<ExpandedQuery>,
     }
@@ -1463,6 +1513,56 @@ mod tests {
             ".nanoclaw/memory/indexes/memory-embed.sqlite"
         );
         assert_eq!(lifecycle.indexed_document_count, 1);
+    }
+
+    #[tokio::test]
+    async fn search_uses_sqlite_lexical_sidecar_for_exact_matches() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("MEMORY.md"), "semantic recall target")
+            .await
+            .unwrap();
+        fs::create_dir_all(dir.path().join("memory")).await.unwrap();
+        fs::write(
+            dir.path().join("memory/today.md"),
+            "browserless exact token in lexical sidecar",
+        )
+        .await
+        .unwrap();
+
+        let backend = MemoryEmbedBackend::new(
+            dir.path().to_path_buf(),
+            MemoryEmbedConfig::default(),
+            Arc::new(ZeroEmbeddingClient),
+        )
+        .unwrap();
+        let response = backend
+            .search(MemorySearchRequest {
+                query: "browserless".to_string(),
+                limit: Some(2),
+                path_prefix: None,
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(response.hits[0].path, "memory/today.md");
+        assert_eq!(
+            response
+                .metadata
+                .get("lexical_index_path")
+                .and_then(Value::as_str),
+            Some(".nanoclaw/memory/indexes/memory-embed-lexical.sqlite")
+        );
+
+        let lifecycle = MemoryStateLayout::new(dir.path())
+            .load_lifecycle("memory-embed-lexical")
+            .unwrap()
+            .unwrap();
+        assert_eq!(lifecycle.status, MemorySidecarStatus::Ready);
+        assert_eq!(
+            lifecycle.artifact_path,
+            ".nanoclaw/memory/indexes/memory-embed-lexical.sqlite"
+        );
+        assert_eq!(lifecycle.indexed_document_count, 2);
     }
 
     #[tokio::test]

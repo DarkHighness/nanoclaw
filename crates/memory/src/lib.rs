@@ -9,6 +9,7 @@ mod backend;
 mod config;
 mod corpus;
 mod error;
+mod lexical_index;
 mod memory_core;
 mod memory_embed;
 mod runtime_exports;
