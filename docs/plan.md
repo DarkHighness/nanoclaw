@@ -9,7 +9,7 @@ Completed:
 - Added declarative config loading from `agent-core.toml`
 - Added environment override support for provider/runtime/TUI settings
 - Added configured skill roots and base instructions
-- Replaced the TUI `DemoBackend` path with a real `rig-core` backend
+- Replaced the TUI `DemoBackend` path with a real provider backend
 - Added real MCP client support for `stdio` and `streamable_http`
 - Registered MCP tools into the same runtime tool registry as local tools
 - Passed configured `hook_env` variables into command hooks

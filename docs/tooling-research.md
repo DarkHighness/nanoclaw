@@ -34,7 +34,7 @@ Reason:
 
 Implementation impact:
 
-- `agent-core-runtime` now converts tool executor failures into `ToolResult::error(...)` transcript messages and continues the loop.
+- `runtime` now converts tool executor failures into `ToolResult::error(...)` transcript messages and continues the loop.
 
 ### 2. MCP prompts should be user-controlled, not silently auto-invoked by the model
 
@@ -44,7 +44,7 @@ Reason:
 
 Implementation impact:
 
-- `agent-core-tui` now exposes prompt discovery and loading with `/prompts` and `/prompt <server> <name>`.
+- `apps/reference-tui` now exposes prompt discovery and loading with `/prompts` and `/prompt <server> <name>`.
 - Prompt payloads are loaded into the input box for explicit user review and submission.
 
 ### 3. MCP resources should be application-mediated
@@ -89,7 +89,7 @@ Reason:
 Implementation impact:
 
 - The OpenAI backend path now uses the Responses-compatible `rig` path.
-- `agent-core-types` preserves `message_id` on messages and `call_id` on tool calls/results.
+- `types` preserves `message_id` on messages and `call_id` on tool calls/results.
 - Provider adapters now emit the substrate's canonical field names directly instead of preserving compatibility aliases in the core types.
 
 ### 7. Local web tooling should preserve the hosted-tool split between discovery and retrieval
@@ -102,7 +102,7 @@ Reason:
 
 Implementation impact:
 
-- `agent-core-tools` now provides first-party `web_search` and `web_fetch` as an optional feature bundle instead of part of the mandatory default tool set.
+- `tools` now provides first-party `web_search` and `web_fetch` as an optional feature bundle instead of part of the mandatory default tool set.
 - `web_fetch` accepts only `http`/`https`, blocks local or private hosts by default, and extracts readable text from HTML or other text-like responses.
 - `web_search` is intentionally lightweight and backend-pluggable. The default bootstrap path uses an RSS search endpoint for discovery and can be overridden with `AGENT_CORE_WEB_SEARCH_ENDPOINT`.
 - Domain allow/block lists are available through environment variables so operators can narrow outbound access before a richer approval UX lands.
@@ -117,8 +117,8 @@ Reason:
 
 Implementation impact:
 
-- `agent-core-runtime` now exposes `ToolApprovalHandler`.
-- `agent-core-tui` supplies the current interactive implementation and pauses on destructive or open-world tools, plus hook-driven `ask` requests.
+- `runtime` now exposes `ToolApprovalHandler`.
+- `apps/reference-tui` supplies the current interactive implementation and pauses on destructive or open-world tools, plus hook-driven `ask` requests.
 - Approval denials are reported back as error tool results so the model can recover instead of losing the whole turn.
 - The TUI approval layer now caches allow/deny decisions for the current session by tool identity, which is the smallest practical step toward reusable approval policy without entangling runtime state with UI persistence.
 
@@ -196,7 +196,7 @@ Reason:
 
 Implementation impact:
 
-- `agent-core-tools` now exposes a feature-gated `code-intel` bundle with four local tools: `code_symbol_search`, `code_document_symbols`, `code_definitions`, and `code_references`.
+- `tools` now exposes a feature-gated `code-intel` bundle with four local tools: `code_symbol_search`, `code_document_symbols`, `code_definitions`, and `code_references`.
 - The feature provides a `CodeIntelBackend` trait so hosts can plug in an LSP client, an external index, or another backend without changing the tool contract.
 - The default concrete backend is `WorkspaceTextCodeIntelBackend`, a lexical in-workspace indexer that proves the contract and keeps tests deterministic when no external code-intel daemon is available.
 - `code_references` uses the substrate's canonical `include_declaration` field directly, even when the underlying backend is LSP-shaped.
@@ -228,7 +228,7 @@ Reason:
 Implementation impact:
 
 - `ToolExecutionContext` now carries `worktree_root`, `additional_roots`, and runtime ids (`run_id`, `session_id`, `turn_id`, `tool_name`, `tool_call_id`).
-- `agent-core-runtime` now clones a per-call scoped context before tool execution so each local tool sees the exact runtime identifiers for the current invocation.
+- `runtime` now clones a per-call scoped context before tool execution so each local tool sees the exact runtime identifiers for the current invocation.
 - Path-policy helpers now support validating a candidate path against multiple allowed roots, and local fs/process/code-intel tools delegate root checks through that shared context method instead of open-coding one-root assumptions.
 - The minimal runtime example and reference shells now initialize `worktree_root` explicitly so hosts can opt into multi-root policy without inventing a parallel config surface.
 
@@ -243,7 +243,7 @@ Reason:
 
 Implementation impact:
 
-- `agent-core-runtime` now exposes `ToolApprovalPolicy` alongside `ToolApprovalHandler`.
+- `runtime` now exposes `ToolApprovalPolicy` alongside `ToolApprovalHandler`.
 - Hosts can install ordered first-match rules that `allow`, `ask`, or `deny` based on tool name, tool origin, and selected argument predicates (`exists`, `value equals`, `string matcher`, `URL host matcher`).
 - The runtime consults policy before invoking the approval handler. Policy can suppress hint-driven approval, force review for otherwise safe tools, or deny the call outright.
 - Hook-driven permission denial or review still wins over policy suppression, so higher-order host policy is not erased by a local allowlist shortcut.
@@ -258,7 +258,7 @@ Reason:
 
 Implementation impact:
 
-- `agent-core-rig` now exposes typed OpenAI request controls for `prompt_cache_key` and `prompt_cache_retention`.
+- `provider` now exposes typed OpenAI request controls for `prompt_cache_key` and `prompt_cache_retention`.
 - The adapter merges those controls into OpenAI request payloads while leaving non-OpenAI providers unchanged.
 - If a host also passes `additional_params`, the typed cache controls are merged at the top level instead of forcing the host to handcraft provider JSON for a common optimization path.
 
@@ -288,8 +288,8 @@ Reason:
 
 Implementation impact:
 
-- `agent-core-types` now carries `ProviderContinuation` in `ModelRequest` and `ModelEvent::ResponseComplete`, so provider-managed state is explicit at the runtime boundary instead of being smuggled through opaque metadata.
-- `agent-core-runtime` now tracks the last provider continuation plus a transcript cursor. When provider-managed history is enabled, runtime sends only append-only transcript growth after the last successful upstream response; if the provider reports `previous_response_not_found`, runtime clears the chain and retries once with the full visible transcript.
+- `types` now carries `ProviderContinuation` in `ModelRequest` and `ModelEvent::ResponseComplete`, so provider-managed state is explicit at the runtime boundary instead of being smuggled through opaque metadata.
+- `runtime` now tracks the last provider continuation plus a transcript cursor. When provider-managed history is enabled, runtime sends only append-only transcript growth after the last successful upstream response; if the provider reports `previous_response_not_found`, runtime clears the chain and retries once with the full visible transcript.
 - The OpenAI adapter now uses a native Responses streaming request path so it can preserve `response_id`, send top-level `instructions`, keep `prompt_cache_*` controls intact, and attach `context_management` compaction hints without waiting for generic adapter support.
 - Local runtime compaction now explicitly resets provider continuation state, because once runtime rewrites the visible request window into a new summary/tail boundary, the old upstream response chain no longer matches the local context shape.
 

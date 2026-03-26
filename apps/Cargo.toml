@@ -1,0 +1,4 @@
+[workspace]
+default-members = ["reference-tui", "code-agent"]
+members = ["reference-tui", "code-agent"]
+resolver = "2"

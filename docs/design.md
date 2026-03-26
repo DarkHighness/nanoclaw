@@ -2,7 +2,7 @@
 
 ## Goals
 
-The workspace is organized around one idea: keep the agent substrate small, composable, and provider-agnostic, then attach concrete products and integrations at the edges.
+The workspace is organized around one idea: keep the agent foundation small, composable, and provider-agnostic, then attach concrete products and integrations at the edges.
 
 The host application is expected to compose the runtime in Rust code. File-based config, terminal UI, and other operator workflows are outer-shell concerns, not framework-defining primitives.
 
@@ -19,21 +19,28 @@ The design centers on four layers:
 
 The smallest practical runtime closure is:
 
-- `agent-core-types`
-- `agent-core-runtime`
-- `agent-core-tools`
-- `agent-core-skills`
-- one provider adapter such as `agent-core-rig`
+- `types`
+- `runtime`
+- `tools`
+- `skills`
+- one provider adapter such as `provider`
 
 Everything else is an edge layer around that closure:
 
-- `agent-core-mcp` for MCP integration
-- `agent-core-store` for persistence and replay
-- `apps/agent-core-tui` for a removable reference terminal shell with its own private config module
+- `mcp` for MCP integration
+- `store` for persistence and replay
+- `apps/reference-tui` for a removable reference terminal shell with its own private config module
 
-The root workspace excludes the reference shell crate so the default build and test path stays substrate-first.
+The root foundation workspace excludes host applications so the default build and test path stays base-runtime first.
 
-### `agent-core-types`
+Directory naming follows that split directly:
+
+- infrastructure crates under `crates/`
+- host applications under `apps/`
+
+The umbrella crate lives in `crates/core`, but its Rust package name is `agent` to avoid colliding with Rust's standard `core` crate.
+
+### `types`
 
 Shared protocol types for:
 
@@ -45,7 +52,7 @@ Shared protocol types for:
 
 This crate is the contract surface between the rest of the workspace.
 
-### `agent-core-runtime`
+### `runtime`
 
 Owns the turn loop:
 
@@ -62,7 +69,7 @@ The runtime is intentionally unaware of any one provider, any one UI, or any one
 It still exposes runtime-native coordination primitives such as append-only steering messages,
 queued runtime commands, and loop detection.
 
-### `agent-core-tools`
+### `tools`
 
 Provides the local tool abstraction plus the core built-ins:
 
@@ -89,7 +96,7 @@ Optional tool bundles are compiled behind features. Today that includes:
 
 Provider-hosted tools and MCP tools enter through the same runtime tool boundary instead of bespoke client logic.
 
-For code-editing tools specifically, the current substrate now treats file access as a two-step contract:
+For code-editing tools specifically, the current foundation now treats file access as a two-step contract:
 
 - `read` exposes line-numbered views plus stable file snapshot ids and slice hashes
 - `write` exposes full-file create/replace with explicit missing/existing-file policy plus optional snapshot guards
@@ -98,7 +105,7 @@ For code-editing tools specifically, the current substrate now treats file acces
 
 That contract is documented in detail in [tool-interface-design.md](/Users/twiliness/nanoclaw/docs/tool-interface-design.md).
 
-### `agent-core-skills`
+### `skills`
 
 Loads skills from host-provided roots. Each skill folder contains a `SKILL.md` with YAML frontmatter and optional subdirectories such as:
 
@@ -114,9 +121,9 @@ Skills are treated as first-class runtime assets. They contribute:
 
 The runtime no longer auto-activates skills through prompt-string heuristics.
 
-### `agent-core-rig`
+### `provider`
 
-Owns provider-backed model execution. It translates `agent-core-types` requests into concrete provider calls and currently supports:
+Owns provider-backed model execution. It translates `types` requests into concrete provider calls and currently supports:
 
 - OpenAI
 - Anthropic
@@ -124,7 +131,7 @@ Owns provider-backed model execution. It translates `agent-core-types` requests 
 The OpenAI path is aligned with the Responses API shape. The adapter preserves stable `message_id` and `call_id` fields so provider state can be audited without leaking provider-specific naming into the rest of the runtime.
 When hosts enable OpenAI response chaining, the adapter also preserves `response_id` as runtime continuation state, uses top-level Responses `instructions`, and can attach `context_management` compaction hints without forcing the runtime layer to speak provider JSON directly.
 
-### `agent-core-mcp`
+### `mcp`
 
 Owns MCP integration. It supports:
 
@@ -141,7 +148,7 @@ It can:
 
 The bridge layer converts remote MCP tool metadata into local runtime tool registrations.
 
-### `agent-core-store`
+### `store`
 
 Provides run event storage and transcript replay. The workspace includes:
 
@@ -151,11 +158,11 @@ Provides run event storage and transcript replay. The workspace includes:
 - simple run search over prompts, transcript text, tool usage, and other stored event fields
 - optional retention controls by run count or run age
 
-### `apps/agent-core-tui`
+### `apps/reference-tui`
 
-This crate is a reference-shell layer, not part of the substrate minimum closure.
+This crate is a reference-shell layer, not part of the minimal foundation closure.
 
-`apps/agent-core-tui` currently provides:
+`apps/reference-tui` currently provides:
 
 - operator-facing tool approval UX
 - startup dashboards
@@ -164,7 +171,7 @@ This crate is a reference-shell layer, not part of the substrate minimum closure
 - reference shell wiring for provider boot, skill loading, and persistent storage
 - a shell-local config module for file/env loading and shell-oriented defaults
 
-Hosts embedding the substrate should treat this as an example of one application shape, not as a required framework surface.
+Hosts embedding the foundation should treat this as an example of one application shape, not as a required framework surface.
 
 ## Runtime Flow
 
@@ -203,9 +210,9 @@ Hosts embedding the substrate should treat this as an example of one application
 
 ## Reference Shell Configuration
 
-The repository still includes a declarative config layer, but that layer belongs to the removable reference shell rather than the runtime substrate.
+The repository still includes a declarative config layer, but that layer belongs to the removable reference shell rather than the runtime foundation.
 
-The private config module inside `apps/agent-core-tui` currently supports:
+The private config module inside `apps/reference-tui` currently supports:
 
 - provider selection and request defaults
 - runtime loop limits for the reference shell
@@ -215,7 +222,7 @@ The private config module inside `apps/agent-core-tui` currently supports:
 - hook environment variables
 - optional shell-level system prompt text
 
-Hosts embedding the substrate should define their own config layer, or none at all.
+Hosts embedding the foundation should define their own config layer, or none at all.
 
 ## Tooling Notes
 
@@ -226,16 +233,16 @@ Hosts embedding the substrate should define their own config layer, or none at a
 - `ToolExecutionContext` carries both host root policy (`workspace_root`, `worktree_root`, `additional_roots`) and per-call runtime scope (`run_id`, `session_id`, `turn_id`, `tool_name`, `tool_call_id`) so local tools can stay generic while still participating in audit and path-control flows.
 - Feature-enabled local code-intel tooling follows the same request families as LSP (`workspace/symbol`, `textDocument/documentSymbol`, `textDocument/definition`, `textDocument/references`), while keeping the backend host-pluggable instead of hardcoding one language server process contract.
 - Provider streaming passes through the `ModelBackend` boundary into runtime progress events, and hosts can consume those events however they want.
-- The `rig` adapter now exposes explicit OpenAI prompt-cache request controls (`prompt_cache_key`, `prompt_cache_retention`) instead of forcing hosts to smuggle them through opaque JSON. Those controls stay provider-scoped in the adapter layer and are omitted for non-OpenAI providers.
+- The provider adapter now exposes explicit OpenAI prompt-cache request controls (`prompt_cache_key`, `prompt_cache_retention`) instead of forcing hosts to smuggle them through opaque JSON. Those controls stay provider-scoped in the adapter layer and are omitted for non-OpenAI providers.
 - The runtime now distinguishes between full visible-transcript requests and provider-managed continuation windows. When an upstream provider exposes durable response chaining, runtime can send only append-only transcript growth while still keeping its own transcript immutable and fully auditable.
 - The OpenAI adapter now has a native Responses streaming path for stateful turns. That path preserves `response_id`, maps `previous_response_id` retries back into runtime continuation handling, and can emit server-side compaction hints through `context_management`.
 - Startup assembly for the reference shell lives in a testable boot module, so that shell's config parsing, provider wiring, skill loading, and store fallback can be exercised without launching the full shell loop.
 - MCP `stdio` support is guarded by a real child-process integration test instead of only mock-client coverage.
-- The `rig` backend has provider-agnostic contract tests around schema coercion, message conversion, and event/origin propagation.
+- The provider backend has provider-agnostic contract tests around schema coercion, message conversion, and event/origin propagation.
 
 ## Deliberate Tradeoffs
 
-- Local runtime compaction and OpenAI server-side compaction now coexist, but only the request-hint path is integrated. The standalone OpenAI `/responses/compact` window is still not mapped into first-class runtime transcript items, because the substrate does not yet preserve opaque provider-only compaction items as replayable message objects.
+- Local runtime compaction and OpenAI server-side compaction now coexist, but only the request-hint path is integrated. The standalone OpenAI `/responses/compact` window is still not mapped into first-class runtime transcript items, because the foundation does not yet preserve opaque provider-only compaction items as replayable message objects.
 - The default persistent store still uses append-only JSONL transcripts as the durable source of truth, but now pairs them with a small mutable index sidecar for summaries, search prefiltering, and retention. It still does not provide multi-process coordination or a heavier full-text index backend.
 - The current approval flow now supports runtime-level rule composition in addition to shell-side prompts. Hosts can auto-allow, deny, or require review for matching tool/origin/argument patterns, but persistent allowlists and richer policy storage are still outer-host concerns.
 - Feature-enabled `web_search` is intentionally lightweight today. It does not yet provide hosted-tool quality ranking, citations, or user-location controls.

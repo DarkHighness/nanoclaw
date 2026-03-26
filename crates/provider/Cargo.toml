@@ -1,0 +1,21 @@
+[package]
+name = "provider"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+runtime = { path = "../runtime" }
+types = { path = "../types" }
+async-stream.workspace = true
+async-trait.workspace = true
+eventsource-stream.workspace = true
+futures.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true
+wiremock.workspace = true

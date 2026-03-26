@@ -1,33 +1,41 @@
 # nanoclaw
 
-`nanoclaw` is a Rust workspace for building a provider-agnostic agent substrate.
+`nanoclaw` is a Rust repository with two Cargo workspaces:
 
-Core crates:
+- `crates/Cargo.toml`: the foundation workspace
+- `apps/Cargo.toml`: removable host applications and examples
 
-- `agent-core-types`: shared protocol types
-- `agent-core-runtime`: generic agent turn loop
-- `agent-core-tools`: core local tool abstractions and built-ins
-- `agent-core-skills`: skill package loading and cataloging
-- `agent-core-rig`: provider adapters built on `rig-core`
-- `agent-core-mcp`: MCP integration surface
-- `agent-core-store`: persistence and replay surface
+Foundation crates:
 
-The repository also keeps a removable reference shell in `apps/agent-core-tui`. That crate is maintained independently from the substrate workspace and is one example of a host application shape, not part of the base framework contract.
+- `types`: shared protocol types
+- `runtime`: generic agent turn loop
+- `tools`: core local tool abstractions and built-ins
+- `skills`: skill package loading and cataloging
+- `provider`: provider adapters
+- `mcp`: MCP integration surface
+- `store`: persistence and replay surface
+- `agent`: umbrella crate in `crates/core` that re-exports the foundation surface
+
+The repository also keeps removable host applications in the separate `apps/` workspace. `apps/reference-tui` is the reference shell, and `apps/code-agent` is the codex-like example product layer.
 
 ## Framework Boundary
 
 The intended boundary is:
 
-- substrate closure: `agent-core-types`, `agent-core-runtime`, `agent-core-tools`, `agent-core-skills`, plus one provider adapter such as `agent-core-rig`
+- minimal foundation closure: `types`, `runtime`, `tools`, `skills`, plus one provider adapter such as `provider`
 - core built-in tools: `read`, `write`, `edit`, `patch`, `glob`, `grep`, `list`, `bash`
 - optional tool bundles: non-essential tools such as first-party web access, code-intel navigation tools, and agentic task/todo tools compile only behind Cargo features
-- integration surfaces: `agent-core-mcp` and `agent-core-store` bolt onto the same runtime contracts
-- reference product layer: `apps/agent-core-tui` sits outside the substrate, keeps its shell-local config private, and can be removed without changing the runtime core
+- integration surfaces: `mcp` and `store` bolt onto the same runtime contracts
+- reference product layer: `apps/reference-tui` sits outside the foundation workspace, keeps its shell-local config private, and can be removed without changing the runtime core
 
-The root workspace defaults follow that split:
+The repository no longer treats the whole tree as one Cargo workspace. Foundation and app validation run through their own workspace manifests.
 
-- `cargo test` and `cargo check` target the substrate-oriented crates by default
-- the reference shell is built and tested through its own manifest path instead of the substrate workspace
+The directory layout follows that split directly:
+
+- `crates/core`, `crates/runtime`, `crates/tools`, `crates/provider`, `crates/mcp`, `crates/store`, `crates/skills`, `crates/types`
+- `apps/reference-tui`, `apps/code-agent`
+
+The umbrella crate keeps the Rust package name `agent` even though its directory is `crates/core`, because a package literally named `core` would collide with Rust's standard `core` crate.
 
 ## Base Composition
 
@@ -36,17 +44,15 @@ The primary integration path is Rust code, not TOML. A host application should a
 ```rust
 use std::sync::Arc;
 
-use agent_core::{
+use agent::{
     AgentRuntimeBuilder, HookRunner, InMemoryRunStore, ReadTool, SkillCatalog,
     ToolExecutionContext, ToolRegistry, WriteTool,
 };
-use agent_core::rig::{RigBackendDescriptor, RigModelBackend, RigProviderDescriptor};
+use agent::provider::{ProviderBackend, ProviderDescriptor};
 
 let cwd = std::env::current_dir()?;
 let store = Arc::new(InMemoryRunStore::new());
-let backend = Arc::new(RigModelBackend::from_descriptor(
-    RigBackendDescriptor::new(RigProviderDescriptor::openai("gpt-4.1-mini")),
-)?);
+let backend = Arc::new(ProviderBackend::new(ProviderDescriptor::openai("gpt-5.4"))?);
 
 let mut tools = ToolRegistry::new();
 tools.register(ReadTool::new());
@@ -70,13 +76,13 @@ let runtime = AgentRuntimeBuilder::new(backend, store)
     .build();
 ```
 
-A compiled substrate-only example lives at [minimal_runtime.rs](/Users/twiliness/nanoclaw/crates/agent-core/examples/minimal_runtime.rs). It builds the preamble in Rust, wires a skill catalog, registers only the core tools, and runs the runtime without any TOML or TUI layer.
+A compiled foundation-only example lives at [minimal_runtime.rs](/Users/twiliness/nanoclaw/crates/core/examples/minimal_runtime.rs). It builds the preamble in Rust, wires a skill catalog, registers only the core tools, and runs the runtime without any TOML or TUI layer.
 
 ```bash
-cargo run -p agent-core --example minimal_runtime
+cargo run --manifest-path crates/Cargo.toml -p agent --example minimal_runtime
 ```
 
-## Substrate Status
+## Foundation Status
 
 The core workspace now provides:
 
@@ -96,13 +102,13 @@ The core workspace now provides:
 
 ## Reference Shell
 
-`apps/agent-core-tui` is a removable host application around the same runtime APIs. It exists to exercise the substrate end to end, not to define the framework, and it is maintained outside the root workspace.
+`apps/reference-tui` is a removable host application around the same runtime APIs. It exists to exercise the foundation end to end, not to define the framework, and it is maintained in the separate app workspace.
 
 Useful commands:
 
 ```bash
-cargo run --manifest-path apps/agent-core-tui/Cargo.toml
-cargo run --manifest-path apps/agent-core-tui/Cargo.toml --features web-tools
+cargo run --manifest-path apps/Cargo.toml -p reference-tui
+cargo run --manifest-path apps/Cargo.toml -p reference-tui --features web-tools
 ```
 
 Inside the reference shell, operator commands include:
@@ -129,7 +135,7 @@ Inside the reference shell, operator commands include:
 
 The file/env config layer applies only to the removable reference shell, and it now lives as a private module inside that shell crate.
 
-`apps/agent-core-tui` reads:
+`apps/reference-tui` reads:
 
 - `agent-core.toml`
 - `.agent-core/config.toml`
@@ -154,17 +160,17 @@ Key shell-level knobs:
 
 Examples:
 
-- shell config template: [agent-core.toml.example](/Users/twiliness/nanoclaw/apps/agent-core-tui/examples/agent-core.toml.example)
-- OpenAI example: [openai example](/Users/twiliness/nanoclaw/apps/agent-core-tui/examples/openai/agent-core.toml)
-- Anthropic example: [anthropic example](/Users/twiliness/nanoclaw/apps/agent-core-tui/examples/anthropic/agent-core.toml)
+- shell config template: [agent-core.toml.example](/Users/twiliness/nanoclaw/apps/reference-tui/examples/agent-core.toml.example)
+- OpenAI example: [openai example](/Users/twiliness/nanoclaw/apps/reference-tui/examples/openai/agent-core.toml)
+- Anthropic example: [anthropic example](/Users/twiliness/nanoclaw/apps/reference-tui/examples/anthropic/agent-core.toml)
 
 ## Example Code Agent
 
-For a thinner codex-like code agent example, see [apps/code-agent-example](/Users/twiliness/nanoclaw/apps/code-agent-example/README.md).
+For a thinner codex-like code agent example, see [apps/code-agent](/Users/twiliness/nanoclaw/apps/code-agent/README.md).
 
 ```bash
 export OPENAI_API_KEY=...
-cargo run --manifest-path apps/code-agent-example/Cargo.toml
+cargo run --manifest-path apps/Cargo.toml -p code-agent
 ```
 
 ## Documentation
@@ -176,24 +182,24 @@ cargo run --manifest-path apps/code-agent-example/Cargo.toml
 
 ## Testing
 
-Substrate-focused default test run:
+Foundation workspace test run:
 
 ```bash
-cargo test
+cargo test --manifest-path crates/Cargo.toml
 ```
 
-Independent reference-shell test run:
+App workspace test run:
 
 ```bash
-cargo test --manifest-path apps/agent-core-tui/Cargo.toml
+cargo test --manifest-path apps/Cargo.toml
 ```
 
 Targeted regressions:
 
 ```bash
-cargo test -p agent-core --example minimal_runtime
-cargo test -p agent-core-mcp --test stdio_integration
-cargo test -p agent-core-rig --lib
+cargo test --manifest-path crates/Cargo.toml -p agent --example minimal_runtime
+cargo test --manifest-path crates/Cargo.toml -p mcp --test stdio_integration
+cargo test --manifest-path crates/Cargo.toml -p provider --lib
 ```
 
 ## Git Hooks
@@ -208,5 +214,5 @@ Install them once per clone:
 
 Those hooks enforce two repository rules:
 
-- `pre-commit` runs formatting for the root workspace and the independent app manifests, then blocks the commit if any staged file changed and needs re-staging
+- `pre-commit` runs formatting for the foundation workspace (`crates/Cargo.toml`) and the app workspace (`apps/Cargo.toml`), then blocks the commit if any staged file changed and needs re-staging
 - `commit-msg` requires a Conventional Commit first line such as `feat(runtime): add queue drain` or `docs: document hook installation`

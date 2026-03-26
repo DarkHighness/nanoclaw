@@ -1,0 +1,21 @@
+[package]
+name = "mcp"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+tools = { path = "../tools" }
+types = { path = "../types" }
+anyhow.workspace = true
+async-trait.workspace = true
+futures.workspace = true
+http.workspace = true
+rmcp = { workspace = true, features = ["server", "transport-io"] }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

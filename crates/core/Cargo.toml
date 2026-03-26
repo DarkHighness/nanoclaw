@@ -1,0 +1,29 @@
+[package]
+name = "agent"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[features]
+default = []
+agentic-tools = [
+    "runtime/agentic-tools",
+    "tools/agentic-tools",
+]
+code-intel = ["tools/code-intel"]
+web-tools = ["tools/web-tools"]
+
+[dependencies]
+mcp = { path = "../mcp" }
+provider = { path = "../provider" }
+runtime = { path = "../runtime" }
+skills = { path = "../skills" }
+store = { path = "../store" }
+tools = { path = "../tools" }
+types = { path = "../types" }
+
+[dev-dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+futures.workspace = true
+tokio.workspace = true

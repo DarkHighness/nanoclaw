@@ -1,0 +1,16 @@
+[package]
+name = "skills"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+types = { path = "../types" }
+regex.workspace = true
+serde.workspace = true
+serde_yaml.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

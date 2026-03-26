@@ -1,0 +1,17 @@
+use crate::Result;
+use async_trait::async_trait;
+use types::{HookContext, HookOutput};
+
+#[async_trait]
+pub trait PromptHookEvaluator: Send + Sync {
+    async fn evaluate(&self, prompt: &str, context: HookContext) -> Result<HookOutput>;
+}
+
+pub struct NoopPromptHookEvaluator;
+
+#[async_trait]
+impl PromptHookEvaluator for NoopPromptHookEvaluator {
+    async fn evaluate(&self, _prompt: &str, _context: HookContext) -> Result<HookOutput> {
+        Ok(HookOutput::default())
+    }
+}

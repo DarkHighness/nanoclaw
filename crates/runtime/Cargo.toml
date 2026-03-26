@@ -1,0 +1,27 @@
+[package]
+name = "runtime"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[features]
+default = []
+agentic-tools = ["tools/agentic-tools"]
+
+[dependencies]
+skills = { path = "../skills" }
+store = { path = "../store" }
+tools = { path = "../tools" }
+types = { path = "../types" }
+async-trait.workspace = true
+futures.workspace = true
+regex.workspace = true
+reqwest.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-stream.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+wiremock.workspace = true
