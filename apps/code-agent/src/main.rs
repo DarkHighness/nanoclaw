@@ -57,11 +57,19 @@ struct AppOptions {
     model: String,
     system_prompt: Option<String>,
     skill_roots: Vec<PathBuf>,
+    sandbox_fail_if_unavailable: bool,
     one_shot_prompt: Option<String>,
 }
 
 impl AppOptions {
     fn from_env_and_args(env_map: &EnvMap) -> Result<Self> {
+        Self::from_env_and_args_iter(env_map, env::args().skip(1))
+    }
+
+    fn from_env_and_args_iter(
+        env_map: &EnvMap,
+        args: impl IntoIterator<Item = String>,
+    ) -> Result<Self> {
         let mut provider = env_lookup(env_map, vars::CODE_AGENT_PROVIDER.key)
             .as_deref()
             .map(parse_provider)
@@ -70,9 +78,12 @@ impl AppOptions {
         let mut skill_roots = env_lookup(env_map, vars::CODE_AGENT_SKILL_ROOTS.key)
             .map(split_path_list)
             .unwrap_or_default();
+        let mut sandbox_fail_if_unavailable = env_map
+            .get_bool_var(vars::CODE_AGENT_SANDBOX_FAIL_IF_UNAVAILABLE)
+            .unwrap_or(false);
         let mut prompt_parts = Vec::new();
 
-        let mut args = env::args().skip(1);
+        let mut args = args.into_iter();
         while let Some(arg) = args.next() {
             match arg.as_str() {
                 "--provider" => {
@@ -81,6 +92,10 @@ impl AppOptions {
                 "--system-prompt" => system_prompt = Some(next_arg(&mut args, "--system-prompt")?),
                 "--skill-root" => {
                     skill_roots.push(PathBuf::from(next_arg(&mut args, "--skill-root")?))
+                }
+                "--sandbox-fail-if-unavailable" => {
+                    sandbox_fail_if_unavailable =
+                        parse_bool_flag(&next_arg(&mut args, "--sandbox-fail-if-unavailable")?)?
                 }
                 "--help" | "-h" => {
                     print_help();
@@ -107,6 +122,7 @@ impl AppOptions {
             model,
             system_prompt,
             skill_roots,
+            sandbox_fail_if_unavailable,
             one_shot_prompt,
         })
     }
@@ -199,7 +215,7 @@ async fn build_runtime(
         enabled: true,
         ..LoopDetectionConfig::default()
     };
-    let sandbox_policy = SandboxPolicy::recommended_for_context(&tool_context);
+    let sandbox_policy = build_sandbox_policy(options, &tool_context);
     let process_executor = Arc::new(ManagedPolicyProcessExecutor::new());
     let hook_runner = Arc::new(HookRunner::with_services(
         Arc::new(
@@ -270,6 +286,16 @@ async fn build_runtime(
         .build();
 
     Ok((runtime, skills))
+}
+
+fn build_sandbox_policy(
+    options: &AppOptions,
+    tool_context: &ToolExecutionContext,
+) -> SandboxPolicy {
+    // `code-agent` keeps the workspace-derived sandbox posture but lets the
+    // operator decide whether missing enforcement backends are tolerable.
+    SandboxPolicy::recommended_for_context(tool_context)
+        .with_fail_if_unavailable(options.sandbox_fail_if_unavailable)
 }
 
 fn build_backend(options: &AppOptions) -> Result<ProviderBackend> {
@@ -376,6 +402,14 @@ fn parse_provider(value: &str) -> Result<SelectedProvider> {
     }
 }
 
+fn parse_bool_flag(value: &str) -> Result<bool> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Ok(true),
+        "0" | "false" | "no" | "off" => Ok(false),
+        other => bail!("unsupported boolean value `{other}`"),
+    }
+}
+
 fn ensure_api_key_available(
     provider: SelectedProvider,
     has_openai: bool,
@@ -413,6 +447,7 @@ fn print_help() {
     println!("  --provider <openai|anthropic>");
     println!("  --system-prompt <text>");
     println!("  --skill-root <path>");
+    println!("  --sandbox-fail-if-unavailable <true|false>");
     println!("  -h, --help");
     println!();
     println!("environment:");
@@ -420,11 +455,24 @@ fn print_help() {
     println!("  OPENAI_API_KEY / ANTHROPIC_API_KEY");
     println!("  OPENAI_BASE_URL / ANTHROPIC_BASE_URL");
     println!("  CODE_AGENT_PROVIDER / CODE_AGENT_SYSTEM_PROMPT / CODE_AGENT_SKILL_ROOTS");
+    println!("  CODE_AGENT_SANDBOX_FAIL_IF_UNAVAILABLE");
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{SelectedProvider, default_model};
+    use super::{
+        AppOptions, SelectedProvider, build_sandbox_policy, default_model, parse_bool_flag,
+    };
+    use agent::ToolExecutionContext;
+    use agent::tools::{NetworkPolicy, SandboxMode};
+    use agent_env::EnvMap;
+    use std::sync::{Mutex, OnceLock};
+    use tempfile::tempdir;
+
+    fn env_test_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
 
     #[test]
     fn default_model_matches_provider() {
@@ -433,5 +481,45 @@ mod tests {
             default_model(SelectedProvider::Anthropic),
             "claude-sonnet-4-6"
         );
+    }
+
+    #[test]
+    fn parses_boolean_flag_values() {
+        assert!(parse_bool_flag("true").unwrap());
+        assert!(!parse_bool_flag("off").unwrap());
+        assert!(parse_bool_flag("1").unwrap());
+        assert!(parse_bool_flag("maybe").is_err());
+    }
+
+    #[tokio::test]
+    async fn loads_sandbox_fail_closed_from_env_and_cli() {
+        let _guard = env_test_lock().lock().unwrap();
+        let dir = tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(".env"),
+            "OPENAI_API_KEY=test-key\nCODE_AGENT_SANDBOX_FAIL_IF_UNAVAILABLE=false\n",
+        )
+        .unwrap();
+        let env_map = EnvMap::from_workspace_dir(dir.path()).unwrap();
+        let options = AppOptions::from_env_and_args_iter(
+            &env_map,
+            vec![
+                "--sandbox-fail-if-unavailable".to_string(),
+                "true".to_string(),
+            ],
+        )
+        .unwrap();
+        let tool_context = ToolExecutionContext {
+            workspace_root: dir.path().to_path_buf(),
+            worktree_root: Some(dir.path().to_path_buf()),
+            workspace_only: true,
+            ..Default::default()
+        };
+
+        let policy = build_sandbox_policy(&options, &tool_context);
+
+        assert_eq!(policy.mode, SandboxMode::WorkspaceWrite);
+        assert_eq!(policy.network, NetworkPolicy::Off);
+        assert!(policy.fail_if_unavailable);
     }
 }

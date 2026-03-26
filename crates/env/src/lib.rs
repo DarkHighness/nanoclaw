@@ -63,6 +63,10 @@ pub mod vars {
         "CODE_AGENT_SKILL_ROOTS",
         "OS-path-list of additional skill roots for the code-agent app.",
     );
+    pub const CODE_AGENT_SANDBOX_FAIL_IF_UNAVAILABLE: EnvVar = EnvVar::new(
+        "CODE_AGENT_SANDBOX_FAIL_IF_UNAVAILABLE",
+        "Whether code-agent should fail closed when no enforcing sandbox backend is available.",
+    );
 
     pub const AGENT_CORE_PROVIDER: EnvVar = EnvVar::new(
         "AGENT_CORE_PROVIDER",
@@ -112,6 +116,10 @@ pub mod vars {
         "AGENT_CORE_STORE_DIR",
         "Run-store directory override for reference-tui.",
     );
+    pub const AGENT_CORE_SANDBOX_FAIL_IF_UNAVAILABLE: EnvVar = EnvVar::new(
+        "AGENT_CORE_SANDBOX_FAIL_IF_UNAVAILABLE",
+        "Whether reference-tui should fail closed when no enforcing sandbox backend is available.",
+    );
     pub const AGENT_CORE_COMMAND_PREFIX: EnvVar = EnvVar::new(
         "AGENT_CORE_COMMAND_PREFIX",
         "Slash-command prefix for TUI command parsing.",
@@ -153,6 +161,7 @@ pub mod vars {
         CODE_AGENT_PROVIDER,
         CODE_AGENT_SYSTEM_PROMPT,
         CODE_AGENT_SKILL_ROOTS,
+        CODE_AGENT_SANDBOX_FAIL_IF_UNAVAILABLE,
         AGENT_CORE_PROVIDER,
         AGENT_CORE_MODEL,
         AGENT_CORE_BASE_URL,
@@ -165,6 +174,7 @@ pub mod vars {
         AGENT_CORE_COMPACT_TRIGGER_TOKENS,
         AGENT_CORE_COMPACT_PRESERVE_RECENT_MESSAGES,
         AGENT_CORE_STORE_DIR,
+        AGENT_CORE_SANDBOX_FAIL_IF_UNAVAILABLE,
         AGENT_CORE_COMMAND_PREFIX,
         AGENT_CORE_SYSTEM_PROMPT,
         AGENT_CORE_SKILL_ROOTS,

@@ -95,6 +95,12 @@ impl SandboxPolicy {
     }
 
     #[must_use]
+    pub fn with_fail_if_unavailable(mut self, fail_if_unavailable: bool) -> Self {
+        self.fail_if_unavailable = fail_if_unavailable;
+        self
+    }
+
+    #[must_use]
     pub fn requires_enforcement(&self) -> bool {
         !matches!(self.mode, SandboxMode::DangerFullAccess)
             || !matches!(self.network, NetworkPolicy::Full)

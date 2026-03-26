@@ -46,6 +46,7 @@ pub struct RuntimeConfig {
     pub compact_preserve_recent_messages: Option<usize>,
     #[serde(default)]
     pub store_dir: Option<String>,
+    pub sandbox_fail_if_unavailable: bool,
 }
 
 impl Default for RuntimeConfig {
@@ -57,6 +58,7 @@ impl Default for RuntimeConfig {
             compact_trigger_tokens: Some(96_000),
             compact_preserve_recent_messages: Some(8),
             store_dir: None,
+            sandbox_fail_if_unavailable: false,
         }
     }
 }
@@ -144,6 +146,9 @@ impl AgentCoreConfig {
         }
         if let Some(value) = env_map.get_non_empty_var(vars::AGENT_CORE_STORE_DIR) {
             config.runtime.store_dir = Some(value);
+        }
+        if let Some(parsed) = env_map.get_bool_var(vars::AGENT_CORE_SANDBOX_FAIL_IF_UNAVAILABLE) {
+            config.runtime.sandbox_fail_if_unavailable = parsed;
         }
         if let Some(value) = env_map.get_non_empty_var(vars::AGENT_CORE_COMMAND_PREFIX) {
             config.tui.command_prefix = value;
@@ -245,7 +250,7 @@ mod tests {
         let dir = tempdir().unwrap();
         fs::write(
             dir.path().join(".env"),
-            "AGENT_CORE_MODEL=from_env\nAGENT_CORE_WORKSPACE_ONLY=false\n",
+            "AGENT_CORE_MODEL=from_env\nAGENT_CORE_WORKSPACE_ONLY=false\nAGENT_CORE_SANDBOX_FAIL_IF_UNAVAILABLE=true\n",
         )
         .await
         .unwrap();
@@ -260,6 +265,7 @@ mod tests {
         assert_eq!(config.provider.model.as_deref(), Some("from_local"));
         assert_eq!(config.runtime.compact_preserve_recent_messages, Some(6));
         assert!(!config.runtime.workspace_only);
+        assert!(config.runtime.sandbox_fail_if_unavailable);
     }
 
     #[tokio::test]
@@ -286,6 +292,7 @@ mod tests {
                 workspace_only = false
                 compact_preserve_recent_messages = 5
                 store_dir = ".agent-core/custom-store"
+                sandbox_fail_if_unavailable = true
 
                 [tui]
                 command_prefix = ":"
@@ -309,6 +316,7 @@ mod tests {
             config.runtime.store_dir.as_deref(),
             Some(".agent-core/custom-store")
         );
+        assert!(config.runtime.sandbox_fail_if_unavailable);
         assert_eq!(config.tui.command_prefix, ":");
         assert_eq!(
             config.system_prompt.as_deref(),
@@ -362,6 +370,7 @@ mod tests {
 
         let config = AgentCoreConfig::load_from_dir(dir.path()).unwrap();
         assert!(config.runtime.workspace_only);
+        assert!(!config.runtime.sandbox_fail_if_unavailable);
         assert_eq!(
             config.runtime.store_dir.as_deref(),
             Some(".agent-core/store")

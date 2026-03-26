@@ -13,6 +13,7 @@ additional_params = { metadata = { tier = "standard" } }
 
 [runtime]
 workspace_only = true
+sandbox_fail_if_unavailable = false
 auto_compact = true
 context_tokens = 128000
 compact_trigger_tokens = 96000

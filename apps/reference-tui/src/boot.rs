@@ -106,7 +106,7 @@ async fn bootstrap_from_parts(
         model_context_window_tokens: Some(context_tokens(&config)),
         ..Default::default()
     };
-    let sandbox_policy = SandboxPolicy::recommended_for_context(&tool_context);
+    let sandbox_policy = build_sandbox_policy(&config, &tool_context);
     let process_executor = Arc::new(ManagedPolicyProcessExecutor::new());
     let hook_runner = Arc::new(HookRunner::with_services(
         Arc::new(
@@ -205,6 +205,7 @@ async fn bootstrap_from_parts(
         &skill_names,
         &connected_mcp_servers,
         &config,
+        &sandbox_policy,
     );
 
     Ok(BootArtifacts {
@@ -224,6 +225,18 @@ async fn bootstrap_from_parts(
 
 fn context_tokens(config: &AgentCoreConfig) -> usize {
     config.runtime.context_tokens.unwrap_or(128_000)
+}
+
+fn build_sandbox_policy(
+    config: &AgentCoreConfig,
+    tool_context: &ToolExecutionContext,
+) -> SandboxPolicy {
+    // The host config only controls whether missing enforcement backends are a
+    // hard error or a best-effort fallback. Filesystem and network posture
+    // still derive from the tool context so runtime path policy and local
+    // process policy do not drift apart.
+    SandboxPolicy::recommended_for_context(tool_context)
+        .with_fail_if_unavailable(config.runtime.sandbox_fail_if_unavailable)
 }
 
 fn build_runtime_preamble(
@@ -336,6 +349,7 @@ fn build_startup_summary(
     skill_names: &[String],
     mcp_servers: &[ConnectedMcpServer],
     config: &AgentCoreConfig,
+    sandbox_policy: &SandboxPolicy,
 ) -> TuiStartupSummary {
     let local_tools = tool_specs
         .iter()
@@ -355,6 +369,7 @@ fn build_startup_summary(
         format!("skills: {}", skill_names.len()),
         format!("mcp servers: {}", mcp_servers.len()),
         format!("command prefix: {}", config.tui.command_prefix),
+        format!("sandbox: {}", sandbox_summary(sandbox_policy)),
         format!(
             "compaction: {}",
             if config.runtime.auto_compact {
@@ -400,6 +415,27 @@ fn build_startup_summary(
         sidebar,
         status: "Ready. /status restores the startup overview.".to_string(),
     }
+}
+
+fn sandbox_summary(policy: &SandboxPolicy) -> String {
+    let mode = match policy.mode {
+        tools::SandboxMode::ReadOnly => "read-only",
+        tools::SandboxMode::WorkspaceWrite => "workspace-write",
+        tools::SandboxMode::DangerFullAccess => "danger-full-access",
+    };
+    let network = match &policy.network {
+        tools::NetworkPolicy::Off => "network off".to_string(),
+        tools::NetworkPolicy::AllowDomains(domains) => {
+            format!("network allowlist({})", domains.join(","))
+        }
+        tools::NetworkPolicy::Full => "network full".to_string(),
+    };
+    let availability = if policy.fail_if_unavailable {
+        "require backend"
+    } else {
+        "best effort"
+    };
+    format!("{mode}, {network}, {availability}")
 }
 
 fn preview_list(items: &[String], max_items: usize) -> String {
@@ -473,12 +509,14 @@ fn resolve_path(base_dir: &Path, value: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::{
-        DEFAULT_AGENT_PREAMBLE, bootstrap_from_dir, build_runtime_preamble, resolved_skill_roots,
+        DEFAULT_AGENT_PREAMBLE, bootstrap_from_dir, build_runtime_preamble, build_sandbox_policy,
+        resolved_skill_roots, sandbox_summary,
     };
     use crate::config::{AgentCoreConfig, ProviderKind};
     use agent::skills::load_skill_roots;
     use tempfile::tempdir;
     use tokio::fs;
+    use tools::{NetworkPolicy, SandboxMode, ToolExecutionContext};
     use types::ToolOrigin;
 
     #[tokio::test]
@@ -556,6 +594,13 @@ Use this skill when asked.
                 .sidebar
                 .iter()
                 .any(|line| line.contains("command prefix: :"))
+        );
+        assert!(
+            artifacts
+                .startup_summary
+                .sidebar
+                .iter()
+                .any(|line| line.contains("sandbox: workspace-write, network off, best effort"))
         );
         #[cfg(feature = "web-tools")]
         assert!(
@@ -682,6 +727,30 @@ Use this skill when asked.
         assert_eq!(
             backend.request_options().additional_params,
             Some(serde_json::json!({"metadata":{"tier":"priority"}}))
+        );
+    }
+
+    #[test]
+    fn runtime_sandbox_config_can_require_enforcing_backend() {
+        let workspace = tempdir().unwrap();
+        let config = AgentCoreConfig::default().with_override(|config| {
+            config.runtime.sandbox_fail_if_unavailable = true;
+        });
+        let tool_context = ToolExecutionContext {
+            workspace_root: workspace.path().to_path_buf(),
+            worktree_root: Some(workspace.path().to_path_buf()),
+            workspace_only: true,
+            ..Default::default()
+        };
+
+        let policy = build_sandbox_policy(&config, &tool_context);
+
+        assert_eq!(policy.mode, SandboxMode::WorkspaceWrite);
+        assert_eq!(policy.network, NetworkPolicy::Off);
+        assert!(policy.fail_if_unavailable);
+        assert_eq!(
+            sandbox_summary(&policy),
+            "workspace-write, network off, require backend"
         );
     }
 }
