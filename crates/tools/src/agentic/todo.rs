@@ -62,6 +62,14 @@ pub struct TodoReadInput {
     pub include_completed: bool,
 }
 
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+struct TodoReadToolOutput {
+    count: usize,
+    include_completed: bool,
+    revision: String,
+    items: Vec<TodoItem>,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum TodoWriteCommand {
@@ -76,6 +84,23 @@ pub struct TodoWriteInput {
     pub command: Option<TodoWriteCommand>,
     #[serde(default)]
     pub expected_revision: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum TodoWriteToolOutput {
+    Success {
+        command: TodoWriteCommand,
+        count: usize,
+        revision_before: String,
+        revision_after: String,
+        items: Vec<TodoItem>,
+    },
+    Error {
+        command: TodoWriteCommand,
+        expected_revision: String,
+        revision_before: String,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -99,7 +124,10 @@ impl Tool for TodoReadTool {
             input_schema: serde_json::to_value(schema_for!(TodoReadInput))
                 .expect("todo_read schema"),
             output_mode: ToolOutputMode::Text,
-            output_schema: None,
+            output_schema: Some(
+                serde_json::to_value(schema_for!(TodoReadToolOutput))
+                    .expect("todo_read output schema"),
+            ),
             origin: ToolOrigin::Local,
             annotations: mcp_tool_annotations("Read Todos", true, false, true, false),
         }
@@ -130,12 +158,20 @@ impl Tool for TodoReadTool {
             input.include_completed,
             render_todos(&items)
         );
+        let structured_output = TodoReadToolOutput {
+            count: items.len(),
+            include_completed: input.include_completed,
+            revision: revision.clone(),
+            items: items.clone(),
+        };
         Ok(ToolResult {
             id: call_id,
             call_id: external_call_id,
             tool_name: "todo_read".to_string(),
             parts: vec![MessagePart::text(text)],
-            structured_content: None,
+            structured_content: Some(
+                serde_json::to_value(structured_output).expect("todo_read structured output"),
+            ),
             metadata: Some(serde_json::json!({
                 "count": items.len(),
                 "include_completed": input.include_completed,
@@ -169,7 +205,10 @@ impl Tool for TodoWriteTool {
             input_schema: serde_json::to_value(schema_for!(TodoWriteInput))
                 .expect("todo_write schema"),
             output_mode: ToolOutputMode::Text,
-            output_schema: None,
+            output_schema: Some(
+                serde_json::to_value(schema_for!(TodoWriteToolOutput))
+                    .expect("todo_write output schema"),
+            ),
             origin: ToolOrigin::Local,
             annotations: mcp_tool_annotations("Write Todos", false, true, true, false),
         }
@@ -183,11 +222,17 @@ impl Tool for TodoWriteTool {
     ) -> Result<ToolResult> {
         let external_call_id = types::CallId::from(&call_id);
         let input: TodoWriteInput = serde_json::from_value(arguments)?;
+        let command = input.command.clone().unwrap_or(TodoWriteCommand::Replace);
         let before = self.state.snapshot().await;
         let revision_before = revision_for(&before);
         if let Some(expected_revision) = input.expected_revision.as_deref()
             && expected_revision != revision_before
         {
+            let structured_output = TodoWriteToolOutput::Error {
+                command: command.clone(),
+                expected_revision: expected_revision.to_string(),
+                revision_before: revision_before.clone(),
+            };
             return Ok(ToolResult {
                 id: call_id,
                 call_id: external_call_id.clone(),
@@ -195,8 +240,12 @@ impl Tool for TodoWriteTool {
                 parts: vec![MessagePart::text(format!(
                     "Todo revision mismatch. Expected {expected_revision}, found {revision_before}. Re-read todos before writing."
                 ))],
-                structured_content: None,
+                structured_content: Some(
+                    serde_json::to_value(structured_output)
+                        .expect("todo_write error structured output"),
+                ),
                 metadata: Some(serde_json::json!({
+                    "command": command,
                     "expected_revision": expected_revision,
                     "revision_before": revision_before,
                 })),
@@ -204,7 +253,6 @@ impl Tool for TodoWriteTool {
             });
         }
 
-        let command = input.command.unwrap_or(TodoWriteCommand::Replace);
         let updated = match command {
             TodoWriteCommand::Replace => {
                 self.state.replace(input.items.clone()).await;
@@ -221,12 +269,21 @@ impl Tool for TodoWriteTool {
             revision_after,
             render_todos(&updated)
         );
+        let structured_output = TodoWriteToolOutput::Success {
+            command: command.clone(),
+            count: updated.len(),
+            revision_before: revision_before.clone(),
+            revision_after: revision_after.clone(),
+            items: updated.clone(),
+        };
         Ok(ToolResult {
             id: call_id,
             call_id: external_call_id,
             tool_name: "todo_write".to_string(),
             parts: vec![MessagePart::text(summary)],
-            structured_content: None,
+            structured_content: Some(
+                serde_json::to_value(structured_output).expect("todo_write structured output"),
+            ),
             metadata: Some(serde_json::json!({
                 "command": command,
                 "count": updated.len(),
@@ -317,13 +374,16 @@ mod tests {
         assert!(text.contains("runtime queue"));
         assert!(!text.contains("Inspect repository"));
         assert!(text.contains("revision="));
+        let structured = result.structured_content.unwrap();
+        assert_eq!(structured["count"], 1);
+        assert_eq!(structured["items"][0]["id"], "t2");
     }
 
     #[tokio::test]
     async fn todo_write_can_merge_by_id() {
         let state = TodoListState::new(sample_items());
         let writer = TodoWriteTool::new(state.clone());
-        writer
+        let result = writer
             .execute(
                 ToolCallId::new(),
                 serde_json::to_value(TodoWriteInput {
@@ -340,6 +400,10 @@ mod tests {
             )
             .await
             .unwrap();
+        let structured = result.structured_content.unwrap();
+        assert_eq!(structured["kind"], "success");
+        assert_eq!(structured["command"], "merge");
+        assert_eq!(structured["items"].as_array().unwrap().len(), 2);
         let snapshot = state.snapshot().await;
         assert_eq!(snapshot.len(), 2);
         assert_eq!(snapshot[1].status, TodoStatus::Completed);

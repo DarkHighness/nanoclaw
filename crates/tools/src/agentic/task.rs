@@ -64,11 +64,24 @@ struct StructuredTaskArtifact {
     label: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, JsonSchema)]
 struct TaskArtifact {
     kind: String,
     uri: String,
     label: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+struct TaskToolOutput {
+    run_id: String,
+    session_id: String,
+    agent_name: String,
+    allowed_tools: Vec<String>,
+    status: String,
+    summary: String,
+    artifacts: Vec<TaskArtifact>,
+    text: String,
+    used_structured_payload: bool,
 }
 
 #[async_trait]
@@ -114,7 +127,10 @@ impl Tool for TaskTool {
                 .to_string(),
             input_schema: serde_json::to_value(schema_for!(TaskToolInput)).expect("task schema"),
             output_mode: ToolOutputMode::Text,
-            output_schema: None,
+            output_schema: Some(
+                serde_json::to_value(schema_for!(TaskToolOutput))
+                    .expect("task output schema"),
+            ),
             origin: ToolOrigin::Local,
             annotations: mcp_tool_annotations("Run Subagent Task", false, false, false, false),
         }
@@ -169,12 +185,25 @@ impl Tool for TaskTool {
                 normalized.text.clone()
             }
         );
+        let structured_output = TaskToolOutput {
+            run_id: output.run_id.as_str().to_string(),
+            session_id: output.session_id.as_str().to_string(),
+            agent_name: output.agent_name.clone(),
+            allowed_tools: output.allowed_tools.clone(),
+            status: status.clone(),
+            summary: summary_line.clone(),
+            artifacts: normalized.artifacts.clone(),
+            text: normalized.text.clone(),
+            used_structured_payload: normalized.used_structured_payload,
+        };
         Ok(ToolResult {
             id: call_id,
             call_id: external_call_id,
             tool_name: "task".to_string(),
             parts: vec![MessagePart::text(rendered_text)],
-            structured_content: None,
+            structured_content: Some(
+                serde_json::to_value(structured_output).expect("task structured output"),
+            ),
             metadata: Some(serde_json::json!({
                 "run_id": output.run_id,
                 "session_id": output.session_id,
@@ -355,8 +384,8 @@ mod tests {
         async fn run(&self, request: SubagentRequest) -> Result<SubagentResult> {
             self.requests.lock().unwrap().push(request);
             Ok(SubagentResult {
-                run_id: "run-child-1".to_string(),
-                session_id: "session-child-1".to_string(),
+                run_id: "run-child-1".into(),
+                session_id: "session-child-1".into(),
                 agent_name: "explorer".to_string(),
                 assistant_text: "subagent completed".to_string(),
                 allowed_tools: vec!["read".to_string(), "glob".to_string()],
@@ -385,6 +414,9 @@ mod tests {
 
         assert!(result.text_content().contains("subagent completed"));
         assert!(result.text_content().contains("run-child-1"));
+        let structured = result.structured_content.unwrap();
+        assert_eq!(structured["run_id"], "run-child-1");
+        assert_eq!(structured["status"], "completed");
         let requests = executor.requests.lock().unwrap();
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].prompt, "inspect repository");
@@ -404,8 +436,8 @@ mod tests {
     impl SubagentExecutor for StructuredResponseExecutor {
         async fn run(&self, _request: SubagentRequest) -> Result<SubagentResult> {
             Ok(SubagentResult {
-                run_id: "run-child-2".to_string(),
-                session_id: "session-child-2".to_string(),
+                run_id: "run-child-2".into(),
+                session_id: "session-child-2".into(),
                 agent_name: "worker".to_string(),
                 assistant_text: self.response_text.clone(),
                 allowed_tools: vec!["read".to_string()],
@@ -440,6 +472,14 @@ mod tests {
             .await
             .unwrap();
 
+        let structured = result.structured_content.clone().unwrap();
+        assert_eq!(structured["status"], "completed");
+        assert_eq!(structured["summary"], "patched files");
+        assert_eq!(
+            structured["artifacts"][0]["uri"],
+            "https://example.com/spec"
+        );
+        assert_eq!(structured["used_structured_payload"], true);
         let metadata = result.metadata.unwrap();
         assert_eq!(metadata["status"], "completed");
         assert_eq!(metadata["summary"], "patched files");
@@ -469,6 +509,9 @@ mod tests {
             .await
             .unwrap();
 
+        let structured = result.structured_content.clone().unwrap();
+        assert_eq!(structured["used_structured_payload"], false);
+        assert_eq!(structured["artifacts"].as_array().unwrap().len(), 2);
         let metadata = result.metadata.unwrap();
         assert_eq!(metadata["used_structured_payload"], false);
         assert_eq!(metadata["artifacts"].as_array().unwrap().len(), 2);
