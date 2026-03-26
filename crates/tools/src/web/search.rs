@@ -18,6 +18,8 @@ use std::collections::BTreeSet;
 use std::fmt::Write as _;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
+use time::OffsetDateTime;
+use time::format_description::well_known::{Rfc2822, Rfc3339};
 use types::{MessagePart, ToolCallId, ToolOrigin, ToolOutputMode, ToolResult, ToolSpec};
 
 const DEFAULT_SEARCH_ENDPOINT: &str = "https://www.bing.com/search";
@@ -96,6 +98,22 @@ struct WebSearchPolicyOutput {
 }
 
 #[derive(Clone, Debug, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+enum WebSearchFreshnessMode {
+    NotRequested,
+    BestEffort,
+}
+
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+struct WebSearchFreshnessOutput {
+    requested: WebSearchFreshness,
+    mode: WebSearchFreshnessMode,
+    cutoff_unix_s: Option<i64>,
+    dropped_results: usize,
+    kept_without_timestamp: usize,
+}
+
+#[derive(Clone, Debug, Serialize, JsonSchema)]
 struct WebSearchToolOutput {
     query: String,
     request_query: String,
@@ -120,6 +138,7 @@ struct WebSearchToolOutput {
     citation_ids: Vec<String>,
     retrieved_at_unix_s: u64,
     policy: WebSearchPolicyOutput,
+    freshness_filter: WebSearchFreshnessOutput,
     results: Vec<SearchResultRecord>,
     sources: Vec<SearchSourceRecord>,
 }
@@ -427,6 +446,8 @@ impl Tool for WebSearchTool {
             .filter(|item| matches_policy(item, &self.policy))
             .filter(|item| matches_domains(item, &domains))
             .collect::<Vec<_>>();
+        let (filtered_results, freshness_filter) =
+            apply_freshness_filter(filtered_results, &request.freshness);
         let filtered_total = filtered_results.len();
         let offset = offset.min(filtered_total);
         let paged_results = filtered_results
@@ -487,6 +508,7 @@ impl Tool for WebSearchTool {
             citation_ids: citation_ids.clone(),
             retrieved_at_unix_s,
             policy: policy_output,
+            freshness_filter: freshness_filter.clone(),
             results: result_records.clone(),
             sources: sources.clone(),
         };
@@ -508,6 +530,21 @@ impl Tool for WebSearchTool {
         sections.push(format!("results> {}", result_records.len()));
         sections.push(format!("total_matches> {filtered_total}"));
         sections.push(format!("citations> {}", citation_ids.len()));
+        sections.push(format!(
+            "freshness_mode> {}",
+            format_freshness_mode(&freshness_filter.mode)
+        ));
+        if let Some(cutoff_unix_s) = freshness_filter.cutoff_unix_s {
+            sections.push(format!("freshness_cutoff_unix_s> {cutoff_unix_s}"));
+        }
+        sections.push(format!(
+            "freshness_dropped> {}",
+            freshness_filter.dropped_results
+        ));
+        sections.push(format!(
+            "freshness_unknown> {}",
+            freshness_filter.kept_without_timestamp
+        ));
         if result_records.is_empty() {
             sections.push(String::new());
             sections.push("No search results matched the current filters.".to_string());
@@ -555,6 +592,13 @@ impl Tool for WebSearchTool {
                     "allow_private_hosts": self.policy.allow_private_hosts,
                     "allowed_domains": self.policy.allowed_domains.iter().cloned().collect::<Vec<_>>(),
                     "blocked_domains": self.policy.blocked_domains.iter().cloned().collect::<Vec<_>>(),
+                },
+                "freshness_filter": {
+                    "requested": freshness_filter.requested,
+                    "mode": freshness_filter.mode,
+                    "cutoff_unix_s": freshness_filter.cutoff_unix_s,
+                    "dropped_results": freshness_filter.dropped_results,
+                    "kept_without_timestamp": freshness_filter.kept_without_timestamp,
                 },
                 "results": result_records.iter().map(|item| serde_json::json!({
                     "id": item.id,
@@ -838,6 +882,13 @@ fn format_source_mode(source_mode: &WebSearchSourceMode) -> &'static str {
     }
 }
 
+fn format_freshness_mode(mode: &WebSearchFreshnessMode) -> &'static str {
+    match mode {
+        WebSearchFreshnessMode::NotRequested => "not_requested",
+        WebSearchFreshnessMode::BestEffort => "best_effort",
+    }
+}
+
 fn normalize_domains(domains: Option<Vec<String>>) -> Vec<String> {
     let mut normalized = domains
         .unwrap_or_default()
@@ -848,6 +899,86 @@ fn normalize_domains(domains: Option<Vec<String>>) -> Vec<String> {
     normalized.sort();
     normalized.dedup();
     normalized
+}
+
+fn apply_freshness_filter(
+    results: Vec<SearchResultItem>,
+    requested: &WebSearchFreshness,
+) -> (Vec<SearchResultItem>, WebSearchFreshnessOutput) {
+    if matches!(requested, WebSearchFreshness::AnyTime) {
+        return (
+            results,
+            WebSearchFreshnessOutput {
+                requested: requested.clone(),
+                mode: WebSearchFreshnessMode::NotRequested,
+                cutoff_unix_s: None,
+                dropped_results: 0,
+                kept_without_timestamp: 0,
+            },
+        );
+    }
+
+    let now = OffsetDateTime::now_utc();
+    let Some(cutoff) = freshness_cutoff(now, requested) else {
+        return (
+            results,
+            WebSearchFreshnessOutput {
+                requested: requested.clone(),
+                mode: WebSearchFreshnessMode::BestEffort,
+                cutoff_unix_s: None,
+                dropped_results: 0,
+                kept_without_timestamp: 0,
+            },
+        );
+    };
+
+    let mut dropped_results = 0usize;
+    let mut kept_without_timestamp = 0usize;
+    let filtered = results
+        .into_iter()
+        .filter(
+            |item| match item.published_at.as_deref().and_then(parse_published_at) {
+                Some(timestamp) => {
+                    let keep = timestamp >= cutoff;
+                    if !keep {
+                        dropped_results += 1;
+                    }
+                    keep
+                }
+                None => {
+                    kept_without_timestamp += 1;
+                    true
+                }
+            },
+        )
+        .collect::<Vec<_>>();
+
+    (
+        filtered,
+        WebSearchFreshnessOutput {
+            requested: requested.clone(),
+            mode: WebSearchFreshnessMode::BestEffort,
+            cutoff_unix_s: Some(cutoff.unix_timestamp()),
+            dropped_results,
+            kept_without_timestamp,
+        },
+    )
+}
+
+fn freshness_cutoff(now: OffsetDateTime, requested: &WebSearchFreshness) -> Option<OffsetDateTime> {
+    match requested {
+        WebSearchFreshness::AnyTime => None,
+        WebSearchFreshness::PastDay => Some(now - time::Duration::days(1)),
+        WebSearchFreshness::PastWeek => Some(now - time::Duration::weeks(1)),
+        WebSearchFreshness::PastMonth => Some(now - time::Duration::days(30)),
+        WebSearchFreshness::PastYear => Some(now - time::Duration::days(365)),
+    }
+}
+
+fn parse_published_at(value: &str) -> Option<OffsetDateTime> {
+    OffsetDateTime::parse(value, &Rfc2822)
+        .ok()
+        .or_else(|| OffsetDateTime::parse(value, &Rfc3339).ok())
 }
 
 fn augment_query_with_domains(query: &str, domains: &[String]) -> String {
@@ -1113,6 +1244,7 @@ mod tests {
         assert_eq!(structured["backend_capabilities"]["locale"], true);
         assert_eq!(structured["backend_capabilities"]["freshness"], false);
         assert_eq!(structured["backend_capabilities"]["source_mode"], false);
+        assert_eq!(structured["freshness_filter"]["mode"], "not_requested");
         assert_eq!(
             structured["citation_ids"][0],
             structured["results"][0]["citation_id"]
@@ -1188,6 +1320,76 @@ mod tests {
         let query = requests[0].url.query().unwrap_or_default();
         assert!(query.contains("cc=fr"));
         assert!(query.contains("setlang=fr-FR"));
+    }
+
+    #[tokio::test]
+    async fn web_search_applies_best_effort_freshness_filter() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/search"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "application/rss+xml")
+                    .set_body_string(
+                        r#"
+                    <rss><channel>
+                        <item>
+                            <title>Recent</title>
+                            <link>https://example.com/recent</link>
+                            <pubDate>Tue, 25 Mar 2026 09:00:00 GMT</pubDate>
+                        </item>
+                        <item>
+                            <title>Old</title>
+                            <link>https://example.com/old</link>
+                            <pubDate>Tue, 25 Feb 2026 09:00:00 GMT</pubDate>
+                        </item>
+                        <item>
+                            <title>Undated</title>
+                            <link>https://example.com/undated</link>
+                        </item>
+                    </channel></rss>
+                "#,
+                    ),
+            )
+            .mount(&server)
+            .await;
+
+        let tool = WebSearchTool::with_settings(
+            WebToolPolicy {
+                allow_private_hosts: true,
+                allowed_domains: BTreeSet::new(),
+                blocked_domains: BTreeSet::new(),
+            },
+            5_000,
+            Some(format!("{}/search", server.uri())),
+        )
+        .unwrap();
+        let result = tool
+            .execute(
+                ToolCallId::new(),
+                serde_json::to_value(WebSearchToolInput {
+                    query: "example".to_string(),
+                    limit: Some(5),
+                    offset: None,
+                    domains: None,
+                    locale: None,
+                    freshness: Some(WebSearchFreshness::PastWeek),
+                    source_mode: None,
+                })
+                .unwrap(),
+                &ToolExecutionContext::default(),
+            )
+            .await
+            .unwrap();
+
+        let text = result.text_content();
+        assert!(text.contains("Recent"));
+        assert!(text.contains("Undated"));
+        assert!(!text.contains("Old"));
+        let structured = result.structured_content.unwrap();
+        assert_eq!(structured["freshness_filter"]["mode"], "best_effort");
+        assert_eq!(structured["freshness_filter"]["dropped_results"], 1);
+        assert_eq!(structured["freshness_filter"]["kept_without_timestamp"], 1);
     }
 
     #[tokio::test]
