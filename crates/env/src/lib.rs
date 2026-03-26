@@ -143,7 +143,7 @@ pub mod vars {
     );
     pub const AGENT_CORE_WEB_SEARCH_BACKEND: EnvVar = EnvVar::new(
         "AGENT_CORE_WEB_SEARCH_BACKEND",
-        "Search backend selection for the local web_search tool (`bing_rss`, `brave_api`, `exa_api`, or `duckduckgo_html`).",
+        "Search backend selection for the local web_search tool (`auto`, `bing_rss`, `brave_api`, `exa_api`, or `duckduckgo_html`). Defaults to `auto` when unset.",
     );
     pub const AGENT_CORE_WEB_SEARCH_API_ENDPOINT: EnvVar = EnvVar::new(
         "AGENT_CORE_WEB_SEARCH_API_ENDPOINT",

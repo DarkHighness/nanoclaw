@@ -5,7 +5,6 @@ use crate::web::common::{
     default_http_client, summarize_remote_body, truncate_text,
 };
 use crate::{Result, ToolExecutionContext};
-use agent_env::vars;
 use async_trait::async_trait;
 use reqwest::{Client, Url};
 use schemars::{JsonSchema, schema_for};
@@ -28,6 +27,7 @@ use engines::bing::parse_feed_results;
 use engines::brave::BraveApiSearchBackend;
 use engines::duckduckgo::DuckDuckGoHtmlSearchBackend;
 use engines::exa::ExaApiSearchBackend;
+use engines::{WebSearchBackendKind, WebSearchBackendRegistry};
 
 const DEFAULT_SEARCH_ENDPOINT: &str = "https://www.bing.com/search";
 const DEFAULT_BRAVE_API_BASE_URL: &str = "https://api.search.brave.com";
@@ -42,6 +42,8 @@ const EXA_MAX_RESULTS: usize = 100;
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 pub struct WebSearchToolInput {
     pub query: String,
+    #[serde(default)]
+    pub backend: Option<String>,
     pub limit: Option<usize>,
     #[serde(default)]
     pub offset: Option<usize>,
@@ -145,7 +147,9 @@ struct WebSearchToolOutput {
     locale: String,
     freshness: WebSearchFreshness,
     source_mode: WebSearchSourceMode,
+    requested_backend: String,
     backend: String,
+    available_backends: Vec<String>,
     retrieval_mode: String,
     backend_capabilities: WebSearchBackendCapabilities,
     engine: String,
@@ -210,14 +214,6 @@ struct SearchBackendResponse {
     more_results_available: Option<bool>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum WebSearchBackendKind {
-    BingRss,
-    BraveApi,
-    ExaApi,
-    DuckDuckGoHtml,
-}
-
 #[async_trait]
 trait WebSearchBackend: Send + Sync {
     fn backend_name(&self) -> &'static str;
@@ -238,7 +234,7 @@ trait WebSearchBackend: Send + Sync {
 pub struct WebSearchTool {
     client: Client,
     policy: WebToolPolicy,
-    backend: Arc<dyn WebSearchBackend>,
+    backend_registry: WebSearchBackendRegistry,
 }
 
 impl Default for WebSearchTool {
@@ -255,61 +251,29 @@ impl WebSearchTool {
     }
 
     pub(crate) fn with_env_settings(policy: WebToolPolicy, timeout_ms: u64) -> Result<Self> {
-        match parse_backend_kind(agent_env::get_non_empty(
-            vars::AGENT_CORE_WEB_SEARCH_BACKEND,
-        ))? {
-            WebSearchBackendKind::BingRss => Self::with_settings(
-                policy,
-                timeout_ms,
-                agent_env::get_non_empty(vars::AGENT_CORE_WEB_SEARCH_ENDPOINT),
-            ),
-            WebSearchBackendKind::BraveApi => Self::with_brave_backend(
-                policy,
-                timeout_ms,
-                agent_env::get_non_empty(vars::AGENT_CORE_WEB_SEARCH_BRAVE_API_ENDPOINT)
-                    .or_else(|| agent_env::get_non_empty(vars::AGENT_CORE_WEB_SEARCH_API_ENDPOINT)),
-                agent_env::get_non_empty(vars::AGENT_CORE_WEB_SEARCH_BRAVE_API_KEY)
-                    .or_else(|| agent_env::get_non_empty(vars::AGENT_CORE_WEB_SEARCH_API_KEY))
-                    .ok_or_else(|| {
-                        crate::ToolError::invalid(
-                            "AGENT_CORE_WEB_SEARCH_BRAVE_API_KEY is required for the brave_api backend",
-                        )
-                    })?,
-            ),
-            WebSearchBackendKind::ExaApi => Self::with_exa_backend(
-                policy,
-                timeout_ms,
-                agent_env::get_non_empty(vars::AGENT_CORE_WEB_SEARCH_EXA_API_ENDPOINT),
-                agent_env::get_non_empty(vars::AGENT_CORE_WEB_SEARCH_EXA_API_KEY)
-                    .ok_or_else(|| {
-                        crate::ToolError::invalid(
-                            "AGENT_CORE_WEB_SEARCH_EXA_API_KEY is required for the exa_api backend",
-                        )
-                    })?,
-            ),
-            WebSearchBackendKind::DuckDuckGoHtml => Self::with_duckduckgo_backend(
-                policy,
-                timeout_ms,
-                agent_env::get_non_empty(vars::AGENT_CORE_WEB_SEARCH_DUCKDUCKGO_ENDPOINT),
-            ),
-        }
+        Self::with_backend_registry(policy, timeout_ms, WebSearchBackendRegistry::from_env()?)
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn with_settings(
         policy: WebToolPolicy,
         timeout_ms: u64,
         endpoint: Option<String>,
     ) -> Result<Self> {
         let endpoint = endpoint.unwrap_or_else(|| DEFAULT_SEARCH_ENDPOINT.to_string());
-        Self::with_backend(
+        Self::with_backend_registry(
             policy,
             timeout_ms,
-            Arc::new(BingRssSearchBackend::new(Url::parse(&endpoint).map_err(
-                |error| crate::ToolError::invalid(format!("invalid search endpoint: {error}")),
-            )?)),
+            WebSearchBackendRegistry::single(
+                WebSearchBackendKind::BingRss,
+                Arc::new(BingRssSearchBackend::new(Url::parse(&endpoint).map_err(
+                    |error| crate::ToolError::invalid(format!("invalid search endpoint: {error}")),
+                )?)),
+            ),
         )
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn with_brave_backend(
         policy: WebToolPolicy,
         timeout_ms: u64,
@@ -317,18 +281,22 @@ impl WebSearchTool {
         api_key: String,
     ) -> Result<Self> {
         let endpoint = endpoint.unwrap_or_else(|| DEFAULT_BRAVE_API_BASE_URL.to_string());
-        Self::with_backend(
+        Self::with_backend_registry(
             policy,
             timeout_ms,
-            Arc::new(BraveApiSearchBackend::new(
-                Url::parse(&endpoint).map_err(|error| {
-                    crate::ToolError::invalid(format!("invalid Brave API endpoint: {error}"))
-                })?,
-                api_key,
-            )),
+            WebSearchBackendRegistry::single(
+                WebSearchBackendKind::BraveApi,
+                Arc::new(BraveApiSearchBackend::new(
+                    Url::parse(&endpoint).map_err(|error| {
+                        crate::ToolError::invalid(format!("invalid Brave API endpoint: {error}"))
+                    })?,
+                    api_key,
+                )),
+            ),
         )
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn with_exa_backend(
         policy: WebToolPolicy,
         timeout_ms: u64,
@@ -336,39 +304,48 @@ impl WebSearchTool {
         api_key: String,
     ) -> Result<Self> {
         let endpoint = endpoint.unwrap_or_else(|| DEFAULT_EXA_API_BASE_URL.to_string());
-        Self::with_backend(
+        Self::with_backend_registry(
             policy,
             timeout_ms,
-            Arc::new(ExaApiSearchBackend::new(
-                Url::parse(&endpoint).map_err(|error| {
-                    crate::ToolError::invalid(format!("invalid Exa API endpoint: {error}"))
-                })?,
-                api_key,
-            )),
+            WebSearchBackendRegistry::single(
+                WebSearchBackendKind::ExaApi,
+                Arc::new(ExaApiSearchBackend::new(
+                    Url::parse(&endpoint).map_err(|error| {
+                        crate::ToolError::invalid(format!("invalid Exa API endpoint: {error}"))
+                    })?,
+                    api_key,
+                )),
+            ),
         )
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn with_duckduckgo_backend(
         policy: WebToolPolicy,
         timeout_ms: u64,
         endpoint: Option<String>,
     ) -> Result<Self> {
         let endpoint = endpoint.unwrap_or_else(|| DEFAULT_DUCKDUCKGO_HTML_ENDPOINT.to_string());
-        Self::with_backend(
+        Self::with_backend_registry(
             policy,
             timeout_ms,
-            Arc::new(DuckDuckGoHtmlSearchBackend::new(
-                Url::parse(&endpoint).map_err(|error| {
-                    crate::ToolError::invalid(format!("invalid DuckDuckGo HTML endpoint: {error}"))
-                })?,
-            )),
+            WebSearchBackendRegistry::single(
+                WebSearchBackendKind::DuckDuckGoHtml,
+                Arc::new(DuckDuckGoHtmlSearchBackend::new(
+                    Url::parse(&endpoint).map_err(|error| {
+                        crate::ToolError::invalid(format!(
+                            "invalid DuckDuckGo HTML endpoint: {error}"
+                        ))
+                    })?,
+                )),
+            ),
         )
     }
 
-    fn with_backend(
+    fn with_backend_registry(
         policy: WebToolPolicy,
         timeout_ms: u64,
-        backend: Arc<dyn WebSearchBackend>,
+        backend_registry: WebSearchBackendRegistry,
     ) -> Result<Self> {
         Ok(Self {
             // Search result allowlists apply to returned links, not to the configured
@@ -380,7 +357,7 @@ impl WebSearchTool {
                 RedirectValidationScope::Transport,
             )?,
             policy,
-            backend,
+            backend_registry,
         })
     }
 }
@@ -390,7 +367,7 @@ impl Tool for WebSearchTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "web_search".to_string(),
-            description: "Search the public web and return result titles, URLs, and snippets. Supports per-call domain filtering before follow-up web_fetch calls.".to_string(),
+            description: "Search the public web and return result titles, URLs, and snippets. Supports optional backend selection plus per-call domain filtering before follow-up web_fetch calls.".to_string(),
             input_schema: serde_json::to_value(schema_for!(WebSearchToolInput))
                 .expect("web_search schema"),
             output_mode: ToolOutputMode::Text,
@@ -419,6 +396,18 @@ impl Tool for WebSearchTool {
                 "Query must not be empty",
             ));
         }
+        let available_backends = self.backend_registry.available_backend_names();
+        let (requested_backend, backend) =
+            match self.backend_registry.resolve(input.backend.as_deref()) {
+                Ok((requested_backend, backend)) => (requested_backend, backend),
+                Err(error) => {
+                    return Ok(ToolResult::error(
+                        call_id,
+                        "web_search",
+                        format!("Failed to resolve a web search backend for `{query}`: {error}"),
+                    ));
+                }
+            };
 
         let domains = normalize_domains(input.domains);
         let request = WebSearchRequest {
@@ -430,11 +419,7 @@ impl Tool for WebSearchTool {
             offset: input.offset.unwrap_or(0),
         };
 
-        let response = match self
-            .backend
-            .search(&self.client, &self.policy, &request)
-            .await
-        {
+        let response = match backend.search(&self.client, &self.policy, &request).await {
             Ok(response) => response,
             Err(error) => {
                 return Ok(ToolResult::error(
@@ -454,7 +439,7 @@ impl Tool for WebSearchTool {
             results,
             more_results_available,
         } = response;
-        let backend_capabilities = self.backend.capabilities();
+        let backend_capabilities = backend.capabilities();
         let request_url = request_urls
             .first()
             .cloned()
@@ -482,8 +467,10 @@ impl Tool for WebSearchTool {
                     "locale": request.locale.language,
                     "freshness": request.freshness,
                     "source_mode": request.source_mode,
-                    "backend": self.backend.backend_name(),
-                    "retrieval_mode": self.backend.retrieval_mode(),
+                    "requested_backend": requested_backend.name(),
+                    "backend": backend.backend_name(),
+                    "available_backends": available_backends,
+                    "retrieval_mode": backend.retrieval_mode(),
                     "backend_capabilities": backend_capabilities,
                     "status": status,
                     "content_type": content_type,
@@ -553,8 +540,10 @@ impl Tool for WebSearchTool {
             locale: request.locale.language.clone(),
             freshness: request.freshness.clone(),
             source_mode: request.source_mode.clone(),
-            backend: self.backend.backend_name().to_string(),
-            retrieval_mode: self.backend.retrieval_mode().to_string(),
+            requested_backend: requested_backend.name().to_string(),
+            backend: backend.backend_name().to_string(),
+            available_backends: available_backends.clone(),
+            retrieval_mode: backend.retrieval_mode().to_string(),
             backend_capabilities: backend_capabilities.clone(),
             engine: request_url.host_str().unwrap_or("custom").to_string(),
             request_url: request_url.as_str().to_string(),
@@ -591,8 +580,9 @@ impl Tool for WebSearchTool {
 
         let mut sections = vec![
             format!("query> {query}"),
-            format!("backend> {}", self.backend.backend_name()),
-            format!("retrieval_mode> {}", self.backend.retrieval_mode()),
+            format!("requested_backend> {}", requested_backend.name()),
+            format!("backend> {}", backend.backend_name()),
+            format!("retrieval_mode> {}", backend.retrieval_mode()),
             format!("locale> {}", request.locale.language),
             format!("freshness> {}", format_freshness(&request.freshness)),
             format!("source_mode> {}", format_source_mode(&request.source_mode)),
@@ -600,6 +590,10 @@ impl Tool for WebSearchTool {
             format!("limit> {limit}"),
             format!("offset> {offset}"),
         ];
+        sections.push(format!(
+            "available_backends> {}",
+            available_backends.join(", ")
+        ));
         if !domains.is_empty() {
             sections.push(format!("domains> {}", domains.join(", ")));
         }
@@ -648,24 +642,6 @@ impl Tool for WebSearchTool {
 
 fn looks_like_markup_fragment(value: &str) -> bool {
     value.contains('<') && value.contains('>')
-}
-
-fn parse_backend_kind(value: Option<String>) -> Result<WebSearchBackendKind> {
-    match value
-        .as_deref()
-        .map(str::trim)
-        .filter(|candidate| !candidate.is_empty())
-    {
-        None | Some("bing") | Some("bing_rss") => Ok(WebSearchBackendKind::BingRss),
-        Some("brave") | Some("brave_api") => Ok(WebSearchBackendKind::BraveApi),
-        Some("exa") | Some("exa_api") => Ok(WebSearchBackendKind::ExaApi),
-        Some("duckduckgo") | Some("duckduckgo_html") | Some("ddg") => {
-            Ok(WebSearchBackendKind::DuckDuckGoHtml)
-        }
-        Some(other) => Err(crate::ToolError::invalid(format!(
-            "unsupported web search backend `{other}`"
-        ))),
-    }
 }
 
 async fn send_search_request(
@@ -1047,13 +1023,19 @@ fn unix_timestamp_s() -> u64 {
 
 #[cfg(test)]
 mod tests {
+    use super::engines::{
+        WebSearchBackendKind, WebSearchBackendRegistry, WebSearchBackendSelector,
+        parse_backend_selector,
+    };
     use super::{
-        BingRssSearchBackend, SearchLocale, WebSearchFreshness, WebSearchRequest,
-        WebSearchSourceMode, WebSearchTool, WebSearchToolInput, parse_feed_results,
+        BingRssSearchBackend, ExaApiSearchBackend, SearchLocale, WebSearchFreshness,
+        WebSearchRequest, WebSearchSourceMode, WebSearchTool, WebSearchToolInput,
+        parse_feed_results,
     };
     use crate::web::common::WebToolPolicy;
     use crate::{Tool, ToolExecutionContext};
     use std::collections::BTreeSet;
+    use std::sync::Arc;
     use types::ToolCallId;
     use wiremock::matchers::{body_partial_json, header, method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -1166,28 +1148,68 @@ mod tests {
     }
 
     #[test]
-    fn backend_kind_parser_accepts_supported_aliases() {
+    fn backend_selector_parser_accepts_supported_aliases() {
+        assert_eq!(parse_backend_selector(None).unwrap(), None);
         assert_eq!(
-            super::parse_backend_kind(None).unwrap(),
-            super::WebSearchBackendKind::BingRss
+            parse_backend_selector(Some("auto")).unwrap(),
+            Some(WebSearchBackendSelector::Auto)
         );
         assert_eq!(
-            super::parse_backend_kind(Some("bing".to_string())).unwrap(),
-            super::WebSearchBackendKind::BingRss
+            parse_backend_selector(Some("bing")).unwrap(),
+            Some(WebSearchBackendSelector::Kind(
+                WebSearchBackendKind::BingRss
+            ))
         );
         assert_eq!(
-            super::parse_backend_kind(Some("brave".to_string())).unwrap(),
-            super::WebSearchBackendKind::BraveApi
+            parse_backend_selector(Some("brave")).unwrap(),
+            Some(WebSearchBackendSelector::Kind(
+                WebSearchBackendKind::BraveApi
+            ))
         );
         assert_eq!(
-            super::parse_backend_kind(Some("exa".to_string())).unwrap(),
-            super::WebSearchBackendKind::ExaApi
+            parse_backend_selector(Some("exa")).unwrap(),
+            Some(WebSearchBackendSelector::Kind(WebSearchBackendKind::ExaApi))
         );
         assert_eq!(
-            super::parse_backend_kind(Some("ddg".to_string())).unwrap(),
-            super::WebSearchBackendKind::DuckDuckGoHtml
+            parse_backend_selector(Some("ddg")).unwrap(),
+            Some(WebSearchBackendSelector::Kind(
+                WebSearchBackendKind::DuckDuckGoHtml
+            ))
         );
-        assert!(super::parse_backend_kind(Some("google".to_string())).is_err());
+        assert!(parse_backend_selector(Some("google")).is_err());
+    }
+
+    #[test]
+    fn backend_registry_auto_prefers_hosted_backends() {
+        let registry = WebSearchBackendRegistry::from_backends(
+            WebSearchBackendSelector::Auto,
+            vec![
+                (
+                    WebSearchBackendKind::BingRss,
+                    Arc::new(BingRssSearchBackend::new(
+                        reqwest::Url::parse("https://www.bing.com/search").unwrap(),
+                    )) as Arc<dyn super::WebSearchBackend>,
+                ),
+                (
+                    WebSearchBackendKind::BraveApi,
+                    Arc::new(super::BraveApiSearchBackend::new(
+                        reqwest::Url::parse("https://api.search.brave.com").unwrap(),
+                        "token".to_string(),
+                    )) as Arc<dyn super::WebSearchBackend>,
+                ),
+                (
+                    WebSearchBackendKind::ExaApi,
+                    Arc::new(ExaApiSearchBackend::new(
+                        reqwest::Url::parse("https://api.exa.ai").unwrap(),
+                        "token".to_string(),
+                    )) as Arc<dyn super::WebSearchBackend>,
+                ),
+            ],
+        );
+
+        let (selector, backend) = registry.resolve(None).unwrap();
+        assert_eq!(selector, WebSearchBackendSelector::Auto);
+        assert_eq!(backend.backend_name(), "exa_api");
     }
 
     fn brave_results(start: usize, end: usize) -> Vec<serde_json::Value> {
@@ -1270,6 +1292,7 @@ mod tests {
                 ToolCallId::new(),
                 serde_json::to_value(WebSearchToolInput {
                     query: "example".to_string(),
+                    backend: None,
                     limit: Some(5),
                     offset: Some(38),
                     domains: None,
@@ -1289,6 +1312,7 @@ mod tests {
         assert!(text.contains("extra_snippets: follow-up 39 | detail 39"));
 
         let structured = result.structured_content.unwrap();
+        assert_eq!(structured["requested_backend"], "brave_api");
         assert_eq!(structured["backend"], "brave_api");
         assert_eq!(structured["retrieval_mode"], "json_api");
         assert_eq!(structured["backend_capabilities"]["pagination"], true);
@@ -1389,6 +1413,7 @@ mod tests {
                 ToolCallId::new(),
                 serde_json::to_value(WebSearchToolInput {
                     query: "openai".to_string(),
+                    backend: None,
                     limit: Some(2),
                     offset: Some(2),
                     domains: None,
@@ -1406,6 +1431,7 @@ mod tests {
         assert!(text.contains("Three"));
         assert!(text.contains("Four"));
         let structured = result.structured_content.unwrap();
+        assert_eq!(structured["requested_backend"], "exa_api");
         assert_eq!(structured["backend"], "exa_api");
         assert_eq!(structured["results"][0]["rank"], 3);
         assert_eq!(structured["results"][0]["title"], "Three");
@@ -1459,6 +1485,7 @@ mod tests {
                 ToolCallId::new(),
                 serde_json::to_value(WebSearchToolInput {
                     query: "openai".to_string(),
+                    backend: None,
                     limit: Some(2),
                     offset: Some(0),
                     domains: None,
@@ -1476,6 +1503,7 @@ mod tests {
         assert!(text.contains("https://example.com/alpha"));
         assert!(text.contains("raw_url: https://duckduckgo.com/l/?uddg="));
         let structured = result.structured_content.unwrap();
+        assert_eq!(structured["requested_backend"], "duckduckgo_html");
         assert_eq!(structured["backend"], "duckduckgo_html");
         assert_eq!(structured["results"][0]["url"], "https://example.com/alpha");
     }
@@ -1514,6 +1542,7 @@ mod tests {
                 ToolCallId::new(),
                 serde_json::to_value(WebSearchToolInput {
                     query: "openai".to_string(),
+                    backend: None,
                     limit: Some(2),
                     offset: Some(0),
                     domains: None,
@@ -1574,6 +1603,7 @@ mod tests {
                 ToolCallId::new(),
                 serde_json::to_value(WebSearchToolInput {
                     query: "example".to_string(),
+                    backend: None,
                     limit: Some(5),
                     offset: None,
                     domains: Some(vec!["allowed.example.com".to_string()]),
@@ -1591,7 +1621,9 @@ mod tests {
         assert!(text.contains("allowed.example.com/article"));
         assert!(!text.contains("other.example.org/post"));
         let structured = result.structured_content.clone().unwrap();
+        assert_eq!(structured["requested_backend"], "bing_rss");
         assert_eq!(structured["backend"], "bing_rss");
+        assert_eq!(structured["available_backends"][0], "bing_rss");
         assert_eq!(structured["retrieval_mode"], "rss");
         assert_eq!(structured["locale"], "en-US");
         assert_eq!(structured["freshness"], "any_time");
@@ -1648,6 +1680,7 @@ mod tests {
                 ToolCallId::new(),
                 serde_json::to_value(WebSearchToolInput {
                     query: "bonjour".to_string(),
+                    backend: None,
                     limit: Some(5),
                     offset: None,
                     domains: None,
@@ -1665,6 +1698,7 @@ mod tests {
         assert_eq!(structured["locale"], "fr-FR");
         assert_eq!(structured["freshness"], "past_week");
         assert_eq!(structured["source_mode"], "news");
+        assert_eq!(structured["requested_backend"], "bing_rss");
         assert_eq!(structured["backend"], "bing_rss");
         let request_url = structured["request_url"].as_str().unwrap();
         assert!(request_url.contains("cc=fr"));
@@ -1718,6 +1752,7 @@ mod tests {
                 ToolCallId::new(),
                 serde_json::to_value(WebSearchToolInput {
                     query: "example".to_string(),
+                    backend: None,
                     limit: Some(5),
                     offset: None,
                     domains: Some(vec!["allowed.example.com".to_string()]),
@@ -1795,6 +1830,7 @@ mod tests {
                 ToolCallId::new(),
                 serde_json::to_value(WebSearchToolInput {
                     query: "example".to_string(),
+                    backend: None,
                     limit: Some(5),
                     offset: None,
                     domains: None,
@@ -1854,6 +1890,7 @@ mod tests {
                 ToolCallId::new(),
                 serde_json::to_value(WebSearchToolInput {
                     query: "example".to_string(),
+                    backend: None,
                     limit: Some(1),
                     offset: Some(1),
                     domains: None,
@@ -1880,5 +1917,104 @@ mod tests {
                 .unwrap()
                 .starts_with("wsr_")
         );
+    }
+
+    #[tokio::test]
+    async fn web_search_allows_per_call_backend_override() {
+        let bing_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/search"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "application/rss+xml")
+                    .set_body_string(
+                        r#"
+                    <rss><channel>
+                        <item><title>Bing Result</title><link>https://example.com/bing</link></item>
+                    </channel></rss>
+                "#,
+                    ),
+            )
+            .mount(&bing_server)
+            .await;
+
+        let exa_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/search"))
+            .and(header("x-api-key", "exa-token"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "application/json")
+                    .set_body_string(
+                        serde_json::json!({
+                            "results": [
+                                {
+                                    "title": "Exa Result",
+                                    "url": "https://example.com/exa",
+                                    "summary": "summary exa"
+                                }
+                            ]
+                        })
+                        .to_string(),
+                    ),
+            )
+            .mount(&exa_server)
+            .await;
+
+        let tool = WebSearchTool::with_backend_registry(
+            WebToolPolicy {
+                allow_private_hosts: true,
+                allowed_domains: BTreeSet::new(),
+                blocked_domains: BTreeSet::new(),
+            },
+            5_000,
+            WebSearchBackendRegistry::from_backends(
+                WebSearchBackendSelector::Kind(WebSearchBackendKind::BingRss),
+                vec![
+                    (
+                        WebSearchBackendKind::BingRss,
+                        Arc::new(BingRssSearchBackend::new(
+                            reqwest::Url::parse(&format!("{}/search", bing_server.uri())).unwrap(),
+                        )) as Arc<dyn super::WebSearchBackend>,
+                    ),
+                    (
+                        WebSearchBackendKind::ExaApi,
+                        Arc::new(ExaApiSearchBackend::new(
+                            reqwest::Url::parse(&exa_server.uri()).unwrap(),
+                            "exa-token".to_string(),
+                        )) as Arc<dyn super::WebSearchBackend>,
+                    ),
+                ],
+            ),
+        )
+        .unwrap();
+
+        let result = tool
+            .execute(
+                ToolCallId::new(),
+                serde_json::to_value(WebSearchToolInput {
+                    query: "openai".to_string(),
+                    backend: Some("exa".to_string()),
+                    limit: Some(1),
+                    offset: Some(0),
+                    domains: None,
+                    locale: None,
+                    freshness: None,
+                    source_mode: None,
+                })
+                .unwrap(),
+                &ToolExecutionContext::default(),
+            )
+            .await
+            .unwrap();
+
+        assert!(result.text_content().contains("Exa Result"));
+        let structured = result.structured_content.unwrap();
+        assert_eq!(structured["requested_backend"], "exa_api");
+        assert_eq!(structured["backend"], "exa_api");
+        assert_eq!(structured["available_backends"][0], "exa_api");
+        assert_eq!(structured["available_backends"][1], "bing_rss");
+        assert_eq!(bing_server.received_requests().await.unwrap().len(), 0);
+        assert_eq!(exa_server.received_requests().await.unwrap().len(), 1);
     }
 }
