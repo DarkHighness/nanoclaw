@@ -85,6 +85,106 @@ Date: 2026-03-27
 3. 将 host boot 的 runtime/provider/sandbox/tooling 组装路径收敛为一条共享装配链。
 4. 让 `runtime`、`memory`、`provider`、`sandbox` 的状态型子系统都形成“单一 facade + 明确内部模块”的结构。
 
+## 2026-03-27 已落地对齐项
+
+自本计划形成后，仓库已经落下两次实现提交：
+
+- `71e4bc3` `refactor(internals): extract helper submodules`
+- `750beef` `fix(reference-tui): finalize app module extraction`
+
+这两次提交完成的是“无行为变化的内聚拆分”第一批切片，而不是更深层的 crate 重组。它们与本计划的对齐关系如下。
+
+### 已完成的切片
+
+#### 1. `provider/openai` 已对齐到 Wave 5 的第一步
+
+已落地：
+
+- `crates/provider/src/openai/payload.rs`
+- `crates/provider/src/openai/message_codec.rs`
+
+当前状态：
+
+- `openai.rs` 从计划基线中的 `1219 LOC` 收敛到当前 `751 LOC`
+- request payload 组装与 `MessagePart` 编码已从 transport 主文件中抽离
+- tool call / reasoning / message id 的协议解析已从主文件中抽离
+
+已验证：
+
+- `cargo test -p provider` 通过
+
+仍未完成：
+
+- `Responses SSE` 与 `Realtime WebSocket` transport 仍在 `openai.rs`
+- `error.rs` 独立化和 transport 进一步拆分还未开始
+
+#### 2. `reference-tui/app` 已对齐到 Wave 1 的中前段
+
+已落地：
+
+- `apps/reference-tui/src/app/approval.rs`
+- `apps/reference-tui/src/app/presenters.rs`
+
+当前状态：
+
+- `app.rs` 从计划基线中的 `1492 LOC` 收敛到当前 `960 LOC`
+- tool approval 交互与会话级审批缓存已独立为 `approval.rs`
+- sidebar / transcript / run summary / MCP 文本呈现逻辑已独立为 `presenters.rs`
+
+已验证：
+
+- `cargo test -p reference-tui` 通过
+
+仍未完成：
+
+- `apply_command` 的大 `match` 还未按命令域拆成 `commands/*`
+- terminal 生命周期、observer 与 run history 仍在 `app.rs`
+
+#### 3. `core/plugin_boot` 已对齐到 Wave 3 的第一步
+
+已落地：
+
+- `crates/core/src/plugin_boot/drivers.rs`
+- `crates/core/src/plugin_boot/driver_env.rs`
+- `crates/core/src/plugin_boot/background_sync.rs`
+
+当前状态：
+
+- `activate_driver_requests` 已从“单文件内联所有驱动逻辑”收敛为 `dispatch + driver-specific activator`
+- driver env secret materialization 与 memory background sync 已独立出主文件
+- `plugin_boot.rs` 当前收敛到 `188 LOC`
+
+已验证：
+
+- `cargo test -p agent` 通过
+
+仍未完成：
+
+- 仍然是 host-coded driver dispatch，不是 registry-driven compiled driver registry
+- builtin root 解析与 activation plan 还没有进一步拆为更细模块
+
+### 本轮实施后的结构变化
+
+以计划形成时的基线为参照，本轮切片带来的直接变化是：
+
+- `>=1000 LOC` 的 Rust 文件从 `9` 个降到 `7` 个
+- `>=1500 LOC` 的 Rust 文件仍为 `5` 个
+- `>=500 LOC` 的 Rust 文件仍为 `30` 个
+
+这符合本计划“先消减最粗的千行神文件，再处理 500-1000 LOC 中段文件”的执行顺序。
+
+### 当前仍然保持不变的重点
+
+本轮没有触碰、也仍然是后续重点的部分包括：
+
+- `crates/runtime/src/runtime.rs`
+- `crates/tools/src/web/search.rs`
+- `crates/memory/src/memory_embed.rs`
+- `crates/tools/src/process/bash.rs`
+- `apps/reference-tui/src/boot.rs` 与 `apps/code-agent/src/main.rs` 的共享 boot 收敛
+
+因此，本计划后续的主线仍然有效：先继续做内部子模块抽离，再合并宿主 boot 路径，最后处理 `runtime` / `memory` / `sandbox` 的高状态密度核心。
+
 ## 重构原则
 
 - 先拆内部模块，再谈 crate 重组；不要用新的顶层抽象掩盖现有职责混杂。
@@ -115,6 +215,8 @@ Date: 2026-03-27
 目标：先拿低风险、高可见度的 host 层做切口。
 
 #### `apps/reference-tui`
+
+状态：已部分落地（`approval.rs`、`presenters.rs` 已抽出）
 
 建议拆分：
 
@@ -207,6 +309,8 @@ Date: 2026-03-27
 
 #### `crates/core/src/plugin_boot.rs`
 
+状态：已部分落地（`drivers.rs`、`driver_env.rs`、`background_sync.rs` 已抽出）
+
 建议拆分：
 
 - `plugin_roots.rs`
@@ -296,6 +400,8 @@ Date: 2026-03-27
 - 最后才拆 `search()` / `sync()` 主流程。
 
 #### `crates/provider/src/openai.rs`
+
+状态：已部分落地（`payload.rs`、`message_codec.rs` 已抽出）
 
 建议拆分：
 
