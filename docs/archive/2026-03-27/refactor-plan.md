@@ -87,14 +87,17 @@ Date: 2026-03-27
 
 ## 2026-03-27 已落地对齐项
 
-自本计划形成后，仓库已经落下四次实现提交：
+自本计划形成后，仓库已经落下七次实现提交：
 
 - `71e4bc3` `refactor(internals): extract helper submodules`
 - `750beef` `fix(reference-tui): finalize app module extraction`
 - `37ca0cb` `refactor(mcp): move stdio fixture under tests`
 - `9dae2ec` `refactor(code-agent): extract options and provider modules`
+- `4ea26a6` `refactor(reference-tui): extract run history commands`
+- `1303df2` `refactor(reference-tui): split catalog and mcp commands`
+- `b224d99` `refactor(reference-tui): extract live render observer`
 
-这四次提交完成的是“无行为变化的内聚拆分”第一批切片，而不是更深层的 crate 重组。它们与本计划的对齐关系如下。
+这七次提交完成的是“无行为变化的内聚拆分”第一批切片，而不是更深层的 crate 重组。它们与本计划的对齐关系如下。
 
 ### 已完成的切片
 
@@ -120,18 +123,26 @@ Date: 2026-03-27
 - `Responses SSE` 与 `Realtime WebSocket` transport 仍在 `openai.rs`
 - `error.rs` 独立化和 transport 进一步拆分还未开始
 
-#### 2. `reference-tui/app` 已对齐到 Wave 1 的中前段
+#### 2. `reference-tui/app` 已对齐到 Wave 1 的后段
 
 已落地：
 
 - `apps/reference-tui/src/app/approval.rs`
 - `apps/reference-tui/src/app/presenters.rs`
+- `apps/reference-tui/src/app/commands/session.rs`
+- `apps/reference-tui/src/app/commands/runs.rs`
+- `apps/reference-tui/src/app/commands/catalog.rs`
+- `apps/reference-tui/src/app/commands/mcp.rs`
+- `apps/reference-tui/src/app/observer.rs`
+- `apps/reference-tui/src/app/run_history.rs`
 
 当前状态：
 
-- `app.rs` 从计划基线中的 `1492 LOC` 收敛到当前 `960 LOC`
+- `app.rs` 从计划基线中的 `1492 LOC` 收敛到当前 `301 LOC`
 - tool approval 交互与会话级审批缓存已独立为 `approval.rs`
 - sidebar / transcript / run summary / MCP 文本呈现逻辑已独立为 `presenters.rs`
+- `apply_command` 已按 session / runs / catalog / mcp 四个命令域拆成 `commands/*`
+- 实时 streaming observer 与 run history helper 已从 UI 主文件中抽离
 
 已验证：
 
@@ -139,8 +150,8 @@ Date: 2026-03-27
 
 仍未完成：
 
-- `apply_command` 的大 `match` 还未按命令域拆成 `commands/*`
-- terminal 生命周期、observer 与 run history 仍在 `app.rs`
+- terminal 生命周期与键盘事件循环仍在 `app.rs`
+- `terminal.rs` 仍未抽出，run 入口与 UI loop 还没有进一步收口
 
 #### 3. `core/plugin_boot` 已对齐到 Wave 3 的第一步
 
@@ -265,7 +276,7 @@ Date: 2026-03-27
 
 #### `apps/reference-tui`
 
-状态：已部分落地（`approval.rs`、`presenters.rs` 已抽出）
+状态：已大部分落地（`commands/*`、`observer.rs`、`approval.rs`、`presenters.rs`、`run_history.rs` 已抽出）
 
 建议拆分：
 
