@@ -87,12 +87,13 @@ Date: 2026-03-27
 
 ## 2026-03-27 已落地对齐项
 
-自本计划形成后，仓库已经落下两次实现提交：
+自本计划形成后，仓库已经落下三次实现提交：
 
 - `71e4bc3` `refactor(internals): extract helper submodules`
 - `750beef` `fix(reference-tui): finalize app module extraction`
+- `37ca0cb` `refactor(mcp): move stdio fixture under tests`
 
-这两次提交完成的是“无行为变化的内聚拆分”第一批切片，而不是更深层的 crate 重组。它们与本计划的对齐关系如下。
+这三次提交完成的是“无行为变化的内聚拆分”第一批切片，而不是更深层的 crate 重组。它们与本计划的对齐关系如下。
 
 ### 已完成的切片
 
@@ -163,6 +164,27 @@ Date: 2026-03-27
 - 仍然是 host-coded driver dispatch，不是 registry-driven compiled driver registry
 - builtin root 解析与 activation plan 还没有进一步拆为更细模块
 
+#### 4. `mcp` 测试边界已对齐到 Wave 0 的护栏要求
+
+已落地：
+
+- `crates/mcp/tests/support/stdio_fixture.rs`
+- `crates/mcp/src/bin/test_stdio_server.rs`
+
+当前状态：
+
+- 原先放在 `src/bin/test_stdio_server.rs` 里的测试夹具服务逻辑，已迁回 `tests/support`
+- `src/bin/test_stdio_server.rs` 现在只保留供 `env!(CARGO_BIN_EXE_test_stdio_server)` 启动的极薄 shim
+- `stdio_integration.rs` 中的 recording executor 已对齐当前 `sandbox::ProcessExecutor` 契约
+
+已验证：
+
+- `cargo test -p mcp` 通过
+
+仍未完成：
+
+- 这条“测试夹具归 `tests`、运行时入口不承载测试实现”的边界规则，还没有系统化检查覆盖到整个仓库
+
 ### 本轮实施后的结构变化
 
 以计划形成时的基线为参照，本轮切片带来的直接变化是：
@@ -170,6 +192,7 @@ Date: 2026-03-27
 - `>=1000 LOC` 的 Rust 文件从 `9` 个降到 `7` 个
 - `>=1500 LOC` 的 Rust 文件仍为 `5` 个
 - `>=500 LOC` 的 Rust 文件仍为 `30` 个
+- `mcp` 的 stdio fixture 不再作为 `src/bin` 中的实现主体存在，测试辅助逻辑回到 `tests` 边界内
 
 这符合本计划“先消减最粗的千行神文件，再处理 500-1000 LOC 中段文件”的执行顺序。
 
@@ -203,6 +226,7 @@ Date: 2026-03-27
 - 为目标文件补足当前行为的测试覆盖或快照用例，尤其是 `runtime`、`bash`、`memory`、`sandbox`。
 - 为每个目标文件先写清楚“拆分后仍由谁拥有最终决策权”。
 - 在不改公开接口的前提下，先移动纯 helper、DTO 和 formatter。
+- 测试夹具、集成测试辅助逻辑和仅供测试使用的服务实现默认放在 `tests/`；如果 Cargo 必须保留可执行 target，则 `src/bin` 只保留最薄的启动 shim。
 
 输出物：
 
