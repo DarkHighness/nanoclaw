@@ -17,7 +17,6 @@ use runtime::{
     AgentRuntime, Result as RuntimeResult, RunTurnOutcome, RuntimeError, RuntimeObserver,
     RuntimeProgressEvent,
 };
-use serde_json::Value;
 use std::io::{self, Stdout};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -184,207 +183,15 @@ impl RuntimeTui {
             | TuiCommand::Run { .. }
             | TuiCommand::ExportRun { .. }
             | TuiCommand::ExportTranscript { .. }) => self.apply_runs_command(command, state).await,
-            TuiCommand::Skills { query } => {
-                let skills = filter_skills(&self.skills, query.as_deref());
-                state.sidebar = if skills.is_empty() {
-                    vec!["no skills matched".to_string()]
-                } else {
-                    skills
-                        .iter()
-                        .take(16)
-                        .map(|skill| format_skill_line(skill))
-                        .collect()
-                };
-                state.sidebar_title = "Skills".to_string();
-                state.status = if let Some(query) = query {
-                    if skills.is_empty() {
-                        format!("No skills matched `{query}`")
-                    } else {
-                        format!(
-                            "Listed {} matching skills. Use {}skill <name> for details.",
-                            skills.len(),
-                            self.command_prefix
-                        )
-                    }
-                } else if skills.is_empty() {
-                    "No skills loaded".to_string()
-                } else {
-                    format!(
-                        "Listed {} skills. Use {}skill <name> for details.",
-                        skills.len(),
-                        self.command_prefix
-                    )
-                };
-                Ok(false)
-            }
-            TuiCommand::Skill { skill_name } => {
-                let skill = resolve_skill_reference(&self.skills, &skill_name)?;
-                state.sidebar = format_skill_sidebar(skill);
-                state.sidebar_title = "Skill".to_string();
-                state.status = format!("Loaded skill {}", skill.name);
-                Ok(false)
-            }
-            TuiCommand::Tools => {
-                state.sidebar = self.runtime_tools().iter().map(format_tool_line).collect();
-                state.sidebar_title = "Tools".to_string();
-                state.status = "Listed tools".to_string();
-                Ok(false)
-            }
-            TuiCommand::Hooks => {
-                state.sidebar = vec![
-                    "Claude-style hooks enabled".to_string(),
-                    "SessionStart".to_string(),
-                    "UserPromptSubmit".to_string(),
-                    "PreToolUse/PostToolUse".to_string(),
-                    "Stop/SessionEnd".to_string(),
-                ];
-                state.sidebar_title = "Hooks".to_string();
-                state.status = "Listed hooks".to_string();
-                Ok(false)
-            }
-            TuiCommand::Mcp => {
-                state.sidebar = self
-                    .mcp_servers
-                    .iter()
-                    .map(|server| {
-                        format!(
-                            "server: {}  tools={} prompts={} resources={}",
-                            server.server_name,
-                            server.catalog.tools.len(),
-                            server.catalog.prompts.len(),
-                            server.catalog.resources.len()
-                        )
-                    })
-                    .collect();
-                state.sidebar_title = "MCP".to_string();
-                state.status = "Listed MCP servers".to_string();
-                Ok(false)
-            }
-            TuiCommand::Prompts => {
-                state.sidebar = self
-                    .mcp_servers
-                    .iter()
-                    .flat_map(|server| {
-                        server.catalog.prompts.iter().map(|prompt| {
-                            let args = prompt
-                                .arguments
-                                .iter()
-                                .map(|argument| {
-                                    if argument.required {
-                                        format!("{}*", argument.name)
-                                    } else {
-                                        argument.name.clone()
-                                    }
-                                })
-                                .collect::<Vec<_>>();
-                            let suffix = if args.is_empty() {
-                                String::new()
-                            } else {
-                                format!(" ({})", args.join(", "))
-                            };
-                            format!(
-                                "{}:{}{}{}",
-                                server.server_name,
-                                prompt.name,
-                                suffix,
-                                if prompt.description.is_empty() {
-                                    String::new()
-                                } else {
-                                    format!(" - {}", prompt.description)
-                                }
-                            )
-                        })
-                    })
-                    .collect();
-                state.sidebar_title = "Prompts".to_string();
-                state.status = "Listed MCP prompts".to_string();
-                Ok(false)
-            }
-            TuiCommand::Resources => {
-                state.sidebar = self
-                    .mcp_servers
-                    .iter()
-                    .flat_map(|server| {
-                        server.catalog.resources.iter().map(|resource| {
-                            format!(
-                                "{}:{}{}",
-                                server.server_name,
-                                resource.uri,
-                                resource
-                                    .mime_type
-                                    .as_deref()
-                                    .map(|mime| format!(" [{mime}]"))
-                                    .unwrap_or_default()
-                            )
-                        })
-                    })
-                    .collect();
-                state.sidebar_title = "Resources".to_string();
-                state.status = "Listed MCP resources".to_string();
-                Ok(false)
-            }
-            TuiCommand::Prompt {
-                server_name,
-                prompt_name,
-            } => {
-                let server = self
-                    .mcp_servers
-                    .iter()
-                    .find(|server| server.server_name == server_name)
-                    .ok_or_else(|| anyhow::anyhow!("unknown MCP server: {server_name}"))?;
-                let prompt = server.client.get_prompt(&prompt_name, Value::Null).await?;
-                state.input = prompt_to_text(&prompt);
-                state.sidebar = vec![
-                    format!("prompt: {server_name}/{prompt_name}"),
-                    format!(
-                        "arguments: {}",
-                        if prompt.arguments.is_empty() {
-                            "none".to_string()
-                        } else {
-                            prompt
-                                .arguments
-                                .iter()
-                                .map(|argument| {
-                                    if argument.required {
-                                        format!("{}*", argument.name)
-                                    } else {
-                                        argument.name.clone()
-                                    }
-                                })
-                                .collect::<Vec<_>>()
-                                .join(", ")
-                        }
-                    ),
-                ];
-                state.sidebar_title = "Prompt".to_string();
-                state.status = format!("Loaded MCP prompt {server_name}/{prompt_name} into input");
-                Ok(false)
-            }
-            TuiCommand::Resource { server_name, uri } => {
-                let server = self
-                    .mcp_servers
-                    .iter()
-                    .find(|server| server.server_name == server_name)
-                    .ok_or_else(|| anyhow::anyhow!("unknown MCP server: {server_name}"))?;
-                let resource = server.client.read_resource(&uri).await?;
-                state.input = resource_to_text(&resource);
-                state.sidebar = vec![
-                    format!("resource: {server_name}:{}", resource.uri),
-                    format!(
-                        "mime: {}",
-                        resource
-                            .mime_type
-                            .clone()
-                            .unwrap_or_else(|| "unknown".to_string())
-                    ),
-                ];
-                state.sidebar_title = "Resource".to_string();
-                state.status = format!(
-                    "Loaded MCP resource {server_name}:{} into input",
-                    resource.uri
-                );
-                Ok(false)
-            }
+            command @ (TuiCommand::Skills { .. }
+            | TuiCommand::Skill { .. }
+            | TuiCommand::Tools
+            | TuiCommand::Hooks) => self.apply_catalog_command(command, state).await,
+            command @ (TuiCommand::Mcp
+            | TuiCommand::Prompts
+            | TuiCommand::Resources
+            | TuiCommand::Prompt { .. }
+            | TuiCommand::Resource { .. }) => self.apply_mcp_command(command, state).await,
         }
     }
 
@@ -549,72 +356,13 @@ impl RuntimeObserver for LiveRenderObserver<'_> {
     }
 }
 
-fn filter_skills<'a>(skills: &'a [Skill], query: Option<&str>) -> Vec<&'a Skill> {
-    let Some(query) = query.map(str::trim).filter(|query| !query.is_empty()) else {
-        return skills.iter().collect();
-    };
-    let query = query.to_lowercase();
-    skills
-        .iter()
-        .filter(|skill| {
-            skill.name.to_lowercase().contains(&query)
-                || skill.description.to_lowercase().contains(&query)
-                || skill
-                    .aliases
-                    .iter()
-                    .any(|alias| alias.to_lowercase().contains(&query))
-                || skill
-                    .tags
-                    .iter()
-                    .any(|tag| tag.to_lowercase().contains(&query))
-        })
-        .collect()
-}
-
-fn resolve_skill_reference<'a>(skills: &'a [Skill], skill_ref: &str) -> anyhow::Result<&'a Skill> {
-    if let Some(skill) = skills.iter().find(|skill| skill.name == skill_ref) {
-        return Ok(skill);
-    }
-    if let Some(skill) = skills
-        .iter()
-        .find(|skill| skill.aliases.iter().any(|alias| alias == skill_ref))
-    {
-        return Ok(skill);
-    }
-
-    let matches = skills
-        .iter()
-        .filter(|skill| {
-            skill.name.starts_with(skill_ref)
-                || skill
-                    .aliases
-                    .iter()
-                    .any(|alias| alias.starts_with(skill_ref))
-        })
-        .collect::<Vec<_>>();
-    match matches.as_slice() {
-        [] => Err(anyhow::anyhow!("unknown skill: {skill_ref}")),
-        [skill] => Ok(skill),
-        _ => Err(anyhow::anyhow!(
-            "ambiguous skill reference {skill_ref}: {}",
-            matches
-                .iter()
-                .map(|skill| skill.name.as_str())
-                .collect::<Vec<_>>()
-                .join(", ")
-        )),
-    }
-}
-
 #[cfg(test)]
 mod tests {
+    use super::InteractiveToolApprovalHandler;
     use super::approval::{SessionApprovalDecision, ToolApprovalCacheKey};
-    use super::{InteractiveToolApprovalHandler, resolve_skill_reference};
-    use agent::skills::Skill;
     use runtime::{ToolApprovalOutcome, ToolApprovalRequest};
     use serde_json::json;
     use std::collections::BTreeMap;
-    use std::path::PathBuf;
     use types::{ToolCall, ToolCallId, ToolOrigin, ToolOutputMode, ToolSpec};
 
     fn sample_request(tool_name: &str, origin: ToolOrigin) -> ToolApprovalRequest {
@@ -686,26 +434,5 @@ mod tests {
                 origin_key: "mcp:remote".to_string(),
             }
         );
-    }
-
-    #[test]
-    fn resolves_skill_by_alias() {
-        let skills = vec![Skill {
-            name: "pdf".to_string(),
-            description: "Use for PDF tasks".to_string(),
-            aliases: vec!["acrobat".to_string()],
-            body: "Do PDF things.".to_string(),
-            root_dir: PathBuf::from("/tmp/pdf"),
-            tags: vec!["document".to_string()],
-            hooks: Vec::new(),
-            references: Vec::new(),
-            scripts: Vec::new(),
-            assets: Vec::new(),
-            metadata: BTreeMap::new(),
-            extension_metadata: BTreeMap::new(),
-        }];
-
-        let resolved = resolve_skill_reference(&skills, "acrobat").unwrap();
-        assert_eq!(resolved.name, "pdf");
     }
 }
