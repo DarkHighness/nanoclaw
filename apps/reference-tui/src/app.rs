@@ -2,7 +2,7 @@ mod approval;
 mod presenters;
 
 use crate::{TuiCommand, config::AgentCoreConfig, parse_command, render};
-use agent::mcp::{ConnectedMcpServer, McpPrompt, McpResource};
+use agent::mcp::ConnectedMcpServer;
 use agent::skills::Skill;
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyModifiers};
@@ -15,14 +15,14 @@ use runtime::{
     AgentRuntime, Result as RuntimeResult, RunTurnOutcome, RuntimeError, RuntimeObserver,
     RuntimeProgressEvent,
 };
+use serde_json::Value;
 use std::io::{self, Stdout};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use store::{RunStore, RunSummary};
-use types::{RunId, ToolLifecycleEventKind, ToolSpec};
+use types::{RunEventEnvelope, RunId, ToolLifecycleEventKind, ToolSpec};
 
 pub use approval::InteractiveToolApprovalHandler;
-use approval::{SessionApprovalDecision, ToolApprovalCacheKey};
 use presenters::*;
 
 pub struct RuntimeTui {
@@ -801,10 +801,8 @@ fn encode_run_events_jsonl(events: &[RunEventEnvelope]) -> anyhow::Result<String
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        InteractiveToolApprovalHandler, SessionApprovalDecision, ToolApprovalCacheKey,
-        resolve_run_reference, resolve_skill_reference,
-    };
+    use super::approval::{SessionApprovalDecision, ToolApprovalCacheKey};
+    use super::{InteractiveToolApprovalHandler, resolve_run_reference, resolve_skill_reference};
     use agent::skills::Skill;
     use runtime::{ToolApprovalOutcome, ToolApprovalRequest};
     use serde_json::json;

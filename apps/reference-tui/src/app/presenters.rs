@@ -3,8 +3,8 @@ use agent::skills::Skill;
 use serde_json::Value;
 use store::{RunSearchResult, RunSummary};
 use types::{
-    Message, MessagePart, MessageRole, RunEventEnvelope, RunEventKind, SessionId,
-    ToolLifecycleEventKind, ToolOrigin, ToolSpec,
+    Message, MessagePart, MessageRole, RunEventEnvelope, RunEventKind, SessionId, ToolOrigin,
+    ToolSpec,
 };
 
 pub(super) fn format_tool_line(spec: &ToolSpec) -> String {

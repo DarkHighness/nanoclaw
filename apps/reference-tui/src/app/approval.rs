@@ -22,13 +22,13 @@ pub struct InteractiveToolApprovalHandler {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub(super) struct ToolApprovalCacheKey {
+pub(crate) struct ToolApprovalCacheKey {
     pub(crate) tool_name: String,
     pub(crate) origin_key: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum SessionApprovalDecision {
+pub(crate) enum SessionApprovalDecision {
     Approve,
     Deny,
 }
