@@ -1,11 +1,10 @@
 mod config;
+mod options;
+mod provider;
 mod tui;
 
-use crate::config::CodeAgentConfig;
-use agent::provider::{
-    BackendDescriptor, OpenAiResponsesOptions, OpenAiServerCompaction, ProviderBackend,
-    ProviderDescriptor, RequestOptions,
-};
+use crate::options::AppOptions;
+use crate::provider::build_backend;
 use agent::runtime::{
     CompactionConfig, DefaultCommandHookExecutor, LoopDetectionConfig, ModelConversationCompactor,
     NoopToolApprovalPolicy, RuntimeSubagentExecutor, ToolApprovalHandler,
@@ -19,13 +18,11 @@ use agent::{
     Skill, SkillCatalog, TaskTool, TodoListState, TodoReadTool, TodoWriteTool,
     ToolExecutionContext, ToolRegistry, WorkspaceTextCodeIntelBackend, WriteTool,
 };
-use agent_env::{EnvMap, vars};
-use anyhow::{Context, Result, bail};
-use nanoclaw_config::{PluginsConfig, ProviderKind, resolved_provider_kind};
-use serde_json::Value;
+use agent_env::EnvMap;
+use anyhow::{Context, Result};
+use nanoclaw_config::PluginsConfig;
 use std::collections::BTreeMap;
 use std::env;
-use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tracing::{info, warn};
@@ -33,141 +30,9 @@ use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::EnvFilter;
 use tui::{CodeAgentTui, make_tui_support};
 
-const DEFAULT_OPENAI_MODEL: &str = "gpt-5.4";
-const DEFAULT_ANTHROPIC_MODEL: &str = "claude-sonnet-4-6";
 const DEFAULT_CONTEXT_TOKENS: usize = 128_000;
 const DEFAULT_TRIGGER_TOKENS: usize = 96_000;
 const DEFAULT_PRESERVE_RECENT_MESSAGES: usize = 8;
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum SelectedProvider {
-    OpenAi,
-    Anthropic,
-}
-
-impl SelectedProvider {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::OpenAi => "openai",
-            Self::Anthropic => "anthropic",
-        }
-    }
-}
-
-impl fmt::Display for SelectedProvider {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
-#[derive(Clone, Debug)]
-struct AppOptions {
-    provider: SelectedProvider,
-    model: String,
-    base_url: Option<String>,
-    temperature: Option<f64>,
-    max_tokens: Option<u64>,
-    additional_params: Option<Value>,
-    provider_env: BTreeMap<String, String>,
-    system_prompt: Option<String>,
-    skill_roots: Vec<PathBuf>,
-    plugins: PluginsConfig,
-    sandbox_fail_if_unavailable: bool,
-    lsp_enabled: bool,
-    lsp_auto_install: bool,
-    lsp_install_root: Option<PathBuf>,
-    one_shot_prompt: Option<String>,
-}
-
-impl AppOptions {
-    fn from_env_and_args(workspace_root: &Path, env_map: &EnvMap) -> Result<Self> {
-        Self::from_env_and_args_iter(workspace_root, env_map, env::args().skip(1))
-    }
-
-    fn from_env_and_args_iter(
-        workspace_root: &Path,
-        env_map: &EnvMap,
-        args: impl IntoIterator<Item = String>,
-    ) -> Result<Self> {
-        let workspace_config = CodeAgentConfig::load_from_dir(workspace_root, env_map)?;
-        let mut provider = None;
-        let provider_from_config =
-            selected_provider_from_kind(resolved_provider_kind(&workspace_config.core));
-        let mut system_prompt = workspace_config.core.system_prompt.clone();
-        let mut skill_roots = workspace_config.core.resolved_skill_roots(workspace_root);
-        let mut plugins = workspace_config.core.plugins.clone();
-        let mut sandbox_fail_if_unavailable =
-            workspace_config.core.runtime.sandbox_fail_if_unavailable;
-        let lsp_enabled = workspace_config.lsp_enabled;
-        let lsp_auto_install = workspace_config.lsp_auto_install;
-        let lsp_install_root = workspace_config.lsp_install_root.clone();
-        let mut prompt_parts = Vec::new();
-
-        let mut args = args.into_iter();
-        while let Some(arg) = args.next() {
-            match arg.as_str() {
-                "--provider" => {
-                    provider = Some(parse_provider(&next_arg(&mut args, "--provider")?)?)
-                }
-                "--system-prompt" => system_prompt = Some(next_arg(&mut args, "--system-prompt")?),
-                "--skill-root" => {
-                    skill_roots.push(PathBuf::from(next_arg(&mut args, "--skill-root")?))
-                }
-                "--plugin-root" => {
-                    plugins.roots.push(next_arg(&mut args, "--plugin-root")?);
-                }
-                "--memory-plugin" => {
-                    plugins.slots.memory = Some(next_arg(&mut args, "--memory-plugin")?);
-                }
-                "--sandbox-fail-if-unavailable" => {
-                    sandbox_fail_if_unavailable =
-                        parse_bool_flag(&next_arg(&mut args, "--sandbox-fail-if-unavailable")?)?
-                }
-                "--help" | "-h" => {
-                    print_help();
-                    std::process::exit(0);
-                }
-                _ if arg.starts_with("--") => bail!("unknown option `{arg}`"),
-                _ => {
-                    prompt_parts.push(arg);
-                    prompt_parts.extend(args);
-                    break;
-                }
-            }
-        }
-
-        let provider = provider.unwrap_or(provider_from_config);
-        ensure_api_key_available(provider, &workspace_config.core.provider.env, env_map)?;
-        let model = if provider != provider_from_config {
-            default_model(provider).to_string()
-        } else {
-            workspace_config
-                .core
-                .provider
-                .model
-                .clone()
-                .unwrap_or_else(|| default_model(provider).to_string())
-        };
-        let one_shot_prompt = (!prompt_parts.is_empty()).then(|| prompt_parts.join(" "));
-
-        Ok(Self {
-            provider,
-            model,
-            base_url: workspace_config.core.provider.base_url.clone(),
-            temperature: workspace_config.core.provider.temperature,
-            max_tokens: workspace_config.core.provider.max_tokens,
-            additional_params: workspace_config.core.provider.additional_params.clone(),
-            provider_env: workspace_config.core.provider.env.clone(),
-            system_prompt,
-            skill_roots,
-            plugins,
-            sandbox_fail_if_unavailable,
-            lsp_enabled,
-            lsp_auto_install,
-            lsp_install_root,
-            one_shot_prompt,
-        })
-    }
-}
 
 fn main() -> Result<()> {
     let workspace_root = env::current_dir().context("failed to resolve current workspace")?;
@@ -260,7 +125,15 @@ async fn build_runtime(
     tool_context: ToolExecutionContext,
     sandbox_policy: SandboxPolicy,
 ) -> Result<(AgentRuntime, Vec<Skill>)> {
-    let backend = Arc::new(build_backend(options)?);
+    let backend = Arc::new(build_backend(
+        options.provider,
+        options.model.clone(),
+        options.base_url.clone(),
+        options.temperature,
+        options.max_tokens,
+        options.additional_params.clone(),
+        &options.provider_env,
+    )?);
     let store = Arc::new(InMemoryRunStore::new());
     let plugin_plan = build_plugin_activation_plan(workspace_root, &options.plugins)
         .context("failed to build plugin activation plan")?;
@@ -428,34 +301,6 @@ fn build_tool_context(workspace_root: &Path) -> ToolExecutionContext {
     }
 }
 
-fn build_backend(options: &AppOptions) -> Result<ProviderBackend> {
-    let descriptor = BackendDescriptor::new(match options.provider {
-        SelectedProvider::OpenAi => ProviderDescriptor::openai(options.model.clone()),
-        SelectedProvider::Anthropic => ProviderDescriptor::anthropic(options.model.clone()),
-    });
-    let request_options = RequestOptions {
-        temperature: options.temperature,
-        max_tokens: options.max_tokens,
-        additional_params: options.additional_params.clone(),
-        openai_responses: matches!(options.provider, SelectedProvider::OpenAi).then(|| {
-            OpenAiResponsesOptions {
-                chain_previous_response: true,
-                store: Some(true),
-                server_compaction: Some(OpenAiServerCompaction {
-                    compact_threshold: DEFAULT_TRIGGER_TOKENS,
-                }),
-            }
-        }),
-        ..RequestOptions::default()
-    };
-    Ok(ProviderBackend::from_settings_with_api_key(
-        descriptor,
-        request_options,
-        options.base_url.clone(),
-        configured_provider_api_key(options),
-    )?)
-}
-
 fn build_system_preamble(
     system_prompt: Option<&str>,
     skill_catalog: &SkillCatalog,
@@ -555,103 +400,11 @@ fn inject_process_env(env_map: &EnvMap) {
     env_map.apply_to_process();
 }
 
-fn next_arg(args: &mut impl Iterator<Item = String>, flag: &str) -> Result<String> {
-    args.next()
-        .with_context(|| format!("missing value for `{flag}`"))
-}
-
-fn parse_provider(value: &str) -> Result<SelectedProvider> {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "openai" => Ok(SelectedProvider::OpenAi),
-        "anthropic" => Ok(SelectedProvider::Anthropic),
-        other => bail!("unsupported provider `{other}`"),
-    }
-}
-
-fn parse_bool_flag(value: &str) -> Result<bool> {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "1" | "true" | "yes" | "on" => Ok(true),
-        "0" | "false" | "no" | "off" => Ok(false),
-        other => bail!("unsupported boolean value `{other}`"),
-    }
-}
-
-fn selected_provider_from_kind(kind: ProviderKind) -> SelectedProvider {
-    match kind {
-        ProviderKind::OpenAi => SelectedProvider::OpenAi,
-        ProviderKind::Anthropic => SelectedProvider::Anthropic,
-    }
-}
-
-fn configured_provider_api_key(options: &AppOptions) -> Option<String> {
-    let env_key = match options.provider {
-        SelectedProvider::OpenAi => "OPENAI_API_KEY",
-        SelectedProvider::Anthropic => "ANTHROPIC_API_KEY",
-    };
-    options.provider_env.get(env_key).cloned()
-}
-
-fn ensure_api_key_available(
-    provider: SelectedProvider,
-    provider_env: &BTreeMap<String, String>,
-    env_map: &EnvMap,
-) -> Result<()> {
-    let has_openai = provider_env.contains_key("OPENAI_API_KEY")
-        || env_map.get_non_empty(vars::OPENAI_API_KEY.key).is_some();
-    let has_anthropic = provider_env.contains_key("ANTHROPIC_API_KEY")
-        || env_map.get_non_empty(vars::ANTHROPIC_API_KEY.key).is_some();
-    match provider {
-        SelectedProvider::OpenAi if !has_openai => {
-            bail!("missing OPENAI_API_KEY for provider openai")
-        }
-        SelectedProvider::Anthropic if !has_anthropic => {
-            bail!("missing ANTHROPIC_API_KEY for provider anthropic")
-        }
-        _ => Ok(()),
-    }
-}
-
-fn default_model(provider: SelectedProvider) -> &'static str {
-    match provider {
-        SelectedProvider::OpenAi => DEFAULT_OPENAI_MODEL,
-        SelectedProvider::Anthropic => DEFAULT_ANTHROPIC_MODEL,
-    }
-}
-
-fn print_help() {
-    println!("Code Agent Example");
-    println!();
-    println!("usage:");
-    println!("  cargo run --manifest-path apps/Cargo.toml -p code-agent");
-    println!(
-        "  cargo run --manifest-path apps/Cargo.toml -p code-agent -- \"fix the failing test\""
-    );
-    println!("  cargo run --manifest-path apps/Cargo.toml -p code-agent -- --provider anthropic");
-    println!();
-    println!("options:");
-    println!("  --provider <openai|anthropic>");
-    println!("  --system-prompt <text>");
-    println!("  --skill-root <path>");
-    println!("  --plugin-root <path>");
-    println!("  --memory-plugin <id|none>");
-    println!("  --sandbox-fail-if-unavailable <true|false>");
-    println!("  -h, --help");
-    println!();
-    println!("environment:");
-    println!("  .env and .env.local in the current workspace are loaded automatically");
-    println!("  OPENAI_API_KEY / ANTHROPIC_API_KEY");
-    println!("  OPENAI_BASE_URL / ANTHROPIC_BASE_URL");
-    println!("  NANOCLAW_CORE_* for shared core runtime settings");
-    println!(
-        "  CODE_AGENT_LSP_ENABLED / CODE_AGENT_LSP_AUTO_INSTALL / CODE_AGENT_LSP_INSTALL_ROOT"
-    );
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{
-        AppOptions, SelectedProvider, build_sandbox_policy, default_model, parse_bool_flag,
-    };
+    use super::build_sandbox_policy;
+    use crate::options::{AppOptions, parse_bool_flag};
+    use crate::provider::{SelectedProvider, default_model};
     use agent::ToolExecutionContext;
     use agent::tools::{NetworkPolicy, SandboxMode};
     use agent_env::EnvMap;
