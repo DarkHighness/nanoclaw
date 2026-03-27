@@ -87,13 +87,14 @@ Date: 2026-03-27
 
 ## 2026-03-27 已落地对齐项
 
-自本计划形成后，仓库已经落下三次实现提交：
+自本计划形成后，仓库已经落下四次实现提交：
 
 - `71e4bc3` `refactor(internals): extract helper submodules`
 - `750beef` `fix(reference-tui): finalize app module extraction`
 - `37ca0cb` `refactor(mcp): move stdio fixture under tests`
+- `9dae2ec` `refactor(code-agent): extract options and provider modules`
 
-这三次提交完成的是“无行为变化的内聚拆分”第一批切片，而不是更深层的 crate 重组。它们与本计划的对齐关系如下。
+这四次提交完成的是“无行为变化的内聚拆分”第一批切片，而不是更深层的 crate 重组。它们与本计划的对齐关系如下。
 
 ### 已完成的切片
 
@@ -185,14 +186,38 @@ Date: 2026-03-27
 
 - 这条“测试夹具归 `tests`、运行时入口不承载测试实现”的边界规则，还没有系统化检查覆盖到整个仓库
 
+#### 5. `apps/code-agent` 已对齐到 Wave 1 的第一步
+
+已落地：
+
+- `apps/code-agent/src/options.rs`
+- `apps/code-agent/src/provider.rs`
+
+当前状态：
+
+- `main.rs` 从当前切片前的 `715 LOC` 收敛到 `468 LOC`
+- CLI 参数解析、环境装载、provider 选择与 help 输出已从启动主文件移入 `options.rs`
+- provider 默认模型、API key 可用性检查与 backend 构造已从主文件移入 `provider.rs`
+- `main.rs` 现在主要保留 tracing 初始化、runtime facade、tool/runtime 装配与 plugin/skill 协调
+
+已验证：
+
+- `cargo test -p code-agent` 通过
+
+仍未完成：
+
+- `build_runtime` 仍然同时承担 tool registry、hook runner、skill/plugin 汇总与 subagent 装配
+- `build_plugin_activation_plan`、`build_system_preamble` 与 skill root 解析还在 `main.rs`
+
 ### 本轮实施后的结构变化
 
 以计划形成时的基线为参照，本轮切片带来的直接变化是：
 
 - `>=1000 LOC` 的 Rust 文件从 `9` 个降到 `7` 个
 - `>=1500 LOC` 的 Rust 文件仍为 `5` 个
-- `>=500 LOC` 的 Rust 文件仍为 `30` 个
+- `>=500 LOC` 的 Rust 文件从 `30` 个降到 `29` 个
 - `mcp` 的 stdio fixture 不再作为 `src/bin` 中的实现主体存在，测试辅助逻辑回到 `tests` 边界内
+- `apps/code-agent/src/main.rs` 已不再属于 `>=500 LOC` 热点文件
 
 这符合本计划“先消减最粗的千行神文件，再处理 500-1000 LOC 中段文件”的执行顺序。
 
