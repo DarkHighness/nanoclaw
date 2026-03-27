@@ -2,13 +2,14 @@ use mcp::{
     McpConnectOptions, McpServerConfig, McpTransportConfig,
     connect_and_catalog_mcp_servers_with_options,
 };
+use sandbox::Result as SandboxResult;
 use serde_json::json;
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use tempfile::tempdir;
 use tokio::process::Command;
 use tokio::time::{Duration, timeout};
-use tools::{ExecRequest, HostProcessExecutor, ProcessExecutor, Result as ToolResult};
+use tools::{ExecRequest, HostProcessExecutor, ProcessExecutor};
 use types::{MessagePart, ToolOrigin};
 
 #[derive(Clone)]
@@ -18,7 +19,9 @@ struct RecordingExecutor {
 }
 
 impl ProcessExecutor for RecordingExecutor {
-    fn prepare(&self, request: ExecRequest) -> ToolResult<Command> {
+    // Preserve the real process preparation path and only layer request
+    // recording on top so the integration test still exercises host startup.
+    fn prepare(&self, request: ExecRequest) -> SandboxResult<Command> {
         self.requests.lock().unwrap().push(request.clone());
         self.inner.prepare(request)
     }
