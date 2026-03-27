@@ -1,5 +1,7 @@
 mod approval;
+mod commands;
 mod presenters;
+mod run_history;
 
 use crate::{TuiCommand, config::AgentCoreConfig, parse_command, render};
 use agent::mcp::ConnectedMcpServer;
@@ -17,10 +19,10 @@ use runtime::{
 };
 use serde_json::Value;
 use std::io::{self, Stdout};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
-use store::{RunStore, RunSummary};
-use types::{RunEventEnvelope, RunId, ToolLifecycleEventKind, ToolSpec};
+use store::RunStore;
+use types::{ToolLifecycleEventKind, ToolSpec};
 
 pub use approval::InteractiveToolApprovalHandler;
 use presenters::*;
@@ -175,137 +177,13 @@ impl RuntimeTui {
     ) -> anyhow::Result<bool> {
         match command {
             TuiCommand::Quit => Ok(true),
-            TuiCommand::Status => {
-                self.restore_startup_summary(state);
-                state.status = self.startup_summary.status.clone();
-                Ok(false)
+            command @ (TuiCommand::Status | TuiCommand::Clear | TuiCommand::Compact { .. }) => {
+                self.apply_session_command(command, state).await
             }
-            TuiCommand::Clear => {
-                state.transcript.clear();
-                self.restore_startup_summary(state);
-                state.status = "Cleared transcript".to_string();
-                Ok(false)
-            }
-            TuiCommand::Compact { instructions } => {
-                if self.runtime.compact_now(instructions.clone()).await? {
-                    state.transcript = self.replay_run_lines(&self.runtime.run_id()).await?;
-                    let events = self.store.events(&self.runtime.run_id()).await?;
-                    state.sidebar = build_turn_sidebar(&events);
-                    state.sidebar_title = "Turn".to_string();
-                    state.status = if let Some(instructions) = instructions {
-                        format!(
-                            "Compacted visible history with notes: {}",
-                            preview_text(&instructions, 48)
-                        )
-                    } else {
-                        "Compacted visible history".to_string()
-                    };
-                } else {
-                    state.status = "Compaction skipped".to_string();
-                }
-                Ok(false)
-            }
-            TuiCommand::Runs { query } => {
-                if let Some(query) = query {
-                    let runs = self.store.search_runs(&query).await?;
-                    state.sidebar = if runs.is_empty() {
-                        vec![format!("no runs matched `{query}`")]
-                    } else {
-                        runs.iter().take(12).map(format_run_search_line).collect()
-                    };
-                    state.sidebar_title = "Run Search".to_string();
-                    state.status = if runs.is_empty() {
-                        format!("No runs matched `{query}`")
-                    } else {
-                        format!(
-                            "Found {} matching runs. Use {}run <id-prefix> to replay one.",
-                            runs.len(),
-                            self.command_prefix
-                        )
-                    };
-                } else {
-                    let runs = self.store.list_runs().await?;
-                    state.sidebar = if runs.is_empty() {
-                        vec!["no runs recorded yet".to_string()]
-                    } else {
-                        runs.iter().take(12).map(format_run_summary_line).collect()
-                    };
-                    state.sidebar_title = "Runs".to_string();
-                    state.status = if runs.is_empty() {
-                        "No runs available yet".to_string()
-                    } else {
-                        format!(
-                            "Listed {} runs. Use {}run <id-prefix> to replay one.",
-                            runs.len(),
-                            self.command_prefix
-                        )
-                    };
-                }
-                Ok(false)
-            }
-            TuiCommand::Run { run_ref } => {
-                let runs = self.store.list_runs().await?;
-                let run_id = resolve_run_reference(&runs, &run_ref)?;
-                let summary = runs
-                    .iter()
-                    .find(|summary| summary.run_id == run_id)
-                    .cloned()
-                    .ok_or_else(|| anyhow::anyhow!("run missing from store listing: {}", run_id))?;
-                let events = self.store.events(&run_id).await?;
-                let session_ids = self.store.session_ids(&run_id).await?;
-                state.transcript = self.replay_run_lines(&run_id).await?;
-                state.sidebar = format_run_sidebar(&summary, &session_ids, &events);
-                state.sidebar_title = "Run".to_string();
-                state.status = format!(
-                    "Loaded run {} with {} transcript messages",
-                    preview_id(run_id.as_str()),
-                    summary.transcript_message_count
-                );
-                Ok(false)
-            }
-            TuiCommand::ExportRun { run_ref, path } => {
-                let runs = self.store.list_runs().await?;
-                let run_id = resolve_run_reference(&runs, &run_ref)?;
-                let events = self.store.events(&run_id).await?;
-                let output_path = self
-                    .write_output_file(&path, encode_run_events_jsonl(&events)?)
-                    .await?;
-                state.sidebar = vec![
-                    format!("exported run: {}", run_id),
-                    format!("path: {}", output_path.display()),
-                    format!("events: {}", events.len()),
-                ];
-                state.sidebar_title = "Export".to_string();
-                state.status = format!(
-                    "Exported run {} to {}",
-                    preview_id(run_id.as_str()),
-                    output_path.display()
-                );
-                Ok(false)
-            }
-            TuiCommand::ExportTranscript { run_ref, path } => {
-                let runs = self.store.list_runs().await?;
-                let run_id = resolve_run_reference(&runs, &run_ref)?;
-                let transcript = self.replay_run_lines(&run_id).await?;
-                let content = if transcript.is_empty() {
-                    String::new()
-                } else {
-                    format!("{}\n", transcript.join("\n\n"))
-                };
-                let output_path = self.write_output_file(&path, content).await?;
-                state.sidebar = vec![
-                    format!("exported transcript: {}", run_id),
-                    format!("path: {}", output_path.display()),
-                    format!("lines: {}", transcript.len()),
-                ];
-                state.sidebar_title = "Export".to_string();
-                state.status = format!(
-                    "Exported transcript {} to {}",
-                    preview_id(run_id.as_str()),
-                    output_path.display()
-                );
-                Ok(false)
-            }
+            command @ (TuiCommand::Runs { .. }
+            | TuiCommand::Run { .. }
+            | TuiCommand::ExportRun { .. }
+            | TuiCommand::ExportTranscript { .. }) => self.apply_runs_command(command, state).await,
             TuiCommand::Skills { query } => {
                 let skills = filter_skills(&self.skills, query.as_deref());
                 state.sidebar = if skills.is_empty() {
@@ -534,29 +412,6 @@ impl RuntimeTui {
         state.sidebar = self.startup_summary.sidebar.clone();
         state.sidebar_title = self.startup_summary.sidebar_title.clone();
     }
-
-    async fn replay_run_lines(&self, run_id: &RunId) -> anyhow::Result<Vec<String>> {
-        Ok(self
-            .store
-            .replay_transcript(run_id)
-            .await?
-            .iter()
-            .map(message_to_text)
-            .collect())
-    }
-
-    async fn write_output_file(
-        &self,
-        relative_or_absolute: &str,
-        content: String,
-    ) -> anyhow::Result<PathBuf> {
-        let path = resolve_output_path(&self.workspace_root, relative_or_absolute);
-        if let Some(parent) = path.parent() {
-            tokio::fs::create_dir_all(parent).await?;
-        }
-        tokio::fs::write(&path, content).await?;
-        Ok(path)
-    }
 }
 
 struct LiveRenderObserver<'a> {
@@ -694,33 +549,6 @@ impl RuntimeObserver for LiveRenderObserver<'_> {
     }
 }
 
-fn resolve_run_reference(runs: &[RunSummary], run_ref: &str) -> anyhow::Result<RunId> {
-    if let Some(run) = runs
-        .iter()
-        .find(|summary| summary.run_id.as_str() == run_ref)
-    {
-        return Ok(run.run_id.clone());
-    }
-
-    let matches = runs
-        .iter()
-        .filter(|summary| summary.run_id.as_str().starts_with(run_ref))
-        .collect::<Vec<_>>();
-    match matches.as_slice() {
-        [] => Err(anyhow::anyhow!("unknown run id or prefix: {run_ref}")),
-        [run] => Ok(run.run_id.clone()),
-        _ => Err(anyhow::anyhow!(
-            "ambiguous run prefix {run_ref}: {}",
-            matches
-                .iter()
-                .take(6)
-                .map(|run| preview_id(run.run_id.as_str()))
-                .collect::<Vec<_>>()
-                .join(", ")
-        )),
-    }
-}
-
 fn filter_skills<'a>(skills: &'a [Skill], query: Option<&str>) -> Vec<&'a Skill> {
     let Some(query) = query.map(str::trim).filter(|query| !query.is_empty()) else {
         return skills.iter().collect();
@@ -778,38 +606,16 @@ fn resolve_skill_reference<'a>(skills: &'a [Skill], skill_ref: &str) -> anyhow::
     }
 }
 
-fn resolve_output_path(workspace_root: &Path, value: &str) -> PathBuf {
-    let path = PathBuf::from(value);
-    if path.is_absolute() {
-        path
-    } else {
-        workspace_root.join(path)
-    }
-}
-
-fn encode_run_events_jsonl(events: &[RunEventEnvelope]) -> anyhow::Result<String> {
-    let mut lines = Vec::with_capacity(events.len());
-    for event in events {
-        lines.push(serde_json::to_string(event)?);
-    }
-    Ok(if lines.is_empty() {
-        String::new()
-    } else {
-        format!("{}\n", lines.join("\n"))
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::approval::{SessionApprovalDecision, ToolApprovalCacheKey};
-    use super::{InteractiveToolApprovalHandler, resolve_run_reference, resolve_skill_reference};
+    use super::{InteractiveToolApprovalHandler, resolve_skill_reference};
     use agent::skills::Skill;
     use runtime::{ToolApprovalOutcome, ToolApprovalRequest};
     use serde_json::json;
     use std::collections::BTreeMap;
     use std::path::PathBuf;
-    use store::RunSummary;
-    use types::{RunId, ToolCall, ToolCallId, ToolOrigin, ToolOutputMode, ToolSpec};
+    use types::{ToolCall, ToolCallId, ToolOrigin, ToolOutputMode, ToolSpec};
 
     fn sample_request(tool_name: &str, origin: ToolOrigin) -> ToolApprovalRequest {
         ToolApprovalRequest {
@@ -880,61 +686,6 @@ mod tests {
                 origin_key: "mcp:remote".to_string(),
             }
         );
-    }
-
-    #[test]
-    fn resolves_unique_run_prefix() {
-        let runs = vec![
-            RunSummary {
-                run_id: RunId::from("abc12345"),
-                first_timestamp_ms: 1,
-                last_timestamp_ms: 2,
-                event_count: 3,
-                session_count: 1,
-                transcript_message_count: 2,
-                last_user_prompt: Some("first".to_string()),
-            },
-            RunSummary {
-                run_id: RunId::from("def67890"),
-                first_timestamp_ms: 4,
-                last_timestamp_ms: 5,
-                event_count: 6,
-                session_count: 1,
-                transcript_message_count: 2,
-                last_user_prompt: Some("second".to_string()),
-            },
-        ];
-
-        assert_eq!(
-            resolve_run_reference(&runs, "abc").unwrap(),
-            RunId::from("abc12345")
-        );
-    }
-
-    #[test]
-    fn rejects_ambiguous_run_prefix() {
-        let runs = vec![
-            RunSummary {
-                run_id: RunId::from("abc12345"),
-                first_timestamp_ms: 1,
-                last_timestamp_ms: 2,
-                event_count: 3,
-                session_count: 1,
-                transcript_message_count: 2,
-                last_user_prompt: None,
-            },
-            RunSummary {
-                run_id: RunId::from("abc67890"),
-                first_timestamp_ms: 4,
-                last_timestamp_ms: 5,
-                event_count: 6,
-                session_count: 1,
-                transcript_message_count: 2,
-                last_user_prompt: None,
-            },
-        ];
-
-        assert!(resolve_run_reference(&runs, "abc").is_err());
     }
 
     #[test]
