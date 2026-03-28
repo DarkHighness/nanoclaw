@@ -6,12 +6,14 @@
 mod background_sync;
 mod driver_env;
 mod drivers;
+mod registry;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use plugins::{
-    DriverActivationRequest, PluginActivationPlan, PluginEntryConfig, PluginResolverConfig,
+    PluginActivationPlan, PluginEntryConfig, PluginExecutableActivation, PluginResolverConfig,
     PluginSlotsConfig, build_activation_plan, discover_plugins,
 };
+pub use registry::{DriverActivationOutcome, PluginDriverRegistry, UnknownDriverPolicy};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -43,17 +45,6 @@ impl Default for PluginBootResolverConfig {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum UnknownDriverPolicy {
-    Error,
-    Warn,
-}
-
-#[derive(Default)]
-pub struct DriverActivationOutcome {
-    pub warnings: Vec<String>,
-}
-
 pub fn build_plugin_activation_plan(
     workspace_root: &Path,
     config: &PluginBootResolverConfig,
@@ -74,51 +65,29 @@ pub fn build_plugin_activation_plan(
         entries: config.entries.clone(),
         slots: config.slots.clone(),
     };
-    Ok(build_activation_plan(discovery, &resolver))
+    Ok(build_activation_plan(discovery, &resolver, workspace_root))
 }
 
 pub fn activate_driver_requests(
-    requests: &[DriverActivationRequest],
+    requests: &[PluginExecutableActivation],
     workspace_root: &Path,
     run_store: Option<Arc<dyn RunStore>>,
     tools: &mut ToolRegistry,
     unknown_driver_policy: UnknownDriverPolicy,
 ) -> Result<DriverActivationOutcome> {
-    let mut outcome = DriverActivationOutcome::default();
     let env_map = agent_env::EnvMap::from_workspace_dir(workspace_root)
         .context("failed to resolve environment for plugin driver activation")?;
-
-    for request in requests {
-        match request.driver_id.as_str() {
-            "builtin.memory-core" => drivers::activate_memory_core_request(
-                request,
-                workspace_root,
-                run_store.clone(),
-                tools,
-                &mut outcome.warnings,
-            )?,
-            "builtin.memory-embed" => drivers::activate_memory_embed_request(
-                request,
-                workspace_root,
-                &env_map,
-                run_store.clone(),
-                tools,
-                &mut outcome.warnings,
-            )?,
-            other => match unknown_driver_policy {
-                UnknownDriverPolicy::Error => bail!(
-                    "plugin `{}` references unknown driver `{other}`",
-                    request.plugin_id
-                ),
-                UnknownDriverPolicy::Warn => outcome.warnings.push(format!(
-                    "plugin `{}` references unknown driver `{other}`",
-                    request.plugin_id
-                )),
-            },
-        }
-    }
-
-    Ok(outcome)
+    let registry = drivers::builtin_registry();
+    registry.activate_all(
+        requests,
+        &mut registry::PluginDriverContext {
+            workspace_root,
+            env_map: &env_map,
+            run_store,
+            tools,
+        },
+        unknown_driver_policy,
+    )
 }
 
 #[cfg(test)]
@@ -127,7 +96,9 @@ mod tests {
         PluginBootResolverConfig, UnknownDriverPolicy, activate_driver_requests,
         build_plugin_activation_plan,
     };
-    use plugins::{DriverActivationRequest, PluginEntryConfig, PluginSlotsConfig};
+    use plugins::{
+        PluginEntryConfig, PluginExecutableActivation, PluginRuntimeSpec, PluginSlotsConfig,
+    };
     use std::collections::BTreeMap;
     use tempfile::tempdir;
     use tools::ToolRegistry;
@@ -168,10 +139,17 @@ enabled_by_default = true
     fn unknown_driver_can_warn_without_failing() {
         let dir = tempdir().unwrap();
         std::fs::write(dir.path().join(".env"), "").unwrap();
-        let requests = vec![DriverActivationRequest {
+        let requests = vec![PluginExecutableActivation {
             plugin_id: "demo".to_string(),
-            driver_id: "builtin.unknown".to_string(),
+            root_dir: dir.path().to_path_buf(),
+            runtime: PluginRuntimeSpec {
+                driver: "builtin.unknown".to_string(),
+                module: None,
+                abi: None,
+            },
             config: toml::map::Map::new(),
+            capabilities: plugins::PluginCapabilitySet::default(),
+            granted_permissions: plugins::PluginResolvedPermissions::default(),
         }];
 
         let mut tools = ToolRegistry::new();

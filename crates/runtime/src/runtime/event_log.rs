@@ -1,5 +1,5 @@
 use super::AgentRuntime;
-use crate::{HookAggregate, Result, append_transcript_message};
+use crate::{Result, append_transcript_message};
 use types::{
     Message, RunEventEnvelope, RunEventKind, ToolCall, ToolLifecycleEventEnvelope, TurnId,
 };
@@ -46,19 +46,15 @@ impl AgentRuntime {
         Ok(lifecycle)
     }
 
-    pub(super) async fn append_hook_context_messages(
+    pub(super) async fn append_hook_messages(
         &mut self,
         turn_id: &TurnId,
-        aggregate: &HookAggregate,
+        messages: &[Message],
     ) -> Result<()> {
-        for message in aggregate
-            .system_messages
-            .iter()
-            .chain(aggregate.additional_context.iter())
-        {
+        for message in messages {
             let event = append_transcript_message(
                 &mut self.session.transcript,
-                Message::system(message.clone()),
+                message.clone(),
                 self.session.run_id.clone(),
                 self.session.session_id.clone(),
                 turn_id.clone(),

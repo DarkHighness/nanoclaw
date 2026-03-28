@@ -1,7 +1,7 @@
 use super::support::{RecordingBackend, RecordingObserver, StaticPromptEvaluator};
 use crate::{
-    AgentRuntimeBuilder, DefaultCommandHookExecutor, HookRunner, NoopAgentHookEvaluator,
-    ReqwestHttpHookExecutor,
+    AgentRuntimeBuilder, DefaultCommandHookExecutor, DefaultWasmHookExecutor, HookRunner,
+    NoopAgentHookEvaluator, ReqwestHttpHookExecutor,
 };
 use skills::{Skill, SkillCatalog};
 use std::collections::BTreeMap;
@@ -12,7 +12,7 @@ use tools::ToolExecutionContext;
 use types::{HookEvent, HookHandler, HookRegistration, PromptHookHandler};
 
 #[tokio::test]
-async fn runtime_keeps_dynamic_hook_context_append_only_and_disables_prompt_skill_matching() {
+async fn runtime_applies_hook_effects_without_mutating_base_instructions() {
     let dir = tempfile::tempdir().unwrap();
     let store = Arc::new(InMemoryRunStore::new());
     let backend = Arc::new(RecordingBackend::default());
@@ -35,6 +35,7 @@ async fn runtime_keeps_dynamic_hook_context_append_only_and_disables_prompt_skil
         Arc::new(ReqwestHttpHookExecutor::default()),
         Arc::new(StaticPromptEvaluator),
         Arc::new(NoopAgentHookEvaluator),
+        Arc::new(DefaultWasmHookExecutor),
     ));
     let mut runtime = AgentRuntimeBuilder::new(backend.clone(), store.clone())
         .hook_runner(hook_runner)
@@ -53,6 +54,7 @@ async fn runtime_keeps_dynamic_hook_context_append_only_and_disables_prompt_skil
                 prompt: "ignored".to_string(),
             }),
             timeout_ms: None,
+            execution: None,
         }])
         .skill_catalog(skill_catalog)
         .build();
@@ -66,31 +68,28 @@ async fn runtime_keeps_dynamic_hook_context_append_only_and_disables_prompt_skil
     let requests = backend.requests();
     assert_eq!(requests.len(), 1);
     assert_eq!(requests[0].instructions, vec!["static base instruction"]);
-    assert!(requests[0].additional_context.is_empty());
-    assert_eq!(requests[0].messages.len(), 3);
+    assert_eq!(
+        requests[0].additional_context,
+        vec!["hook additional context".to_string()]
+    );
+    assert_eq!(requests[0].messages.len(), 2);
     assert_eq!(requests[0].messages[0].role, types::MessageRole::System);
     assert_eq!(
         requests[0].messages[0].text_content(),
         "hook system message"
     );
-    assert_eq!(requests[0].messages[1].role, types::MessageRole::System);
+    assert_eq!(requests[0].messages[1].role, types::MessageRole::User);
     assert_eq!(
         requests[0].messages[1].text_content(),
-        "hook additional context"
-    );
-    assert_eq!(requests[0].messages[2].role, types::MessageRole::User);
-    assert_eq!(
-        requests[0].messages[2].text_content(),
         "please use acrobat skill on this file"
     );
 
     let transcript = store.replay_transcript(&runtime.run_id()).await.unwrap();
-    assert_eq!(transcript.len(), 4);
+    assert_eq!(transcript.len(), 3);
     assert_eq!(transcript[0].text_content(), "hook system message");
-    assert_eq!(transcript[1].text_content(), "hook additional context");
     assert_eq!(
-        transcript[2].text_content(),
+        transcript[1].text_content(),
         "please use acrobat skill on this file"
     );
-    assert_eq!(transcript[3].text_content(), "ok");
+    assert_eq!(transcript[2].text_content(), "ok");
 }

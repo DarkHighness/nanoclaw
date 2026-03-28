@@ -1,5 +1,5 @@
 use crate::{
-    AgentId, CallId, EnvelopeId, EventId, HookEvent, HookOutput, Message, MessageId, Reasoning,
+    AgentId, CallId, EnvelopeId, EventId, HookEvent, HookResult, Message, MessageId, Reasoning,
     ResponseId, RunId, SessionId, ToolCall, ToolCallId, ToolName, ToolSpec, TurnId,
 };
 use schemars::JsonSchema;
@@ -288,7 +288,7 @@ pub enum RunEventKind {
     HookCompleted {
         hook_name: String,
         event: HookEvent,
-        output: HookOutput,
+        output: HookResult,
     },
     TranscriptMessage {
         message: Message,

@@ -144,8 +144,8 @@ pub(super) fn format_run_event_line(event: &RunEventEnvelope) -> String {
         RunEventKind::HookCompleted {
             hook_name, output, ..
         } => format!(
-            "hook_completed {hook_name} continue={} decision={:?}",
-            output.r#continue, output.decision
+            "hook_completed {hook_name} effects={}",
+            output.effects.len()
         ),
         RunEventKind::TranscriptMessage { message } => {
             format!("transcript {}", preview_text(&message_to_text(message), 42))

@@ -305,6 +305,7 @@ fn resolve_relative_path(base_dir: &Path, value: &str) -> PathBuf {
 mod tests {
     use super::{NanoclawCoreConfig, ProviderKind};
     use agent::AgentWorkspaceLayout;
+    use agent::types::{HookHostApiGrant, HookMutationPermission};
     use std::path::PathBuf;
     use std::sync::{Mutex, OnceLock};
     use tempfile::tempdir;
@@ -373,6 +374,14 @@ mod tests {
                 [plugins.entries.memory-core]
                 enabled = true
 
+                [plugins.entries.memory-core.permissions]
+                read = ["docs"]
+                write = [".nanoclaw/plugin-state/memory-core"]
+                exec = [".nanoclaw/plugins-cache/memory-core"]
+                network = { allow_domains = ["api.example.com"] }
+                message_mutation = "review_required"
+                host_api = ["read_file", "emit_hook_effect"]
+
                 [plugins.entries.memory-core.config]
                 vector_store = { kind = "sqlite", path = ".nanoclaw/memory/indexes/test.sqlite" }
             "#,
@@ -426,6 +435,33 @@ mod tests {
                 .and_then(|table| table.get("path"))
                 .and_then(toml::Value::as_str),
             Some(".nanoclaw/memory/indexes/test.sqlite")
+        );
+        let permissions = &config
+            .plugins
+            .entries
+            .get("memory-core")
+            .unwrap()
+            .permissions;
+        assert_eq!(permissions.read, vec!["docs".to_string()]);
+        assert_eq!(
+            permissions.write,
+            vec![".nanoclaw/plugin-state/memory-core".to_string()]
+        );
+        assert_eq!(
+            permissions.exec,
+            vec![".nanoclaw/plugins-cache/memory-core".to_string()]
+        );
+        assert_eq!(
+            permissions.network,
+            agent::plugins::PluginNetworkAccess::AllowDomains(vec!["api.example.com".to_string()])
+        );
+        assert_eq!(
+            permissions.message_mutation,
+            HookMutationPermission::ReviewRequired
+        );
+        assert_eq!(
+            permissions.host_api,
+            vec![HookHostApiGrant::ReadFile, HookHostApiGrant::EmitHookEffect]
         );
         assert_eq!(
             config.resolved_store_dir(dir.path()),

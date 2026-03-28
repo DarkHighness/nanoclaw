@@ -1,15 +1,14 @@
 use crate::Result;
 use async_trait::async_trait;
-use types::{HookContext, HookOutput, ToolName};
+use types::{HookContext, HookRegistration, HookResult};
 
 #[async_trait]
 pub trait AgentHookEvaluator: Send + Sync {
     async fn evaluate(
         &self,
-        prompt: &str,
-        allowed_tools: &[ToolName],
+        registration: &HookRegistration,
         context: HookContext,
-    ) -> Result<HookOutput>;
+    ) -> Result<HookResult>;
 }
 
 pub struct NoopAgentHookEvaluator;
@@ -18,10 +17,9 @@ pub struct NoopAgentHookEvaluator;
 impl AgentHookEvaluator for NoopAgentHookEvaluator {
     async fn evaluate(
         &self,
-        _prompt: &str,
-        _allowed_tools: &[ToolName],
+        _registration: &HookRegistration,
         _context: HookContext,
-    ) -> Result<HookOutput> {
-        Ok(HookOutput::default())
+    ) -> Result<HookResult> {
+        Ok(HookResult::default())
     }
 }

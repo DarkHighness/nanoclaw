@@ -1,77 +1,29 @@
 use crate::{
-    AgentHookEvaluator, CommandHookExecutor, DefaultCommandHookExecutor, HttpHookExecutor,
-    NoopAgentHookEvaluator, NoopPromptHookEvaluator, PromptHookEvaluator, ReqwestHttpHookExecutor,
-    Result, matches_hook,
+    AgentHookEvaluator, CommandHookExecutor, DefaultCommandHookExecutor, DefaultWasmHookExecutor,
+    HttpHookExecutor, NoopAgentHookEvaluator, NoopPromptHookEvaluator, PromptHookEvaluator,
+    ReqwestHttpHookExecutor, Result, WasmHookExecutor, matches_hook,
 };
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
-use types::{
-    GateDecision, HookContext, HookDecision, HookHandler, HookOutput, HookRegistration,
-    PermissionBehavior, PermissionDecision,
-};
+use types::{HookContext, HookHandler, HookRegistration, HookResult};
 
-#[derive(Default)]
-pub struct HookAggregate {
-    pub system_messages: Vec<String>,
-    pub additional_context: Vec<String>,
-    pub permission_decision: Option<PermissionDecision>,
-    pub permission_behavior: Option<PermissionBehavior>,
-    pub gate_decision: Option<GateDecision>,
-    pub gate_reason: Option<String>,
-    pub continue_allowed: bool,
-    pub stop_reason: Option<String>,
+#[derive(Clone, Debug, PartialEq)]
+pub struct HookInvocation {
+    pub registration: HookRegistration,
+    pub output: HookResult,
 }
 
-impl HookAggregate {
-    pub fn absorb(&mut self, output: HookOutput) {
-        if let Some(message) = output.system_message {
-            self.system_messages.push(message);
-        }
-        self.additional_context.extend(output.additional_context);
-        self.continue_allowed &= output.r#continue;
-        if self.stop_reason.is_none() {
-            self.stop_reason = output.stop_reason;
-        }
-        if let Some(decision) = output.decision {
-            match decision {
-                HookDecision::PreToolUse {
-                    permission_decision,
-                } => {
-                    self.permission_decision =
-                        Some(match (self.permission_decision, permission_decision) {
-                            (Some(PermissionDecision::Deny), _) | (_, PermissionDecision::Deny) => {
-                                PermissionDecision::Deny
-                            }
-                            (Some(PermissionDecision::Ask), _) | (_, PermissionDecision::Ask) => {
-                                PermissionDecision::Ask
-                            }
-                            _ => PermissionDecision::Allow,
-                        });
-                }
-                HookDecision::PermissionRequest { behavior, reason } => {
-                    self.permission_behavior = Some(match (self.permission_behavior, behavior) {
-                        (Some(PermissionBehavior::Deny), _) | (_, PermissionBehavior::Deny) => {
-                            PermissionBehavior::Deny
-                        }
-                        _ => PermissionBehavior::Allow,
-                    });
-                    if self.gate_reason.is_none() {
-                        self.gate_reason = reason;
-                    }
-                }
-                HookDecision::Gate { decision, reason } => {
-                    if matches!(decision, GateDecision::Block) {
-                        self.gate_decision = Some(GateDecision::Block);
-                    } else if self.gate_decision.is_none() {
-                        self.gate_decision = Some(GateDecision::Allow);
-                    }
-                    if self.gate_reason.is_none() {
-                        self.gate_reason = reason;
-                    }
-                }
-                HookDecision::Elicitation { .. } => {}
-            }
-        }
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct HookInvocationBatch {
+    pub invocations: Vec<HookInvocation>,
+}
+
+impl HookInvocationBatch {
+    pub fn push(&mut self, registration: HookRegistration, output: HookResult) {
+        self.invocations.push(HookInvocation {
+            registration,
+            output,
+        });
     }
 }
 
@@ -80,8 +32,9 @@ pub struct HookRunner {
     http_executor: Arc<dyn HttpHookExecutor>,
     prompt_evaluator: Arc<dyn PromptHookEvaluator>,
     agent_evaluator: Arc<dyn AgentHookEvaluator>,
-    async_tx: mpsc::Sender<HookOutput>,
-    async_rx: Mutex<mpsc::Receiver<HookOutput>>,
+    wasm_executor: Arc<dyn WasmHookExecutor>,
+    async_tx: mpsc::Sender<HookInvocation>,
+    async_rx: Mutex<mpsc::Receiver<HookInvocation>>,
 }
 
 const ASYNC_HOOK_BUFFER_CAPACITY: usize = 64;
@@ -94,6 +47,7 @@ impl Default for HookRunner {
             http_executor: Arc::new(ReqwestHttpHookExecutor::default()),
             prompt_evaluator: Arc::new(NoopPromptHookEvaluator),
             agent_evaluator: Arc::new(NoopAgentHookEvaluator),
+            wasm_executor: Arc::new(DefaultWasmHookExecutor),
             async_tx,
             async_rx: Mutex::new(async_rx),
         }
@@ -107,42 +61,35 @@ impl HookRunner {
         http_executor: Arc<dyn HttpHookExecutor>,
         prompt_evaluator: Arc<dyn PromptHookEvaluator>,
         agent_evaluator: Arc<dyn AgentHookEvaluator>,
+        wasm_executor: Arc<dyn WasmHookExecutor>,
     ) -> Self {
-        // Asynchronous hooks are decoupled from the main turn loop, but the
-        // queue is still bounded so a stalled host cannot accumulate unbounded
-        // side-channel context in memory.
         let (async_tx, async_rx) = mpsc::channel(ASYNC_HOOK_BUFFER_CAPACITY);
         Self {
             command_executor,
             http_executor,
             prompt_evaluator,
             agent_evaluator,
+            wasm_executor,
             async_tx,
             async_rx: Mutex::new(async_rx),
         }
     }
 
-    pub async fn drain_async_context(&self) -> HookAggregate {
-        let mut aggregate = HookAggregate::default();
-        // The receiver is single-consumer and drained with non-blocking
-        // `try_recv`, so a synchronous mutex is cheaper than an async mutex
-        // here and never crosses an `.await`.
+    pub async fn drain_async_invocations(&self) -> HookInvocationBatch {
+        let mut batch = HookInvocationBatch::default();
         let mut guard = self.async_rx.lock().expect("hook async receiver lock");
-        while let Ok(output) = guard.try_recv() {
-            aggregate.absorb(output);
+        while let Ok(invocation) = guard.try_recv() {
+            batch.invocations.push(invocation);
         }
-        aggregate
+        batch
     }
 
     pub async fn run(
         &self,
         registrations: &[HookRegistration],
         context: HookContext,
-    ) -> Result<HookAggregate> {
-        let mut aggregate = HookAggregate {
-            continue_allowed: true,
-            ..HookAggregate::default()
-        };
+    ) -> Result<HookInvocationBatch> {
+        let mut batch = HookInvocationBatch::default();
         for registration in registrations
             .iter()
             .filter(|registration| registration.event == context.event)
@@ -154,54 +101,56 @@ impl HookRunner {
                 HookHandler::Command(command) if command.asynchronous => {
                     let tx = self.async_tx.clone();
                     let command_executor = self.command_executor.clone();
-                    let command_text = command.command.clone();
+                    let registration = registration.clone();
                     let context = context.clone();
                     tokio::spawn(async move {
-                        if let Ok(output) = command_executor.execute(&command_text, context).await {
+                        if let Ok(output) = command_executor.execute(&registration, context).await {
                             let _ = tx
-                                .send(HookOutput {
-                                    decision: None,
-                                    ..output
+                                .send(HookInvocation {
+                                    registration,
+                                    output,
                                 })
                                 .await;
                         }
                     });
                 }
-                HookHandler::Command(command) => {
-                    aggregate.absorb(
-                        self.command_executor
-                            .execute(&command.command, context.clone())
-                            .await?,
-                    );
+                HookHandler::Command(_) => {
+                    let output = self
+                        .command_executor
+                        .execute(registration, context.clone())
+                        .await?;
+                    batch.push(registration.clone(), output);
                 }
-                HookHandler::Http(http) => {
-                    aggregate.absorb(
-                        self.http_executor
-                            .execute(
-                                &http.method,
-                                &http.url,
-                                &http.headers.clone().into_iter().collect(),
-                                context.clone(),
-                            )
-                            .await?,
-                    );
+                HookHandler::Http(_) => {
+                    let output = self
+                        .http_executor
+                        .execute(registration, context.clone())
+                        .await?;
+                    batch.push(registration.clone(), output);
                 }
-                HookHandler::Prompt(prompt) => {
-                    aggregate.absorb(
-                        self.prompt_evaluator
-                            .evaluate(&prompt.prompt, context.clone())
-                            .await?,
-                    );
+                HookHandler::Prompt(_) => {
+                    let output = self
+                        .prompt_evaluator
+                        .evaluate(registration, context.clone())
+                        .await?;
+                    batch.push(registration.clone(), output);
                 }
-                HookHandler::Agent(agent) => {
-                    aggregate.absorb(
-                        self.agent_evaluator
-                            .evaluate(&agent.prompt, &agent.allowed_tools, context.clone())
-                            .await?,
-                    );
+                HookHandler::Agent(_) => {
+                    let output = self
+                        .agent_evaluator
+                        .evaluate(registration, context.clone())
+                        .await?;
+                    batch.push(registration.clone(), output);
+                }
+                HookHandler::Wasm(_) => {
+                    let output = self
+                        .wasm_executor
+                        .execute(registration, context.clone())
+                        .await?;
+                    batch.push(registration.clone(), output);
                 }
             }
         }
-        Ok(aggregate)
+        Ok(batch)
     }
 }

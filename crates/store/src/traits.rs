@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashSet;
 use thiserror::Error;
-use types::{Message, RunEventEnvelope, RunEventKind, RunId, SessionId};
+use types::{HookEffect, Message, RunEventEnvelope, RunEventKind, RunId, SessionId};
 
 #[derive(Debug, Error)]
 pub enum RunStoreError {
@@ -258,12 +258,41 @@ pub(crate) fn searchable_event_strings(event: &RunEventEnvelope) -> Vec<String> 
             hook_name, output, ..
         } => {
             values.push(hook_name.clone());
-            if let Some(message) = &output.system_message {
-                values.push(message.clone());
-            }
-            values.extend(output.additional_context.clone());
-            if let Some(reason) = &output.stop_reason {
-                values.push(reason.clone());
+            for effect in &output.effects {
+                match effect {
+                    HookEffect::AppendMessage { parts, .. } => {
+                        values.extend(parts.iter().filter_map(|part| match part {
+                            types::MessagePart::Text { text } => Some(text.clone()),
+                            _ => None,
+                        }));
+                    }
+                    HookEffect::AddContext { text } | HookEffect::InjectInstruction { text } => {
+                        values.push(text.clone());
+                    }
+                    HookEffect::Stop { reason } => {
+                        values.push(reason.clone());
+                    }
+                    HookEffect::RewriteToolArgs {
+                        tool_name,
+                        arguments,
+                    } => {
+                        values.push(tool_name.to_string());
+                        values.push(arguments.to_string());
+                    }
+                    HookEffect::SetGateDecision { reason, .. }
+                    | HookEffect::SetPermissionDecision { reason, .. }
+                    | HookEffect::SetPermissionBehavior { reason, .. } => {
+                        if let Some(reason) = reason {
+                            values.push(reason.clone());
+                        }
+                    }
+                    HookEffect::ReplaceMessage { message, .. } => {
+                        values.push(message.text_content());
+                    }
+                    HookEffect::PatchMessage { .. }
+                    | HookEffect::RemoveMessage { .. }
+                    | HookEffect::Elicitation { .. } => {}
+                }
             }
         }
         RunEventKind::TranscriptMessage { message } => {
@@ -523,20 +552,68 @@ fn collect_memory_export_sections(events: &[RunEventEnvelope]) -> MemoryExportSe
             RunEventKind::HookCompleted {
                 hook_name, output, ..
             } => {
-                if let Some(message) = &output.system_message {
-                    push_unique(
-                        &mut sections.decisions,
-                        format!("{hook_name}: {}", preview_text(message, 120)),
-                    );
-                }
-                if let Some(reason) = &output.stop_reason {
-                    push_unique(
-                        &mut sections.failures,
-                        format!("{hook_name}: {}", preview_text(reason, 120)),
-                    );
-                }
-                for line in &output.additional_context {
-                    push_unique(&mut sections.follow_up, preview_text(line, 120));
+                for effect in &output.effects {
+                    match effect {
+                        HookEffect::AppendMessage { parts, .. } => {
+                            for text in parts.iter().filter_map(|part| match part {
+                                types::MessagePart::Text { text } => Some(text.as_str()),
+                                _ => None,
+                            }) {
+                                push_unique(
+                                    &mut sections.decisions,
+                                    format!("{hook_name}: {}", preview_text(text, 120)),
+                                );
+                            }
+                        }
+                        HookEffect::ReplaceMessage { message, .. } => {
+                            push_unique(
+                                &mut sections.decisions,
+                                format!(
+                                    "{hook_name}: {}",
+                                    preview_text(&message.text_content(), 120)
+                                ),
+                            );
+                        }
+                        HookEffect::AddContext { text }
+                        | HookEffect::InjectInstruction { text } => {
+                            push_unique(
+                                &mut sections.follow_up,
+                                format!("{hook_name}: {}", preview_text(text, 120)),
+                            );
+                        }
+                        HookEffect::Stop { reason } => {
+                            push_unique(
+                                &mut sections.failures,
+                                format!("{hook_name}: {}", preview_text(reason, 120)),
+                            );
+                        }
+                        HookEffect::SetGateDecision { reason, .. }
+                        | HookEffect::SetPermissionDecision { reason, .. }
+                        | HookEffect::SetPermissionBehavior { reason, .. } => {
+                            if let Some(reason) = reason {
+                                push_unique(
+                                    &mut sections.decisions,
+                                    format!("{hook_name}: {}", preview_text(reason, 120)),
+                                );
+                            }
+                        }
+                        HookEffect::RewriteToolArgs {
+                            tool_name,
+                            arguments,
+                        } => {
+                            push_unique(
+                                &mut sections.follow_up,
+                                format!(
+                                    "{hook_name}: rewrite {} {}",
+                                    tool_name,
+                                    preview_text(&arguments.to_string(), 120)
+                                ),
+                            );
+                        }
+                        HookEffect::PatchMessage { .. }
+                        | HookEffect::RemoveMessage { .. }
+                        | HookEffect::Elicitation { .. } => {}
+                    }
                 }
             }
             RunEventKind::ToolApprovalResolved {

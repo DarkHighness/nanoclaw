@@ -38,6 +38,7 @@ mod tests {
                 asynchronous: false,
             }),
             timeout_ms: None,
+            execution: None,
         };
         let context = HookContext {
             event: HookEvent::PreToolUse,

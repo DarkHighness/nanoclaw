@@ -4,7 +4,7 @@ use crate::{
     estimate_prompt_tokens,
 };
 use serde_json::json;
-use types::{GateDecision, HookContext, HookEvent, Message, TurnId};
+use types::{HookContext, HookEvent, Message, TurnId};
 
 impl AgentRuntime {
     fn visible_message_indices(&self) -> Vec<usize> {
@@ -112,17 +112,19 @@ impl AgentRuntime {
                 },
             )
             .await?;
-        if matches!(pre_hooks.gate_decision, Some(GateDecision::Block))
-            || !pre_hooks.continue_allowed
-        {
+        let pre_effects = self
+            .apply_hook_effects(turn_id, pre_hooks, None, None)
+            .await?;
+        if pre_effects.blocked_reason("compaction blocked").is_some() {
             return Ok(false);
         }
 
         let mut compaction_instructions = instructions;
-        if let Some(message) = pre_hooks.system_messages.first() {
+        if !pre_effects.injected_instructions.is_empty() {
+            let injected = pre_effects.injected_instructions.join("\n\n");
             compaction_instructions = Some(match compaction_instructions {
-                Some(existing) => format!("{existing}\n\n{message}"),
-                None => message.clone(),
+                Some(existing) => format!("{existing}\n\n{injected}"),
+                None => injected,
             });
         }
 
@@ -194,7 +196,8 @@ impl AgentRuntime {
                 },
             )
             .await?;
-        self.append_hook_context_messages(turn_id, &post_hooks)
+        let _ = self
+            .apply_hook_effects(turn_id, post_hooks, None, None)
             .await?;
         Ok(true)
     }

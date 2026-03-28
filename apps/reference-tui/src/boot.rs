@@ -136,6 +136,7 @@ async fn bootstrap_from_parts(
         Arc::new(runtime::ReqwestHttpHookExecutor::default()),
         Arc::new(runtime::NoopPromptHookEvaluator),
         Arc::new(runtime::NoopAgentHookEvaluator),
+        Arc::new(runtime::DefaultWasmHookExecutor),
     ));
 
     let mut tools = ToolRegistry::new();
@@ -158,7 +159,7 @@ async fn bootstrap_from_parts(
     }
 
     let driver_outcome = agent::activate_driver_requests(
-        &plugin_plan.driver_activations,
+        &plugin_plan.runtime_activations,
         &workspace_root,
         Some(store.clone()),
         &mut tools,
@@ -452,6 +453,8 @@ Use this skill when asked.
                 id = "memory-core"
                 kind = "memory"
                 enabled_by_default = false
+
+                [runtime]
                 driver = "builtin.memory-core"
             "#,
         )

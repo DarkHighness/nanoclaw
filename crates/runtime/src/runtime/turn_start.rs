@@ -3,8 +3,7 @@ use crate::{Result, RuntimeObserver, RuntimeProgressEvent, append_transcript_mes
 use serde_json::json;
 use std::collections::BTreeMap;
 use types::{
-    AgentCoreError, GateDecision, HookContext, HookEvent, HookRegistration, Message, RunEventKind,
-    TurnId,
+    AgentCoreError, HookContext, HookEvent, HookRegistration, Message, RunEventKind, TurnId,
 };
 
 impl AgentRuntime {
@@ -16,12 +15,14 @@ impl AgentRuntime {
         prompt: &str,
         observer: &mut dyn RuntimeObserver,
     ) -> Result<()> {
+        self.clear_pending_request_effects();
         self.ensure_session_started(turn_id, hooks).await?;
         self.record_instruction_load(turn_id, hooks, instructions)
             .await?;
 
-        let async_context = self.hook_runner.drain_async_context().await;
-        self.append_hook_context_messages(turn_id, &async_context)
+        let async_context = self.hook_runner.drain_async_invocations().await;
+        let _ = self
+            .apply_hook_effects(turn_id, async_context, None, None)
             .await?;
 
         self.submit_user_prompt(turn_id, hooks, prompt, observer)
@@ -52,8 +53,12 @@ impl AgentRuntime {
                 },
             )
             .await?;
-        self.append_hook_context_messages(turn_id, &session_start_hooks)
+        let session_start_effects = self
+            .apply_hook_effects(turn_id, session_start_hooks, None, None)
             .await?;
+        if let Some(reason) = session_start_effects.blocked_reason("session start blocked") {
+            return Err(AgentCoreError::HookBlocked(reason).into());
+        }
         self.append_event(
             None,
             None,
@@ -91,8 +96,12 @@ impl AgentRuntime {
                 },
             )
             .await?;
-        self.append_hook_context_messages(turn_id, &instruction_hooks)
+        let instruction_effects = self
+            .apply_hook_effects(turn_id, instruction_hooks, None, None)
             .await?;
+        if let Some(reason) = instruction_effects.blocked_reason("instruction load blocked") {
+            return Err(AgentCoreError::HookBlocked(reason).into());
+        }
         self.append_event(
             Some(turn_id.clone()),
             None,
@@ -123,23 +132,26 @@ impl AgentRuntime {
                 },
             )
             .await?;
-        if matches!(user_hooks.gate_decision, Some(GateDecision::Block))
-            || !user_hooks.continue_allowed
-        {
-            return Err(AgentCoreError::HookBlocked(
-                user_hooks
-                    .gate_reason
-                    .or(user_hooks.stop_reason)
-                    .unwrap_or_else(|| "user prompt blocked".to_string()),
+        let user_effects = self
+            .apply_hook_effects(
+                turn_id,
+                user_hooks,
+                Some(Message::user(prompt.to_string())),
+                None,
             )
-            .into());
-        }
-        self.append_hook_context_messages(turn_id, &user_hooks)
             .await?;
+        if let Some(reason) = user_effects.blocked_reason("user prompt blocked") {
+            return Err(AgentCoreError::HookBlocked(reason).into());
+        }
+        let Some(user_message) = user_effects.current_message else {
+            return Err(
+                AgentCoreError::HookBlocked("user prompt removed by hook".to_string()).into(),
+            );
+        };
 
         let transcript_event = append_transcript_message(
             &mut self.session.transcript,
-            Message::user(prompt.to_string()),
+            user_message,
             self.session.run_id.clone(),
             self.session.session_id.clone(),
             turn_id.clone(),

@@ -4,4 +4,6 @@ name = "Memory Embed"
 description = "Markdown memory with hybrid lexical and embedding retrieval"
 kind = "memory"
 enabled_by_default = false
+
+[runtime]
 driver = "builtin.memory-embed"

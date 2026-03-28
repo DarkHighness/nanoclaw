@@ -376,6 +376,7 @@ mod tests {
             filesystem: FilesystemPolicy {
                 readable_roots: vec![workspace.path().to_path_buf()],
                 writable_roots: vec![workspace.path().to_path_buf()],
+                executable_roots: vec![],
                 protected_paths: vec![],
             },
             network: NetworkPolicy::Off,
@@ -433,6 +434,7 @@ mod tests {
                     filesystem: FilesystemPolicy {
                         readable_roots: vec![workspace.path().to_path_buf()],
                         writable_roots: vec![workspace.path().to_path_buf()],
+                        executable_roots: vec![],
                         protected_paths: vec![],
                     },
                     network: NetworkPolicy::Off,
@@ -470,6 +472,7 @@ mod tests {
                     filesystem: FilesystemPolicy {
                         readable_roots: vec![workspace.path().to_path_buf()],
                         writable_roots: vec![workspace.path().to_path_buf()],
+                        executable_roots: vec![],
                         protected_paths: vec![],
                     },
                     network: NetworkPolicy::Off,
@@ -504,6 +507,7 @@ mod tests {
                     filesystem: FilesystemPolicy {
                         readable_roots: vec![workspace.path().to_path_buf()],
                         writable_roots: vec![workspace.path().to_path_buf()],
+                        executable_roots: vec![],
                         protected_paths: vec![],
                     },
                     network: NetworkPolicy::AllowDomains(vec!["example.com".to_string()]),

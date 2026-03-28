@@ -14,6 +14,10 @@ pub struct ToolExecutionContext {
     pub worktree_root: Option<PathBuf>,
     pub sandbox_root: Option<PathBuf>,
     pub additional_roots: Vec<PathBuf>,
+    pub read_only_roots: Vec<PathBuf>,
+    pub writable_roots: Vec<PathBuf>,
+    pub exec_roots: Vec<PathBuf>,
+    pub network_policy: Option<sandbox::NetworkPolicy>,
     pub workspace_only: bool,
     pub container_workdir: Option<String>,
     pub model_context_window_tokens: Option<usize>,
@@ -71,6 +75,9 @@ impl ToolExecutionContext {
             roots.push(worktree_root);
         }
         roots.extend(self.additional_roots.iter().map(PathBuf::as_path));
+        roots.extend(self.read_only_roots.iter().map(PathBuf::as_path));
+        roots.extend(self.writable_roots.iter().map(PathBuf::as_path));
+        roots.extend(self.exec_roots.iter().map(PathBuf::as_path));
         roots
     }
 
@@ -100,6 +107,21 @@ impl ToolExecutionContext {
         Ok(())
     }
 
+    pub fn assert_path_execute_allowed(&self, path: &Path) -> Result<()> {
+        if self.exec_roots.is_empty() {
+            return Err(crate::ToolError::invalid(format!(
+                "execute access is not granted for {}",
+                path.display()
+            )));
+        }
+        sandbox::assert_filesystem_access(
+            &self.sandbox_policy(),
+            path,
+            sandbox::FilesystemAccess::Execute,
+        )?;
+        Ok(())
+    }
+
     pub fn assert_path_allowed(&self, path: &Path) -> Result<()> {
         self.assert_path_read_allowed(path)
     }
@@ -110,6 +132,10 @@ impl ToolExecutionContext {
             workspace_root: self.effective_root().to_path_buf(),
             worktree_root: self.worktree_root.clone(),
             additional_roots: self.additional_roots.clone(),
+            read_only_roots: self.read_only_roots.clone(),
+            writable_roots: self.writable_roots.clone(),
+            exec_roots: self.exec_roots.clone(),
+            network_policy: self.network_policy.clone(),
             workspace_only: self.workspace_only,
         }
     }

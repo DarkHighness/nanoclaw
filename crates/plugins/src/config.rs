@@ -1,6 +1,8 @@
+use crate::manifest::PluginNetworkAccess;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use toml::map::Map;
+use types::{HookHostApiGrant, HookMutationPermission};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct PluginSlotsConfig {
@@ -8,10 +10,28 @@ pub struct PluginSlotsConfig {
     pub memory: Option<String>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct PluginPermissionGrant {
+    #[serde(default)]
+    pub read: Vec<String>,
+    #[serde(default)]
+    pub write: Vec<String>,
+    #[serde(default)]
+    pub exec: Vec<String>,
+    #[serde(default)]
+    pub network: PluginNetworkAccess,
+    #[serde(default)]
+    pub message_mutation: HookMutationPermission,
+    #[serde(default)]
+    pub host_api: Vec<HookHostApiGrant>,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
 pub struct PluginEntryConfig {
     #[serde(default)]
     pub enabled: Option<bool>,
+    #[serde(default)]
+    pub permissions: PluginPermissionGrant,
     #[serde(default)]
     pub config: Map<String, toml::Value>,
 }

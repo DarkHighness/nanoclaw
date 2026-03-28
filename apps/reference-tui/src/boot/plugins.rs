@@ -43,6 +43,7 @@ pub(super) fn build_plugin_activation_plan(
                     id.clone(),
                     PluginEntryConfig {
                         enabled: entry.enabled,
+                        permissions: entry.permissions.clone(),
                         config: entry.config.clone().into_iter().collect(),
                     },
                 )

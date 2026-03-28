@@ -4,8 +4,8 @@ use futures::StreamExt;
 use serde_json::json;
 use tracing::{debug, info, warn};
 use types::{
-    AgentCoreError, GateDecision, HookContext, HookEvent, HookRegistration, Message, MessageId,
-    MessagePart, ModelEvent, RunEventKind, ToolCall, TurnId,
+    AgentCoreError, HookContext, HookEvent, HookRegistration, Message, MessageId, MessagePart,
+    ModelEvent, RunEventKind, ToolCall, TurnId,
 };
 
 struct TurnResponse {
@@ -48,8 +48,10 @@ impl AgentRuntime {
                     self.handle_tool_call(hooks, turn_id, call, observer)
                         .await?;
                 }
-                let drained = self.hook_runner.drain_async_context().await;
-                self.append_hook_context_messages(turn_id, &drained).await?;
+                let drained = self.hook_runner.drain_async_invocations().await;
+                let _ = self
+                    .apply_hook_effects(turn_id, drained, None, None)
+                    .await?;
                 continue;
             }
 
@@ -209,6 +211,7 @@ impl AgentRuntime {
             assistant_text: response.assistant_text.clone(),
             tool_calls: response.tool_calls.clone(),
         })?;
+        self.clear_pending_request_effects();
         Ok(response)
     }
 
@@ -280,15 +283,10 @@ impl AgentRuntime {
                 },
             )
             .await?;
-
-        if matches!(stop_hooks.gate_decision, Some(GateDecision::Block))
-            || !stop_hooks.continue_allowed
-        {
-            let reason = stop_hooks
-                .gate_reason
-                .clone()
-                .or(stop_hooks.stop_reason.clone())
-                .unwrap_or_else(|| "stop blocked".to_string());
+        let stop_effects = self
+            .apply_hook_effects(turn_id, stop_hooks, None, None)
+            .await?;
+        if let Some(reason) = stop_effects.blocked_reason("stop blocked") {
             self.append_event(
                 Some(turn_id.clone()),
                 None,
@@ -297,11 +295,12 @@ impl AgentRuntime {
                 },
             )
             .await?;
-            if stop_hooks.system_messages.is_empty() && stop_hooks.additional_context.is_empty() {
+            if stop_effects.appended_messages.is_empty()
+                && stop_effects.additional_context.is_empty()
+                && stop_effects.injected_instructions.is_empty()
+            {
                 return Err(AgentCoreError::HookBlocked(reason).into());
             }
-            self.append_hook_context_messages(turn_id, &stop_hooks)
-                .await?;
             return Ok(true);
         }
 

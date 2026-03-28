@@ -4,7 +4,7 @@ use mcp::McpServerConfig;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
-use types::HookRegistration;
+use types::{HookHandler, HookRegistration};
 
 const MANIFEST_RELATIVE_PATH: &str = ".nanoclaw-plugin/plugin.toml";
 
@@ -182,7 +182,9 @@ fn load_plugin(plugin_root: &Path, manifest_path: &Path) -> Result<DiscoveredPlu
     let mut hooks = Vec::new();
     for path in hook_paths {
         let parsed: HookFile = toml::from_str(&fs::read_to_string(&path)?)?;
-        hooks.extend(parsed.hooks);
+        for hook in parsed.hooks {
+            hooks.push(resolve_hook_paths(plugin_root, hook)?);
+        }
     }
 
     let mut mcp_servers = Vec::new();
@@ -205,6 +207,23 @@ fn load_plugin(plugin_root: &Path, manifest_path: &Path) -> Result<DiscoveredPlu
         hooks,
         mcp_servers,
     })
+}
+
+fn resolve_hook_paths(plugin_root: &Path, mut hook: HookRegistration) -> Result<HookRegistration> {
+    match &mut hook.handler {
+        HookHandler::Command(command) => {
+            command.command = resolve_safe_relative_path(plugin_root, &command.command)?
+                .to_string_lossy()
+                .to_string();
+        }
+        HookHandler::Wasm(wasm) => {
+            wasm.module = resolve_safe_relative_path(plugin_root, &wasm.module)?
+                .to_string_lossy()
+                .to_string();
+        }
+        HookHandler::Http(_) | HookHandler::Prompt(_) | HookHandler::Agent(_) => {}
+    }
+    Ok(hook)
 }
 
 fn resolve_safe_relative_path(root: &Path, value: &str) -> Result<PathBuf> {

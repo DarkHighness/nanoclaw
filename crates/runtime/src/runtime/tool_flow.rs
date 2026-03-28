@@ -7,8 +7,8 @@ use serde_json::json;
 use std::collections::BTreeMap;
 use tracing::warn;
 use types::{
-    AgentCoreError, GateDecision, HookContext, HookEvent, HookRegistration, Message,
-    PermissionBehavior, PermissionDecision, RunEventKind, ToolCall, ToolSpec, TurnId,
+    AgentCoreError, HookContext, HookEvent, HookRegistration, Message, PermissionBehavior,
+    PermissionDecision, RunEventKind, ToolCall, ToolSpec, TurnId,
 };
 
 impl AgentRuntime {
@@ -19,6 +19,7 @@ impl AgentRuntime {
         call: ToolCall,
         observer: &mut dyn RuntimeObserver,
     ) -> Result<()> {
+        let mut call = call;
         let tool_name = call.tool_name.clone();
         let tool = self
             .tool_registry
@@ -43,13 +44,22 @@ impl AgentRuntime {
                 },
             )
             .await?;
-        self.append_hook_context_messages(turn_id, &pre_hooks)
+        let pre_effects = self
+            .apply_hook_effects(turn_id, pre_hooks, None, Some(&tool_name))
             .await?;
+        if let Some(arguments) = pre_effects.rewritten_tool_arguments.clone() {
+            call.arguments = arguments;
+        }
 
         let mut approval_reasons = approval_reasons_for_tool(&tool_spec);
         let mut hook_approval_reasons = Vec::new();
         let mut policy_only_reasons = Vec::new();
-        match pre_hooks
+        if let Some(reason) = pre_effects.blocked_reason("tool use blocked") {
+            return self
+                .record_tool_failure_result(hooks, turn_id, &call, observer, reason)
+                .await;
+        }
+        match pre_effects
             .permission_decision
             .unwrap_or(PermissionDecision::Allow)
         {
@@ -73,12 +83,16 @@ impl AgentRuntime {
                         },
                     )
                     .await?;
-                self.append_hook_context_messages(turn_id, &permission_hooks)
+                let permission_effects = self
+                    .apply_hook_effects(turn_id, permission_hooks, None, Some(&tool_name))
                     .await?;
                 if matches!(
-                    permission_hooks.permission_behavior,
+                    permission_effects.permission_behavior,
                     Some(PermissionBehavior::Deny)
-                ) {
+                ) || permission_effects
+                    .blocked_reason("permission request denied")
+                    .is_some()
+                {
                     let error = AgentCoreError::PermissionDenied(tool_name.to_string()).to_string();
                     return self
                         .record_tool_failure_result(
@@ -86,12 +100,15 @@ impl AgentRuntime {
                             turn_id,
                             &call,
                             observer,
-                            permission_hooks.gate_reason.unwrap_or(error),
+                            permission_effects
+                                .gate_reason
+                                .or(permission_effects.stop_reason)
+                                .unwrap_or(error),
                         )
                         .await;
                 }
                 hook_approval_reasons.push(
-                    permission_hooks
+                    permission_effects
                         .gate_reason
                         .unwrap_or_else(|| "hook requested approval".to_string()),
                 );
@@ -307,19 +324,12 @@ impl AgentRuntime {
                         },
                     )
                     .await?;
-                if matches!(post_hooks.gate_decision, Some(GateDecision::Block))
-                    || !post_hooks.continue_allowed
-                {
-                    return Err(AgentCoreError::HookBlocked(
-                        post_hooks
-                            .gate_reason
-                            .or(post_hooks.stop_reason)
-                            .unwrap_or_else(|| "post tool hook blocked".to_string()),
-                    )
-                    .into());
-                }
-                self.append_hook_context_messages(turn_id, &post_hooks)
+                let post_effects = self
+                    .apply_hook_effects(turn_id, post_hooks, None, Some(&tool_name))
                     .await?;
+                if let Some(reason) = post_effects.blocked_reason("post tool hook blocked") {
+                    return Err(AgentCoreError::HookBlocked(reason).into());
+                }
             }
             Err(error) => {
                 self.tool_loop_detector
@@ -380,7 +390,8 @@ impl AgentRuntime {
                 },
             )
             .await?;
-        self.append_hook_context_messages(turn_id, &failure_hooks)
+        let _ = self
+            .apply_hook_effects(turn_id, failure_hooks, None, Some(&call.tool_name))
             .await?;
         Ok(())
     }
