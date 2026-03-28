@@ -812,4 +812,78 @@ mod tests {
             assert_eq!(listed.entries[0].metadata.status, MemoryStatus::Archived);
         }
     );
+
+    bounded_async_test!(
+        async fn list_hides_non_ready_entries_by_default_and_can_include_them_explicitly() {
+            let dir = tempdir().unwrap();
+            fs::create_dir_all(dir.path().join(".nanoclaw/memory/semantic"))
+                .await
+                .unwrap();
+            fs::write(
+                dir.path().join(".nanoclaw/memory/semantic/ready.md"),
+                "---\nscope: semantic\nlayer: rule\nstatus: ready\n---\n# Ready\n\nkeep this",
+            )
+            .await
+            .unwrap();
+            fs::write(
+                dir.path().join(".nanoclaw/memory/semantic/stale.md"),
+                "---\nscope: semantic\nlayer: rule\nstatus: stale\n---\n# Stale\n\nhide this by default",
+            )
+            .await
+            .unwrap();
+            fs::write(
+                dir.path().join(".nanoclaw/memory/semantic/archived.md"),
+                "---\nscope: semantic\nlayer: rule\nstatus: archived\n---\n# Archived\n\nshow only when requested",
+            )
+            .await
+            .unwrap();
+
+            let backend =
+                MemoryCoreBackend::new(dir.path().to_path_buf(), MemoryCoreConfig::default());
+            let default_list = backend
+                .list(MemoryListRequest {
+                    limit: Some(10),
+                    path_prefix: Some(".nanoclaw/memory/semantic/".to_string()),
+                    scopes: Some(vec![MemoryScope::Semantic]),
+                    tags: None,
+                    run_id: None,
+                    session_id: None,
+                    agent_name: None,
+                    task_id: None,
+                    include_stale: None,
+                })
+                .await
+                .unwrap();
+            assert_eq!(default_list.entries.len(), 1);
+            assert_eq!(default_list.entries[0].metadata.status, MemoryStatus::Ready);
+
+            let full_list = backend
+                .list(MemoryListRequest {
+                    limit: Some(10),
+                    path_prefix: Some(".nanoclaw/memory/semantic/".to_string()),
+                    scopes: Some(vec![MemoryScope::Semantic]),
+                    tags: None,
+                    run_id: None,
+                    session_id: None,
+                    agent_name: None,
+                    task_id: None,
+                    include_stale: Some(true),
+                })
+                .await
+                .unwrap();
+            assert_eq!(full_list.entries.len(), 3);
+            assert!(
+                full_list
+                    .entries
+                    .iter()
+                    .any(|entry| entry.metadata.status == MemoryStatus::Stale)
+            );
+            assert!(
+                full_list
+                    .entries
+                    .iter()
+                    .any(|entry| entry.metadata.status == MemoryStatus::Archived)
+            );
+        }
+    );
 }

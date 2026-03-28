@@ -553,7 +553,7 @@ fn normalize_list(value: Option<Vec<String>>) -> Option<Vec<String>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{MemoryGetTool, MemoryRecordTool, MemorySearchTool};
+    use super::{MemoryGetTool, MemoryListTool, MemoryRecordTool, MemorySearchTool};
     use crate::{MemoryCoreBackend, MemoryCoreConfig, MemoryScope};
     use serde_json::json;
     use std::sync::Arc;
@@ -646,6 +646,66 @@ mod tests {
         .unwrap();
         assert!(recorded.contains("Keep this in session scratchpad"));
         assert!(recorded.contains("run_id: run_1"));
+    }
+
+    #[tokio::test]
+    async fn memory_list_tool_hides_non_ready_entries_by_default() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join(".nanoclaw/memory/semantic"))
+            .await
+            .unwrap();
+        fs::write(
+            dir.path().join(".nanoclaw/memory/semantic/ready.md"),
+            "---\nscope: semantic\nlayer: rule\nstatus: ready\n---\n# Ready\n\nkeep",
+        )
+        .await
+        .unwrap();
+        fs::write(
+            dir.path().join(".nanoclaw/memory/semantic/archived.md"),
+            "---\nscope: semantic\nlayer: rule\nstatus: archived\n---\n# Archived\n\nhide by default",
+        )
+        .await
+        .unwrap();
+
+        let backend = Arc::new(MemoryCoreBackend::new(
+            dir.path().to_path_buf(),
+            MemoryCoreConfig::default(),
+        ));
+        let tool = MemoryListTool::new(backend);
+
+        let default_result = tool
+            .execute(
+                ToolCallId::new(),
+                json!({"path_prefix":".nanoclaw/memory/semantic/"}),
+                &ToolExecutionContext::default(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            default_result
+                .text_content()
+                .contains("[memory_list entries=1]")
+        );
+        assert!(default_result.text_content().contains("status=ready"));
+        assert!(!default_result.text_content().contains("status=archived"));
+
+        let full_result = tool
+            .execute(
+                ToolCallId::new(),
+                json!({
+                    "path_prefix":".nanoclaw/memory/semantic/",
+                    "include_stale": true
+                }),
+                &ToolExecutionContext::default(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            full_result
+                .text_content()
+                .contains("[memory_list entries=2]")
+        );
+        assert!(full_result.text_content().contains("status=archived"));
     }
 
     #[test]

@@ -42,7 +42,7 @@
 ## 3. 当前完成度校准
 
 - 插件系统：约 `68%`
-- Memory 系统：约 `80%`
+- Memory 系统：约 `85%`
 - 多 Agent 系统：约 `65% ~ 70%`
 
 结论：
@@ -136,6 +136,7 @@
   - `RunStore::export_for_memory()` 现在会真实聚合 `run/session/subagent/task`
   - `InMemoryRunStore` / `FileRunStore` 都补了真实 `subagent/task export` 测试
   - `memory_record` 对同一 managed file 的追加改为路径级串行化
+  - `memory_list.include_stale` 现在会真实控制非 `ready` 记录可见性
   - 非 ASCII `task_id` 的 working task 路径已回退到稳定 hash slug
 
 - 补齐 production 级 `subagent/task` runtime export：
@@ -174,6 +175,13 @@
   - 目标文件：
     - `crates/memory/src/retrieval_policy.rs`
     - `crates/memory/src/tools.rs`
+    - `crates/memory/src/memory_core.rs`
+  - 状态：
+    - `completed`
+  - 已落地语义：
+    - `include_stale = false | None` 时只返回 `ready`
+    - `include_stale = true` 时显式放开 `stale/superseded/archived`
+    - retrieval policy、backend、tool 三层都已补测试
 
 - 修复非 ASCII `task_id` 的 working 路径生成：
   - `slugify(task_id)` 为空时必须回退到稳定文件名策略

@@ -48,7 +48,6 @@ pub(crate) fn matches_search_filters(
         request.agent_name.as_deref(),
         request.task_id.as_deref(),
         request.include_stale.unwrap_or(false),
-        true,
     )
 }
 
@@ -67,8 +66,7 @@ pub(crate) fn matches_list_filters(
         request.session_id.as_ref(),
         request.agent_name.as_deref(),
         request.task_id.as_deref(),
-        request.include_stale.unwrap_or(true),
-        false,
+        request.include_stale.unwrap_or(false),
     )
 }
 
@@ -91,7 +89,6 @@ fn matches_filters(
     agent_name: Option<&str>,
     task_id: Option<&str>,
     include_stale: bool,
-    enforce_search_status: bool,
 ) -> bool {
     if path_prefix
         .map(str::trim)
@@ -144,19 +141,15 @@ fn matches_filters(
         return false;
     }
 
-    if enforce_search_status && !status_visible_in_search(metadata.status, include_stale) {
+    if !status_visible_in_retrieval(metadata.status, include_stale) {
         return false;
     }
 
     true
 }
 
-fn status_visible_in_search(status: MemoryStatus, include_stale: bool) -> bool {
-    match status {
-        MemoryStatus::Ready => true,
-        MemoryStatus::Stale => include_stale,
-        MemoryStatus::Superseded | MemoryStatus::Archived => false,
-    }
+fn status_visible_in_retrieval(status: MemoryStatus, include_stale: bool) -> bool {
+    include_stale || status == MemoryStatus::Ready
 }
 
 fn tag_eq(left: &str, right: &str) -> bool {
@@ -333,8 +326,12 @@ fn parse_daily_log_date(path: &str) -> Option<Date> {
 
 #[cfg(test)]
 mod tests {
-    use super::{MemoryRetrievalSignals, matches_search_filters, search_signals_on};
-    use crate::{MemoryDocumentMetadata, MemoryScope, MemorySearchRequest, MemoryStatus};
+    use super::{
+        MemoryRetrievalSignals, matches_list_filters, matches_search_filters, search_signals_on,
+    };
+    use crate::{
+        MemoryDocumentMetadata, MemoryListRequest, MemoryScope, MemorySearchRequest, MemoryStatus,
+    };
     use time::{Date, Month, PrimitiveDateTime, Time};
     use types::{RunId, SessionId};
 
@@ -390,6 +387,42 @@ mod tests {
                 ..metadata.clone()
             },
             &request
+        ));
+        assert!(matches_search_filters(
+            ".nanoclaw/memory/working/sessions/session_1.md",
+            &MemoryDocumentMetadata {
+                status: MemoryStatus::Archived,
+                ..metadata.clone()
+            },
+            &MemorySearchRequest {
+                include_stale: Some(true),
+                ..request.clone()
+            }
+        ));
+    }
+
+    #[test]
+    fn list_filters_hide_non_ready_entries_unless_include_stale_is_enabled() {
+        let metadata = MemoryDocumentMetadata {
+            scope: MemoryScope::Semantic,
+            layer: "rule".to_string(),
+            status: MemoryStatus::Archived,
+            ..MemoryDocumentMetadata::default()
+        };
+        let base = MemoryListRequest::default();
+
+        assert!(!matches_list_filters(
+            ".nanoclaw/memory/semantic/canary.md",
+            &metadata,
+            &base
+        ));
+        assert!(matches_list_filters(
+            ".nanoclaw/memory/semantic/canary.md",
+            &metadata,
+            &MemoryListRequest {
+                include_stale: Some(true),
+                ..base
+            }
         ));
     }
 

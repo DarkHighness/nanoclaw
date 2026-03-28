@@ -665,7 +665,7 @@ cargo test -p agent
 
 ### 17.1 当前完成度校准
 
-- 估计完成度：约 `80%`
+- 估计完成度：约 `85%`
 
 当前已经落地的部分：
 
@@ -676,6 +676,7 @@ cargo test -p agent
 - runtime export 的 `run/session/subagent/task` 渲染结构
 - `RunStore::export_for_memory()` 的真实 `run/session/subagent/task` 导出链
 - `memory_record` 的路径级串行化追加写
+- `memory_list.include_stale` 的真实状态过滤语义
 - working task 对非 ASCII `task_id` 的稳定 slug 回退
 - `subagent/task export` 的 in-memory / file-backed store 真测试覆盖
 
@@ -683,13 +684,13 @@ cargo test -p agent
 
 - tool 默认作用域只自动继承 `run_id/session_id`
 - 读路径仍然过重，并夹带 runtime export side effect
-- `memory_list.include_stale` 语义还没有真正收口
 
 ### 17.2 P0 修复项
 
 - 当前分支已完成：
   - 补齐 production 级 `subagent/task` export
   - 修复 `memory_record` 的同文件并发丢写
+  - 修复 `memory_list.include_stale` 的实际语义
   - 修复非 ASCII `task_id` 导致的空 slug 路径
   - 用真实 store 测试覆盖 `subagent/task export`
 
@@ -702,7 +703,10 @@ cargo test -p agent
   - 已完成：
     - `memory_record` 现在对目标 managed path 先拿锁再做 read-modify-write
 - 修复 `memory_list.include_stale` 的实际语义：
-  - 不能继续出现参数存在但过滤不生效
+  - 已完成：
+    - `include_stale = false | None` 时只返回 `ready`
+    - `include_stale = true` 时显式放开 `stale/superseded/archived`
+    - retrieval policy、backend、tool 三层都已经有回归测试
 - 修复非 ASCII `task_id` 导致的空 slug 路径
   - 已完成：
     - working task 路径会回退到 `task-<stable-hash>`
