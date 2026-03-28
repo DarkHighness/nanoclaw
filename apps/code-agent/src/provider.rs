@@ -7,8 +7,8 @@ use agent::runtime::ModelBackendCapabilities;
 use agent_env::{EnvMap, vars};
 use anyhow::{Result, bail};
 use nanoclaw_config::{ProviderKind, ResolvedAgentProfile, ResolvedInternalProfile, ResolvedModel};
-use std::collections::BTreeMap;
 use serde_json::Value;
+use std::collections::BTreeMap;
 
 const DEFAULT_INTERNAL_MEMORY_TIMEOUT_MS: u64 = 30_000;
 

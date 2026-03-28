@@ -6,8 +6,7 @@ mod tui;
 use crate::options::AppOptions;
 use crate::provider::{
     agent_backend_capabilities, build_agent_backend, build_internal_backend,
-    build_memory_reasoning_service, provider_label,
-    provider_summary,
+    build_memory_reasoning_service, provider_label, provider_summary,
 };
 use agent::mcp::{
     McpConnectOptions, McpServerConfig, McpTransportConfig, catalog_tools_as_registry_entries,

@@ -52,9 +52,7 @@ pub(super) fn agent_backend_capabilities(
 }
 
 pub(super) fn provider_summary(config: &AgentCoreConfig) -> String {
-    let model = &config.primary_profile.model;
-    let provider = provider_name(&model.provider);
-    format!("{} -> {provider} / {}", model.alias, model.model)
+    provider_model_summary(&config.primary_profile.model)
 }
 
 pub(super) fn provider_model_summary(model: &ResolvedModel) -> String {
