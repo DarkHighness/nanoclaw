@@ -2,7 +2,7 @@
 
 日期：2026-03-28
 
-状态：Planning
+状态：Planning + Reviewed
 
 ## 1. 目标
 
@@ -737,3 +737,65 @@ cargo test -p code-agent
   - hooks / memory 联动
 - DoD：
   - agent tree、artifact、claim、handoff 都可回放与检索
+
+## 19. 审查校准与修复清单
+
+### 19.1 当前完成度校准
+
+- 估计完成度：约 `65% ~ 70%`
+
+当前已经落地的部分：
+
+- `task / task_batch / agent_spawn / agent_send / agent_wait / agent_list / agent_cancel`
+- `AgentHandle / AgentEnvelope / AgentResultEnvelope`
+- `AgentSessionManager`
+- `AgentMailbox`
+- `WriteLeaseManager`
+- 生命周期事件与基础 store 持久化
+
+当前尚未达到计划目标的部分：
+
+- `dependency_ids` 仍未进入调度
+- `task_batch` 还是 fan-out/join，不是结构化 DAG 调度
+- parent-child 隔离边界还不够硬
+- 终态收敛和等待语义仍有竞态
+
+### 19.2 P0 修复项
+
+- 当前分支已完成：
+  - 修复 child 非终态结果归一化
+  - 修复 `agent_wait()` 的无丢通知语义
+  - 给 `send / wait / cancel / list` 加了 parent-child scope 收紧
+
+- 修复 child 终态收敛：
+  - 自然完成的 child 不允许回写非终态 status
+- 修复 `agent_wait()` 的无丢通知语义：
+  - `snapshot -> notified().await` 结构必须替换
+- 给 `send / wait / cancel` 增加父子作用域校验
+- 修复批量 spawn 的部分成功副作用：
+  - 改为全量 preflight 或失败回滚
+
+### 19.3 P1 对齐项
+
+- 让 `dependency_ids` 真正参与调度：
+  - 引入 ready set / blocked set / completion propagation
+- 统一终态收尾 owner：
+  - 状态、事件、lease release 不能继续由 manager 和 worker 分别收尾
+- 明确 root runtime 与 parent runtime 的控制面边界：
+  - `list/send/wait/cancel` 的授权模型要写清楚
+
+### 19.4 P2 性能与硬化
+
+- 批量 spawn 改为有界并行冷启动
+- 优化 `WriteLeaseManager` 的冲突检测结构
+- 降低生命周期事件 append 写放大
+- 评估 mailbox / session manager 是否需要从单点 `Mutex<BTreeMap<...>>` 升级
+
+### 19.5 文档修正
+
+本路线后续文档必须明确写清：
+
+- `dependency_ids` 是 schema-only 还是 runtime-enforced
+- `agent_wait` 是否已经具备无丢通知语义
+- `send / wait / cancel` 是否已强制 parent-child scope
+- `task_batch` 当前是 fan-out/join 还是真正的依赖调度器

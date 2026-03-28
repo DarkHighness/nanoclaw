@@ -7,6 +7,11 @@ Date: 2026-03-26
 This file replaces the earlier design-pass notes after a repository-wide review of
 `docs/` against the current implementation.
 
+Current subsystem remediation for the 2026-03-28 plugin / memory / multi-agent
+review now lives in:
+
+- `docs/2026-03-28-remediation-checklist.md`
+
 Archived documents now live under:
 
 - `docs/archive/2026-03-26/`
@@ -192,3 +197,12 @@ This looks like test drift, not a core feature regression.
    lightweight lexical backend vs SQLite FTS5 lexical index.
 4. Revisit plugin driver activation only if the repository adds more compiled
    plugin kinds than the current memory slot.
+
+## 2026-03-28 Follow-up
+
+The active remediation order for the newer subsystem work is:
+
+1. fix multi-agent correctness and parent-child isolation
+2. fix memory production export and concurrent record safety
+3. tighten plugin effect permissions and driver-outcome wiring
+4. only then continue with performance and feature expansion

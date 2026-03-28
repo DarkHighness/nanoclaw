@@ -100,6 +100,11 @@ impl AgentSessionManager {
         result: Option<AgentResultEnvelope>,
         error: Option<String>,
     ) -> Result<AgentHandle> {
+        if !status.is_terminal() {
+            return Err(RuntimeError::invalid_state(format!(
+                "finish requires terminal status, got {status}"
+            )));
+        }
         let mut guard = self.records.lock().unwrap();
         let record = guard.get_mut(agent_id).ok_or_else(|| {
             RuntimeError::invalid_state(format!("unknown child agent: {agent_id}"))
@@ -123,6 +128,10 @@ impl AgentSessionManager {
 
     pub async fn wait(&self, request: AgentWaitRequest) -> Result<AgentWaitResponse> {
         loop {
+            // Register the waiter before snapshotting state so status transitions
+            // that race with the snapshot cannot be lost between the read and
+            // the subsequent wait.
+            let notified = self.updates.notified();
             let response = self.snapshot_wait(&request)?;
             let done = match request.mode {
                 AgentWaitMode::Any => !response.completed.is_empty(),
@@ -131,7 +140,7 @@ impl AgentSessionManager {
             if done {
                 return Ok(response);
             }
-            self.updates.notified().await;
+            notified.await;
         }
     }
 
@@ -144,7 +153,7 @@ impl AgentSessionManager {
             let record = guard.get(agent_id).ok_or_else(|| {
                 RuntimeError::invalid_state(format!("unknown child agent: {agent_id}"))
             })?;
-            if is_terminal(&record.handle.status) {
+            if record.handle.status.is_terminal() {
                 completed.push(record.handle.clone());
                 if let Some(result) = &record.result {
                     results.push(result.clone());
@@ -153,16 +162,21 @@ impl AgentSessionManager {
                 pending.push(record.handle.clone());
             }
         }
-        if matches!(request.mode, AgentWaitMode::Any) && !completed.is_empty() {
-            completed.truncate(1);
-            let completed_id = completed[0].agent_id.clone();
+        if matches!(request.mode, AgentWaitMode::Any)
+            && let Some(first_completed) = completed.first().cloned()
+        {
+            let completed_id = first_completed.agent_id.clone();
+            let result = guard
+                .get(&completed_id)
+                .and_then(|record| record.result.clone());
+            completed = vec![first_completed];
             pending = request
                 .agent_ids
                 .iter()
                 .filter(|agent_id| **agent_id != completed_id)
                 .filter_map(|agent_id| guard.get(agent_id).map(|record| record.handle.clone()))
                 .collect();
-            results.truncate(1);
+            results = result.into_iter().collect();
         }
         Ok(AgentWaitResponse {
             completed,
@@ -221,13 +235,6 @@ impl AgentSessionManager {
         self.updates.notify_waiters();
         Ok((handle, result))
     }
-}
-
-fn is_terminal(status: &AgentStatus) -> bool {
-    matches!(
-        status,
-        AgentStatus::Completed | AgentStatus::Failed | AgentStatus::Cancelled
-    )
 }
 
 #[cfg(test)]
@@ -343,5 +350,113 @@ mod tests {
         assert_eq!(handle.status, AgentStatus::Cancelled);
         assert_eq!(result.status, AgentStatus::Cancelled);
         assert_eq!(result.claimed_files, vec!["src/lib.rs".to_string()]);
+    }
+
+    #[test]
+    fn finish_rejects_non_terminal_status() {
+        let manager = AgentSessionManager::new();
+        let (mailbox, _) = agent_mailbox_channel();
+        manager.insert(
+            AgentHandle {
+                agent_id: "agent_1".into(),
+                parent_agent_id: None,
+                run_id: "run_1".into(),
+                session_id: "session_1".into(),
+                task_id: "task_1".to_string(),
+                role: "explorer".to_string(),
+                status: AgentStatus::Running,
+            },
+            AgentTaskSpec {
+                task_id: "task_1".to_string(),
+                role: "explorer".to_string(),
+                prompt: "inspect".to_string(),
+                steer: None,
+                allowed_tools: Vec::new(),
+                requested_write_set: Vec::new(),
+                dependency_ids: Vec::new(),
+                timeout_seconds: None,
+            },
+            mailbox,
+        );
+
+        let error = manager
+            .finish(&AgentId::from("agent_1"), AgentStatus::Running, None, None)
+            .unwrap_err();
+        assert!(error.to_string().contains("terminal status"));
+    }
+
+    #[test]
+    fn wait_any_keeps_result_aligned_with_completed_agent() {
+        let manager = AgentSessionManager::new();
+        for agent_id in ["agent_1", "agent_2"] {
+            let (mailbox, _) = agent_mailbox_channel();
+            manager.insert(
+                AgentHandle {
+                    agent_id: agent_id.into(),
+                    parent_agent_id: None,
+                    run_id: "run_1".into(),
+                    session_id: "session_1".into(),
+                    task_id: format!("task_{agent_id}"),
+                    role: "explorer".to_string(),
+                    status: AgentStatus::Running,
+                },
+                AgentTaskSpec {
+                    task_id: format!("task_{agent_id}"),
+                    role: "explorer".to_string(),
+                    prompt: "inspect".to_string(),
+                    steer: None,
+                    allowed_tools: Vec::new(),
+                    requested_write_set: Vec::new(),
+                    dependency_ids: Vec::new(),
+                    timeout_seconds: None,
+                },
+                mailbox,
+            );
+        }
+        manager
+            .finish(
+                &AgentId::from("agent_1"),
+                AgentStatus::Completed,
+                Some(AgentResultEnvelope {
+                    agent_id: "agent_1".into(),
+                    task_id: "task_agent_1".to_string(),
+                    status: AgentStatus::Completed,
+                    summary: "done".to_string(),
+                    text: "ok".to_string(),
+                    artifacts: Vec::new(),
+                    claimed_files: Vec::new(),
+                    structured_payload: None,
+                }),
+                None,
+            )
+            .unwrap();
+        manager
+            .finish(
+                &AgentId::from("agent_2"),
+                AgentStatus::Completed,
+                Some(AgentResultEnvelope {
+                    agent_id: "agent_2".into(),
+                    task_id: "task_agent_2".to_string(),
+                    status: AgentStatus::Completed,
+                    summary: "done".to_string(),
+                    text: "ok".to_string(),
+                    artifacts: Vec::new(),
+                    claimed_files: Vec::new(),
+                    structured_payload: None,
+                }),
+                None,
+            )
+            .unwrap();
+
+        let response = manager
+            .snapshot_wait(&AgentWaitRequest {
+                agent_ids: vec![AgentId::from("agent_1"), AgentId::from("agent_2")],
+                mode: AgentWaitMode::Any,
+            })
+            .unwrap();
+
+        assert_eq!(response.completed.len(), 1);
+        assert_eq!(response.results.len(), 1);
+        assert_eq!(response.completed[0].agent_id, response.results[0].agent_id);
     }
 }

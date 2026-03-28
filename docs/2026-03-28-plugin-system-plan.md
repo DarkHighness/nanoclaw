@@ -2,7 +2,7 @@
 
 日期：2026-03-28
 
-状态：Planning
+状态：Planning + Reviewed
 
 ## 1. 目标
 
@@ -737,3 +737,64 @@ cargo test -p reference-tui
   - UI/summary 展示 contributions / permissions / diagnostics
 - DoD：
   - 出错时用户能直接看出是哪个 plugin、哪种权限、哪个 runtime 失败
+
+## 16. 审查校准与修复清单
+
+### 16.1 当前完成度校准
+
+- 估计完成度：约 `68%`
+
+当前已经落地的部分：
+
+- manifest / permissions / activation plan 控制面
+- `HookEffect` 协议与 effect runtime 最小闭环
+- `PluginDriverRegistry`
+- `HookHandler::Wasm`
+- Reference TUI 的基础插件可观测性
+
+当前尚未达到计划目标的部分：
+
+- `prompt` / `agent` hook 仍是占位实现
+- `DriverActivationOutcome` 没有在宿主侧完整并回 runtime
+- `builtin.wasm-hook-runtime` 更像校验器，而不是完整 runtime driver
+- message mutation 协议宽于当前运行时能力
+
+### 16.2 P0 修复项
+
+- 收紧 WASM hook 的 gate 权限：
+  - `allow_gate_decision` 不能因为 handler 是 `Wasm` 就自动放开
+  - gate / permission effect 必须来自显式 capability + granted permission
+- `prompt` / `agent` hook 未实现前必须 fail-closed：
+  - 不允许继续 silent noop
+- 明确 `ReviewRequired` 的语义：
+  - 如果当前没有 host review 流程，就不要把它伪装成可用能力
+
+### 16.3 P1 对齐项
+
+- 打通 `DriverActivationOutcome` 的宿主消费链：
+  - `hooks`
+  - `mcp_servers`
+  - `instructions`
+  - `diagnostics`
+- 明确 `builtin.wasm-hook-runtime` 的职责：
+  - 若只是 module validation，则应在命名和文档上收窄
+  - 若目标是 runtime driver，则必须真正返回 runtime contributions
+- 统一消息 mutation 能力：
+  - 要么补 `MessageId / LastOfRole`
+  - 要么收窄协议到 `Current`
+
+### 16.4 P2 性能与硬化
+
+- 缓存 WASM `Engine/Module`
+- 避免每次 hook 都起一个专用 timer 线程
+- 统一 command/http/wasm 的网络执行与审计平面
+- 收紧 `DefaultCommandHookExecutor::default()` 的默认安全姿态
+
+### 16.5 文档修正
+
+本路线后续文档必须明确写清：
+
+- 当前 `prompt` / `agent` handlers 还未实现
+- `DriverActivationOutcome` 是否已经被 `reference-tui` / `code-agent` 完整消费
+- `builtin.wasm-hook-runtime` 是校验器还是完整 runtime driver
+- message mutation 当前到底支持“in-flight only”还是“transcript-aware”

@@ -165,6 +165,30 @@ impl RuntimeSubagentExecutor {
             })
             .collect()
     }
+
+    fn ensure_parent_can_access(
+        &self,
+        parent: &SubagentParentContext,
+        handle: &AgentHandle,
+    ) -> std::result::Result<(), ToolError> {
+        if handle.parent_agent_id == parent.parent_agent_id {
+            return Ok(());
+        }
+        let owner = handle
+            .parent_agent_id
+            .as_ref()
+            .map(ToString::to_string)
+            .unwrap_or_else(|| "<root>".to_string());
+        let caller = parent
+            .parent_agent_id
+            .as_ref()
+            .map(ToString::to_string)
+            .unwrap_or_else(|| "<root>".to_string());
+        Err(ToolError::invalid_state(format!(
+            "parent agent {caller} cannot access child agent {} owned by {owner}",
+            handle.agent_id
+        )))
+    }
 }
 
 #[async_trait]
@@ -314,6 +338,7 @@ impl SubagentExecutor for RuntimeSubagentExecutor {
             .session_manager
             .handle(&agent_id)
             .map_err(|error| ToolError::invalid_state(error.to_string()))?;
+        self.ensure_parent_can_access(&parent, &handle)?;
         if handle.status.is_terminal() {
             return Ok(handle);
         }
@@ -334,9 +359,16 @@ impl SubagentExecutor for RuntimeSubagentExecutor {
 
     async fn wait(
         &self,
-        _parent: SubagentParentContext,
+        parent: SubagentParentContext,
         request: AgentWaitRequest,
     ) -> std::result::Result<AgentWaitResponse, ToolError> {
+        for agent_id in &request.agent_ids {
+            let handle = self
+                .session_manager
+                .handle(agent_id)
+                .map_err(|error| ToolError::invalid_state(error.to_string()))?;
+            self.ensure_parent_can_access(&parent, &handle)?;
+        }
         self.session_manager
             .wait(request)
             .await
@@ -351,13 +383,7 @@ impl SubagentExecutor for RuntimeSubagentExecutor {
             .session_manager
             .list()
             .into_iter()
-            .filter(|handle| {
-                parent
-                    .parent_agent_id
-                    .as_ref()
-                    .map(|agent_id| handle.parent_agent_id.as_ref() == Some(agent_id))
-                    .unwrap_or(true)
-            })
+            .filter(|handle| handle.parent_agent_id == parent.parent_agent_id)
             .collect())
     }
 
@@ -371,6 +397,7 @@ impl SubagentExecutor for RuntimeSubagentExecutor {
             .session_manager
             .handle(&agent_id)
             .map_err(|error| ToolError::invalid_state(error.to_string()))?;
+        self.ensure_parent_can_access(&parent, &handle)?;
         if handle.status.is_terminal() {
             return Ok(handle);
         }
@@ -775,11 +802,10 @@ fn normalize_child_result(
         return AgentResultEnvelope {
             agent_id: agent_id.clone(),
             task_id: task.task_id.clone(),
-            status: payload
-                .status
-                .as_deref()
-                .map(parse_status)
-                .unwrap_or(AgentStatus::Completed),
+            // A child may report a richer terminal outcome, but the successful
+            // return path must never persist a non-terminal status or waits can
+            // hang forever on an agent that already exited.
+            status: normalize_terminal_result_status(payload.status.as_deref()),
             summary: payload
                 .summary
                 .filter(|value| !value.trim().is_empty())
@@ -809,6 +835,15 @@ fn normalize_child_result(
         artifacts: extract_artifacts(assistant_text),
         claimed_files,
         structured_payload: None,
+    }
+}
+
+fn normalize_terminal_result_status(value: Option<&str>) -> AgentStatus {
+    let status = value.map(parse_status).unwrap_or(AgentStatus::Completed);
+    if status.is_terminal() {
+        status
+    } else {
+        AgentStatus::Completed
     }
 }
 
@@ -1261,5 +1296,152 @@ mod tests {
             .await
             .expect_err("conflicting lease must fail");
         assert!(error.to_string().contains("write lease conflict"));
+    }
+
+    #[tokio::test]
+    async fn runtime_subagent_executor_rejects_cross_parent_control_requests() {
+        let backend = Arc::new(BlockingBackend {
+            requests: Arc::new(Mutex::new(Vec::new())),
+            started: Arc::new(Notify::new()),
+            release: Arc::new(Notify::new()),
+            first_user_request_pending: Arc::new(Mutex::new(false)),
+        });
+        let store = Arc::new(InMemoryRunStore::new());
+        let executor = make_executor(backend, store);
+        let owner = SubagentParentContext {
+            run_id: Some("run_parent".into()),
+            session_id: Some("session_parent".into()),
+            turn_id: Some("turn_parent".into()),
+            parent_agent_id: Some("agent_owner".into()),
+        };
+        let intruder = SubagentParentContext {
+            parent_agent_id: Some("agent_intruder".into()),
+            ..owner.clone()
+        };
+
+        let handles = executor
+            .spawn(
+                owner.clone(),
+                vec![AgentTaskSpec {
+                    task_id: "inspect".to_string(),
+                    role: "explorer".to_string(),
+                    prompt: "inspect".to_string(),
+                    steer: None,
+                    allowed_tools: vec![ToolName::from("read")],
+                    requested_write_set: Vec::new(),
+                    dependency_ids: Vec::new(),
+                    timeout_seconds: None,
+                }],
+            )
+            .await
+            .unwrap();
+
+        let send_error = executor
+            .send(
+                intruder.clone(),
+                handles[0].agent_id.clone(),
+                "steer".to_string(),
+                serde_json::json!({"message":"nope"}),
+            )
+            .await
+            .expect_err("foreign parent must not send");
+        assert!(send_error.to_string().contains("cannot access child agent"));
+
+        let wait_error = executor
+            .wait(
+                intruder.clone(),
+                AgentWaitRequest {
+                    agent_ids: vec![handles[0].agent_id.clone()],
+                    mode: AgentWaitMode::All,
+                },
+            )
+            .await
+            .expect_err("foreign parent must not wait");
+        assert!(wait_error.to_string().contains("cannot access child agent"));
+
+        let cancel_error = executor
+            .cancel(
+                intruder,
+                handles[0].agent_id.clone(),
+                Some("stop".to_string()),
+            )
+            .await
+            .expect_err("foreign parent must not cancel");
+        assert!(
+            cancel_error
+                .to_string()
+                .contains("cannot access child agent")
+        );
+    }
+
+    #[tokio::test]
+    async fn runtime_subagent_executor_root_list_only_shows_root_owned_children() {
+        let backend = Arc::new(ImmediateBackend::default());
+        let store = Arc::new(InMemoryRunStore::new());
+        let executor = make_executor(backend, store);
+        executor
+            .spawn(
+                SubagentParentContext::default(),
+                vec![AgentTaskSpec {
+                    task_id: "root".to_string(),
+                    role: "explorer".to_string(),
+                    prompt: "inspect".to_string(),
+                    steer: None,
+                    allowed_tools: vec![ToolName::from("read")],
+                    requested_write_set: Vec::new(),
+                    dependency_ids: Vec::new(),
+                    timeout_seconds: None,
+                }],
+            )
+            .await
+            .unwrap();
+        executor
+            .spawn(
+                SubagentParentContext {
+                    parent_agent_id: Some("agent_parent".into()),
+                    ..SubagentParentContext::default()
+                },
+                vec![AgentTaskSpec {
+                    task_id: "nested".to_string(),
+                    role: "explorer".to_string(),
+                    prompt: "inspect".to_string(),
+                    steer: None,
+                    allowed_tools: vec![ToolName::from("read")],
+                    requested_write_set: Vec::new(),
+                    dependency_ids: Vec::new(),
+                    timeout_seconds: None,
+                }],
+            )
+            .await
+            .unwrap();
+
+        let root_handles = executor
+            .list(SubagentParentContext::default())
+            .await
+            .unwrap();
+        assert_eq!(root_handles.len(), 1);
+        assert_eq!(root_handles[0].task_id, "root");
+    }
+
+    #[test]
+    fn normalize_child_result_coerces_non_terminal_payload_status_to_completed() {
+        let result = normalize_child_result(
+            &types::AgentId::from("agent_1"),
+            &AgentTaskSpec {
+                task_id: "task_1".to_string(),
+                role: "explorer".to_string(),
+                prompt: "inspect".to_string(),
+                steer: None,
+                allowed_tools: Vec::new(),
+                requested_write_set: Vec::new(),
+                dependency_ids: Vec::new(),
+                timeout_seconds: None,
+            },
+            r#"{"status":"running","summary":"still going","text":"done"}"#,
+            Vec::new(),
+        );
+
+        assert_eq!(result.status, AgentStatus::Completed);
+        assert_eq!(result.summary, "still going");
     }
 }

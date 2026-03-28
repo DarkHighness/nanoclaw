@@ -1,0 +1,335 @@
+# 2026-03-28 修复与实施清单
+
+日期：2026-03-28
+
+状态：Active
+
+## 1. 目的
+
+本文档把 2026-03-28 对插件系统、Memory 系统、多 Agent 系统的实现审查，整理成统一的修复与实施清单。
+
+这份清单不替代三条路线各自的详细 Plan，而是作为当前迭代的执行总表，用来回答三个问题：
+
+- 哪些问题必须先修，否则继续堆功能会放大错误。
+- 哪些问题属于“与计划不对齐”，但不会立刻造成错误结果。
+- 哪些问题主要是性能与工业化收口。
+
+## 2. 审查依据
+
+- 路线文档：
+  - `docs/2026-03-28-plugin-system-plan.md`
+  - `docs/2026-03-28-memory-system-plan.md`
+  - `docs/2026-03-28-multi-agent-plan.md`
+- 关键代码路径：
+  - `crates/plugins`
+  - `crates/memory`
+  - `crates/runtime`
+  - `crates/store`
+  - `crates/tools/src/agentic`
+  - `apps/reference-tui`
+  - `apps/code-agent`
+- 已运行验证：
+  - `cargo test --manifest-path crates/Cargo.toml -p plugins`
+  - `cargo test --manifest-path crates/Cargo.toml -p memory`
+  - `cargo test --manifest-path crates/Cargo.toml -p runtime`
+  - `cargo test --manifest-path crates/Cargo.toml -p store`
+  - `cargo test --manifest-path crates/Cargo.toml -p tools`
+  - `cargo test --manifest-path crates/Cargo.toml -p agent`
+  - `cargo test --manifest-path apps/Cargo.toml -p reference-tui`
+  - `cargo test --manifest-path apps/Cargo.toml -p code-agent`
+
+## 3. 当前完成度校准
+
+- 插件系统：约 `68%`
+- Memory 系统：约 `72%`
+- 多 Agent 系统：约 `65% ~ 70%`
+
+结论：
+
+- 三条路线都已经从“设计稿”进入“可运行原型”。
+- 目前最大的风险不是缺功能，而是：
+  - 权限和协议边界还不够硬
+  - 多 Agent / Memory 的并发正确性还不够稳
+  - 若继续扩功能，后续返工成本会明显上升
+
+## 4. 优先级定义
+
+- `P0`
+  - 正确性、安全性、协议一致性问题
+  - 不修会直接导致错误结果、越权、挂死或数据损坏
+- `P1`
+  - 与计划核心目标不对齐
+  - 当前能运行，但不是目标模型
+- `P2`
+  - 性能、可观测性、工业化收口
+  - 不会马上出错，但会限制规模化使用
+
+## 5. 执行顺序
+
+建议按下面顺序推进，而不是按子系统各自闭门做完：
+
+1. 先修 `P0 正确性与安全边界`
+2. 再补 `P1 计划对齐缺口`
+3. 最后做 `P2 性能与硬化`
+
+原因：
+
+- 多 Agent 的等待与终态问题，会直接影响 Memory runtime export 的正确性。
+- 插件权限边界不收紧，后面补更多 WASM host API 只会扩大攻击面。
+- Memory 的并发写和导出链不修，多 Agent 的 coordination/episodic 联动会继续写错。
+
+## 6. P0 修复清单
+
+### 6.1 多 Agent
+
+- 当前分支已完成：
+  - child 非终态结果归一化，避免自然结束后把 agent 留在 `Queued/Running/Waiting*`
+  - `AgentSessionManager::wait()` 的无丢通知修复
+  - `send / wait / cancel / list` 的 parent-child scope 收紧
+
+- 修复 child 终态收敛：
+  - 子代理自然结束后，不能把 `Queued/Running/Waiting*` 写回 `AgentResultEnvelope.status`
+  - `finish_success()` 只能接受终态；非终态应被归一化为 `Completed` 或直接判错
+  - 目标文件：
+    - `crates/runtime/src/subagent_impl.rs`
+
+- 修复 `agent_wait()` 的等待竞态：
+  - `AgentSessionManager::wait()` 不能继续使用当前的 “snapshot -> notified().await” 结构
+  - 改成无丢通知语义的等待模型
+  - 可选实现：
+    - 先拿 `notified()` future，再 snapshot，再 await
+    - 或直接换成 `watch` / `broadcast` / 条件变量式版本号
+  - 目标文件：
+    - `crates/runtime/src/agent_session_manager.rs`
+
+- 加父子作用域校验：
+  - `agent_send`
+  - `agent_wait`
+  - `agent_cancel`
+  - 都必须验证调用方是否有权操作目标 child
+  - 顶层 root runtime 是否允许全局查看，需要单独定义，不应默认放开所有控制面
+  - 目标文件：
+    - `crates/runtime/src/subagent_impl.rs`
+    - `crates/tools/src/agentic/task.rs`
+
+- 修复批量 spawn 的部分成功副作用：
+  - 要么先做全量 preflight：
+    - tool resolution
+    - write lease claim
+    - task validation
+  - 要么在中途失败时回滚前面已启动 child
+  - 目标文件：
+    - `crates/runtime/src/subagent_impl.rs`
+  - 状态：
+    - `pending`
+
+### 6.2 Memory
+
+- 补齐 production 级 `subagent/task` runtime export：
+  - `RunStore::export_for_memory()` 必须真正聚合：
+    - `TaskCreated`
+    - `TaskCompleted`
+    - `SubagentStart`
+    - `SubagentStop`
+    - `AgentEnvelope::*`
+  - 不能只让 `runtime_exports.rs` 支持渲染，但 store 侧不产出记录
+  - 目标文件：
+    - `crates/store/src/traits.rs`
+    - `crates/store/src/memory.rs`
+    - `crates/store/src/file.rs`
+
+- 修复 `memory_record` 并发丢写：
+  - `working` / `coordination` 同文件写入不能继续使用裸 `read-modify-write`
+  - 至少实现文件级串行化，或版本校验失败后重试
+  - 目标文件：
+    - `crates/memory/src/managed_files.rs`
+
+- 修复 `memory_list.include_stale` 语义：
+  - 要么真正执行 `stale/superseded/archived` 过滤
+  - 要么删掉该参数，避免虚假语义
+  - 目标文件：
+    - `crates/memory/src/retrieval_policy.rs`
+    - `crates/memory/src/tools.rs`
+
+- 修复非 ASCII `task_id` 的 working 路径生成：
+  - `slugify(task_id)` 为空时必须回退到稳定文件名策略
+  - 不能生成 `.../tasks/.md`
+  - 目标文件：
+    - `crates/memory/src/managed_files.rs`
+
+### 6.3 插件系统
+
+- 收紧 WASM hook 的 gate 权限：
+  - `allow_gate_decision` 不能因为 `handler_kind == Wasm` 就自动放开
+  - gate/permission 相关 effect 必须绑定 capability + granted permission
+  - 目标文件：
+    - `crates/plugins/src/resolution.rs`
+    - `crates/runtime/src/runtime/hook_effects.rs`
+
+- `prompt` / `agent` hook 未实现前必须 fail-closed：
+  - 当前 silent noop 会制造“配置成功但没有效果”的假象
+  - 在未实现前，注册时或执行时必须显式报错
+  - 目标文件：
+    - `crates/runtime/src/hooks/handlers/prompt.rs`
+    - `crates/runtime/src/hooks/handlers/agent.rs`
+    - `crates/runtime/src/hooks/runner.rs`
+
+## 7. P1 计划对齐清单
+
+### 7.1 多 Agent
+
+- 让 `dependency_ids` 真正进入调度：
+  - `task_batch` 不能继续只是 fan-out/join
+  - 需要最小 DAG 调度器：
+    - ready set
+    - blocked set
+    - completion propagation
+    - failure policy
+  - 目标文件：
+    - `crates/tools/src/agentic/task.rs`
+    - `crates/runtime/src/subagent_impl.rs`
+
+- 统一终态收尾所有权：
+  - 当前 manager 和 worker 两边都能结束 child
+  - 需要单一 owner 负责：
+    - 状态落盘
+    - lease release
+    - `TaskCompleted`
+    - `SubagentStop`
+  - 目标文件：
+    - `crates/runtime/src/agent_session_manager.rs`
+    - `crates/runtime/src/subagent_impl.rs`
+
+### 7.2 Memory
+
+- 把 runtime export 与多 Agent 主事件打通：
+  - subagent/task sidecar 不只是存在，还要成为 episodic retrieval 的一等输入
+  - parent -> child -> result -> memory_search 全链路需要补测试
+  - 目标文件：
+    - `crates/store`
+    - `crates/memory/src/runtime_exports.rs`
+    - `crates/memory/src/memory_core.rs`
+    - `crates/memory/src/memory_embed.rs`
+
+- 补充 runtime -> memory scope bridge：
+  - 当前 tool 默认只会自动带 `run_id/session_id`
+  - 如果目标是通用 Agent memory，需要把 `agent/task` 作用域也补进上下文桥接
+  - 目标文件：
+    - `crates/tools/src/context.rs`
+    - `crates/memory/src/tools.rs`
+
+### 7.3 插件系统
+
+- 打通 `DriverActivationOutcome` 的宿主消费闭环：
+  - `hooks`
+  - `mcp_servers`
+  - `instructions`
+  - `diagnostics`
+  - 都要进入宿主 build pipeline，而不是只保留 `warnings`
+  - 目标文件：
+    - `crates/core/src/plugin_boot/registry.rs`
+    - `apps/reference-tui/src/boot.rs`
+    - `apps/code-agent/src/main.rs`
+
+- 明确消息 mutation 的目标能力：
+  - 如果目标只支持当前 in-flight message，就应收窄协议
+  - 如果目标是通用 transcript mutation，就应补 `MessageId/LastOfRole`
+  - 不能继续保持“协议更宽、运行时更窄”的状态
+  - 目标文件：
+    - `crates/types/src/hook.rs`
+    - `crates/runtime/src/runtime/hook_effects.rs`
+
+- 明确 `builtin.wasm-hook-runtime` 的职责：
+  - 若它只是校验器，应更名并在文档中说明
+  - 若它是 runtime driver，应真正返回 runtime contributions
+  - 目标文件：
+    - `crates/core/src/plugin_boot/drivers.rs`
+    - `docs/2026-03-28-plugin-system-plan.md`
+
+## 8. P2 性能与硬化清单
+
+### 8.1 多 Agent
+
+- 批量 spawn 改成有界并行冷启动
+- `WriteLeaseManager` 优化冲突检测数据结构
+- store append 降低生命周期事件写放大
+
+### 8.2 Memory
+
+- 把 runtime export materialization 从 `get/list/search` 读路径中拆出
+- 给 corpus 扫描增加增量目录快照
+- 避免读请求触发不必要的 sidecar 重写
+
+### 8.3 插件系统
+
+- 缓存 WASM `Engine/Module`
+- 去掉每次 hook 单独创建 timer 线程的实现
+- 统一 command/http/wasm 的网络与审计平面
+- 收紧 `DefaultCommandHookExecutor::default()` 的默认安全姿态
+
+## 9. 文档更新要求
+
+本轮整改后，文档必须同步更新到以下状态：
+
+- 插件文档要明确：
+  - 现状完成度
+  - 未完成的 handler/runtime contribution
+  - 权限边界和 effect policy 的最终形状
+
+- Memory 文档要明确：
+  - `subagent/task` export 是否已进入生产链
+  - `working/coordination` 是否具备并发安全写入
+  - 读路径是否仍会触发 runtime export side effect
+
+- 多 Agent 文档要明确：
+  - `dependency_ids` 是否真的参与调度
+  - `agent_wait` 是否具备无丢通知语义
+  - parent-child scope 是否强制执行
+
+## 10. 当前迭代的完成定义
+
+本轮整改只有在下面条件同时成立时，才能算完成：
+
+- 多 Agent：
+  - `agent_wait` 无挂死竞态
+  - child 终态不可回写为非终态
+  - `send/wait/cancel` 有父子作用域校验
+  - batch spawn 无部分成功脏状态
+
+- Memory：
+  - `subagent/task` export 进入真实 store 导出链
+  - `memory_record` 对同文件并发写不丢数据
+  - `memory_list.include_stale` 语义明确且测试覆盖
+
+- 插件：
+  - WASM hook 不再自动获得 gate 权限
+  - `prompt/agent` hook 不再 silent noop
+  - `DriverActivationOutcome` 至少在一个宿主里形成完整闭环
+
+## 11. 建议实施批次
+
+### Batch 1：先止血
+
+- 多 Agent：
+  - `wait()` 竞态
+  - child 终态归一化
+  - parent scope 校验
+- Memory：
+  - 并发写保护
+  - `subagent/task` export 生产链
+- 插件：
+  - WASM gate 权限收紧
+  - `prompt/agent` fail-closed
+
+### Batch 2：补核心对齐
+
+- `dependency_ids` 调度
+- `DriverActivationOutcome` 闭环
+- runtime export 与多 Agent 联动
+- message mutation 协议/实现统一
+
+### Batch 3：做性能与收口
+
+- Memory 读路径增量化
+- WASM runtime 缓存与 timer 优化
+- write lease / store append 性能优化

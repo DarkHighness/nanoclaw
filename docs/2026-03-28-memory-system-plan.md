@@ -2,7 +2,7 @@
 
 日期：2026-03-28
 
-状态：Planning
+状态：Planning + Reviewed
 
 ## 1. 目标
 
@@ -660,3 +660,59 @@ cargo test -p agent
   - subagent result 自动写 episodic / coordination
 - DoD：
   - parent -> child -> result -> memory_search 全链路打通
+
+## 17. 审查校准与修复清单
+
+### 17.1 当前完成度校准
+
+- 估计完成度：约 `72%`
+
+当前已经落地的部分：
+
+- 五层 taxonomy
+- Markdown source of truth
+- `memory_search/get/list/record/promote/forget`
+- lifecycle / promotion / retention 基础模型
+- runtime export 的 `run/session/subagent/task` 渲染结构
+
+当前尚未达到计划目标的部分：
+
+- `subagent/task` runtime export 尚未进入真实生产导出链
+- `working/coordination` 还不具备并发安全写入
+- tool 默认作用域只自动继承 `run_id/session_id`
+- 读路径仍然过重，并夹带 runtime export side effect
+
+### 17.2 P0 修复项
+
+- 补齐 production 级 `subagent/task` export：
+  - `RunStore::export_for_memory()` 必须真实聚合 subagent/task 记录
+- 修复 `memory_record` 的同文件并发丢写：
+  - 至少实现文件级串行化或 optimistic concurrency
+- 修复 `memory_list.include_stale` 的实际语义：
+  - 不能继续出现参数存在但过滤不生效
+- 修复非 ASCII `task_id` 导致的空 slug 路径
+
+### 17.3 P1 对齐项
+
+- 把 runtime export 与多 Agent 主事件真正打通：
+  - subagent/task sidecar 要成为 episodic retrieval 的一等输入
+- 补充 runtime -> memory context bridge：
+  - 需要明确 `agent/task` 作用域是否要进入 `ToolExecutionContext`
+- 用真实 store 测试覆盖 `subagent/task export`：
+  - 不能继续只靠 fixture 伪造 bundle
+
+### 17.4 P2 性能与硬化
+
+- 把 runtime export materialization 从 `get/list/search` 读路径拆出
+- 给 corpus 扫描增加增量目录快照
+- 避免读请求触发多余 sidecar 重写
+- 评估 `memory-core` / `memory-embed` 对同一 corpus 的共享缓存策略
+
+### 17.5 文档修正
+
+本路线后续文档必须明确写清：
+
+- `run/session/subagent/task` 四类 export 中，哪些已经进入真实 store 导出链
+- `working/coordination` 是否已经具备并发安全写入
+- `include_stale` 的精确定义
+- 读路径是否仍会触发 runtime export side effect
