@@ -1,3 +1,7 @@
+use super::execution::{
+    HookAuditAction, HookExecutionObserver, TracingHookExecutionObserver, authorize_execute_path,
+    record_completion, record_failure,
+};
 use crate::{Result, RuntimeError};
 use async_trait::async_trait;
 use std::collections::HashMap;
@@ -7,10 +11,10 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, UNIX_EPOCH};
 use tokio::sync::Mutex as AsyncMutex;
-use tools::{NetworkPolicy, ToolExecutionContext};
+use tools::ToolExecutionContext;
 use types::{
-    HookContext, HookEffect, HookExecutionPolicy, HookHandler, HookHostApiGrant, HookNetworkPolicy,
-    HookRegistration, HookResult,
+    HookContext, HookEffect, HookExecutionPolicy, HookHandler, HookHostApiGrant, HookRegistration,
+    HookResult,
 };
 use wasmtime::{Caller, Config, Engine, Linker, Module, Store};
 
@@ -26,9 +30,10 @@ pub trait WasmHookExecutor: Send + Sync {
     ) -> Result<HookResult>;
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct DefaultWasmHookExecutor {
     module_cache: Arc<WasmModuleCache>,
+    observer: Arc<dyn HookExecutionObserver>,
 }
 
 #[derive(Default)]
@@ -62,23 +67,40 @@ impl WasmHookExecutor for DefaultWasmHookExecutor {
                 registration.name
             )));
         };
-        let execution = registration
-            .execution
-            .clone()
-            .ok_or_else(|| RuntimeError::hook("wasm hooks require execution policy"))?;
-        let tool_context = tool_context_for_execution(&execution);
         let module_path = PathBuf::from(&wasm.module);
-        tool_context
-            .assert_path_execute_allowed(&module_path)
-            .map_err(|error| RuntimeError::hook(error.to_string()))?;
-        let fingerprint = module_fingerprint(&module_path)?;
+        let authorized =
+            authorize_execute_path(registration, "wasm", &module_path, self.observer.as_ref())?;
+        let fingerprint = module_fingerprint(&module_path).map_err(|error| {
+            record_failure(
+                self.observer.as_ref(),
+                registration,
+                "wasm",
+                HookAuditAction::ExecutePath,
+                module_path.display().to_string(),
+                &error,
+            );
+            error
+        })?;
         let runtime = self
             .module_cache
             .get_or_load(module_path, fingerprint)
-            .await?;
+            .await
+            .map_err(|error| {
+                record_failure(
+                    self.observer.as_ref(),
+                    registration,
+                    "wasm",
+                    HookAuditAction::ExecutePath,
+                    wasm.module.clone(),
+                    &error,
+                );
+                error
+            })?;
         let execution_guard = runtime.execution_lock.clone().lock_owned().await;
         let registration = registration.clone();
+        let registration_for_call = registration.clone();
         let runtime_for_call = runtime.clone();
+        let tool_context = authorized.tool_context.clone();
         let timeout_ms = registration.timeout_ms.unwrap_or(DEFAULT_WASM_TIMEOUT_MS);
         let watchdog_engine = runtime.engine.clone();
         let watchdog = tokio::spawn(async move {
@@ -87,12 +109,50 @@ impl WasmHookExecutor for DefaultWasmHookExecutor {
         });
         let join_result = tokio::task::spawn_blocking(move || {
             let _execution_guard = execution_guard;
-            execute_wasm_hook(&runtime_for_call, &registration, context)
+            execute_wasm_hook(
+                &runtime_for_call,
+                &registration_for_call,
+                context,
+                tool_context,
+            )
         })
         .await;
         watchdog.abort();
-        join_result
-            .map_err(|error| RuntimeError::hook(format!("wasm hook task failed: {error}")))?
+        let result = join_result.map_err(|error| {
+            let error = RuntimeError::hook(format!("wasm hook task failed: {error}"));
+            record_failure(
+                self.observer.as_ref(),
+                &registration,
+                "wasm",
+                HookAuditAction::ExecutePath,
+                wasm.module.clone(),
+                &error,
+            );
+            error
+        })?;
+        match result {
+            Ok(output) => {
+                record_completion(
+                    self.observer.as_ref(),
+                    &registration,
+                    "wasm",
+                    HookAuditAction::ExecutePath,
+                    wasm.module.clone(),
+                );
+                Ok(output)
+            }
+            Err(error) => {
+                record_failure(
+                    self.observer.as_ref(),
+                    &registration,
+                    "wasm",
+                    HookAuditAction::ExecutePath,
+                    wasm.module.clone(),
+                    &error,
+                );
+                Err(error)
+            }
+        }
     }
 }
 
@@ -105,8 +165,25 @@ struct WasmHostState {
 
 impl DefaultWasmHookExecutor {
     #[cfg(test)]
+    fn with_observer(observer: Arc<dyn HookExecutionObserver>) -> Self {
+        Self {
+            module_cache: Arc::new(WasmModuleCache::default()),
+            observer,
+        }
+    }
+
+    #[cfg(test)]
     fn cached_module_count(&self) -> usize {
         self.module_cache.cached_module_count()
+    }
+}
+
+impl Default for DefaultWasmHookExecutor {
+    fn default() -> Self {
+        Self {
+            module_cache: Arc::new(WasmModuleCache::default()),
+            observer: Arc::new(TracingHookExecutionObserver),
+        }
     }
 }
 
@@ -177,6 +254,7 @@ fn execute_wasm_hook(
     runtime: &CachedWasmRuntime,
     registration: &HookRegistration,
     context: HookContext,
+    tool_context: ToolExecutionContext,
 ) -> Result<HookResult> {
     let HookHandler::Wasm(wasm) = &registration.handler else {
         return Err(RuntimeError::hook(format!(
@@ -188,11 +266,6 @@ fn execute_wasm_hook(
         .execution
         .clone()
         .ok_or_else(|| RuntimeError::hook("wasm hooks require execution policy"))?;
-    let tool_context = tool_context_for_execution(&execution);
-    let module_path = PathBuf::from(&wasm.module);
-    tool_context
-        .assert_path_execute_allowed(&module_path)
-        .map_err(|error| RuntimeError::hook(error.to_string()))?;
 
     let mut linker = Linker::new(&runtime.engine);
     bind_host_functions(&mut linker)?;
@@ -477,29 +550,6 @@ fn guest_memory(
         .ok_or_else(|| wasmtime::Error::msg("wasm module does not export memory"))
 }
 
-fn tool_context_for_execution(execution: &HookExecutionPolicy) -> ToolExecutionContext {
-    let workspace_root = execution
-        .plugin_root
-        .clone()
-        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
-    ToolExecutionContext {
-        workspace_root: workspace_root.clone(),
-        worktree_root: Some(workspace_root),
-        read_only_roots: execution.read_roots.clone(),
-        writable_roots: execution.write_roots.clone(),
-        exec_roots: execution.exec_roots.clone(),
-        network_policy: Some(match &execution.network {
-            HookNetworkPolicy::Deny => NetworkPolicy::Off,
-            HookNetworkPolicy::Allow => NetworkPolicy::Full,
-            HookNetworkPolicy::AllowDomains { domains } => {
-                NetworkPolicy::AllowDomains(domains.clone())
-            }
-        }),
-        workspace_only: true,
-        ..Default::default()
-    }
-}
-
 fn map_wasm_error(error: impl std::fmt::Display) -> RuntimeError {
     let message = error.to_string();
     if message.contains("interrupt") || message.contains("fuel") {
@@ -512,10 +562,25 @@ fn map_wasm_error(error: impl std::fmt::Display) -> RuntimeError {
 #[cfg(test)]
 mod tests {
     use super::{DefaultWasmHookExecutor, WasmHookExecutor};
+    use crate::hooks::handlers::execution::{
+        HookAuditAction, HookAuditEvent, HookAuditOutcome, HookExecutionObserver,
+    };
+    use std::sync::{Arc, Mutex};
     use types::{
         HookContext, HookEvent, HookExecutionPolicy, HookHandler, HookHostApiGrant,
         HookRegistration, HookResult, MessagePart, MessageRole, RunId, SessionId, WasmHookHandler,
     };
+
+    #[derive(Default)]
+    struct RecordingObserver {
+        events: Mutex<Vec<HookAuditEvent>>,
+    }
+
+    impl HookExecutionObserver for RecordingObserver {
+        fn record(&self, event: HookAuditEvent) {
+            self.events.lock().unwrap().push(event);
+        }
+    }
 
     fn write_wasm_module(
         dir: &tempfile::TempDir,
@@ -807,5 +872,61 @@ mod tests {
                 parts: vec![MessagePart::text("from cache two updated")],
             }]
         );
+    }
+
+    #[tokio::test]
+    async fn wasm_hook_uses_shared_audit_plane() {
+        let dir = tempfile::tempdir().unwrap();
+        let effect_json = "{\"kind\":\"append_message\",\"role\":\"system\",\"parts\":[{\"type\":\"text\",\"text\":\"from wasm\"}]}";
+        let module = write_wasm_module(
+            &dir,
+            "ok.wasm",
+            &format!(
+                r#"(module
+                    (import "{host}" "emit_effect" (func $emit_effect (param i32 i32) (result i32)))
+                    (memory (export "memory") 1)
+                    (data (i32.const 0) "{effect_data}")
+                    (func (export "on_user_prompt")
+                        i32.const 0
+                        i32.const {effect_len}
+                        call $emit_effect
+                        drop))
+                "#,
+                host = super::HOST_MODULE,
+                effect_data = wat_string(effect_json),
+                effect_len = effect_json.len(),
+            ),
+        );
+        let mut registration = base_registration(&module, "on_user_prompt");
+        registration.execution = Some(HookExecutionPolicy {
+            plugin_id: Some("team-policy".to_string()),
+            plugin_root: Some(dir.path().to_path_buf()),
+            exec_roots: vec![dir.path().to_path_buf()],
+            host_api_grants: vec![HookHostApiGrant::EmitHookEffect],
+            ..HookExecutionPolicy::default()
+        });
+        let observer = Arc::new(RecordingObserver::default());
+        let executor = DefaultWasmHookExecutor::with_observer(observer.clone());
+
+        executor
+            .execute(
+                &registration,
+                HookContext {
+                    event: HookEvent::UserPromptSubmit,
+                    run_id: RunId::from("run_1"),
+                    session_id: SessionId::from("session_1"),
+                    turn_id: None,
+                    fields: Default::default(),
+                    payload: serde_json::json!({}),
+                },
+            )
+            .await
+            .unwrap();
+
+        let events = observer.events.lock().unwrap();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].action, HookAuditAction::ExecutePath);
+        assert_eq!(events[0].outcome, HookAuditOutcome::Allowed);
+        assert_eq!(events[1].outcome, HookAuditOutcome::Completed);
     }
 }

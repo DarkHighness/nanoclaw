@@ -424,7 +424,30 @@
   - 目标文件：
     - `crates/runtime/src/hooks/handlers/wasm.rs`
 - 统一 command/http/wasm 的网络与审计平面
+  - 状态：
+    - `completed`
+  - 已落地语义：
+    - 三类 handler 现在都先经过统一的 execution preflight
+    - 统一 preflight 会强制要求显式 `HookExecutionPolicy`
+    - `command` / `wasm` 共享同一条 execute-path grant 检查
+    - `http` 共享同一条 network grant 检查
+    - 三类 handler 都会经过同一套 audit observer / tracing 入口，记录 `allowed / denied / completed / failed`
+    - command sandbox policy 不再各自拼装，而是由共享 tool-context policy 收敛并与 host base policy 取交集
+  - 目标文件：
+    - `crates/runtime/src/hooks/handlers/execution.rs`
+    - `crates/runtime/src/hooks/handlers/command.rs`
+    - `crates/runtime/src/hooks/handlers/http.rs`
+    - `crates/runtime/src/hooks/handlers/wasm.rs`
 - 收紧 `DefaultCommandHookExecutor::default()` 的默认安全姿态
+  - 状态：
+    - `completed`
+  - 已落地语义：
+    - 默认 command executor 已切到 `ManagedPolicyProcessExecutor`
+    - 默认 sandbox policy 改为 `workspace-write + network off + host escape deny`
+    - 默认策略要求 enforcing backend 可用，否则 fail-closed
+    - command hook 若未显式携带 execution grants，会在 preflight 阶段直接拒绝，不再进入进程启动
+  - 目标文件：
+    - `crates/runtime/src/hooks/handlers/command.rs`
 
 ## 9. 文档更新要求
 
@@ -449,6 +472,11 @@
   - 默认 lane 是否固定为 `gpt_5_4_default -> gpt-5.4 @ 400k`
   - `primary/subagent_defaults/roles/summary/memory` 是否都是独立解析入口
   - token usage ledger 的统计口径与持久化边界是否已经定稿
+
+- 插件路线文档还要补：
+  - hook execution plane 已经统一到显式 grants + shared audit observer
+  - `DefaultCommandHookExecutor::default()` 已经 fail-safe，不再沿用宽松 host execution 姿态
+  - Runtime Driver 仍未实现，需要在 P2 收尾后回到 `driver registry + executable runtime contribution` 路线继续推进
 
 ## 10. 当前迭代的完成定义
 

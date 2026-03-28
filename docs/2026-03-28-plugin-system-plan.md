@@ -814,7 +814,19 @@ cargo test -p reference-tui
     - 超时控制改成 tokio watchdog task + epoch interrupt
     - 同一模块的执行会先串行化，再启动 watchdog，避免排队请求误伤正在运行的 store
 - 统一 command/http/wasm 的网络执行与审计平面
+  - 已完成：
+    - 三类 handler 都先经过同一个 execution preflight，不再各自散落做 grant 判断
+    - preflight 统一要求显式 `HookExecutionPolicy`
+    - `command` / `wasm` 共享 execute-path grant 检查
+    - `http` 共享 network grant 检查
+    - 三类 handler 都共享同一套 audit observer / tracing 入口，记录 `allowed / denied / completed / failed`
+    - command sandbox policy 改为从 shared tool-context policy 派生，并与 host base policy 取交集，避免宿主策略被 hook grant 意外放宽
 - 收紧 `DefaultCommandHookExecutor::default()` 的默认安全姿态
+  - 已完成：
+    - 默认 command executor 已切到 `ManagedPolicyProcessExecutor`
+    - 默认 sandbox policy 改成 `workspace-write + network off + host escape deny`
+    - 默认策略要求 enforcing backend 可用，否则 fail-closed
+    - command hook 未显式提供 execution grants 时，会在 preflight 阶段直接拒绝
 
 ### 16.5 文档修正
 
@@ -825,3 +837,7 @@ cargo test -p reference-tui
 - `builtin.wasm-hook-validator` 只是校验器，不是完整 runtime driver
 - message mutation 当前支持 `Current + MessageId + LastOfRole(visible transcript only)`
 - `LastOfRole` 只解析已落盘的可见 transcript；要修改当前正在构造的消息仍需使用 `Current`
+- Runtime Driver 仍未实现：
+  - 当前只有 `builtin.wasm-hook-validator` 与 hook runtime 最小闭环
+  - 还没有把 executable runtime contribution 扩成真正的 driver-backed runtime surface
+  - 本轮先把剩余 P2 正确性/性能项收口，再回到 Runtime Driver 路线实现

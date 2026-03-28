@@ -1,3 +1,7 @@
+use super::execution::{
+    HookAuditAction, HookExecutionObserver, TracingHookExecutionObserver, authorize_execute_path,
+    record_completion, record_failure, tighten_hook_sandbox_policy,
+};
 use crate::{Result, RuntimeError};
 use async_trait::async_trait;
 use std::collections::BTreeMap;
@@ -5,10 +9,10 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tools::{
-    ExecRequest, ExecutionOrigin, HostProcessExecutor, NetworkPolicy, ProcessExecutor,
-    ProcessStdio, RuntimeScope, SandboxPolicy,
+    ExecRequest, ExecutionOrigin, FilesystemPolicy, HostEscapePolicy, ManagedPolicyProcessExecutor,
+    ProcessExecutor, ProcessStdio, RuntimeScope, SandboxMode, SandboxPolicy,
 };
-use types::{HookContext, HookExecutionPolicy, HookNetworkPolicy, HookRegistration, HookResult};
+use types::{HookContext, HookHandler, HookRegistration, HookResult};
 
 #[async_trait]
 pub trait CommandHookExecutor: Send + Sync {
@@ -24,6 +28,7 @@ pub struct DefaultCommandHookExecutor {
     extra_env: BTreeMap<String, String>,
     process_executor: Arc<dyn ProcessExecutor>,
     sandbox_policy: SandboxPolicy,
+    observer: Arc<dyn HookExecutionObserver>,
 }
 
 impl fmt::Debug for DefaultCommandHookExecutor {
@@ -45,8 +50,9 @@ impl DefaultCommandHookExecutor {
     pub fn new(extra_env: BTreeMap<String, String>) -> Self {
         Self {
             extra_env,
-            process_executor: Arc::new(HostProcessExecutor),
-            sandbox_policy: SandboxPolicy::default(),
+            process_executor: Arc::new(ManagedPolicyProcessExecutor::new()),
+            sandbox_policy: default_hook_command_sandbox_policy(),
+            observer: Arc::new(TracingHookExecutionObserver),
         }
     }
 
@@ -58,7 +64,8 @@ impl DefaultCommandHookExecutor {
         Self {
             extra_env,
             process_executor,
-            sandbox_policy: SandboxPolicy::default(),
+            sandbox_policy: default_hook_command_sandbox_policy(),
+            observer: Arc::new(TracingHookExecutionObserver),
         }
     }
 
@@ -72,6 +79,22 @@ impl DefaultCommandHookExecutor {
             extra_env,
             process_executor,
             sandbox_policy,
+            observer: Arc::new(TracingHookExecutionObserver),
+        }
+    }
+
+    #[cfg(test)]
+    fn with_process_executor_policy_and_observer(
+        extra_env: BTreeMap<String, String>,
+        process_executor: Arc<dyn ProcessExecutor>,
+        sandbox_policy: SandboxPolicy,
+        observer: Arc<dyn HookExecutionObserver>,
+    ) -> Self {
+        Self {
+            extra_env,
+            process_executor,
+            sandbox_policy,
+            observer,
         }
     }
 }
@@ -83,14 +106,19 @@ impl CommandHookExecutor for DefaultCommandHookExecutor {
         registration: &HookRegistration,
         context: HookContext,
     ) -> Result<HookResult> {
-        let types::HookHandler::Command(command) = &registration.handler else {
+        let HookHandler::Command(command) = &registration.handler else {
             return Err(RuntimeError::hook(format!(
                 "hook `{}` is not a command hook",
                 registration.name
             )));
         };
         let command_path = PathBuf::from(&command.command);
-        ensure_exec_allowed(&registration.execution, &command_path)?;
+        let authorized = authorize_execute_path(
+            registration,
+            "command",
+            &command_path,
+            self.observer.as_ref(),
+        )?;
 
         let mut env = self.extra_env.clone();
         env.insert(
@@ -116,86 +144,100 @@ impl CommandHookExecutor for DefaultCommandHookExecutor {
                     tool_name: None,
                     tool_call_id: None,
                 },
-                sandbox_policy: build_hook_sandbox_policy(
+                sandbox_policy: tighten_hook_sandbox_policy(
                     &self.sandbox_policy,
-                    registration.execution.as_ref(),
+                    &authorized.tool_context,
                 ),
             })
-            .map_err(|error| RuntimeError::hook(error.to_string()))?;
-        let output = process.output().await?;
+            .map_err(|error| {
+                let error = RuntimeError::hook(error.to_string());
+                record_failure(
+                    self.observer.as_ref(),
+                    registration,
+                    "command",
+                    HookAuditAction::ExecutePath,
+                    command_path.display().to_string(),
+                    &error,
+                );
+                error
+            })?;
+        let output = process.output().await.map_err(|error| {
+            let error = RuntimeError::hook(error.to_string());
+            record_failure(
+                self.observer.as_ref(),
+                registration,
+                "command",
+                HookAuditAction::ExecutePath,
+                command_path.display().to_string(),
+                &error,
+            );
+            error
+        })?;
         if !output.status.success() {
-            return Err(RuntimeError::hook(format!(
+            let error = RuntimeError::hook(format!(
                 "hook command failed: {}",
                 String::from_utf8_lossy(&output.stderr)
-            )));
+            ));
+            record_failure(
+                self.observer.as_ref(),
+                registration,
+                "command",
+                HookAuditAction::ExecutePath,
+                command_path.display().to_string(),
+                &error,
+            );
+            return Err(error);
         }
         let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
         if stdout.is_empty() {
+            record_completion(
+                self.observer.as_ref(),
+                registration,
+                "command",
+                HookAuditAction::ExecutePath,
+                command_path.display().to_string(),
+            );
             return Ok(HookResult::default());
         }
-        match serde_json::from_str::<HookResult>(&stdout) {
-            Ok(value) => Ok(value),
-            Err(_) => Ok(HookResult {
+        let result = match serde_json::from_str::<HookResult>(&stdout) {
+            Ok(value) => value,
+            Err(_) => HookResult {
                 effects: vec![types::HookEffect::AddContext { text: stdout }],
-            }),
-        }
+            },
+        };
+        record_completion(
+            self.observer.as_ref(),
+            registration,
+            "command",
+            HookAuditAction::ExecutePath,
+            command_path.display().to_string(),
+        );
+        Ok(result)
     }
 }
 
-fn ensure_exec_allowed(execution: &Option<HookExecutionPolicy>, command_path: &Path) -> Result<()> {
-    let Some(execution) = execution else {
-        return Ok(());
-    };
-    if execution.exec_roots.is_empty() {
-        return Err(RuntimeError::hook(format!(
-            "plugin `{}` has no exec grant for command hook",
-            execution.plugin_id.as_deref().unwrap_or("unknown")
-        )));
+fn default_hook_command_sandbox_policy() -> SandboxPolicy {
+    SandboxPolicy {
+        mode: SandboxMode::WorkspaceWrite,
+        filesystem: FilesystemPolicy::default(),
+        network: tools::NetworkPolicy::Off,
+        host_escape: HostEscapePolicy::Deny,
+        fail_if_unavailable: true,
     }
-    if execution
-        .exec_roots
-        .iter()
-        .any(|root| command_path.starts_with(root))
-    {
-        return Ok(());
-    }
-    Err(RuntimeError::hook(format!(
-        "command hook executable {} is outside granted exec roots",
-        command_path.display()
-    )))
-}
-
-fn build_hook_sandbox_policy(
-    base: &SandboxPolicy,
-    execution: Option<&HookExecutionPolicy>,
-) -> SandboxPolicy {
-    let Some(execution) = execution else {
-        return base.clone();
-    };
-    let mut policy = base.clone();
-    policy.filesystem.readable_roots = execution.read_roots.clone();
-    policy
-        .filesystem
-        .readable_roots
-        .extend(execution.exec_roots.iter().cloned());
-    policy.filesystem.writable_roots = execution.write_roots.clone();
-    policy.network = match &execution.network {
-        HookNetworkPolicy::Deny => NetworkPolicy::Off,
-        HookNetworkPolicy::Allow => NetworkPolicy::Full,
-        HookNetworkPolicy::AllowDomains { domains } => NetworkPolicy::AllowDomains(domains.clone()),
-    };
-    policy
 }
 
 #[cfg(test)]
 mod tests {
     use super::{CommandHookExecutor, DefaultCommandHookExecutor};
+    use crate::hooks::handlers::execution::{
+        HookAuditAction, HookAuditEvent, HookAuditOutcome, HookExecutionObserver,
+    };
     use std::collections::BTreeMap;
     use std::sync::{Arc, Mutex};
     use tokio::process::Command;
     use tools::{
-        ExecRequest, HostProcessExecutor, ProcessExecutor, RuntimeScope as ExecRuntimeScope,
-        SandboxError,
+        ExecRequest, HostProcessExecutor, NetworkPolicy, ProcessExecutor,
+        RuntimeScope as ExecRuntimeScope, SandboxError, SandboxMode,
     };
     use types::{
         HookContext, HookEffect, HookEvent, HookExecutionPolicy, HookHandler, HookRegistration,
@@ -212,6 +254,17 @@ mod tests {
         fn prepare(&self, request: ExecRequest) -> std::result::Result<Command, SandboxError> {
             self.requests.lock().unwrap().push(request.clone());
             self.inner.prepare(request)
+        }
+    }
+
+    #[derive(Default)]
+    struct RecordingObserver {
+        events: Mutex<Vec<HookAuditEvent>>,
+    }
+
+    impl HookExecutionObserver for RecordingObserver {
+        fn record(&self, event: HookAuditEvent) {
+            self.events.lock().unwrap().push(event);
         }
     }
 
@@ -290,6 +343,8 @@ mod tests {
         assert!(logged[0].args.is_empty());
         assert!(logged[0].env.contains_key("NANOCLAW_CORE_HOOK_PAYLOAD"));
         assert_eq!(logged[0].runtime_scope.run_id, Some(run_id.clone()));
+        assert_eq!(logged[0].sandbox_policy.mode, SandboxMode::WorkspaceWrite);
+        assert_eq!(logged[0].sandbox_policy.network, NetworkPolicy::Off);
         assert_eq!(
             logged[0].runtime_scope,
             ExecRuntimeScope {
@@ -300,5 +355,119 @@ mod tests {
                 tool_call_id: None,
             }
         );
+    }
+
+    #[tokio::test]
+    async fn default_command_executor_requires_explicit_execution_grants() {
+        let dir = tempfile::tempdir().unwrap();
+        let command_path = dir.path().join("hook.sh");
+        std::fs::write(&command_path, "#!/bin/sh\nprintf ''").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut permissions = std::fs::metadata(&command_path).unwrap().permissions();
+            permissions.set_mode(0o755);
+            std::fs::set_permissions(&command_path, permissions).unwrap();
+        }
+
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let process_executor = Arc::new(RecordingExecutor {
+            inner: Arc::new(HostProcessExecutor),
+            requests: requests.clone(),
+        });
+        let executor =
+            DefaultCommandHookExecutor::with_process_executor(BTreeMap::new(), process_executor);
+        let error = executor
+            .execute(
+                &HookRegistration {
+                    name: "hook".to_string(),
+                    event: HookEvent::Notification,
+                    matcher: None,
+                    handler: HookHandler::Command(types::CommandHookHandler {
+                        command: command_path.to_string_lossy().to_string(),
+                        asynchronous: false,
+                    }),
+                    timeout_ms: None,
+                    execution: None,
+                },
+                HookContext {
+                    event: HookEvent::Notification,
+                    run_id: RunId::from("run_1"),
+                    session_id: SessionId::from("session_1"),
+                    turn_id: None,
+                    fields: BTreeMap::new(),
+                    payload: serde_json::json!({}),
+                },
+            )
+            .await
+            .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("requires execution policy grants")
+        );
+        assert!(requests.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn command_hook_uses_shared_audit_plane() {
+        let dir = tempfile::tempdir().unwrap();
+        let command_path = dir.path().join("hook.sh");
+        std::fs::write(&command_path, "#!/bin/sh\nprintf ''").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut permissions = std::fs::metadata(&command_path).unwrap().permissions();
+            permissions.set_mode(0o755);
+            std::fs::set_permissions(&command_path, permissions).unwrap();
+        }
+
+        let observer = Arc::new(RecordingObserver::default());
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let executor = DefaultCommandHookExecutor::with_process_executor_policy_and_observer(
+            BTreeMap::new(),
+            Arc::new(RecordingExecutor {
+                inner: Arc::new(HostProcessExecutor),
+                requests,
+            }),
+            super::default_hook_command_sandbox_policy(),
+            observer.clone(),
+        );
+
+        executor
+            .execute(
+                &HookRegistration {
+                    name: "hook".to_string(),
+                    event: HookEvent::Notification,
+                    matcher: None,
+                    handler: HookHandler::Command(types::CommandHookHandler {
+                        command: command_path.to_string_lossy().to_string(),
+                        asynchronous: false,
+                    }),
+                    timeout_ms: None,
+                    execution: Some(HookExecutionPolicy {
+                        plugin_id: Some("plugin".to_string()),
+                        exec_roots: vec![dir.path().to_path_buf()],
+                        ..HookExecutionPolicy::default()
+                    }),
+                },
+                HookContext {
+                    event: HookEvent::Notification,
+                    run_id: RunId::from("run_1"),
+                    session_id: SessionId::from("session_1"),
+                    turn_id: None,
+                    fields: BTreeMap::new(),
+                    payload: serde_json::json!({}),
+                },
+            )
+            .await
+            .unwrap();
+
+        let events = observer.events.lock().unwrap();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].action, HookAuditAction::ExecutePath);
+        assert_eq!(events[0].outcome, HookAuditOutcome::Allowed);
+        assert_eq!(events[1].outcome, HookAuditOutcome::Completed);
     }
 }

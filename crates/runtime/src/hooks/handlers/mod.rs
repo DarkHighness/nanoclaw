@@ -1,5 +1,6 @@
 mod agent;
 mod command;
+mod execution;
 mod http;
 mod prompt;
 mod wasm;

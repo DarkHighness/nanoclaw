@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use store::{InMemoryRunStore, RunStore};
 use tools::ToolExecutionContext;
-use types::{HookEvent, HookHandler, HookRegistration, PromptHookHandler};
+use types::{HookEvent, HookHandler, HookRegistration, PromptHookHandler, RunEventKind};
 
 #[tokio::test]
 async fn runtime_applies_hook_effects_without_mutating_base_instructions() {
@@ -92,4 +92,21 @@ async fn runtime_applies_hook_effects_without_mutating_base_instructions() {
         "please use acrobat skill on this file"
     );
     assert_eq!(transcript[2].text_content(), "ok");
+
+    let events = store.events(&runtime.run_id()).await.unwrap();
+    assert!(events.iter().any(|event| matches!(
+        &event.event,
+        RunEventKind::HookInvoked { hook_name, event }
+            if hook_name == "inject_context" && event == &HookEvent::UserPromptSubmit
+    )));
+    assert!(events.iter().any(|event| matches!(
+        &event.event,
+        RunEventKind::HookCompleted {
+            hook_name,
+            event,
+            output,
+        } if hook_name == "inject_context"
+            && event == &HookEvent::UserPromptSubmit
+            && !output.effects.is_empty()
+    )));
 }

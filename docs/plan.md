@@ -20,6 +20,9 @@ As of 2026-03-28, the remediation pass has already cleared:
   `include_stale` semantics, and agent/task context bridging
 - plugin hook permission hardening, fail-closed stub handlers, and
   `DriverActivationOutcome` host integration in both host apps
+- plugin hook execution-plane hardening across `command` / `http` / `wasm`,
+  including shared grant preflight, shared audit records, and a fail-safe
+  default command executor posture
 
 Archived documents now live under:
 
@@ -188,6 +191,9 @@ This looks like test drift, not a core feature regression.
 
 - move plugin driver activation from host-level `match` statements to a real
   compiled driver registry if more driver-backed plugins are expected
+- return to the unfinished Runtime Driver path after the remaining P2 runtime
+  hardening is complete; the current `builtin.wasm-hook-validator` is still a
+  validator, not a general executable runtime driver
 - continue improving provider-native structured tool-result transport so fewer
   providers need the JSON-envelope text fallback
 

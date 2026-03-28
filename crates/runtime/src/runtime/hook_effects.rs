@@ -76,7 +76,17 @@ impl AgentRuntime {
         };
 
         for invocation in batch.invocations {
+            self.append_event(
+                Some(turn_id.clone()),
+                None,
+                RunEventKind::HookInvoked {
+                    hook_name: invocation.registration.name.clone(),
+                    event: invocation.registration.event,
+                },
+            )
+            .await?;
             apply_hook_invocation(&mut applied, &invocation.registration, current_tool_name)?;
+            let output = invocation.output.clone();
             for effect in invocation.output.effects {
                 apply_hook_effect(
                     &mut applied,
@@ -85,6 +95,16 @@ impl AgentRuntime {
                     effect,
                 )?;
             }
+            self.append_event(
+                Some(turn_id.clone()),
+                None,
+                RunEventKind::HookCompleted {
+                    hook_name: invocation.registration.name.clone(),
+                    event: invocation.registration.event,
+                    output,
+                },
+            )
+            .await?;
         }
 
         self.apply_transcript_mutations(turn_id, &applied.transcript_mutations)
