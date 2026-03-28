@@ -69,6 +69,7 @@ impl RuntimeObserver for SharedRenderObserver {
                 };
             }
             RuntimeProgressEvent::TokenUsageUpdated { ledger, .. } => {
+                state.session.token_ledger = ledger.clone();
                 if let Some(window) = ledger.context_window {
                     state.push_activity(format!(
                         "context {} / {} tokens, input {} output {} cache {}",
@@ -166,5 +167,43 @@ impl RuntimeObserver for SharedRenderObserver {
             }
         });
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SharedRenderObserver;
+    use crate::tui::state::SharedUiState;
+    use agent::runtime::{RuntimeObserver, RuntimeProgressEvent};
+    use agent::types::{ContextWindowUsage, TokenLedgerSnapshot, TokenUsage, TokenUsagePhase};
+
+    #[test]
+    fn token_usage_updates_are_persisted_into_session_state() {
+        let ui_state = SharedUiState::new();
+        let ledger = TokenLedgerSnapshot {
+            context_window: Some(ContextWindowUsage {
+                used_tokens: 64_000,
+                max_tokens: 400_000,
+            }),
+            last_usage: Some(TokenUsage::from_input_output(4_000, 300, 500)),
+            cumulative_usage: TokenUsage::from_input_output(20_000, 1_200, 3_000),
+        };
+
+        SharedRenderObserver::new(ui_state.clone())
+            .on_event(RuntimeProgressEvent::TokenUsageUpdated {
+                phase: TokenUsagePhase::ResponseCompleted,
+                ledger: ledger.clone(),
+            })
+            .expect("token usage update should render");
+
+        let snapshot = ui_state.snapshot();
+        assert_eq!(snapshot.session.token_ledger, ledger);
+        assert!(
+            snapshot
+                .activity
+                .last()
+                .expect("token usage activity should be recorded")
+                .contains("context 64000 / 400000 tokens, input 20000 output 1200 cache 3000")
+        );
     }
 }

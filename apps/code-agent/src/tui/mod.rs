@@ -502,6 +502,7 @@ impl CodeAgentTui {
                 tool_names: self.tool_names.clone(),
                 skill_names,
                 queued_commands: 0,
+                token_ledger: Default::default(),
             },
             inspector_title: "Guide".to_string(),
             inspector: vec![
