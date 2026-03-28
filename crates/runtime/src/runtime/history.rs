@@ -4,7 +4,7 @@ use crate::{
     estimate_prompt_tokens,
 };
 use serde_json::json;
-use types::{HookContext, HookEvent, Message, MessageId, TurnId};
+use types::{HookContext, HookEvent, Message, MessageId, MessageRole, TurnId};
 
 impl AgentRuntime {
     pub(crate) fn visible_message_indices(&self) -> Vec<usize> {
@@ -57,11 +57,33 @@ impl AgentRuntime {
         })
     }
 
+    pub(crate) fn visible_transcript_last_index_for_role(
+        &self,
+        role: &MessageRole,
+    ) -> Option<usize> {
+        self.visible_message_indices()
+            .into_iter()
+            .rev()
+            .find(|index| {
+                self.session
+                    .transcript
+                    .get(*index)
+                    .is_some_and(|message| &message.role == role)
+            })
+    }
+
     pub(crate) fn transcript_contains_message_id(&self, message_id: &MessageId) -> bool {
         self.session
             .transcript
             .iter()
             .any(|message| &message.message_id == message_id)
+    }
+
+    pub(crate) fn transcript_contains_role(&self, role: &MessageRole) -> bool {
+        self.session
+            .transcript
+            .iter()
+            .any(|message| &message.role == role)
     }
 
     pub(super) async fn compact_if_needed(

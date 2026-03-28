@@ -11,7 +11,7 @@ use store::{InMemoryRunStore, RunStore};
 use tools::ToolExecutionContext;
 use types::{
     HookContext, HookEffect, HookRegistration, HookResult, MessageId, MessagePart, MessagePatch,
-    MessageSelector, ProviderContinuation, RunEventKind,
+    MessageRole, MessageSelector, ProviderContinuation, RunEventKind,
 };
 
 #[derive(Clone, Default)]
@@ -44,6 +44,38 @@ impl PromptHookEvaluator for MessageIdPatchPromptEvaluator {
             effects: vec![HookEffect::PatchMessage {
                 selector: MessageSelector::MessageId {
                     message_id: target_message_id,
+                },
+                patch: MessagePatch {
+                    append_parts: vec![MessagePart::text(" patched")],
+                    ..Default::default()
+                },
+            }],
+        })
+    }
+}
+
+#[derive(Clone, Default)]
+struct LastAssistantPatchPromptEvaluator;
+
+#[async_trait]
+impl PromptHookEvaluator for LastAssistantPatchPromptEvaluator {
+    async fn evaluate(
+        &self,
+        _registration: &HookRegistration,
+        context: HookContext,
+    ) -> Result<HookResult> {
+        let prompt = context
+            .payload
+            .get("prompt")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default();
+        if prompt != "third task" {
+            return Ok(HookResult::default());
+        }
+        Ok(HookResult {
+            effects: vec![HookEffect::PatchMessage {
+                selector: MessageSelector::LastOfRole {
+                    role: MessageRole::Assistant,
                 },
                 patch: MessagePatch {
                     append_parts: vec![MessagePart::text(" patched")],
@@ -247,6 +279,97 @@ async fn message_id_patch_resets_provider_continuation_and_replays_full_visible_
                     &event.event,
                     RunEventKind::TranscriptMessagePatched { message_id, .. }
                         if message_id == &first_message_id
+                )
+            })
+    );
+}
+
+#[tokio::test]
+async fn last_of_role_patch_targets_last_visible_assistant_message() {
+    let dir = tempfile::tempdir().unwrap();
+    let backend = Arc::new(ContinuingBackend::default());
+    let store = Arc::new(InMemoryRunStore::new());
+    let mut runtime: AgentRuntime = AgentRuntimeBuilder::new(backend.clone(), store.clone())
+        .hook_runner(Arc::new(HookRunner::with_services(
+            Arc::new(DefaultCommandHookExecutor::default()),
+            Arc::new(ReqwestHttpHookExecutor::default()),
+            Arc::new(LastAssistantPatchPromptEvaluator),
+            Arc::new(FailClosedAgentHookEvaluator),
+            Arc::new(DefaultWasmHookExecutor),
+        )))
+        .tool_context(ToolExecutionContext {
+            workspace_root: dir.path().to_path_buf(),
+            workspace_only: true,
+            model_context_window_tokens: Some(128_000),
+            ..Default::default()
+        })
+        .hooks(vec![HookRegistration {
+            name: "last-of-role-patch".to_string(),
+            event: types::HookEvent::UserPromptSubmit,
+            matcher: None,
+            handler: types::HookHandler::Prompt(types::PromptHookHandler {
+                prompt: "ignored".to_string(),
+            }),
+            timeout_ms: None,
+            execution: None,
+        }])
+        .skill_catalog(SkillCatalog::default())
+        .build();
+
+    runtime.run_user_prompt("first task").await.unwrap();
+    runtime.run_user_prompt("second task").await.unwrap();
+
+    let transcript_after_second_turn = store.replay_transcript(&runtime.run_id()).await.unwrap();
+    let assistant_messages = transcript_after_second_turn
+        .iter()
+        .filter(|message| message.role == MessageRole::Assistant)
+        .cloned()
+        .collect::<Vec<_>>();
+    assert_eq!(assistant_messages.len(), 2);
+    let first_assistant_id = assistant_messages[0].message_id.clone();
+    let second_assistant_id = assistant_messages[1].message_id.clone();
+
+    runtime.run_user_prompt("third task").await.unwrap();
+
+    let requests = backend.requests();
+    assert_eq!(requests.len(), 3);
+    assert!(requests[2].continuation.is_none());
+    assert!(requests[2].messages.iter().any(|message| {
+        message.message_id == second_assistant_id
+            && message.parts
+                == vec![
+                    types::MessagePart::text("response 2"),
+                    types::MessagePart::text(" patched"),
+                ]
+    }));
+    assert!(
+        requests[2]
+            .messages
+            .iter()
+            .any(|message| message.message_id == first_assistant_id
+                && message.text_content() == "response 1")
+    );
+
+    let transcript = store.replay_transcript(&runtime.run_id()).await.unwrap();
+    let assistant_messages = transcript
+        .iter()
+        .filter(|message| message.role == MessageRole::Assistant)
+        .collect::<Vec<_>>();
+    assert_eq!(assistant_messages.len(), 3);
+    assert_eq!(assistant_messages[0].text_content(), "response 1");
+    assert_eq!(assistant_messages[1].text_content(), "response 2\n patched");
+    assert_eq!(assistant_messages[2].text_content(), "response 3");
+    assert!(
+        store
+            .events(&runtime.run_id())
+            .await
+            .unwrap()
+            .iter()
+            .any(|event| {
+                matches!(
+                    &event.event,
+                    RunEventKind::TranscriptMessagePatched { message_id, .. }
+                        if message_id == &second_assistant_id
                 )
             })
     );

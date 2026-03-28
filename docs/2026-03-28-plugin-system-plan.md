@@ -794,9 +794,9 @@ cargo test -p reference-tui
   - 若目标是 runtime driver，则必须真正返回 runtime contributions
 - 统一消息 mutation 能力：
   - 已完成：
-    - `MessageSelector` 现在支持 `Current` 与 `MessageId`
-    - `LastOfRole` 仍然被明确排除在协议外
-    - `MessageId` 变更只允许命中当前可见 transcript
+    - `MessageSelector` 现在支持 `Current`、`MessageId` 与 `LastOfRole`
+    - `MessageId` 与 `LastOfRole` 都只允许命中当前可见 transcript
+    - `LastOfRole` 只会扫描已落盘的可见 transcript，不会命中当前 in-flight 的 `Current` 消息
     - 历史 mutation 通过 append-only `patched/removed` 事件落盘，并会显式失效 provider continuation
 
 ### 16.4 P2 性能与硬化
@@ -813,4 +813,5 @@ cargo test -p reference-tui
 - 当前 `prompt` / `agent` handlers 是否仍为 fail-closed stub，还是已有真实执行器
 - `DriverActivationOutcome` 已经被 `reference-tui` / `code-agent` 完整消费
 - `builtin.wasm-hook-runtime` 是校验器还是完整 runtime driver
-- message mutation 当前支持 `Current + MessageId(visible transcript only)`，不支持 `LastOfRole`
+- message mutation 当前支持 `Current + MessageId + LastOfRole(visible transcript only)`
+- `LastOfRole` 只解析已落盘的可见 transcript；要修改当前正在构造的消息仍需使用 `Current`

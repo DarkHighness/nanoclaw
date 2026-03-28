@@ -2,22 +2,28 @@ use super::AgentRuntime;
 use crate::{HookInvocationBatch, Result, RuntimeError};
 use types::{
     GateDecision, HookEffect, HookHandlerKind, HookMutationPermission, HookRegistration, Message,
-    MessageId, MessageSelector, PermissionBehavior, PermissionDecision, RunEventKind, ToolName,
-    TurnId,
+    MessageId, MessageRole, MessageSelector, PermissionBehavior, PermissionDecision, RunEventKind,
+    ToolName, TurnId,
 };
+
+#[derive(Clone, Debug, PartialEq)]
+pub(super) enum TranscriptMutationTarget {
+    MessageId(MessageId),
+    LastOfRole(MessageRole),
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub(super) enum TranscriptMutation {
     Replace {
-        message_id: MessageId,
+        target: TranscriptMutationTarget,
         message: Message,
     },
     Patch {
-        message_id: MessageId,
+        target: TranscriptMutationTarget,
         patch: types::MessagePatch,
     },
     Remove {
-        message_id: MessageId,
+        target: TranscriptMutationTarget,
     },
 }
 
@@ -99,19 +105,16 @@ impl AgentRuntime {
     ) -> Result<()> {
         for mutation in mutations {
             match mutation.clone() {
-                TranscriptMutation::Replace {
-                    message_id,
-                    message,
-                } => {
-                    self.apply_transcript_message_replacement(turn_id, message_id, message)
+                TranscriptMutation::Replace { target, message } => {
+                    self.apply_transcript_message_replacement(turn_id, target, message)
                         .await?;
                 }
-                TranscriptMutation::Patch { message_id, patch } => {
-                    self.apply_transcript_message_patch(turn_id, message_id, patch)
+                TranscriptMutation::Patch { target, patch } => {
+                    self.apply_transcript_message_patch(turn_id, target, patch)
                         .await?;
                 }
-                TranscriptMutation::Remove { message_id } => {
-                    self.apply_transcript_message_removal(turn_id, message_id)
+                TranscriptMutation::Remove { target } => {
+                    self.apply_transcript_message_removal(turn_id, target)
                         .await?;
                 }
             }
@@ -122,10 +125,10 @@ impl AgentRuntime {
     async fn apply_transcript_message_replacement(
         &mut self,
         turn_id: &TurnId,
-        message_id: MessageId,
+        target: TranscriptMutationTarget,
         mut message: Message,
     ) -> Result<()> {
-        let index = self.resolve_mutable_transcript_index(&message_id)?;
+        let (index, message_id) = self.resolve_mutable_transcript_target(&target)?;
         // Replacement keeps the original message identity stable so replay and
         // future `message_id` selectors still point at the same transcript node.
         message.message_id = message_id.clone();
@@ -147,10 +150,10 @@ impl AgentRuntime {
     async fn apply_transcript_message_patch(
         &mut self,
         turn_id: &TurnId,
-        message_id: MessageId,
+        target: TranscriptMutationTarget,
         patch: types::MessagePatch,
     ) -> Result<()> {
-        let index = self.resolve_mutable_transcript_index(&message_id)?;
+        let (index, message_id) = self.resolve_mutable_transcript_target(&target)?;
         let Some(message) = self.session.transcript.get_mut(index) else {
             return Err(RuntimeError::invalid_state(format!(
                 "transcript index {index} vanished during patch"
@@ -182,9 +185,9 @@ impl AgentRuntime {
     async fn apply_transcript_message_removal(
         &mut self,
         turn_id: &TurnId,
-        message_id: MessageId,
+        target: TranscriptMutationTarget,
     ) -> Result<()> {
-        let _index = self.resolve_mutable_transcript_index(&message_id)?;
+        let (_index, message_id) = self.resolve_mutable_transcript_target(&target)?;
         self.session.removed_message_ids.insert(message_id.clone());
         self.append_event(
             Some(turn_id.clone()),
@@ -196,18 +199,51 @@ impl AgentRuntime {
         Ok(())
     }
 
-    fn resolve_mutable_transcript_index(&self, message_id: &MessageId) -> Result<usize> {
-        if let Some(index) = self.visible_transcript_index_for_message_id(message_id) {
-            return Ok(index);
+    fn resolve_mutable_transcript_target(
+        &self,
+        target: &TranscriptMutationTarget,
+    ) -> Result<(usize, MessageId)> {
+        match target {
+            TranscriptMutationTarget::MessageId(message_id) => {
+                if let Some(index) = self.visible_transcript_index_for_message_id(message_id) {
+                    return Ok((index, message_id.clone()));
+                }
+                let error = if self.transcript_contains_message_id(message_id) {
+                    format!(
+                        "hook cannot mutate compacted or otherwise hidden transcript message `{message_id}`"
+                    )
+                } else {
+                    format!("unknown transcript message id `{message_id}`")
+                };
+                Err(RuntimeError::hook(error))
+            }
+            // Role-based selectors resolve at mutation-apply time so multiple
+            // queued effects in one hook batch see earlier transcript changes.
+            TranscriptMutationTarget::LastOfRole(role) => {
+                if let Some(index) = self.visible_transcript_last_index_for_role(role) {
+                    let message_id = self
+                        .session
+                        .transcript
+                        .get(index)
+                        .map(|message| message.message_id.clone())
+                        .ok_or_else(|| {
+                            RuntimeError::invalid_state(format!(
+                                "visible transcript index {index} vanished during role lookup"
+                            ))
+                        })?;
+                    return Ok((index, message_id));
+                }
+                let role_name = describe_role(role);
+                let error = if self.transcript_contains_role(role) {
+                    format!(
+                        "hook cannot mutate compacted or otherwise hidden last `{role_name}` transcript message"
+                    )
+                } else {
+                    format!("hook cannot find any `{role_name}` transcript message")
+                };
+                Err(RuntimeError::hook(error))
+            }
         }
-        let error = if self.transcript_contains_message_id(message_id) {
-            format!(
-                "hook cannot mutate compacted or otherwise hidden transcript message `{message_id}`"
-            )
-        } else {
-            format!("unknown transcript message id `{message_id}`")
-        };
-        Err(RuntimeError::hook(error))
     }
 }
 
@@ -436,7 +472,14 @@ fn apply_message_replacement(
         }
         MessageSelector::MessageId { message_id } => {
             transcript_mutations.push(TranscriptMutation::Replace {
-                message_id,
+                target: TranscriptMutationTarget::MessageId(message_id),
+                message,
+            });
+            Ok(())
+        }
+        MessageSelector::LastOfRole { role } => {
+            transcript_mutations.push(TranscriptMutation::Replace {
+                target: TranscriptMutationTarget::LastOfRole(role),
                 message,
             });
             Ok(())
@@ -469,7 +512,17 @@ fn apply_message_patch(
             Ok(())
         }
         MessageSelector::MessageId { message_id } => {
-            transcript_mutations.push(TranscriptMutation::Patch { message_id, patch });
+            transcript_mutations.push(TranscriptMutation::Patch {
+                target: TranscriptMutationTarget::MessageId(message_id),
+                patch,
+            });
+            Ok(())
+        }
+        MessageSelector::LastOfRole { role } => {
+            transcript_mutations.push(TranscriptMutation::Patch {
+                target: TranscriptMutationTarget::LastOfRole(role),
+                patch,
+            });
             Ok(())
         }
     }
@@ -486,9 +539,26 @@ fn apply_message_removal(
             Ok(())
         }
         MessageSelector::MessageId { message_id } => {
-            transcript_mutations.push(TranscriptMutation::Remove { message_id });
+            transcript_mutations.push(TranscriptMutation::Remove {
+                target: TranscriptMutationTarget::MessageId(message_id),
+            });
             Ok(())
         }
+        MessageSelector::LastOfRole { role } => {
+            transcript_mutations.push(TranscriptMutation::Remove {
+                target: TranscriptMutationTarget::LastOfRole(role),
+            });
+            Ok(())
+        }
+    }
+}
+
+fn describe_role(role: &MessageRole) -> &'static str {
+    match role {
+        MessageRole::System => "system",
+        MessageRole::User => "user",
+        MessageRole::Assistant => "assistant",
+        MessageRole::Tool => "tool",
     }
 }
 

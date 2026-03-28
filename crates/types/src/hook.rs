@@ -258,6 +258,10 @@ pub enum MessageSelector {
     // compaction 隐藏的历史消息做变更会破坏 summary/continuation 语义，
     // 运行时会显式拒绝这类 selector。
     MessageId { message_id: MessageId },
+    // `last_of_role` 只会在当前可见 transcript 中查找指定角色的最后一条
+    // 消息，不会命中还未落盘的 `Current` 消息。需要改动当前构建中的消息时，
+    // 仍应使用 `Current`。
+    LastOfRole { role: MessageRole },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
@@ -366,12 +370,12 @@ mod tests {
     }
 
     #[test]
-    fn legacy_message_selectors_are_rejected() {
+    fn unknown_message_selectors_are_rejected() {
         let patch = serde_json::json!({
             "kind": "patch_message",
             "selector": {
-                "kind": "last_of_role",
-                "role": "assistant"
+                "kind": "message_index",
+                "index": 3
             },
             "patch": {
                 "append_parts": [{ "type": "text", "text": "patched" }]
@@ -430,6 +434,33 @@ mod tests {
             selector,
             MessageSelector::MessageId {
                 message_id: MessageId::from("msg_1"),
+            }
+        );
+        assert_eq!(message.role, MessageRole::Assistant);
+    }
+
+    #[test]
+    fn replace_message_with_last_of_role_selector_deserializes() {
+        let value = serde_json::json!({
+            "kind": "replace_message",
+            "selector": {
+                "kind": "last_of_role",
+                "role": "assistant"
+            },
+            "message": {
+                "role": "assistant",
+                "parts": [{ "type": "text", "text": "rewritten" }]
+            }
+        });
+
+        let parsed = serde_json::from_value::<HookEffect>(value).unwrap();
+        let HookEffect::ReplaceMessage { selector, message } = parsed else {
+            panic!("expected replace_message effect");
+        };
+        assert_eq!(
+            selector,
+            MessageSelector::LastOfRole {
+                role: MessageRole::Assistant,
             }
         );
         assert_eq!(message.role, MessageRole::Assistant);
