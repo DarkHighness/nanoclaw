@@ -170,6 +170,7 @@ async fn build_runtime(
         Arc::new(agent::runtime::ReqwestHttpHookExecutor::default()),
         Arc::new(agent::runtime::NoopPromptHookEvaluator),
         Arc::new(agent::runtime::NoopAgentHookEvaluator),
+        Arc::new(agent::runtime::DefaultWasmHookExecutor),
     ));
     let todo_state = TodoListState::default();
     // Managed LSP helpers run outside the normal user-invoked tool approval path.
@@ -230,7 +231,7 @@ async fn build_runtime(
     // surfaces stay identical regardless of whether a capability came from builtin boot code or a
     // plugin slot selection.
     agent::activate_driver_requests(
-        &plugin_plan.driver_activations,
+        &plugin_plan.runtime_activations,
         workspace_root,
         Some(store.clone()),
         &mut tools,

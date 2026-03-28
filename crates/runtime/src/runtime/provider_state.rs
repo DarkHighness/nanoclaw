@@ -19,10 +19,14 @@ impl AgentRuntime {
             run_id: self.session.run_id.clone(),
             session_id: self.session.session_id.clone(),
             turn_id: turn_id.clone(),
-            instructions: instructions.to_vec(),
+            instructions: instructions
+                .iter()
+                .chain(self.pending_injected_instructions.iter())
+                .cloned()
+                .collect(),
             messages,
             tools: self.tool_registry.specs(),
-            additional_context: Vec::new(),
+            additional_context: self.pending_additional_context.clone(),
             continuation,
             metadata: json!({}),
         }

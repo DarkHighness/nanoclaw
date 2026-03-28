@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use thiserror::Error;
-use types::{Message, RunEventEnvelope, RunEventKind, RunId, SessionId};
+use types::{HookEffect, Message, RunEventEnvelope, RunEventKind, RunId, SessionId};
 
 #[derive(Debug, Error)]
 pub enum RunStoreError {
@@ -208,12 +208,41 @@ pub(crate) fn searchable_event_strings(event: &RunEventEnvelope) -> Vec<String> 
             hook_name, output, ..
         } => {
             values.push(hook_name.clone());
-            if let Some(message) = &output.system_message {
-                values.push(message.clone());
-            }
-            values.extend(output.additional_context.clone());
-            if let Some(reason) = &output.stop_reason {
-                values.push(reason.clone());
+            for effect in &output.effects {
+                match effect {
+                    HookEffect::AppendMessage { parts, .. } => {
+                        values.extend(parts.iter().filter_map(|part| match part {
+                            types::MessagePart::Text { text } => Some(text.clone()),
+                            _ => None,
+                        }));
+                    }
+                    HookEffect::AddContext { text } | HookEffect::InjectInstruction { text } => {
+                        values.push(text.clone());
+                    }
+                    HookEffect::Stop { reason } => {
+                        values.push(reason.clone());
+                    }
+                    HookEffect::RewriteToolArgs {
+                        tool_name,
+                        arguments,
+                    } => {
+                        values.push(tool_name.to_string());
+                        values.push(arguments.to_string());
+                    }
+                    HookEffect::SetGateDecision { reason, .. }
+                    | HookEffect::SetPermissionDecision { reason, .. }
+                    | HookEffect::SetPermissionBehavior { reason, .. } => {
+                        if let Some(reason) = reason {
+                            values.push(reason.clone());
+                        }
+                    }
+                    HookEffect::ReplaceMessage { message, .. } => {
+                        values.push(message.text_content());
+                    }
+                    HookEffect::PatchMessage { .. }
+                    | HookEffect::RemoveMessage { .. }
+                    | HookEffect::Elicitation { .. } => {}
+                }
             }
         }
         RunEventKind::TranscriptMessage { message } => {

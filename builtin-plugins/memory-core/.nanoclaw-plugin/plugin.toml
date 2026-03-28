@@ -4,4 +4,6 @@ name = "Memory Core"
 description = "Markdown memory with local lexical retrieval"
 kind = "memory"
 enabled_by_default = true
+
+[runtime]
 driver = "builtin.memory-core"

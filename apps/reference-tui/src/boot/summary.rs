@@ -2,7 +2,9 @@ use super::StoreHandle;
 use crate::{TuiStartupSummary, config::AgentCoreConfig};
 use agent::mcp::ConnectedMcpServer;
 use agent::plugins::{PluginActivationPlan, PluginDiagnosticLevel};
+use std::path::{Path, PathBuf};
 use tools::{SandboxBackendStatus, SandboxPolicy, describe_sandbox_policy};
+use types::{HookHostApiGrant, HookMutationPermission, HookNetworkPolicy};
 use types::{RunId, ToolOrigin, ToolSpec};
 
 pub(super) fn build_startup_summary(
@@ -74,6 +76,22 @@ pub(super) fn build_startup_summary(
     if let Some(memory_slot) = plugin_plan.slots.memory.as_deref() {
         sidebar.push(format!("memory slot: {memory_slot}"));
     }
+    for plugin in plugin_plan
+        .plugin_states
+        .iter()
+        .filter(|state| state.enabled)
+    {
+        sidebar.push(format!(
+            "plugin {}: {}",
+            plugin.plugin_id,
+            describe_plugin_contributions(plugin)
+        ));
+        sidebar.push(format!(
+            "plugin {} perms: {}",
+            plugin.plugin_id,
+            describe_plugin_permissions(workspace_root, plugin)
+        ));
+    }
     for diagnostic in &plugin_plan.diagnostics {
         let level = match diagnostic.level {
             PluginDiagnosticLevel::Warning => "plugin warning",
@@ -124,4 +142,230 @@ fn preview_list(items: &[String], max_items: usize) -> String {
 
 fn preview_id(value: &str) -> String {
     value.chars().take(8).collect()
+}
+
+fn describe_plugin_contributions(plugin: &agent::plugins::PluginState) -> String {
+    let mut parts = Vec::new();
+    let contributions = &plugin.contributions;
+    if contributions.instruction_count > 0 {
+        parts.push(format!("instructions={}", contributions.instruction_count));
+    }
+    if !contributions.skill_roots.is_empty() {
+        parts.push(format!("skills={}", contributions.skill_roots.len()));
+    }
+    if !contributions.hook_names.is_empty() {
+        parts.push(format!(
+            "hooks={}",
+            preview_list(&contributions.hook_names, 2)
+        ));
+    }
+    if !contributions.mcp_servers.is_empty() {
+        parts.push(format!(
+            "mcp={}",
+            preview_list(&contributions.mcp_servers, 2)
+        ));
+    }
+    if let Some(driver) = contributions.runtime_driver.as_deref() {
+        parts.push(format!("runtime={driver}"));
+    }
+    if parts.is_empty() {
+        "no declarative or runtime contributions".to_string()
+    } else {
+        parts.join(", ")
+    }
+}
+
+fn describe_plugin_permissions(
+    workspace_root: &Path,
+    plugin: &agent::plugins::PluginState,
+) -> String {
+    let permissions = &plugin.granted_permissions;
+    let mut parts = Vec::new();
+    parts.push(format!(
+        "read={}",
+        preview_paths(workspace_root, &permissions.read_roots)
+    ));
+    parts.push(format!(
+        "write={}",
+        preview_paths(workspace_root, &permissions.write_roots)
+    ));
+    parts.push(format!(
+        "exec={}",
+        preview_paths(workspace_root, &permissions.exec_roots)
+    ));
+    parts.push(format!(
+        "network={}",
+        describe_network_policy(&permissions.network)
+    ));
+    parts.push(format!(
+        "mutation={}",
+        describe_mutation_permission(permissions.message_mutation)
+    ));
+    parts.push(format!(
+        "host_api={}",
+        describe_host_api_grants(&permissions.host_api)
+    ));
+    parts.join(", ")
+}
+
+fn preview_paths(workspace_root: &Path, paths: &[PathBuf]) -> String {
+    if paths.is_empty() {
+        return "none".to_string();
+    }
+    let preview = paths
+        .iter()
+        .take(2)
+        .map(|path| {
+            path.strip_prefix(workspace_root)
+                .unwrap_or(path.as_path())
+                .display()
+                .to_string()
+        })
+        .collect::<Vec<_>>();
+    if paths.len() > 2 {
+        format!("{}, +{}", preview.join(", "), paths.len() - 2)
+    } else {
+        preview.join(", ")
+    }
+}
+
+fn describe_network_policy(policy: &HookNetworkPolicy) -> String {
+    match policy {
+        HookNetworkPolicy::Deny => "deny".to_string(),
+        HookNetworkPolicy::Allow => "allow".to_string(),
+        HookNetworkPolicy::AllowDomains { domains } => {
+            if domains.is_empty() {
+                "allow_domains".to_string()
+            } else {
+                format!("allow_domains({})", preview_list(domains, 2))
+            }
+        }
+    }
+}
+
+fn describe_mutation_permission(permission: HookMutationPermission) -> &'static str {
+    match permission {
+        HookMutationPermission::Deny => "deny",
+        HookMutationPermission::Allow => "allow",
+        HookMutationPermission::ReviewRequired => "review_required",
+    }
+}
+
+fn describe_host_api_grants(grants: &[HookHostApiGrant]) -> String {
+    if grants.is_empty() {
+        return "none".to_string();
+    }
+    let names = grants
+        .iter()
+        .map(|grant| match grant {
+            HookHostApiGrant::GetHookContext => "get_hook_context".to_string(),
+            HookHostApiGrant::EmitHookEffect => "emit_hook_effect".to_string(),
+            HookHostApiGrant::Log => "log".to_string(),
+            HookHostApiGrant::ReadFile => "read_file".to_string(),
+            HookHostApiGrant::WriteFile => "write_file".to_string(),
+            HookHostApiGrant::ListDir => "list_dir".to_string(),
+            HookHostApiGrant::SpawnMcp => "spawn_mcp".to_string(),
+            HookHostApiGrant::ResolveSkill => "resolve_skill".to_string(),
+        })
+        .collect::<Vec<_>>();
+    preview_list(&names, 3)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::StoreHandle;
+    use super::build_startup_summary;
+    use crate::config::AgentCoreConfig;
+    use agent::plugins::{
+        PluginActivationPlan, PluginContributionSummary, PluginResolvedPermissions, PluginState,
+    };
+    use std::sync::Arc;
+    use store::InMemoryRunStore;
+    use tempfile::tempdir;
+    use tools::{
+        HostEscapePolicy, NetworkPolicy, SandboxBackendStatus, SandboxMode, SandboxPolicy,
+    };
+    use types::{
+        HookHostApiGrant, HookMutationPermission, HookNetworkPolicy, RunId, ToolOrigin,
+        ToolOutputMode, ToolSpec,
+    };
+
+    #[test]
+    fn startup_summary_lists_enabled_plugin_contributions_and_permissions() {
+        let workspace = tempdir().unwrap();
+        let summary = build_startup_summary(
+            &RunId::from("run_test"),
+            workspace.path(),
+            "openai / gpt-test",
+            &StoreHandle {
+                store: Arc::new(InMemoryRunStore::new()),
+                label: "memory fallback".to_string(),
+                warning: None,
+            },
+            0,
+            &[ToolSpec {
+                name: "read".into(),
+                description: "read".to_string(),
+                input_schema: serde_json::json!({"type":"object"}),
+                output_mode: ToolOutputMode::Text,
+                output_schema: None,
+                origin: ToolOrigin::Local,
+                annotations: Default::default(),
+            }],
+            &[],
+            &[],
+            &AgentCoreConfig::default(),
+            &PluginActivationPlan {
+                plugin_states: vec![PluginState {
+                    plugin_id: "team-policy".to_string(),
+                    enabled: true,
+                    reason: "enabled by plugins.entries".to_string(),
+                    requested_permissions: Default::default(),
+                    granted_permissions: PluginResolvedPermissions {
+                        read_roots: vec![workspace.path().join("docs")],
+                        write_roots: vec![
+                            workspace.path().join(".nanoclaw/plugin-state/team-policy"),
+                        ],
+                        exec_roots: vec![
+                            workspace.path().join(".nanoclaw/plugins-cache/team-policy"),
+                        ],
+                        network: HookNetworkPolicy::AllowDomains {
+                            domains: vec!["api.example.com".to_string()],
+                        },
+                        message_mutation: HookMutationPermission::Allow,
+                        host_api: vec![
+                            HookHostApiGrant::ReadFile,
+                            HookHostApiGrant::EmitHookEffect,
+                        ],
+                    },
+                    contributions: PluginContributionSummary {
+                        instruction_count: 1,
+                        skill_roots: vec![workspace.path().join("plugins/team-policy/skills")],
+                        hook_names: vec!["rewrite-user-message".to_string()],
+                        mcp_servers: vec!["docs".to_string()],
+                        runtime_driver: Some("builtin.wasm-hook-runtime".to_string()),
+                    },
+                }],
+                ..PluginActivationPlan::default()
+            },
+            &[],
+            &SandboxPolicy {
+                mode: SandboxMode::WorkspaceWrite,
+                filesystem: Default::default(),
+                network: NetworkPolicy::Off,
+                host_escape: HostEscapePolicy::Deny,
+                fail_if_unavailable: false,
+            },
+            &SandboxBackendStatus::NotRequired,
+        );
+
+        assert!(summary
+            .sidebar
+            .iter()
+            .any(|line| line.contains("plugin team-policy: instructions=1, skills=1, hooks=rewrite-user-message, mcp=docs, runtime=builtin.wasm-hook-runtime")));
+        assert!(summary
+            .sidebar
+            .iter()
+            .any(|line| line.contains("plugin team-policy perms: read=docs, write=.nanoclaw/plugin-state/team-policy, exec=.nanoclaw/plugins-cache/team-policy, network=allow_domains(api.example.com), mutation=allow, host_api=read_file, emit_hook_effect")));
+    }
 }

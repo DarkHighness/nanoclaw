@@ -22,7 +22,9 @@ thiserror.workspace = true
 tokio.workspace = true
 tokio-stream.workspace = true
 tracing.workspace = true
+wasmtime.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+wat.workspace = true
 wiremock.workspace = true

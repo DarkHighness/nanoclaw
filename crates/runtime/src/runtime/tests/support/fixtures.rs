@@ -6,7 +6,8 @@ use async_trait::async_trait;
 use serde_json::Value;
 use tools::{Tool, ToolError, ToolExecutionContext, mcp_tool_annotations};
 use types::{
-    HookContext, HookOutput, ToolCallId, ToolOrigin, ToolOutputMode, ToolResult, ToolSpec,
+    HookContext, HookEffect, HookRegistration, HookResult, MessagePart, MessageRole, ToolCallId,
+    ToolOrigin, ToolOutputMode, ToolResult, ToolSpec,
 };
 
 pub(in crate::runtime::tests) struct StaticPromptEvaluator;
@@ -15,11 +16,21 @@ pub(in crate::runtime::tests) struct StaticCompactor;
 
 #[async_trait]
 impl crate::PromptHookEvaluator for StaticPromptEvaluator {
-    async fn evaluate(&self, _prompt: &str, _context: HookContext) -> Result<HookOutput> {
-        Ok(HookOutput {
-            system_message: Some("hook system message".to_string()),
-            additional_context: vec!["hook additional context".to_string()],
-            ..HookOutput::default()
+    async fn evaluate(
+        &self,
+        _registration: &HookRegistration,
+        _context: HookContext,
+    ) -> Result<HookResult> {
+        Ok(HookResult {
+            effects: vec![
+                HookEffect::AppendMessage {
+                    role: MessageRole::System,
+                    parts: vec![MessagePart::text("hook system message")],
+                },
+                HookEffect::AddContext {
+                    text: "hook additional context".to_string(),
+                },
+            ],
         })
     }
 }

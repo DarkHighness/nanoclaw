@@ -18,6 +18,7 @@ pub enum SandboxMode {
 pub struct FilesystemPolicy {
     pub readable_roots: Vec<PathBuf>,
     pub writable_roots: Vec<PathBuf>,
+    pub executable_roots: Vec<PathBuf>,
     pub protected_paths: Vec<PathBuf>,
 }
 
@@ -38,6 +39,7 @@ pub enum HostEscapePolicy {
 pub enum FilesystemAccess {
     Read,
     Write,
+    Execute,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -54,6 +56,10 @@ pub struct SandboxScope {
     pub workspace_root: PathBuf,
     pub worktree_root: Option<PathBuf>,
     pub additional_roots: Vec<PathBuf>,
+    pub read_only_roots: Vec<PathBuf>,
+    pub writable_roots: Vec<PathBuf>,
+    pub exec_roots: Vec<PathBuf>,
+    pub network_policy: Option<NetworkPolicy>,
     pub workspace_only: bool,
 }
 
@@ -75,14 +81,33 @@ impl SandboxPolicy {
             return Self::permissive();
         }
 
-        let mut roots = vec![scope.workspace_root.clone()];
-        if let Some(worktree_root) = scope.worktree_root.clone() {
-            roots.push(worktree_root);
-        }
-        roots.extend(scope.additional_roots.iter().cloned());
-        let roots = dedup_paths(roots);
+        let mut readable_roots = if scope.read_only_roots.is_empty()
+            && scope.writable_roots.is_empty()
+            && scope.exec_roots.is_empty()
+        {
+            let mut roots = vec![scope.workspace_root.clone()];
+            if let Some(worktree_root) = scope.worktree_root.clone() {
+                roots.push(worktree_root);
+            }
+            roots.extend(scope.additional_roots.iter().cloned());
+            dedup_paths(roots)
+        } else {
+            let mut roots = scope.read_only_roots.clone();
+            roots.extend(scope.writable_roots.iter().cloned());
+            roots.extend(scope.exec_roots.iter().cloned());
+            dedup_paths(roots)
+        };
+        let writable_roots = if scope.writable_roots.is_empty()
+            && scope.read_only_roots.is_empty()
+            && scope.exec_roots.is_empty()
+        {
+            readable_roots.clone()
+        } else {
+            dedup_paths(scope.writable_roots.clone())
+        };
+        let executable_roots = dedup_paths(scope.exec_roots.clone());
         let protected_paths = dedup_paths(
-            roots
+            readable_roots
                 .iter()
                 .flat_map(|root| {
                     DEFAULT_PROTECTED_DIRS
@@ -95,11 +120,12 @@ impl SandboxPolicy {
         Self {
             mode: SandboxMode::WorkspaceWrite,
             filesystem: FilesystemPolicy {
-                readable_roots: roots.clone(),
-                writable_roots: roots,
+                readable_roots: std::mem::take(&mut readable_roots),
+                writable_roots,
+                executable_roots,
                 protected_paths,
             },
-            network: NetworkPolicy::Off,
+            network: scope.network_policy.clone().unwrap_or(NetworkPolicy::Off),
             host_escape: HostEscapePolicy::Deny,
             // Hosts can tighten this later once every platform backend exists.
             // The substrate should not silently claim fail-closed isolation on a
@@ -120,6 +146,7 @@ impl SandboxPolicy {
             || !matches!(self.network, NetworkPolicy::Full)
             || !self.filesystem.readable_roots.is_empty()
             || !self.filesystem.writable_roots.is_empty()
+            || !self.filesystem.executable_roots.is_empty()
             || !self.filesystem.protected_paths.is_empty()
     }
 }
@@ -157,6 +184,7 @@ pub fn assert_filesystem_access(
     let allowed_roots = match access {
         FilesystemAccess::Read => accessible_roots_for_filesystem(&filesystem),
         FilesystemAccess::Write => filesystem.writable_roots,
+        FilesystemAccess::Execute => filesystem.executable_roots,
     };
     if allowed_roots.is_empty() || path_is_inside_any_root(&path, &allowed_roots) {
         return Ok(());
@@ -165,6 +193,7 @@ pub fn assert_filesystem_access(
     let action = match access {
         FilesystemAccess::Read => "read",
         FilesystemAccess::Write => "write",
+        FilesystemAccess::Execute => "execute",
     };
     let allowed = allowed_roots
         .iter()
@@ -296,6 +325,13 @@ pub(crate) fn canonicalize_filesystem_policy(
                 .map(|path| canonicalize_policy_path(path))
                 .collect::<Result<Vec<_>>>()?,
         ),
+        executable_roots: dedup_paths(
+            policy
+                .executable_roots
+                .iter()
+                .map(|path| canonicalize_policy_path(path))
+                .collect::<Result<Vec<_>>>()?,
+        ),
         protected_paths: dedup_paths(
             policy
                 .protected_paths
@@ -374,6 +410,7 @@ fn dedup_paths(paths: Vec<PathBuf>) -> Vec<PathBuf> {
 fn accessible_roots_for_filesystem(filesystem: &FilesystemPolicy) -> Vec<PathBuf> {
     let mut roots = filesystem.writable_roots.clone();
     roots.extend(filesystem.readable_roots.iter().cloned());
+    roots.extend(filesystem.executable_roots.iter().cloned());
     dedup_paths(roots)
 }
 
@@ -394,6 +431,7 @@ mod tests {
             worktree_root: Some(workspace.path().to_path_buf()),
             additional_roots: vec![extra.path().to_path_buf()],
             workspace_only: true,
+            ..Default::default()
         };
 
         let policy = SandboxPolicy::recommended_for_scope(&scope);

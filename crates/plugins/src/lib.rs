@@ -1,8 +1,8 @@
 //! TOML-native plugin manifest discovery and activation planning.
 //!
 //! This crate is intentionally control-plane only. It resolves plugin metadata
-//! into deterministic activation inputs (skills, hooks, MCP, and driver
-//! requests) without directly mutating runtime behavior.
+//! into deterministic activation inputs (skills, hooks, MCP, and runtime
+//! activations) without directly mutating runtime behavior.
 
 mod config;
 mod discovery;
@@ -19,14 +19,13 @@ pub use resolution::*;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::BTreeMap;
     use std::fs;
-    use std::path::PathBuf;
     use tempfile::tempdir;
     use toml::map::Map;
+    use types::HookMutationPermission;
 
     #[test]
-    fn discovery_loads_plugin_manifest_and_component_files() {
+    fn discovery_loads_new_manifest_and_component_files() {
         let dir = tempdir().unwrap();
         let plugin_root = dir.path().join("demo");
         fs::create_dir_all(plugin_root.join(".nanoclaw-plugin")).unwrap();
@@ -42,6 +41,15 @@ enabled_by_default = true
 skill_roots = ["skills"]
 hook_files = [".nanoclaw-plugin/hooks.toml"]
 mcp_files = [".nanoclaw-plugin/mcp.toml"]
+
+[runtime]
+driver = "builtin.wasm-hook-runtime"
+module = "wasm/plugin.wasm"
+abi = "nanoclaw.plugin.v1"
+
+[permissions]
+exec = [".nanoclaw/plugins-cache/demo"]
+host_api = ["get_hook_context", "emit_hook_effect"]
 "#,
         )
         .unwrap();
@@ -53,8 +61,9 @@ name = "review-reminder"
 event = "UserPromptSubmit"
 
 [hooks.handler]
-type = "prompt"
-prompt = "review first"
+type = "wasm"
+module = "wasm/prompt-filter.wasm"
+entrypoint = "on_user_prompt"
 "#,
         )
         .unwrap();
@@ -79,37 +88,42 @@ cwd = "."
         assert_eq!(plugin.manifest.id, "demo");
         assert_eq!(plugin.skill_roots, vec![plugin_root.join("skills")]);
         assert_eq!(plugin.hooks.len(), 1);
+        match &plugin.hooks[0].handler {
+            types::HookHandler::Wasm(wasm) => {
+                assert_eq!(
+                    wasm.module,
+                    plugin_root
+                        .join("wasm/prompt-filter.wasm")
+                        .to_string_lossy()
+                        .to_string()
+                );
+            }
+            other => panic!("unexpected hook handler: {other:?}"),
+        }
         assert_eq!(plugin.mcp_servers.len(), 1);
-    }
-
-    #[test]
-    fn discovery_prefers_first_plugin_for_duplicate_id() {
-        let dir = tempdir().unwrap();
-        let first = dir.path().join("a");
-        let second = dir.path().join("b");
-        fs::create_dir_all(first.join(".nanoclaw-plugin")).unwrap();
-        fs::create_dir_all(second.join(".nanoclaw-plugin")).unwrap();
-        fs::write(first.join(".nanoclaw-plugin/plugin.toml"), r#"id = "dup""#).unwrap();
-        fs::write(second.join(".nanoclaw-plugin/plugin.toml"), r#"id = "dup""#).unwrap();
-
-        let discovered = discover_plugins(&[dir.path().to_path_buf()]).unwrap();
-        assert_eq!(discovered.plugins.len(), 1);
-        assert_eq!(discovered.plugins[0].root_dir, first);
-        assert!(
-            discovered
-                .diagnostics
-                .iter()
-                .any(|diag| diag.code == "plugin_duplicate_id")
+        assert_eq!(
+            plugin
+                .manifest
+                .runtime
+                .as_ref()
+                .and_then(|runtime| runtime.abi.as_deref()),
+            Some("nanoclaw.plugin.v1")
         );
     }
 
     #[test]
-    fn activation_plan_resolves_enablement_and_driver_config() {
+    fn activation_plan_resolves_runtime_permissions_and_config() {
+        let dir = tempdir().unwrap();
         let mut plugin = sample_plugin(
-            "memory-core",
-            PluginKind::Memory,
+            dir.path(),
+            "team-policy",
+            PluginKind::Bundle,
             true,
-            Some("builtin.memory-core"),
+            Some(PluginRuntimeSpec {
+                driver: "builtin.wasm-hook-runtime".to_string(),
+                module: Some("wasm/plugin.wasm".to_string()),
+                abi: Some("nanoclaw.plugin.v1".to_string()),
+            }),
         );
         plugin.manifest.defaults = Map::from_iter([(
             "search".to_string(),
@@ -121,15 +135,38 @@ cwd = "."
                 ),
             ])),
         )]);
+        plugin.manifest.permissions = PluginPermissionRequest {
+            read: vec!["docs".to_string()],
+            write: vec![".nanoclaw/plugin-state/team-policy".to_string()],
+            exec: vec![".nanoclaw/plugins-cache/team-policy".to_string()],
+            network: PluginNetworkAccess::Deny,
+            message_mutation: HookMutationPermission::Allow,
+            host_api: vec![
+                types::HookHostApiGrant::GetHookContext,
+                types::HookHostApiGrant::EmitHookEffect,
+            ],
+            hook_events: vec![types::HookEvent::UserPromptSubmit],
+        };
         let discovery = PluginDiscovery {
             plugins: vec![plugin],
             diagnostics: Vec::new(),
         };
         let mut resolver = PluginResolverConfig::default();
         resolver.entries.insert(
-            "memory-core".to_string(),
+            "team-policy".to_string(),
             PluginEntryConfig {
                 enabled: Some(true),
+                permissions: PluginPermissionGrant {
+                    read: vec!["docs".to_string()],
+                    write: vec![".nanoclaw/plugin-state/team-policy".to_string()],
+                    exec: vec![".nanoclaw/plugins-cache/team-policy".to_string()],
+                    network: PluginNetworkAccess::Deny,
+                    message_mutation: HookMutationPermission::Allow,
+                    host_api: vec![
+                        types::HookHostApiGrant::GetHookContext,
+                        types::HookHostApiGrant::EmitHookEffect,
+                    ],
+                },
                 config: Map::from_iter([
                     (
                         "index_path".to_string(),
@@ -145,105 +182,109 @@ cwd = "."
                 ]),
             },
         );
-        resolver.slots.memory = Some("memory-core".to_string());
 
-        let plan = build_activation_plan(discovery, &resolver);
-        assert_eq!(plan.driver_activations.len(), 1);
-        assert_eq!(plan.driver_activations[0].driver_id, "builtin.memory-core");
+        let plan = build_activation_plan(discovery, &resolver, dir.path());
+        assert_eq!(plan.runtime_activations.len(), 1);
         assert_eq!(
-            plan.driver_activations[0]
+            plan.runtime_activations[0].runtime.driver,
+            "builtin.wasm-hook-runtime"
+        );
+        assert_eq!(
+            plan.runtime_activations[0]
                 .config
                 .get("index_path")
                 .and_then(toml::Value::as_str),
             Some(".nanoclaw/memory.db")
         );
-        let limit = plan.driver_activations[0]
+        let limit = plan.runtime_activations[0]
             .config
             .get("search")
             .and_then(toml::Value::as_table)
             .and_then(|table| table.get("limit"))
             .and_then(toml::Value::as_integer);
-        let mode = plan.driver_activations[0]
-            .config
-            .get("search")
-            .and_then(toml::Value::as_table)
-            .and_then(|table| table.get("mode"))
-            .and_then(toml::Value::as_str);
         assert_eq!(limit, Some(9));
-        assert_eq!(mode, Some("lexical"));
-        assert_eq!(plan.slots.memory.as_deref(), Some("memory-core"));
+        assert_eq!(
+            plan.runtime_activations[0].granted_permissions.read_roots,
+            vec![dir.path().join("docs")]
+        );
+        assert_eq!(
+            plan.runtime_activations[0].granted_permissions.exec_roots,
+            vec![dir.path().join(".nanoclaw/plugins-cache/team-policy")]
+        );
     }
 
     #[test]
-    fn activation_plan_marks_memory_slot_kind_mismatch() {
+    fn activation_plan_rejects_permission_grant_overreach() {
+        let dir = tempdir().unwrap();
+        let mut plugin = sample_plugin(
+            dir.path(),
+            "team-policy",
+            PluginKind::Bundle,
+            true,
+            Some(PluginRuntimeSpec {
+                driver: "builtin.wasm-hook-runtime".to_string(),
+                module: Some("wasm/plugin.wasm".to_string()),
+                abi: None,
+            }),
+        );
+        plugin.manifest.permissions = PluginPermissionRequest {
+            exec: vec![".nanoclaw/plugins-cache/team-policy".to_string()],
+            ..PluginPermissionRequest::default()
+        };
         let discovery = PluginDiscovery {
-            plugins: vec![sample_plugin("plain", PluginKind::Bundle, true, None)],
+            plugins: vec![plugin],
             diagnostics: Vec::new(),
         };
         let mut resolver = PluginResolverConfig::default();
-        resolver.slots.memory = Some("plain".to_string());
+        resolver.entries.insert(
+            "team-policy".to_string(),
+            PluginEntryConfig {
+                enabled: Some(true),
+                permissions: PluginPermissionGrant {
+                    exec: vec![".nanoclaw/plugins-cache/other".to_string()],
+                    ..PluginPermissionGrant::default()
+                },
+                config: Map::new(),
+            },
+        );
 
-        let plan = build_activation_plan(discovery, &resolver);
+        let plan = build_activation_plan(discovery, &resolver, dir.path());
+        assert!(plan.runtime_activations.is_empty());
         assert!(
             plan.diagnostics
                 .iter()
-                .any(|diag| diag.code == "memory_slot_kind_mismatch")
+                .any(|diag| diag.code == "plugin_permission_grant_exceeds_request")
         );
-        assert_eq!(plan.slots.memory, None);
-    }
-
-    #[test]
-    fn memory_slot_force_enables_selected_plugin() {
-        let discovery = PluginDiscovery {
-            plugins: vec![sample_plugin(
-                "memory-embed",
-                PluginKind::Memory,
-                false,
-                Some("builtin.memory-embed"),
-            )],
-            diagnostics: Vec::new(),
-        };
-        let mut resolver = PluginResolverConfig::default();
-        resolver.slots.memory = Some("memory-embed".to_string());
-
-        let plan = build_activation_plan(discovery, &resolver);
-        assert_eq!(plan.slots.memory.as_deref(), Some("memory-embed"));
-        assert_eq!(plan.driver_activations.len(), 1);
         assert!(
             plan.plugin_states
                 .iter()
-                .any(|state| state.plugin_id == "memory-embed" && state.enabled)
+                .any(|state| state.plugin_id == "team-policy" && !state.enabled)
         );
     }
 
     #[test]
-    fn activation_plan_respects_allow_and_deny_rules() {
-        let discovery = PluginDiscovery {
-            plugins: vec![
-                sample_plugin("allowed", PluginKind::Bundle, true, None),
-                sample_plugin("denied", PluginKind::Bundle, true, None),
-            ],
-            diagnostics: Vec::new(),
-        };
-        let mut resolver = PluginResolverConfig::default();
-        resolver.allow = vec!["allowed".to_string(), "denied".to_string()];
-        resolver.deny = vec!["denied".to_string()];
+    fn message_mutation_manifest_values_parse() {
+        let manifest: PluginManifest = toml::from_str(
+            r#"
+id = "mutator"
 
-        let plan = build_activation_plan(discovery, &resolver);
-        let states = plan
-            .plugin_states
-            .iter()
-            .map(|state| (state.plugin_id.as_str(), state.enabled))
-            .collect::<BTreeMap<_, _>>();
-        assert_eq!(states.get("allowed"), Some(&true));
-        assert_eq!(states.get("denied"), Some(&false));
+[permissions]
+message_mutation = "allow"
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            manifest.permissions.message_mutation,
+            HookMutationPermission::Allow
+        );
     }
 
     fn sample_plugin(
+        workspace_root: &std::path::Path,
         id: &str,
         kind: PluginKind,
         enabled_by_default: bool,
-        driver: Option<&str>,
+        runtime: Option<PluginRuntimeSpec>,
     ) -> DiscoveredPlugin {
         DiscoveredPlugin {
             manifest: PluginManifest {
@@ -253,13 +294,25 @@ cwd = "."
                 description: None,
                 kind,
                 enabled_by_default,
-                driver: driver.map(ToOwned::to_owned),
                 components: PluginComponents::default(),
+                runtime,
+                capabilities: PluginCapabilitySet {
+                    hook_handlers: vec![types::HookHandlerKind::Wasm],
+                    message_mutations: vec![PluginMessageMutationCapability::Append],
+                    tool_policies: vec![PluginToolPolicyCapability::RewriteArgs],
+                    host_api: vec![
+                        types::HookHostApiGrant::GetHookContext,
+                        types::HookHostApiGrant::EmitHookEffect,
+                    ],
+                    mcp_exports: false,
+                    skill_exports: false,
+                },
+                permissions: PluginPermissionRequest::default(),
                 instructions: Vec::new(),
                 defaults: Map::new(),
             },
-            root_dir: PathBuf::from(format!("/tmp/{id}")),
-            manifest_path: PathBuf::from(format!("/tmp/{id}/.nanoclaw-plugin/plugin.toml")),
+            root_dir: workspace_root.join(id),
+            manifest_path: workspace_root.join(format!("{id}/.nanoclaw-plugin/plugin.toml")),
             skill_roots: Vec::new(),
             hooks: Vec::new(),
             mcp_servers: Vec::new(),

@@ -1,12 +1,13 @@
 mod event_log;
 mod history;
+mod hook_effects;
 mod provider_state;
 mod tool_flow;
 mod turn_loop;
 mod turn_start;
 
 use crate::{
-    CompactionConfig, ConversationCompactor, HookAggregate, HookRunner, LoopDetectionConfig,
+    CompactionConfig, ConversationCompactor, HookInvocationBatch, HookRunner, LoopDetectionConfig,
     ModelBackend, NoopRuntimeObserver, Result, RuntimeCommand, RuntimeObserver,
     RuntimeProgressEvent, RuntimeSession, ToolApprovalHandler, ToolApprovalPolicy,
     ToolLoopDetector, append_transcript_message,
@@ -31,6 +32,8 @@ pub struct AgentRuntime {
     tool_loop_detector: ToolLoopDetector,
     base_instructions: Vec<String>,
     hook_registrations: Vec<HookRegistration>,
+    pending_additional_context: Vec<String>,
+    pending_injected_instructions: Vec<String>,
     session: RuntimeSession,
 }
 
@@ -70,6 +73,8 @@ impl AgentRuntime {
             tool_loop_detector: ToolLoopDetector::new(loop_detection_config),
             base_instructions,
             hook_registrations,
+            pending_additional_context: Vec::new(),
+            pending_injected_instructions: Vec::new(),
             session: RuntimeSession::default(),
         }
     }
@@ -208,7 +213,7 @@ impl AgentRuntime {
         &self,
         hooks: &[HookRegistration],
         context: HookContext,
-    ) -> Result<HookAggregate> {
+    ) -> Result<HookInvocationBatch> {
         self.hook_runner.run(hooks, context).await
     }
 }

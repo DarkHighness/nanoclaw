@@ -1,5 +1,5 @@
 use crate::{
-    CallId, EventId, HookEvent, HookOutput, Message, MessageId, Reasoning, ResponseId, RunId,
+    CallId, EventId, HookEvent, HookResult, Message, MessageId, Reasoning, ResponseId, RunId,
     SessionId, ToolCall, ToolCallId, ToolName, ToolSpec, TurnId,
 };
 use serde::{Deserialize, Serialize};
@@ -120,7 +120,7 @@ pub enum RunEventKind {
     HookCompleted {
         hook_name: String,
         event: HookEvent,
-        output: HookOutput,
+        output: HookResult,
     },
     TranscriptMessage {
         message: Message,

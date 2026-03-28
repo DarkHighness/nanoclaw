@@ -2,16 +2,21 @@ use crate::{Result, RuntimeError};
 use async_trait::async_trait;
 use std::collections::BTreeMap;
 use std::fmt;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tools::{
-    ExecRequest, ExecutionOrigin, HostProcessExecutor, ProcessExecutor, ProcessStdio, RuntimeScope,
-    SandboxPolicy,
+    ExecRequest, ExecutionOrigin, HostProcessExecutor, NetworkPolicy, ProcessExecutor,
+    ProcessStdio, RuntimeScope, SandboxPolicy,
 };
-use types::{HookContext, HookOutput};
+use types::{HookContext, HookExecutionPolicy, HookNetworkPolicy, HookRegistration, HookResult};
 
 #[async_trait]
 pub trait CommandHookExecutor: Send + Sync {
-    async fn execute(&self, command: &str, context: HookContext) -> Result<HookOutput>;
+    async fn execute(
+        &self,
+        registration: &HookRegistration,
+        context: HookContext,
+    ) -> Result<HookResult>;
 }
 
 #[derive(Clone)]
@@ -73,7 +78,20 @@ impl DefaultCommandHookExecutor {
 
 #[async_trait]
 impl CommandHookExecutor for DefaultCommandHookExecutor {
-    async fn execute(&self, command: &str, context: HookContext) -> Result<HookOutput> {
+    async fn execute(
+        &self,
+        registration: &HookRegistration,
+        context: HookContext,
+    ) -> Result<HookResult> {
+        let types::HookHandler::Command(command) = &registration.handler else {
+            return Err(RuntimeError::hook(format!(
+                "hook `{}` is not a command hook",
+                registration.name
+            )));
+        };
+        let command_path = PathBuf::from(&command.command);
+        ensure_exec_allowed(&registration.execution, &command_path)?;
+
         let mut env = self.extra_env.clone();
         env.insert(
             "NANOCLAW_CORE_HOOK_PAYLOAD".to_string(),
@@ -82,9 +100,9 @@ impl CommandHookExecutor for DefaultCommandHookExecutor {
         let mut process = self
             .process_executor
             .prepare(ExecRequest {
-                program: "/bin/sh".to_string(),
-                args: vec!["-lc".to_string(), command.to_string()],
-                cwd: None,
+                program: command.command.clone(),
+                args: Vec::new(),
+                cwd: command_path.parent().map(Path::to_path_buf),
                 env,
                 stdin: ProcessStdio::Null,
                 stdout: ProcessStdio::Piped,
@@ -98,7 +116,10 @@ impl CommandHookExecutor for DefaultCommandHookExecutor {
                     tool_name: None,
                     tool_call_id: None,
                 },
-                sandbox_policy: self.sandbox_policy.clone(),
+                sandbox_policy: build_hook_sandbox_policy(
+                    &self.sandbox_policy,
+                    registration.execution.as_ref(),
+                ),
             })
             .map_err(|error| RuntimeError::hook(error.to_string()))?;
         let output = process.output().await?;
@@ -110,16 +131,60 @@ impl CommandHookExecutor for DefaultCommandHookExecutor {
         }
         let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
         if stdout.is_empty() {
-            return Ok(HookOutput::default());
+            return Ok(HookResult::default());
         }
-        match serde_json::from_str::<HookOutput>(&stdout) {
+        match serde_json::from_str::<HookResult>(&stdout) {
             Ok(value) => Ok(value),
-            Err(_) => Ok(HookOutput {
-                system_message: Some(stdout),
-                ..HookOutput::default()
+            Err(_) => Ok(HookResult {
+                effects: vec![types::HookEffect::AddContext { text: stdout }],
             }),
         }
     }
+}
+
+fn ensure_exec_allowed(execution: &Option<HookExecutionPolicy>, command_path: &Path) -> Result<()> {
+    let Some(execution) = execution else {
+        return Ok(());
+    };
+    if execution.exec_roots.is_empty() {
+        return Err(RuntimeError::hook(format!(
+            "plugin `{}` has no exec grant for command hook",
+            execution.plugin_id.as_deref().unwrap_or("unknown")
+        )));
+    }
+    if execution
+        .exec_roots
+        .iter()
+        .any(|root| command_path.starts_with(root))
+    {
+        return Ok(());
+    }
+    Err(RuntimeError::hook(format!(
+        "command hook executable {} is outside granted exec roots",
+        command_path.display()
+    )))
+}
+
+fn build_hook_sandbox_policy(
+    base: &SandboxPolicy,
+    execution: Option<&HookExecutionPolicy>,
+) -> SandboxPolicy {
+    let Some(execution) = execution else {
+        return base.clone();
+    };
+    let mut policy = base.clone();
+    policy.filesystem.readable_roots = execution.read_roots.clone();
+    policy
+        .filesystem
+        .readable_roots
+        .extend(execution.exec_roots.iter().cloned());
+    policy.filesystem.writable_roots = execution.write_roots.clone();
+    policy.network = match &execution.network {
+        HookNetworkPolicy::Deny => NetworkPolicy::Off,
+        HookNetworkPolicy::Allow => NetworkPolicy::Full,
+        HookNetworkPolicy::AllowDomains { domains } => NetworkPolicy::AllowDomains(domains.clone()),
+    };
+    policy
 }
 
 #[cfg(test)]
@@ -132,7 +197,10 @@ mod tests {
         ExecRequest, HostProcessExecutor, ProcessExecutor, RuntimeScope as ExecRuntimeScope,
         SandboxError,
     };
-    use types::{HookContext, HookEvent, RunId, SessionId};
+    use types::{
+        HookContext, HookEffect, HookEvent, HookExecutionPolicy, HookHandler, HookRegistration,
+        HookResult, MessagePart, MessageRole, RunId, SessionId,
+    };
 
     #[derive(Clone)]
     struct RecordingExecutor {
@@ -149,6 +217,21 @@ mod tests {
 
     #[tokio::test]
     async fn command_hook_executor_routes_process_launch_through_executor() {
+        let dir = tempfile::tempdir().unwrap();
+        let command_path = dir.path().join("hook.sh");
+        std::fs::write(
+            &command_path,
+            "#!/bin/sh\nprintf '{\"effects\":[{\"kind\":\"append_message\",\"role\":\"system\",\"parts\":[{\"type\":\"text\",\"text\":\"ok\"}]}]}'",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut permissions = std::fs::metadata(&command_path).unwrap().permissions();
+            permissions.set_mode(0o755);
+            std::fs::set_permissions(&command_path, permissions).unwrap();
+        }
+
         let run_id = RunId::from("run_1");
         let session_id = SessionId::from("session_1");
         let requests = Arc::new(Mutex::new(Vec::new()));
@@ -163,7 +246,20 @@ mod tests {
 
         let output = executor
             .execute(
-                "printf '{\"system_message\":\"ok\"}'",
+                &HookRegistration {
+                    name: "hook".to_string(),
+                    event: HookEvent::Notification,
+                    matcher: None,
+                    handler: HookHandler::Command(types::CommandHookHandler {
+                        command: command_path.to_string_lossy().to_string(),
+                        asynchronous: false,
+                    }),
+                    timeout_ms: None,
+                    execution: Some(HookExecutionPolicy {
+                        exec_roots: vec![dir.path().to_path_buf()],
+                        ..HookExecutionPolicy::default()
+                    }),
+                },
                 HookContext {
                     event: HookEvent::Notification,
                     run_id: run_id.clone(),
@@ -176,14 +272,22 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(output.system_message.as_deref(), Some("ok"));
+        assert_eq!(
+            output,
+            HookResult {
+                effects: vec![HookEffect::AppendMessage {
+                    role: MessageRole::System,
+                    parts: vec![MessagePart::text("ok")],
+                }],
+            }
+        );
         let logged = requests.lock().unwrap();
         assert_eq!(logged.len(), 1);
-        assert_eq!(logged[0].program, "/bin/sh");
         assert_eq!(
-            logged[0].args,
-            vec!["-lc", "printf '{\"system_message\":\"ok\"}'"]
+            logged[0].program,
+            command_path.to_string_lossy().to_string()
         );
+        assert!(logged[0].args.is_empty());
         assert!(logged[0].env.contains_key("NANOCLAW_CORE_HOOK_PAYLOAD"));
         assert_eq!(logged[0].runtime_scope.run_id, Some(run_id.clone()));
         assert_eq!(
