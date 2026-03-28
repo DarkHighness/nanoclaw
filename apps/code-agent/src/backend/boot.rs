@@ -1,4 +1,5 @@
 use crate::backend::boot_inputs::DriverHostInputs;
+use crate::backend::boot_mcp::build_startup_diagnostics_snapshot;
 use crate::backend::boot_runtime::{build_runtime_tooling, register_subagent_tools};
 use crate::backend::store::build_store;
 use crate::backend::{
@@ -12,7 +13,7 @@ use crate::provider::{
     build_memory_reasoning_service, provider_label, provider_summary,
 };
 use agent::mcp::{
-    McpConnectOptions, catalog_tools_as_registry_entries,
+    ConnectedMcpServer, McpConnectOptions, catalog_tools_as_registry_entries,
     connect_and_catalog_mcp_servers_with_options,
 };
 use agent::runtime::{
@@ -37,9 +38,11 @@ struct RuntimeBuildResult {
     runtime: AgentRuntime,
     store: Arc<dyn store::RunStore>,
     skills: Vec<Skill>,
+    mcp_servers: Vec<ConnectedMcpServer>,
     store_label: String,
     store_warning: Option<String>,
     stored_run_count: usize,
+    startup_diagnostics: crate::backend::StartupDiagnosticsSnapshot,
 }
 
 #[derive(Clone)]
@@ -113,9 +116,11 @@ pub(crate) async fn build_session(
         runtime,
         store,
         skills,
+        mcp_servers,
         store_label,
         store_warning,
         stored_run_count,
+        startup_diagnostics,
     } = build_runtime(
         options,
         workspace_root,
@@ -135,6 +140,7 @@ pub(crate) async fn build_session(
     Ok(super::CodeAgentSession::new(
         runtime,
         store,
+        mcp_servers,
         super::SessionStartupSnapshot {
             workspace_name: workspace_root
                 .file_name()
@@ -154,6 +160,7 @@ pub(crate) async fn build_session(
             store_warning,
             stored_session_count: stored_run_count,
             sandbox_summary,
+            startup_diagnostics,
         },
         skills,
     ))
@@ -240,6 +247,7 @@ async fn build_runtime(
         plugin_instructions,
         &driver_outcome,
     );
+    let mut connected_mcp_servers = Vec::new();
     if !mcp_servers.is_empty() {
         let resolved_mcp_servers =
             dedup_mcp_servers(resolve_mcp_servers(&mcp_servers, workspace_root));
@@ -261,6 +269,7 @@ async fn build_runtime(
                 tools.register(adapter);
             }
         }
+        connected_mcp_servers = connected;
     }
     ensure_model_supports_registered_tools(
         &options.primary_profile,
@@ -299,6 +308,14 @@ async fn build_runtime(
     );
     let subagent_executor = Arc::new(subagent_executor);
     register_subagent_tools(&mut tools, subagent_executor);
+    let tool_specs = tools.specs();
+    let startup_diagnostics = build_startup_diagnostics_snapshot(
+        workspace_root,
+        &tool_specs,
+        &connected_mcp_servers,
+        &plugin_plan,
+        &driver_outcome,
+    );
 
     let runtime = AgentRuntimeBuilder::new(backend.clone(), store.clone())
         .hook_runner(hook_runner)
@@ -322,9 +339,11 @@ async fn build_runtime(
         runtime,
         store,
         skills,
+        mcp_servers: connected_mcp_servers,
         store_label: store_handle.label,
         store_warning: store_handle.warning,
         stored_run_count,
+        startup_diagnostics,
     })
 }
 

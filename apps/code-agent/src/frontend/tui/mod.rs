@@ -9,8 +9,10 @@ use crate::backend::{CodeAgentSession, preview_id};
 pub(crate) use approval::{ApprovalBridge, InteractiveToolApprovalHandler};
 use commands::{SlashCommand, parse_slash_command};
 use history::{
-    format_session_export_result, format_session_inspector, format_session_resume_status,
-    format_session_search_line, format_session_summary_line, format_session_transcript_lines,
+    format_mcp_prompt_summary_line, format_mcp_resource_summary_line,
+    format_mcp_server_summary_line, format_session_export_result, format_session_inspector,
+    format_session_resume_status, format_session_search_line, format_session_summary_line,
+    format_session_transcript_lines, format_startup_diagnostics,
 };
 use observer::SharedRenderObserver;
 use render::render;
@@ -383,6 +385,108 @@ impl CodeAgentTui {
                 });
                 Ok(false)
             }
+            SlashCommand::Diagnostics => {
+                let diagnostics = self.session.startup_diagnostics();
+                self.ui_state.mutate(move |state| {
+                    state.inspector_title = "Diagnostics".to_string();
+                    state.inspector_scroll = 0;
+                    state.inspector = format_startup_diagnostics(&diagnostics);
+                    state.status = "Opened startup diagnostics".to_string();
+                    state.push_activity("inspected startup diagnostics");
+                });
+                Ok(false)
+            }
+            SlashCommand::Mcp => {
+                let servers = self.session.list_mcp_servers().await;
+                self.ui_state.mutate(move |state| {
+                    state.inspector_title = "MCP".to_string();
+                    state.inspector_scroll = 0;
+                    state.inspector = if servers.is_empty() {
+                        vec![
+                            "## MCP".to_string(),
+                            "No MCP servers connected.".to_string(),
+                        ]
+                    } else {
+                        std::iter::once("## MCP".to_string())
+                            .chain(servers.iter().map(format_mcp_server_summary_line))
+                            .collect()
+                    };
+                    state.status = "Listed MCP servers".to_string();
+                    state.push_activity("listed mcp servers");
+                });
+                Ok(false)
+            }
+            SlashCommand::Prompts => {
+                let prompts = self.session.list_mcp_prompts().await;
+                self.ui_state.mutate(move |state| {
+                    state.inspector_title = "Prompts".to_string();
+                    state.inspector_scroll = 0;
+                    state.inspector = if prompts.is_empty() {
+                        vec![
+                            "## MCP Prompts".to_string(),
+                            "No MCP prompts available.".to_string(),
+                        ]
+                    } else {
+                        std::iter::once("## MCP Prompts".to_string())
+                            .chain(prompts.iter().map(format_mcp_prompt_summary_line))
+                            .collect()
+                    };
+                    state.status = "Listed MCP prompts".to_string();
+                    state.push_activity("listed mcp prompts");
+                });
+                Ok(false)
+            }
+            SlashCommand::Resources => {
+                let resources = self.session.list_mcp_resources().await;
+                self.ui_state.mutate(move |state| {
+                    state.inspector_title = "Resources".to_string();
+                    state.inspector_scroll = 0;
+                    state.inspector = if resources.is_empty() {
+                        vec![
+                            "## MCP Resources".to_string(),
+                            "No MCP resources available.".to_string(),
+                        ]
+                    } else {
+                        std::iter::once("## MCP Resources".to_string())
+                            .chain(resources.iter().map(format_mcp_resource_summary_line))
+                            .collect()
+                    };
+                    state.status = "Listed MCP resources".to_string();
+                    state.push_activity("listed mcp resources");
+                });
+                Ok(false)
+            }
+            SlashCommand::Prompt {
+                server_name,
+                prompt_name,
+            } => {
+                let loaded = self
+                    .session
+                    .load_mcp_prompt(&server_name, &prompt_name)
+                    .await?;
+                self.ui_state.mutate(move |state| {
+                    state.input = loaded.input_text;
+                    state.inspector_title = "Prompt".to_string();
+                    state.inspector_scroll = 0;
+                    state.inspector = loaded.inspector_lines;
+                    state.status =
+                        format!("Loaded MCP prompt {server_name}/{prompt_name} into input");
+                    state.push_activity(format!("loaded mcp prompt {server_name}/{prompt_name}"));
+                });
+                Ok(false)
+            }
+            SlashCommand::Resource { server_name, uri } => {
+                let loaded = self.session.load_mcp_resource(&server_name, &uri).await?;
+                self.ui_state.mutate(move |state| {
+                    state.input = loaded.input_text;
+                    state.inspector_title = "Resource".to_string();
+                    state.inspector_scroll = 0;
+                    state.inspector = loaded.inspector_lines;
+                    state.status = format!("Loaded MCP resource {server_name}:{uri} into input");
+                    state.push_activity(format!("loaded mcp resource {server_name}:{uri}"));
+                });
+                Ok(false)
+            }
             SlashCommand::Steer { message } => {
                 let Some(message) = message else {
                     self.ui_state.mutate(|state| {
@@ -636,6 +740,7 @@ impl CodeAgentTui {
                 store_warning: snapshot.store_warning.clone(),
                 stored_session_count: snapshot.stored_session_count,
                 sandbox_summary: snapshot.sandbox_summary.clone(),
+                startup_diagnostics: snapshot.startup_diagnostics.clone(),
                 queued_commands: 0,
                 token_ledger: Default::default(),
             },
@@ -656,6 +761,7 @@ impl CodeAgentTui {
                 store_warning: snapshot.store_warning.clone(),
                 stored_session_count: snapshot.stored_session_count,
                 sandbox_summary: snapshot.sandbox_summary.clone(),
+                startup_diagnostics: snapshot.startup_diagnostics.clone(),
                 queued_commands: 0,
                 token_ledger: Default::default(),
             }),
@@ -696,6 +802,12 @@ fn command_palette_lines() -> Vec<String> {
         "/export_transcript <session-ref> <path>".to_string(),
         "/tools".to_string(),
         "/skills".to_string(),
+        "/diagnostics".to_string(),
+        "/mcp".to_string(),
+        "/prompts".to_string(),
+        "/resources".to_string(),
+        "/prompt <server> <name>".to_string(),
+        "/resource <server> <uri>".to_string(),
         "/steer <notes>".to_string(),
         "/compact [notes]".to_string(),
         "/clear".to_string(),
@@ -727,11 +839,38 @@ fn build_startup_inspector(session: &state::SessionSummary) -> Vec<String> {
             session.store_label, session.stored_session_count
         ),
         format!("sandbox: {}", session.sandbox_summary),
+        "## Diagnostics".to_string(),
+        format!(
+            "tools: {} local / {} mcp",
+            session.startup_diagnostics.local_tool_count,
+            session.startup_diagnostics.mcp_tool_count
+        ),
+        format!(
+            "plugins: {} enabled / {} total",
+            session.startup_diagnostics.enabled_plugin_count,
+            session.startup_diagnostics.total_plugin_count
+        ),
+        format!(
+            "mcp servers: {}",
+            session.startup_diagnostics.mcp_servers.len()
+        ),
     ];
     if let Some(warning) = &session.store_warning {
         lines.push(format!(
             "store warning: {}",
             state::preview_text(warning, 72)
+        ));
+    }
+    if !session.startup_diagnostics.warnings.is_empty() {
+        lines.push(format!(
+            "warnings: {}",
+            session.startup_diagnostics.warnings.join(" | ")
+        ));
+    }
+    if !session.startup_diagnostics.diagnostics.is_empty() {
+        lines.push(format!(
+            "driver diagnostics: {}",
+            session.startup_diagnostics.diagnostics.join(" | ")
         ));
     }
     lines
@@ -761,6 +900,7 @@ mod tests {
             store_warning: Some("falling back soon".to_string()),
             stored_session_count: 12,
             sandbox_summary: "enforced via seatbelt".to_string(),
+            startup_diagnostics: Default::default(),
             queued_commands: 0,
             token_ledger: Default::default(),
         });

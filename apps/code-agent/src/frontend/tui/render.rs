@@ -218,6 +218,15 @@ fn session_lines(state: &TuiState) -> Vec<String> {
                 state.session.skill_names.len().to_string()
             }
         ),
+        format!(
+            "plugins: {} / {}",
+            state.session.startup_diagnostics.enabled_plugin_count,
+            state.session.startup_diagnostics.total_plugin_count
+        ),
+        format!(
+            "mcp: {} servers",
+            state.session.startup_diagnostics.mcp_servers.len()
+        ),
         "## Store".to_string(),
         format!("store: {}", preview_text(&state.session.store_label, 20),),
         format!(

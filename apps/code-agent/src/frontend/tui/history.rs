@@ -1,7 +1,8 @@
 use super::state::preview_text;
 use crate::backend::{
-    LoadedRun, PersistedSessionSearchMatch, PersistedSessionSummary, RunExportArtifact,
-    RunExportKind, SessionResumeStatus, SessionResumeSupport, message_to_text, preview_id,
+    LoadedRun, McpPromptSummary, McpResourceSummary, McpServerSummary, PersistedSessionSearchMatch,
+    PersistedSessionSummary, RunExportArtifact, RunExportKind, SessionResumeStatus,
+    SessionResumeSupport, StartupDiagnosticsSnapshot, message_to_text, preview_id,
 };
 use agent::types::{RunEventEnvelope, RunEventKind, SessionId};
 use store::TokenUsageRecord;
@@ -153,6 +154,92 @@ pub(crate) fn format_session_resume_status(status: &SessionResumeStatus) -> Vec<
         lines.push(format!("reason: {reason}"));
     }
     lines
+}
+
+pub(crate) fn format_startup_diagnostics(snapshot: &StartupDiagnosticsSnapshot) -> Vec<String> {
+    let mut lines = vec![
+        "## Runtime".to_string(),
+        format!("local tools: {}", snapshot.local_tool_count),
+        format!("mcp tools: {}", snapshot.mcp_tool_count),
+        format!(
+            "plugins: {} enabled / {} total",
+            snapshot.enabled_plugin_count, snapshot.total_plugin_count
+        ),
+        format!("mcp servers: {}", snapshot.mcp_servers.len()),
+    ];
+    if !snapshot.plugin_details.is_empty() {
+        lines.push("## Plugins".to_string());
+        lines.extend(snapshot.plugin_details.iter().cloned());
+    }
+    if !snapshot.mcp_servers.is_empty() {
+        lines.push("## MCP Servers".to_string());
+        lines.extend(
+            snapshot
+                .mcp_servers
+                .iter()
+                .map(format_mcp_server_summary_line),
+        );
+    }
+    if !snapshot.warnings.is_empty() {
+        lines.push("## Warnings".to_string());
+        lines.extend(
+            snapshot
+                .warnings
+                .iter()
+                .map(|warning| format!("warning: {warning}")),
+        );
+    }
+    if !snapshot.diagnostics.is_empty() {
+        lines.push("## Diagnostics".to_string());
+        lines.extend(
+            snapshot
+                .diagnostics
+                .iter()
+                .map(|diagnostic| format!("diagnostic: {diagnostic}")),
+        );
+    }
+    lines
+}
+
+pub(crate) fn format_mcp_server_summary_line(summary: &McpServerSummary) -> String {
+    format!(
+        "{}  tools={} prompts={} resources={}",
+        summary.server_name, summary.tool_count, summary.prompt_count, summary.resource_count
+    )
+}
+
+pub(crate) fn format_mcp_prompt_summary_line(summary: &McpPromptSummary) -> String {
+    let suffix = if summary.argument_names.is_empty() {
+        String::new()
+    } else {
+        format!(" ({})", summary.argument_names.join(", "))
+    };
+    if summary.description.is_empty() {
+        format!("{}:{}{}", summary.server_name, summary.prompt_name, suffix)
+    } else {
+        format!(
+            "{}:{}{} - {}",
+            summary.server_name, summary.prompt_name, suffix, summary.description
+        )
+    }
+}
+
+pub(crate) fn format_mcp_resource_summary_line(summary: &McpResourceSummary) -> String {
+    format!(
+        "{}:{}{}{}",
+        summary.server_name,
+        summary.uri,
+        summary
+            .mime_type
+            .as_deref()
+            .map(|mime| format!(" [{mime}]"))
+            .unwrap_or_default(),
+        if summary.description.is_empty() {
+            String::new()
+        } else {
+            format!(" - {}", summary.description)
+        }
+    )
 }
 
 fn format_token_usage_record_line(record: &TokenUsageRecord) -> String {

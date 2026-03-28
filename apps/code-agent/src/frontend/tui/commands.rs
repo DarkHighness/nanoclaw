@@ -6,13 +6,41 @@ pub(crate) enum SlashCommand {
     Help,
     Tools,
     Skills,
-    Steer { message: Option<String> },
-    Compact { notes: Option<String> },
-    Sessions { query: Option<String> },
-    Session { session_ref: String },
-    Resume { session_ref: String },
-    ExportSession { session_ref: String, path: String },
-    ExportTranscript { session_ref: String, path: String },
+    Diagnostics,
+    Mcp,
+    Prompts,
+    Resources,
+    Prompt {
+        server_name: String,
+        prompt_name: String,
+    },
+    Resource {
+        server_name: String,
+        uri: String,
+    },
+    Steer {
+        message: Option<String>,
+    },
+    Compact {
+        notes: Option<String>,
+    },
+    Sessions {
+        query: Option<String>,
+    },
+    Session {
+        session_ref: String,
+    },
+    Resume {
+        session_ref: String,
+    },
+    ExportSession {
+        session_ref: String,
+        path: String,
+    },
+    ExportTranscript {
+        session_ref: String,
+        path: String,
+    },
     Clear,
     Quit,
     InvalidUsage(String),
@@ -37,6 +65,18 @@ enum SlashSubcommand {
     Help,
     Tools,
     Skills,
+    Diagnostics,
+    Mcp,
+    Prompts,
+    Resources,
+    Prompt {
+        server_name: String,
+        prompt_name: String,
+    },
+    Resource {
+        server_name: String,
+        uri: String,
+    },
     Steer {
         #[arg(
             value_name = "NOTES",
@@ -102,6 +142,18 @@ impl From<SlashSubcommand> for SlashCommand {
             SlashSubcommand::Help => Self::Help,
             SlashSubcommand::Tools => Self::Tools,
             SlashSubcommand::Skills => Self::Skills,
+            SlashSubcommand::Diagnostics => Self::Diagnostics,
+            SlashSubcommand::Mcp => Self::Mcp,
+            SlashSubcommand::Prompts => Self::Prompts,
+            SlashSubcommand::Resources => Self::Resources,
+            SlashSubcommand::Prompt {
+                server_name,
+                prompt_name,
+            } => Self::Prompt {
+                server_name,
+                prompt_name,
+            },
+            SlashSubcommand::Resource { server_name, uri } => Self::Resource { server_name, uri },
             SlashSubcommand::Steer { message } => Self::Steer {
                 message: join_optional_tail(message),
             },
@@ -176,6 +228,20 @@ mod tests {
             SlashCommand::InvalidUsage(message) => {
                 assert!(message.contains("Usage:"));
                 assert!(message.contains("session <SESSION_REF>"));
+            }
+            _ => panic!("unexpected command"),
+        }
+    }
+
+    #[test]
+    fn parses_mcp_prompt_lookup() {
+        match parse_slash_command("/prompt fs code_review") {
+            SlashCommand::Prompt {
+                server_name,
+                prompt_name,
+            } => {
+                assert_eq!(server_name, "fs");
+                assert_eq!(prompt_name, "code_review");
             }
             _ => panic!("unexpected command"),
         }

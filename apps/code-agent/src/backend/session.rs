@@ -1,5 +1,11 @@
 use crate::backend::run_history::{self, LoadedRun, RunExportArtifact};
 use crate::backend::session_catalog;
+use crate::backend::{
+    LoadedMcpPrompt, LoadedMcpResource, McpPromptSummary, McpResourceSummary, McpServerSummary,
+    StartupDiagnosticsSnapshot, list_mcp_prompts, list_mcp_resources, list_mcp_servers,
+    load_mcp_prompt, load_mcp_resource,
+};
+use agent::mcp::ConnectedMcpServer;
 use agent::runtime::{Result as RuntimeResult, RuntimeObserver};
 use agent::{AgentRuntime, RuntimeCommand, Skill};
 use anyhow::Result;
@@ -27,6 +33,7 @@ pub(crate) struct SessionStartupSnapshot {
     pub(crate) store_warning: Option<String>,
     pub(crate) stored_session_count: usize,
     pub(crate) sandbox_summary: String,
+    pub(crate) startup_diagnostics: StartupDiagnosticsSnapshot,
 }
 
 /// The backend session owns runtime state so frontends can speak to a stable
@@ -35,6 +42,7 @@ pub(crate) struct SessionStartupSnapshot {
 pub(crate) struct CodeAgentSession {
     runtime: Arc<AsyncMutex<AgentRuntime>>,
     store: Arc<dyn RunStore>,
+    mcp_servers: Arc<Vec<ConnectedMcpServer>>,
     workspace_root: PathBuf,
     startup: Arc<RwLock<SessionStartupSnapshot>>,
     skills: Arc<Vec<Skill>>,
@@ -44,6 +52,7 @@ impl CodeAgentSession {
     pub(crate) fn new(
         runtime: AgentRuntime,
         store: Arc<dyn RunStore>,
+        mcp_servers: Vec<ConnectedMcpServer>,
         startup: SessionStartupSnapshot,
         skills: Vec<Skill>,
     ) -> Self {
@@ -51,6 +60,7 @@ impl CodeAgentSession {
         Self {
             runtime: Arc::new(AsyncMutex::new(runtime)),
             store,
+            mcp_servers: Arc::new(mcp_servers),
             workspace_root,
             startup: Arc::new(RwLock::new(startup)),
             skills: Arc::new(skills),
@@ -67,6 +77,10 @@ impl CodeAgentSession {
 
     pub(crate) fn skills(&self) -> &[Skill] {
         self.skills.as_slice()
+    }
+
+    pub(crate) fn startup_diagnostics(&self) -> StartupDiagnosticsSnapshot {
+        self.startup.read().unwrap().startup_diagnostics.clone()
     }
 
     pub(crate) async fn end_session(&self, reason: Option<String>) -> RuntimeResult<()> {
@@ -174,6 +188,34 @@ impl CodeAgentSession {
             loaded.summary.run_id.as_str(),
             &active_session_ref,
         ))
+    }
+
+    pub(crate) async fn list_mcp_servers(&self) -> Vec<McpServerSummary> {
+        list_mcp_servers(self.mcp_servers.as_slice())
+    }
+
+    pub(crate) async fn list_mcp_prompts(&self) -> Vec<McpPromptSummary> {
+        list_mcp_prompts(self.mcp_servers.as_slice())
+    }
+
+    pub(crate) async fn list_mcp_resources(&self) -> Vec<McpResourceSummary> {
+        list_mcp_resources(self.mcp_servers.as_slice())
+    }
+
+    pub(crate) async fn load_mcp_prompt(
+        &self,
+        server_name: &str,
+        prompt_name: &str,
+    ) -> Result<LoadedMcpPrompt> {
+        load_mcp_prompt(self.mcp_servers.as_slice(), server_name, prompt_name).await
+    }
+
+    pub(crate) async fn load_mcp_resource(
+        &self,
+        server_name: &str,
+        uri: &str,
+    ) -> Result<LoadedMcpResource> {
+        load_mcp_resource(self.mcp_servers.as_slice(), server_name, uri).await
     }
 
     fn set_stored_session_count(&self, count: usize) {

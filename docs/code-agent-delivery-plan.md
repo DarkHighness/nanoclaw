@@ -62,13 +62,20 @@ Shipped in the fifth implementation slice:
 - the TUI session/history panes now render backend snapshots and history views
   with sectioned inspector output instead of flat text blobs
 
+Shipped in the sixth implementation slice:
+
+- backend boot is now decomposed across focused helpers for host inputs,
+  sandbox/preamble construction, runtime tooling, and MCP/diagnostic summaries
+- `code-agent` now owns MCP server/prompt/resource inspection instead of
+  depending on the legacy shell for that operator workflow
+- startup diagnostics are now backend-owned snapshots rendered by the TUI
+  through dedicated `/diagnostics`, `/mcp`, `/prompts`, `/resources`,
+  `/prompt`, and `/resource` commands
+
 Still pending in the next slices:
 
-- backend boot still needs internal decomposition out of `boot.rs`
 - frontend-neutral approval, event, and session-operation contracts beyond the
   startup snapshot
-- MCP prompt/resource inspection and richer startup diagnostics still need to
-  move into `code-agent`
 - remaining docs and workspace cleanup before `reference-tui` can be retired
 
 ## External Product Signals
@@ -108,15 +115,15 @@ Primary code evidence:
 
 Current problems:
 
-- `code-agent` boot is no longer in `main.rs`, but `backend/boot.rs` is still a
-  broad orchestration module that owns too many concerns at once.
+- `code-agent` boot is now split across helper modules, but backend-owned host
+  contracts are still incomplete for a future non-TUI frontend.
 - the new session facade is only the first boundary cut; a future Web frontend
   still lacks typed host events, approval messages, and snapshots.
 - legacy `reference-tui` code still duplicates host responsibilities that now
   belong in `code-agent`.
-- `code-agent` now owns durable session browsing/replay/export, but MCP
-  browsing and richer startup diagnostics still have not moved over from the
-  legacy shell.
+- `code-agent` now owns durable session browsing/replay/export plus MCP
+  inspection, but true runtime resume/reattach still has not moved above the
+  stored history catalog.
 - product-facing commands now say `session`, but the host still lacks a true
   runtime resume/reattach path above the stored run catalog.
 - repository docs and app workspace defaults were tightened, but the app
@@ -134,8 +141,8 @@ Current problems:
 ### P1
 
 - legacy host capabilities still need migration into `code-agent`
-  - MCP prompt/resource inspection
-  - startup diagnostics and host summaries
+  - richer approval/session event surfaces
+  - remaining legacy-only host controls
 - approval flow is still too frontend-shaped
 - subagent execution is available but not yet exposed as a strong product
   experience

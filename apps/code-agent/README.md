@@ -17,6 +17,8 @@ It intentionally keeps the host layer thin:
 - streaming assistant output in a `ratatui` TUI
 - manual and automatic context compaction
 - persistent session history with replay and export commands
+- MCP server, prompt, and resource inspection from the TUI
+- backend-owned startup diagnostics surfaced through the inspector
 
 ## Usage
 
@@ -137,10 +139,17 @@ not have useful extensions, including `Dockerfile*`, `Containerfile*`, `go.mod`,
 - `/help`
 - `/sessions [query]`
 - `/session <session-ref>`
+- `/resume <session-ref>`
 - `/export_session <session-ref> <path>`
 - `/export_transcript <session-ref> <path>`
 - `/tools`
 - `/skills`
+- `/diagnostics`
+- `/mcp`
+- `/prompts`
+- `/resources`
+- `/prompt <server> <name>`
+- `/resource <server> <uri>`
 - `/steer <notes>`
 - `/compact [notes]`
 - `/clear`
@@ -151,3 +160,8 @@ Claude Code, and OpenCode. The durable history backend still stores entries by
 substrate `run_id`, so `/session <session-ref>` currently opens persisted
 history and exports artifacts, but it does not yet resume a live runtime from
 that stored state.
+
+The startup inspector is now backed by a structured backend snapshot, and the
+MCP-focused commands expose connected server catalogs plus prompt/resource
+loading directly from `code-agent` without relying on the legacy
+`reference-tui` shell.

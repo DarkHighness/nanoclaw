@@ -1,3 +1,4 @@
+use crate::backend::StartupDiagnosticsSnapshot;
 use agent::types::TokenLedgerSnapshot;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -53,6 +54,7 @@ pub(crate) struct SessionSummary {
     pub(crate) store_warning: Option<String>,
     pub(crate) stored_session_count: usize,
     pub(crate) sandbox_summary: String,
+    pub(crate) startup_diagnostics: StartupDiagnosticsSnapshot,
     pub(crate) queued_commands: usize,
     pub(crate) token_ledger: TokenLedgerSnapshot,
 }
