@@ -1,16 +1,17 @@
 mod boot;
+mod boot_inputs;
 mod boot_preamble;
 mod boot_sandbox;
 mod run_history;
 mod session;
+mod session_catalog;
 mod store;
 
+pub(crate) use boot::CodeAgentSubagentProfileResolver;
+pub(crate) use boot::build_session;
 #[cfg(test)]
-pub(crate) use boot::driver_host_output_lines;
-pub(crate) use boot::{
-    CodeAgentSubagentProfileResolver, build_session, dedup_mcp_servers, merge_driver_host_inputs,
-    resolve_mcp_servers,
-};
+pub(crate) use boot_inputs::driver_host_output_lines;
+pub(crate) use boot_inputs::{dedup_mcp_servers, merge_driver_host_inputs, resolve_mcp_servers};
 pub(crate) use boot_preamble::{
     build_plugin_activation_plan, build_system_preamble, resolve_skill_roots,
 };
@@ -22,3 +23,6 @@ pub(crate) use run_history::{
     LoadedRun, RunExportArtifact, RunExportKind, message_to_text, preview_id,
 };
 pub(crate) use session::{CodeAgentSession, SessionStartupSnapshot};
+pub(crate) use session_catalog::{
+    PersistedSessionSearchMatch, PersistedSessionSummary, SessionResumeStatus, SessionResumeSupport,
+};

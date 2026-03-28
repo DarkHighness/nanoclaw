@@ -1,7 +1,9 @@
+use crate::backend::boot_inputs::DriverHostInputs;
 use crate::backend::store::build_store;
 use crate::backend::{
     build_plugin_activation_plan, build_sandbox_policy, build_system_preamble, build_tool_context,
-    log_sandbox_status, resolve_skill_roots, tool_context_for_profile,
+    dedup_mcp_servers, log_sandbox_status, merge_driver_host_inputs, resolve_mcp_servers,
+    resolve_skill_roots, tool_context_for_profile,
 };
 use crate::options::AppOptions;
 use crate::provider::{
@@ -9,7 +11,7 @@ use crate::provider::{
     build_memory_reasoning_service, provider_label, provider_summary,
 };
 use agent::mcp::{
-    McpConnectOptions, McpServerConfig, McpTransportConfig, catalog_tools_as_registry_entries,
+    McpConnectOptions, catalog_tools_as_registry_entries,
     connect_and_catalog_mcp_servers_with_options,
 };
 use agent::runtime::{
@@ -21,7 +23,7 @@ use agent::tools::{
     AgentCancelTool, AgentListTool, AgentSendTool, AgentSpawnTool, AgentWaitTool, TaskBatchTool,
     describe_sandbox_policy, ensure_sandbox_policy_supported,
 };
-use agent::types::{AgentTaskSpec, HookRegistration};
+use agent::types::AgentTaskSpec;
 use agent::{
     AgentRuntime, AgentRuntimeBuilder, BashTool, CodeDefinitionsTool, CodeDocumentSymbolsTool,
     CodeIntelBackend, CodeReferencesTool, CodeSymbolSearchTool, EditTool, GlobTool, GrepTool,
@@ -34,7 +36,7 @@ use agent_env::EnvMap;
 use anyhow::{Context, Result, bail};
 use nanoclaw_config::{CoreConfig, ResolvedAgentProfile};
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use tracing::{info, warn};
 
@@ -45,12 +47,6 @@ struct RuntimeBuildResult {
     store_label: String,
     store_warning: Option<String>,
     stored_run_count: usize,
-}
-
-pub(crate) struct DriverHostInputs {
-    pub(crate) runtime_hooks: Vec<HookRegistration>,
-    pub(crate) mcp_servers: Vec<McpServerConfig>,
-    pub(crate) instructions: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -105,81 +101,6 @@ impl SubagentProfileResolver for CodeAgentSubagentProfileResolver {
             supports_tool_calls: profile.model.capabilities.tool_calls,
         })
     }
-}
-
-pub(crate) fn merge_driver_host_inputs(
-    runtime_hooks: Vec<HookRegistration>,
-    mcp_servers: Vec<McpServerConfig>,
-    instructions: Vec<String>,
-    driver_outcome: &agent::DriverActivationOutcome,
-) -> DriverHostInputs {
-    let mut merged = DriverHostInputs {
-        runtime_hooks,
-        mcp_servers,
-        instructions,
-    };
-    // Code Agent has both declarative plugin contributions and runtime driver
-    // output. Merge them once here so the foreground runtime, subagents, and
-    // MCP bootstrap all see the same effective startup inputs.
-    driver_outcome.extend_host_inputs(
-        &mut merged.runtime_hooks,
-        &mut merged.mcp_servers,
-        &mut merged.instructions,
-    );
-    merged
-}
-
-pub(crate) fn resolve_mcp_servers(
-    configs: &[McpServerConfig],
-    workspace_root: &Path,
-) -> Vec<McpServerConfig> {
-    configs
-        .iter()
-        .cloned()
-        .map(|mut server| {
-            if let McpTransportConfig::Stdio { cwd, .. } = &mut server.transport
-                && let Some(current_dir) = cwd.as_deref()
-            {
-                let resolved = resolve_path(workspace_root, current_dir);
-                *cwd = Some(resolved.to_string_lossy().to_string());
-            }
-            server
-        })
-        .collect()
-}
-
-pub(crate) fn dedup_mcp_servers(servers: Vec<McpServerConfig>) -> Vec<McpServerConfig> {
-    let mut by_name = BTreeMap::new();
-    for server in servers {
-        by_name.entry(server.name.clone()).or_insert(server);
-    }
-    by_name.into_values().collect()
-}
-
-fn resolve_path(base_dir: &Path, value: &str) -> PathBuf {
-    let path = PathBuf::from(value);
-    if path.is_absolute() {
-        path
-    } else {
-        base_dir.join(path)
-    }
-}
-
-#[cfg(test)]
-pub(crate) fn driver_host_output_lines(
-    driver_outcome: &agent::DriverActivationOutcome,
-) -> Vec<String> {
-    driver_outcome
-        .host_messages()
-        .map(|message| match message.level {
-            agent::DriverHostMessageLevel::Warning => {
-                format!("warning: plugin driver warning: {}", message.message)
-            }
-            agent::DriverHostMessageLevel::Diagnostic => {
-                format!("info: plugin driver diagnostic: {}", message.message)
-            }
-        })
-        .collect()
 }
 
 pub(crate) async fn build_session(
