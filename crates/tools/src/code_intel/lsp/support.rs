@@ -605,6 +605,9 @@ fn collect_workspace_files(
         .git_ignore(true)
         .git_exclude(true)
         .git_global(true);
+    // Preload selection is bounded. Sort traversal so the chosen prefix stays
+    // deterministic instead of depending on filesystem directory iteration.
+    builder.sort_by_file_path(|left, right| left.cmp(right));
     builder.filter_entry(|entry| {
         if entry.depth() == 0 {
             return true;
@@ -1069,5 +1072,20 @@ mod tests {
         assert!(should_preload_path(&ts_path, &TYPESCRIPT_SPEC));
         assert!(!should_preload_path(&go_path, &GO_SPEC));
         assert!(!should_preload_path(&readme_path, &TYPESCRIPT_SPEC));
+    }
+
+    #[test]
+    fn preload_candidates_apply_limit_after_sorted_traversal() {
+        let dir = tempfile::tempdir().unwrap();
+        let zeta = dir.path().join("zeta.ts");
+        let middle = dir.path().join("middle.ts");
+        let alpha = dir.path().join("alpha.ts");
+        std::fs::write(&zeta, "export const zeta = 1;\n").unwrap();
+        std::fs::write(&middle, "export const middle = 1;\n").unwrap();
+        std::fs::write(&alpha, "export const alpha = 1;\n").unwrap();
+
+        let candidates = collect_preload_candidates(dir.path(), &TYPESCRIPT_SPEC, 2);
+
+        assert_eq!(candidates, vec![alpha, middle]);
     }
 }
