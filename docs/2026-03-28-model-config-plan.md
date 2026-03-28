@@ -23,11 +23,16 @@
   - 两个 host app 已从 resolved primary profile 启动
   - compactor 已切到 `internal.summary`
   - primary profile 的 context / compact / sandbox 已进入真实 runtime 装配
+- `Phase D`
+  - 已完成 MVP
+  - `code-agent` 已为 child runtime 注入独立的 subagent profile resolver
+  - `task.role -> agents.roles.<role>` 已进入真实 child runtime 构建链
+  - child prompt / compact / context window / tool_calls fail-fast 已使用 child profile
+  - child file-tool context 已按 child sandbox profile 派生
+  - process tool 的统一 sandbox policy 仍留在 `Phase E`
 
 仍未完成：
 
-- `Phase D`
-  - subagent profile 工厂化
 - `Phase E`
   - sandbox profile 派生函数进一步下沉到统一入口
 - `Phase F`
@@ -1316,6 +1321,16 @@ pub struct RuntimeTokenLedger {
 
 ## 9.4 Phase D：subagent profile 工厂化
 
+状态：
+
+- `completed`
+- 备注：
+  - child runtime 已不再继承 parent backend / prompt / compaction config
+  - `code-agent` 现在会按 `task.role` 解析 `agents.roles.<role>`
+  - `tool_calls=false` 会在 spawn preflight 阶段 fail-fast
+  - child file-tool context 已按 profile sandbox 生成
+  - `bash` 等 process tool 仍未共享这套 profile-derived sandbox policy，这部分保留到 `Phase E`
+
 目标：
 
 - child runtime 不再继承父 backend
@@ -1348,6 +1363,8 @@ pub struct RuntimeTokenLedger {
 
 - explorer / implementer / vision child 能用不同模型
 - child 不再继承 primary backend
+- role-specific prompt 与 child compaction 已跟随 role profile
+- `tool_calls=false` 的 child profile 不能带本地工具启动
 
 ## 9.5 Phase E：sandbox 正式纳入 profile
 

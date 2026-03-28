@@ -10,15 +10,16 @@ use agent::mcp::{
     connect_and_catalog_mcp_servers_with_options,
 };
 use agent::runtime::{
-    CompactionConfig, DefaultCommandHookExecutor, HostRuntimeLimits, LoopDetectionConfig,
-    ModelConversationCompactor, NoopToolApprovalPolicy, RuntimeSubagentExecutor,
-    ToolApprovalHandler, build_host_tokio_runtime,
+    CompactionConfig, ConversationCompactor, DefaultCommandHookExecutor, HostRuntimeLimits,
+    LoopDetectionConfig, ModelBackend, ModelConversationCompactor, NoopToolApprovalPolicy,
+    RuntimeSubagentExecutor, SubagentProfileResolver, SubagentRuntimeProfile, ToolApprovalHandler,
+    build_host_tokio_runtime,
 };
 use agent::tools::{
     AgentCancelTool, AgentListTool, AgentSendTool, AgentSpawnTool, AgentWaitTool,
     SandboxBackendStatus, TaskBatchTool, ensure_sandbox_policy_supported,
 };
-use agent::types::HookRegistration;
+use agent::types::{AgentTaskSpec, HookRegistration};
 use agent::{
     AgentRuntime, AgentRuntimeBuilder, AgentWorkspaceLayout, BashTool, CodeDefinitionsTool,
     CodeDocumentSymbolsTool, CodeIntelBackend, CodeReferencesTool, CodeSymbolSearchTool, EditTool,
@@ -29,9 +30,8 @@ use agent::{
 };
 use agent_env::EnvMap;
 use anyhow::{Context, Result};
-use nanoclaw_config::AgentSandboxMode;
-use nanoclaw_config::PluginsConfig;
-use std::collections::BTreeMap;
+use nanoclaw_config::{AgentSandboxMode, CoreConfig, PluginsConfig, ResolvedAgentProfile};
+use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -44,6 +44,58 @@ struct DriverHostInputs {
     runtime_hooks: Vec<HookRegistration>,
     mcp_servers: Vec<McpServerConfig>,
     instructions: Vec<String>,
+}
+
+#[derive(Clone)]
+struct CodeAgentSubagentProfileResolver {
+    core: CoreConfig,
+    base_tool_context: ToolExecutionContext,
+    skill_catalog: SkillCatalog,
+    plugin_instructions: Vec<String>,
+}
+
+impl SubagentProfileResolver for CodeAgentSubagentProfileResolver {
+    fn resolve_profile(
+        &self,
+        task: &AgentTaskSpec,
+    ) -> agent::runtime::Result<SubagentRuntimeProfile> {
+        let profile = self
+            .core
+            .resolve_subagent_profile(Some(task.role.as_str()))
+            .map_err(|error| {
+                agent::runtime::RuntimeError::invalid_state(format!(
+                    "failed to resolve subagent profile for role `{}`: {error}",
+                    task.role
+                ))
+            })?;
+        let backend: Arc<dyn ModelBackend> =
+            Arc::new(build_agent_backend(&profile).map_err(|error| {
+                agent::runtime::RuntimeError::invalid_state(format!(
+                    "failed to build backend for subagent profile `{}`: {error}",
+                    profile.profile_name
+                ))
+            })?);
+        let compactor: Arc<dyn ConversationCompactor> =
+            Arc::new(ModelConversationCompactor::new(backend.clone()));
+        Ok(SubagentRuntimeProfile {
+            profile_name: profile.profile_name.clone(),
+            backend,
+            tool_context: tool_context_for_profile(&self.base_tool_context, &profile),
+            conversation_compactor: compactor,
+            compaction_config: CompactionConfig {
+                enabled: profile.auto_compact,
+                context_window_tokens: profile.context_window_tokens,
+                trigger_tokens: profile.compact_trigger_tokens,
+                preserve_recent_messages: profile.compact_preserve_recent_messages,
+            },
+            instructions: build_system_preamble(
+                &profile,
+                &self.skill_catalog,
+                &self.plugin_instructions,
+            ),
+            supports_tool_calls: profile.model.capabilities.tool_calls,
+        })
+    }
 }
 
 fn merge_driver_host_inputs(
@@ -361,25 +413,23 @@ async fn build_runtime(
         &skill_catalog,
         &plugin_instructions,
     );
+    let subagent_profile_resolver = Arc::new(CodeAgentSubagentProfileResolver {
+        core: options.core.clone(),
+        base_tool_context: tool_context.clone(),
+        skill_catalog: skill_catalog.clone(),
+        plugin_instructions: plugin_instructions.clone(),
+    });
     let subagent_executor = RuntimeSubagentExecutor::new(
-        backend.clone(),
         hook_runner.clone(),
         store.clone(),
         tools.clone(),
         tool_context.clone(),
         approval_handler.clone(),
         Arc::new(NoopToolApprovalPolicy),
-        compactor.clone(),
-        CompactionConfig {
-            enabled: options.primary_profile.auto_compact,
-            context_window_tokens: options.primary_profile.context_window_tokens,
-            trigger_tokens: options.primary_profile.compact_trigger_tokens,
-            preserve_recent_messages: options.primary_profile.compact_preserve_recent_messages,
-        },
         loop_detection_config.clone(),
-        instructions.clone(),
         runtime_hooks.clone(),
         skill_catalog.clone(),
+        subagent_profile_resolver,
     );
     let subagent_executor = Arc::new(subagent_executor);
     tools.register(TaskTool::new(subagent_executor.clone()));
@@ -450,8 +500,60 @@ fn build_tool_context(workspace_root: &Path, options: &AppOptions) -> ToolExecut
     }
 }
 
+fn tool_context_for_profile(
+    base: &ToolExecutionContext,
+    profile: &ResolvedAgentProfile,
+) -> ToolExecutionContext {
+    let mut context = base.clone();
+    context.model_context_window_tokens = Some(profile.context_window_tokens);
+    match profile.sandbox {
+        AgentSandboxMode::DangerFullAccess => {
+            context.workspace_only = false;
+            context.read_only_roots.clear();
+            context.writable_roots.clear();
+            context.exec_roots.clear();
+            context.network_policy = Some(agent::tools::NetworkPolicy::Full);
+        }
+        AgentSandboxMode::WorkspaceWrite => {
+            context.workspace_only = true;
+        }
+        AgentSandboxMode::ReadOnly => {
+            context.workspace_only = true;
+            context.read_only_roots = profile_read_only_roots(base);
+            context.writable_roots.clear();
+            context.network_policy = Some(
+                match base
+                    .network_policy
+                    .clone()
+                    .unwrap_or(agent::tools::NetworkPolicy::Off)
+                {
+                    agent::tools::NetworkPolicy::Full => agent::tools::NetworkPolicy::Off,
+                    other => other,
+                },
+            );
+        }
+    }
+    // File-oriented tools already honor ToolExecutionContext. Process tools still
+    // carry their own baked sandbox policy until Phase E routes profile-derived
+    // sandbox policy through every runtime process execution path.
+    context
+}
+
+fn profile_read_only_roots(base: &ToolExecutionContext) -> Vec<PathBuf> {
+    let mut roots = BTreeSet::new();
+    roots.insert(base.effective_root().to_path_buf());
+    if let Some(worktree_root) = base.worktree_root.clone() {
+        roots.insert(worktree_root);
+    }
+    roots.extend(base.additional_roots.iter().cloned());
+    roots.extend(base.read_only_roots.iter().cloned());
+    roots.extend(base.writable_roots.iter().cloned());
+    roots.extend(base.exec_roots.iter().cloned());
+    roots.into_iter().collect()
+}
+
 fn build_system_preamble(
-    profile: &nanoclaw_config::ResolvedAgentProfile,
+    profile: &ResolvedAgentProfile,
     skill_catalog: &SkillCatalog,
     plugin_instructions: &[String],
 ) -> Vec<String> {
@@ -554,17 +656,23 @@ fn inject_process_env(env_map: &EnvMap) {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_sandbox_policy, dedup_mcp_servers, driver_host_output_lines,
-        merge_driver_host_inputs, resolve_mcp_servers,
+        CodeAgentSubagentProfileResolver, build_sandbox_policy, dedup_mcp_servers,
+        driver_host_output_lines, merge_driver_host_inputs, resolve_mcp_servers,
+        tool_context_for_profile,
     };
     use crate::options::{AppOptions, parse_bool_flag};
     use agent::DriverActivationOutcome;
     use agent::ToolExecutionContext;
     use agent::mcp::{McpServerConfig, McpTransportConfig};
+    use agent::runtime::SubagentProfileResolver;
     use agent::tools::{NetworkPolicy, SandboxMode};
     use agent::types::{HookEvent, HookHandler, HookRegistration, HttpHookHandler};
     use agent_env::EnvMap;
+    use nanoclaw_config::{
+        AgentProfileConfig, AgentSandboxMode, CoreConfig, ModelCapabilitiesConfig, ModelConfig,
+    };
     use std::collections::BTreeMap;
+    use std::path::PathBuf;
     use std::sync::{Mutex, OnceLock};
     use tempfile::tempdir;
 
@@ -654,6 +762,113 @@ mod tests {
                 "existing instruction".to_string(),
                 "driver instruction".to_string()
             ]
+        );
+    }
+
+    #[test]
+    fn tool_context_for_read_only_profile_promotes_accessible_roots_and_disables_full_network() {
+        let profile = CoreConfig::default()
+            .with_override(|config| {
+                config.agents.roles.insert(
+                    "reviewer".to_string(),
+                    AgentProfileConfig {
+                        sandbox: Some(AgentSandboxMode::ReadOnly),
+                        ..AgentProfileConfig::default()
+                    },
+                );
+            })
+            .resolve_subagent_profile(Some("reviewer"))
+            .unwrap();
+        let context = tool_context_for_profile(
+            &ToolExecutionContext {
+                workspace_root: PathBuf::from("/workspace"),
+                worktree_root: Some(PathBuf::from("/worktree")),
+                additional_roots: vec![PathBuf::from("/refs")],
+                writable_roots: vec![PathBuf::from("/workspace/tmp")],
+                exec_roots: vec![PathBuf::from("/workspace/bin")],
+                network_policy: Some(NetworkPolicy::Full),
+                workspace_only: false,
+                ..Default::default()
+            },
+            &profile,
+        );
+
+        assert!(context.workspace_only);
+        assert!(context.writable_roots.is_empty());
+        assert_eq!(context.network_policy, Some(NetworkPolicy::Off));
+        assert_eq!(
+            context.read_only_roots,
+            vec![
+                PathBuf::from("/refs"),
+                PathBuf::from("/workspace"),
+                PathBuf::from("/workspace/bin"),
+                PathBuf::from("/workspace/tmp"),
+                PathBuf::from("/worktree"),
+            ]
+        );
+    }
+
+    #[test]
+    fn subagent_profile_resolver_routes_role_profiles_and_honors_tool_capability() {
+        let resolver = CodeAgentSubagentProfileResolver {
+            core: CoreConfig::default().with_override(|config| {
+                let mut base_model = config.models["gpt_5_4_default"].clone();
+                base_model
+                    .env
+                    .insert("OPENAI_API_KEY".to_string(), "test-key".to_string());
+                config.models.insert(
+                    "reviewer_no_tools".to_string(),
+                    ModelConfig {
+                        capabilities: ModelCapabilitiesConfig {
+                            tool_calls: false,
+                            ..base_model.capabilities.clone()
+                        },
+                        ..base_model
+                    },
+                );
+                config.agents.roles.insert(
+                    "reviewer".to_string(),
+                    AgentProfileConfig {
+                        model: Some("reviewer_no_tools".to_string()),
+                        system_prompt: Some("Review only".to_string()),
+                        sandbox: Some(AgentSandboxMode::ReadOnly),
+                        ..AgentProfileConfig::default()
+                    },
+                );
+            }),
+            base_tool_context: ToolExecutionContext {
+                workspace_root: PathBuf::from("/workspace"),
+                worktree_root: Some(PathBuf::from("/workspace")),
+                workspace_only: true,
+                ..Default::default()
+            },
+            skill_catalog: agent::SkillCatalog::default(),
+            plugin_instructions: vec!["Plugin instruction".to_string()],
+        };
+
+        let profile = resolver
+            .resolve_profile(&agent::types::AgentTaskSpec {
+                task_id: "review".to_string(),
+                role: "reviewer".to_string(),
+                prompt: "review".to_string(),
+                steer: None,
+                allowed_tools: Vec::new(),
+                requested_write_set: Vec::new(),
+                dependency_ids: Vec::new(),
+                timeout_seconds: None,
+            })
+            .unwrap();
+
+        assert_eq!(profile.profile_name, "roles.reviewer");
+        assert!(!profile.supports_tool_calls);
+        assert!(profile.instructions.join("\n").contains("Review only"));
+        assert_eq!(
+            profile.tool_context.model_context_window_tokens,
+            Some(400_000)
+        );
+        assert_eq!(
+            profile.tool_context.network_policy,
+            Some(NetworkPolicy::Off)
         );
     }
 

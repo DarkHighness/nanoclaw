@@ -38,20 +38,32 @@ const DEFAULT_EXCLUDED_CHILD_TOOLS: &[&str] = &[
 const READY_CHILD_LAUNCH_CONCURRENCY: usize = 4;
 
 #[derive(Clone)]
+pub struct SubagentRuntimeProfile {
+    pub profile_name: String,
+    pub backend: Arc<dyn ModelBackend>,
+    pub tool_context: ToolExecutionContext,
+    pub conversation_compactor: Arc<dyn ConversationCompactor>,
+    pub compaction_config: CompactionConfig,
+    pub instructions: Vec<String>,
+    pub supports_tool_calls: bool,
+}
+
+pub trait SubagentProfileResolver: Send + Sync {
+    fn resolve_profile(&self, task: &AgentTaskSpec) -> Result<SubagentRuntimeProfile>;
+}
+
+#[derive(Clone)]
 pub struct RuntimeSubagentExecutor {
-    backend: Arc<dyn ModelBackend>,
     hook_runner: Arc<HookRunner>,
     store: Arc<dyn RunStore>,
     tool_registry: ToolRegistry,
     tool_context: ToolExecutionContext,
     tool_approval_handler: Arc<dyn ToolApprovalHandler>,
     tool_approval_policy: Arc<dyn ToolApprovalPolicy>,
-    conversation_compactor: Arc<dyn ConversationCompactor>,
-    compaction_config: CompactionConfig,
     loop_detection_config: LoopDetectionConfig,
-    instructions: Vec<String>,
     hooks: Vec<HookRegistration>,
     skill_catalog: SkillCatalog,
+    profile_resolver: Arc<dyn SubagentProfileResolver>,
     session_manager: AgentSessionManager,
     write_lease_manager: Arc<WriteLeaseManager>,
 }
@@ -62,6 +74,7 @@ struct PlannedChildSpawn {
     tool_registry: ToolRegistry,
     requested_files: Vec<PathBuf>,
     dependency_agent_ids: Vec<AgentId>,
+    profile: SubagentRuntimeProfile,
 }
 
 #[derive(Clone)]
@@ -78,6 +91,7 @@ struct ChildLaunchPlan {
     tool_registry: ToolRegistry,
     mailbox_rx: AgentMailboxReceiver,
     dependency_agent_ids: Vec<AgentId>,
+    profile: SubagentRuntimeProfile,
 }
 
 enum DependencyGate {
@@ -101,34 +115,28 @@ impl RuntimeSubagentExecutor {
     #[allow(clippy::too_many_arguments)]
     #[must_use]
     pub fn new(
-        backend: Arc<dyn ModelBackend>,
         hook_runner: Arc<HookRunner>,
         store: Arc<dyn RunStore>,
         tool_registry: ToolRegistry,
         tool_context: ToolExecutionContext,
         tool_approval_handler: Arc<dyn ToolApprovalHandler>,
         tool_approval_policy: Arc<dyn ToolApprovalPolicy>,
-        conversation_compactor: Arc<dyn ConversationCompactor>,
-        compaction_config: CompactionConfig,
         loop_detection_config: LoopDetectionConfig,
-        instructions: Vec<String>,
         hooks: Vec<HookRegistration>,
         skill_catalog: SkillCatalog,
+        profile_resolver: Arc<dyn SubagentProfileResolver>,
     ) -> Self {
         Self {
-            backend,
             hook_runner,
             store,
             tool_registry,
             tool_context,
             tool_approval_handler,
             tool_approval_policy,
-            conversation_compactor,
-            compaction_config,
             loop_detection_config,
-            instructions,
             hooks,
             skill_catalog,
+            profile_resolver,
             session_manager: AgentSessionManager::new(),
             write_lease_manager: Arc::new(WriteLeaseManager::new()),
         }
@@ -414,10 +422,10 @@ impl RuntimeSubagentExecutor {
     }
 
     fn build_child_runtime(&self, plan: &ChildLaunchPlan) -> AgentRuntime {
-        AgentRuntimeBuilder::new(self.backend.clone(), self.store.clone())
+        AgentRuntimeBuilder::new(plan.profile.backend.clone(), self.store.clone())
             .hook_runner(self.hook_runner.clone())
             .tool_registry(plan.tool_registry.clone())
-            .tool_context(self.tool_context.clone().with_agent_scope_metadata(
+            .tool_context(plan.profile.tool_context.clone().with_agent_scope_metadata(
                 plan.handle.agent_id.clone(),
                 Some(plan.task.role.clone()),
                 Some(plan.task.task_id.clone()),
@@ -425,10 +433,10 @@ impl RuntimeSubagentExecutor {
             ))
             .tool_approval_handler(self.tool_approval_handler.clone())
             .tool_approval_policy(self.tool_approval_policy.clone())
-            .conversation_compactor(self.conversation_compactor.clone())
-            .compaction_config(self.compaction_config.clone())
+            .conversation_compactor(plan.profile.conversation_compactor.clone())
+            .compaction_config(plan.profile.compaction_config.clone())
             .loop_detection_config(self.loop_detection_config.clone())
-            .instructions(self.instructions.clone())
+            .instructions(plan.profile.instructions.clone())
             .hooks(self.hooks.clone())
             .skill_catalog(self.skill_catalog.clone())
             .session(RuntimeSession::new(
@@ -800,6 +808,16 @@ impl SubagentExecutor for RuntimeSubagentExecutor {
             let (tool_registry, resolved_tools) = self
                 .resolve_child_tools(&task.allowed_tools)
                 .map_err(|error| ToolError::invalid_state(error.to_string()))?;
+            let profile = self
+                .profile_resolver
+                .resolve_profile(&task)
+                .map_err(|error| ToolError::invalid_state(error.to_string()))?;
+            if !profile.supports_tool_calls && !tool_registry.names().is_empty() {
+                return Err(ToolError::invalid(format!(
+                    "subagent profile `{}` does not support tool calls, but task `{}` resolved local tools",
+                    profile.profile_name, task.task_id
+                )));
+            }
             let task = AgentTaskSpec {
                 allowed_tools: resolved_tools,
                 ..task
@@ -822,6 +840,7 @@ impl SubagentExecutor for RuntimeSubagentExecutor {
                 tool_registry,
                 requested_files,
                 dependency_agent_ids: Vec::new(),
+                profile,
             });
         }
         self.resolve_dependency_plan(&parent, &mut planned)?;
@@ -869,6 +888,7 @@ impl SubagentExecutor for RuntimeSubagentExecutor {
                 tool_registry: child.tool_registry,
                 mailbox_rx,
                 dependency_agent_ids: child.dependency_agent_ids,
+                profile: child.profile,
             };
             if launch_plan.dependency_agent_ids.is_empty() {
                 ready.push(launch_plan);
@@ -1507,7 +1527,10 @@ fn extract_steering_text(payload: &Value) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{RuntimeSubagentExecutor, normalize_child_result, run_bounded_launches};
+    use super::{
+        RuntimeSubagentExecutor, SubagentProfileResolver, SubagentRuntimeProfile,
+        normalize_child_result, run_bounded_launches,
+    };
     use crate::Result;
     use crate::{
         AlwaysAllowToolApprovalHandler, CompactionConfig, HookRunner, LoopDetectionConfig,
@@ -1527,6 +1550,41 @@ mod tests {
         AgentEnvelopeKind, AgentStatus, AgentTaskSpec, AgentWaitMode, AgentWaitRequest,
         MessageRole, ModelEvent, ModelRequest, RunEventKind, ToolName,
     };
+
+    #[derive(Clone)]
+    struct StaticProfileResolver {
+        backend: Arc<dyn ModelBackend>,
+        tool_context: ToolExecutionContext,
+        supports_tool_calls: bool,
+    }
+
+    impl StaticProfileResolver {
+        fn new(
+            backend: Arc<dyn ModelBackend>,
+            tool_context: ToolExecutionContext,
+            supports_tool_calls: bool,
+        ) -> Self {
+            Self {
+                backend,
+                tool_context,
+                supports_tool_calls,
+            }
+        }
+    }
+
+    impl SubagentProfileResolver for StaticProfileResolver {
+        fn resolve_profile(&self, task: &AgentTaskSpec) -> Result<SubagentRuntimeProfile> {
+            Ok(SubagentRuntimeProfile {
+                profile_name: format!("roles.{}", task.role),
+                backend: self.backend.clone(),
+                tool_context: self.tool_context.clone(),
+                conversation_compactor: Arc::new(NoopConversationCompactor),
+                compaction_config: CompactionConfig::default(),
+                instructions: vec![format!("profile instruction for {}", task.role)],
+                supports_tool_calls: self.supports_tool_calls,
+            })
+        }
+    }
 
     #[derive(Clone, Default)]
     struct ImmediateBackend {
@@ -1689,27 +1747,37 @@ mod tests {
         backend: Arc<dyn ModelBackend>,
         store: Arc<dyn RunStore>,
     ) -> RuntimeSubagentExecutor {
+        make_executor_with_tool_calls(backend, store, true)
+    }
+
+    fn make_executor_with_tool_calls(
+        backend: Arc<dyn ModelBackend>,
+        store: Arc<dyn RunStore>,
+        supports_tool_calls: bool,
+    ) -> RuntimeSubagentExecutor {
         let dir = tempfile::tempdir().unwrap();
         let mut registry = ToolRegistry::new();
         registry.register(ReadTool::new());
+        let tool_context = ToolExecutionContext {
+            workspace_root: dir.path().to_path_buf(),
+            workspace_only: true,
+            ..Default::default()
+        };
         RuntimeSubagentExecutor::new(
-            backend,
             Arc::new(HookRunner::default()),
             store,
             registry,
-            ToolExecutionContext {
-                workspace_root: dir.path().to_path_buf(),
-                workspace_only: true,
-                ..Default::default()
-            },
+            tool_context.clone(),
             Arc::new(AlwaysAllowToolApprovalHandler),
             Arc::new(NoopToolApprovalPolicy),
-            Arc::new(NoopConversationCompactor),
-            CompactionConfig::default(),
             LoopDetectionConfig::default(),
-            vec!["static instruction".to_string()],
             Vec::new(),
             SkillCatalog::default(),
+            Arc::new(StaticProfileResolver::new(
+                backend,
+                tool_context,
+                supports_tool_calls,
+            )),
         )
     }
 
@@ -1775,6 +1843,77 @@ mod tests {
                 .iter()
                 .all(|result| result.status == AgentStatus::Completed)
         );
+    }
+
+    #[tokio::test]
+    async fn runtime_subagent_executor_uses_role_specific_profile_instructions() {
+        let backend = Arc::new(ImmediateBackend::default());
+        let store = Arc::new(InMemoryRunStore::new());
+        let executor = make_executor(backend.clone(), store);
+
+        let handles = executor
+            .spawn(
+                SubagentParentContext::default(),
+                vec![AgentTaskSpec {
+                    task_id: "review".to_string(),
+                    role: "reviewer".to_string(),
+                    prompt: "review".to_string(),
+                    steer: None,
+                    allowed_tools: vec![ToolName::from("read")],
+                    requested_write_set: Vec::new(),
+                    dependency_ids: Vec::new(),
+                    timeout_seconds: None,
+                }],
+            )
+            .await
+            .unwrap();
+        executor
+            .wait(
+                SubagentParentContext::default(),
+                AgentWaitRequest {
+                    agent_ids: handles
+                        .iter()
+                        .map(|handle| handle.agent_id.clone())
+                        .collect(),
+                    mode: AgentWaitMode::All,
+                },
+            )
+            .await
+            .unwrap();
+
+        let requests = backend.requests.lock().unwrap();
+        assert!(requests.iter().any(|request| {
+            request
+                .instructions
+                .iter()
+                .any(|instruction| instruction.contains("profile instruction for reviewer"))
+        }));
+    }
+
+    #[tokio::test]
+    async fn runtime_subagent_executor_fails_fast_when_profile_disables_tool_calls() {
+        let backend = Arc::new(ImmediateBackend::default());
+        let store = Arc::new(InMemoryRunStore::new());
+        let executor = make_executor_with_tool_calls(backend, store, false);
+
+        let error = executor
+            .spawn(
+                SubagentParentContext::default(),
+                vec![AgentTaskSpec {
+                    task_id: "review".to_string(),
+                    role: "reviewer".to_string(),
+                    prompt: "review".to_string(),
+                    steer: None,
+                    allowed_tools: vec![ToolName::from("read")],
+                    requested_write_set: Vec::new(),
+                    dependency_ids: Vec::new(),
+                    timeout_seconds: None,
+                }],
+            )
+            .await
+            .expect_err("tool-capability mismatch must fail fast");
+
+        assert!(error.to_string().contains("does not support tool calls"));
     }
 
     #[tokio::test]

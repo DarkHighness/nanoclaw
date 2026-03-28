@@ -2,12 +2,13 @@ use crate::config::CodeAgentConfig;
 use crate::provider::ensure_api_key_available;
 use agent_env::EnvMap;
 use anyhow::{Context, Result, bail};
-use nanoclaw_config::{PluginsConfig, ResolvedAgentProfile, ResolvedInternalProfile};
+use nanoclaw_config::{CoreConfig, PluginsConfig, ResolvedAgentProfile, ResolvedInternalProfile};
 use std::env;
 use std::path::{Path, PathBuf};
 
 #[derive(Clone, Debug)]
 pub(crate) struct AppOptions {
+    pub(crate) core: CoreConfig,
     pub(crate) primary_profile: ResolvedAgentProfile,
     pub(crate) summary_profile: ResolvedInternalProfile,
     pub(crate) skill_roots: Vec<PathBuf>,
@@ -33,13 +34,13 @@ impl AppOptions {
         args: impl IntoIterator<Item = String>,
     ) -> Result<Self> {
         let workspace_config = CodeAgentConfig::load_from_dir(workspace_root, env_map)?;
-        let mut primary_profile = workspace_config.core.resolve_primary_agent()?;
-        let summary_profile = workspace_config.core.resolve_summary_profile()?;
-        let memory_profile = workspace_config.core.resolve_memory_profile()?;
-        let mut skill_roots = workspace_config.core.resolved_skill_roots(workspace_root);
-        let mut plugins = workspace_config.core.plugins.clone();
-        let mut sandbox_fail_if_unavailable =
-            workspace_config.core.host.sandbox_fail_if_unavailable;
+        let core = workspace_config.core.clone();
+        let mut primary_profile = core.resolve_primary_agent()?;
+        let summary_profile = core.resolve_summary_profile()?;
+        let memory_profile = core.resolve_memory_profile()?;
+        let mut skill_roots = core.resolved_skill_roots(workspace_root);
+        let mut plugins = core.plugins.clone();
+        let mut sandbox_fail_if_unavailable = core.host.sandbox_fail_if_unavailable;
         let lsp_enabled = workspace_config.lsp_enabled;
         let lsp_auto_install = workspace_config.lsp_auto_install;
         let lsp_install_root = workspace_config.lsp_install_root.clone();
@@ -88,6 +89,7 @@ impl AppOptions {
         let one_shot_prompt = (!prompt_parts.is_empty()).then(|| prompt_parts.join(" "));
 
         Ok(Self {
+            core,
             primary_profile,
             summary_profile,
             skill_roots,

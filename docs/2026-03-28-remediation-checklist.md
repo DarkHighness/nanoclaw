@@ -581,8 +581,11 @@
     - `core.toml` 已切到 `global_system_prompt / host / models / agents / internal`
     - `reference-tui` 与 `code-agent` 已从 resolved primary profile 启动
     - compactor 已切到 `internal.summary`
+    - `code-agent` 子代理现在会按 `task.role` 解析 `agents.roles.<role>`
+    - child runtime 已改为消费独立 subagent profile，包括 prompt / compact / context window / tool-calls gating
+    - child file-tool context 已按 profile sandbox 派生
   - 未完成：
-    - subagent profile 工厂化
+    - process tool 的 profile-derived sandbox policy 统一接线
     - internal.memory 推理链接线
 - token usage ledger 与 UI 展示
   - 状态：`planned`
