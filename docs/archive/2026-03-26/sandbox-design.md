@@ -616,8 +616,8 @@ Exit criterion:
 
 ## Relationship To Existing Notes
 
-- [design.md](/Users/twiliness/nanoclaw/docs/design.md) remains the architecture overview
-- [tool-interface-design.md](/Users/twiliness/nanoclaw/docs/tool-interface-design.md) remains the contract note for local coding tools
-- [tooling-research.md](/Users/twiliness/nanoclaw/docs/tooling-research.md) captures external research inputs that motivated the approval and multi-root path model
+- [design.md](design.md) remains the architecture overview
+- [tool-interface-design.md](tool-interface-design.md) remains the contract note for local coding tools
+- [tooling-research.md](tooling-research.md) captures external research inputs that motivated the approval and multi-root path model
 
 This note is narrower: it defines the local execution boundary and how that boundary should be composed into the substrate.

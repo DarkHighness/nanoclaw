@@ -1,5 +1,15 @@
 # Sandbox Design
 
+Date: 2026-03-28
+
+Status: Live Design Note
+
+This note records the current sandbox boundary after the 2026-03-28
+implementation pass.
+
+For the earlier design-target version, see
+`docs/archive/2026-03-26/sandbox-design.md`.
+
 `crates/sandbox` is the canonical sandbox boundary for `nanoclaw`.
 
 The short version is:

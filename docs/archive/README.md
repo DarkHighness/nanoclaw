@@ -7,11 +7,15 @@ Date: 2026-03-28
 This directory preserves dated documentation snapshots after each major design,
 review, or remediation pass.
 
-Use the live [plan.md](/home/twiliness/nanoclaw/docs/plan.md) as the current
-entry point.
+Use the live `docs/plan.md` as the current entry point.
 
 Use this index when you need historical context, implementation chronology, or
 the original reasoning behind a subsystem change.
+
+Current live design notes outside the archive:
+
+- `docs/plan.md`
+- `docs/sandbox-design.md`
 
 ## Timeline
 

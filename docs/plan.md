@@ -63,3 +63,4 @@ Intentionally still documented as not yet implemented:
 
 - `docs/plan.md`
 - `docs/sandbox-design.md`
+  - current-state sandbox boundary note
