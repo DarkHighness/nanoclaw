@@ -1,6 +1,7 @@
 mod boot;
 mod boot_inputs;
 mod boot_preamble;
+mod boot_runtime;
 mod boot_sandbox;
 mod run_history;
 mod session;

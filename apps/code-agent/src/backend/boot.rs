@@ -1,4 +1,5 @@
 use crate::backend::boot_inputs::DriverHostInputs;
+use crate::backend::boot_runtime::{build_runtime_tooling, register_subagent_tools};
 use crate::backend::store::build_store;
 use crate::backend::{
     build_plugin_activation_plan, build_sandbox_policy, build_system_preamble, build_tool_context,
@@ -15,27 +16,19 @@ use agent::mcp::{
     connect_and_catalog_mcp_servers_with_options,
 };
 use agent::runtime::{
-    CompactionConfig, ConversationCompactor, DefaultCommandHookExecutor, LoopDetectionConfig,
-    ModelBackend, ModelConversationCompactor, NoopToolApprovalPolicy, RuntimeSubagentExecutor,
-    SubagentProfileResolver, SubagentRuntimeProfile, ToolApprovalHandler,
+    CompactionConfig, ConversationCompactor, ModelBackend, ModelConversationCompactor,
+    NoopToolApprovalPolicy, RuntimeSubagentExecutor, SubagentProfileResolver,
+    SubagentRuntimeProfile, ToolApprovalHandler,
 };
-use agent::tools::{
-    AgentCancelTool, AgentListTool, AgentSendTool, AgentSpawnTool, AgentWaitTool, TaskBatchTool,
-    describe_sandbox_policy, ensure_sandbox_policy_supported,
-};
+use agent::tools::{describe_sandbox_policy, ensure_sandbox_policy_supported};
 use agent::types::AgentTaskSpec;
 use agent::{
-    AgentRuntime, AgentRuntimeBuilder, BashTool, CodeDefinitionsTool, CodeDocumentSymbolsTool,
-    CodeIntelBackend, CodeReferencesTool, CodeSymbolSearchTool, EditTool, GlobTool, GrepTool,
-    HookRunner, ListTool, ManagedCodeIntelBackend, ManagedCodeIntelOptions,
-    ManagedPolicyProcessExecutor, PatchTool, ReadTool, SandboxPolicy, Skill, SkillCatalog,
-    TaskTool, TodoListState, TodoReadTool, TodoWriteTool, ToolExecutionContext, ToolRegistry,
-    WorkspaceTextCodeIntelBackend, WriteTool,
+    AgentRuntime, AgentRuntimeBuilder, SandboxPolicy, Skill, SkillCatalog, ToolExecutionContext,
+    ToolRegistry,
 };
 use agent_env::EnvMap;
 use anyhow::{Context, Result, bail};
 use nanoclaw_config::{CoreConfig, ResolvedAgentProfile};
-use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
 use tracing::{info, warn};
@@ -201,79 +194,14 @@ async fn build_runtime(
     let plugin_mcp_servers = plugin_plan.mcp_servers.clone();
     let plugin_instructions = plugin_plan.instructions.clone();
     let compactor = Arc::new(ModelConversationCompactor::new(summary_backend));
-    let loop_detection_config = LoopDetectionConfig {
-        enabled: true,
-        ..LoopDetectionConfig::default()
-    };
-    let process_executor = Arc::new(ManagedPolicyProcessExecutor::new());
-    let hook_runner = Arc::new(HookRunner::with_services(
-        Arc::new(
-            DefaultCommandHookExecutor::with_process_executor_and_policy(
-                BTreeMap::new(),
-                process_executor.clone(),
-                sandbox_policy.clone(),
-            ),
-        ),
-        Arc::new(agent::runtime::ReqwestHttpHookExecutor::default()),
-        Arc::new(agent::runtime::FailClosedPromptHookEvaluator),
-        Arc::new(agent::runtime::FailClosedAgentHookEvaluator),
-        Arc::new(agent::runtime::DefaultWasmHookExecutor::default()),
-    ));
-    let todo_state = TodoListState::default();
-    // Managed LSP helpers run outside the normal user-invoked tool approval
-    // path. Keep them behind explicit app-level config until background helper
-    // execution shares the same approval and sandbox contract as foreground
-    // tool calls.
-    let managed_code_intel = options.lsp_enabled.then(|| {
-        let mut lsp_options = ManagedCodeIntelOptions::for_workspace(workspace_root);
-        lsp_options.auto_install = options.lsp_auto_install;
-        if let Some(install_root) = &options.lsp_install_root {
-            lsp_options.install_root = install_root.clone();
-        }
-        Arc::new(ManagedCodeIntelBackend::new(
-            workspace_root.to_path_buf(),
-            lsp_options,
-            process_executor.clone(),
-            SandboxPolicy::permissive(),
-            SandboxPolicy::permissive(),
-        ))
-    });
-    let code_intel_backend: Arc<dyn CodeIntelBackend> = managed_code_intel
-        .clone()
-        .map(|backend| backend as Arc<dyn CodeIntelBackend>)
-        .unwrap_or_else(|| Arc::new(WorkspaceTextCodeIntelBackend::new()));
-
-    let mut tools = ToolRegistry::new();
-    if let Some(observer) = managed_code_intel.clone() {
-        tools.register(ReadTool::with_file_activity_observer(observer.clone()));
-        tools.register(WriteTool::with_file_activity_observer(observer.clone()));
-        tools.register(EditTool::with_file_activity_observer(observer.clone()));
-        tools.register(PatchTool::with_file_activity_observer(observer));
-    } else {
-        tools.register(ReadTool::new());
-        tools.register(WriteTool::new());
-        tools.register(EditTool::new());
-        tools.register(PatchTool::new());
-    }
-    tools.register(GlobTool::new());
-    tools.register(GrepTool::new());
-    tools.register(ListTool::new());
-    tools.register(BashTool::with_process_executor_and_policy(
-        process_executor.clone(),
-        sandbox_policy.clone(),
-    ));
-    tools.register(CodeSymbolSearchTool::with_backend(
-        code_intel_backend.clone(),
-    ));
-    tools.register(CodeDocumentSymbolsTool::with_backend(
-        code_intel_backend.clone(),
-    ));
-    tools.register(CodeDefinitionsTool::with_backend(
-        code_intel_backend.clone(),
-    ));
-    tools.register(CodeReferencesTool::with_backend(code_intel_backend));
-    tools.register(TodoReadTool::new(todo_state.clone()));
-    tools.register(TodoWriteTool::new(todo_state));
+    // Runtime tooling assembly is still host boot work, but it lives behind a
+    // dedicated helper so later frontends inherit the same process-local tool,
+    // hook, and LSP wiring without reopening this orchestration block.
+    let runtime_tooling = build_runtime_tooling(options, workspace_root, &sandbox_policy);
+    let loop_detection_config = runtime_tooling.loop_detection_config;
+    let process_executor = runtime_tooling.process_executor.clone();
+    let hook_runner = runtime_tooling.hook_runner.clone();
+    let mut tools = runtime_tooling.tools;
     // Driver-backed plugins expand into normal local tools here so the runtime
     // and subagent surfaces stay identical regardless of whether a capability
     // came from builtin boot code or a plugin slot selection.
@@ -370,13 +298,7 @@ async fn build_runtime(
         subagent_profile_resolver,
     );
     let subagent_executor = Arc::new(subagent_executor);
-    tools.register(TaskTool::new(subagent_executor.clone()));
-    tools.register(TaskBatchTool::new(subagent_executor.clone()));
-    tools.register(AgentSpawnTool::new(subagent_executor.clone()));
-    tools.register(AgentSendTool::new(subagent_executor.clone()));
-    tools.register(AgentWaitTool::new(subagent_executor.clone()));
-    tools.register(AgentListTool::new(subagent_executor.clone()));
-    tools.register(AgentCancelTool::new(subagent_executor.clone()));
+    register_subagent_tools(&mut tools, subagent_executor);
 
     let runtime = AgentRuntimeBuilder::new(backend.clone(), store.clone())
         .hook_runner(hook_runner)
