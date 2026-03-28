@@ -2,9 +2,11 @@
 
 日期：2026-03-28
 
-状态：Active
+状态：Archived Snapshot
 
-负责人：进行中
+归档说明：本文档已在 2026-03-28 当日实现收口并与代码核对后归档。
+
+负责人：归档快照
 
 ## 0. 当前实现进度
 
@@ -41,12 +43,8 @@
   - `builtin.memory-embed` 允许用 `query_expansion.use_internal_profile = true` / `rerank.use_internal_profile = true` 显式复用该 service
   - 显式声明的 embedding / query expansion / rerank service 配置仍然优先，不会被 `internal.memory` 覆盖
 
-仍未完成：
+仍在继续：
 
-- `Phase F`
-  - capability metadata enforcement
-- `Phase G`
-  - token usage ledger
 - `Phase H`
   - 全量文档与收尾测试
 
@@ -1442,9 +1440,30 @@ pub struct RuntimeTokenLedger {
 
 ## 9.6 Phase F：能力元数据与 enforcement
 
+状态：
+
+- 已完成 MVP
+
 目标：
 
 - 模型能力不仅是注释，还要进入 runtime 约束
+
+已落地：
+
+- `model.capabilities.*` 已进入 resolved profile，并在 host boot 中统一映射为
+  `ModelBackendCapabilities`
+- `reference-tui` 与 `code-agent` 都会按 backend capabilities 决定工具面是否暴露
+- `tool_calls` 已进入 primary runtime 与 child runtime 的 fail-fast / wiring 约束
+- provider descriptor / backend settings 已共享同一份能力元数据来源
+
+说明：
+
+- 本阶段没有再额外引入一层独立的“vision worker router”
+- 当前实现的收口点是：
+  - 能力元数据不再只是文档字段
+  - 能力会进入 host/provider/runtime 的真实装配与约束链
+- 如果后续需要做更细的 modality-specific worker dispatch，应作为新增功能继续演进，
+  而不是把当前已落地的 enforcement 描述成“未完成”
 
 任务：
 
@@ -1469,10 +1488,34 @@ pub struct RuntimeTokenLedger {
 
 ## 9.7 Phase G：Token 统计与可视化
 
+状态：
+
+- 已完成 MVP
+
 目标：
 
 - 建立统一 token usage ledger
 - 让 runtime / store / UI 使用同一份 usage 数据
+
+已落地：
+
+- `types` 中已落地：
+  - `TokenUsage`
+  - `ContextWindowUsage`
+  - `TokenLedgerSnapshot`
+  - `TokenUsagePhase`
+- runtime 会在 `request started` 与 `response completed` 两个阶段更新 ledger
+- store 已能聚合：
+  - run
+  - session
+  - subagent
+  - task
+  四个层级的 usage 视图
+- `reference-tui` 与 `code-agent` 已展示：
+  - `context used / limit`
+  - `input / output`
+  - `prefill / decode / cache read`
+- runtime / store / UI 当前已经共用同一份 ledger 语义，不再各自重算
 
 任务：
 

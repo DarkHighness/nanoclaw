@@ -2,7 +2,9 @@
 
 日期：2026-03-28
 
-状态：Planning + Reviewed
+状态：Archived Snapshot
+
+归档说明：本文档已在 2026-03-28 当日实现收口并与代码核对后归档。
 
 ## 1. 目标
 
@@ -380,7 +382,7 @@ pub enum HookEffect {
 - `crates/plugins/src/manifest.rs`
 - `crates/plugins/src/config.rs`
 - `crates/plugins/src/resolution.rs`
-- `docs/2026-03-28-plugin-system-plan.md`
+- `docs/archive/2026-03-28/2026-03-28-plugin-system-plan.md`
 
 交付：
 

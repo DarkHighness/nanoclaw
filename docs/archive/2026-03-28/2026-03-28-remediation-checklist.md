@@ -2,7 +2,9 @@
 
 日期：2026-03-28
 
-状态：Active
+状态：Archived Snapshot
+
+归档说明：本文档已在 2026-03-28 当日修复完成并与实现核对后归档。
 
 ## 1. 目的
 
@@ -17,10 +19,10 @@
 ## 2. 审查依据
 
 - 路线文档：
-  - `docs/2026-03-28-plugin-system-plan.md`
-  - `docs/2026-03-28-memory-system-plan.md`
-  - `docs/2026-03-28-multi-agent-plan.md`
-  - `docs/2026-03-28-model-config-plan.md`
+  - `docs/archive/2026-03-28/2026-03-28-plugin-system-plan.md`
+  - `docs/archive/2026-03-28/2026-03-28-memory-system-plan.md`
+  - `docs/archive/2026-03-28/2026-03-28-multi-agent-plan.md`
+  - `docs/archive/2026-03-28/2026-03-28-model-config-plan.md`
 - 关键代码路径：
   - `crates/plugins`
   - `crates/memory`
@@ -283,7 +285,7 @@
     - thinking / system prompt / compact / sandbox 覆盖
     统一落到 resolved config
   - 详细方案见：
-    - `docs/2026-03-28-model-config-plan.md`
+    - `docs/archive/2026-03-28/2026-03-28-model-config-plan.md`
   - 实施时按文档中的 Phase A -> H 顺序推进，不并行跳步
   - 这项工作横跨：
     - `crates/config`
@@ -294,20 +296,24 @@
     - `crates/sandbox`
 
 - 补统一 token usage ledger 与展示面：
-  - 这是 `P1`，不是单纯的 `P2` 可观测性收尾
-  - 最低要求必须统一输出：
-    - `context used / limit / trigger`
-    - `input`
-    - `output`
-    - `prefill`
-    - `decode`
-    - `cache read`
-  - 统计口径必须固定为：
-    - request build 时估算上下文占用
-    - response complete 时归一化 provider usage
-    - runtime / store / UI 共用同一份 ledger
+  - 状态：
+    - `completed`
+  - 已落地：
+    - `types` 已提供：
+      - `TokenUsage`
+      - `ContextWindowUsage`
+      - `TokenLedgerSnapshot`
+      - `TokenUsagePhase`
+    - runtime 会在 `request started` 与 `response completed` 两个阶段更新 ledger
+    - provider usage 已归一化进入统一 usage 模型
+    - store 已聚合 run / session / subagent / task 四个层级的 usage 报告
+    - `reference-tui` 与 `code-agent` 已统一展示：
+      - `context used / limit`
+      - `input / output`
+      - `prefill / decode / cache read`
+    - runtime / store / UI 已共用同一份 ledger 语义
   - 详细方案见：
-    - `docs/2026-03-28-model-config-plan.md`
+    - `docs/archive/2026-03-28/2026-03-28-model-config-plan.md`
   - 这项工作横跨：
     - `crates/types`
     - `crates/runtime`
@@ -379,7 +385,7 @@
     - 独立的 `builtin.wasm-hook-runtime` 已补上，当前可产出 `hooks / mcp_servers / instructions`
   - 目标文件：
     - `crates/core/src/plugin_boot/drivers.rs`
-    - `docs/2026-03-28-plugin-system-plan.md`
+    - `docs/archive/2026-03-28/2026-03-28-plugin-system-plan.md`
 
 ## 8. P2 性能与硬化清单
 
@@ -594,7 +600,10 @@
       - `rerank.use_internal_profile = true`
     - 上述 fallback 只在插件显式请求时生效，不会覆盖已有的 embedding / query expansion / rerank service 配置
 - token usage ledger 与 UI 展示
-  - 状态：`planned`
+  - 状态：`completed`
+  - 已落地：
+    - token usage ledger 已进入 runtime / store / UI 的统一事件面
+    - `code-agent` 与 `reference-tui` 已消费统一 token ledger，而不是各自重算
 
 ### Batch 3：做性能与收口
 
