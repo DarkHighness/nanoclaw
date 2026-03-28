@@ -22,8 +22,9 @@ use agent::{
     ToolExecutionContext, ToolRegistry, WorkspaceTextCodeIntelBackend, WriteTool,
 };
 use agent_env::EnvMap;
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, ensure};
 use nanoclaw_config::PluginsConfig;
+use nanoclaw_config::RuntimeConfig;
 use std::collections::BTreeMap;
 use std::env;
 use std::path::{Path, PathBuf};
@@ -44,12 +45,36 @@ fn main() -> Result<()> {
     let _tracing_guard = init_tracing(&workspace_root)?;
     let options = AppOptions::from_env_and_args(&workspace_root, &env_map)?;
 
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .context("failed to build tokio runtime")?;
+    let runtime = build_tokio_runtime(&RuntimeConfig {
+        tokio_worker_threads: options.tokio_worker_threads,
+        tokio_max_blocking_threads: options.tokio_max_blocking_threads,
+        ..RuntimeConfig::default()
+    })?;
     let local = tokio::task::LocalSet::new();
     runtime.block_on(local.run_until(async_main(workspace_root, options)))
+}
+
+fn build_tokio_runtime(config: &RuntimeConfig) -> Result<tokio::runtime::Runtime> {
+    let mut builder = tokio::runtime::Builder::new_multi_thread();
+    builder.enable_all();
+    if let Some(worker_threads) = config.tokio_worker_threads {
+        ensure!(
+            worker_threads > 0,
+            "runtime.tokio_worker_threads must be greater than zero"
+        );
+        builder.worker_threads(worker_threads);
+    }
+    if let Some(max_blocking_threads) = config.tokio_max_blocking_threads {
+        ensure!(
+            max_blocking_threads > 0,
+            "runtime.tokio_max_blocking_threads must be greater than zero"
+        );
+        // Memory indexing and filesystem-backed tools rely on Tokio's blocking
+        // pool for SQLite, LanceDB, and other host-only work. Cap it here so
+        // local runs can bound CPU fan-out without changing those call sites.
+        builder.max_blocking_threads(max_blocking_threads);
+    }
+    builder.build().context("failed to build tokio runtime")
 }
 
 fn init_tracing(workspace_root: &Path) -> Result<WorkerGuard> {

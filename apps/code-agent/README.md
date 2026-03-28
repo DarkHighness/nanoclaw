@@ -50,6 +50,10 @@ cargo run --manifest-path apps/Cargo.toml -p code-agent -- --provider anthropic
 - Precedence is: command-line flags > process environment > `.env.local` > `.env`.
 - Shared core settings come from `.nanoclaw/config/core.toml` plus `NANOCLAW_CORE_*` env overrides.
 - App-local settings come from `.nanoclaw/apps/code-agent.toml`.
+- Runtime thread caps can be set in `.nanoclaw/config/core.toml` with
+  `runtime.tokio_worker_threads` and `runtime.tokio_max_blocking_threads`,
+  or via `NANOCLAW_CORE_TOKIO_WORKER_THREADS` and
+  `NANOCLAW_CORE_TOKIO_MAX_BLOCKING_THREADS`.
 - `CODE_AGENT_LSP_ENABLED`: enable the managed LSP overlay for code-intel tools and file-open hooks (defaults to `true`)
 - `CODE_AGENT_LSP_AUTO_INSTALL`: allow automatic installation of supported LSP servers into the managed cache (defaults to `false`)
 - `CODE_AGENT_LSP_INSTALL_ROOT`: optional override for the managed LSP cache/install directory (defaults to `.nanoclaw/tools/lsp` under the workspace)

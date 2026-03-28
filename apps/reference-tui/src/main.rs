@@ -1,18 +1,23 @@
 use agent::AgentWorkspaceLayout;
 use anyhow::{Context, Result};
+use nanoclaw_config::{CoreConfig, RuntimeConfig};
 use std::path::Path;
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::EnvFilter;
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
     let cwd = std::env::current_dir().context("failed to resolve current workspace")?;
+    let runtime_config = CoreConfig::load_from_dir(&cwd)
+        .context("failed to load core config for runtime settings")?
+        .runtime;
     let _tracing_guard = init_tracing(&cwd)?;
-    reference_tui::bootstrap_from_dir(&cwd)
-        .await?
-        .into_tui()
-        .run()
-        .await
+    build_tokio_runtime(&runtime_config)?.block_on(async {
+        reference_tui::bootstrap_from_dir(&cwd)
+            .await?
+            .into_tui()
+            .run()
+            .await
+    })
 }
 
 fn init_tracing(workspace_root: &Path) -> Result<WorkerGuard> {
@@ -37,4 +42,26 @@ fn init_tracing(workspace_root: &Path) -> Result<WorkerGuard> {
         .try_init()
         .map_err(|error| anyhow::anyhow!("failed to initialize tracing subscriber: {error}"))?;
     Ok(guard)
+}
+
+fn build_tokio_runtime(config: &RuntimeConfig) -> Result<tokio::runtime::Runtime> {
+    let mut builder = tokio::runtime::Builder::new_multi_thread();
+    builder.enable_all();
+    if let Some(worker_threads) = config.tokio_worker_threads {
+        anyhow::ensure!(
+            worker_threads > 0,
+            "runtime.tokio_worker_threads must be greater than zero"
+        );
+        builder.worker_threads(worker_threads);
+    }
+    if let Some(max_blocking_threads) = config.tokio_max_blocking_threads {
+        anyhow::ensure!(
+            max_blocking_threads > 0,
+            "runtime.tokio_max_blocking_threads must be greater than zero"
+        );
+        // Reference-TUI drives the same storage and filesystem-heavy paths as
+        // other hosts, so the blocking pool needs the same explicit cap.
+        builder.max_blocking_threads(max_blocking_threads);
+    }
+    builder.build().context("failed to build tokio runtime")
 }

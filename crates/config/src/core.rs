@@ -45,6 +45,10 @@ pub struct RuntimeConfig {
     #[serde(default)]
     pub store_dir: Option<String>,
     pub sandbox_fail_if_unavailable: bool,
+    #[serde(default)]
+    pub tokio_worker_threads: Option<usize>,
+    #[serde(default)]
+    pub tokio_max_blocking_threads: Option<usize>,
 }
 
 impl Default for RuntimeConfig {
@@ -57,6 +61,8 @@ impl Default for RuntimeConfig {
             compact_preserve_recent_messages: Some(8),
             store_dir: None,
             sandbox_fail_if_unavailable: false,
+            tokio_worker_threads: None,
+            tokio_max_blocking_threads: None,
         }
     }
 }
@@ -163,6 +169,16 @@ impl NanoclawCoreConfig {
         if let Some(parsed) = env_map.get_bool_var(vars::NANOCLAW_CORE_SANDBOX_FAIL_IF_UNAVAILABLE)
         {
             config.runtime.sandbox_fail_if_unavailable = parsed;
+        }
+        if let Some(parsed) =
+            env_map.get_parsed_var::<usize>(vars::NANOCLAW_CORE_TOKIO_WORKER_THREADS)
+        {
+            config.runtime.tokio_worker_threads = Some(parsed);
+        }
+        if let Some(parsed) =
+            env_map.get_parsed_var::<usize>(vars::NANOCLAW_CORE_TOKIO_MAX_BLOCKING_THREADS)
+        {
+            config.runtime.tokio_max_blocking_threads = Some(parsed);
         }
         if let Some(value) = env_map.get_non_empty_var(vars::NANOCLAW_CORE_SYSTEM_PROMPT) {
             config.system_prompt = Some(value);
@@ -322,12 +338,12 @@ mod tests {
         std::fs::create_dir_all(AgentWorkspaceLayout::new(dir.path()).config_dir()).unwrap();
         std::fs::write(
             dir.path().join(".env"),
-            "NANOCLAW_CORE_MODEL=from_env\nNANOCLAW_CORE_WORKSPACE_ONLY=false\nNANOCLAW_CORE_SANDBOX_FAIL_IF_UNAVAILABLE=true\n",
+            "NANOCLAW_CORE_MODEL=from_env\nNANOCLAW_CORE_WORKSPACE_ONLY=false\nNANOCLAW_CORE_SANDBOX_FAIL_IF_UNAVAILABLE=true\nNANOCLAW_CORE_TOKIO_MAX_BLOCKING_THREADS=12\n",
         )
         .unwrap();
         std::fs::write(
             dir.path().join(".env.local"),
-            "NANOCLAW_CORE_MODEL=from_local\nNANOCLAW_CORE_COMPACT_PRESERVE_RECENT_MESSAGES=6\n",
+            "NANOCLAW_CORE_MODEL=from_local\nNANOCLAW_CORE_COMPACT_PRESERVE_RECENT_MESSAGES=6\nNANOCLAW_CORE_TOKIO_WORKER_THREADS=3\n",
         )
         .unwrap();
 
@@ -336,6 +352,8 @@ mod tests {
         assert_eq!(config.runtime.compact_preserve_recent_messages, Some(6));
         assert!(!config.runtime.workspace_only);
         assert!(config.runtime.sandbox_fail_if_unavailable);
+        assert_eq!(config.runtime.tokio_worker_threads, Some(3));
+        assert_eq!(config.runtime.tokio_max_blocking_threads, Some(12));
     }
 
     #[tokio::test]
@@ -362,6 +380,8 @@ mod tests {
                 compact_preserve_recent_messages = 5
                 store_dir = ".nanoclaw/custom-store"
                 sandbox_fail_if_unavailable = true
+                tokio_worker_threads = 2
+                tokio_max_blocking_threads = 10
 
                 [plugins]
                 roots = ["plugins", "/tmp/global-plugins"]
@@ -404,6 +424,8 @@ mod tests {
             Some(".nanoclaw/custom-store")
         );
         assert!(config.runtime.sandbox_fail_if_unavailable);
+        assert_eq!(config.runtime.tokio_worker_threads, Some(2));
+        assert_eq!(config.runtime.tokio_max_blocking_threads, Some(10));
         assert_eq!(
             config.system_prompt.as_deref(),
             Some("Work carefully and be concise.")

@@ -102,6 +102,14 @@ pub mod vars {
         "NANOCLAW_CORE_SANDBOX_FAIL_IF_UNAVAILABLE",
         "Whether Nanoclaw core should fail closed when no enforcing sandbox backend is available.",
     );
+    pub const NANOCLAW_CORE_TOKIO_WORKER_THREADS: EnvVar = EnvVar::new(
+        "NANOCLAW_CORE_TOKIO_WORKER_THREADS",
+        "Optional Tokio worker-thread count override for host apps that build their own runtimes.",
+    );
+    pub const NANOCLAW_CORE_TOKIO_MAX_BLOCKING_THREADS: EnvVar = EnvVar::new(
+        "NANOCLAW_CORE_TOKIO_MAX_BLOCKING_THREADS",
+        "Optional Tokio max-blocking-thread override for host apps that build their own runtimes.",
+    );
     pub const NANOCLAW_CORE_SYSTEM_PROMPT: EnvVar = EnvVar::new(
         "NANOCLAW_CORE_SYSTEM_PROMPT",
         "Additional system prompt override for Nanoclaw core config loading.",
@@ -189,6 +197,8 @@ pub mod vars {
         NANOCLAW_CORE_COMPACT_PRESERVE_RECENT_MESSAGES,
         NANOCLAW_CORE_STORE_DIR,
         NANOCLAW_CORE_SANDBOX_FAIL_IF_UNAVAILABLE,
+        NANOCLAW_CORE_TOKIO_WORKER_THREADS,
+        NANOCLAW_CORE_TOKIO_MAX_BLOCKING_THREADS,
         NANOCLAW_CORE_SYSTEM_PROMPT,
         NANOCLAW_CORE_SKILL_ROOTS,
         NANOCLAW_CORE_PLUGIN_ROOTS,

@@ -19,6 +19,9 @@ context_tokens = 128000
 compact_trigger_tokens = 96000
 compact_preserve_recent_messages = 8
 store_dir = ".nanoclaw/store"
+# Optional host-runtime caps for local CPU usage.
+# tokio_worker_threads = 2
+# tokio_max_blocking_threads = 8
 
 [hook_env]
 PROJECT_NAME = "nanoclaw"
