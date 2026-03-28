@@ -97,7 +97,7 @@ async fn runtime_continues_after_tool_approval_denied() {
         requests[0]
             .reasons
             .iter()
-            .any(|reason| reason.contains("destructive"))
+            .any(|reason: &String| reason.contains("destructive"))
     );
 
     let events = store.events(&runtime.run_id()).await.unwrap();
@@ -221,7 +221,7 @@ async fn approval_policy_can_require_review_for_otherwise_safe_tools() {
         requests[0]
             .reasons
             .iter()
-            .any(|reason| reason.contains("sensitive file read requires review"))
+            .any(|reason: &String| reason.contains("sensitive file read requires review"))
     );
     let events = store.events(&runtime.run_id()).await.unwrap();
     assert!(events.iter().any(|event| {
@@ -230,7 +230,7 @@ async fn approval_policy_can_require_review_for_otherwise_safe_tools() {
             RunEventKind::ToolApprovalRequested { reasons, .. }
                 if reasons
                     .iter()
-                    .any(|reason| reason.contains("sensitive file read requires review"))
+                    .any(|reason: &String| reason.contains("sensitive file read requires review"))
         )
     }));
 }

@@ -118,10 +118,7 @@ async fn local_compaction_resets_provider_continuation() {
     let requests = backend.requests();
     assert_eq!(requests.len(), 2);
     assert!(requests[1].continuation.is_none());
-    assert!(
-        requests[1]
-            .messages
-            .iter()
-            .any(|message| message.text_content().contains("summary for 2 messages"))
-    );
+    assert!(requests[1].messages.iter().any(|message: &types::Message| {
+        message.text_content().contains("summary for 2 messages")
+    }));
 }
