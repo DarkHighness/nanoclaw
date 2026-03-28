@@ -34,6 +34,16 @@ impl EventSink for InMemoryRunStore {
             .push(event);
         Ok(())
     }
+
+    async fn append_batch(&self, events: Vec<RunEventEnvelope>) -> Result<()> {
+        for event in events {
+            self.events
+                .entry(event.run_id.clone())
+                .or_default()
+                .push(event);
+        }
+        Ok(())
+    }
 }
 
 #[async_trait]

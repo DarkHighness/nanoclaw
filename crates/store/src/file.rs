@@ -9,7 +9,7 @@ use crate::{
 };
 use async_trait::async_trait;
 use futures::{StreamExt, stream};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -91,74 +91,76 @@ impl FileRunStore {
     async fn persist_index(&self, index: &FileRunStoreIndex) -> Result<()> {
         persist_index_file(&self.root_dir, index).await
     }
-}
 
-#[async_trait]
-impl EventSink for FileRunStore {
-    async fn append(&self, event: RunEventEnvelope) -> Result<()> {
-        let _guard = self.write_lock.lock().await;
-        let path = self.run_path(&event.run_id);
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).await?;
+    async fn append_locked_events(&self, events: &[RunEventEnvelope]) -> Result<()> {
+        if events.is_empty() {
+            return Ok(());
         }
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)
-            .await?;
-        let encoded = serde_json::to_string(&event)?;
-        file.write_all(encoded.as_bytes()).await?;
-        file.write_all(b"\n").await?;
-        file.flush().await?;
 
-        let rebuild_index_record = matches!(
-            &event.event,
-            types::RunEventKind::TranscriptMessagePatched { .. }
-                | types::RunEventKind::TranscriptMessageRemoved { .. }
-        );
-        let rebuilt_record = if rebuild_index_record {
-            indexed_record_from_events(load_events_from_path(&path).await?)
-        } else {
-            None
-        };
-        let pruned =
-            {
-                let mut index = self.index.write().expect("file run store write lock");
-                if rebuild_index_record {
-                    let rebuilt = rebuilt_record.unwrap_or(IndexedRunRecord {
-                        summary: RunSummary {
-                            run_id: event.run_id.clone(),
-                            first_timestamp_ms: event.timestamp_ms,
-                            last_timestamp_ms: event.timestamp_ms,
-                            event_count: 1,
-                            session_count: 1,
-                            transcript_message_count: 0,
-                            last_user_prompt: None,
-                        },
-                        session_ids: vec![event.session_id.clone()],
-                        search_corpus: String::new(),
-                    });
-                    index.runs.insert(event.run_id.clone(), rebuilt);
-                } else {
-                    let record = index.runs.entry(event.run_id.clone()).or_insert_with(|| {
-                        IndexedRunRecord {
-                            summary: RunSummary {
-                                run_id: event.run_id.clone(),
-                                first_timestamp_ms: event.timestamp_ms,
-                                last_timestamp_ms: event.timestamp_ms,
-                                event_count: 0,
-                                session_count: 0,
-                                transcript_message_count: 0,
-                                last_user_prompt: None,
-                            },
-                            session_ids: Vec::new(),
-                            search_corpus: String::new(),
-                        }
-                    });
-                    apply_event_to_record(record, &event);
+        let mut active_run_id: Option<RunId> = None;
+        let mut active_file: Option<tokio::fs::File> = None;
+        let mut rebuild_runs = HashSet::new();
+        let mut rebuild_fallbacks = HashMap::new();
+
+        for event in events {
+            if active_run_id.as_ref() != Some(&event.run_id) {
+                if let Some(mut file) = active_file.take() {
+                    file.flush().await?;
                 }
-                select_runs_to_prune(&index, &self.options.retention, current_timestamp_ms())
-            };
+                let path = self.run_path(&event.run_id);
+                if let Some(parent) = path.parent() {
+                    fs::create_dir_all(parent).await?;
+                }
+                active_file = Some(
+                    OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(&path)
+                        .await?,
+                );
+                active_run_id = Some(event.run_id.clone());
+            }
+
+            let file = active_file.as_mut().expect("active run file");
+            let encoded = serde_json::to_string(event)?;
+            file.write_all(encoded.as_bytes()).await?;
+            file.write_all(b"\n").await?;
+
+            if rebuild_index_record(&event.event) {
+                rebuild_runs.insert(event.run_id.clone());
+                rebuild_fallbacks.insert(event.run_id.clone(), event.clone());
+            }
+        }
+
+        if let Some(mut file) = active_file.take() {
+            file.flush().await?;
+        }
+
+        let mut rebuilt_records = HashMap::new();
+        for run_id in &rebuild_runs {
+            let path = self.run_path(run_id);
+            let rebuilt = indexed_record_from_events(load_events_from_path(&path).await?)
+                .unwrap_or_else(|| default_indexed_record(rebuild_fallbacks[run_id].clone()));
+            rebuilt_records.insert(run_id.clone(), rebuilt);
+        }
+
+        let pruned = {
+            let mut index = self.index.write().expect("file run store write lock");
+            for event in events {
+                if rebuild_runs.contains(&event.run_id) {
+                    continue;
+                }
+                let record = index
+                    .runs
+                    .entry(event.run_id.clone())
+                    .or_insert_with(|| default_indexed_record(event.clone()));
+                apply_event_to_record(record, event);
+            }
+            for (run_id, record) in rebuilt_records {
+                index.runs.insert(run_id, record);
+            }
+            select_runs_to_prune(&index, &self.options.retention, current_timestamp_ms())
+        };
 
         for run_id in &pruned {
             delete_run_file(&self.root_dir, run_id).await?;
@@ -179,6 +181,20 @@ impl EventSink for FileRunStore {
         };
         self.persist_index(&index_snapshot).await?;
         Ok(())
+    }
+}
+
+#[async_trait]
+impl EventSink for FileRunStore {
+    async fn append(&self, event: RunEventEnvelope) -> Result<()> {
+        let _guard = self.write_lock.lock().await;
+        self.append_locked_events(std::slice::from_ref(&event))
+            .await
+    }
+
+    async fn append_batch(&self, events: Vec<RunEventEnvelope>) -> Result<()> {
+        let _guard = self.write_lock.lock().await;
+        self.append_locked_events(&events).await
     }
 }
 
@@ -371,6 +387,30 @@ impl RunStore for FileRunStore {
     }
 }
 
+fn rebuild_index_record(event: &types::RunEventKind) -> bool {
+    matches!(
+        event,
+        types::RunEventKind::TranscriptMessagePatched { .. }
+            | types::RunEventKind::TranscriptMessageRemoved { .. }
+    )
+}
+
+fn default_indexed_record(event: RunEventEnvelope) -> IndexedRunRecord {
+    IndexedRunRecord {
+        summary: RunSummary {
+            run_id: event.run_id,
+            first_timestamp_ms: event.timestamp_ms,
+            last_timestamp_ms: event.timestamp_ms,
+            event_count: 0,
+            session_count: 0,
+            transcript_message_count: 0,
+            last_user_prompt: None,
+        },
+        session_ids: Vec::new(),
+        search_corpus: String::new(),
+    }
+}
+
 fn sort_export_records(records: &mut [crate::RunMemoryExportRecord]) {
     sort_memory_export_records(records);
 }
@@ -442,6 +482,56 @@ mod tests {
             assert_eq!(events[0].session_id, session_id);
             assert_eq!(reopened.replay_transcript(&run_id).await.unwrap().len(), 1);
             assert_eq!(reopened.list_runs().await.unwrap().len(), 1);
+        }
+    );
+
+    bounded_async_test!(
+        async fn append_batch_persists_multiple_events_in_order() {
+            let dir = tempfile::tempdir().unwrap();
+            let run_id = RunId::new();
+            let session_id = SessionId::new();
+
+            let store = FileRunStore::open(dir.path()).await.unwrap();
+            store
+                .append_batch(vec![
+                    RunEventEnvelope::new(
+                        run_id.clone(),
+                        session_id.clone(),
+                        None,
+                        None,
+                        RunEventKind::UserPromptSubmit {
+                            prompt: "ship it".to_string(),
+                        },
+                    ),
+                    RunEventEnvelope::new(
+                        run_id.clone(),
+                        session_id.clone(),
+                        None,
+                        None,
+                        RunEventKind::TranscriptMessage {
+                            message: Message::assistant("done"),
+                        },
+                    ),
+                ])
+                .await
+                .unwrap();
+
+            let events = store.events(&run_id).await.unwrap();
+            assert_eq!(events.len(), 2);
+            assert!(matches!(
+                events[0].event,
+                RunEventKind::UserPromptSubmit { .. }
+            ));
+            assert!(matches!(
+                events[1].event,
+                RunEventKind::TranscriptMessage { .. }
+            ));
+            assert_eq!(
+                store.list_runs().await.unwrap()[0]
+                    .last_user_prompt
+                    .as_deref(),
+                Some("ship it")
+            );
         }
     );
 

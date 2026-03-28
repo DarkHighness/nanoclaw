@@ -159,6 +159,14 @@ impl RuntimeSubagentExecutor {
         parent: &SubagentParentContext,
         event: RunEventKind,
     ) -> Result<()> {
+        self.append_parent_events(parent, vec![event]).await
+    }
+
+    async fn append_parent_events(
+        &self,
+        parent: &SubagentParentContext,
+        events: Vec<RunEventKind>,
+    ) -> Result<()> {
         let Some(run_id) = parent.run_id.clone() else {
             return Ok(());
         };
@@ -166,13 +174,20 @@ impl RuntimeSubagentExecutor {
             return Ok(());
         };
         self.store
-            .append(RunEventEnvelope::new(
-                run_id,
-                session_id,
-                parent.turn_id.clone(),
-                None,
-                event,
-            ))
+            .append_batch(
+                events
+                    .into_iter()
+                    .map(|event| {
+                        RunEventEnvelope::new(
+                            run_id.clone(),
+                            session_id.clone(),
+                            parent.turn_id.clone(),
+                            None,
+                            event,
+                        )
+                    })
+                    .collect(),
+            )
             .await
             .map_err(RuntimeError::from)
     }
@@ -183,17 +198,30 @@ impl RuntimeSubagentExecutor {
         handle: &AgentHandle,
         kind: AgentEnvelopeKind,
     ) -> Result<()> {
-        self.append_parent_event(
+        self.append_agent_envelopes(parent, handle, vec![kind])
+            .await
+    }
+
+    async fn append_agent_envelopes(
+        &self,
+        parent: &SubagentParentContext,
+        handle: &AgentHandle,
+        kinds: Vec<AgentEnvelopeKind>,
+    ) -> Result<()> {
+        self.append_parent_events(
             parent,
-            RunEventKind::AgentEnvelope {
-                envelope: AgentEnvelope::new(
-                    handle.agent_id.clone(),
-                    handle.parent_agent_id.clone(),
-                    handle.run_id.clone(),
-                    handle.session_id.clone(),
-                    kind,
-                ),
-            },
+            kinds
+                .into_iter()
+                .map(|kind| RunEventKind::AgentEnvelope {
+                    envelope: AgentEnvelope::new(
+                        handle.agent_id.clone(),
+                        handle.parent_agent_id.clone(),
+                        handle.run_id.clone(),
+                        handle.session_id.clone(),
+                        kind,
+                    ),
+                })
+                .collect(),
         )
         .await
     }
@@ -241,44 +269,50 @@ impl RuntimeSubagentExecutor {
         planned: &[PlannedChildSpawn],
     ) -> std::result::Result<(), ToolError> {
         for child in planned {
-            self.append_parent_event(
-                parent,
+            let mut events = vec![
                 RunEventKind::TaskCreated {
                     task: child.task.clone(),
                     parent_agent_id: parent.parent_agent_id.clone(),
                 },
-            )
-            .await
-            .map_err(|error| ToolError::invalid_state(error.to_string()))?;
-            self.append_agent_envelope(
-                parent,
-                &child.handle,
-                AgentEnvelopeKind::SpawnRequested {
-                    task: child.task.clone(),
+                RunEventKind::AgentEnvelope {
+                    envelope: AgentEnvelope::new(
+                        child.handle.agent_id.clone(),
+                        child.handle.parent_agent_id.clone(),
+                        child.handle.run_id.clone(),
+                        child.handle.session_id.clone(),
+                        AgentEnvelopeKind::SpawnRequested {
+                            task: child.task.clone(),
+                        },
+                    ),
                 },
-            )
-            .await
-            .map_err(|error| ToolError::invalid_state(error.to_string()))?;
+            ];
             if !child.task.requested_write_set.is_empty() {
-                self.append_agent_envelope(
-                    parent,
-                    &child.handle,
-                    AgentEnvelopeKind::ClaimRequested {
-                        files: child.task.requested_write_set.clone(),
-                    },
-                )
-                .await
-                .map_err(|error| ToolError::invalid_state(error.to_string()))?;
-                self.append_agent_envelope(
-                    parent,
-                    &child.handle,
-                    AgentEnvelopeKind::ClaimGranted {
-                        files: child.task.requested_write_set.clone(),
-                    },
-                )
-                .await
-                .map_err(|error| ToolError::invalid_state(error.to_string()))?;
+                events.push(RunEventKind::AgentEnvelope {
+                    envelope: AgentEnvelope::new(
+                        child.handle.agent_id.clone(),
+                        child.handle.parent_agent_id.clone(),
+                        child.handle.run_id.clone(),
+                        child.handle.session_id.clone(),
+                        AgentEnvelopeKind::ClaimRequested {
+                            files: child.task.requested_write_set.clone(),
+                        },
+                    ),
+                });
+                events.push(RunEventKind::AgentEnvelope {
+                    envelope: AgentEnvelope::new(
+                        child.handle.agent_id.clone(),
+                        child.handle.parent_agent_id.clone(),
+                        child.handle.run_id.clone(),
+                        child.handle.session_id.clone(),
+                        AgentEnvelopeKind::ClaimGranted {
+                            files: child.task.requested_write_set.clone(),
+                        },
+                    ),
+                });
             }
+            self.append_parent_events(parent, events)
+                .await
+                .map_err(|error| ToolError::invalid_state(error.to_string()))?;
         }
         Ok(())
     }
@@ -994,20 +1028,34 @@ impl ChildAgentWorker {
         };
         self.handle = handle.clone();
         let _ = self
-            .append_parent_event(RunEventKind::SubagentStart {
-                handle: handle.clone(),
-                task: self.task.clone(),
-            })
-            .await;
-        let _ = self
-            .append_agent_envelope(AgentEnvelopeKind::StatusChanged {
-                status: AgentStatus::Running,
-            })
-            .await;
-        let _ = self
-            .append_agent_envelope(AgentEnvelopeKind::Started {
-                task: self.task.clone(),
-            })
+            .append_parent_events(vec![
+                RunEventKind::SubagentStart {
+                    handle: handle.clone(),
+                    task: self.task.clone(),
+                },
+                RunEventKind::AgentEnvelope {
+                    envelope: AgentEnvelope::new(
+                        self.handle.agent_id.clone(),
+                        self.handle.parent_agent_id.clone(),
+                        self.handle.run_id.clone(),
+                        self.handle.session_id.clone(),
+                        AgentEnvelopeKind::StatusChanged {
+                            status: AgentStatus::Running,
+                        },
+                    ),
+                },
+                RunEventKind::AgentEnvelope {
+                    envelope: AgentEnvelope::new(
+                        self.handle.agent_id.clone(),
+                        self.handle.parent_agent_id.clone(),
+                        self.handle.run_id.clone(),
+                        self.handle.session_id.clone(),
+                        AgentEnvelopeKind::Started {
+                            task: self.task.clone(),
+                        },
+                    ),
+                },
+            ])
             .await;
 
         if let Some(steer) = self.task.steer.clone() {
@@ -1116,37 +1164,50 @@ impl ChildAgentWorker {
         ) else {
             return;
         };
-        let _ = self
-            .append_agent_envelope(AgentEnvelopeKind::StatusChanged {
-                status: result.status.clone(),
-            })
-            .await;
-        for artifact in &result.artifacts {
-            let _ = self
-                .append_agent_envelope(AgentEnvelopeKind::Artifact {
-                    artifact: artifact.clone(),
-                })
-                .await;
-        }
-        let _ = self
-            .append_agent_envelope(AgentEnvelopeKind::Result {
-                result: result.clone(),
-            })
-            .await;
-        let _ = self
-            .append_parent_event(RunEventKind::TaskCompleted {
-                task_id: self.task.task_id.clone(),
-                agent_id: handle.agent_id.clone(),
-                status: result.status.clone(),
-            })
-            .await;
-        let _ = self
-            .append_parent_event(RunEventKind::SubagentStop {
-                handle,
-                result: Some(result),
-                error: None,
-            })
-            .await;
+        let mut events = vec![RunEventKind::AgentEnvelope {
+            envelope: AgentEnvelope::new(
+                self.handle.agent_id.clone(),
+                self.handle.parent_agent_id.clone(),
+                self.handle.run_id.clone(),
+                self.handle.session_id.clone(),
+                AgentEnvelopeKind::StatusChanged {
+                    status: result.status.clone(),
+                },
+            ),
+        }];
+        events.extend(result.artifacts.iter().cloned().map(|artifact| {
+            RunEventKind::AgentEnvelope {
+                envelope: AgentEnvelope::new(
+                    self.handle.agent_id.clone(),
+                    self.handle.parent_agent_id.clone(),
+                    self.handle.run_id.clone(),
+                    self.handle.session_id.clone(),
+                    AgentEnvelopeKind::Artifact { artifact },
+                ),
+            }
+        }));
+        events.push(RunEventKind::AgentEnvelope {
+            envelope: AgentEnvelope::new(
+                self.handle.agent_id.clone(),
+                self.handle.parent_agent_id.clone(),
+                self.handle.run_id.clone(),
+                self.handle.session_id.clone(),
+                AgentEnvelopeKind::Result {
+                    result: result.clone(),
+                },
+            ),
+        });
+        events.push(RunEventKind::TaskCompleted {
+            task_id: self.task.task_id.clone(),
+            agent_id: handle.agent_id.clone(),
+            status: result.status.clone(),
+        });
+        events.push(RunEventKind::SubagentStop {
+            handle,
+            result: Some(result),
+            error: None,
+        });
+        let _ = self.append_parent_events(events).await;
         self.write_lease_manager.release(&self.handle.agent_id);
         let _ = self
             .runtime
@@ -1178,28 +1239,40 @@ impl ChildAgentWorker {
             return;
         };
         let _ = self
-            .append_agent_envelope(AgentEnvelopeKind::StatusChanged {
-                status: AgentStatus::Cancelled,
-            })
-            .await;
-        let _ = self
-            .append_agent_envelope(AgentEnvelopeKind::Cancelled {
-                reason: reason.clone(),
-            })
-            .await;
-        let _ = self
-            .append_parent_event(RunEventKind::TaskCompleted {
-                task_id: self.task.task_id.clone(),
-                agent_id: handle.agent_id.clone(),
-                status: AgentStatus::Cancelled,
-            })
-            .await;
-        let _ = self
-            .append_parent_event(RunEventKind::SubagentStop {
-                handle,
-                result: Some(result),
-                error: reason.clone(),
-            })
+            .append_parent_events(vec![
+                RunEventKind::AgentEnvelope {
+                    envelope: AgentEnvelope::new(
+                        self.handle.agent_id.clone(),
+                        self.handle.parent_agent_id.clone(),
+                        self.handle.run_id.clone(),
+                        self.handle.session_id.clone(),
+                        AgentEnvelopeKind::StatusChanged {
+                            status: AgentStatus::Cancelled,
+                        },
+                    ),
+                },
+                RunEventKind::AgentEnvelope {
+                    envelope: AgentEnvelope::new(
+                        self.handle.agent_id.clone(),
+                        self.handle.parent_agent_id.clone(),
+                        self.handle.run_id.clone(),
+                        self.handle.session_id.clone(),
+                        AgentEnvelopeKind::Cancelled {
+                            reason: reason.clone(),
+                        },
+                    ),
+                },
+                RunEventKind::TaskCompleted {
+                    task_id: self.task.task_id.clone(),
+                    agent_id: handle.agent_id.clone(),
+                    status: AgentStatus::Cancelled,
+                },
+                RunEventKind::SubagentStop {
+                    handle,
+                    result: Some(result),
+                    error: reason.clone(),
+                },
+            ])
             .await;
         self.write_lease_manager.release(&self.handle.agent_id);
         let _ = self.runtime.end_session(reason).await;
@@ -1227,34 +1300,46 @@ impl ChildAgentWorker {
             return;
         };
         let _ = self
-            .append_agent_envelope(AgentEnvelopeKind::StatusChanged {
-                status: AgentStatus::Failed,
-            })
-            .await;
-        let _ = self
-            .append_agent_envelope(AgentEnvelopeKind::Failed {
-                error: error.clone(),
-            })
-            .await;
-        let _ = self
-            .append_parent_event(RunEventKind::TaskCompleted {
-                task_id: self.task.task_id.clone(),
-                agent_id: handle.agent_id.clone(),
-                status: AgentStatus::Failed,
-            })
-            .await;
-        let _ = self
-            .append_parent_event(RunEventKind::SubagentStop {
-                handle,
-                result: Some(result),
-                error: Some(error),
-            })
+            .append_parent_events(vec![
+                RunEventKind::AgentEnvelope {
+                    envelope: AgentEnvelope::new(
+                        self.handle.agent_id.clone(),
+                        self.handle.parent_agent_id.clone(),
+                        self.handle.run_id.clone(),
+                        self.handle.session_id.clone(),
+                        AgentEnvelopeKind::StatusChanged {
+                            status: AgentStatus::Failed,
+                        },
+                    ),
+                },
+                RunEventKind::AgentEnvelope {
+                    envelope: AgentEnvelope::new(
+                        self.handle.agent_id.clone(),
+                        self.handle.parent_agent_id.clone(),
+                        self.handle.run_id.clone(),
+                        self.handle.session_id.clone(),
+                        AgentEnvelopeKind::Failed {
+                            error: error.clone(),
+                        },
+                    ),
+                },
+                RunEventKind::TaskCompleted {
+                    task_id: self.task.task_id.clone(),
+                    agent_id: handle.agent_id.clone(),
+                    status: AgentStatus::Failed,
+                },
+                RunEventKind::SubagentStop {
+                    handle,
+                    result: Some(result),
+                    error: Some(error),
+                },
+            ])
             .await;
         self.write_lease_manager.release(&self.handle.agent_id);
         let _ = self.runtime.end_session(Some("failed".to_string())).await;
     }
 
-    async fn append_parent_event(&self, event: RunEventKind) -> Result<()> {
+    async fn append_parent_events(&self, events: Vec<RunEventKind>) -> Result<()> {
         let Some(run_id) = self.parent.run_id.clone() else {
             return Ok(());
         };
@@ -1262,28 +1347,22 @@ impl ChildAgentWorker {
             return Ok(());
         };
         self.store
-            .append(RunEventEnvelope::new(
-                run_id,
-                session_id,
-                self.parent.turn_id.clone(),
-                None,
-                event,
-            ))
+            .append_batch(
+                events
+                    .into_iter()
+                    .map(|event| {
+                        RunEventEnvelope::new(
+                            run_id.clone(),
+                            session_id.clone(),
+                            self.parent.turn_id.clone(),
+                            None,
+                            event,
+                        )
+                    })
+                    .collect(),
+            )
             .await
             .map_err(RuntimeError::from)
-    }
-
-    async fn append_agent_envelope(&self, kind: AgentEnvelopeKind) -> Result<()> {
-        self.append_parent_event(RunEventKind::AgentEnvelope {
-            envelope: AgentEnvelope::new(
-                self.handle.agent_id.clone(),
-                self.handle.parent_agent_id.clone(),
-                self.handle.run_id.clone(),
-                self.handle.session_id.clone(),
-                kind,
-            ),
-        })
-        .await
     }
 }
 

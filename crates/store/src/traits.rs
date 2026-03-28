@@ -988,6 +988,13 @@ fn preview_text(value: &str, max_chars: usize) -> String {
 #[async_trait]
 pub trait EventSink: Send + Sync {
     async fn append(&self, event: RunEventEnvelope) -> Result<()>;
+
+    async fn append_batch(&self, events: Vec<RunEventEnvelope>) -> Result<()> {
+        for event in events {
+            self.append(event).await?;
+        }
+        Ok(())
+    }
 }
 
 #[async_trait]

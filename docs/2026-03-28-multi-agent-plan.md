@@ -808,6 +808,10 @@ cargo test -p code-agent
     - trie 节点会维护 owner subtree counts，冲突检查可按 owner 剪枝，不再扫过所有活跃 lease
     - root/subtree/sibling/重复 claim 的关键回归测试已补齐
 - 降低生命周期事件 append 写放大
+  - 已完成：
+    - `EventSink` 已支持 `append_batch()`，file-backed run store 会在一次写锁内批量持久化连续事件
+    - subagent 的 spawn / start / finish 热路径已切到 batch append，减少重复文件打开与 flush
+    - 已补 file store 批量追加回归测试，runtime/store 相关测试保持通过
 - 评估 mailbox / session manager 是否需要从单点 `Mutex<BTreeMap<...>>` 升级
 
 ### 19.5 文档修正

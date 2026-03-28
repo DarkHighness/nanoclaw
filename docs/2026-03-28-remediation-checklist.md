@@ -404,6 +404,17 @@
   - 目标文件：
     - `crates/runtime/src/write_lease.rs`
 - store append 降低生命周期事件写放大
+  - 状态：
+    - `completed`
+  - 已落地语义：
+    - `EventSink` 现在支持 `append_batch()`，file store 会在单次锁持有期间批量写入连续事件
+    - subagent spawn / start / finish 的生命周期事件已切到 batch append，减少重复开锁、打开文件与 flush
+    - 已补 file store 的批量追加回归测试，并保持 runtime/store 全量相关测试通过
+  - 目标文件：
+    - `crates/store/src/traits.rs`
+    - `crates/store/src/file.rs`
+    - `crates/store/src/memory.rs`
+    - `crates/runtime/src/subagent_impl.rs`
 
 ### 8.2 Memory
 
