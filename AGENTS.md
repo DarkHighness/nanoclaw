@@ -23,6 +23,10 @@ Necessary comments are required. Examples:
 - approval and sandbox boundaries
 - feature-gated tool surfaces
 
+All source-code comments and doc comments must be written in English. Do not
+introduce Chinese or mixed-language code comments, even if surrounding design
+notes or user-facing documentation are written in another language.
+
 If a future reader would have to reverse-engineer why a piece of code exists, add the comment.
 
 ## Design Notes

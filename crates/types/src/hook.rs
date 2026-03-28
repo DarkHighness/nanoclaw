@@ -254,13 +254,13 @@ pub struct HookRegistration {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum MessageSelector {
     Current,
-    // `message_id` 只允许命中当前可见 transcript 中的既有消息。对被
-    // compaction 隐藏的历史消息做变更会破坏 summary/continuation 语义，
-    // 运行时会显式拒绝这类 selector。
+    // `message_id` may only target an existing message in the current visible
+    // transcript. Mutating compacted or otherwise hidden history would break
+    // summary and continuation semantics, so the runtime rejects it explicitly.
     MessageId { message_id: MessageId },
-    // `last_of_role` 只会在当前可见 transcript 中查找指定角色的最后一条
-    // 消息，不会命中还未落盘的 `Current` 消息。需要改动当前构建中的消息时，
-    // 仍应使用 `Current`。
+    // `last_of_role` only scans the current visible transcript for the latest
+    // persisted message with the requested role. It never targets the in-flight
+    // `Current` message; use `Current` when mutating the message being built now.
     LastOfRole { role: MessageRole },
 }
 
