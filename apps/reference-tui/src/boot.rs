@@ -486,6 +486,10 @@ Use this skill when asked.
 
         assert!(tool_names.contains(&ToolName::from("memory_search")));
         assert!(tool_names.contains(&ToolName::from("memory_get")));
+        assert!(tool_names.contains(&ToolName::from("memory_list")));
+        assert!(tool_names.contains(&ToolName::from("memory_record")));
+        assert!(tool_names.contains(&ToolName::from("memory_promote")));
+        assert!(tool_names.contains(&ToolName::from("memory_forget")));
         assert!(
             artifacts
                 .startup_summary

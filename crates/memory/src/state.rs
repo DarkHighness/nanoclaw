@@ -1,11 +1,25 @@
-use crate::{MemoryError, MemoryVectorStoreKind, Result};
+use crate::{MemoryError, MemoryScope, MemoryVectorStoreKind, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const MEMORY_STATE_ROOT_RELATIVE: &str = ".nanoclaw/memory";
-pub const MEMORY_RUNTIME_EXPORTS_RELATIVE: &str = ".nanoclaw/memory/runtime";
+pub const MEMORY_PROCEDURAL_RELATIVE: &str = ".nanoclaw/memory/procedural";
+pub const MEMORY_SEMANTIC_RELATIVE: &str = ".nanoclaw/memory/semantic";
+pub const MEMORY_EPISODIC_RELATIVE: &str = ".nanoclaw/memory/episodic";
+pub const MEMORY_EPISODIC_RUNS_RELATIVE: &str = ".nanoclaw/memory/episodic/runs";
+pub const MEMORY_EPISODIC_SESSIONS_RELATIVE: &str = ".nanoclaw/memory/episodic/sessions";
+pub const MEMORY_EPISODIC_SUBAGENTS_RELATIVE: &str = ".nanoclaw/memory/episodic/subagents";
+pub const MEMORY_EPISODIC_TASKS_RELATIVE: &str = ".nanoclaw/memory/episodic/tasks";
+pub const MEMORY_WORKING_RELATIVE: &str = ".nanoclaw/memory/working";
+pub const MEMORY_WORKING_SESSIONS_RELATIVE: &str = ".nanoclaw/memory/working/sessions";
+pub const MEMORY_WORKING_TASKS_RELATIVE: &str = ".nanoclaw/memory/working/tasks";
+pub const MEMORY_COORDINATION_RELATIVE: &str = ".nanoclaw/memory/coordination";
+pub const MEMORY_COORDINATION_PLANS_RELATIVE: &str = ".nanoclaw/memory/coordination/plans";
+pub const MEMORY_COORDINATION_CLAIMS_RELATIVE: &str = ".nanoclaw/memory/coordination/claims";
+pub const MEMORY_COORDINATION_HANDOFFS_RELATIVE: &str = ".nanoclaw/memory/coordination/handoffs";
+pub const MEMORY_RUNTIME_EXPORTS_RELATIVE: &str = MEMORY_EPISODIC_RELATIVE;
 pub const MEMORY_INDEXES_RELATIVE: &str = ".nanoclaw/memory/indexes";
 pub const MEMORY_LIFECYCLE_RELATIVE: &str = ".nanoclaw/memory/lifecycle";
 pub const MEMORY_CORE_SQLITE_INDEX_RELATIVE: &str = ".nanoclaw/memory/indexes/memory-core.sqlite";
@@ -50,6 +64,14 @@ pub struct MemorySidecarLifecycle {
     pub indexed_document_count: usize,
     #[serde(default)]
     pub exported_run_count: usize,
+    #[serde(default)]
+    pub exported_session_count: usize,
+    #[serde(default)]
+    pub exported_subagent_count: usize,
+    #[serde(default)]
+    pub exported_task_count: usize,
+    #[serde(default)]
+    pub exported_document_count: usize,
     #[serde(default)]
     pub artifact_path: String,
     #[serde(default)]
@@ -126,6 +148,21 @@ impl MemoryStateLayout {
 
     pub fn resolve_runtime_exports_dir(&self, configured: &Path) -> Result<ResolvedStatePath> {
         self.resolve_path_within_state_root(configured)
+    }
+
+    pub fn resolve_managed_memory_path(&self, relative: &Path) -> Result<ResolvedStatePath> {
+        self.resolve_path_within_state_root(relative)
+    }
+
+    pub fn resolve_scope_dir(&self, scope: MemoryScope) -> Result<ResolvedStatePath> {
+        let relative = match scope {
+            MemoryScope::Procedural => Path::new(MEMORY_PROCEDURAL_RELATIVE),
+            MemoryScope::Semantic => Path::new(MEMORY_SEMANTIC_RELATIVE),
+            MemoryScope::Episodic => Path::new(MEMORY_EPISODIC_RELATIVE),
+            MemoryScope::Working => Path::new(MEMORY_WORKING_RELATIVE),
+            MemoryScope::Coordination => Path::new(MEMORY_COORDINATION_RELATIVE),
+        };
+        self.resolve_path_within_state_root(relative)
     }
 
     pub fn resolve_lifecycle_path(&self, backend: &str) -> Result<ResolvedStatePath> {
@@ -238,11 +275,11 @@ mod tests {
             .unwrap();
         assert_eq!(
             resolved.absolute_path(),
-            Path::new("/workspace/.nanoclaw/memory/runtime")
+            Path::new("/workspace/.nanoclaw/memory/episodic")
         );
         assert_eq!(
             resolved.relative_path(),
-            Path::new(".nanoclaw/memory/runtime")
+            Path::new(".nanoclaw/memory/episodic")
         );
     }
 

@@ -1,4 +1,7 @@
-use crate::{MemoryBackend, MemoryGetRequest, MemorySearchRequest};
+use crate::{
+    MemoryBackend, MemoryForgetRequest, MemoryGetRequest, MemoryListRequest, MemoryPromoteRequest,
+    MemoryRecordRequest, MemoryScope, MemorySearchRequest, MemoryStatus,
+};
 use async_trait::async_trait;
 use schemars::{JsonSchema, schema_for};
 use serde::{Deserialize, Serialize};
@@ -16,6 +19,20 @@ pub struct MemorySearchToolInput {
     pub limit: Option<usize>,
     #[serde(default)]
     pub path_prefix: Option<String>,
+    #[serde(default)]
+    pub scopes: Option<Vec<MemoryScope>>,
+    #[serde(default)]
+    pub tags: Option<Vec<String>>,
+    #[serde(default)]
+    pub run_id: Option<String>,
+    #[serde(default)]
+    pub session_id: Option<String>,
+    #[serde(default)]
+    pub agent_name: Option<String>,
+    #[serde(default)]
+    pub task_id: Option<String>,
+    #[serde(default)]
+    pub include_stale: Option<bool>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
@@ -25,6 +42,66 @@ pub struct MemoryGetToolInput {
     pub start_line: Option<usize>,
     #[serde(default)]
     pub line_count: Option<usize>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+pub struct MemoryListToolInput {
+    #[serde(default)]
+    pub limit: Option<usize>,
+    #[serde(default)]
+    pub path_prefix: Option<String>,
+    #[serde(default)]
+    pub scopes: Option<Vec<MemoryScope>>,
+    #[serde(default)]
+    pub tags: Option<Vec<String>>,
+    #[serde(default)]
+    pub run_id: Option<String>,
+    #[serde(default)]
+    pub session_id: Option<String>,
+    #[serde(default)]
+    pub agent_name: Option<String>,
+    #[serde(default)]
+    pub task_id: Option<String>,
+    #[serde(default)]
+    pub include_stale: Option<bool>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+pub struct MemoryRecordToolInput {
+    pub scope: MemoryScope,
+    pub title: String,
+    pub content: String,
+    #[serde(default)]
+    pub layer: Option<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub run_id: Option<String>,
+    #[serde(default)]
+    pub session_id: Option<String>,
+    #[serde(default)]
+    pub agent_name: Option<String>,
+    #[serde(default)]
+    pub task_id: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+pub struct MemoryPromoteToolInput {
+    pub source_path: String,
+    pub target_scope: MemoryScope,
+    pub title: String,
+    #[serde(default)]
+    pub content: String,
+    #[serde(default)]
+    pub layer: Option<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+pub struct MemoryForgetToolInput {
+    pub path: String,
+    pub status: MemoryStatus,
 }
 
 pub struct MemorySearchTool {
@@ -49,12 +126,58 @@ impl MemoryGetTool {
     }
 }
 
+pub struct MemoryListTool {
+    backend: Arc<dyn MemoryBackend>,
+}
+
+impl MemoryListTool {
+    #[must_use]
+    pub fn new(backend: Arc<dyn MemoryBackend>) -> Self {
+        Self { backend }
+    }
+}
+
+pub struct MemoryRecordTool {
+    backend: Arc<dyn MemoryBackend>,
+}
+
+impl MemoryRecordTool {
+    #[must_use]
+    pub fn new(backend: Arc<dyn MemoryBackend>) -> Self {
+        Self { backend }
+    }
+}
+
+pub struct MemoryPromoteTool {
+    backend: Arc<dyn MemoryBackend>,
+}
+
+impl MemoryPromoteTool {
+    #[must_use]
+    pub fn new(backend: Arc<dyn MemoryBackend>) -> Self {
+        Self { backend }
+    }
+}
+
+pub struct MemoryForgetTool {
+    backend: Arc<dyn MemoryBackend>,
+}
+
+impl MemoryForgetTool {
+    #[must_use]
+    pub fn new(backend: Arc<dyn MemoryBackend>) -> Self {
+        Self { backend }
+    }
+}
+
 #[async_trait]
 impl Tool for MemorySearchTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "memory_search".into(),
-            description: "Search curated workspace memory Markdown files and return bounded snippets with file and line citations.".to_string(),
+            description:
+                "Search layered memory Markdown files with scope, tag, and runtime-aware retrieval."
+                    .to_string(),
             input_schema: serde_json::to_value(schema_for!(MemorySearchToolInput))
                 .expect("memory_search schema"),
             output_mode: ToolOutputMode::Text,
@@ -68,7 +191,7 @@ impl Tool for MemorySearchTool {
         &self,
         call_id: ToolCallId,
         arguments: Value,
-        _ctx: &ToolExecutionContext,
+        ctx: &ToolExecutionContext,
     ) -> tools::Result<ToolResult> {
         let external_call_id = types::CallId::from(&call_id);
         let input: MemorySearchToolInput = serde_json::from_value(arguments)?;
@@ -78,6 +201,14 @@ impl Tool for MemorySearchTool {
                 query: input.query,
                 limit: input.limit,
                 path_prefix: input.path_prefix,
+                scopes: input.scopes,
+                tags: normalize_list(input.tags),
+                run_id: normalize_id(input.run_id).or_else(|| ctx.run_id.clone()),
+                session_id: normalize_session_id(input.session_id)
+                    .or_else(|| ctx.session_id.clone()),
+                agent_name: normalize_string(input.agent_name),
+                task_id: normalize_string(input.task_id),
+                include_stale: input.include_stale,
             })
             .await
             .map_err(|error| tools::ToolError::invalid(error.to_string()))?;
@@ -88,17 +219,17 @@ impl Tool for MemorySearchTool {
         )];
         for (index, hit) in response.hits.iter().enumerate() {
             lines.push(format!(
-                "{}. {}:{}-{} score={:.3}",
+                "{}. {}:{}-{} score={:.3} scope={} status={}",
                 index + 1,
                 hit.path,
                 hit.start_line,
                 hit.end_line,
-                hit.score
+                hit.score,
+                hit.document_metadata.scope.as_str(),
+                hit.document_metadata.status.as_str()
             ));
             lines.push(hit.snippet.clone());
         }
-        // Preserve the machine-readable hit list alongside the human-readable summary so
-        // provider adapters can forward citations without reparsing the text block.
         let structured_output = json!({
             "backend": response.backend,
             "hits": response.hits,
@@ -150,8 +281,10 @@ impl Tool for MemoryGetTool {
             document.text.clone()
         };
         let output = format!(
-            "[memory_get path={} lines={}-{} / {} snapshot={}]\n{}",
+            "[memory_get path={} title={} scope={} lines={}-{} / {} snapshot={}]\n{}",
             document.path,
+            document.title,
+            document.metadata.scope.as_str(),
             document.resolved_start_line,
             document.resolved_end_line,
             document.total_lines,
@@ -160,11 +293,13 @@ impl Tool for MemoryGetTool {
         );
         let structured_output = json!({
             "path": document.path,
+            "title": document.title,
             "snapshot_id": document.snapshot_id,
             "requested_start_line": document.requested_start_line,
             "resolved_start_line": document.resolved_start_line,
             "resolved_end_line": document.resolved_end_line,
             "total_lines": document.total_lines,
+            "metadata": document.metadata,
             "text": document.text,
         });
         let mut result = ToolResult::text(call_id, "memory_get", output)
@@ -175,16 +310,257 @@ impl Tool for MemoryGetTool {
     }
 }
 
+#[async_trait]
+impl Tool for MemoryListTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "memory_list".into(),
+            description:
+                "List the current memory inventory with scope, status, and runtime metadata."
+                    .to_string(),
+            input_schema: serde_json::to_value(schema_for!(MemoryListToolInput))
+                .expect("memory_list schema"),
+            output_mode: ToolOutputMode::Text,
+            output_schema: None,
+            origin: ToolOrigin::Local,
+            annotations: mcp_tool_annotations("Memory List", true, false, true, false),
+        }
+    }
+
+    async fn execute(
+        &self,
+        call_id: ToolCallId,
+        arguments: Value,
+        ctx: &ToolExecutionContext,
+    ) -> tools::Result<ToolResult> {
+        let external_call_id = types::CallId::from(&call_id);
+        let input: MemoryListToolInput = serde_json::from_value(arguments)?;
+        let response = self
+            .backend
+            .list(MemoryListRequest {
+                limit: input.limit,
+                path_prefix: input.path_prefix,
+                scopes: input.scopes,
+                tags: normalize_list(input.tags),
+                run_id: normalize_id(input.run_id).or_else(|| ctx.run_id.clone()),
+                session_id: normalize_session_id(input.session_id)
+                    .or_else(|| ctx.session_id.clone()),
+                agent_name: normalize_string(input.agent_name),
+                task_id: normalize_string(input.task_id),
+                include_stale: input.include_stale,
+            })
+            .await
+            .map_err(|error| tools::ToolError::invalid(error.to_string()))?;
+        let mut lines = vec![format!("[memory_list entries={}]", response.entries.len())];
+        for (index, entry) in response.entries.iter().enumerate() {
+            lines.push(format!(
+                "{}. {} scope={} status={} title={}",
+                index + 1,
+                entry.path,
+                entry.metadata.scope.as_str(),
+                entry.metadata.status.as_str(),
+                entry.title
+            ));
+        }
+        let structured_output = json!({
+            "entries": response.entries,
+            "metadata": response.metadata,
+        });
+        let mut result = ToolResult::text(call_id, "memory_list", lines.join("\n"))
+            .with_call_id(external_call_id)
+            .with_structured_content(structured_output.clone());
+        result.metadata = Some(structured_output);
+        Ok(result)
+    }
+}
+
+#[async_trait]
+impl Tool for MemoryRecordTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "memory_record".into(),
+            description: "Append working or coordination memory as Markdown source of truth under .nanoclaw/memory.".to_string(),
+            input_schema: serde_json::to_value(schema_for!(MemoryRecordToolInput))
+                .expect("memory_record schema"),
+            output_mode: ToolOutputMode::Text,
+            output_schema: None,
+            origin: ToolOrigin::Local,
+            annotations: mcp_tool_annotations("Memory Record", true, false, true, false),
+        }
+    }
+
+    async fn execute(
+        &self,
+        call_id: ToolCallId,
+        arguments: Value,
+        ctx: &ToolExecutionContext,
+    ) -> tools::Result<ToolResult> {
+        let external_call_id = types::CallId::from(&call_id);
+        let input: MemoryRecordToolInput = serde_json::from_value(arguments)?;
+        let response = self
+            .backend
+            .record(MemoryRecordRequest {
+                scope: input.scope,
+                title: input.title,
+                content: input.content,
+                layer: input.layer,
+                tags: input.tags,
+                run_id: normalize_id(input.run_id).or_else(|| ctx.run_id.clone()),
+                session_id: normalize_session_id(input.session_id)
+                    .or_else(|| ctx.session_id.clone()),
+                agent_name: normalize_string(input.agent_name),
+                task_id: normalize_string(input.task_id),
+            })
+            .await
+            .map_err(|error| tools::ToolError::invalid(error.to_string()))?;
+        mutation_result(call_id, external_call_id, "memory_record", response)
+    }
+}
+
+#[async_trait]
+impl Tool for MemoryPromoteTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "memory_promote".into(),
+            description:
+                "Promote verified working or episodic memory into procedural or semantic memory."
+                    .to_string(),
+            input_schema: serde_json::to_value(schema_for!(MemoryPromoteToolInput))
+                .expect("memory_promote schema"),
+            output_mode: ToolOutputMode::Text,
+            output_schema: None,
+            origin: ToolOrigin::Local,
+            annotations: mcp_tool_annotations("Memory Promote", true, false, true, false),
+        }
+    }
+
+    async fn execute(
+        &self,
+        call_id: ToolCallId,
+        arguments: Value,
+        _ctx: &ToolExecutionContext,
+    ) -> tools::Result<ToolResult> {
+        let external_call_id = types::CallId::from(&call_id);
+        let input: MemoryPromoteToolInput = serde_json::from_value(arguments)?;
+        let response = self
+            .backend
+            .promote(MemoryPromoteRequest {
+                source_path: input.source_path,
+                target_scope: input.target_scope,
+                title: input.title,
+                content: input.content,
+                layer: input.layer,
+                tags: input.tags,
+            })
+            .await
+            .map_err(|error| tools::ToolError::invalid(error.to_string()))?;
+        mutation_result(call_id, external_call_id, "memory_promote", response)
+    }
+}
+
+#[async_trait]
+impl Tool for MemoryForgetTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "memory_forget".into(),
+            description: "Mark memory as stale, superseded, or archived without deleting the Markdown source.".to_string(),
+            input_schema: serde_json::to_value(schema_for!(MemoryForgetToolInput))
+                .expect("memory_forget schema"),
+            output_mode: ToolOutputMode::Text,
+            output_schema: None,
+            origin: ToolOrigin::Local,
+            annotations: mcp_tool_annotations("Memory Forget", true, false, true, false),
+        }
+    }
+
+    async fn execute(
+        &self,
+        call_id: ToolCallId,
+        arguments: Value,
+        _ctx: &ToolExecutionContext,
+    ) -> tools::Result<ToolResult> {
+        let external_call_id = types::CallId::from(&call_id);
+        let input: MemoryForgetToolInput = serde_json::from_value(arguments)?;
+        let response = self
+            .backend
+            .forget(MemoryForgetRequest {
+                path: input.path,
+                status: input.status,
+            })
+            .await
+            .map_err(|error| tools::ToolError::invalid(error.to_string()))?;
+        mutation_result(call_id, external_call_id, "memory_forget", response)
+    }
+}
+
+fn mutation_result(
+    call_id: ToolCallId,
+    external_call_id: types::CallId,
+    tool_name: &str,
+    response: crate::MemoryMutationResponse,
+) -> tools::Result<ToolResult> {
+    let text = format!(
+        "[{} action={} path={} scope={} status={} snapshot={}]",
+        tool_name,
+        response.action,
+        response.path,
+        response.metadata.scope.as_str(),
+        response.metadata.status.as_str(),
+        response.snapshot_id
+    );
+    let structured_output = json!({
+        "action": response.action,
+        "path": response.path,
+        "snapshot_id": response.snapshot_id,
+        "metadata": response.metadata,
+    });
+    let mut result = ToolResult::text(call_id, tool_name, text)
+        .with_call_id(external_call_id)
+        .with_structured_content(structured_output.clone());
+    result.metadata = Some(structured_output);
+    Ok(result)
+}
+
+fn normalize_id(value: Option<String>) -> Option<types::RunId> {
+    normalize_string(value).map(types::RunId::from)
+}
+
+fn normalize_session_id(value: Option<String>) -> Option<types::SessionId> {
+    normalize_string(value).map(types::SessionId::from)
+}
+
+fn normalize_string(value: Option<String>) -> Option<String> {
+    value.and_then(|value| {
+        let trimmed = value.trim();
+        (!trimmed.is_empty()).then(|| trimmed.to_string())
+    })
+}
+
+fn normalize_list(value: Option<Vec<String>>) -> Option<Vec<String>> {
+    value.and_then(|items| {
+        let mut normalized = items
+            .into_iter()
+            .filter_map(|item| {
+                let trimmed = item.trim();
+                (!trimmed.is_empty()).then(|| trimmed.to_string())
+            })
+            .collect::<Vec<_>>();
+        normalized.sort();
+        normalized.dedup();
+        (!normalized.is_empty()).then_some(normalized)
+    })
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{MemoryGetTool, MemorySearchTool};
-    use crate::{MemoryCoreBackend, MemoryCoreConfig};
+    use super::{MemoryGetTool, MemoryRecordTool, MemorySearchTool};
+    use crate::{MemoryCoreBackend, MemoryCoreConfig, MemoryScope};
     use serde_json::json;
     use std::sync::Arc;
     use tempfile::tempdir;
     use tokio::fs;
     use tools::{Tool, ToolExecutionContext};
-    use types::ToolCallId;
+    use types::{RunId, SessionId, ToolCallId};
 
     #[tokio::test]
     async fn memory_get_tool_formats_numbered_lines() {
@@ -209,7 +585,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn memory_search_tool_reports_hits() {
+    async fn memory_search_tool_reports_scope_and_hits() {
         let dir = tempdir().unwrap();
         fs::write(dir.path().join("MEMORY.md"), "redis sentinel")
             .await
@@ -231,6 +607,52 @@ mod tests {
             result
                 .text_content()
                 .contains("[memory_search backend=memory-core hits=1]")
+        );
+        assert!(result.text_content().contains("scope=semantic"));
+    }
+
+    #[tokio::test]
+    async fn memory_record_tool_uses_runtime_scope_defaults() {
+        let dir = tempdir().unwrap();
+        let backend = Arc::new(MemoryCoreBackend::new(
+            dir.path().to_path_buf(),
+            MemoryCoreConfig::default(),
+        ));
+        let tool = MemoryRecordTool::new(backend);
+        let ctx = ToolExecutionContext {
+            workspace_root: dir.path().to_path_buf(),
+            run_id: Some(RunId::from("run_1")),
+            session_id: Some(SessionId::from("session_1")),
+            ..ToolExecutionContext::default()
+        };
+        let result = tool
+            .execute(
+                ToolCallId::new(),
+                json!({
+                    "scope":"working",
+                    "title":"Debug note",
+                    "content":"Keep this in session scratchpad"
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(result.text_content().contains("scope=working"));
+        let recorded = fs::read_to_string(
+            dir.path()
+                .join(".nanoclaw/memory/working/sessions/session_1.md"),
+        )
+        .await
+        .unwrap();
+        assert!(recorded.contains("Keep this in session scratchpad"));
+        assert!(recorded.contains("run_id: run_1"));
+    }
+
+    #[test]
+    fn memory_scope_schema_serializes_as_kebab_case() {
+        assert_eq!(
+            serde_json::to_string(&MemoryScope::Coordination).unwrap(),
+            "\"coordination\""
         );
     }
 }

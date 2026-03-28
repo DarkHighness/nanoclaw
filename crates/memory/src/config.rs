@@ -245,11 +245,15 @@ fn default_context_lines() -> usize {
 }
 
 fn default_include_globs() -> Vec<String> {
-    vec!["MEMORY.md".to_string(), "memory/**/*.md".to_string()]
+    vec![
+        "MEMORY.md".to_string(),
+        "memory/**/*.md".to_string(),
+        ".nanoclaw/memory/**/*.md".to_string(),
+    ]
 }
 
 fn default_runtime_export_output_dir() -> PathBuf {
-    PathBuf::from(".nanoclaw/memory/runtime")
+    PathBuf::from(".nanoclaw/memory/episodic")
 }
 
 fn default_runtime_export_max_runs() -> usize {
