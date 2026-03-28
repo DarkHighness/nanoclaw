@@ -347,7 +347,7 @@ mod tests {
                         skill_roots: vec![workspace.path().join("plugins/team-policy/skills")],
                         hook_names: vec!["rewrite-user-message".to_string()],
                         mcp_servers: vec!["docs".to_string()],
-                        runtime_driver: Some("builtin.wasm-hook-runtime".to_string()),
+                        runtime_driver: Some("builtin.wasm-hook-validator".to_string()),
                     },
                 }],
                 ..PluginActivationPlan::default()
@@ -367,7 +367,7 @@ mod tests {
         assert!(summary
             .sidebar
             .iter()
-            .any(|line| line.contains("plugin team-policy: instructions=1, skills=1, hooks=rewrite-user-message, mcp=docs, runtime=builtin.wasm-hook-runtime")));
+            .any(|line| line.contains("plugin team-policy: instructions=1, skills=1, hooks=rewrite-user-message, mcp=docs, runtime=builtin.wasm-hook-validator")));
         assert!(summary
             .sidebar
             .iter()
@@ -393,7 +393,7 @@ mod tests {
             &AgentCoreConfig::default(),
             &PluginActivationPlan::default(),
             &["slow startup".to_string()],
-            &["prepared wasm runtime".to_string()],
+            &["validated wasm hook module".to_string()],
             &SandboxPolicy {
                 mode: SandboxMode::WorkspaceWrite,
                 filesystem: Default::default(),
@@ -414,7 +414,7 @@ mod tests {
             summary
                 .sidebar
                 .iter()
-                .any(|line| line == "driver diagnostic: prepared wasm runtime")
+                .any(|line| line == "driver diagnostic: validated wasm hook module")
         );
     }
 }

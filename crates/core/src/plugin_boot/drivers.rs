@@ -13,11 +13,13 @@ use plugins::PluginExecutableActivation;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+const WASM_HOOK_VALIDATOR_DRIVER_ID: &str = "builtin.wasm-hook-validator";
+
 pub(super) fn builtin_registry() -> PluginDriverRegistry {
     let mut registry = PluginDriverRegistry::new();
     registry.register(Arc::new(MemoryCoreDriverFactory));
     registry.register(Arc::new(MemoryEmbedDriverFactory));
-    registry.register(Arc::new(WasmHookRuntimeDriverFactory));
+    registry.register(Arc::new(WasmHookValidatorDriverFactory));
     registry
 }
 
@@ -151,11 +153,11 @@ impl PluginDriverFactory for MemoryEmbedDriverFactory {
     }
 }
 
-struct WasmHookRuntimeDriverFactory;
+struct WasmHookValidatorDriverFactory;
 
-impl PluginDriverFactory for WasmHookRuntimeDriverFactory {
+impl PluginDriverFactory for WasmHookValidatorDriverFactory {
     fn driver_id(&self) -> &'static str {
-        "builtin.wasm-hook-runtime"
+        WASM_HOOK_VALIDATOR_DRIVER_ID
     }
 
     fn activate(
@@ -164,9 +166,12 @@ impl PluginDriverFactory for WasmHookRuntimeDriverFactory {
         _context: &mut PluginDriverContext<'_>,
         outcome: &mut DriverActivationOutcome,
     ) -> Result<()> {
+        // This builtin participates in the same activation pipeline as real
+        // runtime drivers, but it only validates wasm-module wiring and does
+        // not contribute hooks, MCP servers, tools, or instructions on its own.
         let Some(module) = activation.runtime.module.as_deref() else {
             anyhow::bail!(
-                "plugin `{}` uses builtin.wasm-hook-runtime without runtime.module",
+                "plugin `{}` uses builtin.wasm-hook-validator without runtime.module",
                 activation.plugin_id
             );
         };
@@ -184,7 +189,7 @@ impl PluginDriverFactory for WasmHookRuntimeDriverFactory {
             );
         }
         outcome.diagnostics.push(format!(
-            "plugin `{}` prepared wasm runtime module {}",
+            "plugin `{}` validated wasm hook module {}",
             activation.plugin_id,
             module_path.display()
         ));

@@ -150,6 +150,17 @@ pub(super) fn format_run_event_line(event: &RunEventEnvelope) -> String {
         RunEventKind::TranscriptMessage { message } => {
             format!("transcript {}", preview_text(&message_to_text(message), 42))
         }
+        RunEventKind::TranscriptMessagePatched {
+            message_id,
+            message,
+        } => format!(
+            "transcript_patch {} {}",
+            preview_id(message_id.as_str()),
+            preview_text(&message_to_text(message), 32)
+        ),
+        RunEventKind::TranscriptMessageRemoved { message_id } => {
+            format!("transcript_remove {}", preview_id(message_id.as_str()))
+        }
         RunEventKind::ToolApprovalRequested { call, .. } => {
             format!("approval_requested {}", call.tool_name)
         }

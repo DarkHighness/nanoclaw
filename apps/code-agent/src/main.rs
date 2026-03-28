@@ -715,14 +715,14 @@ mod tests {
             hooks: Vec::new(),
             mcp_servers: Vec::new(),
             instructions: Vec::new(),
-            diagnostics: vec!["prepared wasm runtime".to_string()],
+            diagnostics: vec!["validated wasm hook module".to_string()],
         });
 
         assert_eq!(
             lines,
             vec![
                 "warning: plugin driver warning: slow startup".to_string(),
-                "info: plugin driver diagnostic: prepared wasm runtime".to_string(),
+                "info: plugin driver diagnostic: validated wasm hook module".to_string(),
             ]
         );
     }

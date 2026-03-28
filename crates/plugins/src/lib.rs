@@ -43,7 +43,7 @@ hook_files = [".nanoclaw-plugin/hooks.toml"]
 mcp_files = [".nanoclaw-plugin/mcp.toml"]
 
 [runtime]
-driver = "builtin.wasm-hook-runtime"
+driver = "builtin.wasm-hook-validator"
 module = "wasm/plugin.wasm"
 abi = "nanoclaw.plugin.v1"
 
@@ -120,7 +120,7 @@ cwd = "."
             PluginKind::Bundle,
             true,
             Some(PluginRuntimeSpec {
-                driver: "builtin.wasm-hook-runtime".to_string(),
+                driver: "builtin.wasm-hook-validator".to_string(),
                 module: Some("wasm/plugin.wasm".to_string()),
                 abi: Some("nanoclaw.plugin.v1".to_string()),
             }),
@@ -187,7 +187,7 @@ cwd = "."
         assert_eq!(plan.runtime_activations.len(), 1);
         assert_eq!(
             plan.runtime_activations[0].runtime.driver,
-            "builtin.wasm-hook-runtime"
+            "builtin.wasm-hook-validator"
         );
         assert_eq!(
             plan.runtime_activations[0]
@@ -222,7 +222,7 @@ cwd = "."
             PluginKind::Bundle,
             true,
             Some(PluginRuntimeSpec {
-                driver: "builtin.wasm-hook-runtime".to_string(),
+                driver: "builtin.wasm-hook-validator".to_string(),
                 module: Some("wasm/plugin.wasm".to_string()),
                 abi: None,
             }),
@@ -371,7 +371,7 @@ message_mutation = "allow"
             PluginKind::Bundle,
             true,
             Some(PluginRuntimeSpec {
-                driver: "builtin.wasm-hook-runtime".to_string(),
+                driver: "builtin.wasm-hook-validator".to_string(),
                 module: Some("wasm/plugin.wasm".to_string()),
                 abi: None,
             }),
@@ -414,7 +414,7 @@ message_mutation = "allow"
             PluginKind::Bundle,
             true,
             Some(PluginRuntimeSpec {
-                driver: "builtin.wasm-hook-runtime".to_string(),
+                driver: "builtin.wasm-hook-validator".to_string(),
                 module: Some("wasm/plugin.wasm".to_string()),
                 abi: None,
             }),

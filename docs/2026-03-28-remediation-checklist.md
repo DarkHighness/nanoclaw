@@ -369,9 +369,14 @@
     - `crates/types/src/hook.rs`
     - `crates/runtime/src/runtime/hook_effects.rs`
 
-- 明确 `builtin.wasm-hook-runtime` 的职责：
-  - 若它只是校验器，应更名并在文档中说明
-  - 若它是 runtime driver，应真正返回 runtime contributions
+- 明确 `builtin.wasm-hook-validator` 的职责：
+  - 状态：
+    - `completed`
+  - 已落地语义：
+    - 内建项已从 `builtin.wasm-hook-runtime` 更名为 `builtin.wasm-hook-validator`
+    - 它只负责 `runtime.module` 与 `exec_roots` 的校验，不再伪装成能提供 runtime contributions 的通用 driver
+    - host diagnostic 文案已统一为 `validated wasm hook module ...`
+  - 后续若要提供真正的 runtime contributions，应新增独立 executable runtime driver
   - 目标文件：
     - `crates/core/src/plugin_boot/drivers.rs`
     - `docs/2026-03-28-plugin-system-plan.md`

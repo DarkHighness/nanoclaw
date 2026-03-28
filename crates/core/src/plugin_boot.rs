@@ -100,7 +100,8 @@ mod tests {
         build_plugin_activation_plan,
     };
     use plugins::{
-        PluginEntryConfig, PluginExecutableActivation, PluginRuntimeSpec, PluginSlotsConfig,
+        PluginEntryConfig, PluginExecutableActivation, PluginResolvedPermissions,
+        PluginRuntimeSpec, PluginSlotsConfig,
     };
     use std::collections::BTreeMap;
     use tempfile::tempdir;
@@ -165,5 +166,90 @@ enabled_by_default = true
         )
         .unwrap();
         assert_eq!(outcome.warnings.len(), 1);
+    }
+
+    #[test]
+    fn wasm_hook_validator_emits_diagnostic_for_module_inside_exec_root() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join(".env"), "").unwrap();
+        let exec_root = dir.path().join(".nanoclaw/plugins-cache/demo");
+        std::fs::create_dir_all(&exec_root).unwrap();
+        let module_path = exec_root.join("policy.wasm");
+        let requests = vec![PluginExecutableActivation {
+            plugin_id: "demo".to_string(),
+            root_dir: dir.path().to_path_buf(),
+            runtime: PluginRuntimeSpec {
+                driver: "builtin.wasm-hook-validator".to_string(),
+                module: Some(module_path.to_string_lossy().to_string()),
+                abi: Some("nanoclaw.plugin.v1".to_string()),
+            },
+            config: toml::map::Map::new(),
+            capabilities: plugins::PluginCapabilitySet::default(),
+            granted_permissions: PluginResolvedPermissions {
+                exec_roots: vec![exec_root.clone()],
+                ..PluginResolvedPermissions::default()
+            },
+        }];
+
+        let mut tools = ToolRegistry::new();
+        let outcome = activate_driver_requests(
+            &requests,
+            dir.path(),
+            None,
+            &mut tools,
+            UnknownDriverPolicy::Error,
+        )
+        .unwrap();
+
+        assert_eq!(
+            outcome.diagnostics,
+            vec![format!(
+                "plugin `demo` validated wasm hook module {}",
+                module_path.display()
+            )]
+        );
+    }
+
+    #[test]
+    fn wasm_hook_validator_rejects_module_outside_exec_root() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join(".env"), "").unwrap();
+        let requests = vec![PluginExecutableActivation {
+            plugin_id: "demo".to_string(),
+            root_dir: dir.path().to_path_buf(),
+            runtime: PluginRuntimeSpec {
+                driver: "builtin.wasm-hook-validator".to_string(),
+                module: Some(
+                    dir.path()
+                        .join("wasm/policy.wasm")
+                        .to_string_lossy()
+                        .to_string(),
+                ),
+                abi: None,
+            },
+            config: toml::map::Map::new(),
+            capabilities: plugins::PluginCapabilitySet::default(),
+            granted_permissions: PluginResolvedPermissions {
+                exec_roots: vec![dir.path().join(".nanoclaw/plugins-cache/demo")],
+                ..PluginResolvedPermissions::default()
+            },
+        }];
+
+        let mut tools = ToolRegistry::new();
+        let error = match activate_driver_requests(
+            &requests,
+            dir.path(),
+            None,
+            &mut tools,
+            UnknownDriverPolicy::Error,
+        ) {
+            Ok(_) => panic!("expected validator to reject module outside exec roots"),
+            Err(error) => error,
+        };
+
+        assert!(
+            error.to_string().contains("references wasm module")
+                && error.to_string().contains("outside granted exec roots")
+        );
     }
 }

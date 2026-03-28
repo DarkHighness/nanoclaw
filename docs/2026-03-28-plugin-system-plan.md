@@ -219,7 +219,7 @@ hook_files = [".nanoclaw-plugin/hooks.toml"]
 mcp_files = [".nanoclaw-plugin/mcp.toml"]
 
 [runtime]
-driver = "builtin.wasm-hook-runtime"
+driver = "builtin.wasm-hook-validator"
 module = "wasm/plugin.wasm"
 abi = "nanoclaw.plugin.v1"
 
@@ -758,7 +758,7 @@ cargo test -p reference-tui
 
 当前尚未达到计划目标的部分：
 
-- `builtin.wasm-hook-runtime` 更像校验器，而不是完整 runtime driver
+- WASM executable surface 仍只有 validator + hook runtime 的最小闭环，还不是能输出更多 runtime contributions 的通用 executable driver
 
 ### 16.2 P0 修复项
 
@@ -789,9 +789,12 @@ cargo test -p reference-tui
     - `DriverActivationOutcome::extend_host_inputs()` 已成为统一 merge 点
     - `reference-tui` 与 `code-agent` 都会消费 `hooks / mcp_servers / instructions / diagnostics`
     - `code-agent` 侧已补 driver MCP 的路径解析、按名去重与宿主沙箱策略对齐
-- 明确 `builtin.wasm-hook-runtime` 的职责：
-  - 若只是 module validation，则应在命名和文档上收窄
-  - 若目标是 runtime driver，则必须真正返回 runtime contributions
+- 明确 `builtin.wasm-hook-validator` 的职责：
+  - 已完成：
+    - 内建 driver 已更名为 `builtin.wasm-hook-validator`
+    - 其职责明确收窄为 module path / exec-root validation
+    - host diagnostic 文案已改成 `validated wasm hook module ...`
+  - 后续若要承载真正的 runtime contributions，应新增独立的 executable runtime driver，而不是继续复用 validator 名称
 - 统一消息 mutation 能力：
   - 已完成：
     - `MessageSelector` 现在支持 `Current`、`MessageId` 与 `LastOfRole`
@@ -812,6 +815,6 @@ cargo test -p reference-tui
 
 - 当前 `prompt` / `agent` handlers 是否仍为 fail-closed stub，还是已有真实执行器
 - `DriverActivationOutcome` 已经被 `reference-tui` / `code-agent` 完整消费
-- `builtin.wasm-hook-runtime` 是校验器还是完整 runtime driver
+- `builtin.wasm-hook-validator` 只是校验器，不是完整 runtime driver
 - message mutation 当前支持 `Current + MessageId + LastOfRole(visible transcript only)`
 - `LastOfRole` 只解析已落盘的可见 transcript；要修改当前正在构造的消息仍需使用 `Current`
