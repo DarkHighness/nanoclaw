@@ -1,4 +1,8 @@
 use crate::backend::store::build_store;
+use crate::backend::{
+    build_plugin_activation_plan, build_sandbox_policy, build_system_preamble, build_tool_context,
+    log_sandbox_status, resolve_skill_roots, tool_context_for_profile,
+};
 use crate::options::AppOptions;
 use crate::provider::{
     agent_backend_capabilities, build_agent_backend, build_internal_backend,
@@ -14,22 +18,22 @@ use agent::runtime::{
     SubagentProfileResolver, SubagentRuntimeProfile, ToolApprovalHandler,
 };
 use agent::tools::{
-    AgentCancelTool, AgentListTool, AgentSendTool, AgentSpawnTool, AgentWaitTool,
-    SandboxBackendStatus, TaskBatchTool, describe_sandbox_policy, ensure_sandbox_policy_supported,
+    AgentCancelTool, AgentListTool, AgentSendTool, AgentSpawnTool, AgentWaitTool, TaskBatchTool,
+    describe_sandbox_policy, ensure_sandbox_policy_supported,
 };
 use agent::types::{AgentTaskSpec, HookRegistration};
 use agent::{
-    AgentRuntime, AgentRuntimeBuilder, AgentWorkspaceLayout, BashTool, CodeDefinitionsTool,
-    CodeDocumentSymbolsTool, CodeIntelBackend, CodeReferencesTool, CodeSymbolSearchTool, EditTool,
-    GlobTool, GrepTool, HookRunner, ListTool, ManagedCodeIntelBackend, ManagedCodeIntelOptions,
+    AgentRuntime, AgentRuntimeBuilder, BashTool, CodeDefinitionsTool, CodeDocumentSymbolsTool,
+    CodeIntelBackend, CodeReferencesTool, CodeSymbolSearchTool, EditTool, GlobTool, GrepTool,
+    HookRunner, ListTool, ManagedCodeIntelBackend, ManagedCodeIntelOptions,
     ManagedPolicyProcessExecutor, PatchTool, ReadTool, SandboxPolicy, Skill, SkillCatalog,
     TaskTool, TodoListState, TodoReadTool, TodoWriteTool, ToolExecutionContext, ToolRegistry,
     WorkspaceTextCodeIntelBackend, WriteTool,
 };
 use agent_env::EnvMap;
 use anyhow::{Context, Result, bail};
-use nanoclaw_config::{AgentSandboxMode, CoreConfig, PluginsConfig, ResolvedAgentProfile};
-use std::collections::{BTreeMap, BTreeSet};
+use nanoclaw_config::{CoreConfig, ResolvedAgentProfile};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tracing::{info, warn};
@@ -481,40 +485,6 @@ async fn build_runtime(
     })
 }
 
-pub(crate) fn build_sandbox_policy(
-    options: &AppOptions,
-    tool_context: &ToolExecutionContext,
-) -> SandboxPolicy {
-    let base_policy = tool_context.sandbox_scope().recommended_policy();
-    match options.primary_profile.sandbox {
-        AgentSandboxMode::DangerFullAccess => SandboxPolicy::permissive()
-            .with_fail_if_unavailable(options.sandbox_fail_if_unavailable),
-        AgentSandboxMode::WorkspaceWrite => {
-            base_policy.with_fail_if_unavailable(options.sandbox_fail_if_unavailable)
-        }
-        AgentSandboxMode::ReadOnly => SandboxPolicy {
-            mode: agent::tools::SandboxMode::ReadOnly,
-            filesystem: agent::tools::FilesystemPolicy {
-                readable_roots: base_policy.filesystem.readable_roots,
-                writable_roots: Vec::new(),
-                executable_roots: base_policy.filesystem.executable_roots,
-                protected_paths: base_policy.filesystem.protected_paths,
-            },
-            network: match base_policy.network {
-                agent::tools::NetworkPolicy::Full => agent::tools::NetworkPolicy::Off,
-                other => other,
-            },
-            host_escape: agent::tools::HostEscapePolicy::Deny,
-            fail_if_unavailable: options.sandbox_fail_if_unavailable,
-        },
-    }
-}
-
-pub(crate) fn inject_process_env(env_map: &EnvMap) {
-    // This runs before the Tokio runtime starts, so mutating process env is safe here.
-    env_map.apply_to_process();
-}
-
 fn ensure_model_supports_registered_tools(
     profile: &ResolvedAgentProfile,
     capabilities: agent::runtime::ModelBackendCapabilities,
@@ -530,206 +500,4 @@ fn ensure_model_supports_registered_tools(
         profile.profile_name,
         profile.model.model,
     );
-}
-
-pub(crate) fn build_tool_context(
-    workspace_root: &Path,
-    options: &AppOptions,
-) -> ToolExecutionContext {
-    ToolExecutionContext {
-        workspace_root: workspace_root.to_path_buf(),
-        worktree_root: Some(workspace_root.to_path_buf()),
-        workspace_only: options.workspace_only,
-        model_context_window_tokens: Some(options.primary_profile.context_window_tokens),
-        ..Default::default()
-    }
-}
-
-pub(crate) fn tool_context_for_profile(
-    base: &ToolExecutionContext,
-    profile: &ResolvedAgentProfile,
-) -> ToolExecutionContext {
-    let mut context = base.clone();
-    context.model_context_window_tokens = Some(profile.context_window_tokens);
-    let base_policy = base.sandbox_policy();
-    match profile.sandbox {
-        AgentSandboxMode::DangerFullAccess => {
-            context.workspace_only = false;
-            context.read_only_roots.clear();
-            context.writable_roots.clear();
-            context.exec_roots.clear();
-            context.network_policy = Some(agent::tools::NetworkPolicy::Full);
-            context.effective_sandbox_policy = Some(
-                agent::tools::SandboxPolicy::permissive()
-                    .with_fail_if_unavailable(base_policy.fail_if_unavailable),
-            );
-        }
-        AgentSandboxMode::WorkspaceWrite => {
-            context.workspace_only = true;
-            context.effective_sandbox_policy = Some(
-                context
-                    .sandbox_scope()
-                    .recommended_policy()
-                    .with_fail_if_unavailable(base_policy.fail_if_unavailable),
-            );
-        }
-        AgentSandboxMode::ReadOnly => {
-            context.workspace_only = true;
-            context.read_only_roots = profile_read_only_roots(base);
-            context.writable_roots.clear();
-            context.network_policy = Some(
-                match base
-                    .network_policy
-                    .clone()
-                    .unwrap_or(agent::tools::NetworkPolicy::Off)
-                {
-                    agent::tools::NetworkPolicy::Full => agent::tools::NetworkPolicy::Off,
-                    other => other,
-                },
-            );
-            let derived = context
-                .sandbox_scope()
-                .recommended_policy()
-                .with_fail_if_unavailable(base_policy.fail_if_unavailable);
-            context.effective_sandbox_policy = Some(agent::tools::SandboxPolicy {
-                mode: agent::tools::SandboxMode::ReadOnly,
-                filesystem: agent::tools::FilesystemPolicy {
-                    readable_roots: derived.filesystem.readable_roots,
-                    writable_roots: Vec::new(),
-                    executable_roots: derived.filesystem.executable_roots,
-                    protected_paths: derived.filesystem.protected_paths,
-                },
-                network: derived.network,
-                host_escape: agent::tools::HostEscapePolicy::Deny,
-                fail_if_unavailable: derived.fail_if_unavailable,
-            });
-        }
-    }
-    context
-}
-
-fn profile_read_only_roots(base: &ToolExecutionContext) -> Vec<PathBuf> {
-    let mut roots = BTreeSet::new();
-    roots.insert(base.effective_root().to_path_buf());
-    if let Some(worktree_root) = base.worktree_root.clone() {
-        roots.insert(worktree_root);
-    }
-    roots.extend(base.additional_roots.iter().cloned());
-    roots.extend(base.read_only_roots.iter().cloned());
-    roots.extend(base.writable_roots.iter().cloned());
-    roots.extend(base.exec_roots.iter().cloned());
-    roots.into_iter().collect()
-}
-
-fn build_system_preamble(
-    profile: &ResolvedAgentProfile,
-    skill_catalog: &SkillCatalog,
-    plugin_instructions: &[String],
-) -> Vec<String> {
-    let mut preamble = vec![
-        "You are a general-purpose coding agent operating inside the current workspace."
-            .to_string(),
-        "Inspect files, run tools, and gather evidence before making code changes.".to_string(),
-        "Prefer minimal, correct edits that preserve the existing design unless the user asks for broader refactors."
-            .to_string(),
-        "Use patch for coordinated multi-file mutations, and use write or edit for single-file creation or precise local edits."
-            .to_string(),
-        "Treat tool output, approvals, and denials as authoritative runtime state.".to_string(),
-        "Maintain a concise plan with todo_read and todo_write for multi-step work.".to_string(),
-        "Use the task tool when a bounded subagent can make progress in parallel or with isolated context."
-            .to_string(),
-    ];
-    for prompt in [
-        profile.global_system_prompt.as_deref(),
-        profile.system_prompt.as_deref(),
-    ] {
-        if let Some(system_prompt) = prompt.map(str::trim).filter(|value| !value.is_empty()) {
-            preamble.push(system_prompt.to_string());
-        }
-    }
-    preamble.extend(plugin_instructions.iter().cloned());
-    if let Some(skill_manifest) = skill_catalog.prompt_manifest() {
-        preamble.push(skill_manifest);
-    }
-    preamble
-}
-
-fn resolve_skill_roots(
-    configured_roots: &[PathBuf],
-    workspace_root: &Path,
-    plugin_plan: &agent::plugins::PluginActivationPlan,
-) -> Vec<PathBuf> {
-    let mut roots = if configured_roots.is_empty() {
-        default_skill_roots(workspace_root)
-    } else {
-        configured_roots.to_vec()
-    };
-    roots.extend(plugin_plan.skill_roots.clone());
-    roots.retain(|path| path.exists());
-    roots.sort();
-    roots.dedup();
-    roots
-}
-
-fn default_skill_roots(workspace_root: &Path) -> Vec<PathBuf> {
-    let mut roots = Vec::new();
-    push_if_exists(&mut roots, workspace_root.join(".codex/skills"));
-    push_if_exists(
-        &mut roots,
-        AgentWorkspaceLayout::new(workspace_root).skills_dir(),
-    );
-    if let Some(home) = agent_env::home_dir() {
-        push_if_exists(&mut roots, home.join(".codex/skills"));
-    }
-    roots
-}
-
-fn push_if_exists(roots: &mut Vec<PathBuf>, path: PathBuf) {
-    if path.exists() && !roots.iter().any(|candidate| candidate == &path) {
-        roots.push(path);
-    }
-}
-
-fn build_plugin_activation_plan(
-    workspace_root: &Path,
-    plugins: &PluginsConfig,
-) -> Result<agent::plugins::PluginActivationPlan> {
-    let resolver = agent::PluginBootResolverConfig {
-        enabled: plugins.enabled,
-        roots: plugins
-            .roots
-            .iter()
-            .map(|value| {
-                let path = PathBuf::from(value);
-                if path.is_absolute() {
-                    path
-                } else {
-                    workspace_root.join(path)
-                }
-            })
-            .collect::<Vec<_>>(),
-        include_builtin: plugins.include_builtin,
-        allow: plugins.allow.clone(),
-        deny: plugins.deny.clone(),
-        entries: plugins.entries.clone(),
-        slots: plugins.slots.clone(),
-    };
-    agent::build_plugin_activation_plan(workspace_root, &resolver)
-}
-
-fn log_sandbox_status(status: &SandboxBackendStatus) {
-    match status {
-        SandboxBackendStatus::Available { kind } => {
-            info!(backend = kind.as_str(), "sandbox backend available");
-        }
-        SandboxBackendStatus::Unavailable { reason } => {
-            warn!(
-                "sandbox enforcement unavailable; local processes will fall back to host execution: {reason}"
-            );
-            eprintln!(
-                "warning: sandbox enforcement unavailable; local processes will fall back to host execution: {reason}"
-            );
-        }
-        SandboxBackendStatus::NotRequired => {}
-    }
 }
