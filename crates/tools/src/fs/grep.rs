@@ -419,8 +419,18 @@ fn format_bytes(bytes: usize) -> String {
 mod tests {
     use super::{GrepTool, GrepToolInput};
     use crate::{Tool, ToolExecutionContext};
+    use nanoclaw_test_support::run_current_thread_test;
     use std::path::Path;
     use types::ToolCallId;
+
+    macro_rules! bounded_async_test {
+        (async fn $name:ident() $body:block) => {
+            #[test]
+            fn $name() {
+                run_current_thread_test(async $body);
+            }
+        };
+    }
 
     fn context(root: &Path) -> ToolExecutionContext {
         ToolExecutionContext {
@@ -430,82 +440,84 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn grep_tool_reports_metadata_with_matches() {
-        let dir = tempfile::tempdir().unwrap();
-        tokio::fs::write(dir.path().join("sample.txt"), "alpha\nbeta\ngamma\n")
-            .await
-            .unwrap();
+    bounded_async_test!(
+        async fn grep_tool_reports_metadata_with_matches() {
+            let dir = tempfile::tempdir().unwrap();
+            tokio::fs::write(dir.path().join("sample.txt"), "alpha\nbeta\ngamma\n")
+                .await
+                .unwrap();
 
-        let result = GrepTool::new()
-            .execute(
-                ToolCallId::new(),
-                serde_json::to_value(GrepToolInput {
-                    pattern: "beta".to_string(),
-                    path: None,
-                    glob: None,
-                    ignore_case: None,
-                    literal: None,
-                    context: Some(1),
-                    limit: None,
-                })
-                .unwrap(),
-                &context(dir.path()),
-            )
-            .await
-            .unwrap();
+            let result = GrepTool::new()
+                .execute(
+                    ToolCallId::new(),
+                    serde_json::to_value(GrepToolInput {
+                        pattern: "beta".to_string(),
+                        path: None,
+                        glob: None,
+                        ignore_case: None,
+                        literal: None,
+                        context: Some(1),
+                        limit: None,
+                    })
+                    .unwrap(),
+                    &context(dir.path()),
+                )
+                .await
+                .unwrap();
 
-        let text = result.text_content();
-        assert!(text.starts_with("[grep pattern=beta"));
-        assert!(text.contains("sample.txt:2: beta"));
-        let metadata = result.metadata.unwrap();
-        assert_eq!(metadata["match_count"].as_u64().unwrap(), 1);
-        assert_eq!(metadata["lines_returned"].as_u64().unwrap(), 3);
-        assert!(metadata["header"].as_str().unwrap().contains("context=1"));
-        assert!(!metadata["ignore_case"].as_bool().unwrap());
-        let entries = metadata["entries"].as_array().unwrap();
-        assert!(entries.iter().any(|entry| {
-            entry["line"].as_u64().unwrap() == 2 && entry["role"].as_str().unwrap() == "match"
-        }));
-    }
-
-    #[tokio::test]
-    async fn grep_tool_deduplicates_overlapping_context_rows() {
-        let dir = tempfile::tempdir().unwrap();
-        tokio::fs::write(
-            dir.path().join("sample.txt"),
-            "a\nmatch one\nmatch two\nz\n",
-        )
-        .await
-        .unwrap();
-
-        let result = GrepTool::new()
-            .execute(
-                ToolCallId::new(),
-                serde_json::to_value(GrepToolInput {
-                    pattern: "match".to_string(),
-                    path: None,
-                    glob: None,
-                    ignore_case: None,
-                    literal: None,
-                    context: Some(1),
-                    limit: None,
-                })
-                .unwrap(),
-                &context(dir.path()),
-            )
-            .await
-            .unwrap();
-
-        let metadata = result.metadata.unwrap();
-        let entries = metadata["entries"].as_array().unwrap();
-        let mut seen = std::collections::BTreeSet::new();
-        for entry in entries {
-            let key = (
-                entry["path"].as_str().unwrap().to_string(),
-                entry["line"].as_u64().unwrap(),
-            );
-            assert!(seen.insert(key), "duplicate line emitted in grep context");
+            let text = result.text_content();
+            assert!(text.starts_with("[grep pattern=beta"));
+            assert!(text.contains("sample.txt:2: beta"));
+            let metadata = result.metadata.unwrap();
+            assert_eq!(metadata["match_count"].as_u64().unwrap(), 1);
+            assert_eq!(metadata["lines_returned"].as_u64().unwrap(), 3);
+            assert!(metadata["header"].as_str().unwrap().contains("context=1"));
+            assert!(!metadata["ignore_case"].as_bool().unwrap());
+            let entries = metadata["entries"].as_array().unwrap();
+            assert!(entries.iter().any(|entry| {
+                entry["line"].as_u64().unwrap() == 2 && entry["role"].as_str().unwrap() == "match"
+            }));
         }
-    }
+    );
+
+    bounded_async_test!(
+        async fn grep_tool_deduplicates_overlapping_context_rows() {
+            let dir = tempfile::tempdir().unwrap();
+            tokio::fs::write(
+                dir.path().join("sample.txt"),
+                "a\nmatch one\nmatch two\nz\n",
+            )
+            .await
+            .unwrap();
+
+            let result = GrepTool::new()
+                .execute(
+                    ToolCallId::new(),
+                    serde_json::to_value(GrepToolInput {
+                        pattern: "match".to_string(),
+                        path: None,
+                        glob: None,
+                        ignore_case: None,
+                        literal: None,
+                        context: Some(1),
+                        limit: None,
+                    })
+                    .unwrap(),
+                    &context(dir.path()),
+                )
+                .await
+                .unwrap();
+
+            let metadata = result.metadata.unwrap();
+            let entries = metadata["entries"].as_array().unwrap();
+            let mut seen = std::collections::BTreeSet::new();
+            for entry in entries {
+                let key = (
+                    entry["path"].as_str().unwrap().to_string(),
+                    entry["line"].as_u64().unwrap(),
+                );
+                assert!(seen.insert(key), "duplicate line emitted in grep context");
+            }
+        }
+    );
 }

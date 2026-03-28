@@ -505,7 +505,17 @@ fn format_bytes(bytes: usize) -> String {
 mod tests {
     use super::{ReadTool, ReadToolInput};
     use crate::{Tool, ToolExecutionContext};
+    use nanoclaw_test_support::run_current_thread_test;
     use types::ToolCallId;
+
+    macro_rules! bounded_async_test {
+        (async fn $name:ident() $body:block) => {
+            #[test]
+            fn $name() {
+                run_current_thread_test(async $body);
+            }
+        };
+    }
 
     fn context(root: &std::path::Path) -> ToolExecutionContext {
         ToolExecutionContext {
@@ -515,122 +525,126 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn read_tool_returns_line_numbered_view_with_hashes() {
-        let dir = tempfile::tempdir().unwrap();
-        tokio::fs::write(dir.path().join("sample.txt"), "alpha\nbeta\ngamma\n")
-            .await
-            .unwrap();
+    bounded_async_test!(
+        async fn read_tool_returns_line_numbered_view_with_hashes() {
+            let dir = tempfile::tempdir().unwrap();
+            tokio::fs::write(dir.path().join("sample.txt"), "alpha\nbeta\ngamma\n")
+                .await
+                .unwrap();
 
-        let tool = ReadTool::new();
-        let result = tool
-            .execute(
-                ToolCallId::new(),
-                serde_json::to_value(ReadToolInput {
-                    path: "sample.txt".to_string(),
-                    start_line: Some(2),
-                    end_line: Some(3),
-                    line_count: None,
-                    annotate_lines: None,
-                    anchor_text: None,
-                    anchor_context: None,
-                    anchor_occurrence: None,
-                    anchor_ignore_case: None,
-                })
-                .unwrap(),
-                &context(dir.path()),
+            let tool = ReadTool::new();
+            let result = tool
+                .execute(
+                    ToolCallId::new(),
+                    serde_json::to_value(ReadToolInput {
+                        path: "sample.txt".to_string(),
+                        start_line: Some(2),
+                        end_line: Some(3),
+                        line_count: None,
+                        annotate_lines: None,
+                        anchor_text: None,
+                        anchor_context: None,
+                        anchor_occurrence: None,
+                        anchor_ignore_case: None,
+                    })
+                    .unwrap(),
+                    &context(dir.path()),
+                )
+                .await
+                .unwrap();
+
+            let text = result.text_content();
+            assert!(text.contains("[read path=sample.txt lines=2-3 / 3 snapshot="));
+            assert!(text.contains(" 2 | beta"));
+            assert!(text.contains(" 3 | gamma"));
+            let structured = result.structured_content.unwrap();
+            assert_eq!(structured["kind"], "window");
+            assert!(structured["selection_hash"].as_str().unwrap().len() >= 12);
+            assert_eq!(structured["next_start_line"], serde_json::json!(null));
+        }
+    );
+
+    bounded_async_test!(
+        async fn read_tool_reads_with_explicit_start_line_and_line_count() {
+            let dir = tempfile::tempdir().unwrap();
+            tokio::fs::write(dir.path().join("sample.txt"), "alpha\nbeta\ngamma\n")
+                .await
+                .unwrap();
+
+            let tool = ReadTool::new();
+            let result = tool
+                .execute(
+                    ToolCallId::new(),
+                    serde_json::json!({
+                        "path": "sample.txt",
+                        "start_line": 2,
+                        "line_count": 1
+                    }),
+                    &context(dir.path()),
+                )
+                .await
+                .unwrap();
+
+            let text = result.text_content();
+            assert!(text.contains("lines=2-2 / 3"));
+            assert!(text.contains(" 2 | beta"));
+        }
+    );
+
+    bounded_async_test!(
+        async fn read_tool_can_anchor_on_symbol_like_text() {
+            let dir = tempfile::tempdir().unwrap();
+            tokio::fs::write(
+                dir.path().join("sample.rs"),
+                "fn alpha() {}\nfn beta() {}\nfn target_symbol() {}\nfn gamma() {}\n",
             )
             .await
             .unwrap();
 
-        let text = result.text_content();
-        assert!(text.contains("[read path=sample.txt lines=2-3 / 3 snapshot="));
-        assert!(text.contains(" 2 | beta"));
-        assert!(text.contains(" 3 | gamma"));
-        let structured = result.structured_content.unwrap();
-        assert_eq!(structured["kind"], "window");
-        assert!(structured["selection_hash"].as_str().unwrap().len() >= 12);
-        assert_eq!(structured["next_start_line"], serde_json::json!(null));
-    }
+            let result = ReadTool::new()
+                .execute(
+                    ToolCallId::new(),
+                    serde_json::json!({
+                        "path": "sample.rs",
+                        "anchor_text": "target_symbol",
+                        "anchor_context": 1
+                    }),
+                    &context(dir.path()),
+                )
+                .await
+                .unwrap();
 
-    #[tokio::test]
-    async fn read_tool_reads_with_explicit_start_line_and_line_count() {
-        let dir = tempfile::tempdir().unwrap();
-        tokio::fs::write(dir.path().join("sample.txt"), "alpha\nbeta\ngamma\n")
-            .await
-            .unwrap();
+            let text = result.text_content();
+            assert!(text.contains("lines=2-4 / 4"));
+            assert!(text.contains(" 3 | fn target_symbol() {}"));
+            let structured = result.structured_content.clone().unwrap();
+            assert_eq!(structured["anchor"]["line"], 3);
+            let metadata = result.metadata.unwrap();
+            assert_eq!(metadata["anchor"]["line"].as_u64().unwrap(), 3);
+        }
+    );
 
-        let tool = ReadTool::new();
-        let result = tool
-            .execute(
-                ToolCallId::new(),
-                serde_json::json!({
-                    "path": "sample.txt",
-                    "start_line": 2,
-                    "line_count": 1
-                }),
-                &context(dir.path()),
-            )
-            .await
-            .unwrap();
+    bounded_async_test!(
+        async fn read_tool_rejects_anchor_with_manual_range() {
+            let dir = tempfile::tempdir().unwrap();
+            tokio::fs::write(dir.path().join("sample.txt"), "alpha\nbeta\n")
+                .await
+                .unwrap();
 
-        let text = result.text_content();
-        assert!(text.contains("lines=2-2 / 3"));
-        assert!(text.contains(" 2 | beta"));
-    }
+            let err = ReadTool::new()
+                .execute(
+                    ToolCallId::new(),
+                    serde_json::json!({
+                        "path": "sample.txt",
+                        "anchor_text": "beta",
+                        "start_line": 2
+                    }),
+                    &context(dir.path()),
+                )
+                .await
+                .unwrap_err();
 
-    #[tokio::test]
-    async fn read_tool_can_anchor_on_symbol_like_text() {
-        let dir = tempfile::tempdir().unwrap();
-        tokio::fs::write(
-            dir.path().join("sample.rs"),
-            "fn alpha() {}\nfn beta() {}\nfn target_symbol() {}\nfn gamma() {}\n",
-        )
-        .await
-        .unwrap();
-
-        let result = ReadTool::new()
-            .execute(
-                ToolCallId::new(),
-                serde_json::json!({
-                    "path": "sample.rs",
-                    "anchor_text": "target_symbol",
-                    "anchor_context": 1
-                }),
-                &context(dir.path()),
-            )
-            .await
-            .unwrap();
-
-        let text = result.text_content();
-        assert!(text.contains("lines=2-4 / 4"));
-        assert!(text.contains(" 3 | fn target_symbol() {}"));
-        let structured = result.structured_content.clone().unwrap();
-        assert_eq!(structured["anchor"]["line"], 3);
-        let metadata = result.metadata.unwrap();
-        assert_eq!(metadata["anchor"]["line"].as_u64().unwrap(), 3);
-    }
-
-    #[tokio::test]
-    async fn read_tool_rejects_anchor_with_manual_range() {
-        let dir = tempfile::tempdir().unwrap();
-        tokio::fs::write(dir.path().join("sample.txt"), "alpha\nbeta\n")
-            .await
-            .unwrap();
-
-        let err = ReadTool::new()
-            .execute(
-                ToolCallId::new(),
-                serde_json::json!({
-                    "path": "sample.txt",
-                    "anchor_text": "beta",
-                    "start_line": 2
-                }),
-                &context(dir.path()),
-            )
-            .await
-            .unwrap_err();
-
-        assert!(err.to_string().contains("anchor_text cannot be combined"));
-    }
+            assert!(err.to_string().contains("anchor_text cannot be combined"));
+        }
+    );
 }

@@ -169,117 +169,130 @@ impl Tool for WriteTool {
 mod tests {
     use super::{WriteExistingBehavior, WriteMissingBehavior, WriteTool, WriteToolInput};
     use crate::{Tool, ToolExecutionContext};
+    use nanoclaw_test_support::run_current_thread_test;
     use types::ToolCallId;
 
-    #[tokio::test]
-    async fn write_tool_creates_new_file() {
-        let dir = tempfile::tempdir().unwrap();
-        let tool = WriteTool::new();
-        let result = tool
-            .execute(
-                ToolCallId::new(),
-                serde_json::to_value(WriteToolInput {
-                    path: "sample.txt".to_string(),
-                    content: "hello\n".to_string(),
-                    if_exists: None,
-                    if_missing: None,
-                    expected_snapshot: None,
-                })
-                .unwrap(),
-                &ToolExecutionContext {
-                    workspace_root: dir.path().to_path_buf(),
-                    workspace_only: true,
-                    ..Default::default()
-                },
-            )
-            .await
-            .unwrap();
-
-        assert!(!result.is_error);
-        let structured = result.structured_content.unwrap();
-        assert_eq!(structured["kind"], "success");
-        assert_eq!(structured["write"]["created"], true);
-        assert_eq!(
-            tokio::fs::read_to_string(dir.path().join("sample.txt"))
-                .await
-                .unwrap(),
-            "hello\n"
-        );
+    macro_rules! bounded_async_test {
+        (async fn $name:ident() $body:block) => {
+            #[test]
+            fn $name() {
+                run_current_thread_test(async $body);
+            }
+        };
     }
 
-    #[tokio::test]
-    async fn write_tool_can_refuse_overwrite_without_policy() {
-        let dir = tempfile::tempdir().unwrap();
-        tokio::fs::write(dir.path().join("sample.txt"), "hello\n")
-            .await
-            .unwrap();
-        let tool = WriteTool::new();
-        let result = tool
-            .execute(
-                ToolCallId::new(),
-                serde_json::to_value(WriteToolInput {
-                    path: "sample.txt".to_string(),
-                    content: "next\n".to_string(),
-                    if_exists: Some(WriteExistingBehavior::Error),
-                    if_missing: Some(WriteMissingBehavior::Create),
-                    expected_snapshot: None,
-                })
-                .unwrap(),
-                &ToolExecutionContext {
-                    workspace_root: dir.path().to_path_buf(),
-                    workspace_only: true,
-                    ..Default::default()
-                },
-            )
-            .await
-            .unwrap();
-
-        assert!(result.is_error);
-        let structured = result.structured_content.unwrap();
-        assert_eq!(structured["kind"], "error");
-        assert_eq!(structured["write"]["if_exists"], "error");
-        assert_eq!(
-            tokio::fs::read_to_string(dir.path().join("sample.txt"))
+    bounded_async_test!(
+        async fn write_tool_creates_new_file() {
+            let dir = tempfile::tempdir().unwrap();
+            let tool = WriteTool::new();
+            let result = tool
+                .execute(
+                    ToolCallId::new(),
+                    serde_json::to_value(WriteToolInput {
+                        path: "sample.txt".to_string(),
+                        content: "hello\n".to_string(),
+                        if_exists: None,
+                        if_missing: None,
+                        expected_snapshot: None,
+                    })
+                    .unwrap(),
+                    &ToolExecutionContext {
+                        workspace_root: dir.path().to_path_buf(),
+                        workspace_only: true,
+                        ..Default::default()
+                    },
+                )
                 .await
-                .unwrap(),
-            "hello\n"
-        );
-    }
+                .unwrap();
 
-    #[tokio::test]
-    async fn write_tool_rejects_protected_workspace_state_paths() {
-        let dir = tempfile::tempdir().unwrap();
-        tokio::fs::create_dir_all(dir.path().join(".nanoclaw"))
-            .await
-            .unwrap();
-        let tool = WriteTool::new();
+            assert!(!result.is_error);
+            let structured = result.structured_content.unwrap();
+            assert_eq!(structured["kind"], "success");
+            assert_eq!(structured["write"]["created"], true);
+            assert_eq!(
+                tokio::fs::read_to_string(dir.path().join("sample.txt"))
+                    .await
+                    .unwrap(),
+                "hello\n"
+            );
+        }
+    );
 
-        let err = tool
-            .execute(
-                ToolCallId::new(),
-                serde_json::to_value(WriteToolInput {
-                    path: ".nanoclaw/state.toml".to_string(),
-                    content: "x = 1\n".to_string(),
-                    if_exists: None,
-                    if_missing: None,
-                    expected_snapshot: None,
-                })
-                .unwrap(),
-                &ToolExecutionContext {
-                    workspace_root: dir.path().to_path_buf(),
-                    worktree_root: Some(dir.path().to_path_buf()),
-                    workspace_only: true,
-                    ..Default::default()
-                },
-            )
-            .await
-            .unwrap_err();
-
-        assert!(err.to_string().contains("protected path"));
-        assert!(
-            !tokio::fs::try_exists(dir.path().join(".nanoclaw/state.toml"))
+    bounded_async_test!(
+        async fn write_tool_can_refuse_overwrite_without_policy() {
+            let dir = tempfile::tempdir().unwrap();
+            tokio::fs::write(dir.path().join("sample.txt"), "hello\n")
                 .await
-                .unwrap()
-        );
-    }
+                .unwrap();
+            let tool = WriteTool::new();
+            let result = tool
+                .execute(
+                    ToolCallId::new(),
+                    serde_json::to_value(WriteToolInput {
+                        path: "sample.txt".to_string(),
+                        content: "next\n".to_string(),
+                        if_exists: Some(WriteExistingBehavior::Error),
+                        if_missing: Some(WriteMissingBehavior::Create),
+                        expected_snapshot: None,
+                    })
+                    .unwrap(),
+                    &ToolExecutionContext {
+                        workspace_root: dir.path().to_path_buf(),
+                        workspace_only: true,
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap();
+
+            assert!(result.is_error);
+            let structured = result.structured_content.unwrap();
+            assert_eq!(structured["kind"], "error");
+            assert_eq!(structured["write"]["if_exists"], "error");
+            assert_eq!(
+                tokio::fs::read_to_string(dir.path().join("sample.txt"))
+                    .await
+                    .unwrap(),
+                "hello\n"
+            );
+        }
+    );
+
+    bounded_async_test!(
+        async fn write_tool_rejects_protected_workspace_state_paths() {
+            let dir = tempfile::tempdir().unwrap();
+            tokio::fs::create_dir_all(dir.path().join(".nanoclaw"))
+                .await
+                .unwrap();
+            let tool = WriteTool::new();
+
+            let err = tool
+                .execute(
+                    ToolCallId::new(),
+                    serde_json::to_value(WriteToolInput {
+                        path: ".nanoclaw/state.toml".to_string(),
+                        content: "x = 1\n".to_string(),
+                        if_exists: None,
+                        if_missing: None,
+                        expected_snapshot: None,
+                    })
+                    .unwrap(),
+                    &ToolExecutionContext {
+                        workspace_root: dir.path().to_path_buf(),
+                        worktree_root: Some(dir.path().to_path_buf()),
+                        workspace_only: true,
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap_err();
+
+            assert!(err.to_string().contains("protected path"));
+            assert!(
+                !tokio::fs::try_exists(dir.path().join(".nanoclaw/state.toml"))
+                    .await
+                    .unwrap()
+            );
+        }
+    );
 }

@@ -238,7 +238,9 @@ manual host runtimes fall back to Tokio's standard `TOKIO_WORKER_THREADS`
 behavior, which now lines up with the Cargo default above.
 
 Tests that explicitly opt into the shared bounded runtime helper also inherit
-`NANOCLAW_TEST_MAX_BLOCKING_THREADS`, which defaults to `1` here.
+`NANOCLAW_TEST_MAX_BLOCKING_THREADS`, which defaults to `1` here. Today that
+includes the heavier `memory` tests plus persistence/filesystem test modules in
+`store` and `tools`.
 
 Override them explicitly when you want a faster local run:
 

@@ -207,92 +207,104 @@ fn display_path(file: &Path, root: &Path) -> String {
 mod tests {
     use super::{GlobTool, GlobToolInput};
     use crate::{Tool, ToolExecutionContext};
+    use nanoclaw_test_support::run_current_thread_test;
     use types::ToolCallId;
 
-    #[tokio::test]
-    async fn glob_tool_lists_matching_files() {
-        let dir = tempfile::tempdir().unwrap();
-        tokio::fs::create_dir_all(dir.path().join("src"))
-            .await
-            .unwrap();
-        tokio::fs::write(dir.path().join("src/lib.rs"), "")
-            .await
-            .unwrap();
-        tokio::fs::write(dir.path().join("src/main.rs"), "")
-            .await
-            .unwrap();
-
-        let tool = GlobTool::new();
-        let result = tool
-            .execute(
-                ToolCallId::new(),
-                serde_json::to_value(GlobToolInput {
-                    pattern: "src/**/*.rs".to_string(),
-                    path: None,
-                    limit: None,
-                })
-                .unwrap(),
-                &ToolExecutionContext {
-                    workspace_root: dir.path().to_path_buf(),
-                    workspace_only: true,
-                    ..Default::default()
-                },
-            )
-            .await
-            .unwrap();
-
-        let output = result.text_content();
-        assert!(output.contains("src/lib.rs"));
-        assert!(output.contains("src/main.rs"));
-        let metadata = result.metadata.unwrap();
-        assert_eq!(metadata["match_count"].as_u64().unwrap(), 2);
-        assert!(
-            metadata["header"]
-                .as_str()
-                .unwrap()
-                .contains("pattern=src/**/*.rs")
-        );
-        let matches_meta = metadata["matches"].as_array().unwrap();
-        assert!(
-            matches_meta
-                .iter()
-                .any(|entry| { entry["path"].as_str().unwrap().ends_with("src/lib.rs") })
-        );
+    macro_rules! bounded_async_test {
+        (async fn $name:ident() $body:block) => {
+            #[test]
+            fn $name() {
+                run_current_thread_test(async $body);
+            }
+        };
     }
 
-    #[tokio::test]
-    async fn glob_tool_marks_truncation_only_when_extra_matches_exist() {
-        let dir = tempfile::tempdir().unwrap();
-        tokio::fs::create_dir_all(dir.path().join("src"))
-            .await
-            .unwrap();
-        tokio::fs::write(dir.path().join("src/lib.rs"), "")
-            .await
-            .unwrap();
-        tokio::fs::write(dir.path().join("src/main.rs"), "")
-            .await
-            .unwrap();
+    bounded_async_test!(
+        async fn glob_tool_lists_matching_files() {
+            let dir = tempfile::tempdir().unwrap();
+            tokio::fs::create_dir_all(dir.path().join("src"))
+                .await
+                .unwrap();
+            tokio::fs::write(dir.path().join("src/lib.rs"), "")
+                .await
+                .unwrap();
+            tokio::fs::write(dir.path().join("src/main.rs"), "")
+                .await
+                .unwrap();
 
-        let result = GlobTool::new()
-            .execute(
-                ToolCallId::new(),
-                serde_json::to_value(GlobToolInput {
-                    pattern: "src/**/*.rs".to_string(),
-                    path: None,
-                    limit: Some(2),
-                })
-                .unwrap(),
-                &ToolExecutionContext {
-                    workspace_root: dir.path().to_path_buf(),
-                    workspace_only: true,
-                    ..Default::default()
-                },
-            )
-            .await
-            .unwrap();
+            let tool = GlobTool::new();
+            let result = tool
+                .execute(
+                    ToolCallId::new(),
+                    serde_json::to_value(GlobToolInput {
+                        pattern: "src/**/*.rs".to_string(),
+                        path: None,
+                        limit: None,
+                    })
+                    .unwrap(),
+                    &ToolExecutionContext {
+                        workspace_root: dir.path().to_path_buf(),
+                        workspace_only: true,
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap();
 
-        let metadata = result.metadata.unwrap();
-        assert!(!metadata["truncated"].as_bool().unwrap());
-        assert_eq!(metadata["match_count"].as_u64().unwrap(), 2);
-    }
+            let output = result.text_content();
+            assert!(output.contains("src/lib.rs"));
+            assert!(output.contains("src/main.rs"));
+            let metadata = result.metadata.unwrap();
+            assert_eq!(metadata["match_count"].as_u64().unwrap(), 2);
+            assert!(
+                metadata["header"]
+                    .as_str()
+                    .unwrap()
+                    .contains("pattern=src/**/*.rs")
+            );
+            let matches_meta = metadata["matches"].as_array().unwrap();
+            assert!(
+                matches_meta
+                    .iter()
+                    .any(|entry| { entry["path"].as_str().unwrap().ends_with("src/lib.rs") })
+            );
+        }
+    );
+
+    bounded_async_test!(
+        async fn glob_tool_marks_truncation_only_when_extra_matches_exist() {
+            let dir = tempfile::tempdir().unwrap();
+            tokio::fs::create_dir_all(dir.path().join("src"))
+                .await
+                .unwrap();
+            tokio::fs::write(dir.path().join("src/lib.rs"), "")
+                .await
+                .unwrap();
+            tokio::fs::write(dir.path().join("src/main.rs"), "")
+                .await
+                .unwrap();
+
+            let result = GlobTool::new()
+                .execute(
+                    ToolCallId::new(),
+                    serde_json::to_value(GlobToolInput {
+                        pattern: "src/**/*.rs".to_string(),
+                        path: None,
+                        limit: Some(2),
+                    })
+                    .unwrap(),
+                    &ToolExecutionContext {
+                        workspace_root: dir.path().to_path_buf(),
+                        workspace_only: true,
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap();
+
+            let metadata = result.metadata.unwrap();
+            assert!(!metadata["truncated"].as_bool().unwrap());
+            assert_eq!(metadata["match_count"].as_u64().unwrap(), 2);
+        }
+    );
 }

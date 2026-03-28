@@ -330,8 +330,18 @@ fn normalize_requested_file_path(requested_path: &str, root: &Path) -> String {
 mod tests {
     use super::{ListTool, ListToolInput};
     use crate::{Tool, ToolExecutionContext};
+    use nanoclaw_test_support::run_current_thread_test;
     use std::path::PathBuf;
     use types::ToolCallId;
+
+    macro_rules! bounded_async_test {
+        (async fn $name:ident() $body:block) => {
+            #[test]
+            fn $name() {
+                run_current_thread_test(async $body);
+            }
+        };
+    }
 
     fn context(root: PathBuf) -> ToolExecutionContext {
         ToolExecutionContext {
@@ -341,151 +351,155 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn list_tool_lists_shallow_entries_by_default() {
-        let dir = tempfile::tempdir().unwrap();
-        tokio::fs::create_dir_all(dir.path().join("src"))
-            .await
-            .unwrap();
-        tokio::fs::write(dir.path().join("README.md"), "hi")
-            .await
-            .unwrap();
-        tokio::fs::write(dir.path().join("src/lib.rs"), "")
-            .await
-            .unwrap();
+    bounded_async_test!(
+        async fn list_tool_lists_shallow_entries_by_default() {
+            let dir = tempfile::tempdir().unwrap();
+            tokio::fs::create_dir_all(dir.path().join("src"))
+                .await
+                .unwrap();
+            tokio::fs::write(dir.path().join("README.md"), "hi")
+                .await
+                .unwrap();
+            tokio::fs::write(dir.path().join("src/lib.rs"), "")
+                .await
+                .unwrap();
 
-        let result = ListTool::new()
-            .execute(
-                ToolCallId::new(),
-                serde_json::to_value(ListToolInput {
-                    path: None,
-                    recursive: None,
-                    max_depth: None,
-                    limit: None,
-                })
-                .unwrap(),
-                &context(dir.path().to_path_buf()),
-            )
-            .await
-            .unwrap();
+            let result = ListTool::new()
+                .execute(
+                    ToolCallId::new(),
+                    serde_json::to_value(ListToolInput {
+                        path: None,
+                        recursive: None,
+                        max_depth: None,
+                        limit: None,
+                    })
+                    .unwrap(),
+                    &context(dir.path().to_path_buf()),
+                )
+                .await
+                .unwrap();
 
-        let output = result.text_content();
-        assert!(output.contains("[D] src"));
-        assert!(output.contains("[F] README.md"));
-        assert!(!output.contains("src/lib.rs"));
-    }
+            let output = result.text_content();
+            assert!(output.contains("[D] src"));
+            assert!(output.contains("[F] README.md"));
+            assert!(!output.contains("src/lib.rs"));
+        }
+    );
 
-    #[tokio::test]
-    async fn list_tool_respects_gitignore_by_default() {
-        let dir = tempfile::tempdir().unwrap();
-        tokio::fs::create_dir_all(dir.path().join("build"))
-            .await
-            .unwrap();
-        tokio::fs::write(dir.path().join(".gitignore"), "build/\n")
-            .await
-            .unwrap();
-        tokio::fs::write(dir.path().join("build/output.log"), "x")
-            .await
-            .unwrap();
-        tokio::fs::write(dir.path().join("visible.txt"), "v")
-            .await
-            .unwrap();
+    bounded_async_test!(
+        async fn list_tool_respects_gitignore_by_default() {
+            let dir = tempfile::tempdir().unwrap();
+            tokio::fs::create_dir_all(dir.path().join("build"))
+                .await
+                .unwrap();
+            tokio::fs::write(dir.path().join(".gitignore"), "build/\n")
+                .await
+                .unwrap();
+            tokio::fs::write(dir.path().join("build/output.log"), "x")
+                .await
+                .unwrap();
+            tokio::fs::write(dir.path().join("visible.txt"), "v")
+                .await
+                .unwrap();
 
-        let result = ListTool::new()
-            .execute(
-                ToolCallId::new(),
-                serde_json::to_value(ListToolInput {
-                    path: None,
-                    recursive: Some(true),
-                    max_depth: Some(4),
-                    limit: None,
-                })
-                .unwrap(),
-                &context(dir.path().to_path_buf()),
-            )
-            .await
-            .unwrap();
+            let result = ListTool::new()
+                .execute(
+                    ToolCallId::new(),
+                    serde_json::to_value(ListToolInput {
+                        path: None,
+                        recursive: Some(true),
+                        max_depth: Some(4),
+                        limit: None,
+                    })
+                    .unwrap(),
+                    &context(dir.path().to_path_buf()),
+                )
+                .await
+                .unwrap();
 
-        let output = result.text_content();
-        assert!(output.contains("visible.txt"));
-        assert!(!output.contains("build"));
-        assert!(!output.contains("output.log"));
-    }
+            let output = result.text_content();
+            assert!(output.contains("visible.txt"));
+            assert!(!output.contains("build"));
+            assert!(!output.contains("output.log"));
+        }
+    );
 
-    #[tokio::test]
-    async fn list_tool_applies_limit_and_reports_truncation() {
-        let dir = tempfile::tempdir().unwrap();
-        tokio::fs::create_dir_all(dir.path().join("src"))
-            .await
-            .unwrap();
-        tokio::fs::write(dir.path().join("a.txt"), "")
-            .await
-            .unwrap();
-        tokio::fs::write(dir.path().join("b.txt"), "")
-            .await
-            .unwrap();
-        tokio::fs::write(dir.path().join("src/c.txt"), "")
-            .await
-            .unwrap();
+    bounded_async_test!(
+        async fn list_tool_applies_limit_and_reports_truncation() {
+            let dir = tempfile::tempdir().unwrap();
+            tokio::fs::create_dir_all(dir.path().join("src"))
+                .await
+                .unwrap();
+            tokio::fs::write(dir.path().join("a.txt"), "")
+                .await
+                .unwrap();
+            tokio::fs::write(dir.path().join("b.txt"), "")
+                .await
+                .unwrap();
+            tokio::fs::write(dir.path().join("src/c.txt"), "")
+                .await
+                .unwrap();
 
-        let result = ListTool::new()
-            .execute(
-                ToolCallId::new(),
-                serde_json::to_value(ListToolInput {
-                    path: None,
-                    recursive: Some(true),
-                    max_depth: Some(4),
-                    limit: Some(2),
-                })
-                .unwrap(),
-                &context(dir.path().to_path_buf()),
-            )
-            .await
-            .unwrap();
+            let result = ListTool::new()
+                .execute(
+                    ToolCallId::new(),
+                    serde_json::to_value(ListToolInput {
+                        path: None,
+                        recursive: Some(true),
+                        max_depth: Some(4),
+                        limit: Some(2),
+                    })
+                    .unwrap(),
+                    &context(dir.path().to_path_buf()),
+                )
+                .await
+                .unwrap();
 
-        let output = result.text_content();
-        assert!(output.contains("limit reached"));
-        let metadata = result.metadata.unwrap();
-        assert_eq!(metadata["truncated"], true);
-        assert_eq!(metadata["entry_count"], 2);
-        assert_eq!(metadata["limit"].as_u64().unwrap(), 2);
-        let entries = metadata["entries"].as_array().unwrap();
-        assert_eq!(entries.len(), 2);
-        assert!(
-            metadata["header"]
-                .as_str()
-                .unwrap()
-                .starts_with("[list path=")
-        );
-        assert_eq!(metadata["counts"]["files"].as_u64().unwrap(), 2);
-    }
+            let output = result.text_content();
+            assert!(output.contains("limit reached"));
+            let metadata = result.metadata.unwrap();
+            assert_eq!(metadata["truncated"], true);
+            assert_eq!(metadata["entry_count"], 2);
+            assert_eq!(metadata["limit"].as_u64().unwrap(), 2);
+            let entries = metadata["entries"].as_array().unwrap();
+            assert_eq!(entries.len(), 2);
+            assert!(
+                metadata["header"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("[list path=")
+            );
+            assert_eq!(metadata["counts"]["files"].as_u64().unwrap(), 2);
+        }
+    );
 
-    #[tokio::test]
-    async fn list_tool_preserves_requested_file_path() {
-        let dir = tempfile::tempdir().unwrap();
-        tokio::fs::create_dir_all(dir.path().join("src"))
-            .await
-            .unwrap();
-        tokio::fs::write(dir.path().join("src/lib.rs"), "pub fn f() {}")
-            .await
-            .unwrap();
+    bounded_async_test!(
+        async fn list_tool_preserves_requested_file_path() {
+            let dir = tempfile::tempdir().unwrap();
+            tokio::fs::create_dir_all(dir.path().join("src"))
+                .await
+                .unwrap();
+            tokio::fs::write(dir.path().join("src/lib.rs"), "pub fn f() {}")
+                .await
+                .unwrap();
 
-        let result = ListTool::new()
-            .execute(
-                ToolCallId::new(),
-                serde_json::to_value(ListToolInput {
-                    path: Some("src/lib.rs".to_string()),
-                    recursive: None,
-                    max_depth: None,
-                    limit: None,
-                })
-                .unwrap(),
-                &context(dir.path().to_path_buf()),
-            )
-            .await
-            .unwrap();
+            let result = ListTool::new()
+                .execute(
+                    ToolCallId::new(),
+                    serde_json::to_value(ListToolInput {
+                        path: Some("src/lib.rs".to_string()),
+                        recursive: None,
+                        max_depth: None,
+                        limit: None,
+                    })
+                    .unwrap(),
+                    &context(dir.path().to_path_buf()),
+                )
+                .await
+                .unwrap();
 
-        let output = result.text_content();
-        assert!(output.contains("[F] src/lib.rs"));
-    }
+            let output = result.text_content();
+            assert!(output.contains("[F] src/lib.rs"));
+        }
+    );
 }

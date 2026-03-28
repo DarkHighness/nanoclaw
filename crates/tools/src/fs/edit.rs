@@ -162,164 +162,178 @@ impl Tool for EditTool {
 mod tests {
     use super::{EditTool, EditToolInput};
     use crate::{TextEditOperation, Tool, ToolExecutionContext, stable_text_hash};
+    use nanoclaw_test_support::run_current_thread_test;
     use types::ToolCallId;
 
-    #[tokio::test]
-    async fn edit_tool_replaces_exact_match() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("sample.txt");
-        tokio::fs::write(&path, "hello world\n").await.unwrap();
-
-        let tool = EditTool::new();
-        let result = tool
-            .execute(
-                ToolCallId::new(),
-                serde_json::to_value(EditToolInput {
-                    path: "sample.txt".to_string(),
-                    operation: TextEditOperation::StrReplace {
-                        old_text: "world".to_string(),
-                        new_text: "agent".to_string(),
-                        replace_all: false,
-                    },
-                    expected_snapshot: None,
-                })
-                .unwrap(),
-                &ToolExecutionContext {
-                    workspace_root: dir.path().to_path_buf(),
-                    workspace_only: true,
-                    ..Default::default()
-                },
-            )
-            .await
-            .unwrap();
-
-        assert!(!result.is_error);
-        let structured = result.structured_content.unwrap();
-        assert_eq!(structured["kind"], "success");
-        assert_eq!(structured["edit"]["command"], "edit");
-        assert_eq!(
-            tokio::fs::read_to_string(path).await.unwrap(),
-            "hello agent\n"
-        );
+    macro_rules! bounded_async_test {
+        (async fn $name:ident() $body:block) => {
+            #[test]
+            fn $name() {
+                run_current_thread_test(async $body);
+            }
+        };
     }
 
-    #[tokio::test]
-    async fn edit_tool_replaces_line_ranges() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("sample.txt");
-        tokio::fs::write(&path, "alpha\nbeta\ngamma\n")
-            .await
-            .unwrap();
+    bounded_async_test!(
+        async fn edit_tool_replaces_exact_match() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("sample.txt");
+            tokio::fs::write(&path, "hello world\n").await.unwrap();
 
-        let tool = EditTool::new();
-        let result = tool
-            .execute(
-                ToolCallId::new(),
-                serde_json::to_value(EditToolInput {
-                    path: "sample.txt".to_string(),
-                    operation: TextEditOperation::ReplaceLines {
-                        start_line: 2,
-                        end_line: 3,
-                        text: "middle\ntail".to_string(),
-                        expected_selection_hash: None,
+            let tool = EditTool::new();
+            let result = tool
+                .execute(
+                    ToolCallId::new(),
+                    serde_json::to_value(EditToolInput {
+                        path: "sample.txt".to_string(),
+                        operation: TextEditOperation::StrReplace {
+                            old_text: "world".to_string(),
+                            new_text: "agent".to_string(),
+                            replace_all: false,
+                        },
+                        expected_snapshot: None,
+                    })
+                    .unwrap(),
+                    &ToolExecutionContext {
+                        workspace_root: dir.path().to_path_buf(),
+                        workspace_only: true,
+                        ..Default::default()
                     },
-                    expected_snapshot: None,
-                })
-                .unwrap(),
-                &ToolExecutionContext {
-                    workspace_root: dir.path().to_path_buf(),
-                    workspace_only: true,
-                    ..Default::default()
-                },
-            )
-            .await
-            .unwrap();
+                )
+                .await
+                .unwrap();
 
-        assert!(!result.is_error);
-        assert_eq!(
-            tokio::fs::read_to_string(path).await.unwrap(),
-            "alpha\nmiddle\ntail\n"
-        );
-    }
+            assert!(!result.is_error);
+            let structured = result.structured_content.unwrap();
+            assert_eq!(structured["kind"], "success");
+            assert_eq!(structured["edit"]["command"], "edit");
+            assert_eq!(
+                tokio::fs::read_to_string(path).await.unwrap(),
+                "hello agent\n"
+            );
+        }
+    );
 
-    #[tokio::test]
-    async fn edit_tool_checks_snapshot_guards() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("sample.txt");
-        tokio::fs::write(&path, "alpha\nbeta\n").await.unwrap();
+    bounded_async_test!(
+        async fn edit_tool_replaces_line_ranges() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("sample.txt");
+            tokio::fs::write(&path, "alpha\nbeta\ngamma\n")
+                .await
+                .unwrap();
 
-        let tool = EditTool::new();
-        let result = tool
-            .execute(
-                ToolCallId::new(),
-                serde_json::to_value(EditToolInput {
-                    path: "sample.txt".to_string(),
-                    operation: TextEditOperation::StrReplace {
-                        old_text: "beta".to_string(),
-                        new_text: "gamma".to_string(),
-                        replace_all: false,
+            let tool = EditTool::new();
+            let result = tool
+                .execute(
+                    ToolCallId::new(),
+                    serde_json::to_value(EditToolInput {
+                        path: "sample.txt".to_string(),
+                        operation: TextEditOperation::ReplaceLines {
+                            start_line: 2,
+                            end_line: 3,
+                            text: "middle\ntail".to_string(),
+                            expected_selection_hash: None,
+                        },
+                        expected_snapshot: None,
+                    })
+                    .unwrap(),
+                    &ToolExecutionContext {
+                        workspace_root: dir.path().to_path_buf(),
+                        workspace_only: true,
+                        ..Default::default()
                     },
-                    expected_snapshot: Some(stable_text_hash("other")),
-                })
-                .unwrap(),
-                &ToolExecutionContext {
-                    workspace_root: dir.path().to_path_buf(),
-                    workspace_only: true,
-                    ..Default::default()
-                },
-            )
-            .await
-            .unwrap();
+                )
+                .await
+                .unwrap();
 
-        assert!(result.is_error);
-        let structured = result.structured_content.unwrap();
-        assert_eq!(structured["kind"], "error");
-        assert_eq!(
-            structured["edit"]["expected_snapshot"],
-            stable_text_hash("other")
-        );
-        assert_eq!(
-            tokio::fs::read_to_string(path).await.unwrap(),
-            "alpha\nbeta\n"
-        );
-    }
+            assert!(!result.is_error);
+            assert_eq!(
+                tokio::fs::read_to_string(path).await.unwrap(),
+                "alpha\nmiddle\ntail\n"
+            );
+        }
+    );
 
-    #[tokio::test]
-    async fn edit_tool_rejects_protected_workspace_state_paths() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join(".nanoclaw").join("state.toml");
-        tokio::fs::create_dir_all(path.parent().unwrap())
-            .await
-            .unwrap();
-        tokio::fs::write(&path, "alpha = 1\n").await.unwrap();
+    bounded_async_test!(
+        async fn edit_tool_checks_snapshot_guards() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("sample.txt");
+            tokio::fs::write(&path, "alpha\nbeta\n").await.unwrap();
 
-        let err = EditTool::new()
-            .execute(
-                ToolCallId::new(),
-                serde_json::to_value(EditToolInput {
-                    path: ".nanoclaw/state.toml".to_string(),
-                    operation: TextEditOperation::StrReplace {
-                        old_text: "1".to_string(),
-                        new_text: "2".to_string(),
-                        replace_all: false,
+            let tool = EditTool::new();
+            let result = tool
+                .execute(
+                    ToolCallId::new(),
+                    serde_json::to_value(EditToolInput {
+                        path: "sample.txt".to_string(),
+                        operation: TextEditOperation::StrReplace {
+                            old_text: "beta".to_string(),
+                            new_text: "gamma".to_string(),
+                            replace_all: false,
+                        },
+                        expected_snapshot: Some(stable_text_hash("other")),
+                    })
+                    .unwrap(),
+                    &ToolExecutionContext {
+                        workspace_root: dir.path().to_path_buf(),
+                        workspace_only: true,
+                        ..Default::default()
                     },
-                    expected_snapshot: None,
-                })
-                .unwrap(),
-                &ToolExecutionContext {
-                    workspace_root: dir.path().to_path_buf(),
-                    worktree_root: Some(dir.path().to_path_buf()),
-                    workspace_only: true,
-                    ..Default::default()
-                },
-            )
-            .await
-            .unwrap_err();
+                )
+                .await
+                .unwrap();
 
-        assert!(err.to_string().contains("protected path"));
-        assert_eq!(
-            tokio::fs::read_to_string(path).await.unwrap(),
-            "alpha = 1\n"
-        );
-    }
+            assert!(result.is_error);
+            let structured = result.structured_content.unwrap();
+            assert_eq!(structured["kind"], "error");
+            assert_eq!(
+                structured["edit"]["expected_snapshot"],
+                stable_text_hash("other")
+            );
+            assert_eq!(
+                tokio::fs::read_to_string(path).await.unwrap(),
+                "alpha\nbeta\n"
+            );
+        }
+    );
+
+    bounded_async_test!(
+        async fn edit_tool_rejects_protected_workspace_state_paths() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join(".nanoclaw").join("state.toml");
+            tokio::fs::create_dir_all(path.parent().unwrap())
+                .await
+                .unwrap();
+            tokio::fs::write(&path, "alpha = 1\n").await.unwrap();
+
+            let err = EditTool::new()
+                .execute(
+                    ToolCallId::new(),
+                    serde_json::to_value(EditToolInput {
+                        path: ".nanoclaw/state.toml".to_string(),
+                        operation: TextEditOperation::StrReplace {
+                            old_text: "1".to_string(),
+                            new_text: "2".to_string(),
+                            replace_all: false,
+                        },
+                        expected_snapshot: None,
+                    })
+                    .unwrap(),
+                    &ToolExecutionContext {
+                        workspace_root: dir.path().to_path_buf(),
+                        worktree_root: Some(dir.path().to_path_buf()),
+                        workspace_only: true,
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap_err();
+
+            assert!(err.to_string().contains("protected path"));
+            assert_eq!(
+                tokio::fs::read_to_string(path).await.unwrap(),
+                "alpha = 1\n"
+            );
+        }
+    );
 }

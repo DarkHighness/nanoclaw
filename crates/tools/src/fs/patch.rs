@@ -725,22 +725,200 @@ fn compute_diff_preview(path: &str, before: Option<&str>, after: Option<&str>) -
 mod tests {
     use super::{PatchOperation, PatchTool, PatchToolInput};
     use crate::{TextEditOperation, Tool, ToolExecutionContext};
+    use nanoclaw_test_support::run_current_thread_test;
     use types::ToolCallId;
 
-    #[tokio::test]
-    async fn patch_tool_applies_multiple_operations_without_partial_commits() {
-        let dir = tempfile::tempdir().unwrap();
-        tokio::fs::write(dir.path().join("sample.txt"), "alpha\nbeta\n")
-            .await
-            .unwrap();
+    macro_rules! bounded_async_test {
+        (async fn $name:ident() $body:block) => {
+            #[test]
+            fn $name() {
+                run_current_thread_test(async $body);
+            }
+        };
+    }
 
-        let tool = PatchTool::new();
-        let result = tool
-            .execute(
-                ToolCallId::new(),
-                serde_json::to_value(PatchToolInput {
-                    operations: vec![
-                        PatchOperation::Edit {
+    bounded_async_test!(
+        async fn patch_tool_applies_multiple_operations_without_partial_commits() {
+            let dir = tempfile::tempdir().unwrap();
+            tokio::fs::write(dir.path().join("sample.txt"), "alpha\nbeta\n")
+                .await
+                .unwrap();
+
+            let tool = PatchTool::new();
+            let result = tool
+                .execute(
+                    ToolCallId::new(),
+                    serde_json::to_value(PatchToolInput {
+                        operations: vec![
+                            PatchOperation::Edit {
+                                path: "sample.txt".to_string(),
+                                edits: vec![TextEditOperation::StrReplace {
+                                    old_text: "beta".to_string(),
+                                    new_text: "gamma".to_string(),
+                                    replace_all: false,
+                                }],
+                                expected_snapshot: None,
+                            },
+                            PatchOperation::Write {
+                                path: "created.txt".to_string(),
+                                content: "new\n".to_string(),
+                                if_exists: None,
+                                if_missing: None,
+                                expected_snapshot: None,
+                            },
+                        ],
+                    })
+                    .unwrap(),
+                    &ToolExecutionContext {
+                        workspace_root: dir.path().to_path_buf(),
+                        workspace_only: true,
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap();
+
+            assert!(!result.is_error);
+            let structured = result.structured_content.unwrap();
+            assert_eq!(structured["kind"], "success");
+            assert_eq!(structured["operation_count"], 2);
+            assert_eq!(structured["changed_files"].as_array().unwrap().len(), 2);
+            assert_eq!(
+                tokio::fs::read_to_string(dir.path().join("sample.txt"))
+                    .await
+                    .unwrap(),
+                "alpha\ngamma\n"
+            );
+            assert_eq!(
+                tokio::fs::read_to_string(dir.path().join("created.txt"))
+                    .await
+                    .unwrap(),
+                "new\n"
+            );
+        }
+    );
+
+    bounded_async_test!(
+        async fn patch_tool_aborts_before_commit_on_failed_operation() {
+            let dir = tempfile::tempdir().unwrap();
+            tokio::fs::write(dir.path().join("sample.txt"), "alpha\nbeta\n")
+                .await
+                .unwrap();
+
+            let tool = PatchTool::new();
+            let result = tool
+                .execute(
+                    ToolCallId::new(),
+                    serde_json::to_value(PatchToolInput {
+                        operations: vec![
+                            PatchOperation::Edit {
+                                path: "sample.txt".to_string(),
+                                edits: vec![TextEditOperation::StrReplace {
+                                    old_text: "beta".to_string(),
+                                    new_text: "gamma".to_string(),
+                                    replace_all: false,
+                                }],
+                                expected_snapshot: None,
+                            },
+                            PatchOperation::Delete {
+                                path: "missing.txt".to_string(),
+                                expected_snapshot: None,
+                                ignore_missing: Some(false),
+                            },
+                        ],
+                    })
+                    .unwrap(),
+                    &ToolExecutionContext {
+                        workspace_root: dir.path().to_path_buf(),
+                        workspace_only: true,
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap();
+
+            assert!(result.is_error);
+            let structured = result.structured_content.clone().unwrap();
+            assert_eq!(structured["kind"], "error");
+            assert_eq!(structured["failed_operation_index"], 2);
+            let metadata = result.metadata.unwrap();
+            assert_eq!(metadata["failed_operation_index"].as_u64().unwrap(), 2);
+            assert_eq!(
+                metadata["failed_operation"]["command"].as_str().unwrap(),
+                "delete"
+            );
+            assert_eq!(
+                tokio::fs::read_to_string(dir.path().join("sample.txt"))
+                    .await
+                    .unwrap(),
+                "alpha\nbeta\n"
+            );
+        }
+    );
+
+    bounded_async_test!(
+        async fn patch_tool_can_move_files_atomically() {
+            let dir = tempfile::tempdir().unwrap();
+            tokio::fs::write(dir.path().join("old.txt"), "payload\n")
+                .await
+                .unwrap();
+
+            let result = PatchTool::new()
+                .execute(
+                    ToolCallId::new(),
+                    serde_json::to_value(PatchToolInput {
+                        operations: vec![PatchOperation::Move {
+                            from_path: "old.txt".to_string(),
+                            to_path: "new.txt".to_string(),
+                            expected_snapshot: None,
+                            if_destination_exists: None,
+                            ignore_missing: None,
+                        }],
+                    })
+                    .unwrap(),
+                    &ToolExecutionContext {
+                        workspace_root: dir.path().to_path_buf(),
+                        workspace_only: true,
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap();
+
+            assert!(!result.is_error);
+            let structured = result.structured_content.clone().unwrap();
+            assert_eq!(structured["operations"][0]["command"], "move");
+            assert!(
+                !tokio::fs::try_exists(dir.path().join("old.txt"))
+                    .await
+                    .unwrap()
+            );
+            assert_eq!(
+                tokio::fs::read_to_string(dir.path().join("new.txt"))
+                    .await
+                    .unwrap(),
+                "payload\n"
+            );
+            let metadata = result.metadata.unwrap();
+            assert_eq!(
+                metadata["operations"][0]["command"].as_str().unwrap(),
+                "move"
+            );
+        }
+    );
+
+    bounded_async_test!(
+        async fn patch_tool_returns_hunk_preview_for_changes() {
+            let dir = tempfile::tempdir().unwrap();
+            tokio::fs::write(dir.path().join("sample.txt"), "alpha\nbeta\n")
+                .await
+                .unwrap();
+
+            let result = PatchTool::new()
+                .execute(
+                    ToolCallId::new(),
+                    serde_json::to_value(PatchToolInput {
+                        operations: vec![PatchOperation::Edit {
                             path: "sample.txt".to_string(),
                             edits: vec![TextEditOperation::StrReplace {
                                 old_text: "beta".to_string(),
@@ -748,220 +926,57 @@ mod tests {
                                 replace_all: false,
                             }],
                             expected_snapshot: None,
-                        },
-                        PatchOperation::Write {
-                            path: "created.txt".to_string(),
-                            content: "new\n".to_string(),
+                        }],
+                    })
+                    .unwrap(),
+                    &ToolExecutionContext {
+                        workspace_root: dir.path().to_path_buf(),
+                        workspace_only: true,
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap();
+
+            let output = result.text_content();
+            assert!(output.contains("[diff_preview]"));
+            assert!(output.contains("@@ -2,1 +2,1 @@"));
+            assert!(output.contains("-beta"));
+            assert!(output.contains("+gamma"));
+        }
+    );
+
+    bounded_async_test!(
+        async fn patch_tool_rejects_protected_workspace_state_paths() {
+            let dir = tempfile::tempdir().unwrap();
+            tokio::fs::create_dir_all(dir.path().join(".nanoclaw"))
+                .await
+                .unwrap();
+
+            let err = PatchTool::new()
+                .execute(
+                    ToolCallId::new(),
+                    serde_json::to_value(PatchToolInput {
+                        operations: vec![PatchOperation::Write {
+                            path: ".nanoclaw/state.toml".to_string(),
+                            content: "x = 1\n".to_string(),
                             if_exists: None,
                             if_missing: None,
                             expected_snapshot: None,
-                        },
-                    ],
-                })
-                .unwrap(),
-                &ToolExecutionContext {
-                    workspace_root: dir.path().to_path_buf(),
-                    workspace_only: true,
-                    ..Default::default()
-                },
-            )
-            .await
-            .unwrap();
-
-        assert!(!result.is_error);
-        let structured = result.structured_content.unwrap();
-        assert_eq!(structured["kind"], "success");
-        assert_eq!(structured["operation_count"], 2);
-        assert_eq!(structured["changed_files"].as_array().unwrap().len(), 2);
-        assert_eq!(
-            tokio::fs::read_to_string(dir.path().join("sample.txt"))
-                .await
-                .unwrap(),
-            "alpha\ngamma\n"
-        );
-        assert_eq!(
-            tokio::fs::read_to_string(dir.path().join("created.txt"))
-                .await
-                .unwrap(),
-            "new\n"
-        );
-    }
-
-    #[tokio::test]
-    async fn patch_tool_aborts_before_commit_on_failed_operation() {
-        let dir = tempfile::tempdir().unwrap();
-        tokio::fs::write(dir.path().join("sample.txt"), "alpha\nbeta\n")
-            .await
-            .unwrap();
-
-        let tool = PatchTool::new();
-        let result = tool
-            .execute(
-                ToolCallId::new(),
-                serde_json::to_value(PatchToolInput {
-                    operations: vec![
-                        PatchOperation::Edit {
-                            path: "sample.txt".to_string(),
-                            edits: vec![TextEditOperation::StrReplace {
-                                old_text: "beta".to_string(),
-                                new_text: "gamma".to_string(),
-                                replace_all: false,
-                            }],
-                            expected_snapshot: None,
-                        },
-                        PatchOperation::Delete {
-                            path: "missing.txt".to_string(),
-                            expected_snapshot: None,
-                            ignore_missing: Some(false),
-                        },
-                    ],
-                })
-                .unwrap(),
-                &ToolExecutionContext {
-                    workspace_root: dir.path().to_path_buf(),
-                    workspace_only: true,
-                    ..Default::default()
-                },
-            )
-            .await
-            .unwrap();
-
-        assert!(result.is_error);
-        let structured = result.structured_content.clone().unwrap();
-        assert_eq!(structured["kind"], "error");
-        assert_eq!(structured["failed_operation_index"], 2);
-        let metadata = result.metadata.unwrap();
-        assert_eq!(metadata["failed_operation_index"].as_u64().unwrap(), 2);
-        assert_eq!(
-            metadata["failed_operation"]["command"].as_str().unwrap(),
-            "delete"
-        );
-        assert_eq!(
-            tokio::fs::read_to_string(dir.path().join("sample.txt"))
-                .await
-                .unwrap(),
-            "alpha\nbeta\n"
-        );
-    }
-
-    #[tokio::test]
-    async fn patch_tool_can_move_files_atomically() {
-        let dir = tempfile::tempdir().unwrap();
-        tokio::fs::write(dir.path().join("old.txt"), "payload\n")
-            .await
-            .unwrap();
-
-        let result = PatchTool::new()
-            .execute(
-                ToolCallId::new(),
-                serde_json::to_value(PatchToolInput {
-                    operations: vec![PatchOperation::Move {
-                        from_path: "old.txt".to_string(),
-                        to_path: "new.txt".to_string(),
-                        expected_snapshot: None,
-                        if_destination_exists: None,
-                        ignore_missing: None,
-                    }],
-                })
-                .unwrap(),
-                &ToolExecutionContext {
-                    workspace_root: dir.path().to_path_buf(),
-                    workspace_only: true,
-                    ..Default::default()
-                },
-            )
-            .await
-            .unwrap();
-
-        assert!(!result.is_error);
-        let structured = result.structured_content.clone().unwrap();
-        assert_eq!(structured["operations"][0]["command"], "move");
-        assert!(
-            !tokio::fs::try_exists(dir.path().join("old.txt"))
-                .await
-                .unwrap()
-        );
-        assert_eq!(
-            tokio::fs::read_to_string(dir.path().join("new.txt"))
-                .await
-                .unwrap(),
-            "payload\n"
-        );
-        let metadata = result.metadata.unwrap();
-        assert_eq!(
-            metadata["operations"][0]["command"].as_str().unwrap(),
-            "move"
-        );
-    }
-
-    #[tokio::test]
-    async fn patch_tool_returns_hunk_preview_for_changes() {
-        let dir = tempfile::tempdir().unwrap();
-        tokio::fs::write(dir.path().join("sample.txt"), "alpha\nbeta\n")
-            .await
-            .unwrap();
-
-        let result = PatchTool::new()
-            .execute(
-                ToolCallId::new(),
-                serde_json::to_value(PatchToolInput {
-                    operations: vec![PatchOperation::Edit {
-                        path: "sample.txt".to_string(),
-                        edits: vec![TextEditOperation::StrReplace {
-                            old_text: "beta".to_string(),
-                            new_text: "gamma".to_string(),
-                            replace_all: false,
                         }],
-                        expected_snapshot: None,
-                    }],
-                })
-                .unwrap(),
-                &ToolExecutionContext {
-                    workspace_root: dir.path().to_path_buf(),
-                    workspace_only: true,
-                    ..Default::default()
-                },
-            )
-            .await
-            .unwrap();
+                    })
+                    .unwrap(),
+                    &ToolExecutionContext {
+                        workspace_root: dir.path().to_path_buf(),
+                        worktree_root: Some(dir.path().to_path_buf()),
+                        workspace_only: true,
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap_err();
 
-        let output = result.text_content();
-        assert!(output.contains("[diff_preview]"));
-        assert!(output.contains("@@ -2,1 +2,1 @@"));
-        assert!(output.contains("-beta"));
-        assert!(output.contains("+gamma"));
-    }
-
-    #[tokio::test]
-    async fn patch_tool_rejects_protected_workspace_state_paths() {
-        let dir = tempfile::tempdir().unwrap();
-        tokio::fs::create_dir_all(dir.path().join(".nanoclaw"))
-            .await
-            .unwrap();
-
-        let err = PatchTool::new()
-            .execute(
-                ToolCallId::new(),
-                serde_json::to_value(PatchToolInput {
-                    operations: vec![PatchOperation::Write {
-                        path: ".nanoclaw/state.toml".to_string(),
-                        content: "x = 1\n".to_string(),
-                        if_exists: None,
-                        if_missing: None,
-                        expected_snapshot: None,
-                    }],
-                })
-                .unwrap(),
-                &ToolExecutionContext {
-                    workspace_root: dir.path().to_path_buf(),
-                    worktree_root: Some(dir.path().to_path_buf()),
-                    workspace_only: true,
-                    ..Default::default()
-                },
-            )
-            .await
-            .unwrap_err();
-
-        assert!(err.to_string().contains("protected path"));
-    }
+            assert!(err.to_string().contains("protected path"));
+        }
+    );
 }

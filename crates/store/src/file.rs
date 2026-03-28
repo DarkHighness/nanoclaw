@@ -361,232 +361,248 @@ fn current_timestamp_ms() -> u128 {
 mod tests {
     use super::{FileRunStore, FileRunStoreOptions, RunStoreRetentionPolicy, current_timestamp_ms};
     use crate::{EventSink, RunMemoryExportRequest, RunStore};
+    use nanoclaw_test_support::run_current_thread_test;
     use std::time::Duration;
     use types::{Message, RunEventEnvelope, RunEventKind, RunId, SessionId};
 
     use super::index_sidecar::append_search_text;
 
-    #[tokio::test]
-    async fn persists_events_across_store_reopen() {
-        let dir = tempfile::tempdir().unwrap();
-        let run_id = RunId::new();
-        let session_id = SessionId::new();
-
-        let store = FileRunStore::open(dir.path()).await.unwrap();
-        store
-            .append(RunEventEnvelope::new(
-                run_id.clone(),
-                session_id.clone(),
-                None,
-                None,
-                RunEventKind::TranscriptMessage {
-                    message: Message::user("hello"),
-                },
-            ))
-            .await
-            .unwrap();
-        drop(store);
-
-        let reopened = FileRunStore::open(dir.path()).await.unwrap();
-        let events = reopened.events(&run_id).await.unwrap();
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0].session_id, session_id);
-        assert_eq!(reopened.replay_transcript(&run_id).await.unwrap().len(), 1);
-        assert_eq!(reopened.list_runs().await.unwrap().len(), 1);
+    macro_rules! bounded_async_test {
+        (async fn $name:ident() $body:block) => {
+            #[test]
+            fn $name() {
+                run_current_thread_test(async $body);
+            }
+        };
     }
 
-    #[tokio::test]
-    async fn returns_session_ids_in_encounter_order() {
-        let dir = tempfile::tempdir().unwrap();
-        let run_id = RunId::new();
-        let session_a = SessionId::new();
-        let session_b = SessionId::new();
+    bounded_async_test!(
+        async fn persists_events_across_store_reopen() {
+            let dir = tempfile::tempdir().unwrap();
+            let run_id = RunId::new();
+            let session_id = SessionId::new();
 
-        let store = FileRunStore::open(dir.path()).await.unwrap();
-        for session in [&session_a, &session_a, &session_b] {
+            let store = FileRunStore::open(dir.path()).await.unwrap();
             store
                 .append(RunEventEnvelope::new(
                     run_id.clone(),
-                    session.clone(),
+                    session_id.clone(),
                     None,
                     None,
-                    RunEventKind::Notification {
-                        source: "test".to_string(),
-                        message: "ok".to_string(),
+                    RunEventKind::TranscriptMessage {
+                        message: Message::user("hello"),
                     },
                 ))
                 .await
                 .unwrap();
+            drop(store);
+
+            let reopened = FileRunStore::open(dir.path()).await.unwrap();
+            let events = reopened.events(&run_id).await.unwrap();
+            assert_eq!(events.len(), 1);
+            assert_eq!(events[0].session_id, session_id);
+            assert_eq!(reopened.replay_transcript(&run_id).await.unwrap().len(), 1);
+            assert_eq!(reopened.list_runs().await.unwrap().len(), 1);
         }
+    );
 
-        let sessions = store.session_ids(&run_id).await.unwrap();
-        assert_eq!(sessions, vec![session_a, session_b]);
-    }
+    bounded_async_test!(
+        async fn returns_session_ids_in_encounter_order() {
+            let dir = tempfile::tempdir().unwrap();
+            let run_id = RunId::new();
+            let session_a = SessionId::new();
+            let session_b = SessionId::new();
 
-    #[tokio::test]
-    async fn lists_persisted_runs_newest_first() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = FileRunStore::open(dir.path()).await.unwrap();
-        let session_id = SessionId::new();
-        let older_run = RunId::new();
-        let newer_run = RunId::new();
-        let mut older_event = RunEventEnvelope::new(
-            older_run.clone(),
-            session_id.clone(),
-            None,
-            None,
-            RunEventKind::UserPromptSubmit {
-                prompt: "older".to_string(),
-            },
-        );
-        older_event.timestamp_ms = 1;
-        let mut newer_event = RunEventEnvelope::new(
-            newer_run.clone(),
-            session_id,
-            None,
-            None,
-            RunEventKind::UserPromptSubmit {
-                prompt: "newer".to_string(),
-            },
-        );
-        newer_event.timestamp_ms = 2;
+            let store = FileRunStore::open(dir.path()).await.unwrap();
+            for session in [&session_a, &session_a, &session_b] {
+                store
+                    .append(RunEventEnvelope::new(
+                        run_id.clone(),
+                        session.clone(),
+                        None,
+                        None,
+                        RunEventKind::Notification {
+                            source: "test".to_string(),
+                            message: "ok".to_string(),
+                        },
+                    ))
+                    .await
+                    .unwrap();
+            }
 
-        store.append(older_event).await.unwrap();
-        store.append(newer_event).await.unwrap();
+            let sessions = store.session_ids(&run_id).await.unwrap();
+            assert_eq!(sessions, vec![session_a, session_b]);
+        }
+    );
 
-        let runs = store.list_runs().await.unwrap();
-        assert_eq!(runs.len(), 2);
-        assert_eq!(runs[0].run_id, newer_run);
-        assert_eq!(runs[0].last_user_prompt.as_deref(), Some("newer"));
-        assert_eq!(runs[1].run_id, older_run);
-    }
-
-    #[tokio::test]
-    async fn searches_persisted_runs_by_transcript_content() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = FileRunStore::open(dir.path()).await.unwrap();
-        let run_id = RunId::new();
-        let session_id = SessionId::new();
-        store
-            .append(RunEventEnvelope::new(
-                run_id.clone(),
+    bounded_async_test!(
+        async fn lists_persisted_runs_newest_first() {
+            let dir = tempfile::tempdir().unwrap();
+            let store = FileRunStore::open(dir.path()).await.unwrap();
+            let session_id = SessionId::new();
+            let older_run = RunId::new();
+            let newer_run = RunId::new();
+            let mut older_event = RunEventEnvelope::new(
+                older_run.clone(),
+                session_id.clone(),
+                None,
+                None,
+                RunEventKind::UserPromptSubmit {
+                    prompt: "older".to_string(),
+                },
+            );
+            older_event.timestamp_ms = 1;
+            let mut newer_event = RunEventEnvelope::new(
+                newer_run.clone(),
                 session_id,
                 None,
                 None,
-                RunEventKind::TranscriptMessage {
-                    message: Message::assistant("deploy checklist"),
+                RunEventKind::UserPromptSubmit {
+                    prompt: "newer".to_string(),
                 },
-            ))
+            );
+            newer_event.timestamp_ms = 2;
+
+            store.append(older_event).await.unwrap();
+            store.append(newer_event).await.unwrap();
+
+            let runs = store.list_runs().await.unwrap();
+            assert_eq!(runs.len(), 2);
+            assert_eq!(runs[0].run_id, newer_run);
+            assert_eq!(runs[0].last_user_prompt.as_deref(), Some("newer"));
+            assert_eq!(runs[1].run_id, older_run);
+        }
+    );
+
+    bounded_async_test!(
+        async fn searches_persisted_runs_by_transcript_content() {
+            let dir = tempfile::tempdir().unwrap();
+            let store = FileRunStore::open(dir.path()).await.unwrap();
+            let run_id = RunId::new();
+            let session_id = SessionId::new();
+            store
+                .append(RunEventEnvelope::new(
+                    run_id.clone(),
+                    session_id,
+                    None,
+                    None,
+                    RunEventKind::TranscriptMessage {
+                        message: Message::assistant("deploy checklist"),
+                    },
+                ))
+                .await
+                .unwrap();
+
+            let matches = store.search_runs("checklist").await.unwrap();
+            assert_eq!(matches.len(), 1);
+            assert_eq!(matches[0].summary.run_id, run_id);
+            assert_eq!(matches[0].matched_event_count, 1);
+            assert!(
+                matches[0]
+                    .preview_matches
+                    .iter()
+                    .any(|line| line.contains("deploy checklist"))
+            );
+        }
+    );
+
+    bounded_async_test!(
+        async fn retention_policy_prunes_oldest_runs_by_count() {
+            let dir = tempfile::tempdir().unwrap();
+            let store = FileRunStore::open_with_options(
+                dir.path(),
+                FileRunStoreOptions {
+                    retention: RunStoreRetentionPolicy {
+                        max_runs: Some(1),
+                        max_age: None,
+                    },
+                },
+            )
+            .await
+            .unwrap();
+            let session_id = SessionId::new();
+            let older_run = RunId::new();
+            let newer_run = RunId::new();
+            let mut older_event = RunEventEnvelope::new(
+                older_run.clone(),
+                session_id.clone(),
+                None,
+                None,
+                RunEventKind::UserPromptSubmit {
+                    prompt: "older".to_string(),
+                },
+            );
+            older_event.timestamp_ms = current_timestamp_ms().saturating_sub(10_000);
+            let mut newer_event = RunEventEnvelope::new(
+                newer_run.clone(),
+                session_id,
+                None,
+                None,
+                RunEventKind::UserPromptSubmit {
+                    prompt: "newer".to_string(),
+                },
+            );
+            newer_event.timestamp_ms = current_timestamp_ms();
+
+            store.append(older_event).await.unwrap();
+            store.append(newer_event).await.unwrap();
+
+            let runs = store.list_runs().await.unwrap();
+            assert_eq!(runs.len(), 1);
+            assert_eq!(runs[0].run_id, newer_run);
+            assert!(store.events(&older_run).await.is_err());
+        }
+    );
+
+    bounded_async_test!(
+        async fn retention_policy_prunes_runs_by_age_on_open() {
+            let dir = tempfile::tempdir().unwrap();
+            let store = FileRunStore::open(dir.path()).await.unwrap();
+            let session_id = SessionId::new();
+            let old_run = RunId::new();
+            let fresh_run = RunId::new();
+            let mut old_event = RunEventEnvelope::new(
+                old_run.clone(),
+                session_id.clone(),
+                None,
+                None,
+                RunEventKind::UserPromptSubmit {
+                    prompt: "old".to_string(),
+                },
+            );
+            old_event.timestamp_ms = current_timestamp_ms().saturating_sub(10_000);
+            let mut fresh_event = RunEventEnvelope::new(
+                fresh_run.clone(),
+                session_id,
+                None,
+                None,
+                RunEventKind::UserPromptSubmit {
+                    prompt: "fresh".to_string(),
+                },
+            );
+            fresh_event.timestamp_ms = current_timestamp_ms();
+            store.append(old_event).await.unwrap();
+            store.append(fresh_event).await.unwrap();
+            drop(store);
+
+            let reopened = FileRunStore::open_with_options(
+                dir.path(),
+                FileRunStoreOptions {
+                    retention: RunStoreRetentionPolicy {
+                        max_runs: None,
+                        max_age: Some(Duration::from_secs(1)),
+                    },
+                },
+            )
             .await
             .unwrap();
 
-        let matches = store.search_runs("checklist").await.unwrap();
-        assert_eq!(matches.len(), 1);
-        assert_eq!(matches[0].summary.run_id, run_id);
-        assert_eq!(matches[0].matched_event_count, 1);
-        assert!(
-            matches[0]
-                .preview_matches
-                .iter()
-                .any(|line| line.contains("deploy checklist"))
-        );
-    }
-
-    #[tokio::test]
-    async fn retention_policy_prunes_oldest_runs_by_count() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = FileRunStore::open_with_options(
-            dir.path(),
-            FileRunStoreOptions {
-                retention: RunStoreRetentionPolicy {
-                    max_runs: Some(1),
-                    max_age: None,
-                },
-            },
-        )
-        .await
-        .unwrap();
-        let session_id = SessionId::new();
-        let older_run = RunId::new();
-        let newer_run = RunId::new();
-        let mut older_event = RunEventEnvelope::new(
-            older_run.clone(),
-            session_id.clone(),
-            None,
-            None,
-            RunEventKind::UserPromptSubmit {
-                prompt: "older".to_string(),
-            },
-        );
-        older_event.timestamp_ms = current_timestamp_ms().saturating_sub(10_000);
-        let mut newer_event = RunEventEnvelope::new(
-            newer_run.clone(),
-            session_id,
-            None,
-            None,
-            RunEventKind::UserPromptSubmit {
-                prompt: "newer".to_string(),
-            },
-        );
-        newer_event.timestamp_ms = current_timestamp_ms();
-
-        store.append(older_event).await.unwrap();
-        store.append(newer_event).await.unwrap();
-
-        let runs = store.list_runs().await.unwrap();
-        assert_eq!(runs.len(), 1);
-        assert_eq!(runs[0].run_id, newer_run);
-        assert!(store.events(&older_run).await.is_err());
-    }
-
-    #[tokio::test]
-    async fn retention_policy_prunes_runs_by_age_on_open() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = FileRunStore::open(dir.path()).await.unwrap();
-        let session_id = SessionId::new();
-        let old_run = RunId::new();
-        let fresh_run = RunId::new();
-        let mut old_event = RunEventEnvelope::new(
-            old_run.clone(),
-            session_id.clone(),
-            None,
-            None,
-            RunEventKind::UserPromptSubmit {
-                prompt: "old".to_string(),
-            },
-        );
-        old_event.timestamp_ms = current_timestamp_ms().saturating_sub(10_000);
-        let mut fresh_event = RunEventEnvelope::new(
-            fresh_run.clone(),
-            session_id,
-            None,
-            None,
-            RunEventKind::UserPromptSubmit {
-                prompt: "fresh".to_string(),
-            },
-        );
-        fresh_event.timestamp_ms = current_timestamp_ms();
-        store.append(old_event).await.unwrap();
-        store.append(fresh_event).await.unwrap();
-        drop(store);
-
-        let reopened = FileRunStore::open_with_options(
-            dir.path(),
-            FileRunStoreOptions {
-                retention: RunStoreRetentionPolicy {
-                    max_runs: None,
-                    max_age: Some(Duration::from_secs(1)),
-                },
-            },
-        )
-        .await
-        .unwrap();
-
-        let runs = reopened.list_runs().await.unwrap();
-        assert_eq!(runs.len(), 1);
-        assert_eq!(runs[0].run_id, fresh_run);
-        assert!(reopened.events(&old_run).await.is_err());
-    }
+            let runs = reopened.list_runs().await.unwrap();
+            assert_eq!(runs.len(), 1);
+            assert_eq!(runs[0].run_id, fresh_run);
+            assert!(reopened.events(&old_run).await.is_err());
+        }
+    );
 
     #[test]
     fn search_corpus_is_capped_to_recent_text() {
@@ -595,39 +611,40 @@ mod tests {
         assert!(corpus.chars().count() <= 16_384);
     }
 
-    #[tokio::test]
-    async fn exports_runs_for_memory_from_index_sidecar() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = FileRunStore::open(dir.path()).await.unwrap();
-        let run_id = RunId::new();
-        let session_id = SessionId::new();
-        store
-            .append(RunEventEnvelope::new(
-                run_id.clone(),
-                session_id.clone(),
-                None,
-                None,
-                RunEventKind::UserPromptSubmit {
-                    prompt: "ship release".to_string(),
-                },
-            ))
-            .await
-            .unwrap();
+    bounded_async_test!(
+        async fn exports_runs_for_memory_from_index_sidecar() {
+            let dir = tempfile::tempdir().unwrap();
+            let store = FileRunStore::open(dir.path()).await.unwrap();
+            let run_id = RunId::new();
+            let session_id = SessionId::new();
+            store
+                .append(RunEventEnvelope::new(
+                    run_id.clone(),
+                    session_id.clone(),
+                    None,
+                    None,
+                    RunEventKind::UserPromptSubmit {
+                        prompt: "ship release".to_string(),
+                    },
+                ))
+                .await
+                .unwrap();
 
-        let exports = store
-            .export_for_memory(RunMemoryExportRequest {
-                max_runs: Some(1),
-                max_search_corpus_chars: Some(64),
-            })
-            .await
-            .unwrap();
-        assert_eq!(exports.runs.len(), 1);
-        assert_eq!(exports.runs[0].summary.run_id, run_id);
-        assert!(exports.runs[0].search_corpus.contains("ship release"));
-        assert_eq!(exports.sessions.len(), 1);
-        assert_eq!(
-            exports.sessions[0].summary.session_id.as_ref(),
-            Some(&session_id)
-        );
-    }
+            let exports = store
+                .export_for_memory(RunMemoryExportRequest {
+                    max_runs: Some(1),
+                    max_search_corpus_chars: Some(64),
+                })
+                .await
+                .unwrap();
+            assert_eq!(exports.runs.len(), 1);
+            assert_eq!(exports.runs[0].summary.run_id, run_id);
+            assert!(exports.runs[0].search_corpus.contains("ship release"));
+            assert_eq!(exports.sessions.len(), 1);
+            assert_eq!(
+                exports.sessions[0].summary.session_id.as_ref(),
+                Some(&session_id)
+            );
+        }
+    );
 }
