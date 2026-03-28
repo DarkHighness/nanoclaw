@@ -1,4 +1,5 @@
 mod provider;
+mod summary;
 
 use crate::{
     InteractiveToolApprovalHandler, RuntimeTui, TuiStartupSummary, config::AgentCoreConfig,
@@ -8,9 +9,7 @@ use agent::mcp::{
     ConnectedMcpServer, McpConnectOptions, McpServerConfig, McpTransportConfig,
     catalog_tools_as_registry_entries, connect_and_catalog_mcp_servers_with_options,
 };
-use agent::plugins::{
-    PluginActivationPlan, PluginDiagnosticLevel, PluginEntryConfig, PluginSlotsConfig,
-};
+use agent::plugins::{PluginActivationPlan, PluginEntryConfig, PluginSlotsConfig};
 use agent::skills::{Skill, load_skill_roots};
 use anyhow::{Context, Result};
 use provider::{build_backend, provider_summary};
@@ -22,15 +21,17 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use store::{FileRunStore, InMemoryRunStore, RunStore};
+use summary::build_startup_summary;
+#[cfg(test)]
+use tools::describe_sandbox_policy;
 use tools::{
     BashTool, EditTool, GlobTool, GrepTool, ListTool, ManagedPolicyProcessExecutor, PatchTool,
     ReadTool, SandboxBackendStatus, SandboxPolicy, ToolExecutionContext, ToolRegistry, WriteTool,
-    describe_sandbox_policy, ensure_sandbox_policy_supported,
+    ensure_sandbox_policy_supported,
 };
 #[cfg(feature = "web-tools")]
 use tools::{WebFetchTool, WebSearchBackendsTool, WebSearchTool};
 use tracing::{info, warn};
-use types::ToolOrigin;
 
 const DEFAULT_AGENT_PREAMBLE: &[&str] = &[
     "You are a general-purpose software agent operating inside the current workspace.",
@@ -318,127 +319,6 @@ async fn build_store(config: &AgentCoreConfig, workspace_root: &Path) -> Result<
     }
 }
 
-fn build_startup_summary(
-    run_id: &types::RunId,
-    workspace_root: &Path,
-    provider_summary: &str,
-    store_handle: &StoreHandle,
-    stored_run_count: usize,
-    tool_specs: &[types::ToolSpec],
-    skill_names: &[String],
-    mcp_servers: &[ConnectedMcpServer],
-    config: &AgentCoreConfig,
-    plugin_plan: &PluginActivationPlan,
-    driver_warnings: &[String],
-    sandbox_policy: &SandboxPolicy,
-    sandbox_status: &SandboxBackendStatus,
-) -> TuiStartupSummary {
-    let local_tools = tool_specs
-        .iter()
-        .filter(|tool| matches!(tool.origin, ToolOrigin::Local))
-        .count();
-    let mcp_tools = tool_specs.len().saturating_sub(local_tools);
-    let mut sidebar = vec![
-        format!("run: {}", preview_id(run_id.as_str())),
-        format!("workspace: {}", workspace_root.display()),
-        format!("provider: {provider_summary}"),
-        format!("store: {}", store_handle.label),
-        format!("stored runs: {stored_run_count}"),
-        format!(
-            "tools: {} total ({local_tools} local, {mcp_tools} mcp)",
-            tool_specs.len()
-        ),
-        format!("skills: {}", skill_names.len()),
-        format!(
-            "plugins: {} enabled / {} total",
-            plugin_plan
-                .plugin_states
-                .iter()
-                .filter(|state| state.enabled)
-                .count(),
-            plugin_plan.plugin_states.len()
-        ),
-        format!("mcp servers: {}", mcp_servers.len()),
-        format!("command prefix: {}", config.tui.command_prefix),
-        format!(
-            "sandbox: {}",
-            describe_sandbox_policy(sandbox_policy, sandbox_status)
-        ),
-        format!(
-            "compaction: {}",
-            if config.runtime.auto_compact {
-                format!(
-                    "auto at ~{} / {} tokens, keep {} recent messages",
-                    config
-                        .runtime
-                        .compact_trigger_tokens
-                        .unwrap_or(config.runtime.context_tokens.unwrap_or(128_000) * 3 / 4),
-                    config.runtime.context_tokens.unwrap_or(128_000),
-                    config.runtime.compact_preserve_recent_messages.unwrap_or(8),
-                )
-            } else {
-                "disabled".to_string()
-            }
-        ),
-    ];
-    if let Some(warning) = &store_handle.warning {
-        sidebar.push(format!("warning: {warning}"));
-    }
-    if let Some(memory_slot) = plugin_plan.slots.memory.as_deref() {
-        sidebar.push(format!("memory slot: {memory_slot}"));
-    }
-    for diagnostic in &plugin_plan.diagnostics {
-        let level = match diagnostic.level {
-            PluginDiagnosticLevel::Warning => "plugin warning",
-            PluginDiagnosticLevel::Error => "plugin error",
-        };
-        sidebar.push(format!("{level}: {}", diagnostic.message));
-    }
-    for warning in driver_warnings {
-        sidebar.push(format!("driver warning: {warning}"));
-    }
-    if !skill_names.is_empty() {
-        sidebar.push(format!("skill names: {}", preview_list(skill_names, 4)));
-    }
-    if !mcp_servers.is_empty() {
-        sidebar.push(format!(
-            "mcp names: {}",
-            preview_list(
-                &mcp_servers
-                    .iter()
-                    .map(|server| server.server_name.clone())
-                    .collect::<Vec<_>>(),
-                4,
-            )
-        ));
-    }
-    sidebar.push(
-        "commands: /status /runs [query] /run <id> /export_run <id> <path> /compact [/notes] /skills /skill <name>"
-            .to_string(),
-    );
-
-    TuiStartupSummary {
-        sidebar_title: "Overview".to_string(),
-        sidebar,
-        status: "Ready. /status restores the startup overview.".to_string(),
-    }
-}
-
-fn preview_list(items: &[String], max_items: usize) -> String {
-    if items.is_empty() {
-        return "none".to_string();
-    }
-    let mut preview = items.iter().take(max_items).cloned().collect::<Vec<_>>();
-    if items.len() > max_items {
-        preview.push(format!("+{}", items.len() - max_items));
-    }
-    preview.join(", ")
-}
-
-fn preview_id(value: &str) -> String {
-    value.chars().take(8).collect()
-}
-
 fn resolved_skill_roots(
     config: &AgentCoreConfig,
     workspace_root: &Path,
@@ -530,13 +410,20 @@ mod tests {
     };
     use crate::config::{AgentCoreConfig, ProviderKind};
     use agent::skills::load_skill_roots;
+    use std::sync::{Mutex, OnceLock};
     use tempfile::tempdir;
     use tokio::fs;
     use tools::{NetworkPolicy, SandboxBackendStatus, SandboxMode, ToolExecutionContext};
     use types::{ToolName, ToolOrigin};
 
+    fn env_test_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
     #[tokio::test]
     async fn bootstraps_runtime_from_configured_workspace() {
+        let _guard = env_test_lock().lock().unwrap();
         let dir = tempdir().unwrap();
         fs::create_dir_all(dir.path().join("skills").join("useful"))
             .await
@@ -653,6 +540,7 @@ Use this skill when asked.
 
     #[tokio::test]
     async fn runtime_preamble_is_built_in_code_from_system_prompt_and_skills() {
+        let _guard = env_test_lock().lock().unwrap();
         let dir = tempdir().unwrap();
         fs::create_dir_all(dir.path().join("skills").join("useful"))
             .await
@@ -697,6 +585,7 @@ Use this skill when asked.
 
     #[tokio::test]
     async fn boot_registers_memory_tools_from_builtin_plugin_slot() {
+        let _guard = env_test_lock().lock().unwrap();
         let dir = tempdir().unwrap();
         fs::create_dir_all(
             dir.path()
@@ -759,6 +648,7 @@ Use this skill when asked.
 
     #[tokio::test]
     async fn falls_back_to_memory_store_when_store_path_is_not_directory() {
+        let _guard = env_test_lock().lock().unwrap();
         let dir = tempdir().unwrap();
         fs::create_dir_all(dir.path().join(".nanoclaw/config"))
             .await
@@ -806,6 +696,7 @@ Use this skill when asked.
 
     #[tokio::test]
     async fn build_backend_applies_provider_additional_params() {
+        let _guard = env_test_lock().lock().unwrap();
         let config = AgentCoreConfig::default().with_override(|config| {
             config.provider.kind = Some(ProviderKind::OpenAi);
             config.provider.model = Some("gpt-4.1-mini".to_string());
@@ -827,6 +718,7 @@ Use this skill when asked.
 
     #[test]
     fn runtime_sandbox_config_can_require_enforcing_backend() {
+        let _guard = env_test_lock().lock().unwrap();
         let workspace = tempdir().unwrap();
         let config = AgentCoreConfig::default().with_override(|config| {
             config.runtime.sandbox_fail_if_unavailable = true;
