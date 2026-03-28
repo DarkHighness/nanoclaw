@@ -418,8 +418,15 @@
     - `crates/memory/src/runtime_exports.rs`
     - `crates/memory/src/memory_core.rs`
     - `crates/memory/src/memory_embed.rs`
-- 给 corpus 扫描增加增量目录快照
-- 避免读请求触发不必要的 sidecar 重写
+- 给 corpus 加入增量文件快照与共享缓存
+  - 状态：
+    - `completed`
+  - 已落地语义：
+    - `load_memory_corpus()` 现在维护进程内 corpus cache，`memory-core` / `memory-embed` 会共享同一份解析结果
+    - 未变化的 Markdown 文档会按 `len + modified timestamp` 复用解析结果，不再重复读盘
+    - 单文件修改只会重读受影响文档，已补回归测试覆盖 cache hit 与增量失效
+  - 目标文件：
+    - `crates/memory/src/corpus.rs`
 
 ### 8.3 插件系统
 

@@ -684,8 +684,7 @@ cargo test -p agent
 
 当前尚未达到计划目标的部分：
 
-- corpus 扫描还不是增量快照模式
-- `memory-core` / `memory-embed` 之间还没有共享缓存
+- candidate 发现阶段仍会重新 walk 目标目录；当前优化先解决未变文件的重复读盘与重复解析
 
 ### 17.2 P0 修复项
 
@@ -733,9 +732,11 @@ cargo test -p agent
     - `get/list/search` 现在只读取既有 sidecars 与 lifecycle 统计，不再触发 `export_for_memory()`
     - `memory-core` / `memory-embed` 两个 backend 的读路径都已切到 read-only runtime export 加载
     - 已补回归测试，覆盖“读请求不触发 runtime export materialization”
-- 给 corpus 扫描增加增量目录快照
-- 避免读请求触发多余 sidecar 重写
-- 评估 `memory-core` / `memory-embed` 对同一 corpus 的共享缓存策略
+- 给 corpus 加入增量文件快照与共享缓存
+  - 已完成：
+    - `load_memory_corpus()` 现在维护进程内 corpus cache，`memory-core` / `memory-embed` 可共享同一份解析结果
+    - 未变化的 Markdown 文档会按 `len + modified timestamp` 复用解析结果，不再重复读盘
+    - 单文件修改只会重读受影响文档，已补回归测试覆盖 cache hit 与增量失效
 
 ### 17.5 文档修正
 

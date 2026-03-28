@@ -6,7 +6,9 @@ use globset::{Glob, GlobSet, GlobSetBuilder};
 use ignore::WalkBuilder;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::UNIX_EPOCH;
 use tokio::fs;
 use types::{RunId, SessionId};
@@ -56,6 +58,41 @@ struct ParsedFrontmatter {
     body_start_line: usize,
     frontmatter: Option<MemoryFrontmatter>,
 }
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct MemoryCorpusCacheKey {
+    workspace_root: PathBuf,
+    include_globs: Vec<String>,
+    extra_paths: Vec<PathBuf>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct MemoryCorpusFileFingerprint {
+    len: u64,
+    modified_at_ms: Option<u64>,
+    modified_at_ns: Option<u64>,
+}
+
+#[derive(Clone, Debug)]
+struct CachedMemoryCorpusDocument {
+    fingerprint: MemoryCorpusFileFingerprint,
+    document: MemoryCorpusDocument,
+}
+
+#[derive(Clone, Debug, Default)]
+struct MemoryCorpusCacheEntry {
+    documents: BTreeMap<String, CachedMemoryCorpusDocument>,
+}
+
+// Memory search backends reload the same Markdown corpus repeatedly inside one
+// process. Keeping an in-memory snapshot cache avoids re-reading unchanged
+// files while preserving Markdown as the only source of truth.
+static MEMORY_CORPUS_CACHE: OnceLock<
+    Mutex<HashMap<MemoryCorpusCacheKey, Arc<MemoryCorpusCacheEntry>>>,
+> = OnceLock::new();
+
+#[cfg(test)]
+static CORPUS_DISK_READS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 impl MemoryCorpus {
     #[must_use]
@@ -134,16 +171,28 @@ pub async fn load_memory_corpus(
     config: &MemoryCorpusConfig,
 ) -> Result<MemoryCorpus> {
     let include_set = build_globset(&config.include_globs)?;
+    let cache_key = MemoryCorpusCacheKey {
+        workspace_root: workspace_root.to_path_buf(),
+        include_globs: config.include_globs.clone(),
+        extra_paths: config.extra_paths.clone(),
+    };
+    let cached = {
+        memory_corpus_cache()
+            .lock()
+            .expect("memory corpus cache lock")
+            .get(&cache_key)
+            .cloned()
+    };
     let mut candidates = discover_default_candidates(workspace_root, &include_set)?;
     candidates.extend(resolve_extra_paths(workspace_root, &config.extra_paths)?);
     candidates.sort();
     candidates.dedup();
 
-    let mut documents = Vec::new();
+    let mut documents = BTreeMap::new();
     for absolute_path in candidates {
-        if !absolute_path.exists() || !absolute_path.is_file() {
+        let Some(fingerprint) = load_file_fingerprint(&absolute_path).await? else {
             continue;
-        }
+        };
         let relative = absolute_path
             .strip_prefix(workspace_root)
             .map_err(|_| MemoryError::PathOutsideWorkspace(absolute_path.display().to_string()))?;
@@ -152,27 +201,86 @@ pub async fn load_memory_corpus(
         {
             continue;
         }
-        let text = fs::read_to_string(&absolute_path).await?;
-        let lines = parse_lines(&text);
-        let parsed_frontmatter = parse_frontmatter(&text)?;
-        let modified_at_ms = file_timestamp_ms(&absolute_path).await?;
-        let metadata = merge_metadata(
-            infer_metadata_from_path(&relative_path),
-            parsed_frontmatter.frontmatter,
-            modified_at_ms,
+        let document = if let Some(document) = reuse_cached_document(
+            cached.as_deref(),
+            &relative_path,
+            &absolute_path,
+            &fingerprint,
+        ) {
+            document
+        } else {
+            load_document_from_disk(
+                absolute_path.clone(),
+                &relative_path,
+                fingerprint.modified_at_ms,
+            )
+            .await?
+        };
+        documents.insert(
+            relative_path,
+            CachedMemoryCorpusDocument {
+                fingerprint,
+                document,
+            },
         );
-        documents.push(MemoryCorpusDocument {
-            path: relative_path.clone(),
-            absolute_path,
-            snapshot_id: stable_hash(&text),
-            title: extract_title(&lines, parsed_frontmatter.body_start_line, &relative_path),
-            lines,
-            metadata,
-        });
     }
 
-    documents.sort_by(|left, right| left.path.cmp(&right.path));
-    Ok(MemoryCorpus { documents })
+    let corpus = MemoryCorpus {
+        documents: documents
+            .values()
+            .map(|cached| cached.document.clone())
+            .collect(),
+    };
+    memory_corpus_cache()
+        .lock()
+        .expect("memory corpus cache lock")
+        .insert(cache_key, Arc::new(MemoryCorpusCacheEntry { documents }));
+    Ok(corpus)
+}
+
+fn memory_corpus_cache()
+-> &'static Mutex<HashMap<MemoryCorpusCacheKey, Arc<MemoryCorpusCacheEntry>>> {
+    MEMORY_CORPUS_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn reuse_cached_document(
+    cached: Option<&MemoryCorpusCacheEntry>,
+    relative_path: &str,
+    absolute_path: &Path,
+    fingerprint: &MemoryCorpusFileFingerprint,
+) -> Option<MemoryCorpusDocument> {
+    let cached = cached?;
+    let document = cached.documents.get(relative_path)?;
+    (document.document.absolute_path == absolute_path && document.fingerprint == *fingerprint)
+        .then(|| document.document.clone())
+}
+
+async fn load_document_from_disk(
+    absolute_path: PathBuf,
+    relative_path: &str,
+    modified_at_ms: Option<u64>,
+) -> Result<MemoryCorpusDocument> {
+    let text = read_document_text(&absolute_path).await?;
+    let lines = parse_lines(&text);
+    let parsed_frontmatter = parse_frontmatter(&text)?;
+    let metadata = merge_metadata(
+        infer_metadata_from_path(relative_path),
+        parsed_frontmatter.frontmatter,
+        modified_at_ms,
+    );
+    Ok(MemoryCorpusDocument {
+        path: relative_path.to_string(),
+        absolute_path,
+        snapshot_id: stable_hash(&text),
+        title: extract_title(&lines, parsed_frontmatter.body_start_line, relative_path),
+        lines,
+        metadata,
+    })
+}
+
+async fn read_document_text(path: &Path) -> Result<String> {
+    record_corpus_disk_read();
+    Ok(fs::read_to_string(path).await?)
 }
 
 fn build_globset(globs: &[String]) -> Result<GlobSet> {
@@ -534,23 +642,60 @@ fn normalize_string_list(values: Vec<String>) -> Vec<String> {
     normalized
 }
 
-async fn file_timestamp_ms(path: &Path) -> Result<Option<u64>> {
-    let metadata = fs::metadata(path).await?;
-    let modified = match metadata.modified() {
-        Ok(modified) => modified,
-        Err(_) => return Ok(None),
+async fn load_file_fingerprint(path: &Path) -> Result<Option<MemoryCorpusFileFingerprint>> {
+    let metadata = match fs::metadata(path).await {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
     };
-    let duration = match modified.duration_since(UNIX_EPOCH) {
-        Ok(duration) => duration,
-        Err(_) => return Ok(None),
-    };
-    Ok(Some(
-        duration
-            .as_millis()
-            .min(u128::from(u64::MAX))
-            .try_into()
-            .unwrap_or(u64::MAX),
-    ))
+    if !metadata.is_file() {
+        return Ok(None);
+    }
+    let modified = metadata
+        .modified()
+        .ok()
+        .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok());
+    Ok(Some(MemoryCorpusFileFingerprint {
+        len: metadata.len(),
+        modified_at_ms: modified
+            .as_ref()
+            .map(|duration| capped_duration_millis(*duration)),
+        modified_at_ns: modified.map(capped_duration_nanos),
+    }))
+}
+
+fn capped_duration_millis(duration: std::time::Duration) -> u64 {
+    duration
+        .as_millis()
+        .min(u128::from(u64::MAX))
+        .try_into()
+        .unwrap_or(u64::MAX)
+}
+
+fn capped_duration_nanos(duration: std::time::Duration) -> u64 {
+    duration
+        .as_nanos()
+        .min(u128::from(u64::MAX))
+        .try_into()
+        .unwrap_or(u64::MAX)
+}
+
+#[cfg(test)]
+fn record_corpus_disk_read() {
+    CORPUS_DISK_READS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+#[cfg(not(test))]
+fn record_corpus_disk_read() {}
+
+#[cfg(test)]
+fn corpus_disk_read_count() -> usize {
+    CORPUS_DISK_READS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+#[cfg(test)]
+fn reset_corpus_disk_read_count() {
+    CORPUS_DISK_READS.store(0, std::sync::atomic::Ordering::Relaxed);
 }
 
 fn extract_title(lines: &[String], body_start_line: usize, path: &str) -> String {
@@ -598,10 +743,13 @@ fn is_daily_log_path(path: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{chunk_corpus, load_memory_corpus};
+    use super::{
+        chunk_corpus, corpus_disk_read_count, load_memory_corpus, reset_corpus_disk_read_count,
+    };
     use crate::{MemoryChunkingConfig, MemoryCorpusConfig, MemoryScope};
+    use std::time::Duration;
     use tempfile::tempdir;
-    use tokio::fs;
+    use tokio::{fs, time::sleep};
 
     #[tokio::test]
     async fn loads_default_memory_globs_only() {
@@ -710,6 +858,61 @@ mod tests {
             by_path["memory/howto.md"].metadata.tags,
             vec!["deploy".to_string()]
         );
+    }
+
+    #[tokio::test]
+    async fn reuses_unchanged_documents_without_re_reading_disk() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("MEMORY.md"), "# Root\nfact")
+            .await
+            .unwrap();
+        fs::create_dir_all(dir.path().join("memory")).await.unwrap();
+        fs::write(dir.path().join("memory/cache.md"), "# Cache\nentry")
+            .await
+            .unwrap();
+
+        reset_corpus_disk_read_count();
+        let first = load_memory_corpus(dir.path(), &MemoryCorpusConfig::default())
+            .await
+            .unwrap();
+        let first_reads = corpus_disk_read_count();
+        let second = load_memory_corpus(dir.path(), &MemoryCorpusConfig::default())
+            .await
+            .unwrap();
+
+        assert_eq!(first.documents, second.documents);
+        assert_eq!(first_reads, 2);
+        assert_eq!(corpus_disk_read_count(), first_reads);
+    }
+
+    #[tokio::test]
+    async fn reloads_only_documents_whose_fingerprint_changed() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("MEMORY.md"), "# Root\nfact")
+            .await
+            .unwrap();
+        fs::create_dir_all(dir.path().join("memory")).await.unwrap();
+        fs::write(dir.path().join("memory/cache.md"), "# Cache\nentry")
+            .await
+            .unwrap();
+
+        reset_corpus_disk_read_count();
+        load_memory_corpus(dir.path(), &MemoryCorpusConfig::default())
+            .await
+            .unwrap();
+        let baseline_reads = corpus_disk_read_count();
+
+        sleep(Duration::from_millis(2)).await;
+        fs::write(dir.path().join("memory/cache.md"), "# Cache\nupdated entry")
+            .await
+            .unwrap();
+        let corpus = load_memory_corpus(dir.path(), &MemoryCorpusConfig::default())
+            .await
+            .unwrap();
+
+        assert_eq!(corpus.documents.len(), 2);
+        assert_eq!(corpus.documents[1].path, "memory/cache.md");
+        assert_eq!(corpus_disk_read_count(), baseline_reads + 1);
     }
 
     #[tokio::test]
