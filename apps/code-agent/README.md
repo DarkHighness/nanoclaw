@@ -16,6 +16,7 @@ It intentionally keeps the host layer thin:
 - interactive approval for destructive tools
 - streaming assistant output in a `ratatui` TUI
 - manual and automatic context compaction
+- persistent run history with replay and export commands
 
 ## Usage
 
@@ -132,7 +133,12 @@ not have useful extensions, including `Dockerfile*`, `Containerfile*`, `go.mod`,
 
 ## Commands
 
+- `/status`
 - `/help`
+- `/runs [query]`
+- `/run <id-prefix>`
+- `/export_run <id-prefix> <path>`
+- `/export_transcript <id-prefix> <path>`
 - `/tools`
 - `/skills`
 - `/steer <notes>`

@@ -45,12 +45,21 @@ Shipped in the third implementation slice:
 - repository top-level docs now treat `reference-tui` as temporary migration
   source material instead of an actively maintained app
 
+Shipped in the fourth implementation slice:
+
+- `code-agent` backend now owns run history lookup, replay, and export services
+- the TUI now exposes `/runs`, `/run`, `/export_run`, and
+  `/export_transcript` on top of backend-owned store access
+- durable run replay/export no longer depends on the legacy shell staying
+  product-shaped
+
 Still pending in the next slices:
 
 - backend boot still needs internal decomposition out of `boot.rs`
-- replay and export migration into `code-agent`
 - frontend-neutral approval, event, and session-operation contracts beyond the
   startup snapshot
+- MCP prompt/resource inspection and richer startup diagnostics still need to
+  move into `code-agent`
 - remaining docs and workspace cleanup before `reference-tui` can be retired
 
 ## External Product Signals
@@ -94,9 +103,8 @@ Current problems:
   still lacks typed host events, approval messages, and snapshots.
 - legacy `reference-tui` code still duplicates host responsibilities that now
   belong in `code-agent`.
-- `code-agent` now persists runs through the backend, but replay, export, MCP
-  browsing, and startup diagnostics still have not moved over from the legacy
-  shell.
+- `code-agent` now owns durable run replay/export, but MCP browsing and richer
+  startup diagnostics still have not moved over from the legacy shell.
 - repository docs and app workspace defaults were tightened, but the app
   workspace still contains transitional code that must be retired later.
 
@@ -106,14 +114,12 @@ Current problems:
 
 - strict backend/frontend split is incomplete
 - frontend-neutral command/event/approval contract is incomplete
-- durable run/session storage exists, but durable history/export services do not
 - `apps/` delivery boundary is still transitional while legacy code stays
   in-tree
 
 ### P1
 
 - legacy host capabilities still need migration into `code-agent`
-  - runs/history/export
   - MCP prompt/resource inspection
   - startup diagnostics and host summaries
 - approval flow is still too frontend-shaped

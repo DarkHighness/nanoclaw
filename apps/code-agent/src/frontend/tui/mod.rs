@@ -1,10 +1,17 @@
 mod approval;
+mod commands;
+mod history;
 mod observer;
 mod render;
 mod state;
 
-use crate::backend::CodeAgentSession;
+use crate::backend::{CodeAgentSession, preview_id};
 pub(crate) use approval::{ApprovalBridge, InteractiveToolApprovalHandler};
+use commands::{SlashCommand, parse_slash_command};
+use history::{
+    format_export_result, format_run_inspector, format_run_search_line, format_run_summary_line,
+    format_transcript_lines,
+};
 use observer::SharedRenderObserver;
 use render::render;
 pub(crate) use state::SharedUiState;
@@ -227,9 +234,13 @@ impl CodeAgentTui {
         if let Some(task) = self.turn_task.take() {
             match task.await {
                 Ok(Ok(())) => {
+                    let stored_run_count = self.session.refresh_stored_run_count().await.ok();
                     self.ui_state.mutate(|state| {
                         state.turn_running = false;
                         state.session.git = git.clone();
+                        if let Some(stored_run_count) = stored_run_count {
+                            state.session.stored_run_count = stored_run_count;
+                        }
                     });
                 }
                 Ok(Err(error)) => {
@@ -306,15 +317,30 @@ impl CodeAgentTui {
     }
 
     async fn apply_command(&mut self, input: &str) -> Result<bool> {
-        match input.trim() {
-            "/quit" | "/exit" => Ok(true),
-            "/help" => {
+        match parse_slash_command(input) {
+            SlashCommand::Quit => Ok(true),
+            SlashCommand::Status => {
+                self.ui_state.mutate(|state| {
+                    state.inspector_title = "Guide".to_string();
+                    state.inspector_scroll = 0;
+                    state.inspector = build_startup_inspector(&state.session);
+                    state.status = "Restored session overview".to_string();
+                    state.push_activity("restored session overview");
+                });
+                Ok(false)
+            }
+            SlashCommand::Help => {
                 self.ui_state.mutate(|state| {
                     state.inspector_title = "Command Palette".to_string();
                     state.inspector_scroll = 0;
                     state.inspector = vec![
                         "Slash commands".to_string(),
+                        "  /status".to_string(),
                         "  /help".to_string(),
+                        "  /runs [query]".to_string(),
+                        "  /run <id-prefix>".to_string(),
+                        "  /export_run <id-prefix> <path>".to_string(),
+                        "  /export_transcript <id-prefix> <path>".to_string(),
                         "  /tools".to_string(),
                         "  /skills".to_string(),
                         "  /steer <notes>".to_string(),
@@ -327,8 +353,8 @@ impl CodeAgentTui {
                 });
                 Ok(false)
             }
-            "/tools" => {
-                let tool_names = self.session.startup_snapshot().tool_names.clone();
+            SlashCommand::Tools => {
+                let tool_names = self.session.startup_snapshot().tool_names;
                 self.ui_state.mutate(move |state| {
                     state.inspector_title = "Tool Catalog".to_string();
                     state.inspector_scroll = 0;
@@ -341,7 +367,7 @@ impl CodeAgentTui {
                 });
                 Ok(false)
             }
-            "/skills" => {
+            SlashCommand::Skills => {
                 let skills = self.session.skills().to_vec();
                 self.ui_state.mutate(move |state| {
                     state.inspector_title = "Skill Catalog".to_string();
@@ -365,14 +391,8 @@ impl CodeAgentTui {
                 });
                 Ok(false)
             }
-            _ if input.trim().starts_with("/steer") => {
-                let notes = input
-                    .trim()
-                    .strip_prefix("/steer")
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty())
-                    .map(ToOwned::to_owned);
-                let Some(message) = notes else {
+            SlashCommand::Steer { message } => {
+                let Some(message) = message.map(ToOwned::to_owned) else {
                     self.ui_state.mutate(|state| {
                         state.status = "Usage: /steer <notes>".to_string();
                         state.push_activity("invalid /steer invocation");
@@ -406,7 +426,7 @@ impl CodeAgentTui {
                 });
                 Ok(false)
             }
-            "/clear" => {
+            SlashCommand::Clear => {
                 let mut startup = self.startup_state();
                 startup.session.queued_commands = self.command_queue.len().await;
                 startup.status = "Cleared conversation pane".to_string();
@@ -414,7 +434,7 @@ impl CodeAgentTui {
                 self.ui_state.replace(startup);
                 Ok(false)
             }
-            _ if input.trim().starts_with("/compact") => {
+            SlashCommand::Compact { notes } => {
                 if self.turn_task.is_some() {
                     self.ui_state.mutate(|state| {
                         state.status = "Wait for the current turn before compacting".to_string();
@@ -422,12 +442,7 @@ impl CodeAgentTui {
                     });
                     return Ok(false);
                 }
-                let notes = input
-                    .trim()
-                    .strip_prefix("/compact")
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty())
-                    .map(ToOwned::to_owned);
+                let notes = notes.map(ToOwned::to_owned);
                 let compacted = self.session.compact_now(notes).await?;
                 self.ui_state.mutate(|state| {
                     if compacted {
@@ -440,7 +455,18 @@ impl CodeAgentTui {
                 });
                 Ok(false)
             }
-            _ => {
+            command @ (SlashCommand::Runs { .. }
+            | SlashCommand::Run { .. }
+            | SlashCommand::ExportRun { .. }
+            | SlashCommand::ExportTranscript { .. }) => self.apply_history_command(command).await,
+            SlashCommand::InvalidUsage(message) => {
+                self.ui_state.mutate(|state| {
+                    state.status = message.to_string();
+                    state.push_activity(format!("invalid command: {message}"));
+                });
+                Ok(false)
+            }
+            SlashCommand::Unknown(input) => {
                 let input = input.to_string();
                 self.ui_state.mutate(move |state| {
                     state.status = format!("Unknown command: {input}");
@@ -448,6 +474,127 @@ impl CodeAgentTui {
                 });
                 Ok(false)
             }
+        }
+    }
+
+    async fn apply_history_command(&mut self, command: SlashCommand<'_>) -> Result<bool> {
+        match command {
+            SlashCommand::Runs { query } => {
+                if let Some(query) = query {
+                    let query = query.to_string();
+                    let matches = self.session.search_runs(&query).await?;
+                    let stored_run_count = self.session.refresh_stored_run_count().await.ok();
+                    self.ui_state.mutate(move |state| {
+                        if let Some(stored_run_count) = stored_run_count {
+                            state.session.stored_run_count = stored_run_count;
+                        }
+                        state.inspector_title = "Run Search".to_string();
+                        state.inspector_scroll = 0;
+                        state.inspector = if matches.is_empty() {
+                            vec![format!("no runs matched `{query}`")]
+                        } else {
+                            matches
+                                .iter()
+                                .take(12)
+                                .map(format_run_search_line)
+                                .collect()
+                        };
+                        state.status = if matches.is_empty() {
+                            format!("No runs matched `{query}`")
+                        } else {
+                            format!(
+                                "Found {} matching runs. Use /run <id-prefix> to replay one.",
+                                matches.len()
+                            )
+                        };
+                        state.push_activity(format!(
+                            "searched runs: {}",
+                            state::preview_text(&query, 40)
+                        ));
+                    });
+                } else {
+                    let runs = self.session.list_runs().await?;
+                    let stored_run_count = runs.len();
+                    self.ui_state.mutate(move |state| {
+                        state.session.stored_run_count = stored_run_count;
+                        state.inspector_title = "Runs".to_string();
+                        state.inspector_scroll = 0;
+                        state.inspector = if runs.is_empty() {
+                            vec!["no runs recorded yet".to_string()]
+                        } else {
+                            runs.iter().take(12).map(format_run_summary_line).collect()
+                        };
+                        state.status = if runs.is_empty() {
+                            "No runs available yet".to_string()
+                        } else {
+                            format!(
+                                "Listed {} runs. Use /run <id-prefix> to replay one.",
+                                runs.len()
+                            )
+                        };
+                        state.push_activity("listed persisted runs");
+                    });
+                }
+                Ok(false)
+            }
+            SlashCommand::Run { run_ref } => {
+                if self.turn_task.is_some() {
+                    self.ui_state.mutate(|state| {
+                        state.status =
+                            "Wait for the current turn before replaying another run".to_string();
+                        state.push_activity("run replay blocked while turn running");
+                    });
+                    return Ok(false);
+                }
+                let loaded = self.session.load_run(run_ref).await?;
+                let inspector = format_run_inspector(&loaded);
+                let transcript = format_transcript_lines(&loaded);
+                let run_id_preview = preview_id(loaded.summary.run_id.as_str());
+                let transcript_count = loaded.summary.transcript_message_count;
+                self.ui_state.mutate(move |state| {
+                    state.inspector_title = "Run".to_string();
+                    state.inspector_scroll = 0;
+                    state.inspector = inspector;
+                    state.transcript = transcript;
+                    state.transcript_scroll = 0;
+                    state.status = format!(
+                        "Loaded run {} with {} transcript messages",
+                        run_id_preview, transcript_count
+                    );
+                    state.push_activity(format!("loaded run {}", run_id_preview));
+                });
+                Ok(false)
+            }
+            SlashCommand::ExportRun { run_ref, path } => {
+                let export = self.session.export_run_events(run_ref, path).await?;
+                let inspector = format_export_result(&export);
+                let run_id_preview = preview_id(export.run_id.as_str());
+                let output_path = export.output_path.display().to_string();
+                self.ui_state.mutate(move |state| {
+                    state.inspector_title = "Export".to_string();
+                    state.inspector_scroll = 0;
+                    state.inspector = inspector;
+                    state.status = format!("Exported run {} to {}", run_id_preview, output_path);
+                    state.push_activity(format!("exported run {}", run_id_preview));
+                });
+                Ok(false)
+            }
+            SlashCommand::ExportTranscript { run_ref, path } => {
+                let export = self.session.export_run_transcript(run_ref, path).await?;
+                let inspector = format_export_result(&export);
+                let run_id_preview = preview_id(export.run_id.as_str());
+                let output_path = export.output_path.display().to_string();
+                self.ui_state.mutate(move |state| {
+                    state.inspector_title = "Export".to_string();
+                    state.inspector_scroll = 0;
+                    state.inspector = inspector;
+                    state.status =
+                        format!("Exported transcript {} to {}", run_id_preview, output_path);
+                    state.push_activity(format!("exported transcript {}", run_id_preview));
+                });
+                Ok(false)
+            }
+            _ => unreachable!("history handler received non-history command"),
         }
     }
 
@@ -519,7 +666,8 @@ fn queued_command_preview(command: &RuntimeCommand) -> String {
 fn build_startup_inspector(session: &state::SessionSummary) -> Vec<String> {
     let mut lines = vec![
         "Ask for repo inspection, edits, tests, or debugging.".to_string(),
-        "Use /help, /tools, /skills, /steer, or /compact from the composer.".to_string(),
+        "Use /status, /runs, /run, /export_run, /export_transcript, /tools, /skills,".to_string(),
+        "/steer, or /compact.".to_string(),
         "Approvals stay in-line above the composer instead of replacing the screen.".to_string(),
         format!(
             "Primary lane: {} / {}",

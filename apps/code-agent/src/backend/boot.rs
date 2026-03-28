@@ -36,6 +36,7 @@ use tracing::{info, warn};
 
 struct RuntimeBuildResult {
     runtime: AgentRuntime,
+    store: Arc<dyn store::RunStore>,
     skills: Vec<Skill>,
     store_label: String,
     store_warning: Option<String>,
@@ -192,6 +193,7 @@ pub(crate) async fn build_session(
 
     let RuntimeBuildResult {
         runtime,
+        store,
         skills,
         store_label,
         store_warning,
@@ -209,6 +211,7 @@ pub(crate) async fn build_session(
 
     Ok(super::CodeAgentSession::new(
         runtime,
+        store,
         super::SessionStartupSnapshot {
             workspace_name: workspace_root
                 .file_name()
@@ -443,7 +446,7 @@ async fn build_runtime(
     tools.register(AgentListTool::new(subagent_executor.clone()));
     tools.register(AgentCancelTool::new(subagent_executor.clone()));
 
-    let runtime = AgentRuntimeBuilder::new(backend.clone(), store)
+    let runtime = AgentRuntimeBuilder::new(backend.clone(), store.clone())
         .hook_runner(hook_runner)
         .tool_registry(tools)
         .tool_context(tool_context)
@@ -463,6 +466,7 @@ async fn build_runtime(
 
     Ok(RuntimeBuildResult {
         runtime,
+        store,
         skills,
         store_label: store_handle.label,
         store_warning: store_handle.warning,

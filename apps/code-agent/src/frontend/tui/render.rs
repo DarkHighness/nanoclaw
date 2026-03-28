@@ -201,6 +201,15 @@ fn session_lines(state: &TuiState) -> Vec<String> {
                 state.session.skill_names.len().to_string()
             }
         ),
+        format!(
+            "store: {}  runs {}",
+            preview_text(&state.session.store_label, 20),
+            state.session.stored_run_count
+        ),
+        format!(
+            "sandbox: {}",
+            preview_text(&state.session.sandbox_summary, 28)
+        ),
         session_context_line(state),
         session_last_token_line(state),
         session_total_token_line(state),
