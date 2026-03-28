@@ -14,6 +14,7 @@ store = { path = "../store" }
 tools = { path = "../tools" }
 types = { path = "../types" }
 async-trait.workspace = true
+dashmap.workspace = true
 futures.workspace = true
 regex.workspace = true
 reqwest.workspace = true

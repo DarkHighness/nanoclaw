@@ -813,6 +813,10 @@ cargo test -p code-agent
     - subagent 的 spawn / start / finish 热路径已切到 batch append，减少重复文件打开与 flush
     - 已补 file store 批量追加回归测试，runtime/store 相关测试保持通过
 - 评估 mailbox / session manager 是否需要从单点 `Mutex<BTreeMap<...>>` 升级
+  - 已完成：
+    - `AgentSessionManager` 已切到 `DashMap<AgentId, Arc<RecordCell>>`，单 agent 控制面更新不再竞争全局 registry 锁
+    - `list()` 继续输出稳定顺序，`wait/snapshot/cancel` 语义保持不变
+    - mailbox 继续保持每 agent 独立 channel，本轮不再引入额外共享结构
 
 ### 19.5 文档修正
 

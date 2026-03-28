@@ -1,6 +1,6 @@
 use crate::agent_mailbox::AgentMailbox;
 use crate::{Result, RuntimeError};
-use std::collections::BTreeMap;
+use dashmap::DashMap;
 use std::sync::{Arc, Mutex};
 use tokio::sync::Notify;
 use tokio::task::JoinHandle;
@@ -18,6 +18,10 @@ struct AgentRecord {
     join_handle: Option<JoinHandle<()>>,
 }
 
+struct AgentRecordCell {
+    state: Mutex<AgentRecord>,
+}
+
 #[derive(Clone)]
 pub struct AgentRecordSnapshot {
     pub handle: AgentHandle,
@@ -28,7 +32,10 @@ pub struct AgentRecordSnapshot {
 
 #[derive(Clone, Default)]
 pub struct AgentSessionManager {
-    records: Arc<Mutex<BTreeMap<AgentId, AgentRecord>>>,
+    // Child-control operations mostly target one agent at a time. Sharding the
+    // registry removes the single global lock while preserving per-agent
+    // mutation atomicity through the inner record mutex.
+    records: Arc<DashMap<AgentId, Arc<AgentRecordCell>>>,
     updates: Arc<Notify>,
 }
 
@@ -38,17 +45,26 @@ impl AgentSessionManager {
         Self::default()
     }
 
+    fn record(&self, agent_id: &AgentId) -> Result<Arc<AgentRecordCell>> {
+        self.records
+            .get(agent_id)
+            .map(|entry| entry.value().clone())
+            .ok_or_else(|| RuntimeError::invalid_state(format!("unknown child agent: {agent_id}")))
+    }
+
     pub fn insert(&self, handle: AgentHandle, task: AgentTaskSpec, mailbox: AgentMailbox) {
-        self.records.lock().unwrap().insert(
+        self.records.insert(
             handle.agent_id.clone(),
-            AgentRecord {
-                handle,
-                task,
-                mailbox,
-                result: None,
-                error: None,
-                join_handle: None,
-            },
+            Arc::new(AgentRecordCell {
+                state: Mutex::new(AgentRecord {
+                    handle,
+                    task,
+                    mailbox,
+                    result: None,
+                    error: None,
+                    join_handle: None,
+                }),
+            }),
         );
         self.updates.notify_waiters();
     }
@@ -58,43 +74,29 @@ impl AgentSessionManager {
         agent_id: &AgentId,
         join_handle: JoinHandle<()>,
     ) -> Result<()> {
-        let mut guard = self.records.lock().unwrap();
-        let record = guard.get_mut(agent_id).ok_or_else(|| {
-            RuntimeError::invalid_state(format!("unknown child agent: {agent_id}"))
-        })?;
-        record.join_handle = Some(join_handle);
+        let record = self.record(agent_id)?;
+        record.state.lock().unwrap().join_handle = Some(join_handle);
         Ok(())
     }
 
     pub fn mailbox(&self, agent_id: &AgentId) -> Result<AgentMailbox> {
-        let guard = self.records.lock().unwrap();
-        guard
-            .get(agent_id)
-            .map(|record| record.mailbox.clone())
-            .ok_or_else(|| RuntimeError::invalid_state(format!("unknown child agent: {agent_id}")))
+        let record = self.record(agent_id)?;
+        Ok(record.state.lock().unwrap().mailbox.clone())
     }
 
     pub fn handle(&self, agent_id: &AgentId) -> Result<AgentHandle> {
-        let guard = self.records.lock().unwrap();
-        guard
-            .get(agent_id)
-            .map(|record| record.handle.clone())
-            .ok_or_else(|| RuntimeError::invalid_state(format!("unknown child agent: {agent_id}")))
+        let record = self.record(agent_id)?;
+        Ok(record.state.lock().unwrap().handle.clone())
     }
 
     pub fn task(&self, agent_id: &AgentId) -> Result<AgentTaskSpec> {
-        let guard = self.records.lock().unwrap();
-        guard
-            .get(agent_id)
-            .map(|record| record.task.clone())
-            .ok_or_else(|| RuntimeError::invalid_state(format!("unknown child agent: {agent_id}")))
+        let record = self.record(agent_id)?;
+        Ok(record.state.lock().unwrap().task.clone())
     }
 
     pub fn snapshot(&self, agent_id: &AgentId) -> Result<AgentRecordSnapshot> {
-        let guard = self.records.lock().unwrap();
-        let record = guard.get(agent_id).ok_or_else(|| {
-            RuntimeError::invalid_state(format!("unknown child agent: {agent_id}"))
-        })?;
+        let record = self.record(agent_id)?;
+        let record = record.state.lock().unwrap();
         Ok(AgentRecordSnapshot {
             handle: record.handle.clone(),
             task: record.task.clone(),
@@ -104,12 +106,12 @@ impl AgentSessionManager {
     }
 
     pub fn update_status(&self, agent_id: &AgentId, status: AgentStatus) -> Result<AgentHandle> {
-        let mut guard = self.records.lock().unwrap();
-        let record = guard.get_mut(agent_id).ok_or_else(|| {
-            RuntimeError::invalid_state(format!("unknown child agent: {agent_id}"))
-        })?;
-        record.handle.status = status;
-        let handle = record.handle.clone();
+        let record = self.record(agent_id)?;
+        let handle = {
+            let mut record = record.state.lock().unwrap();
+            record.handle.status = status;
+            record.handle.clone()
+        };
         self.updates.notify_waiters();
         Ok(handle)
     }
@@ -126,25 +128,26 @@ impl AgentSessionManager {
                 "finish requires terminal status, got {status}"
             )));
         }
-        let mut guard = self.records.lock().unwrap();
-        let record = guard.get_mut(agent_id).ok_or_else(|| {
-            RuntimeError::invalid_state(format!("unknown child agent: {agent_id}"))
-        })?;
-        record.handle.status = status;
-        record.result = result;
-        record.error = error;
-        let handle = record.handle.clone();
+        let record = self.record(agent_id)?;
+        let handle = {
+            let mut record = record.state.lock().unwrap();
+            record.handle.status = status;
+            record.result = result;
+            record.error = error;
+            record.handle.clone()
+        };
         self.updates.notify_waiters();
         Ok(handle)
     }
 
     pub fn list(&self) -> Vec<AgentHandle> {
-        self.records
-            .lock()
-            .unwrap()
-            .values()
-            .map(|record| record.handle.clone())
-            .collect()
+        let mut handles = self
+            .records
+            .iter()
+            .map(|entry| entry.value().state.lock().unwrap().handle.clone())
+            .collect::<Vec<_>>();
+        handles.sort_by(|left, right| left.agent_id.as_str().cmp(right.agent_id.as_str()));
+        handles
     }
 
     pub async fn wait(&self, request: AgentWaitRequest) -> Result<AgentWaitResponse> {
@@ -166,14 +169,12 @@ impl AgentSessionManager {
     }
 
     fn snapshot_wait(&self, request: &AgentWaitRequest) -> Result<AgentWaitResponse> {
-        let guard = self.records.lock().unwrap();
         let mut completed = Vec::new();
         let mut pending = Vec::new();
         let mut results = Vec::new();
         for agent_id in &request.agent_ids {
-            let record = guard.get(agent_id).ok_or_else(|| {
-                RuntimeError::invalid_state(format!("unknown child agent: {agent_id}"))
-            })?;
+            let record = self.record(agent_id)?;
+            let record = record.state.lock().unwrap();
             if record.handle.status.is_terminal() {
                 completed.push(record.handle.clone());
                 if let Some(result) = &record.result {
@@ -187,16 +188,20 @@ impl AgentSessionManager {
             && let Some(first_completed) = completed.first().cloned()
         {
             let completed_id = first_completed.agent_id.clone();
-            let result = guard
-                .get(&completed_id)
-                .and_then(|record| record.result.clone());
+            let result = self
+                .record(&completed_id)?
+                .state
+                .lock()
+                .unwrap()
+                .result
+                .clone();
             completed = vec![first_completed];
             pending = request
                 .agent_ids
                 .iter()
                 .filter(|agent_id| **agent_id != completed_id)
-                .filter_map(|agent_id| guard.get(agent_id).map(|record| record.handle.clone()))
-                .collect();
+                .map(|agent_id| self.handle(agent_id))
+                .collect::<Result<Vec<_>>>()?;
             results = result.into_iter().collect();
         }
         Ok(AgentWaitResponse {
@@ -212,47 +217,47 @@ impl AgentSessionManager {
         reason: Option<String>,
         claimed_files: Vec<String>,
     ) -> Result<(AgentHandle, AgentResultEnvelope)> {
-        let mut guard = self.records.lock().unwrap();
-        let record = guard.get_mut(agent_id).ok_or_else(|| {
-            RuntimeError::invalid_state(format!("unknown child agent: {agent_id}"))
-        })?;
-        if record.handle.status.is_terminal() {
-            let result = record
-                .result
-                .clone()
-                .unwrap_or_else(|| AgentResultEnvelope {
-                    agent_id: record.handle.agent_id.clone(),
-                    task_id: record.task.task_id.clone(),
-                    status: record.handle.status.clone(),
-                    summary: reason
-                        .clone()
-                        .unwrap_or_else(|| "agent already terminal".to_string()),
-                    text: String::new(),
-                    artifacts: Vec::new(),
-                    claimed_files,
-                    structured_payload: None,
-                });
-            return Ok((record.handle.clone(), result));
-        }
-        if let Some(join_handle) = record.join_handle.take() {
-            join_handle.abort();
-        }
-        let result = AgentResultEnvelope {
-            agent_id: record.handle.agent_id.clone(),
-            task_id: record.task.task_id.clone(),
-            status: AgentStatus::Cancelled,
-            summary: reason
-                .clone()
-                .unwrap_or_else(|| "child agent cancelled".to_string()),
-            text: String::new(),
-            artifacts: Vec::new(),
-            claimed_files,
-            structured_payload: None,
+        let record = self.record(agent_id)?;
+        let (handle, result) = {
+            let mut record = record.state.lock().unwrap();
+            if record.handle.status.is_terminal() {
+                let result = record
+                    .result
+                    .clone()
+                    .unwrap_or_else(|| AgentResultEnvelope {
+                        agent_id: record.handle.agent_id.clone(),
+                        task_id: record.task.task_id.clone(),
+                        status: record.handle.status.clone(),
+                        summary: reason
+                            .clone()
+                            .unwrap_or_else(|| "agent already terminal".to_string()),
+                        text: String::new(),
+                        artifacts: Vec::new(),
+                        claimed_files,
+                        structured_payload: None,
+                    });
+                return Ok((record.handle.clone(), result));
+            }
+            if let Some(join_handle) = record.join_handle.take() {
+                join_handle.abort();
+            }
+            let result = AgentResultEnvelope {
+                agent_id: record.handle.agent_id.clone(),
+                task_id: record.task.task_id.clone(),
+                status: AgentStatus::Cancelled,
+                summary: reason
+                    .clone()
+                    .unwrap_or_else(|| "child agent cancelled".to_string()),
+                text: String::new(),
+                artifacts: Vec::new(),
+                claimed_files,
+                structured_payload: None,
+            };
+            record.handle.status = AgentStatus::Cancelled;
+            record.result = Some(result.clone());
+            record.error = reason;
+            (record.handle.clone(), result)
         };
-        record.handle.status = AgentStatus::Cancelled;
-        record.result = Some(result.clone());
-        record.error = reason;
-        let handle = record.handle.clone();
         self.updates.notify_waiters();
         Ok((handle, result))
     }
@@ -479,5 +484,44 @@ mod tests {
         assert_eq!(response.completed.len(), 1);
         assert_eq!(response.results.len(), 1);
         assert_eq!(response.completed[0].agent_id, response.results[0].agent_id);
+    }
+
+    #[test]
+    fn list_returns_handles_in_agent_id_order() {
+        let manager = AgentSessionManager::new();
+        for agent_id in ["agent_2", "agent_1"] {
+            let (mailbox, _) = agent_mailbox_channel();
+            manager.insert(
+                AgentHandle {
+                    agent_id: agent_id.into(),
+                    parent_agent_id: None,
+                    run_id: "run_1".into(),
+                    session_id: "session_1".into(),
+                    task_id: format!("task_{agent_id}"),
+                    role: "explorer".to_string(),
+                    status: AgentStatus::Running,
+                },
+                AgentTaskSpec {
+                    task_id: format!("task_{agent_id}"),
+                    role: "explorer".to_string(),
+                    prompt: "inspect".to_string(),
+                    steer: None,
+                    allowed_tools: Vec::new(),
+                    requested_write_set: Vec::new(),
+                    dependency_ids: Vec::new(),
+                    timeout_seconds: None,
+                },
+                mailbox,
+            );
+        }
+
+        let handles = manager.list();
+        assert_eq!(
+            handles
+                .into_iter()
+                .map(|handle| handle.agent_id)
+                .collect::<Vec<_>>(),
+            vec![AgentId::from("agent_1"), AgentId::from("agent_2")]
+        );
     }
 }

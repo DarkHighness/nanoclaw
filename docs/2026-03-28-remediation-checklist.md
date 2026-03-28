@@ -415,6 +415,17 @@
     - `crates/store/src/file.rs`
     - `crates/store/src/memory.rs`
     - `crates/runtime/src/subagent_impl.rs`
+- 升级 `AgentSessionManager` 的单点锁结构
+  - 状态：
+    - `completed`
+  - 已落地语义：
+    - `AgentSessionManager` 已从 `Mutex<BTreeMap<...>>` 切到 `DashMap<AgentId, Arc<RecordCell>>`
+    - 单 agent 的状态更新、cancel、join handle 绑定不再竞争全局 registry 锁
+    - `list()` 仍保持按 `agent_id` 排序的稳定输出，wait/snapshot 语义不变
+    - mailbox 继续保持每 agent 独立 channel，本轮未引入新的共享热点
+  - 目标文件：
+    - `crates/runtime/src/agent_session_manager.rs`
+    - `crates/runtime/Cargo.toml`
 
 ### 8.2 Memory
 
