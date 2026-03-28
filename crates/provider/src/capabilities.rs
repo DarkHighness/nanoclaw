@@ -27,24 +27,3 @@ impl ProviderDescriptor {
         }
     }
 }
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ProviderCapabilities {
-    pub streaming: bool,
-    pub tool_calls: bool,
-    pub multimodal_messages: bool,
-    pub provider_managed_history: bool,
-    pub provider_native_compaction: bool,
-}
-
-impl Default for ProviderCapabilities {
-    fn default() -> Self {
-        Self {
-            streaming: true,
-            tool_calls: true,
-            multimodal_messages: true,
-            provider_managed_history: false,
-            provider_native_compaction: false,
-        }
-    }
-}

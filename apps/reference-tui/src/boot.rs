@@ -14,7 +14,7 @@ use agent::mcp::{
 };
 use agent::skills::{Skill, load_skill_roots};
 use agent_env::EnvMap;
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use plugins::{
     build_plugin_activation_plan, dedup_mcp_servers, resolve_mcp_servers, resolved_skill_roots,
 };
@@ -22,7 +22,8 @@ use plugins::{
 use preamble::DEFAULT_AGENT_PREAMBLE;
 use preamble::build_runtime_preamble;
 use provider::{
-    build_backend, build_memory_reasoning_service, build_summary_backend, provider_summary,
+    agent_backend_capabilities, build_backend, build_memory_reasoning_service,
+    build_summary_backend, provider_summary,
 };
 use runtime::{
     AgentRuntime, AgentRuntimeBuilder, CompactionConfig, DefaultCommandHookExecutor, HookRunner,
@@ -243,6 +244,12 @@ async fn bootstrap_from_parts(
         .await
         .context("failed to load configured skill roots")?;
     let skills = skill_catalog.all().to_vec();
+    ensure_model_supports_registered_tools(
+        &config.primary_profile,
+        agent_backend_capabilities(&config.primary_profile),
+        &tools,
+        "primary",
+    )?;
     let instructions = build_runtime_preamble(&config, &skill_catalog, &runtime_instructions);
     let skill_hooks = skills
         .iter()
@@ -299,6 +306,23 @@ async fn bootstrap_from_parts(
         store_label: store_handle.label,
         store_warning: store_handle.warning,
     })
+}
+
+fn ensure_model_supports_registered_tools(
+    profile: &nanoclaw_config::ResolvedAgentProfile,
+    capabilities: runtime::ModelBackendCapabilities,
+    tools: &ToolRegistry,
+    profile_label: &str,
+) -> Result<()> {
+    let registered_tool_count = tools.names().len();
+    if capabilities.tool_calls || registered_tool_count == 0 {
+        return Ok(());
+    }
+    bail!(
+        "{profile_label} profile `{}` uses model `{}` without tool-call support, but the host registered {registered_tool_count} tools",
+        profile.profile_name,
+        profile.model.model,
+    );
 }
 
 #[cfg(test)]

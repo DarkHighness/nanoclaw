@@ -121,6 +121,7 @@ pub(crate) fn openai_capabilities(options: &RequestOptions) -> runtime::ModelBac
             && openai_options.is_some_and(|options| options.chain_previous_response),
         provider_native_compaction: !websocket_transport
             && openai_options.is_some_and(|options| options.server_compaction.is_some()),
+        ..runtime::ModelBackendCapabilities::default()
     }
 }
 

@@ -120,6 +120,7 @@ impl ModelBackend for ContinuingBackend {
         ModelBackendCapabilities {
             provider_managed_history: true,
             provider_native_compaction: true,
+            ..ModelBackendCapabilities::default()
         }
     }
 

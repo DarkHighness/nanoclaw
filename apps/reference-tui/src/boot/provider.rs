@@ -4,9 +4,11 @@ use agent::provider::{
     BackendDescriptor, OpenAiResponsesOptions, OpenAiServerCompaction, ProviderBackend,
     ProviderDescriptor, RequestOptions,
 };
+use agent::runtime::ModelBackendCapabilities;
 use agent_env::EnvMap;
 use anyhow::Result;
-use nanoclaw_config::{ProviderKind, ResolvedAgentProfile, ResolvedInternalProfile};
+use nanoclaw_config::{ProviderKind, ResolvedAgentProfile, ResolvedInternalProfile, ResolvedModel};
+use serde_json::Value;
 use std::collections::BTreeMap;
 
 const DEFAULT_INTERNAL_MEMORY_TIMEOUT_MS: u64 = 30_000;
@@ -34,6 +36,21 @@ pub(super) fn build_memory_reasoning_service(
     }
 }
 
+pub(super) fn agent_backend_capabilities(
+    profile: &ResolvedAgentProfile,
+) -> ModelBackendCapabilities {
+    build_backend_settings(
+        &profile.model,
+        profile.temperature,
+        Some(profile.max_output_tokens),
+        profile.additional_params.clone(),
+        matches!(profile.model.provider, ProviderKind::OpenAi)
+            .then_some(profile.compact_trigger_tokens),
+    )
+    .0
+    .capabilities
+}
+
 pub(super) fn provider_summary(config: &AgentCoreConfig) -> String {
     let model = &config.primary_profile.model;
     let provider = provider_name(&model.provider);
@@ -41,65 +58,93 @@ pub(super) fn provider_summary(config: &AgentCoreConfig) -> String {
 }
 
 fn build_agent_backend(profile: &ResolvedAgentProfile) -> Result<ProviderBackend> {
-    let descriptor = BackendDescriptor::new(match profile.model.provider {
-        ProviderKind::OpenAi => ProviderDescriptor::openai(profile.model.model.clone()),
-        ProviderKind::Anthropic => ProviderDescriptor::anthropic(profile.model.model.clone()),
-    });
+    build_backend_from_model(
+        &profile.model,
+        profile.temperature,
+        Some(profile.max_output_tokens),
+        profile.additional_params.clone(),
+        matches!(profile.model.provider, ProviderKind::OpenAi)
+            .then_some(profile.compact_trigger_tokens),
+    )
+}
 
-    // The reference shell opts into Responses-native state chaining for the
-    // foreground profile so the default host path exercises provider-managed
-    // history rather than only the append-only local fallback.
+fn build_internal_backend(profile: &ResolvedInternalProfile) -> Result<ProviderBackend> {
+    build_backend_from_model(
+        &profile.model,
+        profile.temperature,
+        Some(profile.max_output_tokens),
+        profile.additional_params.clone(),
+        None,
+    )
+}
+
+fn build_backend_from_model(
+    model: &ResolvedModel,
+    temperature: Option<f64>,
+    max_tokens: Option<u64>,
+    additional_params: Option<Value>,
+    compact_trigger_tokens: Option<usize>,
+) -> Result<ProviderBackend> {
+    let (descriptor, request_options) = build_backend_settings(
+        model,
+        temperature,
+        max_tokens,
+        additional_params,
+        compact_trigger_tokens,
+    );
+
+    Ok(ProviderBackend::from_settings_with_api_key(
+        descriptor,
+        request_options,
+        model.base_url.clone(),
+        configured_provider_api_key(model),
+    )?)
+}
+
+fn build_backend_settings(
+    model: &ResolvedModel,
+    temperature: Option<f64>,
+    max_tokens: Option<u64>,
+    additional_params: Option<Value>,
+    compact_trigger_tokens: Option<usize>,
+) -> (BackendDescriptor, RequestOptions) {
+    // The reference shell opts into Responses-native state chaining for OpenAI
+    // so the substrate path is exercised by default instead of only in tests.
     let request_options = RequestOptions {
-        temperature: profile.temperature,
-        max_tokens: Some(profile.max_output_tokens),
-        additional_params: profile.additional_params.clone(),
-        openai_responses: matches!(profile.model.provider, ProviderKind::OpenAi).then(|| {
+        temperature,
+        max_tokens,
+        additional_params,
+        openai_responses: matches!(model.provider, ProviderKind::OpenAi).then(|| {
             OpenAiResponsesOptions {
                 chain_previous_response: true,
                 store: Some(true),
-                server_compaction: Some(OpenAiServerCompaction {
-                    compact_threshold: profile.compact_trigger_tokens,
-                }),
+                server_compaction: compact_trigger_tokens
+                    .map(|compact_threshold| OpenAiServerCompaction { compact_threshold }),
             }
         }),
         ..RequestOptions::default()
     };
+    let descriptor = BackendDescriptor::new(match model.provider {
+        ProviderKind::OpenAi => ProviderDescriptor::openai(model.model.clone()),
+        ProviderKind::Anthropic => ProviderDescriptor::anthropic(model.model.clone()),
+    })
+    .with_capabilities(ModelBackendCapabilities::from_model_surface(
+        model.capabilities.tool_calls,
+        model.capabilities.vision,
+        model.capabilities.image_generation,
+        model.capabilities.audio_input,
+        model.capabilities.tts,
+    ))
+    .resolved_for_request(&request_options);
 
-    Ok(ProviderBackend::from_settings_with_api_key(
-        descriptor,
-        request_options,
-        profile.model.base_url.clone(),
-        configured_provider_api_key(&profile.model),
-    )?)
+    (descriptor, request_options)
 }
 
-fn build_internal_backend(profile: &ResolvedInternalProfile) -> Result<ProviderBackend> {
-    let descriptor = BackendDescriptor::new(match profile.model.provider {
-        ProviderKind::OpenAi => ProviderDescriptor::openai(profile.model.model.clone()),
-        ProviderKind::Anthropic => ProviderDescriptor::anthropic(profile.model.model.clone()),
-    });
-    let request_options = RequestOptions {
-        temperature: profile.temperature,
-        max_tokens: Some(profile.max_output_tokens),
-        additional_params: profile.additional_params.clone(),
-        ..RequestOptions::default()
-    };
-    Ok(ProviderBackend::from_settings_with_api_key(
-        descriptor,
-        request_options,
-        profile.model.base_url.clone(),
-        configured_provider_api_key(&profile.model),
-    )?)
-}
-
-fn configured_provider_api_key(model: &nanoclaw_config::ResolvedModel) -> Option<String> {
+fn configured_provider_api_key(model: &ResolvedModel) -> Option<String> {
     resolved_provider_api_key(model, &EnvMap::from_process())
 }
 
-fn resolved_provider_api_key(
-    model: &nanoclaw_config::ResolvedModel,
-    env_map: &EnvMap,
-) -> Option<String> {
+fn resolved_provider_api_key(model: &ResolvedModel, env_map: &EnvMap) -> Option<String> {
     let env_key = match model.provider {
         ProviderKind::OpenAi => "OPENAI_API_KEY",
         ProviderKind::Anthropic => "ANTHROPIC_API_KEY",
