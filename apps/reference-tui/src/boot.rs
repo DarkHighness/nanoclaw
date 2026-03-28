@@ -1,6 +1,7 @@
 mod plugins;
 mod preamble;
 mod provider;
+mod runtime_settings;
 mod store_support;
 mod summary;
 
@@ -24,6 +25,7 @@ use runtime::{
     AgentRuntime, AgentRuntimeBuilder, CompactionConfig, DefaultCommandHookExecutor, HookRunner,
     ModelConversationCompactor,
 };
+use runtime_settings::{build_sandbox_policy, context_tokens};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use store::RunStore;
@@ -33,7 +35,7 @@ use summary::build_startup_summary;
 use tools::describe_sandbox_policy;
 use tools::{
     BashTool, EditTool, GlobTool, GrepTool, ListTool, ManagedPolicyProcessExecutor, PatchTool,
-    ReadTool, SandboxBackendStatus, SandboxPolicy, ToolExecutionContext, ToolRegistry, WriteTool,
+    ReadTool, SandboxBackendStatus, ToolExecutionContext, ToolRegistry, WriteTool,
     ensure_sandbox_policy_supported,
 };
 #[cfg(feature = "web-tools")]
@@ -251,24 +253,6 @@ async fn bootstrap_from_parts(
         store_label: store_handle.label,
         store_warning: store_handle.warning,
     })
-}
-
-fn context_tokens(config: &AgentCoreConfig) -> usize {
-    config.runtime.context_tokens.unwrap_or(128_000)
-}
-
-fn build_sandbox_policy(
-    config: &AgentCoreConfig,
-    tool_context: &ToolExecutionContext,
-) -> SandboxPolicy {
-    // The host config only controls whether missing enforcement backends are a
-    // hard error or a best-effort fallback. Filesystem and network posture
-    // still derive from the tool context so runtime path policy and local
-    // process policy do not drift apart.
-    tool_context
-        .sandbox_scope()
-        .recommended_policy()
-        .with_fail_if_unavailable(config.runtime.sandbox_fail_if_unavailable)
 }
 
 #[cfg(test)]
