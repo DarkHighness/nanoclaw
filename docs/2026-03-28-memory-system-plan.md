@@ -665,7 +665,7 @@ cargo test -p agent
 
 ### 17.1 当前完成度校准
 
-- 估计完成度：约 `72%`
+- 估计完成度：约 `80%`
 
 当前已经落地的部分：
 
@@ -674,23 +674,38 @@ cargo test -p agent
 - `memory_search/get/list/record/promote/forget`
 - lifecycle / promotion / retention 基础模型
 - runtime export 的 `run/session/subagent/task` 渲染结构
+- `RunStore::export_for_memory()` 的真实 `run/session/subagent/task` 导出链
+- `memory_record` 的路径级串行化追加写
+- working task 对非 ASCII `task_id` 的稳定 slug 回退
+- `subagent/task export` 的 in-memory / file-backed store 真测试覆盖
 
 当前尚未达到计划目标的部分：
 
-- `subagent/task` runtime export 尚未进入真实生产导出链
-- `working/coordination` 还不具备并发安全写入
 - tool 默认作用域只自动继承 `run_id/session_id`
 - 读路径仍然过重，并夹带 runtime export side effect
+- `memory_list.include_stale` 语义还没有真正收口
 
 ### 17.2 P0 修复项
 
+- 当前分支已完成：
+  - 补齐 production 级 `subagent/task` export
+  - 修复 `memory_record` 的同文件并发丢写
+  - 修复非 ASCII `task_id` 导致的空 slug 路径
+  - 用真实 store 测试覆盖 `subagent/task export`
+
 - 补齐 production 级 `subagent/task` export：
-  - `RunStore::export_for_memory()` 必须真实聚合 subagent/task 记录
+  - 已完成：
+    - `RunStore::export_for_memory()` 真实聚合 subagent/task 记录
+    - 共享分组 helper 会消费 `TaskCreated / TaskCompleted / SubagentStart / SubagentStop / AgentEnvelope::*`
+    - `InMemoryRunStore` 与 `FileRunStore` 都已经覆盖真实 runtime event 导出
 - 修复 `memory_record` 的同文件并发丢写：
-  - 至少实现文件级串行化或 optimistic concurrency
+  - 已完成：
+    - `memory_record` 现在对目标 managed path 先拿锁再做 read-modify-write
 - 修复 `memory_list.include_stale` 的实际语义：
   - 不能继续出现参数存在但过滤不生效
 - 修复非 ASCII `task_id` 导致的空 slug 路径
+  - 已完成：
+    - working task 路径会回退到 `task-<stable-hash>`
 
 ### 17.3 P1 对齐项
 
@@ -698,8 +713,6 @@ cargo test -p agent
   - subagent/task sidecar 要成为 episodic retrieval 的一等输入
 - 补充 runtime -> memory context bridge：
   - 需要明确 `agent/task` 作用域是否要进入 `ToolExecutionContext`
-- 用真实 store 测试覆盖 `subagent/task export`：
-  - 不能继续只靠 fixture 伪造 bundle
 
 ### 17.4 P2 性能与硬化
 

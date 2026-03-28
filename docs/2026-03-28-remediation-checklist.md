@@ -20,6 +20,7 @@
   - `docs/2026-03-28-plugin-system-plan.md`
   - `docs/2026-03-28-memory-system-plan.md`
   - `docs/2026-03-28-multi-agent-plan.md`
+  - `docs/2026-03-28-model-config-plan.md`
 - 关键代码路径：
   - `crates/plugins`
   - `crates/memory`
@@ -41,7 +42,7 @@
 ## 3. 当前完成度校准
 
 - 插件系统：约 `68%`
-- Memory 系统：约 `72%`
+- Memory 系统：约 `80%`
 - 多 Agent 系统：约 `65% ~ 70%`
 
 结论：
@@ -131,6 +132,12 @@
 
 ### 6.2 Memory
 
+- 当前分支已完成：
+  - `RunStore::export_for_memory()` 现在会真实聚合 `run/session/subagent/task`
+  - `InMemoryRunStore` / `FileRunStore` 都补了真实 `subagent/task export` 测试
+  - `memory_record` 对同一 managed file 的追加改为路径级串行化
+  - 非 ASCII `task_id` 的 working task 路径已回退到稳定 hash slug
+
 - 补齐 production 级 `subagent/task` runtime export：
   - `RunStore::export_for_memory()` 必须真正聚合：
     - `TaskCreated`
@@ -143,12 +150,23 @@
     - `crates/store/src/traits.rs`
     - `crates/store/src/memory.rs`
     - `crates/store/src/file.rs`
+  - 状态：
+    - `completed`
+  - 已落地语义：
+    - 共享分组 helper 已按 `TaskCreated / TaskCompleted / SubagentStart / SubagentStop / AgentEnvelope::*` 聚合
+    - `run/session/subagent/task` 四类记录都进入真实 store 导出链
+    - file-backed store 已有真实事件回放测试，不再只靠 fixture bundle
 
 - 修复 `memory_record` 并发丢写：
   - `working` / `coordination` 同文件写入不能继续使用裸 `read-modify-write`
   - 至少实现文件级串行化，或版本校验失败后重试
   - 目标文件：
     - `crates/memory/src/managed_files.rs`
+  - 状态：
+    - `completed`
+  - 已落地语义：
+    - `memory_record` 现在在目标 managed path 上先拿锁再读写
+    - 单进程内并发追加不会再因为同一旧快照而互相覆盖
 
 - 修复 `memory_list.include_stale` 语义：
   - 要么真正执行 `stale/superseded/archived` 过滤
@@ -162,6 +180,10 @@
   - 不能生成 `.../tasks/.md`
   - 目标文件：
     - `crates/memory/src/managed_files.rs`
+  - 状态：
+    - `completed`
+  - 已落地语义：
+    - working task 文件名会回退到 `task-<stable-hash>`，避免空 slug 路径
 
 ### 6.3 插件系统
 
@@ -205,6 +227,27 @@
   - 目标文件：
     - `crates/runtime/src/agent_session_manager.rs`
     - `crates/runtime/src/subagent_impl.rs`
+
+- 把模型配置从“单一 provider/model”升级为“模型目录 + agent profile”：
+  - 当前是开发版本，这项重构**不要求旧配置兼容**
+  - 代码与配置层都**不应内置默认模型 id 或拍脑袋 token budget**
+  - 目标不是只加字段，而是把：
+    - 模型 alias
+    - 主 agent / subagent profile
+    - role -> profile 路由
+    - summary / memory internal profile
+    - thinking / system prompt / compact / sandbox 覆盖
+    统一落到 resolved config
+  - 详细方案见：
+    - `docs/2026-03-28-model-config-plan.md`
+  - 实施时按文档中的 Phase A -> G 顺序推进，不并行跳步
+  - 这项工作横跨：
+    - `crates/config`
+    - `apps/reference-tui`
+    - `apps/code-agent`
+    - `crates/runtime/src/subagent_impl.rs`
+    - `crates/tools/src/context.rs`
+    - `crates/sandbox`
 
 ### 7.2 Memory
 

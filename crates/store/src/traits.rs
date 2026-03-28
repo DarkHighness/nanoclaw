@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use thiserror::Error;
 use types::{HookEffect, Message, RunEventEnvelope, RunEventKind, RunId, SessionId};
 
@@ -97,6 +97,28 @@ pub struct RunMemoryExportBundle {
     pub subagents: Vec<RunMemoryExportRecord>,
     #[serde(default)]
     pub tasks: Vec<RunMemoryExportRecord>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct GroupedMemoryExportEvents {
+    pub(crate) sessions: Vec<(SessionId, Vec<RunEventEnvelope>)>,
+    pub(crate) subagents: Vec<ScopedMemoryExportEvents>,
+    pub(crate) tasks: Vec<ScopedMemoryExportEvents>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct ScopedMemoryExportEvents {
+    pub(crate) session_id: Option<SessionId>,
+    pub(crate) agent_name: Option<String>,
+    pub(crate) task_id: Option<String>,
+    pub(crate) events: Vec<RunEventEnvelope>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct AgentMemoryExportContext {
+    session_id: Option<SessionId>,
+    agent_name: Option<String>,
+    task_id: Option<String>,
 }
 
 #[must_use]
@@ -435,6 +457,228 @@ pub(crate) fn build_search_corpus(events: &[RunEventEnvelope]) -> String {
 }
 
 #[must_use]
+pub(crate) fn group_events_for_memory_export(
+    events: &[RunEventEnvelope],
+) -> GroupedMemoryExportEvents {
+    let mut sessions = BTreeMap::<SessionId, Vec<RunEventEnvelope>>::new();
+    let mut subagents = BTreeMap::<String, ScopedMemoryExportEvents>::new();
+    let mut tasks = BTreeMap::<String, ScopedMemoryExportEvents>::new();
+    let mut agent_contexts = BTreeMap::<String, AgentMemoryExportContext>::new();
+
+    for event in events {
+        sessions
+            .entry(event.session_id.clone())
+            .or_default()
+            .push(event.clone());
+
+        match &event.event {
+            // Task lifecycle lives on the parent session stream. We keep those
+            // records under task scope and later overwrite the fallback session
+            // with the child session once spawn/start events provide it.
+            RunEventKind::TaskCreated { task, .. } => {
+                let group = tasks.entry(task.task_id.clone()).or_default();
+                group.task_id = Some(task.task_id.clone());
+                if group.session_id.is_none() {
+                    group.session_id = Some(event.session_id.clone());
+                }
+                group.events.push(event.clone());
+            }
+            RunEventKind::TaskCompleted {
+                task_id, agent_id, ..
+            } => {
+                let context = agent_contexts
+                    .get(&agent_id.to_string())
+                    .cloned()
+                    .unwrap_or_default();
+                push_task_event(
+                    &mut tasks,
+                    task_id.clone(),
+                    Some(&context),
+                    Some(&event.session_id),
+                    event,
+                );
+                if !context.agent_name.is_none() || subagents.contains_key(&agent_id.to_string()) {
+                    push_subagent_event(&mut subagents, agent_id.to_string(), &context, event);
+                }
+            }
+            RunEventKind::SubagentStart { handle, task } => {
+                let context = update_agent_memory_export_context(
+                    &mut agent_contexts,
+                    &handle.agent_id.to_string(),
+                    Some(&handle.session_id),
+                    Some(handle.role.as_str()),
+                    Some(task.task_id.as_str()),
+                );
+                push_subagent_event(&mut subagents, handle.agent_id.to_string(), &context, event);
+                push_task_event(
+                    &mut tasks,
+                    task.task_id.clone(),
+                    Some(&context),
+                    Some(&handle.session_id),
+                    event,
+                );
+            }
+            RunEventKind::AgentEnvelope { envelope } => {
+                let agent_key = envelope.agent_id.to_string();
+                let context = match &envelope.kind {
+                    types::AgentEnvelopeKind::SpawnRequested { task }
+                    | types::AgentEnvelopeKind::Started { task } => {
+                        let context = update_agent_memory_export_context(
+                            &mut agent_contexts,
+                            &agent_key,
+                            Some(&envelope.session_id),
+                            Some(task.role.as_str()),
+                            Some(task.task_id.as_str()),
+                        );
+                        push_task_event(
+                            &mut tasks,
+                            task.task_id.clone(),
+                            Some(&context),
+                            Some(&envelope.session_id),
+                            event,
+                        );
+                        context
+                    }
+                    types::AgentEnvelopeKind::Result { result } => {
+                        let context = update_agent_memory_export_context(
+                            &mut agent_contexts,
+                            &agent_key,
+                            Some(&envelope.session_id),
+                            None,
+                            Some(result.task_id.as_str()),
+                        );
+                        push_task_event(
+                            &mut tasks,
+                            result.task_id.clone(),
+                            Some(&context),
+                            Some(&envelope.session_id),
+                            event,
+                        );
+                        context
+                    }
+                    _ => {
+                        let context = update_agent_memory_export_context(
+                            &mut agent_contexts,
+                            &agent_key,
+                            Some(&envelope.session_id),
+                            None,
+                            None,
+                        );
+                        if let Some(task_id) = &context.task_id {
+                            push_task_event(
+                                &mut tasks,
+                                task_id.clone(),
+                                Some(&context),
+                                Some(&envelope.session_id),
+                                event,
+                            );
+                        }
+                        context
+                    }
+                };
+                push_subagent_event(&mut subagents, agent_key, &context, event);
+            }
+            RunEventKind::SubagentStop { handle, .. } => {
+                let context = update_agent_memory_export_context(
+                    &mut agent_contexts,
+                    &handle.agent_id.to_string(),
+                    Some(&handle.session_id),
+                    Some(handle.role.as_str()),
+                    Some(handle.task_id.as_str()),
+                );
+                push_subagent_event(&mut subagents, handle.agent_id.to_string(), &context, event);
+                push_task_event(
+                    &mut tasks,
+                    handle.task_id.clone(),
+                    Some(&context),
+                    Some(&handle.session_id),
+                    event,
+                );
+            }
+            _ => {}
+        }
+    }
+
+    GroupedMemoryExportEvents {
+        sessions: sessions.into_iter().collect(),
+        subagents: subagents.into_values().collect(),
+        tasks: tasks.into_values().collect(),
+    }
+}
+
+fn update_agent_memory_export_context(
+    contexts: &mut BTreeMap<String, AgentMemoryExportContext>,
+    agent_key: &str,
+    session_id: Option<&SessionId>,
+    agent_name: Option<&str>,
+    task_id: Option<&str>,
+) -> AgentMemoryExportContext {
+    let context = contexts.entry(agent_key.to_string()).or_default();
+    if let Some(session_id) = session_id {
+        context.session_id = Some(session_id.clone());
+    }
+    if let Some(agent_name) = agent_name {
+        let agent_name = agent_name.trim();
+        if !agent_name.is_empty() {
+            context.agent_name = Some(agent_name.to_string());
+        }
+    }
+    if let Some(task_id) = task_id {
+        let task_id = task_id.trim();
+        if !task_id.is_empty() {
+            context.task_id = Some(task_id.to_string());
+        }
+    }
+    context.clone()
+}
+
+fn push_subagent_event(
+    groups: &mut BTreeMap<String, ScopedMemoryExportEvents>,
+    agent_key: String,
+    context: &AgentMemoryExportContext,
+    event: &RunEventEnvelope,
+) {
+    let group = groups.entry(agent_key).or_default();
+    apply_memory_export_context(group, context, None);
+    group.events.push(event.clone());
+}
+
+fn push_task_event(
+    groups: &mut BTreeMap<String, ScopedMemoryExportEvents>,
+    task_key: String,
+    context: Option<&AgentMemoryExportContext>,
+    fallback_session_id: Option<&SessionId>,
+    event: &RunEventEnvelope,
+) {
+    let group = groups.entry(task_key.clone()).or_default();
+    group.task_id = Some(task_key);
+    if let Some(context) = context {
+        apply_memory_export_context(group, context, fallback_session_id);
+    } else if group.session_id.is_none() {
+        group.session_id = fallback_session_id.cloned();
+    }
+    group.events.push(event.clone());
+}
+
+fn apply_memory_export_context(
+    group: &mut ScopedMemoryExportEvents,
+    context: &AgentMemoryExportContext,
+    fallback_session_id: Option<&SessionId>,
+) {
+    if let Some(session_id) = &context.session_id {
+        group.session_id = Some(session_id.clone());
+    } else if group.session_id.is_none() {
+        group.session_id = fallback_session_id.cloned();
+    }
+    if let Some(agent_name) = &context.agent_name {
+        group.agent_name = Some(agent_name.clone());
+    }
+    if let Some(task_id) = &context.task_id {
+        group.task_id = Some(task_id.clone());
+    }
+}
+
+#[must_use]
 pub fn build_memory_export_record(
     scope: MemoryExportScope,
     run_id: &RunId,
@@ -479,6 +723,24 @@ pub fn build_memory_export_record(
         search_corpus: build_search_corpus(events),
         sections: collect_memory_export_sections(events),
     })
+}
+
+pub(crate) fn sort_memory_export_records(records: &mut [RunMemoryExportRecord]) {
+    records.sort_by(|left, right| {
+        right
+            .summary
+            .last_timestamp_ms
+            .cmp(&left.summary.last_timestamp_ms)
+            .then_with(|| {
+                left.summary
+                    .run_id
+                    .as_str()
+                    .cmp(right.summary.run_id.as_str())
+            })
+            .then_with(|| left.summary.session_id.cmp(&right.summary.session_id))
+            .then_with(|| left.summary.agent_name.cmp(&right.summary.agent_name))
+            .then_with(|| left.summary.task_id.cmp(&right.summary.task_id))
+    });
 }
 
 pub(crate) fn apply_memory_export_request(

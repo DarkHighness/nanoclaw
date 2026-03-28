@@ -6,12 +6,15 @@ use crate::state::{
 };
 use crate::{
     MemoryDocumentMetadata, MemoryError, MemoryMutationResponse, MemoryRecordRequest, MemoryScope,
-    MemoryStateLayout, MemoryStatus, Result,
+    MemoryStateLayout, MemoryStatus, ResolvedStatePath, Result,
 };
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock};
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 use tokio::fs;
+use tokio::sync::Mutex as AsyncMutex;
 use types::{RunId, SessionId};
 
 #[derive(Clone, Debug)]
@@ -21,6 +24,9 @@ pub(crate) struct ManagedMemoryFile {
     pub(crate) body: String,
     pub(crate) metadata: MemoryDocumentMetadata,
 }
+
+static MANAGED_MEMORY_FILE_LOCKS: OnceLock<Mutex<HashMap<PathBuf, Arc<AsyncMutex<()>>>>> =
+    OnceLock::new();
 
 pub(crate) async fn record_memory(
     workspace_root: &Path,
@@ -36,6 +42,12 @@ pub(crate) async fn record_memory(
         .clone()
         .or_else(|| default_session_id.cloned());
     let target = resolve_record_target(&request, session_id.as_ref())?;
+    let resolved = layout.resolve_managed_memory_path(Path::new(&target.relative_path))?;
+    // `memory_record` is an append-style read-modify-write API. Lock the
+    // target path before reading so concurrent agents cannot both observe the
+    // same old body and overwrite each other's section append.
+    let file_lock = managed_memory_file_lock(resolved.absolute_path());
+    let _guard = file_lock.lock().await;
     let existing = load_managed_memory_file(workspace_root, &target.relative_path)
         .await
         .ok();
@@ -76,9 +88,8 @@ pub(crate) async fn record_memory(
         &request.content,
     );
 
-    write_memory_file(
-        &layout,
-        &target.relative_path,
+    write_memory_file_resolved(
+        &resolved,
         &target.document_title,
         &body,
         &metadata,
@@ -112,6 +123,18 @@ pub(crate) async fn write_memory_file(
     action: &str,
 ) -> Result<MemoryMutationResponse> {
     let resolved = layout.resolve_managed_memory_path(Path::new(relative_path))?;
+    let file_lock = managed_memory_file_lock(resolved.absolute_path());
+    let _guard = file_lock.lock().await;
+    write_memory_file_resolved(&resolved, title, body, metadata, action).await
+}
+
+async fn write_memory_file_resolved(
+    resolved: &ResolvedStatePath,
+    title: &str,
+    body: &str,
+    metadata: &MemoryDocumentMetadata,
+    action: &str,
+) -> Result<MemoryMutationResponse> {
     if let Some(parent) = resolved.absolute_path().parent() {
         fs::create_dir_all(parent).await?;
     }
@@ -124,6 +147,15 @@ pub(crate) async fn write_memory_file(
         snapshot_id: stable_hash(&encoded),
         metadata: metadata.clone(),
     })
+}
+
+fn managed_memory_file_lock(path: &Path) -> Arc<AsyncMutex<()>> {
+    let locks = MANAGED_MEMORY_FILE_LOCKS.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut locks = locks.lock().expect("managed memory file lock registry");
+    locks
+        .entry(path.to_path_buf())
+        .or_insert_with(|| Arc::new(AsyncMutex::new(())))
+        .clone()
 }
 
 pub(crate) fn render_memory_markdown(
@@ -224,7 +256,7 @@ fn resolve_record_target(
                 return Ok(RecordTarget {
                     relative_path: format!(
                         "{MEMORY_WORKING_TASKS_RELATIVE}/{}.md",
-                        slugify(task_id)
+                        stable_memory_slug(task_id, "task")
                     ),
                     layer: "working-task".to_string(),
                     document_title: format!("Task {task_id}"),
@@ -392,4 +424,135 @@ struct RecordTarget {
     relative_path: String,
     layer: String,
     document_title: String,
+}
+
+fn stable_memory_slug(value: &str, prefix: &str) -> String {
+    let slug = slugify(value);
+    if !slug.is_empty() {
+        return slug;
+    }
+    format!("{prefix}-{}", &stable_hash(value.trim())[0..12])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        MEMORY_WORKING_TASKS_RELATIVE, MemoryRecordRequest, MemoryScope, Path,
+        managed_memory_file_lock, record_memory, stable_memory_slug,
+    };
+    use crate::MemoryStateLayout;
+    use tempfile::tempdir;
+    use tokio::fs;
+    use tokio::time::{Duration, sleep};
+
+    #[tokio::test]
+    async fn record_memory_serializes_read_modify_write_per_file() {
+        let dir = tempdir().unwrap();
+        let layout = MemoryStateLayout::new(dir.path());
+        let relative_path = format!(
+            "{MEMORY_WORKING_TASKS_RELATIVE}/{}.md",
+            stable_memory_slug("task-1", "task")
+        );
+        let resolved = layout
+            .resolve_managed_memory_path(Path::new(&relative_path))
+            .unwrap();
+        let path_lock = managed_memory_file_lock(resolved.absolute_path());
+        let guard = path_lock.lock().await;
+
+        let workspace_root = dir.path().to_path_buf();
+        let first = tokio::spawn({
+            let workspace_root = workspace_root.clone();
+            async move {
+                record_memory(
+                    workspace_root.as_path(),
+                    MemoryRecordRequest {
+                        scope: MemoryScope::Working,
+                        title: "First note".to_string(),
+                        content: "alpha".to_string(),
+                        layer: None,
+                        tags: Vec::new(),
+                        run_id: None,
+                        session_id: None,
+                        agent_name: None,
+                        task_id: Some("task-1".to_string()),
+                    },
+                    None,
+                    None,
+                )
+                .await
+            }
+        });
+        let second = tokio::spawn({
+            let workspace_root = workspace_root.clone();
+            async move {
+                record_memory(
+                    workspace_root.as_path(),
+                    MemoryRecordRequest {
+                        scope: MemoryScope::Working,
+                        title: "Second note".to_string(),
+                        content: "beta".to_string(),
+                        layer: None,
+                        tags: Vec::new(),
+                        run_id: None,
+                        session_id: None,
+                        agent_name: None,
+                        task_id: Some("task-1".to_string()),
+                    },
+                    None,
+                    None,
+                )
+                .await
+            }
+        });
+
+        sleep(Duration::from_millis(25)).await;
+        drop(guard);
+
+        first.await.unwrap().unwrap();
+        second.await.unwrap().unwrap();
+
+        let recorded = fs::read_to_string(resolved.absolute_path()).await.unwrap();
+        assert!(recorded.contains("alpha"));
+        assert!(recorded.contains("beta"));
+    }
+
+    #[tokio::test]
+    async fn working_task_records_fallback_to_hashed_slug_for_non_ascii_task_ids() {
+        let dir = tempdir().unwrap();
+        let response = record_memory(
+            dir.path(),
+            MemoryRecordRequest {
+                scope: MemoryScope::Working,
+                title: "任务记录".to_string(),
+                content: "保留这段内容".to_string(),
+                layer: None,
+                tags: Vec::new(),
+                run_id: None,
+                session_id: None,
+                agent_name: None,
+                task_id: Some("任务".to_string()),
+            },
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            response.path,
+            format!(
+                "{MEMORY_WORKING_TASKS_RELATIVE}/{}.md",
+                stable_memory_slug("任务", "task")
+            )
+        );
+        assert_ne!(
+            response.path,
+            format!("{MEMORY_WORKING_TASKS_RELATIVE}/.md")
+        );
+        let recorded = fs::read_to_string(dir.path().join(&response.path))
+            .await
+            .unwrap();
+        assert!(recorded.contains("task_id: 任务"));
+        assert!(recorded.contains("保留这段内容"));
+    }
 }

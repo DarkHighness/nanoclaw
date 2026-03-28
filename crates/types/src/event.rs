@@ -127,7 +127,7 @@ pub struct AgentEnvelope {
     pub parent_agent_id: Option<AgentId>,
     pub run_id: RunId,
     pub session_id: SessionId,
-    pub timestamp_ms: u128,
+    pub timestamp_ms: u64,
     pub kind: AgentEnvelopeKind,
 }
 
@@ -148,7 +148,13 @@ impl AgentEnvelope {
             session_id,
             timestamp_ms: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
-                .map_or(0, |value| value.as_millis()),
+                .map_or(0, |value| {
+                    value
+                        .as_millis()
+                        .min(u128::from(u64::MAX))
+                        .try_into()
+                        .unwrap_or(u64::MAX)
+                }),
             kind,
         }
     }

@@ -2,11 +2,11 @@ use crate::replay::replay_transcript;
 use crate::{
     EventSink, Result, RunMemoryExportBundle, RunMemoryExportRequest, RunSearchResult, RunStore,
     RunStoreError, RunSummary, apply_memory_export_request, build_memory_export_record,
-    search_run_events, summarize_run_events,
+    group_events_for_memory_export, search_run_events, sort_memory_export_records,
+    summarize_run_events,
 };
 use async_trait::async_trait;
 use dashmap::DashMap;
-use std::collections::BTreeMap;
 use std::sync::Arc;
 use types::{Message, RunEventEnvelope, RunId, SessionId};
 
@@ -125,7 +125,9 @@ impl RunStore for InMemoryRunStore {
                 bundle.runs.push(record);
             }
 
-            for (session_id, events) in session_event_groups(entry.value()) {
+            let groups = group_events_for_memory_export(entry.value());
+
+            for (session_id, events) in groups.sessions {
                 if let Some(record) = build_memory_export_record(
                     crate::MemoryExportScope::Session,
                     entry.key(),
@@ -137,39 +139,41 @@ impl RunStore for InMemoryRunStore {
                     bundle.sessions.push(record);
                 }
             }
+
+            for group in groups.subagents {
+                if let Some(record) = build_memory_export_record(
+                    crate::MemoryExportScope::Subagent,
+                    entry.key(),
+                    group.session_id,
+                    group.agent_name,
+                    None,
+                    &group.events,
+                ) {
+                    bundle.subagents.push(record);
+                }
+            }
+
+            for group in groups.tasks {
+                if let Some(record) = build_memory_export_record(
+                    crate::MemoryExportScope::Task,
+                    entry.key(),
+                    group.session_id,
+                    None,
+                    group.task_id,
+                    &group.events,
+                ) {
+                    bundle.tasks.push(record);
+                }
+            }
         }
 
         sort_memory_export_records(&mut bundle.runs);
         sort_memory_export_records(&mut bundle.sessions);
+        sort_memory_export_records(&mut bundle.subagents);
+        sort_memory_export_records(&mut bundle.tasks);
         apply_memory_export_request(&mut bundle, &request);
         Ok(bundle)
     }
-}
-
-fn session_event_groups(events: &[RunEventEnvelope]) -> Vec<(SessionId, Vec<RunEventEnvelope>)> {
-    let mut grouped = BTreeMap::<SessionId, Vec<RunEventEnvelope>>::new();
-    for event in events {
-        grouped
-            .entry(event.session_id.clone())
-            .or_default()
-            .push(event.clone());
-    }
-    grouped.into_iter().collect()
-}
-
-fn sort_memory_export_records(records: &mut [crate::RunMemoryExportRecord]) {
-    records.sort_by(|left, right| {
-        right
-            .summary
-            .last_timestamp_ms
-            .cmp(&left.summary.last_timestamp_ms)
-            .then_with(|| {
-                left.summary
-                    .run_id
-                    .as_str()
-                    .cmp(right.summary.run_id.as_str())
-            })
-    });
 }
 
 #[cfg(test)]
@@ -177,7 +181,11 @@ mod tests {
     use super::InMemoryRunStore;
     use crate::{EventSink, RunMemoryExportRequest, RunStore};
     use nanoclaw_test_support::run_current_thread_test;
-    use types::{Message, RunEventEnvelope, RunEventKind, RunId, SessionId};
+    use serde_json::json;
+    use types::{
+        AgentArtifact, AgentEnvelope, AgentEnvelopeKind, AgentHandle, AgentId, AgentResultEnvelope,
+        AgentStatus, AgentTaskSpec, Message, RunEventEnvelope, RunEventKind, RunId, SessionId,
+    };
 
     macro_rules! bounded_async_test {
         (async fn $name:ident() $body:block) => {
@@ -338,6 +346,148 @@ mod tests {
                 exports.sessions[0].summary.session_id.as_ref(),
                 Some(&session_id)
             );
+        }
+    );
+
+    bounded_async_test!(
+        async fn exports_subagent_and_task_runtime_records() {
+            let store = InMemoryRunStore::new();
+            let run_id = RunId::new();
+            let parent_session_id = SessionId::new();
+            let child_session_id = SessionId::new();
+            let child_run_id = RunId::new();
+            let agent_id = AgentId::new();
+            let task = AgentTaskSpec {
+                task_id: "task-17".to_string(),
+                role: "reviewer".to_string(),
+                prompt: "review the patch".to_string(),
+                steer: None,
+                allowed_tools: Vec::new(),
+                requested_write_set: vec!["src/lib.rs".to_string()],
+                dependency_ids: Vec::new(),
+                timeout_seconds: None,
+            };
+            let running_handle = AgentHandle {
+                agent_id: agent_id.clone(),
+                parent_agent_id: None,
+                run_id: child_run_id.clone(),
+                session_id: child_session_id.clone(),
+                task_id: task.task_id.clone(),
+                role: task.role.clone(),
+                status: AgentStatus::Running,
+            };
+            let result = AgentResultEnvelope {
+                agent_id: agent_id.clone(),
+                task_id: task.task_id.clone(),
+                status: AgentStatus::Completed,
+                summary: "review completed".to_string(),
+                text: "found no blocking issues".to_string(),
+                artifacts: vec![AgentArtifact {
+                    kind: "report".to_string(),
+                    uri: "reports/review.md".to_string(),
+                    label: Some("review report".to_string()),
+                    metadata: None,
+                }],
+                claimed_files: vec!["src/lib.rs".to_string()],
+                structured_payload: None,
+            };
+
+            for event in [
+                RunEventKind::UserPromptSubmit {
+                    prompt: "review the latest patch".to_string(),
+                },
+                RunEventKind::TaskCreated {
+                    task: task.clone(),
+                    parent_agent_id: None,
+                },
+                RunEventKind::AgentEnvelope {
+                    envelope: AgentEnvelope::new(
+                        agent_id.clone(),
+                        None,
+                        child_run_id.clone(),
+                        child_session_id.clone(),
+                        AgentEnvelopeKind::SpawnRequested { task: task.clone() },
+                    ),
+                },
+                RunEventKind::SubagentStart {
+                    handle: running_handle.clone(),
+                    task: task.clone(),
+                },
+                RunEventKind::AgentEnvelope {
+                    envelope: AgentEnvelope::new(
+                        agent_id.clone(),
+                        None,
+                        child_run_id.clone(),
+                        child_session_id.clone(),
+                        AgentEnvelopeKind::Message {
+                            channel: "handoff".to_string(),
+                            payload: json!({"note": "checked ownership"}),
+                        },
+                    ),
+                },
+                RunEventKind::AgentEnvelope {
+                    envelope: AgentEnvelope::new(
+                        agent_id.clone(),
+                        None,
+                        child_run_id.clone(),
+                        child_session_id.clone(),
+                        AgentEnvelopeKind::Result {
+                            result: result.clone(),
+                        },
+                    ),
+                },
+                RunEventKind::TaskCompleted {
+                    task_id: task.task_id.clone(),
+                    agent_id: agent_id.clone(),
+                    status: AgentStatus::Completed,
+                },
+                RunEventKind::SubagentStop {
+                    handle: AgentHandle {
+                        status: AgentStatus::Completed,
+                        ..running_handle.clone()
+                    },
+                    result: Some(result.clone()),
+                    error: None,
+                },
+            ] {
+                store
+                    .append(RunEventEnvelope::new(
+                        run_id.clone(),
+                        parent_session_id.clone(),
+                        None,
+                        None,
+                        event,
+                    ))
+                    .await
+                    .unwrap();
+            }
+
+            let exports = store
+                .export_for_memory(RunMemoryExportRequest::default())
+                .await
+                .unwrap();
+            assert_eq!(exports.subagents.len(), 1);
+            assert_eq!(
+                exports.subagents[0].summary.session_id.as_ref(),
+                Some(&child_session_id)
+            );
+            assert_eq!(
+                exports.subagents[0].summary.agent_name.as_deref(),
+                Some("reviewer")
+            );
+            assert!(
+                exports.subagents[0]
+                    .search_corpus
+                    .contains("found no blocking issues")
+            );
+
+            assert_eq!(exports.tasks.len(), 1);
+            assert_eq!(
+                exports.tasks[0].summary.session_id.as_ref(),
+                Some(&child_session_id)
+            );
+            assert_eq!(exports.tasks[0].summary.task_id.as_deref(), Some("task-17"));
+            assert!(exports.tasks[0].search_corpus.contains("checked ownership"));
         }
     );
 }
