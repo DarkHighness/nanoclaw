@@ -765,7 +765,7 @@ mod tests {
     use super::{
         session_context_line, session_last_token_line, session_lines, session_total_token_line,
     };
-    use crate::tui::state::TuiState;
+    use crate::frontend::tui::state::TuiState;
     use agent::types::{ContextWindowUsage, TokenLedgerSnapshot, TokenUsage};
     use std::path::PathBuf;
 

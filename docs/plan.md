@@ -65,5 +65,7 @@ Intentionally still documented as not yet implemented:
 - `docs/sandbox-design.md`
   - current-state sandbox boundary note
 - `docs/code-agent-delivery-plan.md`
+  - active app-convergence and code-agent industrialization plan
+ - `docs/code-agent-delivery-plan.md`
   - active plan for converging `apps/` onto a single `code-agent` product and
     splitting it into backend/frontend layers

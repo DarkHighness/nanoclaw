@@ -16,7 +16,7 @@ Foundation crates:
 - `store`: persistence and replay surface
 - `agent`: umbrella crate in `crates/core` that re-exports the foundation surface
 
-The repository also keeps removable host applications in the separate `apps/` workspace. `apps/reference-tui` is the reference shell, and `apps/code-agent` is the codex-like example product layer.
+The repository also keeps removable host applications in the separate `apps/` workspace. `apps/code-agent` is the actively delivered example product layer. `apps/reference-tui` remains in-tree as a migration/reference shell while its host capabilities are absorbed into `apps/code-agent`.
 
 ## Framework Boundary
 
@@ -26,14 +26,16 @@ The intended boundary is:
 - core built-in tools: `read`, `write`, `edit`, `patch`, `glob`, `grep`, `list`, `bash`
 - optional tool bundles: non-essential tools such as first-party web access, code-intel navigation tools, and agentic task/todo tools compile only behind Cargo features
 - integration surfaces: `mcp` and `store` bolt onto the same runtime contracts
-- reference product layer: `apps/reference-tui` sits outside the foundation workspace, keeps its shell-local config private, and can be removed without changing the runtime core
+- example product layer: `apps/code-agent` sits outside the foundation workspace, owns the product-facing host shell, and is the primary delivered app
+- migration shell: `apps/reference-tui` remains removable and exists only as a transition surface while its host capabilities move into `apps/code-agent`
 
 The repository no longer treats the whole tree as one Cargo workspace. Foundation and app validation run through their own workspace manifests.
 
 The directory layout follows that split directly:
 
 - `crates/core`, `crates/runtime`, `crates/tools`, `crates/provider`, `crates/mcp`, `crates/store`, `crates/skills`, `crates/types`
-- `apps/reference-tui`, `apps/code-agent`
+- `apps/code-agent`
+- `apps/reference-tui` (transitional migration shell)
 
 Every workspace now also has a standard mutable-state layout under `.nanoclaw/`:
 
@@ -111,7 +113,7 @@ The core workspace now provides:
 
 ## Reference Shell
 
-`apps/reference-tui` is a removable host application around the same runtime APIs. It exists to exercise the foundation end to end, not to define the framework, and it is maintained in the separate app workspace.
+`apps/reference-tui` is a transitional host application around the same runtime APIs. It remains useful as a migration and validation surface, but `apps/code-agent` is the primary delivered example app.
 
 Useful commands:
 
@@ -183,7 +185,7 @@ Examples:
 
 ## Example Code Agent
 
-For a thinner codex-like code agent example, see [apps/code-agent](/Users/twiliness/nanoclaw/apps/code-agent/README.md).
+The primary example app is [apps/code-agent](/Users/twiliness/nanoclaw/apps/code-agent/README.md).
 
 ```bash
 export OPENAI_API_KEY=...

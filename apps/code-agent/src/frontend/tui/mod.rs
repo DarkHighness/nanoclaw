@@ -3,13 +3,14 @@ mod observer;
 mod render;
 mod state;
 
+use crate::backend::CodeAgentSession;
 pub(crate) use approval::{ApprovalBridge, InteractiveToolApprovalHandler};
 use observer::SharedRenderObserver;
 use render::render;
 pub(crate) use state::SharedUiState;
 use state::TuiState;
 
-use agent::{AgentRuntime, RuntimeCommand, RuntimeCommandQueue, Skill};
+use agent::{RuntimeCommand, RuntimeCommandQueue};
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::execute;
@@ -19,9 +20,7 @@ use crossterm::terminal::{
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use std::io::{self, Stdout};
-use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::sync::Mutex as AsyncMutex;
 use tokio::task::{JoinHandle, spawn_local};
 use tokio::time::{Duration, sleep};
 
@@ -40,14 +39,7 @@ pub(crate) fn make_tui_support() -> (
 }
 
 pub struct CodeAgentTui {
-    runtime: Arc<AsyncMutex<AgentRuntime>>,
-    workspace_root: PathBuf,
-    provider_label: String,
-    model: String,
-    summary_model: String,
-    memory_model: String,
-    tool_names: Vec<String>,
-    skills: Vec<Skill>,
+    session: CodeAgentSession,
     initial_prompt: Option<String>,
     ui_state: SharedUiState,
     approval_bridge: ApprovalBridge,
@@ -57,27 +49,13 @@ pub struct CodeAgentTui {
 
 impl CodeAgentTui {
     pub fn new(
-        runtime: AgentRuntime,
-        workspace_root: PathBuf,
-        provider_label: String,
-        model: String,
-        summary_model: String,
-        memory_model: String,
-        skills: Vec<Skill>,
+        session: CodeAgentSession,
         initial_prompt: Option<String>,
         ui_state: SharedUiState,
         approval_bridge: ApprovalBridge,
     ) -> Self {
-        let tool_names = runtime.tool_registry_names();
         Self {
-            runtime: Arc::new(AsyncMutex::new(runtime)),
-            workspace_root,
-            provider_label,
-            model,
-            summary_model,
-            memory_model,
-            tool_names,
-            skills,
+            session,
             initial_prompt,
             ui_state,
             approval_bridge,
@@ -100,10 +78,10 @@ impl CodeAgentTui {
         }
 
         let result = self.event_loop(&mut terminal).await;
-        {
-            let mut runtime = self.runtime.lock().await;
-            let _ = runtime.end_session(Some("operator_exit".to_string())).await;
-        }
+        let _ = self
+            .session
+            .end_session(Some("operator_exit".to_string()))
+            .await;
 
         disable_raw_mode()?;
         execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
@@ -245,7 +223,7 @@ impl CodeAgentTui {
         if !finished {
             return Ok(());
         }
-        let git = state::git_snapshot(&self.workspace_root);
+        let git = state::git_snapshot(self.session.workspace_root());
         if let Some(task) = self.turn_task.take() {
             match task.await {
                 Ok(Ok(())) => {
@@ -317,16 +295,13 @@ impl CodeAgentTui {
             state.push_activity(preview.clone());
         });
 
-        let runtime = self.runtime.clone();
+        let session = self.session.clone();
         let ui_state = self.ui_state.clone();
         self.turn_task = Some(spawn_local(async move {
             let mut observer = SharedRenderObserver::new(ui_state.clone());
-            let mut runtime = runtime.lock().await;
-            runtime
+            session
                 .apply_control_with_observer(command, &mut observer)
                 .await
-                .map(|_| ())
-                .map_err(anyhow::Error::from)
         }));
     }
 
@@ -353,7 +328,7 @@ impl CodeAgentTui {
                 Ok(false)
             }
             "/tools" => {
-                let tool_names = self.tool_names.clone();
+                let tool_names = self.session.tool_names().to_vec();
                 self.ui_state.mutate(move |state| {
                     state.inspector_title = "Tool Catalog".to_string();
                     state.inspector_scroll = 0;
@@ -367,7 +342,7 @@ impl CodeAgentTui {
                 Ok(false)
             }
             "/skills" => {
-                let skills = self.skills.clone();
+                let skills = self.session.skills().to_vec();
                 self.ui_state.mutate(move |state| {
                     state.inspector_title = "Skill Catalog".to_string();
                     state.inspector_scroll = 0;
@@ -421,12 +396,9 @@ impl CodeAgentTui {
                     });
                     return Ok(false);
                 }
-                {
-                    let mut runtime = self.runtime.lock().await;
-                    runtime
-                        .steer(message.clone(), Some("manual_command".to_string()))
-                        .await?;
-                }
+                self.session
+                    .steer(message.clone(), Some("manual_command".to_string()))
+                    .await?;
                 self.ui_state.mutate(|state| {
                     state.push_transcript(format!("system> {message}"));
                     state.status = "Applied steer".to_string();
@@ -456,10 +428,7 @@ impl CodeAgentTui {
                     .map(str::trim)
                     .filter(|value| !value.is_empty())
                     .map(ToOwned::to_owned);
-                let compacted = {
-                    let mut runtime = self.runtime.lock().await;
-                    runtime.compact_now(notes).await?
-                };
+                let compacted = self.session.compact_now(notes).await?;
                 self.ui_state.mutate(|state| {
                     if compacted {
                         state.status = "Compacted visible history".to_string();
@@ -483,29 +452,36 @@ impl CodeAgentTui {
     }
 
     fn startup_state(&self) -> TuiState {
-        let skill_names = if self.skills.is_empty() {
+        let skills = self.session.skills();
+        let skill_names = if skills.is_empty() {
             Vec::new()
         } else {
-            self.skills
+            skills
                 .iter()
                 .map(|skill| skill.name.clone())
                 .collect::<Vec<_>>()
         };
+        let workspace_root = self.session.workspace_root().to_path_buf();
         let workspace_name = self
-            .workspace_root
+            .session
+            .workspace_root()
             .file_name()
             .and_then(|value| value.to_str())
             .unwrap_or("workspace")
             .to_string();
+        let provider_label = self.session.provider_label().to_string();
+        let model = self.session.model().to_string();
+        let summary_model = self.session.summary_model().to_string();
+        let memory_model = self.session.memory_model().to_string();
 
         let mut state = TuiState {
             session: state::SessionSummary {
                 workspace_name,
-                provider_label: self.provider_label.clone(),
-                model: self.model.clone(),
-                workspace_root: self.workspace_root.clone(),
-                git: state::git_snapshot(&self.workspace_root),
-                tool_names: self.tool_names.clone(),
+                provider_label: provider_label.clone(),
+                model: model.clone(),
+                workspace_root: workspace_root.clone(),
+                git: state::git_snapshot(&workspace_root),
+                tool_names: self.session.tool_names().to_vec(),
                 skill_names,
                 queued_commands: 0,
                 token_ledger: Default::default(),
@@ -516,9 +492,9 @@ impl CodeAgentTui {
                 "Use /help, /tools, /skills, /steer, or /compact from the composer.".to_string(),
                 "Approvals stay in-line above the composer instead of replacing the screen."
                     .to_string(),
-                format!("Primary lane: {} / {}", self.provider_label, self.model),
-                format!("Summary lane: {}", self.summary_model),
-                format!("Memory lane: {}", self.memory_model),
+                format!("Primary lane: {provider_label} / {model}"),
+                format!("Summary lane: {summary_model}"),
+                format!("Memory lane: {memory_model}"),
             ],
             status: "Ready for your next instruction".to_string(),
             ..TuiState::default()

@@ -175,7 +175,7 @@ impl RuntimeObserver for SharedRenderObserver {
 #[cfg(test)]
 mod tests {
     use super::SharedRenderObserver;
-    use crate::tui::state::SharedUiState;
+    use crate::frontend::tui::state::SharedUiState;
     use agent::runtime::{RuntimeObserver, RuntimeProgressEvent};
     use agent::types::{ContextWindowUsage, TokenLedgerSnapshot, TokenUsage, TokenUsagePhase};
 

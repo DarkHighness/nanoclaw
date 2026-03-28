@@ -1,8 +1,11 @@
+mod backend;
 mod config;
+mod frontend;
 mod options;
 mod provider;
-mod tui;
 
+use crate::backend::CodeAgentSession;
+use crate::frontend::tui::{CodeAgentTui, make_tui_support};
 use crate::options::AppOptions;
 use crate::provider::{
     agent_backend_capabilities, build_agent_backend, build_internal_backend,
@@ -41,7 +44,6 @@ use std::sync::Arc;
 use tracing::{info, warn};
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::EnvFilter;
-use tui::{CodeAgentTui, make_tui_support};
 
 struct DriverHostInputs {
     runtime_hooks: Vec<HookRegistration>,
@@ -247,20 +249,18 @@ async fn async_main(workspace_root: PathBuf, options: AppOptions) -> Result<()> 
     let summary_model = provider_summary(&options.summary_profile.model);
     let memory_model = provider_summary(&options.memory_profile.model);
     let initial_prompt = options.one_shot_prompt.clone();
-    CodeAgentTui::new(
+    let session = CodeAgentSession::new(
         runtime,
-        workspace_root,
+        workspace_root.clone(),
         provider_label,
         model,
         summary_model,
         memory_model,
         skills,
-        initial_prompt,
-        ui_state,
-        approval_bridge,
-    )
-    .run()
-    .await
+    );
+    CodeAgentTui::new(session, initial_prompt, ui_state, approval_bridge)
+        .run()
+        .await
 }
 
 async fn build_runtime(
