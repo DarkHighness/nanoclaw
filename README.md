@@ -228,11 +228,18 @@ They intentionally keep local build/test CPU usage bounded:
 - Cargo build jobs default to `1`
 - Rust test threads default to `1`
 - Rayon worker threads default to `1`
+- Tokio multi-thread worker threads default to `1`
+
+Host apps can still override Tokio runtime limits explicitly in
+`.nanoclaw/config/core.toml` with `runtime.tokio_worker_threads` and
+`runtime.tokio_max_blocking_threads`. When `tokio_worker_threads` is unset,
+manual host runtimes fall back to Tokio's standard `TOKIO_WORKER_THREADS`
+behavior, which now lines up with the Cargo default above.
 
 Override them explicitly when you want a faster local run:
 
 ```bash
-CARGO_BUILD_JOBS=8 RUST_TEST_THREADS=8 RAYON_NUM_THREADS=8 cargo test --manifest-path crates/Cargo.toml -p memory
+CARGO_BUILD_JOBS=8 RUST_TEST_THREADS=8 RAYON_NUM_THREADS=8 TOKIO_WORKER_THREADS=8 cargo test --manifest-path crates/Cargo.toml -p memory
 ```
 
 ## Git Hooks
