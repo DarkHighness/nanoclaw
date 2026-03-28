@@ -1,11 +1,14 @@
+mod provider_state;
+
 use crate::{
     CompactionConfig, CompactionRequest, ConversationCompactor, HookAggregate, HookRunner,
     LoopDetectionConfig, LoopSignalSeverity, ModelBackend, NoopRuntimeObserver, Result,
-    RuntimeCommand, RuntimeError, RuntimeObserver, RuntimeProgressEvent, RuntimeSession,
-    ToolApprovalHandler, ToolApprovalOutcome, ToolApprovalPolicy, ToolApprovalPolicyDecision,
-    ToolApprovalRequest, ToolLoopDetector, append_transcript_message, estimate_prompt_tokens,
+    RuntimeCommand, RuntimeObserver, RuntimeProgressEvent, RuntimeSession, ToolApprovalHandler,
+    ToolApprovalOutcome, ToolApprovalPolicy, ToolApprovalPolicyDecision, ToolApprovalRequest,
+    ToolLoopDetector, append_transcript_message, estimate_prompt_tokens,
 };
 use futures::StreamExt;
+use provider_state::is_provider_continuation_lost;
 use serde_json::json;
 use skills::SkillCatalog;
 use std::collections::BTreeMap;
@@ -15,9 +18,8 @@ use tools::{ToolExecutionContext, ToolRegistry};
 use tracing::{debug, info, warn};
 use types::{
     AgentCoreError, GateDecision, HookContext, HookEvent, HookRegistration, Message, MessageId,
-    MessagePart, ModelEvent, ModelRequest, PermissionBehavior, PermissionDecision,
-    ProviderContinuation, RunEventEnvelope, RunEventKind, ToolCall, ToolLifecycleEventEnvelope,
-    ToolSpec, TurnId,
+    MessagePart, ModelEvent, PermissionBehavior, PermissionDecision, RunEventEnvelope,
+    RunEventKind, ToolCall, ToolLifecycleEventEnvelope, ToolSpec, TurnId,
 };
 
 pub struct AgentRuntime {
@@ -966,64 +968,6 @@ impl AgentRuntime {
             .collect()
     }
 
-    fn build_model_request(
-        &self,
-        turn_id: &TurnId,
-        instructions: &[String],
-        force_full_transcript: bool,
-    ) -> ModelRequest {
-        let (messages, continuation) = if force_full_transcript {
-            (self.visible_transcript(), None)
-        } else {
-            self.request_window()
-        };
-        ModelRequest {
-            run_id: self.session.run_id.clone(),
-            session_id: self.session.session_id.clone(),
-            turn_id: turn_id.clone(),
-            instructions: instructions.to_vec(),
-            messages,
-            tools: self.tool_registry.specs(),
-            additional_context: Vec::new(),
-            continuation,
-            metadata: json!({}),
-        }
-    }
-
-    fn request_window(&self) -> (Vec<Message>, Option<ProviderContinuation>) {
-        let capabilities = self.backend.capabilities();
-        if !capabilities.provider_managed_history {
-            return (self.visible_transcript(), None);
-        }
-
-        let Some(continuation) = self.session.provider_continuation.clone() else {
-            return (self.visible_transcript(), None);
-        };
-
-        // Provider-managed chaining references the prior upstream response and
-        // sends only append-only transcript growth after that response. This
-        // avoids reserializing the visible transcript while keeping runtime
-        // history itself immutable on disk and in memory.
-        let start = self
-            .session
-            .provider_transcript_cursor
-            .min(self.session.transcript.len());
-        (
-            self.session.transcript[start..].to_vec(),
-            Some(continuation),
-        )
-    }
-
-    fn update_provider_continuation(&mut self, continuation: Option<ProviderContinuation>) {
-        self.session.provider_continuation = continuation;
-        self.session.provider_transcript_cursor = self.session.transcript.len();
-    }
-
-    fn reset_provider_continuation(&mut self) {
-        self.session.provider_continuation = None;
-        self.session.provider_transcript_cursor = 0;
-    }
-
     async fn compact_if_needed(
         &mut self,
         turn_id: &TurnId,
@@ -1248,13 +1192,6 @@ fn severity_label(severity: LoopSignalSeverity) -> &'static str {
         LoopSignalSeverity::Warning => "warning",
         LoopSignalSeverity::Critical => "critical",
     }
-}
-
-fn is_provider_continuation_lost(error: &RuntimeError) -> bool {
-    matches!(
-        error,
-        RuntimeError::AgentCore(AgentCoreError::ProviderContinuationLost(_))
-    )
 }
 
 fn approval_reasons_for_tool(spec: &ToolSpec) -> Vec<String> {
