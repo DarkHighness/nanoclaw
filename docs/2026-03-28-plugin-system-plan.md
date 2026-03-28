@@ -759,7 +759,6 @@ cargo test -p reference-tui
 当前尚未达到计划目标的部分：
 
 - `builtin.wasm-hook-runtime` 更像校验器，而不是完整 runtime driver
-- message mutation 协议宽于当前运行时能力
 
 ### 16.2 P0 修复项
 
@@ -794,8 +793,10 @@ cargo test -p reference-tui
   - 若只是 module validation，则应在命名和文档上收窄
   - 若目标是 runtime driver，则必须真正返回 runtime contributions
 - 统一消息 mutation 能力：
-  - 要么补 `MessageId / LastOfRole`
-  - 要么收窄协议到 `Current`
+  - 已完成：
+    - `MessageSelector` 已收窄到 `Current`
+    - 开发版不再保留 `MessageId / LastOfRole` 这类运行时无法兑现的 selector
+    - message mutation 现在明确是 in-flight only，而不是 transcript-aware
 
 ### 16.4 P2 性能与硬化
 
@@ -811,4 +812,4 @@ cargo test -p reference-tui
 - 当前 `prompt` / `agent` handlers 是否仍为 fail-closed stub，还是已有真实执行器
 - `DriverActivationOutcome` 已经被 `reference-tui` / `code-agent` 完整消费
 - `builtin.wasm-hook-runtime` 是校验器还是完整 runtime driver
-- message mutation 当前到底支持“in-flight only”还是“transcript-aware”
+- message mutation 当前明确只支持 “in-flight only”

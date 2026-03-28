@@ -329,9 +329,12 @@
     - `apps/code-agent/src/main.rs`
 
 - 明确消息 mutation 的目标能力：
-  - 如果目标只支持当前 in-flight message，就应收窄协议
-  - 如果目标是通用 transcript mutation，就应补 `MessageId/LastOfRole`
-  - 不能继续保持“协议更宽、运行时更窄”的状态
+  - 状态：
+    - `completed`
+  - 已落地语义：
+    - 开发版直接把 `MessageSelector` 收窄到 `Current`
+    - 不再保留 `MessageId/LastOfRole` 这类运行时没有稳定定位面的 selector
+    - message mutation 现在明确是 in-flight only
   - 目标文件：
     - `crates/types/src/hook.rs`
     - `crates/runtime/src/runtime/hook_effects.rs`
@@ -428,7 +431,7 @@
 - runtime export 与多 Agent 联动
   - 状态：`completed`
 - message mutation 协议/实现统一
-  - 状态：`pending`
+  - 状态：`completed`
 
 ### Batch 3：做性能与收口
 

@@ -1,4 +1,4 @@
-use crate::{Message, MessageId, MessagePart, MessageRole, RunId, SessionId, ToolName, TurnId};
+use crate::{Message, MessagePart, MessageRole, RunId, SessionId, ToolName, TurnId};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -253,9 +253,10 @@ pub struct HookRegistration {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum MessageSelector {
+    // 当前 runtime 只支持变更 in-flight message。开发版直接把协议收窄到
+    // 这一个 selector，避免类型面保留 `message_id/last_of_role` 这类
+    // 运行时无法兑现的“伪能力”。
     Current,
-    MessageId { message_id: MessageId },
-    LastOfRole { role: MessageRole },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
@@ -339,5 +340,82 @@ impl HookContext {
     #[must_use]
     pub fn field(&self, key: &str) -> Option<&str> {
         self.fields.get(key).map(String::as_str)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{HookEffect, MessagePart, MessageRole, MessageSelector};
+
+    #[test]
+    fn current_selector_round_trips() {
+        let json = serde_json::to_string(&HookEffect::RemoveMessage {
+            selector: MessageSelector::Current,
+        })
+        .unwrap();
+
+        let parsed = serde_json::from_str::<HookEffect>(&json).unwrap();
+        assert_eq!(
+            parsed,
+            HookEffect::RemoveMessage {
+                selector: MessageSelector::Current,
+            }
+        );
+    }
+
+    #[test]
+    fn legacy_message_selectors_are_rejected() {
+        let replace = serde_json::json!({
+            "kind": "replace_message",
+            "selector": {
+                "kind": "message_id",
+                "message_id": "msg_1"
+            },
+            "message": {
+                "role": "assistant",
+                "parts": [{ "type": "text", "text": "patched" }]
+            }
+        });
+        let patch = serde_json::json!({
+            "kind": "patch_message",
+            "selector": {
+                "kind": "last_of_role",
+                "role": "assistant"
+            },
+            "patch": {
+                "append_parts": [{ "type": "text", "text": "patched" }]
+            }
+        });
+
+        let replace_error = serde_json::from_value::<HookEffect>(replace).unwrap_err();
+        let patch_error = serde_json::from_value::<HookEffect>(patch).unwrap_err();
+
+        assert!(replace_error.to_string().contains("unknown variant"));
+        assert!(patch_error.to_string().contains("unknown variant"));
+    }
+
+    #[test]
+    fn replace_message_with_current_selector_still_deserializes() {
+        let value = serde_json::json!({
+            "kind": "replace_message",
+            "selector": { "kind": "current" },
+            "message": {
+                "role": "assistant",
+                "parts": [{ "type": "text", "text": "rewritten" }]
+            }
+        });
+
+        let parsed = serde_json::from_value::<HookEffect>(value).unwrap();
+        let HookEffect::ReplaceMessage { selector, message } = parsed else {
+            panic!("expected replace_message effect");
+        };
+        assert_eq!(selector, MessageSelector::Current);
+        assert_eq!(message.role, MessageRole::Assistant);
+        assert_eq!(
+            message.parts,
+            vec![MessagePart::Text {
+                text: "rewritten".to_string(),
+            }]
+        );
     }
 }

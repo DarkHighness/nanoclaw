@@ -270,28 +270,18 @@ fn ensure_message_mutation_allowed(
 
 fn apply_message_replacement(
     current_message: &mut Option<Message>,
-    selector: MessageSelector,
+    _selector: MessageSelector,
     message: Message,
 ) -> Result<()> {
-    if !matches!(selector, MessageSelector::Current) {
-        return Err(RuntimeError::hook(
-            "only current in-flight message replacement is supported",
-        ));
-    }
     *current_message = Some(message);
     Ok(())
 }
 
 fn apply_message_patch(
     current_message: &mut Option<Message>,
-    selector: MessageSelector,
+    _selector: MessageSelector,
     patch: types::MessagePatch,
 ) -> Result<()> {
-    if !matches!(selector, MessageSelector::Current) {
-        return Err(RuntimeError::hook(
-            "only current in-flight message patching is supported",
-        ));
-    }
     let Some(message) = current_message.as_mut() else {
         return Err(RuntimeError::hook(
             "hook attempted to patch a missing current message",
@@ -311,13 +301,8 @@ fn apply_message_patch(
 
 fn apply_message_removal(
     current_message: &mut Option<Message>,
-    selector: MessageSelector,
+    _selector: MessageSelector,
 ) -> Result<()> {
-    if !matches!(selector, MessageSelector::Current) {
-        return Err(RuntimeError::hook(
-            "only current in-flight message removal is supported",
-        ));
-    }
     *current_message = None;
     Ok(())
 }
