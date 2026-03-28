@@ -575,7 +575,15 @@
 - message mutation 协议/实现统一
   - 状态：`completed`
 - 模型目录 + agent/internal profile 重构
-  - 状态：`planned`
+  - 状态：`in_progress`
+  - 已落地：
+    - `nanoclaw-config` 已删除旧 `provider/runtime/system_prompt` schema
+    - `core.toml` 已切到 `global_system_prompt / host / models / agents / internal`
+    - `reference-tui` 与 `code-agent` 已从 resolved primary profile 启动
+    - compactor 已切到 `internal.summary`
+  - 未完成：
+    - subagent profile 工厂化
+    - internal.memory 推理链接线
 - token usage ledger 与 UI 展示
   - 状态：`planned`
 

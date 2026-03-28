@@ -20,7 +20,7 @@ use plugins::{
 #[cfg(test)]
 use preamble::DEFAULT_AGENT_PREAMBLE;
 use preamble::build_runtime_preamble;
-use provider::{build_backend, provider_summary};
+use provider::{build_backend, build_summary_backend, provider_summary};
 use runtime::{
     AgentRuntime, AgentRuntimeBuilder, CompactionConfig, DefaultCommandHookExecutor, HookRunner,
     ModelConversationCompactor,
@@ -131,11 +131,13 @@ async fn bootstrap_from_parts(
     let stored_run_count = store.list_runs().await.unwrap_or_default().len();
     let backend =
         Arc::new(build_backend(&config).context("failed to initialize provider backend")?);
-    let provider_summary = provider_summary(&config, &backend);
+    let summary_backend =
+        Arc::new(build_summary_backend(&config).context("failed to initialize summary backend")?);
+    let provider_summary = provider_summary(&config);
     let tool_context = ToolExecutionContext {
         workspace_root: workspace_root.clone(),
         worktree_root: Some(workspace_root.clone()),
-        workspace_only: config.runtime.workspace_only,
+        workspace_only: config.core.host.workspace_only,
         model_context_window_tokens: Some(context_tokens(&config)),
         ..Default::default()
     };
@@ -157,7 +159,7 @@ async fn bootstrap_from_parts(
     let hook_runner = Arc::new(HookRunner::with_services(
         Arc::new(
             DefaultCommandHookExecutor::with_process_executor_and_policy(
-                config.hook_env.clone(),
+                config.core.hook_env.clone(),
                 process_executor.clone(),
                 sandbox_policy.clone(),
             ),
@@ -201,6 +203,7 @@ async fn bootstrap_from_parts(
     } = merge_driver_host_inputs(
         plugin_plan.hooks.clone(),
         config
+            .core
             .mcp_servers
             .iter()
             .cloned()
@@ -243,24 +246,17 @@ async fn bootstrap_from_parts(
         .iter()
         .map(|skill| skill.name.clone())
         .collect::<Vec<_>>();
-    let context_tokens = context_tokens(&config);
-    let compact_trigger_tokens = config
-        .runtime
-        .compact_trigger_tokens
-        .unwrap_or((context_tokens * 3) / 4);
-    let compact_preserve_recent_messages =
-        config.runtime.compact_preserve_recent_messages.unwrap_or(8);
     let runtime = AgentRuntimeBuilder::new(backend.clone(), store.clone())
         .hook_runner(hook_runner)
         .tool_registry(tools)
         .tool_context(tool_context)
         .tool_approval_handler(Arc::new(InteractiveToolApprovalHandler::default()))
-        .conversation_compactor(Arc::new(ModelConversationCompactor::new(backend.clone())))
+        .conversation_compactor(Arc::new(ModelConversationCompactor::new(summary_backend)))
         .compaction_config(CompactionConfig {
-            enabled: config.runtime.auto_compact,
-            context_window_tokens: context_tokens,
-            trigger_tokens: compact_trigger_tokens,
-            preserve_recent_messages: compact_preserve_recent_messages,
+            enabled: config.primary_profile.auto_compact,
+            context_window_tokens: config.primary_profile.context_window_tokens,
+            trigger_tokens: config.primary_profile.compact_trigger_tokens,
+            preserve_recent_messages: config.primary_profile.compact_preserve_recent_messages,
         })
         .instructions(instructions)
         .hooks(runtime_hooks)
@@ -305,7 +301,7 @@ mod tests {
         build_runtime_preamble, build_sandbox_policy, describe_sandbox_policy,
         merge_driver_host_inputs, resolved_skill_roots,
     };
-    use crate::config::{AgentCoreConfig, ProviderKind};
+    use crate::config::AgentCoreConfig;
     use crate::test_support::lock_env_test;
     use agent::DriverActivationOutcome;
     use agent::mcp::{McpServerConfig, McpTransportConfig};
@@ -420,19 +416,22 @@ Use this skill when asked.
         fs::write(
             crate::config::core_config_path(dir.path()),
             r#"
-                system_prompt = "Keep answers short."
+                global_system_prompt = "Keep answers short."
                 skill_roots = ["skills"]
 
-                [provider]
-                kind = "openai"
-                model = "gpt-4.1-mini"
-
-                [provider.env]
-                OPENAI_API_KEY = "test-key"
-
-                [runtime]
+                [host]
                 workspace_only = true
                 store_dir = ".nanoclaw/custom-store"
+
+                [models.gpt_5_4_default]
+                provider = "openai"
+                model = "gpt-5.4"
+                context_window_tokens = 400000
+                max_output_tokens = 128000
+                compact_trigger_tokens = 320000
+
+                [models.gpt_5_4_default.env]
+                OPENAI_API_KEY = "test-key"
             "#,
         )
         .await
@@ -465,7 +464,7 @@ Use this skill when asked.
                 .startup_summary
                 .sidebar
                 .iter()
-                .any(|line| line.contains("provider: openai / gpt-4.1-mini"))
+                .any(|line| line.contains("provider: gpt_5_4_default -> openai / gpt-5.4"))
         );
         assert!(
             artifacts
@@ -529,8 +528,8 @@ Use this skill when asked.
         .await
         .unwrap();
         let config = AgentCoreConfig::default().with_override(|config| {
-            config.system_prompt = Some("Project-specific prompt.".to_string());
-            config.skill_roots = vec!["skills".to_string()];
+            config.core.global_system_prompt = Some("Project-specific prompt.".to_string());
+            config.core.skill_roots = vec!["skills".to_string()];
         });
         let plugin_plan = build_plugin_activation_plan(&config, dir.path()).unwrap();
         let skill_catalog =
@@ -587,11 +586,14 @@ Use this skill when asked.
         fs::write(
             crate::config::core_config_path(dir.path()),
             r#"
-                [provider]
-                kind = "openai"
-                model = "gpt-4.1-mini"
+                [models.gpt_5_4_default]
+                provider = "openai"
+                model = "gpt-5.4"
+                context_window_tokens = 400000
+                max_output_tokens = 128000
+                compact_trigger_tokens = 320000
 
-                [provider.env]
+                [models.gpt_5_4_default.env]
                 OPENAI_API_KEY = "test-key"
 
                 [plugins.slots]
@@ -633,14 +635,17 @@ Use this skill when asked.
         fs::write(
             crate::config::core_config_path(dir.path()),
             r#"
-                [provider]
-                kind = "openai"
-                model = "gpt-4.1-mini"
+                [models.gpt_5_4_default]
+                provider = "openai"
+                model = "gpt-5.4"
+                context_window_tokens = 400000
+                max_output_tokens = 128000
+                compact_trigger_tokens = 320000
 
-                [provider.env]
+                [models.gpt_5_4_default.env]
                 OPENAI_API_KEY = "test-key"
 
-                [runtime]
+                [host]
                 store_dir = "occupied"
             "#,
         )
@@ -675,12 +680,17 @@ Use this skill when asked.
     async fn build_backend_applies_provider_additional_params() {
         let _guard = lock_env_test();
         let config = AgentCoreConfig::default().with_override(|config| {
-            config.provider.kind = Some(ProviderKind::OpenAi);
-            config.provider.model = Some("gpt-4.1-mini".to_string());
-            config.provider.additional_params =
-                Some(serde_json::json!({"metadata":{"tier":"priority"}}));
             config
-                .provider
+                .core
+                .models
+                .get_mut("gpt_5_4_default")
+                .unwrap()
+                .additional_params = Some(serde_json::json!({"metadata":{"tier":"priority"}}));
+            config
+                .core
+                .models
+                .get_mut("gpt_5_4_default")
+                .unwrap()
                 .env
                 .insert("OPENAI_API_KEY".to_string(), "test-key".to_string());
         });
@@ -698,7 +708,7 @@ Use this skill when asked.
         let _guard = lock_env_test();
         let workspace = tempdir().unwrap();
         let config = AgentCoreConfig::default().with_override(|config| {
-            config.runtime.sandbox_fail_if_unavailable = true;
+            config.core.host.sandbox_fail_if_unavailable = true;
         });
         let tool_context = ToolExecutionContext {
             workspace_root: workspace.path().to_path_buf(),

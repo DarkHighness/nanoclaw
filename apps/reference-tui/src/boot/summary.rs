@@ -56,15 +56,12 @@ pub(super) fn build_startup_summary(
         ),
         format!(
             "compaction: {}",
-            if config.runtime.auto_compact {
+            if config.primary_profile.auto_compact {
                 format!(
                     "auto at ~{} / {} tokens, keep {} recent messages",
-                    config
-                        .runtime
-                        .compact_trigger_tokens
-                        .unwrap_or(config.runtime.context_tokens.unwrap_or(128_000) * 3 / 4),
-                    config.runtime.context_tokens.unwrap_or(128_000),
-                    config.runtime.compact_preserve_recent_messages.unwrap_or(8),
+                    config.primary_profile.compact_trigger_tokens,
+                    config.primary_profile.context_window_tokens,
+                    config.primary_profile.compact_preserve_recent_messages,
                 )
             } else {
                 "disabled".to_string()

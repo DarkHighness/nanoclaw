@@ -4,7 +4,7 @@ mod provider;
 mod tui;
 
 use crate::options::AppOptions;
-use crate::provider::build_backend;
+use crate::provider::{build_agent_backend, build_internal_backend, provider_label};
 use agent::mcp::{
     McpConnectOptions, McpServerConfig, McpTransportConfig, catalog_tools_as_registry_entries,
     connect_and_catalog_mcp_servers_with_options,
@@ -29,6 +29,7 @@ use agent::{
 };
 use agent_env::EnvMap;
 use anyhow::{Context, Result};
+use nanoclaw_config::AgentSandboxMode;
 use nanoclaw_config::PluginsConfig;
 use std::collections::BTreeMap;
 use std::env;
@@ -38,10 +39,6 @@ use tracing::{info, warn};
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::EnvFilter;
 use tui::{CodeAgentTui, make_tui_support};
-
-const DEFAULT_CONTEXT_TOKENS: usize = 128_000;
-const DEFAULT_TRIGGER_TOKENS: usize = 96_000;
-const DEFAULT_PRESERVE_RECENT_MESSAGES: usize = 8;
 
 struct DriverHostInputs {
     runtime_hooks: Vec<HookRegistration>,
@@ -161,7 +158,7 @@ fn init_tracing(workspace_root: &Path) -> Result<WorkerGuard> {
 
 async fn async_main(workspace_root: PathBuf, options: AppOptions) -> Result<()> {
     let (ui_state, approval_bridge, approval_handler) = make_tui_support();
-    let tool_context = build_tool_context(&workspace_root);
+    let tool_context = build_tool_context(&workspace_root, &options);
     let sandbox_policy = build_sandbox_policy(&options, &tool_context);
     let sandbox_status = ensure_sandbox_policy_supported(&sandbox_policy)
         .context("sandbox policy cannot be enforced on this host")?;
@@ -187,8 +184,8 @@ async fn async_main(workspace_root: PathBuf, options: AppOptions) -> Result<()> 
         sandbox_policy,
     )
     .await?;
-    let provider_label = options.provider.to_string();
-    let model = options.model.clone();
+    let provider_label = provider_label(&options.primary_profile);
+    let model = options.primary_profile.model.model.clone();
     let initial_prompt = options.one_shot_prompt.clone();
     CodeAgentTui::new(
         runtime,
@@ -211,15 +208,8 @@ async fn build_runtime(
     tool_context: ToolExecutionContext,
     sandbox_policy: SandboxPolicy,
 ) -> Result<(AgentRuntime, Vec<Skill>)> {
-    let backend = Arc::new(build_backend(
-        options.provider,
-        options.model.clone(),
-        options.base_url.clone(),
-        options.temperature,
-        options.max_tokens,
-        options.additional_params.clone(),
-        &options.provider_env,
-    )?);
+    let backend = Arc::new(build_agent_backend(&options.primary_profile)?);
+    let summary_backend = Arc::new(build_internal_backend(&options.summary_profile)?);
     let store = Arc::new(InMemoryRunStore::new());
     let plugin_plan = build_plugin_activation_plan(workspace_root, &options.plugins)
         .context("failed to build plugin activation plan")?;
@@ -231,7 +221,7 @@ async fn build_runtime(
     let runtime_hooks = plugin_plan.hooks.clone();
     let plugin_mcp_servers = plugin_plan.mcp_servers.clone();
     let plugin_instructions = plugin_plan.instructions.clone();
-    let compactor = Arc::new(ModelConversationCompactor::new(backend.clone()));
+    let compactor = Arc::new(ModelConversationCompactor::new(summary_backend));
     let loop_detection_config = LoopDetectionConfig {
         enabled: true,
         ..LoopDetectionConfig::default()
@@ -367,7 +357,7 @@ async fn build_runtime(
         .collect::<Vec<_>>();
     runtime_hooks.extend(skill_hooks.clone());
     let instructions = build_system_preamble(
-        options.system_prompt.as_deref(),
+        &options.primary_profile,
         &skill_catalog,
         &plugin_instructions,
     );
@@ -381,10 +371,10 @@ async fn build_runtime(
         Arc::new(NoopToolApprovalPolicy),
         compactor.clone(),
         CompactionConfig {
-            enabled: true,
-            context_window_tokens: DEFAULT_CONTEXT_TOKENS,
-            trigger_tokens: DEFAULT_TRIGGER_TOKENS,
-            preserve_recent_messages: DEFAULT_PRESERVE_RECENT_MESSAGES,
+            enabled: options.primary_profile.auto_compact,
+            context_window_tokens: options.primary_profile.context_window_tokens,
+            trigger_tokens: options.primary_profile.compact_trigger_tokens,
+            preserve_recent_messages: options.primary_profile.compact_preserve_recent_messages,
         },
         loop_detection_config.clone(),
         instructions.clone(),
@@ -407,10 +397,10 @@ async fn build_runtime(
         .tool_approval_handler(approval_handler)
         .conversation_compactor(compactor)
         .compaction_config(CompactionConfig {
-            enabled: true,
-            context_window_tokens: DEFAULT_CONTEXT_TOKENS,
-            trigger_tokens: DEFAULT_TRIGGER_TOKENS,
-            preserve_recent_messages: DEFAULT_PRESERVE_RECENT_MESSAGES,
+            enabled: options.primary_profile.auto_compact,
+            context_window_tokens: options.primary_profile.context_window_tokens,
+            trigger_tokens: options.primary_profile.compact_trigger_tokens,
+            preserve_recent_messages: options.primary_profile.compact_preserve_recent_messages,
         })
         .loop_detection_config(loop_detection_config)
         .instructions(instructions)
@@ -425,26 +415,43 @@ fn build_sandbox_policy(
     options: &AppOptions,
     tool_context: &ToolExecutionContext,
 ) -> SandboxPolicy {
-    // `code-agent` keeps the workspace-derived sandbox posture but lets the
-    // operator decide whether missing enforcement backends are tolerable.
-    tool_context
-        .sandbox_scope()
-        .recommended_policy()
-        .with_fail_if_unavailable(options.sandbox_fail_if_unavailable)
+    let base_policy = tool_context.sandbox_scope().recommended_policy();
+    match options.primary_profile.sandbox {
+        AgentSandboxMode::DangerFullAccess => SandboxPolicy::permissive()
+            .with_fail_if_unavailable(options.sandbox_fail_if_unavailable),
+        AgentSandboxMode::WorkspaceWrite => {
+            base_policy.with_fail_if_unavailable(options.sandbox_fail_if_unavailable)
+        }
+        AgentSandboxMode::ReadOnly => SandboxPolicy {
+            mode: agent::tools::SandboxMode::ReadOnly,
+            filesystem: agent::tools::FilesystemPolicy {
+                readable_roots: base_policy.filesystem.readable_roots,
+                writable_roots: Vec::new(),
+                executable_roots: base_policy.filesystem.executable_roots,
+                protected_paths: base_policy.filesystem.protected_paths,
+            },
+            network: match base_policy.network {
+                agent::tools::NetworkPolicy::Full => agent::tools::NetworkPolicy::Off,
+                other => other,
+            },
+            host_escape: agent::tools::HostEscapePolicy::Deny,
+            fail_if_unavailable: options.sandbox_fail_if_unavailable,
+        },
+    }
 }
 
-fn build_tool_context(workspace_root: &Path) -> ToolExecutionContext {
+fn build_tool_context(workspace_root: &Path, options: &AppOptions) -> ToolExecutionContext {
     ToolExecutionContext {
         workspace_root: workspace_root.to_path_buf(),
         worktree_root: Some(workspace_root.to_path_buf()),
-        workspace_only: true,
-        model_context_window_tokens: Some(DEFAULT_CONTEXT_TOKENS),
+        workspace_only: options.workspace_only,
+        model_context_window_tokens: Some(options.primary_profile.context_window_tokens),
         ..Default::default()
     }
 }
 
 fn build_system_preamble(
-    system_prompt: Option<&str>,
+    profile: &nanoclaw_config::ResolvedAgentProfile,
     skill_catalog: &SkillCatalog,
     plugin_instructions: &[String],
 ) -> Vec<String> {
@@ -461,11 +468,13 @@ fn build_system_preamble(
         "Use the task tool when a bounded subagent can make progress in parallel or with isolated context."
             .to_string(),
     ];
-    if let Some(system_prompt) = system_prompt
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        preamble.push(system_prompt.to_string());
+    for prompt in [
+        profile.global_system_prompt.as_deref(),
+        profile.system_prompt.as_deref(),
+    ] {
+        if let Some(system_prompt) = prompt.map(str::trim).filter(|value| !value.is_empty()) {
+            preamble.push(system_prompt.to_string());
+        }
     }
     preamble.extend(plugin_instructions.iter().cloned());
     if let Some(skill_manifest) = skill_catalog.prompt_manifest() {
@@ -549,7 +558,6 @@ mod tests {
         merge_driver_host_inputs, resolve_mcp_servers,
     };
     use crate::options::{AppOptions, parse_bool_flag};
-    use crate::provider::{SelectedProvider, default_model};
     use agent::DriverActivationOutcome;
     use agent::ToolExecutionContext;
     use agent::mcp::{McpServerConfig, McpTransportConfig};
@@ -563,15 +571,6 @@ mod tests {
     fn env_test_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(()))
-    }
-
-    #[test]
-    fn default_model_matches_provider() {
-        assert_eq!(default_model(SelectedProvider::OpenAi), "gpt-5.4");
-        assert_eq!(
-            default_model(SelectedProvider::Anthropic),
-            "claude-sonnet-4-6"
-        );
     }
 
     #[test]

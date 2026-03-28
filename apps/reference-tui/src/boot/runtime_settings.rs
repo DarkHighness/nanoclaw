@@ -1,20 +1,41 @@
 use crate::config::AgentCoreConfig;
-use tools::{SandboxPolicy, ToolExecutionContext};
+use nanoclaw_config::AgentSandboxMode;
+use tools::{
+    FilesystemPolicy, HostEscapePolicy, NetworkPolicy, SandboxMode, SandboxPolicy,
+    ToolExecutionContext,
+};
 
 pub(super) fn context_tokens(config: &AgentCoreConfig) -> usize {
-    config.runtime.context_tokens.unwrap_or(128_000)
+    config.primary_profile.context_window_tokens
 }
 
 pub(super) fn build_sandbox_policy(
     config: &AgentCoreConfig,
     tool_context: &ToolExecutionContext,
 ) -> SandboxPolicy {
-    // The host config only controls whether missing enforcement backends are a
-    // hard error or a best-effort fallback. Filesystem and network posture
-    // still derive from the tool context so runtime path policy and local
-    // process policy do not drift apart.
-    tool_context
-        .sandbox_scope()
-        .recommended_policy()
-        .with_fail_if_unavailable(config.runtime.sandbox_fail_if_unavailable)
+    let base_policy = tool_context.sandbox_scope().recommended_policy();
+    let fail_if_unavailable = config.core.host.sandbox_fail_if_unavailable;
+    match config.primary_profile.sandbox {
+        AgentSandboxMode::DangerFullAccess => {
+            SandboxPolicy::permissive().with_fail_if_unavailable(fail_if_unavailable)
+        }
+        AgentSandboxMode::WorkspaceWrite => {
+            base_policy.with_fail_if_unavailable(fail_if_unavailable)
+        }
+        AgentSandboxMode::ReadOnly => SandboxPolicy {
+            mode: SandboxMode::ReadOnly,
+            filesystem: FilesystemPolicy {
+                readable_roots: base_policy.filesystem.readable_roots,
+                writable_roots: Vec::new(),
+                executable_roots: base_policy.filesystem.executable_roots,
+                protected_paths: base_policy.filesystem.protected_paths,
+            },
+            network: match base_policy.network {
+                NetworkPolicy::Full => NetworkPolicy::Off,
+                other => other,
+            },
+            host_escape: HostEscapePolicy::Deny,
+            fail_if_unavailable,
+        },
+    }
 }

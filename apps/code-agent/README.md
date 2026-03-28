@@ -38,20 +38,14 @@ cargo run --manifest-path apps/Cargo.toml -p code-agent -- "inspect this reposit
 
 The prompt is submitted as the first turn, then the TUI stays open.
 
-Explicit provider:
-
-```bash
-cargo run --manifest-path apps/Cargo.toml -p code-agent -- --provider anthropic
-```
-
 ## Environment
 
 - The app automatically loads `.env` and `.env.local` from the current workspace.
 - Precedence is: command-line flags > process environment > `.env.local` > `.env`.
-- Shared core settings come from `.nanoclaw/config/core.toml` plus `NANOCLAW_CORE_*` env overrides.
+- Shared core settings come from `.nanoclaw/config/core.toml` plus host/plugin-oriented `NANOCLAW_CORE_*` env overrides.
 - App-local settings come from `.nanoclaw/apps/code-agent.toml`.
 - Runtime thread caps can be set in `.nanoclaw/config/core.toml` with
-  `runtime.tokio_worker_threads` and `runtime.tokio_max_blocking_threads`,
+  `host.tokio_worker_threads` and `host.tokio_max_blocking_threads`,
   or via `NANOCLAW_CORE_TOKIO_WORKER_THREADS` and
   `NANOCLAW_CORE_TOKIO_MAX_BLOCKING_THREADS`.
 - `CODE_AGENT_LSP_ENABLED`: enable the managed LSP overlay for code-intel tools and file-open hooks (defaults to `true`)
@@ -66,23 +60,19 @@ Example:
 cp apps/code-agent/.env.example .env
 ```
 
-The built-in model defaults are:
-
-- OpenAI: `gpt-5.4`
-- Anthropic: `claude-sonnet-4-6`
-
-The code-agent reads provider/model/system prompt/plugin selection from the
-shared core config layer. Provider credentials and endpoint overrides stay
-provider-native:
+The code-agent now reads model selection from the shared model catalog and
+agent profiles in `.nanoclaw/config/core.toml`. Provider credentials and
+endpoint overrides stay provider-native:
 
 - process environment
 - `.env.local`
 - `.env`
 
 Use `OPENAI_API_KEY` / `OPENAI_BASE_URL` for OpenAI and `ANTHROPIC_API_KEY` /
-`ANTHROPIC_BASE_URL` for Anthropic. Shared runtime knobs such as provider,
-model, skill roots, plugin roots, and sandbox fallback now live under the
-`NANOCLAW_CORE_*` namespace or in `.nanoclaw/config/core.toml`.
+`ANTHROPIC_BASE_URL` for Anthropic. The shared config now uses the
+`global_system_prompt / host / models / agents / internal` layout, so the host
+no longer reads legacy `provider`, `runtime`, or top-level `system_prompt`
+sections.
 
 If no skill roots are provided, it loads any existing directories from:
 

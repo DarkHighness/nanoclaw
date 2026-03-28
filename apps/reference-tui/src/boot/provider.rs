@@ -1,37 +1,48 @@
-use crate::config::{AgentCoreConfig, ProviderKind};
+use crate::config::AgentCoreConfig;
 use agent::provider::{
     BackendDescriptor, OpenAiResponsesOptions, OpenAiServerCompaction, ProviderBackend,
     ProviderDescriptor, RequestOptions,
 };
-use agent_env::vars;
-use anyhow::{Result, anyhow};
+use anyhow::Result;
+use nanoclaw_config::{ProviderKind, ResolvedAgentProfile, ResolvedInternalProfile};
 
 pub(super) fn build_backend(config: &AgentCoreConfig) -> Result<ProviderBackend> {
-    let model = config.provider.model.clone().ok_or_else(|| {
-        anyhow!(
-            "missing provider model; set `provider.model` in `.nanoclaw/config/core.toml` or `NANOCLAW_CORE_MODEL`"
-        )
-    })?;
-    let provider_kind = resolved_provider_kind(config, &model);
-    let descriptor = BackendDescriptor::new(match provider_kind {
-        ProviderKind::OpenAi => ProviderDescriptor::openai(model),
-        ProviderKind::Anthropic => ProviderDescriptor::anthropic(model),
+    build_agent_backend(&config.primary_profile)
+}
+
+pub(super) fn build_summary_backend(config: &AgentCoreConfig) -> Result<ProviderBackend> {
+    build_internal_backend(&config.summary_profile)
+}
+
+pub(super) fn provider_summary(config: &AgentCoreConfig) -> String {
+    let model = &config.primary_profile.model;
+    let provider = match model.provider {
+        ProviderKind::OpenAi => "openai",
+        ProviderKind::Anthropic => "anthropic",
+    };
+    format!("{} -> {provider} / {}", model.alias, model.model)
+}
+
+fn build_agent_backend(profile: &ResolvedAgentProfile) -> Result<ProviderBackend> {
+    let descriptor = BackendDescriptor::new(match profile.model.provider {
+        ProviderKind::OpenAi => ProviderDescriptor::openai(profile.model.model.clone()),
+        ProviderKind::Anthropic => ProviderDescriptor::anthropic(profile.model.model.clone()),
     });
 
-    // The reference shell opts into Responses-native state chaining for OpenAI
-    // so the substrate path is exercised by default instead of only in tests.
+    // The reference shell opts into Responses-native state chaining for the
+    // foreground profile so the default host path exercises provider-managed
+    // history rather than only the append-only local fallback.
     let request_options = RequestOptions {
-        temperature: config.provider.temperature,
-        max_tokens: config.provider.max_tokens,
-        additional_params: config.provider.additional_params.clone(),
-        openai_responses: matches!(provider_kind, ProviderKind::OpenAi).then(|| {
+        temperature: profile.temperature,
+        max_tokens: Some(profile.max_output_tokens),
+        additional_params: profile.additional_params.clone(),
+        openai_responses: matches!(profile.model.provider, ProviderKind::OpenAi).then(|| {
             OpenAiResponsesOptions {
                 chain_previous_response: true,
                 store: Some(true),
-                server_compaction: config
-                    .runtime
-                    .compact_trigger_tokens
-                    .map(|compact_threshold| OpenAiServerCompaction { compact_threshold }),
+                server_compaction: Some(OpenAiServerCompaction {
+                    compact_threshold: profile.compact_trigger_tokens,
+                }),
             }
         }),
         ..RequestOptions::default()
@@ -40,43 +51,34 @@ pub(super) fn build_backend(config: &AgentCoreConfig) -> Result<ProviderBackend>
     Ok(ProviderBackend::from_settings_with_api_key(
         descriptor,
         request_options,
-        config.provider.base_url.clone(),
-        configured_provider_api_key(config, &provider_kind),
+        profile.model.base_url.clone(),
+        configured_provider_api_key(&profile.model),
     )?)
 }
 
-pub(super) fn provider_summary(config: &AgentCoreConfig, backend: &ProviderBackend) -> String {
-    let provider = match resolved_provider_kind(config, &backend.descriptor().provider.model) {
-        ProviderKind::OpenAi => "openai",
-        ProviderKind::Anthropic => "anthropic",
+fn build_internal_backend(profile: &ResolvedInternalProfile) -> Result<ProviderBackend> {
+    let descriptor = BackendDescriptor::new(match profile.model.provider {
+        ProviderKind::OpenAi => ProviderDescriptor::openai(profile.model.model.clone()),
+        ProviderKind::Anthropic => ProviderDescriptor::anthropic(profile.model.model.clone()),
+    });
+    let request_options = RequestOptions {
+        temperature: profile.temperature,
+        max_tokens: Some(profile.max_output_tokens),
+        additional_params: profile.additional_params.clone(),
+        ..RequestOptions::default()
     };
-    format!("{provider} / {}", backend.descriptor().provider.model)
+    Ok(ProviderBackend::from_settings_with_api_key(
+        descriptor,
+        request_options,
+        profile.model.base_url.clone(),
+        configured_provider_api_key(&profile.model),
+    )?)
 }
 
-fn configured_provider_api_key(
-    config: &AgentCoreConfig,
-    provider_kind: &ProviderKind,
-) -> Option<String> {
-    let env_key = match provider_kind {
+fn configured_provider_api_key(model: &nanoclaw_config::ResolvedModel) -> Option<String> {
+    let env_key = match model.provider {
         ProviderKind::OpenAi => "OPENAI_API_KEY",
         ProviderKind::Anthropic => "ANTHROPIC_API_KEY",
     };
-    config.provider.env.get(env_key).cloned()
-}
-
-fn resolved_provider_kind(config: &AgentCoreConfig, model: &str) -> ProviderKind {
-    if let Some(kind) = &config.provider.kind {
-        return kind.clone();
-    }
-    if model.trim().starts_with("claude") {
-        return ProviderKind::Anthropic;
-    }
-    let has_openai = config.provider.env.contains_key("OPENAI_API_KEY")
-        || agent_env::has_non_empty(vars::OPENAI_API_KEY);
-    let has_anthropic = config.provider.env.contains_key("ANTHROPIC_API_KEY")
-        || agent_env::has_non_empty(vars::ANTHROPIC_API_KEY);
-    match (has_openai, has_anthropic) {
-        (false, true) => ProviderKind::Anthropic,
-        _ => ProviderKind::OpenAi,
-    }
+    model.env.get(env_key).cloned()
 }

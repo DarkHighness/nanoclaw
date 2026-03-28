@@ -14,8 +14,11 @@ pub(super) fn build_runtime_preamble(
         .iter()
         .map(|value| (*value).to_string())
         .collect::<Vec<_>>();
-    if let Some(system_prompt) = config.system_prompt.as_deref().map(str::trim) {
-        if !system_prompt.is_empty() {
+    for prompt in [
+        config.primary_profile.global_system_prompt.as_deref(),
+        config.primary_profile.system_prompt.as_deref(),
+    ] {
+        if let Some(system_prompt) = prompt.map(str::trim).filter(|value| !value.is_empty()) {
             preamble.push(system_prompt.to_string());
         }
     }

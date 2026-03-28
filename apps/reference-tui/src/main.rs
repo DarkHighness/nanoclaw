@@ -10,7 +10,7 @@ fn main() -> Result<()> {
     let cwd = std::env::current_dir().context("failed to resolve current workspace")?;
     let runtime_config = CoreConfig::load_from_dir(&cwd)
         .context("failed to load core config for runtime settings")?
-        .runtime;
+        .host;
     let _tracing_guard = init_tracing(&cwd)?;
     build_host_tokio_runtime(HostRuntimeLimits {
         worker_threads: runtime_config.tokio_worker_threads,

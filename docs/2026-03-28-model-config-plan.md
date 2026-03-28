@@ -2,9 +2,40 @@
 
 日期：2026-03-28
 
-状态：Planning
+状态：Active
 
-负责人：待实施
+负责人：进行中
+
+## 0. 当前实现进度
+
+截至 `2026-03-28`，本计划已有第一段落地：
+
+- `Phase A`
+  - 已完成
+  - `core.toml` 顶层已切到 `global_system_prompt / host / models / agents / internal`
+  - 旧 `provider / runtime / system_prompt` 入口已从 `nanoclaw-config` 删除
+- `Phase B`
+  - 已完成 MVP
+  - `reference-tui` 与 `code-agent` 的 provider backend 已改为消费 resolved profile
+  - provider summary 已展示 `model alias -> provider / model`
+- `Phase C`
+  - 已完成 MVP
+  - 两个 host app 已从 resolved primary profile 启动
+  - compactor 已切到 `internal.summary`
+  - primary profile 的 context / compact / sandbox 已进入真实 runtime 装配
+
+仍未完成：
+
+- `Phase D`
+  - subagent profile 工厂化
+- `Phase E`
+  - sandbox profile 派生函数进一步下沉到统一入口
+- `Phase F`
+  - capability metadata enforcement
+- `Phase G`
+  - token usage ledger
+- `Phase H`
+  - 全量文档与收尾测试
 
 ## 1. 结论先行
 

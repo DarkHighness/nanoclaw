@@ -28,14 +28,14 @@ pub(super) fn build_plugin_activation_plan(
     config: &AgentCoreConfig,
     workspace_root: &Path,
 ) -> Result<PluginActivationPlan> {
+    let plugins = config.plugins();
     let resolver = agent::PluginBootResolverConfig {
-        enabled: config.plugins.enabled,
+        enabled: plugins.enabled,
         roots: config.resolved_plugin_roots(workspace_root),
-        include_builtin: config.plugins.include_builtin,
-        allow: config.plugins.allow.clone(),
-        deny: config.plugins.deny.clone(),
-        entries: config
-            .plugins
+        include_builtin: plugins.include_builtin,
+        allow: plugins.allow.clone(),
+        deny: plugins.deny.clone(),
+        entries: plugins
             .entries
             .iter()
             .map(|(id, entry)| {
@@ -50,7 +50,7 @@ pub(super) fn build_plugin_activation_plan(
             })
             .collect::<BTreeMap<_, _>>(),
         slots: PluginSlotsConfig {
-            memory: config.plugins.slots.memory.clone(),
+            memory: plugins.slots.memory.clone(),
         },
     };
     agent::build_plugin_activation_plan(workspace_root, &resolver)

@@ -1,7 +1,7 @@
 use agent::{
     AgentRuntimeBuilder, BashTool, EditTool, GlobTool, GrepTool, HookRunner, InMemoryRunStore,
     ListTool, Message, MessageRole, ModelBackend, ModelEvent, ModelRequest, PatchTool, ReadTool,
-    SandboxPolicy, Skill, SkillCatalog, ToolExecutionContext, ToolRegistry, WriteTool,
+    Skill, SkillCatalog, ToolExecutionContext, ToolRegistry, WriteTool,
 };
 use anyhow::Result;
 use async_trait::async_trait;
