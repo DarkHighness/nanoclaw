@@ -7,6 +7,7 @@ use ignore::WalkBuilder;
 use schemars::{JsonSchema, schema_for};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::cmp::Ordering;
 use std::path::Path;
 use types::{MessagePart, ToolCallId, ToolOrigin, ToolOutputMode, ToolResult, ToolSpec};
 
@@ -140,11 +141,7 @@ impl Tool for ListTool {
         } else {
             collect_entries(&root, recursive, max_depth, limit + 1)?
         };
-        entries.sort_by(|left, right| {
-            left.path
-                .cmp(&right.path)
-                .then_with(|| kind_rank(&left.kind).cmp(&kind_rank(&right.kind)))
-        });
+        entries.sort_by(compare_list_entry);
 
         let truncated = entries.len() > limit;
         if truncated {
@@ -265,6 +262,12 @@ fn kind_rank(kind: &EntryKind) -> u8 {
     }
 }
 
+fn compare_list_entry(left: &ListEntry, right: &ListEntry) -> Ordering {
+    left.path
+        .cmp(&right.path)
+        .then_with(|| kind_rank(&left.kind).cmp(&kind_rank(&right.kind)))
+}
+
 fn collect_entries(
     root: &Path,
     recursive: bool,
@@ -306,8 +309,12 @@ fn collect_entries(
             kind,
         });
 
-        if entries.len() >= limit {
-            break;
+        // `ignore::Walk` traversal order is not the same as the final display
+        // order. Keep only the smallest `limit` entries by display sort key so
+        // truncation remains deterministic without retaining the full walk.
+        if entries.len() > limit {
+            entries.sort_by(compare_list_entry);
+            entries.truncate(limit);
         }
     }
     Ok(entries)
@@ -463,6 +470,8 @@ mod tests {
             assert_eq!(metadata["limit"].as_u64().unwrap(), 2);
             let entries = metadata["entries"].as_array().unwrap();
             assert_eq!(entries.len(), 2);
+            assert_eq!(entries[0]["path"].as_str().unwrap(), "a.txt");
+            assert_eq!(entries[1]["path"].as_str().unwrap(), "b.txt");
             assert!(
                 metadata["header"]
                     .as_str()
