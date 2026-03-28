@@ -13,7 +13,10 @@ use plugins::{
     PluginActivationPlan, PluginEntryConfig, PluginExecutableActivation, PluginResolverConfig,
     PluginSlotsConfig, build_activation_plan, discover_plugins,
 };
-pub use registry::{DriverActivationOutcome, PluginDriverRegistry, UnknownDriverPolicy};
+pub use registry::{
+    DriverActivationOutcome, DriverHostMessage, DriverHostMessageLevel, PluginDriverRegistry,
+    UnknownDriverPolicy,
+};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

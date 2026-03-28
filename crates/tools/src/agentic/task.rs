@@ -229,7 +229,7 @@ impl Tool for TaskBatchTool {
         ToolSpec {
             name: "task_batch".into(),
             description:
-                "Spawn multiple child agents, wait for fan-out/join completion, and return structured results."
+                "Spawn multiple child agents with dependency-aware scheduling, wait for completion, and return structured results."
                     .to_string(),
             input_schema: serde_json::to_value(schema_for!(TaskBatchToolInput))
                 .expect("task_batch schema"),
@@ -287,7 +287,9 @@ impl Tool for AgentSpawnTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "agent_spawn".into(),
-            description: "Spawn one or more child agents without waiting.".to_string(),
+            description:
+                "Spawn one or more child agents without waiting, honoring in-batch dependencies before they start."
+                    .to_string(),
             input_schema: serde_json::to_value(schema_for!(AgentSpawnToolInput))
                 .expect("agent_spawn schema"),
             output_mode: ToolOutputMode::Text,
@@ -503,6 +505,15 @@ fn normalize_task_input(input: AgentTaskInput, ordinal: usize) -> Result<AgentTa
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| format!("task_{ordinal}"));
+    let dependency_ids = normalize_dependency_ids(input.dependency_ids);
+    if dependency_ids
+        .iter()
+        .any(|dependency_id| dependency_id == &task_id)
+    {
+        return Err(ToolError::invalid(format!(
+            "agent task {task_id} cannot depend on itself"
+        )));
+    }
     Ok(AgentTaskSpec {
         task_id,
         role,
@@ -513,7 +524,7 @@ fn normalize_task_input(input: AgentTaskInput, ordinal: usize) -> Result<AgentTa
             .filter(|value| !value.is_empty()),
         allowed_tools: input.allowed_tools,
         requested_write_set: normalize_paths(input.requested_write_set),
-        dependency_ids: input.dependency_ids,
+        dependency_ids,
         timeout_seconds: input.timeout_seconds,
     })
 }
@@ -525,6 +536,16 @@ fn normalize_paths(paths: Vec<String>) -> Vec<String> {
         .map(|path| path.trim().to_string())
         .filter(|path| !path.is_empty())
         .filter(|path| unique.insert(path.clone()))
+        .collect()
+}
+
+fn normalize_dependency_ids(dependency_ids: Vec<String>) -> Vec<String> {
+    let mut unique = BTreeSet::new();
+    dependency_ids
+        .into_iter()
+        .map(|dependency_id| dependency_id.trim().to_string())
+        .filter(|dependency_id| !dependency_id.is_empty())
+        .filter(|dependency_id| unique.insert(dependency_id.clone()))
         .collect()
 }
 
@@ -706,6 +727,7 @@ mod tests {
         wait_any_queue: Vec<AgentId>,
         sent: Vec<(AgentId, String, serde_json::Value)>,
         cancelled: Vec<AgentId>,
+        spawned_tasks: Vec<AgentTaskSpec>,
     }
 
     #[async_trait]
@@ -718,6 +740,7 @@ mod tests {
             let mut state = self.state.lock().unwrap();
             let mut handles = Vec::new();
             for task in tasks {
+                state.spawned_tasks.push(task.clone());
                 let agent_id = AgentId::from(format!("agent_{}", task.task_id));
                 let handle = AgentHandle {
                     agent_id: agent_id.clone(),
@@ -891,6 +914,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn task_batch_preserves_dependency_ids_for_executor_scheduling() {
+        let executor = Arc::new(FakeExecutor::default());
+        let tool = TaskBatchTool::new(executor.clone());
+        tool.execute(
+            ToolCallId::new(),
+            json!({
+                "tasks": [
+                    {"task_id":"inspect","role":"explorer","prompt":"inspect"},
+                    {"task_id":"review","role":"reviewer","prompt":"review","dependency_ids":["inspect"," inspect "]}
+                ],
+                "mode": "all",
+                "stop_on_error": false
+            }),
+            &ToolExecutionContext::default(),
+        )
+        .await
+        .unwrap();
+
+        let state = executor.state.lock().unwrap();
+        let review = state
+            .spawned_tasks
+            .iter()
+            .find(|task| task.task_id == "review")
+            .expect("review task should be forwarded to the executor");
+        assert_eq!(review.dependency_ids, vec!["inspect"]);
+    }
+
+    #[tokio::test]
     async fn task_batch_stop_on_error_cancels_remaining_agents() {
         let executor = Arc::new(FakeExecutor::default());
         let tool = TaskBatchTool::new(executor.clone());
@@ -1012,5 +1063,49 @@ mod tests {
             .unwrap();
         assert_eq!(cancelled.structured_content.unwrap()["status"], "cancelled");
         assert_eq!(executor.state.lock().unwrap().sent.len(), 1);
+    }
+
+    #[test]
+    fn normalize_task_input_deduplicates_dependency_ids() {
+        let task = super::normalize_task_input(
+            AgentTaskInput {
+                task_id: Some("review".to_string()),
+                role: Some("reviewer".to_string()),
+                prompt: "review".to_string(),
+                steer: None,
+                allowed_tools: Vec::new(),
+                requested_write_set: Vec::new(),
+                dependency_ids: vec![
+                    " inspect ".to_string(),
+                    "inspect".to_string(),
+                    "plan".to_string(),
+                ],
+                timeout_seconds: None,
+            },
+            1,
+        )
+        .unwrap();
+
+        assert_eq!(task.dependency_ids, vec!["inspect", "plan"]);
+    }
+
+    #[test]
+    fn normalize_task_input_rejects_self_dependency() {
+        let error = super::normalize_task_input(
+            AgentTaskInput {
+                task_id: Some("review".to_string()),
+                role: Some("reviewer".to_string()),
+                prompt: "review".to_string(),
+                steer: None,
+                allowed_tools: Vec::new(),
+                requested_write_set: Vec::new(),
+                dependency_ids: vec!["review".to_string()],
+                timeout_seconds: None,
+            },
+            1,
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("cannot depend on itself"));
     }
 }

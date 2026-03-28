@@ -758,7 +758,6 @@ cargo test -p reference-tui
 
 当前尚未达到计划目标的部分：
 
-- `DriverActivationOutcome` 没有在宿主侧完整并回 runtime
 - `builtin.wasm-hook-runtime` 更像校验器，而不是完整 runtime driver
 - message mutation 协议宽于当前运行时能力
 
@@ -787,10 +786,10 @@ cargo test -p reference-tui
 ### 16.3 P1 对齐项
 
 - 打通 `DriverActivationOutcome` 的宿主消费链：
-  - `hooks`
-  - `mcp_servers`
-  - `instructions`
-  - `diagnostics`
+  - 已完成：
+    - `DriverActivationOutcome::extend_host_inputs()` 已成为统一 merge 点
+    - `reference-tui` 与 `code-agent` 都会消费 `hooks / mcp_servers / instructions / diagnostics`
+    - `code-agent` 侧已补 driver MCP 的路径解析、按名去重与宿主沙箱策略对齐
 - 明确 `builtin.wasm-hook-runtime` 的职责：
   - 若只是 module validation，则应在命名和文档上收窄
   - 若目标是 runtime driver，则必须真正返回 runtime contributions
@@ -810,6 +809,6 @@ cargo test -p reference-tui
 本路线后续文档必须明确写清：
 
 - 当前 `prompt` / `agent` handlers 是否仍为 fail-closed stub，还是已有真实执行器
-- `DriverActivationOutcome` 是否已经被 `reference-tui` / `code-agent` 完整消费
+- `DriverActivationOutcome` 已经被 `reference-tui` / `code-agent` 完整消费
 - `builtin.wasm-hook-runtime` 是校验器还是完整 runtime driver
 - message mutation 当前到底支持“in-flight only”还是“transcript-aware”

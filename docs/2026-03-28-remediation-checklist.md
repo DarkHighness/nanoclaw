@@ -244,12 +244,14 @@
 ### 7.1 多 Agent
 
 - 让 `dependency_ids` 真正进入调度：
-  - `task_batch` 不能继续只是 fan-out/join
-  - 需要最小 DAG 调度器：
-    - ready set
-    - blocked set
-    - completion propagation
-    - failure policy
+  - 状态：
+    - `completed`
+  - 已落地语义：
+    - `task_batch` / `agent_spawn` 已不再是无条件 fan-out
+    - batch 内依赖会进入 ready set / blocked set 调度
+    - 依赖完成会触发 completion propagation
+    - 依赖失败会阻断 downstream child，并产出明确 result envelope
+    - 缺失依赖 / 自依赖 / 循环依赖现在都会报错
   - 目标文件：
     - `crates/tools/src/agentic/task.rs`
     - `crates/runtime/src/subagent_impl.rs`
@@ -289,8 +291,12 @@
 ### 7.2 Memory
 
 - 把 runtime export 与多 Agent 主事件打通：
-  - subagent/task sidecar 不只是存在，还要成为 episodic retrieval 的一等输入
-  - parent -> child -> result -> memory_search 全链路需要补测试
+  - 状态：
+    - `completed`
+  - 已落地语义：
+    - `RunStore::export_for_memory()` 已真实导出 `run/session/subagent/task`
+    - runtime sidecar 已进入 memory corpus，可被 `memory_search/list/get` 消费
+    - `subagent/task` 记录现在是 episodic retrieval 的真实输入，而不是只落盘不参与检索
   - 目标文件：
     - `crates/store`
     - `crates/memory/src/runtime_exports.rs`
@@ -298,8 +304,12 @@
     - `crates/memory/src/memory_embed.rs`
 
 - 补充 runtime -> memory scope bridge：
-  - 当前 tool 默认只会自动带 `run_id/session_id`
-  - 如果目标是通用 Agent memory，需要把 `agent/task` 作用域也补进上下文桥接
+  - 状态：
+    - `completed`
+  - 已落地语义：
+    - `ToolExecutionContext` 已携带 `agent_name/task_id`
+    - `memory_search/list/record` 默认会继承当前 agent/task 作用域
+    - 子代理上下文现在可以直接检索和记录自己对应的 working / episodic memory
   - 目标文件：
     - `crates/tools/src/context.rs`
     - `crates/memory/src/tools.rs`
@@ -307,11 +317,12 @@
 ### 7.3 插件系统
 
 - 打通 `DriverActivationOutcome` 的宿主消费闭环：
-  - `hooks`
-  - `mcp_servers`
-  - `instructions`
-  - `diagnostics`
-  - 都要进入宿主 build pipeline，而不是只保留 `warnings`
+  - 状态：
+    - `completed`
+  - 已落地语义：
+    - `hooks / mcp_servers / instructions / diagnostics` 都已进入宿主 build pipeline
+    - `reference-tui` 与 `code-agent` 都会消费 driver outcome
+    - `code-agent` 新接入的 driver MCP 也已补齐路径解析、去重和沙箱策略对齐
   - 目标文件：
     - `crates/core/src/plugin_boot/registry.rs`
     - `apps/reference-tui/src/boot.rs`
@@ -411,9 +422,13 @@
 ### Batch 2：补核心对齐
 
 - `dependency_ids` 调度
+  - 状态：`completed`
 - `DriverActivationOutcome` 闭环
+  - 状态：`completed`
 - runtime export 与多 Agent 联动
+  - 状态：`completed`
 - message mutation 协议/实现统一
+  - 状态：`pending`
 
 ### Batch 3：做性能与收口
 

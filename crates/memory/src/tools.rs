@@ -206,8 +206,9 @@ impl Tool for MemorySearchTool {
                 run_id: normalize_id(input.run_id).or_else(|| ctx.run_id.clone()),
                 session_id: normalize_session_id(input.session_id)
                     .or_else(|| ctx.session_id.clone()),
-                agent_name: normalize_string(input.agent_name),
-                task_id: normalize_string(input.task_id),
+                agent_name: normalize_string(input.agent_name)
+                    .or_else(|| inherited_agent_name(ctx)),
+                task_id: normalize_string(input.task_id).or_else(|| inherited_task_id(ctx)),
                 include_stale: input.include_stale,
             })
             .await
@@ -345,8 +346,9 @@ impl Tool for MemoryListTool {
                 run_id: normalize_id(input.run_id).or_else(|| ctx.run_id.clone()),
                 session_id: normalize_session_id(input.session_id)
                     .or_else(|| ctx.session_id.clone()),
-                agent_name: normalize_string(input.agent_name),
-                task_id: normalize_string(input.task_id),
+                agent_name: normalize_string(input.agent_name)
+                    .or_else(|| inherited_agent_name(ctx)),
+                task_id: normalize_string(input.task_id).or_else(|| inherited_task_id(ctx)),
                 include_stale: input.include_stale,
             })
             .await
@@ -408,8 +410,9 @@ impl Tool for MemoryRecordTool {
                 run_id: normalize_id(input.run_id).or_else(|| ctx.run_id.clone()),
                 session_id: normalize_session_id(input.session_id)
                     .or_else(|| ctx.session_id.clone()),
-                agent_name: normalize_string(input.agent_name),
-                task_id: normalize_string(input.task_id),
+                agent_name: normalize_string(input.agent_name)
+                    .or_else(|| inherited_agent_name(ctx)),
+                task_id: normalize_string(input.task_id).or_else(|| inherited_task_id(ctx)),
             })
             .await
             .map_err(|error| tools::ToolError::invalid(error.to_string()))?;
@@ -551,6 +554,19 @@ fn normalize_list(value: Option<Vec<String>>) -> Option<Vec<String>> {
     })
 }
 
+fn inherited_agent_name(ctx: &ToolExecutionContext) -> Option<String> {
+    normalize_string(ctx.agent_name.clone()).or_else(|| {
+        ctx.agent_id
+            .as_ref()
+            .map(ToString::to_string)
+            .and_then(|value| normalize_string(Some(value)))
+    })
+}
+
+fn inherited_task_id(ctx: &ToolExecutionContext) -> Option<String> {
+    normalize_string(ctx.task_id.clone())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{MemoryGetTool, MemoryListTool, MemoryRecordTool, MemorySearchTool};
@@ -560,7 +576,7 @@ mod tests {
     use tempfile::tempdir;
     use tokio::fs;
     use tools::{Tool, ToolExecutionContext};
-    use types::{RunId, SessionId, ToolCallId};
+    use types::{AgentId, RunId, SessionId, ToolCallId};
 
     #[tokio::test]
     async fn memory_get_tool_formats_numbered_lines() {
@@ -646,6 +662,102 @@ mod tests {
         .unwrap();
         assert!(recorded.contains("Keep this in session scratchpad"));
         assert!(recorded.contains("run_id: run_1"));
+    }
+
+    #[tokio::test]
+    async fn memory_record_tool_uses_agent_and_task_scope_defaults() {
+        let dir = tempdir().unwrap();
+        let backend = Arc::new(MemoryCoreBackend::new(
+            dir.path().to_path_buf(),
+            MemoryCoreConfig::default(),
+        ));
+        let tool = MemoryRecordTool::new(backend);
+        let ctx = ToolExecutionContext {
+            workspace_root: dir.path().to_path_buf(),
+            run_id: Some(RunId::from("run_1")),
+            session_id: Some(SessionId::from("session_1")),
+            agent_id: Some(AgentId::from("agent_child")),
+            agent_name: Some("reviewer".to_string()),
+            task_id: Some("task_17".to_string()),
+            ..ToolExecutionContext::default()
+        };
+        tool.execute(
+            ToolCallId::new(),
+            json!({
+                "scope":"working",
+                "title":"Task note",
+                "content":"Track the current child task"
+            }),
+            &ctx,
+        )
+        .await
+        .unwrap();
+
+        let recorded =
+            fs::read_to_string(dir.path().join(".nanoclaw/memory/working/tasks/task-17.md"))
+                .await
+                .unwrap();
+        assert!(recorded.contains("agent_name: reviewer"));
+        assert!(recorded.contains("task_id: task_17"));
+    }
+
+    #[tokio::test]
+    async fn memory_search_tool_inherits_agent_and_task_scope_filters() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join(".nanoclaw/memory/episodic/tasks"))
+            .await
+            .unwrap();
+        fs::create_dir_all(dir.path().join(".nanoclaw/memory/episodic/subagents"))
+            .await
+            .unwrap();
+        fs::write(
+            dir.path()
+                .join(".nanoclaw/memory/episodic/tasks/run-1--session-1--task-17.md"),
+            "---\nscope: episodic\nlayer: runtime-task\nrun_id: run_1\nsession_id: session_1\nagent_name: reviewer\ntask_id: task_17\nstatus: ready\n---\n# Task task_17\n\nchecked ownership",
+        )
+        .await
+        .unwrap();
+        fs::write(
+            dir.path()
+                .join(".nanoclaw/memory/episodic/tasks/run-1--session-1--task-99.md"),
+            "---\nscope: episodic\nlayer: runtime-task\nrun_id: run_1\nsession_id: session_1\nagent_name: reviewer\ntask_id: task_99\nstatus: ready\n---\n# Task task_99\n\nchecked ownership elsewhere",
+        )
+        .await
+        .unwrap();
+
+        let backend = Arc::new(MemoryCoreBackend::new(
+            dir.path().to_path_buf(),
+            MemoryCoreConfig::default(),
+        ));
+        let tool = MemorySearchTool::new(backend);
+        let ctx = ToolExecutionContext {
+            workspace_root: dir.path().to_path_buf(),
+            run_id: Some(RunId::from("run_1")),
+            session_id: Some(SessionId::from("session_1")),
+            agent_id: Some(AgentId::from("agent_child")),
+            agent_name: Some("reviewer".to_string()),
+            task_id: Some("task_17".to_string()),
+            ..ToolExecutionContext::default()
+        };
+        let result = tool
+            .execute(
+                ToolCallId::new(),
+                json!({"query":"checked ownership"}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        assert!(result.text_content().contains("hits=1"));
+        let structured = result.structured_content.unwrap();
+        assert_eq!(
+            structured["hits"][0]["document_metadata"]["task_id"],
+            "task_17"
+        );
+        assert_eq!(
+            structured["hits"][0]["document_metadata"]["agent_name"],
+            "reviewer"
+        );
     }
 
     #[tokio::test]

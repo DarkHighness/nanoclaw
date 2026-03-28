@@ -19,6 +19,7 @@ pub(super) fn build_startup_summary(
     config: &AgentCoreConfig,
     plugin_plan: &PluginActivationPlan,
     driver_warnings: &[String],
+    driver_diagnostics: &[String],
     sandbox_policy: &SandboxPolicy,
     sandbox_status: &SandboxBackendStatus,
 ) -> TuiStartupSummary {
@@ -101,6 +102,9 @@ pub(super) fn build_startup_summary(
     }
     for warning in driver_warnings {
         sidebar.push(format!("driver warning: {warning}"));
+    }
+    for diagnostic in driver_diagnostics {
+        sidebar.push(format!("driver diagnostic: {diagnostic}"));
     }
     if !skill_names.is_empty() {
         sidebar.push(format!("skill names: {}", preview_list(skill_names, 4)));
@@ -349,6 +353,7 @@ mod tests {
                 ..PluginActivationPlan::default()
             },
             &[],
+            &[],
             &SandboxPolicy {
                 mode: SandboxMode::WorkspaceWrite,
                 filesystem: Default::default(),
@@ -367,5 +372,49 @@ mod tests {
             .sidebar
             .iter()
             .any(|line| line.contains("plugin team-policy perms: read=docs, write=.nanoclaw/plugin-state/team-policy, exec=.nanoclaw/plugins-cache/team-policy, network=allow_domains(api.example.com), mutation=allow, host_api=read_file, emit_hook_effect")));
+    }
+
+    #[test]
+    fn startup_summary_includes_driver_warnings_and_diagnostics() {
+        let workspace = tempdir().unwrap();
+        let summary = build_startup_summary(
+            &RunId::from("run_test"),
+            workspace.path(),
+            "openai / gpt-test",
+            &StoreHandle {
+                store: Arc::new(InMemoryRunStore::new()),
+                label: "memory fallback".to_string(),
+                warning: None,
+            },
+            0,
+            &[],
+            &[],
+            &[],
+            &AgentCoreConfig::default(),
+            &PluginActivationPlan::default(),
+            &["slow startup".to_string()],
+            &["prepared wasm runtime".to_string()],
+            &SandboxPolicy {
+                mode: SandboxMode::WorkspaceWrite,
+                filesystem: Default::default(),
+                network: NetworkPolicy::Off,
+                host_escape: HostEscapePolicy::Deny,
+                fail_if_unavailable: false,
+            },
+            &SandboxBackendStatus::NotRequired,
+        );
+
+        assert!(
+            summary
+                .sidebar
+                .iter()
+                .any(|line| line == "driver warning: slow startup")
+        );
+        assert!(
+            summary
+                .sidebar
+                .iter()
+                .any(|line| line == "driver diagnostic: prepared wasm runtime")
+        );
     }
 }

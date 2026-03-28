@@ -25,6 +25,8 @@ pub struct ToolExecutionContext {
     pub session_id: Option<SessionId>,
     pub turn_id: Option<TurnId>,
     pub agent_id: Option<AgentId>,
+    pub agent_name: Option<String>,
+    pub task_id: Option<String>,
     pub tool_name: Option<ToolName>,
     pub tool_call_id: Option<CallId>,
     pub write_guard: Option<Arc<dyn ToolWriteGuard>>,
@@ -47,6 +49,8 @@ impl fmt::Debug for ToolExecutionContext {
             .field("session_id", &self.session_id)
             .field("turn_id", &self.turn_id)
             .field("agent_id", &self.agent_id)
+            .field("agent_name", &self.agent_name)
+            .field("task_id", &self.task_id)
             .field("tool_name", &self.tool_name)
             .field("tool_call_id", &self.tool_call_id)
             .finish_non_exhaustive()
@@ -164,8 +168,27 @@ impl ToolExecutionContext {
         agent_id: AgentId,
         write_guard: Arc<dyn ToolWriteGuard>,
     ) -> Self {
+        self.with_agent_scope_metadata(agent_id, None, None, write_guard)
+    }
+
+    #[must_use]
+    pub fn with_agent_scope_metadata(
+        &self,
+        agent_id: AgentId,
+        agent_name: Option<String>,
+        task_id: Option<String>,
+        write_guard: Arc<dyn ToolWriteGuard>,
+    ) -> Self {
         let mut scoped = self.clone();
         scoped.agent_id = Some(agent_id);
+        scoped.agent_name = agent_name.and_then(|value| {
+            let trimmed = value.trim();
+            (!trimmed.is_empty()).then(|| trimmed.to_string())
+        });
+        scoped.task_id = task_id.and_then(|value| {
+            let trimmed = value.trim();
+            (!trimmed.is_empty()).then(|| trimmed.to_string())
+        });
         scoped.write_guard = Some(write_guard);
         scoped
     }
@@ -286,6 +309,27 @@ mod tests {
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].0, Some(AgentId::from("agent_1")));
         assert_eq!(calls[0].1, vec![target]);
+    }
+
+    #[test]
+    fn agent_scope_metadata_tracks_agent_name_and_task_id() {
+        let workspace = tempfile::tempdir().unwrap();
+        let guard = Arc::new(RecordingWriteGuard::default());
+        let context = ToolExecutionContext {
+            workspace_root: workspace.path().to_path_buf(),
+            workspace_only: true,
+            ..Default::default()
+        }
+        .with_agent_scope_metadata(
+            AgentId::from("agent_1"),
+            Some("reviewer".to_string()),
+            Some("task_1".to_string()),
+            guard,
+        );
+
+        assert_eq!(context.agent_id, Some(AgentId::from("agent_1")));
+        assert_eq!(context.agent_name.as_deref(), Some("reviewer"));
+        assert_eq!(context.task_id.as_deref(), Some("task_1"));
     }
 
     #[test]

@@ -758,8 +758,7 @@ cargo test -p code-agent
 
 当前尚未达到计划目标的部分：
 
-- `dependency_ids` 仍未进入调度
-- `task_batch` 还是 fan-out/join，不是结构化 DAG 调度
+- `dependency_ids` 已进入 batch 内依赖调度，但还不是完整的通用 DAG/工作流执行器
 - 终态收尾 owner 还没有统一
 - root runtime 与 parent runtime 的控制面授权边界还没有写成完整策略
 
@@ -786,7 +785,11 @@ cargo test -p code-agent
 ### 19.3 P1 对齐项
 
 - 让 `dependency_ids` 真正参与调度：
-  - 引入 ready set / blocked set / completion propagation
+  - 已完成：
+    - `task_batch` / `agent_spawn` 现在会消费 `dependency_ids`
+    - runtime 已引入 ready set / blocked set / completion propagation
+    - 缺失依赖 / 自依赖 / 循环依赖会在调度前失败
+    - upstream 失败会阻断 downstream child，并产出明确终态结果
 - 统一终态收尾 owner：
   - 状态、事件、lease release 不能继续由 manager 和 worker 分别收尾
 - 明确 root runtime 与 parent runtime 的控制面边界：
@@ -803,7 +806,7 @@ cargo test -p code-agent
 
 本路线后续文档必须明确写清：
 
-- `dependency_ids` 是 schema-only 还是 runtime-enforced
+- `dependency_ids` 已经是 runtime-enforced，但目前只覆盖 batch 内最小依赖调度
 - `agent_wait` 是否已经具备无丢通知语义
 - `send / wait / cancel` 是否已强制 parent-child scope
-- `task_batch` 当前是 fan-out/join 还是真正的依赖调度器
+- `task_batch` 当前是最小依赖调度器，还不是完整 workflow engine

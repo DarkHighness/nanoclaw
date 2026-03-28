@@ -18,6 +18,14 @@ struct AgentRecord {
     join_handle: Option<JoinHandle<()>>,
 }
 
+#[derive(Clone)]
+pub struct AgentRecordSnapshot {
+    pub handle: AgentHandle,
+    pub task: AgentTaskSpec,
+    pub result: Option<AgentResultEnvelope>,
+    pub error: Option<String>,
+}
+
 #[derive(Clone, Default)]
 pub struct AgentSessionManager {
     records: Arc<Mutex<BTreeMap<AgentId, AgentRecord>>>,
@@ -80,6 +88,19 @@ impl AgentSessionManager {
             .get(agent_id)
             .map(|record| record.task.clone())
             .ok_or_else(|| RuntimeError::invalid_state(format!("unknown child agent: {agent_id}")))
+    }
+
+    pub fn snapshot(&self, agent_id: &AgentId) -> Result<AgentRecordSnapshot> {
+        let guard = self.records.lock().unwrap();
+        let record = guard.get(agent_id).ok_or_else(|| {
+            RuntimeError::invalid_state(format!("unknown child agent: {agent_id}"))
+        })?;
+        Ok(AgentRecordSnapshot {
+            handle: record.handle.clone(),
+            task: record.task.clone(),
+            result: record.result.clone(),
+            error: record.error.clone(),
+        })
     }
 
     pub fn update_status(&self, agent_id: &AgentId, status: AgentStatus) -> Result<AgentHandle> {

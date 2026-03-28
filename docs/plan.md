@@ -12,6 +12,15 @@ review now lives in:
 
 - `docs/2026-03-28-remediation-checklist.md`
 
+As of 2026-03-28, the remediation pass has already cleared:
+
+- multi-agent `agent_wait` correctness, parent scope isolation, batch spawn
+  atomicity, and `dependency_ids` scheduling
+- memory `subagent/task` export production wiring, concurrent managed writes,
+  `include_stale` semantics, and agent/task context bridging
+- plugin hook permission hardening, fail-closed stub handlers, and
+  `DriverActivationOutcome` host integration in both host apps
+
 Archived documents now live under:
 
 - `docs/archive/2026-03-26/`

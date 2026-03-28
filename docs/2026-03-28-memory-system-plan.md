@@ -665,7 +665,7 @@ cargo test -p agent
 
 ### 17.1 当前完成度校准
 
-- 估计完成度：约 `85%`
+- 估计完成度：约 `90%`
 
 当前已经落地的部分：
 
@@ -679,10 +679,11 @@ cargo test -p agent
 - `memory_list.include_stale` 的真实状态过滤语义
 - working task 对非 ASCII `task_id` 的稳定 slug 回退
 - `subagent/task export` 的 in-memory / file-backed store 真测试覆盖
+- `ToolExecutionContext` 的 `agent_name/task_id` 作用域桥接
+- `memory_search/list/record` 对 agent/task 默认作用域的自动继承
 
 当前尚未达到计划目标的部分：
 
-- tool 默认作用域只自动继承 `run_id/session_id`
 - 读路径仍然过重，并夹带 runtime export side effect
 
 ### 17.2 P0 修复项
@@ -714,9 +715,14 @@ cargo test -p agent
 ### 17.3 P1 对齐项
 
 - 把 runtime export 与多 Agent 主事件真正打通：
-  - subagent/task sidecar 要成为 episodic retrieval 的一等输入
+  - 已完成：
+    - `run/session/subagent/task` runtime export 已进入真实 store 导出链
+    - runtime sidecar 已成为 memory corpus 的检索输入
+    - `subagent/task` 现在可以被 `memory_search/list/get` 直接消费
 - 补充 runtime -> memory context bridge：
-  - 需要明确 `agent/task` 作用域是否要进入 `ToolExecutionContext`
+  - 已完成：
+    - `ToolExecutionContext` 已带 `agent_name/task_id`
+    - `memory_search/list/record` 默认会继承当前 `agent/task` 作用域
 
 ### 17.4 P2 性能与硬化
 

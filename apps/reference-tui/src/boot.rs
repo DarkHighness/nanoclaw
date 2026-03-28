@@ -9,7 +9,7 @@ use crate::{
     InteractiveToolApprovalHandler, RuntimeTui, TuiStartupSummary, config::AgentCoreConfig,
 };
 use agent::mcp::{
-    ConnectedMcpServer, McpConnectOptions, catalog_tools_as_registry_entries,
+    ConnectedMcpServer, McpConnectOptions, McpServerConfig, catalog_tools_as_registry_entries,
     connect_and_catalog_mcp_servers_with_options,
 };
 use agent::skills::{Skill, load_skill_roots};
@@ -41,6 +41,7 @@ use tools::{
 #[cfg(feature = "web-tools")]
 use tools::{WebFetchTool, WebSearchBackendsTool, WebSearchTool};
 use tracing::{info, warn};
+use types::HookRegistration;
 
 pub struct BootArtifacts {
     pub workspace_root: PathBuf,
@@ -79,6 +80,34 @@ impl BootArtifacts {
             startup_summary,
         )
     }
+}
+
+struct DriverHostInputs {
+    runtime_hooks: Vec<HookRegistration>,
+    mcp_server_configs: Vec<McpServerConfig>,
+    runtime_instructions: Vec<String>,
+}
+
+fn merge_driver_host_inputs(
+    runtime_hooks: Vec<HookRegistration>,
+    mcp_server_configs: Vec<McpServerConfig>,
+    runtime_instructions: Vec<String>,
+    driver_outcome: &agent::DriverActivationOutcome,
+) -> DriverHostInputs {
+    let mut merged = DriverHostInputs {
+        runtime_hooks,
+        mcp_server_configs,
+        runtime_instructions,
+    };
+    // Driver output is part of the same host boot pipeline as declarative plugin
+    // output. Keep the merge in one helper so both host apps preserve the same
+    // contribution ordering and tests can assert the full startup input set.
+    driver_outcome.extend_host_inputs(
+        &mut merged.runtime_hooks,
+        &mut merged.mcp_server_configs,
+        &mut merged.runtime_instructions,
+    );
+    merged
 }
 
 pub async fn bootstrap_from_dir(dir: impl AsRef<Path>) -> Result<BootArtifacts> {
@@ -165,8 +194,21 @@ async fn bootstrap_from_parts(
         &mut tools,
         agent::UnknownDriverPolicy::Warn,
     )?;
-    let mut mcp_server_configs = config.mcp_servers.clone();
-    mcp_server_configs.extend(plugin_plan.mcp_servers.clone());
+    let DriverHostInputs {
+        mut runtime_hooks,
+        mcp_server_configs,
+        runtime_instructions,
+    } = merge_driver_host_inputs(
+        plugin_plan.hooks.clone(),
+        config
+            .mcp_servers
+            .iter()
+            .cloned()
+            .chain(plugin_plan.mcp_servers.iter().cloned())
+            .collect(),
+        plugin_plan.instructions.clone(),
+        &driver_outcome,
+    );
     let mcp_servers = resolve_mcp_servers(&mcp_server_configs, &workspace_root);
     let connected_mcp_servers = connect_and_catalog_mcp_servers_with_options(
         &dedup_mcp_servers(mcp_servers),
@@ -191,8 +233,7 @@ async fn bootstrap_from_parts(
         .await
         .context("failed to load configured skill roots")?;
     let skills = skill_catalog.all().to_vec();
-    let instructions = build_runtime_preamble(&config, &skill_catalog, &plugin_plan.instructions);
-    let mut runtime_hooks = plugin_plan.hooks.clone();
+    let instructions = build_runtime_preamble(&config, &skill_catalog, &runtime_instructions);
     let skill_hooks = skills
         .iter()
         .flat_map(|skill| skill.hooks.clone())
@@ -237,6 +278,7 @@ async fn bootstrap_from_parts(
         &config,
         &plugin_plan,
         &driver_outcome.warnings,
+        &driver_outcome.diagnostics,
         &sandbox_policy,
         &sandbox_status,
     );
@@ -261,15 +303,94 @@ mod tests {
     use super::{
         DEFAULT_AGENT_PREAMBLE, bootstrap_from_dir, build_plugin_activation_plan,
         build_runtime_preamble, build_sandbox_policy, describe_sandbox_policy,
-        resolved_skill_roots,
+        merge_driver_host_inputs, resolved_skill_roots,
     };
     use crate::config::{AgentCoreConfig, ProviderKind};
     use crate::test_support::lock_env_test;
+    use agent::DriverActivationOutcome;
+    use agent::mcp::{McpServerConfig, McpTransportConfig};
     use agent::skills::load_skill_roots;
+    use std::collections::BTreeMap;
     use tempfile::tempdir;
     use tokio::fs;
     use tools::{NetworkPolicy, SandboxBackendStatus, SandboxMode, ToolExecutionContext};
-    use types::{ToolName, ToolOrigin};
+    use types::{HookEvent, HookHandler, HookRegistration, HttpHookHandler, ToolName, ToolOrigin};
+
+    #[test]
+    fn driver_outcome_extends_reference_tui_boot_inputs() {
+        let merged = merge_driver_host_inputs(
+            vec![HookRegistration {
+                name: "existing-hook".to_string(),
+                event: HookEvent::Stop,
+                matcher: None,
+                handler: HookHandler::Http(HttpHookHandler {
+                    url: "https://example.test/existing".to_string(),
+                    method: "POST".to_string(),
+                    headers: BTreeMap::new(),
+                }),
+                timeout_ms: None,
+                execution: None,
+            }],
+            vec![McpServerConfig {
+                name: "existing-mcp".to_string(),
+                transport: McpTransportConfig::Stdio {
+                    command: "stdio-server".to_string(),
+                    args: Vec::new(),
+                    env: BTreeMap::new(),
+                    cwd: None,
+                },
+            }],
+            vec!["existing instruction".to_string()],
+            &DriverActivationOutcome {
+                warnings: Vec::new(),
+                hooks: vec![HookRegistration {
+                    name: "driver-hook".to_string(),
+                    event: HookEvent::SessionStart,
+                    matcher: None,
+                    handler: HookHandler::Http(HttpHookHandler {
+                        url: "https://example.test/hook".to_string(),
+                        method: "POST".to_string(),
+                        headers: BTreeMap::new(),
+                    }),
+                    timeout_ms: Some(250),
+                    execution: None,
+                }],
+                mcp_servers: vec![McpServerConfig {
+                    name: "driver-mcp".to_string(),
+                    transport: McpTransportConfig::StreamableHttp {
+                        url: "https://example.test/mcp".to_string(),
+                        headers: BTreeMap::new(),
+                    },
+                }],
+                instructions: vec!["driver instruction".to_string()],
+                diagnostics: vec!["prepared runtime".to_string()],
+            },
+        );
+
+        assert_eq!(
+            merged
+                .runtime_hooks
+                .iter()
+                .map(|hook| hook.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["existing-hook", "driver-hook"]
+        );
+        assert_eq!(
+            merged
+                .mcp_server_configs
+                .iter()
+                .map(|server| server.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["existing-mcp", "driver-mcp"]
+        );
+        assert_eq!(
+            merged.runtime_instructions,
+            vec![
+                "existing instruction".to_string(),
+                "driver instruction".to_string()
+            ]
+        );
+    }
 
     #[tokio::test]
     async fn bootstraps_runtime_from_configured_workspace() {

@@ -22,6 +22,57 @@ pub struct DriverActivationOutcome {
     pub diagnostics: Vec<String>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DriverHostMessageLevel {
+    Warning,
+    Diagnostic,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DriverHostMessage {
+    pub level: DriverHostMessageLevel,
+    pub message: String,
+}
+
+impl DriverActivationOutcome {
+    pub fn extend_runtime_contributions(
+        &self,
+        hooks: &mut Vec<HookRegistration>,
+        mcp_servers: &mut Vec<McpServerConfig>,
+        instructions: &mut Vec<String>,
+    ) {
+        self.extend_host_inputs(hooks, mcp_servers, instructions);
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.warnings.is_empty()
+            && self.hooks.is_empty()
+            && self.mcp_servers.is_empty()
+            && self.instructions.is_empty()
+            && self.diagnostics.is_empty()
+    }
+
+    pub fn host_messages(&self) -> impl Iterator<Item = DriverHostMessage> + '_ {
+        self.warnings
+            .iter()
+            .cloned()
+            .map(|message| DriverHostMessage {
+                level: DriverHostMessageLevel::Warning,
+                message,
+            })
+            .chain(
+                self.diagnostics
+                    .iter()
+                    .cloned()
+                    .map(|message| DriverHostMessage {
+                        level: DriverHostMessageLevel::Diagnostic,
+                        message,
+                    }),
+            )
+    }
+}
+
 pub struct PluginDriverContext<'a> {
     pub workspace_root: &'a std::path::Path,
     pub env_map: &'a agent_env::EnvMap,
@@ -83,5 +134,133 @@ impl PluginDriverRegistry {
             factory.activate(activation, context, &mut outcome)?;
         }
         Ok(outcome)
+    }
+}
+
+impl DriverActivationOutcome {
+    /// Host boot code consumes declarative plugin plan output and runtime driver
+    /// output through the same build pipeline. Keep the merge step centralized so
+    /// every host app applies hooks, MCP servers, and instructions in the same
+    /// order instead of hand-rolling partial merges.
+    pub fn extend_host_inputs(
+        &self,
+        hooks: &mut Vec<HookRegistration>,
+        mcp_servers: &mut Vec<McpServerConfig>,
+        instructions: &mut Vec<String>,
+    ) {
+        hooks.extend(self.hooks.iter().cloned());
+        mcp_servers.extend(self.mcp_servers.iter().cloned());
+        instructions.extend(self.instructions.iter().cloned());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DriverActivationOutcome, DriverHostMessage, DriverHostMessageLevel};
+    use mcp::{McpServerConfig, McpTransportConfig};
+    use std::collections::BTreeMap;
+    use types::{HookEvent, HookHandler, HookRegistration, HttpHookHandler};
+
+    #[test]
+    fn driver_outcome_extends_all_host_inputs() {
+        let outcome = DriverActivationOutcome {
+            warnings: Vec::new(),
+            hooks: vec![HookRegistration {
+                name: "driver-hook".to_string(),
+                event: HookEvent::SessionStart,
+                matcher: None,
+                handler: HookHandler::Http(HttpHookHandler {
+                    url: "https://example.test/hook".to_string(),
+                    method: "POST".to_string(),
+                    headers: BTreeMap::new(),
+                }),
+                timeout_ms: Some(500),
+                execution: None,
+            }],
+            mcp_servers: vec![McpServerConfig {
+                name: "driver-mcp".to_string(),
+                transport: McpTransportConfig::StreamableHttp {
+                    url: "https://example.test/mcp".to_string(),
+                    headers: BTreeMap::new(),
+                },
+            }],
+            instructions: vec!["driver instruction".to_string()],
+            diagnostics: Vec::new(),
+        };
+        let mut hooks = vec![HookRegistration {
+            name: "existing-hook".to_string(),
+            event: HookEvent::Stop,
+            matcher: None,
+            handler: HookHandler::Http(HttpHookHandler {
+                url: "https://example.test/existing".to_string(),
+                method: "POST".to_string(),
+                headers: BTreeMap::new(),
+            }),
+            timeout_ms: None,
+            execution: None,
+        }];
+        let mut mcp_servers = vec![McpServerConfig {
+            name: "existing-mcp".to_string(),
+            transport: McpTransportConfig::Stdio {
+                command: "stdio-server".to_string(),
+                args: Vec::new(),
+                env: BTreeMap::new(),
+                cwd: None,
+            },
+        }];
+        let mut instructions = vec!["existing instruction".to_string()];
+
+        outcome.extend_host_inputs(&mut hooks, &mut mcp_servers, &mut instructions);
+
+        assert_eq!(
+            hooks
+                .iter()
+                .map(|hook| hook.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["existing-hook", "driver-hook"]
+        );
+        assert_eq!(
+            mcp_servers
+                .iter()
+                .map(|server| server.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["existing-mcp", "driver-mcp"]
+        );
+        assert_eq!(
+            instructions,
+            vec![
+                "existing instruction".to_string(),
+                "driver instruction".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn driver_outcome_emits_host_messages_in_order() {
+        let outcome = DriverActivationOutcome {
+            warnings: vec!["first warning".to_string(), "second warning".to_string()],
+            hooks: Vec::new(),
+            mcp_servers: Vec::new(),
+            instructions: Vec::new(),
+            diagnostics: vec!["first diagnostic".to_string()],
+        };
+
+        assert_eq!(
+            outcome.host_messages().collect::<Vec<_>>(),
+            vec![
+                DriverHostMessage {
+                    level: DriverHostMessageLevel::Warning,
+                    message: "first warning".to_string(),
+                },
+                DriverHostMessage {
+                    level: DriverHostMessageLevel::Warning,
+                    message: "second warning".to_string(),
+                },
+                DriverHostMessage {
+                    level: DriverHostMessageLevel::Diagnostic,
+                    message: "first diagnostic".to_string(),
+                },
+            ]
+        );
     }
 }

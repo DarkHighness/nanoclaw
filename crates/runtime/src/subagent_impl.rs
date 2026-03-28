@@ -8,6 +8,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::Value;
 use skills::SkillCatalog;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
 use store::RunStore;
@@ -57,6 +58,29 @@ struct PlannedChildSpawn {
     task: AgentTaskSpec,
     tool_registry: ToolRegistry,
     requested_files: Vec<PathBuf>,
+    dependency_agent_ids: Vec<AgentId>,
+}
+
+#[derive(Clone)]
+struct DependencyFailure {
+    task_id: String,
+    status: AgentStatus,
+    summary: Option<String>,
+}
+
+struct ChildLaunchPlan {
+    parent: SubagentParentContext,
+    handle: AgentHandle,
+    task: AgentTaskSpec,
+    tool_registry: ToolRegistry,
+    mailbox_rx: AgentMailboxReceiver,
+    dependency_agent_ids: Vec<AgentId>,
+}
+
+enum DependencyGate {
+    Ready,
+    Blocked(BTreeSet<AgentId>),
+    Failed(Vec<DependencyFailure>),
 }
 
 impl RuntimeSubagentExecutor {
@@ -244,6 +268,357 @@ impl RuntimeSubagentExecutor {
         }
         Ok(())
     }
+
+    fn resolve_dependency_plan(
+        &self,
+        parent: &SubagentParentContext,
+        planned: &mut [PlannedChildSpawn],
+    ) -> std::result::Result<(), ToolError> {
+        let mut existing_by_task_id = BTreeMap::new();
+        for handle in self
+            .session_manager
+            .list()
+            .into_iter()
+            .filter(|handle| handle.parent_agent_id == parent.parent_agent_id)
+        {
+            if existing_by_task_id
+                .insert(handle.task_id.clone(), handle.agent_id.clone())
+                .is_some()
+            {
+                return Err(ToolError::invalid(format!(
+                    "duplicate child task id `{}` already exists under parent scope",
+                    handle.task_id
+                )));
+            }
+        }
+
+        let mut task_to_index = BTreeMap::new();
+        for (index, child) in planned.iter().enumerate() {
+            if existing_by_task_id.contains_key(&child.task.task_id) {
+                return Err(ToolError::invalid(format!(
+                    "child task id `{}` already exists under parent scope",
+                    child.task.task_id
+                )));
+            }
+            if task_to_index
+                .insert(child.task.task_id.clone(), index)
+                .is_some()
+            {
+                return Err(ToolError::invalid(format!(
+                    "duplicate agent task id `{}` in batch spawn",
+                    child.task.task_id
+                )));
+            }
+        }
+
+        let handle_ids = planned
+            .iter()
+            .map(|child| child.handle.agent_id.clone())
+            .collect::<Vec<_>>();
+        let mut dependency_counts = BTreeMap::new();
+        let mut reverse_edges: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for child in planned.iter_mut() {
+            let mut dependency_agent_ids = Vec::with_capacity(child.task.dependency_ids.len());
+            let mut intra_batch_dependencies = 0usize;
+            for dependency_id in &child.task.dependency_ids {
+                if let Some(&dependency_index) = task_to_index.get(dependency_id) {
+                    dependency_agent_ids.push(handle_ids[dependency_index].clone());
+                    intra_batch_dependencies += 1;
+                    reverse_edges
+                        .entry(dependency_id.clone())
+                        .or_default()
+                        .push(child.task.task_id.clone());
+                } else if let Some(existing_agent_id) = existing_by_task_id.get(dependency_id) {
+                    dependency_agent_ids.push(existing_agent_id.clone());
+                } else {
+                    return Err(ToolError::invalid(format!(
+                        "agent task {} references unknown dependency `{dependency_id}`",
+                        child.task.task_id
+                    )));
+                }
+            }
+            dependency_counts.insert(child.task.task_id.clone(), intra_batch_dependencies);
+            child.dependency_agent_ids = dependency_agent_ids;
+        }
+
+        let mut ready = dependency_counts
+            .iter()
+            .filter_map(|(task_id, count)| (*count == 0).then_some(task_id.clone()))
+            .collect::<VecDeque<_>>();
+        let mut visited = 0usize;
+        while let Some(task_id) = ready.pop_front() {
+            visited += 1;
+            for dependent in reverse_edges.get(&task_id).into_iter().flatten() {
+                if let Some(remaining) = dependency_counts.get_mut(dependent) {
+                    *remaining = remaining.saturating_sub(1);
+                    if *remaining == 0 {
+                        ready.push_back(dependent.clone());
+                    }
+                }
+            }
+        }
+        if visited != planned.len() {
+            return Err(ToolError::invalid(
+                "agent batch dependencies contain a cycle",
+            ));
+        }
+        Ok(())
+    }
+
+    fn build_child_runtime(&self, plan: &ChildLaunchPlan) -> AgentRuntime {
+        AgentRuntimeBuilder::new(self.backend.clone(), self.store.clone())
+            .hook_runner(self.hook_runner.clone())
+            .tool_registry(plan.tool_registry.clone())
+            .tool_context(self.tool_context.clone().with_agent_scope_metadata(
+                plan.handle.agent_id.clone(),
+                Some(plan.task.role.clone()),
+                Some(plan.task.task_id.clone()),
+                self.write_lease_manager.clone(),
+            ))
+            .tool_approval_handler(self.tool_approval_handler.clone())
+            .tool_approval_policy(self.tool_approval_policy.clone())
+            .conversation_compactor(self.conversation_compactor.clone())
+            .compaction_config(self.compaction_config.clone())
+            .loop_detection_config(self.loop_detection_config.clone())
+            .instructions(self.instructions.clone())
+            .hooks(self.hooks.clone())
+            .skill_catalog(self.skill_catalog.clone())
+            .session(RuntimeSession::new(
+                plan.handle.run_id.clone(),
+                plan.handle.session_id.clone(),
+            ))
+            .build()
+    }
+
+    fn launch_child(&self, plan: ChildLaunchPlan) {
+        let runtime = self.build_child_runtime(&plan);
+        let handle = plan.handle.clone();
+        let worker = ChildAgentWorker {
+            parent: plan.parent,
+            store: self.store.clone(),
+            session_manager: self.session_manager.clone(),
+            write_lease_manager: self.write_lease_manager.clone(),
+            handle: handle.clone(),
+            task: plan.task,
+            runtime,
+            mailbox_rx: plan.mailbox_rx,
+        };
+        let join_handle = tokio::spawn(async move { worker.run().await });
+        // The record is inserted before any worker is launched, so losing it here
+        // would mean internal state corruption rather than a recoverable runtime
+        // error.
+        self.session_manager
+            .attach_join_handle(&handle.agent_id, join_handle)
+            .expect("child record inserted before worker launch");
+    }
+
+    fn dependency_gate(
+        &self,
+        dependency_agent_ids: &[AgentId],
+    ) -> std::result::Result<DependencyGate, ToolError> {
+        let mut pending = BTreeSet::new();
+        let mut failures = Vec::new();
+        for dependency_agent_id in dependency_agent_ids {
+            let snapshot = self
+                .session_manager
+                .snapshot(dependency_agent_id)
+                .map_err(|error| ToolError::invalid_state(error.to_string()))?;
+            match snapshot.handle.status {
+                AgentStatus::Completed => {}
+                AgentStatus::Failed | AgentStatus::Cancelled => failures.push(DependencyFailure {
+                    task_id: snapshot.task.task_id,
+                    status: snapshot.handle.status,
+                    summary: snapshot.result.map(|result| result.summary),
+                }),
+                _ => {
+                    pending.insert(dependency_agent_id.clone());
+                }
+            }
+        }
+        if !failures.is_empty() {
+            Ok(DependencyGate::Failed(failures))
+        } else if pending.is_empty() {
+            Ok(DependencyGate::Ready)
+        } else {
+            Ok(DependencyGate::Blocked(pending))
+        }
+    }
+
+    async fn run_dependency_scheduler(self, mut blocked: BTreeMap<AgentId, ChildLaunchPlan>) {
+        while !blocked.is_empty() {
+            let mut ready = Vec::new();
+            let mut failed = Vec::new();
+            let mut waiting_on = BTreeSet::new();
+
+            for (agent_id, plan) in &blocked {
+                let Ok(snapshot) = self.session_manager.snapshot(agent_id) else {
+                    ready.push(agent_id.clone());
+                    continue;
+                };
+                if snapshot.handle.status.is_terminal() {
+                    ready.push(agent_id.clone());
+                    continue;
+                }
+                match self.dependency_gate(&plan.dependency_agent_ids) {
+                    Ok(DependencyGate::Ready) => ready.push(agent_id.clone()),
+                    Ok(DependencyGate::Failed(failures)) => {
+                        failed.push((agent_id.clone(), failures));
+                    }
+                    Ok(DependencyGate::Blocked(pending)) => waiting_on.extend(pending),
+                    Err(_) => ready.push(agent_id.clone()),
+                }
+            }
+
+            for agent_id in ready {
+                if let Some(plan) = blocked.remove(&agent_id) {
+                    if self
+                        .session_manager
+                        .handle(&agent_id)
+                        .map(|handle| handle.status.is_terminal())
+                        .unwrap_or(true)
+                    {
+                        continue;
+                    }
+                    self.launch_child(plan);
+                }
+            }
+
+            for (agent_id, failures) in failed {
+                if let Some(plan) = blocked.remove(&agent_id) {
+                    self.fail_blocked_child(&plan.parent, plan.handle, plan.task, failures)
+                        .await;
+                }
+            }
+
+            if blocked.is_empty() {
+                return;
+            }
+            if waiting_on.is_empty() {
+                return;
+            }
+            let _ = self
+                .session_manager
+                .wait(AgentWaitRequest {
+                    agent_ids: waiting_on.into_iter().collect(),
+                    mode: types::AgentWaitMode::Any,
+                })
+                .await;
+        }
+    }
+
+    async fn fail_blocked_child(
+        &self,
+        parent: &SubagentParentContext,
+        handle: AgentHandle,
+        task: AgentTaskSpec,
+        failures: Vec<DependencyFailure>,
+    ) {
+        let status = if failures
+            .iter()
+            .any(|failure| failure.status == AgentStatus::Failed)
+        {
+            AgentStatus::Failed
+        } else {
+            AgentStatus::Cancelled
+        };
+        let dependency_summary = failures
+            .iter()
+            .map(|failure| format!("{}={}", failure.task_id, failure.status))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let summary = format!("dependency gate blocked by {dependency_summary}");
+        let details = failures
+            .iter()
+            .map(|failure| match &failure.summary {
+                Some(reason) => format!("{} ({}) {reason}", failure.task_id, failure.status),
+                None => format!("{} ({})", failure.task_id, failure.status),
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let result = AgentResultEnvelope {
+            agent_id: handle.agent_id.clone(),
+            task_id: task.task_id.clone(),
+            status: status.clone(),
+            summary: summary.clone(),
+            text: details.clone(),
+            artifacts: Vec::new(),
+            claimed_files: self.write_lease_manager.claimed_paths(&handle.agent_id),
+            structured_payload: None,
+        };
+        let Ok(handle) = self.session_manager.finish(
+            &handle.agent_id,
+            status.clone(),
+            Some(result.clone()),
+            Some(summary.clone()),
+        ) else {
+            return;
+        };
+        let released_agent_id = handle.agent_id.clone();
+        let _ = self
+            .append_agent_envelope(
+                parent,
+                &handle,
+                AgentEnvelopeKind::StatusChanged {
+                    status: status.clone(),
+                },
+            )
+            .await;
+        match status {
+            AgentStatus::Failed => {
+                let _ = self
+                    .append_agent_envelope(
+                        parent,
+                        &handle,
+                        AgentEnvelopeKind::Failed {
+                            error: details.clone(),
+                        },
+                    )
+                    .await;
+            }
+            AgentStatus::Cancelled => {
+                let _ = self
+                    .append_agent_envelope(
+                        parent,
+                        &handle,
+                        AgentEnvelopeKind::Cancelled {
+                            reason: Some(summary.clone()),
+                        },
+                    )
+                    .await;
+            }
+            _ => {}
+        }
+        let _ = self
+            .append_agent_envelope(
+                parent,
+                &handle,
+                AgentEnvelopeKind::Result {
+                    result: result.clone(),
+                },
+            )
+            .await;
+        let _ = self
+            .append_parent_event(
+                parent,
+                RunEventKind::TaskCompleted {
+                    task_id: task.task_id.clone(),
+                    agent_id: handle.agent_id.clone(),
+                    status: status.clone(),
+                },
+            )
+            .await;
+        let _ = self
+            .append_parent_event(
+                parent,
+                RunEventKind::SubagentStop {
+                    handle,
+                    result: Some(result),
+                    error: Some(summary),
+                },
+            )
+            .await;
+        self.write_lease_manager.release(&released_agent_id);
+    }
 }
 
 #[async_trait]
@@ -279,8 +654,10 @@ impl SubagentExecutor for RuntimeSubagentExecutor {
                 task,
                 tool_registry,
                 requested_files,
+                dependency_agent_ids: Vec::new(),
             });
         }
+        self.resolve_dependency_plan(&parent, &mut planned)?;
 
         let mut claimed_agents = Vec::new();
         for child in &planned {
@@ -310,54 +687,30 @@ impl SubagentExecutor for RuntimeSubagentExecutor {
         }
 
         let mut handles = Vec::with_capacity(planned.len());
+        let mut blocked = BTreeMap::new();
         for child in planned {
-            let handle = child.handle;
-            let task = child.task;
-            let runtime =
-                AgentRuntimeBuilder::new(self.backend.clone(), self.store.clone())
-                    .hook_runner(self.hook_runner.clone())
-                    .tool_registry(child.tool_registry)
-                    .tool_context(self.tool_context.clone().with_agent_scope(
-                        handle.agent_id.clone(),
-                        self.write_lease_manager.clone(),
-                    ))
-                    .tool_approval_handler(self.tool_approval_handler.clone())
-                    .tool_approval_policy(self.tool_approval_policy.clone())
-                    .conversation_compactor(self.conversation_compactor.clone())
-                    .compaction_config(self.compaction_config.clone())
-                    .loop_detection_config(self.loop_detection_config.clone())
-                    .instructions(self.instructions.clone())
-                    .hooks(self.hooks.clone())
-                    .skill_catalog(self.skill_catalog.clone())
-                    .session(RuntimeSession::new(
-                        handle.run_id.clone(),
-                        handle.session_id.clone(),
-                    ))
-                    .build();
-
+            let handle = child.handle.clone();
+            let task = child.task.clone();
             let (mailbox, mailbox_rx) = agent_mailbox_channel();
             self.session_manager
                 .insert(handle.clone(), task.clone(), mailbox);
-
-            let worker = ChildAgentWorker {
+            let launch_plan = ChildLaunchPlan {
                 parent: parent.clone(),
-                store: self.store.clone(),
-                session_manager: self.session_manager.clone(),
-                write_lease_manager: self.write_lease_manager.clone(),
                 handle: handle.clone(),
                 task,
-                runtime,
+                tool_registry: child.tool_registry,
                 mailbox_rx,
+                dependency_agent_ids: child.dependency_agent_ids,
             };
-            let join_handle = tokio::spawn(async move { worker.run().await });
-            if let Err(error) = self
-                .session_manager
-                .attach_join_handle(&handle.agent_id, join_handle)
-            {
-                self.write_lease_manager.release(&handle.agent_id);
-                return Err(ToolError::invalid_state(error.to_string()));
+            if launch_plan.dependency_agent_ids.is_empty() {
+                self.launch_child(launch_plan);
+            } else {
+                blocked.insert(handle.agent_id.clone(), launch_plan);
             }
             handles.push(handle);
+        }
+        if !blocked.is_empty() {
+            tokio::spawn(self.clone().run_dependency_scheduler(blocked));
         }
         Ok(handles)
     }
@@ -1040,6 +1393,83 @@ mod tests {
         }
     }
 
+    #[derive(Clone, Default)]
+    struct ConditionalBackend {
+        requests: Arc<Mutex<Vec<ModelRequest>>>,
+    }
+
+    #[async_trait]
+    impl ModelBackend for ConditionalBackend {
+        async fn stream_turn(
+            &self,
+            request: ModelRequest,
+        ) -> Result<BoxStream<'static, Result<ModelEvent>>> {
+            self.requests.lock().unwrap().push(request.clone());
+            let user_prompt = request
+                .messages
+                .iter()
+                .find(|message| message.role == MessageRole::User)
+                .map(|message| message.text_content())
+                .unwrap_or_default();
+            if user_prompt.contains("fail dependency") {
+                return Err(crate::RuntimeError::invalid_state(
+                    "dependency execution failed",
+                ));
+            }
+            Ok(stream::iter(vec![
+                Ok(ModelEvent::TextDelta {
+                    delta: format!("child ok {user_prompt}"),
+                }),
+                Ok(ModelEvent::ResponseComplete {
+                    stop_reason: Some("stop".to_string()),
+                    message_id: None,
+                    continuation: None,
+                    reasoning: Vec::new(),
+                }),
+            ])
+            .boxed())
+        }
+    }
+
+    #[derive(Clone, Default)]
+    struct FailingBackend {
+        requests: Arc<Mutex<Vec<ModelRequest>>>,
+    }
+
+    #[async_trait]
+    impl ModelBackend for FailingBackend {
+        async fn stream_turn(
+            &self,
+            request: ModelRequest,
+        ) -> Result<BoxStream<'static, Result<ModelEvent>>> {
+            self.requests.lock().unwrap().push(request.clone());
+            let prompt = request
+                .messages
+                .iter()
+                .find(|message| message.role == MessageRole::User)
+                .map(|message| message.text_content())
+                .unwrap_or_default();
+            if prompt.contains("fail") {
+                return Ok(stream::iter(vec![Ok(ModelEvent::Error {
+                    message: "upstream failed".to_string(),
+                })])
+                .boxed());
+            }
+            Ok(stream::iter(vec![
+                Ok(ModelEvent::TextDelta {
+                    delta: format!("child ok {prompt}"),
+                }),
+                Ok(ModelEvent::ResponseComplete {
+                    stop_reason: Some("stop".to_string()),
+                    message_id: None,
+                    continuation: None,
+                    reasoning: Vec::new(),
+                }),
+            ])
+            .boxed())
+        }
+    }
+
     fn make_executor(
         backend: Arc<dyn ModelBackend>,
         store: Arc<dyn RunStore>,
@@ -1234,6 +1664,150 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn runtime_subagent_executor_blocks_dependent_child_until_dependency_finishes() {
+        let started = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let backend = Arc::new(BlockingBackend {
+            requests: Arc::new(Mutex::new(Vec::new())),
+            started: started.clone(),
+            release: release.clone(),
+            first_user_request_pending: Arc::new(Mutex::new(true)),
+        });
+        let store = Arc::new(InMemoryRunStore::new());
+        let executor = make_executor(backend.clone(), store);
+
+        let handles = executor
+            .spawn(
+                SubagentParentContext::default(),
+                vec![
+                    AgentTaskSpec {
+                        task_id: "inspect".to_string(),
+                        role: "explorer".to_string(),
+                        prompt: "inspect".to_string(),
+                        steer: None,
+                        allowed_tools: vec![ToolName::from("read")],
+                        requested_write_set: Vec::new(),
+                        dependency_ids: Vec::new(),
+                        timeout_seconds: None,
+                    },
+                    AgentTaskSpec {
+                        task_id: "review".to_string(),
+                        role: "reviewer".to_string(),
+                        prompt: "review".to_string(),
+                        steer: None,
+                        allowed_tools: vec![ToolName::from("read")],
+                        requested_write_set: Vec::new(),
+                        dependency_ids: vec!["inspect".to_string()],
+                        timeout_seconds: None,
+                    },
+                ],
+            )
+            .await
+            .unwrap();
+
+        started.notified().await;
+        tokio::task::yield_now().await;
+
+        assert_eq!(backend.requests.lock().unwrap().len(), 1);
+        let review_handle = handles
+            .iter()
+            .find(|handle| handle.task_id == "review")
+            .unwrap();
+        assert_eq!(
+            executor
+                .session_manager
+                .handle(&review_handle.agent_id)
+                .unwrap()
+                .status,
+            AgentStatus::Queued
+        );
+
+        release.notify_waiters();
+        let wait = executor
+            .wait(
+                SubagentParentContext::default(),
+                AgentWaitRequest {
+                    agent_ids: handles
+                        .iter()
+                        .map(|handle| handle.agent_id.clone())
+                        .collect(),
+                    mode: AgentWaitMode::All,
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(backend.requests.lock().unwrap().len(), 2);
+        assert_eq!(wait.completed.len(), 2);
+        assert!(wait.pending.is_empty());
+        assert!(
+            wait.results
+                .iter()
+                .all(|result| result.status == AgentStatus::Completed)
+        );
+    }
+
+    #[tokio::test]
+    async fn runtime_subagent_executor_propagates_dependency_failures_without_launching_child() {
+        let backend = Arc::new(ConditionalBackend::default());
+        let store = Arc::new(InMemoryRunStore::new());
+        let executor = make_executor(backend.clone(), store);
+
+        let handles = executor
+            .spawn(
+                SubagentParentContext::default(),
+                vec![
+                    AgentTaskSpec {
+                        task_id: "inspect".to_string(),
+                        role: "explorer".to_string(),
+                        prompt: "fail dependency".to_string(),
+                        steer: None,
+                        allowed_tools: vec![ToolName::from("read")],
+                        requested_write_set: Vec::new(),
+                        dependency_ids: Vec::new(),
+                        timeout_seconds: None,
+                    },
+                    AgentTaskSpec {
+                        task_id: "review".to_string(),
+                        role: "reviewer".to_string(),
+                        prompt: "review".to_string(),
+                        steer: None,
+                        allowed_tools: vec![ToolName::from("read")],
+                        requested_write_set: Vec::new(),
+                        dependency_ids: vec!["inspect".to_string()],
+                        timeout_seconds: None,
+                    },
+                ],
+            )
+            .await
+            .unwrap();
+
+        let wait = executor
+            .wait(
+                SubagentParentContext::default(),
+                AgentWaitRequest {
+                    agent_ids: handles
+                        .iter()
+                        .map(|handle| handle.agent_id.clone())
+                        .collect(),
+                    mode: AgentWaitMode::All,
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(backend.requests.lock().unwrap().len(), 1);
+        let review_result = wait
+            .results
+            .iter()
+            .find(|result| result.task_id == "review")
+            .unwrap();
+        assert_eq!(review_result.status, AgentStatus::Failed);
+        assert!(review_result.summary.contains("dependency gate blocked"));
+        assert!(review_result.text.contains("inspect (failed)"));
+    }
+
+    #[tokio::test]
     async fn runtime_subagent_executor_cancels_running_agent() {
         let started = Arc::new(Notify::new());
         let release = Arc::new(Notify::new());
@@ -1395,6 +1969,382 @@ mod tests {
             .await
             .expect("claims must be released after failed batch");
         assert_eq!(handles.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn runtime_subagent_executor_defers_downstream_until_dependencies_complete() {
+        let started = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let backend = Arc::new(BlockingBackend {
+            requests: Arc::new(Mutex::new(Vec::new())),
+            started: started.clone(),
+            release: release.clone(),
+            first_user_request_pending: Arc::new(Mutex::new(true)),
+        });
+        let store = Arc::new(InMemoryRunStore::new());
+        let executor = make_executor(backend.clone(), store);
+        let parent = SubagentParentContext {
+            run_id: Some("run_parent".into()),
+            session_id: Some("session_parent".into()),
+            turn_id: Some("turn_parent".into()),
+            parent_agent_id: Some("agent_parent".into()),
+        };
+
+        let handles = executor
+            .spawn(
+                parent.clone(),
+                vec![
+                    AgentTaskSpec {
+                        task_id: "inspect".to_string(),
+                        role: "explorer".to_string(),
+                        prompt: "inspect workspace".to_string(),
+                        steer: None,
+                        allowed_tools: vec![ToolName::from("read")],
+                        requested_write_set: Vec::new(),
+                        dependency_ids: Vec::new(),
+                        timeout_seconds: None,
+                    },
+                    AgentTaskSpec {
+                        task_id: "review".to_string(),
+                        role: "reviewer".to_string(),
+                        prompt: "review findings".to_string(),
+                        steer: None,
+                        allowed_tools: vec![ToolName::from("read")],
+                        requested_write_set: Vec::new(),
+                        dependency_ids: vec!["inspect".to_string()],
+                        timeout_seconds: None,
+                    },
+                ],
+            )
+            .await
+            .unwrap();
+
+        started.notified().await;
+        assert_eq!(backend.requests.lock().unwrap().len(), 1);
+        let listed = executor.list(parent.clone()).await.unwrap();
+        assert_eq!(
+            listed
+                .iter()
+                .find(|handle| handle.task_id == "review")
+                .map(|handle| handle.status.clone()),
+            Some(AgentStatus::Queued)
+        );
+
+        release.notify_waiters();
+        let wait = executor
+            .wait(
+                parent,
+                AgentWaitRequest {
+                    agent_ids: handles
+                        .iter()
+                        .map(|handle| handle.agent_id.clone())
+                        .collect(),
+                    mode: AgentWaitMode::All,
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(backend.requests.lock().unwrap().len(), 2);
+        assert_eq!(wait.results.len(), 2);
+        assert!(
+            wait.results
+                .iter()
+                .all(|result| result.status == AgentStatus::Completed)
+        );
+        let prompts = backend
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|request| {
+                request
+                    .messages
+                    .iter()
+                    .find(|message| message.role == MessageRole::User)
+                    .map(|message| message.text_content())
+                    .unwrap_or_default()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(prompts, vec!["inspect workspace", "review findings"]);
+    }
+
+    #[tokio::test]
+    async fn runtime_subagent_executor_fails_downstream_when_dependency_fails() {
+        let backend = Arc::new(FailingBackend::default());
+        let store = Arc::new(InMemoryRunStore::new());
+        let executor = make_executor(backend.clone(), store);
+        let parent = SubagentParentContext {
+            run_id: Some("run_parent".into()),
+            session_id: Some("session_parent".into()),
+            turn_id: Some("turn_parent".into()),
+            parent_agent_id: Some("agent_parent".into()),
+        };
+
+        let handles = executor
+            .spawn(
+                parent.clone(),
+                vec![
+                    AgentTaskSpec {
+                        task_id: "inspect".to_string(),
+                        role: "explorer".to_string(),
+                        prompt: "fail upstream".to_string(),
+                        steer: None,
+                        allowed_tools: vec![ToolName::from("read")],
+                        requested_write_set: Vec::new(),
+                        dependency_ids: Vec::new(),
+                        timeout_seconds: None,
+                    },
+                    AgentTaskSpec {
+                        task_id: "review".to_string(),
+                        role: "reviewer".to_string(),
+                        prompt: "review findings".to_string(),
+                        steer: None,
+                        allowed_tools: vec![ToolName::from("read")],
+                        requested_write_set: Vec::new(),
+                        dependency_ids: vec!["inspect".to_string()],
+                        timeout_seconds: None,
+                    },
+                ],
+            )
+            .await
+            .unwrap();
+
+        let wait = executor
+            .wait(
+                parent,
+                AgentWaitRequest {
+                    agent_ids: handles
+                        .iter()
+                        .map(|handle| handle.agent_id.clone())
+                        .collect(),
+                    mode: AgentWaitMode::All,
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(backend.requests.lock().unwrap().len(), 1);
+        let upstream = wait
+            .results
+            .iter()
+            .find(|result| result.task_id == "inspect")
+            .unwrap();
+        assert_eq!(upstream.status, AgentStatus::Failed);
+        let downstream = wait
+            .results
+            .iter()
+            .find(|result| result.task_id == "review")
+            .unwrap();
+        assert_eq!(downstream.status, AgentStatus::Failed);
+        assert!(
+            downstream
+                .summary
+                .contains("dependency gate blocked by inspect=failed"),
+            "{}",
+            downstream.summary
+        );
+    }
+
+    #[tokio::test]
+    async fn runtime_subagent_executor_blocks_dependent_children_until_ready() {
+        let started = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let backend = Arc::new(BlockingBackend {
+            requests: Arc::new(Mutex::new(Vec::new())),
+            started: started.clone(),
+            release: release.clone(),
+            first_user_request_pending: Arc::new(Mutex::new(true)),
+        });
+        let store = Arc::new(InMemoryRunStore::new());
+        let executor = make_executor(backend.clone(), store);
+
+        let handles = executor
+            .spawn(
+                SubagentParentContext::default(),
+                vec![
+                    AgentTaskSpec {
+                        task_id: "inspect".to_string(),
+                        role: "explorer".to_string(),
+                        prompt: "inspect".to_string(),
+                        steer: None,
+                        allowed_tools: vec![ToolName::from("read")],
+                        requested_write_set: Vec::new(),
+                        dependency_ids: Vec::new(),
+                        timeout_seconds: None,
+                    },
+                    AgentTaskSpec {
+                        task_id: "review".to_string(),
+                        role: "reviewer".to_string(),
+                        prompt: "review".to_string(),
+                        steer: None,
+                        allowed_tools: vec![ToolName::from("read")],
+                        requested_write_set: Vec::new(),
+                        dependency_ids: vec!["inspect".to_string()],
+                        timeout_seconds: None,
+                    },
+                ],
+            )
+            .await
+            .unwrap();
+
+        started.notified().await;
+        let listing = executor
+            .list(SubagentParentContext::default())
+            .await
+            .unwrap();
+        assert_eq!(listing.len(), 2);
+        assert_eq!(
+            listing
+                .iter()
+                .find(|handle| handle.task_id == "inspect")
+                .unwrap()
+                .status,
+            AgentStatus::Running
+        );
+        assert_eq!(
+            listing
+                .iter()
+                .find(|handle| handle.task_id == "review")
+                .unwrap()
+                .status,
+            AgentStatus::Queued
+        );
+        assert_eq!(
+            backend.requests.lock().unwrap().len(),
+            1,
+            "downstream child must not start before its dependency finishes"
+        );
+
+        release.notify_waiters();
+        let wait = executor
+            .wait(
+                SubagentParentContext::default(),
+                AgentWaitRequest {
+                    agent_ids: handles
+                        .iter()
+                        .map(|handle| handle.agent_id.clone())
+                        .collect(),
+                    mode: AgentWaitMode::All,
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(wait.completed.len(), 2);
+        assert_eq!(wait.results.len(), 2);
+        assert_eq!(
+            backend.requests.lock().unwrap().len(),
+            2,
+            "downstream child should start after dependency completion"
+        );
+        assert!(
+            wait.results
+                .iter()
+                .all(|result| result.status == AgentStatus::Completed)
+        );
+    }
+
+    #[tokio::test]
+    async fn runtime_subagent_executor_fails_dependents_after_upstream_failure() {
+        let backend = Arc::new(ConditionalBackend::default());
+        let store = Arc::new(InMemoryRunStore::new());
+        let executor = make_executor(backend.clone(), store);
+
+        let handles = executor
+            .spawn(
+                SubagentParentContext::default(),
+                vec![
+                    AgentTaskSpec {
+                        task_id: "inspect".to_string(),
+                        role: "explorer".to_string(),
+                        prompt: "fail dependency".to_string(),
+                        steer: None,
+                        allowed_tools: vec![ToolName::from("read")],
+                        requested_write_set: Vec::new(),
+                        dependency_ids: Vec::new(),
+                        timeout_seconds: None,
+                    },
+                    AgentTaskSpec {
+                        task_id: "review".to_string(),
+                        role: "reviewer".to_string(),
+                        prompt: "review".to_string(),
+                        steer: None,
+                        allowed_tools: vec![ToolName::from("read")],
+                        requested_write_set: Vec::new(),
+                        dependency_ids: vec!["inspect".to_string()],
+                        timeout_seconds: None,
+                    },
+                ],
+            )
+            .await
+            .unwrap();
+
+        let wait = executor
+            .wait(
+                SubagentParentContext::default(),
+                AgentWaitRequest {
+                    agent_ids: handles
+                        .iter()
+                        .map(|handle| handle.agent_id.clone())
+                        .collect(),
+                    mode: AgentWaitMode::All,
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(backend.requests.lock().unwrap().len(), 1);
+        let by_task = wait
+            .results
+            .iter()
+            .map(|result| (result.task_id.as_str(), result))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        assert_eq!(by_task["inspect"].status, AgentStatus::Failed);
+        assert_eq!(by_task["review"].status, AgentStatus::Failed);
+        assert!(
+            by_task["review"]
+                .summary
+                .contains("dependency gate blocked by inspect=failed")
+        );
+    }
+
+    #[tokio::test]
+    async fn runtime_subagent_executor_rejects_dependency_cycles() {
+        let backend = Arc::new(ImmediateBackend::default());
+        let store = Arc::new(InMemoryRunStore::new());
+        let executor = make_executor(backend, store);
+
+        let error = executor
+            .spawn(
+                SubagentParentContext::default(),
+                vec![
+                    AgentTaskSpec {
+                        task_id: "a".to_string(),
+                        role: "explorer".to_string(),
+                        prompt: "a".to_string(),
+                        steer: None,
+                        allowed_tools: vec![ToolName::from("read")],
+                        requested_write_set: Vec::new(),
+                        dependency_ids: vec!["b".to_string()],
+                        timeout_seconds: None,
+                    },
+                    AgentTaskSpec {
+                        task_id: "b".to_string(),
+                        role: "reviewer".to_string(),
+                        prompt: "b".to_string(),
+                        steer: None,
+                        allowed_tools: vec![ToolName::from("read")],
+                        requested_write_set: Vec::new(),
+                        dependency_ids: vec!["a".to_string()],
+                        timeout_seconds: None,
+                    },
+                ],
+            )
+            .await
+            .expect_err("cyclic dependencies must be rejected");
+
+        assert!(error.to_string().contains("dependency"));
     }
 
     #[tokio::test]

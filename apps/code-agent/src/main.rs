@@ -5,6 +5,10 @@ mod tui;
 
 use crate::options::AppOptions;
 use crate::provider::build_backend;
+use agent::mcp::{
+    McpConnectOptions, McpServerConfig, McpTransportConfig, catalog_tools_as_registry_entries,
+    connect_and_catalog_mcp_servers_with_options,
+};
 use agent::runtime::{
     CompactionConfig, DefaultCommandHookExecutor, HostRuntimeLimits, LoopDetectionConfig,
     ModelConversationCompactor, NoopToolApprovalPolicy, RuntimeSubagentExecutor,
@@ -14,6 +18,7 @@ use agent::tools::{
     AgentCancelTool, AgentListTool, AgentSendTool, AgentSpawnTool, AgentWaitTool,
     SandboxBackendStatus, TaskBatchTool, ensure_sandbox_policy_supported,
 };
+use agent::types::HookRegistration;
 use agent::{
     AgentRuntime, AgentRuntimeBuilder, AgentWorkspaceLayout, BashTool, CodeDefinitionsTool,
     CodeDocumentSymbolsTool, CodeIntelBackend, CodeReferencesTool, CodeSymbolSearchTool, EditTool,
@@ -37,6 +42,82 @@ use tui::{CodeAgentTui, make_tui_support};
 const DEFAULT_CONTEXT_TOKENS: usize = 128_000;
 const DEFAULT_TRIGGER_TOKENS: usize = 96_000;
 const DEFAULT_PRESERVE_RECENT_MESSAGES: usize = 8;
+
+struct DriverHostInputs {
+    runtime_hooks: Vec<HookRegistration>,
+    mcp_servers: Vec<McpServerConfig>,
+    instructions: Vec<String>,
+}
+
+fn merge_driver_host_inputs(
+    runtime_hooks: Vec<HookRegistration>,
+    mcp_servers: Vec<McpServerConfig>,
+    instructions: Vec<String>,
+    driver_outcome: &agent::DriverActivationOutcome,
+) -> DriverHostInputs {
+    let mut merged = DriverHostInputs {
+        runtime_hooks,
+        mcp_servers,
+        instructions,
+    };
+    // Code Agent has both declarative plugin contributions and runtime driver
+    // output. Merge them once here so the foreground runtime, subagents, and
+    // MCP bootstrap all see the same effective startup inputs.
+    driver_outcome.extend_host_inputs(
+        &mut merged.runtime_hooks,
+        &mut merged.mcp_servers,
+        &mut merged.instructions,
+    );
+    merged
+}
+
+fn resolve_mcp_servers(configs: &[McpServerConfig], workspace_root: &Path) -> Vec<McpServerConfig> {
+    configs
+        .iter()
+        .cloned()
+        .map(|mut server| {
+            if let McpTransportConfig::Stdio { cwd, .. } = &mut server.transport
+                && let Some(current_dir) = cwd.as_deref()
+            {
+                let resolved = resolve_path(workspace_root, current_dir);
+                *cwd = Some(resolved.to_string_lossy().to_string());
+            }
+            server
+        })
+        .collect()
+}
+
+fn dedup_mcp_servers(servers: Vec<McpServerConfig>) -> Vec<McpServerConfig> {
+    let mut by_name = BTreeMap::new();
+    for server in servers {
+        by_name.entry(server.name.clone()).or_insert(server);
+    }
+    by_name.into_values().collect()
+}
+
+fn resolve_path(base_dir: &Path, value: &str) -> PathBuf {
+    let path = PathBuf::from(value);
+    if path.is_absolute() {
+        path
+    } else {
+        base_dir.join(path)
+    }
+}
+
+#[cfg(test)]
+fn driver_host_output_lines(driver_outcome: &agent::DriverActivationOutcome) -> Vec<String> {
+    driver_outcome
+        .host_messages()
+        .map(|message| match message.level {
+            agent::DriverHostMessageLevel::Warning => {
+                format!("warning: plugin driver warning: {}", message.message)
+            }
+            agent::DriverHostMessageLevel::Diagnostic => {
+                format!("info: plugin driver diagnostic: {}", message.message)
+            }
+        })
+        .collect()
+}
 
 fn main() -> Result<()> {
     let workspace_root = env::current_dir().context("failed to resolve current workspace")?;
@@ -147,17 +228,9 @@ async fn build_runtime(
         .await
         .context("failed to load skill roots")?;
     let skills = skill_catalog.all().to_vec();
-    let mut runtime_hooks = plugin_plan.hooks.clone();
-    let skill_hooks = skills
-        .iter()
-        .flat_map(|skill| skill.hooks.clone())
-        .collect::<Vec<_>>();
-    runtime_hooks.extend(skill_hooks.clone());
-    let instructions = build_system_preamble(
-        options.system_prompt.as_deref(),
-        &skill_catalog,
-        &plugin_plan.instructions,
-    );
+    let runtime_hooks = plugin_plan.hooks.clone();
+    let plugin_mcp_servers = plugin_plan.mcp_servers.clone();
+    let plugin_instructions = plugin_plan.instructions.clone();
     let compactor = Arc::new(ModelConversationCompactor::new(backend.clone()));
     let loop_detection_config = LoopDetectionConfig {
         enabled: true,
@@ -217,8 +290,8 @@ async fn build_runtime(
     tools.register(GrepTool::new());
     tools.register(ListTool::new());
     tools.register(BashTool::with_process_executor_and_policy(
-        process_executor,
-        sandbox_policy,
+        process_executor.clone(),
+        sandbox_policy.clone(),
     ));
     tools.register(CodeSymbolSearchTool::with_backend(
         code_intel_backend.clone(),
@@ -235,13 +308,69 @@ async fn build_runtime(
     // Driver-backed plugins expand into normal local tools here so the runtime and subagent
     // surfaces stay identical regardless of whether a capability came from builtin boot code or a
     // plugin slot selection.
-    agent::activate_driver_requests(
+    let driver_outcome = agent::activate_driver_requests(
         &plugin_plan.runtime_activations,
         workspace_root,
         Some(store.clone()),
         &mut tools,
         agent::UnknownDriverPolicy::Error,
     )?;
+    for message in driver_outcome.host_messages() {
+        match message.level {
+            agent::DriverHostMessageLevel::Warning => {
+                let line = format!("warning: plugin driver warning: {}", message.message);
+                warn!("{line}");
+                eprintln!("{line}");
+            }
+            agent::DriverHostMessageLevel::Diagnostic => {
+                let line = format!("info: plugin driver diagnostic: {}", message.message);
+                info!("{line}");
+                eprintln!("{line}");
+            }
+        }
+    }
+    let DriverHostInputs {
+        mut runtime_hooks,
+        mcp_servers,
+        instructions: plugin_instructions,
+    } = merge_driver_host_inputs(
+        runtime_hooks,
+        plugin_mcp_servers,
+        plugin_instructions,
+        &driver_outcome,
+    );
+    if !mcp_servers.is_empty() {
+        let resolved_mcp_servers =
+            dedup_mcp_servers(resolve_mcp_servers(&mcp_servers, workspace_root));
+        let connected = connect_and_catalog_mcp_servers_with_options(
+            &resolved_mcp_servers,
+            McpConnectOptions {
+                process_executor: process_executor.clone(),
+                sandbox_policy: sandbox_policy.clone(),
+                ..Default::default()
+            },
+        )
+        .await
+        .context("failed to connect plugin MCP servers")?;
+        for server in &connected {
+            for adapter in catalog_tools_as_registry_entries(server.client.clone())
+                .await
+                .context("failed to register plugin MCP tools")?
+            {
+                tools.register(adapter);
+            }
+        }
+    }
+    let skill_hooks = skills
+        .iter()
+        .flat_map(|skill| skill.hooks.clone())
+        .collect::<Vec<_>>();
+    runtime_hooks.extend(skill_hooks.clone());
+    let instructions = build_system_preamble(
+        options.system_prompt.as_deref(),
+        &skill_catalog,
+        &plugin_instructions,
+    );
     let subagent_executor = RuntimeSubagentExecutor::new(
         backend.clone(),
         hook_runner.clone(),
@@ -415,12 +544,19 @@ fn inject_process_env(env_map: &EnvMap) {
 
 #[cfg(test)]
 mod tests {
-    use super::build_sandbox_policy;
+    use super::{
+        build_sandbox_policy, dedup_mcp_servers, driver_host_output_lines,
+        merge_driver_host_inputs, resolve_mcp_servers,
+    };
     use crate::options::{AppOptions, parse_bool_flag};
     use crate::provider::{SelectedProvider, default_model};
+    use agent::DriverActivationOutcome;
     use agent::ToolExecutionContext;
+    use agent::mcp::{McpServerConfig, McpTransportConfig};
     use agent::tools::{NetworkPolicy, SandboxMode};
+    use agent::types::{HookEvent, HookHandler, HookRegistration, HttpHookHandler};
     use agent_env::EnvMap;
+    use std::collections::BTreeMap;
     use std::sync::{Mutex, OnceLock};
     use tempfile::tempdir;
 
@@ -444,6 +580,194 @@ mod tests {
         assert!(!parse_bool_flag("off").unwrap());
         assert!(parse_bool_flag("1").unwrap());
         assert!(parse_bool_flag("maybe").is_err());
+    }
+
+    #[test]
+    fn driver_outcome_extends_code_agent_runtime_inputs() {
+        let merged = merge_driver_host_inputs(
+            vec![HookRegistration {
+                name: "existing-hook".to_string(),
+                event: HookEvent::Stop,
+                matcher: None,
+                handler: HookHandler::Http(HttpHookHandler {
+                    url: "https://example.test/existing".to_string(),
+                    method: "POST".to_string(),
+                    headers: BTreeMap::new(),
+                }),
+                timeout_ms: None,
+                execution: None,
+            }],
+            vec![McpServerConfig {
+                name: "existing-mcp".to_string(),
+                transport: McpTransportConfig::Stdio {
+                    command: "stdio-server".to_string(),
+                    args: Vec::new(),
+                    env: BTreeMap::new(),
+                    cwd: None,
+                },
+            }],
+            vec!["existing instruction".to_string()],
+            &DriverActivationOutcome {
+                warnings: Vec::new(),
+                hooks: vec![HookRegistration {
+                    name: "driver-hook".to_string(),
+                    event: HookEvent::SessionStart,
+                    matcher: None,
+                    handler: HookHandler::Http(HttpHookHandler {
+                        url: "https://example.test/hook".to_string(),
+                        method: "POST".to_string(),
+                        headers: BTreeMap::new(),
+                    }),
+                    timeout_ms: Some(500),
+                    execution: None,
+                }],
+                mcp_servers: vec![McpServerConfig {
+                    name: "driver-mcp".to_string(),
+                    transport: McpTransportConfig::StreamableHttp {
+                        url: "https://example.test/mcp".to_string(),
+                        headers: BTreeMap::new(),
+                    },
+                }],
+                instructions: vec!["driver instruction".to_string()],
+                diagnostics: vec!["prepared runtime".to_string()],
+            },
+        );
+
+        assert_eq!(
+            merged
+                .runtime_hooks
+                .iter()
+                .map(|hook| hook.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["existing-hook", "driver-hook"]
+        );
+        assert_eq!(
+            merged
+                .mcp_servers
+                .iter()
+                .map(|server| server.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["existing-mcp", "driver-mcp"]
+        );
+        assert_eq!(
+            merged.instructions,
+            vec![
+                "existing instruction".to_string(),
+                "driver instruction".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn empty_driver_outcome_keeps_code_agent_runtime_inputs_stable() {
+        let merged = merge_driver_host_inputs(
+            vec![HookRegistration {
+                name: "existing-hook".to_string(),
+                event: HookEvent::Stop,
+                matcher: None,
+                handler: HookHandler::Http(HttpHookHandler {
+                    url: "https://example.test/existing".to_string(),
+                    method: "POST".to_string(),
+                    headers: BTreeMap::new(),
+                }),
+                timeout_ms: None,
+                execution: None,
+            }],
+            vec![McpServerConfig {
+                name: "existing-mcp".to_string(),
+                transport: McpTransportConfig::Stdio {
+                    command: "stdio-server".to_string(),
+                    args: Vec::new(),
+                    env: BTreeMap::new(),
+                    cwd: None,
+                },
+            }],
+            vec!["existing instruction".to_string()],
+            &DriverActivationOutcome::default(),
+        );
+
+        assert_eq!(
+            merged
+                .runtime_hooks
+                .iter()
+                .map(|hook| hook.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["existing-hook"]
+        );
+        assert_eq!(
+            merged
+                .mcp_servers
+                .iter()
+                .map(|server| server.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["existing-mcp"]
+        );
+        assert_eq!(
+            merged.instructions,
+            vec!["existing instruction".to_string()]
+        );
+    }
+
+    #[test]
+    fn driver_diagnostics_are_rendered_for_host_output() {
+        let lines = driver_host_output_lines(&DriverActivationOutcome {
+            warnings: vec!["slow startup".to_string()],
+            hooks: Vec::new(),
+            mcp_servers: Vec::new(),
+            instructions: Vec::new(),
+            diagnostics: vec!["prepared wasm runtime".to_string()],
+        });
+
+        assert_eq!(
+            lines,
+            vec![
+                "warning: plugin driver warning: slow startup".to_string(),
+                "info: plugin driver diagnostic: prepared wasm runtime".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn resolve_and_dedup_plugin_mcp_servers_matches_host_boot_expectations() {
+        let dir = tempdir().unwrap();
+        let resolved = dedup_mcp_servers(resolve_mcp_servers(
+            &[
+                McpServerConfig {
+                    name: "dup".to_string(),
+                    transport: McpTransportConfig::Stdio {
+                        command: "first".to_string(),
+                        args: Vec::new(),
+                        env: BTreeMap::new(),
+                        cwd: Some("relative".to_string()),
+                    },
+                },
+                McpServerConfig {
+                    name: "dup".to_string(),
+                    transport: McpTransportConfig::Stdio {
+                        command: "second".to_string(),
+                        args: Vec::new(),
+                        env: BTreeMap::new(),
+                        cwd: Some("ignored".to_string()),
+                    },
+                },
+            ],
+            dir.path(),
+        ));
+
+        assert_eq!(resolved.len(), 1);
+        match &resolved[0].transport {
+            McpTransportConfig::Stdio { command, cwd, .. } => {
+                let expected_cwd = dir.path().join("relative");
+                assert_eq!(command, "first");
+                assert_eq!(
+                    cwd.as_deref(),
+                    Some(expected_cwd.to_string_lossy().as_ref())
+                );
+            }
+            McpTransportConfig::StreamableHttp { .. } => {
+                panic!("expected stdio transport");
+            }
+        }
     }
 
     #[tokio::test]
