@@ -29,12 +29,15 @@
   - `task.role -> agents.roles.<role>` 已进入真实 child runtime 构建链
   - child prompt / compact / context window / tool_calls fail-fast 已使用 child profile
   - child file-tool context 已按 child sandbox profile 派生
-  - process tool 的统一 sandbox policy 仍留在 `Phase E`
+- `Phase E`
+  - 已完成 MVP
+  - `ToolExecutionContext` 已支持显式 effective sandbox policy
+  - `reference-tui` 与 `code-agent` 都会把 host/profile-derived sandbox 显式写入 runtime tool context
+  - `bash` 已改为消费 runtime context 里的 effective sandbox policy
+  - file tools 与 process tools 已共享同一条 profile-derived sandbox 生效链
 
 仍未完成：
 
-- `Phase E`
-  - sandbox profile 派生函数进一步下沉到统一入口
 - `Phase F`
   - capability metadata enforcement
 - `Phase G`
@@ -1368,6 +1371,15 @@ pub struct RuntimeTokenLedger {
 
 ## 9.5 Phase E：sandbox 正式纳入 profile
 
+状态：
+
+- `completed`
+- 备注：
+  - `ToolExecutionContext` 已支持显式 effective sandbox policy
+  - `reference-tui` 与 `code-agent` 的主 runtime 都会把 host/profile-derived policy 注入 tool context
+  - `code-agent` child profile 派生出的 sandbox 现在同时作用于 file tools 与 `bash`
+  - 仍可继续把 host 内部的 profile -> policy helper 收敛成共享实现，但这不再阻塞能力生效
+
 目标：
 
 - `read_only`
@@ -1399,6 +1411,7 @@ pub struct RuntimeTokenLedger {
 
 - 只读 profile 不能写文件
 - child sandbox 与 primary sandbox 可不同
+- `bash` 与 file tools 会读取同一份 effective sandbox policy
 
 ## 9.6 Phase F：能力元数据与 enforcement
 

@@ -210,8 +210,9 @@ fn init_tracing(workspace_root: &Path) -> Result<WorkerGuard> {
 
 async fn async_main(workspace_root: PathBuf, options: AppOptions) -> Result<()> {
     let (ui_state, approval_bridge, approval_handler) = make_tui_support();
-    let tool_context = build_tool_context(&workspace_root, &options);
-    let sandbox_policy = build_sandbox_policy(&options, &tool_context);
+    let base_tool_context = build_tool_context(&workspace_root, &options);
+    let sandbox_policy = build_sandbox_policy(&options, &base_tool_context);
+    let tool_context = base_tool_context.with_sandbox_policy(sandbox_policy.clone());
     let sandbox_status = ensure_sandbox_policy_supported(&sandbox_policy)
         .context("sandbox policy cannot be enforced on this host")?;
     match &sandbox_status {
@@ -506,6 +507,7 @@ fn tool_context_for_profile(
 ) -> ToolExecutionContext {
     let mut context = base.clone();
     context.model_context_window_tokens = Some(profile.context_window_tokens);
+    let base_policy = base.sandbox_policy();
     match profile.sandbox {
         AgentSandboxMode::DangerFullAccess => {
             context.workspace_only = false;
@@ -513,9 +515,19 @@ fn tool_context_for_profile(
             context.writable_roots.clear();
             context.exec_roots.clear();
             context.network_policy = Some(agent::tools::NetworkPolicy::Full);
+            context.effective_sandbox_policy = Some(
+                agent::tools::SandboxPolicy::permissive()
+                    .with_fail_if_unavailable(base_policy.fail_if_unavailable),
+            );
         }
         AgentSandboxMode::WorkspaceWrite => {
             context.workspace_only = true;
+            context.effective_sandbox_policy = Some(
+                context
+                    .sandbox_scope()
+                    .recommended_policy()
+                    .with_fail_if_unavailable(base_policy.fail_if_unavailable),
+            );
         }
         AgentSandboxMode::ReadOnly => {
             context.workspace_only = true;
@@ -531,11 +543,24 @@ fn tool_context_for_profile(
                     other => other,
                 },
             );
+            let derived = context
+                .sandbox_scope()
+                .recommended_policy()
+                .with_fail_if_unavailable(base_policy.fail_if_unavailable);
+            context.effective_sandbox_policy = Some(agent::tools::SandboxPolicy {
+                mode: agent::tools::SandboxMode::ReadOnly,
+                filesystem: agent::tools::FilesystemPolicy {
+                    readable_roots: derived.filesystem.readable_roots,
+                    writable_roots: Vec::new(),
+                    executable_roots: derived.filesystem.executable_roots,
+                    protected_paths: derived.filesystem.protected_paths,
+                },
+                network: derived.network,
+                host_escape: agent::tools::HostEscapePolicy::Deny,
+                fail_if_unavailable: derived.fail_if_unavailable,
+            });
         }
     }
-    // File-oriented tools already honor ToolExecutionContext. Process tools still
-    // carry their own baked sandbox policy until Phase E routes profile-derived
-    // sandbox policy through every runtime process execution path.
     context
 }
 

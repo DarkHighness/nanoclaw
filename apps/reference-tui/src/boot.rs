@@ -142,6 +142,7 @@ async fn bootstrap_from_parts(
         ..Default::default()
     };
     let sandbox_policy = build_sandbox_policy(&config, &tool_context);
+    let tool_context = tool_context.with_sandbox_policy(sandbox_policy.clone());
     let sandbox_status = ensure_sandbox_policy_supported(&sandbox_policy)
         .context("sandbox policy cannot be enforced on this host")?;
     match &sandbox_status {

@@ -584,8 +584,9 @@
     - `code-agent` 子代理现在会按 `task.role` 解析 `agents.roles.<role>`
     - child runtime 已改为消费独立 subagent profile，包括 prompt / compact / context window / tool-calls gating
     - child file-tool context 已按 profile sandbox 派生
+    - `ToolExecutionContext` 已支持显式 effective sandbox policy
+    - `reference-tui` 与 `code-agent` 的 `bash` 已改为消费 runtime context 里的 policy，而不是继续硬编码主 runtime 静态沙盒
   - 未完成：
-    - process tool 的 profile-derived sandbox policy 统一接线
     - internal.memory 推理链接线
 - token usage ledger 与 UI 展示
   - 状态：`planned`

@@ -18,6 +18,7 @@ pub struct ToolExecutionContext {
     pub writable_roots: Vec<PathBuf>,
     pub exec_roots: Vec<PathBuf>,
     pub network_policy: Option<sandbox::NetworkPolicy>,
+    pub effective_sandbox_policy: Option<sandbox::SandboxPolicy>,
     pub workspace_only: bool,
     pub container_workdir: Option<String>,
     pub model_context_window_tokens: Option<usize>,
@@ -39,6 +40,7 @@ impl fmt::Debug for ToolExecutionContext {
             .field("worktree_root", &self.worktree_root)
             .field("sandbox_root", &self.sandbox_root)
             .field("additional_roots", &self.additional_roots)
+            .field("effective_sandbox_policy", &self.effective_sandbox_policy)
             .field("workspace_only", &self.workspace_only)
             .field("container_workdir", &self.container_workdir)
             .field(
@@ -87,7 +89,9 @@ impl ToolExecutionContext {
 
     #[must_use]
     pub fn sandbox_policy(&self) -> sandbox::SandboxPolicy {
-        self.sandbox_scope().recommended_policy()
+        self.effective_sandbox_policy
+            .clone()
+            .unwrap_or_else(|| self.sandbox_scope().recommended_policy())
     }
 
     pub fn assert_path_read_allowed(&self, path: &Path) -> Result<()> {
@@ -142,6 +146,13 @@ impl ToolExecutionContext {
             network_policy: self.network_policy.clone(),
             workspace_only: self.workspace_only,
         }
+    }
+
+    #[must_use]
+    pub fn with_sandbox_policy(&self, policy: sandbox::SandboxPolicy) -> Self {
+        let mut scoped = self.clone();
+        scoped.effective_sandbox_policy = Some(policy);
+        scoped
     }
 
     #[must_use]
@@ -286,6 +297,28 @@ mod tests {
                 .assert_path_write_allowed(&workspace.path().join(".nanoclaw/state.toml"))
                 .is_err()
         );
+    }
+
+    #[test]
+    fn explicit_sandbox_policy_override_takes_precedence_over_scope_derivation() {
+        let workspace = tempfile::tempdir().unwrap();
+        let context = ToolExecutionContext {
+            workspace_root: workspace.path().to_path_buf(),
+            workspace_only: false,
+            ..Default::default()
+        }
+        .with_sandbox_policy(
+            sandbox::SandboxPolicy::recommended_for_scope(&sandbox::SandboxScope {
+                workspace_root: workspace.path().to_path_buf(),
+                workspace_only: true,
+                ..Default::default()
+            })
+            .with_fail_if_unavailable(true),
+        );
+
+        let policy = context.sandbox_policy();
+        assert_eq!(policy.mode, sandbox::SandboxMode::WorkspaceWrite);
+        assert!(policy.fail_if_unavailable);
     }
 
     #[test]

@@ -389,6 +389,16 @@ impl BashTool {
             sandbox_policy,
         }
     }
+
+    fn effective_sandbox_policy(&self, ctx: &ToolExecutionContext) -> SandboxPolicy {
+        // Host apps can now pin the exact runtime policy on the context so file
+        // tools and process tools enforce the same profile-derived sandbox. The
+        // tool-level policy remains a fallback for older embeddings that still
+        // construct bash without an explicit context override.
+        ctx.effective_sandbox_policy
+            .clone()
+            .unwrap_or_else(|| self.sandbox_policy.clone())
+    }
 }
 
 #[async_trait]
@@ -452,7 +462,7 @@ async fn execute_run(
         kill_on_drop: true,
         origin: ExecutionOrigin::BashTool,
         runtime_scope: runtime_scope_from_context(ctx),
-        sandbox_policy: tool.sandbox_policy.clone(),
+        sandbox_policy: tool.effective_sandbox_policy(ctx),
     })?;
 
     let future = child.output();
@@ -597,7 +607,7 @@ async fn execute_start(
             kill_on_drop: true,
             origin: ExecutionOrigin::BashTool,
             runtime_scope: runtime_scope_from_context(ctx),
-            sandbox_policy: tool.sandbox_policy.clone(),
+            sandbox_policy: tool.effective_sandbox_policy(ctx),
         })?
         .spawn()?;
     // Keep the protocol surface stringly for compatibility, but use a typed
@@ -1257,6 +1267,61 @@ mod tests {
         assert_eq!(logged[0].args[0], "-lc");
         assert_eq!(logged[0].args[1], "printf hello");
         assert_eq!(logged[0].env["TEST_ENV"], "value");
+    }
+
+    #[tokio::test]
+    async fn bash_tool_prefers_context_sandbox_policy_when_present() {
+        let dir = tempfile::tempdir().unwrap();
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let tool = BashTool::with_process_executor_and_policy(
+            Arc::new(RecordingExecutor {
+                inner: Arc::new(HostProcessExecutor),
+                requests: requests.clone(),
+            }),
+            sandbox::SandboxPolicy::permissive(),
+        );
+        let policy = sandbox::SandboxPolicy {
+            mode: sandbox::SandboxMode::ReadOnly,
+            filesystem: sandbox::FilesystemPolicy {
+                readable_roots: vec![dir.path().to_path_buf()],
+                writable_roots: Vec::new(),
+                executable_roots: Vec::new(),
+                protected_paths: Vec::new(),
+            },
+            network: sandbox::NetworkPolicy::Off,
+            host_escape: sandbox::HostEscapePolicy::Deny,
+            fail_if_unavailable: true,
+        };
+        let result = tool
+            .execute(
+                ToolCallId::new(),
+                serde_json::to_value(BashToolInput {
+                    mode: None,
+                    command: Some("printf hello".to_string()),
+                    session_id: None,
+                    cwd: Some(".".to_string()),
+                    timeout_ms: Some(5_000),
+                    poll_wait_ms: None,
+                    stdout_start_char: None,
+                    stderr_start_char: None,
+                    max_output_chars: None,
+                    env: None,
+                })
+                .unwrap(),
+                &ToolExecutionContext {
+                    workspace_root: dir.path().to_path_buf(),
+                    workspace_only: true,
+                    effective_sandbox_policy: Some(policy.clone()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+
+        assert!(!result.is_error);
+        let logged = requests.lock().unwrap();
+        assert_eq!(logged.len(), 1);
+        assert_eq!(logged[0].sandbox_policy, policy);
     }
 
     #[tokio::test]
