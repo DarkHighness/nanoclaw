@@ -2,7 +2,7 @@ use crate::agent_mailbox::{AgentControlMessage, AgentMailboxReceiver, agent_mail
 use crate::{
     AgentRuntime, AgentRuntimeBuilder, AgentSessionManager, CompactionConfig,
     ConversationCompactor, HookRunner, LoopDetectionConfig, ModelBackend, Result, RuntimeError,
-    ToolApprovalHandler, ToolApprovalPolicy, WriteLeaseManager,
+    RuntimeSession, ToolApprovalHandler, ToolApprovalPolicy, WriteLeaseManager,
 };
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -13,11 +13,12 @@ use std::sync::Arc;
 use store::RunStore;
 use tools::{
     SubagentExecutor, SubagentParentContext, ToolError, ToolExecutionContext, ToolRegistry,
+    resolve_tool_path_against_workspace_root,
 };
 use types::{
     AgentArtifact, AgentEnvelope, AgentEnvelopeKind, AgentHandle, AgentId, AgentResultEnvelope,
     AgentStatus, AgentTaskSpec, AgentWaitRequest, AgentWaitResponse, HookRegistration,
-    RunEventEnvelope, RunEventKind, ToolName,
+    RunEventEnvelope, RunEventKind, RunId, SessionId, ToolName,
 };
 
 const DEFAULT_EXCLUDED_CHILD_TOOLS: &[&str] = &[
@@ -48,7 +49,7 @@ pub struct RuntimeSubagentExecutor {
     hooks: Vec<HookRegistration>,
     skill_catalog: SkillCatalog,
     session_manager: AgentSessionManager,
-    write_lease_manager: WriteLeaseManager,
+    write_lease_manager: Arc<WriteLeaseManager>,
 }
 
 impl RuntimeSubagentExecutor {
@@ -84,7 +85,7 @@ impl RuntimeSubagentExecutor {
             hooks,
             skill_catalog,
             session_manager: AgentSessionManager::new(),
-            write_lease_manager: WriteLeaseManager::new(),
+            write_lease_manager: Arc::new(WriteLeaseManager::new()),
         }
     }
 
@@ -130,6 +131,40 @@ impl RuntimeSubagentExecutor {
             .await
             .map_err(RuntimeError::from)
     }
+
+    async fn append_agent_envelope(
+        &self,
+        parent: &SubagentParentContext,
+        handle: &AgentHandle,
+        kind: AgentEnvelopeKind,
+    ) -> Result<()> {
+        self.append_parent_event(
+            parent,
+            RunEventKind::AgentEnvelope {
+                envelope: AgentEnvelope::new(
+                    handle.agent_id.clone(),
+                    handle.parent_agent_id.clone(),
+                    handle.run_id.clone(),
+                    handle.session_id.clone(),
+                    kind,
+                ),
+            },
+        )
+        .await
+    }
+
+    fn resolve_write_set(&self, files: &[String]) -> std::result::Result<Vec<PathBuf>, ToolError> {
+        files
+            .iter()
+            .map(|file| {
+                resolve_tool_path_against_workspace_root(
+                    file,
+                    self.tool_context.effective_root(),
+                    self.tool_context.container_workdir.as_deref(),
+                )
+            })
+            .collect()
+    }
 }
 
 #[async_trait]
@@ -139,70 +174,123 @@ impl SubagentExecutor for RuntimeSubagentExecutor {
         parent: SubagentParentContext,
         tasks: Vec<AgentTaskSpec>,
     ) -> std::result::Result<Vec<AgentHandle>, ToolError> {
-        let mut created = Vec::new();
+        let mut handles = Vec::new();
         for task in tasks {
-            let agent_id = AgentId::new();
-            let requested_paths = task
-                .requested_write_set
-                .iter()
-                .map(PathBuf::from)
-                .collect::<Vec<_>>();
-            self.write_lease_manager
-                .claim(&agent_id, &requested_paths)
-                .map_err(|conflict| {
-                    ToolError::invalid_state(format!(
-                        "write lease conflict on {} owned by {} via {}",
-                        conflict.requested, conflict.owner, conflict.owner_path
-                    ))
-                })?;
             let (tool_registry, resolved_tools) = self
                 .resolve_child_tools(&task.allowed_tools)
                 .map_err(|error| ToolError::invalid_state(error.to_string()))?;
-            let runtime = AgentRuntimeBuilder::new(self.backend.clone(), self.store.clone())
-                .hook_runner(self.hook_runner.clone())
-                .tool_registry(tool_registry)
-                .tool_context(self.tool_context.clone())
-                .tool_approval_handler(self.tool_approval_handler.clone())
-                .tool_approval_policy(self.tool_approval_policy.clone())
-                .conversation_compactor(self.conversation_compactor.clone())
-                .compaction_config(self.compaction_config.clone())
-                .loop_detection_config(self.loop_detection_config.clone())
-                .instructions(self.instructions.clone())
-                .hooks(self.hooks.clone())
-                .skill_catalog(self.skill_catalog.clone())
-                .build();
+            let task = AgentTaskSpec {
+                allowed_tools: resolved_tools,
+                ..task
+            };
+
             let handle = AgentHandle {
-                agent_id: agent_id.clone(),
+                agent_id: AgentId::new(),
                 parent_agent_id: parent.parent_agent_id.clone(),
-                run_id: runtime.run_id(),
-                session_id: runtime.session_id(),
+                run_id: RunId::new(),
+                session_id: SessionId::new(),
                 task_id: task.task_id.clone(),
                 role: task.role.clone(),
                 status: AgentStatus::Queued,
             };
-            let effective_task = AgentTaskSpec {
-                allowed_tools: resolved_tools,
-                ..task.clone()
-            };
-            let (mailbox, mailbox_rx) = agent_mailbox_channel();
-            self.session_manager
-                .insert(handle.clone(), effective_task.clone(), mailbox);
+
             self.append_parent_event(
                 &parent,
                 RunEventKind::TaskCreated {
-                    task: effective_task.clone(),
+                    task: task.clone(),
                     parent_agent_id: parent.parent_agent_id.clone(),
                 },
             )
             .await
             .map_err(|error| ToolError::invalid_state(error.to_string()))?;
+            self.append_agent_envelope(
+                &parent,
+                &handle,
+                AgentEnvelopeKind::SpawnRequested { task: task.clone() },
+            )
+            .await
+            .map_err(|error| ToolError::invalid_state(error.to_string()))?;
+
+            let requested_files = self
+                .resolve_write_set(&task.requested_write_set)
+                .map_err(|error| ToolError::invalid_state(error.to_string()))?;
+            if !task.requested_write_set.is_empty() {
+                self.append_agent_envelope(
+                    &parent,
+                    &handle,
+                    AgentEnvelopeKind::ClaimRequested {
+                        files: task.requested_write_set.clone(),
+                    },
+                )
+                .await
+                .map_err(|error| ToolError::invalid_state(error.to_string()))?;
+                match self
+                    .write_lease_manager
+                    .claim(&handle.agent_id, &requested_files)
+                {
+                    Ok(()) => {
+                        self.append_agent_envelope(
+                            &parent,
+                            &handle,
+                            AgentEnvelopeKind::ClaimGranted {
+                                files: task.requested_write_set.clone(),
+                            },
+                        )
+                        .await
+                        .map_err(|error| ToolError::invalid_state(error.to_string()))?;
+                    }
+                    Err(conflict) => {
+                        self.append_agent_envelope(
+                            &parent,
+                            &handle,
+                            AgentEnvelopeKind::ClaimRejected {
+                                files: task.requested_write_set.clone(),
+                                owner: conflict.owner.clone(),
+                            },
+                        )
+                        .await
+                        .map_err(|error| ToolError::invalid_state(error.to_string()))?;
+                        return Err(ToolError::invalid_state(format!(
+                            "write lease conflict for {} owned by {}",
+                            conflict.requested, conflict.owner
+                        )));
+                    }
+                }
+            }
+
+            let runtime =
+                AgentRuntimeBuilder::new(self.backend.clone(), self.store.clone())
+                    .hook_runner(self.hook_runner.clone())
+                    .tool_registry(tool_registry)
+                    .tool_context(self.tool_context.clone().with_agent_scope(
+                        handle.agent_id.clone(),
+                        self.write_lease_manager.clone(),
+                    ))
+                    .tool_approval_handler(self.tool_approval_handler.clone())
+                    .tool_approval_policy(self.tool_approval_policy.clone())
+                    .conversation_compactor(self.conversation_compactor.clone())
+                    .compaction_config(self.compaction_config.clone())
+                    .loop_detection_config(self.loop_detection_config.clone())
+                    .instructions(self.instructions.clone())
+                    .hooks(self.hooks.clone())
+                    .skill_catalog(self.skill_catalog.clone())
+                    .session(RuntimeSession::new(
+                        handle.run_id.clone(),
+                        handle.session_id.clone(),
+                    ))
+                    .build();
+
+            let (mailbox, mailbox_rx) = agent_mailbox_channel();
+            self.session_manager
+                .insert(handle.clone(), task.clone(), mailbox);
+
             let worker = ChildAgentWorker {
                 parent: parent.clone(),
                 store: self.store.clone(),
                 session_manager: self.session_manager.clone(),
                 write_lease_manager: self.write_lease_manager.clone(),
                 handle: handle.clone(),
-                task: effective_task,
+                task,
                 runtime,
                 mailbox_rx,
             };
@@ -210,9 +298,9 @@ impl SubagentExecutor for RuntimeSubagentExecutor {
             self.session_manager
                 .attach_join_handle(&handle.agent_id, join_handle)
                 .map_err(|error| ToolError::invalid_state(error.to_string()))?;
-            created.push(handle);
+            handles.push(handle);
         }
-        Ok(created)
+        Ok(handles)
     }
 
     async fn send(
@@ -222,26 +310,22 @@ impl SubagentExecutor for RuntimeSubagentExecutor {
         channel: String,
         payload: Value,
     ) -> std::result::Result<AgentHandle, ToolError> {
+        let handle = self
+            .session_manager
+            .handle(&agent_id)
+            .map_err(|error| ToolError::invalid_state(error.to_string()))?;
+        if handle.status.is_terminal() {
+            return Ok(handle);
+        }
         self.session_manager
             .mailbox(&agent_id)
             .map_err(|error| ToolError::invalid_state(error.to_string()))?
             .send(channel.clone(), payload.clone())
             .map_err(|error| ToolError::invalid_state(error.to_string()))?;
-        let handle = self
-            .session_manager
-            .handle(&agent_id)
-            .map_err(|error| ToolError::invalid_state(error.to_string()))?;
-        self.append_parent_event(
+        self.append_agent_envelope(
             &parent,
-            RunEventKind::AgentEnvelope {
-                envelope: AgentEnvelope::new(
-                    handle.agent_id.clone(),
-                    handle.parent_agent_id.clone(),
-                    handle.run_id.clone(),
-                    handle.session_id.clone(),
-                    AgentEnvelopeKind::Message { channel, payload },
-                ),
-            },
+            &handle,
+            AgentEnvelopeKind::Message { channel, payload },
         )
         .await
         .map_err(|error| ToolError::invalid_state(error.to_string()))?;
@@ -261,32 +345,80 @@ impl SubagentExecutor for RuntimeSubagentExecutor {
 
     async fn list(
         &self,
-        _parent: SubagentParentContext,
+        parent: SubagentParentContext,
     ) -> std::result::Result<Vec<AgentHandle>, ToolError> {
-        Ok(self.session_manager.list())
+        Ok(self
+            .session_manager
+            .list()
+            .into_iter()
+            .filter(|handle| {
+                parent
+                    .parent_agent_id
+                    .as_ref()
+                    .map(|agent_id| handle.parent_agent_id.as_ref() == Some(agent_id))
+                    .unwrap_or(true)
+            })
+            .collect())
     }
 
     async fn cancel(
         &self,
-        _parent: SubagentParentContext,
+        parent: SubagentParentContext,
         agent_id: AgentId,
         reason: Option<String>,
     ) -> std::result::Result<AgentHandle, ToolError> {
-        self.session_manager
-            .mailbox(&agent_id)
-            .map_err(|error| ToolError::invalid_state(error.to_string()))?
-            .cancel(reason.clone())
-            .map_err(|error| ToolError::invalid_state(error.to_string()))?;
         let handle = self
             .session_manager
-            .cancel(
-                &agent_id,
-                reason,
-                self.write_lease_manager.claimed_paths(&agent_id),
-            )
+            .handle(&agent_id)
+            .map_err(|error| ToolError::invalid_state(error.to_string()))?;
+        if handle.status.is_terminal() {
+            return Ok(handle);
+        }
+        let claimed_files = self.write_lease_manager.claimed_paths(&agent_id);
+        let (handle, result) = self
+            .session_manager
+            .cancel(&agent_id, reason.clone(), claimed_files)
             .map_err(|error| ToolError::invalid_state(error.to_string()))?;
         self.write_lease_manager.release(&agent_id);
-        Ok(handle.0)
+        self.append_agent_envelope(
+            &parent,
+            &handle,
+            AgentEnvelopeKind::StatusChanged {
+                status: AgentStatus::Cancelled,
+            },
+        )
+        .await
+        .map_err(|error| ToolError::invalid_state(error.to_string()))?;
+        self.append_agent_envelope(
+            &parent,
+            &handle,
+            AgentEnvelopeKind::Cancelled {
+                reason: reason.clone(),
+            },
+        )
+        .await
+        .map_err(|error| ToolError::invalid_state(error.to_string()))?;
+        self.append_parent_event(
+            &parent,
+            RunEventKind::TaskCompleted {
+                task_id: handle.task_id.clone(),
+                agent_id: handle.agent_id.clone(),
+                status: AgentStatus::Cancelled,
+            },
+        )
+        .await
+        .map_err(|error| ToolError::invalid_state(error.to_string()))?;
+        self.append_parent_event(
+            &parent,
+            RunEventKind::SubagentStop {
+                handle: handle.clone(),
+                result: Some(result),
+                error: reason,
+            },
+        )
+        .await
+        .map_err(|error| ToolError::invalid_state(error.to_string()))?;
+        Ok(handle)
     }
 }
 
@@ -294,7 +426,7 @@ struct ChildAgentWorker {
     parent: SubagentParentContext,
     store: Arc<dyn RunStore>,
     session_manager: AgentSessionManager,
-    write_lease_manager: WriteLeaseManager,
+    write_lease_manager: Arc<WriteLeaseManager>,
     handle: AgentHandle,
     task: AgentTaskSpec,
     runtime: AgentRuntime,
@@ -303,35 +435,55 @@ struct ChildAgentWorker {
 
 impl ChildAgentWorker {
     async fn run(mut self) {
-        if let Ok(handle) = self
+        let handle = match self
             .session_manager
             .update_status(&self.handle.agent_id, AgentStatus::Running)
         {
-            let _ = self
-                .append_parent_event(RunEventKind::SubagentStart {
-                    handle,
-                    task: self.task.clone(),
-                })
-                .await;
-        }
+            Ok(handle) => handle,
+            Err(_) => return,
+        };
+        self.handle = handle.clone();
+        let _ = self
+            .append_parent_event(RunEventKind::SubagentStart {
+                handle: handle.clone(),
+                task: self.task.clone(),
+            })
+            .await;
+        let _ = self
+            .append_agent_envelope(AgentEnvelopeKind::StatusChanged {
+                status: AgentStatus::Running,
+            })
+            .await;
+        let _ = self
+            .append_agent_envelope(AgentEnvelopeKind::Started {
+                task: self.task.clone(),
+            })
+            .await;
+
         if let Some(steer) = self.task.steer.clone() {
-            let _ = self
+            if let Err(error) = self
                 .runtime
                 .steer(
                     steer,
                     Some(format!("subagent:{}:initial", self.task.task_id)),
                 )
-                .await;
+                .await
+            {
+                self.fail(error.to_string()).await;
+                return;
+            }
         }
+
         let mut next_prompt = Some(self.task.prompt.clone());
         while let Some(prompt) = next_prompt.take() {
-            let outcome = match self.runtime.run_user_prompt(prompt).await {
+            let outcome = match self.run_prompt(prompt).await {
                 Ok(outcome) => outcome,
                 Err(error) => {
                     self.fail(error.to_string()).await;
                     return;
                 }
             };
+
             match self.consume_mailbox().await {
                 MailboxOutcome::Continue => {
                     next_prompt = Some(
@@ -340,35 +492,26 @@ impl ChildAgentWorker {
                     );
                 }
                 MailboxOutcome::Cancel(reason) => {
-                    self.cancel(reason).await;
+                    self.finish_cancel(reason).await;
                     return;
                 }
                 MailboxOutcome::Finish => {
-                    let result = normalize_child_result(
-                        &self.handle.agent_id,
-                        &self.task,
-                        &outcome.assistant_text,
-                        self.write_lease_manager
-                            .claimed_paths(&self.handle.agent_id),
-                    );
-                    if let Ok(handle) = self.session_manager.finish(
-                        &self.handle.agent_id,
-                        result.status.clone(),
-                        Some(result.clone()),
-                        None,
-                    ) {
-                        let _ = self
-                            .append_parent_event(RunEventKind::SubagentStop {
-                                handle,
-                                result: Some(result),
-                                error: None,
-                            })
-                            .await;
-                    }
-                    self.write_lease_manager.release(&self.handle.agent_id);
+                    self.finish_success(outcome.assistant_text).await;
                     return;
                 }
             }
+        }
+    }
+
+    async fn run_prompt(&mut self, prompt: String) -> Result<crate::RunTurnOutcome> {
+        match self.task.timeout_seconds {
+            Some(timeout_seconds) => tokio::time::timeout(
+                std::time::Duration::from_secs(timeout_seconds),
+                self.runtime.run_user_prompt(prompt),
+            )
+            .await
+            .map_err(|_| RuntimeError::invalid_state("subagent timed out"))?,
+            None => self.runtime.run_user_prompt(prompt).await,
         }
     }
 
@@ -378,15 +521,22 @@ impl ChildAgentWorker {
             match message {
                 AgentControlMessage::Message { channel, payload } => {
                     if channel == "steer" {
-                        if let Some(steering) = extract_steering_text(&payload) {
-                            let _ = self
+                        if let Some(message) = extract_steering_text(&payload) {
+                            if self
                                 .runtime
                                 .steer(
-                                    steering,
+                                    message,
                                     Some(format!("subagent:{}:{channel}", self.task.task_id)),
                                 )
-                                .await;
-                            continue_requested = true;
+                                .await
+                                .is_ok()
+                            {
+                                continue_requested = true;
+                            } else {
+                                return MailboxOutcome::Cancel(Some(
+                                    "failed to apply steering".to_string(),
+                                ));
+                            }
                         }
                     }
                 }
@@ -400,7 +550,61 @@ impl ChildAgentWorker {
         }
     }
 
-    async fn cancel(&mut self, reason: Option<String>) {
+    async fn finish_success(&mut self, assistant_text: String) {
+        let result = normalize_child_result(
+            &self.handle.agent_id,
+            &self.task,
+            &assistant_text,
+            self.write_lease_manager
+                .claimed_paths(&self.handle.agent_id),
+        );
+        let Ok(handle) = self.session_manager.finish(
+            &self.handle.agent_id,
+            result.status.clone(),
+            Some(result.clone()),
+            None,
+        ) else {
+            return;
+        };
+        let _ = self
+            .append_agent_envelope(AgentEnvelopeKind::StatusChanged {
+                status: result.status.clone(),
+            })
+            .await;
+        for artifact in &result.artifacts {
+            let _ = self
+                .append_agent_envelope(AgentEnvelopeKind::Artifact {
+                    artifact: artifact.clone(),
+                })
+                .await;
+        }
+        let _ = self
+            .append_agent_envelope(AgentEnvelopeKind::Result {
+                result: result.clone(),
+            })
+            .await;
+        let _ = self
+            .append_parent_event(RunEventKind::TaskCompleted {
+                task_id: self.task.task_id.clone(),
+                agent_id: handle.agent_id.clone(),
+                status: result.status.clone(),
+            })
+            .await;
+        let _ = self
+            .append_parent_event(RunEventKind::SubagentStop {
+                handle,
+                result: Some(result),
+                error: None,
+            })
+            .await;
+        self.write_lease_manager.release(&self.handle.agent_id);
+        let _ = self
+            .runtime
+            .end_session(Some("completed".to_string()))
+            .await;
+    }
+
+    async fn finish_cancel(&mut self, reason: Option<String>) {
         let result = AgentResultEnvelope {
             agent_id: self.handle.agent_id.clone(),
             task_id: self.task.task_id.clone(),
@@ -415,13 +619,40 @@ impl ChildAgentWorker {
                 .claimed_paths(&self.handle.agent_id),
             structured_payload: None,
         };
-        let _ = self.session_manager.finish(
+        let Ok(handle) = self.session_manager.finish(
             &self.handle.agent_id,
             AgentStatus::Cancelled,
-            Some(result),
-            reason,
-        );
+            Some(result.clone()),
+            reason.clone(),
+        ) else {
+            return;
+        };
+        let _ = self
+            .append_agent_envelope(AgentEnvelopeKind::StatusChanged {
+                status: AgentStatus::Cancelled,
+            })
+            .await;
+        let _ = self
+            .append_agent_envelope(AgentEnvelopeKind::Cancelled {
+                reason: reason.clone(),
+            })
+            .await;
+        let _ = self
+            .append_parent_event(RunEventKind::TaskCompleted {
+                task_id: self.task.task_id.clone(),
+                agent_id: handle.agent_id.clone(),
+                status: AgentStatus::Cancelled,
+            })
+            .await;
+        let _ = self
+            .append_parent_event(RunEventKind::SubagentStop {
+                handle,
+                result: Some(result),
+                error: reason.clone(),
+            })
+            .await;
         self.write_lease_manager.release(&self.handle.agent_id);
+        let _ = self.runtime.end_session(reason).await;
     }
 
     async fn fail(&mut self, error: String) {
@@ -437,13 +668,40 @@ impl ChildAgentWorker {
                 .claimed_paths(&self.handle.agent_id),
             structured_payload: None,
         };
-        let _ = self.session_manager.finish(
+        let Ok(handle) = self.session_manager.finish(
             &self.handle.agent_id,
             AgentStatus::Failed,
-            Some(result),
-            Some(error),
-        );
+            Some(result.clone()),
+            Some(error.clone()),
+        ) else {
+            return;
+        };
+        let _ = self
+            .append_agent_envelope(AgentEnvelopeKind::StatusChanged {
+                status: AgentStatus::Failed,
+            })
+            .await;
+        let _ = self
+            .append_agent_envelope(AgentEnvelopeKind::Failed {
+                error: error.clone(),
+            })
+            .await;
+        let _ = self
+            .append_parent_event(RunEventKind::TaskCompleted {
+                task_id: self.task.task_id.clone(),
+                agent_id: handle.agent_id.clone(),
+                status: AgentStatus::Failed,
+            })
+            .await;
+        let _ = self
+            .append_parent_event(RunEventKind::SubagentStop {
+                handle,
+                result: Some(result),
+                error: Some(error),
+            })
+            .await;
         self.write_lease_manager.release(&self.handle.agent_id);
+        let _ = self.runtime.end_session(Some("failed".to_string())).await;
     }
 
     async fn append_parent_event(&self, event: RunEventKind) -> Result<()> {
@@ -463,6 +721,19 @@ impl ChildAgentWorker {
             ))
             .await
             .map_err(RuntimeError::from)
+    }
+
+    async fn append_agent_envelope(&self, kind: AgentEnvelopeKind) -> Result<()> {
+        self.append_parent_event(RunEventKind::AgentEnvelope {
+            envelope: AgentEnvelope::new(
+                self.handle.agent_id.clone(),
+                self.handle.parent_agent_id.clone(),
+                self.handle.run_id.clone(),
+                self.handle.session_id.clone(),
+                kind,
+            ),
+        })
+        .await
     }
 }
 
@@ -528,13 +799,14 @@ fn normalize_child_result(
             structured_payload: payload.structured_payload,
         };
     }
+
     AgentResultEnvelope {
         agent_id: agent_id.clone(),
         task_id: task.task_id.clone(),
         status: AgentStatus::Completed,
         summary: summarize_output(assistant_text),
         text: assistant_text.to_string(),
-        artifacts: Vec::new(),
+        artifacts: extract_artifacts(assistant_text),
         claimed_files,
         structured_payload: None,
     }
@@ -542,6 +814,10 @@ fn normalize_child_result(
 
 fn parse_status(value: &str) -> AgentStatus {
     match value.trim().to_ascii_lowercase().as_str() {
+        "queued" => AgentStatus::Queued,
+        "running" => AgentStatus::Running,
+        "waiting_approval" => AgentStatus::WaitingApproval,
+        "waiting_message" => AgentStatus::WaitingMessage,
         "failed" => AgentStatus::Failed,
         "cancelled" => AgentStatus::Cancelled,
         _ => AgentStatus::Completed,
@@ -555,6 +831,20 @@ fn summarize_output(text: &str) -> String {
     } else {
         collapsed.chars().take(96).collect()
     }
+}
+
+fn extract_artifacts(text: &str) -> Vec<AgentArtifact> {
+    text.split_whitespace()
+        .filter(|token| token.starts_with("http://") || token.starts_with("https://"))
+        .map(|token| AgentArtifact {
+            kind: "url".to_string(),
+            uri: token
+                .trim_matches(|c| c == ')' || c == ']' || c == ',')
+                .to_string(),
+            label: None,
+            metadata: None,
+        })
+        .collect()
 }
 
 fn extract_steering_text(payload: &Value) -> Option<String> {
@@ -596,14 +886,42 @@ mod tests {
         ReadTool, SubagentExecutor, SubagentParentContext, ToolExecutionContext, ToolRegistry,
     };
     use types::{
-        AgentWaitMode, AgentWaitRequest, ModelEvent, ModelRequest, RunEventKind, ToolName,
+        AgentEnvelopeKind, AgentStatus, AgentTaskSpec, AgentWaitMode, AgentWaitRequest,
+        MessageRole, ModelEvent, ModelRequest, RunEventKind, ToolName,
     };
+
+    #[derive(Clone, Default)]
+    struct ImmediateBackend {
+        requests: Arc<Mutex<Vec<ModelRequest>>>,
+    }
+
+    #[async_trait]
+    impl ModelBackend for ImmediateBackend {
+        async fn stream_turn(
+            &self,
+            request: ModelRequest,
+        ) -> Result<BoxStream<'static, Result<ModelEvent>>> {
+            self.requests.lock().unwrap().push(request);
+            Ok(stream::iter(vec![
+                Ok(ModelEvent::TextDelta {
+                    delta: "child ok https://example.com/report".to_string(),
+                }),
+                Ok(ModelEvent::ResponseComplete {
+                    stop_reason: Some("stop".to_string()),
+                    message_id: None,
+                    continuation: None,
+                    reasoning: Vec::new(),
+                }),
+            ])
+            .boxed())
+        }
+    }
 
     #[derive(Clone)]
     struct BlockingBackend {
+        requests: Arc<Mutex<Vec<ModelRequest>>>,
         started: Arc<Notify>,
         release: Arc<Notify>,
-        requests: Arc<Mutex<Vec<ModelRequest>>>,
         first_user_request_pending: Arc<Mutex<bool>>,
     }
 
@@ -613,27 +931,34 @@ mod tests {
             &self,
             request: ModelRequest,
         ) -> Result<BoxStream<'static, Result<ModelEvent>>> {
-            let should_wait = if request
+            self.requests.lock().unwrap().push(request.clone());
+            if request
                 .messages
                 .iter()
-                .any(|message| message.role == types::MessageRole::User)
+                .any(|message| message.role == MessageRole::User)
             {
-                let mut pending = self.first_user_request_pending.lock().unwrap();
-                let should_wait = *pending;
-                *pending = false;
-                should_wait
-            } else {
-                false
-            };
-            self.requests.lock().unwrap().push(request);
-            if should_wait {
-                self.started.notify_waiters();
-                self.release.notified().await;
+                let should_wait = {
+                    let mut pending = self.first_user_request_pending.lock().unwrap();
+                    if *pending {
+                        *pending = false;
+                        true
+                    } else {
+                        false
+                    }
+                };
+                if should_wait {
+                    self.started.notify_waiters();
+                    self.release.notified().await;
+                }
             }
+            let text = request
+                .messages
+                .iter()
+                .find(|message| message.role == MessageRole::System)
+                .map(|message| format!("child ok {}", message.text_content()))
+                .unwrap_or_else(|| "child ok".to_string());
             Ok(stream::iter(vec![
-                Ok(ModelEvent::TextDelta {
-                    delta: "child ok".to_string(),
-                }),
+                Ok(ModelEvent::TextDelta { delta: text }),
                 Ok(ModelEvent::ResponseComplete {
                     stop_reason: Some("stop".to_string()),
                     message_id: None,
@@ -674,27 +999,91 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn runtime_subagent_executor_spawns_and_waits() {
+    async fn runtime_subagent_executor_spawns_batch_and_waits_all() {
+        let backend = Arc::new(ImmediateBackend::default());
+        let store = Arc::new(InMemoryRunStore::new());
+        let executor = make_executor(backend, store);
+
+        let handles = executor
+            .spawn(
+                SubagentParentContext {
+                    run_id: Some("run_parent".into()),
+                    session_id: Some("session_parent".into()),
+                    turn_id: Some("turn_parent".into()),
+                    parent_agent_id: Some("agent_parent".into()),
+                },
+                vec![
+                    AgentTaskSpec {
+                        task_id: "inspect".to_string(),
+                        role: "explorer".to_string(),
+                        prompt: "inspect".to_string(),
+                        steer: None,
+                        allowed_tools: vec![ToolName::from("read")],
+                        requested_write_set: Vec::new(),
+                        dependency_ids: Vec::new(),
+                        timeout_seconds: None,
+                    },
+                    AgentTaskSpec {
+                        task_id: "review".to_string(),
+                        role: "reviewer".to_string(),
+                        prompt: "review".to_string(),
+                        steer: None,
+                        allowed_tools: vec![ToolName::from("read")],
+                        requested_write_set: Vec::new(),
+                        dependency_ids: Vec::new(),
+                        timeout_seconds: None,
+                    },
+                ],
+            )
+            .await
+            .unwrap();
+
+        let wait = executor
+            .wait(
+                SubagentParentContext::default(),
+                AgentWaitRequest {
+                    agent_ids: handles
+                        .iter()
+                        .map(|handle| handle.agent_id.clone())
+                        .collect(),
+                    mode: AgentWaitMode::All,
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(wait.completed.len(), 2);
+        assert_eq!(wait.results.len(), 2);
+        assert!(
+            wait.results
+                .iter()
+                .all(|result| result.status == AgentStatus::Completed)
+        );
+    }
+
+    #[tokio::test]
+    async fn runtime_subagent_executor_applies_steering_and_emits_lifecycle_events() {
         let started = Arc::new(Notify::new());
         let release = Arc::new(Notify::new());
         let backend = Arc::new(BlockingBackend {
+            requests: Arc::new(Mutex::new(Vec::new())),
             started: started.clone(),
             release: release.clone(),
-            requests: Arc::new(Mutex::new(Vec::new())),
             first_user_request_pending: Arc::new(Mutex::new(true)),
         });
         let store = Arc::new(InMemoryRunStore::new());
-        let executor = make_executor(backend, store.clone());
+        let executor = make_executor(backend.clone(), store.clone());
         let parent = SubagentParentContext {
             run_id: Some("run_parent".into()),
             session_id: Some("session_parent".into()),
             turn_id: Some("turn_parent".into()),
-            parent_agent_id: None,
+            parent_agent_id: Some("agent_parent".into()),
         };
+
         let handles = executor
             .spawn(
                 parent.clone(),
-                vec![types::AgentTaskSpec {
+                vec![AgentTaskSpec {
                     task_id: "inspect".to_string(),
                     role: "explorer".to_string(),
                     prompt: "inspect workspace".to_string(),
@@ -707,6 +1096,7 @@ mod tests {
             )
             .await
             .unwrap();
+
         started.notified().await;
         executor
             .send(
@@ -718,6 +1108,106 @@ mod tests {
             .await
             .unwrap();
         release.notify_waiters();
+
+        let wait = executor
+            .wait(
+                parent.clone(),
+                AgentWaitRequest {
+                    agent_ids: vec![handles[0].agent_id.clone()],
+                    mode: AgentWaitMode::All,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(wait.results[0].status, AgentStatus::Completed);
+        assert!(backend.requests.lock().unwrap().iter().any(|request| {
+            request
+                .messages
+                .iter()
+                .any(|message| message.text_content().contains("focus tests"))
+        }));
+
+        let events = store.events(&"run_parent".into()).await.unwrap();
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event.event, RunEventKind::TaskCreated { .. }))
+        );
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event.event, RunEventKind::SubagentStart { .. }))
+        );
+        assert!(events.iter().any(|event| matches!(
+            &event.event,
+            RunEventKind::AgentEnvelope {
+                envelope: types::AgentEnvelope {
+                    kind: AgentEnvelopeKind::Message { .. },
+                    ..
+                },
+            }
+        )));
+        assert!(events.iter().any(|event| matches!(
+            &event.event,
+            RunEventKind::AgentEnvelope {
+                envelope: types::AgentEnvelope {
+                    kind: AgentEnvelopeKind::Result { .. },
+                    ..
+                },
+            }
+        )));
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event.event, RunEventKind::SubagentStop { .. }))
+        );
+    }
+
+    #[tokio::test]
+    async fn runtime_subagent_executor_cancels_running_agent() {
+        let started = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let backend = Arc::new(BlockingBackend {
+            requests: Arc::new(Mutex::new(Vec::new())),
+            started: started.clone(),
+            release,
+            first_user_request_pending: Arc::new(Mutex::new(true)),
+        });
+        let store = Arc::new(InMemoryRunStore::new());
+        let executor = make_executor(backend, store.clone());
+        let parent = SubagentParentContext {
+            run_id: Some("run_parent".into()),
+            session_id: Some("session_parent".into()),
+            turn_id: Some("turn_parent".into()),
+            parent_agent_id: Some("agent_parent".into()),
+        };
+
+        let handles = executor
+            .spawn(
+                parent.clone(),
+                vec![AgentTaskSpec {
+                    task_id: "cancel_me".to_string(),
+                    role: "explorer".to_string(),
+                    prompt: "inspect".to_string(),
+                    steer: None,
+                    allowed_tools: vec![ToolName::from("read")],
+                    requested_write_set: Vec::new(),
+                    dependency_ids: Vec::new(),
+                    timeout_seconds: None,
+                }],
+            )
+            .await
+            .unwrap();
+        started.notified().await;
+        executor
+            .cancel(
+                parent.clone(),
+                handles[0].agent_id.clone(),
+                Some("stop".to_string()),
+            )
+            .await
+            .unwrap();
+
         let wait = executor
             .wait(
                 parent,
@@ -728,17 +1218,48 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(wait.completed.len(), 1);
-        let events = store.events(&"run_parent".into()).await.unwrap();
-        assert!(
-            events
-                .iter()
-                .any(|event| matches!(event.event, RunEventKind::SubagentStart { .. }))
-        );
-        assert!(
-            events
-                .iter()
-                .any(|event| matches!(event.event, RunEventKind::SubagentStop { .. }))
-        );
+        assert_eq!(wait.results[0].status, AgentStatus::Cancelled);
+    }
+
+    #[tokio::test]
+    async fn runtime_subagent_executor_rejects_conflicting_write_leases() {
+        let backend = Arc::new(ImmediateBackend::default());
+        let store = Arc::new(InMemoryRunStore::new());
+        let executor = make_executor(backend, store);
+
+        executor
+            .spawn(
+                SubagentParentContext::default(),
+                vec![AgentTaskSpec {
+                    task_id: "one".to_string(),
+                    role: "writer".to_string(),
+                    prompt: "write".to_string(),
+                    steer: None,
+                    allowed_tools: vec![ToolName::from("read")],
+                    requested_write_set: vec!["src".to_string()],
+                    dependency_ids: Vec::new(),
+                    timeout_seconds: None,
+                }],
+            )
+            .await
+            .unwrap();
+
+        let error = executor
+            .spawn(
+                SubagentParentContext::default(),
+                vec![AgentTaskSpec {
+                    task_id: "two".to_string(),
+                    role: "writer".to_string(),
+                    prompt: "write".to_string(),
+                    steer: None,
+                    allowed_tools: vec![ToolName::from("read")],
+                    requested_write_set: vec!["src/lib.rs".to_string()],
+                    dependency_ids: Vec::new(),
+                    timeout_seconds: None,
+                }],
+            )
+            .await
+            .expect_err("conflicting lease must fail");
+        assert!(error.to_string().contains("write lease conflict"));
     }
 }
