@@ -445,8 +445,9 @@
     - `completed`
   - 已落地语义：
     - `load_memory_corpus()` 现在维护进程内 corpus cache，`memory-core` / `memory-embed` 会共享同一份解析结果
+    - 目录快照未变化时会直接返回缓存，不再重新 walk candidate roots
     - 未变化的 Markdown 文档会按 `len + modified timestamp` 复用解析结果，不再重复读盘
-    - 单文件修改只会重读受影响文档，已补回归测试覆盖 cache hit 与增量失效
+    - 单文件修改或新 candidate 加入时只会重读受影响文档，已补回归测试覆盖 cache hit、目录快照命中与增量失效
   - 目标文件：
     - `crates/memory/src/corpus.rs`
 

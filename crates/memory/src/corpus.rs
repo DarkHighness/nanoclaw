@@ -73,6 +73,19 @@ struct MemoryCorpusFileFingerprint {
     modified_at_ns: Option<u64>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct MemoryCorpusDirectoryFingerprint {
+    exists: bool,
+    is_dir: bool,
+    modified_at_ns: Option<u64>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct MemoryCorpusDiscoverySnapshot {
+    candidates: Vec<PathBuf>,
+    directories: BTreeMap<PathBuf, MemoryCorpusDirectoryFingerprint>,
+}
+
 #[derive(Clone, Debug)]
 struct CachedMemoryCorpusDocument {
     fingerprint: MemoryCorpusFileFingerprint,
@@ -81,6 +94,7 @@ struct CachedMemoryCorpusDocument {
 
 #[derive(Clone, Debug, Default)]
 struct MemoryCorpusCacheEntry {
+    discovery: MemoryCorpusDiscoverySnapshot,
     documents: BTreeMap<String, CachedMemoryCorpusDocument>,
 }
 
@@ -94,10 +108,26 @@ static MEMORY_CORPUS_CACHE: OnceLock<
 #[cfg(test)]
 static CORPUS_DISK_READS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
+#[cfg(test)]
+static CORPUS_DISCOVERY_RUNS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
 impl MemoryCorpus {
     #[must_use]
     pub fn total_lines(&self) -> usize {
         self.documents.iter().map(|doc| doc.lines.len()).sum()
+    }
+}
+
+impl MemoryCorpusDiscoverySnapshot {
+    fn extend(&mut self, mut other: Self) {
+        self.candidates.append(&mut other.candidates);
+        self.directories.append(&mut other.directories);
+    }
+
+    fn sort_and_dedup(&mut self) {
+        self.candidates.sort();
+        self.candidates.dedup();
     }
 }
 
@@ -183,13 +213,26 @@ pub async fn load_memory_corpus(
             .get(&cache_key)
             .cloned()
     };
-    let mut candidates = discover_default_candidates(workspace_root, &include_set)?;
-    candidates.extend(resolve_extra_paths(workspace_root, &config.extra_paths)?);
-    candidates.sort();
-    candidates.dedup();
+    if let Some(cached) = cached.as_deref()
+        && cached_discovery_is_fresh(cached).await?
+        && cached_documents_are_fresh(cached).await?
+    {
+        return Ok(MemoryCorpus {
+            documents: cached
+                .documents
+                .values()
+                .map(|cached| cached.document.clone())
+                .collect(),
+        });
+    }
+
+    record_corpus_discovery_run();
+    let mut discovery = discover_default_candidates(workspace_root, &include_set)?;
+    discovery.extend(resolve_extra_paths(workspace_root, &config.extra_paths)?);
+    discovery.sort_and_dedup();
 
     let mut documents = BTreeMap::new();
-    for absolute_path in candidates {
+    for absolute_path in &discovery.candidates {
         let Some(fingerprint) = load_file_fingerprint(&absolute_path).await? else {
             continue;
         };
@@ -234,7 +277,13 @@ pub async fn load_memory_corpus(
     memory_corpus_cache()
         .lock()
         .expect("memory corpus cache lock")
-        .insert(cache_key, Arc::new(MemoryCorpusCacheEntry { documents }));
+        .insert(
+            cache_key,
+            Arc::new(MemoryCorpusCacheEntry {
+                discovery,
+                documents,
+            }),
+        );
     Ok(corpus)
 }
 
@@ -253,6 +302,27 @@ fn reuse_cached_document(
     let document = cached.documents.get(relative_path)?;
     (document.document.absolute_path == absolute_path && document.fingerprint == *fingerprint)
         .then(|| document.document.clone())
+}
+
+async fn cached_discovery_is_fresh(cached: &MemoryCorpusCacheEntry) -> Result<bool> {
+    for (path, expected) in &cached.discovery.directories {
+        if load_directory_fingerprint(path).await? != *expected {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+async fn cached_documents_are_fresh(cached: &MemoryCorpusCacheEntry) -> Result<bool> {
+    for document in cached.documents.values() {
+        let Some(current) = load_file_fingerprint(&document.document.absolute_path).await? else {
+            return Ok(false);
+        };
+        if current != document.fingerprint {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 async fn load_document_from_disk(
@@ -294,8 +364,9 @@ fn build_globset(globs: &[String]) -> Result<GlobSet> {
 fn discover_default_candidates(
     workspace_root: &Path,
     include_set: &GlobSet,
-) -> Result<Vec<PathBuf>> {
-    let mut paths = Vec::new();
+) -> Result<MemoryCorpusDiscoverySnapshot> {
+    let mut discovery = MemoryCorpusDiscoverySnapshot::default();
+    insert_directory_fingerprint_sync(&mut discovery.directories, workspace_root);
     let mut walker = WalkBuilder::new(workspace_root);
     walker.hidden(false);
     walker.follow_links(false);
@@ -304,6 +375,10 @@ fn discover_default_candidates(
             continue;
         };
         let path = entry.path();
+        if path.is_dir() {
+            insert_directory_fingerprint_sync(&mut discovery.directories, path);
+            continue;
+        }
         if !path.is_file() {
             continue;
         }
@@ -311,14 +386,17 @@ fn discover_default_candidates(
             continue;
         };
         if include_set.is_match(relative) {
-            paths.push(path.to_path_buf());
+            discovery.candidates.push(path.to_path_buf());
         }
     }
-    Ok(paths)
+    Ok(discovery)
 }
 
-fn resolve_extra_paths(workspace_root: &Path, extras: &[PathBuf]) -> Result<Vec<PathBuf>> {
-    let mut out = Vec::new();
+fn resolve_extra_paths(
+    workspace_root: &Path,
+    extras: &[PathBuf],
+) -> Result<MemoryCorpusDiscoverySnapshot> {
+    let mut discovery = MemoryCorpusDiscoverySnapshot::default();
     for value in extras {
         let absolute = if value.is_absolute() {
             value.clone()
@@ -331,6 +409,7 @@ fn resolve_extra_paths(workspace_root: &Path, extras: &[PathBuf]) -> Result<Vec<
             ));
         }
         if absolute.is_dir() {
+            insert_directory_fingerprint_sync(&mut discovery.directories, &absolute);
             let mut walker = WalkBuilder::new(&absolute);
             walker.hidden(false);
             walker.follow_links(false);
@@ -339,15 +418,19 @@ fn resolve_extra_paths(workspace_root: &Path, extras: &[PathBuf]) -> Result<Vec<
                     continue;
                 };
                 let path = entry.path();
+                if path.is_dir() {
+                    insert_directory_fingerprint_sync(&mut discovery.directories, path);
+                    continue;
+                }
                 if path.is_file() && path.extension().is_some_and(|value| value == "md") {
-                    out.push(path.to_path_buf());
+                    discovery.candidates.push(path.to_path_buf());
                 }
             }
         } else if absolute.is_file() {
-            out.push(absolute);
+            discovery.candidates.push(absolute);
         }
     }
-    Ok(out)
+    Ok(discovery)
 }
 
 fn parse_lines(text: &str) -> Vec<String> {
@@ -664,6 +747,62 @@ async fn load_file_fingerprint(path: &Path) -> Result<Option<MemoryCorpusFileFin
     }))
 }
 
+async fn load_directory_fingerprint(path: &Path) -> Result<MemoryCorpusDirectoryFingerprint> {
+    match fs::metadata(path).await {
+        Ok(metadata) => Ok(directory_fingerprint_from_metadata(&metadata)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            Ok(MemoryCorpusDirectoryFingerprint {
+                exists: false,
+                is_dir: false,
+                modified_at_ns: None,
+            })
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn insert_directory_fingerprint_sync(
+    directories: &mut BTreeMap<PathBuf, MemoryCorpusDirectoryFingerprint>,
+    path: &Path,
+) {
+    directories
+        .entry(path.to_path_buf())
+        .or_insert_with(|| load_directory_fingerprint_sync(path));
+}
+
+fn load_directory_fingerprint_sync(path: &Path) -> MemoryCorpusDirectoryFingerprint {
+    match std::fs::metadata(path) {
+        Ok(metadata) => directory_fingerprint_from_metadata(&metadata),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            MemoryCorpusDirectoryFingerprint {
+                exists: false,
+                is_dir: false,
+                modified_at_ns: None,
+            }
+        }
+        Err(_) => MemoryCorpusDirectoryFingerprint {
+            exists: true,
+            is_dir: false,
+            modified_at_ns: None,
+        },
+    }
+}
+
+fn directory_fingerprint_from_metadata(
+    metadata: &std::fs::Metadata,
+) -> MemoryCorpusDirectoryFingerprint {
+    let modified_at_ns = metadata
+        .modified()
+        .ok()
+        .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+        .map(capped_duration_nanos);
+    MemoryCorpusDirectoryFingerprint {
+        exists: true,
+        is_dir: metadata.is_dir(),
+        modified_at_ns,
+    }
+}
+
 fn capped_duration_millis(duration: std::time::Duration) -> u64 {
     duration
         .as_millis()
@@ -696,6 +835,24 @@ fn corpus_disk_read_count() -> usize {
 #[cfg(test)]
 fn reset_corpus_disk_read_count() {
     CORPUS_DISK_READS.store(0, std::sync::atomic::Ordering::Relaxed);
+}
+
+#[cfg(test)]
+fn record_corpus_discovery_run() {
+    CORPUS_DISCOVERY_RUNS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+#[cfg(not(test))]
+fn record_corpus_discovery_run() {}
+
+#[cfg(test)]
+fn corpus_discovery_run_count() -> usize {
+    CORPUS_DISCOVERY_RUNS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+#[cfg(test)]
+fn reset_corpus_discovery_run_count() {
+    CORPUS_DISCOVERY_RUNS.store(0, std::sync::atomic::Ordering::Relaxed);
 }
 
 fn extract_title(lines: &[String], body_start_line: usize, path: &str) -> String {
@@ -744,7 +901,8 @@ fn is_daily_log_path(path: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        chunk_corpus, corpus_disk_read_count, load_memory_corpus, reset_corpus_disk_read_count,
+        chunk_corpus, corpus_discovery_run_count, corpus_disk_read_count, load_memory_corpus,
+        reset_corpus_discovery_run_count, reset_corpus_disk_read_count,
     };
     use crate::{MemoryChunkingConfig, MemoryCorpusConfig, MemoryScope};
     use std::time::Duration;
@@ -886,6 +1044,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn reuses_directory_snapshot_without_rewalking_candidates() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("MEMORY.md"), "# Root\nfact")
+            .await
+            .unwrap();
+        fs::create_dir_all(dir.path().join("memory")).await.unwrap();
+        fs::write(dir.path().join("memory/cache.md"), "# Cache\nentry")
+            .await
+            .unwrap();
+
+        reset_corpus_disk_read_count();
+        reset_corpus_discovery_run_count();
+        load_memory_corpus(dir.path(), &MemoryCorpusConfig::default())
+            .await
+            .unwrap();
+        let first_discovers = corpus_discovery_run_count();
+        let first_reads = corpus_disk_read_count();
+
+        load_memory_corpus(dir.path(), &MemoryCorpusConfig::default())
+            .await
+            .unwrap();
+
+        assert_eq!(first_discovers, 1);
+        assert_eq!(corpus_discovery_run_count(), first_discovers);
+        assert_eq!(corpus_disk_read_count(), first_reads);
+    }
+
+    #[tokio::test]
     async fn reloads_only_documents_whose_fingerprint_changed() {
         let dir = tempdir().unwrap();
         fs::write(dir.path().join("MEMORY.md"), "# Root\nfact")
@@ -912,6 +1098,37 @@ mod tests {
 
         assert_eq!(corpus.documents.len(), 2);
         assert_eq!(corpus.documents[1].path, "memory/cache.md");
+        assert_eq!(corpus_disk_read_count(), baseline_reads + 1);
+    }
+
+    #[tokio::test]
+    async fn directory_snapshot_invalidates_when_new_candidate_is_added() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("MEMORY.md"), "# Root\nfact")
+            .await
+            .unwrap();
+        fs::create_dir_all(dir.path().join("memory")).await.unwrap();
+        fs::write(dir.path().join("memory/cache.md"), "# Cache\nentry")
+            .await
+            .unwrap();
+
+        reset_corpus_disk_read_count();
+        reset_corpus_discovery_run_count();
+        load_memory_corpus(dir.path(), &MemoryCorpusConfig::default())
+            .await
+            .unwrap();
+        let baseline_reads = corpus_disk_read_count();
+
+        sleep(Duration::from_millis(2)).await;
+        fs::write(dir.path().join("memory/new.md"), "# New\nentry")
+            .await
+            .unwrap();
+        let corpus = load_memory_corpus(dir.path(), &MemoryCorpusConfig::default())
+            .await
+            .unwrap();
+
+        assert_eq!(corpus.documents.len(), 3);
+        assert_eq!(corpus_discovery_run_count(), 2);
         assert_eq!(corpus_disk_read_count(), baseline_reads + 1);
     }
 
