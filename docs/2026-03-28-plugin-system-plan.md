@@ -742,7 +742,7 @@ cargo test -p reference-tui
 
 ### 16.1 当前完成度校准
 
-- 估计完成度：约 `74%`
+- 估计完成度：约 `78%`
 
 当前已经落地的部分：
 
@@ -754,6 +754,7 @@ cargo test -p reference-tui
 - WASM gate 权限不再因 handler 类型自动放开
 - `prompt` / `agent` handler 默认 fail-closed
 - host app 默认 HookRunner wiring 已切到 fail-closed evaluator
+- `message_mutation = review_required` 会在 activation 阶段直接判为不支持
 
 当前尚未达到计划目标的部分：
 
@@ -766,6 +767,7 @@ cargo test -p reference-tui
 - 当前分支已完成：
   - 收紧 WASM hook 的 gate 权限
   - `prompt` / `agent` hook 未实现前 fail-closed
+  - `ReviewRequired` 语义 fail-closed 收口
 
 - 收紧 WASM hook 的 gate 权限：
   - 已完成：
@@ -778,7 +780,9 @@ cargo test -p reference-tui
     - HookRunner 与 host app wiring 都已切到 fail-closed evaluator
     - handler 单测与 runner 集成测试已补齐
 - 明确 `ReviewRequired` 的语义：
-  - 如果当前没有 host review 流程，就不要把它伪装成可用能力
+  - 已完成：
+    - `message_mutation = review_required` 在 manifest 或 resolver grant 中都会触发 activation diagnostic
+    - 当前没有 host review 流程时，插件会在 activation plan 阶段被禁用
 
 ### 16.3 P1 对齐项
 

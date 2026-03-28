@@ -362,6 +362,95 @@ message_mutation = "allow"
         );
     }
 
+    #[test]
+    fn activation_plan_rejects_review_required_message_mutation_request() {
+        let dir = tempdir().unwrap();
+        let mut plugin = sample_plugin(
+            dir.path(),
+            "team-policy",
+            PluginKind::Bundle,
+            true,
+            Some(PluginRuntimeSpec {
+                driver: "builtin.wasm-hook-runtime".to_string(),
+                module: Some("wasm/plugin.wasm".to_string()),
+                abi: None,
+            }),
+        );
+        plugin.manifest.permissions.message_mutation = HookMutationPermission::ReviewRequired;
+        let discovery = PluginDiscovery {
+            plugins: vec![plugin],
+            diagnostics: Vec::new(),
+        };
+        let mut resolver = PluginResolverConfig::default();
+        resolver.entries.insert(
+            "team-policy".to_string(),
+            PluginEntryConfig {
+                enabled: Some(true),
+                permissions: PluginPermissionGrant::default(),
+                config: Map::new(),
+            },
+        );
+
+        let plan = build_activation_plan(discovery, &resolver, dir.path());
+        assert!(plan.runtime_activations.is_empty());
+        assert!(
+            plan.diagnostics
+                .iter()
+                .any(|diag| { diag.code == "plugin_permission_review_required_unsupported" })
+        );
+        assert!(
+            plan.plugin_states
+                .iter()
+                .any(|state| state.plugin_id == "team-policy" && !state.enabled)
+        );
+    }
+
+    #[test]
+    fn activation_plan_rejects_review_required_message_mutation_grant() {
+        let dir = tempdir().unwrap();
+        let mut plugin = sample_plugin(
+            dir.path(),
+            "team-policy",
+            PluginKind::Bundle,
+            true,
+            Some(PluginRuntimeSpec {
+                driver: "builtin.wasm-hook-runtime".to_string(),
+                module: Some("wasm/plugin.wasm".to_string()),
+                abi: None,
+            }),
+        );
+        plugin.manifest.permissions.message_mutation = HookMutationPermission::Allow;
+        let discovery = PluginDiscovery {
+            plugins: vec![plugin],
+            diagnostics: Vec::new(),
+        };
+        let mut resolver = PluginResolverConfig::default();
+        resolver.entries.insert(
+            "team-policy".to_string(),
+            PluginEntryConfig {
+                enabled: Some(true),
+                permissions: PluginPermissionGrant {
+                    message_mutation: HookMutationPermission::ReviewRequired,
+                    ..PluginPermissionGrant::default()
+                },
+                config: Map::new(),
+            },
+        );
+
+        let plan = build_activation_plan(discovery, &resolver, dir.path());
+        assert!(plan.runtime_activations.is_empty());
+        assert!(
+            plan.diagnostics
+                .iter()
+                .any(|diag| { diag.code == "plugin_permission_review_required_unsupported" })
+        );
+        assert!(
+            plan.plugin_states
+                .iter()
+                .any(|state| state.plugin_id == "team-policy" && !state.enabled)
+        );
+    }
+
     fn sample_plugin(
         workspace_root: &std::path::Path,
         id: &str,

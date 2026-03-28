@@ -41,7 +41,7 @@
 
 ## 3. 当前完成度校准
 
-- 插件系统：约 `74%`
+- 插件系统：约 `78%`
 - Memory 系统：约 `85%`
 - 多 Agent 系统：约 `65% ~ 70%`
 
@@ -199,6 +199,7 @@
   - WASM hook 不会再因为 handler 类型是 `wasm` 就自动获得 gate 权限
   - `prompt` / `agent` hook 默认改为 fail-closed
   - host app 的默认 HookRunner wiring 已同步切到 fail-closed evaluator
+  - `message_mutation = review_required` 现在会在 activation 阶段直接判为不支持
 
 - 收紧 WASM hook 的 gate 权限：
   - `allow_gate_decision` 不能因为 `handler_kind == Wasm` 就自动放开
@@ -226,6 +227,17 @@
     - `prompt` / `agent` evaluator 默认返回 hook error
     - 默认 HookRunner 与 host app wiring 都已切到 fail-closed evaluator
     - handler 单测与 runner 集成测试都已补上
+
+- 明确 `ReviewRequired` 的语义：
+  - 如果当前没有 host review 流程，就不要把它伪装成可用能力
+  - 目标文件：
+    - `crates/plugins/src/resolution.rs`
+    - `crates/plugins/src/lib.rs`
+  - 状态：
+    - `completed`
+  - 已落地语义：
+    - `message_mutation = review_required` 在 manifest 或 resolver grant 中都会触发 activation diagnostic
+    - 插件会在 activation plan 阶段被禁用，而不是留到运行时再失败
 
 ## 7. P1 计划对齐清单
 

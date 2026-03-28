@@ -330,6 +330,12 @@ fn resolve_plugin_permissions(
         .unwrap_or_default();
     let requested = &plugin.manifest.permissions;
 
+    ensure_supported_permission_modes(
+        requested,
+        &grant,
+        &plugin.manifest.id,
+        &plugin.manifest_path,
+    )?;
     ensure_requested_contains_all(
         requested,
         &grant,
@@ -362,6 +368,37 @@ fn resolve_plugin_permissions(
     })
 }
 
+fn ensure_supported_permission_modes(
+    requested: &PluginPermissionRequest,
+    granted: &PluginPermissionGrant,
+    plugin_id: &str,
+    manifest_path: &Path,
+) -> Result<(), PluginDiagnostic> {
+    if matches!(
+        requested.message_mutation,
+        HookMutationPermission::ReviewRequired
+    ) {
+        return Err(permission_diagnostic(
+            "plugin_permission_review_required_unsupported",
+            plugin_id,
+            manifest_path,
+            "message mutation mode `review_required` is not supported because host review is not implemented",
+        ));
+    }
+    if matches!(
+        granted.message_mutation,
+        HookMutationPermission::ReviewRequired
+    ) {
+        return Err(permission_diagnostic(
+            "plugin_permission_review_required_unsupported",
+            plugin_id,
+            manifest_path,
+            "plugin permission grant uses `message_mutation = review_required`, but host review is not implemented",
+        ));
+    }
+    Ok(())
+}
+
 fn ensure_requested_contains_all(
     requested: &PluginPermissionRequest,
     granted: &PluginPermissionGrant,
@@ -392,6 +429,7 @@ fn ensure_requested_contains_all(
 
     if !network_allows(&requested.network, &granted.network) {
         return Err(permission_diagnostic(
+            "plugin_permission_grant_exceeds_request",
             plugin_id,
             manifest_path,
             "network permission grant exceeds plugin request",
@@ -399,6 +437,7 @@ fn ensure_requested_contains_all(
     }
     if !message_mutation_allows(requested.message_mutation, granted.message_mutation) {
         return Err(permission_diagnostic(
+            "plugin_permission_grant_exceeds_request",
             plugin_id,
             manifest_path,
             "message mutation grant exceeds plugin request",
@@ -407,6 +446,7 @@ fn ensure_requested_contains_all(
     for api in &granted.host_api {
         if !requested.host_api.iter().any(|candidate| candidate == api) {
             return Err(permission_diagnostic(
+                "plugin_permission_grant_exceeds_request",
                 plugin_id,
                 manifest_path,
                 format!("host API grant `{api:?}` exceeds plugin request"),
@@ -427,6 +467,7 @@ fn ensure_requested_paths(
     for grant in granted {
         if !requested.contains(grant) {
             return Err(permission_diagnostic(
+                "plugin_permission_grant_exceeds_request",
                 plugin_id,
                 manifest_path,
                 format!("{label} permission grant `{grant}` exceeds plugin request"),
@@ -437,12 +478,13 @@ fn ensure_requested_paths(
 }
 
 fn permission_diagnostic(
+    code: &'static str,
     plugin_id: &str,
     manifest_path: &Path,
     message: impl Into<String>,
 ) -> PluginDiagnostic {
     PluginDiagnostic::error(
-        "plugin_permission_grant_exceeds_request",
+        code,
         message.into(),
         Some(plugin_id.to_string()),
         Some(manifest_path.to_path_buf()),
@@ -523,14 +565,6 @@ fn message_mutation_allows(
         || matches!(
             (requested, granted),
             (HookMutationPermission::Allow, HookMutationPermission::Allow)
-                | (
-                    HookMutationPermission::ReviewRequired,
-                    HookMutationPermission::ReviewRequired
-                )
-                | (
-                    HookMutationPermission::Allow,
-                    HookMutationPermission::ReviewRequired
-                )
         )
 }
 
