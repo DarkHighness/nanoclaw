@@ -221,6 +221,20 @@ cargo test --manifest-path crates/Cargo.toml -p mcp --test stdio_integration
 cargo test --manifest-path crates/Cargo.toml -p provider --lib
 ```
 
+Repository default resource caps live in
+[.cargo/config.toml](/home/twiliness/nanoclaw/.cargo/config.toml).
+They intentionally keep local build/test CPU usage bounded:
+
+- Cargo build jobs default to `1`
+- Rust test threads default to `1`
+- Rayon worker threads default to `1`
+
+Override them explicitly when you want a faster local run:
+
+```bash
+CARGO_BUILD_JOBS=8 RUST_TEST_THREADS=8 RAYON_NUM_THREADS=8 cargo test --manifest-path crates/Cargo.toml -p memory
+```
+
 ## Git Hooks
 
 The repository ships its own git hooks under `.githooks`.
