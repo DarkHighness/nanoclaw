@@ -134,8 +134,8 @@ async fn bootstrap_from_parts(
             ),
         ),
         Arc::new(runtime::ReqwestHttpHookExecutor::default()),
-        Arc::new(runtime::NoopPromptHookEvaluator),
-        Arc::new(runtime::NoopAgentHookEvaluator),
+        Arc::new(runtime::FailClosedPromptHookEvaluator),
+        Arc::new(runtime::FailClosedAgentHookEvaluator),
         Arc::new(runtime::DefaultWasmHookExecutor),
     ));
 

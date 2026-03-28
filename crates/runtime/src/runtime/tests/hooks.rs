@@ -1,7 +1,7 @@
 use super::support::{RecordingBackend, RecordingObserver, StaticPromptEvaluator};
 use crate::{
-    AgentRuntimeBuilder, DefaultCommandHookExecutor, DefaultWasmHookExecutor, HookRunner,
-    NoopAgentHookEvaluator, ReqwestHttpHookExecutor,
+    AgentRuntimeBuilder, DefaultCommandHookExecutor, DefaultWasmHookExecutor,
+    FailClosedAgentHookEvaluator, HookRunner, ReqwestHttpHookExecutor,
 };
 use skills::{Skill, SkillCatalog};
 use std::collections::BTreeMap;
@@ -34,7 +34,7 @@ async fn runtime_applies_hook_effects_without_mutating_base_instructions() {
         Arc::new(DefaultCommandHookExecutor::default()),
         Arc::new(ReqwestHttpHookExecutor::default()),
         Arc::new(StaticPromptEvaluator),
-        Arc::new(NoopAgentHookEvaluator),
+        Arc::new(FailClosedAgentHookEvaluator),
         Arc::new(DefaultWasmHookExecutor),
     ));
     let mut runtime = AgentRuntimeBuilder::new(backend.clone(), store.clone())

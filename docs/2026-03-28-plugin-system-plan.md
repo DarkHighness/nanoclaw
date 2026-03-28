@@ -742,7 +742,7 @@ cargo test -p reference-tui
 
 ### 16.1 当前完成度校准
 
-- 估计完成度：约 `68%`
+- 估计完成度：约 `74%`
 
 当前已经落地的部分：
 
@@ -751,21 +751,32 @@ cargo test -p reference-tui
 - `PluginDriverRegistry`
 - `HookHandler::Wasm`
 - Reference TUI 的基础插件可观测性
+- WASM gate 权限不再因 handler 类型自动放开
+- `prompt` / `agent` handler 默认 fail-closed
+- host app 默认 HookRunner wiring 已切到 fail-closed evaluator
 
 当前尚未达到计划目标的部分：
 
-- `prompt` / `agent` hook 仍是占位实现
 - `DriverActivationOutcome` 没有在宿主侧完整并回 runtime
 - `builtin.wasm-hook-runtime` 更像校验器，而不是完整 runtime driver
 - message mutation 协议宽于当前运行时能力
 
 ### 16.2 P0 修复项
 
+- 当前分支已完成：
+  - 收紧 WASM hook 的 gate 权限
+  - `prompt` / `agent` hook 未实现前 fail-closed
+
 - 收紧 WASM hook 的 gate 权限：
-  - `allow_gate_decision` 不能因为 handler 是 `Wasm` 就自动放开
-  - gate / permission effect 必须来自显式 capability + granted permission
+  - 已完成：
+    - `allow_gate_decision` 不再因为 handler 是 `Wasm` 自动放开
+    - gate 决策现在只来自显式 `Gate` capability
+    - activation plan 已补 capability-based 回归测试
 - `prompt` / `agent` hook 未实现前必须 fail-closed：
-  - 不允许继续 silent noop
+  - 已完成：
+    - 默认 evaluator 现在显式返回 hook error
+    - HookRunner 与 host app wiring 都已切到 fail-closed evaluator
+    - handler 单测与 runner 集成测试已补齐
 - 明确 `ReviewRequired` 的语义：
   - 如果当前没有 host review 流程，就不要把它伪装成可用能力
 
@@ -794,7 +805,7 @@ cargo test -p reference-tui
 
 本路线后续文档必须明确写清：
 
-- 当前 `prompt` / `agent` handlers 还未实现
+- 当前 `prompt` / `agent` handlers 是否仍为 fail-closed stub，还是已有真实执行器
 - `DriverActivationOutcome` 是否已经被 `reference-tui` / `code-agent` 完整消费
 - `builtin.wasm-hook-runtime` 是校验器还是完整 runtime driver
 - message mutation 当前到底支持“in-flight only”还是“transcript-aware”

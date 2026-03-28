@@ -9,8 +9,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path, PathBuf};
 use toml::map::Map;
 use types::{
-    HookEffectPolicy, HookExecutionPolicy, HookHandlerKind, HookHostApiGrant,
-    HookMutationPermission, HookNetworkPolicy, HookRegistration,
+    HookEffectPolicy, HookExecutionPolicy, HookHostApiGrant, HookMutationPermission,
+    HookNetworkPolicy, HookRegistration,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
@@ -280,11 +280,7 @@ fn decorate_hook_registration(
         exec_roots: granted_permissions.exec_roots.clone(),
         network: granted_permissions.network.clone(),
         host_api_grants: granted_permissions.host_api.clone(),
-        effects: derive_effect_policy(
-            &plugin.manifest.capabilities,
-            granted_permissions,
-            hook.handler.kind(),
-        ),
+        effects: derive_effect_policy(&plugin.manifest.capabilities, granted_permissions),
     });
     hook
 }
@@ -292,7 +288,6 @@ fn decorate_hook_registration(
 fn derive_effect_policy(
     capabilities: &PluginCapabilitySet,
     granted_permissions: &PluginResolvedPermissions,
-    handler_kind: HookHandlerKind,
 ) -> HookEffectPolicy {
     let declared_mutations = !capabilities.message_mutations.is_empty();
     let can_gate = capabilities.tool_policies.iter().any(|policy| {
@@ -321,7 +316,7 @@ fn derive_effect_policy(
             .iter()
             .any(|policy| *policy == PluginToolPolicyCapability::RewriteArgs),
         allow_permission_decision: can_permission,
-        allow_gate_decision: can_gate || matches!(handler_kind, HookHandlerKind::Wasm),
+        allow_gate_decision: can_gate,
     }
 }
 

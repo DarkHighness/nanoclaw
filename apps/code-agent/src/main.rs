@@ -173,8 +173,8 @@ async fn build_runtime(
             ),
         ),
         Arc::new(agent::runtime::ReqwestHttpHookExecutor::default()),
-        Arc::new(agent::runtime::NoopPromptHookEvaluator),
-        Arc::new(agent::runtime::NoopAgentHookEvaluator),
+        Arc::new(agent::runtime::FailClosedPromptHookEvaluator),
+        Arc::new(agent::runtime::FailClosedAgentHookEvaluator),
         Arc::new(agent::runtime::DefaultWasmHookExecutor),
     ));
     let todo_state = TodoListState::default();

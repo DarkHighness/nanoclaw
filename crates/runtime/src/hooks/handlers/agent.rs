@@ -1,4 +1,4 @@
-use crate::Result;
+use crate::{Result, RuntimeError};
 use async_trait::async_trait;
 use types::{HookContext, HookRegistration, HookResult};
 
@@ -11,15 +11,57 @@ pub trait AgentHookEvaluator: Send + Sync {
     ) -> Result<HookResult>;
 }
 
-pub struct NoopAgentHookEvaluator;
+pub struct FailClosedAgentHookEvaluator;
 
 #[async_trait]
-impl AgentHookEvaluator for NoopAgentHookEvaluator {
+impl AgentHookEvaluator for FailClosedAgentHookEvaluator {
     async fn evaluate(
         &self,
-        _registration: &HookRegistration,
+        registration: &HookRegistration,
         _context: HookContext,
     ) -> Result<HookResult> {
-        Ok(HookResult::default())
+        // Agent hooks are control-plane extensions. Until they are actually
+        // wired, failing closed is safer than pretending the hook executed.
+        Err(RuntimeError::hook(format!(
+            "hook `{}` uses handler `agent`, which is not implemented",
+            registration.name
+        )))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AgentHookEvaluator, FailClosedAgentHookEvaluator};
+    use types::{
+        AgentHookHandler, HookContext, HookEvent, HookHandler, HookRegistration, RunId, SessionId,
+    };
+
+    #[tokio::test]
+    async fn agent_handler_fails_closed() {
+        let error = FailClosedAgentHookEvaluator
+            .evaluate(
+                &HookRegistration {
+                    name: "agent-review".to_string(),
+                    event: HookEvent::SubagentStart,
+                    matcher: None,
+                    handler: HookHandler::Agent(AgentHookHandler {
+                        prompt: "review".to_string(),
+                        allowed_tools: Vec::new(),
+                    }),
+                    timeout_ms: None,
+                    execution: None,
+                },
+                HookContext {
+                    event: HookEvent::SubagentStart,
+                    run_id: RunId::from("run_1"),
+                    session_id: SessionId::from("session_1"),
+                    turn_id: None,
+                    fields: Default::default(),
+                    payload: serde_json::json!({}),
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("not implemented"));
     }
 }

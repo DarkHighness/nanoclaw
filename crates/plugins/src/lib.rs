@@ -22,7 +22,7 @@ mod tests {
     use std::fs;
     use tempfile::tempdir;
     use toml::map::Map;
-    use types::HookMutationPermission;
+    use types::{HookEvent, HookHandler, HookMutationPermission, WasmHookHandler};
 
     #[test]
     fn discovery_loads_new_manifest_and_component_files() {
@@ -276,6 +276,89 @@ message_mutation = "allow"
         assert_eq!(
             manifest.permissions.message_mutation,
             HookMutationPermission::Allow
+        );
+    }
+
+    #[test]
+    fn activation_plan_does_not_auto_grant_gate_to_wasm_hooks() {
+        let dir = tempdir().unwrap();
+        let mut plugin = sample_plugin(dir.path(), "team-policy", PluginKind::Bundle, true, None);
+        plugin.hooks = vec![types::HookRegistration {
+            name: "wasm-gate".to_string(),
+            event: HookEvent::UserPromptSubmit,
+            matcher: None,
+            handler: HookHandler::Wasm(WasmHookHandler {
+                module: "wasm/plugin.wasm".to_string(),
+                entrypoint: "on_user_prompt".to_string(),
+            }),
+            timeout_ms: None,
+            execution: None,
+        }];
+        let discovery = PluginDiscovery {
+            plugins: vec![plugin],
+            diagnostics: Vec::new(),
+        };
+        let mut resolver = PluginResolverConfig::default();
+        resolver.entries.insert(
+            "team-policy".to_string(),
+            PluginEntryConfig {
+                enabled: Some(true),
+                permissions: PluginPermissionGrant::default(),
+                config: Map::new(),
+            },
+        );
+
+        let plan = build_activation_plan(discovery, &resolver, dir.path());
+        assert_eq!(plan.hooks.len(), 1);
+        assert!(
+            !plan.hooks[0]
+                .execution
+                .as_ref()
+                .expect("plugin hook execution policy")
+                .effects
+                .allow_gate_decision
+        );
+    }
+
+    #[test]
+    fn activation_plan_grants_gate_only_when_capability_is_declared() {
+        let dir = tempdir().unwrap();
+        let mut plugin = sample_plugin(dir.path(), "team-policy", PluginKind::Bundle, true, None);
+        plugin.manifest.capabilities.tool_policies = vec![PluginToolPolicyCapability::Gate];
+        plugin.hooks = vec![types::HookRegistration {
+            name: "wasm-gate".to_string(),
+            event: HookEvent::UserPromptSubmit,
+            matcher: None,
+            handler: HookHandler::Wasm(WasmHookHandler {
+                module: "wasm/plugin.wasm".to_string(),
+                entrypoint: "on_user_prompt".to_string(),
+            }),
+            timeout_ms: None,
+            execution: None,
+        }];
+        let discovery = PluginDiscovery {
+            plugins: vec![plugin],
+            diagnostics: Vec::new(),
+        };
+        let mut resolver = PluginResolverConfig::default();
+        resolver.entries.insert(
+            "team-policy".to_string(),
+            PluginEntryConfig {
+                enabled: Some(true),
+                permissions: PluginPermissionGrant::default(),
+                config: Map::new(),
+            },
+        );
+
+        let plan = build_activation_plan(discovery, &resolver, dir.path());
+        assert_eq!(plan.hooks.len(), 1);
+        assert!(
+            plan.hooks[0]
+                .execution
+                .as_ref()
+                .expect("plugin hook execution policy")
+                .effects
+                .allow_gate_decision
         );
     }
 

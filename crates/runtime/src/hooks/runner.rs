@@ -1,7 +1,7 @@
 use crate::{
     AgentHookEvaluator, CommandHookExecutor, DefaultCommandHookExecutor, DefaultWasmHookExecutor,
-    HttpHookExecutor, NoopAgentHookEvaluator, NoopPromptHookEvaluator, PromptHookEvaluator,
-    ReqwestHttpHookExecutor, Result, WasmHookExecutor, matches_hook,
+    FailClosedAgentHookEvaluator, FailClosedPromptHookEvaluator, HttpHookExecutor,
+    PromptHookEvaluator, ReqwestHttpHookExecutor, Result, WasmHookExecutor, matches_hook,
 };
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
@@ -45,8 +45,8 @@ impl Default for HookRunner {
         Self {
             command_executor: Arc::new(DefaultCommandHookExecutor::default()),
             http_executor: Arc::new(ReqwestHttpHookExecutor::default()),
-            prompt_evaluator: Arc::new(NoopPromptHookEvaluator),
-            agent_evaluator: Arc::new(NoopAgentHookEvaluator),
+            prompt_evaluator: Arc::new(FailClosedPromptHookEvaluator),
+            agent_evaluator: Arc::new(FailClosedAgentHookEvaluator),
             wasm_executor: Arc::new(DefaultWasmHookExecutor),
             async_tx,
             async_rx: Mutex::new(async_rx),
@@ -152,5 +152,73 @@ impl HookRunner {
             }
         }
         Ok(batch)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::HookRunner;
+    use types::{
+        AgentHookHandler, HookContext, HookEvent, HookHandler, HookRegistration, PromptHookHandler,
+        RunId, SessionId,
+    };
+
+    #[tokio::test]
+    async fn prompt_hooks_fail_closed_by_default() {
+        let runner = HookRunner::default();
+        let error = runner
+            .run(
+                &[HookRegistration {
+                    name: "prompt-hook".to_string(),
+                    event: HookEvent::UserPromptSubmit,
+                    matcher: None,
+                    handler: HookHandler::Prompt(PromptHookHandler {
+                        prompt: "unused".to_string(),
+                    }),
+                    timeout_ms: None,
+                    execution: None,
+                }],
+                HookContext {
+                    event: HookEvent::UserPromptSubmit,
+                    run_id: RunId::from("run_1"),
+                    session_id: SessionId::from("session_1"),
+                    turn_id: None,
+                    fields: Default::default(),
+                    payload: serde_json::json!({}),
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("not implemented"));
+    }
+
+    #[tokio::test]
+    async fn agent_hooks_fail_closed_by_default() {
+        let runner = HookRunner::default();
+        let error = runner
+            .run(
+                &[HookRegistration {
+                    name: "agent-hook".to_string(),
+                    event: HookEvent::SubagentStart,
+                    matcher: None,
+                    handler: HookHandler::Agent(AgentHookHandler {
+                        prompt: "review".to_string(),
+                        allowed_tools: Vec::new(),
+                    }),
+                    timeout_ms: None,
+                    execution: None,
+                }],
+                HookContext {
+                    event: HookEvent::SubagentStart,
+                    run_id: RunId::from("run_1"),
+                    session_id: SessionId::from("session_1"),
+                    turn_id: None,
+                    fields: Default::default(),
+                    payload: serde_json::json!({}),
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("not implemented"));
     }
 }

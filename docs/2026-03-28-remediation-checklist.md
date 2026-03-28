@@ -41,7 +41,7 @@
 
 ## 3. 当前完成度校准
 
-- 插件系统：约 `68%`
+- 插件系统：约 `74%`
 - Memory 系统：约 `85%`
 - 多 Agent 系统：约 `65% ~ 70%`
 
@@ -195,12 +195,23 @@
 
 ### 6.3 插件系统
 
+- 当前分支已完成：
+  - WASM hook 不会再因为 handler 类型是 `wasm` 就自动获得 gate 权限
+  - `prompt` / `agent` hook 默认改为 fail-closed
+  - host app 的默认 HookRunner wiring 已同步切到 fail-closed evaluator
+
 - 收紧 WASM hook 的 gate 权限：
   - `allow_gate_decision` 不能因为 `handler_kind == Wasm` 就自动放开
   - gate/permission 相关 effect 必须绑定 capability + granted permission
   - 目标文件：
     - `crates/plugins/src/resolution.rs`
     - `crates/runtime/src/runtime/hook_effects.rs`
+  - 状态：
+    - `completed`
+  - 已落地语义：
+    - `allow_gate_decision` 现在只来自显式 `Gate` capability
+    - WASM handler 若要实际发出 effect，仍必须具备 `emit_hook_effect` host API grant
+    - activation plan 已补测试，覆盖“无 capability 不放开 / 有 capability 才放开”
 
 - `prompt` / `agent` hook 未实现前必须 fail-closed：
   - 当前 silent noop 会制造“配置成功但没有效果”的假象
@@ -209,6 +220,12 @@
     - `crates/runtime/src/hooks/handlers/prompt.rs`
     - `crates/runtime/src/hooks/handlers/agent.rs`
     - `crates/runtime/src/hooks/runner.rs`
+  - 状态：
+    - `completed`
+  - 已落地语义：
+    - `prompt` / `agent` evaluator 默认返回 hook error
+    - 默认 HookRunner 与 host app wiring 都已切到 fail-closed evaluator
+    - handler 单测与 runner 集成测试都已补上
 
 ## 7. P1 计划对齐清单
 

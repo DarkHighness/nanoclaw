@@ -1,4 +1,4 @@
-use crate::Result;
+use crate::{Result, RuntimeError};
 use async_trait::async_trait;
 use types::{HookContext, HookRegistration, HookResult};
 
@@ -11,15 +11,57 @@ pub trait PromptHookEvaluator: Send + Sync {
     ) -> Result<HookResult>;
 }
 
-pub struct NoopPromptHookEvaluator;
+pub struct FailClosedPromptHookEvaluator;
 
 #[async_trait]
-impl PromptHookEvaluator for NoopPromptHookEvaluator {
+impl PromptHookEvaluator for FailClosedPromptHookEvaluator {
     async fn evaluate(
         &self,
-        _registration: &HookRegistration,
+        registration: &HookRegistration,
         _context: HookContext,
     ) -> Result<HookResult> {
-        Ok(HookResult::default())
+        // Prompt hooks are intentionally fail-closed until a real evaluator
+        // exists. Silently succeeding here would make plugin manifests look
+        // active while skipping their declared control path entirely.
+        Err(RuntimeError::hook(format!(
+            "hook `{}` uses handler `prompt`, which is not implemented",
+            registration.name
+        )))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{FailClosedPromptHookEvaluator, PromptHookEvaluator};
+    use types::{
+        HookContext, HookEvent, HookHandler, HookRegistration, PromptHookHandler, RunId, SessionId,
+    };
+
+    #[tokio::test]
+    async fn prompt_handler_fails_closed() {
+        let error = FailClosedPromptHookEvaluator
+            .evaluate(
+                &HookRegistration {
+                    name: "prompt-gate".to_string(),
+                    event: HookEvent::UserPromptSubmit,
+                    matcher: None,
+                    handler: HookHandler::Prompt(PromptHookHandler {
+                        prompt: "unused".to_string(),
+                    }),
+                    timeout_ms: None,
+                    execution: None,
+                },
+                HookContext {
+                    event: HookEvent::UserPromptSubmit,
+                    run_id: RunId::from("run_1"),
+                    session_id: SessionId::from("session_1"),
+                    turn_id: None,
+                    fields: Default::default(),
+                    payload: serde_json::json!({}),
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("not implemented"));
     }
 }
