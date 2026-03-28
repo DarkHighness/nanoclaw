@@ -86,6 +86,7 @@
   - child 非终态结果归一化，避免自然结束后把 agent 留在 `Queued/Running/Waiting*`
   - `AgentSessionManager::wait()` 的无丢通知修复
   - `send / wait / cancel / list` 的 parent-child scope 收紧
+  - batch spawn 的全量 preflight + write lease 预申请，失败时不留下部分已启动 child
 
 - 修复 child 终态收敛：
   - 子代理自然结束后，不能把 `Queued/Running/Waiting*` 写回 `AgentResultEnvelope.status`
@@ -121,7 +122,12 @@
   - 目标文件：
     - `crates/runtime/src/subagent_impl.rs`
   - 状态：
-    - `pending`
+    - `completed`
+  - 已落地语义：
+    - 先完成全部子任务的 tool resolution / task normalization / write set 解析
+    - 再统一申请本批次所有 write lease
+    - 任一 claim 失败时释放已申请 lease，并且不创建任何 child session / worker
+    - claim 成功后先写入生命周期事件，再启动 child runtime
 
 ### 6.2 Memory
 
@@ -314,6 +320,7 @@
   - `wait()` 竞态
   - child 终态归一化
   - parent scope 校验
+  - batch spawn 原子化
 - Memory：
   - 并发写保护
   - `subagent/task` export 生产链

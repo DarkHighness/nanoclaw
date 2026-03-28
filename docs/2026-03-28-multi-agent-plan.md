@@ -742,7 +742,7 @@ cargo test -p code-agent
 
 ### 19.1 当前完成度校准
 
-- 估计完成度：约 `65% ~ 70%`
+- 估计完成度：约 `70% ~ 75%`
 
 当前已经落地的部分：
 
@@ -752,13 +752,16 @@ cargo test -p code-agent
 - `AgentMailbox`
 - `WriteLeaseManager`
 - 生命周期事件与基础 store 持久化
+- `agent_wait` 的无丢通知语义
+- parent-child 控制面隔离
+- batch spawn 的原子化 preflight / claim / start 流程
 
 当前尚未达到计划目标的部分：
 
 - `dependency_ids` 仍未进入调度
 - `task_batch` 还是 fan-out/join，不是结构化 DAG 调度
-- parent-child 隔离边界还不够硬
-- 终态收敛和等待语义仍有竞态
+- 终态收尾 owner 还没有统一
+- root runtime 与 parent runtime 的控制面授权边界还没有写成完整策略
 
 ### 19.2 P0 修复项
 
@@ -766,6 +769,7 @@ cargo test -p code-agent
   - 修复 child 非终态结果归一化
   - 修复 `agent_wait()` 的无丢通知语义
   - 给 `send / wait / cancel / list` 加了 parent-child scope 收紧
+  - 修复批量 spawn 的部分成功副作用，改为全量 preflight + claim + 再启动
 
 - 修复 child 终态收敛：
   - 自然完成的 child 不允许回写非终态 status
@@ -773,7 +777,11 @@ cargo test -p code-agent
   - `snapshot -> notified().await` 结构必须替换
 - 给 `send / wait / cancel` 增加父子作用域校验
 - 修复批量 spawn 的部分成功副作用：
-  - 改为全量 preflight 或失败回滚
+  - 已完成：
+    - 全量预解析 task / tool / write set
+    - 全批次先 claim write lease
+    - claim 失败时释放已申请 lease，不留下 child session / worker
+    - 只有事件追加成功后才真正启动 child runtime
 
 ### 19.3 P1 对齐项
 

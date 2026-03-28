@@ -52,6 +52,13 @@ pub struct RuntimeSubagentExecutor {
     write_lease_manager: Arc<WriteLeaseManager>,
 }
 
+struct PlannedChildSpawn {
+    handle: AgentHandle,
+    task: AgentTaskSpec,
+    tool_registry: ToolRegistry,
+    requested_files: Vec<PathBuf>,
+}
+
 impl RuntimeSubagentExecutor {
     #[allow(clippy::too_many_arguments)]
     #[must_use]
@@ -189,6 +196,54 @@ impl RuntimeSubagentExecutor {
             handle.agent_id
         )))
     }
+
+    async fn append_spawn_events(
+        &self,
+        parent: &SubagentParentContext,
+        planned: &[PlannedChildSpawn],
+    ) -> std::result::Result<(), ToolError> {
+        for child in planned {
+            self.append_parent_event(
+                parent,
+                RunEventKind::TaskCreated {
+                    task: child.task.clone(),
+                    parent_agent_id: parent.parent_agent_id.clone(),
+                },
+            )
+            .await
+            .map_err(|error| ToolError::invalid_state(error.to_string()))?;
+            self.append_agent_envelope(
+                parent,
+                &child.handle,
+                AgentEnvelopeKind::SpawnRequested {
+                    task: child.task.clone(),
+                },
+            )
+            .await
+            .map_err(|error| ToolError::invalid_state(error.to_string()))?;
+            if !child.task.requested_write_set.is_empty() {
+                self.append_agent_envelope(
+                    parent,
+                    &child.handle,
+                    AgentEnvelopeKind::ClaimRequested {
+                        files: child.task.requested_write_set.clone(),
+                    },
+                )
+                .await
+                .map_err(|error| ToolError::invalid_state(error.to_string()))?;
+                self.append_agent_envelope(
+                    parent,
+                    &child.handle,
+                    AgentEnvelopeKind::ClaimGranted {
+                        files: child.task.requested_write_set.clone(),
+                    },
+                )
+                .await
+                .map_err(|error| ToolError::invalid_state(error.to_string()))?;
+            }
+        }
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -198,7 +253,7 @@ impl SubagentExecutor for RuntimeSubagentExecutor {
         parent: SubagentParentContext,
         tasks: Vec<AgentTaskSpec>,
     ) -> std::result::Result<Vec<AgentHandle>, ToolError> {
-        let mut handles = Vec::new();
+        let mut planned = Vec::new();
         for task in tasks {
             let (tool_registry, resolved_tools) = self
                 .resolve_child_tools(&task.allowed_tools)
@@ -207,85 +262,61 @@ impl SubagentExecutor for RuntimeSubagentExecutor {
                 allowed_tools: resolved_tools,
                 ..task
             };
-
-            let handle = AgentHandle {
-                agent_id: AgentId::new(),
-                parent_agent_id: parent.parent_agent_id.clone(),
-                run_id: RunId::new(),
-                session_id: SessionId::new(),
-                task_id: task.task_id.clone(),
-                role: task.role.clone(),
-                status: AgentStatus::Queued,
-            };
-
-            self.append_parent_event(
-                &parent,
-                RunEventKind::TaskCreated {
-                    task: task.clone(),
-                    parent_agent_id: parent.parent_agent_id.clone(),
-                },
-            )
-            .await
-            .map_err(|error| ToolError::invalid_state(error.to_string()))?;
-            self.append_agent_envelope(
-                &parent,
-                &handle,
-                AgentEnvelopeKind::SpawnRequested { task: task.clone() },
-            )
-            .await
-            .map_err(|error| ToolError::invalid_state(error.to_string()))?;
-
             let requested_files = self
                 .resolve_write_set(&task.requested_write_set)
                 .map_err(|error| ToolError::invalid_state(error.to_string()))?;
-            if !task.requested_write_set.is_empty() {
-                self.append_agent_envelope(
-                    &parent,
-                    &handle,
-                    AgentEnvelopeKind::ClaimRequested {
-                        files: task.requested_write_set.clone(),
-                    },
-                )
-                .await
-                .map_err(|error| ToolError::invalid_state(error.to_string()))?;
-                match self
-                    .write_lease_manager
-                    .claim(&handle.agent_id, &requested_files)
-                {
-                    Ok(()) => {
-                        self.append_agent_envelope(
-                            &parent,
-                            &handle,
-                            AgentEnvelopeKind::ClaimGranted {
-                                files: task.requested_write_set.clone(),
-                            },
-                        )
-                        .await
-                        .map_err(|error| ToolError::invalid_state(error.to_string()))?;
-                    }
-                    Err(conflict) => {
-                        self.append_agent_envelope(
-                            &parent,
-                            &handle,
-                            AgentEnvelopeKind::ClaimRejected {
-                                files: task.requested_write_set.clone(),
-                                owner: conflict.owner.clone(),
-                            },
-                        )
-                        .await
-                        .map_err(|error| ToolError::invalid_state(error.to_string()))?;
-                        return Err(ToolError::invalid_state(format!(
-                            "write lease conflict for {} owned by {}",
-                            conflict.requested, conflict.owner
-                        )));
-                    }
-                }
-            }
 
+            planned.push(PlannedChildSpawn {
+                handle: AgentHandle {
+                    agent_id: AgentId::new(),
+                    parent_agent_id: parent.parent_agent_id.clone(),
+                    run_id: RunId::new(),
+                    session_id: SessionId::new(),
+                    task_id: task.task_id.clone(),
+                    role: task.role.clone(),
+                    status: AgentStatus::Queued,
+                },
+                task,
+                tool_registry,
+                requested_files,
+            });
+        }
+
+        let mut claimed_agents = Vec::new();
+        for child in &planned {
+            if child.requested_files.is_empty() {
+                continue;
+            }
+            if let Err(conflict) = self
+                .write_lease_manager
+                .claim(&child.handle.agent_id, &child.requested_files)
+            {
+                for agent_id in &claimed_agents {
+                    self.write_lease_manager.release(agent_id);
+                }
+                return Err(ToolError::invalid_state(format!(
+                    "write lease conflict for {} owned by {}",
+                    conflict.requested, conflict.owner
+                )));
+            }
+            claimed_agents.push(child.handle.agent_id.clone());
+        }
+
+        if let Err(error) = self.append_spawn_events(&parent, &planned).await {
+            for agent_id in &claimed_agents {
+                self.write_lease_manager.release(agent_id);
+            }
+            return Err(error);
+        }
+
+        let mut handles = Vec::with_capacity(planned.len());
+        for child in planned {
+            let handle = child.handle;
+            let task = child.task;
             let runtime =
                 AgentRuntimeBuilder::new(self.backend.clone(), self.store.clone())
                     .hook_runner(self.hook_runner.clone())
-                    .tool_registry(tool_registry)
+                    .tool_registry(child.tool_registry)
                     .tool_context(self.tool_context.clone().with_agent_scope(
                         handle.agent_id.clone(),
                         self.write_lease_manager.clone(),
@@ -319,9 +350,13 @@ impl SubagentExecutor for RuntimeSubagentExecutor {
                 mailbox_rx,
             };
             let join_handle = tokio::spawn(async move { worker.run().await });
-            self.session_manager
+            if let Err(error) = self
+                .session_manager
                 .attach_join_handle(&handle.agent_id, join_handle)
-                .map_err(|error| ToolError::invalid_state(error.to_string()))?;
+            {
+                self.write_lease_manager.release(&handle.agent_id);
+                return Err(ToolError::invalid_state(error.to_string()));
+            }
             handles.push(handle);
         }
         Ok(handles)
@@ -1296,6 +1331,70 @@ mod tests {
             .await
             .expect_err("conflicting lease must fail");
         assert!(error.to_string().contains("write lease conflict"));
+    }
+
+    #[tokio::test]
+    async fn runtime_subagent_executor_batch_spawn_is_atomic_on_conflict() {
+        let backend = Arc::new(ImmediateBackend::default());
+        let store = Arc::new(InMemoryRunStore::new());
+        let executor = make_executor(backend, store);
+
+        let error = executor
+            .spawn(
+                SubagentParentContext::default(),
+                vec![
+                    AgentTaskSpec {
+                        task_id: "one".to_string(),
+                        role: "writer".to_string(),
+                        prompt: "write".to_string(),
+                        steer: None,
+                        allowed_tools: vec![ToolName::from("read")],
+                        requested_write_set: vec!["src".to_string()],
+                        dependency_ids: Vec::new(),
+                        timeout_seconds: None,
+                    },
+                    AgentTaskSpec {
+                        task_id: "two".to_string(),
+                        role: "writer".to_string(),
+                        prompt: "write".to_string(),
+                        steer: None,
+                        allowed_tools: vec![ToolName::from("read")],
+                        requested_write_set: vec!["src/lib.rs".to_string()],
+                        dependency_ids: Vec::new(),
+                        timeout_seconds: None,
+                    },
+                ],
+            )
+            .await
+            .expect_err("conflicting batch must fail");
+        assert!(error.to_string().contains("write lease conflict"));
+
+        let root_handles = executor
+            .list(SubagentParentContext::default())
+            .await
+            .unwrap();
+        assert!(
+            root_handles.is_empty(),
+            "failed batch must not leave running children"
+        );
+
+        let handles = executor
+            .spawn(
+                SubagentParentContext::default(),
+                vec![AgentTaskSpec {
+                    task_id: "retry".to_string(),
+                    role: "writer".to_string(),
+                    prompt: "write".to_string(),
+                    steer: None,
+                    allowed_tools: vec![ToolName::from("read")],
+                    requested_write_set: vec!["src".to_string()],
+                    dependency_ids: Vec::new(),
+                    timeout_seconds: None,
+                }],
+            )
+            .await
+            .expect("claims must be released after failed batch");
+        assert_eq!(handles.len(), 1);
     }
 
     #[tokio::test]
