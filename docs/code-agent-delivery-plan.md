@@ -47,11 +47,20 @@ Shipped in the third implementation slice:
 
 Shipped in the fourth implementation slice:
 
-- `code-agent` backend now owns run history lookup, replay, and export services
-- the TUI now exposes `/runs`, `/run`, `/export_run`, and
-  `/export_transcript` on top of backend-owned store access
-- durable run replay/export no longer depends on the legacy shell staying
+- `code-agent` backend now owns durable history lookup, replay, and export
+  services
+- the TUI now exposes persisted history browsing and export on top of
+  backend-owned store access
+- durable history replay/export no longer depends on the legacy shell staying
   product-shaped
+
+Shipped in the fifth implementation slice:
+
+- the TUI slash-command parser now uses `clap` instead of ad hoc string splits
+- product-facing host terminology now converges on `session` even while the
+  durable substrate store remains run-keyed
+- the TUI session/history panes now render backend snapshots and history views
+  with sectioned inspector output instead of flat text blobs
 
 Still pending in the next slices:
 
@@ -83,6 +92,8 @@ The consistent product pattern across those systems is:
 - agent-specific model / permission / tool contracts
 - explicit subagent orchestration instead of prompt-only delegation
 - durable session history, replay, and operator-visible controls
+- product-facing `session`, `continue`, `resume`, and `fork` terminology rather
+  than exposing raw persistence identifiers as the primary UX noun
 
 ## Current Repository Diagnosis
 
@@ -103,8 +114,11 @@ Current problems:
   still lacks typed host events, approval messages, and snapshots.
 - legacy `reference-tui` code still duplicates host responsibilities that now
   belong in `code-agent`.
-- `code-agent` now owns durable run replay/export, but MCP browsing and richer
-  startup diagnostics still have not moved over from the legacy shell.
+- `code-agent` now owns durable session browsing/replay/export, but MCP
+  browsing and richer startup diagnostics still have not moved over from the
+  legacy shell.
+- product-facing commands now say `session`, but the host still lacks a true
+  runtime resume/reattach path above the stored run catalog.
 - repository docs and app workspace defaults were tightened, but the app
   workspace still contains transitional code that must be retired later.
 
@@ -217,6 +231,12 @@ Acceptance:
 - approval is backend-owned state
 - subagent lifecycle is visible and navigable
 - session resume / reattach path is defined
+
+Current note:
+
+- the host now exposes session browsing/export semantics, but true runtime
+  resume remains a pending backend capability rather than an implemented
+  feature.
 
 ### Phase E: Delivery Cleanup
 

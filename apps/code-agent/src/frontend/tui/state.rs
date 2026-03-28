@@ -39,6 +39,8 @@ impl GitSnapshot {
 #[derive(Clone, Debug, Default)]
 pub(crate) struct SessionSummary {
     pub(crate) workspace_name: String,
+    pub(crate) active_session_ref: String,
+    pub(crate) root_session_id: String,
     pub(crate) provider_label: String,
     pub(crate) model: String,
     pub(crate) summary_model: String,
@@ -49,7 +51,7 @@ pub(crate) struct SessionSummary {
     pub(crate) skill_names: Vec<String>,
     pub(crate) store_label: String,
     pub(crate) store_warning: Option<String>,
-    pub(crate) stored_run_count: usize,
+    pub(crate) stored_session_count: usize,
     pub(crate) sandbox_summary: String,
     pub(crate) queued_commands: usize,
     pub(crate) token_ledger: TokenLedgerSnapshot,

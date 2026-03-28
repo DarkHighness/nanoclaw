@@ -16,7 +16,7 @@ It intentionally keeps the host layer thin:
 - interactive approval for destructive tools
 - streaming assistant output in a `ratatui` TUI
 - manual and automatic context compaction
-- persistent run history with replay and export commands
+- persistent session history with replay and export commands
 
 ## Usage
 
@@ -135,13 +135,19 @@ not have useful extensions, including `Dockerfile*`, `Containerfile*`, `go.mod`,
 
 - `/status`
 - `/help`
-- `/runs [query]`
-- `/run <id-prefix>`
-- `/export_run <id-prefix> <path>`
-- `/export_transcript <id-prefix> <path>`
+- `/sessions [query]`
+- `/session <session-ref>`
+- `/export_session <session-ref> <path>`
+- `/export_transcript <session-ref> <path>`
 - `/tools`
 - `/skills`
 - `/steer <notes>`
 - `/compact [notes]`
 - `/clear`
 - `/exit`
+
+The product-facing host surface now uses `session` terminology to match Codex,
+Claude Code, and OpenCode. The durable history backend still stores entries by
+substrate `run_id`, so `/session <session-ref>` currently opens persisted
+history and exports artifacts, but it does not yet resume a live runtime from
+that stored state.

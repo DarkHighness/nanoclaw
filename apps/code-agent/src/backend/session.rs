@@ -14,6 +14,8 @@ use tokio::sync::Mutex as AsyncMutex;
 pub(crate) struct SessionStartupSnapshot {
     pub(crate) workspace_name: String,
     pub(crate) workspace_root: PathBuf,
+    pub(crate) active_session_ref: String,
+    pub(crate) root_session_id: String,
     pub(crate) provider_label: String,
     pub(crate) model: String,
     pub(crate) summary_model: String,
@@ -22,7 +24,7 @@ pub(crate) struct SessionStartupSnapshot {
     pub(crate) skill_names: Vec<String>,
     pub(crate) store_label: String,
     pub(crate) store_warning: Option<String>,
-    pub(crate) stored_run_count: usize,
+    pub(crate) stored_session_count: usize,
     pub(crate) sandbox_summary: String,
 }
 
@@ -97,21 +99,21 @@ impl CodeAgentSession {
         runtime.compact_now(notes).await
     }
 
-    pub(crate) async fn list_runs(&self) -> Result<Vec<RunSummary>> {
+    pub(crate) async fn list_sessions(&self) -> Result<Vec<RunSummary>> {
         let runs = run_history::list_runs(&self.store).await?;
-        self.set_stored_run_count(runs.len());
+        self.set_stored_session_count(runs.len());
         Ok(runs)
     }
 
-    pub(crate) async fn search_runs(&self, query: &str) -> Result<Vec<RunSearchResult>> {
+    pub(crate) async fn search_sessions(&self, query: &str) -> Result<Vec<RunSearchResult>> {
         run_history::search_runs(&self.store, query).await
     }
 
-    pub(crate) async fn load_run(&self, run_ref: &str) -> Result<LoadedRun> {
+    pub(crate) async fn load_session(&self, run_ref: &str) -> Result<LoadedRun> {
         run_history::load_run(&self.store, run_ref).await
     }
 
-    pub(crate) async fn export_run_events(
+    pub(crate) async fn export_session(
         &self,
         run_ref: &str,
         relative_or_absolute: &str,
@@ -125,7 +127,7 @@ impl CodeAgentSession {
         .await
     }
 
-    pub(crate) async fn export_run_transcript(
+    pub(crate) async fn export_session_transcript(
         &self,
         run_ref: &str,
         relative_or_absolute: &str,
@@ -139,13 +141,13 @@ impl CodeAgentSession {
         .await
     }
 
-    pub(crate) async fn refresh_stored_run_count(&self) -> Result<usize> {
+    pub(crate) async fn refresh_stored_session_count(&self) -> Result<usize> {
         let count = run_history::list_runs(&self.store).await?.len();
-        self.set_stored_run_count(count);
+        self.set_stored_session_count(count);
         Ok(count)
     }
 
-    fn set_stored_run_count(&self, count: usize) {
-        self.startup.write().unwrap().stored_run_count = count;
+    fn set_stored_session_count(&self, count: usize) {
+        self.startup.write().unwrap().stored_session_count = count;
     }
 }

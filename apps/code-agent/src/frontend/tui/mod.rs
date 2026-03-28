@@ -9,8 +9,8 @@ use crate::backend::{CodeAgentSession, preview_id};
 pub(crate) use approval::{ApprovalBridge, InteractiveToolApprovalHandler};
 use commands::{SlashCommand, parse_slash_command};
 use history::{
-    format_export_result, format_run_inspector, format_run_search_line, format_run_summary_line,
-    format_transcript_lines,
+    format_session_export_result, format_session_inspector, format_session_search_line,
+    format_session_summary_line, format_session_transcript_lines,
 };
 use observer::SharedRenderObserver;
 use render::render;
@@ -234,12 +234,13 @@ impl CodeAgentTui {
         if let Some(task) = self.turn_task.take() {
             match task.await {
                 Ok(Ok(())) => {
-                    let stored_run_count = self.session.refresh_stored_run_count().await.ok();
+                    let stored_session_count =
+                        self.session.refresh_stored_session_count().await.ok();
                     self.ui_state.mutate(|state| {
                         state.turn_running = false;
                         state.session.git = git.clone();
-                        if let Some(stored_run_count) = stored_run_count {
-                            state.session.stored_run_count = stored_run_count;
+                        if let Some(stored_session_count) = stored_session_count {
+                            state.session.stored_session_count = stored_session_count;
                         }
                     });
                 }
@@ -333,21 +334,7 @@ impl CodeAgentTui {
                 self.ui_state.mutate(|state| {
                     state.inspector_title = "Command Palette".to_string();
                     state.inspector_scroll = 0;
-                    state.inspector = vec![
-                        "Slash commands".to_string(),
-                        "  /status".to_string(),
-                        "  /help".to_string(),
-                        "  /runs [query]".to_string(),
-                        "  /run <id-prefix>".to_string(),
-                        "  /export_run <id-prefix> <path>".to_string(),
-                        "  /export_transcript <id-prefix> <path>".to_string(),
-                        "  /tools".to_string(),
-                        "  /skills".to_string(),
-                        "  /steer <notes>".to_string(),
-                        "  /compact [notes]".to_string(),
-                        "  /clear".to_string(),
-                        "  /quit".to_string(),
-                    ];
+                    state.inspector = command_palette_lines();
                     state.status = "Opened command palette".to_string();
                     state.push_activity("opened command palette");
                 });
@@ -358,10 +345,13 @@ impl CodeAgentTui {
                 self.ui_state.mutate(move |state| {
                     state.inspector_title = "Tool Catalog".to_string();
                     state.inspector_scroll = 0;
-                    state.inspector = tool_names
-                        .iter()
-                        .map(|tool| format!("tool: {tool}"))
-                        .collect();
+                    state.inspector = if tool_names.is_empty() {
+                        vec!["## Tools".to_string(), "No tools registered.".to_string()]
+                    } else {
+                        std::iter::once("## Tools".to_string())
+                            .chain(tool_names.iter().map(|tool| format!("tool: {tool}")))
+                            .collect()
+                    };
                     state.status = "Listed core tools".to_string();
                     state.push_activity("inspected tool catalog");
                 });
@@ -373,17 +363,19 @@ impl CodeAgentTui {
                     state.inspector_title = "Skill Catalog".to_string();
                     state.inspector_scroll = 0;
                     state.inspector = if skills.is_empty() {
-                        vec!["No skills are available in the configured roots.".to_string()]
+                        vec![
+                            "## Skills".to_string(),
+                            "No skills are available in the configured roots.".to_string(),
+                        ]
                     } else {
-                        skills
-                            .iter()
-                            .map(|skill| {
+                        std::iter::once("## Skills".to_string())
+                            .chain(skills.iter().map(|skill| {
                                 format!(
                                     "{}: {}",
                                     skill.name,
                                     state::preview_text(&skill.description, 72)
                                 )
-                            })
+                            }))
                             .collect()
                     };
                     state.status = "Listed available skills".to_string();
@@ -392,7 +384,7 @@ impl CodeAgentTui {
                 Ok(false)
             }
             SlashCommand::Steer { message } => {
-                let Some(message) = message.map(ToOwned::to_owned) else {
+                let Some(message) = message else {
                     self.ui_state.mutate(|state| {
                         state.status = "Usage: /steer <notes>".to_string();
                         state.push_activity("invalid /steer invocation");
@@ -442,7 +434,6 @@ impl CodeAgentTui {
                     });
                     return Ok(false);
                 }
-                let notes = notes.map(ToOwned::to_owned);
                 let compacted = self.session.compact_now(notes).await?;
                 self.ui_state.mutate(|state| {
                     if compacted {
@@ -455,142 +446,151 @@ impl CodeAgentTui {
                 });
                 Ok(false)
             }
-            command @ (SlashCommand::Runs { .. }
-            | SlashCommand::Run { .. }
-            | SlashCommand::ExportRun { .. }
+            command @ (SlashCommand::Sessions { .. }
+            | SlashCommand::Session { .. }
+            | SlashCommand::ExportSession { .. }
             | SlashCommand::ExportTranscript { .. }) => self.apply_history_command(command).await,
             SlashCommand::InvalidUsage(message) => {
                 self.ui_state.mutate(|state| {
-                    state.status = message.to_string();
-                    state.push_activity(format!("invalid command: {message}"));
-                });
-                Ok(false)
-            }
-            SlashCommand::Unknown(input) => {
-                let input = input.to_string();
-                self.ui_state.mutate(move |state| {
-                    state.status = format!("Unknown command: {input}");
-                    state.push_activity(format!("unknown command: {input}"));
+                    state.status = "Command syntax error".to_string();
+                    state.inspector_title = "Command Error".to_string();
+                    state.inspector_scroll = 0;
+                    state.inspector = message.lines().map(ToOwned::to_owned).collect();
+                    state.push_activity("command parse error");
                 });
                 Ok(false)
             }
         }
     }
 
-    async fn apply_history_command(&mut self, command: SlashCommand<'_>) -> Result<bool> {
+    async fn apply_history_command(&mut self, command: SlashCommand) -> Result<bool> {
         match command {
-            SlashCommand::Runs { query } => {
+            SlashCommand::Sessions { query } => {
                 if let Some(query) = query {
-                    let query = query.to_string();
-                    let matches = self.session.search_runs(&query).await?;
-                    let stored_run_count = self.session.refresh_stored_run_count().await.ok();
+                    let matches = self.session.search_sessions(&query).await?;
+                    let stored_session_count =
+                        self.session.refresh_stored_session_count().await.ok();
                     self.ui_state.mutate(move |state| {
-                        if let Some(stored_run_count) = stored_run_count {
-                            state.session.stored_run_count = stored_run_count;
+                        if let Some(stored_session_count) = stored_session_count {
+                            state.session.stored_session_count = stored_session_count;
                         }
-                        state.inspector_title = "Run Search".to_string();
+                        state.inspector_title = "Session Search".to_string();
                         state.inspector_scroll = 0;
                         state.inspector = if matches.is_empty() {
-                            vec![format!("no runs matched `{query}`")]
+                            vec![
+                                "## Session Search".to_string(),
+                                format!("no sessions matched `{query}`"),
+                            ]
                         } else {
-                            matches
-                                .iter()
-                                .take(12)
-                                .map(format_run_search_line)
+                            std::iter::once("## Session Search".to_string())
+                                .chain(matches.iter().take(12).map(format_session_search_line))
                                 .collect()
                         };
                         state.status = if matches.is_empty() {
-                            format!("No runs matched `{query}`")
+                            format!("No sessions matched `{query}`")
                         } else {
                             format!(
-                                "Found {} matching runs. Use /run <id-prefix> to replay one.",
+                                "Found {} matching sessions. Use /session <session-ref> to open one.",
                                 matches.len()
                             )
                         };
                         state.push_activity(format!(
-                            "searched runs: {}",
+                            "searched sessions: {}",
                             state::preview_text(&query, 40)
                         ));
                     });
                 } else {
-                    let runs = self.session.list_runs().await?;
-                    let stored_run_count = runs.len();
+                    let sessions = self.session.list_sessions().await?;
+                    let stored_session_count = sessions.len();
                     self.ui_state.mutate(move |state| {
-                        state.session.stored_run_count = stored_run_count;
-                        state.inspector_title = "Runs".to_string();
+                        state.session.stored_session_count = stored_session_count;
+                        state.inspector_title = "Sessions".to_string();
                         state.inspector_scroll = 0;
-                        state.inspector = if runs.is_empty() {
-                            vec!["no runs recorded yet".to_string()]
+                        state.inspector = if sessions.is_empty() {
+                            vec![
+                                "## Sessions".to_string(),
+                                "no persisted sessions recorded yet".to_string(),
+                            ]
                         } else {
-                            runs.iter().take(12).map(format_run_summary_line).collect()
+                            std::iter::once("## Sessions".to_string())
+                                .chain(sessions.iter().take(12).map(format_session_summary_line))
+                                .collect()
                         };
-                        state.status = if runs.is_empty() {
-                            "No runs available yet".to_string()
+                        state.status = if sessions.is_empty() {
+                            "No sessions available yet".to_string()
                         } else {
                             format!(
-                                "Listed {} runs. Use /run <id-prefix> to replay one.",
-                                runs.len()
+                                "Listed {} sessions. Use /session <session-ref> to open one.",
+                                sessions.len()
                             )
                         };
-                        state.push_activity("listed persisted runs");
+                        state.push_activity("listed persisted sessions");
                     });
                 }
                 Ok(false)
             }
-            SlashCommand::Run { run_ref } => {
+            SlashCommand::Session { session_ref } => {
                 if self.turn_task.is_some() {
                     self.ui_state.mutate(|state| {
                         state.status =
-                            "Wait for the current turn before replaying another run".to_string();
-                        state.push_activity("run replay blocked while turn running");
+                            "Wait for the current turn before opening another session".to_string();
+                        state.push_activity("session replay blocked while turn running");
                     });
                     return Ok(false);
                 }
-                let loaded = self.session.load_run(run_ref).await?;
-                let inspector = format_run_inspector(&loaded);
-                let transcript = format_transcript_lines(&loaded);
-                let run_id_preview = preview_id(loaded.summary.run_id.as_str());
+                let loaded = self.session.load_session(&session_ref).await?;
+                let inspector = format_session_inspector(&loaded);
+                let transcript = format_session_transcript_lines(&loaded);
+                let session_ref_preview = preview_id(loaded.summary.run_id.as_str());
                 let transcript_count = loaded.summary.transcript_message_count;
                 self.ui_state.mutate(move |state| {
-                    state.inspector_title = "Run".to_string();
+                    state.inspector_title = "Session".to_string();
                     state.inspector_scroll = 0;
                     state.inspector = inspector;
                     state.transcript = transcript;
                     state.transcript_scroll = 0;
                     state.status = format!(
-                        "Loaded run {} with {} transcript messages",
-                        run_id_preview, transcript_count
+                        "Loaded session {} with {} transcript messages",
+                        session_ref_preview, transcript_count
                     );
-                    state.push_activity(format!("loaded run {}", run_id_preview));
+                    state.push_activity(format!("loaded session {}", session_ref_preview));
                 });
                 Ok(false)
             }
-            SlashCommand::ExportRun { run_ref, path } => {
-                let export = self.session.export_run_events(run_ref, path).await?;
-                let inspector = format_export_result(&export);
-                let run_id_preview = preview_id(export.run_id.as_str());
+            SlashCommand::ExportSession { session_ref, path } => {
+                let export = self.session.export_session(&session_ref, &path).await?;
+                let inspector = format_session_export_result(&export);
+                let session_ref_preview = preview_id(export.run_id.as_str());
                 let output_path = export.output_path.display().to_string();
                 self.ui_state.mutate(move |state| {
                     state.inspector_title = "Export".to_string();
                     state.inspector_scroll = 0;
                     state.inspector = inspector;
-                    state.status = format!("Exported run {} to {}", run_id_preview, output_path);
-                    state.push_activity(format!("exported run {}", run_id_preview));
+                    state.status = format!(
+                        "Exported session {} to {}",
+                        session_ref_preview, output_path
+                    );
+                    state.push_activity(format!("exported session {}", session_ref_preview));
                 });
                 Ok(false)
             }
-            SlashCommand::ExportTranscript { run_ref, path } => {
-                let export = self.session.export_run_transcript(run_ref, path).await?;
-                let inspector = format_export_result(&export);
-                let run_id_preview = preview_id(export.run_id.as_str());
+            SlashCommand::ExportTranscript { session_ref, path } => {
+                let export = self
+                    .session
+                    .export_session_transcript(&session_ref, &path)
+                    .await?;
+                let inspector = format_session_export_result(&export);
+                let session_ref_preview = preview_id(export.run_id.as_str());
                 let output_path = export.output_path.display().to_string();
                 self.ui_state.mutate(move |state| {
                     state.inspector_title = "Export".to_string();
                     state.inspector_scroll = 0;
                     state.inspector = inspector;
-                    state.status =
-                        format!("Exported transcript {} to {}", run_id_preview, output_path);
-                    state.push_activity(format!("exported transcript {}", run_id_preview));
+                    state.status = format!(
+                        "Exported transcript {} to {}",
+                        session_ref_preview, output_path
+                    );
+                    state.push_activity(format!("exported transcript {}", session_ref_preview));
                 });
                 Ok(false)
             }
@@ -605,6 +605,8 @@ impl CodeAgentTui {
         let mut state = TuiState {
             session: state::SessionSummary {
                 workspace_name: snapshot.workspace_name.clone(),
+                active_session_ref: snapshot.active_session_ref.clone(),
+                root_session_id: snapshot.root_session_id.clone(),
                 provider_label: snapshot.provider_label.clone(),
                 model: snapshot.model.clone(),
                 summary_model: snapshot.summary_model.clone(),
@@ -615,7 +617,7 @@ impl CodeAgentTui {
                 skill_names: snapshot.skill_names.clone(),
                 store_label: snapshot.store_label.clone(),
                 store_warning: snapshot.store_warning.clone(),
-                stored_run_count: snapshot.stored_run_count,
+                stored_session_count: snapshot.stored_session_count,
                 sandbox_summary: snapshot.sandbox_summary.clone(),
                 queued_commands: 0,
                 token_ledger: Default::default(),
@@ -623,6 +625,8 @@ impl CodeAgentTui {
             inspector_title: "Guide".to_string(),
             inspector: build_startup_inspector(&state::SessionSummary {
                 workspace_name: snapshot.workspace_name.clone(),
+                active_session_ref: snapshot.active_session_ref.clone(),
+                root_session_id: snapshot.root_session_id.clone(),
                 provider_label: snapshot.provider_label.clone(),
                 model: snapshot.model.clone(),
                 summary_model: snapshot.summary_model.clone(),
@@ -633,7 +637,7 @@ impl CodeAgentTui {
                 skill_names: snapshot.skill_names.clone(),
                 store_label: snapshot.store_label.clone(),
                 store_warning: snapshot.store_warning.clone(),
-                stored_run_count: snapshot.stored_run_count,
+                stored_session_count: snapshot.stored_session_count,
                 sandbox_summary: snapshot.sandbox_summary.clone(),
                 queued_commands: 0,
                 token_ledger: Default::default(),
@@ -663,27 +667,50 @@ fn queued_command_preview(command: &RuntimeCommand) -> String {
     }
 }
 
+fn command_palette_lines() -> Vec<String> {
+    vec![
+        "## Commands".to_string(),
+        "/status".to_string(),
+        "/help".to_string(),
+        "/sessions [query]".to_string(),
+        "/session <session-ref>".to_string(),
+        "/export_session <session-ref> <path>".to_string(),
+        "/export_transcript <session-ref> <path>".to_string(),
+        "/tools".to_string(),
+        "/skills".to_string(),
+        "/steer <notes>".to_string(),
+        "/compact [notes]".to_string(),
+        "/clear".to_string(),
+        "/quit".to_string(),
+    ]
+}
+
 fn build_startup_inspector(session: &state::SessionSummary) -> Vec<String> {
     let mut lines = vec![
-        "Ask for repo inspection, edits, tests, or debugging.".to_string(),
-        "Use /status, /runs, /run, /export_run, /export_transcript, /tools, /skills,".to_string(),
-        "/steer, or /compact.".to_string(),
+        "## Session".to_string(),
+        format!("session ref: {}", session.active_session_ref),
+        format!("runtime id: {}", session.root_session_id),
+        "## Workflow".to_string(),
+        "Use /sessions to browse persisted sessions and /session <ref> to open one.".to_string(),
+        "Use /export_session or /export_transcript to write durable artifacts.".to_string(),
         "Approvals stay in-line above the composer instead of replacing the screen.".to_string(),
+        "## Models".to_string(),
         format!(
-            "Primary lane: {} / {}",
+            "primary lane: {} / {}",
             session.provider_label, session.model
         ),
-        format!("Summary lane: {}", session.summary_model),
-        format!("Memory lane: {}", session.memory_model),
+        format!("summary lane: {}", session.summary_model),
+        format!("memory lane: {}", session.memory_model),
+        "## Store".to_string(),
         format!(
-            "Store: {} ({} runs)",
-            session.store_label, session.stored_run_count
+            "store: {} ({} sessions)",
+            session.store_label, session.stored_session_count
         ),
-        format!("Sandbox: {}", session.sandbox_summary),
+        format!("sandbox: {}", session.sandbox_summary),
     ];
     if let Some(warning) = &session.store_warning {
         lines.push(format!(
-            "Store warning: {}",
+            "store warning: {}",
             state::preview_text(warning, 72)
         ));
     }
@@ -700,6 +727,8 @@ mod tests {
     fn startup_inspector_surfaces_backend_boot_snapshot() {
         let lines = build_startup_inspector(&SessionSummary {
             workspace_name: "nanoclaw".to_string(),
+            active_session_ref: "run_123".to_string(),
+            root_session_id: "session_123".to_string(),
             provider_label: "openai".to_string(),
             model: "gpt-5.4".to_string(),
             summary_model: "gpt-5.4-mini".to_string(),
@@ -710,7 +739,7 @@ mod tests {
             skill_names: vec!["rust".to_string()],
             store_label: "file /workspace/.nanoclaw/store".to_string(),
             store_warning: Some("falling back soon".to_string()),
-            stored_run_count: 12,
+            stored_session_count: 12,
             sandbox_summary: "enforced via seatbelt".to_string(),
             queued_commands: 0,
             token_ledger: Default::default(),
@@ -719,17 +748,17 @@ mod tests {
         assert!(
             lines
                 .iter()
-                .any(|line| line == "Store: file /workspace/.nanoclaw/store (12 runs)")
+                .any(|line| line == "store: file /workspace/.nanoclaw/store (12 sessions)")
         );
         assert!(
             lines
                 .iter()
-                .any(|line| line == "Sandbox: enforced via seatbelt")
+                .any(|line| line == "sandbox: enforced via seatbelt")
         );
         assert!(
             lines
                 .iter()
-                .any(|line| line.contains("Store warning: falling back soon"))
+                .any(|line| line.contains("store warning: falling back soon"))
         );
     }
 }

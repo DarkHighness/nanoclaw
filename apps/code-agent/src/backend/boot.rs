@@ -207,6 +207,11 @@ pub(crate) async fn build_session(
     )
     .await?;
     let tool_names = runtime.tool_registry_names();
+    // Persisted history is still keyed by substrate `run_id`. Expose that ID as
+    // the operator-facing session reference until the host grows a first-class
+    // resumable session catalog above the raw runtime/store layer.
+    let active_session_ref = runtime.run_id().to_string();
+    let root_session_id = runtime.session_id().to_string();
     let skill_names = skills.iter().map(|skill| skill.name.clone()).collect();
 
     Ok(super::CodeAgentSession::new(
@@ -219,6 +224,8 @@ pub(crate) async fn build_session(
                 .unwrap_or("workspace")
                 .to_string(),
             workspace_root: workspace_root.to_path_buf(),
+            active_session_ref,
+            root_session_id,
             provider_label: provider_label(&options.primary_profile),
             model: options.primary_profile.model.model.clone(),
             summary_model: provider_summary(&options.summary_profile.model),
@@ -227,7 +234,7 @@ pub(crate) async fn build_session(
             skill_names,
             store_label,
             store_warning,
-            stored_run_count,
+            stored_session_count: stored_run_count,
             sandbox_summary,
         },
         skills,

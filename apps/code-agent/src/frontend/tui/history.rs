@@ -3,14 +3,14 @@ use crate::backend::{LoadedRun, RunExportArtifact, RunExportKind, message_to_tex
 use agent::types::{RunEventEnvelope, RunEventKind, SessionId};
 use store::{RunSearchResult, RunSummary, TokenUsageRecord};
 
-pub(crate) fn format_run_summary_line(summary: &RunSummary) -> String {
+pub(crate) fn format_session_summary_line(summary: &RunSummary) -> String {
     let prompt = summary
         .last_user_prompt
         .as_deref()
         .map(|value| preview_text(value, 36))
         .unwrap_or_else(|| "no prompt yet".to_string());
     format!(
-        "{}  msg={} ev={} sess={}  {}",
+        "{}  msgs={} ev={} workers={}  {}",
         preview_id(summary.run_id.as_str()),
         summary.transcript_message_count,
         summary.event_count,
@@ -19,8 +19,8 @@ pub(crate) fn format_run_summary_line(summary: &RunSummary) -> String {
     )
 }
 
-pub(crate) fn format_run_search_line(result: &RunSearchResult) -> String {
-    let base = format_run_summary_line(&result.summary);
+pub(crate) fn format_session_search_line(result: &RunSearchResult) -> String {
+    let base = format_session_summary_line(&result.summary);
     if result.preview_matches.is_empty() {
         format!("{base}  matches={}", result.matched_event_count)
     } else {
@@ -32,14 +32,16 @@ pub(crate) fn format_run_search_line(result: &RunSearchResult) -> String {
     }
 }
 
-pub(crate) fn format_run_inspector(run: &LoadedRun) -> Vec<String> {
+pub(crate) fn format_session_inspector(run: &LoadedRun) -> Vec<String> {
     let mut lines = vec![
-        format!("run: {}", run.summary.run_id),
-        format!("events: {}", run.summary.event_count),
-        format!("messages: {}", run.summary.transcript_message_count),
-        format!("sessions: {}", run.summary.session_count),
+        "## Session".to_string(),
+        format!("session ref: {}", run.summary.run_id),
+        format!("event count: {}", run.summary.event_count),
+        format!("message count: {}", run.summary.transcript_message_count),
+        format!("worker sessions: {}", run.summary.session_count),
     ];
     if let Some(run_usage) = &run.token_usage.run {
+        lines.push("## Token Budget".to_string());
         if let Some(window) = run_usage.ledger.context_window {
             lines.push(format!(
                 "context: {} / {}",
@@ -47,7 +49,7 @@ pub(crate) fn format_run_inspector(run: &LoadedRun) -> Vec<String> {
             ));
         }
         lines.push(format!(
-            "run tokens: in={} out={} cache={}",
+            "session tokens: in={} out={} cache={}",
             run_usage.ledger.cumulative_usage.input_tokens,
             run_usage.ledger.cumulative_usage.output_tokens,
             run_usage.ledger.cumulative_usage.cache_read_tokens,
@@ -64,7 +66,11 @@ pub(crate) fn format_run_inspector(run: &LoadedRun) -> Vec<String> {
         ));
     }
     if !run.token_usage.subagents.is_empty() {
-        lines.push(format!("subagents: {}", run.token_usage.subagents.len()));
+        lines.push("## Subagents".to_string());
+        lines.push(format!(
+            "subagent count: {}",
+            run.token_usage.subagents.len()
+        ));
         lines.extend(
             run.token_usage
                 .subagents
@@ -74,11 +80,13 @@ pub(crate) fn format_run_inspector(run: &LoadedRun) -> Vec<String> {
         );
     }
     if let Some(prompt) = &run.summary.last_user_prompt {
+        lines.push("## Prompt".to_string());
         lines.push(format!("last prompt: {}", preview_text(prompt, 80)));
     }
     if !run.session_ids.is_empty() {
+        lines.push("## Runtime IDs".to_string());
         lines.push(format!(
-            "session ids: {}",
+            "runtime sessions: {}",
             run.session_ids
                 .iter()
                 .map(|session_id: &SessionId| preview_id(session_id.as_str()))
@@ -87,7 +95,7 @@ pub(crate) fn format_run_inspector(run: &LoadedRun) -> Vec<String> {
         ));
     }
     if !run.events.is_empty() {
-        lines.push("recent events:".to_string());
+        lines.push("## Recent Events".to_string());
         lines.extend(
             run.events
                 .iter()
@@ -102,21 +110,22 @@ pub(crate) fn format_run_inspector(run: &LoadedRun) -> Vec<String> {
     lines
 }
 
-pub(crate) fn format_transcript_lines(run: &LoadedRun) -> Vec<String> {
+pub(crate) fn format_session_transcript_lines(run: &LoadedRun) -> Vec<String> {
     let transcript = run
         .transcript
         .iter()
         .map(message_to_text)
         .collect::<Vec<_>>();
     if transcript.is_empty() {
-        vec!["No transcript messages recorded for this run.".to_string()]
+        vec!["No transcript messages recorded for this session.".to_string()]
     } else {
         transcript
     }
 }
 
-pub(crate) fn format_export_result(result: &RunExportArtifact) -> Vec<String> {
+pub(crate) fn format_session_export_result(result: &RunExportArtifact) -> Vec<String> {
     vec![
+        "## Export".to_string(),
         format!(
             "export: {}",
             match result.kind {
@@ -124,7 +133,7 @@ pub(crate) fn format_export_result(result: &RunExportArtifact) -> Vec<String> {
                 RunExportKind::TranscriptText => "transcript text",
             }
         ),
-        format!("run: {}", result.run_id),
+        format!("session ref: {}", result.run_id),
         format!("path: {}", result.output_path.display()),
         format!("items: {}", result.item_count),
     ]
@@ -282,14 +291,14 @@ fn format_run_event_line(event: &RunEventEnvelope) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::format_export_result;
+    use super::format_session_export_result;
     use crate::backend::{RunExportArtifact, RunExportKind};
     use agent::types::RunId;
     use std::path::PathBuf;
 
     #[test]
     fn export_result_includes_kind_path_and_item_count() {
-        let lines = format_export_result(&RunExportArtifact {
+        let lines = format_session_export_result(&RunExportArtifact {
             kind: RunExportKind::TranscriptText,
             run_id: RunId::from("run-1"),
             output_path: PathBuf::from("/workspace/out.txt"),

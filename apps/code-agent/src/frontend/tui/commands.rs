@@ -1,66 +1,143 @@
-pub(crate) enum SlashCommand<'a> {
+use clap::{CommandFactory, Parser, Subcommand};
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum SlashCommand {
     Status,
     Help,
     Tools,
     Skills,
-    Steer { message: Option<&'a str> },
-    Compact { notes: Option<&'a str> },
-    Runs { query: Option<&'a str> },
-    Run { run_ref: &'a str },
-    ExportRun { run_ref: &'a str, path: &'a str },
-    ExportTranscript { run_ref: &'a str, path: &'a str },
+    Steer { message: Option<String> },
+    Compact { notes: Option<String> },
+    Sessions { query: Option<String> },
+    Session { session_ref: String },
+    ExportSession { session_ref: String, path: String },
+    ExportTranscript { session_ref: String, path: String },
     Clear,
     Quit,
-    InvalidUsage(&'static str),
-    Unknown(&'a str),
+    InvalidUsage(String),
 }
 
-pub(crate) fn parse_slash_command(input: &str) -> SlashCommand<'_> {
+#[derive(Parser, Debug)]
+#[command(
+    no_binary_name = true,
+    disable_version_flag = true,
+    disable_help_flag = true,
+    disable_help_subcommand = true
+)]
+struct SlashCli {
+    #[command(subcommand)]
+    command: SlashSubcommand,
+}
+
+#[derive(Subcommand, Debug)]
+#[command(rename_all = "snake_case")]
+enum SlashSubcommand {
+    Status,
+    Help,
+    Tools,
+    Skills,
+    Steer {
+        #[arg(
+            value_name = "NOTES",
+            trailing_var_arg = true,
+            allow_hyphen_values = true
+        )]
+        message: Vec<String>,
+    },
+    Compact {
+        #[arg(
+            value_name = "NOTES",
+            trailing_var_arg = true,
+            allow_hyphen_values = true
+        )]
+        notes: Vec<String>,
+    },
+    Sessions {
+        #[arg(
+            value_name = "QUERY",
+            trailing_var_arg = true,
+            allow_hyphen_values = true
+        )]
+        query: Vec<String>,
+    },
+    Session {
+        session_ref: String,
+    },
+    ExportSession {
+        session_ref: String,
+        #[arg(value_name = "PATH", required = true, trailing_var_arg = true)]
+        path: Vec<String>,
+    },
+    ExportTranscript {
+        session_ref: String,
+        #[arg(value_name = "PATH", required = true, trailing_var_arg = true)]
+        path: Vec<String>,
+    },
+    Clear,
+    #[command(alias = "exit")]
+    Quit,
+}
+
+pub(crate) fn parse_slash_command(input: &str) -> SlashCommand {
     let trimmed = input.trim();
     let body = trimmed.strip_prefix('/').unwrap_or(trimmed);
-    let mut parts = body.splitn(2, char::is_whitespace);
-    let name = parts.next().unwrap_or_default();
-    let remainder = parts
-        .next()
-        .map(str::trim)
-        .filter(|value| !value.is_empty());
+    let Some(args) = shlex::split(body) else {
+        return SlashCommand::InvalidUsage("Unable to parse command line".to_string());
+    };
 
-    match name {
-        "status" => SlashCommand::Status,
-        "help" => SlashCommand::Help,
-        "tools" => SlashCommand::Tools,
-        "skills" => SlashCommand::Skills,
-        "steer" => SlashCommand::Steer { message: remainder },
-        "compact" => SlashCommand::Compact { notes: remainder },
-        "runs" => SlashCommand::Runs { query: remainder },
-        "run" => remainder
-            .map(|run_ref| SlashCommand::Run { run_ref })
-            .unwrap_or(SlashCommand::InvalidUsage("Usage: /run <id-prefix>")),
-        "export_run" => parse_export_args(remainder)
-            .map(|(run_ref, path)| SlashCommand::ExportRun { run_ref, path })
-            .unwrap_or(SlashCommand::InvalidUsage(
-                "Usage: /export_run <id-prefix> <path>",
-            )),
-        "export_transcript" => parse_export_args(remainder)
-            .map(|(run_ref, path)| SlashCommand::ExportTranscript { run_ref, path })
-            .unwrap_or(SlashCommand::InvalidUsage(
-                "Usage: /export_transcript <id-prefix> <path>",
-            )),
-        "clear" => SlashCommand::Clear,
-        "quit" | "exit" => SlashCommand::Quit,
-        _ => SlashCommand::Unknown(trimmed),
+    match SlashCli::try_parse_from(args) {
+        Ok(parsed) => parsed.command.into(),
+        Err(error) => SlashCommand::InvalidUsage(render_usage_error(error)),
     }
 }
 
-fn parse_export_args(input: Option<&str>) -> Option<(&str, &str)> {
-    let input = input?;
-    let mut parts = input.splitn(2, char::is_whitespace);
-    let run_ref = parts.next()?.trim();
-    let path = parts.next()?.trim();
-    if run_ref.is_empty() || path.is_empty() {
-        return None;
+impl From<SlashSubcommand> for SlashCommand {
+    fn from(value: SlashSubcommand) -> Self {
+        match value {
+            SlashSubcommand::Status => Self::Status,
+            SlashSubcommand::Help => Self::Help,
+            SlashSubcommand::Tools => Self::Tools,
+            SlashSubcommand::Skills => Self::Skills,
+            SlashSubcommand::Steer { message } => Self::Steer {
+                message: join_optional_tail(message),
+            },
+            SlashSubcommand::Compact { notes } => Self::Compact {
+                notes: join_optional_tail(notes),
+            },
+            SlashSubcommand::Sessions { query } => Self::Sessions {
+                query: join_optional_tail(query),
+            },
+            SlashSubcommand::Session { session_ref } => Self::Session { session_ref },
+            SlashSubcommand::ExportSession { session_ref, path } => Self::ExportSession {
+                session_ref,
+                path: join_required_tail(path),
+            },
+            SlashSubcommand::ExportTranscript { session_ref, path } => Self::ExportTranscript {
+                session_ref,
+                path: join_required_tail(path),
+            },
+            SlashSubcommand::Clear => Self::Clear,
+            SlashSubcommand::Quit => Self::Quit,
+        }
     }
-    Some((run_ref, path))
+}
+
+fn join_optional_tail(parts: Vec<String>) -> Option<String> {
+    let joined = parts.join(" ").trim().to_string();
+    (!joined.is_empty()).then_some(joined)
+}
+
+fn join_required_tail(parts: Vec<String>) -> String {
+    parts.join(" ").trim().to_string()
+}
+
+fn render_usage_error(error: clap::Error) -> String {
+    let rendered = error.to_string().trim().to_string();
+    if rendered.is_empty() {
+        let mut command = SlashCli::command().styles(clap::builder::Styles::plain());
+        return command.render_help().to_string().trim().to_string();
+    }
+    rendered
 }
 
 #[cfg(test)]
@@ -68,10 +145,10 @@ mod tests {
     use super::{SlashCommand, parse_slash_command};
 
     #[test]
-    fn parses_runs_query_with_spaces() {
-        match parse_slash_command("/runs fix failing test") {
-            SlashCommand::Runs { query } => {
-                assert_eq!(query, Some("fix failing test"));
+    fn parses_session_query_with_spaces() {
+        match parse_slash_command("/sessions fix failing test") {
+            SlashCommand::Sessions { query } => {
+                assert_eq!(query, Some("fix failing test".to_string()));
             }
             _ => panic!("unexpected command"),
         }
@@ -80,8 +157,8 @@ mod tests {
     #[test]
     fn export_transcript_keeps_path_tail_intact() {
         match parse_slash_command("/export_transcript abc123 reports/run log.txt") {
-            SlashCommand::ExportTranscript { run_ref, path } => {
-                assert_eq!(run_ref, "abc123");
+            SlashCommand::ExportTranscript { session_ref, path } => {
+                assert_eq!(session_ref, "abc123");
                 assert_eq!(path, "reports/run log.txt");
             }
             _ => panic!("unexpected command"),
@@ -89,10 +166,11 @@ mod tests {
     }
 
     #[test]
-    fn missing_run_ref_returns_usage_error() {
-        match parse_slash_command("/run") {
+    fn missing_session_ref_returns_usage_error() {
+        match parse_slash_command("/session") {
             SlashCommand::InvalidUsage(message) => {
-                assert_eq!(message, "Usage: /run <id-prefix>");
+                assert!(message.contains("Usage:"));
+                assert!(message.contains("session <SESSION_REF>"));
             }
             _ => panic!("unexpected command"),
         }

@@ -51,8 +51,8 @@ pub(crate) fn render(
     let right = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(11),
-            Constraint::Length(7),
+            Constraint::Length(13),
+            Constraint::Min(12),
             Constraint::Min(8),
         ])
         .split(body[1]);
@@ -179,19 +179,36 @@ fn render_transcript(frame: &mut ratatui::Frame<'_>, area: Rect, state: &TuiStat
 
 fn render_session(frame: &mut ratatui::Frame<'_>, area: Rect, state: &TuiState) {
     let session = Paragraph::new(build_key_value_text(&session_lines(state)))
-        .block(pane_block("Session", false, BORDER))
+        .block(panel_block("Current Session", BORDER))
         .wrap(Wrap { trim: false })
         .style(Style::default().fg(TEXT).bg(PANEL_ALT_BG));
     frame.render_widget(session, area);
 }
 
 fn session_lines(state: &TuiState) -> Vec<String> {
-    vec![
-        format!("workspace: {}", state.session.workspace_name),
+    let mut lines = vec![
+        "## Workspace".to_string(),
+        format!("name: {}", state.session.workspace_name),
         format!(
             "path: {}",
             preview_text(&state.session.workspace_root.display().to_string(), 52)
         ),
+        "## Session".to_string(),
+        format!(
+            "active ref: {}",
+            preview_text(&state.session.active_session_ref, 28)
+        ),
+        format!(
+            "runtime id: {}",
+            preview_text(&state.session.root_session_id, 28)
+        ),
+        format!("persisted sessions: {}", state.session.stored_session_count),
+        "## Runtime".to_string(),
+        format!(
+            "primary lane: {} / {}",
+            state.session.provider_label, state.session.model
+        ),
+        format!("queue: {} pending", state.session.queued_commands),
         format!(
             "resources: tools {}  skills {}",
             state.session.tool_names.len(),
@@ -201,22 +218,26 @@ fn session_lines(state: &TuiState) -> Vec<String> {
                 state.session.skill_names.len().to_string()
             }
         ),
-        format!(
-            "store: {}  runs {}",
-            preview_text(&state.session.store_label, 20),
-            state.session.stored_run_count
-        ),
+        "## Store".to_string(),
+        format!("store: {}", preview_text(&state.session.store_label, 20),),
         format!(
             "sandbox: {}",
             preview_text(&state.session.sandbox_summary, 28)
         ),
+    ];
+    if let Some(warning) = &state.session.store_warning {
+        lines.push(format!("warning: {}", preview_text(warning, 36)));
+    }
+    lines.extend([
+        "## Tokens".to_string(),
         session_context_line(state),
         session_last_token_line(state),
         session_total_token_line(state),
-        format!("queue: {} pending", state.session.queued_commands),
+        "## Git".to_string(),
         format!("branch: {}", state.session.git.branch_label()),
         format!("dirty: {}", state.session.git.dirty_label()),
-    ]
+    ]);
+    lines
 }
 
 fn session_context_line(state: &TuiState) -> String {
@@ -368,18 +389,18 @@ fn render_composer(frame: &mut ratatui::Frame<'_>, area: Rect, state: &TuiState)
             ),
             Span::styled(" commands  ", Style::default().fg(MUTED)),
             Span::styled(
-                "/steer",
+                "/sessions",
                 Style::default().fg(USER).add_modifier(Modifier::BOLD),
             ),
-            Span::styled(" queued guidance", Style::default().fg(MUTED)),
+            Span::styled(" browse history", Style::default().fg(MUTED)),
         ])
     } else {
         Line::from(vec![
             Span::styled(
-                "/tools",
+                "/session",
                 Style::default().fg(USER).add_modifier(Modifier::BOLD),
             ),
-            Span::styled(" tool catalog  ", Style::default().fg(MUTED)),
+            Span::styled(" open snapshot  ", Style::default().fg(MUTED)),
             Span::styled(
                 "/compact",
                 Style::default().fg(USER).add_modifier(Modifier::BOLD),
@@ -720,6 +741,20 @@ fn code_span(line: &str) -> Span<'static> {
 fn build_key_value_text(lines: &[String]) -> Text<'static> {
     let mut rendered = Vec::new();
     for line in lines {
+        if let Some(title) = line.strip_prefix("## ") {
+            if !rendered.is_empty() {
+                rendered.push(Line::raw(""));
+            }
+            rendered.push(Line::from(vec![
+                Span::styled("▍", Style::default().fg(USER).add_modifier(Modifier::BOLD)),
+                Span::raw(" "),
+                Span::styled(
+                    title.to_string(),
+                    Style::default().fg(HEADER).add_modifier(Modifier::BOLD),
+                ),
+            ]));
+            continue;
+        }
         if let Some((key, value)) = line.split_once(':') {
             rendered.push(Line::from(vec![
                 Span::styled(
@@ -727,21 +762,66 @@ fn build_key_value_text(lines: &[String]) -> Text<'static> {
                     Style::default().fg(MUTED).add_modifier(Modifier::BOLD),
                 ),
                 Span::raw(" "),
-                Span::styled(value.trim().to_string(), Style::default().fg(TEXT)),
+                Span::styled(
+                    value.trim().to_string(),
+                    value_style(key.trim(), value.trim()),
+                ),
             ]));
         } else if let Some(rest) = line.strip_prefix("  ") {
             rendered.push(Line::from(vec![
                 Span::styled("  ", Style::default().fg(SUBTLE)),
                 Span::styled(rest.to_string(), Style::default().fg(TEXT)),
             ]));
+        } else if line.starts_with('/') {
+            rendered.push(Line::from(Span::styled(
+                line.to_string(),
+                Style::default().fg(USER).add_modifier(Modifier::BOLD),
+            )));
         } else {
             rendered.push(Line::from(Span::styled(
                 line.to_string(),
-                Style::default().fg(TEXT),
+                plain_text_style(line),
             )));
         }
     }
     Text::from(rendered)
+}
+
+fn value_style(key: &str, value: &str) -> Style {
+    if key.contains("warning") {
+        Style::default().fg(WARN)
+    } else if key.contains("sandbox") {
+        Style::default().fg(USER)
+    } else if key.contains("dirty") {
+        if value.contains("modified 0")
+            && value.contains("untracked 0")
+            && value.contains("staged 0")
+        {
+            Style::default().fg(ASSISTANT)
+        } else {
+            Style::default().fg(WARN)
+        }
+    } else if key.contains("queue") {
+        if value.starts_with('0') {
+            Style::default().fg(ASSISTANT)
+        } else {
+            Style::default().fg(WARN)
+        }
+    } else if key.contains("active ref") || key.contains("runtime id") {
+        Style::default().fg(USER)
+    } else {
+        Style::default().fg(TEXT)
+    }
+}
+
+fn plain_text_style(line: &str) -> Style {
+    if line.starts_with("Use /") {
+        Style::default().fg(MUTED)
+    } else if line.starts_with("No ") || line.starts_with("no ") {
+        Style::default().fg(SUBTLE)
+    } else {
+        Style::default().fg(TEXT)
+    }
 }
 
 fn status_color(status: &str) -> Color {
@@ -772,7 +852,8 @@ fn clamp_scroll(requested: u16, content_lines: usize, viewport_height: u16) -> u
 #[cfg(test)]
 mod tests {
     use super::{
-        session_context_line, session_last_token_line, session_lines, session_total_token_line,
+        build_key_value_text, session_context_line, session_last_token_line, session_lines,
+        session_total_token_line,
     };
     use crate::frontend::tui::state::TuiState;
     use agent::types::{ContextWindowUsage, TokenLedgerSnapshot, TokenUsage};
@@ -782,6 +863,8 @@ mod tests {
     fn session_token_lines_show_unknown_context_before_first_request() {
         let mut state = TuiState::default();
         state.session.workspace_name = "workspace".to_string();
+        state.session.active_session_ref = "run_123".to_string();
+        state.session.root_session_id = "session_123".to_string();
         state.session.workspace_root = PathBuf::from("/tmp/workspace");
 
         assert_eq!(session_context_line(&state), "context: unknown");
@@ -794,6 +877,8 @@ mod tests {
     fn session_token_lines_show_cumulative_usage_after_runtime_updates() {
         let mut state = TuiState::default();
         state.session.workspace_name = "workspace".to_string();
+        state.session.active_session_ref = "run_123".to_string();
+        state.session.root_session_id = "session_123".to_string();
         state.session.workspace_root = PathBuf::from("/tmp/workspace");
         state.session.token_ledger = TokenLedgerSnapshot {
             context_window: Some(ContextWindowUsage {
@@ -814,5 +899,18 @@ mod tests {
             "total: in 32000  out 2400  prefill 25000  decode 2400  cache 7000"
         );
         assert!(session_lines(&state).contains(&"context: 128000 / 400000".to_string()));
+    }
+
+    #[test]
+    fn key_value_text_renders_section_headers_without_treating_them_as_pairs() {
+        let rendered = build_key_value_text(&[
+            "## Session".to_string(),
+            "session ref: abc123".to_string(),
+            "/sessions [query]".to_string(),
+        ]);
+        let lines = rendered.lines;
+        assert_eq!(lines[0].spans[2].content.as_ref(), "Session");
+        assert_eq!(lines[1].spans[0].content.as_ref(), "session ref:");
+        assert_eq!(lines[2].spans[0].content.as_ref(), "/sessions [query]");
     }
 }
