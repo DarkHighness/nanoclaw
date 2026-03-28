@@ -23,7 +23,7 @@ use preamble::DEFAULT_AGENT_PREAMBLE;
 use preamble::build_runtime_preamble;
 use provider::{
     agent_backend_capabilities, build_backend, build_memory_reasoning_service,
-    build_summary_backend, provider_summary,
+    build_summary_backend, provider_model_summary, provider_summary,
 };
 use runtime::{
     AgentRuntime, AgentRuntimeBuilder, CompactionConfig, DefaultCommandHookExecutor, HookRunner,
@@ -139,7 +139,9 @@ async fn bootstrap_from_parts(
         Arc::new(build_backend(&config).context("failed to initialize provider backend")?);
     let summary_backend =
         Arc::new(build_summary_backend(&config).context("failed to initialize summary backend")?);
-    let provider_summary = provider_summary(&config);
+    let primary_provider_summary = provider_summary(&config);
+    let summary_provider_summary = provider_model_summary(&config.summary_profile.model);
+    let memory_provider_summary = provider_model_summary(&config.memory_profile.model);
     let tool_context = ToolExecutionContext {
         workspace_root: workspace_root.clone(),
         worktree_root: Some(workspace_root.clone()),
@@ -279,7 +281,9 @@ async fn bootstrap_from_parts(
     let startup_summary = build_startup_summary(
         &runtime.run_id(),
         &workspace_root,
-        &provider_summary,
+        &primary_provider_summary,
+        &summary_provider_summary,
+        &memory_provider_summary,
         &store_handle,
         stored_run_count,
         &runtime.tool_specs(),
@@ -302,7 +306,7 @@ async fn bootstrap_from_parts(
         startup_summary,
         skills,
         skill_names,
-        provider_summary,
+        provider_summary: primary_provider_summary,
         store_label: store_handle.label,
         store_warning: store_handle.warning,
     })
@@ -495,7 +499,21 @@ Use this skill when asked.
                 .startup_summary
                 .sidebar
                 .iter()
-                .any(|line| line.contains("provider: gpt_5_4_default -> openai / gpt-5.4"))
+                .any(|line| line.contains("primary lane: openai / gpt-5.4"))
+        );
+        assert!(
+            artifacts
+                .startup_summary
+                .sidebar
+                .iter()
+                .any(|line| line.contains("summary lane: openai / gpt-5.4"))
+        );
+        assert!(
+            artifacts
+                .startup_summary
+                .sidebar
+                .iter()
+                .any(|line| line.contains("memory lane: openai / gpt-5.4"))
         );
         assert!(
             artifacts

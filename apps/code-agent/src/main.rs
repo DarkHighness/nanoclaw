@@ -242,12 +242,16 @@ async fn async_main(workspace_root: PathBuf, options: AppOptions) -> Result<()> 
     .await?;
     let provider_label = provider_label(&options.primary_profile);
     let model = options.primary_profile.model.model.clone();
+    let summary_model = provider_summary(&options.summary_profile.model);
+    let memory_model = provider_summary(&options.memory_profile.model);
     let initial_prompt = options.one_shot_prompt.clone();
     CodeAgentTui::new(
         runtime,
         workspace_root,
         provider_label,
         model,
+        summary_model,
+        memory_model,
         skills,
         initial_prompt,
         ui_state,

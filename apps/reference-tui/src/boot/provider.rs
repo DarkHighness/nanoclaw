@@ -57,6 +57,11 @@ pub(super) fn provider_summary(config: &AgentCoreConfig) -> String {
     format!("{} -> {provider} / {}", model.alias, model.model)
 }
 
+pub(super) fn provider_model_summary(model: &ResolvedModel) -> String {
+    let provider = provider_name(&model.provider);
+    format!("{provider} / {}", model.model)
+}
+
 fn build_agent_backend(profile: &ResolvedAgentProfile) -> Result<ProviderBackend> {
     build_backend_from_model(
         &profile.model,
