@@ -194,7 +194,8 @@ mod tests {
     use serde_json::json;
     use types::{
         AgentArtifact, AgentEnvelope, AgentEnvelopeKind, AgentHandle, AgentId, AgentResultEnvelope,
-        AgentStatus, AgentTaskSpec, Message, RunEventEnvelope, RunEventKind, RunId, SessionId,
+        AgentStatus, AgentTaskSpec, ContextWindowUsage, Message, RunEventEnvelope, RunEventKind,
+        RunId, SessionId, TokenLedgerSnapshot, TokenUsage, TokenUsagePhase,
     };
 
     macro_rules! bounded_async_test {
@@ -498,6 +499,111 @@ mod tests {
             );
             assert_eq!(exports.tasks[0].summary.task_id.as_deref(), Some("task-17"));
             assert!(exports.tasks[0].search_corpus.contains("checked ownership"));
+        }
+    );
+
+    bounded_async_test!(
+        async fn reports_root_and_subagent_token_usage() {
+            let store = InMemoryRunStore::new();
+            let run_id = RunId::new();
+            let parent_session_id = SessionId::new();
+            let child_run_id = RunId::new();
+            let child_session_id = SessionId::new();
+            let agent_id = AgentId::new();
+            let task = AgentTaskSpec {
+                task_id: "task-usage".to_string(),
+                role: "reviewer".to_string(),
+                prompt: "review the patch".to_string(),
+                steer: None,
+                allowed_tools: Vec::new(),
+                requested_write_set: Vec::new(),
+                dependency_ids: Vec::new(),
+                timeout_seconds: None,
+            };
+
+            store
+                .append(RunEventEnvelope::new(
+                    run_id.clone(),
+                    parent_session_id.clone(),
+                    None,
+                    None,
+                    RunEventKind::TokenUsageUpdated {
+                        phase: TokenUsagePhase::ResponseCompleted,
+                        ledger: TokenLedgerSnapshot {
+                            context_window: Some(ContextWindowUsage {
+                                used_tokens: 100,
+                                max_tokens: 400_000,
+                            }),
+                            last_usage: Some(TokenUsage::from_input_output(100, 20, 10)),
+                            cumulative_usage: TokenUsage::from_input_output(100, 20, 10),
+                        },
+                    },
+                ))
+                .await
+                .unwrap();
+            store
+                .append(RunEventEnvelope::new(
+                    run_id.clone(),
+                    parent_session_id,
+                    None,
+                    None,
+                    RunEventKind::SubagentStart {
+                        handle: AgentHandle {
+                            agent_id,
+                            parent_agent_id: None,
+                            run_id: child_run_id.clone(),
+                            session_id: child_session_id.clone(),
+                            task_id: task.task_id.clone(),
+                            role: task.role.clone(),
+                            status: AgentStatus::Running,
+                        },
+                        task,
+                    },
+                ))
+                .await
+                .unwrap();
+            store
+                .append(RunEventEnvelope::new(
+                    child_run_id.clone(),
+                    child_session_id.clone(),
+                    None,
+                    None,
+                    RunEventKind::TokenUsageUpdated {
+                        phase: TokenUsagePhase::ResponseCompleted,
+                        ledger: TokenLedgerSnapshot {
+                            context_window: Some(ContextWindowUsage {
+                                used_tokens: 60,
+                                max_tokens: 200_000,
+                            }),
+                            last_usage: Some(TokenUsage::from_input_output(40, 10, 5)),
+                            cumulative_usage: TokenUsage::from_input_output(40, 10, 5),
+                        },
+                    },
+                ))
+                .await
+                .unwrap();
+
+            let report = store.token_usage(&run_id).await.unwrap();
+            assert_eq!(
+                report
+                    .run
+                    .as_ref()
+                    .map(|record| record.ledger.cumulative_usage),
+                Some(TokenUsage::from_input_output(100, 20, 10))
+            );
+            assert_eq!(report.sessions.len(), 1);
+            assert_eq!(report.subagents.len(), 1);
+            assert_eq!(
+                report.subagents[0].session_id.as_ref(),
+                Some(&child_session_id)
+            );
+            assert_eq!(report.subagents[0].agent_name.as_deref(), Some("reviewer"));
+            assert_eq!(report.tasks.len(), 1);
+            assert_eq!(report.tasks[0].task_id.as_deref(), Some("task-usage"));
+            assert_eq!(
+                report.aggregate_usage,
+                TokenUsage::from_input_output(140, 30, 15)
+            );
         }
     );
 }

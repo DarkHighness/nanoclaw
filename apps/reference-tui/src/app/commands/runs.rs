@@ -60,8 +60,9 @@ impl RuntimeTui {
                     .ok_or_else(|| anyhow::anyhow!("run missing from store listing: {}", run_id))?;
                 let events = self.store.events(&run_id).await?;
                 let session_ids = self.store.session_ids(&run_id).await?;
+                let token_usage = self.store.token_usage(&run_id).await?;
                 state.transcript = self.replay_run_lines(&run_id).await?;
-                state.sidebar = format_run_sidebar(&summary, &session_ids, &events);
+                state.sidebar = format_run_sidebar(&summary, &session_ids, &events, &token_usage);
                 state.sidebar_title = "Run".to_string();
                 state.status = format!(
                     "Loaded run {} with {} transcript messages",
