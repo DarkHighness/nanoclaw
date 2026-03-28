@@ -282,6 +282,21 @@ pub(crate) fn searchable_event_strings(event: &RunEventEnvelope) -> Vec<String> 
             values.push(assistant_text.clone());
             values.extend(tool_calls.iter().map(|call| call.tool_name.to_string()));
         }
+        RunEventKind::TokenUsageUpdated { phase, ledger } => {
+            values.push(format!(
+                "token_usage {:?} context={} input={} output={} prefill={} decode={} cache_read={}",
+                phase,
+                ledger
+                    .context_window
+                    .map(|usage| format!("{}/{}", usage.used_tokens, usage.max_tokens))
+                    .unwrap_or_else(|| "unknown".to_string()),
+                ledger.cumulative_usage.input_tokens,
+                ledger.cumulative_usage.output_tokens,
+                ledger.cumulative_usage.prefill_tokens,
+                ledger.cumulative_usage.decode_tokens,
+                ledger.cumulative_usage.cache_read_tokens,
+            ));
+        }
         RunEventKind::HookInvoked { hook_name, .. } => {
             values.push(hook_name.clone());
         }

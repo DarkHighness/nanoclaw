@@ -1606,6 +1606,7 @@ mod tests {
                     stop_reason: Some("stop".to_string()),
                     message_id: None,
                     continuation: None,
+                    usage: None,
                     reasoning: Vec::new(),
                 }),
             ])
@@ -1659,6 +1660,7 @@ mod tests {
                     stop_reason: Some("stop".to_string()),
                     message_id: None,
                     continuation: None,
+                    usage: None,
                     reasoning: Vec::new(),
                 }),
             ])
@@ -1697,6 +1699,7 @@ mod tests {
                     stop_reason: Some("stop".to_string()),
                     message_id: None,
                     continuation: None,
+                    usage: None,
                     reasoning: Vec::new(),
                 }),
             ])
@@ -1736,6 +1739,7 @@ mod tests {
                     stop_reason: Some("stop".to_string()),
                     message_id: None,
                     continuation: None,
+                    usage: None,
                     reasoning: Vec::new(),
                 }),
             ])

@@ -138,6 +138,16 @@ pub(super) fn format_run_event_line(event: &RunEventEnvelope) -> String {
             preview_text(assistant_text, 24),
             tool_calls.len()
         ),
+        RunEventKind::TokenUsageUpdated { phase, ledger } => format!(
+            "token_usage {:?} context={} input={} output={}",
+            phase,
+            ledger
+                .context_window
+                .map(|usage| format!("{}/{}", usage.used_tokens, usage.max_tokens))
+                .unwrap_or_else(|| "unknown".to_string()),
+            ledger.cumulative_usage.input_tokens,
+            ledger.cumulative_usage.output_tokens,
+        ),
         RunEventKind::HookInvoked { hook_name, event } => {
             format!("hook_invoked {hook_name} {:?}", event)
         }

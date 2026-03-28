@@ -12,6 +12,7 @@ use tokio_tungstenite::tungstenite::protocol::Message as WsMessage;
 use tracing::debug;
 use types::{
     AgentCoreError, MessageId, ModelEvent, ModelRequest, ProviderContinuation, ResponseId,
+    TokenUsage,
 };
 
 mod message_codec;
@@ -191,6 +192,7 @@ pub(crate) async fn stream_openai_responses_turn(
         let mut reasoning = Vec::new();
         let mut message_id = None;
         let mut response_id = None;
+        let mut usage = None;
 
         while let Some(event) = stream.next().await {
             let event = event?;
@@ -222,6 +224,9 @@ pub(crate) async fn stream_openai_responses_turn(
                     }
                 }
                 Some("response.completed") => {
+                    usage = parse_openai_usage(
+                        chunk.get("response").and_then(|response| response.get("usage"))
+                    );
                     response_id = chunk
                         .get("response")
                         .and_then(|response| response.get("id"))
@@ -247,6 +252,7 @@ pub(crate) async fn stream_openai_responses_turn(
             stop_reason: Some(if saw_tool_call { "tool_use" } else { "stop" }.to_string()),
             message_id: Some(message_id.unwrap_or_else(MessageId::new)),
             continuation: response_id.map(|response_id| ProviderContinuation::OpenAiResponses { response_id }),
+            usage,
             reasoning,
         };
     }))
@@ -319,6 +325,7 @@ pub(crate) async fn stream_openai_realtime_turn(
         let mut message_id = None;
         let mut response_id = None;
         let mut emitted_tool_call_ids = HashSet::<String>::new();
+        let mut usage = None;
 
         while let Some(frame) = ws_source.next().await {
             let frame = frame
@@ -376,6 +383,7 @@ pub(crate) async fn stream_openai_realtime_turn(
                         .get("id")
                         .and_then(Value::as_str)
                         .map(ResponseId::from);
+                    usage = parse_openai_usage(response.get("usage"));
 
                     if let Some(items) = response.get("output").and_then(Value::as_array) {
                         for item in items {
@@ -416,9 +424,29 @@ pub(crate) async fn stream_openai_realtime_turn(
             message_id: Some(message_id.unwrap_or_else(MessageId::new)),
             continuation: response_id
                 .map(|response_id| ProviderContinuation::OpenAiResponses { response_id }),
+            usage,
             reasoning,
         };
     }))
+}
+
+fn parse_openai_usage(usage: Option<&Value>) -> Option<TokenUsage> {
+    let usage = usage?;
+    let input_tokens = usage
+        .get("input_tokens")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let output_tokens = usage
+        .get("output_tokens")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let cache_read_tokens = usage
+        .get("input_tokens_details")
+        .and_then(|details| details.get("cached_tokens"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let usage = TokenUsage::from_input_output(input_tokens, output_tokens, cache_read_tokens);
+    (!usage.is_zero()).then_some(usage)
 }
 
 fn classify_openai_error(status: u16, body: &str) -> Result<runtime::RuntimeError> {
@@ -473,7 +501,7 @@ mod tests {
     use tokio_tungstenite::tungstenite::Message as WsMessage;
     use types::{
         AgentCoreError, Message, ModelEvent, ModelRequest, ProviderContinuation, ResponseId, RunId,
-        SessionId, ToolName, TurnId,
+        SessionId, TokenUsage, ToolName, TurnId,
     };
     use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -703,7 +731,7 @@ mod tests {
             "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hel\"}\n\n",
             "data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"function_call\",\"id\":\"fc_1\",\"call_id\":\"call_1\",\"name\":\"read\",\"arguments\":\"{\\\"path\\\":\\\"README.md\\\"}\"}}\n\n",
             "data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"message\",\"id\":\"msg_1\"}}\n\n",
-            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\"}}\n\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"usage\":{\"input_tokens\":120,\"output_tokens\":30,\"input_tokens_details\":{\"cached_tokens\":20}}}}\n\n",
             "data: [DONE]\n\n"
         );
         Mock::given(method("POST"))
@@ -745,8 +773,11 @@ mod tests {
             Some(Ok(ModelEvent::ResponseComplete {
                 message_id: Some(message_id),
                 continuation: Some(ProviderContinuation::OpenAiResponses { response_id }),
+                usage: Some(usage),
                 ..
-            })) if message_id.as_str() == "msg_1" && response_id.as_str() == "resp_1"
+            })) if message_id.as_str() == "msg_1"
+                && response_id.as_str() == "resp_1"
+                && *usage == TokenUsage::from_input_output(120, 30, 20)
         ));
     }
 }

@@ -68,6 +68,18 @@ impl RuntimeObserver for SharedRenderObserver {
                     format!("Continuing execution loop ({iteration})")
                 };
             }
+            RuntimeProgressEvent::TokenUsageUpdated { ledger, .. } => {
+                if let Some(window) = ledger.context_window {
+                    state.push_activity(format!(
+                        "context {} / {} tokens, input {} output {} cache {}",
+                        window.used_tokens,
+                        window.max_tokens,
+                        ledger.cumulative_usage.input_tokens,
+                        ledger.cumulative_usage.output_tokens,
+                        ledger.cumulative_usage.cache_read_tokens,
+                    ));
+                }
+            }
             RuntimeProgressEvent::ModelResponseCompleted { tool_calls, .. } => {
                 self.active_assistant_line = None;
                 state.status = if tool_calls.is_empty() {

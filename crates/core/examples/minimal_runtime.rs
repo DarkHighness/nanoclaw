@@ -39,6 +39,7 @@ impl ModelBackend for EchoBackend {
                 stop_reason: Some("completed".to_string()),
                 message_id: Some("example-response-1".into()),
                 continuation: None,
+                usage: None,
                 reasoning: Vec::new(),
             }),
         ])))

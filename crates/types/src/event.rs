@@ -1,6 +1,7 @@
 use crate::{
     AgentId, CallId, EnvelopeId, EventId, HookEvent, HookResult, Message, MessageId, Reasoning,
-    ResponseId, RunId, SessionId, ToolCall, ToolCallId, ToolName, ToolSpec, TurnId,
+    ResponseId, RunId, SessionId, TokenLedgerSnapshot, TokenUsage, TokenUsagePhase, ToolCall,
+    ToolCallId, ToolName, ToolSpec, TurnId,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -216,6 +217,8 @@ pub enum ModelEvent {
         message_id: Option<MessageId>,
         #[serde(default)]
         continuation: Option<ProviderContinuation>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        usage: Option<TokenUsage>,
         reasoning: Vec<Reasoning>,
     },
     Error {
@@ -286,6 +289,10 @@ pub enum RunEventKind {
         tool_calls: Vec<ToolCall>,
         #[serde(default)]
         continuation: Option<ProviderContinuation>,
+    },
+    TokenUsageUpdated {
+        phase: TokenUsagePhase,
+        ledger: TokenLedgerSnapshot,
     },
     HookInvoked {
         hook_name: String,

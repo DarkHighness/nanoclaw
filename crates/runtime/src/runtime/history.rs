@@ -105,8 +105,12 @@ impl AgentRuntime {
             return Ok(false);
         }
 
-        let estimated_tokens =
-            estimate_prompt_tokens(instructions, &visible_messages, &self.tool_registry.specs());
+        let estimated_tokens = estimate_prompt_tokens(
+            instructions,
+            &visible_messages,
+            &self.tool_registry.specs(),
+            &self.pending_additional_context,
+        );
         if estimated_tokens < self.compaction_config.trigger_tokens {
             return Ok(false);
         }

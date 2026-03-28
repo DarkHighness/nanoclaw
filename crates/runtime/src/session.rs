@@ -1,5 +1,5 @@
 use std::collections::HashSet;
-use types::{Message, MessageId, ProviderContinuation, RunId, SessionId};
+use types::{Message, MessageId, ProviderContinuation, RunId, SessionId, TokenLedgerSnapshot};
 
 #[derive(Clone, Debug)]
 pub struct RuntimeSession {
@@ -13,6 +13,7 @@ pub struct RuntimeSession {
     pub post_summary_start: usize,
     pub removed_message_ids: HashSet<MessageId>,
     pub session_started: bool,
+    pub token_ledger: TokenLedgerSnapshot,
 }
 
 impl Default for RuntimeSession {
@@ -35,6 +36,7 @@ impl RuntimeSession {
             post_summary_start: 0,
             removed_message_ids: HashSet::new(),
             session_started: false,
+            token_ledger: TokenLedgerSnapshot::default(),
         }
     }
 }
