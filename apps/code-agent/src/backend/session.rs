@@ -1,10 +1,11 @@
 use crate::backend::run_history::{self, LoadedRun, RunExportArtifact};
+use crate::backend::session_catalog;
 use agent::runtime::{Result as RuntimeResult, RuntimeObserver};
 use agent::{AgentRuntime, RuntimeCommand, Skill};
 use anyhow::Result;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
-use store::{RunSearchResult, RunStore, RunSummary};
+use store::RunStore;
 use tokio::sync::Mutex as AsyncMutex;
 
 /// This snapshot is the frontend-facing startup contract. It keeps stable host
@@ -99,14 +100,30 @@ impl CodeAgentSession {
         runtime.compact_now(notes).await
     }
 
-    pub(crate) async fn list_sessions(&self) -> Result<Vec<RunSummary>> {
+    pub(crate) async fn list_sessions(
+        &self,
+    ) -> Result<Vec<crate::backend::PersistedSessionSummary>> {
         let runs = run_history::list_runs(&self.store).await?;
         self.set_stored_session_count(runs.len());
-        Ok(runs)
+        let active_session_ref = self.startup_snapshot().active_session_ref;
+        Ok(runs
+            .iter()
+            .map(|summary| session_catalog::persisted_session_summary(summary, &active_session_ref))
+            .collect())
     }
 
-    pub(crate) async fn search_sessions(&self, query: &str) -> Result<Vec<RunSearchResult>> {
-        run_history::search_runs(&self.store, query).await
+    pub(crate) async fn search_sessions(
+        &self,
+        query: &str,
+    ) -> Result<Vec<crate::backend::PersistedSessionSearchMatch>> {
+        let matches = run_history::search_runs(&self.store, query).await?;
+        let active_session_ref = self.startup_snapshot().active_session_ref;
+        Ok(matches
+            .iter()
+            .map(|result| {
+                session_catalog::persisted_session_search_match(result, &active_session_ref)
+            })
+            .collect())
     }
 
     pub(crate) async fn load_session(&self, run_ref: &str) -> Result<LoadedRun> {
@@ -145,6 +162,18 @@ impl CodeAgentSession {
         let count = run_history::list_runs(&self.store).await?.len();
         self.set_stored_session_count(count);
         Ok(count)
+    }
+
+    pub(crate) async fn resume_status(
+        &self,
+        session_ref: &str,
+    ) -> Result<crate::backend::SessionResumeStatus> {
+        let loaded = self.load_session(session_ref).await?;
+        let active_session_ref = self.startup_snapshot().active_session_ref;
+        Ok(session_catalog::resume_status(
+            loaded.summary.run_id.as_str(),
+            &active_session_ref,
+        ))
     }
 
     fn set_stored_session_count(&self, count: usize) {

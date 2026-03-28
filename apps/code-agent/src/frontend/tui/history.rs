@@ -1,25 +1,29 @@
 use super::state::preview_text;
-use crate::backend::{LoadedRun, RunExportArtifact, RunExportKind, message_to_text, preview_id};
+use crate::backend::{
+    LoadedRun, PersistedSessionSearchMatch, PersistedSessionSummary, RunExportArtifact,
+    RunExportKind, SessionResumeStatus, SessionResumeSupport, message_to_text, preview_id,
+};
 use agent::types::{RunEventEnvelope, RunEventKind, SessionId};
-use store::{RunSearchResult, RunSummary, TokenUsageRecord};
+use store::TokenUsageRecord;
 
-pub(crate) fn format_session_summary_line(summary: &RunSummary) -> String {
+pub(crate) fn format_session_summary_line(summary: &PersistedSessionSummary) -> String {
     let prompt = summary
         .last_user_prompt
         .as_deref()
         .map(|value| preview_text(value, 36))
         .unwrap_or_else(|| "no prompt yet".to_string());
     format!(
-        "{}  msgs={} ev={} workers={}  {}",
-        preview_id(summary.run_id.as_str()),
+        "{}  msgs={} ev={} workers={} resume={}  {}",
+        preview_id(&summary.session_ref),
         summary.transcript_message_count,
         summary.event_count,
-        summary.session_count,
+        summary.worker_session_count,
+        summary.resume_support.label(),
         prompt
     )
 }
 
-pub(crate) fn format_session_search_line(result: &RunSearchResult) -> String {
+pub(crate) fn format_session_search_line(result: &PersistedSessionSearchMatch) -> String {
     let base = format_session_summary_line(&result.summary);
     if result.preview_matches.is_empty() {
         format!("{base}  matches={}", result.matched_event_count)
@@ -137,6 +141,18 @@ pub(crate) fn format_session_export_result(result: &RunExportArtifact) -> Vec<St
         format!("path: {}", result.output_path.display()),
         format!("items: {}", result.item_count),
     ]
+}
+
+pub(crate) fn format_session_resume_status(status: &SessionResumeStatus) -> Vec<String> {
+    let mut lines = vec![
+        "## Resume".to_string(),
+        format!("session ref: {}", status.session_ref),
+        format!("support: {}", status.support.label()),
+    ];
+    if let SessionResumeSupport::NotYetSupported { reason } = &status.support {
+        lines.push(format!("reason: {reason}"));
+    }
+    lines
 }
 
 fn format_token_usage_record_line(record: &TokenUsageRecord) -> String {

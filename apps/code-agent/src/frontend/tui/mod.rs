@@ -9,8 +9,8 @@ use crate::backend::{CodeAgentSession, preview_id};
 pub(crate) use approval::{ApprovalBridge, InteractiveToolApprovalHandler};
 use commands::{SlashCommand, parse_slash_command};
 use history::{
-    format_session_export_result, format_session_inspector, format_session_search_line,
-    format_session_summary_line, format_session_transcript_lines,
+    format_session_export_result, format_session_inspector, format_session_resume_status,
+    format_session_search_line, format_session_summary_line, format_session_transcript_lines,
 };
 use observer::SharedRenderObserver;
 use render::render;
@@ -448,6 +448,7 @@ impl CodeAgentTui {
             }
             command @ (SlashCommand::Sessions { .. }
             | SlashCommand::Session { .. }
+            | SlashCommand::Resume { .. }
             | SlashCommand::ExportSession { .. }
             | SlashCommand::ExportTranscript { .. }) => self.apply_history_command(command).await,
             SlashCommand::InvalidUsage(message) => {
@@ -554,6 +555,22 @@ impl CodeAgentTui {
                         session_ref_preview, transcript_count
                     );
                     state.push_activity(format!("loaded session {}", session_ref_preview));
+                });
+                Ok(false)
+            }
+            SlashCommand::Resume { session_ref } => {
+                let status = self.session.resume_status(&session_ref).await?;
+                let inspector = format_session_resume_status(&status);
+                let session_ref_preview = preview_id(&status.session_ref);
+                self.ui_state.mutate(move |state| {
+                    state.inspector_title = "Resume".to_string();
+                    state.inspector_scroll = 0;
+                    state.inspector = inspector;
+                    state.status = format!(
+                        "Checked resume contract for session {}",
+                        session_ref_preview
+                    );
+                    state.push_activity(format!("checked resume contract {}", session_ref_preview));
                 });
                 Ok(false)
             }
@@ -674,6 +691,7 @@ fn command_palette_lines() -> Vec<String> {
         "/help".to_string(),
         "/sessions [query]".to_string(),
         "/session <session-ref>".to_string(),
+        "/resume <session-ref>".to_string(),
         "/export_session <session-ref> <path>".to_string(),
         "/export_transcript <session-ref> <path>".to_string(),
         "/tools".to_string(),
@@ -692,6 +710,8 @@ fn build_startup_inspector(session: &state::SessionSummary) -> Vec<String> {
         format!("runtime id: {}", session.root_session_id),
         "## Workflow".to_string(),
         "Use /sessions to browse persisted sessions and /session <ref> to open one.".to_string(),
+        "Use /resume <ref> to inspect whether a session can reattach to a live runtime."
+            .to_string(),
         "Use /export_session or /export_transcript to write durable artifacts.".to_string(),
         "Approvals stay in-line above the composer instead of replacing the screen.".to_string(),
         "## Models".to_string(),

@@ -10,6 +10,7 @@ pub(crate) enum SlashCommand {
     Compact { notes: Option<String> },
     Sessions { query: Option<String> },
     Session { session_ref: String },
+    Resume { session_ref: String },
     ExportSession { session_ref: String, path: String },
     ExportTranscript { session_ref: String, path: String },
     Clear,
@@ -63,6 +64,9 @@ enum SlashSubcommand {
     Session {
         session_ref: String,
     },
+    Resume {
+        session_ref: String,
+    },
     ExportSession {
         session_ref: String,
         #[arg(value_name = "PATH", required = true, trailing_var_arg = true)]
@@ -108,6 +112,7 @@ impl From<SlashSubcommand> for SlashCommand {
                 query: join_optional_tail(query),
             },
             SlashSubcommand::Session { session_ref } => Self::Session { session_ref },
+            SlashSubcommand::Resume { session_ref } => Self::Resume { session_ref },
             SlashSubcommand::ExportSession { session_ref, path } => Self::ExportSession {
                 session_ref,
                 path: join_required_tail(path),
