@@ -392,6 +392,16 @@
 ### 8.2 Memory
 
 - 把 runtime export materialization 从 `get/list/search` 读路径中拆出
+  - 状态：
+    - `completed`
+  - 已落地语义：
+    - `sync()` 仍负责刷新 runtime export sidecar
+    - `get/list/search` 改为只读取既有 sidecar 与 lifecycle 统计
+    - 读请求不再触发 `export_for_memory()` 或 sidecar 重写
+  - 目标文件：
+    - `crates/memory/src/runtime_exports.rs`
+    - `crates/memory/src/memory_core.rs`
+    - `crates/memory/src/memory_embed.rs`
 - 给 corpus 扫描增加增量目录快照
 - 避免读请求触发不必要的 sidecar 重写
 

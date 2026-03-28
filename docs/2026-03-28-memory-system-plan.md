@@ -684,7 +684,8 @@ cargo test -p agent
 
 当前尚未达到计划目标的部分：
 
-- 读路径仍然过重，并夹带 runtime export side effect
+- corpus 扫描还不是增量快照模式
+- `memory-core` / `memory-embed` 之间还没有共享缓存
 
 ### 17.2 P0 修复项
 
@@ -727,6 +728,11 @@ cargo test -p agent
 ### 17.4 P2 性能与硬化
 
 - 把 runtime export materialization 从 `get/list/search` 读路径拆出
+  - 已完成：
+    - `sync()` 仍负责 materialize runtime export sidecars
+    - `get/list/search` 现在只读取既有 sidecars 与 lifecycle 统计，不再触发 `export_for_memory()`
+    - `memory-core` / `memory-embed` 两个 backend 的读路径都已切到 read-only runtime export 加载
+    - 已补回归测试，覆盖“读请求不触发 runtime export materialization”
 - 给 corpus 扫描增加增量目录快照
 - 避免读请求触发多余 sidecar 重写
 - 评估 `memory-core` / `memory-embed` 对同一 corpus 的共享缓存策略
@@ -738,4 +744,4 @@ cargo test -p agent
 - `run/session/subagent/task` 四类 export 中，哪些已经进入真实 store 导出链
 - `working/coordination` 是否已经具备并发安全写入
 - `include_stale` 的精确定义
-- 读路径是否仍会触发 runtime export side effect
+- 读路径不再触发 runtime export side effect；只有显式/后台 `sync()` 会刷新 runtime export sidecar

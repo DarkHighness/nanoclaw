@@ -24,10 +24,44 @@ pub struct MemoryRuntimeExportStats {
     pub output_dir: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RuntimeExportLoadMode {
+    Materialize,
+    ReadExisting,
+}
+
 pub async fn load_configured_memory_corpus(
     workspace_root: &Path,
     config: &MemoryCorpusConfig,
     run_store: Option<&Arc<dyn RunStore>>,
+) -> Result<(MemoryCorpus, MemoryRuntimeExportStats)> {
+    load_configured_memory_corpus_with_mode(
+        workspace_root,
+        config,
+        run_store,
+        RuntimeExportLoadMode::Materialize,
+    )
+    .await
+}
+
+pub async fn load_configured_memory_corpus_read_only(
+    workspace_root: &Path,
+    config: &MemoryCorpusConfig,
+) -> Result<(MemoryCorpus, MemoryRuntimeExportStats)> {
+    load_configured_memory_corpus_with_mode(
+        workspace_root,
+        config,
+        None,
+        RuntimeExportLoadMode::ReadExisting,
+    )
+    .await
+}
+
+async fn load_configured_memory_corpus_with_mode(
+    workspace_root: &Path,
+    config: &MemoryCorpusConfig,
+    run_store: Option<&Arc<dyn RunStore>>,
+    mode: RuntimeExportLoadMode,
 ) -> Result<(MemoryCorpus, MemoryRuntimeExportStats)> {
     let mut effective = config.clone();
     let stats = if config.runtime_export.enabled {
@@ -39,12 +73,40 @@ pub async fn load_configured_memory_corpus(
         effective
             .extra_paths
             .push(output_dir.relative_path().to_path_buf());
-        materialize_runtime_exports(&layout, config, run_store, &output_dir).await?
+        match mode {
+            RuntimeExportLoadMode::Materialize => {
+                materialize_runtime_exports(&layout, config, run_store, &output_dir).await?
+            }
+            // Read paths should not rewrite runtime-export Markdown or lifecycle
+            // state. They index whatever the last explicit/background sync left
+            // behind and report those persisted stats back to the caller.
+            RuntimeExportLoadMode::ReadExisting => read_runtime_export_stats(&layout, &output_dir)?,
+        }
     } else {
         MemoryRuntimeExportStats::default()
     };
     let corpus = load_memory_corpus(workspace_root, &effective).await?;
     Ok((corpus, stats))
+}
+
+fn read_runtime_export_stats(
+    layout: &MemoryStateLayout,
+    output_dir: &ResolvedStatePath,
+) -> Result<MemoryRuntimeExportStats> {
+    let Some(lifecycle) = layout.load_lifecycle(RUNTIME_EXPORTS_LIFECYCLE_ID)? else {
+        return Ok(MemoryRuntimeExportStats {
+            output_dir: Some(output_dir.relative_display()),
+            ..MemoryRuntimeExportStats::default()
+        });
+    };
+    Ok(MemoryRuntimeExportStats {
+        exported_runs: lifecycle.exported_run_count,
+        exported_sessions: lifecycle.exported_session_count,
+        exported_subagents: lifecycle.exported_subagent_count,
+        exported_tasks: lifecycle.exported_task_count,
+        exported_documents: lifecycle.exported_document_count,
+        output_dir: Some(output_dir.relative_display()),
+    })
 }
 
 async fn materialize_runtime_exports(
@@ -401,11 +463,12 @@ fn stats_from_bundle(
 
 #[cfg(test)]
 mod tests {
-    use super::load_configured_memory_corpus;
+    use super::{load_configured_memory_corpus, load_configured_memory_corpus_read_only};
     use crate::{MemoryCorpusConfig, MemoryError, MemorySidecarStatus, MemoryStateLayout};
     use async_trait::async_trait;
     use nanoclaw_test_support::run_current_thread_test;
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use store::{
         EventSink, InMemoryRunStore, MemoryExportScope, RunMemoryExportBundle,
         RunMemoryExportRecord, RunMemoryExportRequest, RunStore, RunStoreError,
@@ -532,7 +595,15 @@ mod tests {
     );
 
     #[derive(Default)]
-    struct FixtureRunStore;
+    struct FixtureRunStore {
+        export_calls: AtomicUsize,
+    }
+
+    impl FixtureRunStore {
+        fn export_call_count(&self) -> usize {
+            self.export_calls.load(Ordering::SeqCst)
+        }
+    }
 
     #[async_trait]
     impl EventSink for FixtureRunStore {
@@ -579,6 +650,7 @@ mod tests {
             &self,
             _request: RunMemoryExportRequest,
         ) -> std::result::Result<RunMemoryExportBundle, RunStoreError> {
+            self.export_calls.fetch_add(1, Ordering::SeqCst);
             Ok(RunMemoryExportBundle {
                 runs: vec![fixture_record(MemoryExportScope::Run, None, None)],
                 sessions: vec![fixture_record(
@@ -599,6 +671,34 @@ mod tests {
             })
         }
     }
+
+    bounded_async_test!(
+        async fn read_only_load_reuses_persisted_runtime_export_sidecars() {
+            let dir = tempdir().unwrap();
+            let mut config = MemoryCorpusConfig::default();
+            config.runtime_export.enabled = true;
+            let store = Arc::new(FixtureRunStore::default());
+            let run_store: Arc<dyn RunStore> = store.clone();
+
+            let (_corpus, materialized_stats) =
+                load_configured_memory_corpus(dir.path(), &config, Some(&run_store))
+                    .await
+                    .unwrap();
+            assert_eq!(materialized_stats.exported_documents, 4);
+            assert_eq!(store.export_call_count(), 1);
+
+            let (read_only_corpus, read_only_stats) =
+                load_configured_memory_corpus_read_only(dir.path(), &config)
+                    .await
+                    .unwrap();
+            assert_eq!(store.export_call_count(), 1);
+            assert_eq!(read_only_stats, materialized_stats);
+            assert!(read_only_corpus.documents.iter().any(|doc| {
+                doc.path
+                    == ".nanoclaw/memory/episodic/tasks/run-fixture--session-fixture--task-17.md"
+            }));
+        }
+    );
 
     fn fixture_record(
         scope: MemoryExportScope,

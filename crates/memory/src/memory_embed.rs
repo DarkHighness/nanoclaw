@@ -9,7 +9,7 @@ use crate::{
     MemoryListRequest, MemoryListResponse, MemoryMutationResponse, MemoryPromoteRequest,
     MemoryRecordRequest, MemorySearchHit, MemorySearchRequest, MemorySearchResponse,
     MemorySidecarLifecycle, MemorySidecarStatus, MemoryStateLayout, MemorySyncStatus, Result,
-    chunk_corpus, load_configured_memory_corpus,
+    chunk_corpus, load_configured_memory_corpus, load_configured_memory_corpus_read_only,
 };
 use async_trait::async_trait;
 use inference::{
@@ -746,12 +746,9 @@ impl MemoryBackend for MemoryEmbedBackend {
     }
 
     async fn search(&self, req: MemorySearchRequest) -> Result<MemorySearchResponse> {
-        let (corpus, runtime_exports) = load_configured_memory_corpus(
-            &self.workspace_root,
-            &self.config.corpus,
-            self.run_store.as_ref(),
-        )
-        .await?;
+        let (corpus, runtime_exports) =
+            load_configured_memory_corpus_read_only(&self.workspace_root, &self.config.corpus)
+                .await?;
         let chunks = chunk_corpus(&corpus, &self.config.chunking);
         let limit = req
             .limit

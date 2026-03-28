@@ -8,7 +8,7 @@ use crate::{
     MemoryForgetRequest, MemoryGetRequest, MemoryListEntry, MemoryListRequest, MemoryListResponse,
     MemoryMutationResponse, MemoryPromoteRequest, MemoryRecordRequest, MemorySearchHit,
     MemorySearchRequest, MemorySearchResponse, MemoryStateLayout, MemorySyncStatus, Result,
-    chunk_corpus, load_configured_memory_corpus,
+    chunk_corpus, load_configured_memory_corpus, load_configured_memory_corpus_read_only,
 };
 use async_trait::async_trait;
 use serde_json::json;
@@ -87,7 +87,9 @@ impl MemoryCoreBackend {
             })
     }
 
-    async fn load_corpus(&self) -> Result<(crate::MemoryCorpus, crate::MemoryRuntimeExportStats)> {
+    async fn load_sync_corpus(
+        &self,
+    ) -> Result<(crate::MemoryCorpus, crate::MemoryRuntimeExportStats)> {
         load_configured_memory_corpus(
             &self.workspace_root,
             &self.config.corpus,
@@ -95,12 +97,18 @@ impl MemoryCoreBackend {
         )
         .await
     }
+
+    async fn load_read_corpus(
+        &self,
+    ) -> Result<(crate::MemoryCorpus, crate::MemoryRuntimeExportStats)> {
+        load_configured_memory_corpus_read_only(&self.workspace_root, &self.config.corpus).await
+    }
 }
 
 #[async_trait]
 impl MemoryBackend for MemoryCoreBackend {
     async fn sync(&self) -> Result<MemorySyncStatus> {
-        let (corpus, runtime_exports) = self.load_corpus().await?;
+        let (corpus, runtime_exports) = self.load_sync_corpus().await?;
         let indexed_documents = corpus.documents.len();
         let indexed_lines = corpus.total_lines();
         let chunks = chunk_corpus(&corpus, &self.config.chunking);
@@ -116,10 +124,10 @@ impl MemoryBackend for MemoryCoreBackend {
 
     async fn search(&self, req: MemorySearchRequest) -> Result<MemorySearchResponse> {
         // Markdown files remain the source of truth; the SQLite sidecar is just
-        // the derived retrieval index. Search lazily bootstraps the sidecar when
-        // it is missing or config-invalid so the default plugin still works
-        // without a separate indexing command.
-        let (corpus, runtime_exports) = self.load_corpus().await?;
+        // the derived retrieval index. Search may rebuild that index when it is
+        // missing or config-invalid, but runtime-export sidecars are now loaded
+        // read-only from the last explicit/background sync.
+        let (corpus, runtime_exports) = self.load_read_corpus().await?;
         let chunks = chunk_corpus(&corpus, &self.config.chunking);
         let limit = req
             .limit
@@ -243,7 +251,7 @@ impl MemoryBackend for MemoryCoreBackend {
     }
 
     async fn get(&self, req: MemoryGetRequest) -> Result<MemoryDocument> {
-        let (corpus, _) = self.load_corpus().await?;
+        let (corpus, _) = self.load_read_corpus().await?;
         let requested = normalize_path(&req.path);
         let document = corpus
             .documents
@@ -286,7 +294,7 @@ impl MemoryBackend for MemoryCoreBackend {
     }
 
     async fn list(&self, req: MemoryListRequest) -> Result<MemoryListResponse> {
-        let (corpus, runtime_exports) = self.load_corpus().await?;
+        let (corpus, runtime_exports) = self.load_read_corpus().await?;
         let limit = req.limit.unwrap_or(100).max(1).min(500);
         let mut entries = corpus
             .documents
@@ -404,12 +412,19 @@ mod tests {
         MemoryGetRequest, MemoryListRequest, MemoryPromoteRequest, MemoryRecordRequest,
         MemoryScope, MemorySearchRequest, MemorySidecarStatus, MemoryStateLayout, MemoryStatus,
     };
+    use async_trait::async_trait;
     use nanoclaw_test_support::run_current_thread_test;
     use rusqlite::Connection;
     use std::path::Path;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+    use store::{
+        EventSink, RunMemoryExportBundle, RunMemoryExportRequest, RunStore, RunStoreError,
+    };
     use tempfile::tempdir;
     use time::{Duration, OffsetDateTime};
     use tokio::fs;
+    use types::{Message, RunEventEnvelope, RunId, SessionId};
 
     macro_rules! bounded_async_test {
         (async fn $name:ident() $body:block) => {
@@ -514,6 +529,46 @@ mod tests {
                 .unwrap();
             assert_eq!(response.hits.len(), 1);
             assert_eq!(response.hits[0].path, "memory/today.md");
+        }
+    );
+
+    bounded_async_test!(
+        async fn search_does_not_materialize_runtime_exports_on_read() {
+            let dir = tempdir().unwrap();
+            fs::write(dir.path().join("MEMORY.md"), "redis sentinel incident")
+                .await
+                .unwrap();
+
+            let mut config = MemoryCoreConfig::default();
+            config.corpus.runtime_export.enabled = true;
+            let store = Arc::new(CountingRunStore::default());
+            let backend = MemoryCoreBackend::new(dir.path().to_path_buf(), config)
+                .with_run_store(store.clone());
+
+            let response = backend
+                .search(MemorySearchRequest {
+                    query: "redis sentinel".to_string(),
+                    limit: Some(3),
+                    path_prefix: None,
+                    scopes: None,
+                    tags: None,
+                    run_id: None,
+                    session_id: None,
+                    agent_name: None,
+                    task_id: None,
+                    include_stale: None,
+                })
+                .await
+                .unwrap();
+
+            assert_eq!(store.export_call_count(), 0);
+            assert_eq!(
+                response
+                    .metadata
+                    .get("runtime_exported_documents")
+                    .and_then(serde_json::Value::as_u64),
+                Some(0)
+            );
         }
     );
 
@@ -886,4 +941,65 @@ mod tests {
             );
         }
     );
+
+    #[derive(Default)]
+    struct CountingRunStore {
+        export_calls: AtomicUsize,
+    }
+
+    impl CountingRunStore {
+        fn export_call_count(&self) -> usize {
+            self.export_calls.load(AtomicOrdering::SeqCst)
+        }
+    }
+
+    #[async_trait]
+    impl EventSink for CountingRunStore {
+        async fn append(&self, _event: RunEventEnvelope) -> std::result::Result<(), RunStoreError> {
+            Ok(())
+        }
+    }
+
+    #[async_trait]
+    impl RunStore for CountingRunStore {
+        async fn list_runs(&self) -> std::result::Result<Vec<store::RunSummary>, RunStoreError> {
+            Ok(Vec::new())
+        }
+
+        async fn search_runs(
+            &self,
+            _query: &str,
+        ) -> std::result::Result<Vec<store::RunSearchResult>, RunStoreError> {
+            Ok(Vec::new())
+        }
+
+        async fn events(
+            &self,
+            _run_id: &RunId,
+        ) -> std::result::Result<Vec<RunEventEnvelope>, RunStoreError> {
+            Ok(Vec::new())
+        }
+
+        async fn session_ids(
+            &self,
+            _run_id: &RunId,
+        ) -> std::result::Result<Vec<SessionId>, RunStoreError> {
+            Ok(Vec::new())
+        }
+
+        async fn replay_transcript(
+            &self,
+            _run_id: &RunId,
+        ) -> std::result::Result<Vec<Message>, RunStoreError> {
+            Ok(Vec::new())
+        }
+
+        async fn export_for_memory(
+            &self,
+            _request: RunMemoryExportRequest,
+        ) -> std::result::Result<RunMemoryExportBundle, RunStoreError> {
+            self.export_calls.fetch_add(1, AtomicOrdering::SeqCst);
+            Ok(RunMemoryExportBundle::default())
+        }
+    }
 }
