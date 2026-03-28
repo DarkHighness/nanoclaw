@@ -129,8 +129,8 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use tokio::process::Command;
     use tools::{
-        ExecRequest, HostProcessExecutor, ProcessExecutor, Result as ToolResult,
-        RuntimeScope as ExecRuntimeScope,
+        ExecRequest, HostProcessExecutor, ProcessExecutor, RuntimeScope as ExecRuntimeScope,
+        SandboxError,
     };
     use types::{HookContext, HookEvent, RunId, SessionId};
 
@@ -141,7 +141,7 @@ mod tests {
     }
 
     impl ProcessExecutor for RecordingExecutor {
-        fn prepare(&self, request: ExecRequest) -> ToolResult<Command> {
+        fn prepare(&self, request: ExecRequest) -> std::result::Result<Command, SandboxError> {
             self.requests.lock().unwrap().push(request.clone());
             self.inner.prepare(request)
         }

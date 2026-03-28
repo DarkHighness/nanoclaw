@@ -8,7 +8,7 @@ pub use bash::*;
 pub use sandbox::{
     ExecRequest, ExecutionOrigin, FilesystemPolicy, HostEscapePolicy, HostProcessExecutor,
     ManagedPolicyProcessExecutor, NetworkPolicy, ProcessExecutor, ProcessStdio, RuntimeScope,
-    SandboxBackendKind, SandboxBackendStatus, SandboxMode, SandboxPolicy, SandboxScope,
-    describe_sandbox_policy, ensure_sandbox_policy_supported, platform_sandbox_backend_available,
-    sandbox_backend_status,
+    SandboxBackendKind, SandboxBackendStatus, SandboxError, SandboxMode, SandboxPolicy,
+    SandboxScope, describe_sandbox_policy, ensure_sandbox_policy_supported,
+    platform_sandbox_backend_available, sandbox_backend_status,
 };
