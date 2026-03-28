@@ -9,9 +9,9 @@ Status: Active
 The `apps/` workspace should converge on a single delivered example product:
 `code-agent`.
 
-`apps/reference-tui` remains a migration source and validation shell during the
-transition, but it should no longer define the public delivery shape of the
-repository.
+`apps/reference-tui` remains in-tree only as temporary migration source
+material. It is no longer an actively maintained product direction and should
+not define the public delivery shape of the repository.
 
 This plan drives two linked changes:
 
@@ -36,11 +36,22 @@ Shipped in the second implementation slice:
 - durable run persistence is available to the backend even before the replay and
   export UI surfaces move over
 
+Shipped in the third implementation slice:
+
+- backend session startup now exposes a structured snapshot with provider,
+  store, run-count, tool, skill, and sandbox metadata
+- the TUI startup inspector now renders backend-owned boot facts instead of
+  reconstructing host state from ad hoc session getters
+- repository top-level docs now treat `reference-tui` as temporary migration
+  source material instead of an actively maintained app
+
 Still pending in the next slices:
 
 - backend boot still needs internal decomposition out of `boot.rs`
-- replay and export migration from `reference-tui`
-- frontend-neutral approval, event, and snapshot contracts
+- replay and export migration into `code-agent`
+- frontend-neutral approval, event, and session-operation contracts beyond the
+  startup snapshot
+- remaining docs and workspace cleanup before `reference-tui` can be retired
 
 ## External Product Signals
 
@@ -81,11 +92,11 @@ Current problems:
   broad orchestration module that owns too many concerns at once.
 - the new session facade is only the first boundary cut; a future Web frontend
   still lacks typed host events, approval messages, and snapshots.
-- `reference-tui` and `code-agent` still duplicate host responsibilities and
-  blur the delivery boundary.
+- legacy `reference-tui` code still duplicates host responsibilities that now
+  belong in `code-agent`.
 - `code-agent` now persists runs through the backend, but replay, export, MCP
-  browsing, and startup diagnostics still have not moved over from
-  `reference-tui`.
+  browsing, and startup diagnostics still have not moved over from the legacy
+  shell.
 - repository docs and app workspace defaults were tightened, but the app
   workspace still contains transitional code that must be retired later.
 
@@ -94,13 +105,14 @@ Current problems:
 ### P0
 
 - strict backend/frontend split is incomplete
-- frontend-neutral command/event/snapshot/approval contract is missing
-- durable run/session storage is missing from `code-agent`
-- `apps/` delivery boundary is still ambiguous
+- frontend-neutral command/event/approval contract is incomplete
+- durable run/session storage exists, but durable history/export services do not
+- `apps/` delivery boundary is still transitional while legacy code stays
+  in-tree
 
 ### P1
 
-- `reference-tui` capabilities still need migration into `code-agent`
+- legacy host capabilities still need migration into `code-agent`
   - runs/history/export
   - MCP prompt/resource inspection
   - startup diagnostics and host summaries
@@ -138,7 +150,8 @@ Boundary rules:
   interaction patterns
 - frontend talks to backend through typed commands, events, snapshots, and
   approval responses
-- `reference-tui` is a migration source, not a second product direction
+- `reference-tui` is temporary migration source material, not a second product
+  direction
 
 ## Iteration Loop
 
@@ -179,7 +192,7 @@ Acceptance:
 
 Goal:
 
-- migrate `reference-tui` durable capabilities into `code-agent`
+- migrate the remaining durable host capabilities into `code-agent`
 
 Acceptance:
 
@@ -208,6 +221,6 @@ Goal:
 Acceptance:
 
 - `apps/Cargo.toml` default delivery path is `code-agent`
-- README describes `reference-tui` as migration/reference only
+- README describes `reference-tui` as temporary migration source material only
 - remaining `reference-tui` code is either archived, internal, or explicitly
-  transitional
+  transitional on the path to deletion

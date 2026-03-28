@@ -16,7 +16,7 @@ Foundation crates:
 - `store`: persistence and replay surface
 - `agent`: umbrella crate in `crates/core` that re-exports the foundation surface
 
-The repository also keeps removable host applications in the separate `apps/` workspace. `apps/code-agent` is the actively delivered example product layer. `apps/reference-tui` remains in-tree as a migration/reference shell while its host capabilities are absorbed into `apps/code-agent`.
+The repository also keeps removable host applications in the separate `apps/` workspace. `apps/code-agent` is the actively delivered example product layer. `apps/reference-tui` remains in-tree only as temporary migration source material until its remaining host capabilities are merged into `apps/code-agent` and the old shell can be retired.
 
 ## Framework Boundary
 
@@ -27,7 +27,7 @@ The intended boundary is:
 - optional tool bundles: non-essential tools such as first-party web access, code-intel navigation tools, and agentic task/todo tools compile only behind Cargo features
 - integration surfaces: `mcp` and `store` bolt onto the same runtime contracts
 - example product layer: `apps/code-agent` sits outside the foundation workspace, owns the product-facing host shell, and is the primary delivered app
-- migration shell: `apps/reference-tui` remains removable and exists only as a transition surface while its host capabilities move into `apps/code-agent`
+- migration source: `apps/reference-tui` remains removable and exists only as temporary source material while its host capabilities move into `apps/code-agent`
 
 The repository no longer treats the whole tree as one Cargo workspace. Foundation and app validation run through their own workspace manifests.
 
@@ -35,7 +35,7 @@ The directory layout follows that split directly:
 
 - `crates/core`, `crates/runtime`, `crates/tools`, `crates/provider`, `crates/mcp`, `crates/store`, `crates/skills`, `crates/types`
 - `apps/code-agent`
-- `apps/reference-tui` (transitional migration shell)
+- `apps/reference-tui` (temporary migration source)
 
 Every workspace now also has a standard mutable-state layout under `.nanoclaw/`:
 
@@ -111,77 +111,17 @@ The core workspace now provides:
 - feature-gated code-intel tools for symbol navigation: `code_symbol_search`, `code_document_symbols`, `code_definitions`, `code_references`
 - grounded file mutations with `expected_snapshot` / `expected_selection_hash` guards across `write`, `edit`, `patch`, and `todo_write`
 
-## Reference Shell
+## Migration Source
 
-`apps/reference-tui` is a transitional host application around the same runtime APIs. It remains useful as a migration and validation surface, but `apps/code-agent` is the primary delivered example app.
+`apps/reference-tui` is no longer presented as an actively maintained example
+app. It stays in-tree only until its remaining durable history, export, MCP
+inspection, and startup-diagnostics capabilities have been merged into
+`apps/code-agent`.
 
-Useful commands:
-
-```bash
-cargo run --manifest-path apps/Cargo.toml -p reference-tui
-cargo run --manifest-path apps/Cargo.toml -p reference-tui --features web-tools
-```
-
-Inside the reference shell, operator commands include:
-
-```text
-/status
-/compact [notes]
-/runs
-/runs <query>
-/run <id-prefix>
-/export_run <id-prefix> <path>
-/export_transcript <id-prefix> <path>
-/skills [query]
-/skill <name-or-alias>
-/tools
-/mcp
-/prompts
-/prompt <server> <name>
-/resources
-/resource <server> <uri>
-```
-
-## Reference Shell Configuration
-
-The shared core config now lives in the reusable `nanoclaw-config` crate. The
-reference shell merges that shared core layer with its own app-local config.
-
-`apps/reference-tui` reads:
-
-- `.nanoclaw/config/core.toml`
-- `.nanoclaw/apps/reference-tui.toml`
-- `.env`
-- `.env.local`
-- process environment variables
-
-Key shared core knobs:
-
-- `provider.kind`, `provider.model`, `provider.base_url`
-- `provider.temperature`, `provider.max_tokens`, `provider.additional_params`
-- `system_prompt`
-- `skill_roots`
-- `mcp_servers`
-- `runtime.workspace_only`
-- `runtime.auto_compact`
-- `runtime.context_tokens`
-- `runtime.compact_trigger_tokens`
-- `runtime.compact_preserve_recent_messages`
-- `runtime.store_dir`
-- `hook_env`
-
-Reference-shell-only knobs:
-
-- `tui.command_prefix`
-
-Examples:
-
-- core config template: [core.toml.example](/home/twiliness/nanoclaw/apps/reference-tui/examples/core.toml.example)
-- reference-tui config template: [reference-tui.toml.example](/home/twiliness/nanoclaw/apps/reference-tui/examples/reference-tui.toml.example)
-- OpenAI core example: [openai core](/home/twiliness/nanoclaw/apps/reference-tui/examples/openai/core.toml)
-- OpenAI app example: [openai app](/home/twiliness/nanoclaw/apps/reference-tui/examples/openai/reference-tui.toml)
-- Anthropic core example: [anthropic core](/home/twiliness/nanoclaw/apps/reference-tui/examples/anthropic/core.toml)
-- Anthropic app example: [anthropic app](/home/twiliness/nanoclaw/apps/reference-tui/examples/anthropic/reference-tui.toml)
+If you are evaluating or extending the delivered host application, target
+`apps/code-agent`. If you need to mine prior UI or host behavior during the
+transition, treat `apps/reference-tui` as source material rather than a product
+surface.
 
 ## Example Code Agent
 

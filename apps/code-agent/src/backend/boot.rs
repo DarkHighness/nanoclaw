@@ -15,7 +15,7 @@ use agent::runtime::{
 };
 use agent::tools::{
     AgentCancelTool, AgentListTool, AgentSendTool, AgentSpawnTool, AgentWaitTool,
-    SandboxBackendStatus, TaskBatchTool, ensure_sandbox_policy_supported,
+    SandboxBackendStatus, TaskBatchTool, describe_sandbox_policy, ensure_sandbox_policy_supported,
 };
 use agent::types::{AgentTaskSpec, HookRegistration};
 use agent::{
@@ -33,6 +33,14 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tracing::{info, warn};
+
+struct RuntimeBuildResult {
+    runtime: AgentRuntime,
+    skills: Vec<Skill>,
+    store_label: String,
+    store_warning: Option<String>,
+    stored_run_count: usize,
+}
 
 pub(crate) struct DriverHostInputs {
     pub(crate) runtime_hooks: Vec<HookRegistration>,
@@ -180,8 +188,15 @@ pub(crate) async fn build_session(
     let sandbox_status = ensure_sandbox_policy_supported(&sandbox_policy)
         .context("sandbox policy cannot be enforced on this host")?;
     log_sandbox_status(&sandbox_status);
+    let sandbox_summary = describe_sandbox_policy(&sandbox_policy, &sandbox_status);
 
-    let (runtime, skills) = build_runtime(
+    let RuntimeBuildResult {
+        runtime,
+        skills,
+        store_label,
+        store_warning,
+        stored_run_count,
+    } = build_runtime(
         options,
         workspace_root,
         approval_handler,
@@ -189,25 +204,40 @@ pub(crate) async fn build_session(
         sandbox_policy,
     )
     .await?;
+    let tool_names = runtime.tool_registry_names();
+    let skill_names = skills.iter().map(|skill| skill.name.clone()).collect();
 
     Ok(super::CodeAgentSession::new(
         runtime,
-        workspace_root.to_path_buf(),
-        provider_label(&options.primary_profile),
-        options.primary_profile.model.model.clone(),
-        provider_summary(&options.summary_profile.model),
-        provider_summary(&options.memory_profile.model),
+        super::SessionStartupSnapshot {
+            workspace_name: workspace_root
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or("workspace")
+                .to_string(),
+            workspace_root: workspace_root.to_path_buf(),
+            provider_label: provider_label(&options.primary_profile),
+            model: options.primary_profile.model.model.clone(),
+            summary_model: provider_summary(&options.summary_profile.model),
+            memory_model: provider_summary(&options.memory_profile.model),
+            tool_names,
+            skill_names,
+            store_label,
+            store_warning,
+            stored_run_count,
+            sandbox_summary,
+        },
         skills,
     ))
 }
 
-pub(crate) async fn build_runtime(
+async fn build_runtime(
     options: &AppOptions,
     workspace_root: &Path,
     approval_handler: Arc<dyn ToolApprovalHandler>,
     tool_context: ToolExecutionContext,
     sandbox_policy: SandboxPolicy,
-) -> Result<(AgentRuntime, Vec<Skill>)> {
+) -> Result<RuntimeBuildResult> {
     let backend = Arc::new(build_agent_backend(
         &options.primary_profile,
         &options.env_map,
@@ -216,7 +246,15 @@ pub(crate) async fn build_runtime(
         &options.summary_profile,
         &options.env_map,
     )?);
-    let store = build_store(&options.core, workspace_root).await?;
+    let store_handle = build_store(&options.core, workspace_root).await?;
+    let store = store_handle.store.clone();
+    let stored_run_count = match store_handle.store.list_runs().await {
+        Ok(runs) => runs.len(),
+        Err(error) => {
+            warn!("failed to list persisted runs during startup: {error}");
+            0
+        }
+    };
     let plugin_plan = build_plugin_activation_plan(workspace_root, &options.plugins)
         .context("failed to build plugin activation plan")?;
     let skill_roots = resolve_skill_roots(&options.skill_roots, workspace_root, &plugin_plan);
@@ -423,7 +461,13 @@ pub(crate) async fn build_runtime(
         .skill_catalog(skill_catalog)
         .build();
 
-    Ok((runtime, skills))
+    Ok(RuntimeBuildResult {
+        runtime,
+        skills,
+        store_label: store_handle.label,
+        store_warning: store_handle.warning,
+        stored_run_count,
+    })
 }
 
 pub(crate) fn build_sandbox_policy(

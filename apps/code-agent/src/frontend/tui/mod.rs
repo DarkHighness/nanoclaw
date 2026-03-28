@@ -328,7 +328,7 @@ impl CodeAgentTui {
                 Ok(false)
             }
             "/tools" => {
-                let tool_names = self.session.tool_names().to_vec();
+                let tool_names = self.session.startup_snapshot().tool_names.clone();
                 self.ui_state.mutate(move |state| {
                     state.inspector_title = "Tool Catalog".to_string();
                     state.inspector_scroll = 0;
@@ -452,50 +452,45 @@ impl CodeAgentTui {
     }
 
     fn startup_state(&self) -> TuiState {
-        let skills = self.session.skills();
-        let skill_names = if skills.is_empty() {
-            Vec::new()
-        } else {
-            skills
-                .iter()
-                .map(|skill| skill.name.clone())
-                .collect::<Vec<_>>()
-        };
-        let workspace_root = self.session.workspace_root().to_path_buf();
-        let workspace_name = self
-            .session
-            .workspace_root()
-            .file_name()
-            .and_then(|value| value.to_str())
-            .unwrap_or("workspace")
-            .to_string();
-        let provider_label = self.session.provider_label().to_string();
-        let model = self.session.model().to_string();
-        let summary_model = self.session.summary_model().to_string();
-        let memory_model = self.session.memory_model().to_string();
+        let snapshot = self.session.startup_snapshot();
+        let workspace_root = snapshot.workspace_root.clone();
 
         let mut state = TuiState {
             session: state::SessionSummary {
-                workspace_name,
-                provider_label: provider_label.clone(),
-                model: model.clone(),
+                workspace_name: snapshot.workspace_name.clone(),
+                provider_label: snapshot.provider_label.clone(),
+                model: snapshot.model.clone(),
+                summary_model: snapshot.summary_model.clone(),
+                memory_model: snapshot.memory_model.clone(),
                 workspace_root: workspace_root.clone(),
                 git: state::git_snapshot(&workspace_root),
-                tool_names: self.session.tool_names().to_vec(),
-                skill_names,
+                tool_names: snapshot.tool_names.clone(),
+                skill_names: snapshot.skill_names.clone(),
+                store_label: snapshot.store_label.clone(),
+                store_warning: snapshot.store_warning.clone(),
+                stored_run_count: snapshot.stored_run_count,
+                sandbox_summary: snapshot.sandbox_summary.clone(),
                 queued_commands: 0,
                 token_ledger: Default::default(),
             },
             inspector_title: "Guide".to_string(),
-            inspector: vec![
-                "Ask for repo inspection, edits, tests, or debugging.".to_string(),
-                "Use /help, /tools, /skills, /steer, or /compact from the composer.".to_string(),
-                "Approvals stay in-line above the composer instead of replacing the screen."
-                    .to_string(),
-                format!("Primary lane: {provider_label} / {model}"),
-                format!("Summary lane: {summary_model}"),
-                format!("Memory lane: {memory_model}"),
-            ],
+            inspector: build_startup_inspector(&state::SessionSummary {
+                workspace_name: snapshot.workspace_name.clone(),
+                provider_label: snapshot.provider_label.clone(),
+                model: snapshot.model.clone(),
+                summary_model: snapshot.summary_model.clone(),
+                memory_model: snapshot.memory_model.clone(),
+                workspace_root,
+                git: Default::default(),
+                tool_names: snapshot.tool_names.clone(),
+                skill_names: snapshot.skill_names.clone(),
+                store_label: snapshot.store_label.clone(),
+                store_warning: snapshot.store_warning.clone(),
+                stored_run_count: snapshot.stored_run_count,
+                sandbox_summary: snapshot.sandbox_summary.clone(),
+                queued_commands: 0,
+                token_ledger: Default::default(),
+            }),
             status: "Ready for your next instruction".to_string(),
             ..TuiState::default()
         };
@@ -518,5 +513,75 @@ fn queued_command_preview(command: &RuntimeCommand) -> String {
         RuntimeCommand::Steer { message, .. } => {
             format!("applying steer: {}", state::preview_text(message, 40))
         }
+    }
+}
+
+fn build_startup_inspector(session: &state::SessionSummary) -> Vec<String> {
+    let mut lines = vec![
+        "Ask for repo inspection, edits, tests, or debugging.".to_string(),
+        "Use /help, /tools, /skills, /steer, or /compact from the composer.".to_string(),
+        "Approvals stay in-line above the composer instead of replacing the screen.".to_string(),
+        format!(
+            "Primary lane: {} / {}",
+            session.provider_label, session.model
+        ),
+        format!("Summary lane: {}", session.summary_model),
+        format!("Memory lane: {}", session.memory_model),
+        format!(
+            "Store: {} ({} runs)",
+            session.store_label, session.stored_run_count
+        ),
+        format!("Sandbox: {}", session.sandbox_summary),
+    ];
+    if let Some(warning) = &session.store_warning {
+        lines.push(format!(
+            "Store warning: {}",
+            state::preview_text(warning, 72)
+        ));
+    }
+    lines
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_startup_inspector;
+    use super::state::SessionSummary;
+    use std::path::PathBuf;
+
+    #[test]
+    fn startup_inspector_surfaces_backend_boot_snapshot() {
+        let lines = build_startup_inspector(&SessionSummary {
+            workspace_name: "nanoclaw".to_string(),
+            provider_label: "openai".to_string(),
+            model: "gpt-5.4".to_string(),
+            summary_model: "gpt-5.4-mini".to_string(),
+            memory_model: "gpt-5.4-nano".to_string(),
+            workspace_root: PathBuf::from("/workspace"),
+            git: Default::default(),
+            tool_names: vec!["read".to_string(), "write".to_string()],
+            skill_names: vec!["rust".to_string()],
+            store_label: "file /workspace/.nanoclaw/store".to_string(),
+            store_warning: Some("falling back soon".to_string()),
+            stored_run_count: 12,
+            sandbox_summary: "enforced via seatbelt".to_string(),
+            queued_commands: 0,
+            token_ledger: Default::default(),
+        });
+
+        assert!(
+            lines
+                .iter()
+                .any(|line| line == "Store: file /workspace/.nanoclaw/store (12 runs)")
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line == "Sandbox: enforced via seatbelt")
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("Store warning: falling back soon"))
+        );
     }
 }

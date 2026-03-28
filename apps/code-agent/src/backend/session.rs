@@ -5,65 +5,53 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::Mutex as AsyncMutex;
 
+/// This snapshot is the frontend-facing startup contract. It keeps stable host
+/// facts separate from the mutable runtime handle so new frontends can render
+/// the same session metadata without reconstructing boot logic locally.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct SessionStartupSnapshot {
+    pub(crate) workspace_name: String,
+    pub(crate) workspace_root: PathBuf,
+    pub(crate) provider_label: String,
+    pub(crate) model: String,
+    pub(crate) summary_model: String,
+    pub(crate) memory_model: String,
+    pub(crate) tool_names: Vec<String>,
+    pub(crate) skill_names: Vec<String>,
+    pub(crate) store_label: String,
+    pub(crate) store_warning: Option<String>,
+    pub(crate) stored_run_count: usize,
+    pub(crate) sandbox_summary: String,
+}
+
 /// The backend session owns runtime state so frontends can speak to a stable
 /// host contract instead of sharing `AgentRuntime` directly.
 #[derive(Clone)]
 pub(crate) struct CodeAgentSession {
     runtime: Arc<AsyncMutex<AgentRuntime>>,
-    workspace_root: PathBuf,
-    provider_label: String,
-    model: String,
-    summary_model: String,
-    memory_model: String,
-    tool_names: Vec<String>,
+    startup: SessionStartupSnapshot,
     skills: Vec<Skill>,
 }
 
 impl CodeAgentSession {
     pub(crate) fn new(
         runtime: AgentRuntime,
-        workspace_root: PathBuf,
-        provider_label: String,
-        model: String,
-        summary_model: String,
-        memory_model: String,
+        startup: SessionStartupSnapshot,
         skills: Vec<Skill>,
     ) -> Self {
-        let tool_names = runtime.tool_registry_names();
         Self {
             runtime: Arc::new(AsyncMutex::new(runtime)),
-            workspace_root,
-            provider_label,
-            model,
-            summary_model,
-            memory_model,
-            tool_names,
+            startup,
             skills,
         }
     }
 
     pub(crate) fn workspace_root(&self) -> &Path {
-        &self.workspace_root
+        &self.startup.workspace_root
     }
 
-    pub(crate) fn provider_label(&self) -> &str {
-        &self.provider_label
-    }
-
-    pub(crate) fn model(&self) -> &str {
-        &self.model
-    }
-
-    pub(crate) fn summary_model(&self) -> &str {
-        &self.summary_model
-    }
-
-    pub(crate) fn memory_model(&self) -> &str {
-        &self.memory_model
-    }
-
-    pub(crate) fn tool_names(&self) -> &[String] {
-        &self.tool_names
+    pub(crate) fn startup_snapshot(&self) -> &SessionStartupSnapshot {
+        &self.startup
     }
 
     pub(crate) fn skills(&self) -> &[Skill] {
