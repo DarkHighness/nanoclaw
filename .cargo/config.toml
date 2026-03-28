@@ -2,10 +2,11 @@
 # override these locally because `force = false` preserves explicit shell
 # values and Cargo lets explicit `-j` / `CARGO_BUILD_JOBS` win for builds.
 [build]
-jobs = 1
+jobs = 64
+rustc-wrapper = "sccache"
 
 [env]
-RUST_TEST_THREADS = { value = "1", force = false }
-RAYON_NUM_THREADS = { value = "1", force = false }
-TOKIO_WORKER_THREADS = { value = "1", force = false }
-NANOCLAW_TEST_MAX_BLOCKING_THREADS = { value = "1", force = false }
+RUST_TEST_THREADS = { value = "64", force = false }
+RAYON_NUM_THREADS = { value = "64", force = false }
+TOKIO_WORKER_THREADS = { value = "64", force = false }
+NANOCLAW_TEST_MAX_BLOCKING_THREADS = { value = "64", force = false }
