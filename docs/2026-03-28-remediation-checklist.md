@@ -269,7 +269,12 @@
 
 - 把模型配置从“单一 provider/model”升级为“模型目录 + agent profile”：
   - 当前是开发版本，这项重构**不要求旧配置兼容**
-  - 代码与配置层都**不应内置默认模型 id 或拍脑袋 token budget**
+  - 仓库默认 lane 固定为：
+    - `gpt_5_4_default`
+    - `openai / gpt-5.4`
+    - `400k` working context
+    - `128k` max output
+    - `320k` compact trigger
   - 目标不是只加字段，而是把：
     - 模型 alias
     - 主 agent / subagent profile
@@ -279,7 +284,7 @@
     统一落到 resolved config
   - 详细方案见：
     - `docs/2026-03-28-model-config-plan.md`
-  - 实施时按文档中的 Phase A -> G 顺序推进，不并行跳步
+  - 实施时按文档中的 Phase A -> H 顺序推进，不并行跳步
   - 这项工作横跨：
     - `crates/config`
     - `apps/reference-tui`
@@ -287,6 +292,29 @@
     - `crates/runtime/src/subagent_impl.rs`
     - `crates/tools/src/context.rs`
     - `crates/sandbox`
+
+- 补统一 token usage ledger 与展示面：
+  - 这是 `P1`，不是单纯的 `P2` 可观测性收尾
+  - 最低要求必须统一输出：
+    - `context used / limit / trigger`
+    - `input`
+    - `output`
+    - `prefill`
+    - `decode`
+    - `cache read`
+  - 统计口径必须固定为：
+    - request build 时估算上下文占用
+    - response complete 时归一化 provider usage
+    - runtime / store / UI 共用同一份 ledger
+  - 详细方案见：
+    - `docs/2026-03-28-model-config-plan.md`
+  - 这项工作横跨：
+    - `crates/types`
+    - `crates/runtime`
+    - `crates/provider`
+    - `crates/store`
+    - `apps/reference-tui`
+    - `apps/code-agent`
 
 ### 7.2 Memory
 
@@ -386,6 +414,11 @@
   - `agent_wait` 是否具备无丢通知语义
   - parent-child scope 是否强制执行
 
+- 模型配置文档要明确：
+  - 默认 lane 是否固定为 `gpt_5_4_default -> gpt-5.4 @ 400k`
+  - `primary/subagent_defaults/roles/summary/memory` 是否都是独立解析入口
+  - token usage ledger 的统计口径与持久化边界是否已经定稿
+
 ## 10. 当前迭代的完成定义
 
 本轮整改只有在下面条件同时成立时，才能算完成：
@@ -405,6 +438,11 @@
   - WASM hook 不再自动获得 gate 权限
   - `prompt/agent` hook 不再 silent noop
   - `DriverActivationOutcome` 至少在一个宿主里形成完整闭环
+
+- 模型配置与可观测性：
+  - 默认 lane 固定为 `gpt_5_4_default -> gpt-5.4 @ 400k`
+  - `summary` / `memory` 已是独立 internal profile
+  - token usage 可在 runtime / store / UI 三处统一观测
 
 ## 11. 建议实施批次
 
@@ -432,6 +470,10 @@
   - 状态：`completed`
 - message mutation 协议/实现统一
   - 状态：`completed`
+- 模型目录 + agent/internal profile 重构
+  - 状态：`planned`
+- token usage ledger 与 UI 展示
+  - 状态：`planned`
 
 ### Batch 3：做性能与收口
 
