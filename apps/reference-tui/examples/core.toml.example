@@ -1,5 +1,7 @@
 global_system_prompt = "You are operating inside the current workspace."
 
+# Set provider API keys in .env or .env.local.
+
 skill_roots = [
   ".nanoclaw/skills",
 ]

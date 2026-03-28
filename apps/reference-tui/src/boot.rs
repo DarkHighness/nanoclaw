@@ -134,10 +134,12 @@ async fn bootstrap_from_parts(
     let store_handle = build_store(&config, &workspace_root).await?;
     let store = store_handle.store.clone();
     let stored_run_count = store.list_runs().await.unwrap_or_default().len();
-    let backend =
-        Arc::new(build_backend(&config).context("failed to initialize provider backend")?);
-    let summary_backend =
-        Arc::new(build_summary_backend(&config).context("failed to initialize summary backend")?);
+    let backend = Arc::new(
+        build_backend(&config, &env_map).context("failed to initialize provider backend")?,
+    );
+    let summary_backend = Arc::new(
+        build_summary_backend(&config, &env_map).context("failed to initialize summary backend")?,
+    );
     let provider_summary = provider_summary(&config);
     let tool_context = ToolExecutionContext {
         workspace_root: workspace_root.clone(),
@@ -313,6 +315,7 @@ mod tests {
     use agent::DriverActivationOutcome;
     use agent::mcp::{McpServerConfig, McpTransportConfig};
     use agent::skills::load_skill_roots;
+    use agent_env::EnvMap;
     use std::collections::BTreeMap;
     use tempfile::tempdir;
     use tokio::fs;
@@ -436,13 +439,13 @@ Use this skill when asked.
                 context_window_tokens = 400000
                 max_output_tokens = 128000
                 compact_trigger_tokens = 320000
-
-                [models.gpt_5_4_default.env]
-                OPENAI_API_KEY = "test-key"
             "#,
         )
         .await
         .unwrap();
+        fs::write(dir.path().join(".env"), "OPENAI_API_KEY=test-key\n")
+            .await
+            .unwrap();
         fs::write(
             AgentCoreConfig::app_config_path(dir.path()),
             r#"
@@ -600,15 +603,15 @@ Use this skill when asked.
                 max_output_tokens = 128000
                 compact_trigger_tokens = 320000
 
-                [models.gpt_5_4_default.env]
-                OPENAI_API_KEY = "test-key"
-
                 [plugins.slots]
                 memory = "memory-core"
             "#,
         )
         .await
         .unwrap();
+        fs::write(dir.path().join(".env"), "OPENAI_API_KEY=test-key\n")
+            .await
+            .unwrap();
 
         let artifacts = bootstrap_from_dir(dir.path()).await.unwrap();
         let tool_specs = artifacts.runtime.tool_specs();
@@ -649,15 +652,15 @@ Use this skill when asked.
                 max_output_tokens = 128000
                 compact_trigger_tokens = 320000
 
-                [models.gpt_5_4_default.env]
-                OPENAI_API_KEY = "test-key"
-
                 [host]
                 store_dir = "occupied"
             "#,
         )
         .await
         .unwrap();
+        fs::write(dir.path().join(".env"), "OPENAI_API_KEY=test-key\n")
+            .await
+            .unwrap();
         fs::write(dir.path().join("occupied"), "not a directory")
             .await
             .unwrap();
@@ -686,6 +689,10 @@ Use this skill when asked.
     #[tokio::test]
     async fn build_backend_applies_provider_additional_params() {
         let _guard = lock_env_test();
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join(".env"), "OPENAI_API_KEY=test-key\n")
+            .await
+            .unwrap();
         let config = AgentCoreConfig::default().with_override(|config| {
             config
                 .core
@@ -693,16 +700,10 @@ Use this skill when asked.
                 .get_mut("gpt_5_4_default")
                 .unwrap()
                 .additional_params = Some(serde_json::json!({"metadata":{"tier":"priority"}}));
-            config
-                .core
-                .models
-                .get_mut("gpt_5_4_default")
-                .unwrap()
-                .env
-                .insert("OPENAI_API_KEY".to_string(), "test-key".to_string());
         });
 
-        let backend = super::build_backend(&config).unwrap();
+        let env_map = EnvMap::from_workspace_dir(dir.path()).unwrap();
+        let backend = super::build_backend(&config, &env_map).unwrap();
 
         assert_eq!(
             backend.request_options().additional_params,

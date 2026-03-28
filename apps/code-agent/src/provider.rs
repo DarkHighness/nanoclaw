@@ -6,11 +6,13 @@ use agent::provider::{
 use agent_env::{EnvMap, vars};
 use anyhow::{Result, bail};
 use nanoclaw_config::{ProviderKind, ResolvedAgentProfile, ResolvedInternalProfile, ResolvedModel};
-use std::collections::BTreeMap;
 
 const DEFAULT_INTERNAL_MEMORY_TIMEOUT_MS: u64 = 30_000;
 
-pub(crate) fn build_agent_backend(profile: &ResolvedAgentProfile) -> Result<ProviderBackend> {
+pub(crate) fn build_agent_backend(
+    profile: &ResolvedAgentProfile,
+    env_map: &EnvMap,
+) -> Result<ProviderBackend> {
     let descriptor = BackendDescriptor::new(match profile.model.provider {
         ProviderKind::OpenAi => ProviderDescriptor::openai(profile.model.model.clone()),
         ProviderKind::Anthropic => ProviderDescriptor::anthropic(profile.model.model.clone()),
@@ -34,11 +36,14 @@ pub(crate) fn build_agent_backend(profile: &ResolvedAgentProfile) -> Result<Prov
         descriptor,
         request_options,
         profile.model.base_url.clone(),
-        configured_provider_api_key(&profile.model),
+        provider_api_key(&profile.model, env_map),
     )?)
 }
 
-pub(crate) fn build_internal_backend(profile: &ResolvedInternalProfile) -> Result<ProviderBackend> {
+pub(crate) fn build_internal_backend(
+    profile: &ResolvedInternalProfile,
+    env_map: &EnvMap,
+) -> Result<ProviderBackend> {
     let descriptor = BackendDescriptor::new(match profile.model.provider {
         ProviderKind::OpenAi => ProviderDescriptor::openai(profile.model.model.clone()),
         ProviderKind::Anthropic => ProviderDescriptor::anthropic(profile.model.model.clone()),
@@ -53,7 +58,7 @@ pub(crate) fn build_internal_backend(profile: &ResolvedInternalProfile) -> Resul
         descriptor,
         request_options,
         profile.model.base_url.clone(),
-        configured_provider_api_key(&profile.model),
+        provider_api_key(&profile.model, env_map),
     )?)
 }
 
@@ -65,22 +70,16 @@ pub(crate) fn build_memory_reasoning_service(
         provider: provider_name(&profile.model.provider).to_string(),
         model: profile.model.model.clone(),
         base_url: profile.model.base_url.clone(),
-        api_key: resolved_provider_api_key(&profile.model, env_map),
-        headers: BTreeMap::new(),
+        api_key: provider_api_key(&profile.model, env_map),
+        headers: Default::default(),
         timeout_ms: DEFAULT_INTERNAL_MEMORY_TIMEOUT_MS,
     }
 }
 
 pub(crate) fn ensure_api_key_available(model: &ResolvedModel, env_map: &EnvMap) -> Result<()> {
     let present = match model.provider {
-        ProviderKind::OpenAi => {
-            model.env.contains_key("OPENAI_API_KEY")
-                || env_map.get_non_empty(vars::OPENAI_API_KEY.key).is_some()
-        }
-        ProviderKind::Anthropic => {
-            model.env.contains_key("ANTHROPIC_API_KEY")
-                || env_map.get_non_empty(vars::ANTHROPIC_API_KEY.key).is_some()
-        }
+        ProviderKind::OpenAi => env_map.get_non_empty(vars::OPENAI_API_KEY.key).is_some(),
+        ProviderKind::Anthropic => env_map.get_non_empty(vars::ANTHROPIC_API_KEY.key).is_some(),
     };
     if present {
         return Ok(());
@@ -103,20 +102,12 @@ fn provider_name(provider: &ProviderKind) -> &'static str {
     }
 }
 
-fn configured_provider_api_key(model: &ResolvedModel) -> Option<String> {
-    resolved_provider_api_key(model, &EnvMap::from_process())
-}
-
-fn resolved_provider_api_key(model: &ResolvedModel, env_map: &EnvMap) -> Option<String> {
+fn provider_api_key(model: &ResolvedModel, env_map: &EnvMap) -> Option<String> {
     let env_key = match model.provider {
         ProviderKind::OpenAi => "OPENAI_API_KEY",
         ProviderKind::Anthropic => "ANTHROPIC_API_KEY",
     };
-    model
-        .env
-        .get(env_key)
-        .cloned()
-        .or_else(|| env_map.get_non_empty(env_key))
+    env_map.get_non_empty(env_key)
 }
 
 #[cfg(test)]
@@ -126,7 +117,6 @@ mod tests {
     use nanoclaw_config::{
         ModelCapabilitiesConfig, ProviderKind, ResolvedInternalProfile, ResolvedModel,
     };
-    use std::collections::BTreeMap;
     use tempfile::tempdir;
 
     #[test]
@@ -141,7 +131,6 @@ mod tests {
                 provider: ProviderKind::OpenAi,
                 model: "gpt-5.4-mini".to_string(),
                 base_url: None,
-                env: BTreeMap::new(),
                 context_window_tokens: 400_000,
                 max_output_tokens: 32_000,
                 compact_trigger_tokens: 320_000,

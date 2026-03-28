@@ -663,7 +663,6 @@ pub struct ModelConfig {
     pub provider: ProviderKind,
     pub model: String,
     pub base_url: Option<String>,
-    pub env: BTreeMap<String, String>,
     pub context_window_tokens: usize,
     pub max_output_tokens: u64,
     pub compact_trigger_tokens: usize,
@@ -883,7 +882,6 @@ pub struct ResolvedModel {
     pub provider: ProviderKind,
     pub model: String,
     pub base_url: Option<String>,
-    pub env: BTreeMap<String, String>,
     pub context_window_tokens: usize,
     pub max_output_tokens: Option<u64>,
     pub compact_trigger_tokens: usize,
@@ -917,6 +915,11 @@ pub struct ResolvedInternalProfile {
 - `resolve_summary_profile(&CoreConfig)`
 - `resolve_memory_profile(&CoreConfig)`
 - `resolve_model(&CoreConfig, alias: &str)`
+
+密钥来源约束：
+
+- provider API key 统一来自工作区 `.env` / `.env.local`
+- `models.<alias>` 不再承载 secret env 映射
 
 ## 8. 运行时语义
 

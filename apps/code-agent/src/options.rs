@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 
 #[derive(Clone, Debug)]
 pub(crate) struct AppOptions {
+    pub(crate) env_map: EnvMap,
     pub(crate) core: CoreConfig,
     pub(crate) primary_profile: ResolvedAgentProfile,
     pub(crate) summary_profile: ResolvedInternalProfile,
@@ -90,6 +91,7 @@ impl AppOptions {
         let one_shot_prompt = (!prompt_parts.is_empty()).then(|| prompt_parts.join(" "));
 
         Ok(Self {
+            env_map: env_map.clone(),
             core,
             primary_profile,
             summary_profile,

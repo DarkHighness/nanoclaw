@@ -1,5 +1,7 @@
 global_system_prompt = "You are operating inside the current workspace."
 
+# Set OPENAI_API_KEY / ANTHROPIC_API_KEY in .env or .env.local.
+
 skill_roots = [
   ".nanoclaw/skills",
 ]
@@ -28,10 +30,6 @@ compact_trigger_tokens = 160000
 temperature = 0.2
 reasoning_effort = "medium"
 additional_params = { metadata = { tier = "standard" } }
-
-[models.claude_primary.env]
-# Prefer setting ANTHROPIC_API_KEY in your shell or .env.local instead of committing it.
-ANTHROPIC_API_KEY = "replace-me-locally"
 
 [agents.primary]
 model = "claude_primary"

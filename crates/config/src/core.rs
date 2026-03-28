@@ -47,8 +47,6 @@ pub struct ModelConfig {
     pub model: String,
     #[serde(default)]
     pub base_url: Option<String>,
-    #[serde(default)]
-    pub env: BTreeMap<String, String>,
     pub context_window_tokens: usize,
     pub max_output_tokens: u64,
     pub compact_trigger_tokens: usize,
@@ -203,7 +201,6 @@ pub struct ResolvedModel {
     pub provider: ProviderKind,
     pub model: String,
     pub base_url: Option<String>,
-    pub env: BTreeMap<String, String>,
     pub context_window_tokens: usize,
     pub max_output_tokens: u64,
     pub compact_trigger_tokens: usize,
@@ -382,7 +379,6 @@ impl NanoclawCoreConfig {
             provider: model.provider.clone(),
             model: model.model.clone(),
             base_url: model.base_url.clone(),
-            env: model.env.clone(),
             context_window_tokens: model.context_window_tokens,
             max_output_tokens: model.max_output_tokens,
             compact_trigger_tokens: model.compact_trigger_tokens,
@@ -635,7 +631,6 @@ fn default_models() -> BTreeMap<String, ModelConfig> {
             provider: ProviderKind::OpenAi,
             model: DEFAULT_LANE_MODEL.to_string(),
             base_url: None,
-            env: BTreeMap::new(),
             context_window_tokens: 400_000,
             max_output_tokens: 128_000,
             compact_trigger_tokens: 320_000,

@@ -1,5 +1,7 @@
 global_system_prompt = "You are operating inside the current workspace."
 
+# Set OPENAI_API_KEY in .env or .env.local.
+
 skill_roots = [
   ".nanoclaw/skills",
 ]
@@ -19,10 +21,6 @@ temperature = 0.2
 reasoning_effort = "medium"
 capabilities = { tool_calls = true, vision = true, image_generation = true, audio_input = false, tts = true }
 additional_params = { metadata = { tier = "standard" } }
-
-[models.gpt_5_4_default.env]
-# Prefer setting OPENAI_API_KEY in your shell or .env.local instead of committing it.
-OPENAI_API_KEY = "replace-me-locally"
 
 [agents.primary]
 model = "gpt_5_4_default"

@@ -51,6 +51,7 @@ struct DriverHostInputs {
 #[derive(Clone)]
 struct CodeAgentSubagentProfileResolver {
     core: CoreConfig,
+    env_map: EnvMap,
     base_tool_context: ToolExecutionContext,
     skill_catalog: SkillCatalog,
     plugin_instructions: Vec<String>,
@@ -70,13 +71,14 @@ impl SubagentProfileResolver for CodeAgentSubagentProfileResolver {
                     task.role
                 ))
             })?;
-        let backend: Arc<dyn ModelBackend> =
-            Arc::new(build_agent_backend(&profile).map_err(|error| {
+        let backend: Arc<dyn ModelBackend> = Arc::new(
+            build_agent_backend(&profile, &self.env_map).map_err(|error| {
                 agent::runtime::RuntimeError::invalid_state(format!(
                     "failed to build backend for subagent profile `{}`: {error}",
                     profile.profile_name
                 ))
-            })?);
+            })?,
+        );
         let compactor: Arc<dyn ConversationCompactor> =
             Arc::new(ModelConversationCompactor::new(backend.clone()));
         Ok(SubagentRuntimeProfile {
@@ -263,8 +265,14 @@ async fn build_runtime(
     tool_context: ToolExecutionContext,
     sandbox_policy: SandboxPolicy,
 ) -> Result<(AgentRuntime, Vec<Skill>)> {
-    let backend = Arc::new(build_agent_backend(&options.primary_profile)?);
-    let summary_backend = Arc::new(build_internal_backend(&options.summary_profile)?);
+    let backend = Arc::new(build_agent_backend(
+        &options.primary_profile,
+        &options.env_map,
+    )?);
+    let summary_backend = Arc::new(build_internal_backend(
+        &options.summary_profile,
+        &options.env_map,
+    )?);
     let store = Arc::new(InMemoryRunStore::new());
     let plugin_plan = build_plugin_activation_plan(workspace_root, &options.plugins)
         .context("failed to build plugin activation plan")?;
@@ -350,8 +358,6 @@ async fn build_runtime(
     tools.register(CodeReferencesTool::with_backend(code_intel_backend));
     tools.register(TodoReadTool::new(todo_state.clone()));
     tools.register(TodoWriteTool::new(todo_state));
-    let driver_env = EnvMap::from_workspace_dir(workspace_root)
-        .context("failed to resolve environment for memory reasoning service")?;
     // Driver-backed plugins expand into normal local tools here so the runtime and subagent
     // surfaces stay identical regardless of whether a capability came from builtin boot code or a
     // plugin slot selection.
@@ -361,7 +367,7 @@ async fn build_runtime(
         Some(store.clone()),
         Some(build_memory_reasoning_service(
             &options.memory_profile,
-            &driver_env,
+            &options.env_map,
         )),
         &mut tools,
         agent::UnknownDriverPolicy::Error,
@@ -424,6 +430,7 @@ async fn build_runtime(
     );
     let subagent_profile_resolver = Arc::new(CodeAgentSubagentProfileResolver {
         core: options.core.clone(),
+        env_map: options.env_map.clone(),
         base_tool_context: tool_context.clone(),
         skill_catalog: skill_catalog.clone(),
         plugin_instructions: plugin_instructions.clone(),
@@ -843,12 +850,11 @@ mod tests {
 
     #[test]
     fn subagent_profile_resolver_routes_role_profiles_and_honors_tool_capability() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join(".env"), "OPENAI_API_KEY=test-key\n").unwrap();
         let resolver = CodeAgentSubagentProfileResolver {
             core: CoreConfig::default().with_override(|config| {
-                let mut base_model = config.models["gpt_5_4_default"].clone();
-                base_model
-                    .env
-                    .insert("OPENAI_API_KEY".to_string(), "test-key".to_string());
+                let base_model = config.models["gpt_5_4_default"].clone();
                 config.models.insert(
                     "reviewer_no_tools".to_string(),
                     ModelConfig {
@@ -869,6 +875,7 @@ mod tests {
                     },
                 );
             }),
+            env_map: EnvMap::from_workspace_dir(dir.path()).unwrap(),
             base_tool_context: ToolExecutionContext {
                 workspace_root: PathBuf::from("/workspace"),
                 worktree_root: Some(PathBuf::from("/workspace")),

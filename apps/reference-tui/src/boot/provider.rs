@@ -7,16 +7,18 @@ use agent::provider::{
 use agent_env::EnvMap;
 use anyhow::Result;
 use nanoclaw_config::{ProviderKind, ResolvedAgentProfile, ResolvedInternalProfile};
-use std::collections::BTreeMap;
 
 const DEFAULT_INTERNAL_MEMORY_TIMEOUT_MS: u64 = 30_000;
 
-pub(super) fn build_backend(config: &AgentCoreConfig) -> Result<ProviderBackend> {
-    build_agent_backend(&config.primary_profile)
+pub(super) fn build_backend(config: &AgentCoreConfig, env_map: &EnvMap) -> Result<ProviderBackend> {
+    build_agent_backend(&config.primary_profile, env_map)
 }
 
-pub(super) fn build_summary_backend(config: &AgentCoreConfig) -> Result<ProviderBackend> {
-    build_internal_backend(&config.summary_profile)
+pub(super) fn build_summary_backend(
+    config: &AgentCoreConfig,
+    env_map: &EnvMap,
+) -> Result<ProviderBackend> {
+    build_internal_backend(&config.summary_profile, env_map)
 }
 
 pub(super) fn build_memory_reasoning_service(
@@ -28,8 +30,8 @@ pub(super) fn build_memory_reasoning_service(
         provider: provider_name(&profile.model.provider).to_string(),
         model: profile.model.model.clone(),
         base_url: profile.model.base_url.clone(),
-        api_key: resolved_provider_api_key(&profile.model, env_map),
-        headers: BTreeMap::new(),
+        api_key: provider_api_key(&profile.model, env_map),
+        headers: Default::default(),
         timeout_ms: DEFAULT_INTERNAL_MEMORY_TIMEOUT_MS,
     }
 }
@@ -40,7 +42,10 @@ pub(super) fn provider_summary(config: &AgentCoreConfig) -> String {
     format!("{} -> {provider} / {}", model.alias, model.model)
 }
 
-fn build_agent_backend(profile: &ResolvedAgentProfile) -> Result<ProviderBackend> {
+fn build_agent_backend(
+    profile: &ResolvedAgentProfile,
+    env_map: &EnvMap,
+) -> Result<ProviderBackend> {
     let descriptor = BackendDescriptor::new(match profile.model.provider {
         ProviderKind::OpenAi => ProviderDescriptor::openai(profile.model.model.clone()),
         ProviderKind::Anthropic => ProviderDescriptor::anthropic(profile.model.model.clone()),
@@ -69,11 +74,14 @@ fn build_agent_backend(profile: &ResolvedAgentProfile) -> Result<ProviderBackend
         descriptor,
         request_options,
         profile.model.base_url.clone(),
-        configured_provider_api_key(&profile.model),
+        provider_api_key(&profile.model, env_map),
     )?)
 }
 
-fn build_internal_backend(profile: &ResolvedInternalProfile) -> Result<ProviderBackend> {
+fn build_internal_backend(
+    profile: &ResolvedInternalProfile,
+    env_map: &EnvMap,
+) -> Result<ProviderBackend> {
     let descriptor = BackendDescriptor::new(match profile.model.provider {
         ProviderKind::OpenAi => ProviderDescriptor::openai(profile.model.model.clone()),
         ProviderKind::Anthropic => ProviderDescriptor::anthropic(profile.model.model.clone()),
@@ -88,27 +96,16 @@ fn build_internal_backend(profile: &ResolvedInternalProfile) -> Result<ProviderB
         descriptor,
         request_options,
         profile.model.base_url.clone(),
-        configured_provider_api_key(&profile.model),
+        provider_api_key(&profile.model, env_map),
     )?)
 }
 
-fn configured_provider_api_key(model: &nanoclaw_config::ResolvedModel) -> Option<String> {
-    resolved_provider_api_key(model, &EnvMap::from_process())
-}
-
-fn resolved_provider_api_key(
-    model: &nanoclaw_config::ResolvedModel,
-    env_map: &EnvMap,
-) -> Option<String> {
+fn provider_api_key(model: &nanoclaw_config::ResolvedModel, env_map: &EnvMap) -> Option<String> {
     let env_key = match model.provider {
         ProviderKind::OpenAi => "OPENAI_API_KEY",
         ProviderKind::Anthropic => "ANTHROPIC_API_KEY",
     };
-    model
-        .env
-        .get(env_key)
-        .cloned()
-        .or_else(|| env_map.get_non_empty(env_key))
+    env_map.get_non_empty(env_key)
 }
 
 fn provider_name(provider: &ProviderKind) -> &'static str {
@@ -126,7 +123,6 @@ mod tests {
     use nanoclaw_config::{
         ModelCapabilitiesConfig, ProviderKind, ResolvedInternalProfile, ResolvedModel,
     };
-    use std::collections::BTreeMap;
     use tempfile::tempdir;
 
     #[test]
@@ -141,7 +137,6 @@ mod tests {
                 provider: ProviderKind::OpenAi,
                 model: "gpt-5.4-mini".to_string(),
                 base_url: None,
-                env: BTreeMap::new(),
                 context_window_tokens: 400_000,
                 max_output_tokens: 32_000,
                 compact_trigger_tokens: 320_000,

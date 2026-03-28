@@ -579,6 +579,8 @@
   - 已落地：
     - `nanoclaw-config` 已删除旧 `provider/runtime/system_prompt` schema
     - `core.toml` 已切到 `global_system_prompt / host / models / agents / internal`
+    - provider API key 已统一收敛到工作区 `.env` / `.env.local`
+    - `models.<alias>.env` 与 `ResolvedModel.env` 已移除
     - `reference-tui` 与 `code-agent` 已从 resolved primary profile 启动
     - compactor 已切到 `internal.summary`
     - `code-agent` 子代理现在会按 `task.role` 解析 `agents.roles.<role>`
