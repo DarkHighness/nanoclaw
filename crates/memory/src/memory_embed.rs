@@ -1,10 +1,15 @@
 use crate::lexical_index::{self, LexicalIndex, LexicalIndexChunk};
+use crate::managed_files::record_memory;
+use crate::promotion::promote_memory;
+use crate::retention::forget_memory;
 use crate::retrieval_policy;
 use crate::vector_store::{CachedMemoryEmbedIndex, MemoryVectorStore, PersistedChunkEmbedding};
 use crate::{
-    MemoryBackend, MemoryDocument, MemoryEmbedConfig, MemoryGetRequest, MemorySearchHit,
-    MemorySearchRequest, MemorySearchResponse, MemorySidecarLifecycle, MemorySidecarStatus,
-    MemoryStateLayout, MemorySyncStatus, Result, chunk_corpus, load_configured_memory_corpus,
+    MemoryBackend, MemoryDocument, MemoryEmbedConfig, MemoryForgetRequest, MemoryGetRequest,
+    MemoryListRequest, MemoryListResponse, MemoryMutationResponse, MemoryPromoteRequest,
+    MemoryRecordRequest, MemorySearchHit, MemorySearchRequest, MemorySearchResponse,
+    MemorySidecarLifecycle, MemorySidecarStatus, MemoryStateLayout, MemorySyncStatus, Result,
+    chunk_corpus, load_configured_memory_corpus,
 };
 use async_trait::async_trait;
 use inference::{
@@ -48,9 +53,13 @@ struct CandidateAccumulator {
     chunk_id: String,
     chunk: crate::MemoryCorpusChunk,
     title: String,
-    memory_layer: &'static str,
-    document_date: Option<String>,
+    scope_weight: f64,
     recency_multiplier: f64,
+    run_match_bonus: f64,
+    session_match_bonus: f64,
+    agent_match_bonus: f64,
+    task_match_bonus: f64,
+    stale_penalty: f64,
     lexical_score: f64,
     vector_score: f64,
     base_retrieval_score: f64,
@@ -117,6 +126,18 @@ impl MemoryEmbedBackend {
     pub fn with_run_store(mut self, run_store: Arc<dyn RunStore>) -> Self {
         self.run_store = Some(run_store);
         self
+    }
+
+    fn core_delegate(&self) -> crate::MemoryCoreBackend {
+        let backend = crate::MemoryCoreBackend::new(
+            self.workspace_root.clone(),
+            self.config.as_core_config(),
+        );
+        if let Some(run_store) = self.run_store.as_ref() {
+            backend.with_run_store(run_store.clone())
+        } else {
+            backend
+        }
     }
 
     pub fn from_http_config(workspace_root: PathBuf, config: MemoryEmbedConfig) -> Result<Self> {
@@ -737,7 +758,12 @@ impl MemoryBackend for MemoryEmbedBackend {
             .unwrap_or(self.config.search.max_results)
             .max(1)
             .min(50);
-        let prefix = req.path_prefix.map(|value| value.trim().to_string());
+        let prefix = req
+            .path_prefix
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned);
         self.ensure_lexical_index(&corpus, &chunks, runtime_exports.exported_runs)
             .await?;
         let cached = self.ensure_chunk_index(&corpus, &chunks).await?;
@@ -748,6 +774,7 @@ impl MemoryBackend for MemoryEmbedBackend {
                 prefix
                     .as_deref()
                     .is_none_or(|path_prefix| chunk.path.starts_with(path_prefix))
+                    && retrieval_policy::matches_search_filters(&chunk.path, &chunk.metadata, &req)
             })
             .cloned()
             .collect::<Vec<_>>();
@@ -847,7 +874,7 @@ impl MemoryBackend for MemoryEmbedBackend {
         }
 
         let mut ranked = candidates.into_values().collect::<Vec<_>>();
-        apply_temporal_scoring(&mut ranked);
+        apply_temporal_scoring(&mut ranked, &req);
         ranked.sort_by(compare_candidates_by_retrieval);
         let (mut ranked, rerank_used, rerank_fallback) =
             self.maybe_rerank(&req.query, ranked).await?;
@@ -871,13 +898,42 @@ impl MemoryBackend for MemoryEmbedBackend {
                     "retrieval_score".to_string(),
                     json!(candidate.retrieval_score),
                 );
-                metadata.insert("memory_layer".to_string(), json!(candidate.memory_layer));
+                metadata.insert(
+                    "memory_scope".to_string(),
+                    json!(candidate.chunk.metadata.scope.as_str()),
+                );
+                metadata.insert(
+                    "memory_layer".to_string(),
+                    json!(candidate.chunk.metadata.layer),
+                );
+                metadata.insert(
+                    "memory_status".to_string(),
+                    json!(candidate.chunk.metadata.status.as_str()),
+                );
+                metadata.insert("scope_weight".to_string(), json!(candidate.scope_weight));
                 metadata.insert(
                     "recency_multiplier".to_string(),
                     json!(candidate.recency_multiplier),
                 );
-                if let Some(document_date) = &candidate.document_date {
-                    metadata.insert("document_date".to_string(), json!(document_date));
+                metadata.insert(
+                    "run_match_bonus".to_string(),
+                    json!(candidate.run_match_bonus),
+                );
+                metadata.insert(
+                    "session_match_bonus".to_string(),
+                    json!(candidate.session_match_bonus),
+                );
+                metadata.insert(
+                    "agent_match_bonus".to_string(),
+                    json!(candidate.agent_match_bonus),
+                );
+                metadata.insert(
+                    "task_match_bonus".to_string(),
+                    json!(candidate.task_match_bonus),
+                );
+                metadata.insert("stale_penalty".to_string(), json!(candidate.stale_penalty));
+                if let Some(updated_at_ms) = candidate.chunk.metadata.updated_at_ms {
+                    metadata.insert("updated_at_ms".to_string(), json!(updated_at_ms));
                 }
                 metadata.insert(
                     "matched_streams".to_string(),
@@ -909,6 +965,7 @@ impl MemoryBackend for MemoryEmbedBackend {
                         &candidate.chunk.text,
                         self.config.search.max_snippet_chars,
                     ),
+                    document_metadata: candidate.chunk.metadata.clone(),
                     metadata,
                 }
             })
@@ -922,6 +979,10 @@ impl MemoryBackend for MemoryEmbedBackend {
         metadata.insert(
             "runtime_exported_runs".to_string(),
             json!(runtime_exports.exported_runs),
+        );
+        metadata.insert(
+            "runtime_exported_documents".to_string(),
+            json!(runtime_exports.exported_documents),
         );
         if let Some(output_dir) = runtime_exports.output_dir {
             metadata.insert("runtime_export_dir".to_string(), json!(output_dir));
@@ -972,16 +1033,23 @@ impl MemoryBackend for MemoryEmbedBackend {
     }
 
     async fn get(&self, req: MemoryGetRequest) -> Result<MemoryDocument> {
-        let backend = crate::MemoryCoreBackend::new(
-            self.workspace_root.clone(),
-            self.config.as_core_config(),
-        );
-        let backend = if let Some(run_store) = self.run_store.as_ref() {
-            backend.with_run_store(run_store.clone())
-        } else {
-            backend
-        };
-        backend.get(req).await
+        self.core_delegate().get(req).await
+    }
+
+    async fn list(&self, req: MemoryListRequest) -> Result<MemoryListResponse> {
+        self.core_delegate().list(req).await
+    }
+
+    async fn record(&self, req: MemoryRecordRequest) -> Result<MemoryMutationResponse> {
+        record_memory(&self.workspace_root, req, None, None).await
+    }
+
+    async fn promote(&self, req: MemoryPromoteRequest) -> Result<MemoryMutationResponse> {
+        promote_memory(&self.workspace_root, req).await
+    }
+
+    async fn forget(&self, req: MemoryForgetRequest) -> Result<MemoryMutationResponse> {
+        forget_memory(&self.workspace_root, req).await
     }
 }
 
@@ -1188,9 +1256,13 @@ fn apply_ranked_list(
                 rerank_relevant: None,
                 matched_streams: 0,
                 applied_mmr: false,
-                memory_layer: "workspace-note",
-                document_date: None,
+                scope_weight: 1.0,
                 recency_multiplier: 1.0,
+                run_match_bonus: 0.0,
+                session_match_bonus: 0.0,
+                agent_match_bonus: 0.0,
+                task_match_bonus: 0.0,
+                stale_penalty: 1.0,
             });
         match stream_kind {
             RankedStreamKind::Lexical => entry.lexical_score = entry.lexical_score.max(score),
@@ -1209,13 +1281,21 @@ fn apply_ranked_list(
     }
 }
 
-fn apply_temporal_scoring(candidates: &mut [CandidateAccumulator]) {
+fn apply_temporal_scoring(candidates: &mut [CandidateAccumulator], request: &MemorySearchRequest) {
     for candidate in candidates {
-        let signals = retrieval_policy::path_scoring_signals(&candidate.chunk.path);
-        candidate.memory_layer = signals.memory_layer;
-        candidate.document_date = signals.document_date;
+        let signals = retrieval_policy::search_signals(
+            &candidate.chunk.path,
+            &candidate.chunk.metadata,
+            request,
+        );
+        candidate.scope_weight = signals.scope_weight;
         candidate.recency_multiplier = signals.recency_multiplier;
-        candidate.retrieval_score = candidate.base_retrieval_score * candidate.recency_multiplier;
+        candidate.run_match_bonus = signals.run_match_bonus;
+        candidate.session_match_bonus = signals.session_match_bonus;
+        candidate.agent_match_bonus = signals.agent_match_bonus;
+        candidate.task_match_bonus = signals.task_match_bonus;
+        candidate.stale_penalty = signals.stale_penalty;
+        candidate.retrieval_score = candidate.base_retrieval_score * signals.total_multiplier();
     }
 }
 
@@ -1569,6 +1649,13 @@ mod tests {
                 query: "query".to_string(),
                 limit: Some(2),
                 path_prefix: None,
+                scopes: None,
+                tags: None,
+                run_id: None,
+                session_id: None,
+                agent_name: None,
+                task_id: None,
+                include_stale: None,
             })
             .await
             .unwrap();
@@ -1662,6 +1749,13 @@ mod tests {
                 query: "browserless".to_string(),
                 limit: Some(2),
                 path_prefix: None,
+                scopes: None,
+                tags: None,
+                run_id: None,
+                session_id: None,
+                agent_name: None,
+                task_id: None,
+                include_stale: None,
             })
             .await
             .unwrap();
@@ -1819,6 +1913,13 @@ mod tests {
                 query: "browserless".to_string(),
                 limit: Some(2),
                 path_prefix: Some("memory/".to_string()),
+                scopes: None,
+                tags: None,
+                run_id: None,
+                session_id: None,
+                agent_name: None,
+                task_id: None,
+                include_stale: None,
             })
             .await
             .unwrap();
@@ -1946,6 +2047,13 @@ mod tests {
                 query: "canary deploy".to_string(),
                 limit: Some(2),
                 path_prefix: None,
+                scopes: None,
+                tags: None,
+                run_id: None,
+                session_id: None,
+                agent_name: None,
+                task_id: None,
+                include_stale: None,
             })
             .await
             .unwrap();
@@ -2035,8 +2143,16 @@ mod tests {
                     start_line: 1,
                     end_line: 4,
                     text: "duplicate rollout canary".to_string(),
+                    metadata: crate::MemoryDocumentMetadata::default(),
                 },
                 title: "Memory".to_string(),
+                scope_weight: 1.0,
+                recency_multiplier: 1.0,
+                run_match_bonus: 0.0,
+                session_match_bonus: 0.0,
+                agent_match_bonus: 0.0,
+                task_match_bonus: 0.0,
+                stale_penalty: 1.0,
                 lexical_score: 2.0,
                 vector_score: 1.0,
                 retrieval_score: 0.9,
@@ -2045,9 +2161,6 @@ mod tests {
                 rerank_relevant: None,
                 matched_streams: 2,
                 applied_mmr: false,
-                memory_layer: "workspace-note",
-                document_date: None,
-                recency_multiplier: 1.0,
                 base_retrieval_score: 0.9,
             },
             CandidateAccumulator {
@@ -2058,8 +2171,16 @@ mod tests {
                     start_line: 3,
                     end_line: 6,
                     text: "duplicate rollout canary".to_string(),
+                    metadata: crate::MemoryDocumentMetadata::default(),
                 },
                 title: "Memory".to_string(),
+                scope_weight: 1.0,
+                recency_multiplier: 1.0,
+                run_match_bonus: 0.0,
+                session_match_bonus: 0.0,
+                agent_match_bonus: 0.0,
+                task_match_bonus: 0.0,
+                stale_penalty: 1.0,
                 lexical_score: 1.9,
                 vector_score: 0.98,
                 retrieval_score: 0.85,
@@ -2068,9 +2189,6 @@ mod tests {
                 rerank_relevant: None,
                 matched_streams: 2,
                 applied_mmr: false,
-                memory_layer: "workspace-note",
-                document_date: None,
-                recency_multiplier: 1.0,
                 base_retrieval_score: 0.85,
             },
             CandidateAccumulator {
@@ -2081,8 +2199,16 @@ mod tests {
                     start_line: 1,
                     end_line: 4,
                     text: "fallback recovery procedure".to_string(),
+                    metadata: crate::MemoryDocumentMetadata::default(),
                 },
                 title: "Other".to_string(),
+                scope_weight: 1.0,
+                recency_multiplier: 1.0,
+                run_match_bonus: 0.0,
+                session_match_bonus: 0.0,
+                agent_match_bonus: 0.0,
+                task_match_bonus: 0.0,
+                stale_penalty: 1.0,
                 lexical_score: 0.8,
                 vector_score: 0.2,
                 retrieval_score: 0.7,
@@ -2091,9 +2217,6 @@ mod tests {
                 rerank_relevant: None,
                 matched_streams: 1,
                 applied_mmr: false,
-                memory_layer: "workspace-note",
-                document_date: None,
-                recency_multiplier: 1.0,
                 base_retrieval_score: 0.7,
             },
         ];

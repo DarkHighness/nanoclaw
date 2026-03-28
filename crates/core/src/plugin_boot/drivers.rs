@@ -3,7 +3,8 @@ use super::driver_env::materialize_api_key_envs;
 use anyhow::{Context, Result};
 use memory::{
     MemoryBackend, MemoryCoreBackend, MemoryCoreConfig, MemoryEmbedBackend, MemoryEmbedConfig,
-    MemoryGetTool, MemorySearchTool,
+    MemoryForgetTool, MemoryGetTool, MemoryListTool, MemoryPromoteTool, MemoryRecordTool,
+    MemorySearchTool,
 };
 use plugins::DriverActivationRequest;
 use std::path::Path;
@@ -30,6 +31,10 @@ pub(super) fn activate_memory_core_request(
     let backend = memory_core_backend(workspace_root, &config, run_store);
     tools.register_arc(Arc::new(MemorySearchTool::new(backend.clone())));
     tools.register_arc(Arc::new(MemoryGetTool::new(backend.clone())));
+    tools.register_arc(Arc::new(MemoryListTool::new(backend.clone())));
+    tools.register_arc(Arc::new(MemoryRecordTool::new(backend.clone())));
+    tools.register_arc(Arc::new(MemoryPromoteTool::new(backend.clone())));
+    tools.register_arc(Arc::new(MemoryForgetTool::new(backend.clone())));
     maybe_spawn_memory_background_sync(
         backend,
         &request.plugin_id,
@@ -71,6 +76,10 @@ pub(super) fn activate_memory_embed_request(
         })?;
     tools.register_arc(Arc::new(MemorySearchTool::new(backend.clone())));
     tools.register_arc(Arc::new(MemoryGetTool::new(backend.clone())));
+    tools.register_arc(Arc::new(MemoryListTool::new(backend.clone())));
+    tools.register_arc(Arc::new(MemoryRecordTool::new(backend.clone())));
+    tools.register_arc(Arc::new(MemoryPromoteTool::new(backend.clone())));
+    tools.register_arc(Arc::new(MemoryForgetTool::new(backend.clone())));
     maybe_spawn_memory_background_sync(
         backend,
         &request.plugin_id,

@@ -1,11 +1,12 @@
 use crate::replay::replay_transcript;
 use crate::{
-    EventSink, Result, RunMemoryExportRecord, RunMemoryExportRequest, RunSearchResult, RunStore,
-    RunStoreError, RunSummary, append_search_corpus_line, keep_recent_chars, search_run_events,
-    searchable_event_strings, summarize_run_events,
+    EventSink, Result, RunMemoryExportBundle, RunMemoryExportRequest, RunSearchResult, RunStore,
+    RunStoreError, RunSummary, apply_memory_export_request, build_memory_export_record,
+    search_run_events, summarize_run_events,
 };
 use async_trait::async_trait;
 use dashmap::DashMap;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use types::{Message, RunEventEnvelope, RunId, SessionId};
 
@@ -109,56 +110,54 @@ impl RunStore for InMemoryRunStore {
     async fn export_for_memory(
         &self,
         request: RunMemoryExportRequest,
-    ) -> Result<Vec<RunMemoryExportRecord>> {
-        let mut records = self
-            .events
-            .iter()
-            .filter_map(|entry| {
-                Some(RunMemoryExportRecord {
-                    summary: summarize_run_events(entry.key(), entry.value())?,
-                    session_ids: collect_session_ids(entry.value()),
-                    search_corpus: build_search_corpus(entry.value()),
-                })
-            })
-            .collect::<Vec<_>>();
-        sort_memory_export_records(&mut records);
+    ) -> Result<RunMemoryExportBundle> {
+        let mut bundle = RunMemoryExportBundle::default();
 
-        if let Some(max_runs) = request.max_runs {
-            records.truncate(max_runs);
-        }
-        if let Some(max_chars) = request.max_search_corpus_chars {
-            for record in &mut records {
-                record.search_corpus = keep_recent_chars(&record.search_corpus, max_chars);
+        for entry in self.events.iter() {
+            if let Some(record) = build_memory_export_record(
+                crate::MemoryExportScope::Run,
+                entry.key(),
+                None,
+                None,
+                None,
+                entry.value(),
+            ) {
+                bundle.runs.push(record);
+            }
+
+            for (session_id, events) in session_event_groups(entry.value()) {
+                if let Some(record) = build_memory_export_record(
+                    crate::MemoryExportScope::Session,
+                    entry.key(),
+                    Some(session_id),
+                    None,
+                    None,
+                    &events,
+                ) {
+                    bundle.sessions.push(record);
+                }
             }
         }
-        Ok(records)
+
+        sort_memory_export_records(&mut bundle.runs);
+        sort_memory_export_records(&mut bundle.sessions);
+        apply_memory_export_request(&mut bundle, &request);
+        Ok(bundle)
     }
 }
 
-fn collect_session_ids(events: &[RunEventEnvelope]) -> Vec<SessionId> {
-    let mut seen = Vec::new();
+fn session_event_groups(events: &[RunEventEnvelope]) -> Vec<(SessionId, Vec<RunEventEnvelope>)> {
+    let mut grouped = BTreeMap::<SessionId, Vec<RunEventEnvelope>>::new();
     for event in events {
-        if !seen
-            .iter()
-            .any(|value: &SessionId| value == &event.session_id)
-        {
-            seen.push(event.session_id.clone());
-        }
+        grouped
+            .entry(event.session_id.clone())
+            .or_default()
+            .push(event.clone());
     }
-    seen
+    grouped.into_iter().collect()
 }
 
-fn build_search_corpus(events: &[RunEventEnvelope]) -> String {
-    let mut corpus = String::new();
-    for event in events {
-        for value in searchable_event_strings(event) {
-            append_search_corpus_line(&mut corpus, &value);
-        }
-    }
-    corpus
-}
-
-fn sort_memory_export_records(records: &mut [RunMemoryExportRecord]) {
+fn sort_memory_export_records(records: &mut [crate::RunMemoryExportRecord]) {
     records.sort_by(|left, right| {
         right
             .summary
@@ -301,7 +300,7 @@ mod tests {
         store
             .append(RunEventEnvelope::new(
                 run_id.clone(),
-                session_id,
+                session_id.clone(),
                 None,
                 None,
                 RunEventKind::UserPromptSubmit {
@@ -318,8 +317,13 @@ mod tests {
             })
             .await
             .unwrap();
-        assert_eq!(exports.len(), 1);
-        assert_eq!(exports[0].summary.run_id, run_id);
-        assert!(exports[0].search_corpus.contains("deploy release"));
+        assert_eq!(exports.runs.len(), 1);
+        assert_eq!(exports.runs[0].summary.run_id, run_id);
+        assert!(exports.runs[0].search_corpus.contains("deploy release"));
+        assert_eq!(exports.sessions.len(), 1);
+        assert_eq!(
+            exports.sessions[0].summary.session_id.as_ref(),
+            Some(&session_id)
+        );
     }
 }

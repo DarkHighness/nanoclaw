@@ -3,12 +3,13 @@ mod index_sidecar;
 
 use crate::replay::replay_transcript;
 use crate::{
-    EventSink, Result, RunMemoryExportRecord, RunMemoryExportRequest, RunSearchResult, RunStore,
-    RunStoreError, RunSummary, keep_recent_chars, search_run_events,
+    EventSink, Result, RunMemoryExportBundle, RunMemoryExportRequest, RunSearchResult, RunStore,
+    RunStoreError, RunSummary, apply_memory_export_request, build_memory_export_record,
+    search_run_events,
 };
 use async_trait::async_trait;
 use futures::{StreamExt, stream};
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -271,40 +272,73 @@ impl RunStore for FileRunStore {
     async fn export_for_memory(
         &self,
         request: RunMemoryExportRequest,
-    ) -> Result<Vec<RunMemoryExportRecord>> {
-        let index = self.index.read().expect("file run store read lock");
-        let mut records = index
-            .runs
-            .values()
-            .map(|record| RunMemoryExportRecord {
-                summary: record.summary.clone(),
-                session_ids: record.session_ids.clone(),
-                search_corpus: record.search_corpus.clone(),
-            })
-            .collect::<Vec<_>>();
-        records.sort_by(|left, right| {
-            right
-                .summary
-                .last_timestamp_ms
-                .cmp(&left.summary.last_timestamp_ms)
-                .then_with(|| {
-                    left.summary
-                        .run_id
-                        .as_str()
-                        .cmp(right.summary.run_id.as_str())
-                })
-        });
+    ) -> Result<RunMemoryExportBundle> {
+        let run_ids = {
+            let index = self.index.read().expect("file run store read lock");
+            let mut run_ids = index.runs.keys().cloned().collect::<Vec<_>>();
+            run_ids.sort();
+            run_ids
+        };
 
-        if let Some(max_runs) = request.max_runs {
-            records.truncate(max_runs);
-        }
-        if let Some(max_chars) = request.max_search_corpus_chars {
-            for record in &mut records {
-                record.search_corpus = keep_recent_chars(&record.search_corpus, max_chars);
+        let mut bundle = RunMemoryExportBundle::default();
+        for run_id in run_ids {
+            let events = self.events(&run_id).await?;
+            if let Some(record) = build_memory_export_record(
+                crate::MemoryExportScope::Run,
+                &run_id,
+                None,
+                None,
+                None,
+                &events,
+            ) {
+                bundle.runs.push(record);
+            }
+
+            for (session_id, session_events) in session_event_groups(&events) {
+                if let Some(record) = build_memory_export_record(
+                    crate::MemoryExportScope::Session,
+                    &run_id,
+                    Some(session_id),
+                    None,
+                    None,
+                    &session_events,
+                ) {
+                    bundle.sessions.push(record);
+                }
             }
         }
-        Ok(records)
+
+        sort_export_records(&mut bundle.runs);
+        sort_export_records(&mut bundle.sessions);
+        apply_memory_export_request(&mut bundle, &request);
+        Ok(bundle)
     }
+}
+
+fn session_event_groups(events: &[RunEventEnvelope]) -> Vec<(SessionId, Vec<RunEventEnvelope>)> {
+    let mut grouped = BTreeMap::<SessionId, Vec<RunEventEnvelope>>::new();
+    for event in events {
+        grouped
+            .entry(event.session_id.clone())
+            .or_default()
+            .push(event.clone());
+    }
+    grouped.into_iter().collect()
+}
+
+fn sort_export_records(records: &mut [crate::RunMemoryExportRecord]) {
+    records.sort_by(|left, right| {
+        right
+            .summary
+            .last_timestamp_ms
+            .cmp(&left.summary.last_timestamp_ms)
+            .then_with(|| {
+                left.summary
+                    .run_id
+                    .as_str()
+                    .cmp(right.summary.run_id.as_str())
+            })
+    });
 }
 
 fn sort_run_summaries(runs: &mut [RunSummary]) {
@@ -570,7 +604,7 @@ mod tests {
         store
             .append(RunEventEnvelope::new(
                 run_id.clone(),
-                session_id,
+                session_id.clone(),
                 None,
                 None,
                 RunEventKind::UserPromptSubmit {
@@ -587,8 +621,13 @@ mod tests {
             })
             .await
             .unwrap();
-        assert_eq!(exports.len(), 1);
-        assert_eq!(exports[0].summary.run_id, run_id);
-        assert!(exports[0].search_corpus.contains("ship release"));
+        assert_eq!(exports.runs.len(), 1);
+        assert_eq!(exports.runs[0].summary.run_id, run_id);
+        assert!(exports.runs[0].search_corpus.contains("ship release"));
+        assert_eq!(exports.sessions.len(), 1);
+        assert_eq!(
+            exports.sessions[0].summary.session_id.as_ref(),
+            Some(&session_id)
+        );
     }
 }

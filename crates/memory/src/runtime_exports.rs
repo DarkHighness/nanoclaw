@@ -2,17 +2,25 @@ use crate::{
     MemoryCorpus, MemoryCorpusConfig, MemorySidecarLifecycle, MemorySidecarStatus,
     MemoryStateLayout, ResolvedStatePath, Result, load_memory_corpus,
 };
-use std::collections::BTreeSet;
-use std::path::Path;
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use store::{RunMemoryExportRecord, RunMemoryExportRequest, RunStore};
+use store::{
+    MemoryExportScope, RunMemoryExportBundle, RunMemoryExportRecord, RunMemoryExportRequest,
+    RunStore,
+};
 use tokio::fs;
+use types::SessionId;
 
 const RUNTIME_EXPORTS_LIFECYCLE_ID: &str = "runtime-exports";
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MemoryRuntimeExportStats {
     pub exported_runs: usize,
+    pub exported_sessions: usize,
+    pub exported_subagents: usize,
+    pub exported_tasks: usize,
+    pub exported_documents: usize,
     pub output_dir: Option<String>,
 }
 
@@ -25,9 +33,9 @@ pub async fn load_configured_memory_corpus(
     let stats = if config.runtime_export.enabled {
         let layout = MemoryStateLayout::new(workspace_root);
         let output_dir = layout.resolve_runtime_exports_dir(&config.runtime_export.output_dir)?;
-        // Runtime exports are materialized as real Markdown sidecars so search
-        // hits remain readable through `memory_get` instead of pointing at an
-        // in-memory-only synthetic document.
+        // Runtime exports are persisted as readable Markdown sidecars so memory
+        // retrieval can cite them with `memory_get` instead of pointing at an
+        // opaque index-only record.
         effective
             .extra_paths
             .push(output_dir.relative_path().to_path_buf());
@@ -56,8 +64,8 @@ async fn materialize_runtime_exports(
             },
         )?;
         return Ok(MemoryRuntimeExportStats {
-            exported_runs: 0,
             output_dir: Some(output_dir.relative_display()),
+            ..MemoryRuntimeExportStats::default()
         });
     };
 
@@ -71,110 +79,253 @@ async fn materialize_runtime_exports(
         },
     )?;
 
-    let records = run_store
+    let bundle = run_store
         .export_for_memory(RunMemoryExportRequest {
             max_runs: Some(config.runtime_export.max_runs.max(1)),
             max_search_corpus_chars: Some(config.runtime_export.max_search_corpus_chars),
         })
         .await
         .map_err(|error| crate::MemoryError::invalid(error.to_string()))?;
-    fs::create_dir_all(output_dir.absolute_path()).await?;
 
-    let keep = records
-        .iter()
-        .map(export_file_name)
-        .collect::<BTreeSet<_>>();
+    fs::create_dir_all(output_dir.absolute_path()).await?;
+    let keep = write_export_bundle(
+        output_dir.absolute_path(),
+        &bundle,
+        config.runtime_export.include_search_corpus,
+    )
+    .await?;
     prune_stale_runtime_exports(output_dir.absolute_path(), &keep).await?;
 
-    for record in &records {
-        let markdown =
-            render_run_export_markdown(record, config.runtime_export.include_search_corpus);
-        fs::write(
-            output_dir.absolute_path().join(export_file_name(record)),
-            markdown,
-        )
-        .await?;
-    }
-
+    let stats = stats_from_bundle(&bundle, Some(output_dir.relative_display()));
     layout.write_lifecycle(
         RUNTIME_EXPORTS_LIFECYCLE_ID,
         MemorySidecarLifecycle {
             backend: RUNTIME_EXPORTS_LIFECYCLE_ID.to_string(),
             status: MemorySidecarStatus::Ready,
             artifact_path: output_dir.relative_display(),
-            exported_run_count: records.len(),
+            exported_run_count: stats.exported_runs,
+            exported_session_count: stats.exported_sessions,
+            exported_subagent_count: stats.exported_subagents,
+            exported_task_count: stats.exported_tasks,
+            exported_document_count: stats.exported_documents,
             ..MemorySidecarLifecycle::default()
         },
     )?;
 
-    Ok(MemoryRuntimeExportStats {
-        exported_runs: records.len(),
-        output_dir: Some(output_dir.relative_display()),
-    })
+    Ok(stats)
 }
 
-async fn prune_stale_runtime_exports(output_dir: &Path, keep: &BTreeSet<String>) -> Result<()> {
-    let mut entries = match fs::read_dir(output_dir).await {
+async fn write_export_bundle(
+    root_dir: &Path,
+    bundle: &RunMemoryExportBundle,
+    include_search_corpus: bool,
+) -> Result<BTreeMap<&'static str, BTreeSet<String>>> {
+    let mut keep = BTreeMap::new();
+    write_scope_records(
+        root_dir,
+        "runs",
+        &bundle.runs,
+        include_search_corpus,
+        &mut keep,
+    )
+    .await?;
+    write_scope_records(
+        root_dir,
+        "sessions",
+        &bundle.sessions,
+        include_search_corpus,
+        &mut keep,
+    )
+    .await?;
+    write_scope_records(
+        root_dir,
+        "subagents",
+        &bundle.subagents,
+        include_search_corpus,
+        &mut keep,
+    )
+    .await?;
+    write_scope_records(
+        root_dir,
+        "tasks",
+        &bundle.tasks,
+        include_search_corpus,
+        &mut keep,
+    )
+    .await?;
+    Ok(keep)
+}
+
+async fn write_scope_records(
+    root_dir: &Path,
+    directory: &'static str,
+    records: &[RunMemoryExportRecord],
+    include_search_corpus: bool,
+    keep: &mut BTreeMap<&'static str, BTreeSet<String>>,
+) -> Result<()> {
+    let scope_dir = root_dir.join(directory);
+    fs::create_dir_all(&scope_dir).await?;
+    let keep_scope = keep.entry(directory).or_default();
+
+    for record in records {
+        let file_name = export_file_name(record);
+        keep_scope.insert(file_name.clone());
+        fs::write(
+            scope_dir.join(&file_name),
+            render_export_markdown(record, include_search_corpus),
+        )
+        .await?;
+    }
+
+    Ok(())
+}
+
+async fn prune_stale_runtime_exports(
+    root_dir: &Path,
+    keep: &BTreeMap<&'static str, BTreeSet<String>>,
+) -> Result<()> {
+    for directory in ["runs", "sessions", "subagents", "tasks"] {
+        prune_scope_dir(root_dir.join(directory), keep.get(directory)).await?;
+    }
+    Ok(())
+}
+
+async fn prune_scope_dir(path: PathBuf, keep: Option<&BTreeSet<String>>) -> Result<()> {
+    let mut entries = match fs::read_dir(&path).await {
         Ok(entries) => entries,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(error.into()),
     };
     while let Some(entry) = entries.next_entry().await? {
-        let path = entry.path();
-        if !path.is_file() {
+        let entry_path = entry.path();
+        if !entry_path.is_file() {
             continue;
         }
-        let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+        let Some(name) = entry_path.file_name().and_then(|value| value.to_str()) else {
             continue;
         };
-        if keep.contains(name) {
+        if keep.is_some_and(|keep| keep.contains(name)) {
             continue;
         }
-        fs::remove_file(path).await?;
+        fs::remove_file(entry_path).await?;
     }
     Ok(())
 }
 
 fn export_file_name(record: &RunMemoryExportRecord) -> String {
-    format!("{}.md", record.summary.run_id.as_str())
+    match record.summary.scope {
+        MemoryExportScope::Run => format!("{}.md", record.summary.run_id.as_str()),
+        MemoryExportScope::Session => format!(
+            "{}.md",
+            record
+                .summary
+                .session_id
+                .as_ref()
+                .map(SessionId::as_str)
+                .unwrap_or(record.summary.run_id.as_str())
+        ),
+        MemoryExportScope::Subagent => format!(
+            "{}.md",
+            export_name_parts([
+                Some(record.summary.run_id.as_str()),
+                record.summary.session_id.as_ref().map(SessionId::as_str),
+                record.summary.agent_name.as_deref(),
+            ])
+        ),
+        MemoryExportScope::Task => format!(
+            "{}.md",
+            export_name_parts([
+                Some(record.summary.run_id.as_str()),
+                record.summary.session_id.as_ref().map(SessionId::as_str),
+                record.summary.task_id.as_deref(),
+            ])
+        ),
+    }
 }
 
-fn render_run_export_markdown(
-    record: &RunMemoryExportRecord,
-    include_search_corpus: bool,
-) -> String {
+fn export_name_parts<const N: usize>(parts: [Option<&str>; N]) -> String {
+    parts
+        .into_iter()
+        .flatten()
+        .map(slug_fragment)
+        .collect::<Vec<_>>()
+        .join("--")
+}
+
+fn slug_fragment(value: &str) -> String {
+    let mut out = String::new();
+    let mut prev_dash = false;
+    for ch in value.chars() {
+        let normalized = match ch {
+            'a'..='z' | '0'..='9' => Some(ch),
+            'A'..='Z' => Some(ch.to_ascii_lowercase()),
+            _ => None,
+        };
+        if let Some(normalized) = normalized {
+            out.push(normalized);
+            prev_dash = false;
+        } else if !prev_dash && !out.is_empty() {
+            out.push('-');
+            prev_dash = true;
+        }
+    }
+    out.trim_matches('-').to_string()
+}
+
+fn render_export_markdown(record: &RunMemoryExportRecord, include_search_corpus: bool) -> String {
     let mut out = vec![
-        format!("# Run {}", record.summary.run_id),
-        String::new(),
-        format!("- Last updated: {}", record.summary.last_timestamp_ms),
-        format!("- Sessions: {}", record.summary.session_count),
-        format!("- Events: {}", record.summary.event_count),
-        format!(
-            "- Transcript messages: {}",
-            record.summary.transcript_message_count
-        ),
+        "---".to_string(),
+        "scope: episodic".to_string(),
+        format!("layer: {}", scope_layer(record.summary.scope)),
+        format!("run_id: {}", record.summary.run_id),
+        format!("updated_at_ms: {}", record.summary.last_timestamp_ms),
+        "status: ready".to_string(),
+        "tags:".to_string(),
+        "  - runtime-export".to_string(),
     ];
 
-    if !record.session_ids.is_empty() {
-        out.push(format!(
-            "- Session ids: {}",
-            record
-                .session_ids
-                .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join(", ")
-        ));
+    if let Some(session_id) = &record.summary.session_id {
+        out.push(format!("session_id: {session_id}"));
     }
+    if let Some(agent_name) = &record.summary.agent_name {
+        out.push(format!("agent_name: {agent_name}"));
+    }
+    if let Some(task_id) = &record.summary.task_id {
+        out.push(format!("task_id: {task_id}"));
+    }
+
+    out.push("---".to_string());
+    out.push(String::new());
+    out.push(export_heading(record));
+    out.push(String::new());
+    out.push(format!(
+        "- Last updated: {}",
+        record.summary.last_timestamp_ms
+    ));
+    out.push(format!("- Events: {}", record.summary.event_count));
+    out.push(format!(
+        "- Transcript messages: {}",
+        record.summary.transcript_message_count
+    ));
 
     if let Some(prompt) = record.summary.last_user_prompt.as_deref()
         && !prompt.trim().is_empty()
     {
         out.push(String::new());
-        out.push("## Last User Prompt".to_string());
+        out.push("## Prompt".to_string());
         out.push(String::new());
         out.push(prompt.trim().to_string());
     }
+
+    push_list_section(&mut out, "Tool Summary", &record.sections.tool_summary);
+    push_list_section(&mut out, "Decisions", &record.sections.decisions);
+    push_list_section(&mut out, "Failures", &record.sections.failures);
+    push_list_section(
+        &mut out,
+        "Produced Artifacts",
+        &record.sections.produced_artifacts,
+    );
+    push_list_section(&mut out, "Follow-up", &record.sections.follow_up);
 
     if include_search_corpus && !record.search_corpus.trim().is_empty() {
         out.push(String::new());
@@ -187,14 +338,79 @@ fn render_run_export_markdown(
     out.join("\n")
 }
 
+fn push_list_section(lines: &mut Vec<String>, title: &str, entries: &[String]) {
+    if entries.is_empty() {
+        return;
+    }
+    lines.push(String::new());
+    lines.push(format!("## {title}"));
+    lines.push(String::new());
+    for entry in entries {
+        lines.push(format!("- {entry}"));
+    }
+}
+
+fn export_heading(record: &RunMemoryExportRecord) -> String {
+    match record.summary.scope {
+        MemoryExportScope::Run => format!("# Run {}", record.summary.run_id),
+        MemoryExportScope::Session => format!(
+            "# Session {}",
+            record
+                .summary
+                .session_id
+                .as_ref()
+                .map(SessionId::as_str)
+                .unwrap_or(record.summary.run_id.as_str())
+        ),
+        MemoryExportScope::Subagent => format!(
+            "# Subagent {}",
+            record.summary.agent_name.as_deref().unwrap_or("unknown")
+        ),
+        MemoryExportScope::Task => format!(
+            "# Task {}",
+            record.summary.task_id.as_deref().unwrap_or("unknown")
+        ),
+    }
+}
+
+fn scope_layer(scope: MemoryExportScope) -> &'static str {
+    match scope {
+        MemoryExportScope::Run => "runtime-run",
+        MemoryExportScope::Session => "runtime-session",
+        MemoryExportScope::Subagent => "runtime-subagent",
+        MemoryExportScope::Task => "runtime-task",
+    }
+}
+
+fn stats_from_bundle(
+    bundle: &RunMemoryExportBundle,
+    output_dir: Option<String>,
+) -> MemoryRuntimeExportStats {
+    MemoryRuntimeExportStats {
+        exported_runs: bundle.runs.len(),
+        exported_sessions: bundle.sessions.len(),
+        exported_subagents: bundle.subagents.len(),
+        exported_tasks: bundle.tasks.len(),
+        exported_documents: bundle.runs.len()
+            + bundle.sessions.len()
+            + bundle.subagents.len()
+            + bundle.tasks.len(),
+        output_dir,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::load_configured_memory_corpus;
     use crate::{MemoryCorpusConfig, MemoryError, MemorySidecarStatus, MemoryStateLayout};
+    use async_trait::async_trait;
     use std::sync::Arc;
-    use store::{EventSink, InMemoryRunStore};
+    use store::{
+        EventSink, InMemoryRunStore, MemoryExportScope, RunMemoryExportBundle,
+        RunMemoryExportRecord, RunMemoryExportRequest, RunStore, RunStoreError,
+    };
     use tempfile::tempdir;
-    use types::{RunEventEnvelope, RunEventKind, RunId, SessionId};
+    use types::{Message, RunEventEnvelope, RunEventKind, RunId, SessionId};
 
     #[tokio::test]
     async fn writes_runtime_export_markdown_sidecars() {
@@ -222,8 +438,12 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(stats.exported_runs, 1);
+        assert_eq!(stats.exported_sessions, 1);
         assert!(corpus.documents.iter().any(|doc| {
-            doc.path.starts_with(".nanoclaw/memory/runtime/") && doc.path.ends_with(".md")
+            doc.path.starts_with(".nanoclaw/memory/episodic/runs/") && doc.path.ends_with(".md")
+        }));
+        assert!(corpus.documents.iter().any(|doc| {
+            doc.path.starts_with(".nanoclaw/memory/episodic/sessions/") && doc.path.ends_with(".md")
         }));
         let lifecycle = MemoryStateLayout::new(dir.path())
             .load_lifecycle("runtime-exports")
@@ -231,7 +451,34 @@ mod tests {
             .unwrap();
         assert_eq!(lifecycle.status, MemorySidecarStatus::Ready);
         assert_eq!(lifecycle.exported_run_count, 1);
-        assert_eq!(lifecycle.artifact_path, ".nanoclaw/memory/runtime");
+        assert_eq!(lifecycle.exported_session_count, 1);
+        assert_eq!(lifecycle.exported_document_count, 2);
+        assert_eq!(lifecycle.artifact_path, ".nanoclaw/memory/episodic");
+    }
+
+    #[tokio::test]
+    async fn writes_run_session_subagent_and_task_sidecars() {
+        let dir = tempdir().unwrap();
+        let mut config = MemoryCorpusConfig::default();
+        config.runtime_export.enabled = true;
+        let store: Arc<dyn RunStore> = Arc::new(FixtureRunStore::default());
+
+        let (corpus, stats) = load_configured_memory_corpus(dir.path(), &config, Some(&store))
+            .await
+            .unwrap();
+
+        assert_eq!(stats.exported_runs, 1);
+        assert_eq!(stats.exported_sessions, 1);
+        assert_eq!(stats.exported_subagents, 1);
+        assert_eq!(stats.exported_tasks, 1);
+        assert_eq!(stats.exported_documents, 4);
+        assert!(corpus.documents.iter().any(|doc| {
+            doc.path
+                == ".nanoclaw/memory/episodic/subagents/run-fixture--session-fixture--reviewer.md"
+        }));
+        assert!(corpus.documents.iter().any(|doc| {
+            doc.path == ".nanoclaw/memory/episodic/tasks/run-fixture--session-fixture--task-17.md"
+        }));
     }
 
     #[tokio::test]
@@ -244,13 +491,14 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(stats.exported_runs, 0);
+        assert_eq!(stats.exported_documents, 0);
 
         let lifecycle = MemoryStateLayout::new(dir.path())
             .load_lifecycle("runtime-exports")
             .unwrap()
             .unwrap();
         assert_eq!(lifecycle.status, MemorySidecarStatus::Skipped);
-        assert_eq!(lifecycle.artifact_path, ".nanoclaw/memory/runtime");
+        assert_eq!(lifecycle.artifact_path, ".nanoclaw/memory/episodic");
     }
 
     #[tokio::test]
@@ -264,5 +512,105 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, MemoryError::PathOutsideWorkspace(_)));
+    }
+
+    #[derive(Default)]
+    struct FixtureRunStore;
+
+    #[async_trait]
+    impl EventSink for FixtureRunStore {
+        async fn append(&self, _event: RunEventEnvelope) -> std::result::Result<(), RunStoreError> {
+            Ok(())
+        }
+    }
+
+    #[async_trait]
+    impl RunStore for FixtureRunStore {
+        async fn list_runs(&self) -> std::result::Result<Vec<store::RunSummary>, RunStoreError> {
+            Ok(Vec::new())
+        }
+
+        async fn search_runs(
+            &self,
+            _query: &str,
+        ) -> std::result::Result<Vec<store::RunSearchResult>, RunStoreError> {
+            Ok(Vec::new())
+        }
+
+        async fn events(
+            &self,
+            _run_id: &RunId,
+        ) -> std::result::Result<Vec<RunEventEnvelope>, RunStoreError> {
+            Ok(Vec::new())
+        }
+
+        async fn session_ids(
+            &self,
+            _run_id: &RunId,
+        ) -> std::result::Result<Vec<SessionId>, RunStoreError> {
+            Ok(Vec::new())
+        }
+
+        async fn replay_transcript(
+            &self,
+            _run_id: &RunId,
+        ) -> std::result::Result<Vec<Message>, RunStoreError> {
+            Ok(Vec::new())
+        }
+
+        async fn export_for_memory(
+            &self,
+            _request: RunMemoryExportRequest,
+        ) -> std::result::Result<RunMemoryExportBundle, RunStoreError> {
+            Ok(RunMemoryExportBundle {
+                runs: vec![fixture_record(MemoryExportScope::Run, None, None)],
+                sessions: vec![fixture_record(
+                    MemoryExportScope::Session,
+                    Some("session-fixture"),
+                    None,
+                )],
+                subagents: vec![fixture_record(
+                    MemoryExportScope::Subagent,
+                    Some("session-fixture"),
+                    Some("reviewer"),
+                )],
+                tasks: vec![fixture_record(
+                    MemoryExportScope::Task,
+                    Some("session-fixture"),
+                    Some("task-17"),
+                )],
+            })
+        }
+    }
+
+    fn fixture_record(
+        scope: MemoryExportScope,
+        session_id: Option<&str>,
+        detail: Option<&str>,
+    ) -> RunMemoryExportRecord {
+        RunMemoryExportRecord {
+            summary: store::MemoryExportSummary {
+                scope,
+                run_id: RunId::from("run-fixture"),
+                session_id: session_id.map(SessionId::from),
+                agent_name: (scope == MemoryExportScope::Subagent)
+                    .then(|| detail.unwrap_or("reviewer").to_string()),
+                task_id: (scope == MemoryExportScope::Task)
+                    .then(|| detail.unwrap_or("task-17").to_string()),
+                first_timestamp_ms: 1,
+                last_timestamp_ms: 2,
+                event_count: 3,
+                transcript_message_count: 1,
+                last_user_prompt: Some("summarize failures".to_string()),
+            },
+            search_corpus: "summarize failures".to_string(),
+            sections: store::MemoryExportSections {
+                tool_summary: vec!["read completed".to_string()],
+                decisions: vec!["review outcome recorded".to_string()],
+                failures: Vec::new(),
+                produced_artifacts: vec!["reports/review.md".to_string()],
+                follow_up: vec!["open a follow-up task".to_string()],
+            },
+        }
     }
 }
