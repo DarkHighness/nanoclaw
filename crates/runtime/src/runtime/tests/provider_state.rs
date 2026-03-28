@@ -1,11 +1,58 @@
 use super::super::AgentRuntime;
 use super::support::{ContinuingBackend, StaticCompactor};
-use crate::{AgentRuntimeBuilder, CompactionConfig, HookRunner};
+use crate::{
+    AgentRuntimeBuilder, CompactionConfig, DefaultCommandHookExecutor, DefaultWasmHookExecutor,
+    FailClosedAgentHookEvaluator, HookRunner, PromptHookEvaluator, ReqwestHttpHookExecutor, Result,
+};
+use async_trait::async_trait;
 use skills::SkillCatalog;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use store::{InMemoryRunStore, RunStore};
 use tools::ToolExecutionContext;
-use types::{ProviderContinuation, RunEventKind};
+use types::{
+    HookContext, HookEffect, HookRegistration, HookResult, MessageId, MessagePart, MessagePatch,
+    MessageSelector, ProviderContinuation, RunEventKind,
+};
+
+#[derive(Clone, Default)]
+struct MessageIdPatchPromptEvaluator {
+    target_message_id: Arc<Mutex<Option<MessageId>>>,
+}
+
+#[async_trait]
+impl PromptHookEvaluator for MessageIdPatchPromptEvaluator {
+    async fn evaluate(
+        &self,
+        _registration: &HookRegistration,
+        context: HookContext,
+    ) -> Result<HookResult> {
+        let prompt = context
+            .payload
+            .get("prompt")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default();
+        if prompt != "second task" {
+            return Ok(HookResult::default());
+        }
+        let target_message_id = self
+            .target_message_id
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("target message id should be primed before the second turn");
+        Ok(HookResult {
+            effects: vec![HookEffect::PatchMessage {
+                selector: MessageSelector::MessageId {
+                    message_id: target_message_id,
+                },
+                patch: MessagePatch {
+                    append_parts: vec![MessagePart::text(" patched")],
+                    ..Default::default()
+                },
+            }],
+        })
+    }
+}
 
 #[tokio::test]
 async fn runtime_uses_provider_continuation_for_follow_up_turns() {
@@ -121,4 +168,86 @@ async fn local_compaction_resets_provider_continuation() {
     assert!(requests[1].messages.iter().any(|message: &types::Message| {
         message.text_content().contains("summary for 2 messages")
     }));
+}
+
+#[tokio::test]
+async fn message_id_patch_resets_provider_continuation_and_replays_full_visible_transcript() {
+    let dir = tempfile::tempdir().unwrap();
+    let backend = Arc::new(ContinuingBackend::default());
+    let store = Arc::new(InMemoryRunStore::new());
+    let prompt_evaluator = Arc::new(MessageIdPatchPromptEvaluator::default());
+    let mut runtime: AgentRuntime = AgentRuntimeBuilder::new(backend.clone(), store.clone())
+        .hook_runner(Arc::new(HookRunner::with_services(
+            Arc::new(DefaultCommandHookExecutor::default()),
+            Arc::new(ReqwestHttpHookExecutor::default()),
+            prompt_evaluator.clone(),
+            Arc::new(FailClosedAgentHookEvaluator),
+            Arc::new(DefaultWasmHookExecutor),
+        )))
+        .tool_context(ToolExecutionContext {
+            workspace_root: dir.path().to_path_buf(),
+            workspace_only: true,
+            model_context_window_tokens: Some(128_000),
+            ..Default::default()
+        })
+        .hooks(vec![HookRegistration {
+            name: "message-id-patch".to_string(),
+            event: types::HookEvent::UserPromptSubmit,
+            matcher: None,
+            handler: types::HookHandler::Prompt(types::PromptHookHandler {
+                prompt: "ignored".to_string(),
+            }),
+            timeout_ms: None,
+            execution: None,
+        }])
+        .skill_catalog(SkillCatalog::default())
+        .build();
+
+    runtime.run_user_prompt("first task").await.unwrap();
+    let first_message_id = store
+        .replay_transcript(&runtime.run_id())
+        .await
+        .unwrap()
+        .first()
+        .expect("first prompt should be in the transcript")
+        .message_id
+        .clone();
+    *prompt_evaluator.target_message_id.lock().unwrap() = Some(first_message_id.clone());
+
+    runtime.run_user_prompt("second task").await.unwrap();
+
+    let requests = backend.requests();
+    assert_eq!(requests.len(), 2);
+    assert!(requests[1].continuation.is_none());
+    assert!(requests[1].messages.iter().any(|message| {
+        message.message_id == first_message_id
+            && message.parts
+                == vec![
+                    types::MessagePart::text("first task"),
+                    types::MessagePart::text(" patched"),
+                ]
+    }));
+
+    let transcript = store.replay_transcript(&runtime.run_id()).await.unwrap();
+    assert_eq!(
+        transcript[0].parts,
+        vec![
+            types::MessagePart::text("first task"),
+            types::MessagePart::text(" patched"),
+        ]
+    );
+    assert!(
+        store
+            .events(&runtime.run_id())
+            .await
+            .unwrap()
+            .iter()
+            .any(|event| {
+                matches!(
+                    &event.event,
+                    RunEventKind::TranscriptMessagePatched { message_id, .. }
+                        if message_id == &first_message_id
+                )
+            })
+    );
 }

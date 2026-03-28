@@ -360,9 +360,11 @@
   - 状态：
     - `completed`
   - 已落地语义：
-    - 开发版直接把 `MessageSelector` 收窄到 `Current`
-    - 不再保留 `MessageId/LastOfRole` 这类运行时没有稳定定位面的 selector
-    - message mutation 现在明确是 in-flight only
+    - `MessageSelector` 现在支持 `Current` 与 `MessageId`
+    - `LastOfRole` 仍未开放
+    - `MessageId` 只允许命中当前可见 transcript，不能改已被 compaction 隐藏的历史
+    - 历史 mutation 通过 append-only `TranscriptMessagePatched/Removed` 事件落盘
+    - 任意 `MessageId` mutation 都会显式失效 provider continuation
   - 目标文件：
     - `crates/types/src/hook.rs`
     - `crates/runtime/src/runtime/hook_effects.rs`

@@ -2,13 +2,30 @@ use super::AgentRuntime;
 use crate::{HookInvocationBatch, Result, RuntimeError};
 use types::{
     GateDecision, HookEffect, HookHandlerKind, HookMutationPermission, HookRegistration, Message,
-    MessageSelector, PermissionBehavior, PermissionDecision, ToolName, TurnId,
+    MessageId, MessageSelector, PermissionBehavior, PermissionDecision, RunEventKind, ToolName,
+    TurnId,
 };
+
+#[derive(Clone, Debug, PartialEq)]
+pub(super) enum TranscriptMutation {
+    Replace {
+        message_id: MessageId,
+        message: Message,
+    },
+    Patch {
+        message_id: MessageId,
+        patch: types::MessagePatch,
+    },
+    Remove {
+        message_id: MessageId,
+    },
+}
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(super) struct AppliedHookEffects {
     pub current_message: Option<Message>,
     pub appended_messages: Vec<Message>,
+    pub transcript_mutations: Vec<TranscriptMutation>,
     pub additional_context: Vec<String>,
     pub injected_instructions: Vec<String>,
     pub permission_decision: Option<PermissionDecision>,
@@ -64,6 +81,8 @@ impl AgentRuntime {
             }
         }
 
+        self.apply_transcript_mutations(turn_id, &applied.transcript_mutations)
+            .await?;
         self.pending_additional_context
             .extend(applied.additional_context.iter().cloned());
         self.pending_injected_instructions
@@ -71,6 +90,124 @@ impl AgentRuntime {
         self.append_hook_messages(turn_id, &applied.appended_messages)
             .await?;
         Ok(applied)
+    }
+
+    async fn apply_transcript_mutations(
+        &mut self,
+        turn_id: &TurnId,
+        mutations: &[TranscriptMutation],
+    ) -> Result<()> {
+        for mutation in mutations {
+            match mutation.clone() {
+                TranscriptMutation::Replace {
+                    message_id,
+                    message,
+                } => {
+                    self.apply_transcript_message_replacement(turn_id, message_id, message)
+                        .await?;
+                }
+                TranscriptMutation::Patch { message_id, patch } => {
+                    self.apply_transcript_message_patch(turn_id, message_id, patch)
+                        .await?;
+                }
+                TranscriptMutation::Remove { message_id } => {
+                    self.apply_transcript_message_removal(turn_id, message_id)
+                        .await?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn apply_transcript_message_replacement(
+        &mut self,
+        turn_id: &TurnId,
+        message_id: MessageId,
+        mut message: Message,
+    ) -> Result<()> {
+        let index = self.resolve_mutable_transcript_index(&message_id)?;
+        // Replacement keeps the original message identity stable so replay and
+        // future `message_id` selectors still point at the same transcript node.
+        message.message_id = message_id.clone();
+        self.session.transcript[index] = message.clone();
+        self.session.removed_message_ids.remove(&message_id);
+        self.append_event(
+            Some(turn_id.clone()),
+            None,
+            RunEventKind::TranscriptMessagePatched {
+                message_id,
+                message,
+            },
+        )
+        .await?;
+        self.reset_provider_continuation();
+        Ok(())
+    }
+
+    async fn apply_transcript_message_patch(
+        &mut self,
+        turn_id: &TurnId,
+        message_id: MessageId,
+        patch: types::MessagePatch,
+    ) -> Result<()> {
+        let index = self.resolve_mutable_transcript_index(&message_id)?;
+        let Some(message) = self.session.transcript.get_mut(index) else {
+            return Err(RuntimeError::invalid_state(format!(
+                "transcript index {index} vanished during patch"
+            )));
+        };
+        if let Some(role) = patch.role {
+            message.role = role;
+        }
+        if let Some(parts) = patch.replace_parts {
+            message.parts = parts;
+        }
+        if !patch.append_parts.is_empty() {
+            message.parts.extend(patch.append_parts);
+        }
+        let patched_message = message.clone();
+        self.append_event(
+            Some(turn_id.clone()),
+            None,
+            RunEventKind::TranscriptMessagePatched {
+                message_id: message_id.clone(),
+                message: patched_message,
+            },
+        )
+        .await?;
+        self.reset_provider_continuation();
+        Ok(())
+    }
+
+    async fn apply_transcript_message_removal(
+        &mut self,
+        turn_id: &TurnId,
+        message_id: MessageId,
+    ) -> Result<()> {
+        let _index = self.resolve_mutable_transcript_index(&message_id)?;
+        self.session.removed_message_ids.insert(message_id.clone());
+        self.append_event(
+            Some(turn_id.clone()),
+            None,
+            RunEventKind::TranscriptMessageRemoved { message_id },
+        )
+        .await?;
+        self.reset_provider_continuation();
+        Ok(())
+    }
+
+    fn resolve_mutable_transcript_index(&self, message_id: &MessageId) -> Result<usize> {
+        if let Some(index) = self.visible_transcript_index_for_message_id(message_id) {
+            return Ok(index);
+        }
+        let error = if self.transcript_contains_message_id(message_id) {
+            format!(
+                "hook cannot mutate compacted or otherwise hidden transcript message `{message_id}`"
+            )
+        } else {
+            format!("unknown transcript message id `{message_id}`")
+        };
+        Err(RuntimeError::hook(error))
     }
 }
 
@@ -94,13 +231,27 @@ fn apply_hook_effect(
             applied.appended_messages.push(Message::new(role, parts));
         }
         HookEffect::ReplaceMessage { selector, message } => {
-            apply_message_replacement(&mut applied.current_message, selector, message)?;
+            apply_message_replacement(
+                &mut applied.current_message,
+                &mut applied.transcript_mutations,
+                selector,
+                message,
+            )?;
         }
         HookEffect::PatchMessage { selector, patch } => {
-            apply_message_patch(&mut applied.current_message, selector, patch)?;
+            apply_message_patch(
+                &mut applied.current_message,
+                &mut applied.transcript_mutations,
+                selector,
+                patch,
+            )?;
         }
         HookEffect::RemoveMessage { selector } => {
-            apply_message_removal(&mut applied.current_message, selector)?;
+            apply_message_removal(
+                &mut applied.current_message,
+                &mut applied.transcript_mutations,
+                selector,
+            )?;
         }
         HookEffect::AddContext { text } => {
             applied.additional_context.push(text);
@@ -173,7 +324,11 @@ fn validate_effect(registration: &HookRegistration, effect: &HookEffect) -> Resu
         HookEffect::ReplaceMessage { .. }
         | HookEffect::PatchMessage { .. }
         | HookEffect::RemoveMessage { .. } => {
-            if !matches!(handler_kind, HookHandlerKind::Wasm) {
+            // Transcript mutation is still reserved for executable/plugin hooks
+            // that flow through the explicit effect-permission model. Host-owned
+            // hooks are trusted runtime wiring and may use the same effect path
+            // without pretending to be WASM modules.
+            if !host_defined && !matches!(handler_kind, HookHandlerKind::Wasm) {
                 return Err(RuntimeError::hook(format!(
                     "hook `{}` uses message mutation reserved for wasm hooks",
                     registration.name
@@ -270,41 +425,71 @@ fn ensure_message_mutation_allowed(
 
 fn apply_message_replacement(
     current_message: &mut Option<Message>,
-    _selector: MessageSelector,
+    transcript_mutations: &mut Vec<TranscriptMutation>,
+    selector: MessageSelector,
     message: Message,
 ) -> Result<()> {
-    *current_message = Some(message);
-    Ok(())
+    match selector {
+        MessageSelector::Current => {
+            *current_message = Some(message);
+            Ok(())
+        }
+        MessageSelector::MessageId { message_id } => {
+            transcript_mutations.push(TranscriptMutation::Replace {
+                message_id,
+                message,
+            });
+            Ok(())
+        }
+    }
 }
 
 fn apply_message_patch(
     current_message: &mut Option<Message>,
-    _selector: MessageSelector,
+    transcript_mutations: &mut Vec<TranscriptMutation>,
+    selector: MessageSelector,
     patch: types::MessagePatch,
 ) -> Result<()> {
-    let Some(message) = current_message.as_mut() else {
-        return Err(RuntimeError::hook(
-            "hook attempted to patch a missing current message",
-        ));
-    };
-    if let Some(role) = patch.role {
-        message.role = role;
+    match selector {
+        MessageSelector::Current => {
+            let Some(message) = current_message.as_mut() else {
+                return Err(RuntimeError::hook(
+                    "hook attempted to patch a missing current message",
+                ));
+            };
+            if let Some(role) = patch.role {
+                message.role = role;
+            }
+            if let Some(parts) = patch.replace_parts {
+                message.parts = parts;
+            }
+            if !patch.append_parts.is_empty() {
+                message.parts.extend(patch.append_parts);
+            }
+            Ok(())
+        }
+        MessageSelector::MessageId { message_id } => {
+            transcript_mutations.push(TranscriptMutation::Patch { message_id, patch });
+            Ok(())
+        }
     }
-    if let Some(parts) = patch.replace_parts {
-        message.parts = parts;
-    }
-    if !patch.append_parts.is_empty() {
-        message.parts.extend(patch.append_parts);
-    }
-    Ok(())
 }
 
 fn apply_message_removal(
     current_message: &mut Option<Message>,
-    _selector: MessageSelector,
+    transcript_mutations: &mut Vec<TranscriptMutation>,
+    selector: MessageSelector,
 ) -> Result<()> {
-    *current_message = None;
-    Ok(())
+    match selector {
+        MessageSelector::Current => {
+            *current_message = None;
+            Ok(())
+        }
+        MessageSelector::MessageId { message_id } => {
+            transcript_mutations.push(TranscriptMutation::Remove { message_id });
+            Ok(())
+        }
+    }
 }
 
 fn merge_permission_decision(

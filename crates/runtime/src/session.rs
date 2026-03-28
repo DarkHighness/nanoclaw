@@ -1,4 +1,5 @@
-use types::{Message, ProviderContinuation, RunId, SessionId};
+use std::collections::HashSet;
+use types::{Message, MessageId, ProviderContinuation, RunId, SessionId};
 
 #[derive(Clone, Debug)]
 pub struct RuntimeSession {
@@ -10,6 +11,7 @@ pub struct RuntimeSession {
     pub compaction_summary_index: Option<usize>,
     pub retained_tail_indices: Vec<usize>,
     pub post_summary_start: usize,
+    pub removed_message_ids: HashSet<MessageId>,
     pub session_started: bool,
 }
 
@@ -31,6 +33,7 @@ impl RuntimeSession {
             compaction_summary_index: None,
             retained_tail_indices: Vec::new(),
             post_summary_start: 0,
+            removed_message_ids: HashSet::new(),
             session_started: false,
         }
     }

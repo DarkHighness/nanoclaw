@@ -299,6 +299,13 @@ pub enum RunEventKind {
     TranscriptMessage {
         message: Message,
     },
+    TranscriptMessagePatched {
+        message_id: MessageId,
+        message: Message,
+    },
+    TranscriptMessageRemoved {
+        message_id: MessageId,
+    },
     ToolApprovalRequested {
         call: ToolCall,
         reasons: Vec<String>,

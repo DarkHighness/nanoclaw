@@ -4,11 +4,11 @@ use crate::{
     estimate_prompt_tokens,
 };
 use serde_json::json;
-use types::{HookContext, HookEvent, Message, TurnId};
+use types::{HookContext, HookEvent, Message, MessageId, TurnId};
 
 impl AgentRuntime {
-    fn visible_message_indices(&self) -> Vec<usize> {
-        if let Some(summary_index) = self.session.compaction_summary_index {
+    pub(crate) fn visible_message_indices(&self) -> Vec<usize> {
+        let indices = if let Some(summary_index) = self.session.compaction_summary_index {
             let mut indices = Vec::with_capacity(
                 1 + self.session.retained_tail_indices.len() + self.session.transcript.len(),
             );
@@ -24,14 +24,44 @@ impl AgentRuntime {
             indices
         } else {
             (0..self.session.transcript.len()).collect()
-        }
+        };
+        indices
+            .into_iter()
+            .filter(|index| {
+                self.session.transcript.get(*index).is_some_and(|message| {
+                    !self
+                        .session
+                        .removed_message_ids
+                        .contains(&message.message_id)
+                })
+            })
+            .collect()
     }
 
-    pub(super) fn visible_transcript(&self) -> Vec<Message> {
+    pub(crate) fn visible_transcript(&self) -> Vec<Message> {
         self.visible_message_indices()
             .into_iter()
             .filter_map(|index| self.session.transcript.get(index).cloned())
             .collect()
+    }
+
+    pub(crate) fn visible_transcript_index_for_message_id(
+        &self,
+        message_id: &MessageId,
+    ) -> Option<usize> {
+        self.visible_message_indices().into_iter().find(|index| {
+            self.session
+                .transcript
+                .get(*index)
+                .is_some_and(|message| &message.message_id == message_id)
+        })
+    }
+
+    pub(crate) fn transcript_contains_message_id(&self, message_id: &MessageId) -> bool {
+        self.session
+            .transcript
+            .iter()
+            .any(|message| &message.message_id == message_id)
     }
 
     pub(super) async fn compact_if_needed(

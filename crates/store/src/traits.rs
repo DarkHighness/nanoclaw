@@ -1,3 +1,4 @@
+use crate::replay::replay_transcript;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -130,20 +131,17 @@ pub fn summarize_run_events(run_id: &RunId, events: &[RunEventEnvelope]) -> Opti
     let mut first_timestamp_ms = u128::MAX;
     let mut last_timestamp_ms = 0;
     let mut session_ids = HashSet::new();
-    let mut transcript_message_count = 0;
     let mut last_user_prompt = None;
 
     for event in events {
         first_timestamp_ms = first_timestamp_ms.min(event.timestamp_ms);
         last_timestamp_ms = last_timestamp_ms.max(event.timestamp_ms);
         session_ids.insert(event.session_id.clone());
-        if matches!(&event.event, RunEventKind::TranscriptMessage { .. }) {
-            transcript_message_count += 1;
-        }
         if let RunEventKind::UserPromptSubmit { prompt } = &event.event {
             last_user_prompt = Some(prompt.clone());
         }
     }
+    let transcript_message_count = replay_transcript(events).len();
 
     Some(RunSummary {
         run_id: run_id.clone(),
@@ -186,6 +184,17 @@ pub fn search_run_events(
     if let Some(prompt) = &summary.last_user_prompt {
         if prompt.to_lowercase().contains(&query_lower) {
             matches.push(format!("prompt: {}", preview_text(prompt, 80)));
+        }
+    }
+
+    for message in replay_transcript(events) {
+        let text = message.text_content();
+        if !text.to_lowercase().contains(&query_lower) {
+            continue;
+        }
+        matched_event_count += 1;
+        if matches.len() < 3 {
+            matches.push(preview_text(&text, 80));
         }
     }
 
@@ -317,8 +326,14 @@ pub(crate) fn searchable_event_strings(event: &RunEventEnvelope) -> Vec<String> 
                 }
             }
         }
-        RunEventKind::TranscriptMessage { message } => {
-            values.push(message.text_content());
+        RunEventKind::TranscriptMessage { .. } => {}
+        RunEventKind::TranscriptMessagePatched { message_id, .. } => {
+            values.push(message_id.to_string());
+            values.push("transcript patched".to_string());
+        }
+        RunEventKind::TranscriptMessageRemoved { message_id } => {
+            values.push(message_id.to_string());
+            values.push("transcript removed".to_string());
         }
         RunEventKind::ToolApprovalRequested { call, reasons } => {
             values.push(call.tool_name.to_string());
@@ -452,6 +467,9 @@ pub(crate) fn build_search_corpus(events: &[RunEventEnvelope]) -> String {
         for value in searchable_event_strings(event) {
             append_search_corpus_line(&mut corpus, &value);
         }
+    }
+    for message in replay_transcript(events) {
+        append_search_corpus_line(&mut corpus, &message.text_content());
     }
     corpus
 }
@@ -693,19 +711,16 @@ pub fn build_memory_export_record(
 
     let mut first_timestamp_ms = u128::MAX;
     let mut last_timestamp_ms = 0;
-    let mut transcript_message_count = 0;
     let mut last_user_prompt = None;
 
     for event in events {
         first_timestamp_ms = first_timestamp_ms.min(event.timestamp_ms);
         last_timestamp_ms = last_timestamp_ms.max(event.timestamp_ms);
-        if matches!(&event.event, RunEventKind::TranscriptMessage { .. }) {
-            transcript_message_count += 1;
-        }
         if let RunEventKind::UserPromptSubmit { prompt } = &event.event {
             last_user_prompt = Some(prompt.clone());
         }
     }
+    let transcript_message_count = replay_transcript(events).len();
 
     Some(RunMemoryExportRecord {
         summary: MemoryExportSummary {

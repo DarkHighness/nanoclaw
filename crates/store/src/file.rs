@@ -22,8 +22,8 @@ const SEARCH_REPLAY_CONCURRENCY_LIMIT: usize = 8;
 
 use self::index_sidecar::{
     FileRunStoreIndex, IndexedRunRecord, apply_event_to_record, delete_run_file,
-    load_events_from_path, load_or_rebuild_index, persist_index_file, record_matches_query,
-    select_runs_to_prune,
+    indexed_record_from_events, load_events_from_path, load_or_rebuild_index, persist_index_file,
+    record_matches_query, select_runs_to_prune,
 };
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -111,28 +111,54 @@ impl EventSink for FileRunStore {
         file.write_all(b"\n").await?;
         file.flush().await?;
 
-        let pruned = {
-            let mut index = self.index.write().expect("file run store write lock");
-            let record =
-                index
-                    .runs
-                    .entry(event.run_id.clone())
-                    .or_insert_with(|| IndexedRunRecord {
+        let rebuild_index_record = matches!(
+            &event.event,
+            types::RunEventKind::TranscriptMessagePatched { .. }
+                | types::RunEventKind::TranscriptMessageRemoved { .. }
+        );
+        let rebuilt_record = if rebuild_index_record {
+            indexed_record_from_events(load_events_from_path(&path).await?)
+        } else {
+            None
+        };
+        let pruned =
+            {
+                let mut index = self.index.write().expect("file run store write lock");
+                if rebuild_index_record {
+                    let rebuilt = rebuilt_record.unwrap_or(IndexedRunRecord {
                         summary: RunSummary {
                             run_id: event.run_id.clone(),
                             first_timestamp_ms: event.timestamp_ms,
                             last_timestamp_ms: event.timestamp_ms,
-                            event_count: 0,
-                            session_count: 0,
+                            event_count: 1,
+                            session_count: 1,
                             transcript_message_count: 0,
                             last_user_prompt: None,
                         },
-                        session_ids: Vec::new(),
+                        session_ids: vec![event.session_id.clone()],
                         search_corpus: String::new(),
                     });
-            apply_event_to_record(record, &event);
-            select_runs_to_prune(&index, &self.options.retention, current_timestamp_ms())
-        };
+                    index.runs.insert(event.run_id.clone(), rebuilt);
+                } else {
+                    let record = index.runs.entry(event.run_id.clone()).or_insert_with(|| {
+                        IndexedRunRecord {
+                            summary: RunSummary {
+                                run_id: event.run_id.clone(),
+                                first_timestamp_ms: event.timestamp_ms,
+                                last_timestamp_ms: event.timestamp_ms,
+                                event_count: 0,
+                                session_count: 0,
+                                transcript_message_count: 0,
+                                last_user_prompt: None,
+                            },
+                            session_ids: Vec::new(),
+                            search_corpus: String::new(),
+                        }
+                    });
+                    apply_event_to_record(record, &event);
+                }
+                select_runs_to_prune(&index, &self.options.retention, current_timestamp_ms())
+            };
 
         for run_id in &pruned {
             delete_run_file(&self.root_dir, run_id).await?;
@@ -374,7 +400,8 @@ mod tests {
     use std::time::Duration;
     use types::{
         AgentArtifact, AgentEnvelope, AgentEnvelopeKind, AgentHandle, AgentId, AgentResultEnvelope,
-        AgentStatus, AgentTaskSpec, Message, RunEventEnvelope, RunEventKind, RunId, SessionId,
+        AgentStatus, AgentTaskSpec, Message, MessageId, RunEventEnvelope, RunEventKind, RunId,
+        SessionId,
     };
 
     use super::index_sidecar::append_search_text;
@@ -514,6 +541,87 @@ mod tests {
                     .preview_matches
                     .iter()
                     .any(|line| line.contains("deploy checklist"))
+            );
+        }
+    );
+
+    bounded_async_test!(
+        async fn search_rebuilds_index_after_transcript_patch_and_remove_events() {
+            let dir = tempfile::tempdir().unwrap();
+            let store = FileRunStore::open(dir.path()).await.unwrap();
+            let run_id = RunId::new();
+            let session_id = SessionId::new();
+            let checklist_id = MessageId::from("msg_checklist");
+            let temporary_id = MessageId::from("msg_2");
+            store
+                .append(RunEventEnvelope::new(
+                    run_id.clone(),
+                    session_id.clone(),
+                    None,
+                    None,
+                    RunEventKind::TranscriptMessage {
+                        message: Message::assistant("deploy checklist")
+                            .with_message_id(checklist_id.clone()),
+                    },
+                ))
+                .await
+                .unwrap();
+            store
+                .append(RunEventEnvelope::new(
+                    run_id.clone(),
+                    session_id.clone(),
+                    None,
+                    None,
+                    RunEventKind::TranscriptMessage {
+                        message: Message::assistant("temporary draft")
+                            .with_message_id(temporary_id.clone()),
+                    },
+                ))
+                .await
+                .unwrap();
+            store
+                .append(RunEventEnvelope::new(
+                    run_id.clone(),
+                    session_id.clone(),
+                    None,
+                    None,
+                    RunEventKind::TranscriptMessagePatched {
+                        message_id: checklist_id,
+                        message: Message::assistant("release checklist"),
+                    },
+                ))
+                .await
+                .unwrap();
+            store
+                .append(RunEventEnvelope::new(
+                    run_id.clone(),
+                    session_id,
+                    None,
+                    None,
+                    RunEventKind::TranscriptMessageRemoved {
+                        message_id: temporary_id,
+                    },
+                ))
+                .await
+                .unwrap();
+
+            assert!(store.search_runs("deploy").await.unwrap().is_empty());
+            assert!(
+                store
+                    .search_runs("temporary draft")
+                    .await
+                    .unwrap()
+                    .is_empty()
+            );
+
+            let matches = store.search_runs("release").await.unwrap();
+            assert_eq!(matches.len(), 1);
+            assert_eq!(matches[0].summary.run_id, run_id);
+            assert!(
+                matches[0]
+                    .preview_matches
+                    .iter()
+                    .any(|line| line.contains("release checklist"))
             );
         }
     );

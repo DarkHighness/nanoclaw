@@ -1,7 +1,7 @@
 use super::RunStoreRetentionPolicy;
 use crate::{
-    Result, RunSummary, append_search_corpus_line, keep_recent_chars, searchable_event_strings,
-    summarize_run_events,
+    Result, RunSummary, append_search_corpus_line, build_search_corpus, keep_recent_chars,
+    searchable_event_strings, summarize_run_events,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -55,8 +55,17 @@ pub(super) fn apply_event_to_record(record: &mut IndexedRunRecord, event: &RunEv
     if let RunEventKind::UserPromptSubmit { prompt } = &event.event {
         record.summary.last_user_prompt = Some(prompt.clone());
     }
-    for value in searchable_event_strings(event) {
-        append_search_text(&mut record.search_corpus, &value);
+    match &event.event {
+        RunEventKind::TranscriptMessage { message } => {
+            append_search_text(&mut record.search_corpus, &message.text_content());
+        }
+        RunEventKind::TranscriptMessagePatched { .. }
+        | RunEventKind::TranscriptMessageRemoved { .. } => {}
+        _ => {
+            for value in searchable_event_strings(event) {
+                append_search_text(&mut record.search_corpus, &value);
+            }
+        }
     }
 }
 
@@ -179,23 +188,19 @@ async fn rebuild_index(root_dir: &Path, run_files: BTreeSet<RunId>) -> Result<Fi
     Ok(index)
 }
 
-fn indexed_record_from_events(events: Vec<RunEventEnvelope>) -> Option<IndexedRunRecord> {
+pub(super) fn indexed_record_from_events(
+    events: Vec<RunEventEnvelope>,
+) -> Option<IndexedRunRecord> {
     let run_id = events.first()?.run_id.clone();
     let summary = summarize_run_events(&run_id, &events)?;
     let mut session_ids = Vec::new();
     for event in &events {
         push_unique_session_id(&mut session_ids, &event.session_id);
     }
-    let mut search_corpus = String::new();
-    for event in &events {
-        for value in searchable_event_strings(event) {
-            append_search_text(&mut search_corpus, &value);
-        }
-    }
     Some(IndexedRunRecord {
         summary,
         session_ids,
-        search_corpus,
+        search_corpus: build_search_corpus(&events),
     })
 }
 

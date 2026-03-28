@@ -51,7 +51,16 @@ impl AgentRuntime {
             .provider_transcript_cursor
             .min(self.session.transcript.len());
         (
-            self.session.transcript[start..].to_vec(),
+            self.session.transcript[start..]
+                .iter()
+                .filter(|message| {
+                    !self
+                        .session
+                        .removed_message_ids
+                        .contains(&message.message_id)
+                })
+                .cloned()
+                .collect(),
             Some(continuation),
         )
     }

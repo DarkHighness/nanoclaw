@@ -1,4 +1,4 @@
-use crate::{Message, MessagePart, MessageRole, RunId, SessionId, ToolName, TurnId};
+use crate::{Message, MessageId, MessagePart, MessageRole, RunId, SessionId, ToolName, TurnId};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -253,10 +253,11 @@ pub struct HookRegistration {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum MessageSelector {
-    // 当前 runtime 只支持变更 in-flight message。开发版直接把协议收窄到
-    // 这一个 selector，避免类型面保留 `message_id/last_of_role` 这类
-    // 运行时无法兑现的“伪能力”。
     Current,
+    // `message_id` 只允许命中当前可见 transcript 中的既有消息。对被
+    // compaction 隐藏的历史消息做变更会破坏 summary/continuation 语义，
+    // 运行时会显式拒绝这类 selector。
+    MessageId { message_id: MessageId },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
@@ -346,6 +347,7 @@ impl HookContext {
 #[cfg(test)]
 mod tests {
     use super::{HookEffect, MessagePart, MessageRole, MessageSelector};
+    use crate::MessageId;
 
     #[test]
     fn current_selector_round_trips() {
@@ -365,17 +367,6 @@ mod tests {
 
     #[test]
     fn legacy_message_selectors_are_rejected() {
-        let replace = serde_json::json!({
-            "kind": "replace_message",
-            "selector": {
-                "kind": "message_id",
-                "message_id": "msg_1"
-            },
-            "message": {
-                "role": "assistant",
-                "parts": [{ "type": "text", "text": "patched" }]
-            }
-        });
         let patch = serde_json::json!({
             "kind": "patch_message",
             "selector": {
@@ -387,10 +378,8 @@ mod tests {
             }
         });
 
-        let replace_error = serde_json::from_value::<HookEffect>(replace).unwrap_err();
         let patch_error = serde_json::from_value::<HookEffect>(patch).unwrap_err();
 
-        assert!(replace_error.to_string().contains("unknown variant"));
         assert!(patch_error.to_string().contains("unknown variant"));
     }
 
@@ -417,5 +406,32 @@ mod tests {
                 text: "rewritten".to_string(),
             }]
         );
+    }
+
+    #[test]
+    fn replace_message_with_message_id_selector_deserializes() {
+        let value = serde_json::json!({
+            "kind": "replace_message",
+            "selector": {
+                "kind": "message_id",
+                "message_id": "msg_1"
+            },
+            "message": {
+                "role": "assistant",
+                "parts": [{ "type": "text", "text": "rewritten" }]
+            }
+        });
+
+        let parsed = serde_json::from_value::<HookEffect>(value).unwrap();
+        let HookEffect::ReplaceMessage { selector, message } = parsed else {
+            panic!("expected replace_message effect");
+        };
+        assert_eq!(
+            selector,
+            MessageSelector::MessageId {
+                message_id: MessageId::from("msg_1"),
+            }
+        );
+        assert_eq!(message.role, MessageRole::Assistant);
     }
 }
