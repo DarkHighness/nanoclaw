@@ -64,3 +64,6 @@ Intentionally still documented as not yet implemented:
 - `docs/plan.md`
 - `docs/sandbox-design.md`
   - current-state sandbox boundary note
+- `docs/code-agent-delivery-plan.md`
+  - active plan for converging `apps/` onto a single `code-agent` product and
+    splitting it into backend/frontend layers
