@@ -3845,6 +3845,7 @@ dependencies = [
  "ignore",
  "inference",
  "lancedb",
+ "nanoclaw-test-support",
  "rayon",
  "regex",
  "rusqlite",
@@ -3959,6 +3960,13 @@ dependencies = [
  "tempfile",
  "tokio",
  "toml",
+]
+
+[[package]]
+name = "nanoclaw-test-support"
+version = "0.1.0"
+dependencies = [
+ "tokio",
 ]
 
 [[package]]

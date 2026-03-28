@@ -404,273 +404,295 @@ mod tests {
         MemoryGetRequest, MemoryListRequest, MemoryPromoteRequest, MemoryRecordRequest,
         MemoryScope, MemorySearchRequest, MemorySidecarStatus, MemoryStateLayout, MemoryStatus,
     };
+    use nanoclaw_test_support::run_current_thread_test;
     use rusqlite::Connection;
     use std::path::Path;
     use tempfile::tempdir;
     use time::{Duration, OffsetDateTime};
     use tokio::fs;
 
-    #[tokio::test]
-    async fn search_bootstraps_sqlite_sidecar() {
-        let dir = tempdir().unwrap();
-        fs::write(
-            dir.path().join("MEMORY.md"),
-            "primary redis sentinel\nfallback worker",
-        )
-        .await
-        .unwrap();
-        fs::create_dir_all(dir.path().join("memory")).await.unwrap();
-        fs::write(
-            dir.path().join("memory/today.md"),
-            "redis sentinel incident review\nanother note",
-        )
-        .await
-        .unwrap();
-
-        let backend = MemoryCoreBackend::new(dir.path().to_path_buf(), MemoryCoreConfig::default());
-        let response = backend
-            .search(MemorySearchRequest {
-                query: "redis sentinel".to_string(),
-                limit: Some(3),
-                path_prefix: None,
-                scopes: None,
-                tags: None,
-                run_id: None,
-                session_id: None,
-                agent_name: None,
-                task_id: None,
-                include_stale: None,
-            })
-            .await
-            .unwrap();
-        assert_eq!(response.backend, "memory-core");
-        assert!(!response.hits.is_empty());
-
-        let layout = MemoryStateLayout::new(dir.path());
-        let index_path = layout
-            .resolve_index_path(None, Path::new(MEMORY_CORE_SQLITE_INDEX_RELATIVE))
-            .unwrap();
-        assert!(index_path.absolute_path().exists());
-        let connection = Connection::open(index_path.absolute_path()).unwrap();
-        let chunk_count: u32 = connection
-            .query_row("SELECT COUNT(*) FROM chunks", [], |row| row.get(0))
-            .unwrap();
-        let fts_count: u32 = connection
-            .query_row("SELECT COUNT(*) FROM chunks_fts", [], |row| row.get(0))
-            .unwrap();
-        assert!(chunk_count > 0);
-        assert_eq!(chunk_count, fts_count);
-
-        let lifecycle = layout.load_lifecycle("memory-core").unwrap().unwrap();
-        assert_eq!(lifecycle.status, MemorySidecarStatus::Ready);
-        assert_eq!(lifecycle.indexed_document_count, 2);
+    macro_rules! bounded_async_test {
+        (async fn $name:ident() $body:block) => {
+            #[test]
+            fn $name() {
+                run_current_thread_test(async $body);
+            }
+        };
     }
 
-    #[tokio::test]
-    async fn search_respects_path_prefix() {
-        let dir = tempdir().unwrap();
-        fs::write(
-            dir.path().join("MEMORY.md"),
-            "redis sentinel from curated memory",
-        )
-        .await
-        .unwrap();
-        fs::create_dir_all(dir.path().join("memory")).await.unwrap();
-        fs::write(
-            dir.path().join("memory/today.md"),
-            "redis sentinel from daily note",
-        )
-        .await
-        .unwrap();
-
-        let backend = MemoryCoreBackend::new(dir.path().to_path_buf(), MemoryCoreConfig::default());
-        let response = backend
-            .search(MemorySearchRequest {
-                query: "redis sentinel".to_string(),
-                limit: Some(3),
-                path_prefix: Some("memory/".to_string()),
-                scopes: None,
-                tags: None,
-                run_id: None,
-                session_id: None,
-                agent_name: None,
-                task_id: None,
-                include_stale: None,
-            })
+    bounded_async_test!(
+        async fn search_bootstraps_sqlite_sidecar() {
+            let dir = tempdir().unwrap();
+            fs::write(
+                dir.path().join("MEMORY.md"),
+                "primary redis sentinel\nfallback worker",
+            )
             .await
             .unwrap();
-        assert_eq!(response.hits.len(), 1);
-        assert_eq!(response.hits[0].path, "memory/today.md");
-    }
-
-    #[tokio::test]
-    async fn sync_rebuilds_index_after_file_changes() {
-        let dir = tempdir().unwrap();
-        fs::write(dir.path().join("MEMORY.md"), "alpha rollout notes")
+            fs::create_dir_all(dir.path().join("memory")).await.unwrap();
+            fs::write(
+                dir.path().join("memory/today.md"),
+                "redis sentinel incident review\nanother note",
+            )
             .await
             .unwrap();
 
-        let backend = MemoryCoreBackend::new(dir.path().to_path_buf(), MemoryCoreConfig::default());
-        backend.sync().await.unwrap();
-        fs::write(dir.path().join("MEMORY.md"), "beta rollout notes")
+            let backend =
+                MemoryCoreBackend::new(dir.path().to_path_buf(), MemoryCoreConfig::default());
+            let response = backend
+                .search(MemorySearchRequest {
+                    query: "redis sentinel".to_string(),
+                    limit: Some(3),
+                    path_prefix: None,
+                    scopes: None,
+                    tags: None,
+                    run_id: None,
+                    session_id: None,
+                    agent_name: None,
+                    task_id: None,
+                    include_stale: None,
+                })
+                .await
+                .unwrap();
+            assert_eq!(response.backend, "memory-core");
+            assert!(!response.hits.is_empty());
+
+            let layout = MemoryStateLayout::new(dir.path());
+            let index_path = layout
+                .resolve_index_path(None, Path::new(MEMORY_CORE_SQLITE_INDEX_RELATIVE))
+                .unwrap();
+            assert!(index_path.absolute_path().exists());
+            let connection = Connection::open(index_path.absolute_path()).unwrap();
+            let chunk_count: u32 = connection
+                .query_row("SELECT COUNT(*) FROM chunks", [], |row| row.get(0))
+                .unwrap();
+            let fts_count: u32 = connection
+                .query_row("SELECT COUNT(*) FROM chunks_fts", [], |row| row.get(0))
+                .unwrap();
+            assert!(chunk_count > 0);
+            assert_eq!(chunk_count, fts_count);
+
+            let lifecycle = layout.load_lifecycle("memory-core").unwrap().unwrap();
+            assert_eq!(lifecycle.status, MemorySidecarStatus::Ready);
+            assert_eq!(lifecycle.indexed_document_count, 2);
+        }
+    );
+
+    bounded_async_test!(
+        async fn search_respects_path_prefix() {
+            let dir = tempdir().unwrap();
+            fs::write(
+                dir.path().join("MEMORY.md"),
+                "redis sentinel from curated memory",
+            )
             .await
             .unwrap();
-        backend.sync().await.unwrap();
-
-        let response = backend
-            .search(MemorySearchRequest {
-                query: "beta".to_string(),
-                limit: Some(3),
-                path_prefix: None,
-                scopes: None,
-                tags: None,
-                run_id: None,
-                session_id: None,
-                agent_name: None,
-                task_id: None,
-                include_stale: None,
-            })
-            .await
-            .unwrap();
-        assert_eq!(response.hits.len(), 1);
-        assert_eq!(response.hits[0].path, "MEMORY.md");
-    }
-
-    #[tokio::test]
-    async fn search_rebuilds_when_corpus_snapshots_drift() {
-        let dir = tempdir().unwrap();
-        fs::write(dir.path().join("MEMORY.md"), "alpha rollout notes")
-            .await
-            .unwrap();
-
-        let backend = MemoryCoreBackend::new(dir.path().to_path_buf(), MemoryCoreConfig::default());
-        backend
-            .search(MemorySearchRequest {
-                query: "alpha".to_string(),
-                limit: Some(3),
-                path_prefix: None,
-                scopes: None,
-                tags: None,
-                run_id: None,
-                session_id: None,
-                agent_name: None,
-                task_id: None,
-                include_stale: None,
-            })
-            .await
-            .unwrap();
-
-        fs::write(dir.path().join("MEMORY.md"), "beta rollout notes")
-            .await
-            .unwrap();
-
-        let response = backend
-            .search(MemorySearchRequest {
-                query: "beta".to_string(),
-                limit: Some(3),
-                path_prefix: None,
-                scopes: None,
-                tags: None,
-                run_id: None,
-                session_id: None,
-                agent_name: None,
-                task_id: None,
-                include_stale: None,
-            })
-            .await
-            .unwrap();
-        assert_eq!(response.hits.len(), 1);
-        assert_eq!(response.hits[0].path, "MEMORY.md");
-
-        let layout = MemoryStateLayout::new(dir.path());
-        let lifecycle = layout.load_lifecycle("memory-core").unwrap().unwrap();
-        assert_eq!(
-            lifecycle.document_snapshots.get("MEMORY.md").cloned(),
-            Some(super::stable_hash("beta rollout notes"))
-        );
-    }
-
-    #[tokio::test]
-    async fn get_reads_line_window() {
-        let dir = tempdir().unwrap();
-        fs::write(dir.path().join("MEMORY.md"), "line1\nline2\nline3")
+            fs::create_dir_all(dir.path().join("memory")).await.unwrap();
+            fs::write(
+                dir.path().join("memory/today.md"),
+                "redis sentinel from daily note",
+            )
             .await
             .unwrap();
 
-        let backend = MemoryCoreBackend::new(dir.path().to_path_buf(), MemoryCoreConfig::default());
-        let document = backend
-            .get(MemoryGetRequest {
-                path: "MEMORY.md".to_string(),
-                start_line: Some(2),
-                line_count: Some(1),
-            })
+            let backend =
+                MemoryCoreBackend::new(dir.path().to_path_buf(), MemoryCoreConfig::default());
+            let response = backend
+                .search(MemorySearchRequest {
+                    query: "redis sentinel".to_string(),
+                    limit: Some(3),
+                    path_prefix: Some("memory/".to_string()),
+                    scopes: None,
+                    tags: None,
+                    run_id: None,
+                    session_id: None,
+                    agent_name: None,
+                    task_id: None,
+                    include_stale: None,
+                })
+                .await
+                .unwrap();
+            assert_eq!(response.hits.len(), 1);
+            assert_eq!(response.hits[0].path, "memory/today.md");
+        }
+    );
+
+    bounded_async_test!(
+        async fn sync_rebuilds_index_after_file_changes() {
+            let dir = tempdir().unwrap();
+            fs::write(dir.path().join("MEMORY.md"), "alpha rollout notes")
+                .await
+                .unwrap();
+
+            let backend =
+                MemoryCoreBackend::new(dir.path().to_path_buf(), MemoryCoreConfig::default());
+            backend.sync().await.unwrap();
+            fs::write(dir.path().join("MEMORY.md"), "beta rollout notes")
+                .await
+                .unwrap();
+            backend.sync().await.unwrap();
+
+            let response = backend
+                .search(MemorySearchRequest {
+                    query: "beta".to_string(),
+                    limit: Some(3),
+                    path_prefix: None,
+                    scopes: None,
+                    tags: None,
+                    run_id: None,
+                    session_id: None,
+                    agent_name: None,
+                    task_id: None,
+                    include_stale: None,
+                })
+                .await
+                .unwrap();
+            assert_eq!(response.hits.len(), 1);
+            assert_eq!(response.hits[0].path, "MEMORY.md");
+        }
+    );
+
+    bounded_async_test!(
+        async fn search_rebuilds_when_corpus_snapshots_drift() {
+            let dir = tempdir().unwrap();
+            fs::write(dir.path().join("MEMORY.md"), "alpha rollout notes")
+                .await
+                .unwrap();
+
+            let backend =
+                MemoryCoreBackend::new(dir.path().to_path_buf(), MemoryCoreConfig::default());
+            backend
+                .search(MemorySearchRequest {
+                    query: "alpha".to_string(),
+                    limit: Some(3),
+                    path_prefix: None,
+                    scopes: None,
+                    tags: None,
+                    run_id: None,
+                    session_id: None,
+                    agent_name: None,
+                    task_id: None,
+                    include_stale: None,
+                })
+                .await
+                .unwrap();
+
+            fs::write(dir.path().join("MEMORY.md"), "beta rollout notes")
+                .await
+                .unwrap();
+
+            let response = backend
+                .search(MemorySearchRequest {
+                    query: "beta".to_string(),
+                    limit: Some(3),
+                    path_prefix: None,
+                    scopes: None,
+                    tags: None,
+                    run_id: None,
+                    session_id: None,
+                    agent_name: None,
+                    task_id: None,
+                    include_stale: None,
+                })
+                .await
+                .unwrap();
+            assert_eq!(response.hits.len(), 1);
+            assert_eq!(response.hits[0].path, "MEMORY.md");
+
+            let layout = MemoryStateLayout::new(dir.path());
+            let lifecycle = layout.load_lifecycle("memory-core").unwrap().unwrap();
+            assert_eq!(
+                lifecycle.document_snapshots.get("MEMORY.md").cloned(),
+                Some(super::stable_hash("beta rollout notes"))
+            );
+        }
+    );
+
+    bounded_async_test!(
+        async fn get_reads_line_window() {
+            let dir = tempdir().unwrap();
+            fs::write(dir.path().join("MEMORY.md"), "line1\nline2\nline3")
+                .await
+                .unwrap();
+
+            let backend =
+                MemoryCoreBackend::new(dir.path().to_path_buf(), MemoryCoreConfig::default());
+            let document = backend
+                .get(MemoryGetRequest {
+                    path: "MEMORY.md".to_string(),
+                    start_line: Some(2),
+                    line_count: Some(1),
+                })
+                .await
+                .unwrap();
+            assert_eq!(document.resolved_start_line, 2);
+            assert_eq!(document.resolved_end_line, 2);
+            assert_eq!(document.text, " 2 | line2");
+        }
+    );
+
+    bounded_async_test!(
+        async fn search_prefers_recent_daily_logs_over_stale_ones() {
+            let dir = tempdir().unwrap();
+            let today = OffsetDateTime::now_utc().date();
+            let stale = today - Duration::days(120);
+            fs::create_dir_all(dir.path().join("memory")).await.unwrap();
+            fs::write(
+                dir.path().join("memory").join(format!("{stale}.md")),
+                "rollout checklist",
+            )
             .await
             .unwrap();
-        assert_eq!(document.resolved_start_line, 2);
-        assert_eq!(document.resolved_end_line, 2);
-        assert_eq!(document.text, " 2 | line2");
-    }
-
-    #[tokio::test]
-    async fn search_prefers_recent_daily_logs_over_stale_ones() {
-        let dir = tempdir().unwrap();
-        let today = OffsetDateTime::now_utc().date();
-        let stale = today - Duration::days(120);
-        fs::create_dir_all(dir.path().join("memory")).await.unwrap();
-        fs::write(
-            dir.path().join("memory").join(format!("{stale}.md")),
-            "rollout checklist",
-        )
-        .await
-        .unwrap();
-        fs::write(
-            dir.path().join("memory").join(format!("{today}.md")),
-            "rollout checklist",
-        )
-        .await
-        .unwrap();
-
-        let backend = MemoryCoreBackend::new(dir.path().to_path_buf(), MemoryCoreConfig::default());
-        let response = backend
-            .search(MemorySearchRequest {
-                query: "rollout".to_string(),
-                limit: Some(2),
-                path_prefix: Some("memory/".to_string()),
-                scopes: None,
-                tags: None,
-                run_id: None,
-                session_id: None,
-                agent_name: None,
-                task_id: None,
-                include_stale: None,
-            })
+            fs::write(
+                dir.path().join("memory").join(format!("{today}.md")),
+                "rollout checklist",
+            )
             .await
             .unwrap();
 
-        assert_eq!(response.hits[0].path, format!("memory/{today}.md"));
-        assert_eq!(
-            response.hits[0]
-                .metadata
-                .get("memory_layer")
-                .and_then(serde_json::Value::as_str),
-            Some("daily-log")
-        );
-        assert!(
-            response.hits[0].score > response.hits[1].score,
-            "recent daily log should outrank stale daily log after decay"
-        );
-    }
+            let backend =
+                MemoryCoreBackend::new(dir.path().to_path_buf(), MemoryCoreConfig::default());
+            let response = backend
+                .search(MemorySearchRequest {
+                    query: "rollout".to_string(),
+                    limit: Some(2),
+                    path_prefix: Some("memory/".to_string()),
+                    scopes: None,
+                    tags: None,
+                    run_id: None,
+                    session_id: None,
+                    agent_name: None,
+                    task_id: None,
+                    include_stale: None,
+                })
+                .await
+                .unwrap();
 
-    #[tokio::test]
-    async fn search_filters_by_scope_and_tags() {
-        let dir = tempdir().unwrap();
-        fs::write(dir.path().join("MEMORY.md"), "deploy checklist")
-            .await
-            .unwrap();
-        fs::create_dir_all(dir.path().join(".nanoclaw/memory/working/sessions"))
-            .await
-            .unwrap();
-        fs::write(
+            assert_eq!(response.hits[0].path, format!("memory/{today}.md"));
+            assert_eq!(
+                response.hits[0]
+                    .metadata
+                    .get("memory_layer")
+                    .and_then(serde_json::Value::as_str),
+                Some("daily-log")
+            );
+            assert!(
+                response.hits[0].score > response.hits[1].score,
+                "recent daily log should outrank stale daily log after decay"
+            );
+        }
+    );
+
+    bounded_async_test!(
+        async fn search_filters_by_scope_and_tags() {
+            let dir = tempdir().unwrap();
+            fs::write(dir.path().join("MEMORY.md"), "deploy checklist")
+                .await
+                .unwrap();
+            fs::create_dir_all(dir.path().join(".nanoclaw/memory/working/sessions"))
+                .await
+                .unwrap();
+            fs::write(
             dir.path()
                 .join(".nanoclaw/memory/working/sessions/session_1.md"),
             "---\nscope: working\nlayer: working-session\nsession_id: session_1\ntags:\n  - debug\nstatus: ready\n---\n# Session session_1\n\ndeploy checklist",
@@ -678,112 +700,116 @@ mod tests {
         .await
         .unwrap();
 
-        let backend = MemoryCoreBackend::new(dir.path().to_path_buf(), MemoryCoreConfig::default());
-        let response = backend
-            .search(MemorySearchRequest {
-                query: "deploy".to_string(),
-                limit: Some(2),
-                path_prefix: None,
-                scopes: Some(vec![MemoryScope::Working]),
-                tags: Some(vec!["debug".to_string()]),
-                run_id: None,
-                session_id: Some("session_1".into()),
-                agent_name: None,
-                task_id: None,
-                include_stale: Some(false),
-            })
-            .await
-            .unwrap();
+            let backend =
+                MemoryCoreBackend::new(dir.path().to_path_buf(), MemoryCoreConfig::default());
+            let response = backend
+                .search(MemorySearchRequest {
+                    query: "deploy".to_string(),
+                    limit: Some(2),
+                    path_prefix: None,
+                    scopes: Some(vec![MemoryScope::Working]),
+                    tags: Some(vec!["debug".to_string()]),
+                    run_id: None,
+                    session_id: Some("session_1".into()),
+                    agent_name: None,
+                    task_id: None,
+                    include_stale: Some(false),
+                })
+                .await
+                .unwrap();
 
-        assert_eq!(response.hits.len(), 1);
-        assert_eq!(
-            response.hits[0].path,
-            ".nanoclaw/memory/working/sessions/session_1.md"
-        );
-    }
+            assert_eq!(response.hits.len(), 1);
+            assert_eq!(
+                response.hits[0].path,
+                ".nanoclaw/memory/working/sessions/session_1.md"
+            );
+        }
+    );
 
-    #[tokio::test]
-    async fn promote_and_forget_update_memory_lifecycle() {
-        let dir = tempdir().unwrap();
-        let backend = MemoryCoreBackend::new(dir.path().to_path_buf(), MemoryCoreConfig::default());
-        let source = backend
-            .record(MemoryRecordRequest {
-                scope: MemoryScope::Working,
-                title: "Observed fix".to_string(),
-                content: "Use a canary deploy before restart.".to_string(),
-                layer: None,
-                tags: vec!["deploy".to_string()],
-                run_id: Some("run_1".into()),
-                session_id: Some("session_1".into()),
-                agent_name: None,
-                task_id: None,
-            })
-            .await
-            .unwrap();
+    bounded_async_test!(
+        async fn promote_and_forget_update_memory_lifecycle() {
+            let dir = tempdir().unwrap();
+            let backend =
+                MemoryCoreBackend::new(dir.path().to_path_buf(), MemoryCoreConfig::default());
+            let source = backend
+                .record(MemoryRecordRequest {
+                    scope: MemoryScope::Working,
+                    title: "Observed fix".to_string(),
+                    content: "Use a canary deploy before restart.".to_string(),
+                    layer: None,
+                    tags: vec!["deploy".to_string()],
+                    run_id: Some("run_1".into()),
+                    session_id: Some("session_1".into()),
+                    agent_name: None,
+                    task_id: None,
+                })
+                .await
+                .unwrap();
 
-        let promoted = backend
-            .promote(MemoryPromoteRequest {
-                source_path: source.path.clone(),
-                target_scope: MemoryScope::Semantic,
-                title: "Canary Deploy Rule".to_string(),
-                content: "Always do a canary deploy before restart.".to_string(),
-                layer: None,
-                tags: vec!["deploy".to_string(), "verified".to_string()],
-            })
-            .await
-            .unwrap();
+            let promoted = backend
+                .promote(MemoryPromoteRequest {
+                    source_path: source.path.clone(),
+                    target_scope: MemoryScope::Semantic,
+                    title: "Canary Deploy Rule".to_string(),
+                    content: "Always do a canary deploy before restart.".to_string(),
+                    layer: None,
+                    tags: vec!["deploy".to_string(), "verified".to_string()],
+                })
+                .await
+                .unwrap();
 
-        let source_doc = backend
-            .get(MemoryGetRequest {
-                path: source.path.clone(),
-                start_line: None,
-                line_count: None,
-            })
-            .await
-            .unwrap();
-        assert_eq!(source_doc.metadata.status, MemoryStatus::Stale);
+            let source_doc = backend
+                .get(MemoryGetRequest {
+                    path: source.path.clone(),
+                    start_line: None,
+                    line_count: None,
+                })
+                .await
+                .unwrap();
+            assert_eq!(source_doc.metadata.status, MemoryStatus::Stale);
 
-        let promoted_search = backend
-            .search(MemorySearchRequest {
-                query: "canary deploy".to_string(),
-                limit: Some(5),
-                path_prefix: Some(".nanoclaw/memory/semantic/".to_string()),
-                scopes: Some(vec![MemoryScope::Semantic]),
-                tags: Some(vec!["verified".to_string()]),
-                run_id: None,
-                session_id: None,
-                agent_name: None,
-                task_id: None,
-                include_stale: Some(false),
-            })
-            .await
-            .unwrap();
-        assert_eq!(promoted_search.hits.len(), 1);
-        assert_eq!(promoted_search.hits[0].path, promoted.path);
+            let promoted_search = backend
+                .search(MemorySearchRequest {
+                    query: "canary deploy".to_string(),
+                    limit: Some(5),
+                    path_prefix: Some(".nanoclaw/memory/semantic/".to_string()),
+                    scopes: Some(vec![MemoryScope::Semantic]),
+                    tags: Some(vec!["verified".to_string()]),
+                    run_id: None,
+                    session_id: None,
+                    agent_name: None,
+                    task_id: None,
+                    include_stale: Some(false),
+                })
+                .await
+                .unwrap();
+            assert_eq!(promoted_search.hits.len(), 1);
+            assert_eq!(promoted_search.hits[0].path, promoted.path);
 
-        backend
-            .forget(MemoryForgetRequest {
-                path: promoted.path.clone(),
-                status: MemoryStatus::Archived,
-            })
-            .await
-            .unwrap();
+            backend
+                .forget(MemoryForgetRequest {
+                    path: promoted.path.clone(),
+                    status: MemoryStatus::Archived,
+                })
+                .await
+                .unwrap();
 
-        let listed = backend
-            .list(MemoryListRequest {
-                limit: Some(10),
-                path_prefix: Some(".nanoclaw/memory/semantic/".to_string()),
-                scopes: Some(vec![MemoryScope::Semantic]),
-                tags: None,
-                run_id: None,
-                session_id: None,
-                agent_name: None,
-                task_id: None,
-                include_stale: Some(true),
-            })
-            .await
-            .unwrap();
-        assert_eq!(listed.entries.len(), 1);
-        assert_eq!(listed.entries[0].metadata.status, MemoryStatus::Archived);
-    }
+            let listed = backend
+                .list(MemoryListRequest {
+                    limit: Some(10),
+                    path_prefix: Some(".nanoclaw/memory/semantic/".to_string()),
+                    scopes: Some(vec![MemoryScope::Semantic]),
+                    tags: None,
+                    run_id: None,
+                    session_id: None,
+                    agent_name: None,
+                    task_id: None,
+                    include_stale: Some(true),
+                })
+                .await
+                .unwrap();
+            assert_eq!(listed.entries.len(), 1);
+            assert_eq!(listed.entries[0].metadata.status, MemoryStatus::Archived);
+        }
+    );
 }

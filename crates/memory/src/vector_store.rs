@@ -777,8 +777,18 @@ fn map_lancedb_error(error: lancedb::Error) -> MemoryError {
 mod tests {
     use super::{MemoryVectorStore, PersistedChunkEmbedding};
     use crate::{MemoryStateLayout, MemoryVectorStoreConfig, MemoryVectorStoreKind};
+    use nanoclaw_test_support::run_current_thread_test;
     use std::collections::{BTreeMap, BTreeSet};
     use tempfile::tempdir;
+
+    macro_rules! bounded_async_test {
+        (async fn $name:ident() $body:block) => {
+            #[test]
+            fn $name() {
+                run_current_thread_test(async $body);
+            }
+        };
+    }
 
     fn sample_chunks() -> BTreeMap<String, PersistedChunkEmbedding> {
         BTreeMap::from([
@@ -809,96 +819,99 @@ mod tests {
         ])
     }
 
-    #[tokio::test]
-    async fn sqlite_supports_replace_upsert_delete() {
-        let dir = tempdir().unwrap();
-        let layout = MemoryStateLayout::new(dir.path());
-        let store =
-            MemoryVectorStore::from_config(&layout, &MemoryVectorStoreConfig::default()).unwrap();
-        let mut chunks = sample_chunks();
+    bounded_async_test!(
+        async fn sqlite_supports_replace_upsert_delete() {
+            let dir = tempdir().unwrap();
+            let layout = MemoryStateLayout::new(dir.path());
+            let store =
+                MemoryVectorStore::from_config(&layout, &MemoryVectorStoreConfig::default())
+                    .unwrap();
+            let mut chunks = sample_chunks();
 
-        store.replace_chunks(&chunks).await.unwrap();
-        let hits = store.search(&[1.0, 0.0, 0.0], None, 2).await.unwrap();
-        assert_eq!(
-            hits.as_ref()
-                .and_then(|rows| rows.first())
-                .map(|entry| entry.0.as_str()),
-            Some("chunk-a")
-        );
+            store.replace_chunks(&chunks).await.unwrap();
+            let hits = store.search(&[1.0, 0.0, 0.0], None, 2).await.unwrap();
+            assert_eq!(
+                hits.as_ref()
+                    .and_then(|rows| rows.first())
+                    .map(|entry| entry.0.as_str()),
+                Some("chunk-a")
+            );
 
-        chunks.insert(
-            "chunk-c".to_string(),
-            PersistedChunkEmbedding {
-                chunk_id: "chunk-c".to_string(),
-                path: "memory/new.md".to_string(),
-                snapshot_id: "snap-c".to_string(),
-                start_line: 1,
-                end_line: 2,
-                text: "new note".to_string(),
-                embedding: vec![0.0, 0.0, 1.0],
-            },
-        );
-        let mut only_new = BTreeMap::new();
-        only_new.insert("chunk-c".to_string(), chunks["chunk-c"].clone());
-        store.upsert_chunks(&only_new).await.unwrap();
-        assert_eq!(store.load_chunks().await.unwrap().len(), 3);
+            chunks.insert(
+                "chunk-c".to_string(),
+                PersistedChunkEmbedding {
+                    chunk_id: "chunk-c".to_string(),
+                    path: "memory/new.md".to_string(),
+                    snapshot_id: "snap-c".to_string(),
+                    start_line: 1,
+                    end_line: 2,
+                    text: "new note".to_string(),
+                    embedding: vec![0.0, 0.0, 1.0],
+                },
+            );
+            let mut only_new = BTreeMap::new();
+            only_new.insert("chunk-c".to_string(), chunks["chunk-c"].clone());
+            store.upsert_chunks(&only_new).await.unwrap();
+            assert_eq!(store.load_chunks().await.unwrap().len(), 3);
 
-        let mut delete = BTreeSet::new();
-        delete.insert("chunk-b".to_string());
-        store.delete_chunks(&delete).await.unwrap();
-        let remaining = store.load_chunks().await.unwrap();
-        assert_eq!(remaining.len(), 2);
-        assert!(!remaining.contains_key("chunk-b"));
-    }
+            let mut delete = BTreeSet::new();
+            delete.insert("chunk-b".to_string());
+            store.delete_chunks(&delete).await.unwrap();
+            let remaining = store.load_chunks().await.unwrap();
+            assert_eq!(remaining.len(), 2);
+            assert!(!remaining.contains_key("chunk-b"));
+        }
+    );
 
-    #[tokio::test]
-    async fn lancedb_supports_replace_upsert_delete() {
-        let dir = tempdir().unwrap();
-        let layout = MemoryStateLayout::new(dir.path());
-        let store = MemoryVectorStore::from_config(
-            &layout,
-            &MemoryVectorStoreConfig {
-                kind: MemoryVectorStoreKind::Lancedb,
-                path: None,
-            },
-        )
-        .unwrap();
-        let mut chunks = sample_chunks();
-
-        store.replace_chunks(&chunks).await.unwrap();
-        let hits = store
-            .search(&[1.0, 0.0, 0.0], Some("MEMORY"), 2)
-            .await
+    bounded_async_test!(
+        async fn lancedb_supports_replace_upsert_delete() {
+            let dir = tempdir().unwrap();
+            let layout = MemoryStateLayout::new(dir.path());
+            let store = MemoryVectorStore::from_config(
+                &layout,
+                &MemoryVectorStoreConfig {
+                    kind: MemoryVectorStoreKind::Lancedb,
+                    path: None,
+                },
+            )
             .unwrap();
-        assert_eq!(
-            hits.as_ref()
-                .and_then(|rows| rows.first())
-                .map(|entry| entry.0.as_str()),
-            Some("chunk-a")
-        );
+            let mut chunks = sample_chunks();
 
-        chunks.insert(
-            "chunk-c".to_string(),
-            PersistedChunkEmbedding {
-                chunk_id: "chunk-c".to_string(),
-                path: "memory/new.md".to_string(),
-                snapshot_id: "snap-c".to_string(),
-                start_line: 1,
-                end_line: 2,
-                text: "new note".to_string(),
-                embedding: vec![0.0, 0.0, 1.0],
-            },
-        );
-        let mut only_new = BTreeMap::new();
-        only_new.insert("chunk-c".to_string(), chunks["chunk-c"].clone());
-        store.upsert_chunks(&only_new).await.unwrap();
-        assert_eq!(store.load_chunks().await.unwrap().len(), 3);
+            store.replace_chunks(&chunks).await.unwrap();
+            let hits = store
+                .search(&[1.0, 0.0, 0.0], Some("MEMORY"), 2)
+                .await
+                .unwrap();
+            assert_eq!(
+                hits.as_ref()
+                    .and_then(|rows| rows.first())
+                    .map(|entry| entry.0.as_str()),
+                Some("chunk-a")
+            );
 
-        let mut delete = BTreeSet::new();
-        delete.insert("chunk-b".to_string());
-        store.delete_chunks(&delete).await.unwrap();
-        let remaining = store.load_chunks().await.unwrap();
-        assert_eq!(remaining.len(), 2);
-        assert!(!remaining.contains_key("chunk-b"));
-    }
+            chunks.insert(
+                "chunk-c".to_string(),
+                PersistedChunkEmbedding {
+                    chunk_id: "chunk-c".to_string(),
+                    path: "memory/new.md".to_string(),
+                    snapshot_id: "snap-c".to_string(),
+                    start_line: 1,
+                    end_line: 2,
+                    text: "new note".to_string(),
+                    embedding: vec![0.0, 0.0, 1.0],
+                },
+            );
+            let mut only_new = BTreeMap::new();
+            only_new.insert("chunk-c".to_string(), chunks["chunk-c"].clone());
+            store.upsert_chunks(&only_new).await.unwrap();
+            assert_eq!(store.load_chunks().await.unwrap().len(), 3);
+
+            let mut delete = BTreeSet::new();
+            delete.insert("chunk-b".to_string());
+            store.delete_chunks(&delete).await.unwrap();
+            let remaining = store.load_chunks().await.unwrap();
+            assert_eq!(remaining.len(), 2);
+            assert!(!remaining.contains_key("chunk-b"));
+        }
+    );
 }

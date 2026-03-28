@@ -599,12 +599,22 @@ fn chunks_for_paths(
 #[cfg(test)]
 mod tests {
     use super::{LexicalIndex, LexicalIndexChunk, changed_document_paths};
+    use nanoclaw_test_support::run_current_thread_test;
     use rusqlite::Connection;
     use std::collections::BTreeMap;
     use tempfile::tempdir;
 
     const TEST_BACKEND: &str = "memory-test-lexical";
     const TEST_INDEX_PATH: &str = ".nanoclaw/memory/indexes/memory-test-lexical.sqlite";
+
+    macro_rules! bounded_async_test {
+        (async fn $name:ident() $body:block) => {
+            #[test]
+            fn $name() {
+                run_current_thread_test(async $body);
+            }
+        };
+    }
 
     #[test]
     fn changed_document_paths_tracks_added_removed_and_modified_documents() {
@@ -631,79 +641,80 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn ensure_ready_incrementally_refreshes_changed_paths_only() {
-        let dir = tempdir().unwrap();
-        let index = LexicalIndex::new(dir.path(), TEST_BACKEND, TEST_INDEX_PATH, 1);
-        let config = "cfg-1";
-        let initial_snapshots = BTreeMap::from([
-            ("MEMORY.md".to_string(), "snap-a".to_string()),
-            ("memory/keep.md".to_string(), "snap-b".to_string()),
-            ("memory/remove.md".to_string(), "snap-c".to_string()),
-        ]);
-        let initial_chunks = vec![
-            lexical_chunk("chunk-a", "MEMORY.md", "snap-a", 1, 1, "alpha only"),
-            lexical_chunk("chunk-b", "memory/keep.md", "snap-b", 1, 1, "beta stable"),
-            lexical_chunk(
-                "chunk-c",
-                "memory/remove.md",
-                "snap-c",
-                1,
-                1,
-                "gamma removed",
-            ),
-        ];
+    bounded_async_test!(
+        async fn ensure_ready_incrementally_refreshes_changed_paths_only() {
+            let dir = tempdir().unwrap();
+            let index = LexicalIndex::new(dir.path(), TEST_BACKEND, TEST_INDEX_PATH, 1);
+            let config = "cfg-1";
+            let initial_snapshots = BTreeMap::from([
+                ("MEMORY.md".to_string(), "snap-a".to_string()),
+                ("memory/keep.md".to_string(), "snap-b".to_string()),
+                ("memory/remove.md".to_string(), "snap-c".to_string()),
+            ]);
+            let initial_chunks = vec![
+                lexical_chunk("chunk-a", "MEMORY.md", "snap-a", 1, 1, "alpha only"),
+                lexical_chunk("chunk-b", "memory/keep.md", "snap-b", 1, 1, "beta stable"),
+                lexical_chunk(
+                    "chunk-c",
+                    "memory/remove.md",
+                    "snap-c",
+                    1,
+                    1,
+                    "gamma removed",
+                ),
+            ];
 
-        let artifact = index
-            .ensure_ready(config, &initial_snapshots, &initial_chunks, 0)
-            .await
-            .unwrap();
-        let keep_rowid_before = rowid_for_chunk(artifact.absolute_path(), "chunk-b");
-
-        let updated_snapshots = BTreeMap::from([
-            ("MEMORY.md".to_string(), "snap-a2".to_string()),
-            ("memory/keep.md".to_string(), "snap-b".to_string()),
-            ("memory/add.md".to_string(), "snap-d".to_string()),
-        ]);
-        let updated_chunks = vec![
-            lexical_chunk("chunk-a2", "MEMORY.md", "snap-a2", 1, 1, "alpha refreshed"),
-            lexical_chunk("chunk-b", "memory/keep.md", "snap-b", 1, 1, "beta stable"),
-            lexical_chunk("chunk-d", "memory/add.md", "snap-d", 1, 1, "delta added"),
-        ];
-
-        index
-            .ensure_ready(config, &updated_snapshots, &updated_chunks, 0)
-            .await
-            .unwrap();
-
-        assert_eq!(
-            rowid_for_chunk(artifact.absolute_path(), "chunk-b"),
-            keep_rowid_before
-        );
-        assert!(
-            index
-                .search_hits("refreshed", None, 5)
+            let artifact = index
+                .ensure_ready(config, &initial_snapshots, &initial_chunks, 0)
                 .await
-                .unwrap()
-                .iter()
-                .any(|entry| entry.path == "MEMORY.md")
-        );
-        assert!(
+                .unwrap();
+            let keep_rowid_before = rowid_for_chunk(artifact.absolute_path(), "chunk-b");
+
+            let updated_snapshots = BTreeMap::from([
+                ("MEMORY.md".to_string(), "snap-a2".to_string()),
+                ("memory/keep.md".to_string(), "snap-b".to_string()),
+                ("memory/add.md".to_string(), "snap-d".to_string()),
+            ]);
+            let updated_chunks = vec![
+                lexical_chunk("chunk-a2", "MEMORY.md", "snap-a2", 1, 1, "alpha refreshed"),
+                lexical_chunk("chunk-b", "memory/keep.md", "snap-b", 1, 1, "beta stable"),
+                lexical_chunk("chunk-d", "memory/add.md", "snap-d", 1, 1, "delta added"),
+            ];
+
             index
-                .search_hits("removed", None, 5)
+                .ensure_ready(config, &updated_snapshots, &updated_chunks, 0)
                 .await
-                .unwrap()
-                .is_empty()
-        );
-        assert!(
-            index
-                .search_hits("delta", None, 5)
-                .await
-                .unwrap()
-                .iter()
-                .any(|entry| entry.path == "memory/add.md")
-        );
-    }
+                .unwrap();
+
+            assert_eq!(
+                rowid_for_chunk(artifact.absolute_path(), "chunk-b"),
+                keep_rowid_before
+            );
+            assert!(
+                index
+                    .search_hits("refreshed", None, 5)
+                    .await
+                    .unwrap()
+                    .iter()
+                    .any(|entry| entry.path == "MEMORY.md")
+            );
+            assert!(
+                index
+                    .search_hits("removed", None, 5)
+                    .await
+                    .unwrap()
+                    .is_empty()
+            );
+            assert!(
+                index
+                    .search_hits("delta", None, 5)
+                    .await
+                    .unwrap()
+                    .iter()
+                    .any(|entry| entry.path == "memory/add.md")
+            );
+        }
+    );
 
     fn lexical_chunk(
         chunk_id: &str,

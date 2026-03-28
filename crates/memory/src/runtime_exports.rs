@@ -404,6 +404,7 @@ mod tests {
     use super::load_configured_memory_corpus;
     use crate::{MemoryCorpusConfig, MemoryError, MemorySidecarStatus, MemoryStateLayout};
     use async_trait::async_trait;
+    use nanoclaw_test_support::run_current_thread_test;
     use std::sync::Arc;
     use store::{
         EventSink, InMemoryRunStore, MemoryExportScope, RunMemoryExportBundle,
@@ -412,107 +413,123 @@ mod tests {
     use tempfile::tempdir;
     use types::{Message, RunEventEnvelope, RunEventKind, RunId, SessionId};
 
-    #[tokio::test]
-    async fn writes_runtime_export_markdown_sidecars() {
-        let dir = tempdir().unwrap();
-        let store = Arc::new(InMemoryRunStore::new());
-        let run_id = RunId::new();
-        let session_id = SessionId::new();
-        store
-            .append(RunEventEnvelope::new(
-                run_id.clone(),
-                session_id,
-                None,
-                None,
-                RunEventKind::UserPromptSubmit {
-                    prompt: "why did deploy fail?".to_string(),
-                },
-            ))
-            .await
-            .unwrap();
-
-        let mut config = MemoryCorpusConfig::default();
-        config.runtime_export.enabled = true;
-        let run_store: Arc<dyn store::RunStore> = store;
-        let (corpus, stats) = load_configured_memory_corpus(dir.path(), &config, Some(&run_store))
-            .await
-            .unwrap();
-        assert_eq!(stats.exported_runs, 1);
-        assert_eq!(stats.exported_sessions, 1);
-        assert!(corpus.documents.iter().any(|doc| {
-            doc.path.starts_with(".nanoclaw/memory/episodic/runs/") && doc.path.ends_with(".md")
-        }));
-        assert!(corpus.documents.iter().any(|doc| {
-            doc.path.starts_with(".nanoclaw/memory/episodic/sessions/") && doc.path.ends_with(".md")
-        }));
-        let lifecycle = MemoryStateLayout::new(dir.path())
-            .load_lifecycle("runtime-exports")
-            .unwrap()
-            .unwrap();
-        assert_eq!(lifecycle.status, MemorySidecarStatus::Ready);
-        assert_eq!(lifecycle.exported_run_count, 1);
-        assert_eq!(lifecycle.exported_session_count, 1);
-        assert_eq!(lifecycle.exported_document_count, 2);
-        assert_eq!(lifecycle.artifact_path, ".nanoclaw/memory/episodic");
+    macro_rules! bounded_async_test {
+        (async fn $name:ident() $body:block) => {
+            #[test]
+            fn $name() {
+                run_current_thread_test(async $body);
+            }
+        };
     }
 
-    #[tokio::test]
-    async fn writes_run_session_subagent_and_task_sidecars() {
-        let dir = tempdir().unwrap();
-        let mut config = MemoryCorpusConfig::default();
-        config.runtime_export.enabled = true;
-        let store: Arc<dyn RunStore> = Arc::new(FixtureRunStore::default());
+    bounded_async_test!(
+        async fn writes_runtime_export_markdown_sidecars() {
+            let dir = tempdir().unwrap();
+            let store = Arc::new(InMemoryRunStore::new());
+            let run_id = RunId::new();
+            let session_id = SessionId::new();
+            store
+                .append(RunEventEnvelope::new(
+                    run_id.clone(),
+                    session_id,
+                    None,
+                    None,
+                    RunEventKind::UserPromptSubmit {
+                        prompt: "why did deploy fail?".to_string(),
+                    },
+                ))
+                .await
+                .unwrap();
 
-        let (corpus, stats) = load_configured_memory_corpus(dir.path(), &config, Some(&store))
-            .await
-            .unwrap();
+            let mut config = MemoryCorpusConfig::default();
+            config.runtime_export.enabled = true;
+            let run_store: Arc<dyn store::RunStore> = store;
+            let (corpus, stats) =
+                load_configured_memory_corpus(dir.path(), &config, Some(&run_store))
+                    .await
+                    .unwrap();
+            assert_eq!(stats.exported_runs, 1);
+            assert_eq!(stats.exported_sessions, 1);
+            assert!(corpus.documents.iter().any(|doc| {
+                doc.path.starts_with(".nanoclaw/memory/episodic/runs/") && doc.path.ends_with(".md")
+            }));
+            assert!(corpus.documents.iter().any(|doc| {
+                doc.path.starts_with(".nanoclaw/memory/episodic/sessions/")
+                    && doc.path.ends_with(".md")
+            }));
+            let lifecycle = MemoryStateLayout::new(dir.path())
+                .load_lifecycle("runtime-exports")
+                .unwrap()
+                .unwrap();
+            assert_eq!(lifecycle.status, MemorySidecarStatus::Ready);
+            assert_eq!(lifecycle.exported_run_count, 1);
+            assert_eq!(lifecycle.exported_session_count, 1);
+            assert_eq!(lifecycle.exported_document_count, 2);
+            assert_eq!(lifecycle.artifact_path, ".nanoclaw/memory/episodic");
+        }
+    );
 
-        assert_eq!(stats.exported_runs, 1);
-        assert_eq!(stats.exported_sessions, 1);
-        assert_eq!(stats.exported_subagents, 1);
-        assert_eq!(stats.exported_tasks, 1);
-        assert_eq!(stats.exported_documents, 4);
-        assert!(corpus.documents.iter().any(|doc| {
+    bounded_async_test!(
+        async fn writes_run_session_subagent_and_task_sidecars() {
+            let dir = tempdir().unwrap();
+            let mut config = MemoryCorpusConfig::default();
+            config.runtime_export.enabled = true;
+            let store: Arc<dyn RunStore> = Arc::new(FixtureRunStore::default());
+
+            let (corpus, stats) = load_configured_memory_corpus(dir.path(), &config, Some(&store))
+                .await
+                .unwrap();
+
+            assert_eq!(stats.exported_runs, 1);
+            assert_eq!(stats.exported_sessions, 1);
+            assert_eq!(stats.exported_subagents, 1);
+            assert_eq!(stats.exported_tasks, 1);
+            assert_eq!(stats.exported_documents, 4);
+            assert!(corpus.documents.iter().any(|doc| {
             doc.path
                 == ".nanoclaw/memory/episodic/subagents/run-fixture--session-fixture--reviewer.md"
         }));
-        assert!(corpus.documents.iter().any(|doc| {
-            doc.path == ".nanoclaw/memory/episodic/tasks/run-fixture--session-fixture--task-17.md"
-        }));
-    }
+            assert!(corpus.documents.iter().any(|doc| {
+                doc.path
+                    == ".nanoclaw/memory/episodic/tasks/run-fixture--session-fixture--task-17.md"
+            }));
+        }
+    );
 
-    #[tokio::test]
-    async fn writes_skipped_lifecycle_when_runtime_exports_have_no_run_store() {
-        let dir = tempdir().unwrap();
-        let mut config = MemoryCorpusConfig::default();
-        config.runtime_export.enabled = true;
+    bounded_async_test!(
+        async fn writes_skipped_lifecycle_when_runtime_exports_have_no_run_store() {
+            let dir = tempdir().unwrap();
+            let mut config = MemoryCorpusConfig::default();
+            config.runtime_export.enabled = true;
 
-        let (_corpus, stats) = load_configured_memory_corpus(dir.path(), &config, None)
-            .await
-            .unwrap();
-        assert_eq!(stats.exported_runs, 0);
-        assert_eq!(stats.exported_documents, 0);
+            let (_corpus, stats) = load_configured_memory_corpus(dir.path(), &config, None)
+                .await
+                .unwrap();
+            assert_eq!(stats.exported_runs, 0);
+            assert_eq!(stats.exported_documents, 0);
 
-        let lifecycle = MemoryStateLayout::new(dir.path())
-            .load_lifecycle("runtime-exports")
-            .unwrap()
-            .unwrap();
-        assert_eq!(lifecycle.status, MemorySidecarStatus::Skipped);
-        assert_eq!(lifecycle.artifact_path, ".nanoclaw/memory/episodic");
-    }
+            let lifecycle = MemoryStateLayout::new(dir.path())
+                .load_lifecycle("runtime-exports")
+                .unwrap()
+                .unwrap();
+            assert_eq!(lifecycle.status, MemorySidecarStatus::Skipped);
+            assert_eq!(lifecycle.artifact_path, ".nanoclaw/memory/episodic");
+        }
+    );
 
-    #[tokio::test]
-    async fn rejects_runtime_export_output_outside_memory_state_root() {
-        let dir = tempdir().unwrap();
-        let mut config = MemoryCorpusConfig::default();
-        config.runtime_export.enabled = true;
-        config.runtime_export.output_dir = "memory/runtime".into();
+    bounded_async_test!(
+        async fn rejects_runtime_export_output_outside_memory_state_root() {
+            let dir = tempdir().unwrap();
+            let mut config = MemoryCorpusConfig::default();
+            config.runtime_export.enabled = true;
+            config.runtime_export.output_dir = "memory/runtime".into();
 
-        let err = load_configured_memory_corpus(dir.path(), &config, None)
-            .await
-            .unwrap_err();
-        assert!(matches!(err, MemoryError::PathOutsideWorkspace(_)));
-    }
+            let err = load_configured_memory_corpus(dir.path(), &config, None)
+                .await
+                .unwrap_err();
+            assert!(matches!(err, MemoryError::PathOutsideWorkspace(_)));
+        }
+    );
 
     #[derive(Default)]
     struct FixtureRunStore;

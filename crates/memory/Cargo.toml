@@ -32,4 +32,5 @@ toml.workspace = true
 wide.workspace = true
 
 [dev-dependencies]
+nanoclaw-test-support = { path = "../test-support" }
 tempfile.workspace = true

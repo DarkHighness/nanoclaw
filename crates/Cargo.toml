@@ -28,6 +28,7 @@ members = [
     "sandbox",
     "skills",
     "store",
+    "test-support",
     "tools",
     "types",
 ]

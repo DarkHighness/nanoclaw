@@ -8,3 +8,4 @@ jobs = 1
 RUST_TEST_THREADS = { value = "1", force = false }
 RAYON_NUM_THREADS = { value = "1", force = false }
 TOKIO_WORKER_THREADS = { value = "1", force = false }
+NANOCLAW_TEST_MAX_BLOCKING_THREADS = { value = "1", force = false }

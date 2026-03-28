@@ -1553,12 +1553,22 @@ mod tests {
         QueryExpansionClient, QueryExpansionConfig, RerankClient, RerankConfig, RerankDocument,
         RerankJudgment, parse_expanded_queries,
     };
+    use nanoclaw_test_support::run_current_thread_test;
     use serde_json::Value;
     use std::collections::BTreeMap;
     use std::sync::{Arc, Mutex};
     use tempfile::tempdir;
     use time::{Duration, OffsetDateTime};
     use tokio::fs;
+
+    macro_rules! bounded_async_test {
+        (async fn $name:ident() $body:block) => {
+            #[test]
+            fn $name() {
+                run_current_thread_test(async $body);
+            }
+        };
+    }
 
     #[derive(Default)]
     struct MockEmbeddingClient {
@@ -1627,454 +1637,464 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn hybrid_search_prefers_vector_match_when_available() {
-        let dir = tempdir().unwrap();
-        fs::write(dir.path().join("MEMORY.md"), "semantic recall target")
-            .await
-            .unwrap();
-        fs::create_dir_all(dir.path().join("memory")).await.unwrap();
-        fs::write(dir.path().join("memory/today.md"), "lexical only result")
-            .await
-            .unwrap();
-
-        let backend = MemoryEmbedBackend::new(
-            dir.path().to_path_buf(),
-            MemoryEmbedConfig::default(),
-            Arc::new(MockEmbeddingClient::default()),
-        )
-        .unwrap();
-        let response = backend
-            .search(MemorySearchRequest {
-                query: "query".to_string(),
-                limit: Some(2),
-                path_prefix: None,
-                scopes: None,
-                tags: None,
-                run_id: None,
-                session_id: None,
-                agent_name: None,
-                task_id: None,
-                include_stale: None,
-            })
-            .await
-            .unwrap();
-
-        assert_eq!(response.backend, "memory-embed");
-        assert!(!response.hits.is_empty());
-        assert_eq!(response.hits[0].path, "MEMORY.md");
-        assert_eq!(
-            response
-                .metadata
-                .get("fallback_used")
-                .and_then(|value| value.as_bool()),
-            Some(false)
-        );
-    }
-
-    #[tokio::test]
-    async fn sync_reuses_persisted_chunk_embeddings() {
-        let dir = tempdir().unwrap();
-        fs::write(dir.path().join("MEMORY.md"), "semantic recall target")
-            .await
-            .unwrap();
-        let client = Arc::new(MockEmbeddingClient::default());
-        let config = MemoryEmbedConfig::default();
-
-        let backend =
-            MemoryEmbedBackend::new(dir.path().to_path_buf(), config.clone(), client.clone())
+    bounded_async_test!(
+        async fn hybrid_search_prefers_vector_match_when_available() {
+            let dir = tempdir().unwrap();
+            fs::write(dir.path().join("MEMORY.md"), "semantic recall target")
+                .await
                 .unwrap();
-        backend.sync().await.unwrap();
-        let first_calls = client.calls.lock().unwrap().clone();
-        assert_eq!(first_calls.len(), 1);
-        assert_eq!(first_calls[0].len(), 1);
-
-        let backend =
-            MemoryEmbedBackend::new(dir.path().to_path_buf(), config, client.clone()).unwrap();
-        backend.sync().await.unwrap();
-        let second_calls = client.calls.lock().unwrap().clone();
-        assert_eq!(second_calls.len(), 1);
-    }
-
-    #[tokio::test]
-    async fn sync_writes_ready_lifecycle_manifest() {
-        let dir = tempdir().unwrap();
-        fs::write(dir.path().join("MEMORY.md"), "semantic recall target")
-            .await
-            .unwrap();
-        let backend = MemoryEmbedBackend::new(
-            dir.path().to_path_buf(),
-            MemoryEmbedConfig::default(),
-            Arc::new(MockEmbeddingClient::default()),
-        )
-        .unwrap();
-
-        backend.sync().await.unwrap();
-
-        let lifecycle = MemoryStateLayout::new(dir.path())
-            .load_lifecycle("memory-embed")
-            .unwrap()
-            .unwrap();
-        assert_eq!(lifecycle.status, MemorySidecarStatus::Ready);
-        assert_eq!(lifecycle.vector_store, "sqlite");
-        assert_eq!(
-            lifecycle.artifact_path,
-            ".nanoclaw/memory/indexes/memory-embed.sqlite"
-        );
-        assert_eq!(lifecycle.indexed_document_count, 1);
-    }
-
-    #[tokio::test]
-    async fn search_uses_sqlite_lexical_sidecar_for_exact_matches() {
-        let dir = tempdir().unwrap();
-        fs::write(dir.path().join("MEMORY.md"), "semantic recall target")
-            .await
-            .unwrap();
-        fs::create_dir_all(dir.path().join("memory")).await.unwrap();
-        fs::write(
-            dir.path().join("memory/today.md"),
-            "browserless exact token in lexical sidecar",
-        )
-        .await
-        .unwrap();
-
-        let backend = MemoryEmbedBackend::new(
-            dir.path().to_path_buf(),
-            MemoryEmbedConfig::default(),
-            Arc::new(ZeroEmbeddingClient),
-        )
-        .unwrap();
-        let response = backend
-            .search(MemorySearchRequest {
-                query: "browserless".to_string(),
-                limit: Some(2),
-                path_prefix: None,
-                scopes: None,
-                tags: None,
-                run_id: None,
-                session_id: None,
-                agent_name: None,
-                task_id: None,
-                include_stale: None,
-            })
-            .await
-            .unwrap();
-
-        assert_eq!(response.hits[0].path, "memory/today.md");
-        assert_eq!(
-            response
-                .metadata
-                .get("lexical_index_path")
-                .and_then(Value::as_str),
-            Some(".nanoclaw/memory/indexes/memory-embed-lexical.sqlite")
-        );
-
-        let lifecycle = MemoryStateLayout::new(dir.path())
-            .load_lifecycle("memory-embed-lexical")
-            .unwrap()
-            .unwrap();
-        assert_eq!(lifecycle.status, MemorySidecarStatus::Ready);
-        assert_eq!(
-            lifecycle.artifact_path,
-            ".nanoclaw/memory/indexes/memory-embed-lexical.sqlite"
-        );
-        assert_eq!(lifecycle.indexed_document_count, 2);
-    }
-
-    #[tokio::test]
-    async fn sync_after_content_change_only_embeds_new_chunks() {
-        let dir = tempdir().unwrap();
-        fs::write(dir.path().join("MEMORY.md"), "semantic alpha")
-            .await
-            .unwrap();
-        let client = Arc::new(MockEmbeddingClient::default());
-        let config = MemoryEmbedConfig::default();
-
-        let backend =
-            MemoryEmbedBackend::new(dir.path().to_path_buf(), config.clone(), client.clone())
+            fs::create_dir_all(dir.path().join("memory")).await.unwrap();
+            fs::write(dir.path().join("memory/today.md"), "lexical only result")
+                .await
                 .unwrap();
-        backend.sync().await.unwrap();
-        assert_eq!(client.calls.lock().unwrap().len(), 1);
 
-        fs::create_dir_all(dir.path().join("memory")).await.unwrap();
-        fs::write(dir.path().join("memory/new.md"), "semantic beta")
-            .await
+            let backend = MemoryEmbedBackend::new(
+                dir.path().to_path_buf(),
+                MemoryEmbedConfig::default(),
+                Arc::new(MockEmbeddingClient::default()),
+            )
             .unwrap();
-
-        let restarted =
-            MemoryEmbedBackend::new(dir.path().to_path_buf(), config, client.clone()).unwrap();
-        restarted.sync().await.unwrap();
-        assert_eq!(client.calls.lock().unwrap().len(), 2);
-    }
-
-    #[tokio::test]
-    async fn sync_reuses_matching_chunk_embeddings_when_document_snapshot_changes() {
-        let dir = tempdir().unwrap();
-        fs::write(
-            dir.path().join("MEMORY.md"),
-            [
-                "semantic line one",
-                "semantic line two",
-                "semantic line three",
-                "semantic line four",
-            ]
-            .join("\n"),
-        )
-        .await
-        .unwrap();
-        let client = Arc::new(MockEmbeddingClient::default());
-        let mut config = MemoryEmbedConfig::default();
-        config.chunking = MemoryChunkingConfig {
-            target_tokens: 8,
-            overlap_tokens: 1,
-        };
-
-        let backend =
-            MemoryEmbedBackend::new(dir.path().to_path_buf(), config.clone(), client.clone())
+            let response = backend
+                .search(MemorySearchRequest {
+                    query: "query".to_string(),
+                    limit: Some(2),
+                    path_prefix: None,
+                    scopes: None,
+                    tags: None,
+                    run_id: None,
+                    session_id: None,
+                    agent_name: None,
+                    task_id: None,
+                    include_stale: None,
+                })
+                .await
                 .unwrap();
-        backend.sync().await.unwrap();
-        let first_calls = client.calls.lock().unwrap().clone();
-        assert_eq!(first_calls.len(), 1);
-        assert_eq!(first_calls[0].len(), 4);
 
-        fs::write(
-            dir.path().join("MEMORY.md"),
-            [
-                "semantic line one",
-                "semantic line two",
-                "semantic line three changed",
-                "semantic line four changed",
-            ]
-            .join("\n"),
-        )
-        .await
-        .unwrap();
+            assert_eq!(response.backend, "memory-embed");
+            assert!(!response.hits.is_empty());
+            assert_eq!(response.hits[0].path, "MEMORY.md");
+            assert_eq!(
+                response
+                    .metadata
+                    .get("fallback_used")
+                    .and_then(|value| value.as_bool()),
+                Some(false)
+            );
+        }
+    );
 
-        let restarted =
-            MemoryEmbedBackend::new(dir.path().to_path_buf(), config, client.clone()).unwrap();
-        restarted.sync().await.unwrap();
-        let second_calls = client.calls.lock().unwrap().clone();
-        assert_eq!(second_calls.len(), 2);
-        assert_eq!(second_calls[1].len(), 2);
-    }
+    bounded_async_test!(
+        async fn sync_reuses_persisted_chunk_embeddings() {
+            let dir = tempdir().unwrap();
+            fs::write(dir.path().join("MEMORY.md"), "semantic recall target")
+                .await
+                .unwrap();
+            let client = Arc::new(MockEmbeddingClient::default());
+            let config = MemoryEmbedConfig::default();
 
-    #[tokio::test]
-    async fn sync_deduplicates_identical_embedding_payloads() {
-        let dir = tempdir().unwrap();
-        fs::create_dir_all(dir.path().join("memory")).await.unwrap();
-        fs::write(dir.path().join("memory/first.md"), "semantic duplicate")
-            .await
-            .unwrap();
-        fs::write(dir.path().join("memory/second.md"), "semantic duplicate")
-            .await
-            .unwrap();
-        let client = Arc::new(MockEmbeddingClient::default());
+            let backend =
+                MemoryEmbedBackend::new(dir.path().to_path_buf(), config.clone(), client.clone())
+                    .unwrap();
+            backend.sync().await.unwrap();
+            let first_calls = client.calls.lock().unwrap().clone();
+            assert_eq!(first_calls.len(), 1);
+            assert_eq!(first_calls[0].len(), 1);
 
-        let backend = MemoryEmbedBackend::new(
-            dir.path().to_path_buf(),
-            MemoryEmbedConfig::default(),
-            client.clone(),
-        )
-        .unwrap();
-        backend.sync().await.unwrap();
+            let backend =
+                MemoryEmbedBackend::new(dir.path().to_path_buf(), config, client.clone()).unwrap();
+            backend.sync().await.unwrap();
+            let second_calls = client.calls.lock().unwrap().clone();
+            assert_eq!(second_calls.len(), 1);
+        }
+    );
 
-        let calls = client.calls.lock().unwrap().clone();
-        assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0], vec!["semantic duplicate".to_string()]);
-    }
-
-    #[tokio::test]
-    async fn search_prefers_recent_daily_logs_after_temporal_decay() {
-        let dir = tempdir().unwrap();
-        let today = OffsetDateTime::now_utc().date();
-        let stale = today - Duration::days(120);
-        fs::create_dir_all(dir.path().join("memory")).await.unwrap();
-        fs::write(
-            dir.path().join("memory").join(format!("{stale}.md")),
-            "browserless rollout recap",
-        )
-        .await
-        .unwrap();
-        fs::write(
-            dir.path().join("memory").join(format!("{today}.md")),
-            "browserless rollout recap",
-        )
-        .await
-        .unwrap();
-
-        let backend = MemoryEmbedBackend::new(
-            dir.path().to_path_buf(),
-            MemoryEmbedConfig::default(),
-            Arc::new(ZeroEmbeddingClient),
-        )
-        .unwrap();
-        let response = backend
-            .search(MemorySearchRequest {
-                query: "browserless".to_string(),
-                limit: Some(2),
-                path_prefix: Some("memory/".to_string()),
-                scopes: None,
-                tags: None,
-                run_id: None,
-                session_id: None,
-                agent_name: None,
-                task_id: None,
-                include_stale: None,
-            })
-            .await
+    bounded_async_test!(
+        async fn sync_writes_ready_lifecycle_manifest() {
+            let dir = tempdir().unwrap();
+            fs::write(dir.path().join("MEMORY.md"), "semantic recall target")
+                .await
+                .unwrap();
+            let backend = MemoryEmbedBackend::new(
+                dir.path().to_path_buf(),
+                MemoryEmbedConfig::default(),
+                Arc::new(MockEmbeddingClient::default()),
+            )
             .unwrap();
 
-        assert_eq!(response.hits[0].path, format!("memory/{today}.md"));
-        assert_eq!(
-            response.hits[0]
-                .metadata
-                .get("memory_layer")
-                .and_then(Value::as_str),
-            Some("daily-log")
-        );
-        assert!(
-            response.hits[0].score > response.hits[1].score,
-            "recent daily log should outrank stale daily log after decay"
-        );
-    }
+            backend.sync().await.unwrap();
 
-    #[tokio::test]
-    async fn sync_batches_missing_chunks_by_embedding_batch_size() {
-        let dir = tempdir().unwrap();
-        fs::create_dir_all(dir.path().join("memory")).await.unwrap();
-        for index in 0..5 {
+            let lifecycle = MemoryStateLayout::new(dir.path())
+                .load_lifecycle("memory-embed")
+                .unwrap()
+                .unwrap();
+            assert_eq!(lifecycle.status, MemorySidecarStatus::Ready);
+            assert_eq!(lifecycle.vector_store, "sqlite");
+            assert_eq!(
+                lifecycle.artifact_path,
+                ".nanoclaw/memory/indexes/memory-embed.sqlite"
+            );
+            assert_eq!(lifecycle.indexed_document_count, 1);
+        }
+    );
+
+    bounded_async_test!(
+        async fn search_uses_sqlite_lexical_sidecar_for_exact_matches() {
+            let dir = tempdir().unwrap();
+            fs::write(dir.path().join("MEMORY.md"), "semantic recall target")
+                .await
+                .unwrap();
+            fs::create_dir_all(dir.path().join("memory")).await.unwrap();
             fs::write(
-                dir.path().join("memory").join(format!("d{index}.md")),
-                format!("semantic chunk {index}"),
+                dir.path().join("memory/today.md"),
+                "browserless exact token in lexical sidecar",
             )
             .await
             .unwrap();
-        }
-        let client = Arc::new(MockEmbeddingClient::default());
-        let config = MemoryEmbedConfig {
-            embedding: Some(EmbeddingConfig {
-                provider: "mock".to_string(),
-                model: "mock-small".to_string(),
-                base_url: None,
-                api_key: None,
-                headers: BTreeMap::new(),
-                batch_size: 2,
-                timeout_ms: 30_000,
-            }),
-            ..MemoryEmbedConfig::default()
-        };
 
-        let backend =
-            MemoryEmbedBackend::new(dir.path().to_path_buf(), config, client.clone()).unwrap();
-        backend.sync().await.unwrap();
-        let calls = client.calls.lock().unwrap().clone();
-        assert_eq!(
-            calls.iter().map(Vec::len).collect::<Vec<_>>(),
-            vec![2, 2, 1]
-        );
-    }
-
-    #[tokio::test]
-    async fn qmd_query_expansion_and_rerank_can_flip_top_candidate() {
-        let dir = tempdir().unwrap();
-        fs::write(dir.path().join("MEMORY.md"), "canary deploy checklist")
-            .await
+            let backend = MemoryEmbedBackend::new(
+                dir.path().to_path_buf(),
+                MemoryEmbedConfig::default(),
+                Arc::new(ZeroEmbeddingClient),
+            )
             .unwrap();
-        fs::create_dir_all(dir.path().join("memory")).await.unwrap();
-        fs::write(
-            dir.path().join("memory/rollout.md"),
-            "phased rollout plan for production",
-        )
-        .await
-        .unwrap();
+            let response = backend
+                .search(MemorySearchRequest {
+                    query: "browserless".to_string(),
+                    limit: Some(2),
+                    path_prefix: None,
+                    scopes: None,
+                    tags: None,
+                    run_id: None,
+                    session_id: None,
+                    agent_name: None,
+                    task_id: None,
+                    include_stale: None,
+                })
+                .await
+                .unwrap();
 
-        let client = Arc::new(MockEmbeddingClient::default());
-        let config = MemoryEmbedConfig {
-            query_expansion: Some(QueryExpansionConfig {
-                service: LlmServiceConfig {
-                    provider: "mock".to_string(),
-                    model: "mock-expander".to_string(),
-                    base_url: None,
-                    api_key: None,
-                    headers: BTreeMap::new(),
-                    timeout_ms: 30_000,
-                },
-                variants: 1,
-            }),
-            rerank: Some(RerankConfig {
-                service: LlmServiceConfig {
-                    provider: "mock".to_string(),
-                    model: "mock-reranker".to_string(),
-                    base_url: None,
-                    api_key: None,
-                    headers: BTreeMap::new(),
-                    timeout_ms: 30_000,
-                },
-            }),
-            ..MemoryEmbedConfig::default()
-        };
-        let backend = MemoryEmbedBackend::new(dir.path().to_path_buf(), config, client)
-            .unwrap()
-            .with_optional_clients(
-                Some(Arc::new(FixedQueryExpansionClient {
-                    variants: vec![
-                        ExpandedQuery {
-                            kind: ExpandedQueryKind::Lex,
-                            query: "canary rollout".to_string(),
-                        },
-                        ExpandedQuery {
-                            kind: ExpandedQueryKind::Vec,
-                            query: "phased rollout".to_string(),
-                        },
-                    ],
-                })),
-                Some(Arc::new(FixedRerankClient {
-                    judgments: vec![
-                        RerankJudgment {
-                            relevant: false,
-                            confidence: 0.9,
-                        },
-                        RerankJudgment {
-                            relevant: true,
-                            confidence: 1.0,
-                        },
-                    ],
-                })),
+            assert_eq!(response.hits[0].path, "memory/today.md");
+            assert_eq!(
+                response
+                    .metadata
+                    .get("lexical_index_path")
+                    .and_then(Value::as_str),
+                Some(".nanoclaw/memory/indexes/memory-embed-lexical.sqlite")
             );
 
-        let response = backend
-            .search(MemorySearchRequest {
-                query: "canary deploy".to_string(),
-                limit: Some(2),
-                path_prefix: None,
-                scopes: None,
-                tags: None,
-                run_id: None,
-                session_id: None,
-                agent_name: None,
-                task_id: None,
-                include_stale: None,
-            })
+            let lifecycle = MemoryStateLayout::new(dir.path())
+                .load_lifecycle("memory-embed-lexical")
+                .unwrap()
+                .unwrap();
+            assert_eq!(lifecycle.status, MemorySidecarStatus::Ready);
+            assert_eq!(
+                lifecycle.artifact_path,
+                ".nanoclaw/memory/indexes/memory-embed-lexical.sqlite"
+            );
+            assert_eq!(lifecycle.indexed_document_count, 2);
+        }
+    );
+
+    bounded_async_test!(
+        async fn sync_after_content_change_only_embeds_new_chunks() {
+            let dir = tempdir().unwrap();
+            fs::write(dir.path().join("MEMORY.md"), "semantic alpha")
+                .await
+                .unwrap();
+            let client = Arc::new(MockEmbeddingClient::default());
+            let config = MemoryEmbedConfig::default();
+
+            let backend =
+                MemoryEmbedBackend::new(dir.path().to_path_buf(), config.clone(), client.clone())
+                    .unwrap();
+            backend.sync().await.unwrap();
+            assert_eq!(client.calls.lock().unwrap().len(), 1);
+
+            fs::create_dir_all(dir.path().join("memory")).await.unwrap();
+            fs::write(dir.path().join("memory/new.md"), "semantic beta")
+                .await
+                .unwrap();
+
+            let restarted =
+                MemoryEmbedBackend::new(dir.path().to_path_buf(), config, client.clone()).unwrap();
+            restarted.sync().await.unwrap();
+            assert_eq!(client.calls.lock().unwrap().len(), 2);
+        }
+    );
+
+    bounded_async_test!(
+        async fn sync_reuses_matching_chunk_embeddings_when_document_snapshot_changes() {
+            let dir = tempdir().unwrap();
+            fs::write(
+                dir.path().join("MEMORY.md"),
+                [
+                    "semantic line one",
+                    "semantic line two",
+                    "semantic line three",
+                    "semantic line four",
+                ]
+                .join("\n"),
+            )
+            .await
+            .unwrap();
+            let client = Arc::new(MockEmbeddingClient::default());
+            let mut config = MemoryEmbedConfig::default();
+            config.chunking = MemoryChunkingConfig {
+                target_tokens: 8,
+                overlap_tokens: 1,
+            };
+
+            let backend =
+                MemoryEmbedBackend::new(dir.path().to_path_buf(), config.clone(), client.clone())
+                    .unwrap();
+            backend.sync().await.unwrap();
+            let first_calls = client.calls.lock().unwrap().clone();
+            assert_eq!(first_calls.len(), 1);
+            assert_eq!(first_calls[0].len(), 4);
+
+            fs::write(
+                dir.path().join("MEMORY.md"),
+                [
+                    "semantic line one",
+                    "semantic line two",
+                    "semantic line three changed",
+                    "semantic line four changed",
+                ]
+                .join("\n"),
+            )
             .await
             .unwrap();
 
-        assert_eq!(response.hits.len(), 2);
-        assert_eq!(response.hits[0].path, "memory/rollout.md");
-        assert_eq!(
-            response
-                .metadata
-                .get("expansion_used")
-                .and_then(Value::as_bool),
-            Some(true)
-        );
-        assert_eq!(
-            response
-                .metadata
-                .get("rerank_used")
-                .and_then(Value::as_bool),
-            Some(true)
-        );
-    }
+            let restarted =
+                MemoryEmbedBackend::new(dir.path().to_path_buf(), config, client.clone()).unwrap();
+            restarted.sync().await.unwrap();
+            let second_calls = client.calls.lock().unwrap().clone();
+            assert_eq!(second_calls.len(), 2);
+            assert_eq!(second_calls[1].len(), 2);
+        }
+    );
+
+    bounded_async_test!(
+        async fn sync_deduplicates_identical_embedding_payloads() {
+            let dir = tempdir().unwrap();
+            fs::create_dir_all(dir.path().join("memory")).await.unwrap();
+            fs::write(dir.path().join("memory/first.md"), "semantic duplicate")
+                .await
+                .unwrap();
+            fs::write(dir.path().join("memory/second.md"), "semantic duplicate")
+                .await
+                .unwrap();
+            let client = Arc::new(MockEmbeddingClient::default());
+
+            let backend = MemoryEmbedBackend::new(
+                dir.path().to_path_buf(),
+                MemoryEmbedConfig::default(),
+                client.clone(),
+            )
+            .unwrap();
+            backend.sync().await.unwrap();
+
+            let calls = client.calls.lock().unwrap().clone();
+            assert_eq!(calls.len(), 1);
+            assert_eq!(calls[0], vec!["semantic duplicate".to_string()]);
+        }
+    );
+
+    bounded_async_test!(
+        async fn search_prefers_recent_daily_logs_after_temporal_decay() {
+            let dir = tempdir().unwrap();
+            let today = OffsetDateTime::now_utc().date();
+            let stale = today - Duration::days(120);
+            fs::create_dir_all(dir.path().join("memory")).await.unwrap();
+            fs::write(
+                dir.path().join("memory").join(format!("{stale}.md")),
+                "browserless rollout recap",
+            )
+            .await
+            .unwrap();
+            fs::write(
+                dir.path().join("memory").join(format!("{today}.md")),
+                "browserless rollout recap",
+            )
+            .await
+            .unwrap();
+
+            let backend = MemoryEmbedBackend::new(
+                dir.path().to_path_buf(),
+                MemoryEmbedConfig::default(),
+                Arc::new(ZeroEmbeddingClient),
+            )
+            .unwrap();
+            let response = backend
+                .search(MemorySearchRequest {
+                    query: "browserless".to_string(),
+                    limit: Some(2),
+                    path_prefix: Some("memory/".to_string()),
+                    scopes: None,
+                    tags: None,
+                    run_id: None,
+                    session_id: None,
+                    agent_name: None,
+                    task_id: None,
+                    include_stale: None,
+                })
+                .await
+                .unwrap();
+
+            assert_eq!(response.hits[0].path, format!("memory/{today}.md"));
+            assert_eq!(
+                response.hits[0]
+                    .metadata
+                    .get("memory_layer")
+                    .and_then(Value::as_str),
+                Some("daily-log")
+            );
+            assert!(
+                response.hits[0].score > response.hits[1].score,
+                "recent daily log should outrank stale daily log after decay"
+            );
+        }
+    );
+
+    bounded_async_test!(
+        async fn sync_batches_missing_chunks_by_embedding_batch_size() {
+            let dir = tempdir().unwrap();
+            fs::create_dir_all(dir.path().join("memory")).await.unwrap();
+            for index in 0..5 {
+                fs::write(
+                    dir.path().join("memory").join(format!("d{index}.md")),
+                    format!("semantic chunk {index}"),
+                )
+                .await
+                .unwrap();
+            }
+            let client = Arc::new(MockEmbeddingClient::default());
+            let config = MemoryEmbedConfig {
+                embedding: Some(EmbeddingConfig {
+                    provider: "mock".to_string(),
+                    model: "mock-small".to_string(),
+                    base_url: None,
+                    api_key: None,
+                    headers: BTreeMap::new(),
+                    batch_size: 2,
+                    timeout_ms: 30_000,
+                }),
+                ..MemoryEmbedConfig::default()
+            };
+
+            let backend =
+                MemoryEmbedBackend::new(dir.path().to_path_buf(), config, client.clone()).unwrap();
+            backend.sync().await.unwrap();
+            let calls = client.calls.lock().unwrap().clone();
+            assert_eq!(
+                calls.iter().map(Vec::len).collect::<Vec<_>>(),
+                vec![2, 2, 1]
+            );
+        }
+    );
+
+    bounded_async_test!(
+        async fn qmd_query_expansion_and_rerank_can_flip_top_candidate() {
+            let dir = tempdir().unwrap();
+            fs::write(dir.path().join("MEMORY.md"), "canary deploy checklist")
+                .await
+                .unwrap();
+            fs::create_dir_all(dir.path().join("memory")).await.unwrap();
+            fs::write(
+                dir.path().join("memory/rollout.md"),
+                "phased rollout plan for production",
+            )
+            .await
+            .unwrap();
+
+            let client = Arc::new(MockEmbeddingClient::default());
+            let config = MemoryEmbedConfig {
+                query_expansion: Some(QueryExpansionConfig {
+                    service: LlmServiceConfig {
+                        provider: "mock".to_string(),
+                        model: "mock-expander".to_string(),
+                        base_url: None,
+                        api_key: None,
+                        headers: BTreeMap::new(),
+                        timeout_ms: 30_000,
+                    },
+                    variants: 1,
+                }),
+                rerank: Some(RerankConfig {
+                    service: LlmServiceConfig {
+                        provider: "mock".to_string(),
+                        model: "mock-reranker".to_string(),
+                        base_url: None,
+                        api_key: None,
+                        headers: BTreeMap::new(),
+                        timeout_ms: 30_000,
+                    },
+                }),
+                ..MemoryEmbedConfig::default()
+            };
+            let backend = MemoryEmbedBackend::new(dir.path().to_path_buf(), config, client)
+                .unwrap()
+                .with_optional_clients(
+                    Some(Arc::new(FixedQueryExpansionClient {
+                        variants: vec![
+                            ExpandedQuery {
+                                kind: ExpandedQueryKind::Lex,
+                                query: "canary rollout".to_string(),
+                            },
+                            ExpandedQuery {
+                                kind: ExpandedQueryKind::Vec,
+                                query: "phased rollout".to_string(),
+                            },
+                        ],
+                    })),
+                    Some(Arc::new(FixedRerankClient {
+                        judgments: vec![
+                            RerankJudgment {
+                                relevant: false,
+                                confidence: 0.9,
+                            },
+                            RerankJudgment {
+                                relevant: true,
+                                confidence: 1.0,
+                            },
+                        ],
+                    })),
+                );
+
+            let response = backend
+                .search(MemorySearchRequest {
+                    query: "canary deploy".to_string(),
+                    limit: Some(2),
+                    path_prefix: None,
+                    scopes: None,
+                    tags: None,
+                    run_id: None,
+                    session_id: None,
+                    agent_name: None,
+                    task_id: None,
+                    include_stale: None,
+                })
+                .await
+                .unwrap();
+
+            assert_eq!(response.hits.len(), 2);
+            assert_eq!(response.hits[0].path, "memory/rollout.md");
+            assert_eq!(
+                response
+                    .metadata
+                    .get("expansion_used")
+                    .and_then(Value::as_bool),
+                Some(true)
+            );
+            assert_eq!(
+                response
+                    .metadata
+                    .get("rerank_used")
+                    .and_then(Value::as_bool),
+                Some(true)
+            );
+        }
+    );
 
     #[test]
     fn typed_query_lines_parse_into_qmd_query_kinds() {
