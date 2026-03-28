@@ -758,7 +758,8 @@ cargo test -p reference-tui
 
 当前尚未达到计划目标的部分：
 
-- WASM executable surface 仍只有 validator + hook runtime 的最小闭环，还不是能输出更多 runtime contributions 的通用 executable driver
+- 独立的 `builtin.wasm-hook-runtime` 已可产出 `hooks / mcp_servers / instructions`
+- 当前仍未覆盖的是更广泛的 runtime contributions 种类与更强的可执行 driver 生态，不再是“只有 validator”的状态
 
 ### 16.2 P0 修复项
 
@@ -794,7 +795,7 @@ cargo test -p reference-tui
     - 内建 driver 已更名为 `builtin.wasm-hook-validator`
     - 其职责明确收窄为 module path / exec-root validation
     - host diagnostic 文案已改成 `validated wasm hook module ...`
-  - 后续若要承载真正的 runtime contributions，应新增独立的 executable runtime driver，而不是继续复用 validator 名称
+    - 独立的 `builtin.wasm-hook-runtime` 已补上，可从 runtime config 产出 `hooks / mcp_servers / instructions`
 - 统一消息 mutation 能力：
   - 已完成：
     - `MessageSelector` 现在支持 `Current`、`MessageId` 与 `LastOfRole`

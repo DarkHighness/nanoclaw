@@ -272,17 +272,31 @@ fn decorate_hook_registration(
     mut hook: HookRegistration,
     granted_permissions: &PluginResolvedPermissions,
 ) -> HookRegistration {
-    hook.execution = Some(HookExecutionPolicy {
-        plugin_id: Some(plugin.manifest.id.clone()),
-        plugin_root: Some(plugin.root_dir.clone()),
+    hook.execution = Some(build_hook_execution_policy(
+        &plugin.manifest.id,
+        &plugin.root_dir,
+        &plugin.manifest.capabilities,
+        granted_permissions,
+    ));
+    hook
+}
+
+pub fn build_hook_execution_policy(
+    plugin_id: &str,
+    plugin_root: &Path,
+    capabilities: &PluginCapabilitySet,
+    granted_permissions: &PluginResolvedPermissions,
+) -> HookExecutionPolicy {
+    HookExecutionPolicy {
+        plugin_id: Some(plugin_id.to_string()),
+        plugin_root: Some(plugin_root.to_path_buf()),
         read_roots: granted_permissions.read_roots.clone(),
         write_roots: granted_permissions.write_roots.clone(),
         exec_roots: granted_permissions.exec_roots.clone(),
         network: granted_permissions.network.clone(),
         host_api_grants: granted_permissions.host_api.clone(),
-        effects: derive_effect_policy(&plugin.manifest.capabilities, granted_permissions),
-    });
-    hook
+        effects: derive_effect_policy(capabilities, granted_permissions),
+    }
 }
 
 fn derive_effect_policy(

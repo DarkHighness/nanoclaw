@@ -106,6 +106,7 @@ mod tests {
     use std::collections::BTreeMap;
     use tempfile::tempdir;
     use tools::ToolRegistry;
+    use types::{HookEvent, HookHandler, HookHandlerKind};
 
     #[test]
     fn build_plan_includes_builtin_roots_when_enabled() {
@@ -250,6 +251,105 @@ enabled_by_default = true
         assert!(
             error.to_string().contains("references wasm module")
                 && error.to_string().contains("outside granted exec roots")
+        );
+    }
+
+    #[test]
+    fn wasm_hook_runtime_emits_runtime_contributions() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join(".env"), "").unwrap();
+        let exec_root = dir.path().join(".nanoclaw/plugins-cache/demo");
+        std::fs::create_dir_all(&exec_root).unwrap();
+        let module_path = exec_root.join("policy.wasm");
+        let config = toml::from_str::<toml::Value>(
+            r#"
+instructions = ["use the driver instruction"]
+
+[[hooks]]
+name = "policy-start"
+event = "SessionStart"
+entrypoint = "on_session_start"
+timeout_ms = 750
+
+[[mcp_servers]]
+name = "driver-docs"
+
+[mcp_servers.transport]
+transport = "stdio"
+command = "uvx"
+args = ["driver-mcp"]
+"#,
+        )
+        .unwrap()
+        .as_table()
+        .cloned()
+        .unwrap();
+        let requests = vec![PluginExecutableActivation {
+            plugin_id: "demo".to_string(),
+            root_dir: dir.path().to_path_buf(),
+            runtime: PluginRuntimeSpec {
+                driver: "builtin.wasm-hook-runtime".to_string(),
+                module: Some(module_path.to_string_lossy().to_string()),
+                abi: Some("nanoclaw.plugin.v1".to_string()),
+            },
+            config,
+            capabilities: plugins::PluginCapabilitySet {
+                hook_handlers: vec![HookHandlerKind::Wasm],
+                mcp_exports: true,
+                ..plugins::PluginCapabilitySet::default()
+            },
+            granted_permissions: PluginResolvedPermissions {
+                exec_roots: vec![exec_root.clone()],
+                ..PluginResolvedPermissions::default()
+            },
+        }];
+
+        let mut tools = ToolRegistry::new();
+        let outcome = activate_driver_requests(
+            &requests,
+            dir.path(),
+            None,
+            &mut tools,
+            UnknownDriverPolicy::Error,
+        )
+        .unwrap();
+
+        assert_eq!(outcome.hooks.len(), 1);
+        assert_eq!(outcome.hooks[0].name, "policy-start");
+        assert_eq!(outcome.hooks[0].event, HookEvent::SessionStart);
+        match &outcome.hooks[0].handler {
+            HookHandler::Wasm(handler) => {
+                assert_eq!(handler.module, module_path.to_string_lossy());
+                assert_eq!(handler.entrypoint, "on_session_start");
+            }
+            other => panic!("unexpected hook handler: {other:?}"),
+        }
+        assert_eq!(outcome.hooks[0].timeout_ms, Some(750));
+        assert_eq!(
+            outcome.hooks[0]
+                .execution
+                .as_ref()
+                .and_then(|execution| execution.plugin_id.as_deref()),
+            Some("demo")
+        );
+        assert_eq!(
+            outcome.instructions,
+            vec!["use the driver instruction".to_string()]
+        );
+        assert_eq!(
+            outcome
+                .mcp_servers
+                .iter()
+                .map(|server| server.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["driver-docs"]
+        );
+        assert_eq!(
+            outcome.diagnostics,
+            vec![
+                "plugin `demo` activated builtin.wasm-hook-runtime with 1 hooks, 1 MCP servers, and 1 instructions"
+                    .to_string()
+            ]
         );
     }
 }

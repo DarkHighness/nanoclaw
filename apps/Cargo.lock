@@ -29,6 +29,7 @@ dependencies = [
  "plugins",
  "provider",
  "runtime",
+ "serde",
  "skills",
  "store",
  "tokio",
