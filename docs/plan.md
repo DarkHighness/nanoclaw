@@ -191,9 +191,6 @@ This looks like test drift, not a core feature regression.
 
 - move plugin driver activation from host-level `match` statements to a real
   compiled driver registry if more driver-backed plugins are expected
-- return to the unfinished Runtime Driver path after the remaining P2 runtime
-  hardening is complete; the current `builtin.wasm-hook-validator` is still a
-  validator, not a general executable runtime driver
 - continue improving provider-native structured tool-result transport so fewer
   providers need the JSON-envelope text fallback
 

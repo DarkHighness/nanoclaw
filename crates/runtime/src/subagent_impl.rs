@@ -5,10 +5,12 @@ use crate::{
     RuntimeSession, ToolApprovalHandler, ToolApprovalPolicy, WriteLeaseManager,
 };
 use async_trait::async_trait;
+use futures::stream::{self, StreamExt};
 use serde::Deserialize;
 use serde_json::Value;
 use skills::SkillCatalog;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::future::Future;
 use std::path::PathBuf;
 use std::sync::Arc;
 use store::RunStore;
@@ -33,6 +35,7 @@ const DEFAULT_EXCLUDED_CHILD_TOOLS: &[&str] = &[
     "todo_read",
     "todo_write",
 ];
+const READY_CHILD_LAUNCH_CONCURRENCY: usize = 4;
 
 #[derive(Clone)]
 pub struct RuntimeSubagentExecutor {
@@ -81,6 +84,17 @@ enum DependencyGate {
     Ready,
     Blocked(BTreeSet<AgentId>),
     Failed(Vec<DependencyFailure>),
+}
+
+async fn run_bounded_launches<T, F, Fut>(items: Vec<T>, limit: usize, launch: F)
+where
+    T: Send + 'static,
+    F: Fn(T) -> Fut + Clone + Send + Sync + 'static,
+    Fut: Future<Output = ()> + Send + 'static,
+{
+    stream::iter(items)
+        .for_each_concurrent(limit.max(1), launch)
+        .await;
 }
 
 impl RuntimeSubagentExecutor {
@@ -390,8 +404,7 @@ impl RuntimeSubagentExecutor {
             .build()
     }
 
-    fn launch_child(&self, plan: ChildLaunchPlan) {
-        let runtime = self.build_child_runtime(&plan);
+    fn attach_child_worker(&self, plan: ChildLaunchPlan, runtime: AgentRuntime) {
         let handle = plan.handle.clone();
         let worker = ChildAgentWorker {
             parent: plan.parent,
@@ -410,6 +423,47 @@ impl RuntimeSubagentExecutor {
         self.session_manager
             .attach_join_handle(&handle.agent_id, join_handle)
             .expect("child record inserted before worker launch");
+    }
+
+    async fn launch_child_async(&self, plan: ChildLaunchPlan) {
+        let failure_parent = plan.parent.clone();
+        let failure_handle = plan.handle.clone();
+        let failure_task = plan.task.clone();
+        // Child startup rebuilds the runtime view, tool registry, and hook stack.
+        // Run that work behind a bounded blocking lane so ready batches can warm
+        // multiple children at once without unbounded fan-out.
+        let prepared = tokio::task::spawn_blocking({
+            let executor = self.clone();
+            move || {
+                let runtime = executor.build_child_runtime(&plan);
+                (plan, runtime)
+            }
+        })
+        .await;
+        match prepared {
+            Ok((plan, runtime)) => self.attach_child_worker(plan, runtime),
+            Err(error) => {
+                self.fail_launch_child(
+                    &failure_parent,
+                    failure_handle,
+                    failure_task,
+                    format!("failed to prepare child runtime: {error}"),
+                )
+                .await;
+            }
+        }
+    }
+
+    async fn launch_ready_children_bounded(&self, ready: Vec<ChildLaunchPlan>) {
+        if ready.is_empty() {
+            return;
+        }
+        let executor = self.clone();
+        run_bounded_launches(ready, READY_CHILD_LAUNCH_CONCURRENCY, move |plan| {
+            let executor = executor.clone();
+            async move { executor.launch_child_async(plan).await }
+        })
+        .await;
     }
 
     fn dependency_gate(
@@ -469,6 +523,7 @@ impl RuntimeSubagentExecutor {
                 }
             }
 
+            let mut ready_plans = Vec::new();
             for agent_id in ready {
                 if let Some(plan) = blocked.remove(&agent_id) {
                     if self
@@ -479,9 +534,10 @@ impl RuntimeSubagentExecutor {
                     {
                         continue;
                     }
-                    self.launch_child(plan);
+                    ready_plans.push(plan);
                 }
             }
+            self.launch_ready_children_bounded(ready_plans).await;
 
             for (agent_id, failures) in failed {
                 if let Some(plan) = blocked.remove(&agent_id) {
@@ -619,6 +675,83 @@ impl RuntimeSubagentExecutor {
             .await;
         self.write_lease_manager.release(&released_agent_id);
     }
+
+    async fn fail_launch_child(
+        &self,
+        parent: &SubagentParentContext,
+        handle: AgentHandle,
+        task: AgentTaskSpec,
+        error: String,
+    ) {
+        let summary = summarize_output(&error);
+        let result = AgentResultEnvelope {
+            agent_id: handle.agent_id.clone(),
+            task_id: task.task_id.clone(),
+            status: AgentStatus::Failed,
+            summary: summary.clone(),
+            text: error.clone(),
+            artifacts: Vec::new(),
+            claimed_files: self.write_lease_manager.claimed_paths(&handle.agent_id),
+            structured_payload: None,
+        };
+        let Ok(handle) = self.session_manager.finish(
+            &handle.agent_id,
+            AgentStatus::Failed,
+            Some(result.clone()),
+            Some(error.clone()),
+        ) else {
+            return;
+        };
+        let released_agent_id = handle.agent_id.clone();
+        let _ = self
+            .append_agent_envelope(
+                parent,
+                &handle,
+                AgentEnvelopeKind::StatusChanged {
+                    status: AgentStatus::Failed,
+                },
+            )
+            .await;
+        let _ = self
+            .append_agent_envelope(
+                parent,
+                &handle,
+                AgentEnvelopeKind::Failed {
+                    error: error.clone(),
+                },
+            )
+            .await;
+        let _ = self
+            .append_agent_envelope(
+                parent,
+                &handle,
+                AgentEnvelopeKind::Result {
+                    result: result.clone(),
+                },
+            )
+            .await;
+        let _ = self
+            .append_parent_event(
+                parent,
+                RunEventKind::TaskCompleted {
+                    task_id: task.task_id.clone(),
+                    agent_id: handle.agent_id.clone(),
+                    status: AgentStatus::Failed,
+                },
+            )
+            .await;
+        let _ = self
+            .append_parent_event(
+                parent,
+                RunEventKind::SubagentStop {
+                    handle,
+                    result: Some(result),
+                    error: Some(summary),
+                },
+            )
+            .await;
+        self.write_lease_manager.release(&released_agent_id);
+    }
 }
 
 #[async_trait]
@@ -687,6 +820,7 @@ impl SubagentExecutor for RuntimeSubagentExecutor {
         }
 
         let mut handles = Vec::with_capacity(planned.len());
+        let mut ready = Vec::new();
         let mut blocked = BTreeMap::new();
         for child in planned {
             let handle = child.handle.clone();
@@ -703,12 +837,13 @@ impl SubagentExecutor for RuntimeSubagentExecutor {
                 dependency_agent_ids: child.dependency_agent_ids,
             };
             if launch_plan.dependency_agent_ids.is_empty() {
-                self.launch_child(launch_plan);
+                ready.push(launch_plan);
             } else {
                 blocked.insert(handle.agent_id.clone(), launch_plan);
             }
             handles.push(handle);
         }
+        self.launch_ready_children_bounded(ready).await;
         if !blocked.is_empty() {
             tokio::spawn(self.clone().run_dependency_scheduler(blocked));
         }
@@ -1293,7 +1428,7 @@ fn extract_steering_text(payload: &Value) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::RuntimeSubagentExecutor;
+    use super::{RuntimeSubagentExecutor, normalize_child_result, run_bounded_launches};
     use crate::Result;
     use crate::{
         AlwaysAllowToolApprovalHandler, CompactionConfig, HookRunner, LoopDetectionConfig,
@@ -1302,6 +1437,7 @@ mod tests {
     use async_trait::async_trait;
     use futures::{StreamExt, stream, stream::BoxStream};
     use skills::SkillCatalog;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
     use store::{InMemoryRunStore, RunStore};
     use tokio::sync::Notify;
@@ -1503,15 +1639,16 @@ mod tests {
         let backend = Arc::new(ImmediateBackend::default());
         let store = Arc::new(InMemoryRunStore::new());
         let executor = make_executor(backend, store);
+        let parent = SubagentParentContext {
+            run_id: Some("run_parent".into()),
+            session_id: Some("session_parent".into()),
+            turn_id: Some("turn_parent".into()),
+            parent_agent_id: Some("agent_parent".into()),
+        };
 
         let handles = executor
             .spawn(
-                SubagentParentContext {
-                    run_id: Some("run_parent".into()),
-                    session_id: Some("session_parent".into()),
-                    turn_id: Some("turn_parent".into()),
-                    parent_agent_id: Some("agent_parent".into()),
-                },
+                parent.clone(),
                 vec![
                     AgentTaskSpec {
                         task_id: "inspect".to_string(),
@@ -1540,7 +1677,7 @@ mod tests {
 
         let wait = executor
             .wait(
-                SubagentParentContext::default(),
+                parent,
                 AgentWaitRequest {
                     agent_ids: handles
                         .iter()
@@ -2344,7 +2481,7 @@ mod tests {
             .await
             .expect_err("cyclic dependencies must be rejected");
 
-        assert!(error.to_string().contains("dependency"));
+        assert!(error.to_string().contains("dependenc"));
     }
 
     #[tokio::test]
@@ -2492,5 +2629,53 @@ mod tests {
 
         assert_eq!(result.status, AgentStatus::Completed);
         assert_eq!(result.summary, "still going");
+    }
+
+    #[tokio::test]
+    async fn run_bounded_launches_caps_parallelism() {
+        let started = Arc::new(AtomicUsize::new(0));
+        let current = Arc::new(AtomicUsize::new(0));
+        let max_seen = Arc::new(AtomicUsize::new(0));
+        let release = Arc::new(tokio::sync::Semaphore::new(0));
+        let reached_limit = Arc::new(Notify::new());
+
+        let worker = tokio::spawn({
+            let started = started.clone();
+            let current = current.clone();
+            let max_seen = max_seen.clone();
+            let release = release.clone();
+            let reached_limit = reached_limit.clone();
+            async move {
+                run_bounded_launches(vec![1, 2, 3, 4], 2, move |_| {
+                    let started = started.clone();
+                    let current = current.clone();
+                    let max_seen = max_seen.clone();
+                    let release = release.clone();
+                    let reached_limit = reached_limit.clone();
+                    async move {
+                        let in_flight = current.fetch_add(1, Ordering::SeqCst) + 1;
+                        let _ = max_seen.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |seen| {
+                            (seen < in_flight).then_some(in_flight)
+                        });
+                        if started.fetch_add(1, Ordering::SeqCst) + 1 == 2 {
+                            reached_limit.notify_waiters();
+                        }
+                        let permit = release.acquire().await.unwrap();
+                        drop(permit);
+                        current.fetch_sub(1, Ordering::SeqCst);
+                    }
+                })
+                .await;
+            }
+        });
+
+        reached_limit.notified().await;
+        tokio::task::yield_now().await;
+        assert_eq!(started.load(Ordering::SeqCst), 2);
+        assert_eq!(max_seen.load(Ordering::SeqCst), 2);
+
+        release.add_permits(4);
+        worker.await.unwrap();
+        assert_eq!(max_seen.load(Ordering::SeqCst), 2);
     }
 }

@@ -798,7 +798,15 @@ cargo test -p code-agent
 ### 19.4 P2 性能与硬化
 
 - 批量 spawn 改为有界并行冷启动
+  - 已完成：
+    - ready child 的 runtime 准备已进入 bounded launch helper，不再在单个 async task 中串行冷启动整批 child
+    - child runtime 预热会走 bounded blocking lane，再回到 runtime 线程挂接 worker 与 mailbox
+    - 已补并发上限回归测试，验证冷启动不会突破配置的并行度
 - 优化 `WriteLeaseManager` 的冲突检测结构
+  - 已完成：
+    - `WriteLeaseManager` 已从全表路径冲突扫描切到 trie-based conflict index
+    - trie 节点会维护 owner subtree counts，冲突检查可按 owner 剪枝，不再扫过所有活跃 lease
+    - root/subtree/sibling/重复 claim 的关键回归测试已补齐
 - 降低生命周期事件 append 写放大
 - 评估 mailbox / session manager 是否需要从单点 `Mutex<BTreeMap<...>>` 升级
 

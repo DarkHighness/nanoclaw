@@ -837,7 +837,3 @@ cargo test -p reference-tui
 - `builtin.wasm-hook-validator` 只是校验器，不是完整 runtime driver
 - message mutation 当前支持 `Current + MessageId + LastOfRole(visible transcript only)`
 - `LastOfRole` 只解析已落盘的可见 transcript；要修改当前正在构造的消息仍需使用 `Current`
-- Runtime Driver 仍未实现：
-  - 当前只有 `builtin.wasm-hook-validator` 与 hook runtime 最小闭环
-  - 还没有把 executable runtime contribution 扩成真正的 driver-backed runtime surface
-  - 本轮先把剩余 P2 正确性/性能项收口，再回到 Runtime Driver 路线实现

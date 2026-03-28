@@ -386,7 +386,23 @@
 ### 8.1 多 Agent
 
 - 批量 spawn 改成有界并行冷启动
+  - 状态：
+    - `completed`
+  - 已落地语义：
+    - ready child 的 runtime 准备现在走 bounded launch helper，不再在单个 async 任务里串行冷启动整批 child
+    - child runtime 预热会进入 bounded blocking lane，再回到主 runtime 挂接 worker
+    - 已补并发上限回归测试，验证启动器不会突破配置的并发上限
+  - 目标文件：
+    - `crates/runtime/src/subagent_impl.rs`
 - `WriteLeaseManager` 优化冲突检测数据结构
+  - 状态：
+    - `completed`
+  - 已落地语义：
+    - lease 冲突检测已从全表路径扫描切到 trie-based index
+    - 节点维护 owner subtree counts，冲突检查可以按 owner 剪枝，不再扫描所有活跃 lease
+    - 已补 root/subtree/sibling/重复 claim 的回归测试
+  - 目标文件：
+    - `crates/runtime/src/write_lease.rs`
 - store append 降低生命周期事件写放大
 
 ### 8.2 Memory
@@ -476,7 +492,6 @@
 - 插件路线文档还要补：
   - hook execution plane 已经统一到显式 grants + shared audit observer
   - `DefaultCommandHookExecutor::default()` 已经 fail-safe，不再沿用宽松 host execution 姿态
-  - Runtime Driver 仍未实现，需要在 P2 收尾后回到 `driver registry + executable runtime contribution` 路线继续推进
 
 ## 10. 当前迭代的完成定义
 
