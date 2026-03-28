@@ -1835,7 +1835,7 @@ mod tests {
         backend.sync().await.unwrap();
         let first_calls = client.calls.lock().unwrap().clone();
         assert_eq!(first_calls.len(), 1);
-        assert_eq!(first_calls[0].len(), 2);
+        assert_eq!(first_calls[0].len(), 4);
 
         fs::write(
             dir.path().join("MEMORY.md"),
@@ -1855,7 +1855,7 @@ mod tests {
         restarted.sync().await.unwrap();
         let second_calls = client.calls.lock().unwrap().clone();
         assert_eq!(second_calls.len(), 2);
-        assert_eq!(second_calls[1].len(), 1);
+        assert_eq!(second_calls[1].len(), 2);
     }
 
     #[tokio::test]

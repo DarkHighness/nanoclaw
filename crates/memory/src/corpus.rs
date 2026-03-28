@@ -104,17 +104,25 @@ pub fn chunk_corpus(
                 break;
             }
 
-            let mut overlap_start = end;
-            let mut overlap_size = 0usize;
-            while overlap_start > start + 1 {
-                let candidate = document.lines[overlap_start - 1].len() + 1;
-                if overlap_size + candidate > overlap_chars {
-                    break;
+            let next_start = if end == start + 1 {
+                // Tiny chunk targets can legitimately collapse to a single line.
+                // In that case there is no room to preserve overlap, so we must
+                // advance to `end` instead of rewinding to the same `start`.
+                end
+            } else {
+                let mut overlap_start = end;
+                let mut overlap_size = 0usize;
+                while overlap_start > start + 1 {
+                    let candidate = document.lines[overlap_start - 1].len() + 1;
+                    if overlap_size + candidate > overlap_chars {
+                        break;
+                    }
+                    overlap_size += candidate;
+                    overlap_start -= 1;
                 }
-                overlap_size += candidate;
-                overlap_start -= 1;
-            }
-            start = overlap_start.min(end.saturating_sub(1));
+                overlap_start.min(end - 1)
+            };
+            start = next_start;
         }
     }
 
@@ -730,5 +738,41 @@ mod tests {
         assert!(chunks[0].end_line >= chunks[0].start_line);
         assert!(chunks[1].start_line <= chunks[0].end_line);
         assert_eq!(chunks[0].metadata.scope, MemoryScope::Semantic);
+    }
+
+    #[tokio::test]
+    async fn chunks_corpus_advances_when_target_only_fits_one_line() {
+        let dir = tempdir().unwrap();
+        fs::write(
+            dir.path().join("MEMORY.md"),
+            [
+                "semantic line one",
+                "semantic line two",
+                "semantic line three",
+                "semantic line four",
+            ]
+            .join("\n"),
+        )
+        .await
+        .unwrap();
+
+        let corpus = load_memory_corpus(dir.path(), &MemoryCorpusConfig::default())
+            .await
+            .unwrap();
+        let chunks = chunk_corpus(
+            &corpus,
+            &MemoryChunkingConfig {
+                target_tokens: 8,
+                overlap_tokens: 1,
+            },
+        );
+
+        assert_eq!(
+            chunks
+                .iter()
+                .map(|chunk| (chunk.start_line, chunk.end_line))
+                .collect::<Vec<_>>(),
+            vec![(1, 1), (2, 2), (3, 3), (4, 4)]
+        );
     }
 }

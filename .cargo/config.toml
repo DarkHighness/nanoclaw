@@ -1,0 +1,5 @@
+# Keep test-time CPU usage bounded by default. Developers can still override
+# these locally because `force = false` preserves explicit shell values.
+[env]
+RUST_TEST_THREADS = { value = "1", force = false }
+RAYON_NUM_THREADS = { value = "1", force = false }
