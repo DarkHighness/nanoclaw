@@ -114,6 +114,18 @@ impl RuntimeObserver for SharedRenderObserver {
                         call.tool_name,
                         preview_text(&output.text_content(), 44)
                     ));
+                    if matches!(
+                        call.tool_name.as_str(),
+                        "task" | "task_batch" | "agent_wait" | "agent_spawn"
+                    ) {
+                        if let Some(structured) = &output.structured_content {
+                            state.push_activity(format!(
+                                "{} structured {}",
+                                call.tool_name,
+                                preview_text(&structured.to_string(), 44)
+                            ));
+                        }
+                    }
                 }
                 ToolLifecycleEventKind::Failed { call, error } => {
                     state.status = format!("{} failed", call.tool_name);

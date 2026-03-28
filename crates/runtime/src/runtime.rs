@@ -56,6 +56,7 @@ impl AgentRuntime {
         base_instructions: Vec<String>,
         hook_registrations: Vec<HookRegistration>,
         _skill_catalog: SkillCatalog,
+        session: RuntimeSession,
     ) -> Self {
         Self {
             backend,
@@ -70,7 +71,7 @@ impl AgentRuntime {
             tool_loop_detector: ToolLoopDetector::new(loop_detection_config),
             base_instructions,
             hook_registrations,
-            session: RuntimeSession::default(),
+            session,
         }
     }
 

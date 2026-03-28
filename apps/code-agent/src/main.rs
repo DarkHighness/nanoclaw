@@ -9,7 +9,10 @@ use agent::runtime::{
     CompactionConfig, DefaultCommandHookExecutor, LoopDetectionConfig, ModelConversationCompactor,
     NoopToolApprovalPolicy, RuntimeSubagentExecutor, ToolApprovalHandler,
 };
-use agent::tools::{SandboxBackendStatus, ensure_sandbox_policy_supported};
+use agent::tools::{
+    AgentCancelTool, AgentListTool, AgentSendTool, AgentSpawnTool, AgentWaitTool,
+    SandboxBackendStatus, TaskBatchTool, ensure_sandbox_policy_supported,
+};
 use agent::{
     AgentRuntime, AgentRuntimeBuilder, AgentWorkspaceLayout, BashTool, CodeDefinitionsTool,
     CodeDocumentSymbolsTool, CodeIntelBackend, CodeReferencesTool, CodeSymbolSearchTool, EditTool,
@@ -256,7 +259,14 @@ async fn build_runtime(
         runtime_hooks.clone(),
         skill_catalog.clone(),
     );
-    tools.register(TaskTool::new(Arc::new(subagent_executor)));
+    let subagent_executor = Arc::new(subagent_executor);
+    tools.register(TaskTool::new(subagent_executor.clone()));
+    tools.register(TaskBatchTool::new(subagent_executor.clone()));
+    tools.register(AgentSpawnTool::new(subagent_executor.clone()));
+    tools.register(AgentSendTool::new(subagent_executor.clone()));
+    tools.register(AgentWaitTool::new(subagent_executor.clone()));
+    tools.register(AgentListTool::new(subagent_executor.clone()));
+    tools.register(AgentCancelTool::new(subagent_executor.clone()));
 
     let runtime = AgentRuntimeBuilder::new(backend.clone(), store)
         .hook_runner(hook_runner)

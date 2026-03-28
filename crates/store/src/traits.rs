@@ -244,6 +244,98 @@ pub(crate) fn searchable_event_strings(event: &RunEventEnvelope) -> Vec<String> 
             values.push(call.tool_name.to_string());
             values.push(error.clone());
         }
+        RunEventKind::TaskCreated {
+            task,
+            parent_agent_id,
+        } => {
+            values.push(task.task_id.clone());
+            values.push(task.role.clone());
+            values.push(task.prompt.clone());
+            values.extend(task.requested_write_set.clone());
+            if let Some(parent_agent_id) = parent_agent_id {
+                values.push(parent_agent_id.to_string());
+            }
+        }
+        RunEventKind::TaskCompleted {
+            task_id,
+            agent_id,
+            status,
+        } => {
+            values.push(task_id.clone());
+            values.push(agent_id.to_string());
+            values.push(status.to_string());
+        }
+        RunEventKind::SubagentStart { handle, task } => {
+            values.push(handle.agent_id.to_string());
+            values.push(handle.task_id.clone());
+            values.push(handle.role.clone());
+            values.push(task.prompt.clone());
+            values.extend(task.requested_write_set.clone());
+        }
+        RunEventKind::AgentEnvelope { envelope } => match &envelope.kind {
+            types::AgentEnvelopeKind::SpawnRequested { task }
+            | types::AgentEnvelopeKind::Started { task } => {
+                values.push(task.task_id.clone());
+                values.push(task.role.clone());
+            }
+            types::AgentEnvelopeKind::StatusChanged { status } => {
+                values.push(status.to_string());
+            }
+            types::AgentEnvelopeKind::Message { channel, payload } => {
+                values.push(channel.clone());
+                values.push(payload.to_string());
+            }
+            types::AgentEnvelopeKind::Artifact { artifact } => {
+                values.push(artifact.kind.clone());
+                values.push(artifact.uri.clone());
+                if let Some(label) = &artifact.label {
+                    values.push(label.clone());
+                }
+            }
+            types::AgentEnvelopeKind::ClaimRequested { files }
+            | types::AgentEnvelopeKind::ClaimGranted { files } => {
+                values.extend(files.clone());
+            }
+            types::AgentEnvelopeKind::ClaimRejected { files, owner } => {
+                values.extend(files.clone());
+                values.push(owner.to_string());
+            }
+            types::AgentEnvelopeKind::Result { result } => {
+                values.push(result.task_id.clone());
+                values.push(result.agent_id.to_string());
+                values.push(result.status.to_string());
+                values.push(result.summary.clone());
+                values.push(result.text.clone());
+                values.extend(result.claimed_files.clone());
+                values.extend(result.artifacts.iter().map(|artifact| artifact.uri.clone()));
+            }
+            types::AgentEnvelopeKind::Failed { error } => {
+                values.push(error.clone());
+            }
+            types::AgentEnvelopeKind::Cancelled { reason } => {
+                if let Some(reason) = reason {
+                    values.push(reason.clone());
+                }
+            }
+            types::AgentEnvelopeKind::Heartbeat => values.push("heartbeat".to_string()),
+        },
+        RunEventKind::SubagentStop {
+            handle,
+            result,
+            error,
+        } => {
+            values.push(handle.agent_id.to_string());
+            values.push(handle.task_id.clone());
+            values.push(handle.status.to_string());
+            if let Some(result) = result {
+                values.push(result.summary.clone());
+                values.push(result.text.clone());
+                values.extend(result.claimed_files.clone());
+            }
+            if let Some(error) = error {
+                values.push(error.clone());
+            }
+        }
         RunEventKind::Notification { source, message } => {
             values.push(source.clone());
             values.push(message.clone());

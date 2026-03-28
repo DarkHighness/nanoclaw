@@ -165,6 +165,74 @@ pub(super) fn format_run_event_line(event: &RunEventEnvelope) -> String {
         RunEventKind::ToolCallFailed { call, error } => {
             format!("tool_failed {} {}", call.tool_name, preview_text(error, 24))
         }
+        RunEventKind::TaskCreated { task, .. } => format!(
+            "task_created {} role={} claims={}",
+            task.task_id,
+            task.role,
+            task.requested_write_set.len()
+        ),
+        RunEventKind::TaskCompleted {
+            task_id, status, ..
+        } => format!("task_completed {task_id} status={status}"),
+        RunEventKind::SubagentStart { handle, .. } => format!(
+            "subagent_start {} {}",
+            preview_id(handle.agent_id.as_str()),
+            handle.role
+        ),
+        RunEventKind::AgentEnvelope { envelope } => match &envelope.kind {
+            types::AgentEnvelopeKind::SpawnRequested { task } => {
+                format!("agent_spawn {}", task.task_id)
+            }
+            types::AgentEnvelopeKind::Started { task } => {
+                format!("agent_started {}", task.task_id)
+            }
+            types::AgentEnvelopeKind::StatusChanged { status } => {
+                format!("agent_status {}", status)
+            }
+            types::AgentEnvelopeKind::Message { channel, payload } => format!(
+                "agent_message {} {}",
+                channel,
+                preview_text(&payload.to_string(), 24)
+            ),
+            types::AgentEnvelopeKind::Artifact { artifact } => {
+                format!("agent_artifact {}", preview_text(&artifact.uri, 24))
+            }
+            types::AgentEnvelopeKind::ClaimRequested { files } => {
+                format!("claim_requested {}", preview_text(&files.join(", "), 24))
+            }
+            types::AgentEnvelopeKind::ClaimGranted { files } => {
+                format!("claim_granted {}", preview_text(&files.join(", "), 24))
+            }
+            types::AgentEnvelopeKind::ClaimRejected { owner, .. } => {
+                format!("claim_rejected owner={}", preview_id(owner.as_str()))
+            }
+            types::AgentEnvelopeKind::Result { result } => format!(
+                "agent_result {} {}",
+                preview_id(result.agent_id.as_str()),
+                preview_text(&result.summary, 24)
+            ),
+            types::AgentEnvelopeKind::Failed { error } => {
+                format!("agent_failed {}", preview_text(error, 24))
+            }
+            types::AgentEnvelopeKind::Cancelled { reason } => format!(
+                "agent_cancelled {}",
+                preview_text(reason.as_deref().unwrap_or(""), 24)
+            )
+            .trim()
+            .to_string(),
+            types::AgentEnvelopeKind::Heartbeat => "agent_heartbeat".to_string(),
+        },
+        RunEventKind::SubagentStop { handle, result, .. } => format!(
+            "subagent_stop {} status={} {}",
+            preview_id(handle.agent_id.as_str()),
+            handle.status,
+            result
+                .as_ref()
+                .map(|result| preview_text(&result.summary, 24))
+                .unwrap_or_default()
+        )
+        .trim()
+        .to_string(),
         RunEventKind::Notification { source, message } => {
             format!("notification {source} {}", preview_text(message, 24))
         }

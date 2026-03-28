@@ -15,9 +15,16 @@ pub struct RuntimeSession {
 
 impl Default for RuntimeSession {
     fn default() -> Self {
+        Self::new(RunId::new(), SessionId::new())
+    }
+}
+
+impl RuntimeSession {
+    #[must_use]
+    pub fn new(run_id: RunId, session_id: SessionId) -> Self {
         Self {
-            run_id: RunId::new(),
-            session_id: SessionId::new(),
+            run_id,
+            session_id,
             transcript: Vec::new(),
             provider_continuation: None,
             provider_transcript_cursor: 0,

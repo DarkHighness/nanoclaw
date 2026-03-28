@@ -1,3 +1,4 @@
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use uuid::Uuid;
@@ -9,7 +10,9 @@ pub fn new_opaque_id() -> String {
 
 macro_rules! define_id {
     ($name:ident) => {
-        #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+        #[derive(
+            Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema,
+        )]
         #[serde(transparent)]
         pub struct $name(String);
 
@@ -63,6 +66,7 @@ macro_rules! define_id {
 }
 
 define_id!(EventId);
+define_id!(EnvelopeId);
 define_id!(MessageId);
 define_id!(RunId);
 define_id!(SessionId);
@@ -71,6 +75,7 @@ define_id!(ToolCallId);
 define_id!(CallId);
 define_id!(ResponseId);
 define_id!(ReasoningId);
+define_id!(AgentId);
 
 impl From<ToolCallId> for CallId {
     fn from(value: ToolCallId) -> Self {

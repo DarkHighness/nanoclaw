@@ -1,15 +1,183 @@
 use crate::{
-    CallId, EventId, HookEvent, HookOutput, Message, MessageId, Reasoning, ResponseId, RunId,
-    SessionId, ToolCall, ToolCallId, ToolName, ToolSpec, TurnId,
+    AgentId, CallId, EnvelopeId, EventId, HookEvent, HookOutput, Message, MessageId, Reasoning,
+    ResponseId, RunId, SessionId, ToolCall, ToolCallId, ToolName, ToolSpec, TurnId,
 };
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::fmt;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "provider", rename_all = "snake_case")]
 pub enum ProviderContinuation {
     OpenAiResponses { response_id: ResponseId },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentStatus {
+    Queued,
+    Running,
+    WaitingApproval,
+    WaitingMessage,
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+impl AgentStatus {
+    #[must_use]
+    pub fn is_terminal(&self) -> bool {
+        matches!(self, Self::Completed | Self::Failed | Self::Cancelled)
+    }
+}
+
+impl fmt::Display for AgentStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let value = match self {
+            Self::Queued => "queued",
+            Self::Running => "running",
+            Self::WaitingApproval => "waiting_approval",
+            Self::WaitingMessage => "waiting_message",
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+            Self::Cancelled => "cancelled",
+        };
+        f.write_str(value)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct AgentHandle {
+    pub agent_id: AgentId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_agent_id: Option<AgentId>,
+    pub run_id: RunId,
+    pub session_id: SessionId,
+    pub task_id: String,
+    pub role: String,
+    pub status: AgentStatus,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct AgentArtifact {
+    pub kind: String,
+    pub uri: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<Value>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct AgentTaskSpec {
+    pub task_id: String,
+    pub role: String,
+    pub prompt: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub steer: Option<String>,
+    #[serde(default)]
+    pub allowed_tools: Vec<ToolName>,
+    #[serde(default)]
+    pub requested_write_set: Vec<String>,
+    #[serde(default)]
+    pub dependency_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_seconds: Option<u64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct AgentResultEnvelope {
+    pub agent_id: AgentId,
+    pub task_id: String,
+    pub status: AgentStatus,
+    pub summary: String,
+    pub text: String,
+    #[serde(default)]
+    pub artifacts: Vec<AgentArtifact>,
+    #[serde(default)]
+    pub claimed_files: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub structured_payload: Option<Value>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum AgentEnvelopeKind {
+    SpawnRequested { task: AgentTaskSpec },
+    Started { task: AgentTaskSpec },
+    StatusChanged { status: AgentStatus },
+    Message { channel: String, payload: Value },
+    Artifact { artifact: AgentArtifact },
+    ClaimRequested { files: Vec<String> },
+    ClaimGranted { files: Vec<String> },
+    ClaimRejected { files: Vec<String>, owner: AgentId },
+    Result { result: AgentResultEnvelope },
+    Failed { error: String },
+    Cancelled { reason: Option<String> },
+    Heartbeat,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct AgentEnvelope {
+    pub envelope_id: EnvelopeId,
+    pub agent_id: AgentId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_agent_id: Option<AgentId>,
+    pub run_id: RunId,
+    pub session_id: SessionId,
+    pub timestamp_ms: u128,
+    pub kind: AgentEnvelopeKind,
+}
+
+impl AgentEnvelope {
+    #[must_use]
+    pub fn new(
+        agent_id: AgentId,
+        parent_agent_id: Option<AgentId>,
+        run_id: RunId,
+        session_id: SessionId,
+        kind: AgentEnvelopeKind,
+    ) -> Self {
+        Self {
+            envelope_id: EnvelopeId::new(),
+            agent_id,
+            parent_agent_id,
+            run_id,
+            session_id,
+            timestamp_ms: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_or(0, |value| value.as_millis()),
+            kind,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentWaitMode {
+    Any,
+    All,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct AgentWaitRequest {
+    pub agent_ids: Vec<AgentId>,
+    #[serde(default = "default_agent_wait_mode")]
+    pub mode: AgentWaitMode,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct AgentWaitResponse {
+    pub completed: Vec<AgentHandle>,
+    pub pending: Vec<AgentHandle>,
+    #[serde(default)]
+    pub results: Vec<AgentResultEnvelope>,
+}
+
+fn default_agent_wait_mode() -> AgentWaitMode {
+    AgentWaitMode::All
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -149,6 +317,29 @@ pub enum RunEventKind {
         source: String,
         message: String,
     },
+    TaskCreated {
+        task: AgentTaskSpec,
+        parent_agent_id: Option<AgentId>,
+    },
+    TaskCompleted {
+        task_id: String,
+        agent_id: AgentId,
+        status: AgentStatus,
+    },
+    SubagentStart {
+        handle: AgentHandle,
+        task: AgentTaskSpec,
+    },
+    AgentEnvelope {
+        envelope: AgentEnvelope,
+    },
+    SubagentStop {
+        handle: AgentHandle,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        result: Option<AgentResultEnvelope>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
     Stop {
         reason: Option<String>,
     },
@@ -195,9 +386,6 @@ impl RunEventEnvelope {
 
     #[must_use]
     pub fn tool_lifecycle_event(&self) -> Option<ToolLifecycleEventEnvelope> {
-        // Live host observers and persisted run history need to agree on the
-        // same event identity. This projection reuses the stored RunEventEnvelope
-        // ids instead of manufacturing a second tool-event namespace.
         let lifecycle = match &self.event {
             RunEventKind::ToolCallStarted { call } => {
                 ToolLifecycleEventKind::Started { call: call.clone() }
@@ -240,8 +428,11 @@ impl RunEventEnvelope {
 
 #[cfg(test)]
 mod tests {
-    use super::{RunEventEnvelope, RunEventKind, ToolLifecycleEventKind};
-    use crate::{ToolCall, ToolCallId, ToolName, ToolOrigin, ToolResult};
+    use super::{
+        AgentEnvelope, AgentEnvelopeKind, AgentResultEnvelope, AgentStatus, AgentTaskSpec,
+        RunEventEnvelope, RunEventKind, ToolLifecycleEventKind,
+    };
+    use crate::{AgentId, ToolCall, ToolCallId, ToolName, ToolOrigin, ToolResult};
 
     #[test]
     fn run_event_maps_tool_completion_to_lifecycle_envelope() {
@@ -276,6 +467,73 @@ mod tests {
             lifecycle.event,
             ToolLifecycleEventKind::Completed { call: mapped_call, output: mapped_output }
                 if mapped_call.tool_name == ToolName::from("read") && mapped_output.text_content() == "ok"
+        ));
+    }
+
+    #[test]
+    fn agent_envelope_retains_parent_relation_and_result_payload() {
+        let task = AgentTaskSpec {
+            task_id: "task_1".to_string(),
+            role: "reviewer".to_string(),
+            prompt: "inspect".to_string(),
+            steer: None,
+            allowed_tools: vec!["read".into()],
+            requested_write_set: vec!["src/lib.rs".to_string()],
+            dependency_ids: Vec::new(),
+            timeout_seconds: Some(30),
+        };
+        let envelope = AgentEnvelope::new(
+            AgentId::from("agent_child"),
+            Some(AgentId::from("agent_parent")),
+            "run_child".into(),
+            "session_child".into(),
+            AgentEnvelopeKind::Result {
+                result: AgentResultEnvelope {
+                    agent_id: AgentId::from("agent_child"),
+                    task_id: "task_1".to_string(),
+                    status: AgentStatus::Completed,
+                    summary: "done".to_string(),
+                    text: "ok".to_string(),
+                    artifacts: Vec::new(),
+                    claimed_files: vec!["src/lib.rs".to_string()],
+                    structured_payload: Some(serde_json::json!({"task_id": task.task_id})),
+                },
+            },
+        );
+
+        assert_eq!(
+            envelope.parent_agent_id,
+            Some(AgentId::from("agent_parent"))
+        );
+        match envelope.kind {
+            AgentEnvelopeKind::Result { result } => {
+                assert_eq!(result.status, AgentStatus::Completed);
+                assert_eq!(result.structured_payload.unwrap()["task_id"], "task_1");
+            }
+            other => panic!("unexpected envelope kind: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn task_completed_event_keeps_agent_status() {
+        let event = RunEventEnvelope::new(
+            "run_1".into(),
+            "session_1".into(),
+            None,
+            None,
+            RunEventKind::TaskCompleted {
+                task_id: "task_1".to_string(),
+                agent_id: "agent_1".into(),
+                status: AgentStatus::Cancelled,
+            },
+        );
+
+        assert!(matches!(
+            event.event,
+            RunEventKind::TaskCompleted {
+                status: AgentStatus::Cancelled,
+                ..
+            }
         ));
     }
 }

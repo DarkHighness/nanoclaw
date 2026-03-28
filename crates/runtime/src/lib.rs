@@ -4,6 +4,8 @@
 //! tool execution boundary, hook lifecycle, approval boundary, and compaction
 //! interfaces without depending on any one UI or provider adapter.
 
+mod agent_mailbox;
+mod agent_session_manager;
 mod approval;
 mod backend;
 mod builder;
@@ -16,9 +18,13 @@ mod observer;
 mod runtime;
 mod session;
 #[cfg(feature = "agentic-tools")]
+#[path = "subagent_impl.rs"]
 mod subagent;
 mod transcript;
+mod write_lease;
 
+pub use agent_mailbox::*;
+pub use agent_session_manager::*;
 pub use approval::*;
 pub use backend::*;
 pub use builder::*;
@@ -33,3 +39,4 @@ pub use session::*;
 #[cfg(feature = "agentic-tools")]
 pub use subagent::*;
 pub use transcript::*;
+pub use write_lease::*;

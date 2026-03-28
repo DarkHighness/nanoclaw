@@ -1,8 +1,14 @@
 use crate::Result;
+use std::fmt;
 use std::path::{Path, PathBuf};
-use types::{CallId, RunId, SessionId, ToolName, TurnId};
+use std::sync::Arc;
+use types::{AgentId, CallId, RunId, SessionId, ToolName, TurnId};
 
-#[derive(Clone, Debug, Default)]
+pub trait ToolWriteGuard: Send + Sync {
+    fn assert_write_paths(&self, agent_id: Option<&AgentId>, paths: &[PathBuf]) -> Result<()>;
+}
+
+#[derive(Clone, Default)]
 pub struct ToolExecutionContext {
     pub workspace_root: PathBuf,
     pub worktree_root: Option<PathBuf>,
@@ -14,8 +20,33 @@ pub struct ToolExecutionContext {
     pub run_id: Option<RunId>,
     pub session_id: Option<SessionId>,
     pub turn_id: Option<TurnId>,
+    pub agent_id: Option<AgentId>,
     pub tool_name: Option<ToolName>,
     pub tool_call_id: Option<CallId>,
+    pub write_guard: Option<Arc<dyn ToolWriteGuard>>,
+}
+
+impl fmt::Debug for ToolExecutionContext {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ToolExecutionContext")
+            .field("workspace_root", &self.workspace_root)
+            .field("worktree_root", &self.worktree_root)
+            .field("sandbox_root", &self.sandbox_root)
+            .field("additional_roots", &self.additional_roots)
+            .field("workspace_only", &self.workspace_only)
+            .field("container_workdir", &self.container_workdir)
+            .field(
+                "model_context_window_tokens",
+                &self.model_context_window_tokens,
+            )
+            .field("run_id", &self.run_id)
+            .field("session_id", &self.session_id)
+            .field("turn_id", &self.turn_id)
+            .field("agent_id", &self.agent_id)
+            .field("tool_name", &self.tool_name)
+            .field("tool_call_id", &self.tool_call_id)
+            .finish_non_exhaustive()
+    }
 }
 
 impl ToolExecutionContext {
@@ -35,10 +66,6 @@ impl ToolExecutionContext {
 
     #[must_use]
     pub fn accessible_roots(&self) -> Vec<&Path> {
-        // This remains a useful debug/introspection view for host code, but
-        // tool enforcement should go through the sandbox-derived access checks
-        // below so protected subpaths such as `.nanoclaw` stay consistent with
-        // process sandboxing.
         let mut roots = vec![self.effective_root()];
         if let Some(worktree_root) = self.worktree_root.as_deref() {
             roots.push(worktree_root);
@@ -67,6 +94,9 @@ impl ToolExecutionContext {
             path,
             sandbox::FilesystemAccess::Write,
         )?;
+        if let Some(write_guard) = &self.write_guard {
+            write_guard.assert_write_paths(self.agent_id.as_ref(), &[path.to_path_buf()])?;
+        }
         Ok(())
     }
 
@@ -101,12 +131,42 @@ impl ToolExecutionContext {
         scoped.tool_call_id = Some(tool_call_id.into());
         scoped
     }
+
+    #[must_use]
+    pub fn with_agent_scope(
+        &self,
+        agent_id: AgentId,
+        write_guard: Arc<dyn ToolWriteGuard>,
+    ) -> Self {
+        let mut scoped = self.clone();
+        scoped.agent_id = Some(agent_id);
+        scoped.write_guard = Some(write_guard);
+        scoped
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::ToolExecutionContext;
-    use types::{CallId, RunId, SessionId, ToolName, TurnId};
+    use super::{ToolExecutionContext, ToolWriteGuard};
+    use crate::{Result, ToolError};
+    use std::path::PathBuf;
+    use std::sync::{Arc, Mutex};
+    use types::{AgentId, CallId, RunId, SessionId, ToolName, TurnId};
+
+    #[derive(Default)]
+    struct RecordingWriteGuard {
+        calls: Mutex<Vec<(Option<AgentId>, Vec<PathBuf>)>>,
+    }
+
+    impl ToolWriteGuard for RecordingWriteGuard {
+        fn assert_write_paths(&self, agent_id: Option<&AgentId>, paths: &[PathBuf]) -> Result<()> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push((agent_id.cloned(), paths.to_vec()));
+            Ok(())
+        }
+    }
 
     #[test]
     fn accessible_roots_include_workspace_worktree_and_additional_roots() {
@@ -177,5 +237,56 @@ mod tests {
                 .assert_path_write_allowed(&workspace.path().join(".nanoclaw/state.toml"))
                 .is_err()
         );
+    }
+
+    #[test]
+    fn write_guard_observes_agent_scoped_writes() {
+        let workspace = tempfile::tempdir().unwrap();
+        let guard = Arc::new(RecordingWriteGuard::default());
+        let context = ToolExecutionContext {
+            workspace_root: workspace.path().to_path_buf(),
+            worktree_root: Some(workspace.path().to_path_buf()),
+            workspace_only: true,
+            ..Default::default()
+        }
+        .with_agent_scope(AgentId::from("agent_1"), guard.clone());
+
+        let target = workspace.path().join("src/lib.rs");
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        std::fs::write(&target, "ok").unwrap();
+        context.assert_path_write_allowed(&target).unwrap();
+
+        let calls = guard.calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, Some(AgentId::from("agent_1")));
+        assert_eq!(calls[0].1, vec![target]);
+    }
+
+    #[test]
+    fn write_guard_failure_bubbles_out() {
+        struct RejectingWriteGuard;
+        impl ToolWriteGuard for RejectingWriteGuard {
+            fn assert_write_paths(
+                &self,
+                _agent_id: Option<&AgentId>,
+                _paths: &[PathBuf],
+            ) -> Result<()> {
+                Err(ToolError::invalid_state("lease conflict"))
+            }
+        }
+
+        let workspace = tempfile::tempdir().unwrap();
+        let target = workspace.path().join("file.txt");
+        std::fs::write(&target, "ok").unwrap();
+        let context = ToolExecutionContext {
+            workspace_root: workspace.path().to_path_buf(),
+            worktree_root: Some(workspace.path().to_path_buf()),
+            workspace_only: true,
+            ..Default::default()
+        }
+        .with_agent_scope(AgentId::from("agent_1"), Arc::new(RejectingWriteGuard));
+
+        let error = context.assert_path_write_allowed(&target).unwrap_err();
+        assert!(error.to_string().contains("lease conflict"));
     }
 }
