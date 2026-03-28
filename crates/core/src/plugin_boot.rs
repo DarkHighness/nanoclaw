@@ -75,18 +75,21 @@ pub fn activate_driver_requests(
     requests: &[PluginExecutableActivation],
     workspace_root: &Path,
     run_store: Option<Arc<dyn RunStore>>,
+    memory_reasoning_service: Option<inference::LlmServiceConfig>,
     tools: &mut ToolRegistry,
     unknown_driver_policy: UnknownDriverPolicy,
 ) -> Result<DriverActivationOutcome> {
     let env_map = agent_env::EnvMap::from_workspace_dir(workspace_root)
         .context("failed to resolve environment for plugin driver activation")?;
     let registry = drivers::builtin_registry();
+    let memory_reasoning_service = memory_reasoning_service.as_ref();
     registry.activate_all(
         requests,
         &mut registry::PluginDriverContext {
             workspace_root,
             env_map: &env_map,
             run_store,
+            memory_reasoning_service,
             tools,
         },
         unknown_driver_policy,
@@ -162,6 +165,7 @@ enabled_by_default = true
             &requests,
             dir.path(),
             None,
+            None,
             &mut tools,
             UnknownDriverPolicy::Warn,
         )
@@ -196,6 +200,7 @@ enabled_by_default = true
         let outcome = activate_driver_requests(
             &requests,
             dir.path(),
+            None,
             None,
             &mut tools,
             UnknownDriverPolicy::Error,
@@ -240,6 +245,7 @@ enabled_by_default = true
         let error = match activate_driver_requests(
             &requests,
             dir.path(),
+            None,
             None,
             &mut tools,
             UnknownDriverPolicy::Error,
@@ -308,6 +314,7 @@ args = ["driver-mcp"]
         let outcome = activate_driver_requests(
             &requests,
             dir.path(),
+            None,
             None,
             &mut tools,
             UnknownDriverPolicy::Error,

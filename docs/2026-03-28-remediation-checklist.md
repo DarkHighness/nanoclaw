@@ -575,7 +575,7 @@
 - message mutation 协议/实现统一
   - 状态：`completed`
 - 模型目录 + agent/internal profile 重构
-  - 状态：`in_progress`
+  - 状态：`completed`
   - 已落地：
     - `nanoclaw-config` 已删除旧 `provider/runtime/system_prompt` schema
     - `core.toml` 已切到 `global_system_prompt / host / models / agents / internal`
@@ -586,8 +586,11 @@
     - child file-tool context 已按 profile sandbox 派生
     - `ToolExecutionContext` 已支持显式 effective sandbox policy
     - `reference-tui` 与 `code-agent` 的 `bash` 已改为消费 runtime context 里的 policy，而不是继续硬编码主 runtime 静态沙盒
-  - 未完成：
-    - internal.memory 推理链接线
+    - `reference-tui` 与 `code-agent` 现在都会把 `internal.memory` 转成 driver boot 的 memory reasoning service
+    - `builtin.memory-embed` 现在支持：
+      - `query_expansion.use_internal_profile = true`
+      - `rerank.use_internal_profile = true`
+    - 上述 fallback 只在插件显式请求时生效，不会覆盖已有的 embedding / query expansion / rerank service 配置
 - token usage ledger 与 UI 展示
   - 状态：`planned`
 

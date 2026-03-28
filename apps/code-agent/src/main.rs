@@ -4,7 +4,9 @@ mod provider;
 mod tui;
 
 use crate::options::AppOptions;
-use crate::provider::{build_agent_backend, build_internal_backend, provider_label};
+use crate::provider::{
+    build_agent_backend, build_internal_backend, build_memory_reasoning_service, provider_label,
+};
 use agent::mcp::{
     McpConnectOptions, McpServerConfig, McpTransportConfig, catalog_tools_as_registry_entries,
     connect_and_catalog_mcp_servers_with_options,
@@ -348,6 +350,8 @@ async fn build_runtime(
     tools.register(CodeReferencesTool::with_backend(code_intel_backend));
     tools.register(TodoReadTool::new(todo_state.clone()));
     tools.register(TodoWriteTool::new(todo_state));
+    let driver_env = EnvMap::from_workspace_dir(workspace_root)
+        .context("failed to resolve environment for memory reasoning service")?;
     // Driver-backed plugins expand into normal local tools here so the runtime and subagent
     // surfaces stay identical regardless of whether a capability came from builtin boot code or a
     // plugin slot selection.
@@ -355,6 +359,10 @@ async fn build_runtime(
         &plugin_plan.runtime_activations,
         workspace_root,
         Some(store.clone()),
+        Some(build_memory_reasoning_service(
+            &options.memory_profile,
+            &driver_env,
+        )),
         &mut tools,
         agent::UnknownDriverPolicy::Error,
     )?;

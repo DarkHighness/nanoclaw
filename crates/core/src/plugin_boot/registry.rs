@@ -1,4 +1,5 @@
 use anyhow::{Result, bail};
+use inference::LlmServiceConfig;
 use mcp::McpServerConfig;
 use plugins::PluginExecutableActivation;
 use std::collections::BTreeMap;
@@ -77,6 +78,7 @@ pub struct PluginDriverContext<'a> {
     pub workspace_root: &'a std::path::Path,
     pub env_map: &'a agent_env::EnvMap,
     pub run_store: Option<Arc<dyn RunStore>>,
+    pub memory_reasoning_service: Option<&'a LlmServiceConfig>,
     pub tools: &'a mut ToolRegistry,
 }
 

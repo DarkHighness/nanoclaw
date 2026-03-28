@@ -13,6 +13,7 @@ use agent::mcp::{
     connect_and_catalog_mcp_servers_with_options,
 };
 use agent::skills::{Skill, load_skill_roots};
+use agent_env::EnvMap;
 use anyhow::{Context, Result};
 use plugins::{
     build_plugin_activation_plan, dedup_mcp_servers, resolve_mcp_servers, resolved_skill_roots,
@@ -20,7 +21,9 @@ use plugins::{
 #[cfg(test)]
 use preamble::DEFAULT_AGENT_PREAMBLE;
 use preamble::build_runtime_preamble;
-use provider::{build_backend, build_summary_backend, provider_summary};
+use provider::{
+    build_backend, build_memory_reasoning_service, build_summary_backend, provider_summary,
+};
 use runtime::{
     AgentRuntime, AgentRuntimeBuilder, CompactionConfig, DefaultCommandHookExecutor, HookRunner,
     ModelConversationCompactor,
@@ -125,6 +128,8 @@ async fn bootstrap_from_parts(
     let plugin_plan = build_plugin_activation_plan(&config, &workspace_root)
         .context("failed to build plugin activation plan")?;
     let skill_roots = resolved_skill_roots(&config, &workspace_root, &plugin_plan);
+    let env_map = EnvMap::from_workspace_dir(&workspace_root)
+        .context("failed to resolve environment for memory reasoning service")?;
 
     let store_handle = build_store(&config, &workspace_root).await?;
     let store = store_handle.store.clone();
@@ -194,6 +199,7 @@ async fn bootstrap_from_parts(
         &plugin_plan.runtime_activations,
         &workspace_root,
         Some(store.clone()),
+        Some(build_memory_reasoning_service(&config, &env_map)),
         &mut tools,
         agent::UnknownDriverPolicy::Warn,
     )?;

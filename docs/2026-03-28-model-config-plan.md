@@ -35,6 +35,11 @@
   - `reference-tui` 与 `code-agent` 都会把 host/profile-derived sandbox 显式写入 runtime tool context
   - `bash` 已改为消费 runtime context 里的 effective sandbox policy
   - file tools 与 process tools 已共享同一条 profile-derived sandbox 生效链
+- `HOST-05`
+  - 已完成 MVP
+  - `reference-tui` 与 `code-agent` 现在都会把 `internal.memory` 解析成 memory reasoning service 并传入 plugin driver boot
+  - `builtin.memory-embed` 允许用 `query_expansion.use_internal_profile = true` / `rerank.use_internal_profile = true` 显式复用该 service
+  - 显式声明的 embedding / query expansion / rerank service 配置仍然优先，不会被 `internal.memory` 覆盖
 
 仍未完成：
 
@@ -980,6 +985,16 @@ spawn(task)
 - 记忆摘要
 - 记忆晋升 / 压缩
 
+当前已落地的宿主语义：
+
+- host 在 plugin driver boot 时提供一份 memory reasoning service
+- `builtin.memory-embed` 可在以下配置下显式接入该 service：
+  - `query_expansion.use_internal_profile = true`
+  - `rerank.use_internal_profile = true`
+- 该接线只为 query expansion / rerank 提供默认 service 来源
+- embedding config 仍然必须由 memory 子系统自己显式声明
+- 如果插件已经提供 query expansion / rerank service 字段，则保持插件配置，不被 `internal.memory` 覆盖
+
 默认：
 
 - model：`gpt_5_4_default`
@@ -1300,6 +1315,10 @@ pub struct RuntimeTokenLedger {
   - `code-agent` 使用 `internal.summary`
 - `HOST-05`
   - memory 相关内部推理路径使用 `internal.memory`
+  - 当前落地边界：
+    - host 将 `internal.memory` 解析为 memory reasoning service
+    - `memory-embed` 只在插件显式请求 `use_internal_profile = true` 时使用它
+    - 显式 plugin inference config 优先
 - `HOST-06`
   - 删除 `code-agent` 旧默认模型逻辑
 - `HOST-07`
@@ -1314,6 +1333,9 @@ pub struct RuntimeTokenLedger {
 - `apps/code-agent/src/options.rs`
 - `apps/code-agent/src/main.rs`
 - `apps/code-agent/src/provider.rs`
+- `crates/core/src/plugin_boot.rs`
+- `crates/core/src/plugin_boot/registry.rs`
+- `crates/core/src/plugin_boot/drivers.rs`
 
 验收标准：
 
@@ -1321,6 +1343,8 @@ pub struct RuntimeTokenLedger {
 - 默认工作上下文为 `400k`
 - compactor 不再复用 primary backend
 - host app 不再消费旧单模型 config 字段
+- `internal.memory` 可作为 `memory-embed` query expansion / rerank 的显式 host-owned fallback
+- 显式 plugin inference config 不会被 `internal.memory` 覆盖
 
 ## 9.4 Phase D：subagent profile 工厂化
 
