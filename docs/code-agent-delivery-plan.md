@@ -28,10 +28,18 @@ Shipped in the first implementation slice:
 - the TUI no longer holds `AgentRuntime` directly and instead talks to a
   backend-owned session facade
 
+Shipped in the second implementation slice:
+
+- `main.rs` now acts as a thin process entrypoint plus frontend composition
+- backend session construction now lives in `backend/boot.rs`
+- `code-agent` now prefers a file-backed run store with in-memory fallback
+- durable run persistence is available to the backend even before the replay and
+  export UI surfaces move over
+
 Still pending in the next slices:
 
-- host boot extraction out of `main.rs`
-- durable run store, replay, and export migration
+- backend boot still needs internal decomposition out of `boot.rs`
+- replay and export migration from `reference-tui`
 - frontend-neutral approval, event, and snapshot contracts
 
 ## External Product Signals
@@ -69,17 +77,17 @@ Primary code evidence:
 
 Current problems:
 
-- `code-agent` is still a monolithic host. Boot, runtime construction, plugin
-  activation, MCP wiring, subagent setup, and TUI composition all live in
-  `main.rs`.
+- `code-agent` boot is no longer in `main.rs`, but `backend/boot.rs` is still a
+  broad orchestration module that owns too many concerns at once.
 - the new session facade is only the first boundary cut; a future Web frontend
-  still lacks typed host events, approval messages, and snapshots
+  still lacks typed host events, approval messages, and snapshots.
 - `reference-tui` and `code-agent` still duplicate host responsibilities and
   blur the delivery boundary.
-- `code-agent` uses `InMemoryRunStore`, which is not sufficient for durable
-  session history, replay, export, or audit.
-- repository docs and app workspace defaults still imply two equally delivered
-  example applications.
+- `code-agent` now persists runs through the backend, but replay, export, MCP
+  browsing, and startup diagnostics still have not moved over from
+  `reference-tui`.
+- repository docs and app workspace defaults were tightened, but the app
+  workspace still contains transitional code that must be retired later.
 
 ## Gap Model
 

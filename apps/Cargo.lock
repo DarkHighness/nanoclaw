@@ -733,6 +733,7 @@ dependencies = [
  "ratatui",
  "serde",
  "serde_json",
+ "store",
  "tempfile",
  "tokio",
  "toml",
