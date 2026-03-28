@@ -9,8 +9,9 @@ Status: Active
 This file is the live documentation index after the 2026-03-28 implementation
 pass and archive refresh.
 
-Archived 2026-03-28 documents now live under:
+Archived documentation now lives under:
 
+- `docs/archive/README.md`
 - `docs/archive/2026-03-28/README.md`
 - `docs/archive/2026-03-28/2026-03-28-plugin-system-plan.md`
 - `docs/archive/2026-03-28/2026-03-28-memory-system-plan.md`
@@ -18,10 +19,7 @@ Archived 2026-03-28 documents now live under:
 - `docs/archive/2026-03-28/2026-03-28-model-config-plan.md`
 - `docs/archive/2026-03-28/2026-03-28-remediation-checklist.md`
 
-Earlier historical material remains under:
-
-- `docs/archive/2026-03-26/`
-- `docs/archive/2026-03-27/`
+Earlier historical material remains available through the archive timeline.
 
 ## Current Repository State
 
@@ -53,6 +51,7 @@ Intentionally still documented as not yet implemented:
 ## How To Use Docs
 
 - use this file as the root index
+- use `docs/archive/README.md` as the archive timeline
 - use `docs/archive/2026-03-28/README.md` for the full 2026-03-28 archive
   snapshot
 - treat older dated archives as historical context, not as current status
