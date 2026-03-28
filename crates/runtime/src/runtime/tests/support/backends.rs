@@ -71,6 +71,7 @@ impl ModelBackend for MockBackend {
                     stop_reason: Some("tool_use".to_string()),
                     message_id: None,
                     continuation: None,
+                    usage: None,
                     reasoning: Vec::new(),
                 }),
             ])
@@ -84,6 +85,7 @@ impl ModelBackend for MockBackend {
                     stop_reason: Some("stop".to_string()),
                     message_id: None,
                     continuation: None,
+                    usage: None,
                     reasoning: Vec::new(),
                 }),
             ])
@@ -107,6 +109,7 @@ impl ModelBackend for RecordingBackend {
                 stop_reason: Some("stop".to_string()),
                 message_id: None,
                 continuation: None,
+                usage: None,
                 reasoning: Vec::new(),
             }),
         ])
@@ -120,6 +123,7 @@ impl ModelBackend for ContinuingBackend {
         ModelBackendCapabilities {
             provider_managed_history: true,
             provider_native_compaction: true,
+            ..ModelBackendCapabilities::default()
         }
     }
 
@@ -150,6 +154,7 @@ impl ModelBackend for ContinuingBackend {
                 continuation: Some(ProviderContinuation::OpenAiResponses {
                     response_id: format!("resp_{response_index}").into(),
                 }),
+                usage: None,
                 reasoning: Vec::new(),
             }),
         ])

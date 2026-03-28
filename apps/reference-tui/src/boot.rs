@@ -14,7 +14,7 @@ use agent::mcp::{
 };
 use agent::skills::{Skill, load_skill_roots};
 use agent_env::EnvMap;
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use plugins::{
     build_plugin_activation_plan, dedup_mcp_servers, resolve_mcp_servers, resolved_skill_roots,
 };
@@ -22,7 +22,8 @@ use plugins::{
 use preamble::DEFAULT_AGENT_PREAMBLE;
 use preamble::build_runtime_preamble;
 use provider::{
-    build_backend, build_memory_reasoning_service, build_summary_backend, provider_summary,
+    agent_backend_capabilities, build_backend, build_memory_reasoning_service,
+    build_summary_backend, provider_model_summary, provider_summary,
 };
 use runtime::{
     AgentRuntime, AgentRuntimeBuilder, CompactionConfig, DefaultCommandHookExecutor, HookRunner,
@@ -140,7 +141,9 @@ async fn bootstrap_from_parts(
     let summary_backend = Arc::new(
         build_summary_backend(&config, &env_map).context("failed to initialize summary backend")?,
     );
-    let provider_summary = provider_summary(&config);
+    let primary_provider_summary = provider_summary(&config);
+    let summary_provider_summary = provider_model_summary(&config.summary_profile.model);
+    let memory_provider_summary = provider_model_summary(&config.memory_profile.model);
     let tool_context = ToolExecutionContext {
         workspace_root: workspace_root.clone(),
         worktree_root: Some(workspace_root.clone()),
@@ -245,6 +248,12 @@ async fn bootstrap_from_parts(
         .await
         .context("failed to load configured skill roots")?;
     let skills = skill_catalog.all().to_vec();
+    ensure_model_supports_registered_tools(
+        &config.primary_profile,
+        agent_backend_capabilities(&config.primary_profile),
+        &tools,
+        "primary",
+    )?;
     let instructions = build_runtime_preamble(&config, &skill_catalog, &runtime_instructions);
     let skill_hooks = skills
         .iter()
@@ -274,7 +283,9 @@ async fn bootstrap_from_parts(
     let startup_summary = build_startup_summary(
         &runtime.run_id(),
         &workspace_root,
-        &provider_summary,
+        &primary_provider_summary,
+        &summary_provider_summary,
+        &memory_provider_summary,
         &store_handle,
         stored_run_count,
         &runtime.tool_specs(),
@@ -297,10 +308,27 @@ async fn bootstrap_from_parts(
         startup_summary,
         skills,
         skill_names,
-        provider_summary,
+        provider_summary: primary_provider_summary,
         store_label: store_handle.label,
         store_warning: store_handle.warning,
     })
+}
+
+fn ensure_model_supports_registered_tools(
+    profile: &nanoclaw_config::ResolvedAgentProfile,
+    capabilities: runtime::ModelBackendCapabilities,
+    tools: &ToolRegistry,
+    profile_label: &str,
+) -> Result<()> {
+    let registered_tool_count = tools.names().len();
+    if capabilities.tool_calls || registered_tool_count == 0 {
+        return Ok(());
+    }
+    bail!(
+        "{profile_label} profile `{}` uses model `{}` without tool-call support, but the host registered {registered_tool_count} tools",
+        profile.profile_name,
+        profile.model.model,
+    );
 }
 
 #[cfg(test)]
@@ -474,7 +502,21 @@ Use this skill when asked.
                 .startup_summary
                 .sidebar
                 .iter()
-                .any(|line| line.contains("provider: gpt_5_4_default -> openai / gpt-5.4"))
+                .any(|line| line.contains("primary lane: openai / gpt-5.4"))
+        );
+        assert!(
+            artifacts
+                .startup_summary
+                .sidebar
+                .iter()
+                .any(|line| line.contains("summary lane: openai / gpt-5.4"))
+        );
+        assert!(
+            artifacts
+                .startup_summary
+                .sidebar
+                .iter()
+                .any(|line| line.contains("memory lane: openai / gpt-5.4"))
         );
         assert!(
             artifacts

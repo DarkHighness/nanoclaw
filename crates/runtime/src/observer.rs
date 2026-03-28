@@ -1,5 +1,5 @@
 use crate::Result;
-use types::{ToolCall, ToolLifecycleEventEnvelope, TurnId};
+use types::{TokenLedgerSnapshot, TokenUsagePhase, ToolCall, ToolLifecycleEventEnvelope, TurnId};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum RuntimeProgressEvent {
@@ -19,6 +19,10 @@ pub enum RuntimeProgressEvent {
     ModelRequestStarted {
         turn_id: TurnId,
         iteration: usize,
+    },
+    TokenUsageUpdated {
+        phase: TokenUsagePhase,
+        ledger: TokenLedgerSnapshot,
     },
     AssistantTextDelta {
         delta: String,

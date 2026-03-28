@@ -11,6 +11,8 @@ pub(super) fn build_startup_summary(
     run_id: &RunId,
     workspace_root: &std::path::Path,
     provider_summary: &str,
+    summary_provider_summary: &str,
+    memory_provider_summary: &str,
     store_handle: &StoreHandle,
     stored_run_count: usize,
     tool_specs: &[ToolSpec],
@@ -31,7 +33,9 @@ pub(super) fn build_startup_summary(
     let mut sidebar = vec![
         format!("run: {}", preview_id(run_id.as_str())),
         format!("workspace: {}", workspace_root.display()),
-        format!("provider: {provider_summary}"),
+        format!("primary lane: {provider_summary}"),
+        format!("summary lane: {summary_provider_summary}"),
+        format!("memory lane: {memory_provider_summary}"),
         format!("store: {}", store_handle.label),
         format!("stored runs: {stored_run_count}"),
         format!(
@@ -298,6 +302,8 @@ mod tests {
             &RunId::from("run_test"),
             workspace.path(),
             "openai / gpt-test",
+            "openai / gpt-summary",
+            "openai / gpt-memory",
             &StoreHandle {
                 store: Arc::new(InMemoryRunStore::new()),
                 label: "memory fallback".to_string(),
@@ -369,6 +375,18 @@ mod tests {
             .sidebar
             .iter()
             .any(|line| line.contains("plugin team-policy perms: read=docs, write=.nanoclaw/plugin-state/team-policy, exec=.nanoclaw/plugins-cache/team-policy, network=allow_domains(api.example.com), mutation=allow, host_api=read_file, emit_hook_effect")));
+        assert!(
+            summary
+                .sidebar
+                .iter()
+                .any(|line| line == "summary lane: openai / gpt-summary")
+        );
+        assert!(
+            summary
+                .sidebar
+                .iter()
+                .any(|line| line == "memory lane: openai / gpt-memory")
+        );
     }
 
     #[test]
@@ -378,6 +396,8 @@ mod tests {
             &RunId::from("run_test"),
             workspace.path(),
             "openai / gpt-test",
+            "openai / gpt-summary",
+            "openai / gpt-memory",
             &StoreHandle {
                 store: Arc::new(InMemoryRunStore::new()),
                 label: "memory fallback".to_string(),

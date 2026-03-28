@@ -1,3 +1,4 @@
+use agent::types::TokenLedgerSnapshot;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, RwLock};
@@ -45,6 +46,7 @@ pub(crate) struct SessionSummary {
     pub(crate) tool_names: Vec<String>,
     pub(crate) skill_names: Vec<String>,
     pub(crate) queued_commands: usize,
+    pub(crate) token_ledger: TokenLedgerSnapshot,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

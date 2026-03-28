@@ -13,8 +13,8 @@ use std::collections::BTreeMap;
 use tracing::debug;
 use types::{
     AgentCoreError, CallId, MessageId, MessagePart, MessageRole, ModelEvent, ModelRequest,
-    Reasoning, ReasoningContent, ReasoningId, ToolCall, ToolCallId, ToolName, ToolOrigin,
-    ToolResult,
+    Reasoning, ReasoningContent, ReasoningId, TokenUsage, ToolCall, ToolCallId, ToolName,
+    ToolOrigin, ToolResult,
 };
 
 const DEFAULT_ANTHROPIC_MAX_TOKENS: u64 = 4_096;
@@ -104,6 +104,7 @@ pub(crate) async fn stream_anthropic_turn(
         let mut stop_reason = None;
         let mut reasoning = Vec::new();
         let mut blocks = BTreeMap::<u64, AnthropicBlockState>::new();
+        let mut usage = TokenUsage::default();
 
         while let Some(event) = stream.next().await {
             let event = event?;
@@ -124,6 +125,12 @@ pub(crate) async fn stream_anthropic_turn(
                         .and_then(|value| value.get("id"))
                         .and_then(Value::as_str)
                         .map(ToOwned::to_owned);
+                    apply_anthropic_usage(
+                        &mut usage,
+                        payload
+                            .get("message")
+                            .and_then(|value| value.get("usage")),
+                    );
                 }
                 "message_delta" => {
                     stop_reason = payload
@@ -132,6 +139,7 @@ pub(crate) async fn stream_anthropic_turn(
                         .and_then(Value::as_str)
                         .map(ToOwned::to_owned)
                         .or(stop_reason);
+                    apply_anthropic_usage(&mut usage, payload.get("usage"));
                 }
                 "content_block_start" => {
                     let index = payload
@@ -189,9 +197,29 @@ pub(crate) async fn stream_anthropic_turn(
             stop_reason,
             message_id: Some(message_id.map(MessageId::from).unwrap_or_else(MessageId::new)),
             continuation: None,
+            usage: (!usage.is_zero()).then_some(usage),
             reasoning,
         };
     }))
+}
+
+fn apply_anthropic_usage(target: &mut TokenUsage, usage: Option<&Value>) {
+    let Some(usage) = usage else {
+        return;
+    };
+    if let Some(input_tokens) = usage.get("input_tokens").and_then(Value::as_u64) {
+        let cache_read_tokens = usage
+            .get("cache_read_input_tokens")
+            .and_then(Value::as_u64)
+            .unwrap_or(target.cache_read_tokens);
+        target.input_tokens = input_tokens;
+        target.cache_read_tokens = cache_read_tokens;
+        target.prefill_tokens = input_tokens.saturating_sub(cache_read_tokens);
+    }
+    if let Some(output_tokens) = usage.get("output_tokens").and_then(Value::as_u64) {
+        target.output_tokens = output_tokens;
+        target.decode_tokens = output_tokens;
+    }
 }
 
 fn build_anthropic_messages_body(
@@ -541,8 +569,8 @@ mod tests {
     use futures::StreamExt;
     use serde_json::{Value, json};
     use types::{
-        Message, ModelEvent, ModelRequest, RunId, SessionId, ToolName, ToolOrigin, ToolOutputMode,
-        ToolSpec, TurnId,
+        Message, ModelEvent, ModelRequest, RunId, SessionId, TokenUsage, ToolName, ToolOrigin,
+        ToolOutputMode, ToolSpec, TurnId,
     };
     use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -596,7 +624,7 @@ mod tests {
         let server = MockServer::start().await;
         let sse = concat!(
             "event: message_start\n",
-            "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\"}}\n\n",
+            "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"usage\":{\"input_tokens\":120,\"cache_read_input_tokens\":20}}}\n\n",
             "event: content_block_start\n",
             "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
             "event: content_block_delta\n",
@@ -610,7 +638,7 @@ mod tests {
             "event: content_block_stop\n",
             "data: {\"type\":\"content_block_stop\",\"index\":1}\n\n",
             "event: message_delta\n",
-            "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"}}\n\n",
+            "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"output_tokens\":30}}\n\n",
             "event: message_stop\n",
             "data: {\"type\":\"message_stop\"}\n\n",
             "data: [DONE]\n\n"
@@ -657,8 +685,11 @@ mod tests {
                 stop_reason: Some(reason),
                 message_id: Some(message_id),
                 continuation: None,
+                usage: Some(usage),
                 ..
-            }) if reason == "tool_use" && message_id.as_str() == "msg_1"
+            }) if reason == "tool_use"
+                && message_id.as_str() == "msg_1"
+                && *usage == TokenUsage::from_input_output(120, 30, 20)
         ));
     }
 }

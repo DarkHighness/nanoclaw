@@ -1,7 +1,7 @@
 use agent::mcp::{McpPrompt, McpResource};
 use agent::skills::Skill;
 use serde_json::Value;
-use store::{RunSearchResult, RunSummary};
+use store::{RunSearchResult, RunSummary, RunTokenUsageReport, TokenUsageRecord};
 use types::{
     Message, MessagePart, MessageRole, RunEventEnvelope, RunEventKind, SessionId, ToolOrigin,
     ToolSpec,
@@ -61,6 +61,7 @@ pub(super) fn format_run_sidebar(
     summary: &RunSummary,
     session_ids: &[SessionId],
     events: &[RunEventEnvelope],
+    token_usage: &RunTokenUsageReport,
 ) -> Vec<String> {
     let mut sidebar = vec![
         format!("run: {}", summary.run_id),
@@ -68,6 +69,40 @@ pub(super) fn format_run_sidebar(
         format!("messages: {}", summary.transcript_message_count),
         format!("sessions: {}", summary.session_count),
     ];
+    if let Some(run_usage) = &token_usage.run {
+        if let Some(window) = run_usage.ledger.context_window {
+            sidebar.push(format!(
+                "context: {} / {}",
+                window.used_tokens, window.max_tokens
+            ));
+        }
+        sidebar.push(format!(
+            "run tokens: in={} out={} cache={}",
+            run_usage.ledger.cumulative_usage.input_tokens,
+            run_usage.ledger.cumulative_usage.output_tokens,
+            run_usage.ledger.cumulative_usage.cache_read_tokens,
+        ));
+    }
+    if !token_usage.aggregate_usage.is_zero() {
+        sidebar.push(format!(
+            "total tokens: in={} out={} prefill={} decode={} cache={}",
+            token_usage.aggregate_usage.input_tokens,
+            token_usage.aggregate_usage.output_tokens,
+            token_usage.aggregate_usage.prefill_tokens,
+            token_usage.aggregate_usage.decode_tokens,
+            token_usage.aggregate_usage.cache_read_tokens,
+        ));
+    }
+    if !token_usage.subagents.is_empty() {
+        sidebar.push(format!("subagents: {}", token_usage.subagents.len()));
+        sidebar.extend(
+            token_usage
+                .subagents
+                .iter()
+                .take(4)
+                .map(format_token_usage_record_line),
+        );
+    }
     if let Some(prompt) = &summary.last_user_prompt {
         sidebar.push(format!("last prompt: {}", preview_text(prompt, 80)));
     }
@@ -95,6 +130,22 @@ pub(super) fn format_run_sidebar(
         );
     }
     sidebar
+}
+
+fn format_token_usage_record_line(record: &TokenUsageRecord) -> String {
+    let name = record
+        .agent_name
+        .as_deref()
+        .or(record.task_id.as_deref())
+        .map(|value| preview_text(value, 20))
+        .unwrap_or_else(|| preview_id(record.run_id.as_str()));
+    format!(
+        "{} in={} out={} cache={}",
+        name,
+        record.ledger.cumulative_usage.input_tokens,
+        record.ledger.cumulative_usage.output_tokens,
+        record.ledger.cumulative_usage.cache_read_tokens,
+    )
 }
 
 pub(super) fn format_run_event_line(event: &RunEventEnvelope) -> String {
@@ -137,6 +188,16 @@ pub(super) fn format_run_event_line(event: &RunEventEnvelope) -> String {
             "model_response text={} tool_calls={}",
             preview_text(assistant_text, 24),
             tool_calls.len()
+        ),
+        RunEventKind::TokenUsageUpdated { phase, ledger } => format!(
+            "token_usage {:?} context={} input={} output={}",
+            phase,
+            ledger
+                .context_window
+                .map(|usage| format!("{}/{}", usage.used_tokens, usage.max_tokens))
+                .unwrap_or_else(|| "unknown".to_string()),
+            ledger.cumulative_usage.input_tokens,
+            ledger.cumulative_usage.output_tokens,
         ),
         RunEventKind::HookInvoked { hook_name, event } => {
             format!("hook_invoked {hook_name} {:?}", event)

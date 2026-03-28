@@ -3,9 +3,11 @@ use agent::provider::{
     BackendDescriptor, OpenAiResponsesOptions, OpenAiServerCompaction, ProviderBackend,
     ProviderDescriptor, RequestOptions,
 };
+use agent::runtime::ModelBackendCapabilities;
 use agent_env::{EnvMap, vars};
 use anyhow::{Result, bail};
 use nanoclaw_config::{ProviderKind, ResolvedAgentProfile, ResolvedInternalProfile, ResolvedModel};
+use serde_json::Value;
 
 const DEFAULT_INTERNAL_MEMORY_TIMEOUT_MS: u64 = 30_000;
 
@@ -13,53 +15,29 @@ pub(crate) fn build_agent_backend(
     profile: &ResolvedAgentProfile,
     env_map: &EnvMap,
 ) -> Result<ProviderBackend> {
-    let descriptor = BackendDescriptor::new(match profile.model.provider {
-        ProviderKind::OpenAi => ProviderDescriptor::openai(profile.model.model.clone()),
-        ProviderKind::Anthropic => ProviderDescriptor::anthropic(profile.model.model.clone()),
-    });
-    let request_options = RequestOptions {
-        temperature: profile.temperature,
-        max_tokens: Some(profile.max_output_tokens),
-        additional_params: profile.additional_params.clone(),
-        openai_responses: matches!(profile.model.provider, ProviderKind::OpenAi).then(|| {
-            OpenAiResponsesOptions {
-                chain_previous_response: true,
-                store: Some(true),
-                server_compaction: Some(OpenAiServerCompaction {
-                    compact_threshold: profile.compact_trigger_tokens,
-                }),
-            }
-        }),
-        ..RequestOptions::default()
-    };
-    Ok(ProviderBackend::from_settings_with_api_key(
-        descriptor,
-        request_options,
-        profile.model.base_url.clone(),
+    build_backend_from_model(
+        &profile.model,
+        profile.temperature,
+        Some(profile.max_output_tokens),
+        profile.additional_params.clone(),
+        matches!(profile.model.provider, ProviderKind::OpenAi)
+            .then_some(profile.compact_trigger_tokens),
         provider_api_key(&profile.model, env_map),
-    )?)
+    )
 }
 
 pub(crate) fn build_internal_backend(
     profile: &ResolvedInternalProfile,
     env_map: &EnvMap,
 ) -> Result<ProviderBackend> {
-    let descriptor = BackendDescriptor::new(match profile.model.provider {
-        ProviderKind::OpenAi => ProviderDescriptor::openai(profile.model.model.clone()),
-        ProviderKind::Anthropic => ProviderDescriptor::anthropic(profile.model.model.clone()),
-    });
-    let request_options = RequestOptions {
-        temperature: profile.temperature,
-        max_tokens: Some(profile.max_output_tokens),
-        additional_params: profile.additional_params.clone(),
-        ..RequestOptions::default()
-    };
-    Ok(ProviderBackend::from_settings_with_api_key(
-        descriptor,
-        request_options,
-        profile.model.base_url.clone(),
+    build_backend_from_model(
+        &profile.model,
+        profile.temperature,
+        Some(profile.max_output_tokens),
+        profile.additional_params.clone(),
+        None,
         provider_api_key(&profile.model, env_map),
-    )?)
+    )
 }
 
 pub(crate) fn build_memory_reasoning_service(
@@ -76,18 +54,24 @@ pub(crate) fn build_memory_reasoning_service(
     }
 }
 
-pub(crate) fn ensure_api_key_available(model: &ResolvedModel, env_map: &EnvMap) -> Result<()> {
-    let present = match model.provider {
-        ProviderKind::OpenAi => env_map.get_non_empty(vars::OPENAI_API_KEY.key).is_some(),
-        ProviderKind::Anthropic => env_map.get_non_empty(vars::ANTHROPIC_API_KEY.key).is_some(),
-    };
-    if present {
-        return Ok(());
-    }
-    match model.provider {
-        ProviderKind::OpenAi => bail!("missing OPENAI_API_KEY for provider openai"),
-        ProviderKind::Anthropic => bail!("missing ANTHROPIC_API_KEY for provider anthropic"),
-    }
+pub(crate) fn agent_backend_capabilities(
+    profile: &ResolvedAgentProfile,
+) -> ModelBackendCapabilities {
+    build_backend_settings(
+        &profile.model,
+        profile.temperature,
+        Some(profile.max_output_tokens),
+        profile.additional_params.clone(),
+        matches!(profile.model.provider, ProviderKind::OpenAi)
+            .then_some(profile.compact_trigger_tokens),
+    )
+    .0
+    .capabilities
+}
+
+pub(crate) fn provider_summary(model: &ResolvedModel) -> String {
+    let provider = provider_name(&model.provider);
+    format!("{provider} / {}", model.model)
 }
 
 pub(crate) fn provider_label(profile: &ResolvedAgentProfile) -> String {
@@ -100,6 +84,80 @@ fn provider_name(provider: &ProviderKind) -> &'static str {
         ProviderKind::OpenAi => "openai",
         ProviderKind::Anthropic => "anthropic",
     }
+}
+
+pub(crate) fn ensure_api_key_available(model: &ResolvedModel, env_map: &EnvMap) -> Result<()> {
+    let has_openai = env_map.get_non_empty(vars::OPENAI_API_KEY.key).is_some();
+    let has_anthropic = env_map.get_non_empty(vars::ANTHROPIC_API_KEY.key).is_some();
+    match model.provider {
+        ProviderKind::OpenAi if !has_openai => {
+            bail!("missing OPENAI_API_KEY for provider openai")
+        }
+        ProviderKind::Anthropic if !has_anthropic => {
+            bail!("missing ANTHROPIC_API_KEY for provider anthropic")
+        }
+        _ => Ok(()),
+    }
+}
+
+fn build_backend_from_model(
+    model: &ResolvedModel,
+    temperature: Option<f64>,
+    max_tokens: Option<u64>,
+    additional_params: Option<Value>,
+    compact_trigger_tokens: Option<usize>,
+    api_key: Option<String>,
+) -> Result<ProviderBackend> {
+    let (descriptor, request_options) = build_backend_settings(
+        model,
+        temperature,
+        max_tokens,
+        additional_params,
+        compact_trigger_tokens,
+    );
+    Ok(ProviderBackend::from_settings_with_api_key(
+        descriptor,
+        request_options,
+        model.base_url.clone(),
+        api_key,
+    )?)
+}
+
+fn build_backend_settings(
+    model: &ResolvedModel,
+    temperature: Option<f64>,
+    max_tokens: Option<u64>,
+    additional_params: Option<Value>,
+    compact_trigger_tokens: Option<usize>,
+) -> (BackendDescriptor, RequestOptions) {
+    let request_options = RequestOptions {
+        temperature,
+        max_tokens,
+        additional_params,
+        openai_responses: matches!(model.provider, ProviderKind::OpenAi).then(|| {
+            OpenAiResponsesOptions {
+                chain_previous_response: true,
+                store: Some(true),
+                server_compaction: compact_trigger_tokens
+                    .map(|compact_threshold| OpenAiServerCompaction { compact_threshold }),
+            }
+        }),
+        ..RequestOptions::default()
+    };
+    let descriptor = BackendDescriptor::new(match model.provider {
+        ProviderKind::OpenAi => ProviderDescriptor::openai(model.model.clone()),
+        ProviderKind::Anthropic => ProviderDescriptor::anthropic(model.model.clone()),
+    })
+    .with_capabilities(ModelBackendCapabilities::from_model_surface(
+        model.capabilities.tool_calls,
+        model.capabilities.vision,
+        model.capabilities.image_generation,
+        model.capabilities.audio_input,
+        model.capabilities.tts,
+    ))
+    .resolved_for_request(&request_options);
+
+    (descriptor, request_options)
 }
 
 fn provider_api_key(model: &ResolvedModel, env_map: &EnvMap) -> Option<String> {

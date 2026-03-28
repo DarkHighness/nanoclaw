@@ -5,7 +5,8 @@ mod tui;
 
 use crate::options::AppOptions;
 use crate::provider::{
-    build_agent_backend, build_internal_backend, build_memory_reasoning_service, provider_label,
+    agent_backend_capabilities, build_agent_backend, build_internal_backend,
+    build_memory_reasoning_service, provider_label, provider_summary,
 };
 use agent::mcp::{
     McpConnectOptions, McpServerConfig, McpTransportConfig, catalog_tools_as_registry_entries,
@@ -31,7 +32,7 @@ use agent::{
     ToolExecutionContext, ToolRegistry, WorkspaceTextCodeIntelBackend, WriteTool,
 };
 use agent_env::EnvMap;
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use nanoclaw_config::{AgentSandboxMode, CoreConfig, PluginsConfig, ResolvedAgentProfile};
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
@@ -243,12 +244,16 @@ async fn async_main(workspace_root: PathBuf, options: AppOptions) -> Result<()> 
     .await?;
     let provider_label = provider_label(&options.primary_profile);
     let model = options.primary_profile.model.model.clone();
+    let summary_model = provider_summary(&options.summary_profile.model);
+    let memory_model = provider_summary(&options.memory_profile.model);
     let initial_prompt = options.one_shot_prompt.clone();
     CodeAgentTui::new(
         runtime,
         workspace_root,
         provider_label,
         model,
+        summary_model,
+        memory_model,
         skills,
         initial_prompt,
         ui_state,
@@ -418,6 +423,12 @@ async fn build_runtime(
             }
         }
     }
+    ensure_model_supports_registered_tools(
+        &options.primary_profile,
+        agent_backend_capabilities(&options.primary_profile),
+        &tools,
+        "primary",
+    )?;
     let skill_hooks = skills
         .iter()
         .flat_map(|skill| skill.hooks.clone())
@@ -504,6 +515,23 @@ fn build_sandbox_policy(
             fail_if_unavailable: options.sandbox_fail_if_unavailable,
         },
     }
+}
+
+fn ensure_model_supports_registered_tools(
+    profile: &ResolvedAgentProfile,
+    capabilities: agent::runtime::ModelBackendCapabilities,
+    tools: &ToolRegistry,
+    profile_label: &str,
+) -> Result<()> {
+    let registered_tool_count = tools.names().len();
+    if capabilities.tool_calls || registered_tool_count == 0 {
+        return Ok(());
+    }
+    bail!(
+        "{profile_label} profile `{}` uses model `{}` without tool-call support, but the host registered {registered_tool_count} tools",
+        profile.profile_name,
+        profile.model.model,
+    );
 }
 
 fn build_tool_context(workspace_root: &Path, options: &AppOptions) -> ToolExecutionContext {

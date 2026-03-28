@@ -1,11 +1,15 @@
 use super::{AgentRuntime, RunTurnOutcome, provider_state::is_provider_continuation_lost};
-use crate::{Result, RuntimeObserver, RuntimeProgressEvent, append_transcript_message};
+use crate::{
+    Result, RuntimeObserver, RuntimeProgressEvent, append_transcript_message,
+    estimate_prompt_tokens,
+};
 use futures::StreamExt;
 use serde_json::json;
 use tracing::{debug, info, warn};
 use types::{
-    AgentCoreError, HookContext, HookEvent, HookRegistration, Message, MessageId, MessagePart,
-    ModelEvent, RunEventKind, ToolCall, TurnId,
+    AgentCoreError, ContextWindowUsage, HookContext, HookEvent, HookRegistration, Message,
+    MessageId, MessagePart, ModelEvent, RunEventKind, TokenLedgerSnapshot, TokenUsage,
+    TokenUsagePhase, ToolCall, TurnId,
 };
 
 struct TurnResponse {
@@ -14,6 +18,7 @@ struct TurnResponse {
     assistant_reasoning: Vec<types::Reasoning>,
     assistant_message_id: Option<MessageId>,
     provider_continuation: Option<types::ProviderContinuation>,
+    token_usage: Option<TokenUsage>,
 }
 
 impl AgentRuntime {
@@ -103,6 +108,25 @@ impl AgentRuntime {
             },
         )
         .await?;
+        let request_context_usage = ContextWindowUsage {
+            used_tokens: estimate_prompt_tokens(
+                &request.instructions,
+                &request.messages,
+                &request.tools,
+                &request.additional_context,
+            ),
+            max_tokens: self.compaction_config.context_window_tokens,
+        };
+        let request_ledger = self.record_request_token_window(request_context_usage);
+        self.append_event(
+            Some(turn_id.clone()),
+            None,
+            RunEventKind::TokenUsageUpdated {
+                phase: TokenUsagePhase::RequestStarted,
+                ledger: request_ledger.clone(),
+            },
+        )
+        .await?;
         debug!(
             run_id = %self.session.run_id,
             turn_id = %turn_id,
@@ -115,6 +139,10 @@ impl AgentRuntime {
         observer.on_event(RuntimeProgressEvent::ModelRequestStarted {
             turn_id: turn_id.clone(),
             iteration,
+        })?;
+        observer.on_event(RuntimeProgressEvent::TokenUsageUpdated {
+            phase: TokenUsagePhase::RequestStarted,
+            ledger: request_ledger,
         })?;
 
         let used_continuation = request.continuation.is_some();
@@ -151,6 +179,29 @@ impl AgentRuntime {
                     turn_id: turn_id.clone(),
                     iteration,
                 })?;
+                let retried_context_usage = ContextWindowUsage {
+                    used_tokens: estimate_prompt_tokens(
+                        &request.instructions,
+                        &request.messages,
+                        &request.tools,
+                        &request.additional_context,
+                    ),
+                    max_tokens: self.compaction_config.context_window_tokens,
+                };
+                let retried_ledger = self.record_request_token_window(retried_context_usage);
+                self.append_event(
+                    Some(turn_id.clone()),
+                    None,
+                    RunEventKind::TokenUsageUpdated {
+                        phase: TokenUsagePhase::RequestStarted,
+                        ledger: retried_ledger.clone(),
+                    },
+                )
+                .await?;
+                observer.on_event(RuntimeProgressEvent::TokenUsageUpdated {
+                    phase: TokenUsagePhase::RequestStarted,
+                    ledger: retried_ledger,
+                })?;
                 self.backend.stream_turn(request).await?
             }
             Err(error) => return Err(error),
@@ -162,6 +213,7 @@ impl AgentRuntime {
             assistant_reasoning: Vec::new(),
             assistant_message_id: None,
             provider_continuation: None,
+            token_usage: None,
         };
         while let Some(event) = stream.next().await {
             match event? {
@@ -176,12 +228,14 @@ impl AgentRuntime {
                 ModelEvent::ResponseComplete {
                     message_id,
                     continuation,
+                    usage,
                     reasoning,
                     ..
                 } => {
                     response.assistant_message_id = Some(message_id.unwrap_or_else(MessageId::new));
                     response.provider_continuation = continuation;
                     response.assistant_reasoning = reasoning;
+                    response.token_usage = usage;
                 }
                 ModelEvent::Error { message } => {
                     return Err(AgentCoreError::ModelBackend(message).into());
@@ -211,8 +265,38 @@ impl AgentRuntime {
             assistant_text: response.assistant_text.clone(),
             tool_calls: response.tool_calls.clone(),
         })?;
+        let response_ledger = self.record_response_token_usage(response.token_usage);
+        self.append_event(
+            Some(turn_id.clone()),
+            None,
+            RunEventKind::TokenUsageUpdated {
+                phase: TokenUsagePhase::ResponseCompleted,
+                ledger: response_ledger.clone(),
+            },
+        )
+        .await?;
+        observer.on_event(RuntimeProgressEvent::TokenUsageUpdated {
+            phase: TokenUsagePhase::ResponseCompleted,
+            ledger: response_ledger,
+        })?;
         self.clear_pending_request_effects();
         Ok(response)
+    }
+
+    fn record_request_token_window(
+        &mut self,
+        context_window: ContextWindowUsage,
+    ) -> TokenLedgerSnapshot {
+        self.session.token_ledger.context_window = Some(context_window);
+        self.session.token_ledger.clone()
+    }
+
+    fn record_response_token_usage(&mut self, usage: Option<TokenUsage>) -> TokenLedgerSnapshot {
+        self.session.token_ledger.last_usage = usage;
+        if let Some(usage) = self.session.token_ledger.last_usage.as_ref() {
+            self.session.token_ledger.cumulative_usage.accumulate(usage);
+        }
+        self.session.token_ledger.clone()
     }
 
     async fn persist_assistant_response(

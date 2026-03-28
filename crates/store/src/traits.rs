@@ -1,10 +1,16 @@
 use crate::replay::replay_transcript;
 use async_trait::async_trait;
+use futures::{StreamExt, stream};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashSet};
 use thiserror::Error;
-use types::{HookEffect, Message, RunEventEnvelope, RunEventKind, RunId, SessionId};
+use types::{
+    HookEffect, Message, RunEventEnvelope, RunEventKind, RunId, SessionId, TokenLedgerSnapshot,
+    TokenUsage,
+};
+
+const TOKEN_USAGE_CHILD_FETCH_CONCURRENCY_LIMIT: usize = 8;
 
 #[derive(Debug, Error)]
 pub enum RunStoreError {
@@ -34,6 +40,42 @@ pub struct RunSearchResult {
     pub summary: RunSummary,
     pub matched_event_count: usize,
     pub preview_matches: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TokenUsageScope {
+    Run,
+    Session,
+    Subagent,
+    Task,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TokenUsageRecord {
+    pub scope: TokenUsageScope,
+    pub run_id: RunId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<SessionId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<String>,
+    pub ledger: TokenLedgerSnapshot,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunTokenUsageReport {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run: Option<TokenUsageRecord>,
+    #[serde(default)]
+    pub sessions: Vec<TokenUsageRecord>,
+    #[serde(default)]
+    pub subagents: Vec<TokenUsageRecord>,
+    #[serde(default)]
+    pub tasks: Vec<TokenUsageRecord>,
+    #[serde(default)]
+    pub aggregate_usage: TokenUsage,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -117,6 +159,22 @@ pub(crate) struct ScopedMemoryExportEvents {
 
 #[derive(Clone, Debug, Default)]
 struct AgentMemoryExportContext {
+    session_id: Option<SessionId>,
+    agent_name: Option<String>,
+    task_id: Option<String>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct ChildRunTokenUsageContext {
+    run_id: Option<RunId>,
+    session_id: Option<SessionId>,
+    agent_name: Option<String>,
+    task_id: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+struct ResolvedChildRunTokenUsageContext {
+    run_id: RunId,
     session_id: Option<SessionId>,
     agent_name: Option<String>,
     task_id: Option<String>,
@@ -281,6 +339,21 @@ pub(crate) fn searchable_event_strings(event: &RunEventEnvelope) -> Vec<String> 
         } => {
             values.push(assistant_text.clone());
             values.extend(tool_calls.iter().map(|call| call.tool_name.to_string()));
+        }
+        RunEventKind::TokenUsageUpdated { phase, ledger } => {
+            values.push(format!(
+                "token_usage {:?} context={} input={} output={} prefill={} decode={} cache_read={}",
+                phase,
+                ledger
+                    .context_window
+                    .map(|usage| format!("{}/{}", usage.used_tokens, usage.max_tokens))
+                    .unwrap_or_else(|| "unknown".to_string()),
+                ledger.cumulative_usage.input_tokens,
+                ledger.cumulative_usage.output_tokens,
+                ledger.cumulative_usage.prefill_tokens,
+                ledger.cumulative_usage.decode_tokens,
+                ledger.cumulative_usage.cache_read_tokens,
+            ));
         }
         RunEventKind::HookInvoked { hook_name, .. } => {
             values.push(hook_name.clone());
@@ -459,6 +532,116 @@ pub(crate) fn searchable_event_strings(event: &RunEventEnvelope) -> Vec<String> 
     }
     values.retain(|value| !value.trim().is_empty());
     values
+}
+
+#[must_use]
+pub fn latest_token_usage_snapshot(events: &[RunEventEnvelope]) -> Option<TokenLedgerSnapshot> {
+    events.iter().rev().find_map(|event| match &event.event {
+        RunEventKind::TokenUsageUpdated { ledger, .. } => Some(ledger.clone()),
+        _ => None,
+    })
+}
+
+#[must_use]
+pub fn session_token_usage_records(
+    run_id: &RunId,
+    events: &[RunEventEnvelope],
+) -> Vec<TokenUsageRecord> {
+    let mut by_session = BTreeMap::<SessionId, TokenLedgerSnapshot>::new();
+    for event in events {
+        if let RunEventKind::TokenUsageUpdated { ledger, .. } = &event.event {
+            by_session.insert(event.session_id.clone(), ledger.clone());
+        }
+    }
+    by_session
+        .into_iter()
+        .map(|(session_id, ledger)| TokenUsageRecord {
+            scope: TokenUsageScope::Session,
+            run_id: run_id.clone(),
+            session_id: Some(session_id),
+            agent_name: None,
+            task_id: None,
+            ledger,
+        })
+        .collect()
+}
+
+fn collect_child_run_token_usage_contexts(
+    events: &[RunEventEnvelope],
+) -> Vec<ResolvedChildRunTokenUsageContext> {
+    let mut by_agent = BTreeMap::<String, ChildRunTokenUsageContext>::new();
+    for event in events {
+        match &event.event {
+            RunEventKind::SubagentStart { handle, task } => {
+                let context = by_agent.entry(handle.agent_id.to_string()).or_default();
+                context.run_id = Some(handle.run_id.clone());
+                context.session_id = Some(handle.session_id.clone());
+                if context.agent_name.is_none() {
+                    context.agent_name = Some(task.role.clone());
+                }
+                if context.task_id.is_none() {
+                    context.task_id = Some(task.task_id.clone());
+                }
+            }
+            RunEventKind::SubagentStop { handle, .. } => {
+                let context = by_agent.entry(handle.agent_id.to_string()).or_default();
+                context.run_id = Some(handle.run_id.clone());
+                context.session_id = Some(handle.session_id.clone());
+                if context.agent_name.is_none() {
+                    context.agent_name = Some(handle.role.clone());
+                }
+                if context.task_id.is_none() {
+                    context.task_id = Some(handle.task_id.clone());
+                }
+            }
+            RunEventKind::AgentEnvelope { envelope } => {
+                let context = by_agent.entry(envelope.agent_id.to_string()).or_default();
+                if context.run_id.is_none() {
+                    context.run_id = Some(envelope.run_id.clone());
+                }
+                if context.session_id.is_none() {
+                    context.session_id = Some(envelope.session_id.clone());
+                }
+                match &envelope.kind {
+                    types::AgentEnvelopeKind::SpawnRequested { task }
+                    | types::AgentEnvelopeKind::Started { task } => {
+                        if context.agent_name.is_none() {
+                            context.agent_name = Some(task.role.clone());
+                        }
+                        if context.task_id.is_none() {
+                            context.task_id = Some(task.task_id.clone());
+                        }
+                    }
+                    types::AgentEnvelopeKind::Result { result } => {
+                        if context.task_id.is_none() {
+                            context.task_id = Some(result.task_id.clone());
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut contexts = by_agent
+        .into_values()
+        .filter_map(|context| {
+            Some(ResolvedChildRunTokenUsageContext {
+                run_id: context.run_id?,
+                session_id: context.session_id,
+                agent_name: context.agent_name,
+                task_id: context.task_id,
+            })
+        })
+        .collect::<Vec<_>>();
+    contexts.sort_by(|left, right| {
+        left.agent_name
+            .cmp(&right.agent_name)
+            .then_with(|| left.task_id.cmp(&right.task_id))
+            .then_with(|| left.run_id.as_str().cmp(right.run_id.as_str()))
+    });
+    contexts
 }
 
 pub(crate) fn build_search_corpus(events: &[RunEventEnvelope]) -> String {
@@ -1004,6 +1187,65 @@ pub trait RunStore: EventSink {
     async fn events(&self, run_id: &RunId) -> Result<Vec<RunEventEnvelope>>;
     async fn session_ids(&self, run_id: &RunId) -> Result<Vec<SessionId>>;
     async fn replay_transcript(&self, run_id: &RunId) -> Result<Vec<Message>>;
+    async fn token_usage(&self, run_id: &RunId) -> Result<RunTokenUsageReport> {
+        let root_events = self.events(run_id).await?;
+        let run = latest_token_usage_snapshot(&root_events).map(|ledger| TokenUsageRecord {
+            scope: TokenUsageScope::Run,
+            run_id: run_id.clone(),
+            session_id: None,
+            agent_name: None,
+            task_id: None,
+            ledger,
+        });
+        let sessions = session_token_usage_records(run_id, &root_events);
+        let mut aggregate_usage = run
+            .as_ref()
+            .map(|record| record.ledger.cumulative_usage)
+            .unwrap_or_default();
+
+        let child_contexts = collect_child_run_token_usage_contexts(&root_events);
+        let child_records = stream::iter(child_contexts.into_iter().map(|context| async move {
+            let events = self.events(&context.run_id).await?;
+            Ok::<_, RunStoreError>((context, latest_token_usage_snapshot(&events)))
+        }))
+        .buffer_unordered(TOKEN_USAGE_CHILD_FETCH_CONCURRENCY_LIMIT)
+        .collect::<Vec<_>>()
+        .await;
+
+        let mut subagents = Vec::new();
+        let mut tasks = Vec::new();
+        for child in child_records {
+            let (context, ledger) = child?;
+            let Some(ledger) = ledger else {
+                continue;
+            };
+            aggregate_usage.accumulate(&ledger.cumulative_usage);
+            subagents.push(TokenUsageRecord {
+                scope: TokenUsageScope::Subagent,
+                run_id: context.run_id.clone(),
+                session_id: context.session_id.clone(),
+                agent_name: context.agent_name.clone(),
+                task_id: context.task_id.clone(),
+                ledger: ledger.clone(),
+            });
+            tasks.push(TokenUsageRecord {
+                scope: TokenUsageScope::Task,
+                run_id: context.run_id,
+                session_id: context.session_id,
+                agent_name: context.agent_name,
+                task_id: context.task_id,
+                ledger,
+            });
+        }
+
+        Ok(RunTokenUsageReport {
+            run,
+            sessions,
+            subagents,
+            tasks,
+            aggregate_usage,
+        })
+    }
     async fn export_for_memory(
         &self,
         request: RunMemoryExportRequest,

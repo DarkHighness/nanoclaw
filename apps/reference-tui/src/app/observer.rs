@@ -75,6 +75,19 @@ impl RuntimeObserver for LiveRenderObserver<'_> {
                     format!("Continuing tool loop (iteration {iteration})...")
                 };
             }
+            RuntimeProgressEvent::TokenUsageUpdated { ledger, .. } => {
+                if let Some(window) = ledger.context_window {
+                    self.state.sidebar_title = "Token Usage".to_string();
+                    self.state.sidebar = vec![
+                        format!("context: {} / {}", window.used_tokens, window.max_tokens),
+                        format!("input: {}", ledger.cumulative_usage.input_tokens),
+                        format!("output: {}", ledger.cumulative_usage.output_tokens),
+                        format!("prefill: {}", ledger.cumulative_usage.prefill_tokens),
+                        format!("decode: {}", ledger.cumulative_usage.decode_tokens),
+                        format!("cache read: {}", ledger.cumulative_usage.cache_read_tokens),
+                    ];
+                }
+            }
             RuntimeProgressEvent::AssistantTextDelta { delta } => {
                 if let Some(index) = self.active_assistant_line {
                     self.state.transcript[index].push_str(&delta);

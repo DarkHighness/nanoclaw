@@ -7,7 +7,7 @@ use futures::{StreamExt, stream, stream::BoxStream};
 use std::sync::Arc;
 use store::{InMemoryRunStore, RunStore};
 use tools::ToolExecutionContext;
-use types::{ModelEvent, ModelRequest, RunEventKind};
+use types::{ModelEvent, ModelRequest, RunEventKind, TokenUsage, TokenUsagePhase};
 
 struct StreamingTextBackend;
 
@@ -28,6 +28,7 @@ impl ModelBackend for StreamingTextBackend {
                 stop_reason: Some("stop".to_string()),
                 message_id: None,
                 continuation: None,
+                usage: Some(TokenUsage::from_input_output(120, 30, 20)),
                 reasoning: Vec::new(),
             }),
         ])
@@ -71,6 +72,69 @@ async fn runtime_notifies_observer_of_streaming_text_progress() {
     assert!(observer.events().iter().any(|event| matches!(
         event,
         RuntimeProgressEvent::TurnCompleted { assistant_text, .. } if assistant_text == "hello"
+    )));
+}
+
+#[tokio::test]
+async fn runtime_tracks_token_usage_and_context_window() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(InMemoryRunStore::new());
+    let mut runtime = AgentRuntimeBuilder::new(Arc::new(StreamingTextBackend), store.clone())
+        .hook_runner(Arc::new(HookRunner::default()))
+        .tool_context(ToolExecutionContext {
+            workspace_root: dir.path().to_path_buf(),
+            workspace_only: true,
+            model_context_window_tokens: Some(128_000),
+            ..Default::default()
+        })
+        .build();
+    let mut observer = RecordingObserver::default();
+
+    runtime
+        .run_user_prompt_with_observer("hello there", &mut observer)
+        .await
+        .unwrap();
+
+    let token_events = observer
+        .events()
+        .iter()
+        .filter_map(|event| match event {
+            RuntimeProgressEvent::TokenUsageUpdated { phase, ledger } => Some((*phase, ledger)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(token_events.len(), 2);
+    assert!(matches!(token_events[0].0, TokenUsagePhase::RequestStarted));
+    assert!(matches!(
+        token_events[1].0,
+        TokenUsagePhase::ResponseCompleted
+    ));
+    assert!(
+        token_events[0]
+            .1
+            .context_window
+            .is_some_and(|usage| usage.used_tokens > 0 && usage.max_tokens == 200_000)
+    );
+    assert_eq!(
+        token_events[1].1.last_usage,
+        Some(TokenUsage::from_input_output(120, 30, 20))
+    );
+    assert_eq!(
+        token_events[1].1.cumulative_usage,
+        TokenUsage::from_input_output(120, 30, 20)
+    );
+    assert_eq!(
+        runtime.token_ledger().cumulative_usage,
+        TokenUsage::from_input_output(120, 30, 20)
+    );
+
+    let events = store.events(&runtime.run_id()).await.unwrap();
+    assert!(events.iter().any(|event| matches!(
+        &event.event,
+        RunEventKind::TokenUsageUpdated {
+            phase: TokenUsagePhase::ResponseCompleted,
+            ledger,
+        } if ledger.cumulative_usage == TokenUsage::from_input_output(120, 30, 20)
     )));
 }
 

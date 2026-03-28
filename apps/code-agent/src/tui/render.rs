@@ -51,8 +51,8 @@ pub(crate) fn render(
     let right = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(8),
-            Constraint::Length(8),
+            Constraint::Length(11),
+            Constraint::Length(7),
             Constraint::Min(8),
         ])
         .split(body[1]);
@@ -178,30 +178,72 @@ fn render_transcript(frame: &mut ratatui::Frame<'_>, area: Rect, state: &TuiStat
 }
 
 fn render_session(frame: &mut ratatui::Frame<'_>, area: Rect, state: &TuiState) {
-    let lines = vec![
+    let session = Paragraph::new(build_key_value_text(&session_lines(state)))
+        .block(pane_block("Session", false, BORDER))
+        .wrap(Wrap { trim: false })
+        .style(Style::default().fg(TEXT).bg(PANEL_ALT_BG));
+    frame.render_widget(session, area);
+}
+
+fn session_lines(state: &TuiState) -> Vec<String> {
+    vec![
         format!("workspace: {}", state.session.workspace_name),
         format!(
             "path: {}",
             preview_text(&state.session.workspace_root.display().to_string(), 52)
         ),
-        format!("tools: {} loaded", state.session.tool_names.len()),
         format!(
-            "skills: {}",
+            "resources: tools {}  skills {}",
+            state.session.tool_names.len(),
             if state.session.skill_names.is_empty() {
-                "none loaded".to_string()
+                "none".to_string()
             } else {
-                format!("{} loaded", state.session.skill_names.len())
+                state.session.skill_names.len().to_string()
             }
         ),
+        session_context_line(state),
+        session_last_token_line(state),
+        session_total_token_line(state),
         format!("queue: {} pending", state.session.queued_commands),
         format!("branch: {}", state.session.git.branch_label()),
         format!("dirty: {}", state.session.git.dirty_label()),
-    ];
-    let session = Paragraph::new(build_key_value_text(&lines))
-        .block(pane_block("Session", false, BORDER))
-        .wrap(Wrap { trim: false })
-        .style(Style::default().fg(TEXT).bg(PANEL_ALT_BG));
-    frame.render_widget(session, area);
+    ]
+}
+
+fn session_context_line(state: &TuiState) -> String {
+    state
+        .session
+        .token_ledger
+        .context_window
+        .map(|usage| format!("context: {} / {}", usage.used_tokens, usage.max_tokens))
+        .unwrap_or_else(|| "context: unknown".to_string())
+}
+
+fn session_last_token_line(state: &TuiState) -> String {
+    if let Some(last_usage) = state.session.token_ledger.last_usage {
+        format_token_usage_line("last", last_usage)
+    } else {
+        "last: none yet".to_string()
+    }
+}
+
+fn session_total_token_line(state: &TuiState) -> String {
+    if state.session.token_ledger.cumulative_usage.is_zero() {
+        "total: none yet".to_string()
+    } else {
+        format_token_usage_line("total", state.session.token_ledger.cumulative_usage)
+    }
+}
+
+fn format_token_usage_line(label: &str, usage: agent::types::TokenUsage) -> String {
+    format!(
+        "{label}: in {}  out {}  prefill {}  decode {}  cache {}",
+        usage.input_tokens,
+        usage.output_tokens,
+        usage.prefill_tokens,
+        usage.decode_tokens,
+        usage.cache_read_tokens,
+    )
 }
 
 fn render_inspector(frame: &mut ratatui::Frame<'_>, area: Rect, state: &TuiState) {
@@ -715,5 +757,53 @@ fn clamp_scroll(requested: u16, content_lines: usize, viewport_height: u16) -> u
         usize::from(requested)
             .min(max_scroll)
             .min(u16::MAX as usize) as u16
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        session_context_line, session_last_token_line, session_lines, session_total_token_line,
+    };
+    use crate::tui::state::TuiState;
+    use agent::types::{ContextWindowUsage, TokenLedgerSnapshot, TokenUsage};
+    use std::path::PathBuf;
+
+    #[test]
+    fn session_token_lines_show_unknown_context_before_first_request() {
+        let mut state = TuiState::default();
+        state.session.workspace_name = "workspace".to_string();
+        state.session.workspace_root = PathBuf::from("/tmp/workspace");
+
+        assert_eq!(session_context_line(&state), "context: unknown");
+        assert_eq!(session_last_token_line(&state), "last: none yet");
+        assert_eq!(session_total_token_line(&state), "total: none yet");
+        assert!(session_lines(&state).contains(&"total: none yet".to_string()));
+    }
+
+    #[test]
+    fn session_token_lines_show_cumulative_usage_after_runtime_updates() {
+        let mut state = TuiState::default();
+        state.session.workspace_name = "workspace".to_string();
+        state.session.workspace_root = PathBuf::from("/tmp/workspace");
+        state.session.token_ledger = TokenLedgerSnapshot {
+            context_window: Some(ContextWindowUsage {
+                used_tokens: 128_000,
+                max_tokens: 400_000,
+            }),
+            last_usage: Some(TokenUsage::from_input_output(9_000, 600, 1_500)),
+            cumulative_usage: TokenUsage::from_input_output(32_000, 2_400, 7_000),
+        };
+
+        assert_eq!(session_context_line(&state), "context: 128000 / 400000");
+        assert_eq!(
+            session_last_token_line(&state),
+            "last: in 9000  out 600  prefill 7500  decode 600  cache 1500"
+        );
+        assert_eq!(
+            session_total_token_line(&state),
+            "total: in 32000  out 2400  prefill 25000  decode 2400  cache 7000"
+        );
+        assert!(session_lines(&state).contains(&"context: 128000 / 400000".to_string()));
     }
 }

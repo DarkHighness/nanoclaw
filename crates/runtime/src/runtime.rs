@@ -104,6 +104,11 @@ impl AgentRuntime {
         self.tool_registry.specs()
     }
 
+    #[must_use]
+    pub fn token_ledger(&self) -> types::TokenLedgerSnapshot {
+        self.session.token_ledger.clone()
+    }
+
     pub async fn end_session(&mut self, reason: Option<String>) -> Result<()> {
         self.append_event(None, None, RunEventKind::SessionEnd { reason })
             .await

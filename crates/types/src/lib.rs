@@ -9,6 +9,7 @@ mod hook;
 mod id;
 mod message;
 mod tool;
+mod usage;
 
 pub use error::*;
 pub use event::*;
@@ -16,3 +17,4 @@ pub use hook::*;
 pub use id::*;
 pub use message::*;
 pub use tool::*;
+pub use usage::*;

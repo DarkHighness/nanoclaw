@@ -125,9 +125,14 @@ pub fn estimate_prompt_tokens(
     instructions: &[String],
     messages: &[types::Message],
     tools: &[types::ToolSpec],
+    additional_context: &[String],
 ) -> usize {
     let mut chars = 0usize;
     chars += instructions.iter().map(|value| value.len()).sum::<usize>();
+    chars += additional_context
+        .iter()
+        .map(|value| value.len())
+        .sum::<usize>();
     chars += messages
         .iter()
         .map(|message| message.text_content().len() + 32)
