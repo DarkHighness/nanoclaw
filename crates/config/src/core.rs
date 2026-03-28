@@ -30,7 +30,7 @@ pub enum AgentSandboxMode {
     DangerFullAccess,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ModelCapabilitiesConfig {
     pub tool_calls: bool,
@@ -38,6 +38,21 @@ pub struct ModelCapabilitiesConfig {
     pub image_generation: bool,
     pub audio_input: bool,
     pub tts: bool,
+}
+
+impl Default for ModelCapabilitiesConfig {
+    fn default() -> Self {
+        Self {
+            // Host runtimes register tools by default, so a missing capabilities
+            // stanza should behave like the current agentic model baseline rather
+            // than silently downgrading every configured lane to "no tools".
+            tool_calls: true,
+            vision: false,
+            image_generation: false,
+            audio_input: false,
+            tts: false,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -935,6 +950,7 @@ mod tests {
 
         assert_eq!(primary.model.provider, ProviderKind::Anthropic);
         assert_eq!(primary.model.model, "claude-sonnet-4-6");
+        assert!(primary.model.capabilities.tool_calls);
         assert_eq!(primary.system_prompt.as_deref(), Some("Primary prompt."));
         assert_eq!(
             primary.global_system_prompt.as_deref(),
