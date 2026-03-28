@@ -2,6 +2,7 @@ mod event_log;
 mod history;
 mod provider_state;
 mod tool_flow;
+mod turn_loop;
 mod turn_start;
 
 use crate::{
@@ -10,18 +11,12 @@ use crate::{
     RuntimeProgressEvent, RuntimeSession, ToolApprovalHandler, ToolApprovalPolicy,
     ToolLoopDetector, append_transcript_message,
 };
-use futures::StreamExt;
-use provider_state::is_provider_continuation_lost;
-use serde_json::json;
 use skills::SkillCatalog;
 use std::sync::Arc;
 use store::RunStore;
 use tools::{ToolExecutionContext, ToolRegistry};
-use tracing::{debug, info, warn};
-use types::{
-    AgentCoreError, GateDecision, HookContext, HookEvent, HookRegistration, Message, MessageId,
-    MessagePart, ModelEvent, RunEventKind, TurnId,
-};
+use tracing::info;
+use types::{HookContext, HookRegistration, Message, RunEventKind, TurnId};
 
 pub struct AgentRuntime {
     backend: Arc<dyn ModelBackend>,
@@ -205,243 +200,8 @@ impl AgentRuntime {
         );
         self.prepare_user_turn(&turn_id, &hooks, &instructions, &prompt, observer)
             .await?;
-
-        let mut iteration = 0usize;
-        loop {
-            iteration = iteration.saturating_add(1);
-            let _ = self
-                .compact_if_needed(&turn_id, &instructions, observer)
-                .await?;
-            let mut request = self.build_model_request(&turn_id, &instructions, false);
-            self.append_event(
-                Some(turn_id.clone()),
-                None,
-                RunEventKind::ModelRequestStarted {
-                    request: request.clone(),
-                },
-            )
-            .await?;
-            debug!(
-                run_id = %self.session.run_id,
-                turn_id = %turn_id,
-                iteration,
-                uses_provider_continuation = request.continuation.is_some(),
-                message_count = request.messages.len(),
-                tool_count = request.tools.len(),
-                "starting model request"
-            );
-            observer.on_event(RuntimeProgressEvent::ModelRequestStarted {
-                turn_id: turn_id.clone(),
-                iteration,
-            })?;
-
-            let used_continuation = request.continuation.is_some();
-            let mut stream = match self.backend.stream_turn(request.clone()).await {
-                Ok(stream) => stream,
-                Err(error) if used_continuation && is_provider_continuation_lost(&error) => {
-                    warn!(
-                        run_id = %self.session.run_id,
-                        turn_id = %turn_id,
-                        iteration,
-                        error = %error,
-                        "provider continuation was rejected; retrying with rebuilt transcript"
-                    );
-                    self.reset_provider_continuation();
-                    self.append_event(
-                        Some(turn_id.clone()),
-                        None,
-                        RunEventKind::Notification {
-                            source: "provider_state".to_string(),
-                            message: error.to_string(),
-                        },
-                    )
-                    .await?;
-                    request = self.build_model_request(&turn_id, &instructions, true);
-                    self.append_event(
-                        Some(turn_id.clone()),
-                        None,
-                        RunEventKind::ModelRequestStarted {
-                            request: request.clone(),
-                        },
-                    )
-                    .await?;
-                    observer.on_event(RuntimeProgressEvent::ModelRequestStarted {
-                        turn_id: turn_id.clone(),
-                        iteration,
-                    })?;
-                    self.backend.stream_turn(request).await?
-                }
-                Err(error) => return Err(error),
-            };
-            let mut assistant_text = String::new();
-            let mut tool_calls = Vec::new();
-            let mut assistant_reasoning = Vec::new();
-            let mut assistant_message_id = None;
-            let mut provider_continuation = None;
-            while let Some(event) = stream.next().await {
-                match event? {
-                    ModelEvent::TextDelta { delta } => {
-                        assistant_text.push_str(&delta);
-                        observer.on_event(RuntimeProgressEvent::AssistantTextDelta { delta })?;
-                    }
-                    ModelEvent::ToolCallRequested { call } => {
-                        tool_calls.push(call.clone());
-                        observer.on_event(RuntimeProgressEvent::ToolCallRequested { call })?;
-                    }
-                    ModelEvent::ResponseComplete {
-                        message_id,
-                        continuation,
-                        reasoning,
-                        ..
-                    } => {
-                        assistant_message_id = Some(message_id.unwrap_or_else(MessageId::new));
-                        provider_continuation = continuation;
-                        assistant_reasoning = reasoning;
-                    }
-                    ModelEvent::Error { message } => {
-                        return Err(AgentCoreError::ModelBackend(message).into());
-                    }
-                }
-            }
-
-            self.append_event(
-                Some(turn_id.clone()),
-                None,
-                RunEventKind::ModelResponseCompleted {
-                    assistant_text: assistant_text.clone(),
-                    tool_calls: tool_calls.clone(),
-                    continuation: provider_continuation.clone(),
-                },
-            )
-            .await?;
-            debug!(
-                run_id = %self.session.run_id,
-                turn_id = %turn_id,
-                iteration,
-                assistant_chars = assistant_text.chars().count(),
-                tool_call_count = tool_calls.len(),
-                "completed model response"
-            );
-            observer.on_event(RuntimeProgressEvent::ModelResponseCompleted {
-                assistant_text: assistant_text.clone(),
-                tool_calls: tool_calls.clone(),
-            })?;
-
-            if !assistant_text.is_empty()
-                || !tool_calls.is_empty()
-                || !assistant_reasoning.is_empty()
-            {
-                let mut parts = Vec::new();
-                if !assistant_text.is_empty() {
-                    parts.push(MessagePart::text(assistant_text.clone()));
-                }
-                parts.extend(
-                    assistant_reasoning
-                        .iter()
-                        .cloned()
-                        .map(|reasoning| MessagePart::Reasoning { reasoning }),
-                );
-                parts.extend(
-                    tool_calls
-                        .iter()
-                        .cloned()
-                        .map(|call| MessagePart::ToolCall { call }),
-                );
-                let message = Message::assistant_parts(parts)
-                    .with_message_id(assistant_message_id.unwrap_or_else(MessageId::new));
-                let event = append_transcript_message(
-                    &mut self.session.transcript,
-                    message,
-                    self.session.run_id.clone(),
-                    self.session.session_id.clone(),
-                    turn_id.clone(),
-                );
-                self.store.append(event).await?;
-            }
-            self.update_provider_continuation(provider_continuation);
-
-            if !tool_calls.is_empty() {
-                for call in tool_calls {
-                    debug!(
-                        run_id = %self.session.run_id,
-                        turn_id = %turn_id,
-                        tool_name = %call.tool_name,
-                        call_id = %call.call_id,
-                        "dispatching tool call"
-                    );
-                    self.handle_tool_call(&hooks, &turn_id, call, observer)
-                        .await?;
-                }
-                let drained = self.hook_runner.drain_async_context().await;
-                self.append_hook_context_messages(&turn_id, &drained)
-                    .await?;
-                continue;
-            }
-
-            let stop_hooks = self
-                .run_hooks(
-                    &hooks,
-                    HookContext {
-                        event: HookEvent::Stop,
-                        run_id: self.session.run_id.clone(),
-                        session_id: self.session.session_id.clone(),
-                        turn_id: Some(turn_id.clone()),
-                        fields: [("reason".to_string(), "assistant_complete".to_string())]
-                            .into_iter()
-                            .collect(),
-                        payload: json!({ "assistant_text": assistant_text }),
-                    },
-                )
-                .await?;
-
-            if matches!(stop_hooks.gate_decision, Some(GateDecision::Block))
-                || !stop_hooks.continue_allowed
-            {
-                let reason = stop_hooks
-                    .gate_reason
-                    .clone()
-                    .or(stop_hooks.stop_reason.clone())
-                    .unwrap_or_else(|| "stop blocked".to_string());
-                self.append_event(
-                    Some(turn_id.clone()),
-                    None,
-                    RunEventKind::StopFailure {
-                        reason: Some(reason.clone()),
-                    },
-                )
-                .await?;
-                if stop_hooks.system_messages.is_empty() && stop_hooks.additional_context.is_empty()
-                {
-                    return Err(AgentCoreError::HookBlocked(reason).into());
-                }
-                self.append_hook_context_messages(&turn_id, &stop_hooks)
-                    .await?;
-                continue;
-            }
-
-            self.append_event(
-                Some(turn_id.clone()),
-                None,
-                RunEventKind::Stop {
-                    reason: Some("assistant_complete".to_string()),
-                },
-            )
-            .await?;
-            info!(
-                run_id = %self.session.run_id,
-                turn_id = %turn_id,
-                assistant_chars = assistant_text.chars().count(),
-                "completed user turn"
-            );
-            observer.on_event(RuntimeProgressEvent::TurnCompleted {
-                turn_id: turn_id.clone(),
-                assistant_text: assistant_text.clone(),
-            })?;
-            return Ok(RunTurnOutcome {
-                turn_id,
-                assistant_text,
-            });
-        }
+        self.run_turn_loop(&turn_id, &hooks, &instructions, observer)
+            .await
     }
 
     async fn run_hooks(
