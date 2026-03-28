@@ -35,7 +35,7 @@ async fn runtime_applies_hook_effects_without_mutating_base_instructions() {
         Arc::new(ReqwestHttpHookExecutor::default()),
         Arc::new(StaticPromptEvaluator),
         Arc::new(FailClosedAgentHookEvaluator),
-        Arc::new(DefaultWasmHookExecutor),
+        Arc::new(DefaultWasmHookExecutor::default()),
     ));
     let mut runtime = AgentRuntimeBuilder::new(backend.clone(), store.clone())
         .hook_runner(hook_runner)

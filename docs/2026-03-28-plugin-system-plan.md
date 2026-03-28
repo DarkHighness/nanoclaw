@@ -805,7 +805,14 @@ cargo test -p reference-tui
 ### 16.4 P2 性能与硬化
 
 - 缓存 WASM `Engine/Module`
+  - 已完成：
+    - `DefaultWasmHookExecutor` 现在按 module path 缓存 `Engine/Module`
+    - 缓存会根据 wasm 文件的长度与修改时间自动失效重载，避免开发态改文件后必须重启宿主
+    - 已补回归测试，覆盖缓存复用与文件变更后的自动重载
 - 避免每次 hook 都起一个专用 timer 线程
+  - 已完成：
+    - 超时控制改成 tokio watchdog task + epoch interrupt
+    - 同一模块的执行会先串行化，再启动 watchdog，避免排队请求误伤正在运行的 store
 - 统一 command/http/wasm 的网络执行与审计平面
 - 收紧 `DefaultCommandHookExecutor::default()` 的默认安全姿态
 

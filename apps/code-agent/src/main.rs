@@ -248,7 +248,7 @@ async fn build_runtime(
         Arc::new(agent::runtime::ReqwestHttpHookExecutor::default()),
         Arc::new(agent::runtime::FailClosedPromptHookEvaluator),
         Arc::new(agent::runtime::FailClosedAgentHookEvaluator),
-        Arc::new(agent::runtime::DefaultWasmHookExecutor),
+        Arc::new(agent::runtime::DefaultWasmHookExecutor::default()),
     ));
     let todo_state = TodoListState::default();
     // Managed LSP helpers run outside the normal user-invoked tool approval path.

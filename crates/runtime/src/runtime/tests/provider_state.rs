@@ -214,7 +214,7 @@ async fn message_id_patch_resets_provider_continuation_and_replays_full_visible_
             Arc::new(ReqwestHttpHookExecutor::default()),
             prompt_evaluator.clone(),
             Arc::new(FailClosedAgentHookEvaluator),
-            Arc::new(DefaultWasmHookExecutor),
+            Arc::new(DefaultWasmHookExecutor::default()),
         )))
         .tool_context(ToolExecutionContext {
             workspace_root: dir.path().to_path_buf(),
@@ -295,7 +295,7 @@ async fn last_of_role_patch_targets_last_visible_assistant_message() {
             Arc::new(ReqwestHttpHookExecutor::default()),
             Arc::new(LastAssistantPatchPromptEvaluator),
             Arc::new(FailClosedAgentHookEvaluator),
-            Arc::new(DefaultWasmHookExecutor),
+            Arc::new(DefaultWasmHookExecutor::default()),
         )))
         .tool_context(ToolExecutionContext {
             workspace_root: dir.path().to_path_buf(),

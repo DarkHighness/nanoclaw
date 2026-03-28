@@ -408,7 +408,21 @@
 ### 8.3 插件系统
 
 - 缓存 WASM `Engine/Module`
+  - 状态：
+    - `completed`
+  - 已落地语义：
+    - `DefaultWasmHookExecutor` 已按 module path 缓存 `Engine/Module`
+    - 缓存会根据 wasm 文件长度与修改时间自动失效重载
+  - 目标文件：
+    - `crates/runtime/src/hooks/handlers/wasm.rs`
 - 去掉每次 hook 单独创建 timer 线程的实现
+  - 状态：
+    - `completed`
+  - 已落地语义：
+    - 超时控制改为 tokio watchdog task + epoch interrupt
+    - 同一模块执行先串行化，再启动 watchdog，避免共享 engine 下的误中断
+  - 目标文件：
+    - `crates/runtime/src/hooks/handlers/wasm.rs`
 - 统一 command/http/wasm 的网络与审计平面
 - 收紧 `DefaultCommandHookExecutor::default()` 的默认安全姿态
 

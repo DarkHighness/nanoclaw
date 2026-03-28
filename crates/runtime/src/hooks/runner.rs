@@ -47,7 +47,7 @@ impl Default for HookRunner {
             http_executor: Arc::new(ReqwestHttpHookExecutor::default()),
             prompt_evaluator: Arc::new(FailClosedPromptHookEvaluator),
             agent_evaluator: Arc::new(FailClosedAgentHookEvaluator),
-            wasm_executor: Arc::new(DefaultWasmHookExecutor),
+            wasm_executor: Arc::new(DefaultWasmHookExecutor::default()),
             async_tx,
             async_rx: Mutex::new(async_rx),
         }
