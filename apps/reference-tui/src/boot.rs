@@ -1,5 +1,6 @@
 mod plugins;
 mod provider;
+mod store_support;
 mod summary;
 
 use crate::{
@@ -21,7 +22,8 @@ use runtime::{
 };
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use store::{FileRunStore, InMemoryRunStore, RunStore};
+use store::RunStore;
+use store_support::{StoreHandle, build_store};
 use summary::build_startup_summary;
 #[cfg(test)]
 use tools::describe_sandbox_policy;
@@ -51,12 +53,6 @@ pub struct BootArtifacts {
     pub provider_summary: String,
     pub store_label: String,
     pub store_warning: Option<String>,
-}
-
-struct StoreHandle {
-    store: Arc<dyn RunStore>,
-    label: String,
-    warning: Option<String>,
 }
 
 impl BootArtifacts {
@@ -295,29 +291,6 @@ fn build_runtime_preamble(
         preamble.push(skill_manifest);
     }
     preamble
-}
-
-async fn build_store(config: &AgentCoreConfig, workspace_root: &Path) -> Result<StoreHandle> {
-    let store_dir = config.resolved_store_dir(workspace_root);
-    match FileRunStore::open(&store_dir).await {
-        Ok(store) => Ok(StoreHandle {
-            store: Arc::new(store),
-            label: format!("file {}", store_dir.display()),
-            warning: None,
-        }),
-        Err(error) => {
-            let warning = format!(
-                "failed to initialize file run store at {}: {error}",
-                store_dir.display()
-            );
-            warn!("{warning}; falling back to in-memory store");
-            Ok(StoreHandle {
-                store: Arc::new(InMemoryRunStore::new()),
-                label: "memory fallback".to_string(),
-                warning: Some(warning),
-            })
-        }
-    }
 }
 
 #[cfg(test)]
