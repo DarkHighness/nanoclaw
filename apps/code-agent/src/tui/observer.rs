@@ -72,11 +72,13 @@ impl RuntimeObserver for SharedRenderObserver {
                 state.session.token_ledger = ledger.clone();
                 if let Some(window) = ledger.context_window {
                     state.push_activity(format!(
-                        "context {} / {} tokens, input {} output {} cache {}",
+                        "context {} / {} tokens, input {} output {} prefill {} decode {} cache {}",
                         window.used_tokens,
                         window.max_tokens,
                         ledger.cumulative_usage.input_tokens,
                         ledger.cumulative_usage.output_tokens,
+                        ledger.cumulative_usage.prefill_tokens,
+                        ledger.cumulative_usage.decode_tokens,
                         ledger.cumulative_usage.cache_read_tokens,
                     ));
                 }
@@ -203,7 +205,9 @@ mod tests {
                 .activity
                 .last()
                 .expect("token usage activity should be recorded")
-                .contains("context 64000 / 400000 tokens, input 20000 output 1200 cache 3000")
+                .contains(
+                    "context 64000 / 400000 tokens, input 20000 output 1200 prefill 17000 decode 1200 cache 3000"
+                )
         );
     }
 }

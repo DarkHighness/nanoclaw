@@ -51,8 +51,8 @@ pub(crate) fn render(
     let right = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(8),
-            Constraint::Length(8),
+            Constraint::Length(11),
+            Constraint::Length(7),
             Constraint::Min(8),
         ])
         .split(body[1]);
@@ -192,17 +192,18 @@ fn session_lines(state: &TuiState) -> Vec<String> {
             "path: {}",
             preview_text(&state.session.workspace_root.display().to_string(), 52)
         ),
-        format!("tools: {} loaded", state.session.tool_names.len()),
         format!(
-            "skills: {}",
+            "resources: tools {}  skills {}",
+            state.session.tool_names.len(),
             if state.session.skill_names.is_empty() {
-                "none loaded".to_string()
+                "none".to_string()
             } else {
-                format!("{} loaded", state.session.skill_names.len())
+                state.session.skill_names.len().to_string()
             }
         ),
         session_context_line(state),
-        session_token_line(state),
+        session_last_token_line(state),
+        session_total_token_line(state),
         format!("queue: {} pending", state.session.queued_commands),
         format!("branch: {}", state.session.git.branch_label()),
         format!("dirty: {}", state.session.git.dirty_label()),
@@ -218,21 +219,31 @@ fn session_context_line(state: &TuiState) -> String {
         .unwrap_or_else(|| "context: unknown".to_string())
 }
 
-fn session_token_line(state: &TuiState) -> String {
-    if state.session.token_ledger.cumulative_usage.is_zero() {
-        "tokens: none yet".to_string()
+fn session_last_token_line(state: &TuiState) -> String {
+    if let Some(last_usage) = state.session.token_ledger.last_usage {
+        format_token_usage_line("last", last_usage)
     } else {
-        format!(
-            "tokens: in {}  out {}  cache {}",
-            state.session.token_ledger.cumulative_usage.input_tokens,
-            state.session.token_ledger.cumulative_usage.output_tokens,
-            state
-                .session
-                .token_ledger
-                .cumulative_usage
-                .cache_read_tokens,
-        )
+        "last: none yet".to_string()
     }
+}
+
+fn session_total_token_line(state: &TuiState) -> String {
+    if state.session.token_ledger.cumulative_usage.is_zero() {
+        "total: none yet".to_string()
+    } else {
+        format_token_usage_line("total", state.session.token_ledger.cumulative_usage)
+    }
+}
+
+fn format_token_usage_line(label: &str, usage: agent::types::TokenUsage) -> String {
+    format!(
+        "{label}: in {}  out {}  prefill {}  decode {}  cache {}",
+        usage.input_tokens,
+        usage.output_tokens,
+        usage.prefill_tokens,
+        usage.decode_tokens,
+        usage.cache_read_tokens,
+    )
 }
 
 fn render_inspector(frame: &mut ratatui::Frame<'_>, area: Rect, state: &TuiState) {
@@ -751,7 +762,9 @@ fn clamp_scroll(requested: u16, content_lines: usize, viewport_height: u16) -> u
 
 #[cfg(test)]
 mod tests {
-    use super::{session_context_line, session_lines, session_token_line};
+    use super::{
+        session_context_line, session_last_token_line, session_lines, session_total_token_line,
+    };
     use crate::tui::state::TuiState;
     use agent::types::{ContextWindowUsage, TokenLedgerSnapshot, TokenUsage};
     use std::path::PathBuf;
@@ -763,8 +776,9 @@ mod tests {
         state.session.workspace_root = PathBuf::from("/tmp/workspace");
 
         assert_eq!(session_context_line(&state), "context: unknown");
-        assert_eq!(session_token_line(&state), "tokens: none yet");
-        assert!(session_lines(&state).contains(&"tokens: none yet".to_string()));
+        assert_eq!(session_last_token_line(&state), "last: none yet");
+        assert_eq!(session_total_token_line(&state), "total: none yet");
+        assert!(session_lines(&state).contains(&"total: none yet".to_string()));
     }
 
     #[test]
@@ -783,8 +797,12 @@ mod tests {
 
         assert_eq!(session_context_line(&state), "context: 128000 / 400000");
         assert_eq!(
-            session_token_line(&state),
-            "tokens: in 32000  out 2400  cache 7000"
+            session_last_token_line(&state),
+            "last: in 9000  out 600  prefill 7500  decode 600  cache 1500"
+        );
+        assert_eq!(
+            session_total_token_line(&state),
+            "total: in 32000  out 2400  prefill 25000  decode 2400  cache 7000"
         );
         assert!(session_lines(&state).contains(&"context: 128000 / 400000".to_string()));
     }
