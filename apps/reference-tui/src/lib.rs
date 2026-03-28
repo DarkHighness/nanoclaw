@@ -10,6 +10,8 @@ mod boot;
 mod command;
 mod config;
 mod render;
+#[cfg(test)]
+mod test_support;
 
 pub use app::*;
 pub use boot::*;

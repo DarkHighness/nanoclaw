@@ -1,23 +1,24 @@
+mod plugins;
 mod provider;
 mod summary;
 
 use crate::{
     InteractiveToolApprovalHandler, RuntimeTui, TuiStartupSummary, config::AgentCoreConfig,
 };
-use agent::AgentWorkspaceLayout;
 use agent::mcp::{
-    ConnectedMcpServer, McpConnectOptions, McpServerConfig, McpTransportConfig,
-    catalog_tools_as_registry_entries, connect_and_catalog_mcp_servers_with_options,
+    ConnectedMcpServer, McpConnectOptions, catalog_tools_as_registry_entries,
+    connect_and_catalog_mcp_servers_with_options,
 };
-use agent::plugins::{PluginActivationPlan, PluginEntryConfig, PluginSlotsConfig};
 use agent::skills::{Skill, load_skill_roots};
 use anyhow::{Context, Result};
+use plugins::{
+    build_plugin_activation_plan, dedup_mcp_servers, resolve_mcp_servers, resolved_skill_roots,
+};
 use provider::{build_backend, provider_summary};
 use runtime::{
     AgentRuntime, AgentRuntimeBuilder, CompactionConfig, DefaultCommandHookExecutor, HookRunner,
     ModelConversationCompactor,
 };
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use store::{FileRunStore, InMemoryRunStore, RunStore};
@@ -319,88 +320,6 @@ async fn build_store(config: &AgentCoreConfig, workspace_root: &Path) -> Result<
     }
 }
 
-fn resolved_skill_roots(
-    config: &AgentCoreConfig,
-    workspace_root: &Path,
-    plugin_plan: &PluginActivationPlan,
-) -> Vec<PathBuf> {
-    let mut roots = config.resolved_skill_roots(workspace_root);
-    roots.extend(plugin_plan.skill_roots.clone());
-    if roots.is_empty() {
-        let default_root = AgentWorkspaceLayout::new(workspace_root).skills_dir();
-        if default_root.exists() {
-            roots.push(default_root);
-        }
-    }
-    roots.sort();
-    roots.dedup();
-    roots
-}
-
-fn build_plugin_activation_plan(
-    config: &AgentCoreConfig,
-    workspace_root: &Path,
-) -> Result<PluginActivationPlan> {
-    let resolver = agent::PluginBootResolverConfig {
-        enabled: config.plugins.enabled,
-        roots: config.resolved_plugin_roots(workspace_root),
-        include_builtin: config.plugins.include_builtin,
-        allow: config.plugins.allow.clone(),
-        deny: config.plugins.deny.clone(),
-        entries: config
-            .plugins
-            .entries
-            .iter()
-            .map(|(id, entry)| {
-                (
-                    id.clone(),
-                    PluginEntryConfig {
-                        enabled: entry.enabled,
-                        config: entry.config.clone().into_iter().collect(),
-                    },
-                )
-            })
-            .collect::<BTreeMap<_, _>>(),
-        slots: PluginSlotsConfig {
-            memory: config.plugins.slots.memory.clone(),
-        },
-    };
-    agent::build_plugin_activation_plan(workspace_root, &resolver)
-}
-
-fn resolve_mcp_servers(configs: &[McpServerConfig], workspace_root: &Path) -> Vec<McpServerConfig> {
-    configs
-        .iter()
-        .cloned()
-        .map(|mut server| {
-            if let McpTransportConfig::Stdio { cwd, .. } = &mut server.transport
-                && let Some(current_dir) = cwd.as_deref()
-            {
-                let resolved = resolve_path(workspace_root, current_dir);
-                *cwd = Some(resolved.to_string_lossy().to_string());
-            }
-            server
-        })
-        .collect()
-}
-
-fn dedup_mcp_servers(servers: Vec<McpServerConfig>) -> Vec<McpServerConfig> {
-    let mut by_name = BTreeMap::new();
-    for server in servers {
-        by_name.entry(server.name.clone()).or_insert(server);
-    }
-    by_name.into_values().collect()
-}
-
-fn resolve_path(base_dir: &Path, value: &str) -> PathBuf {
-    let path = PathBuf::from(value);
-    if path.is_absolute() {
-        path
-    } else {
-        base_dir.join(path)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
@@ -409,21 +328,16 @@ mod tests {
         resolved_skill_roots,
     };
     use crate::config::{AgentCoreConfig, ProviderKind};
+    use crate::test_support::lock_env_test;
     use agent::skills::load_skill_roots;
-    use std::sync::{Mutex, OnceLock};
     use tempfile::tempdir;
     use tokio::fs;
     use tools::{NetworkPolicy, SandboxBackendStatus, SandboxMode, ToolExecutionContext};
     use types::{ToolName, ToolOrigin};
 
-    fn env_test_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-    }
-
     #[tokio::test]
     async fn bootstraps_runtime_from_configured_workspace() {
-        let _guard = env_test_lock().lock().unwrap();
+        let _guard = lock_env_test();
         let dir = tempdir().unwrap();
         fs::create_dir_all(dir.path().join("skills").join("useful"))
             .await
@@ -540,7 +454,7 @@ Use this skill when asked.
 
     #[tokio::test]
     async fn runtime_preamble_is_built_in_code_from_system_prompt_and_skills() {
-        let _guard = env_test_lock().lock().unwrap();
+        let _guard = lock_env_test();
         let dir = tempdir().unwrap();
         fs::create_dir_all(dir.path().join("skills").join("useful"))
             .await
@@ -585,7 +499,7 @@ Use this skill when asked.
 
     #[tokio::test]
     async fn boot_registers_memory_tools_from_builtin_plugin_slot() {
-        let _guard = env_test_lock().lock().unwrap();
+        let _guard = lock_env_test();
         let dir = tempdir().unwrap();
         fs::create_dir_all(
             dir.path()
@@ -648,7 +562,7 @@ Use this skill when asked.
 
     #[tokio::test]
     async fn falls_back_to_memory_store_when_store_path_is_not_directory() {
-        let _guard = env_test_lock().lock().unwrap();
+        let _guard = lock_env_test();
         let dir = tempdir().unwrap();
         fs::create_dir_all(dir.path().join(".nanoclaw/config"))
             .await
@@ -696,7 +610,7 @@ Use this skill when asked.
 
     #[tokio::test]
     async fn build_backend_applies_provider_additional_params() {
-        let _guard = env_test_lock().lock().unwrap();
+        let _guard = lock_env_test();
         let config = AgentCoreConfig::default().with_override(|config| {
             config.provider.kind = Some(ProviderKind::OpenAi);
             config.provider.model = Some("gpt-4.1-mini".to_string());
@@ -718,7 +632,7 @@ Use this skill when asked.
 
     #[test]
     fn runtime_sandbox_config_can_require_enforcing_backend() {
-        let _guard = env_test_lock().lock().unwrap();
+        let _guard = lock_env_test();
         let workspace = tempdir().unwrap();
         let config = AgentCoreConfig::default().with_override(|config| {
             config.runtime.sandbox_fail_if_unavailable = true;

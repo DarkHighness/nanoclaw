@@ -129,19 +129,14 @@ impl AgentCoreConfig {
 #[cfg(test)]
 mod tests {
     use super::{AgentCoreConfig, ProviderKind, REFERENCE_TUI_COMMAND_PREFIX};
+    use crate::test_support::lock_env_test;
     use std::path::PathBuf;
-    use std::sync::{Mutex, OnceLock};
     use tempfile::tempdir;
     use tokio::fs;
 
-    fn env_test_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-    }
-
     #[tokio::test]
     async fn merges_core_and_reference_tui_configs() {
-        let _guard = env_test_lock().lock().unwrap();
+        let _guard = lock_env_test();
         let dir = tempdir().unwrap();
         fs::create_dir_all(dir.path().join(".nanoclaw/config"))
             .await
@@ -252,7 +247,7 @@ mod tests {
 
     #[tokio::test]
     async fn core_env_overrides_flow_through_merged_config() {
-        let _guard = env_test_lock().lock().unwrap();
+        let _guard = lock_env_test();
         let dir = tempdir().unwrap();
         fs::write(
             dir.path().join(".env"),
@@ -276,7 +271,7 @@ mod tests {
 
     #[tokio::test]
     async fn reference_tui_command_prefix_can_be_overridden_from_env() {
-        let _guard = env_test_lock().lock().unwrap();
+        let _guard = lock_env_test();
         let dir = tempdir().unwrap();
         fs::create_dir_all(dir.path().join(".nanoclaw/apps"))
             .await
