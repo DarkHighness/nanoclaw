@@ -1,5 +1,5 @@
-use super::support::{RecordingBackend, StaticCompactor};
-use crate::{AgentRuntimeBuilder, CompactionConfig, HookRunner};
+use super::support::{RecordingBackend, RecordingObserver, StaticCompactor};
+use crate::{AgentRuntimeBuilder, CompactionConfig, HookRunner, RuntimeProgressEvent};
 use std::sync::Arc;
 use store::{InMemoryRunStore, RunStore};
 use tools::ToolExecutionContext;
@@ -60,4 +60,47 @@ async fn runtime_auto_compacts_visible_history_before_request() {
             }
         )
     }));
+}
+
+#[tokio::test]
+async fn manual_compaction_notifies_observer() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(InMemoryRunStore::new());
+    let backend = Arc::new(RecordingBackend::default());
+    let mut runtime = AgentRuntimeBuilder::new(backend, store)
+        .hook_runner(Arc::new(HookRunner::default()))
+        .tool_context(ToolExecutionContext {
+            workspace_root: dir.path().to_path_buf(),
+            workspace_only: true,
+            model_context_window_tokens: Some(128_000),
+            ..Default::default()
+        })
+        .conversation_compactor(Arc::new(StaticCompactor))
+        .compaction_config(CompactionConfig {
+            enabled: true,
+            context_window_tokens: 64,
+            trigger_tokens: 1,
+            preserve_recent_messages: 1,
+        })
+        .build();
+    let mut observer = RecordingObserver::default();
+
+    runtime.run_user_prompt("first turn").await.unwrap();
+    runtime
+        .steer("retain the latest steering note", Some("test".to_string()))
+        .await
+        .unwrap();
+    runtime
+        .compact_now_with_observer(None, &mut observer)
+        .await
+        .unwrap();
+
+    assert!(observer.events().iter().any(|event| matches!(
+        event,
+        RuntimeProgressEvent::CompactionCompleted {
+            source_message_count,
+            retained_message_count,
+            ..
+        } if *source_message_count >= 2 && *retained_message_count >= 1
+    )));
 }

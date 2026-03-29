@@ -14,6 +14,7 @@ It intentionally keeps the host layer thin:
 - provider adapter from `provider`
 - workspace skills loaded from conventional skill roots
 - interactive approval for destructive tools
+- backend-owned approval and runtime event contracts for frontend reuse
 - streaming assistant output in a `ratatui` TUI
 - manual and automatic context compaction
 - persistent session history with replay and export commands
@@ -165,3 +166,7 @@ The startup inspector is now backed by a structured backend snapshot, and the
 MCP-focused commands expose connected server catalogs plus prompt/resource
 loading directly from `code-agent` without relying on the legacy
 `reference-tui` shell.
+
+Interactive approval and live runtime updates now also route through
+backend-owned contracts, so the TUI renders session events and approval prompts
+without constructing runtime observers or approval handlers on its own.

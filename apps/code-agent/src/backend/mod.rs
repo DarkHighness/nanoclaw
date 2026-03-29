@@ -1,14 +1,19 @@
+mod approval;
 mod boot;
 mod boot_inputs;
 mod boot_mcp;
 mod boot_preamble;
 mod boot_runtime;
 mod boot_sandbox;
+mod events;
 mod run_history;
 mod session;
 mod session_catalog;
 mod store;
 
+pub(crate) use approval::{
+    ApprovalCoordinator, ApprovalDecision, ApprovalPrompt, SessionToolApprovalHandler,
+};
 pub(crate) use boot::CodeAgentSubagentProfileResolver;
 pub(crate) use boot::build_session;
 #[cfg(test)]
@@ -26,6 +31,7 @@ pub(crate) use boot_sandbox::{
     build_sandbox_policy, build_tool_context, inject_process_env, log_sandbox_status,
     tool_context_for_profile,
 };
+pub(crate) use events::{SessionEvent, SessionEventObserver, SessionEventStream};
 pub(crate) use run_history::{
     LoadedRun, RunExportArtifact, RunExportKind, message_to_text, preview_id,
 };

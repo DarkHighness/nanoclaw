@@ -1,6 +1,5 @@
 use super::state::{SharedUiState, preview_text};
-use agent::runtime::{Result as RuntimeResult, RuntimeObserver, RuntimeProgressEvent};
-use agent::types::ToolLifecycleEventKind;
+use crate::backend::SessionEvent;
 
 pub(crate) struct SharedRenderObserver {
     ui_state: SharedUiState,
@@ -14,12 +13,10 @@ impl SharedRenderObserver {
             active_assistant_line: None,
         }
     }
-}
 
-impl RuntimeObserver for SharedRenderObserver {
-    fn on_event(&mut self, event: RuntimeProgressEvent) -> RuntimeResult<()> {
+    pub(crate) fn apply_event(&mut self, event: SessionEvent) {
         self.ui_state.mutate(|state| match event {
-            RuntimeProgressEvent::SteerApplied { message, reason } => {
+            SessionEvent::SteerApplied { message, reason } => {
                 state.push_transcript(format!("system> {message}"));
                 state.status = "Applied steer".to_string();
                 state.push_activity(format!(
@@ -31,13 +28,13 @@ impl RuntimeObserver for SharedRenderObserver {
                     preview_text(&message, 48)
                 ));
             }
-            RuntimeProgressEvent::UserPromptAdded { prompt } => {
+            SessionEvent::UserPromptAdded { prompt } => {
                 self.active_assistant_line = None;
                 state.push_transcript(format!("user> {prompt}"));
                 state.status = "Planning next action".to_string();
                 state.push_activity(format!("user prompt: {}", preview_text(&prompt, 40)));
             }
-            RuntimeProgressEvent::AssistantTextDelta { delta } => {
+            SessionEvent::AssistantTextDelta { delta } => {
                 if let Some(index) = self.active_assistant_line {
                     state.transcript[index].push_str(&delta);
                 } else {
@@ -47,7 +44,7 @@ impl RuntimeObserver for SharedRenderObserver {
                 state.transcript_scroll = u16::MAX;
                 state.status = "Streaming answer".to_string();
             }
-            RuntimeProgressEvent::CompactionCompleted {
+            SessionEvent::CompactionCompleted {
                 reason,
                 source_message_count,
                 retained_message_count,
@@ -61,14 +58,14 @@ impl RuntimeObserver for SharedRenderObserver {
                     preview_text(&reason, 48)
                 ));
             }
-            RuntimeProgressEvent::ModelRequestStarted { iteration, .. } => {
+            SessionEvent::ModelRequestStarted { iteration } => {
                 state.status = if iteration == 1 {
                     "Waiting for model response".to_string()
                 } else {
                     format!("Continuing execution loop ({iteration})")
                 };
             }
-            RuntimeProgressEvent::TokenUsageUpdated { ledger, .. } => {
+            SessionEvent::TokenUsageUpdated { ledger, .. } => {
                 state.session.token_ledger = ledger.clone();
                 if let Some(window) = ledger.context_window {
                     state.push_activity(format!(
@@ -83,23 +80,29 @@ impl RuntimeObserver for SharedRenderObserver {
                     ));
                 }
             }
-            RuntimeProgressEvent::ModelResponseCompleted { tool_calls, .. } => {
+            SessionEvent::ModelResponseCompleted {
+                tool_call_count, ..
+            } => {
                 self.active_assistant_line = None;
-                state.status = if tool_calls.is_empty() {
+                state.status = if tool_call_count == 0 {
                     "Model response complete".to_string()
                 } else {
-                    format!("Model requested {} tool(s)", tool_calls.len())
+                    format!("Model requested {tool_call_count} tool(s)")
                 };
             }
-            RuntimeProgressEvent::ToolCallRequested { call } => {
+            SessionEvent::ToolCallRequested { call } => {
                 state.status = format!("Tool requested: {}", call.tool_name);
                 state.push_activity(format!("requested {}", call.tool_name));
             }
-            RuntimeProgressEvent::ToolApprovalRequested { call, .. } => {
+            SessionEvent::ToolApprovalRequested { call, reasons } => {
                 state.status = format!("Approval required: {}", call.tool_name);
-                state.push_activity(format!("approval needed for {}", call.tool_name));
+                state.push_activity(format!(
+                    "approval needed for {} ({})",
+                    call.tool_name,
+                    preview_text(&reasons.join("; "), 40)
+                ));
             }
-            RuntimeProgressEvent::ToolApprovalResolved {
+            SessionEvent::ToolApprovalResolved {
                 call,
                 approved,
                 reason,
@@ -117,66 +120,67 @@ impl RuntimeObserver for SharedRenderObserver {
                     ));
                 }
             }
-            RuntimeProgressEvent::ToolLifecycle { event } => match event.event {
-                ToolLifecycleEventKind::Started { call } => {
-                    state.status = format!("Running {}", call.tool_name);
-                    state.push_activity(format!("running {}", call.tool_name));
-                }
-                ToolLifecycleEventKind::Completed { call, output } => {
-                    state.status = format!("Completed {}", call.tool_name);
-                    state.push_activity(format!(
-                        "{} -> {}",
-                        call.tool_name,
-                        preview_text(&output.text_content(), 44)
-                    ));
-                    if matches!(
-                        call.tool_name.as_str(),
-                        "task" | "task_batch" | "agent_wait" | "agent_spawn"
-                    ) {
-                        if let Some(structured) = &output.structured_content {
-                            state.push_activity(format!(
-                                "{} structured {}",
-                                call.tool_name,
-                                preview_text(&structured.to_string(), 44)
-                            ));
-                        }
+            SessionEvent::ToolLifecycleStarted { call } => {
+                state.status = format!("Running {}", call.tool_name);
+                state.push_activity(format!("running {}", call.tool_name));
+            }
+            SessionEvent::ToolLifecycleCompleted {
+                call,
+                output_preview,
+                structured_output_preview,
+            } => {
+                state.status = format!("Completed {}", call.tool_name);
+                state.push_activity(format!(
+                    "{} -> {}",
+                    call.tool_name,
+                    preview_text(&output_preview, 44)
+                ));
+                if matches!(
+                    call.tool_name.as_str(),
+                    "task" | "task_batch" | "agent_wait" | "agent_spawn"
+                ) {
+                    if let Some(structured) = structured_output_preview {
+                        state.push_activity(format!(
+                            "{} structured {}",
+                            call.tool_name,
+                            preview_text(&structured, 44)
+                        ));
                     }
                 }
-                ToolLifecycleEventKind::Failed { call, error } => {
-                    state.status = format!("{} failed", call.tool_name);
-                    state.push_activity(format!(
-                        "{} failed: {}",
-                        call.tool_name,
-                        preview_text(&error, 44)
-                    ));
-                }
-                ToolLifecycleEventKind::Cancelled { call, reason } => {
-                    state.status = format!("{} cancelled", call.tool_name);
-                    state.push_activity(format!(
-                        "{} cancelled{}",
-                        call.tool_name,
-                        reason
-                            .as_deref()
-                            .map(|value| format!(": {}", preview_text(value, 44)))
-                            .unwrap_or_default()
-                    ));
-                }
-            },
-            RuntimeProgressEvent::TurnCompleted { .. } => {
+            }
+            SessionEvent::ToolLifecycleFailed { call, error } => {
+                state.status = format!("{} failed", call.tool_name);
+                state.push_activity(format!(
+                    "{} failed: {}",
+                    call.tool_name,
+                    preview_text(&error, 44)
+                ));
+            }
+            SessionEvent::ToolLifecycleCancelled { call, reason } => {
+                state.status = format!("{} cancelled", call.tool_name);
+                state.push_activity(format!(
+                    "{} cancelled{}",
+                    call.tool_name,
+                    reason
+                        .as_deref()
+                        .map(|value| format!(": {}", preview_text(value, 44)))
+                        .unwrap_or_default()
+                ));
+            }
+            SessionEvent::TurnCompleted { .. } => {
                 self.active_assistant_line = None;
                 state.status = "Turn complete".to_string();
                 state.push_activity("turn complete");
             }
         });
-        Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::SharedRenderObserver;
+    use crate::backend::SessionEvent;
     use crate::frontend::tui::state::SharedUiState;
-    use agent::runtime::{RuntimeObserver, RuntimeProgressEvent};
     use agent::types::{ContextWindowUsage, TokenLedgerSnapshot, TokenUsage, TokenUsagePhase};
 
     #[test]
@@ -191,12 +195,10 @@ mod tests {
             cumulative_usage: TokenUsage::from_input_output(20_000, 1_200, 3_000),
         };
 
-        SharedRenderObserver::new(ui_state.clone())
-            .on_event(RuntimeProgressEvent::TokenUsageUpdated {
-                phase: TokenUsagePhase::ResponseCompleted,
-                ledger: ledger.clone(),
-            })
-            .expect("token usage update should render");
+        SharedRenderObserver::new(ui_state.clone()).apply_event(SessionEvent::TokenUsageUpdated {
+            phase: TokenUsagePhase::ResponseCompleted,
+            ledger: ledger.clone(),
+        });
 
         let snapshot = ui_state.snapshot();
         assert_eq!(snapshot.session.token_ledger, ledger);

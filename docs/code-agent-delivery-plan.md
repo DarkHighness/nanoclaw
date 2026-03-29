@@ -72,10 +72,20 @@ Shipped in the sixth implementation slice:
   through dedicated `/diagnostics`, `/mcp`, `/prompts`, `/resources`,
   `/prompt`, and `/resource` commands
 
+Shipped in the seventh implementation slice:
+
+- backend approval prompts and approval decisions now live in a frontend-neutral
+  coordinator instead of a TUI-owned bridge
+- runtime progress now flows through a backend-owned event stream so prompt,
+  steer, and compact operations can be rendered by any frontend without
+  constructing runtime observers locally
+- `main.rs` and the TUI no longer assemble runtime approval handlers or direct
+  observer plumbing as part of frontend composition
+
 Still pending in the next slices:
 
-- frontend-neutral approval, event, and session-operation contracts beyond the
-  startup snapshot
+- frontend-neutral session-operation contracts beyond startup, approval, and
+  event snapshots
 - remaining docs and workspace cleanup before `reference-tui` can be retired
 
 ## External Product Signals
@@ -117,8 +127,9 @@ Current problems:
 
 - `code-agent` boot is now split across helper modules, but backend-owned host
   contracts are still incomplete for a future non-TUI frontend.
-- the new session facade is only the first boundary cut; a future Web frontend
-  still lacks typed host events, approval messages, and snapshots.
+- the backend session now exposes startup, approval, and event contracts, but
+  it still lacks a true runtime resume/reattach lifecycle above persisted
+  history.
 - legacy `reference-tui` code still duplicates host responsibilities that now
   belong in `code-agent`.
 - `code-agent` now owns durable session browsing/replay/export plus MCP
@@ -134,16 +145,15 @@ Current problems:
 ### P0
 
 - strict backend/frontend split is incomplete
-- frontend-neutral command/event/approval contract is incomplete
+- frontend-neutral session-operation contract is incomplete
 - `apps/` delivery boundary is still transitional while legacy code stays
   in-tree
 
 ### P1
 
 - legacy host capabilities still need migration into `code-agent`
-  - richer approval/session event surfaces
+  - richer session/subagent operator surfaces
   - remaining legacy-only host controls
-- approval flow is still too frontend-shaped
 - subagent execution is available but not yet exposed as a strong product
   experience
 
@@ -241,9 +251,9 @@ Acceptance:
 
 Current note:
 
-- the host now exposes session browsing/export semantics, but true runtime
-  resume remains a pending backend capability rather than an implemented
-  feature.
+- approval and runtime event flow are now backend-owned contracts, but true
+  runtime resume remains a pending backend capability rather than an
+  implemented feature.
 
 ### Phase E: Delivery Cleanup
 

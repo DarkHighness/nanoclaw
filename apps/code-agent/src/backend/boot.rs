@@ -3,6 +3,7 @@ use crate::backend::boot_mcp::build_startup_diagnostics_snapshot;
 use crate::backend::boot_runtime::{build_runtime_tooling, register_subagent_tools};
 use crate::backend::store::build_store;
 use crate::backend::{
+    ApprovalCoordinator, SessionEventStream, SessionToolApprovalHandler,
     build_plugin_activation_plan, build_sandbox_policy, build_system_preamble, build_tool_context,
     dedup_mcp_servers, log_sandbox_status, merge_driver_host_inputs, resolve_mcp_servers,
     resolve_skill_roots, tool_context_for_profile,
@@ -102,8 +103,11 @@ impl SubagentProfileResolver for CodeAgentSubagentProfileResolver {
 pub(crate) async fn build_session(
     options: &AppOptions,
     workspace_root: &Path,
-    approval_handler: Arc<dyn ToolApprovalHandler>,
 ) -> Result<super::CodeAgentSession> {
+    let approvals = ApprovalCoordinator::default();
+    let events = SessionEventStream::default();
+    let approval_handler: Arc<dyn ToolApprovalHandler> =
+        Arc::new(SessionToolApprovalHandler::new(approvals.clone()));
     let base_tool_context = build_tool_context(workspace_root, options);
     let sandbox_policy = build_sandbox_policy(options, &base_tool_context);
     let tool_context = base_tool_context.with_sandbox_policy(sandbox_policy.clone());
@@ -141,6 +145,8 @@ pub(crate) async fn build_session(
         runtime,
         store,
         mcp_servers,
+        approvals,
+        events,
         super::SessionStartupSnapshot {
             workspace_name: workspace_root
                 .file_name()

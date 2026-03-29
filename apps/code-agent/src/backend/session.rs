@@ -1,12 +1,13 @@
 use crate::backend::run_history::{self, LoadedRun, RunExportArtifact};
 use crate::backend::session_catalog;
 use crate::backend::{
-    LoadedMcpPrompt, LoadedMcpResource, McpPromptSummary, McpResourceSummary, McpServerSummary,
-    StartupDiagnosticsSnapshot, list_mcp_prompts, list_mcp_resources, list_mcp_servers,
-    load_mcp_prompt, load_mcp_resource,
+    ApprovalCoordinator, ApprovalDecision, ApprovalPrompt, LoadedMcpPrompt, LoadedMcpResource,
+    McpPromptSummary, McpResourceSummary, McpServerSummary, SessionEvent, SessionEventObserver,
+    SessionEventStream, StartupDiagnosticsSnapshot, list_mcp_prompts, list_mcp_resources,
+    list_mcp_servers, load_mcp_prompt, load_mcp_resource,
 };
 use agent::mcp::ConnectedMcpServer;
-use agent::runtime::{Result as RuntimeResult, RuntimeObserver};
+use agent::runtime::Result as RuntimeResult;
 use agent::{AgentRuntime, RuntimeCommand, Skill};
 use anyhow::Result;
 use std::path::{Path, PathBuf};
@@ -43,6 +44,8 @@ pub(crate) struct CodeAgentSession {
     runtime: Arc<AsyncMutex<AgentRuntime>>,
     store: Arc<dyn RunStore>,
     mcp_servers: Arc<Vec<ConnectedMcpServer>>,
+    approvals: ApprovalCoordinator,
+    events: SessionEventStream,
     workspace_root: PathBuf,
     startup: Arc<RwLock<SessionStartupSnapshot>>,
     skills: Arc<Vec<Skill>>,
@@ -53,6 +56,8 @@ impl CodeAgentSession {
         runtime: AgentRuntime,
         store: Arc<dyn RunStore>,
         mcp_servers: Vec<ConnectedMcpServer>,
+        approvals: ApprovalCoordinator,
+        events: SessionEventStream,
         startup: SessionStartupSnapshot,
         skills: Vec<Skill>,
     ) -> Self {
@@ -61,6 +66,8 @@ impl CodeAgentSession {
             runtime: Arc::new(AsyncMutex::new(runtime)),
             store,
             mcp_servers: Arc::new(mcp_servers),
+            approvals,
+            events,
             workspace_root,
             startup: Arc::new(RwLock::new(startup)),
             skills: Arc::new(skills),
@@ -88,30 +95,34 @@ impl CodeAgentSession {
         runtime.end_session(reason).await
     }
 
-    pub(crate) async fn apply_control_with_observer<O>(
-        &self,
-        command: RuntimeCommand,
-        observer: &mut O,
-    ) -> Result<()>
-    where
-        O: RuntimeObserver,
-    {
+    pub(crate) async fn apply_control(&self, command: RuntimeCommand) -> Result<()> {
         let mut runtime = self.runtime.lock().await;
+        let mut observer = SessionEventObserver::new(self.events.clone());
         runtime
-            .apply_control_with_observer(command, observer)
+            .apply_control_with_observer(command, &mut observer)
             .await
             .map(|_| ())
             .map_err(anyhow::Error::from)
     }
 
-    pub(crate) async fn steer(&self, message: String, reason: Option<String>) -> RuntimeResult<()> {
-        let mut runtime = self.runtime.lock().await;
-        runtime.steer(message, reason).await
-    }
-
     pub(crate) async fn compact_now(&self, notes: Option<String>) -> RuntimeResult<bool> {
         let mut runtime = self.runtime.lock().await;
-        runtime.compact_now(notes).await
+        let mut observer = SessionEventObserver::new(self.events.clone());
+        runtime
+            .compact_now_with_observer(notes, &mut observer)
+            .await
+    }
+
+    pub(crate) fn approval_prompt(&self) -> Option<ApprovalPrompt> {
+        self.approvals.snapshot()
+    }
+
+    pub(crate) fn resolve_approval(&self, decision: ApprovalDecision) -> bool {
+        self.approvals.resolve(decision)
+    }
+
+    pub(crate) fn drain_events(&self) -> Vec<SessionEvent> {
+        self.events.drain()
     }
 
     pub(crate) async fn list_sessions(

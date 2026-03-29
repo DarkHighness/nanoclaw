@@ -211,31 +211,6 @@ pub(crate) fn preview_text(value: &str, max_chars: usize) -> String {
     }
 }
 
-pub(crate) fn truncate_preview(value: &str, max_lines: usize, max_columns: usize) -> Vec<String> {
-    let mut lines = Vec::new();
-    for line in value.lines() {
-        if lines.len() == max_lines {
-            lines.push("...".to_string());
-            break;
-        }
-        let clipped = if line.chars().count() > max_columns {
-            format!(
-                "{}...",
-                line.chars()
-                    .take(max_columns.saturating_sub(3))
-                    .collect::<String>()
-            )
-        } else {
-            line.to_string()
-        };
-        lines.push(clipped);
-    }
-    if lines.is_empty() {
-        lines.push("<empty>".to_string());
-    }
-    lines
-}
-
 pub(crate) fn git_snapshot(workspace_root: &Path) -> GitSnapshot {
     let output = Command::new("git")
         .arg("-C")

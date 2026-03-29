@@ -5,7 +5,7 @@ mod options;
 mod provider;
 
 use crate::backend::{build_session, inject_process_env};
-use crate::frontend::tui::{CodeAgentTui, make_tui_support};
+use crate::frontend::tui::{CodeAgentTui, SharedUiState};
 use crate::options::AppOptions;
 use agent::AgentWorkspaceLayout;
 use agent::runtime::{HostRuntimeLimits, build_host_tokio_runtime};
@@ -57,17 +57,12 @@ fn init_tracing(workspace_root: &Path) -> Result<WorkerGuard> {
 }
 
 async fn async_main(workspace_root: PathBuf, options: AppOptions) -> Result<()> {
-    let (ui_state, approval_bridge, approval_handler) = make_tui_support();
-    let session = build_session(&options, &workspace_root, approval_handler).await?;
+    let ui_state = SharedUiState::new();
+    let session = build_session(&options, &workspace_root).await?;
 
-    CodeAgentTui::new(
-        session,
-        options.one_shot_prompt.clone(),
-        ui_state,
-        approval_bridge,
-    )
-    .run()
-    .await
+    CodeAgentTui::new(session, options.one_shot_prompt.clone(), ui_state)
+        .run()
+        .await
 }
 
 #[cfg(test)]

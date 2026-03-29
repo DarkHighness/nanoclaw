@@ -6,7 +6,7 @@ mod render;
 mod state;
 
 use crate::backend::{CodeAgentSession, preview_id};
-pub(crate) use approval::{ApprovalBridge, InteractiveToolApprovalHandler};
+use approval::approval_decision_for_key;
 use commands::{SlashCommand, parse_slash_command};
 use history::{
     format_mcp_prompt_summary_line, format_mcp_resource_summary_line,
@@ -29,29 +29,14 @@ use crossterm::terminal::{
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use std::io::{self, Stdout};
-use std::sync::Arc;
 use tokio::task::{JoinHandle, spawn_local};
 use tokio::time::{Duration, sleep};
-
-pub(crate) fn make_tui_support() -> (
-    SharedUiState,
-    ApprovalBridge,
-    Arc<InteractiveToolApprovalHandler>,
-) {
-    let ui_state = SharedUiState::new();
-    let approval_bridge = ApprovalBridge::default();
-    let handler = Arc::new(InteractiveToolApprovalHandler::new(
-        approval_bridge.clone(),
-        ui_state.clone(),
-    ));
-    (ui_state, approval_bridge, handler)
-}
 
 pub struct CodeAgentTui {
     session: CodeAgentSession,
     initial_prompt: Option<String>,
     ui_state: SharedUiState,
-    approval_bridge: ApprovalBridge,
+    event_renderer: SharedRenderObserver,
     command_queue: RuntimeCommandQueue,
     turn_task: Option<JoinHandle<Result<()>>>,
 }
@@ -61,13 +46,12 @@ impl CodeAgentTui {
         session: CodeAgentSession,
         initial_prompt: Option<String>,
         ui_state: SharedUiState,
-        approval_bridge: ApprovalBridge,
     ) -> Self {
         Self {
             session,
             initial_prompt,
+            event_renderer: SharedRenderObserver::new(ui_state.clone()),
             ui_state,
-            approval_bridge,
             command_queue: RuntimeCommandQueue::new(),
             turn_task: None,
         }
@@ -104,9 +88,10 @@ impl CodeAgentTui {
     ) -> Result<()> {
         loop {
             self.maybe_finish_turn().await?;
+            self.apply_backend_events();
 
             let snapshot = self.ui_state.snapshot();
-            let approval = self.approval_bridge.snapshot();
+            let approval = self.session.approval_prompt();
             terminal.draw(|frame| render(frame, &snapshot, approval.as_ref()))?;
 
             if !event::poll(Duration::ZERO)? {
@@ -186,28 +171,12 @@ impl CodeAgentTui {
     }
 
     fn handle_approval_key(&mut self, key: KeyEvent) -> bool {
-        let Some(prompt) = self.approval_bridge.snapshot() else {
+        let Some(prompt) = self.session.approval_prompt() else {
             return false;
         };
-        let outcome = match key.code {
-            KeyCode::Char('y') | KeyCode::Char('Y') => {
-                Some(agent::runtime::ToolApprovalOutcome::Approve)
-            }
-            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
-                Some(agent::runtime::ToolApprovalOutcome::Deny {
-                    reason: Some("user denied tool call".to_string()),
-                })
-            }
-            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                Some(agent::runtime::ToolApprovalOutcome::Deny {
-                    reason: Some("user cancelled tool approval".to_string()),
-                })
-            }
-            _ => None,
-        };
-        if let Some(outcome) = outcome {
-            let approved = matches!(outcome, agent::runtime::ToolApprovalOutcome::Approve);
-            if self.approval_bridge.respond(outcome) {
+        if let Some(decision) = approval_decision_for_key(key) {
+            let approved = matches!(decision, crate::backend::ApprovalDecision::Approve);
+            if self.session.resolve_approval(decision) {
                 self.ui_state.mutate(|state| {
                     if approved {
                         state.status = format!("Approved {}", prompt.tool_name);
@@ -310,13 +279,9 @@ impl CodeAgentTui {
         });
 
         let session = self.session.clone();
-        let ui_state = self.ui_state.clone();
-        self.turn_task = Some(spawn_local(async move {
-            let mut observer = SharedRenderObserver::new(ui_state.clone());
-            session
-                .apply_control_with_observer(command, &mut observer)
-                .await
-        }));
+        self.turn_task = Some(spawn_local(
+            async move { session.apply_control(command).await },
+        ));
     }
 
     async fn apply_command(&mut self, input: &str) -> Result<bool> {
@@ -512,14 +477,11 @@ impl CodeAgentTui {
                     });
                     return Ok(false);
                 }
-                self.session
-                    .steer(message.clone(), Some("manual_command".to_string()))
-                    .await?;
-                self.ui_state.mutate(|state| {
-                    state.push_transcript(format!("system> {message}"));
-                    state.status = "Applied steer".to_string();
-                    state.push_activity(format!("steer: {}", state::preview_text(&message, 48)));
-                });
+                self.start_command(RuntimeCommand::Steer {
+                    message,
+                    reason: Some("manual_command".to_string()),
+                })
+                .await;
                 Ok(false)
             }
             SlashCommand::Clear => {
@@ -539,15 +501,13 @@ impl CodeAgentTui {
                     return Ok(false);
                 }
                 let compacted = self.session.compact_now(notes).await?;
-                self.ui_state.mutate(|state| {
-                    if compacted {
-                        state.status = "Compacted visible history".to_string();
-                        state.push_activity("compacted visible history");
-                    } else {
+                self.apply_backend_events();
+                if !compacted {
+                    self.ui_state.mutate(|state| {
                         state.status = "Compaction skipped".to_string();
                         state.push_activity("compaction skipped");
-                    }
-                });
+                    });
+                }
                 Ok(false)
             }
             command @ (SlashCommand::Sessions { .. }
@@ -776,6 +736,12 @@ impl CodeAgentTui {
         let depth = self.command_queue.len().await;
         self.ui_state
             .mutate(|state| state.session.queued_commands = depth);
+    }
+
+    fn apply_backend_events(&mut self) {
+        for event in self.session.drain_events() {
+            self.event_renderer.apply_event(event);
+        }
     }
 }
 

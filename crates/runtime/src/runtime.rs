@@ -122,7 +122,16 @@ impl AgentRuntime {
 
     pub async fn compact_now(&mut self, instructions: Option<String>) -> Result<bool> {
         let mut observer = NoopRuntimeObserver;
-        self.compact_visible_history(&TurnId::new(), "manual", instructions, &mut observer)
+        self.compact_now_with_observer(instructions, &mut observer)
+            .await
+    }
+
+    pub async fn compact_now_with_observer(
+        &mut self,
+        instructions: Option<String>,
+        observer: &mut dyn RuntimeObserver,
+    ) -> Result<bool> {
+        self.compact_visible_history(&TurnId::new(), "manual", instructions, observer)
             .await
     }
 
