@@ -136,9 +136,15 @@ impl CodeAgentTui {
                         }
                     }
                     KeyCode::Up => {
+                        if self.apply_command_completion(true) {
+                            continue;
+                        }
                         self.ui_state.mutate(|state| state.scroll_focused(-1));
                     }
                     KeyCode::Down => {
+                        if self.apply_command_completion(false) {
+                            continue;
+                        }
                         self.ui_state.mutate(|state| state.scroll_focused(1));
                     }
                     KeyCode::PageUp => {

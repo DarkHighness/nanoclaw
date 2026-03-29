@@ -12,7 +12,20 @@ pub(crate) struct SlashCommandSpec {
 pub(crate) struct SlashCommandHint {
     pub(crate) selected: SlashCommandSpec,
     pub(crate) matches: Vec<SlashCommandSpec>,
+    pub(crate) arguments: Option<SlashCommandArgumentHint>,
     pub(crate) exact: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SlashCommandArgumentHint {
+    pub(crate) provided: Vec<SlashCommandArgumentValue>,
+    pub(crate) next: Option<&'static str>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SlashCommandArgumentValue {
+    pub(crate) placeholder: &'static str,
+    pub(crate) value: String,
 }
 
 const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
@@ -419,6 +432,9 @@ pub(crate) fn slash_command_hint(input: &str, selected_index: usize) -> Option<S
     if let Some(selected) = selected_spec(command_token, tail, selected_index, &matches) {
         return Some(SlashCommandHint {
             exact: command_token == selected.name,
+            arguments: (command_token == selected.name)
+                .then(|| build_argument_hint(selected, tail))
+                .flatten(),
             selected,
             matches: matches.into_iter().take(5).collect(),
         });
@@ -582,6 +598,47 @@ fn selected_spec(
     matches
         .get(selected_index.min(matches.len().saturating_sub(1)))
         .copied()
+}
+
+fn build_argument_hint(
+    spec: SlashCommandSpec,
+    tail: Option<&str>,
+) -> Option<SlashCommandArgumentHint> {
+    let placeholders = spec.usage.split_whitespace().skip(1).collect::<Vec<_>>();
+    if placeholders.is_empty() {
+        return None;
+    }
+
+    let tail = tail.unwrap_or("").trim();
+    let raw_values = if tail.is_empty() {
+        Vec::new()
+    } else {
+        tail.split_whitespace().collect::<Vec<_>>()
+    };
+    let provided_count = raw_values.len().min(placeholders.len());
+    let mut provided = Vec::new();
+    for (index, placeholder) in placeholders.iter().take(provided_count).enumerate() {
+        // The last positional is treated as a greedy tail because several host
+        // commands intentionally accept spaces after the final placeholder
+        // (`spawn_task <prompt>`, export paths, free-form notes).
+        let value = if index + 1 == placeholders.len() {
+            raw_values[index..].join(" ")
+        } else {
+            raw_values[index].to_string()
+        };
+        provided.push(SlashCommandArgumentValue {
+            placeholder: *placeholder,
+            value,
+        });
+        if index + 1 == placeholders.len() {
+            break;
+        }
+    }
+
+    Some(SlashCommandArgumentHint {
+        provided,
+        next: placeholders.get(provided_count).copied(),
+    })
 }
 
 #[cfg(test)]
@@ -767,6 +824,7 @@ mod tests {
         assert_eq!(hint.selected.name, "sessions");
         assert!(hint.matches.iter().any(|spec| spec.name == "sessions"));
         assert!(hint.matches.iter().any(|spec| spec.name == "session"));
+        assert!(hint.arguments.is_none());
     }
 
     #[test]
@@ -788,5 +846,25 @@ mod tests {
     #[test]
     fn cycle_slash_command_stops_after_args_begin() {
         assert!(cycle_slash_command("/session abc123", 0, false).is_none());
+    }
+
+    #[test]
+    fn slash_command_hint_surfaces_next_required_argument() {
+        let hint = slash_command_hint("/session ", 0).expect("hint");
+
+        let arguments = hint.arguments.expect("arguments");
+        assert_eq!(arguments.next, Some("<session-ref>"));
+        assert!(arguments.provided.is_empty());
+    }
+
+    #[test]
+    fn slash_command_hint_tracks_argument_progress() {
+        let hint = slash_command_hint("/spawn_task reviewer", 0).expect("hint");
+
+        let arguments = hint.arguments.expect("arguments");
+        assert_eq!(arguments.provided.len(), 1);
+        assert_eq!(arguments.provided[0].placeholder, "<role>");
+        assert_eq!(arguments.provided[0].value, "reviewer");
+        assert_eq!(arguments.next, Some("<prompt>"));
     }
 }

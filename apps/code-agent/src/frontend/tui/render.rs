@@ -301,8 +301,47 @@ fn build_command_hint_text(command_hint: &SlashCommandHint) -> Text<'static> {
         Span::styled("  ", Style::default().fg(SUBTLE)),
         Span::styled(command_hint.selected.summary, Style::default().fg(MUTED)),
     ]));
+    if let Some(arguments) = command_hint.arguments.as_ref() {
+        let mut spans = Vec::new();
+        if arguments.provided.is_empty() {
+            if let Some(next) = arguments.next {
+                spans.push(Span::styled("next ", Style::default().fg(SUBTLE)));
+                spans.push(Span::styled(next, Style::default().fg(MUTED)));
+            }
+        } else {
+            for (index, argument) in arguments.provided.iter().enumerate() {
+                if index > 0 {
+                    spans.push(Span::styled(" · ", Style::default().fg(SUBTLE)));
+                }
+                spans.push(Span::styled(
+                    argument.placeholder,
+                    Style::default().fg(SUBTLE),
+                ));
+                spans.push(Span::raw(" "));
+                spans.push(Span::styled(
+                    argument.value.clone(),
+                    Style::default().fg(TEXT),
+                ));
+            }
+            if let Some(next) = arguments.next {
+                spans.push(Span::styled(" · ", Style::default().fg(SUBTLE)));
+                spans.push(Span::styled("next ", Style::default().fg(SUBTLE)));
+                spans.push(Span::styled(next, Style::default().fg(MUTED)));
+            }
+        }
+        if !spans.is_empty() {
+            lines.push(Line::from(spans));
+        }
+    }
     let tab_hint = if command_hint.exact {
-        if command_hint.matches.len() > 1 {
+        if command_hint
+            .arguments
+            .as_ref()
+            .and_then(|arguments| arguments.next)
+            .is_some()
+        {
+            "keep typing"
+        } else if command_hint.matches.len() > 1 {
             "tab next"
         } else {
             "enter run"
@@ -325,7 +364,7 @@ fn command_hint_height(command_hint: &SlashCommandHint) -> u16 {
     build_command_hint_text(command_hint)
         .lines
         .len()
-        .clamp(2, 4) as u16
+        .clamp(2, 6) as u16
 }
 
 fn bottom_layout_constraints(
@@ -1156,7 +1195,9 @@ mod tests {
         should_render_side_rail,
     };
     use crate::frontend::tui::approval::ApprovalPrompt;
-    use crate::frontend::tui::commands::{SlashCommandHint, SlashCommandSpec};
+    use crate::frontend::tui::commands::{
+        SlashCommandArgumentHint, SlashCommandArgumentValue, SlashCommandHint, SlashCommandSpec,
+    };
     use crate::frontend::tui::state::{MainPaneMode, TodoEntry, TuiState};
     use ratatui::layout::Rect;
 
@@ -1490,6 +1531,7 @@ mod tests {
                     summary: "open persisted session",
                 },
             ],
+            arguments: None,
             exact: false,
         });
 
@@ -1506,6 +1548,42 @@ mod tests {
             "browse persisted sessions"
         );
         assert_eq!(rendered.lines[2].spans[0].content.as_ref(), "tab complete");
+    }
+
+    #[test]
+    fn command_hint_text_surfaces_argument_progress() {
+        let rendered = build_command_hint_text(&SlashCommandHint {
+            selected: SlashCommandSpec {
+                section: "Agents",
+                name: "spawn_task",
+                usage: "spawn_task <role> <prompt>",
+                summary: "launch child agent",
+            },
+            matches: vec![SlashCommandSpec {
+                section: "Agents",
+                name: "spawn_task",
+                usage: "spawn_task <role> <prompt>",
+                summary: "launch child agent",
+            }],
+            arguments: Some(SlashCommandArgumentHint {
+                provided: vec![SlashCommandArgumentValue {
+                    placeholder: "<role>",
+                    value: "reviewer".to_string(),
+                }],
+                next: Some("<prompt>"),
+            }),
+            exact: true,
+        });
+
+        assert_eq!(rendered.lines[1].spans[0].content.as_ref(), "<role>");
+        assert_eq!(rendered.lines[1].spans[2].content.as_ref(), "reviewer");
+        assert!(
+            rendered.lines[1]
+                .spans
+                .iter()
+                .any(|span| span.content.as_ref().contains("<prompt>"))
+        );
+        assert_eq!(rendered.lines[2].spans[0].content.as_ref(), "keep typing");
     }
 
     #[test]
