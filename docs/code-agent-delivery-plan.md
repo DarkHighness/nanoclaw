@@ -217,6 +217,17 @@ Shipped in the twenty-first implementation slice:
 - the side rail content was shortened to match its narrow width instead of
   relying on wrapping dense structured output
 
+Shipped in the twenty-second implementation slice:
+
+- the dedicated TUI side rail was removed completely, leaving a single main
+  surface for transcript and command views
+- runtime status moved to a minimal bottom status line, which is closer to a
+  Codex-like terminal flow than stacked headers and side logs
+- transcript entries now use clearer turn headers, compact inline progress
+  updates, and explicit turn dividers instead of a flat undifferentiated stream
+- approval prompts now render as compact bottom-anchored sheets while the shell
+  removes more pane-title chrome and box-heavy structure
+
 Still pending in the next slices:
 
 - remaining docs and workspace cleanup before `reference-tui` can be retired

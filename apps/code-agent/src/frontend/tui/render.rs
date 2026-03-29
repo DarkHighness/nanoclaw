@@ -1,25 +1,25 @@
 use super::approval::ApprovalPrompt;
-use super::state::{MainPaneMode, PaneFocus, TuiState, preview_text};
+use super::state::{MainPaneMode, TuiState, preview_text};
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Margin, Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
+use std::time::{SystemTime, UNIX_EPOCH};
 
-const BG: Color = Color::Rgb(13, 14, 16);
-const TOP_BG: Color = Color::Rgb(13, 14, 16);
-const PANEL_BG: Color = Color::Rgb(16, 17, 20);
-const PANEL_ALT_BG: Color = Color::Rgb(19, 21, 24);
-const OVERLAY_BG: Color = Color::Rgb(24, 26, 30);
-const BORDER: Color = Color::Rgb(58, 61, 66);
-const BORDER_ACTIVE: Color = Color::Rgb(141, 151, 132);
-const TEXT: Color = Color::Rgb(228, 229, 226);
-const MUTED: Color = Color::Rgb(150, 151, 147);
-const SUBTLE: Color = Color::Rgb(108, 110, 106);
-const USER: Color = Color::Rgb(205, 194, 166);
-const ASSISTANT: Color = Color::Rgb(170, 188, 150);
-const ERROR: Color = Color::Rgb(255, 133, 133);
-const WARN: Color = Color::Rgb(255, 196, 92);
-const HEADER: Color = Color::Rgb(235, 240, 247);
+const BG: Color = Color::Rgb(12, 13, 14);
+const MAIN_BG: Color = Color::Rgb(14, 15, 17);
+const FOOTER_BG: Color = Color::Rgb(16, 17, 19);
+const FOOTER_ALT_BG: Color = Color::Rgb(19, 21, 23);
+const OVERLAY_BG: Color = Color::Rgb(22, 24, 27);
+const BORDER_ACTIVE: Color = Color::Rgb(142, 150, 132);
+const TEXT: Color = Color::Rgb(229, 230, 226);
+const MUTED: Color = Color::Rgb(149, 150, 146);
+const SUBTLE: Color = Color::Rgb(106, 108, 105);
+const USER: Color = Color::Rgb(207, 193, 161);
+const ASSISTANT: Color = Color::Rgb(171, 192, 150);
+const ERROR: Color = Color::Rgb(241, 133, 133);
+const WARN: Color = Color::Rgb(235, 196, 94);
+const HEADER: Color = Color::Rgb(236, 238, 232);
 
 pub(crate) fn render(
     frame: &mut ratatui::Frame<'_>,
@@ -32,28 +32,14 @@ pub(crate) fn render(
     let vertical = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
+            Constraint::Min(10),
             Constraint::Length(1),
-            Constraint::Min(12),
-            Constraint::Length(3),
+            Constraint::Length(1),
         ])
         .split(area);
 
-    render_header(frame, vertical[0], state);
-
-    let body = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(83), Constraint::Percentage(17)])
-        .split(vertical[1]);
-
-    render_main_pane(frame, body[0], state);
-
-    let right = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Min(4), Constraint::Length(4)])
-        .split(body[1]);
-
-    render_side_panel(frame, right[0], state);
-    render_activity(frame, right[1], state);
+    render_main_pane(frame, vertical[0], state);
+    render_status_line(frame, vertical[1], state);
     render_composer(frame, vertical[2], state);
 
     if let Some(approval) = approval {
@@ -71,50 +57,6 @@ pub(crate) fn render(
     ));
 }
 
-fn render_header(frame: &mut ratatui::Frame<'_>, area: Rect, state: &TuiState) {
-    let mut spans = vec![
-        Span::styled(
-            preview_text(&state.session.workspace_name, 18),
-            Style::default().fg(HEADER).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled("  ", Style::default().fg(MUTED)),
-        Span::styled("model ", Style::default().fg(MUTED)),
-        Span::styled(
-            preview_text(
-                &format!("{} / {}", state.session.provider_label, state.session.model),
-                24,
-            ),
-            Style::default().fg(TEXT),
-        ),
-        Span::styled("  ", Style::default().fg(MUTED)),
-        Span::styled("session ", Style::default().fg(MUTED)),
-        Span::styled(
-            preview_text(&state.session.active_session_ref, 10),
-            Style::default().fg(USER),
-        ),
-        Span::styled("  ", Style::default().fg(MUTED)),
-        Span::styled("status ", Style::default().fg(MUTED)),
-        Span::styled(
-            preview_text(&state.status, 24),
-            Style::default()
-                .fg(status_color(&state.status))
-                .add_modifier(Modifier::BOLD),
-        ),
-    ];
-    if state.session.queued_commands > 0 {
-        spans.extend([
-            Span::styled("  ", Style::default().fg(MUTED)),
-            Span::styled("queue ", Style::default().fg(MUTED)),
-            Span::styled(
-                state.session.queued_commands.to_string(),
-                Style::default().fg(WARN).add_modifier(Modifier::BOLD),
-            ),
-        ]);
-    }
-    let status = Paragraph::new(Line::from(spans)).style(Style::default().fg(TEXT).bg(TOP_BG));
-    frame.render_widget(status, area);
-}
-
 fn render_main_pane(frame: &mut ratatui::Frame<'_>, area: Rect, state: &TuiState) {
     match state.main_pane {
         MainPaneMode::Transcript => render_transcript(frame, area, state),
@@ -123,246 +65,120 @@ fn render_main_pane(frame: &mut ratatui::Frame<'_>, area: Rect, state: &TuiState
 }
 
 fn render_transcript(frame: &mut ratatui::Frame<'_>, area: Rect, state: &TuiState) {
-    let lines = build_transcript_lines(&state.transcript);
-    let block = pane_block(
-        "Conversation",
-        state.focus == PaneFocus::Conversation,
-        BORDER,
-    );
-    let scroll = clamp_scroll(
-        state.transcript_scroll,
-        lines.len(),
-        block.inner(area).height,
-    );
+    let lines = build_transcript_lines(state);
+    frame.render_widget(Block::default().style(Style::default().bg(MAIN_BG)), area);
+    let inner = area.inner(Margin {
+        vertical: 0,
+        horizontal: 2,
+    });
+    let scroll = clamp_scroll(state.transcript_scroll, lines.len(), inner.height);
     let transcript = Paragraph::new(Text::from(lines))
-        .block(block)
         .scroll((scroll, 0))
         .alignment(Alignment::Left)
         .wrap(Wrap { trim: false })
-        .style(Style::default().fg(TEXT).bg(PANEL_BG));
-    frame.render_widget(transcript, area);
+        .style(Style::default().fg(TEXT).bg(MAIN_BG));
+    frame.render_widget(transcript, inner);
 }
 
 fn render_main_view(frame: &mut ratatui::Frame<'_>, area: Rect, state: &TuiState) {
+    frame.render_widget(Block::default().style(Style::default().bg(MAIN_BG)), area);
+    let inner = area.inner(Margin {
+        vertical: 0,
+        horizontal: 2,
+    });
     let title = if state.inspector_title.is_empty() {
         "View"
     } else {
         state.inspector_title.as_str()
     };
-    let item_count = inspector_collection_count(&state.inspector);
-    let block_title = if is_collection_inspector(title) && item_count > 0 {
-        format!("{title} · {item_count}")
-    } else {
-        title.to_string()
-    };
-    let block = pane_block(block_title, state.focus == PaneFocus::Conversation, BORDER);
     let scroll = clamp_scroll(
         state.inspector_scroll,
-        state.inspector.len().max(1),
-        block.inner(area).height,
+        state.inspector.len().saturating_add(2).max(1),
+        inner.height,
     );
-    let view = Paragraph::new(build_inspector_text(title, &state.inspector))
-        .block(block)
+    let mut lines = vec![Line::from(Span::styled(
+        title.to_string(),
+        Style::default().fg(HEADER).add_modifier(Modifier::BOLD),
+    ))];
+    lines.push(Line::raw(""));
+    lines.extend(build_inspector_text(title, &state.inspector).lines);
+    let view = Paragraph::new(Text::from(lines))
         .scroll((scroll, 0))
         .wrap(Wrap { trim: false })
-        .style(Style::default().fg(TEXT).bg(PANEL_BG));
-    frame.render_widget(view, area);
+        .style(Style::default().fg(TEXT).bg(MAIN_BG));
+    frame.render_widget(view, inner);
 }
 
-fn session_lines(state: &TuiState) -> Vec<String> {
-    let mut lines = vec![
-        "## Workspace".to_string(),
-        format!("name: {}", state.session.workspace_name),
-        format!(
-            "path: {}",
-            preview_text(&state.session.workspace_root.display().to_string(), 52)
+fn render_status_line(frame: &mut ratatui::Frame<'_>, area: Rect, state: &TuiState) {
+    frame.render_widget(Block::default().style(Style::default().bg(FOOTER_BG)), area);
+    let inner = area.inner(Margin {
+        vertical: 0,
+        horizontal: 1,
+    });
+
+    let mut spans = vec![
+        Span::styled(
+            progress_marker(state),
+            Style::default()
+                .fg(status_color(&state.status))
+                .add_modifier(Modifier::BOLD),
         ),
-        "## Session".to_string(),
-        format!(
-            "active ref: {}",
-            preview_text(&state.session.active_session_ref, 28)
-        ),
-        format!(
-            "agent session id: {}",
-            preview_text(&state.session.root_agent_session_id, 28)
-        ),
-        format!("persisted sessions: {}", state.session.stored_session_count),
-        "## Runtime".to_string(),
-        format!(
-            "primary lane: {} / {}",
-            state.session.provider_label, state.session.model
-        ),
-        format!("queue: {} pending", state.session.queued_commands),
-        format!(
-            "resources: tools {}  skills {}",
-            state.session.tool_names.len(),
-            if state.session.skill_names.is_empty() {
-                "none".to_string()
-            } else {
-                state.session.skill_names.len().to_string()
-            }
-        ),
-        format!(
-            "plugins: {} / {}",
-            state.session.startup_diagnostics.enabled_plugin_count,
-            state.session.startup_diagnostics.total_plugin_count
-        ),
-        format!(
-            "mcp: {} servers",
-            state.session.startup_diagnostics.mcp_servers.len()
-        ),
-        "## Store".to_string(),
-        format!("store: {}", preview_text(&state.session.store_label, 20),),
-        format!(
-            "sandbox: {}",
-            preview_text(&state.session.sandbox_summary, 28)
+        Span::raw(" "),
+        Span::styled(
+            preview_text(&state.status, 44),
+            Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
         ),
     ];
-    if let Some(warning) = &state.session.store_warning {
-        lines.push(format!("warning: {}", preview_text(warning, 36)));
+
+    if let Some(activity) = recent_activity_items(state).first() {
+        spans.push(Span::styled("  · ", Style::default().fg(SUBTLE)));
+        spans.push(Span::styled(
+            activity.clone(),
+            Style::default().fg(activity_color(activity)),
+        ));
     }
-    lines.extend([
-        "## Tokens".to_string(),
-        session_context_line(state),
-        session_last_token_line(state),
-        session_total_token_line(state),
-        "## Git".to_string(),
-        format!("branch: {}", state.session.git.branch_label()),
-        format!("dirty: {}", state.session.git.dirty_label()),
-    ]);
-    lines
-}
 
-fn session_context_line(state: &TuiState) -> String {
-    state
-        .session
-        .token_ledger
-        .context_window
-        .map(|usage| format!("context: {} / {}", usage.used_tokens, usage.max_tokens))
-        .unwrap_or_else(|| "context: unknown".to_string())
-}
-
-fn session_last_token_line(state: &TuiState) -> String {
-    if let Some(last_usage) = state.session.token_ledger.last_usage {
-        format_token_usage_line("last", last_usage)
-    } else {
-        "last: none yet".to_string()
+    if state.session.queued_commands > 0 {
+        spans.push(Span::styled("  · ", Style::default().fg(SUBTLE)));
+        spans.push(Span::styled(
+            format!("+{} queued", state.session.queued_commands),
+            Style::default().fg(WARN),
+        ));
     }
-}
 
-fn session_total_token_line(state: &TuiState) -> String {
-    if state.session.token_ledger.cumulative_usage.is_zero() {
-        "total: none yet".to_string()
-    } else {
-        format_token_usage_line("total", state.session.token_ledger.cumulative_usage)
-    }
-}
+    spans.push(Span::styled("  · ", Style::default().fg(SUBTLE)));
+    spans.push(Span::styled(
+        preview_text(
+            &format!(
+                "{} / {}  {}",
+                state.session.provider_label, state.session.model, state.session.active_session_ref
+            ),
+            40,
+        ),
+        Style::default().fg(MUTED),
+    ));
 
-fn format_token_usage_line(label: &str, usage: agent::types::TokenUsage) -> String {
-    format!(
-        "{label}: in {}  out {}  prefill {}  decode {}  cache {}",
-        usage.input_tokens,
-        usage.output_tokens,
-        usage.prefill_tokens,
-        usage.decode_tokens,
-        usage.cache_read_tokens,
-    )
-}
-
-fn render_side_panel(frame: &mut ratatui::Frame<'_>, area: Rect, state: &TuiState) {
-    match state.main_pane {
-        MainPaneMode::Transcript => render_inspector(frame, area, state),
-        MainPaneMode::View => render_side_info(frame, area, state),
-    }
-}
-
-fn render_inspector(frame: &mut ratatui::Frame<'_>, area: Rect, state: &TuiState) {
-    let title = if state.inspector_title.is_empty() {
-        "Info"
-    } else {
-        state.inspector_title.as_str()
-    };
-    let item_count = inspector_collection_count(&state.inspector);
-    let block_title = if is_collection_inspector(title) && item_count > 0 {
-        format!("{title} · {item_count}")
-    } else {
-        title.to_string()
-    };
-    let block = pane_block(block_title, state.focus == PaneFocus::Inspector, BORDER);
-    let scroll = clamp_scroll(
-        state.inspector_scroll,
-        state.inspector.len().max(1),
-        block.inner(area).height,
-    );
-    let inspector = Paragraph::new(build_inspector_text(title, &state.inspector))
-        .block(block)
-        .scroll((scroll, 0))
-        .wrap(Wrap { trim: false })
-        .style(Style::default().fg(TEXT).bg(PANEL_ALT_BG));
-    frame.render_widget(inspector, area);
-}
-
-fn render_side_info(frame: &mut ratatui::Frame<'_>, area: Rect, state: &TuiState) {
-    let info = Paragraph::new(build_key_value_text(&side_info_lines(state)))
-        .block(pane_block(
-            "Info",
-            state.focus == PaneFocus::Inspector,
-            BORDER,
-        ))
-        .wrap(Wrap { trim: false })
-        .style(Style::default().fg(TEXT).bg(PANEL_ALT_BG));
-    frame.render_widget(info, area);
-}
-
-fn render_activity(frame: &mut ratatui::Frame<'_>, area: Rect, state: &TuiState) {
-    let lines = if state.activity.is_empty() {
-        Text::from(vec![Line::from(Span::styled(
-            "No log yet.",
-            Style::default().fg(SUBTLE),
-        ))])
-    } else {
-        let mut lines = Vec::new();
-        for item in state.activity.iter().rev().take(6) {
-            lines.push(Line::from(vec![
-                Span::styled(
-                    activity_marker(item),
-                    Style::default()
-                        .fg(activity_color(item))
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::raw(" "),
-                Span::styled(item.clone(), Style::default().fg(activity_color(item))),
-            ]));
-        }
-        Text::from(lines)
-    };
-    let block = pane_block("Log", state.focus == PaneFocus::Activity, BORDER);
-    let scroll = clamp_scroll(
-        state.activity_scroll,
-        state.activity.len().max(1),
-        block.inner(area).height,
-    );
-    let activity = Paragraph::new(lines)
-        .block(block)
-        .scroll((scroll, 0))
-        .wrap(Wrap { trim: true })
-        .style(Style::default().fg(TEXT).bg(PANEL_BG));
-    frame.render_widget(activity, area);
+    let status = Paragraph::new(Line::from(spans))
+        .style(Style::default().fg(TEXT).bg(FOOTER_BG))
+        .wrap(Wrap { trim: true });
+    frame.render_widget(status, inner);
 }
 
 fn render_composer(frame: &mut ratatui::Frame<'_>, area: Rect, state: &TuiState) {
-    let block = composer_block();
-    let inner = block.inner(area).inner(Margin {
+    frame.render_widget(
+        Block::default().style(Style::default().bg(FOOTER_ALT_BG)),
+        area,
+    );
+    let inner = area.inner(Margin {
         vertical: 0,
         horizontal: 1,
     });
     let columns = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Min(18), Constraint::Length(18)])
+        .constraints([Constraint::Min(16), Constraint::Length(20)])
         .split(inner);
-    frame.render_widget(block, area);
 
-    let input_text = if state.input.is_empty() {
+    let input_line = if state.input.is_empty() {
         Line::from(vec![
             Span::styled(">", Style::default().fg(USER).add_modifier(Modifier::BOLD)),
             Span::raw(" "),
@@ -375,36 +191,28 @@ fn render_composer(frame: &mut ratatui::Frame<'_>, area: Rect, state: &TuiState)
             Span::styled(state.input.clone(), Style::default().fg(TEXT)),
         ])
     };
-    let input_field = Paragraph::new(Text::from(input_text))
-        .style(Style::default().fg(TEXT).bg(TOP_BG))
-        .alignment(Alignment::Left);
-    frame.render_widget(Clear, columns[0]);
-    frame.render_widget(input_field, columns[0]);
+    frame.render_widget(
+        Paragraph::new(input_line).style(Style::default().fg(TEXT).bg(FOOTER_ALT_BG)),
+        columns[0],
+    );
 
-    let mode = Paragraph::new(Line::from(vec![
+    let mode = if state.input.trim_start().starts_with('/') {
+        ("command", USER)
+    } else if state.turn_running {
+        ("follow-up", WARN)
+    } else {
+        ("prompt", ASSISTANT)
+    };
+    let hint = Paragraph::new(Line::from(vec![
         Span::styled(
-            if state.input.trim_start().starts_with('/') {
-                "command"
-            } else if state.turn_running {
-                "follow-up"
-            } else {
-                "prompt"
-            },
-            Style::default()
-                .fg(if state.input.trim_start().starts_with('/') {
-                    USER
-                } else if state.turn_running {
-                    WARN
-                } else {
-                    ASSISTANT
-                })
-                .add_modifier(Modifier::BOLD),
+            mode.0,
+            Style::default().fg(mode.1).add_modifier(Modifier::BOLD),
         ),
         Span::styled("  Enter send", Style::default().fg(MUTED)),
     ]))
     .alignment(Alignment::Right)
-    .style(Style::default().fg(MUTED).bg(PANEL_ALT_BG));
-    frame.render_widget(mode, columns[1]);
+    .style(Style::default().fg(MUTED).bg(FOOTER_ALT_BG));
+    frame.render_widget(hint, columns[1]);
 }
 
 fn render_approval_overlay(frame: &mut ratatui::Frame<'_>, area: Rect, approval: &ApprovalPrompt) {
@@ -412,31 +220,30 @@ fn render_approval_overlay(frame: &mut ratatui::Frame<'_>, area: Rect, approval:
     frame.render_widget(Clear, popup);
 
     let body = Paragraph::new(build_approval_text(approval))
-        .block(panel_block("Approval Required", BORDER_ACTIVE))
+        .block(panel_block("approval", BORDER_ACTIVE))
         .wrap(Wrap { trim: false })
         .style(Style::default().fg(TEXT).bg(OVERLAY_BG));
     frame.render_widget(body, popup);
 }
 
 fn composer_inner_area(area: Rect) -> Rect {
-    let inner = composer_block().inner(area).inner(Margin {
+    let inner = area.inner(Margin {
         vertical: 0,
         horizontal: 1,
     });
     Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Min(18), Constraint::Length(18)])
+        .constraints([Constraint::Min(16), Constraint::Length(20)])
         .split(inner)[0]
 }
 
 fn approval_sheet_rect(area: Rect) -> Rect {
-    let width = area.width.saturating_sub(8).max(40);
-    let height = area.height.min(14);
+    let width = area.width.saturating_sub(8).min(88).max(42);
+    let height = area.height.min(12);
     let x = area.x + area.width.saturating_sub(width) / 2;
-    let bottom_inset = 5;
     let y = area
         .y
-        .saturating_add(area.height.saturating_sub(height + bottom_inset));
+        .saturating_add(area.height.saturating_sub(height.saturating_add(3)));
     Rect {
         x,
         y,
@@ -446,25 +253,23 @@ fn approval_sheet_rect(area: Rect) -> Rect {
 }
 
 fn build_approval_text(approval: &ApprovalPrompt) -> Text<'static> {
-    let mut lines = vec![
-        Line::from(vec![
-            Span::styled(
-                "tool: ",
-                Style::default().fg(MUTED).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(approval.tool_name.clone(), Style::default().fg(TEXT)),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                "origin: ",
-                Style::default().fg(MUTED).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(approval.origin.clone(), Style::default().fg(TEXT)),
-        ]),
-    ];
+    let mut lines = vec![Line::from(vec![
+        Span::styled(
+            "tool ",
+            Style::default().fg(MUTED).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(approval.tool_name.clone(), Style::default().fg(TEXT)),
+        Span::styled(
+            "   origin ",
+            Style::default().fg(MUTED).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(approval.origin.clone(), Style::default().fg(TEXT)),
+    ])];
+
     if !approval.reasons.is_empty() {
+        lines.push(Line::raw(""));
         lines.push(Line::from(Span::styled(
-            "reasons:",
+            "reasons",
             Style::default().fg(MUTED).add_modifier(Modifier::BOLD),
         )));
         for reason in &approval.reasons {
@@ -474,9 +279,10 @@ fn build_approval_text(approval: &ApprovalPrompt) -> Text<'static> {
             ]));
         }
     }
+
     lines.push(Line::raw(""));
     lines.push(Line::from(Span::styled(
-        "arguments preview:",
+        "arguments",
         Style::default().fg(MUTED).add_modifier(Modifier::BOLD),
     )));
     for line in &approval.arguments_preview {
@@ -485,43 +291,23 @@ fn build_approval_text(approval: &ApprovalPrompt) -> Text<'static> {
             Style::default().fg(TEXT),
         )));
     }
+
     lines.push(Line::raw(""));
     lines.push(Line::from(vec![
         Span::styled(
             "y",
             Style::default().fg(ASSISTANT).add_modifier(Modifier::BOLD),
         ),
-        Span::styled(" approve once   ", Style::default().fg(MUTED)),
+        Span::styled(" allow once   ", Style::default().fg(MUTED)),
         Span::styled("n", Style::default().fg(ERROR).add_modifier(Modifier::BOLD)),
         Span::styled(" deny once   ", Style::default().fg(MUTED)),
         Span::styled(
-            "Esc",
+            "esc",
             Style::default().fg(WARN).add_modifier(Modifier::BOLD),
         ),
         Span::styled(" close", Style::default().fg(MUTED)),
     ]));
     Text::from(lines)
-}
-
-fn side_info_lines(state: &TuiState) -> Vec<String> {
-    let mut lines = vec![
-        format!(
-            "summary: {}",
-            preview_text(&state.session.summary_model, 14)
-        ),
-        format!("memory: {}", preview_text(&state.session.memory_model, 14)),
-        format!("saved: {}", state.session.stored_session_count),
-        format!("store: {}", preview_text(&state.session.store_label, 14)),
-    ];
-    if let Some(warning) = &state.session.store_warning {
-        lines.push(format!("warning: {}", preview_text(warning, 14)));
-    } else {
-        lines.push(format!(
-            "sandbox: {}",
-            preview_text(&state.session.sandbox_summary, 14)
-        ));
-    }
-    lines
 }
 
 fn panel_block(title: impl Into<String>, border_color: Color) -> Block<'static> {
@@ -533,39 +319,25 @@ fn panel_block(title: impl Into<String>, border_color: Color) -> Block<'static> 
             format!(" {title} "),
             Style::default().fg(HEADER).add_modifier(Modifier::BOLD),
         ))
-        .style(Style::default().bg(PANEL_BG))
+        .style(Style::default().bg(OVERLAY_BG))
 }
 
-fn pane_block(title: impl Into<String>, focused: bool, base_color: Color) -> Block<'static> {
-    let title = title.into();
-    Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(base_color))
-        .title(Span::styled(
-            format!(" {title} "),
-            Style::default()
-                .fg(if focused { BORDER_ACTIVE } else { HEADER })
-                .add_modifier(Modifier::BOLD),
-        ))
-        .style(Style::default().bg(PANEL_BG))
-}
-
-fn composer_block() -> Block<'static> {
-    Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(BORDER))
-        .title(Span::styled(
-            " Input ",
-            Style::default().fg(HEADER).add_modifier(Modifier::BOLD),
-        ))
-        .style(Style::default().bg(PANEL_ALT_BG))
-}
-
-fn build_transcript_lines(entries: &[String]) -> Vec<Line<'static>> {
+fn build_transcript_lines(state: &TuiState) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
-    if entries.is_empty() {
+
+    if should_render_transcript_context(&state.inspector_title) && !state.inspector.is_empty() {
         lines.push(Line::from(Span::styled(
-            "No conversation yet.",
+            state.inspector_title.clone(),
+            Style::default().fg(HEADER).add_modifier(Modifier::BOLD),
+        )));
+        lines.push(Line::raw(""));
+        lines.extend(build_inspector_text(&state.inspector_title, &state.inspector).lines);
+        lines.push(Line::raw(""));
+    }
+
+    if state.transcript.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "Ready.",
             Style::default().fg(HEADER).add_modifier(Modifier::BOLD),
         )));
         lines.push(Line::raw(""));
@@ -573,50 +345,106 @@ fn build_transcript_lines(entries: &[String]) -> Vec<Line<'static>> {
             "Type a prompt below or open /help.",
             Style::default().fg(SUBTLE),
         )));
-        return lines;
+    } else {
+        for (index, entry) in state.transcript.iter().enumerate() {
+            if index > 0 && entry.starts_with("user> ") {
+                lines.push(turn_divider());
+                lines.push(Line::raw(""));
+            }
+            lines.extend(format_transcript_entry(entry));
+            lines.push(Line::raw(""));
+        }
     }
 
-    for entry in entries {
-        lines.extend(format_transcript_entry(entry));
-        lines.push(Line::raw(""));
+    if state.turn_running || state.session.queued_commands > 0 {
+        if !lines.is_empty() {
+            lines.push(Line::raw(""));
+        }
+        lines.push(Line::from(vec![
+            Span::styled(
+                progress_marker(state),
+                Style::default()
+                    .fg(status_color(&state.status))
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" "),
+            Span::styled(
+                preview_text(&state.status, 80),
+                Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
+            ),
+        ]));
+        for item in recent_activity_items(state).into_iter().take(4) {
+            lines.push(Line::from(vec![
+                Span::raw("  "),
+                Span::styled(
+                    activity_marker(&item),
+                    Style::default()
+                        .fg(activity_color(&item))
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(" "),
+                Span::styled(item.clone(), Style::default().fg(activity_color(&item))),
+            ]));
+        }
     }
+
     lines
 }
 
+fn should_render_transcript_context(title: &str) -> bool {
+    matches!(title, "Resume" | "Session" | "Task" | "Agent Session")
+}
+
+fn turn_divider() -> Line<'static> {
+    Line::from(Span::styled("─".repeat(30), Style::default().fg(SUBTLE)))
+}
+
 fn format_transcript_entry(entry: &str) -> Vec<Line<'static>> {
-    let (label, accent, body) = if let Some(body) = entry.strip_prefix("user> ") {
+    let (kind, accent, body) = if let Some(body) = entry.strip_prefix("user> ") {
         ("user", USER, body)
     } else if let Some(body) = entry.strip_prefix("assistant> ") {
         ("assistant", ASSISTANT, body)
     } else if let Some(body) = entry.strip_prefix("error> ") {
         ("error", ERROR, body)
+    } else if let Some(body) = entry.strip_prefix("system> ") {
+        ("system", MUTED, body)
     } else {
         ("event", WARN, entry)
     };
 
-    let mut lines = Vec::new();
-    lines.push(Line::from(Span::styled(
-        label.to_string(),
-        Style::default().fg(accent).add_modifier(Modifier::BOLD),
-    )));
+    let mut lines = vec![Line::from(vec![
+        Span::styled(
+            message_marker(kind),
+            Style::default().fg(accent).add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(" "),
+        Span::styled(
+            message_label(kind).to_string(),
+            Style::default().fg(accent).add_modifier(Modifier::BOLD),
+        ),
+    ])];
+
     let mut in_code = false;
     for raw_line in body.lines() {
-        if raw_line.trim_start().starts_with("```") {
+        let trimmed = raw_line.trim_start();
+        if trimmed.starts_with("```") {
             in_code = !in_code;
-            lines.push(Line::from(vec![Span::styled(
-                if in_code { "code block" } else { "end code" },
-                Style::default().fg(MUTED).add_modifier(Modifier::DIM),
-            )]));
+            lines.push(Line::from(vec![
+                Span::raw("  "),
+                Span::styled(trimmed.to_string(), Style::default().fg(SUBTLE)),
+            ]));
             continue;
         }
         lines.push(render_transcript_body_line(raw_line, in_code));
     }
+
     if body.trim().is_empty() {
-        lines.push(Line::from(Span::styled(
-            "<empty>",
-            Style::default().fg(SUBTLE),
-        )));
+        lines.push(Line::from(vec![
+            Span::raw("  "),
+            Span::styled("<empty>", Style::default().fg(SUBTLE)),
+        ]));
     }
+
     lines
 }
 
@@ -625,12 +453,7 @@ fn render_transcript_body_line(raw_line: &str, in_code: bool) -> Line<'static> {
         return Line::from(Span::raw(""));
     }
     if in_code {
-        return Line::from(vec![
-            Span::raw("  "),
-            Span::styled("│", Style::default().fg(SUBTLE)),
-            Span::raw(" "),
-            code_span(raw_line),
-        ]);
+        return Line::from(vec![Span::raw("  "), code_span(raw_line)]);
     }
     if let Some(rest) = raw_line
         .strip_prefix("- ")
@@ -638,7 +461,7 @@ fn render_transcript_body_line(raw_line: &str, in_code: bool) -> Line<'static> {
     {
         return Line::from(vec![
             Span::raw("  "),
-            Span::styled("•", Style::default().fg(MUTED).add_modifier(Modifier::BOLD)),
+            Span::styled("-", Style::default().fg(MUTED).add_modifier(Modifier::BOLD)),
             Span::raw(" "),
             Span::styled(rest.to_string(), Style::default().fg(TEXT)),
         ]);
@@ -652,15 +475,60 @@ fn render_transcript_body_line(raw_line: &str, in_code: bool) -> Line<'static> {
 fn code_span(line: &str) -> Span<'static> {
     let trimmed = line.trim_start();
     let style = if trimmed.starts_with('+') && !trimmed.starts_with("+++") {
-        Style::default().fg(ASSISTANT).bg(PANEL_ALT_BG)
+        Style::default().fg(ASSISTANT).bg(FOOTER_BG)
     } else if trimmed.starts_with('-') && !trimmed.starts_with("---") {
-        Style::default().fg(ERROR).bg(PANEL_ALT_BG)
+        Style::default().fg(ERROR).bg(FOOTER_BG)
     } else if trimmed.starts_with("@@") {
-        Style::default().fg(USER).bg(PANEL_ALT_BG)
+        Style::default().fg(USER).bg(FOOTER_BG)
     } else {
-        Style::default().fg(TEXT).bg(PANEL_ALT_BG)
+        Style::default().fg(TEXT).bg(FOOTER_BG)
     };
     Span::styled(line.to_string(), style)
+}
+
+fn progress_marker(state: &TuiState) -> &'static str {
+    if state.turn_running {
+        const FRAMES: [&str; 4] = ["|", "/", "-", "\\"];
+        let frame = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| ((duration.as_millis() / 120) % FRAMES.len() as u128) as usize)
+            .unwrap_or(0);
+        FRAMES[frame]
+    } else if state.session.queued_commands > 0 {
+        "+"
+    } else {
+        "·"
+    }
+}
+
+fn recent_activity_items(state: &TuiState) -> Vec<String> {
+    state
+        .activity
+        .iter()
+        .rev()
+        .take(3)
+        .map(|line| preview_text(line, 36))
+        .collect()
+}
+
+fn message_label(kind: &str) -> &'static str {
+    match kind {
+        "user" => "You",
+        "assistant" => "Code Agent",
+        "error" => "Error",
+        "system" => "System",
+        _ => "Event",
+    }
+}
+
+fn message_marker(kind: &str) -> &'static str {
+    match kind {
+        "user" => "›",
+        "assistant" => "•",
+        "error" => "!",
+        "system" => "·",
+        _ => "·",
+    }
 }
 
 fn build_key_value_text(lines: &[String]) -> Text<'static> {
@@ -670,10 +538,10 @@ fn build_key_value_text(lines: &[String]) -> Text<'static> {
             if !rendered.is_empty() {
                 rendered.push(Line::raw(""));
             }
-            rendered.push(Line::from(vec![Span::styled(
+            rendered.push(Line::from(Span::styled(
                 title.to_string(),
                 Style::default().fg(HEADER).add_modifier(Modifier::BOLD),
-            )]));
+            )));
             continue;
         }
         if let Some((key, value)) = line.split_once(':') {
@@ -690,7 +558,7 @@ fn build_key_value_text(lines: &[String]) -> Text<'static> {
             ]));
         } else if let Some(rest) = line.strip_prefix("  ") {
             rendered.push(Line::from(vec![
-                Span::styled("  ", Style::default().fg(SUBTLE)),
+                Span::raw("  "),
                 Span::styled(rest.to_string(), Style::default().fg(TEXT)),
             ]));
         } else if line.starts_with('/') {
@@ -724,10 +592,10 @@ fn build_collection_text(title: &str, lines: &[String]) -> Text<'static> {
             if !rendered.is_empty() {
                 rendered.push(Line::raw(""));
             }
-            rendered.push(Line::from(vec![Span::styled(
+            rendered.push(Line::from(Span::styled(
                 section.to_string(),
                 Style::default().fg(HEADER).add_modifier(Modifier::BOLD),
-            )]));
+            )));
             continue;
         }
         if line.starts_with("No ") || line.starts_with("no ") {
@@ -787,13 +655,6 @@ fn is_collection_inspector(title: &str) -> bool {
             | "Sessions"
             | "Session Search"
     )
-}
-
-fn inspector_collection_count(lines: &[String]) -> usize {
-    lines
-        .iter()
-        .filter(|line| !line.starts_with("## ") && !line.trim().is_empty())
-        .count()
 }
 
 fn inspector_accent(title: &str) -> Color {
@@ -903,17 +764,10 @@ fn activity_marker(line: &str) -> &'static str {
     let lower = line.to_ascii_lowercase();
     if lower.contains("failed") || lower.contains("error") || lower.contains("denied") {
         "!"
-    } else if lower.contains("approval")
-        || lower.contains("queued")
-        || lower.contains("waiting")
-        || lower.contains("blocked")
-    {
-        "•"
     } else if lower.contains("approved")
         || lower.contains("complete")
         || lower.contains("loaded")
         || lower.contains("ready")
-        || lower.contains("listed")
     {
         "✓"
     } else {
@@ -948,55 +802,8 @@ fn clamp_scroll(requested: u16, content_lines: usize, viewport_height: u16) -> u
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        build_collection_text, build_key_value_text, build_transcript_lines, session_context_line,
-        session_last_token_line, session_lines, session_total_token_line,
-    };
-    use crate::frontend::tui::state::TuiState;
-    use agent::types::{ContextWindowUsage, TokenLedgerSnapshot, TokenUsage};
-    use std::path::PathBuf;
-
-    #[test]
-    fn session_token_lines_show_unknown_context_before_first_request() {
-        let mut state = TuiState::default();
-        state.session.workspace_name = "workspace".to_string();
-        state.session.active_session_ref = "run_123".to_string();
-        state.session.root_agent_session_id = "session_123".to_string();
-        state.session.workspace_root = PathBuf::from("/tmp/workspace");
-
-        assert_eq!(session_context_line(&state), "context: unknown");
-        assert_eq!(session_last_token_line(&state), "last: none yet");
-        assert_eq!(session_total_token_line(&state), "total: none yet");
-        assert!(session_lines(&state).contains(&"total: none yet".to_string()));
-    }
-
-    #[test]
-    fn session_token_lines_show_cumulative_usage_after_runtime_updates() {
-        let mut state = TuiState::default();
-        state.session.workspace_name = "workspace".to_string();
-        state.session.active_session_ref = "run_123".to_string();
-        state.session.root_agent_session_id = "session_123".to_string();
-        state.session.workspace_root = PathBuf::from("/tmp/workspace");
-        state.session.token_ledger = TokenLedgerSnapshot {
-            context_window: Some(ContextWindowUsage {
-                used_tokens: 128_000,
-                max_tokens: 400_000,
-            }),
-            last_usage: Some(TokenUsage::from_input_output(9_000, 600, 1_500)),
-            cumulative_usage: TokenUsage::from_input_output(32_000, 2_400, 7_000),
-        };
-
-        assert_eq!(session_context_line(&state), "context: 128000 / 400000");
-        assert_eq!(
-            session_last_token_line(&state),
-            "last: in 9000  out 600  prefill 7500  decode 600  cache 1500"
-        );
-        assert_eq!(
-            session_total_token_line(&state),
-            "total: in 32000  out 2400  prefill 25000  decode 2400  cache 7000"
-        );
-        assert!(session_lines(&state).contains(&"context: 128000 / 400000".to_string()));
-    }
+    use super::{build_collection_text, build_key_value_text, build_transcript_lines};
+    use crate::frontend::tui::state::{MainPaneMode, TuiState};
 
     #[test]
     fn key_value_text_renders_section_headers_without_treating_them_as_pairs() {
@@ -1012,12 +819,57 @@ mod tests {
     }
 
     #[test]
-    fn transcript_entries_render_with_minimal_header_and_indented_body() {
-        let lines = build_transcript_lines(&["assistant> hello world".to_string()]);
+    fn transcript_entries_render_with_codex_like_headers() {
+        let mut state = TuiState {
+            main_pane: MainPaneMode::Transcript,
+            ..TuiState::default()
+        };
+        state.transcript = vec!["assistant> hello world".to_string()];
 
-        assert_eq!(lines[0].spans[0].content.as_ref(), "assistant");
+        let lines = build_transcript_lines(&state);
+
+        assert_eq!(lines[0].spans[0].content.as_ref(), "•");
+        assert_eq!(lines[0].spans[2].content.as_ref(), "Code Agent");
         assert_eq!(lines[1].spans[0].content.as_ref(), "  ");
         assert_eq!(lines[1].spans[1].content.as_ref(), "hello world");
+    }
+
+    #[test]
+    fn transcript_inserts_turn_dividers_between_user_turns() {
+        let mut state = TuiState {
+            main_pane: MainPaneMode::Transcript,
+            ..TuiState::default()
+        };
+        state.transcript = vec![
+            "user> first".to_string(),
+            "assistant> reply".to_string(),
+            "user> second".to_string(),
+        ];
+
+        let rendered = build_transcript_lines(&state);
+
+        assert!(rendered.iter().any(|line| {
+            line.spans
+                .first()
+                .is_some_and(|span| span.content.contains("─"))
+        }));
+    }
+
+    #[test]
+    fn transcript_renders_resume_summary_above_history() {
+        let mut state = TuiState {
+            main_pane: MainPaneMode::Transcript,
+            inspector_title: "Resume".to_string(),
+            inspector: vec!["## Resume".to_string(), "action: reattached".to_string()],
+            ..TuiState::default()
+        };
+        state.transcript = vec!["assistant> done".to_string()];
+
+        let rendered = build_transcript_lines(&state);
+
+        assert_eq!(rendered[0].spans[0].content.as_ref(), "Resume");
+        assert_eq!(rendered[2].spans[0].content.as_ref(), "Resume");
+        assert_eq!(rendered[3].spans[0].content.as_ref(), "action:");
     }
 
     #[test]

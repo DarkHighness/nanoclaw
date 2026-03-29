@@ -31,11 +31,10 @@ cp apps/code-agent/.env.example .env
 cargo run --manifest-path apps/Cargo.toml -p code-agent
 ```
 
-This opens a compact `ratatui` screen with a minimal top line for
-workspace/model/session status, a wide primary pane for transcript and
-read-heavy command surfaces, a restrained right-hand info/log rail, a more
-neutral dark palette, and a minimal composer tuned for both prompt and
-slash-command workflows.
+This opens a compact `ratatui` screen with a single wide main surface for
+transcript and read-heavy command views, a minimal bottom status line, a
+compact composer, muted approval sheets, and a more neutral dark palette tuned
+for prompt and slash-command workflows.
 
 One-shot prompt:
 
@@ -210,12 +209,15 @@ MCP-focused commands expose connected server catalogs plus prompt/resource
 loading directly from `code-agent` without relying on the legacy
 `reference-tui` shell.
 
-The TUI now follows a more minimal shell: a compact top line for the current
-context, most of the screen dedicated to the transcript or active command view,
-and a restrained side rail that only carries brief info plus recent log
-entries. The palette is intentionally muted rather than blue-accented, and
+The TUI now follows a more minimal shell: a single main pane for transcript and
+command views, a bottom status line for live runtime state, and a compact input
+line instead of stacked bars and side rails. The palette is intentionally
+muted rather than blue-accented, transcript turns are separated visually, and
 read-heavy outputs such as `/help`, command catalogs, and history lists now
-open in the main pane instead of the side rail.
+open in the main pane.
+
+Approval prompts now render as compact bottom-anchored sheets instead of large
+modal panels so tool confirmation feels closer to a terminal operator flow.
 
 Interactive approval and live runtime updates now also route through
 backend-owned contracts, so the TUI renders session events and approval prompts

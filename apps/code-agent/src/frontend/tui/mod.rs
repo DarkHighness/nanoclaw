@@ -124,20 +124,8 @@ impl CodeAgentTui {
                     continue;
                 }
                 match key.code {
-                    KeyCode::Tab => {
-                        self.ui_state.mutate(|state| {
-                            state.cycle_focus_forward();
-                            state.status =
-                                format!("Focus moved to {}", state.focus.title().to_lowercase());
-                        });
-                    }
-                    KeyCode::BackTab => {
-                        self.ui_state.mutate(|state| {
-                            state.cycle_focus_backward();
-                            state.status =
-                                format!("Focus moved to {}", state.focus.title().to_lowercase());
-                        });
-                    }
+                    KeyCode::Tab => {}
+                    KeyCode::BackTab => {}
                     KeyCode::Up => {
                         self.ui_state.mutate(|state| state.scroll_focused(-1));
                     }
@@ -1026,6 +1014,7 @@ impl CodeAgentTui {
                 queued_commands: 0,
                 token_ledger: Default::default(),
             },
+            main_pane: state::MainPaneMode::View,
             inspector_title: "Guide".to_string(),
             inspector: build_startup_inspector(&state::SessionSummary {
                 workspace_name: snapshot.workspace_name.clone(),
@@ -1035,8 +1024,8 @@ impl CodeAgentTui {
                 model: snapshot.model.clone(),
                 summary_model: snapshot.summary_model.clone(),
                 memory_model: snapshot.memory_model.clone(),
-                workspace_root,
-                git: Default::default(),
+                workspace_root: workspace_root.clone(),
+                git: state::git_snapshot(&workspace_root),
                 tool_names: snapshot.tool_names.clone(),
                 skill_names: snapshot.skill_names.clone(),
                 store_label: snapshot.store_label.clone(),
@@ -1184,6 +1173,12 @@ fn command_palette_lines() -> Vec<String> {
 
 fn build_startup_inspector(session: &state::SessionSummary) -> Vec<String> {
     let mut lines = vec![
+        "## Workspace".to_string(),
+        format!("name: {}", session.workspace_name),
+        format!(
+            "root: {}",
+            state::preview_text(&session.workspace_root.display().to_string(), 80)
+        ),
         "## Session".to_string(),
         format!("session ref: {}", session.active_session_ref),
         format!("agent session id: {}", session.root_agent_session_id),
@@ -1202,12 +1197,25 @@ fn build_startup_inspector(session: &state::SessionSummary) -> Vec<String> {
         ),
         format!("summary lane: {}", session.summary_model),
         format!("memory lane: {}", session.memory_model),
+        "## Capabilities".to_string(),
+        format!("tools: {}", session.tool_names.len()),
+        format!("skills: {}", session.skill_names.len()),
         "## Store".to_string(),
         format!(
             "store: {} ({} sessions)",
             session.store_label, session.stored_session_count
         ),
         format!("sandbox: {}", session.sandbox_summary),
+        "## Git".to_string(),
+        if session.git.available {
+            format!("branch: {}", session.git.branch)
+        } else {
+            "branch: unavailable".to_string()
+        },
+        format!(
+            "dirty: staged {}  modified {}  untracked {}",
+            session.git.staged, session.git.modified, session.git.untracked
+        ),
         "## Diagnostics".to_string(),
         format!(
             "tools: {} local / {} mcp",

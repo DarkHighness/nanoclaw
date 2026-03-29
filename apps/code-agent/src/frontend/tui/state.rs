@@ -13,26 +13,6 @@ pub(crate) struct GitSnapshot {
     pub(crate) untracked: usize,
 }
 
-impl GitSnapshot {
-    pub(crate) fn branch_label(&self) -> String {
-        if self.available {
-            format!("git: {}", self.branch)
-        } else {
-            "git: unavailable".to_string()
-        }
-    }
-
-    pub(crate) fn dirty_label(&self) -> String {
-        if !self.available {
-            return "repo unavailable".to_string();
-        }
-        format!(
-            "staged {}  modified {}  untracked {}",
-            self.staged, self.modified, self.untracked
-        )
-    }
-}
-
 #[derive(Clone, Debug, Default)]
 pub(crate) struct SessionSummary {
     pub(crate) workspace_name: String,
@@ -62,45 +42,10 @@ pub(crate) enum MainPaneMode {
     View,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) enum PaneFocus {
-    #[default]
-    Conversation,
-    Inspector,
-    Activity,
-}
-
-impl PaneFocus {
-    pub(crate) fn title(self) -> &'static str {
-        match self {
-            Self::Conversation => "Conversation",
-            Self::Inspector => "Inspector",
-            Self::Activity => "Activity",
-        }
-    }
-
-    pub(crate) fn next(self) -> Self {
-        match self {
-            Self::Conversation => Self::Inspector,
-            Self::Inspector => Self::Activity,
-            Self::Activity => Self::Conversation,
-        }
-    }
-
-    pub(crate) fn previous(self) -> Self {
-        match self {
-            Self::Conversation => Self::Activity,
-            Self::Inspector => Self::Conversation,
-            Self::Activity => Self::Inspector,
-        }
-    }
-}
-
 #[derive(Clone, Debug, Default)]
 pub(crate) struct TuiState {
     pub(crate) session: SessionSummary,
     pub(crate) main_pane: MainPaneMode,
-    pub(crate) focus: PaneFocus,
     pub(crate) input: String,
     pub(crate) transcript: Vec<String>,
     pub(crate) transcript_scroll: u16,
@@ -139,56 +84,24 @@ impl TuiState {
         self.transcript_scroll = u16::MAX;
     }
 
-    pub(crate) fn cycle_focus_forward(&mut self) {
-        self.focus = self.focus.next();
-    }
-
-    pub(crate) fn cycle_focus_backward(&mut self) {
-        self.focus = self.focus.previous();
-    }
-
     pub(crate) fn scroll_focused(&mut self, delta: i16) {
-        match self.focus {
-            PaneFocus::Conversation => match self.main_pane {
-                MainPaneMode::Transcript => bump_scroll(&mut self.transcript_scroll, delta),
-                MainPaneMode::View => bump_scroll(&mut self.inspector_scroll, delta),
-            },
-            PaneFocus::Inspector => {
-                if matches!(self.main_pane, MainPaneMode::Transcript) {
-                    bump_scroll(&mut self.inspector_scroll, delta);
-                }
-            }
-            PaneFocus::Activity => bump_scroll(&mut self.activity_scroll, delta),
+        match self.main_pane {
+            MainPaneMode::Transcript => bump_scroll(&mut self.transcript_scroll, delta),
+            MainPaneMode::View => bump_scroll(&mut self.inspector_scroll, delta),
         }
     }
 
     pub(crate) fn scroll_focused_home(&mut self) {
-        match self.focus {
-            PaneFocus::Conversation => match self.main_pane {
-                MainPaneMode::Transcript => self.transcript_scroll = 0,
-                MainPaneMode::View => self.inspector_scroll = 0,
-            },
-            PaneFocus::Inspector => {
-                if matches!(self.main_pane, MainPaneMode::Transcript) {
-                    self.inspector_scroll = 0;
-                }
-            }
-            PaneFocus::Activity => self.activity_scroll = 0,
+        match self.main_pane {
+            MainPaneMode::Transcript => self.transcript_scroll = 0,
+            MainPaneMode::View => self.inspector_scroll = 0,
         }
     }
 
     pub(crate) fn scroll_focused_end(&mut self) {
-        match self.focus {
-            PaneFocus::Conversation => match self.main_pane {
-                MainPaneMode::Transcript => self.transcript_scroll = u16::MAX,
-                MainPaneMode::View => self.inspector_scroll = u16::MAX,
-            },
-            PaneFocus::Inspector => {
-                if matches!(self.main_pane, MainPaneMode::Transcript) {
-                    self.inspector_scroll = u16::MAX;
-                }
-            }
-            PaneFocus::Activity => self.activity_scroll = u16::MAX,
+        match self.main_pane {
+            MainPaneMode::Transcript => self.transcript_scroll = u16::MAX,
+            MainPaneMode::View => self.inspector_scroll = u16::MAX,
         }
     }
 }
