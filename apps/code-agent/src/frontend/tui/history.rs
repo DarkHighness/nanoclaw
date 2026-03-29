@@ -642,7 +642,7 @@ fn task_status_headline(task_id: &str, status: &AgentStatus) -> String {
         AgentStatus::Completed => format!("✔ Task {task_id} completed"),
         AgentStatus::Failed => format!("✗ Task {task_id} failed"),
         AgentStatus::Cancelled => format!("✗ Task {task_id} cancelled"),
-        AgentStatus::WaitingApproval => format!("• Task {task_id} is waiting for approval"),
+        AgentStatus::WaitingApproval => format!("• Task {task_id} is awaiting approval"),
         AgentStatus::WaitingMessage => format!("• Task {task_id} is waiting for a message"),
         AgentStatus::Queued => format!("• Task {task_id} is queued"),
         AgentStatus::Running => format!("• Task {task_id} is running"),
@@ -663,7 +663,7 @@ fn format_agent_envelope_kind(kind: &AgentEnvelopeKind) -> String {
             AgentStatus::Completed => "✔ Agent completed".to_string(),
             AgentStatus::Failed => "✗ Agent failed".to_string(),
             AgentStatus::Cancelled => "✗ Agent cancelled".to_string(),
-            AgentStatus::WaitingApproval => "• Agent is waiting for approval".to_string(),
+            AgentStatus::WaitingApproval => "• Agent is awaiting approval".to_string(),
             AgentStatus::WaitingMessage => "• Agent is waiting for a message".to_string(),
             AgentStatus::Queued => "• Agent is queued".to_string(),
             AgentStatus::Running => "• Agent is running".to_string(),
@@ -973,7 +973,7 @@ fn format_session_event_line(event: &SessionEventEnvelope) -> String {
             [format!("message {}", preview_id(message_id.as_str()))],
         ),
         SessionEventKind::ToolApprovalRequested { call, reasons } => shell_summary(
-            format!("• Waiting for approval to run {}", call.tool_name),
+            format!("• Awaiting approval for {}", call.tool_name),
             tool_argument_preview_lines(call.tool_name.as_str(), &call.arguments)
                 .into_iter()
                 .chain(std::iter::once(
@@ -1203,7 +1203,7 @@ mod tests {
 
         assert_eq!(
             format_session_event_line(&event),
-            "• Waiting for approval to run bash\n  └ $ cargo test\n  └ reason sandbox policy requires approval"
+            "• Awaiting approval for bash\n  └ $ cargo test\n  └ reason sandbox policy requires approval"
         );
     }
 

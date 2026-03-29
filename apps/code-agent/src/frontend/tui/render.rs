@@ -77,12 +77,22 @@ fn render_main_pane(frame: &mut ratatui::Frame<'_>, area: Rect, state: &TuiState
 }
 
 fn render_transcript(frame: &mut ratatui::Frame<'_>, area: Rect, state: &TuiState) {
-    let lines = build_transcript_lines(state);
     frame.render_widget(Block::default().style(Style::default().bg(MAIN_BG)), area);
     let inner = area.inner(Margin {
         vertical: 0,
         horizontal: 2,
     });
+    if state.transcript.is_empty() && !state.turn_running && state.session.queued_commands == 0 {
+        let lines = build_welcome_lines(state, inner.height);
+        let empty = Paragraph::new(Text::from(lines))
+            .alignment(Alignment::Center)
+            .wrap(Wrap { trim: false })
+            .style(Style::default().fg(TEXT).bg(MAIN_BG));
+        frame.render_widget(empty, inner);
+        return;
+    }
+
+    let lines = build_transcript_lines(state);
     let scroll = clamp_scroll(state.transcript_scroll, lines.len(), inner.height);
     let transcript = Paragraph::new(Text::from(lines))
         .scroll((scroll, 0))
@@ -263,17 +273,7 @@ fn build_transcript_lines(state: &TuiState) -> Vec<Line<'static>> {
         lines.push(Line::raw(""));
     }
 
-    if state.transcript.is_empty() {
-        lines.push(Line::from(Span::styled(
-            "Ready.",
-            Style::default().fg(HEADER).add_modifier(Modifier::BOLD),
-        )));
-        lines.push(Line::raw(""));
-        lines.push(Line::from(Span::styled(
-            "Type a prompt below or open /help.",
-            Style::default().fg(SUBTLE),
-        )));
-    } else {
+    if !state.transcript.is_empty() {
         for (index, entry) in state.transcript.iter().enumerate() {
             if index > 0 && entry.starts_with("› ") {
                 lines.push(turn_divider());
@@ -294,6 +294,35 @@ fn build_transcript_lines(state: &TuiState) -> Vec<Line<'static>> {
         lines.extend(progress_lines);
     }
 
+    lines
+}
+
+fn build_welcome_lines(state: &TuiState, viewport_height: u16) -> Vec<Line<'static>> {
+    let core = vec![
+        Line::from(Span::styled(
+            "code-agent".to_string(),
+            Style::default().fg(HEADER).add_modifier(Modifier::BOLD),
+        )),
+        Line::raw(""),
+        Line::from(Span::styled(
+            format!("{} · {}", state.session.workspace_name, state.session.model),
+            Style::default().fg(MUTED),
+        )),
+        Line::raw(""),
+        Line::from(Span::styled(
+            "Ask for a summary, a fix, or a change.",
+            Style::default().fg(TEXT),
+        )),
+        Line::raw(""),
+        Line::from(Span::styled(
+            "/help commands · /sessions history · /new fresh session",
+            Style::default().fg(SUBTLE),
+        )),
+    ];
+
+    let top_padding = usize::from(viewport_height.saturating_sub(core.len() as u16) / 3);
+    let mut lines = vec![Line::raw(""); top_padding];
+    lines.extend(core);
     lines
 }
 
@@ -1028,7 +1057,7 @@ fn clamp_scroll(requested: u16, content_lines: usize, viewport_height: u16) -> u
 mod tests {
     use super::{
         approval_preview_lines, build_approval_text, build_collection_text, build_key_value_text,
-        build_side_rail_lines, build_transcript_lines, format_footer_context,
+        build_side_rail_lines, build_transcript_lines, build_welcome_lines, format_footer_context,
         should_render_side_rail,
     };
     use crate::frontend::tui::approval::ApprovalPrompt;
@@ -1140,6 +1169,33 @@ mod tests {
         assert_eq!(rendered[0].spans[0].content.as_ref(), "Resume");
         assert_eq!(rendered[2].spans[0].content.as_ref(), "✔");
         assert_eq!(rendered[2].spans[2].content.as_ref(), "Reattached session");
+    }
+
+    #[test]
+    fn welcome_lines_keep_the_start_screen_sparse() {
+        let mut state = TuiState::default();
+        state.session.workspace_name = "nanoclaw".to_string();
+        state.session.model = "gpt-5.4".to_string();
+
+        let lines = build_welcome_lines(&state, 20);
+
+        assert!(lines.iter().any(|line| {
+            line.spans
+                .iter()
+                .any(|span| span.content.as_ref().contains("code-agent"))
+        }));
+        assert!(lines.iter().any(|line| {
+            line.spans.iter().any(|span| {
+                span.content
+                    .as_ref()
+                    .contains("Ask for a summary, a fix, or a change.")
+            })
+        }));
+        assert!(lines.iter().any(|line| {
+            line.spans
+                .iter()
+                .any(|span| span.content.as_ref().contains("/help commands"))
+        }));
     }
 
     #[test]

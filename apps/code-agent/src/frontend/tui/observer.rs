@@ -246,7 +246,7 @@ impl SharedRenderObserver {
 
 fn requested_tool_entry(call: &crate::backend::SessionToolCall) -> String {
     summarize_tool_entry(
-        format!("• Preparing {}", call.tool_name),
+        format!("• Requested {}", call.tool_name),
         tool_argument_detail_lines(call),
     )
 }
@@ -263,7 +263,7 @@ fn waiting_tool_entry(call: &crate::backend::SessionToolCall, reasons: &[String]
         detail_lines.push(format!("  └ {}", preview_text(reason, 72)));
     }
     summarize_tool_entry(
-        format!("• Waiting for approval to run {}", call.tool_name),
+        format!("• Awaiting approval for {}", call.tool_name),
         detail_lines,
     )
 }
@@ -286,7 +286,7 @@ fn completed_tool_entry(
         output_preview,
         structured_output_preview,
     ));
-    summarize_tool_entry(format!("• Called {}", call.tool_name), detail_lines)
+    summarize_tool_entry(format!("• Finished {}", call.tool_name), detail_lines)
 }
 
 fn failed_tool_entry(call: &crate::backend::SessionToolCall, error: &str) -> String {
@@ -593,13 +593,9 @@ mod tests {
 
         let snapshot = ui_state.snapshot();
         assert!(snapshot.transcript.iter().all(|line| !line.contains('>')));
-        assert!(
-            snapshot
-                .transcript
-                .iter()
-                .any(|line| line
-                    == "• Called bash\n  └ $ ls\n  └ exit 0\n```text\nlisted files\n```")
-        );
+        assert!(snapshot.transcript.iter().any(
+            |line| line == "• Finished bash\n  └ $ ls\n  └ exit 0\n```text\nlisted files\n```"
+        ));
     }
 
     #[test]
@@ -634,7 +630,7 @@ mod tests {
         assert_eq!(snapshot.transcript.len(), 1);
         assert_eq!(
             snapshot.transcript[0],
-            "• Called bash\n  └ $ ls\n  └ exit 0\n```text\nlisted files\n```"
+            "• Finished bash\n  └ $ ls\n  └ exit 0\n```text\nlisted files\n```"
         );
     }
 
@@ -710,7 +706,7 @@ mod tests {
         assert_eq!(snapshot.transcript.len(), 1);
         assert_eq!(
             snapshot.transcript[0],
-            "• Called bash\n  └ $ cargo test\n  └ exit 0\n```text\nok\n```"
+            "• Finished bash\n  └ $ cargo test\n  └ exit 0\n```text\nok\n```"
         );
     }
 }
