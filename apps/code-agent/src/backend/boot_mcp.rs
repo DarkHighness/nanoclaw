@@ -60,6 +60,7 @@ pub(crate) fn build_startup_diagnostics_snapshot(
     tool_specs: &[ToolSpec],
     connected_mcp_servers: &[ConnectedMcpServer],
     plugin_plan: &agent::plugins::PluginActivationPlan,
+    startup_warnings: &[String],
     driver_outcome: &DriverActivationOutcome,
 ) -> StartupDiagnosticsSnapshot {
     let local_tool_count = tool_specs
@@ -96,6 +97,9 @@ pub(crate) fn build_startup_diagnostics_snapshot(
         plugin_details.push(format!("{level}: {}", diagnostic.message));
     }
 
+    let mut warnings = startup_warnings.to_vec();
+    warnings.extend(driver_outcome.warnings.clone());
+
     StartupDiagnosticsSnapshot {
         local_tool_count,
         mcp_tool_count,
@@ -107,7 +111,7 @@ pub(crate) fn build_startup_diagnostics_snapshot(
         total_plugin_count: plugin_plan.plugin_states.len(),
         mcp_servers: list_mcp_servers(connected_mcp_servers),
         plugin_details,
-        warnings: driver_outcome.warnings.clone(),
+        warnings,
         diagnostics: driver_outcome.diagnostics.clone(),
     }
 }
@@ -491,6 +495,7 @@ mod tests {
             ],
             &[],
             &agent::plugins::PluginActivationPlan::default(),
+            &["sandbox unavailable".to_string()],
             &DriverActivationOutcome {
                 warnings: vec!["slow startup".to_string()],
                 diagnostics: vec!["validated wasm hook module".to_string()],
@@ -507,7 +512,10 @@ mod tests {
                 total_plugin_count: 0,
                 mcp_servers: Vec::<McpServerSummary>::new(),
                 plugin_details: Vec::new(),
-                warnings: vec!["slow startup".to_string()],
+                warnings: vec![
+                    "sandbox unavailable".to_string(),
+                    "slow startup".to_string()
+                ],
                 diagnostics: vec!["validated wasm hook module".to_string()],
             }
         );

@@ -208,7 +208,10 @@ impl CodeAgentTui {
         if !finished {
             return Ok(());
         }
-        let git = state::git_snapshot(self.session.workspace_root());
+        let git = state::git_snapshot(
+            self.session.workspace_root(),
+            self.session.host_process_surfaces_allowed(),
+        );
         if let Some(task) = self.turn_task.take() {
             match task.await {
                 Ok(Ok(())) => {
@@ -1009,13 +1012,14 @@ impl CodeAgentTui {
                 summary_model: snapshot.summary_model.clone(),
                 memory_model: snapshot.memory_model.clone(),
                 workspace_root: workspace_root.clone(),
-                git: state::git_snapshot(&workspace_root),
+                git: state::git_snapshot(&workspace_root, snapshot.host_process_surfaces_allowed),
                 tool_names: snapshot.tool_names.clone(),
                 skill_names: snapshot.skill_names.clone(),
                 store_label: snapshot.store_label.clone(),
                 store_warning: snapshot.store_warning.clone(),
                 stored_session_count: snapshot.stored_session_count,
                 sandbox_summary: snapshot.sandbox_summary.clone(),
+                host_process_surfaces_allowed: snapshot.host_process_surfaces_allowed,
                 startup_diagnostics: snapshot.startup_diagnostics.clone(),
                 queued_commands: 0,
                 token_ledger: Default::default(),
@@ -1031,13 +1035,14 @@ impl CodeAgentTui {
                 summary_model: snapshot.summary_model.clone(),
                 memory_model: snapshot.memory_model.clone(),
                 workspace_root: workspace_root.clone(),
-                git: state::git_snapshot(&workspace_root),
+                git: state::git_snapshot(&workspace_root, snapshot.host_process_surfaces_allowed),
                 tool_names: snapshot.tool_names.clone(),
                 skill_names: snapshot.skill_names.clone(),
                 store_label: snapshot.store_label.clone(),
                 store_warning: snapshot.store_warning.clone(),
                 stored_session_count: snapshot.stored_session_count,
                 sandbox_summary: snapshot.sandbox_summary.clone(),
+                host_process_surfaces_allowed: snapshot.host_process_surfaces_allowed,
                 startup_diagnostics: snapshot.startup_diagnostics.clone(),
                 queued_commands: 0,
                 token_ledger: Default::default(),
@@ -1213,15 +1218,21 @@ fn build_startup_inspector(session: &state::SessionSummary) -> Vec<String> {
         ),
         format!("sandbox: {}", session.sandbox_summary),
         "## Git".to_string(),
-        if session.git.available {
+        if !session.host_process_surfaces_allowed {
+            "branch: disabled while host subprocesses are blocked".to_string()
+        } else if session.git.available {
             format!("branch: {}", session.git.branch)
         } else {
             "branch: unavailable".to_string()
         },
-        format!(
+        if !session.host_process_surfaces_allowed {
+            "dirty: unavailable while host subprocesses are blocked".to_string()
+        } else {
+            format!(
             "dirty: staged {}  modified {}  untracked {}",
             session.git.staged, session.git.modified, session.git.untracked
-        ),
+            )
+        },
         "## Diagnostics".to_string(),
         format!(
             "tools: {} local / {} mcp",
@@ -1283,6 +1294,7 @@ mod tests {
             store_warning: Some("falling back soon".to_string()),
             stored_session_count: 12,
             sandbox_summary: "enforced via seatbelt".to_string(),
+            host_process_surfaces_allowed: true,
             startup_diagnostics: Default::default(),
             queued_commands: 0,
             token_ledger: Default::default(),

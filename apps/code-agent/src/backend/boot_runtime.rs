@@ -1,5 +1,7 @@
 use crate::options::AppOptions;
-use agent::runtime::{DefaultCommandHookExecutor, HookRunner, LoopDetectionConfig};
+use agent::runtime::{
+    CommandHookExecutor, DefaultCommandHookExecutor, HookRunner, LoopDetectionConfig,
+};
 use agent::tools::{SandboxBackendStatus, SubagentExecutor};
 use agent::{
     BashTool, CodeDefinitionsTool, CodeDocumentSymbolsTool, CodeIntelBackend, CodeReferencesTool,
@@ -17,6 +19,8 @@ pub(crate) struct RuntimeTooling {
     pub(crate) hook_runner: Arc<HookRunner>,
     pub(crate) loop_detection_config: LoopDetectionConfig,
     pub(crate) process_executor: Arc<ManagedPolicyProcessExecutor>,
+    pub(crate) host_process_surfaces_allowed: bool,
+    pub(crate) startup_warnings: Vec<String>,
     pub(crate) tools: ToolRegistry,
 }
 
@@ -27,20 +31,30 @@ pub(crate) fn build_runtime_tooling(
     sandbox_status: &SandboxBackendStatus,
 ) -> RuntimeTooling {
     let process_executor = Arc::new(ManagedPolicyProcessExecutor::new());
-    let hook_runner = Arc::new(HookRunner::with_services(
+    let host_process_surfaces_allowed =
+        host_process_surfaces_allowed(sandbox_policy, sandbox_status);
+    let command_executor: Arc<dyn CommandHookExecutor> = if host_process_surfaces_allowed {
         Arc::new(
             DefaultCommandHookExecutor::with_process_executor_and_policy(
                 BTreeMap::new(),
                 process_executor.clone(),
                 sandbox_policy.clone(),
             ),
-        ),
+        )
+    } else {
+        // Startup may continue without sandbox enforcement after an explicit
+        // operator override, but command hooks still need to fail closed so
+        // they never widen into silent host execution.
+        Arc::new(DefaultCommandHookExecutor::default())
+    };
+    let hook_runner = Arc::new(HookRunner::with_services(
+        command_executor,
         Arc::new(agent::runtime::ReqwestHttpHookExecutor::default()),
         Arc::new(agent::runtime::FailClosedPromptHookEvaluator),
         Arc::new(agent::runtime::FailClosedAgentHookEvaluator),
         Arc::new(agent::runtime::DefaultWasmHookExecutor::default()),
     ));
-    let tools = build_builtin_tools(
+    let (tools, startup_warnings) = build_builtin_tools(
         options,
         workspace_root,
         sandbox_policy,
@@ -55,6 +69,8 @@ pub(crate) fn build_runtime_tooling(
             ..LoopDetectionConfig::default()
         },
         process_executor,
+        host_process_surfaces_allowed,
+        startup_warnings,
         tools,
     }
 }
@@ -78,8 +94,18 @@ fn build_builtin_tools(
     sandbox_policy: &SandboxPolicy,
     sandbox_status: &SandboxBackendStatus,
     process_executor: &Arc<ManagedPolicyProcessExecutor>,
-) -> ToolRegistry {
-    let managed_code_intel = build_managed_code_intel(options, workspace_root, process_executor);
+) -> (ToolRegistry, Vec<String>) {
+    let host_process_surfaces_allowed =
+        host_process_surfaces_allowed(sandbox_policy, sandbox_status);
+    let mut startup_warnings = Vec::new();
+    let managed_code_intel = build_managed_code_intel(
+        options,
+        workspace_root,
+        process_executor,
+        host_process_surfaces_allowed,
+        sandbox_status,
+        &mut startup_warnings,
+    );
     let code_intel_backend: Arc<dyn CodeIntelBackend> = managed_code_intel
         .clone()
         .map(|backend| backend as Arc<dyn CodeIntelBackend>)
@@ -101,7 +127,7 @@ fn build_builtin_tools(
     tools.register(GlobTool::new());
     tools.register(GrepTool::new());
     tools.register(ListTool::new());
-    if host_process_tools_allowed(sandbox_policy, sandbox_status) {
+    if host_process_surfaces_allowed {
         tools.register(BashTool::with_process_executor_and_policy(
             process_executor.clone(),
             sandbox_policy.clone(),
@@ -113,6 +139,9 @@ fn build_builtin_tools(
         warn!(
             "sandbox enforcement backend unavailable; disabling bash tool to avoid host fallback: {reason}"
         );
+        startup_warnings.push(format!(
+            "sandbox backend unavailable; disabled bash tool to avoid host subprocess execution: {reason}"
+        ));
     }
     tools.register(CodeSymbolSearchTool::with_backend(
         code_intel_backend.clone(),
@@ -126,14 +155,28 @@ fn build_builtin_tools(
     tools.register(CodeReferencesTool::with_backend(code_intel_backend));
     tools.register(TodoReadTool::new(todo_state.clone()));
     tools.register(TodoWriteTool::new(todo_state));
-    tools
+    (tools, startup_warnings)
 }
 
 fn build_managed_code_intel(
     options: &AppOptions,
     workspace_root: &Path,
     process_executor: &Arc<ManagedPolicyProcessExecutor>,
+    host_process_surfaces_allowed: bool,
+    sandbox_status: &SandboxBackendStatus,
+    startup_warnings: &mut Vec<String>,
 ) -> Option<Arc<ManagedCodeIntelBackend>> {
+    if options.lsp_enabled && !host_process_surfaces_allowed {
+        if let Some(reason) = sandbox_status.reason() {
+            warn!(
+                "sandbox enforcement backend unavailable; disabling managed code-intel helpers to avoid host fallback: {reason}"
+            );
+            startup_warnings.push(format!(
+                "sandbox backend unavailable; disabled managed code-intel helpers to avoid host subprocess execution: {reason}"
+            ));
+        }
+        return None;
+    }
     // Managed LSP helpers run outside the normal foreground tool approval path.
     // Boot keeps that policy decision local so future frontends inherit the
     // same helper behavior without duplicating host wiring rules.
@@ -153,7 +196,7 @@ fn build_managed_code_intel(
     })
 }
 
-fn host_process_tools_allowed(
+pub(crate) fn host_process_surfaces_allowed(
     sandbox_policy: &SandboxPolicy,
     sandbox_status: &SandboxBackendStatus,
 ) -> bool {
@@ -162,7 +205,7 @@ fn host_process_tools_allowed(
 
 #[cfg(test)]
 mod tests {
-    use super::{build_runtime_tooling, host_process_tools_allowed};
+    use super::{build_runtime_tooling, host_process_surfaces_allowed};
     use crate::options::AppOptions;
     use agent::tools::{NetworkPolicy, SandboxBackendKind, SandboxBackendStatus, SandboxPolicy};
     use agent_env::EnvMap;
@@ -190,13 +233,13 @@ mod tests {
             ..SandboxPolicy::recommended_for_scope(&Default::default())
         };
 
-        assert!(!host_process_tools_allowed(
+        assert!(!host_process_surfaces_allowed(
             &restrictive,
             &SandboxBackendStatus::Unavailable {
                 reason: "bwrap missing".to_string(),
             }
         ));
-        assert!(host_process_tools_allowed(
+        assert!(host_process_surfaces_allowed(
             &restrictive,
             &SandboxBackendStatus::Available {
                 kind: SandboxBackendKind::LinuxBubblewrap,
@@ -206,7 +249,7 @@ mod tests {
 
     #[test]
     fn permissive_policy_keeps_host_process_tools_available() {
-        assert!(host_process_tools_allowed(
+        assert!(host_process_surfaces_allowed(
             &SandboxPolicy::permissive(),
             &SandboxBackendStatus::Unavailable {
                 reason: "not needed".to_string(),
@@ -215,8 +258,9 @@ mod tests {
     }
 
     #[test]
-    fn runtime_tooling_omits_bash_when_backend_is_unavailable() {
-        let options = load_options();
+    fn runtime_tooling_disables_host_process_helpers_when_backend_is_unavailable() {
+        let mut options = load_options();
+        options.lsp_enabled = true;
         let workspace = tempdir().unwrap();
         let policy = SandboxPolicy {
             network: NetworkPolicy::Off,
@@ -237,6 +281,19 @@ mod tests {
                 .names()
                 .into_iter()
                 .any(|name| name.as_str() == "bash")
+        );
+        assert!(!tooling.host_process_surfaces_allowed);
+        assert!(
+            tooling
+                .startup_warnings
+                .iter()
+                .any(|warning| warning.contains("disabled bash tool"))
+        );
+        assert!(
+            tooling
+                .startup_warnings
+                .iter()
+                .any(|warning| warning.contains("disabled managed code-intel helpers"))
         );
     }
 }

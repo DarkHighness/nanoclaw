@@ -31,6 +31,7 @@ pub(crate) struct SessionSummary {
     pub(crate) store_warning: Option<String>,
     pub(crate) stored_session_count: usize,
     pub(crate) sandbox_summary: String,
+    pub(crate) host_process_surfaces_allowed: bool,
     pub(crate) startup_diagnostics: StartupDiagnosticsSnapshot,
     pub(crate) queued_commands: usize,
     pub(crate) token_ledger: TokenLedgerSnapshot,
@@ -172,7 +173,16 @@ pub(crate) fn preview_text(value: &str, max_chars: usize) -> String {
     }
 }
 
-pub(crate) fn git_snapshot(workspace_root: &Path) -> GitSnapshot {
+pub(crate) fn git_snapshot(
+    workspace_root: &Path,
+    host_process_surfaces_allowed: bool,
+) -> GitSnapshot {
+    // The TUI git snapshot is a convenience-only host subprocess. When the
+    // operator continues without sandbox enforcement, keep the UI on the same
+    // fail-closed boundary as the runtime tool and hook surfaces.
+    if !host_process_surfaces_allowed {
+        return GitSnapshot::default();
+    }
     let output = Command::new("git")
         .arg("-C")
         .arg(workspace_root)
@@ -214,5 +224,20 @@ pub(crate) fn git_snapshot(workspace_root: &Path) -> GitSnapshot {
         staged,
         modified,
         untracked,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::git_snapshot;
+    use tempfile::tempdir;
+
+    #[test]
+    fn git_snapshot_skips_host_process_when_disabled() {
+        let dir = tempdir().unwrap();
+        let snapshot = git_snapshot(dir.path(), false);
+
+        assert!(!snapshot.available);
+        assert!(snapshot.branch.is_empty());
     }
 }

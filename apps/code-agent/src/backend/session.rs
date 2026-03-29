@@ -44,6 +44,7 @@ pub(crate) struct SessionStartupSnapshot {
     pub(crate) store_warning: Option<String>,
     pub(crate) stored_session_count: usize,
     pub(crate) sandbox_summary: String,
+    pub(crate) host_process_surfaces_allowed: bool,
     pub(crate) startup_diagnostics: StartupDiagnosticsSnapshot,
 }
 
@@ -173,6 +174,10 @@ impl CodeAgentSession {
 
     pub(crate) fn startup_snapshot(&self) -> SessionStartupSnapshot {
         self.startup.read().unwrap().clone()
+    }
+
+    pub(crate) fn host_process_surfaces_allowed(&self) -> bool {
+        self.startup.read().unwrap().host_process_surfaces_allowed
     }
 
     pub(crate) fn skills(&self) -> &[Skill] {
@@ -993,6 +998,7 @@ mod tests {
             store_warning: None,
             stored_session_count: 0,
             sandbox_summary: "workspace-write".to_string(),
+            host_process_surfaces_allowed: true,
             startup_diagnostics: StartupDiagnosticsSnapshot::default(),
         }
     }

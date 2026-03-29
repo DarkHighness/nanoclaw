@@ -14,8 +14,8 @@ use crate::provider::{
     build_memory_reasoning_service, provider_label, provider_summary,
 };
 use agent::mcp::{
-    ConnectedMcpServer, McpConnectOptions, catalog_tools_as_registry_entries,
-    connect_and_catalog_mcp_servers_with_options,
+    ConnectedMcpServer, McpConnectOptions, McpServerConfig, McpTransportConfig,
+    catalog_tools_as_registry_entries, connect_and_catalog_mcp_servers_with_options,
 };
 use agent::runtime::{
     CompactionConfig, ConversationCompactor, ModelBackend, ModelConversationCompactor,
@@ -23,7 +23,7 @@ use agent::runtime::{
     SubagentRuntimeProfile, ToolApprovalHandler,
 };
 use agent::tools::{SubagentExecutor, describe_sandbox_policy, ensure_sandbox_policy_supported};
-use agent::types::AgentTaskSpec;
+use agent::types::{AgentTaskSpec, HookHandler, HookRegistration};
 use agent::{
     AgentRuntime, AgentRuntimeBuilder, SandboxPolicy, Skill, SkillCatalog, ToolExecutionContext,
     ToolRegistry,
@@ -41,6 +41,7 @@ struct RuntimeBuildResult {
     store: Arc<dyn store::SessionStore>,
     skills: Vec<Skill>,
     mcp_servers: Vec<ConnectedMcpServer>,
+    host_process_surfaces_allowed: bool,
     store_label: String,
     store_warning: Option<String>,
     stored_session_count: usize,
@@ -144,6 +145,7 @@ pub(crate) async fn build_session_with_approval_mode(
         store,
         skills,
         mcp_servers,
+        host_process_surfaces_allowed,
         store_label,
         store_warning,
         stored_session_count,
@@ -191,6 +193,7 @@ pub(crate) async fn build_session_with_approval_mode(
             store_warning,
             stored_session_count: stored_session_count,
             sandbox_summary,
+            host_process_surfaces_allowed,
             startup_diagnostics,
         },
         skills,
@@ -240,6 +243,8 @@ async fn build_runtime(
         build_runtime_tooling(options, workspace_root, &sandbox_policy, &sandbox_status);
     let loop_detection_config = runtime_tooling.loop_detection_config;
     let process_executor = runtime_tooling.process_executor.clone();
+    let host_process_surfaces_allowed = runtime_tooling.host_process_surfaces_allowed;
+    let mut startup_warnings = runtime_tooling.startup_warnings.clone();
     let hook_runner = runtime_tooling.hook_runner.clone();
     let mut tools = runtime_tooling.tools;
     // Driver-backed plugins expand into normal local tools here so the runtime
@@ -280,6 +285,11 @@ async fn build_runtime(
         plugin_instructions,
         &driver_outcome,
     );
+    let mcp_servers = filter_boot_mcp_servers(
+        mcp_servers,
+        host_process_surfaces_allowed,
+        &mut startup_warnings,
+    );
     let mut connected_mcp_servers = Vec::new();
     if !mcp_servers.is_empty() {
         let resolved_mcp_servers =
@@ -314,7 +324,12 @@ async fn build_runtime(
         .iter()
         .flat_map(|skill| skill.hooks.clone())
         .collect::<Vec<_>>();
-    runtime_hooks.extend(skill_hooks.clone());
+    runtime_hooks.extend(skill_hooks);
+    runtime_hooks = filter_runtime_hooks(
+        runtime_hooks,
+        host_process_surfaces_allowed,
+        &mut startup_warnings,
+    );
     let instructions = build_system_preamble(
         &options.primary_profile,
         &skill_catalog,
@@ -346,6 +361,7 @@ async fn build_runtime(
         &tool_specs,
         &connected_mcp_servers,
         &plugin_plan,
+        &startup_warnings,
         &driver_outcome,
     );
 
@@ -373,11 +389,66 @@ async fn build_runtime(
         store,
         skills,
         mcp_servers: connected_mcp_servers,
+        host_process_surfaces_allowed,
         store_label: store_handle.label,
         store_warning: store_handle.warning,
         stored_session_count,
         startup_diagnostics,
     })
+}
+
+fn filter_runtime_hooks(
+    hooks: Vec<HookRegistration>,
+    host_process_surfaces_allowed: bool,
+    startup_warnings: &mut Vec<String>,
+) -> Vec<HookRegistration> {
+    if host_process_surfaces_allowed {
+        return hooks;
+    }
+
+    let (retained, blocked): (Vec<_>, Vec<_>) = hooks
+        .into_iter()
+        .partition(|hook| !matches!(hook.handler, HookHandler::Command(_)));
+    if !blocked.is_empty() {
+        let warning = format!(
+            "sandbox backend unavailable; disabled command hooks to avoid host subprocess execution: {}",
+            blocked
+                .iter()
+                .map(|hook| hook.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        warn!("{warning}");
+        startup_warnings.push(warning);
+    }
+    retained
+}
+
+fn filter_boot_mcp_servers(
+    servers: Vec<McpServerConfig>,
+    host_process_surfaces_allowed: bool,
+    startup_warnings: &mut Vec<String>,
+) -> Vec<McpServerConfig> {
+    if host_process_surfaces_allowed {
+        return servers;
+    }
+
+    let (retained, blocked): (Vec<_>, Vec<_>) = servers
+        .into_iter()
+        .partition(|server| !matches!(server.transport, McpTransportConfig::Stdio { .. }));
+    if !blocked.is_empty() {
+        let warning = format!(
+            "sandbox backend unavailable; skipped stdio MCP servers to avoid host subprocess execution: {}",
+            blocked
+                .iter()
+                .map(|server| server.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        warn!("{warning}");
+        startup_warnings.push(warning);
+    }
+    retained
 }
 
 fn ensure_model_supports_registered_tools(
@@ -395,4 +466,82 @@ fn ensure_model_supports_registered_tools(
         profile.profile_name,
         profile.model.model,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{filter_boot_mcp_servers, filter_runtime_hooks};
+    use agent::mcp::{McpServerConfig, McpTransportConfig};
+    use agent::types::{
+        CommandHookHandler, HookEvent, HookHandler, HookRegistration, HttpHookHandler,
+    };
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn filtering_runtime_hooks_drops_command_hooks_without_host_process_surfaces() {
+        let retained = filter_runtime_hooks(
+            vec![
+                HookRegistration {
+                    name: "command-hook".to_string(),
+                    event: HookEvent::SessionStart,
+                    matcher: None,
+                    handler: HookHandler::Command(CommandHookHandler {
+                        command: "/bin/true".to_string(),
+                        asynchronous: false,
+                    }),
+                    timeout_ms: None,
+                    execution: None,
+                },
+                HookRegistration {
+                    name: "http-hook".to_string(),
+                    event: HookEvent::SessionStart,
+                    matcher: None,
+                    handler: HookHandler::Http(HttpHookHandler {
+                        url: "https://example.test/hook".to_string(),
+                        method: "POST".to_string(),
+                        headers: BTreeMap::new(),
+                    }),
+                    timeout_ms: None,
+                    execution: None,
+                },
+            ],
+            false,
+            &mut Vec::new(),
+        );
+
+        assert_eq!(retained.len(), 1);
+        assert!(matches!(retained[0].handler, HookHandler::Http(_)));
+    }
+
+    #[test]
+    fn filtering_boot_mcp_servers_keeps_http_transports_when_host_processes_are_disabled() {
+        let retained = filter_boot_mcp_servers(
+            vec![
+                McpServerConfig {
+                    name: "stdio".to_string(),
+                    transport: McpTransportConfig::Stdio {
+                        command: "stdio-server".to_string(),
+                        args: Vec::new(),
+                        env: BTreeMap::new(),
+                        cwd: None,
+                    },
+                },
+                McpServerConfig {
+                    name: "http".to_string(),
+                    transport: McpTransportConfig::StreamableHttp {
+                        url: "https://example.test/mcp".to_string(),
+                        headers: BTreeMap::new(),
+                    },
+                },
+            ],
+            false,
+            &mut Vec::new(),
+        );
+
+        assert_eq!(retained.len(), 1);
+        assert!(matches!(
+            retained[0].transport,
+            McpTransportConfig::StreamableHttp { .. }
+        ));
+    }
 }
