@@ -154,6 +154,7 @@ pub(crate) async fn build_session_with_approval_mode(
         approval_handler,
         tool_context,
         sandbox_policy,
+        sandbox_status,
     )
     .await?;
     let tool_names = runtime.tool_registry_names();
@@ -202,6 +203,7 @@ async fn build_runtime(
     approval_handler: Arc<dyn ToolApprovalHandler>,
     tool_context: ToolExecutionContext,
     sandbox_policy: SandboxPolicy,
+    sandbox_status: agent::tools::SandboxBackendStatus,
 ) -> Result<RuntimeBuildResult> {
     let backend = Arc::new(build_agent_backend(
         &options.primary_profile,
@@ -234,7 +236,8 @@ async fn build_runtime(
     // Runtime tooling assembly is still host boot work, but it lives behind a
     // dedicated helper so later frontends inherit the same process-local tool,
     // hook, and LSP wiring without reopening this orchestration block.
-    let runtime_tooling = build_runtime_tooling(options, workspace_root, &sandbox_policy);
+    let runtime_tooling =
+        build_runtime_tooling(options, workspace_root, &sandbox_policy, &sandbox_status);
     let loop_detection_config = runtime_tooling.loop_detection_config;
     let process_executor = runtime_tooling.process_executor.clone();
     let hook_runner = runtime_tooling.hook_runner.clone();
