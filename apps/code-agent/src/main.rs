@@ -5,7 +5,8 @@ mod options;
 mod provider;
 
 use crate::backend::{
-    SessionApprovalMode, build_session, build_session_with_approval_mode, inject_process_env,
+    SandboxFallbackNotice, SessionApprovalMode, build_sandbox_fallback_notice, build_session,
+    build_session_with_approval_mode, inject_process_env, inspect_sandbox_preflight,
 };
 use crate::frontend::tui::{CodeAgentTui, SharedUiState};
 use crate::options::AppOptions;
@@ -60,6 +61,7 @@ fn init_tracing(workspace_root: &Path) -> Result<WorkerGuard> {
 }
 
 async fn async_main(workspace_root: PathBuf, options: AppOptions) -> Result<()> {
+    let mut options = options;
     let stdin_is_terminal = io::stdin().is_terminal();
     let stdout_is_terminal = io::stdout().is_terminal();
     if options.one_shot_prompt.is_none() && (!stdin_is_terminal || !stdout_is_terminal) {
@@ -67,6 +69,11 @@ async fn async_main(workspace_root: PathBuf, options: AppOptions) -> Result<()> 
             "code-agent requires a terminal for interactive mode; pass a prompt argument to run headless one-shot mode"
         );
     }
+    confirm_unsandboxed_startup_if_needed(
+        &workspace_root,
+        &mut options,
+        stdin_is_terminal && stdout_is_terminal,
+    )?;
     // One-shot prompt invocations are also used from scripts and tests. When a
     // real terminal is unavailable, bypass the TUI so raw-mode setup does not
     // fail before the runtime can execute the prompt.
@@ -120,12 +127,119 @@ async fn run_headless_one_shot(workspace_root: PathBuf, options: AppOptions) -> 
     Ok(())
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SandboxFallbackAction {
+    Continue,
+    Prompt,
+    Abort,
+}
+
+fn confirm_unsandboxed_startup_if_needed(
+    workspace_root: &Path,
+    options: &mut AppOptions,
+    interactive_terminal: bool,
+) -> Result<()> {
+    let preflight = inspect_sandbox_preflight(workspace_root, options);
+    let Some(notice) = build_sandbox_fallback_notice(&preflight) else {
+        return Ok(());
+    };
+    match choose_sandbox_fallback_action(options, interactive_terminal) {
+        SandboxFallbackAction::Continue => {
+            options.sandbox_fail_if_unavailable = false;
+            print_sandbox_fallback_notice(
+                &notice,
+                "Continuing because --allow-no-sandbox was set.\n",
+            )?;
+            Ok(())
+        }
+        SandboxFallbackAction::Prompt => {
+            print_sandbox_fallback_notice(
+                &notice,
+                "Continue without sandbox enforcement for this run? [y/N]: ",
+            )?;
+            if operator_confirms_unsandboxed_startup()? {
+                options.sandbox_fail_if_unavailable = false;
+                Ok(())
+            } else {
+                bail!("aborted because sandbox enforcement is unavailable on this host")
+            }
+        }
+        SandboxFallbackAction::Abort => bail!(format_sandbox_abort_message(&notice)),
+    }
+}
+
+fn choose_sandbox_fallback_action(
+    options: &AppOptions,
+    interactive_terminal: bool,
+) -> SandboxFallbackAction {
+    if options.allow_no_sandbox {
+        SandboxFallbackAction::Continue
+    } else if interactive_terminal {
+        SandboxFallbackAction::Prompt
+    } else {
+        // Headless invocations cannot answer a startup risk prompt, so require
+        // an explicit CLI override instead of silently inheriting host fallback.
+        SandboxFallbackAction::Abort
+    }
+}
+
+fn print_sandbox_fallback_notice(notice: &SandboxFallbackNotice, trailer: &str) -> Result<()> {
+    let mut stderr = io::stderr().lock();
+    writeln!(
+        stderr,
+        "warning: sandbox backend unavailable for the configured runtime policy"
+    )?;
+    writeln!(stderr, "  policy: {}", notice.policy_summary)?;
+    writeln!(stderr, "  reason: {}", notice.reason)?;
+    writeln!(stderr, "  risk: {}", notice.risk_summary)?;
+    writeln!(stderr, "  setup:")?;
+    for (index, step) in notice.setup_steps.iter().enumerate() {
+        writeln!(stderr, "    {}. {}", index + 1, step)?;
+    }
+    write!(stderr, "{trailer}")?;
+    stderr.flush()?;
+    Ok(())
+}
+
+fn operator_confirms_unsandboxed_startup() -> Result<bool> {
+    let mut answer = String::new();
+    io::stdin()
+        .read_line(&mut answer)
+        .context("failed to read sandbox confirmation response")?;
+    let normalized = answer.trim().to_ascii_lowercase();
+    Ok(matches!(normalized.as_str(), "y" | "yes"))
+}
+
+fn format_sandbox_abort_message(notice: &SandboxFallbackNotice) -> String {
+    let mut lines = vec![
+        "sandbox backend unavailable for the configured runtime policy".to_string(),
+        format!("policy: {}", notice.policy_summary),
+        format!("reason: {}", notice.reason),
+        format!("risk: {}", notice.risk_summary),
+        "setup:".to_string(),
+    ];
+    lines.extend(
+        notice
+            .setup_steps
+            .iter()
+            .enumerate()
+            .map(|(index, step)| format!("  {}. {}", index + 1, step)),
+    );
+    lines.push(
+        "rerun in a terminal to confirm explicitly, or pass --allow-no-sandbox to accept the risk for this invocation".to_string(),
+    );
+    lines.join("\n")
+}
+
 #[cfg(test)]
 mod tests {
-    use super::launch_headless_one_shot;
+    use super::{
+        SandboxFallbackAction, choose_sandbox_fallback_action, format_sandbox_abort_message,
+        launch_headless_one_shot,
+    };
     use crate::backend::{
-        CodeAgentSubagentProfileResolver, build_sandbox_policy, dedup_mcp_servers,
-        driver_host_output_lines, merge_driver_host_inputs, resolve_mcp_servers,
+        CodeAgentSubagentProfileResolver, SandboxFallbackNotice, build_sandbox_policy,
+        dedup_mcp_servers, driver_host_output_lines, merge_driver_host_inputs, resolve_mcp_servers,
         tool_context_for_profile,
     };
     use crate::options::{AppOptions, parse_bool_flag};
@@ -175,6 +289,53 @@ mod tests {
         assert!(!launch_headless_one_shot(&prompted, true, true));
         assert!(!launch_headless_one_shot(&interactive, false, false));
         assert!(!launch_headless_one_shot(&interactive, true, true));
+    }
+
+    #[test]
+    fn sandbox_fallback_requires_explicit_override_in_non_interactive_runs() {
+        let _guard = env_test_lock().lock().unwrap();
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join(".env"), "OPENAI_API_KEY=test-key\n").unwrap();
+        let env_map = EnvMap::from_workspace_dir(dir.path()).unwrap();
+        let default =
+            AppOptions::from_env_and_args_iter(dir.path(), &env_map, std::iter::empty::<String>())
+                .unwrap();
+        let override_allowed = AppOptions::from_env_and_args_iter(
+            dir.path(),
+            &env_map,
+            vec!["--allow-no-sandbox".to_string()],
+        )
+        .unwrap();
+
+        assert_eq!(
+            choose_sandbox_fallback_action(&default, true),
+            SandboxFallbackAction::Prompt
+        );
+        assert_eq!(
+            choose_sandbox_fallback_action(&default, false),
+            SandboxFallbackAction::Abort
+        );
+        assert_eq!(
+            choose_sandbox_fallback_action(&override_allowed, false),
+            SandboxFallbackAction::Continue
+        );
+    }
+
+    #[test]
+    fn sandbox_abort_message_includes_setup_guidance_and_override_hint() {
+        let message = format_sandbox_abort_message(&SandboxFallbackNotice {
+            policy_summary: "workspace-write, network off, best effort host fallback".to_string(),
+            reason: "bwrap probe failed".to_string(),
+            risk_summary: "local subprocesses may run on the host".to_string(),
+            setup_steps: vec![
+                "install bubblewrap".to_string(),
+                "enable user namespaces".to_string(),
+            ],
+        });
+
+        assert!(message.contains("policy: workspace-write"));
+        assert!(message.contains("1. install bubblewrap"));
+        assert!(message.contains("--allow-no-sandbox"));
     }
 
     #[test]

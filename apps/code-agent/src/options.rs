@@ -17,6 +17,7 @@ pub(crate) struct AppOptions {
     pub(crate) plugins: PluginsConfig,
     pub(crate) workspace_only: bool,
     pub(crate) sandbox_fail_if_unavailable: bool,
+    pub(crate) allow_no_sandbox: bool,
     pub(crate) tokio_worker_threads: Option<usize>,
     pub(crate) tokio_max_blocking_threads: Option<usize>,
     pub(crate) lsp_enabled: bool,
@@ -43,6 +44,7 @@ impl AppOptions {
         let mut skill_roots = core.resolved_skill_roots(workspace_root);
         let mut plugins = core.plugins.clone();
         let mut sandbox_fail_if_unavailable = core.host.sandbox_fail_if_unavailable;
+        let mut allow_no_sandbox = false;
         let lsp_enabled = workspace_config.lsp_enabled;
         let lsp_auto_install = workspace_config.lsp_auto_install;
         let lsp_install_root = workspace_config.lsp_install_root.clone();
@@ -66,6 +68,9 @@ impl AppOptions {
                 "--sandbox-fail-if-unavailable" => {
                     sandbox_fail_if_unavailable =
                         parse_bool_flag(&next_arg(&mut args, "--sandbox-fail-if-unavailable")?)?
+                }
+                "--allow-no-sandbox" => {
+                    allow_no_sandbox = true;
                 }
                 "--help" | "-h" => {
                     print_help();
@@ -100,6 +105,7 @@ impl AppOptions {
             plugins,
             workspace_only: workspace_config.core.host.workspace_only,
             sandbox_fail_if_unavailable,
+            allow_no_sandbox,
             tokio_worker_threads: workspace_config.core.host.tokio_worker_threads,
             tokio_max_blocking_threads: workspace_config.core.host.tokio_max_blocking_threads,
             lsp_enabled,
@@ -138,6 +144,7 @@ fn print_help() {
     println!("  --plugin-root <path>");
     println!("  --memory-plugin <id|none>");
     println!("  --sandbox-fail-if-unavailable <true|false>");
+    println!("  --allow-no-sandbox              continue without sandbox enforcement (unsafe)");
     println!("  -h, --help");
     println!();
     println!("environment:");

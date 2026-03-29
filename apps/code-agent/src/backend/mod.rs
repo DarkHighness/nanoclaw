@@ -32,8 +32,8 @@ pub(crate) use boot_preamble::{
     build_plugin_activation_plan, build_system_preamble, resolve_skill_roots,
 };
 pub(crate) use boot_sandbox::{
-    build_sandbox_policy, build_tool_context, inject_process_env, log_sandbox_status,
-    tool_context_for_profile,
+    SandboxFallbackNotice, build_sandbox_fallback_notice, build_sandbox_policy, build_tool_context,
+    inject_process_env, inspect_sandbox_preflight, log_sandbox_status, tool_context_for_profile,
 };
 pub(crate) use events::{SessionEvent, SessionEventObserver, SessionEventStream, SessionToolCall};
 pub(crate) use session::{

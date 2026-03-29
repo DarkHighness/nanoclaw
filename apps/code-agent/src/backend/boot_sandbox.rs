@@ -1,11 +1,27 @@
 use crate::options::AppOptions;
 use agent::ToolExecutionContext;
-use agent::tools::{SandboxBackendStatus, SandboxPolicy};
+use agent::tools::{
+    SandboxBackendStatus, SandboxPolicy, describe_sandbox_policy, sandbox_backend_status,
+};
 use agent_env::EnvMap;
 use nanoclaw_config::{AgentSandboxMode, ResolvedAgentProfile};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use tracing::{info, warn};
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SandboxPreflight {
+    pub(crate) policy: SandboxPolicy,
+    pub(crate) status: SandboxBackendStatus,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SandboxFallbackNotice {
+    pub(crate) policy_summary: String,
+    pub(crate) reason: String,
+    pub(crate) risk_summary: String,
+    pub(crate) setup_steps: Vec<String>,
+}
 
 pub(crate) fn build_sandbox_policy(
     options: &AppOptions,
@@ -124,14 +140,38 @@ pub(crate) fn log_sandbox_status(status: &SandboxBackendStatus) {
         }
         SandboxBackendStatus::Unavailable { reason } => {
             warn!(
-                "sandbox enforcement unavailable; local processes will fall back to host execution: {reason}"
-            );
-            eprintln!(
-                "warning: sandbox enforcement unavailable; local processes will fall back to host execution: {reason}"
+                "sandbox enforcement unavailable; local processes may fall back to host execution: {reason}"
             );
         }
         SandboxBackendStatus::NotRequired => {}
     }
+}
+
+pub(crate) fn inspect_sandbox_preflight(
+    workspace_root: &Path,
+    options: &AppOptions,
+) -> SandboxPreflight {
+    let tool_context = build_tool_context(workspace_root, options);
+    let policy = build_sandbox_policy(options, &tool_context);
+    let status = sandbox_backend_status(&policy);
+    SandboxPreflight { policy, status }
+}
+
+pub(crate) fn build_sandbox_fallback_notice(
+    preflight: &SandboxPreflight,
+) -> Option<SandboxFallbackNotice> {
+    let SandboxBackendStatus::Unavailable { reason } = &preflight.status else {
+        return None;
+    };
+    if !preflight.policy.requires_enforcement() {
+        return None;
+    }
+    Some(SandboxFallbackNotice {
+        policy_summary: describe_sandbox_policy(&preflight.policy, &preflight.status),
+        reason: reason.clone(),
+        risk_summary: "continuing will disable sandbox enforcement for local subprocesses; bash stays disabled, but hook, MCP, or helper processes may still run on the host".to_string(),
+        setup_steps: platform_sandbox_setup_steps(reason),
+    })
 }
 
 fn profile_read_only_roots(base: &ToolExecutionContext) -> Vec<PathBuf> {
@@ -145,4 +185,70 @@ fn profile_read_only_roots(base: &ToolExecutionContext) -> Vec<PathBuf> {
     roots.extend(base.writable_roots.iter().cloned());
     roots.extend(base.exec_roots.iter().cloned());
     roots.into_iter().collect()
+}
+
+#[cfg(target_os = "linux")]
+fn platform_sandbox_setup_steps(reason: &str) -> Vec<String> {
+    let mut steps = vec![
+        "Install `bubblewrap` and `uidmap` so `bwrap`, `newuidmap`, and `newgidmap` are available.".to_string(),
+        "Ensure unprivileged user namespaces are enabled (`kernel.unprivileged_userns_clone=1` and `user.max_user_namespaces` is non-zero).".to_string(),
+    ];
+    if reason.contains("uid map") || reason.contains("Permission denied") {
+        steps.push(
+            "If you are inside Docker/Podman/LXC/WSL or behind AppArmor/SELinux restrictions, allow uid/gid map setup or run on a host that permits unprivileged user namespaces.".to_string(),
+        );
+    } else {
+        steps.push(
+            "If probing still fails after installation, inspect the host/container policy that blocks unprivileged namespaces.".to_string(),
+        );
+    }
+    steps
+}
+
+#[cfg(target_os = "macos")]
+fn platform_sandbox_setup_steps(_reason: &str) -> Vec<String> {
+    vec![
+        "Ensure the built-in macOS `sandbox-exec` binary is present and executable.".to_string(),
+        "If the host image removed seatbelt support, run on a macOS host with sandboxing enabled."
+            .to_string(),
+    ]
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn platform_sandbox_setup_steps(_reason: &str) -> Vec<String> {
+    vec![
+        "Run Code Agent on a host that provides a supported enforcing sandbox backend.".to_string(),
+    ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{SandboxPreflight, build_sandbox_fallback_notice};
+    use agent::tools::{NetworkPolicy, SandboxBackendStatus, SandboxMode, SandboxPolicy};
+
+    #[test]
+    fn fallback_notice_requires_unavailable_enforcing_backend() {
+        let permissive = SandboxPreflight {
+            policy: SandboxPolicy::permissive(),
+            status: SandboxBackendStatus::Unavailable {
+                reason: "not required".to_string(),
+            },
+        };
+        assert!(build_sandbox_fallback_notice(&permissive).is_none());
+
+        let restrictive = SandboxPreflight {
+            policy: SandboxPolicy {
+                mode: SandboxMode::WorkspaceWrite,
+                network: NetworkPolicy::Off,
+                ..SandboxPolicy::recommended_for_scope(&Default::default())
+            },
+            status: SandboxBackendStatus::Unavailable {
+                reason: "uid map denied".to_string(),
+            },
+        };
+        let notice = build_sandbox_fallback_notice(&restrictive).unwrap();
+        assert!(notice.policy_summary.contains("workspace-write"));
+        assert!(notice.reason.contains("uid map denied"));
+        assert!(!notice.setup_steps.is_empty());
+    }
 }

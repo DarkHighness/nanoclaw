@@ -113,9 +113,6 @@ fn build_builtin_tools(
         warn!(
             "sandbox enforcement backend unavailable; disabling bash tool to avoid host fallback: {reason}"
         );
-        eprintln!(
-            "warning: sandbox backend unavailable; disabling bash tool to avoid host fallback: {reason}"
-        );
     }
     tools.register(CodeSymbolSearchTool::with_backend(
         code_intel_backend.clone(),
