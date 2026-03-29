@@ -43,7 +43,6 @@ impl SharedRenderObserver {
                 self.active_assistant_line = None;
                 self.active_tool_lines.clear();
                 state.active_tool_label = None;
-                state.active_tool_preview.clear();
                 state.push_transcript(format!("› {prompt}"));
                 state.status = "Working".to_string();
                 state.push_activity(format!("user prompt: {}", preview_text(&prompt, 40)));
@@ -110,13 +109,17 @@ impl SharedRenderObserver {
             SessionEvent::ToolCallRequested { call } => {
                 state.status = "Working".to_string();
                 state.active_tool_label = Some(call.tool_name.clone());
-                state.active_tool_preview = call.arguments_preview.clone();
+                let line_index = replace_or_push_tool_line(
+                    state,
+                    self.active_tool_lines.get(&call.call_id).copied(),
+                    requested_tool_entry(&call),
+                );
+                self.active_tool_lines.insert(call.call_id.clone(), line_index);
                 state.push_activity(format!("requested {}", call.tool_name));
             }
             SessionEvent::ToolApprovalRequested { call, reasons } => {
                 state.status = "Waiting for approval".to_string();
                 state.active_tool_label = Some(call.tool_name.clone());
-                state.active_tool_preview = call.arguments_preview.clone();
                 let line_index = replace_or_push_tool_line(
                     state,
                     self.active_tool_lines.get(&call.call_id).copied(),
@@ -137,13 +140,11 @@ impl SharedRenderObserver {
                 if approved {
                     state.status = "Working".to_string();
                     state.active_tool_label = Some(call.tool_name.clone());
-                    state.active_tool_preview = call.arguments_preview.clone();
                     state.push_activity(format!("approved {}", call.tool_name));
                 } else {
                     let reason = reason.unwrap_or_else(|| "permission denied".to_string());
                     state.status = format!("Denied {}: {}", call.tool_name, reason);
                     state.active_tool_label = None;
-                    state.active_tool_preview.clear();
                     let existing = self.active_tool_lines.remove(&call.call_id);
                     replace_tool_line(state, existing, denied_tool_entry(&call, &reason));
                     state.push_activity(format!(
@@ -156,9 +157,9 @@ impl SharedRenderObserver {
             SessionEvent::ToolLifecycleStarted { call } => {
                 state.status = "Working".to_string();
                 state.active_tool_label = Some(call.tool_name.clone());
-                state.active_tool_preview = call.arguments_preview.clone();
                 let existing = self.active_tool_lines.get(&call.call_id).copied();
-                let line_index = replace_or_push_tool_line(state, existing, running_tool_entry(&call));
+                let line_index =
+                    replace_or_push_tool_line(state, existing, running_tool_entry(&call));
                 self.active_tool_lines.insert(call.call_id.clone(), line_index);
                 state.push_activity(format!("running {}", call.tool_name));
             }
@@ -169,7 +170,6 @@ impl SharedRenderObserver {
             } => {
                 state.status = format!("Completed {}", call.tool_name);
                 state.active_tool_label = None;
-                state.active_tool_preview.clear();
                 if let Some(todo_items) =
                     todo_items_from_output(&call.tool_name, structured_output_preview.as_deref())
                 {
@@ -205,7 +205,6 @@ impl SharedRenderObserver {
             SessionEvent::ToolLifecycleFailed { call, error } => {
                 state.status = format!("{} failed", call.tool_name);
                 state.active_tool_label = None;
-                state.active_tool_preview.clear();
                 replace_tool_line(
                     state,
                     self.active_tool_lines.remove(&call.call_id),
@@ -220,7 +219,6 @@ impl SharedRenderObserver {
             SessionEvent::ToolLifecycleCancelled { call, reason } => {
                 state.status = format!("{} cancelled", call.tool_name);
                 state.active_tool_label = None;
-                state.active_tool_preview.clear();
                 replace_tool_line(
                     state,
                     self.active_tool_lines.remove(&call.call_id),
@@ -239,12 +237,18 @@ impl SharedRenderObserver {
                 self.active_assistant_line = None;
                 self.active_tool_lines.clear();
                 state.active_tool_label = None;
-                state.active_tool_preview.clear();
                 state.status = "Ready".to_string();
                 state.push_activity("turn complete");
             }
         });
     }
+}
+
+fn requested_tool_entry(call: &crate::backend::SessionToolCall) -> String {
+    summarize_tool_entry(
+        format!("• Preparing {}", call.tool_name),
+        tool_argument_detail_lines(call),
+    )
 }
 
 fn denied_tool_entry(call: &crate::backend::SessionToolCall, reason: &str) -> String {
@@ -595,6 +599,42 @@ mod tests {
                 .iter()
                 .any(|line| line
                     == "• Called bash\n  └ $ ls\n  └ exit 0\n```text\nlisted files\n```")
+        );
+    }
+
+    #[test]
+    fn tool_request_and_completion_share_one_timeline_cell() {
+        let ui_state = SharedUiState::new();
+        let call = SessionToolCall {
+            tool_name: "bash".to_string(),
+            call_id: "call_123".to_string(),
+            origin: "shell".to_string(),
+            arguments_preview: vec!["$ ls".to_string()],
+        };
+        let mut observer = SharedRenderObserver::new(ui_state.clone());
+
+        observer.apply_event(SessionEvent::ToolCallRequested { call: call.clone() });
+        observer.apply_event(SessionEvent::ToolLifecycleStarted { call: call.clone() });
+        observer.apply_event(SessionEvent::ToolLifecycleCompleted {
+            call,
+            output_preview: "listed files".to_string(),
+            structured_output_preview: Some(
+                json!({
+                    "kind": "run",
+                    "exit_code": 0,
+                    "timed_out": false,
+                    "stdout": {"text": "listed files", "chars": 12, "truncated": false},
+                    "stderr": {"text": "", "chars": 0, "truncated": false}
+                })
+                .to_string(),
+            ),
+        });
+
+        let snapshot = ui_state.snapshot();
+        assert_eq!(snapshot.transcript.len(), 1);
+        assert_eq!(
+            snapshot.transcript[0],
+            "• Called bash\n  └ $ ls\n  └ exit 0\n```text\nlisted files\n```"
         );
     }
 

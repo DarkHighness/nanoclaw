@@ -64,7 +64,6 @@ pub(crate) struct TuiState {
     pub(crate) turn_running: bool,
     pub(crate) turn_started_at: Option<Instant>,
     pub(crate) active_tool_label: Option<String>,
-    pub(crate) active_tool_preview: Vec<String>,
     pub(crate) todo_items: Vec<TodoEntry>,
 }
 

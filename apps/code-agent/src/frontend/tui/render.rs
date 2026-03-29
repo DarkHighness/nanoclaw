@@ -286,11 +286,12 @@ fn build_transcript_lines(state: &TuiState) -> Vec<Line<'static>> {
         }
     }
 
-    if state.turn_running || state.session.queued_commands > 0 {
+    let progress_lines = live_progress_lines(state);
+    if !progress_lines.is_empty() {
         if !lines.is_empty() {
             lines.push(Line::raw(""));
         }
-        lines.extend(live_progress_lines(state));
+        lines.extend(progress_lines);
     }
 
     lines
@@ -411,6 +412,22 @@ fn transcript_body_style(marker: &str, line: &str) -> Style {
 
 fn live_progress_lines(state: &TuiState) -> Vec<Line<'static>> {
     if state.turn_running {
+        if state.active_tool_label.is_some() {
+            if state.session.queued_commands == 0 {
+                return Vec::new();
+            }
+            return vec![Line::from(vec![
+                Span::styled("+", Style::default().fg(WARN).add_modifier(Modifier::BOLD)),
+                Span::raw(" "),
+                Span::styled(
+                    format!(
+                        "{} queued while the current tool runs",
+                        state.session.queued_commands
+                    ),
+                    Style::default().fg(MUTED),
+                ),
+            ])];
+        }
         let elapsed_secs = state
             .turn_started_at
             .map(|started| started.elapsed().as_secs())
@@ -454,12 +471,9 @@ fn live_progress_lines(state: &TuiState) -> Vec<Line<'static>> {
 }
 
 fn live_progress_summary(state: &TuiState) -> String {
-    match (state.status.as_str(), state.active_tool_label.as_deref()) {
-        ("Waiting for approval", Some(tool_name)) => {
-            format!("Waiting for approval to run {tool_name}")
-        }
-        ("Waiting for approval", None) => "Waiting for approval".to_string(),
-        (_, Some(tool_name)) => format!("Running {tool_name}"),
+    match state.status.as_str() {
+        "Waiting for approval" => "Waiting for approval".to_string(),
+        status if !status.is_empty() => status.to_string(),
         _ => "Working".to_string(),
     }
 }
@@ -1151,8 +1165,7 @@ mod tests {
         let state = TuiState {
             main_pane: MainPaneMode::Transcript,
             turn_running: true,
-            status: "Working".to_string(),
-            active_tool_label: Some("bash".to_string()),
+            status: "Working (2)".to_string(),
             ..TuiState::default()
         };
 
@@ -1161,13 +1174,37 @@ mod tests {
         assert!(rendered.iter().any(|line| {
             line.spans
                 .iter()
-                .any(|span| span.content.as_ref().contains("Running bash"))
+                .any(|span| span.content.as_ref().contains("Working (2)"))
         }));
         assert!(!rendered.iter().any(|line| {
             line.spans
                 .iter()
                 .any(|span| span.content.as_ref().contains("$ cargo test"))
         }));
+    }
+
+    #[test]
+    fn transcript_hides_progress_line_while_tool_cell_is_active() {
+        let state = TuiState {
+            main_pane: MainPaneMode::Transcript,
+            turn_running: true,
+            status: "Working".to_string(),
+            active_tool_label: Some("bash".to_string()),
+            transcript: vec!["• Running bash\n  └ $ cargo test".to_string()],
+            ..TuiState::default()
+        };
+
+        let rendered = build_transcript_lines(&state);
+
+        let running_count = rendered
+            .iter()
+            .filter(|line| {
+                line.spans
+                    .iter()
+                    .any(|span| span.content.as_ref().contains("Running bash"))
+            })
+            .count();
+        assert_eq!(running_count, 1);
     }
 
     #[test]
