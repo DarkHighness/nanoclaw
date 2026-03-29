@@ -1069,11 +1069,54 @@ fn render_shell_summary_line(line: &str) -> Vec<Line<'static>> {
 }
 
 fn build_inspector_text(title: &str, lines: &[String]) -> Text<'static> {
-    if is_collection_inspector(title) {
+    if is_command_palette_title(title) {
+        build_command_palette_text(lines)
+    } else if is_collection_inspector(title) {
         build_collection_text(title, lines)
     } else {
         build_key_value_text(lines)
     }
+}
+
+fn build_command_palette_text(lines: &[String]) -> Text<'static> {
+    let mut rendered = Vec::new();
+    for line in lines {
+        if let Some(section) = line.strip_prefix("## ") {
+            if !rendered.is_empty() {
+                rendered.push(Line::raw(""));
+            }
+            rendered.push(Line::from(Span::styled(
+                section.to_string(),
+                Style::default().fg(MUTED),
+            )));
+            continue;
+        }
+        if line.starts_with("No ") {
+            rendered.push(Line::from(Span::styled(
+                line.to_string(),
+                Style::default().fg(SUBTLE),
+            )));
+            continue;
+        }
+        if let Some((command, summary)) = line.split_once("  ") {
+            rendered.push(Line::from(vec![
+                Span::styled("›", Style::default().fg(USER).add_modifier(Modifier::BOLD)),
+                Span::raw(" "),
+                Span::styled(
+                    command.to_string(),
+                    Style::default().fg(HEADER).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled("  ", Style::default().fg(SUBTLE)),
+                Span::styled(summary.to_string(), Style::default().fg(MUTED)),
+            ]));
+        } else {
+            rendered.push(Line::from(Span::styled(
+                line.to_string(),
+                Style::default().fg(TEXT),
+            )));
+        }
+    }
+    Text::from(rendered)
 }
 
 fn build_collection_text(title: &str, lines: &[String]) -> Text<'static> {
@@ -1135,8 +1178,7 @@ fn split_list_entry(line: &str) -> (&str, Option<&str>) {
 fn is_collection_inspector(title: &str) -> bool {
     matches!(
         title,
-        "Command Palette"
-            | "Tool Catalog"
+        "Tool Catalog"
             | "Skill Catalog"
             | "MCP"
             | "Prompts"
@@ -1147,6 +1189,10 @@ fn is_collection_inspector(title: &str) -> bool {
             | "Sessions"
             | "Session Search"
     )
+}
+
+fn is_command_palette_title(title: &str) -> bool {
+    title.starts_with("Command Palette")
 }
 
 fn inspector_accent(title: &str) -> Color {
@@ -1279,8 +1325,8 @@ fn clamp_scroll(requested: u16, content_lines: usize, viewport_height: u16) -> u
 mod tests {
     use super::{
         approval_preview_lines, build_approval_text, build_collection_text,
-        build_command_hint_text, build_key_value_text, build_side_rail_lines,
-        build_transcript_lines, build_welcome_lines, format_footer_context,
+        build_command_hint_text, build_command_palette_text, build_key_value_text,
+        build_side_rail_lines, build_transcript_lines, build_welcome_lines, format_footer_context,
         should_render_side_rail,
     };
     use crate::frontend::tui::approval::ApprovalPrompt;
@@ -1440,6 +1486,27 @@ mod tests {
         assert_eq!(
             rendered.lines[1].spans[4].content.as_ref(),
             "msgs=12 ev=40  no prompt yet"
+        );
+    }
+
+    #[test]
+    fn command_palette_text_matches_picker_style() {
+        let rendered = build_command_palette_text(&[
+            "## Session".to_string(),
+            "/help [query]  browse commands".to_string(),
+            "/sessions [query]  browse persisted sessions".to_string(),
+        ]);
+
+        assert_eq!(rendered.lines[0].spans[0].content.as_ref(), "Session");
+        assert_eq!(rendered.lines[1].spans[0].content.as_ref(), "›");
+        assert_eq!(rendered.lines[1].spans[2].content.as_ref(), "/help [query]");
+        assert_eq!(
+            rendered.lines[1].spans[4].content.as_ref(),
+            "browse commands"
+        );
+        assert_eq!(
+            rendered.lines[2].spans[2].content.as_ref(),
+            "/sessions [query]"
         );
     }
 
