@@ -151,6 +151,37 @@ impl CodeAgentSession {
             .collect())
     }
 
+    pub(crate) async fn list_agent_sessions(
+        &self,
+        session_ref: Option<&str>,
+    ) -> Result<Vec<crate::backend::PersistedAgentSessionSummary>> {
+        let sessions = session_history::list_sessions(&self.store).await?;
+        let filtered_session_id = session_ref
+            .map(|session_ref| session_history::resolve_session_reference(&sessions, session_ref))
+            .transpose()?;
+        let active_agent_session_ref = self.startup_snapshot().root_agent_session_id;
+        let mut agent_sessions = Vec::new();
+        for summary in sessions.into_iter().filter(|summary| {
+            filtered_session_id
+                .as_ref()
+                .is_none_or(|session_id| summary.session_id == *session_id)
+        }) {
+            let events = self.store.events(&summary.session_id).await?;
+            agent_sessions.extend(session_catalog::persisted_agent_session_summaries(
+                summary.session_id.as_str(),
+                &events,
+                &active_agent_session_ref,
+            ));
+        }
+        agent_sessions.sort_by(|left, right| {
+            right
+                .last_timestamp_ms
+                .cmp(&left.last_timestamp_ms)
+                .then_with(|| left.agent_session_ref.cmp(&right.agent_session_ref))
+        });
+        Ok(agent_sessions)
+    }
+
     pub(crate) async fn load_session(&self, session_ref: &str) -> Result<LoadedSession> {
         session_history::load_session(&self.store, session_ref).await
     }
@@ -191,14 +222,15 @@ impl CodeAgentSession {
 
     pub(crate) async fn resume_status(
         &self,
-        session_ref: &str,
-    ) -> Result<crate::backend::SessionResumeStatus> {
-        let loaded = self.load_session(session_ref).await?;
-        let active_session_ref = self.startup_snapshot().active_session_ref;
-        Ok(session_catalog::resume_status(
-            loaded.summary.session_id.as_str(),
-            &active_session_ref,
-        ))
+        agent_session_ref: &str,
+    ) -> Result<crate::backend::AgentSessionResumeStatus> {
+        let agent_sessions = self.list_agent_sessions(None).await?;
+        let active_agent_session_ref = self.startup_snapshot().root_agent_session_id;
+        session_catalog::resolve_agent_session_resume_status(
+            &agent_sessions,
+            agent_session_ref,
+            &active_agent_session_ref,
+        )
     }
 
     pub(crate) async fn list_mcp_servers(&self) -> Vec<McpServerSummary> {

@@ -24,6 +24,9 @@ pub(crate) enum SlashCommand {
     Compact {
         notes: Option<String>,
     },
+    AgentSessions {
+        session_ref: Option<String>,
+    },
     Sessions {
         query: Option<String>,
     },
@@ -31,7 +34,7 @@ pub(crate) enum SlashCommand {
         session_ref: String,
     },
     Resume {
-        session_ref: String,
+        agent_session_ref: String,
     },
     ExportSession {
         session_ref: String,
@@ -93,6 +96,9 @@ enum SlashSubcommand {
         )]
         notes: Vec<String>,
     },
+    AgentSessions {
+        session_ref: Option<String>,
+    },
     Sessions {
         #[arg(
             value_name = "QUERY",
@@ -105,7 +111,7 @@ enum SlashSubcommand {
         session_ref: String,
     },
     Resume {
-        session_ref: String,
+        agent_session_ref: String,
     },
     ExportSession {
         session_ref: String,
@@ -160,11 +166,12 @@ impl From<SlashSubcommand> for SlashCommand {
             SlashSubcommand::Compact { notes } => Self::Compact {
                 notes: join_optional_tail(notes),
             },
+            SlashSubcommand::AgentSessions { session_ref } => Self::AgentSessions { session_ref },
             SlashSubcommand::Sessions { query } => Self::Sessions {
                 query: join_optional_tail(query),
             },
             SlashSubcommand::Session { session_ref } => Self::Session { session_ref },
-            SlashSubcommand::Resume { session_ref } => Self::Resume { session_ref },
+            SlashSubcommand::Resume { agent_session_ref } => Self::Resume { agent_session_ref },
             SlashSubcommand::ExportSession { session_ref, path } => Self::ExportSession {
                 session_ref,
                 path: join_required_tail(path),
@@ -217,6 +224,16 @@ mod tests {
             SlashCommand::ExportTranscript { session_ref, path } => {
                 assert_eq!(session_ref, "abc123");
                 assert_eq!(path, "reports/run log.txt");
+            }
+            _ => panic!("unexpected command"),
+        }
+    }
+
+    #[test]
+    fn parses_agent_session_listing_with_optional_session_ref() {
+        match parse_slash_command("/agent_sessions abc123") {
+            SlashCommand::AgentSessions { session_ref } => {
+                assert_eq!(session_ref, Some("abc123".to_string()));
             }
             _ => panic!("unexpected command"),
         }

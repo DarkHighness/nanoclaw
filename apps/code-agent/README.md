@@ -138,9 +138,10 @@ not have useful extensions, including `Dockerfile*`, `Containerfile*`, `go.mod`,
 
 - `/status`
 - `/help`
+- `/agent_sessions [session-ref]`
 - `/sessions [query]`
 - `/session <session-ref>`
-- `/resume <session-ref>`
+- `/resume <agent-session-ref>`
 - `/export_session <session-ref> <path>`
 - `/export_transcript <session-ref> <path>`
 - `/tools`
@@ -156,11 +157,13 @@ not have useful extensions, including `Dockerfile*`, `Containerfile*`, `go.mod`,
 - `/clear`
 - `/exit`
 
-The product-facing host surface now uses `session` terminology to match Codex,
-Claude Code, and OpenCode. The durable history backend still stores entries by
-substrate `session_id`, so `/session <session-ref>` currently opens persisted
-history and exports artifacts, but it does not yet resume a live runtime from
-that stored state.
+The product-facing host surface now uses `session` terminology for the durable
+conversation history and `agent session` terminology for runtime-resume targets.
+`/session <session-ref>` opens persisted conversation history and exports
+artifacts, while `/resume <agent-session-ref>` now resolves an `AgentSessionId`
+instead of a top-level `SessionId`. Live runtime reattach is still not
+implemented, so resume currently reports whether the target is already attached
+to the active runtime or only available as history.
 
 The startup inspector is now backed by a structured backend snapshot, and the
 MCP-focused commands expose connected server catalogs plus prompt/resource

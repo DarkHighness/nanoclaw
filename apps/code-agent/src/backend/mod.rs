@@ -35,7 +35,8 @@ pub(crate) use boot_sandbox::{
 pub(crate) use events::{SessionEvent, SessionEventObserver, SessionEventStream};
 pub(crate) use session::{CodeAgentSession, SessionStartupSnapshot};
 pub(crate) use session_catalog::{
-    PersistedSessionSearchMatch, PersistedSessionSummary, SessionResumeStatus, SessionResumeSupport,
+    AgentSessionResumeStatus, PersistedAgentSessionSummary, PersistedSessionSearchMatch,
+    PersistedSessionSummary, ResumeSupport,
 };
 pub(crate) use session_history::{
     LoadedSession, SessionExportArtifact, SessionExportKind, message_to_text, preview_id,

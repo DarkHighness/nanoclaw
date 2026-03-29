@@ -9,10 +9,11 @@ use crate::backend::{CodeAgentSession, preview_id};
 use approval::approval_decision_for_key;
 use commands::{SlashCommand, parse_slash_command};
 use history::{
+    format_agent_session_resume_status, format_agent_session_summary_line,
     format_mcp_prompt_summary_line, format_mcp_resource_summary_line,
     format_mcp_server_summary_line, format_session_export_result, format_session_inspector,
-    format_session_resume_status, format_session_search_line, format_session_summary_line,
-    format_session_transcript_lines, format_startup_diagnostics,
+    format_session_search_line, format_session_summary_line, format_session_transcript_lines,
+    format_startup_diagnostics,
 };
 use observer::SharedRenderObserver;
 use render::render;
@@ -510,7 +511,8 @@ impl CodeAgentTui {
                 }
                 Ok(false)
             }
-            command @ (SlashCommand::Sessions { .. }
+            command @ (SlashCommand::AgentSessions { .. }
+            | SlashCommand::Sessions { .. }
             | SlashCommand::Session { .. }
             | SlashCommand::Resume { .. }
             | SlashCommand::ExportSession { .. }
@@ -530,6 +532,41 @@ impl CodeAgentTui {
 
     async fn apply_history_command(&mut self, command: SlashCommand) -> Result<bool> {
         match command {
+            SlashCommand::AgentSessions { session_ref } => {
+                let agent_sessions = self
+                    .session
+                    .list_agent_sessions(session_ref.as_deref())
+                    .await?;
+                self.ui_state.mutate(move |state| {
+                    state.inspector_title = "Agent Sessions".to_string();
+                    state.inspector_scroll = 0;
+                    state.inspector = if agent_sessions.is_empty() {
+                        vec![
+                            "## Agent Sessions".to_string(),
+                            "no persisted agent sessions recorded yet".to_string(),
+                        ]
+                    } else {
+                        std::iter::once("## Agent Sessions".to_string())
+                            .chain(
+                                agent_sessions
+                                    .iter()
+                                    .take(16)
+                                    .map(format_agent_session_summary_line),
+                            )
+                            .collect()
+                    };
+                    state.status = if agent_sessions.is_empty() {
+                        "No agent sessions available yet".to_string()
+                    } else {
+                        format!(
+                            "Listed {} agent sessions. Use /resume <agent-session-ref> to inspect one.",
+                            agent_sessions.len()
+                        )
+                    };
+                    state.push_activity("listed persisted agent sessions");
+                });
+                Ok(false)
+            }
             SlashCommand::Sessions { query } => {
                 if let Some(query) = query {
                     let matches = self.session.search_sessions(&query).await?;
@@ -622,16 +659,16 @@ impl CodeAgentTui {
                 });
                 Ok(false)
             }
-            SlashCommand::Resume { session_ref } => {
-                let status = self.session.resume_status(&session_ref).await?;
-                let inspector = format_session_resume_status(&status);
-                let session_ref_preview = preview_id(&status.session_ref);
+            SlashCommand::Resume { agent_session_ref } => {
+                let status = self.session.resume_status(&agent_session_ref).await?;
+                let inspector = format_agent_session_resume_status(&status);
+                let session_ref_preview = preview_id(&status.agent_session_ref);
                 self.ui_state.mutate(move |state| {
                     state.inspector_title = "Resume".to_string();
                     state.inspector_scroll = 0;
                     state.inspector = inspector;
                     state.status = format!(
-                        "Checked resume contract for session {}",
+                        "Checked resume contract for agent session {}",
                         session_ref_preview
                     );
                     state.push_activity(format!("checked resume contract {}", session_ref_preview));
@@ -761,9 +798,10 @@ fn command_palette_lines() -> Vec<String> {
         "## Commands".to_string(),
         "/status".to_string(),
         "/help".to_string(),
+        "/agent_sessions [session-ref]".to_string(),
         "/sessions [query]".to_string(),
         "/session <session-ref>".to_string(),
-        "/resume <session-ref>".to_string(),
+        "/resume <agent-session-ref>".to_string(),
         "/export_session <session-ref> <path>".to_string(),
         "/export_transcript <session-ref> <path>".to_string(),
         "/tools".to_string(),
@@ -788,8 +826,7 @@ fn build_startup_inspector(session: &state::SessionSummary) -> Vec<String> {
         format!("agent session id: {}", session.root_agent_session_id),
         "## Workflow".to_string(),
         "Use /sessions to browse persisted sessions and /session <ref> to open one.".to_string(),
-        "Use /resume <ref> to inspect whether a session can reattach to a live runtime."
-            .to_string(),
+        "Use /agent_sessions to browse persisted agent sessions and /resume <agent-session-ref> to inspect live reattach support.".to_string(),
         "Use /export_session or /export_transcript to write durable artifacts.".to_string(),
         "Approvals stay in-line above the composer instead of replacing the screen.".to_string(),
         "## Models".to_string(),
@@ -852,7 +889,7 @@ mod tests {
     fn startup_inspector_surfaces_backend_boot_snapshot() {
         let lines = build_startup_inspector(&SessionSummary {
             workspace_name: "nanoclaw".to_string(),
-            active_session_ref: "run_123".to_string(),
+            active_session_ref: "session_123".to_string(),
             root_agent_session_id: "session_123".to_string(),
             provider_label: "openai".to_string(),
             model: "gpt-5.4".to_string(),

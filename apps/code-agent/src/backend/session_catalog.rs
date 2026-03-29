@@ -1,12 +1,15 @@
+use agent::types::{AgentSessionId, SessionEventEnvelope, SessionEventKind};
+use anyhow::{Result, anyhow};
+use std::collections::BTreeMap;
 use store::{SessionSearchResult, SessionSummary};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum SessionResumeSupport {
+pub(crate) enum ResumeSupport {
     AttachedToActiveRuntime,
     NotYetSupported { reason: String },
 }
 
-impl SessionResumeSupport {
+impl ResumeSupport {
     pub(crate) fn label(&self) -> &'static str {
         match self {
             Self::AttachedToActiveRuntime => "attached",
@@ -24,7 +27,7 @@ pub(crate) struct PersistedSessionSummary {
     pub(crate) worker_session_count: usize,
     pub(crate) transcript_message_count: usize,
     pub(crate) last_user_prompt: Option<String>,
-    pub(crate) resume_support: SessionResumeSupport,
+    pub(crate) resume_support: ResumeSupport,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -35,13 +38,27 @@ pub(crate) struct PersistedSessionSearchMatch {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct SessionResumeStatus {
+pub(crate) struct PersistedAgentSessionSummary {
+    pub(crate) agent_session_ref: String,
     pub(crate) session_ref: String,
-    pub(crate) support: SessionResumeSupport,
+    pub(crate) label: String,
+    pub(crate) first_timestamp_ms: u128,
+    pub(crate) last_timestamp_ms: u128,
+    pub(crate) event_count: usize,
+    pub(crate) transcript_message_count: usize,
+    pub(crate) last_user_prompt: Option<String>,
+    pub(crate) resume_support: ResumeSupport,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct AgentSessionResumeStatus {
+    pub(crate) agent_session_ref: String,
+    pub(crate) session_ref: String,
+    pub(crate) support: ResumeSupport,
 }
 
 const HISTORY_ONLY_REASON: &str =
-    "Persisted sessions can be replayed and exported, but runtime reattach is not implemented yet.";
+    "Persisted agent sessions can be inspected, but runtime reattach is not implemented yet.";
 
 pub(crate) fn persisted_session_summary(
     summary: &SessionSummary,
@@ -70,27 +87,148 @@ pub(crate) fn persisted_session_search_match(
     }
 }
 
-pub(crate) fn resume_status(session_ref: &str, active_session_ref: &str) -> SessionResumeStatus {
-    SessionResumeStatus {
-        session_ref: session_ref.to_string(),
-        support: resume_support_for(session_ref, active_session_ref),
+pub(crate) fn persisted_agent_session_summaries(
+    session_ref: &str,
+    events: &[SessionEventEnvelope],
+    active_agent_session_ref: &str,
+) -> Vec<PersistedAgentSessionSummary> {
+    #[derive(Clone, Debug)]
+    struct AgentSessionAccumulator {
+        label: Option<String>,
+        first_timestamp_ms: u128,
+        last_timestamp_ms: u128,
+        event_count: usize,
+        transcript_message_count: usize,
+        last_user_prompt: Option<String>,
     }
+
+    let Some(root_agent_session_id) = events.first().map(|event| event.agent_session_id.clone())
+    else {
+        return Vec::new();
+    };
+
+    let mut by_agent_session = BTreeMap::<AgentSessionId, AgentSessionAccumulator>::new();
+    for event in events {
+        let entry = by_agent_session
+            .entry(event.agent_session_id.clone())
+            .or_insert_with(|| AgentSessionAccumulator {
+                label: None,
+                first_timestamp_ms: event.timestamp_ms,
+                last_timestamp_ms: event.timestamp_ms,
+                event_count: 0,
+                transcript_message_count: 0,
+                last_user_prompt: None,
+            });
+        entry.first_timestamp_ms = entry.first_timestamp_ms.min(event.timestamp_ms);
+        entry.last_timestamp_ms = entry.last_timestamp_ms.max(event.timestamp_ms);
+        entry.event_count += 1;
+        match &event.event {
+            SessionEventKind::TranscriptMessage { .. } => {
+                entry.transcript_message_count += 1;
+            }
+            SessionEventKind::UserPromptSubmit { prompt } => {
+                entry.last_user_prompt = Some(prompt.clone());
+            }
+            SessionEventKind::SubagentStart { task, .. } => {
+                entry.label.get_or_insert_with(|| task.role.clone());
+            }
+            _ => {}
+        }
+    }
+
+    let mut summaries = by_agent_session
+        .into_iter()
+        .map(|(agent_session_id, entry)| PersistedAgentSessionSummary {
+            agent_session_ref: agent_session_id.to_string(),
+            session_ref: session_ref.to_string(),
+            label: if agent_session_id == root_agent_session_id {
+                "root".to_string()
+            } else {
+                entry.label.unwrap_or_else(|| "worker".to_string())
+            },
+            first_timestamp_ms: entry.first_timestamp_ms,
+            last_timestamp_ms: entry.last_timestamp_ms,
+            event_count: entry.event_count,
+            transcript_message_count: entry.transcript_message_count,
+            last_user_prompt: entry.last_user_prompt,
+            resume_support: resume_support_for(agent_session_id.as_str(), active_agent_session_ref),
+        })
+        .collect::<Vec<_>>();
+    summaries.sort_by(|left, right| {
+        right
+            .last_timestamp_ms
+            .cmp(&left.last_timestamp_ms)
+            .then_with(|| left.agent_session_ref.cmp(&right.agent_session_ref))
+    });
+    summaries
 }
 
-fn resume_support_for(session_ref: &str, active_session_ref: &str) -> SessionResumeSupport {
-    if session_ref == active_session_ref {
-        SessionResumeSupport::AttachedToActiveRuntime
+pub(crate) fn resolve_agent_session_resume_status(
+    agent_sessions: &[PersistedAgentSessionSummary],
+    agent_session_ref: &str,
+    active_agent_session_ref: &str,
+) -> Result<AgentSessionResumeStatus> {
+    let summary = resolve_agent_session_reference(agent_sessions, agent_session_ref)?;
+    Ok(AgentSessionResumeStatus {
+        agent_session_ref: summary.agent_session_ref.clone(),
+        session_ref: summary.session_ref.clone(),
+        support: resume_support_for(&summary.agent_session_ref, active_agent_session_ref),
+    })
+}
+
+fn resume_support_for(agent_session_ref: &str, active_agent_session_ref: &str) -> ResumeSupport {
+    if agent_session_ref == active_agent_session_ref {
+        ResumeSupport::AttachedToActiveRuntime
     } else {
-        SessionResumeSupport::NotYetSupported {
+        ResumeSupport::NotYetSupported {
             reason: HISTORY_ONLY_REASON.to_string(),
         }
     }
 }
 
+fn resolve_agent_session_reference<'a>(
+    agent_sessions: &'a [PersistedAgentSessionSummary],
+    agent_session_ref: &str,
+) -> Result<&'a PersistedAgentSessionSummary> {
+    if let Some(summary) = agent_sessions
+        .iter()
+        .find(|summary| summary.agent_session_ref == agent_session_ref)
+    {
+        return Ok(summary);
+    }
+
+    let matches = agent_sessions
+        .iter()
+        .filter(|summary| summary.agent_session_ref.starts_with(agent_session_ref))
+        .collect::<Vec<_>>();
+    match matches.as_slice() {
+        [] => Err(anyhow!(
+            "unknown agent session id or prefix: {agent_session_ref}"
+        )),
+        [summary] => Ok(summary),
+        _ => Err(anyhow!(
+            "ambiguous agent session prefix {agent_session_ref}: {}",
+            matches
+                .iter()
+                .take(6)
+                .map(|summary| summary
+                    .agent_session_ref
+                    .chars()
+                    .take(8)
+                    .collect::<String>())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )),
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{SessionResumeSupport, persisted_session_summary, resume_status};
-    use agent::types::SessionId;
+    use super::{
+        ResumeSupport, persisted_agent_session_summaries, persisted_session_summary,
+        resolve_agent_session_resume_status,
+    };
+    use agent::types::{AgentSessionId, SessionEventEnvelope, SessionEventKind, SessionId};
     use store::SessionSummary;
 
     #[test]
@@ -110,21 +248,95 @@ mod tests {
 
         assert_eq!(
             summary.resume_support,
-            SessionResumeSupport::AttachedToActiveRuntime
+            ResumeSupport::AttachedToActiveRuntime
         );
     }
 
     #[test]
-    fn persisted_session_resume_status_is_explicitly_history_only() {
-        let status = resume_status("archived_session", "active_session");
+    fn persisted_agent_session_resume_status_is_explicitly_history_only() {
+        let status = resolve_agent_session_resume_status(
+            &[super::PersistedAgentSessionSummary {
+                agent_session_ref: "agent_archived".to_string(),
+                session_ref: "session_archived".to_string(),
+                label: "root".to_string(),
+                first_timestamp_ms: 1,
+                last_timestamp_ms: 2,
+                event_count: 3,
+                transcript_message_count: 1,
+                last_user_prompt: None,
+                resume_support: ResumeSupport::NotYetSupported {
+                    reason: "ignored".to_string(),
+                },
+            }],
+            "agent_archived",
+            "agent_active",
+        )
+        .unwrap();
         assert_eq!(status.support.label(), "history-only");
         match status.support {
-            SessionResumeSupport::AttachedToActiveRuntime => {
+            ResumeSupport::AttachedToActiveRuntime => {
                 panic!("expected persisted history to stay history-only")
             }
-            SessionResumeSupport::NotYetSupported { reason } => {
+            ResumeSupport::NotYetSupported { reason } => {
                 assert!(reason.contains("runtime reattach is not implemented yet"));
             }
         }
+    }
+
+    #[test]
+    fn persisted_agent_session_summaries_group_root_and_worker_windows() {
+        let session_id = SessionId::from("session_demo");
+        let root_agent_session_id = AgentSessionId::from("agent_root");
+        let worker_agent_session_id = AgentSessionId::from("agent_worker");
+        let events = vec![
+            SessionEventEnvelope::new(
+                session_id.clone(),
+                root_agent_session_id.clone(),
+                None,
+                None,
+                SessionEventKind::SessionStart {
+                    reason: Some("new_session".to_string()),
+                },
+            ),
+            SessionEventEnvelope::new(
+                session_id.clone(),
+                root_agent_session_id.clone(),
+                None,
+                None,
+                SessionEventKind::UserPromptSubmit {
+                    prompt: "inspect".to_string(),
+                },
+            ),
+            SessionEventEnvelope::new(
+                session_id,
+                worker_agent_session_id.clone(),
+                None,
+                None,
+                SessionEventKind::SessionStart {
+                    reason: Some("subagent".to_string()),
+                },
+            ),
+        ];
+
+        let summaries = persisted_agent_session_summaries(
+            "session_demo",
+            &events,
+            root_agent_session_id.as_str(),
+        );
+        assert_eq!(summaries.len(), 2);
+        let worker = summaries
+            .iter()
+            .find(|summary| summary.agent_session_ref == "agent_worker")
+            .unwrap();
+        assert_eq!(worker.label, "worker");
+        assert_eq!(worker.resume_support.label(), "history-only");
+
+        let root = summaries
+            .iter()
+            .find(|summary| summary.agent_session_ref == "agent_root")
+            .unwrap();
+        assert_eq!(root.label, "root");
+        assert_eq!(root.last_user_prompt.as_deref(), Some("inspect"));
+        assert_eq!(root.resume_support.label(), "attached");
     }
 }

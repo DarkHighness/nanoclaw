@@ -1,9 +1,9 @@
 use super::state::preview_text;
 use crate::backend::{
-    LoadedSession, McpPromptSummary, McpResourceSummary, McpServerSummary,
-    PersistedSessionSearchMatch, PersistedSessionSummary, SessionExportArtifact, SessionExportKind,
-    SessionResumeStatus, SessionResumeSupport, StartupDiagnosticsSnapshot, message_to_text,
-    preview_id,
+    AgentSessionResumeStatus, LoadedSession, McpPromptSummary, McpResourceSummary,
+    McpServerSummary, PersistedAgentSessionSummary, PersistedSessionSearchMatch,
+    PersistedSessionSummary, ResumeSupport, SessionExportArtifact, SessionExportKind,
+    StartupDiagnosticsSnapshot, message_to_text, preview_id,
 };
 use agent::types::{AgentSessionId, SessionEventEnvelope, SessionEventKind};
 use store::TokenUsageRecord;
@@ -20,6 +20,24 @@ pub(crate) fn format_session_summary_line(summary: &PersistedSessionSummary) -> 
         summary.transcript_message_count,
         summary.event_count,
         summary.worker_session_count,
+        summary.resume_support.label(),
+        prompt
+    )
+}
+
+pub(crate) fn format_agent_session_summary_line(summary: &PersistedAgentSessionSummary) -> String {
+    let prompt = summary
+        .last_user_prompt
+        .as_deref()
+        .map(|value| preview_text(value, 28))
+        .unwrap_or_else(|| "no prompt yet".to_string());
+    format!(
+        "{}  session={} label={} ev={} msgs={} resume={}  {}",
+        preview_id(&summary.agent_session_ref),
+        preview_id(&summary.session_ref),
+        summary.label,
+        summary.event_count,
+        summary.transcript_message_count,
         summary.resume_support.label(),
         prompt
     )
@@ -151,13 +169,14 @@ pub(crate) fn format_session_export_result(result: &SessionExportArtifact) -> Ve
     ]
 }
 
-pub(crate) fn format_session_resume_status(status: &SessionResumeStatus) -> Vec<String> {
+pub(crate) fn format_agent_session_resume_status(status: &AgentSessionResumeStatus) -> Vec<String> {
     let mut lines = vec![
         "## Resume".to_string(),
+        format!("agent session ref: {}", status.agent_session_ref),
         format!("session ref: {}", status.session_ref),
         format!("support: {}", status.support.label()),
     ];
-    if let SessionResumeSupport::NotYetSupported { reason } = &status.support {
+    if let ResumeSupport::NotYetSupported { reason } = &status.support {
         lines.push(format!("reason: {reason}"));
     }
     lines
