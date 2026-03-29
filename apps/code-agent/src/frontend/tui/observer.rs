@@ -117,6 +117,12 @@ impl SharedRenderObserver {
                 state.status = "Waiting for approval".to_string();
                 state.active_tool_label = Some(call.tool_name.clone());
                 state.active_tool_preview = call.arguments_preview.clone();
+                let line_index = replace_or_push_tool_line(
+                    state,
+                    self.active_tool_lines.get(&call.call_id).copied(),
+                    waiting_tool_entry(&call, &reasons),
+                );
+                self.active_tool_lines.insert(call.call_id.clone(), line_index);
                 state.push_activity(format!(
                     "approval needed for {} ({})",
                     call.tool_name,
@@ -128,17 +134,18 @@ impl SharedRenderObserver {
                 approved,
                 reason,
             } => {
-                state.active_tool_label = None;
                 if approved {
-                    state.status = format!("Approved {}", call.tool_name);
+                    state.status = "Working".to_string();
+                    state.active_tool_label = Some(call.tool_name.clone());
                     state.active_tool_preview = call.arguments_preview.clone();
-                    state.push_transcript(approved_tool_entry(&call));
                     state.push_activity(format!("approved {}", call.tool_name));
                 } else {
                     let reason = reason.unwrap_or_else(|| "permission denied".to_string());
                     state.status = format!("Denied {}: {}", call.tool_name, reason);
+                    state.active_tool_label = None;
                     state.active_tool_preview.clear();
-                    state.push_transcript(denied_tool_entry(&call, &reason));
+                    let existing = self.active_tool_lines.remove(&call.call_id);
+                    replace_tool_line(state, existing, denied_tool_entry(&call, &reason));
                     state.push_activity(format!(
                         "denied {}: {}",
                         call.tool_name,
@@ -150,9 +157,9 @@ impl SharedRenderObserver {
                 state.status = "Working".to_string();
                 state.active_tool_label = Some(call.tool_name.clone());
                 state.active_tool_preview = call.arguments_preview.clone();
-                state.push_transcript(running_tool_entry(&call));
-                self.active_tool_lines
-                    .insert(call.call_id.clone(), state.transcript.len() - 1);
+                let existing = self.active_tool_lines.get(&call.call_id).copied();
+                let line_index = replace_or_push_tool_line(state, existing, running_tool_entry(&call));
+                self.active_tool_lines.insert(call.call_id.clone(), line_index);
                 state.push_activity(format!("running {}", call.tool_name));
             }
             SessionEvent::ToolLifecycleCompleted {
@@ -240,17 +247,21 @@ impl SharedRenderObserver {
     }
 }
 
-fn approved_tool_entry(call: &crate::backend::SessionToolCall) -> String {
-    summarize_tool_entry(
-        format!("✔ Approved {}", call.tool_name),
-        tool_argument_detail_lines(call),
-    )
-}
-
 fn denied_tool_entry(call: &crate::backend::SessionToolCall, reason: &str) -> String {
     let mut detail_lines = tool_argument_detail_lines(call);
     detail_lines.push(format!("  └ {}", preview_text(reason, 72)));
     summarize_tool_entry(format!("✗ Denied {}", call.tool_name), detail_lines)
+}
+
+fn waiting_tool_entry(call: &crate::backend::SessionToolCall, reasons: &[String]) -> String {
+    let mut detail_lines = tool_argument_detail_lines(call);
+    if let Some(reason) = reasons.first() {
+        detail_lines.push(format!("  └ {}", preview_text(reason, 72)));
+    }
+    summarize_tool_entry(
+        format!("• Waiting for approval to run {}", call.tool_name),
+        detail_lines,
+    )
 }
 
 fn running_tool_entry(call: &crate::backend::SessionToolCall) -> String {
@@ -490,6 +501,26 @@ fn replace_tool_line(
     state.push_transcript(replacement);
 }
 
+// Approval, execution, and terminal tool states intentionally share one
+// transcript cell so the operator reads one progressing operation instead of
+// a stream of disconnected status fragments.
+fn replace_or_push_tool_line(
+    state: &mut super::state::TuiState,
+    index: Option<usize>,
+    replacement: String,
+) -> usize {
+    if let Some(index) = index {
+        if let Some(line) = state.transcript.get_mut(index) {
+            *line = replacement;
+            state.transcript_scroll = u16::MAX;
+            return index;
+        }
+    }
+
+    state.push_transcript(replacement);
+    state.transcript.len().saturating_sub(1)
+}
+
 #[cfg(test)]
 mod tests {
     use super::SharedRenderObserver;
@@ -597,5 +628,49 @@ mod tests {
         assert_eq!(snapshot.todo_items.len(), 2);
         assert_eq!(snapshot.todo_items[1].content, "Refine TUI");
         assert_eq!(snapshot.todo_items[1].status, "in_progress");
+    }
+
+    #[test]
+    fn approval_and_tool_run_share_one_timeline_cell() {
+        let ui_state = SharedUiState::new();
+        let call = SessionToolCall {
+            tool_name: "bash".to_string(),
+            call_id: "call_123".to_string(),
+            origin: "local".to_string(),
+            arguments_preview: vec!["$ cargo test".to_string()],
+        };
+        let mut observer = SharedRenderObserver::new(ui_state.clone());
+
+        observer.apply_event(SessionEvent::ToolApprovalRequested {
+            call: call.clone(),
+            reasons: vec!["sandbox approval required".to_string()],
+        });
+        observer.apply_event(SessionEvent::ToolApprovalResolved {
+            call: call.clone(),
+            approved: true,
+            reason: None,
+        });
+        observer.apply_event(SessionEvent::ToolLifecycleStarted { call: call.clone() });
+        observer.apply_event(SessionEvent::ToolLifecycleCompleted {
+            call,
+            output_preview: "ok".to_string(),
+            structured_output_preview: Some(
+                json!({
+                    "kind": "run",
+                    "exit_code": 0,
+                    "timed_out": false,
+                    "stdout": {"text": "ok", "chars": 2, "truncated": false},
+                    "stderr": {"text": "", "chars": 0, "truncated": false}
+                })
+                .to_string(),
+            ),
+        });
+
+        let snapshot = ui_state.snapshot();
+        assert_eq!(snapshot.transcript.len(), 1);
+        assert_eq!(
+            snapshot.transcript[0],
+            "• Called bash\n  └ $ cargo test\n  └ exit 0\n```text\nok\n```"
+        );
     }
 }

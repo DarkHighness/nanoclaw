@@ -424,7 +424,7 @@ fn live_progress_lines(state: &TuiState) -> Vec<Line<'static>> {
             .map(|started| started.elapsed().as_secs())
             .unwrap_or(0);
         let status = live_progress_summary(state);
-        let mut lines = vec![Line::from(vec![
+        let mut spans = vec![
             Span::styled(
                 progress_marker(state),
                 Style::default()
@@ -436,25 +436,19 @@ fn live_progress_lines(state: &TuiState) -> Vec<Line<'static>> {
                 preview_text(&status, 56),
                 Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
             ),
-            Span::styled(
-                format!(" ({}s • esc to interrupt)", elapsed_secs),
+        ];
+        if state.session.queued_commands > 0 {
+            spans.push(Span::styled(" · ", Style::default().fg(SUBTLE)));
+            spans.push(Span::styled(
+                format!("{} queued", state.session.queued_commands),
                 Style::default().fg(MUTED),
-            ),
-        ])];
-        lines.extend(
-            state
-                .active_tool_preview
-                .iter()
-                .enumerate()
-                .map(|(index, preview)| {
-                    let prefix = if index == 0 { "  └ " } else { "    " };
-                    Line::from(vec![
-                        Span::styled(prefix, Style::default().fg(SUBTLE)),
-                        Span::styled(preview.clone(), Style::default().fg(MUTED)),
-                    ])
-                }),
-        );
-        lines
+            ));
+        }
+        spans.push(Span::styled(
+            format!(" ({}s · esc to interrupt)", elapsed_secs),
+            Style::default().fg(MUTED),
+        ));
+        vec![Line::from(spans)]
     } else {
         vec![Line::from(vec![
             Span::styled("+", Style::default().fg(WARN).add_modifier(Modifier::BOLD)),
@@ -541,46 +535,59 @@ fn build_side_rail_lines(state: &TuiState) -> Vec<Line<'static>> {
             .warnings
             .iter()
             .any(|warning| warning.contains("managed code-intel"));
-        lines.push(Line::from(Span::styled(
+        let warning_count = state.session.startup_diagnostics.warnings.len();
+        let diagnostic_count = state.session.startup_diagnostics.diagnostics.len();
+        lines.push(status_line(
             if degraded { "degraded" } else { "ready" },
-            if degraded {
-                Style::default().fg(WARN).add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(ASSISTANT).add_modifier(Modifier::BOLD)
-            },
+            if degraded { WARN } else { ASSISTANT },
+        ));
+        lines.push(rail_summary_line(format!(
+            "{warning_count} warnings · {diagnostic_count} diagnostics"
         )));
-        if !state.session.startup_diagnostics.warnings.is_empty() {
-            lines.extend(
-                state
-                    .session
-                    .startup_diagnostics
-                    .warnings
-                    .iter()
-                    .take(2)
-                    .map(|warning| bullet_line(&preview_text(warning, 64), WARN)),
-            );
-        } else if !state.session.startup_diagnostics.diagnostics.is_empty() {
-            lines.extend(
+        let lsp_notes = state
+            .session
+            .startup_diagnostics
+            .warnings
+            .iter()
+            .map(|warning| (preview_text(warning, 40), WARN))
+            .chain(
                 state
                     .session
                     .startup_diagnostics
                     .diagnostics
                     .iter()
-                    .take(3)
-                    .map(|diagnostic| bullet_line(&preview_text(diagnostic, 64), USER)),
-            );
+                    .map(|diagnostic| (preview_text(diagnostic, 40), USER)),
+            )
+            .take(3)
+            .collect::<Vec<_>>();
+        if lsp_notes.is_empty() {
+            lines.push(rail_summary_line("No diagnostics yet."));
         } else {
-            lines.push(Line::from(Span::styled(
-                "No diagnostics yet.",
-                Style::default().fg(SUBTLE),
-            )));
+            lines.extend(
+                lsp_notes
+                    .into_iter()
+                    .map(|(note, color)| bullet_line(&note, color)),
+            );
         }
         lines.push(Line::raw(""));
     }
 
     if !state.todo_items.is_empty() {
         lines.push(section_title_line("TODO"));
-        lines.extend(state.todo_items.iter().take(8).map(render_todo_line));
+        let (active, pending, done) = todo_counts(&state.todo_items);
+        lines.push(rail_summary_line(format!(
+            "{active} active · {pending} pending · {done} done"
+        )));
+        let mut todo_items = state.todo_items.iter().collect::<Vec<_>>();
+        todo_items.sort_by_key(|item| (todo_status_rank(&item.status), item.content.as_str()));
+        let visible = todo_items.iter().take(5).copied().collect::<Vec<_>>();
+        lines.extend(visible.iter().map(|item| render_todo_line(item)));
+        if todo_items.len() > visible.len() {
+            lines.push(rail_summary_line(format!(
+                "+{} more",
+                todo_items.len() - visible.len()
+            )));
+        }
     }
 
     if lines.is_empty() {
@@ -609,11 +616,43 @@ fn bullet_line(body: &str, color: Color) -> Line<'static> {
     ])
 }
 
+fn status_line(body: &str, color: Color) -> Line<'static> {
+    Line::from(Span::styled(
+        body.to_string(),
+        Style::default().fg(color).add_modifier(Modifier::BOLD),
+    ))
+}
+
+fn rail_summary_line(body: impl Into<String>) -> Line<'static> {
+    Line::from(Span::styled(body.into(), Style::default().fg(SUBTLE)))
+}
+
+fn todo_counts(items: &[TodoEntry]) -> (usize, usize, usize) {
+    items
+        .iter()
+        .fold((0, 0, 0), |(active, pending, done), item| {
+            match item.status.as_str() {
+                "in_progress" => (active + 1, pending, done),
+                "completed" => (active, pending, done + 1),
+                _ => (active, pending + 1, done),
+            }
+        })
+}
+
+fn todo_status_rank(status: &str) -> usize {
+    match status {
+        "in_progress" => 0,
+        "pending" => 1,
+        "completed" => 2,
+        _ => 3,
+    }
+}
+
 fn render_todo_line(item: &TodoEntry) -> Line<'static> {
     let (marker, color) = match item.status.as_str() {
         "completed" => ("x", ASSISTANT),
         "in_progress" => ("~", WARN),
-        _ => (" ", MUTED),
+        _ => ("·", MUTED),
     };
     Line::from(vec![
         Span::styled("[", Style::default().fg(SUBTLE)),
@@ -623,7 +662,14 @@ fn render_todo_line(item: &TodoEntry) -> Line<'static> {
         ),
         Span::styled("]", Style::default().fg(SUBTLE)),
         Span::raw(" "),
-        Span::styled(preview_text(&item.content, 44), Style::default().fg(TEXT)),
+        Span::styled(
+            preview_text(&item.content, 30),
+            if item.status == "completed" {
+                Style::default().fg(MUTED)
+            } else {
+                Style::default().fg(TEXT)
+            },
+        ),
     ])
 }
 
@@ -1103,17 +1149,12 @@ mod tests {
     }
 
     #[test]
-    fn transcript_renders_live_progress_preview_lines() {
+    fn transcript_renders_compact_live_progress_line() {
         let state = TuiState {
             main_pane: MainPaneMode::Transcript,
             turn_running: true,
             status: "Working".to_string(),
             active_tool_label: Some("bash".to_string()),
-            active_tool_preview: vec![
-                "$ cargo test".to_string(),
-                "...".to_string(),
-                "test result: ok".to_string(),
-            ],
             ..TuiState::default()
         };
 
@@ -1124,7 +1165,7 @@ mod tests {
                 .iter()
                 .any(|span| span.content.as_ref().contains("Running bash"))
         }));
-        assert!(rendered.iter().any(|line| {
+        assert!(!rendered.iter().any(|line| {
             line.spans
                 .iter()
                 .any(|span| span.content.as_ref().contains("$ cargo test"))
@@ -1136,11 +1177,23 @@ mod tests {
         let mut state = TuiState::default();
         state.session.tool_names = vec!["code_symbol_search".to_string()];
         state.session.startup_diagnostics.diagnostics = vec!["rust-analyzer attached".to_string()];
-        state.todo_items = vec![TodoEntry {
-            id: "t1".to_string(),
-            content: "Refine transcript".to_string(),
-            status: "in_progress".to_string(),
-        }];
+        state.todo_items = vec![
+            TodoEntry {
+                id: "t1".to_string(),
+                content: "Refine transcript".to_string(),
+                status: "in_progress".to_string(),
+            },
+            TodoEntry {
+                id: "t2".to_string(),
+                content: "Tighten command palette".to_string(),
+                status: "pending".to_string(),
+            },
+            TodoEntry {
+                id: "t3".to_string(),
+                content: "Finish diagnostics".to_string(),
+                status: "completed".to_string(),
+            },
+        ];
 
         let lines = build_side_rail_lines(&state);
 
@@ -1148,7 +1201,19 @@ mod tests {
         assert!(lines.iter().any(|line| {
             line.spans
                 .iter()
+                .any(|span| span.content.as_ref().contains("0 warnings · 1 diagnostics"))
+        }));
+        assert!(lines.iter().any(|line| {
+            line.spans
+                .iter()
                 .any(|span| span.content.as_ref().contains("rust-analyzer attached"))
+        }));
+        assert!(lines.iter().any(|line| {
+            line.spans.iter().any(|span| {
+                span.content
+                    .as_ref()
+                    .contains("1 active · 1 pending · 1 done")
+            })
         }));
         assert!(lines.iter().any(|line| {
             line.spans

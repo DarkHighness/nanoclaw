@@ -1149,74 +1149,80 @@ fn queued_command_preview(command: &RuntimeCommand) -> String {
 
 fn command_palette_lines() -> Vec<String> {
     vec![
-        "## Commands".to_string(),
-        "/status".to_string(),
-        "/help".to_string(),
-        "/agent_sessions [session-ref]".to_string(),
-        "/agent_session <agent-session-ref>".to_string(),
-        "/live_tasks".to_string(),
-        "/spawn_task <role> <prompt>".to_string(),
-        "/send_task <task-or-agent-ref> <message>".to_string(),
-        "/wait_task <task-or-agent-ref>".to_string(),
-        "/cancel_task <task-or-agent-ref> [reason]".to_string(),
-        "/tasks [session-ref]".to_string(),
-        "/task <task-id>".to_string(),
-        "/sessions [query]".to_string(),
-        "/session <session-ref>".to_string(),
-        "/resume <agent-session-ref>".to_string(),
-        "/export_session <session-ref> <path>".to_string(),
-        "/export_transcript <session-ref> <path>".to_string(),
-        "/tools".to_string(),
-        "/skills".to_string(),
-        "/diagnostics".to_string(),
-        "/mcp".to_string(),
-        "/prompts".to_string(),
-        "/resources".to_string(),
-        "/prompt <server> <name>".to_string(),
-        "/resource <server> <uri>".to_string(),
-        "/steer <notes>".to_string(),
-        "/new".to_string(),
-        "/compact [notes]".to_string(),
-        "/clear  (alias of /new)".to_string(),
-        "/quit".to_string(),
+        "## Session".to_string(),
+        "/status  reopen the current session overview".to_string(),
+        "/new  start a fresh top-level session".to_string(),
+        "/clear  alias of /new".to_string(),
+        "/compact [notes]  compact the active session history".to_string(),
+        "/steer <notes>  inject guidance into the active turn".to_string(),
+        "/quit  leave the TUI".to_string(),
+        "## Agents".to_string(),
+        "/live_tasks  list live child agents".to_string(),
+        "/spawn_task <role> <prompt>  launch a child agent".to_string(),
+        "/send_task <task-or-agent-ref> <message>  steer a live child agent".to_string(),
+        "/wait_task <task-or-agent-ref>  wait for a live child agent".to_string(),
+        "/cancel_task <task-or-agent-ref> [reason]  stop a live child agent".to_string(),
+        "## History".to_string(),
+        "/sessions [query]  browse or search persisted sessions".to_string(),
+        "/session <session-ref>  open one persisted session".to_string(),
+        "/agent_sessions [session-ref]  list agent sessions".to_string(),
+        "/agent_session <agent-session-ref>  inspect one agent session".to_string(),
+        "/resume <agent-session-ref>  reattach a persisted agent session".to_string(),
+        "/tasks [session-ref]  list persisted child tasks".to_string(),
+        "/task <task-id>  inspect one persisted task".to_string(),
+        "## Catalog".to_string(),
+        "/tools  list registered core tools".to_string(),
+        "/skills  list discovered skills".to_string(),
+        "/diagnostics  inspect startup diagnostics".to_string(),
+        "/mcp  list MCP servers".to_string(),
+        "/prompts  list MCP prompts".to_string(),
+        "/resources  list MCP resources".to_string(),
+        "/prompt <server> <name>  load an MCP prompt into input".to_string(),
+        "/resource <server> <uri>  load an MCP resource into input".to_string(),
+        "## Export".to_string(),
+        "/export_session <session-ref> <path>  write a durable session export".to_string(),
+        "/export_transcript <session-ref> <path>  write a transcript export".to_string(),
     ]
 }
 
 fn build_startup_inspector(session: &state::SessionSummary) -> Vec<String> {
     let mut lines = vec![
-        "## Workspace".to_string(),
-        format!("name: {}", session.workspace_name),
+        "## Ready".to_string(),
+        format!("workspace: {}", session.workspace_name),
+        format!("session ref: {}", session.active_session_ref),
+        format!("agent session: {}", session.root_agent_session_id),
+        format!("model: {} / {}", session.provider_label, session.model),
+        format!(
+            "lanes: summary {} · memory {}",
+            session.summary_model, session.memory_model
+        ),
         format!(
             "root: {}",
-            state::preview_text(&session.workspace_root.display().to_string(), 80)
+            state::preview_text(&session.workspace_root.display().to_string(), 72)
         ),
-        "## Session".to_string(),
-        format!("session ref: {}", session.active_session_ref),
-        format!("agent session id: {}", session.root_agent_session_id),
-        "## Workflow".to_string(),
-        "Use /sessions to browse persisted sessions and /session <ref> to open one.".to_string(),
-        "Use /agent_sessions to browse persisted agent sessions, /agent_session <ref> to inspect one, and /resume <agent-session-ref> to reattach one.".to_string(),
-        "Use /spawn_task <role> <prompt> to launch a new live child task, /live_tasks to inspect active child agents, /send_task <task-or-agent-ref> <message> to steer one, /wait_task <task-or-agent-ref> to wait for one, and /cancel_task <task-or-agent-ref> to stop one without leaving the current session.".to_string(),
-        "Use /tasks to browse persisted child tasks and /task <task-id> to inspect one.".to_string(),
-        "Use /new or /clear to start a fresh top-level session without deleting prior history.".to_string(),
-        "Use /export_session or /export_transcript to write durable artifacts.".to_string(),
-        "Approvals stay in-line above the composer instead of replacing the screen.".to_string(),
-        "## Models".to_string(),
-        format!(
-            "primary lane: {} / {}",
-            session.provider_label, session.model
-        ),
-        format!("summary lane: {}", session.summary_model),
-        format!("memory lane: {}", session.memory_model),
-        "## Capabilities".to_string(),
-        format!("tools: {}", session.tool_names.len()),
-        format!("skills: {}", session.skill_names.len()),
-        "## Store".to_string(),
+        "## Start Here".to_string(),
+        "/help  browse command palette".to_string(),
+        "/sessions  browse persisted sessions".to_string(),
+        "/agent_sessions  inspect or resume an agent session".to_string(),
+        "/spawn_task <role> <prompt>  launch a live child agent".to_string(),
+        "/new  start fresh without deleting prior history".to_string(),
+        "## Environment".to_string(),
         format!(
             "store: {} ({} sessions)",
             session.store_label, session.stored_session_count
         ),
         format!("sandbox: {}", session.sandbox_summary),
+        format!(
+            "tools: {} local / {} mcp",
+            session.startup_diagnostics.local_tool_count,
+            session.startup_diagnostics.mcp_tool_count
+        ),
+        format!(
+            "plugins: {} enabled / {} total",
+            session.startup_diagnostics.enabled_plugin_count,
+            session.startup_diagnostics.total_plugin_count
+        ),
+        format!("skills: {}", session.skill_names.len()),
         "## Git".to_string(),
         if !session.host_process_surfaces_allowed {
             "branch: disabled while host subprocesses are blocked".to_string()
@@ -1229,42 +1235,29 @@ fn build_startup_inspector(session: &state::SessionSummary) -> Vec<String> {
             "dirty: unavailable while host subprocesses are blocked".to_string()
         } else {
             format!(
-            "dirty: staged {}  modified {}  untracked {}",
-            session.git.staged, session.git.modified, session.git.untracked
+                "dirty: staged {}  modified {}  untracked {}",
+                session.git.staged, session.git.modified, session.git.untracked
             )
         },
         "## Diagnostics".to_string(),
-        format!(
-            "tools: {} local / {} mcp",
-            session.startup_diagnostics.local_tool_count,
-            session.startup_diagnostics.mcp_tool_count
-        ),
-        format!(
-            "plugins: {} enabled / {} total",
-            session.startup_diagnostics.enabled_plugin_count,
-            session.startup_diagnostics.total_plugin_count
-        ),
         format!(
             "mcp servers: {}",
             session.startup_diagnostics.mcp_servers.len()
         ),
     ];
     if let Some(warning) = &session.store_warning {
-        lines.push(format!(
-            "store warning: {}",
-            state::preview_text(warning, 72)
-        ));
+        lines.push(format!("warning: {}", state::preview_text(warning, 72)));
     }
     if !session.startup_diagnostics.warnings.is_empty() {
         lines.push(format!(
-            "warnings: {}",
-            session.startup_diagnostics.warnings.join(" | ")
+            "warning: {}",
+            state::preview_text(&session.startup_diagnostics.warnings.join(" | "), 80)
         ));
     }
     if !session.startup_diagnostics.diagnostics.is_empty() {
         lines.push(format!(
-            "driver diagnostics: {}",
-            session.startup_diagnostics.diagnostics.join(" | ")
+            "diagnostic: {}",
+            state::preview_text(&session.startup_diagnostics.diagnostics.join(" | "), 80)
         ));
     }
     lines
@@ -1272,8 +1265,8 @@ fn build_startup_inspector(session: &state::SessionSummary) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::build_startup_inspector;
     use super::state::SessionSummary;
+    use super::{build_startup_inspector, command_palette_lines};
     use std::path::PathBuf;
 
     #[test]
@@ -1313,7 +1306,21 @@ mod tests {
         assert!(
             lines
                 .iter()
-                .any(|line| line.contains("store warning: falling back soon"))
+                .any(|line| line.contains("warning: falling back soon"))
+        );
+    }
+
+    #[test]
+    fn command_palette_groups_operator_commands() {
+        let lines = command_palette_lines();
+
+        assert!(lines.iter().any(|line| line == "## Session"));
+        assert!(lines.iter().any(|line| line == "## Agents"));
+        assert!(lines.iter().any(|line| line == "## History"));
+        assert!(
+            lines.iter().any(|line| {
+                line.starts_with("/spawn_task <role> <prompt>  launch a child agent")
+            })
         );
     }
 }
