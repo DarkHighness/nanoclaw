@@ -1,5 +1,6 @@
 use super::approval::ApprovalPrompt;
 use super::state::{MainPaneMode, TodoEntry, TuiState, preview_text};
+use crate::backend::preview_id;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Margin, Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
@@ -198,64 +199,55 @@ fn approval_sheet_rect(area: Rect) -> Rect {
 
 fn build_approval_text(approval: &ApprovalPrompt) -> Text<'static> {
     let question = if approval.tool_name == "bash" {
-        "Would you like to run this command?"
+        "Run this command?"
     } else {
-        "Would you like to continue with this tool call?"
+        "Continue this tool call?"
     };
-    let mut lines = vec![
-        Line::from(Span::styled(
-            question.to_string(),
-            Style::default().fg(HEADER).add_modifier(Modifier::BOLD),
-        )),
-        Line::raw(""),
-    ];
-
-    if !approval.reasons.is_empty() {
-        let mut reasons = approval.reasons.iter();
-        if let Some(reason) = reasons.next() {
-            lines.push(Line::from(vec![
-                Span::styled("Reason: ", Style::default().fg(MUTED)),
-                Span::styled(reason.clone(), Style::default().fg(TEXT)),
-            ]));
-        }
-        for reason in reasons {
-            lines.push(Line::from(vec![
-                Span::raw("        "),
-                Span::styled(reason.clone(), Style::default().fg(TEXT)),
-            ]));
-        }
-        lines.push(Line::raw(""));
-    }
-
-    for line in &approval.arguments_preview {
-        lines.push(Line::from(Span::styled(
-            line.clone(),
-            Style::default().fg(TEXT),
-        )));
-    }
+    let mut lines = vec![Line::from(Span::styled(
+        question.to_string(),
+        Style::default().fg(HEADER).add_modifier(Modifier::BOLD),
+    ))];
 
     lines.push(Line::raw(""));
+    for line in approval_preview_lines(&approval.arguments_preview) {
+        lines.push(Line::from(Span::styled(line, Style::default().fg(TEXT))));
+    }
+    if !approval.reasons.is_empty() {
+        lines.push(Line::raw(""));
+        lines.extend(approval.reasons.iter().take(2).map(|reason| {
+            Line::from(vec![
+                Span::styled("•", Style::default().fg(WARN).add_modifier(Modifier::BOLD)),
+                Span::raw(" "),
+                Span::styled(preview_text(reason, 84), Style::default().fg(MUTED)),
+            ])
+        }));
+    }
+    lines.push(Line::raw(""));
     lines.push(Line::from(vec![
+        Span::styled("y", Style::default().fg(TEXT).add_modifier(Modifier::BOLD)),
+        Span::styled(" approve", Style::default().fg(MUTED)),
+        Span::styled(" · ", Style::default().fg(SUBTLE)),
+        Span::styled("n", Style::default().fg(TEXT).add_modifier(Modifier::BOLD)),
+        Span::styled(" deny", Style::default().fg(MUTED)),
+        Span::styled(" · ", Style::default().fg(SUBTLE)),
         Span::styled(
-            "1. Yes, proceed",
+            "esc",
             Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
         ),
-        Span::styled(" (y)", Style::default().fg(MUTED)),
+        Span::styled(" dismiss", Style::default().fg(MUTED)),
     ]));
-    lines.push(Line::from(vec![
-        Span::raw("2. No, deny"),
-        Span::styled(" (n)", Style::default().fg(MUTED)),
-    ]));
-    lines.push(Line::from(vec![
-        Span::raw("3. Dismiss and deny"),
-        Span::styled(" (esc)", Style::default().fg(MUTED)),
-    ]));
-    lines.push(Line::raw(""));
-    lines.push(Line::from(Span::styled(
-        "Press y to approve, n to deny, or esc to dismiss.",
-        Style::default().fg(MUTED),
-    )));
     Text::from(lines)
+}
+
+fn approval_preview_lines(lines: &[String]) -> Vec<String> {
+    if lines.len() <= 4 {
+        return lines.to_vec();
+    }
+
+    let mut preview = lines.iter().take(2).cloned().collect::<Vec<_>>();
+    preview.push("...".to_string());
+    preview.extend(lines.iter().skip(lines.len().saturating_sub(1)).cloned());
+    preview
 }
 
 fn build_transcript_lines(state: &TuiState) -> Vec<Line<'static>> {
@@ -508,11 +500,13 @@ fn build_composer_line(state: &TuiState) -> Line<'static> {
 }
 
 fn should_render_side_rail(state: &TuiState, area: Rect) -> bool {
-    area.width >= 110 && (lsp_side_rail_available(state) || !state.todo_items.is_empty())
+    state.main_pane == MainPaneMode::Transcript
+        && area.width >= 128
+        && (lsp_side_rail_available(state) || !state.todo_items.is_empty())
 }
 
 fn side_rail_width(total_width: u16) -> u16 {
-    total_width.saturating_mul(26) / 100
+    total_width.saturating_mul(22) / 100
 }
 
 fn lsp_side_rail_available(state: &TuiState) -> bool {
@@ -699,12 +693,12 @@ fn progress_marker(state: &TuiState) -> &'static str {
 
 fn format_footer_context(state: &TuiState) -> Line<'static> {
     let mut spans = vec![Span::styled(
-        state.session.model.clone(),
+        state.session.workspace_name.clone(),
         Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
     )];
     spans.push(Span::styled(" · ", Style::default().fg(SUBTLE)));
     spans.push(Span::styled(
-        state.session.provider_label.clone(),
+        state.session.model.clone(),
         Style::default().fg(MUTED),
     ));
 
@@ -718,7 +712,7 @@ fn format_footer_context(state: &TuiState) -> Line<'static> {
 
     spans.push(Span::styled(" · ", Style::default().fg(SUBTLE)));
     spans.push(Span::styled(
-        preview_text(&state.session.workspace_root.display().to_string(), 44),
+        preview_id(&state.session.active_session_ref),
         Style::default().fg(MUTED),
     ));
 
@@ -1019,9 +1013,13 @@ fn clamp_scroll(requested: u16, content_lines: usize, viewport_height: u16) -> u
 #[cfg(test)]
 mod tests {
     use super::{
-        build_collection_text, build_key_value_text, build_side_rail_lines, build_transcript_lines,
+        approval_preview_lines, build_approval_text, build_collection_text, build_key_value_text,
+        build_side_rail_lines, build_transcript_lines, format_footer_context,
+        should_render_side_rail,
     };
+    use crate::frontend::tui::approval::ApprovalPrompt;
     use crate::frontend::tui::state::{MainPaneMode, TodoEntry, TuiState};
+    use ratatui::layout::Rect;
 
     #[test]
     fn key_value_text_renders_section_headers_without_treating_them_as_pairs() {
@@ -1175,6 +1173,7 @@ mod tests {
     #[test]
     fn side_rail_surfaces_todos_and_lsp_summary() {
         let mut state = TuiState::default();
+        state.main_pane = MainPaneMode::Transcript;
         state.session.tool_names = vec!["code_symbol_search".to_string()];
         state.session.startup_diagnostics.diagnostics = vec!["rust-analyzer attached".to_string()];
         state.todo_items = vec![
@@ -1220,5 +1219,83 @@ mod tests {
                 .iter()
                 .any(|span| span.content.as_ref().contains("Refine transcript"))
         }));
+    }
+
+    #[test]
+    fn side_rail_stays_hidden_for_non_transcript_views() {
+        let mut state = TuiState::default();
+        state.main_pane = MainPaneMode::View;
+        state.session.tool_names = vec!["code_symbol_search".to_string()];
+
+        assert!(!should_render_side_rail(
+            &state,
+            Rect {
+                x: 0,
+                y: 0,
+                width: 140,
+                height: 20,
+            }
+        ));
+    }
+
+    #[test]
+    fn approval_overlay_uses_compact_prompt_language() {
+        let text = build_approval_text(&ApprovalPrompt {
+            tool_name: "bash".to_string(),
+            origin: "local".to_string(),
+            reasons: vec!["sandbox policy requires approval".to_string()],
+            arguments_preview: vec!["$ cargo test".to_string()],
+        });
+
+        assert_eq!(text.lines[0].spans[0].content.as_ref(), "Run this command?");
+        assert!(text.lines.iter().any(|line| {
+            line.spans
+                .iter()
+                .any(|span| span.content.as_ref().contains("y"))
+        }));
+        assert!(text.lines.iter().any(|line| {
+            line.spans.iter().any(|span| {
+                span.content
+                    .as_ref()
+                    .contains("sandbox policy requires approval")
+            })
+        }));
+    }
+
+    #[test]
+    fn approval_preview_lines_collapse_long_argument_blocks() {
+        let lines = approval_preview_lines(&[
+            "one".to_string(),
+            "two".to_string(),
+            "three".to_string(),
+            "four".to_string(),
+            "five".to_string(),
+        ]);
+
+        assert_eq!(lines, vec!["one", "two", "...", "five"]);
+    }
+
+    #[test]
+    fn footer_context_prefers_workspace_and_session_ref() {
+        let mut state = TuiState::default();
+        state.session.workspace_name = "nanoclaw".to_string();
+        state.session.model = "gpt-5.4".to_string();
+        state.session.active_session_ref = "session_123456".to_string();
+
+        let footer = format_footer_context(&state);
+
+        assert_eq!(footer.spans[0].content.as_ref(), "nanoclaw");
+        assert!(
+            footer
+                .spans
+                .iter()
+                .any(|span| { span.content.as_ref().contains("gpt-5.4") })
+        );
+        assert!(
+            footer
+                .spans
+                .iter()
+                .any(|span| { span.content.as_ref().contains("session_") })
+        );
     }
 }

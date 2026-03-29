@@ -11,7 +11,7 @@ use crate::backend::{
 use crate::options::AppOptions;
 use crate::provider::{
     agent_backend_capabilities, build_agent_backend, build_internal_backend,
-    build_memory_reasoning_service, provider_label, provider_summary,
+    build_memory_reasoning_service, provider_label,
 };
 use agent::mcp::{
     ConnectedMcpServer, McpConnectOptions, McpServerConfig, McpTransportConfig,
@@ -165,7 +165,6 @@ pub(crate) async fn build_session_with_approval_mode(
     // resumable session catalog above the raw runtime/store layer.
     let active_session_ref = runtime.session_id().to_string();
     let root_agent_session_id = runtime.agent_session_id().to_string();
-    let skill_names = skills.iter().map(|skill| skill.name.clone()).collect();
 
     Ok(super::CodeAgentSession::new(
         runtime,
@@ -185,10 +184,7 @@ pub(crate) async fn build_session_with_approval_mode(
             root_agent_session_id,
             provider_label: provider_label(&options.primary_profile),
             model: options.primary_profile.model.model.clone(),
-            summary_model: provider_summary(&options.summary_profile.model),
-            memory_model: provider_summary(&options.memory_profile.model),
             tool_names,
-            skill_names,
             store_label,
             store_warning,
             stored_session_count: stored_session_count,

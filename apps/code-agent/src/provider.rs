@@ -69,11 +69,6 @@ pub(crate) fn agent_backend_capabilities(
     .capabilities
 }
 
-pub(crate) fn provider_summary(model: &ResolvedModel) -> String {
-    let provider = provider_name(&model.provider);
-    format!("{provider} / {}", model.model)
-}
-
 pub(crate) fn provider_label(profile: &ResolvedAgentProfile) -> String {
     let provider = provider_name(&profile.model.provider);
     format!("{} -> {provider}", profile.model.alias)

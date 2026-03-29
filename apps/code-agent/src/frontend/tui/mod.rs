@@ -1009,12 +1009,9 @@ impl CodeAgentTui {
                 root_agent_session_id: snapshot.root_agent_session_id.clone(),
                 provider_label: snapshot.provider_label.clone(),
                 model: snapshot.model.clone(),
-                summary_model: snapshot.summary_model.clone(),
-                memory_model: snapshot.memory_model.clone(),
                 workspace_root: workspace_root.clone(),
                 git: state::git_snapshot(&workspace_root, snapshot.host_process_surfaces_allowed),
                 tool_names: snapshot.tool_names.clone(),
-                skill_names: snapshot.skill_names.clone(),
                 store_label: snapshot.store_label.clone(),
                 store_warning: snapshot.store_warning.clone(),
                 stored_session_count: snapshot.stored_session_count,
@@ -1032,12 +1029,9 @@ impl CodeAgentTui {
                 root_agent_session_id: snapshot.root_agent_session_id.clone(),
                 provider_label: snapshot.provider_label.clone(),
                 model: snapshot.model.clone(),
-                summary_model: snapshot.summary_model.clone(),
-                memory_model: snapshot.memory_model.clone(),
                 workspace_root: workspace_root.clone(),
                 git: state::git_snapshot(&workspace_root, snapshot.host_process_surfaces_allowed),
                 tool_names: snapshot.tool_names.clone(),
-                skill_names: snapshot.skill_names.clone(),
                 store_label: snapshot.store_label.clone(),
                 store_warning: snapshot.store_warning.clone(),
                 stored_session_count: snapshot.stored_session_count,
@@ -1150,38 +1144,38 @@ fn queued_command_preview(command: &RuntimeCommand) -> String {
 fn command_palette_lines() -> Vec<String> {
     vec![
         "## Session".to_string(),
-        "/status  reopen the current session overview".to_string(),
-        "/new  start a fresh top-level session".to_string(),
+        "/status  session overview".to_string(),
+        "/new  fresh top-level session".to_string(),
         "/clear  alias of /new".to_string(),
-        "/compact [notes]  compact the active session history".to_string(),
-        "/steer <notes>  inject guidance into the active turn".to_string(),
-        "/quit  leave the TUI".to_string(),
+        "/compact [notes]  compact active history".to_string(),
+        "/steer <notes>  inject guidance".to_string(),
+        "/quit  exit".to_string(),
         "## Agents".to_string(),
         "/live_tasks  list live child agents".to_string(),
-        "/spawn_task <role> <prompt>  launch a child agent".to_string(),
-        "/send_task <task-or-agent-ref> <message>  steer a live child agent".to_string(),
-        "/wait_task <task-or-agent-ref>  wait for a live child agent".to_string(),
-        "/cancel_task <task-or-agent-ref> [reason]  stop a live child agent".to_string(),
+        "/spawn_task <role> <prompt>  launch child agent".to_string(),
+        "/send_task <task-or-agent-ref> <message>  steer child agent".to_string(),
+        "/wait_task <task-or-agent-ref>  wait for child agent".to_string(),
+        "/cancel_task <task-or-agent-ref> [reason]  stop child agent".to_string(),
         "## History".to_string(),
-        "/sessions [query]  browse or search persisted sessions".to_string(),
-        "/session <session-ref>  open one persisted session".to_string(),
+        "/sessions [query]  browse persisted sessions".to_string(),
+        "/session <session-ref>  open persisted session".to_string(),
         "/agent_sessions [session-ref]  list agent sessions".to_string(),
-        "/agent_session <agent-session-ref>  inspect one agent session".to_string(),
-        "/resume <agent-session-ref>  reattach a persisted agent session".to_string(),
+        "/agent_session <agent-session-ref>  inspect agent session".to_string(),
+        "/resume <agent-session-ref>  reattach agent session".to_string(),
         "/tasks [session-ref]  list persisted child tasks".to_string(),
-        "/task <task-id>  inspect one persisted task".to_string(),
+        "/task <task-id>  inspect persisted task".to_string(),
         "## Catalog".to_string(),
-        "/tools  list registered core tools".to_string(),
+        "/tools  list tools".to_string(),
         "/skills  list discovered skills".to_string(),
-        "/diagnostics  inspect startup diagnostics".to_string(),
+        "/diagnostics  startup diagnostics".to_string(),
         "/mcp  list MCP servers".to_string(),
         "/prompts  list MCP prompts".to_string(),
         "/resources  list MCP resources".to_string(),
-        "/prompt <server> <name>  load an MCP prompt into input".to_string(),
-        "/resource <server> <uri>  load an MCP resource into input".to_string(),
+        "/prompt <server> <name>  load MCP prompt".to_string(),
+        "/resource <server> <uri>  load MCP resource".to_string(),
         "## Export".to_string(),
-        "/export_session <session-ref> <path>  write a durable session export".to_string(),
-        "/export_transcript <session-ref> <path>  write a transcript export".to_string(),
+        "/export_session <session-ref> <path>  write session export".to_string(),
+        "/export_transcript <session-ref> <path>  write transcript export".to_string(),
     ]
 }
 
@@ -1193,19 +1187,15 @@ fn build_startup_inspector(session: &state::SessionSummary) -> Vec<String> {
         format!("agent session: {}", session.root_agent_session_id),
         format!("model: {} / {}", session.provider_label, session.model),
         format!(
-            "lanes: summary {} · memory {}",
-            session.summary_model, session.memory_model
-        ),
-        format!(
             "root: {}",
-            state::preview_text(&session.workspace_root.display().to_string(), 72)
+            state::preview_text(&session.workspace_root.display().to_string(), 56)
         ),
-        "## Start Here".to_string(),
-        "/help  browse command palette".to_string(),
-        "/sessions  browse persisted sessions".to_string(),
-        "/agent_sessions  inspect or resume an agent session".to_string(),
-        "/spawn_task <role> <prompt>  launch a live child agent".to_string(),
-        "/new  start fresh without deleting prior history".to_string(),
+        "## Next".to_string(),
+        "/help  browse commands".to_string(),
+        "/sessions  browse history".to_string(),
+        "/agent_sessions  inspect or resume agents".to_string(),
+        "/spawn_task <role> <prompt>  launch child agent".to_string(),
+        "/new  start fresh without deleting history".to_string(),
         "## Environment".to_string(),
         format!(
             "store: {} ({} sessions)",
@@ -1222,7 +1212,6 @@ fn build_startup_inspector(session: &state::SessionSummary) -> Vec<String> {
             session.startup_diagnostics.enabled_plugin_count,
             session.startup_diagnostics.total_plugin_count
         ),
-        format!("skills: {}", session.skill_names.len()),
         "## Git".to_string(),
         if !session.host_process_surfaces_allowed {
             "branch: disabled while host subprocesses are blocked".to_string()
@@ -1277,12 +1266,9 @@ mod tests {
             root_agent_session_id: "session_123".to_string(),
             provider_label: "openai".to_string(),
             model: "gpt-5.4".to_string(),
-            summary_model: "gpt-5.4-mini".to_string(),
-            memory_model: "gpt-5.4-nano".to_string(),
             workspace_root: PathBuf::from("/workspace"),
             git: Default::default(),
             tool_names: vec!["read".to_string(), "write".to_string()],
-            skill_names: vec!["rust".to_string()],
             store_label: "file /workspace/.nanoclaw/store".to_string(),
             store_warning: Some("falling back soon".to_string()),
             stored_session_count: 12,
@@ -1319,7 +1305,7 @@ mod tests {
         assert!(lines.iter().any(|line| line == "## History"));
         assert!(
             lines.iter().any(|line| {
-                line.starts_with("/spawn_task <role> <prompt>  launch a child agent")
+                line.starts_with("/spawn_task <role> <prompt>  launch child agent")
             })
         );
     }
