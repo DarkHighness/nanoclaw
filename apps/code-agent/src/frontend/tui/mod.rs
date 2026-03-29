@@ -11,7 +11,7 @@ use crate::backend::{
     preview_id,
 };
 use approval::approval_decision_for_key;
-use commands::{SlashCommand, parse_slash_command};
+use commands::{SlashCommand, command_palette_lines, cycle_slash_command, parse_slash_command};
 use history::{
     format_agent_session_inspector, format_agent_session_summary_line,
     format_live_task_control_outcome, format_live_task_message_outcome,
@@ -125,8 +125,16 @@ impl CodeAgentTui {
                     continue;
                 }
                 match key.code {
-                    KeyCode::Tab => {}
-                    KeyCode::BackTab => {}
+                    KeyCode::Tab => {
+                        if self.apply_command_completion(false) {
+                            continue;
+                        }
+                    }
+                    KeyCode::BackTab => {
+                        if self.apply_command_completion(true) {
+                            continue;
+                        }
+                    }
                     KeyCode::Up => {
                         self.ui_state.mutate(|state| state.scroll_focused(-1));
                     }
@@ -164,17 +172,35 @@ impl CodeAgentTui {
                     KeyCode::Backspace => {
                         self.ui_state.mutate(|state| {
                             state.input.pop();
+                            state.reset_command_completion();
                         });
                     }
                     KeyCode::Char(ch) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
                         self.ui_state.mutate(|state| {
                             state.input.push(ch);
+                            state.reset_command_completion();
                         });
                     }
                     _ => {}
                 }
             }
         }
+    }
+
+    fn apply_command_completion(&mut self, backwards: bool) -> bool {
+        let snapshot = self.ui_state.snapshot();
+        let Some((input, index)) = cycle_slash_command(
+            &snapshot.input,
+            snapshot.command_completion_index,
+            backwards,
+        ) else {
+            return false;
+        };
+        self.ui_state.mutate(|state| {
+            state.input = input;
+            state.command_completion_index = index;
+        });
+        true
     }
 
     fn handle_approval_key(&mut self, key: KeyEvent) -> bool {
@@ -1121,44 +1147,6 @@ fn queued_command_preview(command: &RuntimeCommand) -> String {
     }
 }
 
-fn command_palette_lines() -> Vec<String> {
-    vec![
-        "## Session".to_string(),
-        "/status  session overview".to_string(),
-        "/new  fresh top-level session".to_string(),
-        "/clear  alias of /new".to_string(),
-        "/compact [notes]  compact active history".to_string(),
-        "/steer <notes>  inject guidance".to_string(),
-        "/quit  exit".to_string(),
-        "## Agents".to_string(),
-        "/live_tasks  list live child agents".to_string(),
-        "/spawn_task <role> <prompt>  launch child agent".to_string(),
-        "/send_task <task-or-agent-ref> <message>  steer child agent".to_string(),
-        "/wait_task <task-or-agent-ref>  wait for child agent".to_string(),
-        "/cancel_task <task-or-agent-ref> [reason]  stop child agent".to_string(),
-        "## History".to_string(),
-        "/sessions [query]  browse persisted sessions".to_string(),
-        "/session <session-ref>  open persisted session".to_string(),
-        "/agent_sessions [session-ref]  list agent sessions".to_string(),
-        "/agent_session <agent-session-ref>  inspect agent session".to_string(),
-        "/resume <agent-session-ref>  reattach agent session".to_string(),
-        "/tasks [session-ref]  list persisted child tasks".to_string(),
-        "/task <task-id>  inspect persisted task".to_string(),
-        "## Catalog".to_string(),
-        "/tools  list tools".to_string(),
-        "/skills  list discovered skills".to_string(),
-        "/diagnostics  startup diagnostics".to_string(),
-        "/mcp  list MCP servers".to_string(),
-        "/prompts  list MCP prompts".to_string(),
-        "/resources  list MCP resources".to_string(),
-        "/prompt <server> <name>  load MCP prompt".to_string(),
-        "/resource <server> <uri>  load MCP resource".to_string(),
-        "## Export".to_string(),
-        "/export_session <session-ref> <path>  write session export".to_string(),
-        "/export_transcript <session-ref> <path>  write transcript export".to_string(),
-    ]
-}
-
 fn build_startup_inspector(session: &state::SessionSummary) -> Vec<String> {
     let mut lines = vec![
         "## Ready".to_string(),
@@ -1234,8 +1222,9 @@ fn build_startup_inspector(session: &state::SessionSummary) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    use super::build_startup_inspector;
+    use super::commands::command_palette_lines;
     use super::state::SessionSummary;
-    use super::{build_startup_inspector, command_palette_lines};
     use std::path::PathBuf;
 
     #[test]

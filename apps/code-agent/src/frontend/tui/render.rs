@@ -1,4 +1,5 @@
 use super::approval::ApprovalPrompt;
+use super::commands::{SlashCommandHint, slash_command_hint};
 use super::state::{MainPaneMode, TodoEntry, TuiState, preview_text};
 use crate::backend::preview_id;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Margin, Position, Rect};
@@ -29,14 +30,33 @@ pub(crate) fn render(
     frame.render_widget(Block::default().style(Style::default().bg(BG)), area);
 
     let approval_height = approval.map(approval_band_height);
+    let command_hint = approval
+        .is_none()
+        .then(|| slash_command_hint(&state.input, state.command_completion_index))
+        .flatten();
+    let command_hint_height = command_hint.as_ref().map(command_hint_height);
     let vertical = Layout::default()
         .direction(Direction::Vertical)
-        .constraints(bottom_layout_constraints(approval_height))
+        .constraints(bottom_layout_constraints(
+            approval_height,
+            command_hint_height,
+        ))
         .split(area);
-    let (main_area, approval_area, composer_area, status_area) = match approval_height {
-        Some(_) => (vertical[0], Some(vertical[1]), vertical[2], vertical[3]),
-        None => (vertical[0], None, vertical[1], vertical[2]),
-    };
+    let mut next_index = 0;
+    let main_area = vertical[next_index];
+    next_index += 1;
+    let approval_area = approval_height.map(|_| {
+        let area = vertical[next_index];
+        next_index += 1;
+        area
+    });
+    let command_hint_area = command_hint_height.map(|_| {
+        let area = vertical[next_index];
+        next_index += 1;
+        area
+    });
+    let composer_area = vertical[next_index];
+    let status_area = vertical[next_index + 1];
 
     if should_render_side_rail(state, main_area) {
         let horizontal = Layout::default()
@@ -53,6 +73,13 @@ pub(crate) fn render(
     }
     if let Some(approval) = approval {
         render_approval_band(frame, approval_area.expect("approval area"), approval);
+    }
+    if let Some(command_hint) = command_hint.as_ref() {
+        render_command_hint_band(
+            frame,
+            command_hint_area.expect("command hint area"),
+            command_hint,
+        );
     }
     render_composer(frame, composer_area, state);
     render_status_line(frame, status_area, state);
@@ -183,6 +210,27 @@ fn render_approval_band(frame: &mut ratatui::Frame<'_>, area: Rect, approval: &A
     );
 }
 
+fn render_command_hint_band(
+    frame: &mut ratatui::Frame<'_>,
+    area: Rect,
+    command_hint: &SlashCommandHint,
+) {
+    frame.render_widget(
+        Block::default().style(Style::default().bg(BOTTOM_PANE_BG)),
+        area,
+    );
+    let inner = area.inner(Margin {
+        vertical: 0,
+        horizontal: 2,
+    });
+    frame.render_widget(
+        Paragraph::new(build_command_hint_text(command_hint))
+            .wrap(Wrap { trim: false })
+            .style(Style::default().fg(TEXT).bg(BOTTOM_PANE_BG)),
+        inner,
+    );
+}
+
 fn composer_inner_area(area: Rect) -> Rect {
     area.inner(Margin {
         vertical: 0,
@@ -231,20 +279,72 @@ fn approval_band_height(approval: &ApprovalPrompt) -> u16 {
     build_approval_text(approval).lines.len().clamp(2, 6) as u16
 }
 
-fn bottom_layout_constraints(approval_height: Option<u16>) -> Vec<Constraint> {
-    match approval_height {
-        Some(height) => vec![
-            Constraint::Min(10),
-            Constraint::Length(height),
-            Constraint::Length(1),
-            Constraint::Length(1),
-        ],
-        None => vec![
-            Constraint::Min(10),
-            Constraint::Length(1),
-            Constraint::Length(1),
-        ],
+fn build_command_hint_text(command_hint: &SlashCommandHint) -> Text<'static> {
+    let usage = format!("/{}", command_hint.selected.usage);
+    let mut lines = vec![Line::from(vec![
+        Span::styled(
+            usage,
+            Style::default().fg(HEADER).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled("  ", Style::default().fg(SUBTLE)),
+        Span::styled(command_hint.selected.summary, Style::default().fg(MUTED)),
+    ])];
+
+    let tab_hint = if command_hint.exact {
+        if command_hint.matches.len() > 1 {
+            "tab next"
+        } else {
+            "enter run"
+        }
+    } else {
+        "tab complete"
+    };
+    lines.push(Line::from(vec![
+        Span::styled(tab_hint, Style::default().fg(MUTED)),
+        Span::styled(" · ", Style::default().fg(SUBTLE)),
+        Span::styled("shift+tab previous", Style::default().fg(MUTED)),
+        Span::styled(" · ", Style::default().fg(SUBTLE)),
+        Span::styled("enter run", Style::default().fg(MUTED)),
+    ]));
+
+    let mut match_spans = vec![Span::styled("matches ", Style::default().fg(SUBTLE))];
+    for (index, name) in command_hint.matches.iter().enumerate() {
+        if index > 0 {
+            match_spans.push(Span::styled("  ", Style::default().fg(SUBTLE)));
+        }
+        let style = if *name == command_hint.selected.name {
+            Style::default().fg(USER).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(MUTED)
+        };
+        match_spans.push(Span::styled(format!("/{}", name), style));
     }
+    lines.push(Line::from(match_spans));
+
+    Text::from(lines)
+}
+
+fn command_hint_height(command_hint: &SlashCommandHint) -> u16 {
+    build_command_hint_text(command_hint)
+        .lines
+        .len()
+        .clamp(2, 4) as u16
+}
+
+fn bottom_layout_constraints(
+    approval_height: Option<u16>,
+    command_hint_height: Option<u16>,
+) -> Vec<Constraint> {
+    let mut constraints = vec![Constraint::Min(10)];
+    if let Some(height) = approval_height {
+        constraints.push(Constraint::Length(height));
+    }
+    if let Some(height) = command_hint_height {
+        constraints.push(Constraint::Length(height));
+    }
+    constraints.push(Constraint::Length(1));
+    constraints.push(Constraint::Length(1));
+    constraints
 }
 
 fn approval_preview_lines(lines: &[String]) -> Vec<String> {
@@ -1053,11 +1153,13 @@ fn clamp_scroll(requested: u16, content_lines: usize, viewport_height: u16) -> u
 #[cfg(test)]
 mod tests {
     use super::{
-        approval_preview_lines, build_approval_text, build_collection_text, build_key_value_text,
-        build_side_rail_lines, build_transcript_lines, build_welcome_lines, format_footer_context,
+        approval_preview_lines, build_approval_text, build_collection_text,
+        build_command_hint_text, build_key_value_text, build_side_rail_lines,
+        build_transcript_lines, build_welcome_lines, format_footer_context,
         should_render_side_rail,
     };
     use crate::frontend::tui::approval::ApprovalPrompt;
+    use crate::frontend::tui::commands::{SlashCommandHint, SlashCommandSpec};
     use crate::frontend::tui::state::{MainPaneMode, TodoEntry, TuiState};
     use ratatui::layout::Rect;
 
@@ -1366,6 +1468,36 @@ mod tests {
         ]);
 
         assert_eq!(lines, vec!["one", "two", "...", "five"]);
+    }
+
+    #[test]
+    fn command_hint_text_surfaces_selected_usage_and_matches() {
+        let rendered = build_command_hint_text(&SlashCommandHint {
+            selected: SlashCommandSpec {
+                section: "History",
+                name: "sessions",
+                usage: "sessions [query]",
+                summary: "browse persisted sessions",
+            },
+            matches: vec!["sessions", "session"],
+            exact: false,
+        });
+
+        assert_eq!(
+            rendered.lines[0].spans[0].content.as_ref(),
+            "/sessions [query]"
+        );
+        assert_eq!(
+            rendered.lines[0].spans[2].content.as_ref(),
+            "browse persisted sessions"
+        );
+        assert_eq!(rendered.lines[1].spans[0].content.as_ref(), "tab complete");
+        assert!(
+            rendered.lines[2]
+                .spans
+                .iter()
+                .any(|span| span.content.as_ref().contains("/session"))
+        );
     }
 
     #[test]

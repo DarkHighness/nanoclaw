@@ -53,6 +53,7 @@ pub(crate) struct TuiState {
     pub(crate) session: SessionSummary,
     pub(crate) main_pane: MainPaneMode,
     pub(crate) input: String,
+    pub(crate) command_completion_index: usize,
     pub(crate) transcript: Vec<String>,
     pub(crate) transcript_scroll: u16,
     pub(crate) inspector_title: String,
@@ -91,6 +92,10 @@ impl TuiState {
     pub(crate) fn push_transcript(&mut self, line: impl Into<String>) {
         self.transcript.push(line.into());
         self.transcript_scroll = u16::MAX;
+    }
+
+    pub(crate) fn reset_command_completion(&mut self) {
+        self.command_completion_index = 0;
     }
 
     pub(crate) fn scroll_focused(&mut self, delta: i16) {
@@ -147,7 +152,9 @@ impl SharedUiState {
     }
 
     pub(crate) fn take_input(&self) -> String {
-        std::mem::take(&mut self.0.write().unwrap().input)
+        let mut state = self.0.write().unwrap();
+        state.command_completion_index = 0;
+        std::mem::take(&mut state.input)
     }
 }
 
