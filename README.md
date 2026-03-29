@@ -16,7 +16,8 @@ Foundation crates:
 - `store`: persistence and replay surface
 - `agent`: umbrella crate in `crates/core` that re-exports the foundation surface
 
-The repository also keeps removable host applications in the separate `apps/` workspace. `apps/code-agent` is the actively delivered example product layer. `apps/reference-tui` remains in-tree only as temporary migration source material until its remaining host capabilities are merged into `apps/code-agent` and the old shell can be retired.
+The repository keeps its delivered host application in the separate `apps/`
+workspace. `apps/code-agent` is the sole actively maintained product layer.
 
 ## Framework Boundary
 
@@ -26,8 +27,7 @@ The intended boundary is:
 - core built-in tools: `read`, `write`, `edit`, `patch`, `glob`, `grep`, `list`, `bash`
 - optional tool bundles: non-essential tools such as first-party web access, code-intel navigation tools, and agentic task/todo tools compile only behind Cargo features
 - integration surfaces: `mcp` and `store` bolt onto the same runtime contracts
-- example product layer: `apps/code-agent` sits outside the foundation workspace, owns the product-facing host shell, and is the primary delivered app
-- migration source: `apps/reference-tui` remains removable and exists only as temporary source material while its host capabilities move into `apps/code-agent`
+- example product layer: `apps/code-agent` sits outside the foundation workspace, owns the product-facing host shell, and is the sole delivered app
 
 The repository no longer treats the whole tree as one Cargo workspace. Foundation and app validation run through their own workspace manifests.
 
@@ -35,7 +35,6 @@ The directory layout follows that split directly:
 
 - `crates/core`, `crates/runtime`, `crates/tools`, `crates/provider`, `crates/mcp`, `crates/store`, `crates/skills`, `crates/types`
 - `apps/code-agent`
-- `apps/reference-tui` (temporary migration source)
 
 Every workspace now also has a standard mutable-state layout under `.nanoclaw/`:
 
@@ -111,17 +110,11 @@ The core workspace now provides:
 - feature-gated code-intel tools for symbol navigation: `code_symbol_search`, `code_document_symbols`, `code_definitions`, `code_references`
 - grounded file mutations with `expected_snapshot` / `expected_selection_hash` guards across `write`, `edit`, `patch`, and `todo_write`
 
-## Migration Source
+## App Workspace
 
-`apps/reference-tui` is no longer presented as an actively maintained example
-app. It stays in-tree only until its remaining durable history, export, MCP
-inspection, and startup-diagnostics capabilities have been merged into
-`apps/code-agent`.
-
-If you are evaluating or extending the delivered host application, target
-`apps/code-agent`. If you need to mine prior UI or host behavior during the
-transition, treat `apps/reference-tui` as source material rather than a product
-surface.
+`apps/code-agent` is the only host application kept in the active workspace.
+Historical shell experiments now live only in archived design material and do
+not define the repository's delivery shape.
 
 ## Example Code Agent
 

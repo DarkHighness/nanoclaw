@@ -9,9 +9,9 @@ Status: Active
 The `apps/` workspace should converge on a single delivered example product:
 `code-agent`.
 
-`apps/reference-tui` remains in-tree only as temporary migration source
-material. It is no longer an actively maintained product direction and should
-not define the public delivery shape of the repository.
+The active tree now carries only `apps/code-agent`. Historical shell material
+survives only in archived planning documents and no longer defines the
+repository delivery boundary.
 
 This plan drives two linked changes:
 
@@ -48,8 +48,7 @@ Shipped in the third implementation slice:
   store, run-count, tool, skill, and sandbox metadata
 - the TUI startup inspector now renders backend-owned boot facts instead of
   reconstructing host state from ad hoc session getters
-- repository top-level docs now treat `reference-tui` as temporary migration
-  source material instead of an actively maintained app
+- repository top-level docs now center `code-agent` as the delivered app
 
 Shipped in the fourth implementation slice:
 
@@ -238,9 +237,14 @@ Shipped in the twenty-third implementation slice:
 - approval prompts were tightened further toward the Codex snapshot style:
   question-first layout, numbered options, and no heavy boxed chrome
 
+Shipped in the twenty-fourth implementation slice:
+
+- the legacy shell was removed from the active `apps/` workspace
+- repository delivery docs now describe `code-agent` as the sole shipped app
+- active workspace cleanup no longer depends on keeping a legacy shell in-tree
+
 Still pending in the next slices:
 
-- remaining docs and workspace cleanup before `reference-tui` can be retired
 - frontend-neutral contracts for richer live subagent/session operator workflows
   beyond the current spawn/list/send/wait/cancel slice
 
@@ -274,8 +278,6 @@ Primary code evidence:
 
 - `apps/code-agent/src/main.rs`
 - `apps/code-agent/src/frontend/tui/*`
-- `apps/reference-tui/src/boot.rs`
-- `apps/reference-tui/src/app.rs`
 - `apps/Cargo.toml`
 - `README.md`
 
@@ -283,26 +285,20 @@ Current problems:
 
 - `code-agent` boot is now split across helper modules, but backend-owned host
   contracts are still incomplete for a future non-TUI frontend.
-- legacy `reference-tui` code still duplicates host responsibilities that now
-  belong in `code-agent`.
 - `code-agent` now owns durable session browsing/replay/export plus MCP
   inspection, and historical `AgentSession` reattach is now implemented for
   histories that carry compaction checkpoints.
-- repository docs and app workspace defaults were tightened, but the app
-  workspace still contains transitional code that must be retired later.
+- repository docs and app workspace now align on `code-agent` as the sole
+  delivered app, but richer operator workflows still need further product work.
 
 ## Gap Model
 
 ### P0
 
 - strict backend/frontend split is incomplete
-- `apps/` delivery boundary is still transitional while legacy code stays
-  in-tree
 
 ### P1
 
-- legacy host capabilities still need migration into `code-agent`
-  - remaining legacy-only host controls
 - subagent execution is available, but live control and richer orchestration
   still are not exposed as a strong product experience
 
@@ -336,8 +332,7 @@ Boundary rules:
   interaction patterns
 - frontend talks to backend through typed commands, events, snapshots, and
   approval responses
-- `reference-tui` is temporary migration source material, not a second product
-  direction
+- `code-agent` is the only delivered host application in the active tree
 
 ## Iteration Loop
 
@@ -415,7 +410,6 @@ Goal:
 
 Acceptance:
 
-- `apps/Cargo.toml` default delivery path is `code-agent`
-- README describes `reference-tui` as temporary migration source material only
-- remaining `reference-tui` code is either archived, internal, or explicitly
-  transitional on the path to deletion
+- `apps/Cargo.toml` contains only `code-agent`
+- README describes `code-agent` as the sole delivered app
+- retired shell material lives only in archive documents, not the active tree

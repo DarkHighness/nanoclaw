@@ -151,8 +151,8 @@ mod tests {
             dir.path().join(NANOCLAW_CORE_CONFIG_FILE_RELATIVE)
         );
         assert_eq!(
-            layout.app_config_path("reference-tui"),
-            dir.path().join(".nanoclaw/apps/reference-tui.toml")
+            layout.app_config_path("code-agent"),
+            dir.path().join(".nanoclaw/apps/code-agent.toml")
         );
     }
 

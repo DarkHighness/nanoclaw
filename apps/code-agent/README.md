@@ -206,8 +206,7 @@ events while the selected child agent finishes.
 
 The startup inspector is now backed by a structured backend snapshot, and the
 MCP-focused commands expose connected server catalogs plus prompt/resource
-loading directly from `code-agent` without relying on the legacy
-`reference-tui` shell.
+loading directly from `code-agent` itself.
 
 The TUI now follows a more minimal shell: a single main pane for transcript and
 command views, a bottom context footer, and a compact prompt line instead of

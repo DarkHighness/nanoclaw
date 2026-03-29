@@ -1,4 +1,4 @@
 [workspace]
 default-members = ["code-agent"]
-members = ["reference-tui", "code-agent"]
+members = ["code-agent"]
 resolver = "2"
