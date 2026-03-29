@@ -136,6 +136,11 @@ Examples:
 - an explicit backend reset
 - an explicit new-agent-session action over an existing `Session`
 
+The boundary is history-based, not turn-based. If automatic compaction happens
+mid-turn, the prompt may remain on the pre-compaction `AgentSession` while the
+rebuilt provider request and response continue on the post-compaction
+`AgentSession`.
+
 `/clear` should not define session semantics by itself if it remains a
 frontend-only visual reset. If the product wants a command that rotates the
 runtime session, it should be modeled as a backend session operation rather than

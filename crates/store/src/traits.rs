@@ -546,6 +546,32 @@ pub fn latest_token_usage_snapshot(events: &[SessionEventEnvelope]) -> Option<To
 }
 
 #[must_use]
+pub fn session_token_usage_snapshot(
+    events: &[SessionEventEnvelope],
+) -> Option<TokenLedgerSnapshot> {
+    let mut latest_by_agent_session = BTreeMap::<AgentSessionId, TokenLedgerSnapshot>::new();
+    let mut session_ledger = None;
+    for event in events {
+        if let SessionEventKind::TokenUsageUpdated { ledger, .. } = &event.event {
+            latest_by_agent_session.insert(event.agent_session_id.clone(), ledger.clone());
+            session_ledger = Some(ledger.clone());
+        }
+    }
+
+    let mut session_ledger = session_ledger?;
+    // A top-level Session can span multiple root AgentSessions after compaction.
+    // The session-wide ledger must therefore aggregate the final cumulative
+    // ledger from each root AgentSession instead of reusing only the latest one.
+    session_ledger.cumulative_usage = TokenUsage::default();
+    for ledger in latest_by_agent_session.values() {
+        session_ledger
+            .cumulative_usage
+            .accumulate(&ledger.cumulative_usage);
+    }
+    Some(session_ledger)
+}
+
+#[must_use]
 pub fn agent_session_token_usage_records(
     session_id: &SessionId,
     events: &[SessionEventEnvelope],
@@ -1196,7 +1222,7 @@ pub trait SessionStore: EventSink {
     async fn replay_transcript(&self, session_id: &SessionId) -> Result<Vec<Message>>;
     async fn token_usage(&self, session_id: &SessionId) -> Result<SessionTokenUsageReport> {
         let root_events = self.events(session_id).await?;
-        let session = latest_token_usage_snapshot(&root_events).map(|ledger| TokenUsageRecord {
+        let session = session_token_usage_snapshot(&root_events).map(|ledger| TokenUsageRecord {
             scope: TokenUsageScope::Session,
             session_id: session_id.clone(),
             agent_session_id: None,

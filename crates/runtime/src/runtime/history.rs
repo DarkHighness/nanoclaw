@@ -115,7 +115,7 @@ impl AgentRuntime {
             return Ok(false);
         }
 
-        self.compact_visible_history(turn_id, "auto", None, observer)
+        self.compact_visible_history(turn_id, "auto", None, Some(instructions), observer)
             .await
     }
 
@@ -124,6 +124,7 @@ impl AgentRuntime {
         turn_id: &TurnId,
         reason: &str,
         instructions: Option<String>,
+        post_compaction_instructions: Option<&[String]>,
         observer: &mut dyn RuntimeObserver,
     ) -> Result<bool> {
         let visible_indices = self.visible_message_indices();
@@ -255,6 +256,18 @@ impl AgentRuntime {
         let _ = self
             .apply_hook_effects(turn_id, post_hooks, None, None)
             .await?;
+
+        let hooks = self.hook_registrations.clone();
+        // AgentSession boundaries follow history-window boundaries, not user-turn
+        // boundaries. Auto compaction can therefore split a single turn: the
+        // prompt stays on the pre-compaction AgentSession, while the rebuilt
+        // request window and subsequent provider response move to the fresh one.
+        self.rotate_agent_session(turn_id, &hooks, "compaction", "compaction")
+            .await?;
+        if let Some(instructions) = post_compaction_instructions {
+            self.record_instruction_load(turn_id, &hooks, instructions)
+                .await?;
+        }
         Ok(true)
     }
 }

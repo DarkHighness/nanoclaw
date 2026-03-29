@@ -101,16 +101,19 @@ impl CodeAgentSession {
         runtime
             .apply_control_with_observer(command, &mut observer)
             .await
-            .map(|_| ())
-            .map_err(anyhow::Error::from)
+            .map_err(anyhow::Error::from)?;
+        self.set_active_agent_session_ref(runtime.agent_session_id().to_string());
+        Ok(())
     }
 
     pub(crate) async fn compact_now(&self, notes: Option<String>) -> RuntimeResult<bool> {
         let mut runtime = self.runtime.lock().await;
         let mut observer = SessionEventObserver::new(self.events.clone());
-        runtime
+        let compacted = runtime
             .compact_now_with_observer(notes, &mut observer)
-            .await
+            .await?;
+        self.set_active_agent_session_ref(runtime.agent_session_id().to_string());
+        Ok(compacted)
     }
 
     pub(crate) fn approval_prompt(&self) -> Option<ApprovalPrompt> {
@@ -263,5 +266,9 @@ impl CodeAgentSession {
 
     fn set_stored_session_count(&self, count: usize) {
         self.startup.write().unwrap().stored_session_count = count;
+    }
+
+    fn set_active_agent_session_ref(&self, agent_session_ref: String) {
+        self.startup.write().unwrap().root_agent_session_id = agent_session_ref;
     }
 }

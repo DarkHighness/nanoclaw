@@ -88,6 +88,15 @@ Shipped in the seventh implementation slice:
 - `main.rs` and the TUI no longer assemble runtime approval handlers or direct
   observer plumbing as part of frontend composition
 
+Shipped in the eighth implementation slice:
+
+- runtime compaction now rotates the root `AgentSessionId` instead of keeping a
+  single long-lived runtime window past a history-boundary rewrite
+- session-wide token accounting now aggregates across rotated root
+  `AgentSession`s instead of losing pre-compaction usage
+- `code-agent` now refreshes its active root-agent-session snapshot after
+  prompt/steer and manual compaction operations
+
 Still pending in the next slices:
 
 - frontend-neutral session-operation contracts beyond startup, approval, and
@@ -136,6 +145,8 @@ Current problems:
 - the backend session now exposes startup, approval, and event contracts, but
   it still lacks a true runtime resume/reattach lifecycle above persisted
   history.
+- explicit `AgentSession` lifecycle boundaries now exist for compaction, but
+  reset/new-session lifecycle operations still need backend-owned contracts.
 - legacy `reference-tui` code still duplicates host responsibilities that now
   belong in `code-agent`.
 - `code-agent` now owns durable session browsing/replay/export plus MCP

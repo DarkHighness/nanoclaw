@@ -649,6 +649,7 @@ mod tests {
             let store = FileSessionStore::open(dir.path()).await.unwrap();
             let session_id = SessionId::new();
             let parent_agent_session_id = AgentSessionId::new();
+            let rotated_parent_agent_session_id = AgentSessionId::new();
             let child_session_id = SessionId::new();
             let child_agent_session_id = AgentSessionId::new();
             let agent_id = AgentId::new();
@@ -678,6 +679,50 @@ mod tests {
                             }),
                             last_usage: Some(TokenUsage::from_input_output(100, 20, 10)),
                             cumulative_usage: TokenUsage::from_input_output(100, 20, 10),
+                        },
+                    },
+                ))
+                .await
+                .unwrap();
+            store
+                .append(SessionEventEnvelope::new(
+                    session_id.clone(),
+                    parent_agent_session_id.clone(),
+                    None,
+                    None,
+                    SessionEventKind::SessionEnd {
+                        reason: Some("compaction".to_string()),
+                    },
+                ))
+                .await
+                .unwrap();
+            store
+                .append(SessionEventEnvelope::new(
+                    session_id.clone(),
+                    rotated_parent_agent_session_id.clone(),
+                    None,
+                    None,
+                    SessionEventKind::SessionStart {
+                        reason: Some("compaction".to_string()),
+                    },
+                ))
+                .await
+                .unwrap();
+            store
+                .append(SessionEventEnvelope::new(
+                    session_id.clone(),
+                    rotated_parent_agent_session_id,
+                    None,
+                    None,
+                    SessionEventKind::TokenUsageUpdated {
+                        phase: TokenUsagePhase::ResponseCompleted,
+                        ledger: TokenLedgerSnapshot {
+                            context_window: Some(ContextWindowUsage {
+                                used_tokens: 80,
+                                max_tokens: 400_000,
+                            }),
+                            last_usage: Some(TokenUsage::from_input_output(25, 5, 0)),
+                            cumulative_usage: TokenUsage::from_input_output(25, 5, 0),
                         },
                     },
                 ))
@@ -731,9 +776,9 @@ mod tests {
                     .session
                     .as_ref()
                     .map(|record| record.ledger.cumulative_usage),
-                Some(TokenUsage::from_input_output(100, 20, 10))
+                Some(TokenUsage::from_input_output(125, 25, 10))
             );
-            assert_eq!(report.agent_sessions.len(), 1);
+            assert_eq!(report.agent_sessions.len(), 2);
             assert_eq!(report.subagents.len(), 1);
             assert_eq!(
                 report.subagents[0].agent_session_id.as_ref(),
@@ -744,7 +789,7 @@ mod tests {
             assert_eq!(report.tasks[0].task_id.as_deref(), Some("task-usage"));
             assert_eq!(
                 report.aggregate_usage,
-                TokenUsage::from_input_output(140, 30, 15)
+                TokenUsage::from_input_output(165, 35, 15)
             );
         }
     );

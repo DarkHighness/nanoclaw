@@ -114,6 +114,82 @@ impl AgentRuntime {
             .await
     }
 
+    pub(super) async fn start_agent_session(
+        &mut self,
+        turn_id: &TurnId,
+        hooks: &[HookRegistration],
+        reason: &str,
+    ) -> Result<()> {
+        if self.session.agent_session_started {
+            return Ok(());
+        }
+
+        let session_start_hooks = self
+            .run_hooks(
+                hooks,
+                HookContext {
+                    event: types::HookEvent::SessionStart,
+                    session_id: self.session.session_id.clone(),
+                    agent_session_id: self.session.agent_session_id.clone(),
+                    turn_id: None,
+                    fields: [("reason".to_string(), reason.to_string())]
+                        .into_iter()
+                        .collect(),
+                    payload: serde_json::json!({ "reason": reason }),
+                },
+            )
+            .await?;
+        let session_start_effects = self
+            .apply_hook_effects(turn_id, session_start_hooks, None, None)
+            .await?;
+        if let Some(reason) = session_start_effects.blocked_reason("session start blocked") {
+            return Err(types::AgentCoreError::HookBlocked(reason).into());
+        }
+        self.append_event(
+            None,
+            None,
+            SessionEventKind::SessionStart {
+                reason: Some(reason.to_string()),
+            },
+        )
+        .await?;
+        self.session.agent_session_started = true;
+        Ok(())
+    }
+
+    pub(super) async fn rotate_agent_session(
+        &mut self,
+        turn_id: &TurnId,
+        hooks: &[HookRegistration],
+        end_reason: &str,
+        start_reason: &str,
+    ) -> Result<()> {
+        let previous_agent_session_id = self.session.agent_session_id.clone();
+        self.append_event(
+            None,
+            None,
+            SessionEventKind::SessionEnd {
+                reason: Some(end_reason.to_string()),
+            },
+        )
+        .await?;
+
+        let next_agent_session_id = types::AgentSessionId::new();
+        info!(
+            session_id = %self.session.session_id,
+            previous_agent_session_id = %previous_agent_session_id,
+            next_agent_session_id = %next_agent_session_id,
+            reason = start_reason,
+            "rotated root agent session"
+        );
+
+        self.session.agent_session_id = next_agent_session_id;
+        self.session.agent_session_started = false;
+        self.session.token_ledger = types::TokenLedgerSnapshot::default();
+        self.reset_provider_continuation();
+        self.start_agent_session(turn_id, hooks, start_reason).await
+    }
+
     pub async fn run_user_prompt(&mut self, prompt: impl Into<String>) -> Result<RunTurnOutcome> {
         let mut observer = NoopRuntimeObserver;
         self.run_user_prompt_with_observer(prompt, &mut observer)
@@ -131,7 +207,7 @@ impl AgentRuntime {
         instructions: Option<String>,
         observer: &mut dyn RuntimeObserver,
     ) -> Result<bool> {
-        self.compact_visible_history(&TurnId::new(), "manual", instructions, observer)
+        self.compact_visible_history(&TurnId::new(), "manual", instructions, None, observer)
             .await
     }
 

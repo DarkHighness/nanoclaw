@@ -34,44 +34,11 @@ impl AgentRuntime {
         turn_id: &TurnId,
         hooks: &[HookRegistration],
     ) -> Result<()> {
-        if self.session.agent_session_started {
-            return Ok(());
-        }
-
-        let session_start_hooks = self
-            .run_hooks(
-                hooks,
-                HookContext {
-                    event: HookEvent::SessionStart,
-                    session_id: self.session.session_id.clone(),
-                    agent_session_id: self.session.agent_session_id.clone(),
-                    turn_id: None,
-                    fields: [("reason".to_string(), "new_session".to_string())]
-                        .into_iter()
-                        .collect(),
-                    payload: json!({ "reason": "new_session" }),
-                },
-            )
-            .await?;
-        let session_start_effects = self
-            .apply_hook_effects(turn_id, session_start_hooks, None, None)
-            .await?;
-        if let Some(reason) = session_start_effects.blocked_reason("session start blocked") {
-            return Err(AgentCoreError::HookBlocked(reason).into());
-        }
-        self.append_event(
-            None,
-            None,
-            SessionEventKind::SessionStart {
-                reason: Some("new_session".to_string()),
-            },
-        )
-        .await?;
-        self.session.agent_session_started = true;
-        Ok(())
+        self.start_agent_session(turn_id, hooks, "new_session")
+            .await
     }
 
-    async fn record_instruction_load(
+    pub(super) async fn record_instruction_load(
         &mut self,
         turn_id: &TurnId,
         hooks: &[HookRegistration],
