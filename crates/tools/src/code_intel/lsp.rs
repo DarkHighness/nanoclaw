@@ -330,7 +330,11 @@ impl ManagedLspRuntime {
                                 );
                             }
                         }
-                        timer.as_mut().reset(Instant::now() + Duration::MAX);
+                        // Once the pending batch is drained the select guard
+                        // disables the timer branch, so the completed sleep can
+                        // stay in place until the next workspace event resets
+                        // it to `WATCH_DEBOUNCE`. Re-arming it with
+                        // `Duration::MAX` can overflow Tokio's `Instant`.
                     }
                 }
             }
@@ -1526,8 +1530,9 @@ fn symbol_name_for_target(target: &CodeNavigationTarget) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::merge_symbols;
+    use super::{WATCH_DEBOUNCE, merge_symbols};
     use crate::code_intel::{CodeLocation, CodeSymbol, CodeSymbolKind};
+    use tokio::time::{Instant, sleep, timeout};
 
     #[test]
     fn merge_dedupes_semantic_and_lexical_results() {
@@ -1558,5 +1563,18 @@ mod tests {
         assert_eq!(merged.len(), 2);
         assert_eq!(merged[0].name, "Engine");
         assert_eq!(merged[1].name, "Runner");
+    }
+
+    #[tokio::test]
+    async fn completed_watch_timer_can_be_reused_for_next_debounce_window() {
+        let timer = sleep(std::time::Duration::from_millis(1));
+        tokio::pin!(timer);
+
+        (&mut timer).await;
+        timer.as_mut().reset(Instant::now() + WATCH_DEBOUNCE);
+
+        timeout(std::time::Duration::from_secs(1), &mut timer)
+            .await
+            .expect("resetting a completed sleep should keep the debounce timer usable");
     }
 }
