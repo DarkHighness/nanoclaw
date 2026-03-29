@@ -32,7 +32,8 @@ pub(crate) fn render(
     let vertical = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),
+            Constraint::Length(4),
+            Constraint::Length(2),
             Constraint::Min(12),
             Constraint::Length(4),
             Constraint::Length(1),
@@ -40,19 +41,20 @@ pub(crate) fn render(
         .split(area);
 
     render_header(frame, vertical[0], state);
+    render_status_strip(frame, vertical[1], state);
 
     let body = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(68), Constraint::Percentage(32)])
-        .split(vertical[1]);
+        .constraints([Constraint::Percentage(64), Constraint::Percentage(36)])
+        .split(vertical[2]);
 
     render_transcript(frame, body[0], state);
 
     let right = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(13),
-            Constraint::Min(12),
+            Constraint::Length(12),
+            Constraint::Min(10),
             Constraint::Min(8),
         ])
         .split(body[1]);
@@ -60,14 +62,14 @@ pub(crate) fn render(
     render_session(frame, right[0], state);
     render_inspector(frame, right[1], state);
     render_activity(frame, right[2], state);
-    render_composer(frame, vertical[2], state);
-    render_footer(frame, vertical[3]);
+    render_composer(frame, vertical[3], state);
+    render_footer(frame, vertical[4]);
 
     if let Some(approval) = approval {
         render_approval_overlay(frame, area, approval);
     }
 
-    let composer_inner = composer_inner_area(vertical[2]);
+    let composer_inner = composer_inner_area(vertical[3]);
     let prefix_width = 2_u16;
     frame.set_cursor_position(Position::new(
         composer_inner
@@ -86,11 +88,8 @@ fn render_header(frame: &mut ratatui::Frame<'_>, area: Rect, state: &TuiState) {
     });
     let split = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(68), Constraint::Percentage(32)])
+        .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
         .split(inner);
-    let git_branch = state.session.git.branch_label();
-    let git_dirty = state.session.git.dirty_label();
-    let queue_label = format!("queue {}", state.session.queued_commands);
 
     let title = Paragraph::new(Text::from(vec![
         Line::from(vec![
@@ -100,12 +99,26 @@ fn render_header(frame: &mut ratatui::Frame<'_>, area: Rect, state: &TuiState) {
                 state.session.workspace_name.clone(),
                 Style::default().fg(HEADER).add_modifier(Modifier::BOLD),
             ),
-            Span::styled("  workspace agent", Style::default().fg(MUTED)),
+            Span::styled("  industrial substrate host", Style::default().fg(MUTED)),
         ]),
         Line::from(Span::styled(
             state.session.workspace_root.display().to_string(),
             Style::default().fg(SUBTLE),
         )),
+        Line::from(vec![
+            chip(&state.session.provider_label, USER),
+            Span::raw(" "),
+            chip(&state.session.model, HEADER),
+            Span::raw(" "),
+            chip(
+                if state.turn_running {
+                    "TURN ACTIVE"
+                } else {
+                    "TURN IDLE"
+                },
+                if state.turn_running { WARN } else { ASSISTANT },
+            ),
+        ]),
     ]))
     .style(Style::default().bg(TOP_BG));
     frame.render_widget(title, split[0]);
@@ -121,16 +134,13 @@ fn render_header(frame: &mut ratatui::Frame<'_>, area: Rect, state: &TuiState) {
                 status_color(&state.status),
             ),
             Span::raw(" "),
-            chip(&state.session.provider_label, USER),
-            Span::raw(" "),
-            chip(&state.session.model, MUTED),
-        ]),
-        Line::from(vec![
-            chip(&git_branch, USER),
-            Span::raw(" "),
             chip(
-                &git_dirty,
-                if state.session.git.is_dirty() {
+                if state.session.queued_commands > 0 {
+                    "QUEUE HOT"
+                } else {
+                    "QUEUE CLEAR"
+                },
+                if state.session.queued_commands > 0 {
                     WARN
                 } else {
                     ASSISTANT
@@ -138,18 +148,88 @@ fn render_header(frame: &mut ratatui::Frame<'_>, area: Rect, state: &TuiState) {
             ),
             Span::raw(" "),
             chip(
-                &queue_label,
-                if state.session.queued_commands > 0 {
+                if state.session.git.is_dirty() {
+                    "DIRTY TREE"
+                } else {
+                    "CLEAN TREE"
+                },
+                if state.session.git.is_dirty() {
                     WARN
                 } else {
-                    MUTED
+                    ASSISTANT
                 },
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("branch ", Style::default().fg(MUTED)),
+            Span::styled(
+                preview_text(&state.session.git.branch, 18),
+                Style::default().fg(USER).add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("summary ", Style::default().fg(MUTED)),
+            Span::styled(
+                preview_text(&state.session.summary_model, 22),
+                Style::default().fg(TEXT),
+            ),
+            Span::styled("  memory ", Style::default().fg(MUTED)),
+            Span::styled(
+                preview_text(&state.session.memory_model, 22),
+                Style::default().fg(TEXT),
             ),
         ]),
     ]))
     .alignment(Alignment::Right)
     .style(Style::default().bg(TOP_BG));
     frame.render_widget(status, split[1]);
+}
+
+fn render_status_strip(frame: &mut ratatui::Frame<'_>, area: Rect, state: &TuiState) {
+    let block = Block::default()
+        .borders(Borders::BOTTOM)
+        .border_style(Style::default().fg(BORDER))
+        .style(Style::default().bg(BG));
+    frame.render_widget(block, area);
+    let inner = area.inner(Margin {
+        vertical: 0,
+        horizontal: 1,
+    });
+    let split = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(68), Constraint::Percentage(32)])
+        .split(inner);
+    let left = Paragraph::new(Line::from(vec![
+        chip(state.focus.title(), BORDER_ACTIVE),
+        Span::raw(" "),
+        Span::styled(
+            preview_text(&state.status, 70),
+            Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
+        ),
+    ]))
+    .style(Style::default().bg(BG));
+    frame.render_widget(left, split[0]);
+
+    let right = Paragraph::new(Line::from(vec![
+        Span::styled("session ", Style::default().fg(MUTED)),
+        Span::styled(
+            preview_text(&state.session.active_session_ref, 12),
+            Style::default().fg(USER),
+        ),
+        Span::styled("  agent ", Style::default().fg(MUTED)),
+        Span::styled(
+            preview_text(&state.session.root_agent_session_id, 12),
+            Style::default().fg(ASSISTANT),
+        ),
+        Span::styled("  stored ", Style::default().fg(MUTED)),
+        Span::styled(
+            state.session.stored_session_count.to_string(),
+            Style::default().fg(HEADER).add_modifier(Modifier::BOLD),
+        ),
+    ]))
+    .alignment(Alignment::Right)
+    .style(Style::default().bg(BG));
+    frame.render_widget(right, split[1]);
 }
 
 fn render_transcript(frame: &mut ratatui::Frame<'_>, area: Rect, state: &TuiState) {
@@ -178,11 +258,61 @@ fn render_transcript(frame: &mut ratatui::Frame<'_>, area: Rect, state: &TuiStat
 }
 
 fn render_session(frame: &mut ratatui::Frame<'_>, area: Rect, state: &TuiState) {
-    let session = Paragraph::new(build_key_value_text(&session_lines(state)))
-        .block(panel_block("Current Session", BORDER))
-        .wrap(Wrap { trim: false })
-        .style(Style::default().fg(TEXT).bg(PANEL_ALT_BG));
-    frame.render_widget(session, area);
+    if area.width < 44 || area.height < 10 {
+        let session = Paragraph::new(build_key_value_text(&session_lines(state)))
+            .block(panel_block("Current Session", BORDER))
+            .wrap(Wrap { trim: false })
+            .style(Style::default().fg(TEXT).bg(PANEL_ALT_BG));
+        frame.render_widget(session, area);
+        return;
+    }
+
+    frame.render_widget(panel_block("Session Radar", BORDER), area);
+    let inner = area.inner(Margin {
+        vertical: 1,
+        horizontal: 1,
+    });
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(4), Constraint::Min(4)])
+        .split(inner);
+    let top = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(rows[0]);
+    let bottom = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(rows[1]);
+
+    render_session_card(
+        frame,
+        top[0],
+        "Identity",
+        USER,
+        session_identity_lines(state),
+    );
+    render_session_card(
+        frame,
+        top[1],
+        "Runtime",
+        ASSISTANT,
+        session_runtime_lines(state),
+    );
+    render_session_card(
+        frame,
+        bottom[0],
+        "Budget",
+        WARN,
+        session_budget_lines(state),
+    );
+    render_session_card(
+        frame,
+        bottom[1],
+        "Environment",
+        BORDER_ACTIVE,
+        session_environment_lines(state),
+    );
 }
 
 fn session_lines(state: &TuiState) -> Vec<String> {
@@ -256,6 +386,139 @@ fn session_context_line(state: &TuiState) -> String {
         .context_window
         .map(|usage| format!("context: {} / {}", usage.used_tokens, usage.max_tokens))
         .unwrap_or_else(|| "context: unknown".to_string())
+}
+
+fn session_identity_lines(state: &TuiState) -> Vec<Line<'static>> {
+    vec![
+        metric_line(
+            "session",
+            &preview_text(&state.session.active_session_ref, 18),
+            USER,
+        ),
+        metric_line(
+            "agent",
+            &preview_text(&state.session.root_agent_session_id, 18),
+            ASSISTANT,
+        ),
+        metric_line(
+            "queue",
+            &format!("{} pending", state.session.queued_commands),
+            if state.session.queued_commands > 0 {
+                WARN
+            } else {
+                ASSISTANT
+            },
+        ),
+    ]
+}
+
+fn session_runtime_lines(state: &TuiState) -> Vec<Line<'static>> {
+    vec![
+        metric_line(
+            "primary",
+            &format!(
+                "{} / {}",
+                state.session.provider_label,
+                preview_text(&state.session.model, 18)
+            ),
+            TEXT,
+        ),
+        metric_line(
+            "summary",
+            &preview_text(&state.session.summary_model, 24),
+            HEADER,
+        ),
+        metric_line(
+            "memory",
+            &preview_text(&state.session.memory_model, 24),
+            MUTED,
+        ),
+    ]
+}
+
+fn session_budget_lines(state: &TuiState) -> Vec<Line<'static>> {
+    let last = state
+        .session
+        .token_ledger
+        .last_usage
+        .map(token_usage_compact)
+        .unwrap_or_else(|| "none yet".to_string());
+    let total = if state.session.token_ledger.cumulative_usage.is_zero() {
+        "none yet".to_string()
+    } else {
+        token_usage_compact(state.session.token_ledger.cumulative_usage)
+    };
+    vec![
+        metric_line("context", &session_context_line(state), USER),
+        metric_line("last", &last, TEXT),
+        metric_line("total", &total, ASSISTANT),
+    ]
+}
+
+fn session_environment_lines(state: &TuiState) -> Vec<Line<'static>> {
+    let git_state = if state.session.git.is_dirty() {
+        state.session.git.dirty_label()
+    } else {
+        format!("clean on {}", preview_text(&state.session.git.branch, 18))
+    };
+    let mut lines = vec![
+        metric_line(
+            "history",
+            &format!("{} persisted", state.session.stored_session_count),
+            HEADER,
+        ),
+        metric_line("store", &preview_text(&state.session.store_label, 22), TEXT),
+        metric_line(
+            "git",
+            &preview_text(&git_state, 28),
+            if state.session.git.is_dirty() {
+                WARN
+            } else {
+                ASSISTANT
+            },
+        ),
+    ];
+    if let Some(warning) = &state.session.store_warning {
+        lines.push(metric_line("warning", &preview_text(warning, 28), WARN));
+    } else {
+        lines.push(metric_line(
+            "sandbox",
+            &preview_text(&state.session.sandbox_summary, 24),
+            USER,
+        ));
+    }
+    lines
+}
+
+fn render_session_card(
+    frame: &mut ratatui::Frame<'_>,
+    area: Rect,
+    title: &'static str,
+    accent: Color,
+    lines: Vec<Line<'static>>,
+) {
+    let card = Paragraph::new(Text::from(lines))
+        .block(card_block(title, accent))
+        .wrap(Wrap { trim: false })
+        .style(Style::default().fg(TEXT).bg(PANEL_ALT_BG));
+    frame.render_widget(card, area);
+}
+
+fn metric_line(label: &str, value: &str, value_color: Color) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(
+            format!("{label} "),
+            Style::default().fg(MUTED).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(value.to_string(), Style::default().fg(value_color)),
+    ])
+}
+
+fn token_usage_compact(usage: agent::types::TokenUsage) -> String {
+    format!(
+        "in {} out {} cache {}",
+        usage.input_tokens, usage.output_tokens, usage.cache_read_tokens
+    )
 }
 
 fn session_last_token_line(state: &TuiState) -> String {
@@ -347,7 +610,11 @@ fn render_composer(frame: &mut ratatui::Frame<'_>, area: Rect, state: &TuiState)
         .split(inner);
     let top = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Min(24), Constraint::Length(30)])
+        .constraints([
+            Constraint::Min(22),
+            Constraint::Length(16),
+            Constraint::Length(22),
+        ])
         .split(rows[0]);
     frame.render_widget(block, area);
 
@@ -369,26 +636,46 @@ fn render_composer(frame: &mut ratatui::Frame<'_>, area: Rect, state: &TuiState)
     frame.render_widget(Clear, top[0]);
     frame.render_widget(input_field, top[0]);
 
+    let mode = Paragraph::new(Line::from(vec![chip(
+        if state.input.trim_start().starts_with('/') {
+            "COMMAND"
+        } else if state.turn_running {
+            "FOLLOW-UP"
+        } else {
+            "PROMPT"
+        },
+        if state.input.trim_start().starts_with('/') {
+            USER
+        } else if state.turn_running {
+            WARN
+        } else {
+            ASSISTANT
+        },
+    )]))
+    .alignment(Alignment::Center)
+    .style(Style::default().bg(PANEL_ALT_BG));
+    frame.render_widget(mode, top[1]);
+
     let actions = Paragraph::new(Line::from(vec![
         Span::styled(
             "Enter",
             Style::default().fg(HEADER).add_modifier(Modifier::BOLD),
         ),
-        Span::styled(" send  ", Style::default().fg(MUTED)),
+        Span::styled(" run  ", Style::default().fg(MUTED)),
         Span::styled(
             "/help",
             Style::default().fg(USER).add_modifier(Modifier::BOLD),
         ),
-        Span::styled(" commands", Style::default().fg(MUTED)),
+        Span::styled(" palette", Style::default().fg(MUTED)),
     ]))
     .alignment(Alignment::Right)
     .style(Style::default().fg(MUTED).bg(PANEL_ALT_BG));
-    frame.render_widget(actions, top[1]);
+    frame.render_widget(actions, top[2]);
 
     let helper_line = if state.input.is_empty() {
         Line::from(vec![
             Span::styled(
-                "Ask for inspection, edits, tests, or an explanation of the codebase.",
+                "Ask for inspection, edits, tests, history replay, or live task control.",
                 Style::default().fg(SUBTLE),
             ),
             Span::raw("  "),
@@ -406,20 +693,20 @@ fn render_composer(frame: &mut ratatui::Frame<'_>, area: Rect, state: &TuiState)
     } else {
         Line::from(vec![
             Span::styled(
-                "/session",
+                "/live_tasks",
                 Style::default().fg(USER).add_modifier(Modifier::BOLD),
             ),
-            Span::styled(" open snapshot  ", Style::default().fg(MUTED)),
+            Span::styled(" child agents  ", Style::default().fg(MUTED)),
             Span::styled(
-                "/compact",
+                "/send_task",
                 Style::default().fg(USER).add_modifier(Modifier::BOLD),
             ),
-            Span::styled(" summarize history  ", Style::default().fg(MUTED)),
+            Span::styled(" steer child  ", Style::default().fg(MUTED)),
             Span::styled(
-                "/steer",
+                "/wait_task",
                 Style::default().fg(USER).add_modifier(Modifier::BOLD),
             ),
-            Span::styled(" guide next turn  ", Style::default().fg(MUTED)),
+            Span::styled(" background wait  ", Style::default().fg(MUTED)),
             Span::styled(
                 "Tab",
                 Style::default().fg(HEADER).add_modifier(Modifier::BOLD),
@@ -447,7 +734,12 @@ fn render_footer(frame: &mut ratatui::Frame<'_>, area: Rect) {
             "↑↓ PgUp PgDn",
             Style::default().fg(HEADER).add_modifier(Modifier::BOLD),
         ),
-        Span::styled(" scroll focused pane", Style::default().fg(MUTED)),
+        Span::styled(" scroll focused pane  ", Style::default().fg(MUTED)),
+        Span::styled(
+            "Home End",
+            Style::default().fg(HEADER).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" jump", Style::default().fg(MUTED)),
     ]))
     .style(Style::default().bg(BG));
     frame.render_widget(footer, area);
@@ -475,7 +767,11 @@ fn composer_inner_area(area: Rect) -> Rect {
         .split(inner);
     Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Min(24), Constraint::Length(30)])
+        .constraints([
+            Constraint::Min(22),
+            Constraint::Length(16),
+            Constraint::Length(22),
+        ])
         .split(rows[0])[0]
 }
 
@@ -584,6 +880,17 @@ fn composer_block<'a>() -> Block<'a> {
         .title(Span::styled(
             " Composer ",
             Style::default().fg(HEADER).add_modifier(Modifier::BOLD),
+        ))
+        .style(Style::default().bg(PANEL_ALT_BG))
+}
+
+fn card_block<'a>(title: &'a str, accent: Color) -> Block<'a> {
+    Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(accent))
+        .title(Span::styled(
+            format!(" {title} "),
+            Style::default().fg(accent).add_modifier(Modifier::BOLD),
         ))
         .style(Style::default().bg(PANEL_ALT_BG))
 }
@@ -799,6 +1106,24 @@ fn build_key_value_text(lines: &[String]) -> Text<'static> {
 fn value_style(key: &str, value: &str) -> Style {
     if key.contains("warning") {
         Style::default().fg(WARN)
+    } else if key.contains("status") {
+        if value.contains("completed") || value.contains("ready") {
+            Style::default().fg(ASSISTANT)
+        } else if value.contains("cancel") || value.contains("failed") {
+            Style::default().fg(ERROR)
+        } else {
+            Style::default().fg(WARN)
+        }
+    } else if key.contains("action") {
+        if value.contains("sent")
+            || value.contains("cancelled")
+            || value.contains("reattached")
+            || value.contains("started")
+        {
+            Style::default().fg(ASSISTANT)
+        } else {
+            Style::default().fg(WARN)
+        }
     } else if key.contains("sandbox") {
         Style::default().fg(USER)
     } else if key.contains("dirty") {
@@ -816,8 +1141,15 @@ fn value_style(key: &str, value: &str) -> Style {
         } else {
             Style::default().fg(WARN)
         }
-    } else if key.contains("active ref") || key.contains("runtime id") {
+    } else if key.contains("active ref")
+        || key.contains("runtime id")
+        || key.contains("session ref")
+        || key.contains("agent id")
+        || key.contains("task id")
+    {
         Style::default().fg(USER)
+    } else if key.contains("summary") {
+        Style::default().fg(HEADER)
     } else {
         Style::default().fg(TEXT)
     }

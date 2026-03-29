@@ -153,6 +153,15 @@ Shipped in the fourteenth implementation slice:
   approvals, transcript deltas, and activity updates continue rendering while
   the operator waits for child completion
 
+Shipped in the fifteenth implementation slice:
+
+- the TUI layout now presents runtime state as a denser product surface instead
+  of a mostly flat debug shell
+- session metadata moved into a `session radar` card grid, and the shell gained
+  a dedicated live status strip between the top bar and body
+- the composer now exposes prompt vs command mode more clearly and highlights
+  the live-task command path alongside the normal prompt flow
+
 Still pending in the next slices:
 
 - remaining docs and workspace cleanup before `reference-tui` can be retired
