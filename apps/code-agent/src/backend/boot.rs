@@ -3,10 +3,10 @@ use crate::backend::boot_mcp::build_startup_diagnostics_snapshot;
 use crate::backend::boot_runtime::{build_runtime_tooling, register_subagent_tools};
 use crate::backend::store::build_store;
 use crate::backend::{
-    ApprovalCoordinator, SessionEventStream, SessionToolApprovalHandler,
-    build_plugin_activation_plan, build_sandbox_policy, build_system_preamble, build_tool_context,
-    dedup_mcp_servers, log_sandbox_status, merge_driver_host_inputs, resolve_mcp_servers,
-    resolve_skill_roots, tool_context_for_profile,
+    ApprovalCoordinator, NonInteractiveToolApprovalHandler, SessionEventStream,
+    SessionToolApprovalHandler, build_plugin_activation_plan, build_sandbox_policy,
+    build_system_preamble, build_tool_context, dedup_mcp_servers, log_sandbox_status,
+    merge_driver_host_inputs, resolve_mcp_servers, resolve_skill_roots, tool_context_for_profile,
 };
 use crate::options::AppOptions;
 use crate::provider::{
@@ -45,6 +45,12 @@ struct RuntimeBuildResult {
     store_warning: Option<String>,
     stored_session_count: usize,
     startup_diagnostics: crate::backend::StartupDiagnosticsSnapshot,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SessionApprovalMode {
+    Interactive,
+    NonInteractive,
 }
 
 #[derive(Clone)]
@@ -105,10 +111,25 @@ pub(crate) async fn build_session(
     options: &AppOptions,
     workspace_root: &Path,
 ) -> Result<super::CodeAgentSession> {
+    build_session_with_approval_mode(options, workspace_root, SessionApprovalMode::Interactive)
+        .await
+}
+
+pub(crate) async fn build_session_with_approval_mode(
+    options: &AppOptions,
+    workspace_root: &Path,
+    approval_mode: SessionApprovalMode,
+) -> Result<super::CodeAgentSession> {
     let approvals = ApprovalCoordinator::default();
     let events = SessionEventStream::default();
-    let approval_handler: Arc<dyn ToolApprovalHandler> =
-        Arc::new(SessionToolApprovalHandler::new(approvals.clone()));
+    let approval_handler: Arc<dyn ToolApprovalHandler> = match approval_mode {
+        SessionApprovalMode::Interactive => {
+            Arc::new(SessionToolApprovalHandler::new(approvals.clone()))
+        }
+        SessionApprovalMode::NonInteractive => Arc::new(NonInteractiveToolApprovalHandler::new(
+            "non-interactive one-shot mode cannot resolve tool approvals",
+        )),
+    };
     let base_tool_context = build_tool_context(workspace_root, options);
     let sandbox_policy = build_sandbox_policy(options, &base_tool_context);
     let tool_context = base_tool_context.with_sandbox_policy(sandbox_policy.clone());

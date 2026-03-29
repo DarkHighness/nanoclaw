@@ -14,11 +14,12 @@ mod store;
 mod task_history;
 
 pub(crate) use approval::{
-    ApprovalCoordinator, ApprovalDecision, ApprovalPrompt, SessionToolApprovalHandler,
+    ApprovalCoordinator, ApprovalDecision, ApprovalPrompt, NonInteractiveToolApprovalHandler,
+    SessionToolApprovalHandler,
 };
 #[allow(unused_imports)]
 pub(crate) use boot::CodeAgentSubagentProfileResolver;
-pub(crate) use boot::build_session;
+pub(crate) use boot::{SessionApprovalMode, build_session, build_session_with_approval_mode};
 #[cfg(test)]
 pub(crate) use boot_inputs::driver_host_output_lines;
 pub(crate) use boot_inputs::{dedup_mcp_servers, merge_driver_host_inputs, resolve_mcp_servers};

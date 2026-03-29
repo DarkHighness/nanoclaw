@@ -11,7 +11,7 @@ use crate::backend::{
     list_mcp_resources, list_mcp_servers, load_mcp_prompt, load_mcp_resource,
 };
 use agent::mcp::ConnectedMcpServer;
-use agent::runtime::Result as RuntimeResult;
+use agent::runtime::{Result as RuntimeResult, RunTurnOutcome};
 use agent::tools::{SubagentExecutor, SubagentParentContext};
 use agent::types::{
     AgentSessionId, AgentTaskSpec, AgentWaitMode, AgentWaitRequest, Message, SessionId,
@@ -197,6 +197,16 @@ impl CodeAgentSession {
             .map_err(anyhow::Error::from)?;
         self.sync_runtime_session_refs(&runtime);
         Ok(())
+    }
+
+    pub(crate) async fn run_one_shot_prompt(&self, prompt: &str) -> Result<RunTurnOutcome> {
+        let mut runtime = self.runtime.lock().await;
+        let outcome = runtime
+            .run_user_prompt(prompt)
+            .await
+            .map_err(anyhow::Error::from)?;
+        self.sync_runtime_session_refs(&runtime);
+        Ok(outcome)
     }
 
     pub(crate) async fn compact_now(&self, notes: Option<String>) -> RuntimeResult<bool> {

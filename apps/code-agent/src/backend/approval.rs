@@ -108,6 +108,29 @@ impl ToolApprovalHandler for SessionToolApprovalHandler {
     }
 }
 
+pub(crate) struct NonInteractiveToolApprovalHandler {
+    reason: String,
+}
+
+impl NonInteractiveToolApprovalHandler {
+    pub(crate) fn new(reason: impl Into<String>) -> Self {
+        Self {
+            reason: reason.into(),
+        }
+    }
+}
+
+#[async_trait]
+impl ToolApprovalHandler for NonInteractiveToolApprovalHandler {
+    async fn decide(&self, _request: ToolApprovalRequest) -> RuntimeResult<ToolApprovalOutcome> {
+        // Headless hosts do not have an approval UI to resume from, so approval
+        // requests must fail closed instead of waiting indefinitely.
+        Ok(ToolApprovalOutcome::Deny {
+            reason: Some(self.reason.clone()),
+        })
+    }
+}
+
 fn tool_origin_label(origin: &ToolOrigin) -> String {
     match origin {
         ToolOrigin::Local => "local".to_string(),
@@ -143,10 +166,61 @@ fn truncate_preview(value: &str, max_lines: usize, max_columns: usize) -> Vec<St
 
 #[cfg(test)]
 mod tests {
-    use super::{ApprovalCoordinator, ApprovalDecision};
+    use super::{
+        ApprovalCoordinator, ApprovalDecision, NonInteractiveToolApprovalHandler, tool_origin_label,
+    };
+    use agent::runtime::{ToolApprovalHandler, ToolApprovalOutcome, ToolApprovalRequest};
+    use agent::types::{ToolCall, ToolCallId, ToolOrigin, ToolOutputMode, ToolSpec};
+    use serde_json::json;
+    use std::collections::BTreeMap;
 
     #[test]
     fn resolving_missing_request_is_a_noop() {
         assert!(!ApprovalCoordinator::default().resolve(ApprovalDecision::Approve));
+    }
+
+    #[tokio::test]
+    async fn non_interactive_handler_denies_immediately() {
+        let handler = NonInteractiveToolApprovalHandler::new("non-interactive mode");
+        let outcome = handler
+            .decide(ToolApprovalRequest {
+                call: ToolCall {
+                    id: ToolCallId::new(),
+                    call_id: "call-1".into(),
+                    tool_name: "write".into(),
+                    arguments: json!({"path":"sample.txt"}),
+                    origin: ToolOrigin::Local,
+                },
+                spec: ToolSpec {
+                    name: "write".into(),
+                    description: "write".to_string(),
+                    input_schema: json!({"type":"object"}),
+                    output_mode: ToolOutputMode::Text,
+                    output_schema: None,
+                    origin: ToolOrigin::Local,
+                    annotations: BTreeMap::new(),
+                },
+                reasons: vec!["destructive".to_string()],
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(
+            outcome,
+            ToolApprovalOutcome::Deny {
+                reason: Some("non-interactive mode".to_string()),
+            }
+        );
+    }
+
+    #[test]
+    fn tool_origin_labels_provider_variants() {
+        assert_eq!(tool_origin_label(&ToolOrigin::Local), "local");
+        assert_eq!(
+            tool_origin_label(&ToolOrigin::Mcp {
+                server_name: "docs".to_string(),
+            }),
+            "mcp:docs"
+        );
     }
 }

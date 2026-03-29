@@ -4,14 +4,17 @@ mod frontend;
 mod options;
 mod provider;
 
-use crate::backend::{build_session, inject_process_env};
+use crate::backend::{
+    SessionApprovalMode, build_session, build_session_with_approval_mode, inject_process_env,
+};
 use crate::frontend::tui::{CodeAgentTui, SharedUiState};
 use crate::options::AppOptions;
 use agent::AgentWorkspaceLayout;
 use agent::runtime::{HostRuntimeLimits, build_host_tokio_runtime};
 use agent_env::EnvMap;
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use std::env;
+use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::EnvFilter;
@@ -57,6 +60,20 @@ fn init_tracing(workspace_root: &Path) -> Result<WorkerGuard> {
 }
 
 async fn async_main(workspace_root: PathBuf, options: AppOptions) -> Result<()> {
+    let stdin_is_terminal = io::stdin().is_terminal();
+    let stdout_is_terminal = io::stdout().is_terminal();
+    if options.one_shot_prompt.is_none() && (!stdin_is_terminal || !stdout_is_terminal) {
+        bail!(
+            "code-agent requires a terminal for interactive mode; pass a prompt argument to run headless one-shot mode"
+        );
+    }
+    // One-shot prompt invocations are also used from scripts and tests. When a
+    // real terminal is unavailable, bypass the TUI so raw-mode setup does not
+    // fail before the runtime can execute the prompt.
+    if launch_headless_one_shot(&options, stdin_is_terminal, stdout_is_terminal) {
+        return run_headless_one_shot(workspace_root, options).await;
+    }
+
     let ui_state = SharedUiState::new();
     let session = build_session(&options, &workspace_root).await?;
 
@@ -65,8 +82,47 @@ async fn async_main(workspace_root: PathBuf, options: AppOptions) -> Result<()> 
         .await
 }
 
+fn launch_headless_one_shot(
+    options: &AppOptions,
+    stdin_is_terminal: bool,
+    stdout_is_terminal: bool,
+) -> bool {
+    options.one_shot_prompt.is_some() && (!stdin_is_terminal || !stdout_is_terminal)
+}
+
+async fn run_headless_one_shot(workspace_root: PathBuf, options: AppOptions) -> Result<()> {
+    let prompt = options
+        .one_shot_prompt
+        .clone()
+        .context("headless one-shot mode requires a prompt")?;
+    let session = build_session_with_approval_mode(
+        &options,
+        &workspace_root,
+        SessionApprovalMode::NonInteractive,
+    )
+    .await?;
+    let result = session.run_one_shot_prompt(&prompt).await;
+    let end_reason = if result.is_ok() {
+        "one_shot_complete"
+    } else {
+        "one_shot_failed"
+    };
+    let _ = session.end_session(Some(end_reason.to_string())).await;
+    let outcome = result?;
+    if !outcome.assistant_text.is_empty() {
+        let mut stdout = io::stdout().lock();
+        stdout.write_all(outcome.assistant_text.as_bytes())?;
+        if !outcome.assistant_text.ends_with('\n') {
+            stdout.write_all(b"\n")?;
+        }
+        stdout.flush()?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
+    use super::launch_headless_one_shot;
     use crate::backend::{
         CodeAgentSubagentProfileResolver, build_sandbox_policy, dedup_mcp_servers,
         driver_host_output_lines, merge_driver_host_inputs, resolve_mcp_servers,
@@ -99,6 +155,26 @@ mod tests {
         assert!(!parse_bool_flag("off").unwrap());
         assert!(parse_bool_flag("1").unwrap());
         assert!(parse_bool_flag("maybe").is_err());
+    }
+
+    #[test]
+    fn headless_one_shot_activates_only_for_non_tty_prompt_runs() {
+        let _guard = env_test_lock().lock().unwrap();
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join(".env"), "OPENAI_API_KEY=test-key\n").unwrap();
+        let env_map = EnvMap::from_workspace_dir(dir.path()).unwrap();
+        let prompted =
+            AppOptions::from_env_and_args_iter(dir.path(), &env_map, vec!["inspect".to_string()])
+                .unwrap();
+        let interactive =
+            AppOptions::from_env_and_args_iter(dir.path(), &env_map, std::iter::empty::<String>())
+                .unwrap();
+
+        assert!(launch_headless_one_shot(&prompted, false, true));
+        assert!(launch_headless_one_shot(&prompted, true, false));
+        assert!(!launch_headless_one_shot(&prompted, true, true));
+        assert!(!launch_headless_one_shot(&interactive, false, false));
+        assert!(!launch_headless_one_shot(&interactive, true, true));
     }
 
     #[test]
