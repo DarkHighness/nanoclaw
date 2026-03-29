@@ -42,14 +42,14 @@ pub(crate) fn render(
 
     let body = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(72), Constraint::Percentage(28)])
+        .constraints([Constraint::Percentage(79), Constraint::Percentage(21)])
         .split(vertical[1]);
 
     render_transcript(frame, body[0], state);
 
     let right = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(8), Constraint::Length(7)])
+        .constraints([Constraint::Min(6), Constraint::Length(5)])
         .split(body[1]);
 
     render_inspector(frame, right[0], state);
@@ -256,7 +256,7 @@ fn format_token_usage_line(label: &str, usage: agent::types::TokenUsage) -> Stri
 
 fn render_inspector(frame: &mut ratatui::Frame<'_>, area: Rect, state: &TuiState) {
     let title = if state.inspector_title.is_empty() {
-        "Guide · operator surface"
+        "Info"
     } else {
         state.inspector_title.as_str()
     };
@@ -283,12 +283,12 @@ fn render_inspector(frame: &mut ratatui::Frame<'_>, area: Rect, state: &TuiState
 fn render_activity(frame: &mut ratatui::Frame<'_>, area: Rect, state: &TuiState) {
     let lines = if state.activity.is_empty() {
         Text::from(vec![Line::from(Span::styled(
-            "No activity yet.",
+            "No log yet.",
             Style::default().fg(SUBTLE),
         ))])
     } else {
         let mut lines = Vec::new();
-        for item in state.activity.iter().rev() {
+        for item in state.activity.iter().rev().take(8) {
             lines.push(Line::from(vec![
                 Span::styled(
                     activity_marker(item),
@@ -311,7 +311,7 @@ fn render_activity(frame: &mut ratatui::Frame<'_>, area: Rect, state: &TuiState)
     let activity = Paragraph::new(lines)
         .block(block)
         .scroll((scroll, 0))
-        .wrap(Wrap { trim: false })
+        .wrap(Wrap { trim: true })
         .style(Style::default().fg(TEXT).bg(PANEL_BG));
     frame.render_widget(activity, area);
 }

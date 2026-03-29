@@ -181,6 +181,15 @@ Shipped in the seventeenth implementation slice:
 - transcript rendering and the composer were both reduced to a more minimal
   presentation so the UI reads as a tool instead of a dashboard
 
+Shipped in the eighteenth implementation slice:
+
+- the right-hand TUI rail was narrowed further so the transcript regains even
+  more horizontal space
+- the default inspector shell was reduced to a more neutral `Info` surface
+  instead of a louder operator panel label
+- the activity panel now behaves more like a compact recent log than a large
+  parallel dashboard pane
+
 Still pending in the next slices:
 
 - remaining docs and workspace cleanup before `reference-tui` can be retired
