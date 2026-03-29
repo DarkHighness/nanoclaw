@@ -598,7 +598,7 @@ fn turn_divider() -> Line<'static> {
 }
 
 fn transcript_entry_needs_spacing(entry: &str) -> bool {
-    !entry.starts_with("  └ ")
+    entry.starts_with("› ")
 }
 
 fn format_transcript_entry(entry: &str) -> Vec<Line<'static>> {
@@ -609,35 +609,66 @@ fn format_transcript_entry(entry: &str) -> Vec<Line<'static>> {
         ))];
     };
 
-    let mut body_lines = body.lines();
-    let first_line = body_lines.next().unwrap_or_default();
-    let mut rendered = vec![Line::from(vec![
-        Span::styled(marker, transcript_marker_style(marker, accent)),
-        Span::raw(" "),
-        Span::styled(
-            first_line.to_string(),
-            transcript_body_style(marker, first_line),
-        ),
-    ])];
+    let mut rendered = render_transcript_body(body, marker);
+    prefix_transcript_marker(&mut rendered, marker, accent);
+    rendered
+}
 
+fn render_transcript_body(body: &str, marker: &str) -> Vec<Line<'static>> {
+    let mut rendered = Vec::new();
     let mut in_code = false;
-    for raw_line in body_lines {
+    let mut first_visible = true;
+
+    for raw_line in body.lines() {
         let trimmed = raw_line.trim_start();
         if trimmed.starts_with("```") {
             in_code = !in_code;
-            rendered.push(Line::from(vec![
-                Span::raw("  "),
-                Span::styled(trimmed.to_string(), Style::default().fg(SUBTLE)),
-            ]));
             continue;
         }
-        rendered.push(render_transcript_body_line(raw_line, in_code));
+
+        rendered.push(render_transcript_body_line(
+            raw_line,
+            marker,
+            in_code,
+            first_visible,
+        ));
+        if !raw_line.trim().is_empty() {
+            first_visible = false;
+        }
+    }
+
+    if rendered.is_empty() {
+        rendered.push(Line::from(Span::raw("")));
     }
 
     rendered
 }
 
-fn render_transcript_body_line(raw_line: &str, in_code: bool) -> Line<'static> {
+fn prefix_transcript_marker(lines: &mut [Line<'static>], marker: &str, accent: Color) {
+    let index = lines
+        .iter()
+        .position(line_has_visible_content)
+        .unwrap_or_default();
+    let mut spans = vec![
+        Span::styled(marker.to_string(), transcript_marker_style(marker, accent)),
+        Span::raw(" "),
+    ];
+    spans.extend(lines[index].spans.clone());
+    lines[index] = Line::from(spans);
+}
+
+fn line_has_visible_content(line: &Line<'static>) -> bool {
+    line.spans
+        .iter()
+        .any(|span| !span.content.as_ref().trim().is_empty())
+}
+
+fn render_transcript_body_line(
+    raw_line: &str,
+    marker: &str,
+    in_code: bool,
+    is_first_visible: bool,
+) -> Line<'static> {
     if raw_line.trim().is_empty() {
         return Line::from(Span::raw(""));
     }
@@ -654,23 +685,194 @@ fn render_transcript_body_line(raw_line: &str, in_code: bool) -> Line<'static> {
         ]);
     }
     if in_code {
-        return Line::from(vec![Span::raw("  "), code_span(raw_line)]);
+        return line_with_indent(is_first_visible, vec![code_span(raw_line)]);
+    }
+    if let Some((level, heading)) = markdown_heading(raw_line) {
+        return line_with_indent(
+            is_first_visible,
+            vec![Span::styled(
+                heading.to_string(),
+                markdown_heading_style(level),
+            )],
+        );
+    }
+    if is_markdown_rule(raw_line) {
+        return line_with_indent(
+            is_first_visible,
+            vec![Span::styled("┈".repeat(18), Style::default().fg(SUBTLE))],
+        );
+    }
+    if let Some(rest) = markdown_quote(raw_line) {
+        let mut spans = vec![
+            Span::styled("│", Style::default().fg(SUBTLE)),
+            Span::raw(" "),
+        ];
+        spans.extend(markdown_inline_spans(rest, Style::default().fg(MUTED)));
+        return line_with_indent(is_first_visible, spans);
     }
     if let Some(rest) = raw_line
         .strip_prefix("- ")
         .or_else(|| raw_line.strip_prefix("* "))
     {
-        return Line::from(vec![
-            Span::raw("  "),
+        let mut spans = vec![
             Span::styled("-", Style::default().fg(MUTED)),
             Span::raw(" "),
-            Span::styled(rest.to_string(), Style::default().fg(TEXT)),
-        ]);
+        ];
+        spans.extend(markdown_inline_spans(
+            rest,
+            transcript_body_style(marker, rest),
+        ));
+        return line_with_indent(is_first_visible, spans);
     }
-    Line::from(vec![
-        Span::raw("  "),
-        Span::styled(raw_line.to_string(), Style::default().fg(TEXT)),
-    ])
+    if let Some((ordinal, rest)) = markdown_ordered_item(raw_line) {
+        let mut spans = vec![
+            Span::styled(format!("{ordinal}."), Style::default().fg(MUTED)),
+            Span::raw(" "),
+        ];
+        spans.extend(markdown_inline_spans(
+            rest,
+            transcript_body_style(marker, rest),
+        ));
+        return line_with_indent(is_first_visible, spans);
+    }
+    line_with_indent(
+        is_first_visible,
+        markdown_inline_spans(raw_line, transcript_body_style(marker, raw_line)),
+    )
+}
+
+fn line_with_indent(is_first_visible: bool, mut spans: Vec<Span<'static>>) -> Line<'static> {
+    if !is_first_visible {
+        spans.insert(0, Span::raw("  "));
+    }
+    Line::from(spans)
+}
+
+fn markdown_heading(raw_line: &str) -> Option<(usize, &str)> {
+    let trimmed = raw_line.trim_start();
+    let level = trimmed.chars().take_while(|char| *char == '#').count();
+    if !(1..=6).contains(&level) {
+        return None;
+    }
+    let heading = trimmed[level..].trim_start();
+    (!heading.is_empty()).then_some((level, heading))
+}
+
+fn markdown_heading_style(level: usize) -> Style {
+    let style = Style::default().fg(HEADER).add_modifier(Modifier::BOLD);
+    if level <= 2 { style } else { style.fg(TEXT) }
+}
+
+fn is_markdown_rule(raw_line: &str) -> bool {
+    let trimmed = raw_line.trim();
+    trimmed.len() >= 3
+        && matches!(trimmed.chars().next(), Some('-' | '*' | '_'))
+        && trimmed.chars().all(|char| matches!(char, '-' | '*' | '_'))
+}
+
+fn markdown_quote(raw_line: &str) -> Option<&str> {
+    raw_line.trim_start().strip_prefix("> ").map(str::trim_end)
+}
+
+fn markdown_ordered_item(raw_line: &str) -> Option<(usize, &str)> {
+    let trimmed = raw_line.trim_start();
+    let (digits, rest) = trimmed.split_once(". ")?;
+    let ordinal = digits.parse::<usize>().ok()?;
+    Some((ordinal, rest))
+}
+
+fn markdown_inline_spans(text: &str, base_style: Style) -> Vec<Span<'static>> {
+    let mut spans = Vec::new();
+    let mut remaining = text;
+
+    while !remaining.is_empty() {
+        if let Some(rest) = remaining.strip_prefix('`')
+            && let Some(end) = rest.find('`')
+        {
+            let code = &rest[..end];
+            if !code.is_empty() {
+                spans.push(Span::styled(code.to_string(), Style::default().fg(USER)));
+            }
+            remaining = &rest[end + 1..];
+            continue;
+        }
+
+        if let Some(rest) = remaining.strip_prefix("**")
+            && let Some(end) = rest.find("**")
+        {
+            let value = &rest[..end];
+            if !value.is_empty() {
+                spans.push(Span::styled(
+                    value.to_string(),
+                    base_style.add_modifier(Modifier::BOLD),
+                ));
+            }
+            remaining = &rest[end + 2..];
+            continue;
+        }
+
+        if let Some(rest) = remaining.strip_prefix('*')
+            && let Some(end) = rest.find('*')
+        {
+            let value = &rest[..end];
+            if !value.is_empty() {
+                spans.push(Span::styled(
+                    value.to_string(),
+                    base_style.add_modifier(Modifier::ITALIC),
+                ));
+            }
+            remaining = &rest[end + 1..];
+            continue;
+        }
+
+        if let Some(rest) = remaining.strip_prefix('[')
+            && let Some(label_end) = rest.find("](")
+            && let Some(url_end) = rest[label_end + 2..].find(')')
+        {
+            let label = &rest[..label_end];
+            let url = &rest[label_end + 2..label_end + 2 + url_end];
+            if !label.is_empty() {
+                spans.push(Span::styled(
+                    label.to_string(),
+                    base_style.add_modifier(Modifier::UNDERLINED),
+                ));
+            }
+            if !url.is_empty() {
+                spans.push(Span::styled(
+                    format!(" ({url})"),
+                    Style::default().fg(SUBTLE),
+                ));
+            }
+            remaining = &rest[label_end + 2 + url_end + 1..];
+            continue;
+        }
+
+        let next_index = markdown_token_index(remaining).unwrap_or(remaining.len());
+        let (plain, rest) = remaining.split_at(next_index);
+        if !plain.is_empty() {
+            spans.push(Span::styled(plain.to_string(), base_style));
+        }
+        if rest.is_empty() {
+            break;
+        }
+        let mut chars = rest.chars();
+        let next = chars.next().expect("rest is not empty");
+        spans.push(Span::styled(next.to_string(), base_style));
+        remaining = chars.as_str();
+    }
+
+    if spans.is_empty() {
+        spans.push(Span::styled(text.to_string(), base_style));
+    }
+
+    spans
+}
+
+fn markdown_token_index(text: &str) -> Option<usize> {
+    ["`", "*", "["]
+        .into_iter()
+        .filter_map(|token| text.find(token))
+        .min()
 }
 
 fn parse_prefixed_entry(entry: &str) -> Option<(&'static str, Color, &str)> {
@@ -1105,7 +1307,7 @@ fn render_shell_summary_line(line: &str) -> Vec<Line<'static>> {
     if parse_prefixed_entry(line).is_some() {
         format_transcript_entry(line)
     } else {
-        vec![render_transcript_body_line(line, false)]
+        vec![render_transcript_body_line(line, "•", false, false)]
     }
 }
 
@@ -1163,7 +1365,6 @@ fn build_command_palette_text(lines: &[String]) -> Text<'static> {
 fn build_collection_text(title: &str, lines: &[String]) -> Text<'static> {
     let accent = inspector_accent(title);
     let mut rendered = Vec::new();
-    let mut saw_entry = false;
     for line in lines {
         if let Some(section) = line.strip_prefix("## ") {
             if !rendered.is_empty() {
@@ -1173,7 +1374,6 @@ fn build_collection_text(title: &str, lines: &[String]) -> Text<'static> {
                 section.to_string(),
                 Style::default().fg(HEADER).add_modifier(Modifier::BOLD),
             )));
-            saw_entry = false;
             continue;
         }
         if line.starts_with("No ") || line.starts_with("no ") {
@@ -1181,22 +1381,16 @@ fn build_collection_text(title: &str, lines: &[String]) -> Text<'static> {
                 line.to_string(),
                 Style::default().fg(SUBTLE),
             )));
-            saw_entry = true;
             continue;
         }
         if is_shell_summary_block(line) {
-            if saw_entry {
-                rendered.push(Line::raw(""));
-            }
             for raw_line in line.lines() {
                 rendered.extend(render_shell_summary_line(raw_line));
             }
-            saw_entry = true;
             continue;
         }
         let (primary, secondary) = split_list_entry(line);
         rendered.push(collection_line(primary, secondary, accent));
-        saw_entry = true;
     }
     Text::from(rendered)
 }
@@ -1556,6 +1750,23 @@ mod tests {
     }
 
     #[test]
+    fn collection_text_keeps_history_rows_compact() {
+        let rendered = build_collection_text(
+            "Sessions",
+            &[
+                "• sess_123  no prompt yet\n  └ 12 messages · 40 events".to_string(),
+                "• sess_456  resume prompt\n  └ 4 messages · 9 events".to_string(),
+            ],
+        );
+
+        assert_eq!(rendered.lines[2].spans[0].content.as_ref(), "•");
+        assert_eq!(
+            rendered.lines[2].spans[2].content.as_ref(),
+            "sess_456  resume prompt"
+        );
+    }
+
+    #[test]
     fn command_palette_text_matches_picker_style() {
         let rendered = build_command_palette_text(&[
             "## Session".to_string(),
@@ -1621,6 +1832,76 @@ mod tests {
             })
             .count();
         assert_eq!(running_count, 1);
+    }
+
+    #[test]
+    fn transcript_renders_markdown_blocks_without_fence_noise() {
+        let mut state = TuiState {
+            main_pane: MainPaneMode::Transcript,
+            ..TuiState::default()
+        };
+        state.transcript = vec![
+            concat!(
+                "• # Plan\n",
+                "- inspect output\n",
+                "1. rerun tests\n",
+                "> keep the diff readable\n",
+                "Use `rg` for search\n",
+                "```diff\n",
+                "+ added line\n",
+                "- removed line\n",
+                "@@ hunk\n",
+                "```"
+            )
+            .to_string(),
+        ];
+
+        let rendered = build_transcript_lines(&state);
+        let line_text = |index: usize| {
+            rendered[index]
+                .spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>()
+        };
+
+        assert_eq!(rendered[0].spans[0].content.as_ref(), "•");
+        assert_eq!(rendered[0].spans[2].content.as_ref(), "Plan");
+        assert!(rendered.iter().all(|line| {
+            line.spans
+                .iter()
+                .all(|span| !span.content.as_ref().contains("```"))
+        }));
+        assert!(line_text(1).contains("- inspect output"));
+        assert!(line_text(2).contains("1. rerun tests"));
+        assert!(line_text(3).contains("│ keep the diff readable"));
+        assert!(
+            rendered
+                .iter()
+                .any(|line| { line.spans.iter().any(|span| span.content.as_ref() == "rg") })
+        );
+        assert!(
+            rendered
+                .iter()
+                .any(|line| line_text_for(line).contains("+ added line"))
+        );
+        assert!(
+            rendered
+                .iter()
+                .any(|line| line_text_for(line).contains("- removed line"))
+        );
+        assert!(
+            rendered
+                .iter()
+                .any(|line| line_text_for(line).contains("@@ hunk"))
+        );
+    }
+
+    fn line_text_for(line: &ratatui::text::Line<'_>) -> String {
+        line.spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>()
     }
 
     #[test]
