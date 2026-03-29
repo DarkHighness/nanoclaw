@@ -43,6 +43,13 @@ pub(crate) enum MainPaneMode {
     View,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct TodoEntry {
+    pub(crate) id: String,
+    pub(crate) content: String,
+    pub(crate) status: String,
+}
+
 #[derive(Clone, Debug, Default)]
 pub(crate) struct TuiState {
     pub(crate) session: SessionSummary,
@@ -59,6 +66,8 @@ pub(crate) struct TuiState {
     pub(crate) turn_running: bool,
     pub(crate) turn_started_at: Option<Instant>,
     pub(crate) active_tool_label: Option<String>,
+    pub(crate) active_tool_preview: Vec<String>,
+    pub(crate) todo_items: Vec<TodoEntry>,
 }
 
 impl TuiState {

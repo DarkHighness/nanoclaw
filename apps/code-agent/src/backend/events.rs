@@ -214,6 +214,36 @@ fn tool_arguments_preview(call: &agent::types::ToolCall) -> Vec<String> {
         return truncate_preview(&format!("$ {}", command.trim()), 4, 96);
     }
 
+    if call.tool_name.as_str() == "todo_read" {
+        let include_completed = call
+            .arguments
+            .get("include_completed")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        return vec![format!(
+            "read todos{}",
+            if include_completed {
+                " (including completed)"
+            } else {
+                ""
+            }
+        )];
+    }
+
+    if call.tool_name.as_str() == "todo_write" {
+        let command = call
+            .arguments
+            .get("command")
+            .and_then(Value::as_str)
+            .unwrap_or("replace");
+        let item_count = call
+            .arguments
+            .get("items")
+            .and_then(Value::as_array)
+            .map_or(0, Vec::len);
+        return vec![format!("{command} {item_count} todo item(s)")];
+    }
+
     for key in ["path", "uri", "query", "prompt", "message"] {
         if let Some(value) = call.arguments.get(key).and_then(Value::as_str)
             && !value.trim().is_empty()

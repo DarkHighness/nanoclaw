@@ -774,6 +774,33 @@ fn tool_argument_preview_lines(tool_name: &str, arguments: &Value) -> Vec<String
         return collapse_middle_lines(&format!("$ {}", command.trim()), 4, 96);
     }
 
+    if tool_name == "todo_read" {
+        let include_completed = arguments
+            .get("include_completed")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        return vec![format!(
+            "read todos{}",
+            if include_completed {
+                " (including completed)"
+            } else {
+                ""
+            }
+        )];
+    }
+
+    if tool_name == "todo_write" {
+        let command = arguments
+            .get("command")
+            .and_then(Value::as_str)
+            .unwrap_or("replace");
+        let item_count = arguments
+            .get("items")
+            .and_then(Value::as_array)
+            .map_or(0, Vec::len);
+        return vec![format!("{command} {item_count} todo item(s)")];
+    }
+
     for key in ["path", "uri", "query", "prompt", "message"] {
         if let Some(value) = arguments.get(key).and_then(Value::as_str)
             && !value.trim().is_empty()

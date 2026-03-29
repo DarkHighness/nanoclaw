@@ -1,4 +1,4 @@
-use super::state::{SharedUiState, preview_text};
+use super::state::{SharedUiState, TodoEntry, preview_text};
 use crate::backend::SessionEvent;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -43,6 +43,7 @@ impl SharedRenderObserver {
                 self.active_assistant_line = None;
                 self.active_tool_lines.clear();
                 state.active_tool_label = None;
+                state.active_tool_preview.clear();
                 state.push_transcript(format!("› {prompt}"));
                 state.status = "Working".to_string();
                 state.push_activity(format!("user prompt: {}", preview_text(&prompt, 40)));
@@ -109,11 +110,13 @@ impl SharedRenderObserver {
             SessionEvent::ToolCallRequested { call } => {
                 state.status = "Working".to_string();
                 state.active_tool_label = Some(call.tool_name.clone());
+                state.active_tool_preview = call.arguments_preview.clone();
                 state.push_activity(format!("requested {}", call.tool_name));
             }
             SessionEvent::ToolApprovalRequested { call, reasons } => {
                 state.status = "Waiting for approval".to_string();
                 state.active_tool_label = Some(call.tool_name.clone());
+                state.active_tool_preview = call.arguments_preview.clone();
                 state.push_activity(format!(
                     "approval needed for {} ({})",
                     call.tool_name,
@@ -128,11 +131,13 @@ impl SharedRenderObserver {
                 state.active_tool_label = None;
                 if approved {
                     state.status = format!("Approved {}", call.tool_name);
+                    state.active_tool_preview = call.arguments_preview.clone();
                     state.push_transcript(approved_tool_entry(&call));
                     state.push_activity(format!("approved {}", call.tool_name));
                 } else {
                     let reason = reason.unwrap_or_else(|| "permission denied".to_string());
                     state.status = format!("Denied {}: {}", call.tool_name, reason);
+                    state.active_tool_preview.clear();
                     state.push_transcript(denied_tool_entry(&call, &reason));
                     state.push_activity(format!(
                         "denied {}: {}",
@@ -144,6 +149,7 @@ impl SharedRenderObserver {
             SessionEvent::ToolLifecycleStarted { call } => {
                 state.status = "Working".to_string();
                 state.active_tool_label = Some(call.tool_name.clone());
+                state.active_tool_preview = call.arguments_preview.clone();
                 state.push_transcript(running_tool_entry(&call));
                 self.active_tool_lines
                     .insert(call.call_id.clone(), state.transcript.len() - 1);
@@ -156,6 +162,12 @@ impl SharedRenderObserver {
             } => {
                 state.status = format!("Completed {}", call.tool_name);
                 state.active_tool_label = None;
+                state.active_tool_preview.clear();
+                if let Some(todo_items) =
+                    todo_items_from_output(&call.tool_name, structured_output_preview.as_deref())
+                {
+                    state.todo_items = todo_items;
+                }
                 replace_tool_line(
                     state,
                     self.active_tool_lines.remove(&call.call_id),
@@ -186,6 +198,7 @@ impl SharedRenderObserver {
             SessionEvent::ToolLifecycleFailed { call, error } => {
                 state.status = format!("{} failed", call.tool_name);
                 state.active_tool_label = None;
+                state.active_tool_preview.clear();
                 replace_tool_line(
                     state,
                     self.active_tool_lines.remove(&call.call_id),
@@ -200,6 +213,7 @@ impl SharedRenderObserver {
             SessionEvent::ToolLifecycleCancelled { call, reason } => {
                 state.status = format!("{} cancelled", call.tool_name);
                 state.active_tool_label = None;
+                state.active_tool_preview.clear();
                 replace_tool_line(
                     state,
                     self.active_tool_lines.remove(&call.call_id),
@@ -218,6 +232,7 @@ impl SharedRenderObserver {
                 self.active_assistant_line = None;
                 self.active_tool_lines.clear();
                 state.active_tool_label = None;
+                state.active_tool_preview.clear();
                 state.status = "Ready".to_string();
                 state.push_activity("turn complete");
             }
@@ -437,6 +452,29 @@ fn collapse_middle_lines(value: &str, max_lines: usize, max_columns: usize) -> V
     lines
 }
 
+fn todo_items_from_output(
+    tool_name: &str,
+    structured_output_preview: Option<&str>,
+) -> Option<Vec<TodoEntry>> {
+    if !matches!(tool_name, "todo_read" | "todo_write") {
+        return None;
+    }
+    let value = serde_json::from_str::<Value>(structured_output_preview?).ok()?;
+    let items = value.get("items")?.as_array()?;
+    Some(
+        items
+            .iter()
+            .filter_map(|item| {
+                Some(TodoEntry {
+                    id: item.get("id")?.as_str()?.to_string(),
+                    content: item.get("content")?.as_str()?.to_string(),
+                    status: item.get("status")?.as_str()?.to_string(),
+                })
+            })
+            .collect(),
+    )
+}
+
 fn replace_tool_line(
     state: &mut super::state::TuiState,
     index: Option<usize>,
@@ -527,5 +565,37 @@ mod tests {
                 .any(|line| line
                     == "• Called bash\n  └ $ ls\n  └ exit 0\n```text\nlisted files\n```")
         );
+    }
+
+    #[test]
+    fn todo_tool_results_update_side_rail_snapshot() {
+        let ui_state = SharedUiState::new();
+        let call = SessionToolCall {
+            tool_name: "todo_write".to_string(),
+            call_id: "call_123".to_string(),
+            origin: "local".to_string(),
+            arguments_preview: vec!["replace todos".to_string()],
+        };
+        let mut observer = SharedRenderObserver::new(ui_state.clone());
+
+        observer.apply_event(SessionEvent::ToolLifecycleCompleted {
+            call,
+            output_preview: "updated todos".to_string(),
+            structured_output_preview: Some(
+                json!({
+                    "kind": "success",
+                    "items": [
+                        {"id": "t1", "content": "Inspect repo", "status": "completed"},
+                        {"id": "t2", "content": "Refine TUI", "status": "in_progress"}
+                    ]
+                })
+                .to_string(),
+            ),
+        });
+
+        let snapshot = ui_state.snapshot();
+        assert_eq!(snapshot.todo_items.len(), 2);
+        assert_eq!(snapshot.todo_items[1].content, "Refine TUI");
+        assert_eq!(snapshot.todo_items[1].status, "in_progress");
     }
 }

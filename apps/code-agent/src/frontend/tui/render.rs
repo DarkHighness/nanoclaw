@@ -1,5 +1,5 @@
 use super::approval::ApprovalPrompt;
-use super::state::{MainPaneMode, TuiState, preview_text};
+use super::state::{MainPaneMode, TodoEntry, TuiState, preview_text};
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Margin, Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
@@ -37,7 +37,19 @@ pub(crate) fn render(
         ])
         .split(area);
 
-    render_main_pane(frame, vertical[0], state);
+    if should_render_side_rail(state, vertical[0]) {
+        let horizontal = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Min(10),
+                Constraint::Length(side_rail_width(vertical[0].width)),
+            ])
+            .split(vertical[0]);
+        render_main_pane(frame, horizontal[0], state);
+        render_side_rail(frame, horizontal[1], state);
+    } else {
+        render_main_pane(frame, vertical[0], state);
+    }
     render_composer(frame, vertical[1], state);
     render_status_line(frame, vertical[2], state);
 
@@ -108,6 +120,21 @@ fn render_main_view(frame: &mut ratatui::Frame<'_>, area: Rect, state: &TuiState
     frame.render_widget(view, inner);
 }
 
+fn render_side_rail(frame: &mut ratatui::Frame<'_>, area: Rect, state: &TuiState) {
+    frame.render_widget(
+        Block::default().style(Style::default().bg(FOOTER_ALT_BG)),
+        area,
+    );
+    let inner = area.inner(Margin {
+        vertical: 0,
+        horizontal: 1,
+    });
+    let rail = Paragraph::new(Text::from(build_side_rail_lines(state)))
+        .wrap(Wrap { trim: false })
+        .style(Style::default().fg(TEXT).bg(FOOTER_ALT_BG));
+    frame.render_widget(rail, inner);
+}
+
 fn render_status_line(frame: &mut ratatui::Frame<'_>, area: Rect, state: &TuiState) {
     frame.render_widget(Block::default().style(Style::default().bg(FOOTER_BG)), area);
     let inner = area.inner(Margin {
@@ -129,21 +156,9 @@ fn render_composer(frame: &mut ratatui::Frame<'_>, area: Rect, state: &TuiState)
         vertical: 0,
         horizontal: 1,
     });
-    let input_line = if state.input.is_empty() {
-        Line::from(vec![
-            Span::styled("›", Style::default().fg(USER).add_modifier(Modifier::BOLD)),
-            Span::raw(" "),
-            Span::styled("Ask Code Agent to do anything", Style::default().fg(SUBTLE)),
-        ])
-    } else {
-        Line::from(vec![
-            Span::styled("›", Style::default().fg(USER).add_modifier(Modifier::BOLD)),
-            Span::raw(" "),
-            Span::styled(state.input.clone(), Style::default().fg(TEXT)),
-        ])
-    };
     frame.render_widget(
-        Paragraph::new(input_line).style(Style::default().fg(TEXT).bg(FOOTER_ALT_BG)),
+        Paragraph::new(build_composer_line(state))
+            .style(Style::default().fg(TEXT).bg(FOOTER_ALT_BG)),
         inner,
     );
 }
@@ -283,7 +298,7 @@ fn build_transcript_lines(state: &TuiState) -> Vec<Line<'static>> {
         if !lines.is_empty() {
             lines.push(Line::raw(""));
         }
-        lines.push(live_progress_line(state));
+        lines.extend(live_progress_lines(state));
     }
 
     lines
@@ -402,14 +417,14 @@ fn transcript_body_style(marker: &str, line: &str) -> Style {
     }
 }
 
-fn live_progress_line(state: &TuiState) -> Line<'static> {
+fn live_progress_lines(state: &TuiState) -> Vec<Line<'static>> {
     if state.turn_running {
         let elapsed_secs = state
             .turn_started_at
             .map(|started| started.elapsed().as_secs())
             .unwrap_or(0);
         let status = live_progress_summary(state);
-        Line::from(vec![
+        let mut lines = vec![Line::from(vec![
             Span::styled(
                 progress_marker(state),
                 Style::default()
@@ -425,16 +440,30 @@ fn live_progress_line(state: &TuiState) -> Line<'static> {
                 format!(" ({}s • esc to interrupt)", elapsed_secs),
                 Style::default().fg(MUTED),
             ),
-        ])
+        ])];
+        lines.extend(
+            state
+                .active_tool_preview
+                .iter()
+                .enumerate()
+                .map(|(index, preview)| {
+                    let prefix = if index == 0 { "  └ " } else { "    " };
+                    Line::from(vec![
+                        Span::styled(prefix, Style::default().fg(SUBTLE)),
+                        Span::styled(preview.clone(), Style::default().fg(MUTED)),
+                    ])
+                }),
+        );
+        lines
     } else {
-        Line::from(vec![
+        vec![Line::from(vec![
             Span::styled("+", Style::default().fg(WARN).add_modifier(Modifier::BOLD)),
             Span::raw(" "),
             Span::styled(
                 format!("{} queued command(s)", state.session.queued_commands),
                 Style::default().fg(MUTED),
             ),
-        ])
+        ])]
     }
 }
 
@@ -444,8 +473,158 @@ fn live_progress_summary(state: &TuiState) -> String {
             format!("Waiting for approval to run {tool_name}")
         }
         ("Waiting for approval", None) => "Waiting for approval".to_string(),
+        (_, Some(tool_name)) => format!("Running {tool_name}"),
         _ => "Working".to_string(),
     }
+}
+
+fn build_composer_line(state: &TuiState) -> Line<'static> {
+    let mut spans = vec![
+        Span::styled("›", Style::default().fg(USER).add_modifier(Modifier::BOLD)),
+        Span::raw(" "),
+    ];
+    if state.input.is_empty() {
+        spans.push(Span::styled(
+            "Type a prompt or /help",
+            Style::default().fg(SUBTLE),
+        ));
+        return Line::from(spans);
+    }
+
+    if state.input.starts_with('/') {
+        let (command, tail) = state
+            .input
+            .split_once(' ')
+            .map_or((state.input.as_str(), None), |(command, tail)| {
+                (command, Some(tail))
+            });
+        spans.push(Span::styled(
+            command.to_string(),
+            Style::default().fg(USER).add_modifier(Modifier::BOLD),
+        ));
+        if let Some(tail) = tail {
+            spans.push(Span::raw(" "));
+            spans.push(Span::styled(tail.to_string(), Style::default().fg(TEXT)));
+        }
+    } else {
+        spans.push(Span::styled(state.input.clone(), Style::default().fg(TEXT)));
+    }
+
+    Line::from(spans)
+}
+
+fn should_render_side_rail(state: &TuiState, area: Rect) -> bool {
+    area.width >= 110 && (lsp_side_rail_available(state) || !state.todo_items.is_empty())
+}
+
+fn side_rail_width(total_width: u16) -> u16 {
+    total_width.saturating_mul(26) / 100
+}
+
+fn lsp_side_rail_available(state: &TuiState) -> bool {
+    state.session.tool_names.iter().any(|tool| {
+        matches!(
+            tool.as_str(),
+            "code_symbol_search" | "code_document_symbols" | "code_definitions" | "code_references"
+        )
+    })
+}
+
+fn build_side_rail_lines(state: &TuiState) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+
+    if lsp_side_rail_available(state) {
+        lines.push(section_title_line("LSP"));
+        let degraded = state
+            .session
+            .startup_diagnostics
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("managed code-intel"));
+        lines.push(Line::from(Span::styled(
+            if degraded { "degraded" } else { "ready" },
+            if degraded {
+                Style::default().fg(WARN).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(ASSISTANT).add_modifier(Modifier::BOLD)
+            },
+        )));
+        if !state.session.startup_diagnostics.warnings.is_empty() {
+            lines.extend(
+                state
+                    .session
+                    .startup_diagnostics
+                    .warnings
+                    .iter()
+                    .take(2)
+                    .map(|warning| bullet_line(&preview_text(warning, 64), WARN)),
+            );
+        } else if !state.session.startup_diagnostics.diagnostics.is_empty() {
+            lines.extend(
+                state
+                    .session
+                    .startup_diagnostics
+                    .diagnostics
+                    .iter()
+                    .take(3)
+                    .map(|diagnostic| bullet_line(&preview_text(diagnostic, 64), USER)),
+            );
+        } else {
+            lines.push(Line::from(Span::styled(
+                "No diagnostics yet.",
+                Style::default().fg(SUBTLE),
+            )));
+        }
+        lines.push(Line::raw(""));
+    }
+
+    if !state.todo_items.is_empty() {
+        lines.push(section_title_line("TODO"));
+        lines.extend(state.todo_items.iter().take(8).map(render_todo_line));
+    }
+
+    if lines.is_empty() {
+        lines.push(section_title_line("Context"));
+        lines.push(Line::from(Span::styled(
+            "No live side context.",
+            Style::default().fg(SUBTLE),
+        )));
+    }
+
+    lines
+}
+
+fn section_title_line(title: &str) -> Line<'static> {
+    Line::from(Span::styled(
+        title.to_string(),
+        Style::default().fg(HEADER).add_modifier(Modifier::BOLD),
+    ))
+}
+
+fn bullet_line(body: &str, color: Color) -> Line<'static> {
+    Line::from(vec![
+        Span::styled("•", Style::default().fg(color).add_modifier(Modifier::BOLD)),
+        Span::raw(" "),
+        Span::styled(body.to_string(), Style::default().fg(MUTED)),
+    ])
+}
+
+fn render_todo_line(item: &TodoEntry) -> Line<'static> {
+    let (marker, color) = match item.status.as_str() {
+        "completed" => ("x", ASSISTANT),
+        "in_progress" => ("~", WARN),
+        _ => (" ", MUTED),
+    };
+    Line::from(vec![
+        Span::styled("[", Style::default().fg(SUBTLE)),
+        Span::styled(
+            marker,
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled("]", Style::default().fg(SUBTLE)),
+        Span::raw(" "),
+        Span::styled(preview_text(&item.content, 44), Style::default().fg(TEXT)),
+    ])
 }
 
 fn code_span(line: &str) -> Span<'static> {
@@ -793,8 +972,10 @@ fn clamp_scroll(requested: u16, content_lines: usize, viewport_height: u16) -> u
 
 #[cfg(test)]
 mod tests {
-    use super::{build_collection_text, build_key_value_text, build_transcript_lines};
-    use crate::frontend::tui::state::{MainPaneMode, TuiState};
+    use super::{
+        build_collection_text, build_key_value_text, build_side_rail_lines, build_transcript_lines,
+    };
+    use crate::frontend::tui::state::{MainPaneMode, TodoEntry, TuiState};
 
     #[test]
     fn key_value_text_renders_section_headers_without_treating_them_as_pairs() {
@@ -919,5 +1100,60 @@ mod tests {
             rendered.lines[1].spans[4].content.as_ref(),
             "msgs=12 ev=40  no prompt yet"
         );
+    }
+
+    #[test]
+    fn transcript_renders_live_progress_preview_lines() {
+        let state = TuiState {
+            main_pane: MainPaneMode::Transcript,
+            turn_running: true,
+            status: "Working".to_string(),
+            active_tool_label: Some("bash".to_string()),
+            active_tool_preview: vec![
+                "$ cargo test".to_string(),
+                "...".to_string(),
+                "test result: ok".to_string(),
+            ],
+            ..TuiState::default()
+        };
+
+        let rendered = build_transcript_lines(&state);
+
+        assert!(rendered.iter().any(|line| {
+            line.spans
+                .iter()
+                .any(|span| span.content.as_ref().contains("Running bash"))
+        }));
+        assert!(rendered.iter().any(|line| {
+            line.spans
+                .iter()
+                .any(|span| span.content.as_ref().contains("$ cargo test"))
+        }));
+    }
+
+    #[test]
+    fn side_rail_surfaces_todos_and_lsp_summary() {
+        let mut state = TuiState::default();
+        state.session.tool_names = vec!["code_symbol_search".to_string()];
+        state.session.startup_diagnostics.diagnostics = vec!["rust-analyzer attached".to_string()];
+        state.todo_items = vec![TodoEntry {
+            id: "t1".to_string(),
+            content: "Refine transcript".to_string(),
+            status: "in_progress".to_string(),
+        }];
+
+        let lines = build_side_rail_lines(&state);
+
+        assert_eq!(lines[0].spans[0].content.as_ref(), "LSP");
+        assert!(lines.iter().any(|line| {
+            line.spans
+                .iter()
+                .any(|span| span.content.as_ref().contains("rust-analyzer attached"))
+        }));
+        assert!(lines.iter().any(|line| {
+            line.spans
+                .iter()
+                .any(|span| span.content.as_ref().contains("Refine transcript"))
+        }));
     }
 }
