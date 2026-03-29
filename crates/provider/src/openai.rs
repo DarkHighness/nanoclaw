@@ -635,7 +635,10 @@ mod tests {
         let mut request = base_request();
         request.messages = vec![
             Message::user("inspect the repo"),
-            Message::assistant_parts(vec![MessagePart::ToolCall { call }]),
+            Message::assistant_parts(vec![
+                MessagePart::text("working"),
+                MessagePart::ToolCall { call },
+            ]),
             Message::tool_result(result),
         ];
 
@@ -643,17 +646,22 @@ mod tests {
             build_openai_responses_body("gpt-5.4".to_string(), request, &RequestOptions::default())
                 .unwrap();
 
-        assert_eq!(body["input"][1]["type"], json!("function_call"));
-        assert_eq!(body["input"][1]["id"], json!("fc_123"));
-        assert_eq!(body["input"][1]["call_id"], json!("call_123"));
-        let replay_arguments = body["input"][1]["arguments"]
+        assert_eq!(body["input"][1]["type"], json!("message"));
+        assert_eq!(body["input"][1]["role"], json!("assistant"));
+        assert!(body["input"][1].get("status").is_none());
+        assert_eq!(body["input"][2]["type"], json!("function_call"));
+        assert_eq!(body["input"][2]["id"], json!("fc_123"));
+        assert_eq!(body["input"][2]["call_id"], json!("call_123"));
+        assert!(body["input"][2].get("status").is_none());
+        let replay_arguments = body["input"][2]["arguments"]
             .as_str()
             .expect("function_call replay arguments should be encoded as a string");
         let parsed_arguments: Value = serde_json::from_str(replay_arguments)
             .expect("replay arguments should stay valid JSON");
         assert_eq!(parsed_arguments, json!({"path":"README.md","line_count":1}));
-        assert_eq!(body["input"][2]["type"], json!("function_call_output"));
-        assert_eq!(body["input"][2]["call_id"], json!("call_123"));
+        assert_eq!(body["input"][3]["type"], json!("function_call_output"));
+        assert_eq!(body["input"][3]["call_id"], json!("call_123"));
+        assert!(body["input"][3].get("status").is_none());
     }
 
     #[test]

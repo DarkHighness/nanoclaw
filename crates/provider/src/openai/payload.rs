@@ -182,7 +182,6 @@ fn serialize_openai_input_items(messages: &[Message]) -> Result<Vec<Value>> {
                         "type": "message",
                         "role": "assistant",
                         "id": message.message_id,
-                        "status": "completed",
                         "content": content,
                     }));
                 }
@@ -316,7 +315,6 @@ fn openai_input_item_from_part(part: &MessagePart, role: MessageRole) -> Option<
             // local tool execution, then re-encode them here so transcript
             // replay and continuation fallback preserve the provider's item shape.
             "arguments": stringify_json(&call.arguments),
-            "status": "completed",
         })),
         MessagePart::ToolResult { result } => Some(json!({
             "type": "function_call_output",
@@ -324,7 +322,6 @@ fn openai_input_item_from_part(part: &MessagePart, role: MessageRole) -> Option<
             // Responses currently treat tool output as text, so rich local tool
             // results travel through the versioned round-trip envelope.
             "output": tool_result_roundtrip_text(result),
-            "status": "completed",
         })),
         MessagePart::Reasoning { reasoning } if matches!(role, MessageRole::Assistant) => {
             let Some(id) = reasoning.id.clone() else {
