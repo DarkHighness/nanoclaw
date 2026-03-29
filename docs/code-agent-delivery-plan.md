@@ -401,6 +401,9 @@ Current note:
 - fresh-session reset and historical reattach now share a typed backend
   session-operation surface, but richer operator flows still need to move onto
   that same contract family.
+- the transcript renderer now consumes a syntax-aware Markdown pipeline, and
+  file mutation tools now emit structured diff previews so live and replay
+  shells can show concrete edits instead of only completion summaries.
 
 ### Phase E: Delivery Cleanup
 

@@ -222,6 +222,12 @@ turns use `›`, assistant and runtime summaries use `•`, approvals resolve in
 conversation instead of being duplicated into visible `tool>` / `approval>` /
 `model>` tags.
 
+Markdown-heavy assistant output now renders through a syntax-aware pipeline
+instead of the older ad hoc formatter. Fenced code blocks, `diff` snippets, and
+common Markdown structure all render directly in the transcript, and file
+mutation tools such as `write`, `edit`, and `patch` now surface structured diff
+previews instead of only terse completion summaries.
+
 Approval prompts now render as compact bottom-pane questions with inline
 command previews instead of large modal panels.
 

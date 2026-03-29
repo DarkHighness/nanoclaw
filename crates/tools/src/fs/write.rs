@@ -2,7 +2,7 @@ use crate::annotations::mcp_tool_annotations;
 use crate::file_activity::FileActivityObserver;
 use crate::fs::{
     WriteExistingBehavior, WriteMissingBehavior, WriteRequest, apply_write, commit_text_file,
-    load_optional_text_file, resolve_tool_path_against_workspace_root,
+    compute_diff_preview, load_optional_text_file, resolve_tool_path_against_workspace_root,
 };
 use crate::registry::Tool;
 use crate::{Result, ToolExecutionContext};
@@ -55,6 +55,7 @@ enum WriteToolOutput {
         summary: String,
         snapshot_before: Option<String>,
         snapshot_after: Option<String>,
+        file_diffs: Vec<Value>,
         write: Value,
     },
     Error {
@@ -129,6 +130,13 @@ impl Tool for WriteTool {
         }
 
         commit_text_file(&resolved, outcome.next_content.as_deref()).await?;
+        let file_diffs = compute_diff_preview(
+            &input.path,
+            existing.as_deref(),
+            outcome.next_content.as_deref(),
+        )
+        .into_iter()
+        .collect::<Vec<_>>();
         if let Some(observer) = &self.activity_observer {
             observer.did_change(resolved.clone());
             observer.did_save(resolved.clone());
@@ -139,18 +147,24 @@ impl Tool for WriteTool {
             summary: outcome.summary.clone(),
             snapshot_before: outcome.snapshot_before.clone(),
             snapshot_after: outcome.snapshot_after.clone(),
+            file_diffs: file_diffs.clone(),
             write: outcome.metadata.clone(),
         };
+        let mut text = format!(
+            "{}\n[snapshot {} -> {}]",
+            outcome.summary,
+            outcome.snapshot_before.as_deref().unwrap_or("missing"),
+            outcome.snapshot_after.as_deref().unwrap_or("missing"),
+        );
+        if let Some(previews) = diff_preview_section(&file_diffs) {
+            text.push_str("\n\n[diff_preview]\n");
+            text.push_str(&previews);
+        }
         Ok(ToolResult {
             id: call_id,
             call_id: external_call_id,
             tool_name: "write".into(),
-            parts: vec![MessagePart::text(format!(
-                "{}\n[snapshot {} -> {}]",
-                outcome.summary,
-                outcome.snapshot_before.as_deref().unwrap_or("missing"),
-                outcome.snapshot_after.as_deref().unwrap_or("missing"),
-            ))],
+            parts: vec![MessagePart::text(text)],
             structured_content: Some(
                 serde_json::to_value(structured_output).expect("write success output"),
             ),
@@ -158,11 +172,20 @@ impl Tool for WriteTool {
                 "path": resolved,
                 "snapshot_before": outcome.snapshot_before,
                 "snapshot_after": outcome.snapshot_after,
+                "file_diffs": file_diffs,
                 "write": outcome.metadata,
             })),
             is_error: false,
         })
     }
+}
+
+fn diff_preview_section(file_diffs: &[Value]) -> Option<String> {
+    let previews = file_diffs
+        .iter()
+        .filter_map(|entry| entry.get("preview").and_then(Value::as_str))
+        .collect::<Vec<_>>();
+    (!previews.is_empty()).then(|| previews.join("\n\n"))
 }
 
 #[cfg(test)]
@@ -206,9 +229,18 @@ mod tests {
                 .unwrap();
 
             assert!(!result.is_error);
+            let text_output = result.text_content();
             let structured = result.structured_content.unwrap();
             assert_eq!(structured["kind"], "success");
             assert_eq!(structured["write"]["created"], true);
+            assert_eq!(structured["file_diffs"].as_array().map_or(0, Vec::len), 1);
+            assert!(
+                structured["file_diffs"][0]["preview"]
+                    .as_str()
+                    .unwrap()
+                    .contains("+++ sample.txt")
+            );
+            assert!(text_output.contains("[diff_preview]"));
             assert_eq!(
                 tokio::fs::read_to_string(dir.path().join("sample.txt"))
                     .await

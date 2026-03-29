@@ -3,7 +3,7 @@ use crate::annotations::mcp_tool_annotations;
 use crate::file_activity::FileActivityObserver;
 use crate::fs::{
     TextEditOperation, WriteExistingBehavior, WriteMissingBehavior, WriteRequest, apply_delete,
-    apply_text_edits, apply_write, commit_text_file, load_optional_text_file,
+    apply_text_edits, apply_write, commit_text_file, compute_diff_preview, load_optional_text_file,
     resolve_tool_path_against_workspace_root,
 };
 use crate::registry::Tool;
@@ -16,8 +16,6 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use types::{MessagePart, ToolCallId, ToolOrigin, ToolOutputMode, ToolResult, ToolSpec};
-
-const DIFF_PREVIEW_LINE_LIMIT: usize = 12;
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(tag = "command", rename_all = "snake_case")]
@@ -660,65 +658,6 @@ fn compact_operation(operation: &PatchOperation) -> Value {
             "has_expected_snapshot": expected_snapshot.is_some(),
         }),
     }
-}
-
-fn compute_diff_preview(path: &str, before: Option<&str>, after: Option<&str>) -> Option<Value> {
-    if before == after {
-        return None;
-    }
-    let before_lines: Vec<&str> = before.unwrap_or("").lines().collect();
-    let after_lines: Vec<&str> = after.unwrap_or("").lines().collect();
-
-    let mut prefix = 0usize;
-    while prefix < before_lines.len()
-        && prefix < after_lines.len()
-        && before_lines[prefix] == after_lines[prefix]
-    {
-        prefix += 1;
-    }
-
-    let mut suffix = 0usize;
-    while suffix < before_lines.len().saturating_sub(prefix)
-        && suffix < after_lines.len().saturating_sub(prefix)
-        && before_lines[before_lines.len() - 1 - suffix]
-            == after_lines[after_lines.len() - 1 - suffix]
-    {
-        suffix += 1;
-    }
-
-    let before_end = before_lines.len().saturating_sub(suffix);
-    let after_end = after_lines.len().saturating_sub(suffix);
-    let removed = &before_lines[prefix..before_end];
-    let added = &after_lines[prefix..after_end];
-    if removed.is_empty() && added.is_empty() {
-        return None;
-    }
-
-    let old_start = if removed.is_empty() { 0 } else { prefix + 1 };
-    let new_start = if added.is_empty() { 0 } else { prefix + 1 };
-    let mut preview_lines = vec![format!(
-        "--- {path}\n+++ {path}\n@@ -{old_start},{} +{new_start},{} @@",
-        removed.len(),
-        added.len()
-    )];
-    for line in removed.iter().take(DIFF_PREVIEW_LINE_LIMIT) {
-        preview_lines.push(format!("-{line}"));
-    }
-    for line in added.iter().take(DIFF_PREVIEW_LINE_LIMIT) {
-        preview_lines.push(format!("+{line}"));
-    }
-    if removed.len() > DIFF_PREVIEW_LINE_LIMIT || added.len() > DIFF_PREVIEW_LINE_LIMIT {
-        preview_lines.push(format!(
-            "[diff preview truncated to {DIFF_PREVIEW_LINE_LIMIT} removed/added lines]"
-        ));
-    }
-
-    Some(json!({
-        "path": path,
-        "before_lines": before_lines.len(),
-        "after_lines": after_lines.len(),
-        "preview": preview_lines.join("\n"),
-    }))
 }
 
 #[cfg(test)]

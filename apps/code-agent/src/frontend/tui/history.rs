@@ -641,6 +641,17 @@ fn shell_summary_with_code_block(
     lines.join("\n")
 }
 
+fn shell_code_block(language: &str, code_block: &[String]) -> String {
+    if code_block.is_empty() {
+        return String::new();
+    }
+    let mut lines = Vec::with_capacity(code_block.len() + 2);
+    lines.push(format!("```{language}"));
+    lines.extend(code_block.iter().cloned());
+    lines.push("```".to_string());
+    lines.join("\n")
+}
+
 fn format_reason_detail(reason: Option<&str>) -> Option<String> {
     reason
         .map(str::trim)
@@ -909,6 +920,49 @@ fn bash_output_block(output: &agent::types::ToolResult) -> (Vec<String>, Vec<Str
     (details, output_lines)
 }
 
+fn file_mutation_output_block(
+    output: &agent::types::ToolResult,
+) -> (Vec<String>, Vec<Vec<String>>) {
+    let mut details = Vec::new();
+    let mut diff_blocks = Vec::new();
+
+    if let Some(structured) = output.structured_content.as_ref() {
+        if let Some(summary) = structured.get("summary").and_then(Value::as_str)
+            && !summary.trim().is_empty()
+        {
+            details.push(format!("summary {}", preview_text(summary, 72)));
+        } else {
+            let first_line = output.text_content();
+            let first_line = first_line.lines().next().unwrap_or_default().trim();
+            if !first_line.is_empty() {
+                details.push(format!("output {}", preview_text(first_line, 72)));
+            }
+        }
+
+        if let Some(before) = structured.get("snapshot_before").and_then(Value::as_str) {
+            let after = structured
+                .get("snapshot_after")
+                .and_then(Value::as_str)
+                .unwrap_or("missing");
+            details.push(format!(
+                "snapshot {} -> {}",
+                preview_text(before, 16),
+                preview_text(after, 16)
+            ));
+        }
+
+        if let Some(file_diffs) = structured.get("file_diffs").and_then(Value::as_array) {
+            for diff in file_diffs {
+                if let Some(preview) = diff.get("preview").and_then(Value::as_str) {
+                    diff_blocks.push(collapse_middle_lines(preview, 16, 120));
+                }
+            }
+        }
+    }
+
+    (details, diff_blocks)
+}
+
 fn format_session_event_line(event: &SessionEventEnvelope) -> String {
     match &event.event {
         SessionEventKind::SessionStart { reason } => shell_summary(
@@ -1054,6 +1108,19 @@ fn format_session_event_line(event: &SessionEventEnvelope) -> String {
                         .chain(extra_details),
                     &output_lines,
                 )
+            } else if matches!(call.tool_name.as_str(), "write" | "edit" | "patch") {
+                let (extra_details, diff_blocks) = file_mutation_output_block(output);
+                let mut rendered = shell_summary(
+                    format!("• Finished {}", call.tool_name),
+                    tool_argument_preview_lines(call.tool_name.as_str(), &call.arguments)
+                        .into_iter()
+                        .chain(extra_details),
+                );
+                for block in diff_blocks {
+                    rendered.push('\n');
+                    rendered.push_str(&shell_code_block("diff", &block));
+                }
+                rendered
             } else {
                 shell_summary(
                     format!("• Finished {}", call.tool_name),
@@ -1293,5 +1360,49 @@ mod tests {
             format_session_event_line(&event),
             "• Finished bash\n  └ $ cargo test\n```text\ntests passed\n```"
         );
+    }
+
+    #[test]
+    fn file_tool_completion_event_includes_diff_block() {
+        let call = ToolCall {
+            id: ToolCallId::from("tool-call-2"),
+            call_id: ToolCallId::from("tool-call-2").into(),
+            tool_name: "write".into(),
+            arguments: json!({"path": "src/lib.rs"}),
+            origin: ToolOrigin::Local,
+        };
+        let output = ToolResult {
+            id: ToolCallId::from("tool-call-2"),
+            call_id: ToolCallId::from("tool-call-2").into(),
+            tool_name: "write".into(),
+            parts: vec![agent::types::MessagePart::text(
+                "Wrote 18 bytes to src/lib.rs\n[diff_preview]\n--- src/lib.rs\n+++ src/lib.rs\n@@ -1,1 +1,1 @@\n-old()\n+new()",
+            )],
+            structured_content: Some(json!({
+                "kind": "success",
+                "summary": "Wrote 18 bytes to src/lib.rs",
+                "snapshot_before": "snap_old",
+                "snapshot_after": "snap_new",
+                "file_diffs": [{
+                    "path": "src/lib.rs",
+                    "preview": "--- src/lib.rs\n+++ src/lib.rs\n@@ -1,1 +1,1 @@\n-old()\n+new()"
+                }]
+            })),
+            metadata: None,
+            is_error: false,
+        };
+        let event = SessionEventEnvelope::new(
+            SessionId::from("session-1"),
+            AgentSessionId::from("agent-session-1"),
+            None,
+            None,
+            SessionEventKind::ToolCallCompleted { call, output },
+        );
+
+        let rendered = format_session_event_line(&event);
+        assert!(rendered.contains("• Finished write"));
+        assert!(rendered.contains("```diff"));
+        assert!(rendered.contains("@@ -1,1 +1,1 @@"));
+        assert!(rendered.contains("+new()"));
     }
 }

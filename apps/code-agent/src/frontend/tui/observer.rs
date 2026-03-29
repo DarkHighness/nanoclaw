@@ -321,8 +321,17 @@ fn tool_output_detail_lines(
     output_preview: &str,
     structured_output_preview: Option<&str>,
 ) -> Vec<String> {
+    let structured =
+        structured_output_preview.and_then(|raw| serde_json::from_str::<Value>(raw).ok());
+
     if tool_name == "bash" {
-        return bash_output_detail_lines(output_preview, structured_output_preview);
+        return bash_output_detail_lines(output_preview, structured.as_ref());
+    }
+
+    if let Some(detail_lines) =
+        file_mutation_output_detail_lines(tool_name, output_preview, structured.as_ref())
+    {
+        return detail_lines;
     }
 
     if output_preview.trim().is_empty() {
@@ -336,23 +345,16 @@ fn tool_output_detail_lines(
     vec![format!("  └ {}", preview_text(output_preview, 96))]
 }
 
-fn bash_output_detail_lines(
-    output_preview: &str,
-    structured_output_preview: Option<&str>,
-) -> Vec<String> {
+fn bash_output_detail_lines(output_preview: &str, structured: Option<&Value>) -> Vec<String> {
     let mut detail_lines = Vec::new();
-    let structured =
-        structured_output_preview.and_then(|raw| serde_json::from_str::<Value>(raw).ok());
 
     if let Some(exit_code) = structured
-        .as_ref()
         .and_then(|value| value.get("exit_code"))
         .and_then(Value::as_i64)
     {
         detail_lines.push(format!("  └ exit {exit_code}"));
     }
     if structured
-        .as_ref()
         .and_then(|value| value.get("timed_out"))
         .and_then(Value::as_bool)
         .unwrap_or(false)
@@ -361,12 +363,10 @@ fn bash_output_detail_lines(
     }
 
     let stdout = structured
-        .as_ref()
         .and_then(|value| value.pointer("/stdout/text"))
         .and_then(Value::as_str)
         .unwrap_or_default();
     let stderr = structured
-        .as_ref()
         .and_then(|value| value.pointer("/stderr/text"))
         .and_then(Value::as_str)
         .unwrap_or_default();
@@ -399,6 +399,67 @@ fn bash_output_detail_lines(
     detail_lines
 }
 
+fn file_mutation_output_detail_lines(
+    tool_name: &str,
+    output_preview: &str,
+    structured: Option<&Value>,
+) -> Option<Vec<String>> {
+    if !matches!(tool_name, "write" | "edit" | "patch") {
+        return None;
+    }
+
+    let mut detail_lines = Vec::new();
+    if let Some(summary) = structured
+        .and_then(|value| value.get("summary"))
+        .and_then(Value::as_str)
+        && !summary.trim().is_empty()
+    {
+        detail_lines.push(format!("  └ {}", preview_text(summary, 96)));
+    } else if !output_preview.trim().is_empty() {
+        let first_line = output_preview.lines().next().unwrap_or_default().trim();
+        if !first_line.is_empty() {
+            detail_lines.push(format!("  └ {}", preview_text(first_line, 96)));
+        }
+    }
+
+    if let Some(before) = structured
+        .and_then(|value| value.get("snapshot_before"))
+        .and_then(Value::as_str)
+    {
+        let after = structured
+            .and_then(|value| value.get("snapshot_after"))
+            .and_then(Value::as_str)
+            .unwrap_or("missing");
+        detail_lines.push(format!(
+            "  └ snapshot {} -> {}",
+            preview_text(before, 16),
+            preview_text(after, 16)
+        ));
+    }
+
+    let file_diffs = structured
+        .and_then(|value| value.get("file_diffs"))
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    for (index, diff) in file_diffs.iter().enumerate() {
+        if file_diffs.len() > 1
+            && let Some(path) = diff.get("path").and_then(Value::as_str)
+        {
+            detail_lines.push(format!("  └ diff {}", preview_text(path, 96)));
+        }
+        if let Some(preview) = diff.get("preview").and_then(Value::as_str) {
+            let max_lines = if index == 0 { 16 } else { 12 };
+            detail_lines.extend(fenced_block_lines(
+                "diff",
+                &collapse_middle_lines(preview, max_lines, 120),
+            ));
+        }
+    }
+
+    Some(detail_lines)
+}
+
 fn prefixed_detail_lines(lines: &[String]) -> Vec<String> {
     let mut rendered = Vec::new();
     for (index, line) in lines.iter().enumerate() {
@@ -415,11 +476,15 @@ fn prefixed_detail_lines(lines: &[String]) -> Vec<String> {
 }
 
 fn code_block_lines(lines: &[String]) -> Vec<String> {
+    fenced_block_lines("text", lines)
+}
+
+fn fenced_block_lines(language: &str, lines: &[String]) -> Vec<String> {
     if lines.is_empty() {
         return Vec::new();
     }
     let mut block = Vec::with_capacity(lines.len() + 2);
-    block.push("```text".to_string());
+    block.push(format!("```{language}"));
     block.extend(lines.iter().cloned());
     block.push("```".to_string());
     block
@@ -708,5 +773,46 @@ mod tests {
             snapshot.transcript[0],
             "• Finished bash\n  └ $ cargo test\n  └ exit 0\n```text\nok\n```"
         );
+    }
+
+    #[test]
+    fn file_tools_surface_diff_blocks_in_live_transcript() {
+        let ui_state = SharedUiState::new();
+        let call = SessionToolCall {
+            tool_name: "write".to_string(),
+            call_id: "call_456".to_string(),
+            origin: "local".to_string(),
+            arguments_preview: vec!["src/lib.rs".to_string()],
+        };
+        let mut observer = SharedRenderObserver::new(ui_state.clone());
+
+        observer.apply_event(SessionEvent::ToolLifecycleCompleted {
+            call,
+            output_preview: "Wrote 18 bytes to src/lib.rs".to_string(),
+            structured_output_preview: Some(
+                json!({
+                    "kind": "success",
+                    "requested_path": "src/lib.rs",
+                    "resolved_path": "/workspace/src/lib.rs",
+                    "summary": "Wrote 18 bytes to src/lib.rs",
+                    "snapshot_before": "snap_old",
+                    "snapshot_after": "snap_new",
+                    "file_diffs": [{
+                        "path": "src/lib.rs",
+                        "preview": "--- src/lib.rs\n+++ src/lib.rs\n@@ -1,1 +1,1 @@\n-old()\n+new()"
+                    }],
+                    "write": {
+                        "command": "write",
+                        "path": "src/lib.rs"
+                    }
+                })
+                .to_string(),
+            ),
+        });
+
+        let snapshot = ui_state.snapshot();
+        assert!(snapshot.transcript[0].contains("```diff"));
+        assert!(snapshot.transcript[0].contains("@@ -1,1 +1,1 @@"));
+        assert!(snapshot.transcript[0].contains("+new()"));
     }
 }

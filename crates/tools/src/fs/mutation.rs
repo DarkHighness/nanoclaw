@@ -6,6 +6,8 @@ use serde_json::{Value, json};
 use std::path::Path;
 use tokio::fs;
 
+pub const DIFF_PREVIEW_LINE_LIMIT: usize = 12;
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum WriteExistingBehavior {
@@ -150,6 +152,69 @@ pub fn apply_write(existing: Option<&str>, path: &str, request: &WriteRequest) -
             }
         }
     }
+}
+
+pub fn compute_diff_preview(
+    path: &str,
+    before: Option<&str>,
+    after: Option<&str>,
+) -> Option<Value> {
+    if before == after {
+        return None;
+    }
+    let before_lines: Vec<&str> = before.unwrap_or("").lines().collect();
+    let after_lines: Vec<&str> = after.unwrap_or("").lines().collect();
+
+    let mut prefix = 0usize;
+    while prefix < before_lines.len()
+        && prefix < after_lines.len()
+        && before_lines[prefix] == after_lines[prefix]
+    {
+        prefix += 1;
+    }
+
+    let mut suffix = 0usize;
+    while suffix < before_lines.len().saturating_sub(prefix)
+        && suffix < after_lines.len().saturating_sub(prefix)
+        && before_lines[before_lines.len() - 1 - suffix]
+            == after_lines[after_lines.len() - 1 - suffix]
+    {
+        suffix += 1;
+    }
+
+    let before_end = before_lines.len().saturating_sub(suffix);
+    let after_end = after_lines.len().saturating_sub(suffix);
+    let removed = &before_lines[prefix..before_end];
+    let added = &after_lines[prefix..after_end];
+    if removed.is_empty() && added.is_empty() {
+        return None;
+    }
+
+    let old_start = if removed.is_empty() { 0 } else { prefix + 1 };
+    let new_start = if added.is_empty() { 0 } else { prefix + 1 };
+    let mut preview_lines = vec![format!(
+        "--- {path}\n+++ {path}\n@@ -{old_start},{} +{new_start},{} @@",
+        removed.len(),
+        added.len()
+    )];
+    for line in removed.iter().take(DIFF_PREVIEW_LINE_LIMIT) {
+        preview_lines.push(format!("-{line}"));
+    }
+    for line in added.iter().take(DIFF_PREVIEW_LINE_LIMIT) {
+        preview_lines.push(format!("+{line}"));
+    }
+    if removed.len() > DIFF_PREVIEW_LINE_LIMIT || added.len() > DIFF_PREVIEW_LINE_LIMIT {
+        preview_lines.push(format!(
+            "[diff preview truncated to {DIFF_PREVIEW_LINE_LIMIT} removed/added lines]"
+        ));
+    }
+
+    Some(json!({
+        "path": path,
+        "before_lines": before_lines.len(),
+        "after_lines": after_lines.len(),
+        "preview": preview_lines.join("\n"),
+    }))
 }
 
 pub fn apply_text_edits(
