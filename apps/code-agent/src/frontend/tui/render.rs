@@ -280,7 +280,14 @@ fn approval_band_height(approval: &ApprovalPrompt) -> u16 {
 }
 
 fn build_command_hint_text(command_hint: &SlashCommandHint) -> Text<'static> {
-    let mut lines = Vec::new();
+    let mut lines = vec![Line::from(vec![
+        Span::styled("commands", Style::default().fg(MUTED)),
+        Span::styled(" · ", Style::default().fg(SUBTLE)),
+        Span::styled(
+            format!("{} matches", command_hint.matches.len()),
+            Style::default().fg(SUBTLE),
+        ),
+    ])];
     let window = visible_command_match_window(command_hint, 4);
     if window.start > 0 {
         lines.push(Line::from(Span::styled(
@@ -288,31 +295,36 @@ fn build_command_hint_text(command_hint: &SlashCommandHint) -> Text<'static> {
             Style::default().fg(SUBTLE),
         )));
     }
-    lines.extend(window.items.iter().filter_map(|spec| {
-        (spec.name != command_hint.selected.name).then(|| {
-            Line::from(vec![
-                Span::styled(spec.section, Style::default().fg(SUBTLE)),
+    for spec in window.items {
+        if spec.name == command_hint.selected.name {
+            lines.push(Line::from(vec![
+                Span::styled("›", Style::default().fg(USER).add_modifier(Modifier::BOLD)),
+                Span::raw(" "),
+                Span::styled(
+                    format!("/{}", spec.usage),
+                    Style::default().fg(HEADER).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled("  ", Style::default().fg(SUBTLE)),
+                Span::styled(spec.summary, Style::default().fg(MUTED)),
+            ]));
+        } else {
+            lines.push(Line::from(vec![
                 Span::styled("  ", Style::default().fg(SUBTLE)),
                 Span::styled(format!("/{}", spec.usage), Style::default().fg(MUTED)),
-            ])
-        })
-    }));
-    lines.push(Line::from(vec![
-        Span::styled(
-            format!("/{}", command_hint.selected.usage),
-            Style::default().fg(HEADER).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled("  ", Style::default().fg(SUBTLE)),
-        Span::styled(command_hint.selected.summary, Style::default().fg(MUTED)),
-    ]));
+                Span::styled("  ", Style::default().fg(SUBTLE)),
+                Span::styled(spec.section, Style::default().fg(SUBTLE)),
+            ]));
+        }
+    }
     if let Some(arguments) = command_hint.arguments.as_ref() {
         let mut spans = Vec::new();
         if arguments.provided.is_empty() {
             if let Some(next) = arguments.next {
-                spans.push(Span::styled("next ", Style::default().fg(SUBTLE)));
+                spans.push(Span::styled("  next ", Style::default().fg(SUBTLE)));
                 spans.push(Span::styled(next.placeholder, Style::default().fg(MUTED)));
             }
         } else {
+            spans.push(Span::styled("  ", Style::default().fg(SUBTLE)));
             for (index, argument) in arguments.provided.iter().enumerate() {
                 if index > 0 {
                     spans.push(Span::styled(" · ", Style::default().fg(SUBTLE)));
@@ -367,6 +379,9 @@ fn build_command_hint_text(command_hint: &SlashCommandHint) -> Text<'static> {
         "enter accept"
     };
     lines.push(Line::from(vec![
+        Span::styled("↑↓", Style::default().fg(MUTED)),
+        Span::styled(" move", Style::default().fg(MUTED)),
+        Span::styled(" · ", Style::default().fg(SUBTLE)),
         Span::styled(tab_hint, Style::default().fg(MUTED)),
         Span::styled(" · ", Style::default().fg(SUBTLE)),
         Span::styled("shift+tab previous", Style::default().fg(MUTED)),
@@ -476,31 +491,61 @@ fn build_transcript_lines(state: &TuiState) -> Vec<Line<'static>> {
 }
 
 fn build_welcome_lines(state: &TuiState, viewport_height: u16) -> Vec<Line<'static>> {
-    let core = vec![
-        Line::from(Span::styled(
-            "code-agent".to_string(),
-            Style::default().fg(HEADER),
-        )),
-        Line::raw(""),
-        Line::from(Span::styled(
-            format!("{} · {}", state.session.workspace_name, state.session.model),
-            Style::default().fg(MUTED),
-        )),
-        Line::raw(""),
-        Line::from(Span::styled(
-            "Ask for a change, a fix, or a summary.",
-            Style::default().fg(TEXT),
-        )),
-        Line::from(Span::styled(
-            "Type a prompt to begin. Use /help when needed.",
-            Style::default().fg(SUBTLE),
-        )),
-    ];
+    let compact = viewport_height < 18;
+    let mut core = build_welcome_logo_lines(compact);
+    core.push(Line::raw(""));
+    core.push(Line::from(Span::styled(
+        format!("{} · {}", state.session.workspace_name, state.session.model),
+        Style::default().fg(MUTED),
+    )));
+    core.push(Line::raw(""));
+    core.push(Line::from(Span::styled(
+        "Ask for a change, a fix, or a summary.",
+        Style::default().fg(TEXT),
+    )));
+    core.push(Line::from(Span::styled(
+        "Type a prompt to begin. Use /help when needed.",
+        Style::default().fg(SUBTLE),
+    )));
 
     let top_padding = usize::from(viewport_height.saturating_sub(core.len() as u16) / 3);
     let mut lines = vec![Line::raw(""); top_padding];
     lines.extend(core);
     lines
+}
+
+fn build_welcome_logo_lines(compact: bool) -> Vec<Line<'static>> {
+    if compact {
+        return vec![
+            Line::from(Span::styled(
+                "NANOCLAW".to_string(),
+                Style::default().fg(HEADER),
+            )),
+            Line::from(Span::styled(
+                "code-agent".to_string(),
+                Style::default().fg(MUTED),
+            )),
+        ];
+    }
+
+    [
+        " _   _    _    _   _  ___   ____  _        _    __        __",
+        "| \\ | |  / \\  | \\ | |/ _ \\ / ___|| |      / \\   \\ \\      / /",
+        "|  \\| | / _ \\ |  \\| | | | | |    | |     / _ \\   \\ \\ /\\ / / ",
+        "| |\\  |/ ___ \\| |\\  | |_| | |___ | |___ / ___ \\   \\ V  V /  ",
+        "|_| \\_/_/   \\_\\_| \\_|\\___/ \\____||_____/_/   \\_\\   \\_/\\_/   ",
+    ]
+    .into_iter()
+    .map(|line| Line::from(Span::styled(line.to_string(), Style::default().fg(HEADER))))
+    .chain(std::iter::once(Line::from(Span::styled(
+        "NANOCLAW".to_string(),
+        Style::default().fg(MUTED),
+    ))))
+    .chain(std::iter::once(Line::from(Span::styled(
+        "code-agent".to_string(),
+        Style::default().fg(MUTED),
+    ))))
+    .collect()
 }
 
 fn should_render_transcript_context(title: &str) -> bool {
@@ -1364,7 +1409,7 @@ mod tests {
         assert!(lines.iter().any(|line| {
             line.spans
                 .iter()
-                .any(|span| span.content.as_ref().contains("code-agent"))
+                .any(|span| span.content.as_ref().contains("NANOCLAW"))
         }));
         assert!(lines.iter().any(|line| {
             line.spans.iter().any(|span| {
@@ -1581,21 +1626,22 @@ mod tests {
             exact: false,
         });
 
-        assert_eq!(rendered.lines[0].spans[0].content.as_ref(), "History");
+        assert_eq!(rendered.lines[0].spans[0].content.as_ref(), "commands");
+        assert_eq!(rendered.lines[1].spans[0].content.as_ref(), "›");
         assert_eq!(
-            rendered.lines[0].spans[2].content.as_ref(),
-            "/session <session-ref>"
-        );
-        assert_eq!(
-            rendered.lines[1].spans[0].content.as_ref(),
+            rendered.lines[1].spans[2].content.as_ref(),
             "/sessions [query]"
         );
         assert_eq!(
-            rendered.lines[1].spans[2].content.as_ref(),
+            rendered.lines[1].spans[4].content.as_ref(),
             "browse persisted sessions"
         );
-        assert_eq!(rendered.lines[2].spans[0].content.as_ref(), "tab complete");
-        assert_eq!(rendered.lines[2].spans[4].content.as_ref(), "enter accept");
+        assert_eq!(
+            rendered.lines[2].spans[1].content.as_ref(),
+            "/session <session-ref>"
+        );
+        assert_eq!(rendered.lines[3].spans[3].content.as_ref(), "tab complete");
+        assert_eq!(rendered.lines[3].spans[7].content.as_ref(), "enter accept");
     }
 
     #[test]
@@ -1627,16 +1673,16 @@ mod tests {
             exact: true,
         });
 
-        assert_eq!(rendered.lines[1].spans[0].content.as_ref(), "<role>");
-        assert_eq!(rendered.lines[1].spans[2].content.as_ref(), "reviewer");
+        assert_eq!(rendered.lines[2].spans[1].content.as_ref(), "<role>");
+        assert_eq!(rendered.lines[2].spans[3].content.as_ref(), "reviewer");
         assert!(
-            rendered.lines[1]
+            rendered.lines[2]
                 .spans
                 .iter()
                 .any(|span| span.content.as_ref().contains("<prompt>"))
         );
-        assert_eq!(rendered.lines[2].spans[0].content.as_ref(), "keep typing");
-        assert_eq!(rendered.lines[2].spans[4].content.as_ref(), "enter run");
+        assert_eq!(rendered.lines[3].spans[3].content.as_ref(), "keep typing");
+        assert_eq!(rendered.lines[3].spans[7].content.as_ref(), "enter run");
     }
 
     #[test]
@@ -1665,9 +1711,9 @@ mod tests {
             exact: true,
         });
 
-        assert_eq!(rendered.lines[1].spans[1].content.as_ref(), "[query]");
-        assert_eq!(rendered.lines[2].spans[0].content.as_ref(), "enter run");
-        assert_eq!(rendered.lines[2].spans[4].content.as_ref(), "enter run");
+        assert_eq!(rendered.lines[2].spans[1].content.as_ref(), "[query]");
+        assert_eq!(rendered.lines[3].spans[3].content.as_ref(), "enter run");
+        assert_eq!(rendered.lines[3].spans[7].content.as_ref(), "enter run");
     }
 
     #[test]
@@ -1728,12 +1774,13 @@ mod tests {
             exact: false,
         });
 
-        assert_eq!(rendered.lines[0].spans[0].content.as_ref(), "… 2 earlier");
+        assert_eq!(rendered.lines[0].spans[0].content.as_ref(), "commands");
+        assert_eq!(rendered.lines[1].spans[0].content.as_ref(), "… 2 earlier");
         assert_eq!(
-            rendered.lines[4].spans[0].content.as_ref(),
+            rendered.lines[5].spans[2].content.as_ref(),
             "/resume <agent-session-ref>"
         );
-        assert_eq!(rendered.lines[5].spans[0].content.as_ref(), "… 1 more");
+        assert_eq!(rendered.lines[6].spans[0].content.as_ref(), "… 1 more");
     }
 
     #[test]
