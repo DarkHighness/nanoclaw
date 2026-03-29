@@ -12,7 +12,7 @@ use crate::backend::{
 };
 use approval::approval_decision_for_key;
 use commands::{
-    SlashCommand, SlashCommandEnterAction, command_palette_lines, cycle_slash_command,
+    SlashCommand, SlashCommandEnterAction, command_palette_lines_for, cycle_slash_command,
     parse_slash_command, resolve_slash_enter_action,
 };
 use history::{
@@ -423,9 +423,15 @@ impl CodeAgentTui {
                 });
                 Ok(false)
             }
-            SlashCommand::Help => {
+            SlashCommand::Help { query } => {
+                let title = query
+                    .as_deref()
+                    .filter(|query| !query.trim().is_empty())
+                    .map(|query| format!("Command Palette · {}", query.trim()))
+                    .unwrap_or_else(|| "Command Palette".to_string());
+                let lines = command_palette_lines_for(query.as_deref());
                 self.ui_state.mutate(|state| {
-                    state.show_main_view("Command Palette", command_palette_lines());
+                    state.show_main_view(title, lines);
                     state.status = "Opened command palette".to_string();
                     state.push_activity("opened command palette");
                 });
@@ -762,12 +768,10 @@ impl CodeAgentTui {
             | SlashCommand::ExportSession { .. }
             | SlashCommand::ExportTranscript { .. }) => self.apply_history_command(command).await,
             SlashCommand::InvalidUsage(message) => {
+                let lines = build_command_error_view(input, &message);
                 self.ui_state.mutate(|state| {
                     state.status = "Command syntax error".to_string();
-                    state.show_main_view(
-                        "Command Error",
-                        message.lines().map(ToOwned::to_owned).collect(),
-                    );
+                    state.show_main_view("Command Error", lines);
                     state.push_activity("command parse error");
                 });
                 Ok(false)
@@ -1195,7 +1199,7 @@ fn build_startup_inspector(session: &state::SessionSummary) -> Vec<String> {
             state::preview_text(&session.workspace_root.display().to_string(), 56)
         ),
         "## Next".to_string(),
-        "/help  browse commands".to_string(),
+        "/help [query]  browse commands".to_string(),
         "/sessions  browse history".to_string(),
         "/agent_sessions  inspect or resume agents".to_string(),
         "/spawn_task <role> <prompt>  launch child agent".to_string(),
@@ -1252,6 +1256,21 @@ fn build_startup_inspector(session: &state::SessionSummary) -> Vec<String> {
             "diagnostic: {}",
             state::preview_text(&session.startup_diagnostics.diagnostics.join(" | "), 80)
         ));
+    }
+    lines
+}
+
+fn build_command_error_view(input: &str, message: &str) -> Vec<String> {
+    let mut lines = message.lines().map(ToOwned::to_owned).collect::<Vec<_>>();
+    let query = input
+        .trim_start_matches('/')
+        .split_whitespace()
+        .next()
+        .filter(|query| !query.is_empty());
+    let palette = command_palette_lines_for(query);
+    if !palette.is_empty() {
+        lines.push(String::new());
+        lines.extend(palette);
     }
     lines
 }

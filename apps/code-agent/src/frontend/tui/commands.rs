@@ -9,8 +9,21 @@ pub(crate) struct SlashCommandSpec {
 }
 
 impl SlashCommandSpec {
-    pub(crate) fn expects_arguments(self) -> bool {
-        self.usage.split_whitespace().nth(1).is_some()
+    pub(crate) fn requires_arguments(self) -> bool {
+        self.argument_specs()
+            .iter()
+            .any(|argument| argument.required)
+    }
+
+    pub(crate) fn argument_specs(self) -> Vec<SlashCommandArgumentSpec> {
+        self.usage
+            .split_whitespace()
+            .skip(1)
+            .map(|placeholder| SlashCommandArgumentSpec {
+                placeholder,
+                required: placeholder.starts_with('<'),
+            })
+            .collect()
     }
 }
 
@@ -26,13 +39,19 @@ pub(crate) struct SlashCommandHint {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct SlashCommandArgumentHint {
     pub(crate) provided: Vec<SlashCommandArgumentValue>,
-    pub(crate) next: Option<&'static str>,
+    pub(crate) next: Option<SlashCommandArgumentSpec>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct SlashCommandArgumentValue {
     pub(crate) placeholder: &'static str,
     pub(crate) value: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct SlashCommandArgumentSpec {
+    pub(crate) placeholder: &'static str,
+    pub(crate) required: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -45,7 +64,7 @@ const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
     SlashCommandSpec {
         section: "Session",
         name: "help",
-        usage: "help",
+        usage: "help [query]",
         summary: "browse commands",
     },
     SlashCommandSpec {
@@ -221,7 +240,9 @@ const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum SlashCommand {
     Status,
-    Help,
+    Help {
+        query: Option<String>,
+    },
     Tools,
     Skills,
     Diagnostics,
@@ -308,7 +329,14 @@ struct SlashCli {
 #[command(rename_all = "snake_case")]
 enum SlashSubcommand {
     Status,
-    Help,
+    Help {
+        #[arg(
+            value_name = "QUERY",
+            trailing_var_arg = true,
+            allow_hyphen_values = true
+        )]
+        query: Vec<String>,
+    },
     Tools,
     Skills,
     Diagnostics,
@@ -427,9 +455,27 @@ pub(crate) fn parse_slash_command(input: &str) -> SlashCommand {
 }
 
 pub(crate) fn command_palette_lines() -> Vec<String> {
+    command_palette_lines_for(None)
+}
+
+pub(crate) fn command_palette_lines_for(query: Option<&str>) -> Vec<String> {
+    let trimmed = query
+        .map(str::trim)
+        .filter(|query| !query.is_empty())
+        .map(|query| query.trim_start_matches('/').to_ascii_lowercase());
+    let specs = trimmed
+        .as_deref()
+        .map(palette_matching_specs)
+        .unwrap_or_else(|| SLASH_COMMAND_SPECS.to_vec());
+    if specs.is_empty() {
+        return vec![
+            "## Command Palette".to_string(),
+            "No commands match this query.".to_string(),
+        ];
+    }
     let mut lines = Vec::new();
     let mut current_section = None;
-    for spec in SLASH_COMMAND_SPECS {
+    for spec in specs {
         if current_section != Some(spec.section) {
             current_section = Some(spec.section);
             lines.push(format!("## {}", spec.section));
@@ -498,7 +544,7 @@ pub(crate) fn resolve_slash_enter_action(
     if hint.exact {
         return None;
     }
-    if hint.matches.len() == 1 && !hint.selected.expects_arguments() {
+    if hint.matches.len() == 1 && !hint.selected.requires_arguments() {
         return Some(SlashCommandEnterAction::Execute(format!(
             "/{}",
             hint.selected.name
@@ -514,7 +560,9 @@ impl From<SlashSubcommand> for SlashCommand {
     fn from(value: SlashSubcommand) -> Self {
         match value {
             SlashSubcommand::Status => Self::Status,
-            SlashSubcommand::Help => Self::Help,
+            SlashSubcommand::Help { query } => Self::Help {
+                query: join_optional_tail(query),
+            },
             SlashSubcommand::Tools => Self::Tools,
             SlashSubcommand::Skills => Self::Skills,
             SlashSubcommand::Diagnostics => Self::Diagnostics,
@@ -609,10 +657,24 @@ fn split_slash_input(input: &str) -> Option<(&str, Option<&str>)> {
 }
 
 fn matching_specs(prefix: &str) -> Vec<SlashCommandSpec> {
+    let prefix = prefix.trim().to_ascii_lowercase();
     SLASH_COMMAND_SPECS
         .iter()
         .copied()
-        .filter(|spec| prefix.is_empty() || spec.name.starts_with(prefix))
+        .filter(|spec| prefix.is_empty() || spec.name.starts_with(&prefix))
+        .collect()
+}
+
+fn palette_matching_specs(prefix: &str) -> Vec<SlashCommandSpec> {
+    let prefix = prefix.trim().to_ascii_lowercase();
+    SLASH_COMMAND_SPECS
+        .iter()
+        .copied()
+        .filter(|spec| {
+            prefix.is_empty()
+                || spec.name.starts_with(&prefix)
+                || spec.section.to_ascii_lowercase().starts_with(&prefix)
+        })
         .collect()
 }
 
@@ -641,7 +703,7 @@ fn build_argument_hint(
     spec: SlashCommandSpec,
     tail: Option<&str>,
 ) -> Option<SlashCommandArgumentHint> {
-    let placeholders = spec.usage.split_whitespace().skip(1).collect::<Vec<_>>();
+    let placeholders = spec.argument_specs();
     if placeholders.is_empty() {
         return None;
     }
@@ -664,7 +726,7 @@ fn build_argument_hint(
             raw_values[index].to_string()
         };
         provided.push(SlashCommandArgumentValue {
-            placeholder: *placeholder,
+            placeholder: placeholder.placeholder,
             value,
         });
         if index + 1 == placeholders.len() {
@@ -681,8 +743,9 @@ fn build_argument_hint(
 #[cfg(test)]
 mod tests {
     use super::{
-        SlashCommand, SlashCommandEnterAction, command_palette_lines, cycle_slash_command,
-        parse_slash_command, resolve_slash_enter_action, slash_command_hint,
+        SlashCommand, SlashCommandArgumentSpec, SlashCommandEnterAction, command_palette_lines,
+        command_palette_lines_for, cycle_slash_command, parse_slash_command,
+        resolve_slash_enter_action, slash_command_hint,
     };
 
     #[test]
@@ -850,8 +913,35 @@ mod tests {
         let lines = command_palette_lines();
 
         assert!(lines.iter().any(|line| line == "## Session"));
-        assert!(lines.iter().any(|line| line == "/help  browse commands"));
+        assert!(
+            lines
+                .iter()
+                .any(|line| line == "/help [query]  browse commands")
+        );
         assert!(lines.iter().any(|line| line == "/clear  alias of /new"));
+    }
+
+    #[test]
+    fn command_palette_can_filter_by_query() {
+        let lines = command_palette_lines_for(Some("agent"));
+
+        assert!(lines.iter().any(|line| line == "## Agents"));
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("/agent_sessions [session-ref]"))
+        );
+        assert!(!lines.iter().any(|line| line.contains("/export_transcript")));
+    }
+
+    #[test]
+    fn parses_help_query_tail() {
+        match parse_slash_command("/help agent") {
+            SlashCommand::Help { query } => {
+                assert_eq!(query, Some("agent".to_string()));
+            }
+            _ => panic!("unexpected command"),
+        }
     }
 
     #[test]
@@ -891,7 +981,13 @@ mod tests {
         let hint = slash_command_hint("/session ", 0).expect("hint");
 
         let arguments = hint.arguments.expect("arguments");
-        assert_eq!(arguments.next, Some("<session-ref>"));
+        assert_eq!(
+            arguments.next,
+            Some(SlashCommandArgumentSpec {
+                placeholder: "<session-ref>",
+                required: true,
+            })
+        );
         assert!(arguments.provided.is_empty());
         assert_eq!(hint.selected_match_index, 1);
     }
@@ -904,7 +1000,13 @@ mod tests {
         assert_eq!(arguments.provided.len(), 1);
         assert_eq!(arguments.provided[0].placeholder, "<role>");
         assert_eq!(arguments.provided[0].value, "reviewer");
-        assert_eq!(arguments.next, Some("<prompt>"));
+        assert_eq!(
+            arguments.next,
+            Some(SlashCommandArgumentSpec {
+                placeholder: "<prompt>",
+                required: true,
+            })
+        );
     }
 
     #[test]

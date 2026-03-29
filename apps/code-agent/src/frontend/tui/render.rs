@@ -310,7 +310,7 @@ fn build_command_hint_text(command_hint: &SlashCommandHint) -> Text<'static> {
         if arguments.provided.is_empty() {
             if let Some(next) = arguments.next {
                 spans.push(Span::styled("next ", Style::default().fg(SUBTLE)));
-                spans.push(Span::styled(next, Style::default().fg(MUTED)));
+                spans.push(Span::styled(next.placeholder, Style::default().fg(MUTED)));
             }
         } else {
             for (index, argument) in arguments.provided.iter().enumerate() {
@@ -330,7 +330,7 @@ fn build_command_hint_text(command_hint: &SlashCommandHint) -> Text<'static> {
             if let Some(next) = arguments.next {
                 spans.push(Span::styled(" · ", Style::default().fg(SUBTLE)));
                 spans.push(Span::styled("next ", Style::default().fg(SUBTLE)));
-                spans.push(Span::styled(next, Style::default().fg(MUTED)));
+                spans.push(Span::styled(next.placeholder, Style::default().fg(MUTED)));
             }
         }
         if !spans.is_empty() {
@@ -348,7 +348,7 @@ fn build_command_hint_text(command_hint: &SlashCommandHint) -> Text<'static> {
             .arguments
             .as_ref()
             .and_then(|arguments| arguments.next)
-            .is_some()
+            .is_some_and(|argument| argument.required)
         {
             "keep typing"
         } else if command_hint.matches.len() > 1 {
@@ -361,7 +361,7 @@ fn build_command_hint_text(command_hint: &SlashCommandHint) -> Text<'static> {
     };
     let enter_hint = if command_hint.exact {
         "enter run"
-    } else if command_hint.matches.len() == 1 && !command_hint.selected.expects_arguments() {
+    } else if command_hint.matches.len() == 1 && !command_hint.selected.requires_arguments() {
         "enter run"
     } else {
         "enter accept"
@@ -1240,7 +1240,8 @@ mod tests {
     };
     use crate::frontend::tui::approval::ApprovalPrompt;
     use crate::frontend::tui::commands::{
-        SlashCommandArgumentHint, SlashCommandArgumentValue, SlashCommandHint, SlashCommandSpec,
+        SlashCommandArgumentHint, SlashCommandArgumentSpec, SlashCommandArgumentValue,
+        SlashCommandHint, SlashCommandSpec,
     };
     use crate::frontend::tui::state::{MainPaneMode, TodoEntry, TuiState};
     use ratatui::layout::Rect;
@@ -1618,7 +1619,10 @@ mod tests {
                     placeholder: "<role>",
                     value: "reviewer".to_string(),
                 }],
-                next: Some("<prompt>"),
+                next: Some(SlashCommandArgumentSpec {
+                    placeholder: "<prompt>",
+                    required: true,
+                }),
             }),
             exact: true,
         });
@@ -1632,6 +1636,37 @@ mod tests {
                 .any(|span| span.content.as_ref().contains("<prompt>"))
         );
         assert_eq!(rendered.lines[2].spans[0].content.as_ref(), "keep typing");
+        assert_eq!(rendered.lines[2].spans[4].content.as_ref(), "enter run");
+    }
+
+    #[test]
+    fn command_hint_text_keeps_enter_run_for_optional_arguments() {
+        let rendered = build_command_hint_text(&SlashCommandHint {
+            selected: SlashCommandSpec {
+                section: "Session",
+                name: "help",
+                usage: "help [query]",
+                summary: "browse commands",
+            },
+            matches: vec![SlashCommandSpec {
+                section: "Session",
+                name: "help",
+                usage: "help [query]",
+                summary: "browse commands",
+            }],
+            selected_match_index: 0,
+            arguments: Some(SlashCommandArgumentHint {
+                provided: Vec::new(),
+                next: Some(SlashCommandArgumentSpec {
+                    placeholder: "[query]",
+                    required: false,
+                }),
+            }),
+            exact: true,
+        });
+
+        assert_eq!(rendered.lines[1].spans[1].content.as_ref(), "[query]");
+        assert_eq!(rendered.lines[2].spans[0].content.as_ref(), "enter run");
         assert_eq!(rendered.lines[2].spans[4].content.as_ref(), "enter run");
     }
 
