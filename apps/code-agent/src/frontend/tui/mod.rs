@@ -37,6 +37,7 @@ use crossterm::terminal::{
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use std::io::{self, Stdout};
+use std::time::Instant;
 use tokio::task::{JoinHandle, spawn_local};
 use tokio::time::{Duration, sleep};
 
@@ -215,6 +216,7 @@ impl CodeAgentTui {
                         self.session.refresh_stored_session_count().await.ok();
                     self.ui_state.mutate(|state| {
                         state.turn_running = false;
+                        state.turn_started_at = None;
                         state.session.git = git.clone();
                         if let Some(stored_session_count) = stored_session_count {
                             state.session.stored_session_count = stored_session_count;
@@ -225,9 +227,10 @@ impl CodeAgentTui {
                     let message = error.to_string();
                     self.ui_state.mutate(|state| {
                         state.turn_running = false;
+                        state.turn_started_at = None;
                         state.session.git = git.clone();
                         state.status = format!("Error: {message}");
-                        state.push_transcript(format!("error> {message}"));
+                        state.push_transcript(format!("✗ {message}"));
                         state.push_activity(format!(
                             "turn failed: {}",
                             state::preview_text(&message, 56)
@@ -237,6 +240,7 @@ impl CodeAgentTui {
                 Err(error) => {
                     self.ui_state.mutate(|state| {
                         state.turn_running = false;
+                        state.turn_started_at = None;
                         state.session.git = git.clone();
                         state.status = format!("Task join error: {error}");
                         state.push_activity(format!("task join error: {error}"));
@@ -328,6 +332,7 @@ impl CodeAgentTui {
         self.ui_state.mutate(|state| {
             state.show_transcript_pane();
             state.turn_running = true;
+            state.turn_started_at = Some(Instant::now());
             state.status = match &command {
                 RuntimeCommand::Prompt { .. } => "Running prompt".to_string(),
                 RuntimeCommand::Steer { .. } => "Applying steer".to_string(),

@@ -3,6 +3,7 @@ use agent::types::TokenLedgerSnapshot;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, RwLock};
+use std::time::Instant;
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct GitSnapshot {
@@ -56,6 +57,7 @@ pub(crate) struct TuiState {
     pub(crate) activity_scroll: u16,
     pub(crate) status: String,
     pub(crate) turn_running: bool,
+    pub(crate) turn_started_at: Option<Instant>,
 }
 
 impl TuiState {

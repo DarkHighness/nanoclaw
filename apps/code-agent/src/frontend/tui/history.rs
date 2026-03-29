@@ -333,11 +333,30 @@ pub(crate) fn format_visible_transcript_lines(transcript: &[Message]) -> Vec<Str
 }
 
 fn format_transcript_lines(transcript: &[Message]) -> Vec<String> {
-    let transcript = transcript.iter().map(message_to_text).collect::<Vec<_>>();
+    let transcript = transcript
+        .iter()
+        .map(|message| format_transcript_entry(&message_to_text(message)))
+        .collect::<Vec<_>>();
     if transcript.is_empty() {
         vec!["No transcript messages recorded for this session.".to_string()]
     } else {
         transcript
+    }
+}
+
+fn format_transcript_entry(raw: &str) -> String {
+    if let Some(body) = raw.strip_prefix("user> ") {
+        format!("› {body}")
+    } else if let Some(body) = raw.strip_prefix("assistant> ") {
+        format!("• {body}")
+    } else if let Some(body) = raw.strip_prefix("system> ") {
+        format!("• {body}")
+    } else if let Some(body) = raw.strip_prefix("tool> ") {
+        format!("• {body}")
+    } else if let Some(body) = raw.strip_prefix("error> ") {
+        format!("✗ {body}")
+    } else {
+        raw.to_string()
     }
 }
 

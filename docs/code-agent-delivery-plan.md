@@ -221,12 +221,22 @@ Shipped in the twenty-second implementation slice:
 
 - the dedicated TUI side rail was removed completely, leaving a single main
   surface for transcript and command views
-- runtime status moved to a minimal bottom status line, which is closer to a
-  Codex-like terminal flow than stacked headers and side logs
+- runtime status moved out of stacked headers and side logs and toward a
+  simpler Codex-like terminal flow
 - transcript entries now use clearer turn headers, compact inline progress
   updates, and explicit turn dividers instead of a flat undifferentiated stream
 - approval prompts now render as compact bottom-anchored sheets while the shell
   removes more pane-title chrome and box-heavy structure
+
+Shipped in the twenty-third implementation slice:
+
+- transcript entries no longer expose visible `user>` / `tool>` / `approval>`
+  tags; the shell now uses Codex-style textual prefixes such as `›`, `•`, `✔`,
+  and `✗`
+- live runtime progress now stays inline in the transcript while the very
+  bottom row is reduced to contextual footer data instead of duplicating status
+- approval prompts were tightened further toward the Codex snapshot style:
+  question-first layout, numbered options, and no heavy boxed chrome
 
 Still pending in the next slices:
 

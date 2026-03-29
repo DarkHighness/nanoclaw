@@ -32,8 +32,8 @@ cargo run --manifest-path apps/Cargo.toml -p code-agent
 ```
 
 This opens a compact `ratatui` screen with a single wide main surface for
-transcript and read-heavy command views, a minimal bottom status line, a
-compact composer, muted approval sheets, and a more neutral dark palette tuned
+transcript and read-heavy command views, a Codex-style prompt line, a minimal
+context footer, muted approval sheets, and a more neutral dark palette tuned
 for prompt and slash-command workflows.
 
 One-shot prompt:
@@ -210,14 +210,20 @@ loading directly from `code-agent` without relying on the legacy
 `reference-tui` shell.
 
 The TUI now follows a more minimal shell: a single main pane for transcript and
-command views, a bottom status line for live runtime state, and a compact input
-line instead of stacked bars and side rails. The palette is intentionally
-muted rather than blue-accented, transcript turns are separated visually, and
-read-heavy outputs such as `/help`, command catalogs, and history lists now
-open in the main pane.
+command views, a bottom context footer, and a compact prompt line instead of
+stacked bars and side rails. The palette is intentionally muted rather than
+blue-accented, transcript turns are separated visually, and read-heavy outputs
+such as `/help`, command catalogs, and history lists now open in the main
+pane.
 
-Approval prompts now render as compact bottom-anchored sheets instead of large
-modal panels so tool confirmation feels closer to a terminal operator flow.
+Transcript rendering is now closer to Codex's own TUI implementation: user
+turns use `›`, assistant and runtime summaries use `•`, approvals resolve into
+`✔` or `✗` history lines, and live runtime progress stays inline in the
+conversation instead of being duplicated into visible `tool>` / `approval>` /
+`model>` tags.
+
+Approval prompts now render as compact bottom-anchored question sheets with a
+Codex-like numbered option list instead of large modal panels.
 
 Interactive approval and live runtime updates now also route through
 backend-owned contracts, so the TUI renders session events and approval prompts

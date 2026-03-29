@@ -3,7 +3,7 @@ use super::state::{MainPaneMode, TuiState, preview_text};
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Margin, Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
+use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const BG: Color = Color::Rgb(12, 13, 14);
@@ -39,14 +39,14 @@ pub(crate) fn render(
         .split(area);
 
     render_main_pane(frame, vertical[0], state);
-    render_status_line(frame, vertical[1], state);
-    render_composer(frame, vertical[2], state);
+    render_composer(frame, vertical[1], state);
+    render_status_line(frame, vertical[2], state);
 
     if let Some(approval) = approval {
         render_approval_overlay(frame, area, approval);
     }
 
-    let composer_inner = composer_inner_area(vertical[2]);
+    let composer_inner = composer_inner_area(vertical[1]);
     let prefix_width = 2_u16;
     frame.set_cursor_position(Position::new(
         composer_inner
@@ -115,50 +115,7 @@ fn render_status_line(frame: &mut ratatui::Frame<'_>, area: Rect, state: &TuiSta
         vertical: 0,
         horizontal: 1,
     });
-
-    let mut spans = vec![
-        Span::styled(
-            progress_marker(state),
-            Style::default()
-                .fg(status_color(&state.status))
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::raw(" "),
-        Span::styled(
-            preview_text(&state.status, 44),
-            Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
-        ),
-    ];
-
-    if let Some(activity) = recent_activity_items(state).first() {
-        spans.push(Span::styled("  · ", Style::default().fg(SUBTLE)));
-        spans.push(Span::styled(
-            activity.clone(),
-            Style::default().fg(activity_color(activity)),
-        ));
-    }
-
-    if state.session.queued_commands > 0 {
-        spans.push(Span::styled("  · ", Style::default().fg(SUBTLE)));
-        spans.push(Span::styled(
-            format!("+{} queued", state.session.queued_commands),
-            Style::default().fg(WARN),
-        ));
-    }
-
-    spans.push(Span::styled("  · ", Style::default().fg(SUBTLE)));
-    spans.push(Span::styled(
-        preview_text(
-            &format!(
-                "{} / {}  {}",
-                state.session.provider_label, state.session.model, state.session.active_session_ref
-            ),
-            40,
-        ),
-        Style::default().fg(MUTED),
-    ));
-
-    let status = Paragraph::new(Line::from(spans))
+    let status = Paragraph::new(format_footer_context(state))
         .style(Style::default().fg(TEXT).bg(FOOTER_BG))
         .wrap(Wrap { trim: true });
     frame.render_widget(status, inner);
@@ -173,73 +130,46 @@ fn render_composer(frame: &mut ratatui::Frame<'_>, area: Rect, state: &TuiState)
         vertical: 0,
         horizontal: 1,
     });
-    let columns = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Min(16), Constraint::Length(20)])
-        .split(inner);
-
     let input_line = if state.input.is_empty() {
         Line::from(vec![
-            Span::styled(">", Style::default().fg(USER).add_modifier(Modifier::BOLD)),
+            Span::styled("›", Style::default().fg(USER).add_modifier(Modifier::BOLD)),
             Span::raw(" "),
-            Span::styled("type a prompt or /help", Style::default().fg(SUBTLE)),
+            Span::styled("Ask Code Agent to do anything", Style::default().fg(SUBTLE)),
         ])
     } else {
         Line::from(vec![
-            Span::styled(">", Style::default().fg(USER).add_modifier(Modifier::BOLD)),
+            Span::styled("›", Style::default().fg(USER).add_modifier(Modifier::BOLD)),
             Span::raw(" "),
             Span::styled(state.input.clone(), Style::default().fg(TEXT)),
         ])
     };
     frame.render_widget(
         Paragraph::new(input_line).style(Style::default().fg(TEXT).bg(FOOTER_ALT_BG)),
-        columns[0],
+        inner,
     );
-
-    let mode = if state.input.trim_start().starts_with('/') {
-        ("command", USER)
-    } else if state.turn_running {
-        ("follow-up", WARN)
-    } else {
-        ("prompt", ASSISTANT)
-    };
-    let hint = Paragraph::new(Line::from(vec![
-        Span::styled(
-            mode.0,
-            Style::default().fg(mode.1).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled("  Enter send", Style::default().fg(MUTED)),
-    ]))
-    .alignment(Alignment::Right)
-    .style(Style::default().fg(MUTED).bg(FOOTER_ALT_BG));
-    frame.render_widget(hint, columns[1]);
 }
 
 fn render_approval_overlay(frame: &mut ratatui::Frame<'_>, area: Rect, approval: &ApprovalPrompt) {
     let popup = approval_sheet_rect(area);
     frame.render_widget(Clear, popup);
-
-    let body = Paragraph::new(build_approval_text(approval))
-        .block(panel_block("approval", BORDER_ACTIVE))
-        .wrap(Wrap { trim: false })
-        .style(Style::default().fg(TEXT).bg(OVERLAY_BG));
-    frame.render_widget(body, popup);
+    frame.render_widget(
+        Paragraph::new(build_approval_text(approval))
+            .wrap(Wrap { trim: false })
+            .style(Style::default().fg(TEXT).bg(OVERLAY_BG)),
+        popup,
+    );
 }
 
 fn composer_inner_area(area: Rect) -> Rect {
-    let inner = area.inner(Margin {
+    area.inner(Margin {
         vertical: 0,
         horizontal: 1,
-    });
-    Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Min(16), Constraint::Length(20)])
-        .split(inner)[0]
+    })
 }
 
 fn approval_sheet_rect(area: Rect) -> Rect {
-    let width = area.width.saturating_sub(8).min(88).max(42);
-    let height = area.height.min(12);
+    let width = area.width.saturating_sub(10).min(96).max(48);
+    let height = area.height.min(14);
     let x = area.x + area.width.saturating_sub(width) / 2;
     let y = area
         .y
@@ -253,38 +183,38 @@ fn approval_sheet_rect(area: Rect) -> Rect {
 }
 
 fn build_approval_text(approval: &ApprovalPrompt) -> Text<'static> {
-    let mut lines = vec![Line::from(vec![
-        Span::styled(
-            "tool ",
-            Style::default().fg(MUTED).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(approval.tool_name.clone(), Style::default().fg(TEXT)),
-        Span::styled(
-            "   origin ",
-            Style::default().fg(MUTED).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(approval.origin.clone(), Style::default().fg(TEXT)),
-    ])];
+    let mut lines = vec![
+        Line::from(Span::styled(
+            format!("  Would you like to run {}?", approval.tool_name),
+            Style::default().fg(HEADER).add_modifier(Modifier::BOLD),
+        )),
+        Line::raw(""),
+    ];
+
+    if !approval.origin.is_empty() {
+        lines.push(Line::from(vec![
+            Span::styled("  Origin: ", Style::default().fg(MUTED)),
+            Span::styled(approval.origin.clone(), Style::default().fg(TEXT)),
+        ]));
+    }
 
     if !approval.reasons.is_empty() {
-        lines.push(Line::raw(""));
-        lines.push(Line::from(Span::styled(
-            "reasons",
-            Style::default().fg(MUTED).add_modifier(Modifier::BOLD),
-        )));
-        for reason in &approval.reasons {
+        let mut reasons = approval.reasons.iter();
+        if let Some(reason) = reasons.next() {
             lines.push(Line::from(vec![
-                Span::styled("  • ", Style::default().fg(WARN)),
+                Span::styled("  Reason: ", Style::default().fg(MUTED)),
+                Span::styled(reason.clone(), Style::default().fg(TEXT)),
+            ]));
+        }
+        for reason in reasons {
+            lines.push(Line::from(vec![
+                Span::raw("          "),
                 Span::styled(reason.clone(), Style::default().fg(TEXT)),
             ]));
         }
     }
 
     lines.push(Line::raw(""));
-    lines.push(Line::from(Span::styled(
-        "arguments",
-        Style::default().fg(MUTED).add_modifier(Modifier::BOLD),
-    )));
     for line in &approval.arguments_preview {
         lines.push(Line::from(Span::styled(
             format!("  {line}"),
@@ -295,31 +225,32 @@ fn build_approval_text(approval: &ApprovalPrompt) -> Text<'static> {
     lines.push(Line::raw(""));
     lines.push(Line::from(vec![
         Span::styled(
+            "› 1. Yes, proceed",
+            Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" (y)", Style::default().fg(MUTED)),
+    ]));
+    lines.push(Line::from(vec![
+        Span::raw("  2. No, deny"),
+        Span::styled(" (n)", Style::default().fg(MUTED)),
+    ]));
+    lines.push(Line::raw(""));
+    lines.push(Line::from(vec![
+        Span::styled("  Press ", Style::default().fg(MUTED)),
+        Span::styled(
             "y",
             Style::default().fg(ASSISTANT).add_modifier(Modifier::BOLD),
         ),
-        Span::styled(" allow once   ", Style::default().fg(MUTED)),
+        Span::styled(" to approve, ", Style::default().fg(MUTED)),
         Span::styled("n", Style::default().fg(ERROR).add_modifier(Modifier::BOLD)),
-        Span::styled(" deny once   ", Style::default().fg(MUTED)),
+        Span::styled(" to deny, or ", Style::default().fg(MUTED)),
         Span::styled(
             "esc",
             Style::default().fg(WARN).add_modifier(Modifier::BOLD),
         ),
-        Span::styled(" close", Style::default().fg(MUTED)),
+        Span::styled(" to cancel", Style::default().fg(MUTED)),
     ]));
     Text::from(lines)
-}
-
-fn panel_block(title: impl Into<String>, border_color: Color) -> Block<'static> {
-    let title = title.into();
-    Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(border_color))
-        .title(Span::styled(
-            format!(" {title} "),
-            Style::default().fg(HEADER).add_modifier(Modifier::BOLD),
-        ))
-        .style(Style::default().bg(OVERLAY_BG))
 }
 
 fn build_transcript_lines(state: &TuiState) -> Vec<Line<'static>> {
@@ -347,12 +278,14 @@ fn build_transcript_lines(state: &TuiState) -> Vec<Line<'static>> {
         )));
     } else {
         for (index, entry) in state.transcript.iter().enumerate() {
-            if index > 0 && entry.starts_with("user> ") {
+            if index > 0 && entry.starts_with("› ") {
                 lines.push(turn_divider());
                 lines.push(Line::raw(""));
             }
             lines.extend(format_transcript_entry(entry));
-            lines.push(Line::raw(""));
+            if transcript_entry_needs_spacing(entry) {
+                lines.push(Line::raw(""));
+            }
         }
     }
 
@@ -360,32 +293,7 @@ fn build_transcript_lines(state: &TuiState) -> Vec<Line<'static>> {
         if !lines.is_empty() {
             lines.push(Line::raw(""));
         }
-        lines.push(Line::from(vec![
-            Span::styled(
-                progress_marker(state),
-                Style::default()
-                    .fg(status_color(&state.status))
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(" "),
-            Span::styled(
-                preview_text(&state.status, 80),
-                Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
-            ),
-        ]));
-        for item in recent_activity_items(state).into_iter().take(4) {
-            lines.push(Line::from(vec![
-                Span::raw("  "),
-                Span::styled(
-                    activity_marker(&item),
-                    Style::default()
-                        .fg(activity_color(&item))
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::raw(" "),
-                Span::styled(item.clone(), Style::default().fg(activity_color(&item))),
-            ]));
-        }
+        lines.push(live_progress_line(state));
     }
 
     lines
@@ -396,61 +304,67 @@ fn should_render_transcript_context(title: &str) -> bool {
 }
 
 fn turn_divider() -> Line<'static> {
-    Line::from(Span::styled("─".repeat(30), Style::default().fg(SUBTLE)))
+    Line::from(Span::styled("─".repeat(16), Style::default().fg(SUBTLE)))
+}
+
+fn transcript_entry_needs_spacing(entry: &str) -> bool {
+    !entry.starts_with("  └ ")
 }
 
 fn format_transcript_entry(entry: &str) -> Vec<Line<'static>> {
-    let (kind, accent, body) = if let Some(body) = entry.strip_prefix("user> ") {
-        ("user", USER, body)
-    } else if let Some(body) = entry.strip_prefix("assistant> ") {
-        ("assistant", ASSISTANT, body)
-    } else if let Some(body) = entry.strip_prefix("error> ") {
-        ("error", ERROR, body)
-    } else if let Some(body) = entry.strip_prefix("system> ") {
-        ("system", MUTED, body)
-    } else {
-        ("event", WARN, entry)
+    let Some((marker, accent, body)) = parse_prefixed_entry(entry) else {
+        return vec![Line::from(Span::styled(
+            entry.to_string(),
+            Style::default().fg(TEXT),
+        ))];
     };
 
-    let mut lines = vec![Line::from(vec![
+    let mut body_lines = body.lines();
+    let first_line = body_lines.next().unwrap_or_default();
+    let mut rendered = vec![Line::from(vec![
         Span::styled(
-            message_marker(kind),
+            marker,
             Style::default().fg(accent).add_modifier(Modifier::BOLD),
         ),
         Span::raw(" "),
         Span::styled(
-            message_label(kind).to_string(),
-            Style::default().fg(accent).add_modifier(Modifier::BOLD),
+            first_line.to_string(),
+            transcript_body_style(marker, first_line),
         ),
     ])];
 
     let mut in_code = false;
-    for raw_line in body.lines() {
+    for raw_line in body_lines {
         let trimmed = raw_line.trim_start();
         if trimmed.starts_with("```") {
             in_code = !in_code;
-            lines.push(Line::from(vec![
+            rendered.push(Line::from(vec![
                 Span::raw("  "),
                 Span::styled(trimmed.to_string(), Style::default().fg(SUBTLE)),
             ]));
             continue;
         }
-        lines.push(render_transcript_body_line(raw_line, in_code));
+        rendered.push(render_transcript_body_line(raw_line, in_code));
     }
 
-    if body.trim().is_empty() {
-        lines.push(Line::from(vec![
-            Span::raw("  "),
-            Span::styled("<empty>", Style::default().fg(SUBTLE)),
-        ]));
-    }
-
-    lines
+    rendered
 }
 
 fn render_transcript_body_line(raw_line: &str, in_code: bool) -> Line<'static> {
     if raw_line.trim().is_empty() {
         return Line::from(Span::raw(""));
+    }
+    if let Some(detail) = raw_line.strip_prefix("  └ ") {
+        return Line::from(vec![
+            Span::styled("  └ ", Style::default().fg(SUBTLE)),
+            Span::styled(detail.to_string(), Style::default().fg(MUTED)),
+        ]);
+    }
+    if let Some(detail) = raw_line.strip_prefix("    ") {
+        return Line::from(vec![
+            Span::raw("    "),
+            Span::styled(detail.to_string(), Style::default().fg(MUTED)),
+        ]);
     }
     if in_code {
         return Line::from(vec![Span::raw("  "), code_span(raw_line)]);
@@ -470,6 +384,67 @@ fn render_transcript_body_line(raw_line: &str, in_code: bool) -> Line<'static> {
         Span::raw("  "),
         Span::styled(raw_line.to_string(), Style::default().fg(TEXT)),
     ])
+}
+
+fn parse_prefixed_entry(entry: &str) -> Option<(&'static str, Color, &str)> {
+    if let Some(body) = entry.strip_prefix("› ") {
+        Some(("›", USER, body))
+    } else if let Some(body) = entry.strip_prefix("• ") {
+        Some(("•", summary_color(body), body))
+    } else if let Some(body) = entry.strip_prefix("✔ ") {
+        Some(("✔", ASSISTANT, body))
+    } else if let Some(body) = entry.strip_prefix("✗ ") {
+        Some(("✗", ERROR, body))
+    } else if let Some(body) = entry.strip_prefix("⚠ ") {
+        Some(("⚠", WARN, body))
+    } else {
+        None
+    }
+}
+
+fn transcript_body_style(marker: &str, line: &str) -> Style {
+    match marker {
+        "›" => Style::default().fg(TEXT),
+        "✔" => Style::default().fg(ASSISTANT),
+        "✗" => Style::default().fg(ERROR),
+        "⚠" => Style::default().fg(WARN),
+        _ => Style::default().fg(summary_color(line)),
+    }
+}
+
+fn live_progress_line(state: &TuiState) -> Line<'static> {
+    if state.turn_running {
+        let elapsed_secs = state
+            .turn_started_at
+            .map(|started| started.elapsed().as_secs())
+            .unwrap_or(0);
+        Line::from(vec![
+            Span::styled(
+                progress_marker(state),
+                Style::default()
+                    .fg(status_color(&state.status))
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" "),
+            Span::styled(
+                preview_text(&state.status, 56),
+                Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!(" ({}s • esc to interrupt)", elapsed_secs),
+                Style::default().fg(MUTED),
+            ),
+        ])
+    } else {
+        Line::from(vec![
+            Span::styled("+", Style::default().fg(WARN).add_modifier(Modifier::BOLD)),
+            Span::raw(" "),
+            Span::styled(
+                format!("{} queued command(s)", state.session.queued_commands),
+                Style::default().fg(MUTED),
+            ),
+        ])
+    }
 }
 
 fn code_span(line: &str) -> Span<'static> {
@@ -501,34 +476,32 @@ fn progress_marker(state: &TuiState) -> &'static str {
     }
 }
 
-fn recent_activity_items(state: &TuiState) -> Vec<String> {
-    state
-        .activity
-        .iter()
-        .rev()
-        .take(3)
-        .map(|line| preview_text(line, 36))
-        .collect()
-}
+fn format_footer_context(state: &TuiState) -> Line<'static> {
+    let mut spans = vec![Span::styled(
+        state.session.model.clone(),
+        Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
+    )];
+    spans.push(Span::styled(" · ", Style::default().fg(SUBTLE)));
+    spans.push(Span::styled(
+        state.session.provider_label.clone(),
+        Style::default().fg(MUTED),
+    ));
 
-fn message_label(kind: &str) -> &'static str {
-    match kind {
-        "user" => "You",
-        "assistant" => "Code Agent",
-        "error" => "Error",
-        "system" => "System",
-        _ => "Event",
+    if state.session.git.available {
+        spans.push(Span::styled(" · ", Style::default().fg(SUBTLE)));
+        spans.push(Span::styled(
+            state.session.git.branch.clone(),
+            Style::default().fg(MUTED),
+        ));
     }
-}
 
-fn message_marker(kind: &str) -> &'static str {
-    match kind {
-        "user" => "›",
-        "assistant" => "•",
-        "error" => "!",
-        "system" => "·",
-        _ => "·",
-    }
+    spans.push(Span::styled(" · ", Style::default().fg(SUBTLE)));
+    spans.push(Span::styled(
+        preview_text(&state.session.workspace_root.display().to_string(), 44),
+        Style::default().fg(MUTED),
+    ));
+
+    Line::from(spans)
 }
 
 fn build_key_value_text(lines: &[String]) -> Text<'static> {
@@ -732,46 +705,29 @@ fn plain_text_style(line: &str) -> Style {
     }
 }
 
-fn activity_color(line: &str) -> Color {
+fn summary_color(line: &str) -> Color {
     let lower = line.to_ascii_lowercase();
-    if lower.contains("failed") || lower.contains("error") || lower.contains("denied") {
-        ERROR
-    } else if lower.contains("approval")
-        || lower.contains("queued")
-        || lower.contains("waiting")
-        || lower.contains("blocked")
+    if lower.contains("failed")
+        || lower.contains("error")
+        || lower.contains("denied")
+        || lower.contains("cancelled")
     {
-        WARN
+        ERROR
     } else if lower.contains("approved")
         || lower.contains("complete")
         || lower.contains("loaded")
         || lower.contains("ready")
-        || lower.contains("listed")
+        || lower.contains("called")
     {
         ASSISTANT
-    } else if lower.contains("session")
-        || lower.contains("resume")
-        || lower.contains("steer")
-        || lower.contains("prompt")
+    } else if lower.contains("waiting")
+        || lower.contains("blocked")
+        || lower.contains("running")
+        || lower.contains("applying")
     {
-        USER
+        WARN
     } else {
         TEXT
-    }
-}
-
-fn activity_marker(line: &str) -> &'static str {
-    let lower = line.to_ascii_lowercase();
-    if lower.contains("failed") || lower.contains("error") || lower.contains("denied") {
-        "!"
-    } else if lower.contains("approved")
-        || lower.contains("complete")
-        || lower.contains("loaded")
-        || lower.contains("ready")
-    {
-        "✓"
-    } else {
-        "›"
     }
 }
 
@@ -819,19 +775,17 @@ mod tests {
     }
 
     #[test]
-    fn transcript_entries_render_with_codex_like_headers() {
+    fn transcript_entries_render_with_codex_like_prefixes() {
         let mut state = TuiState {
             main_pane: MainPaneMode::Transcript,
             ..TuiState::default()
         };
-        state.transcript = vec!["assistant> hello world".to_string()];
+        state.transcript = vec!["• hello world".to_string()];
 
         let lines = build_transcript_lines(&state);
 
         assert_eq!(lines[0].spans[0].content.as_ref(), "•");
-        assert_eq!(lines[0].spans[2].content.as_ref(), "Code Agent");
-        assert_eq!(lines[1].spans[0].content.as_ref(), "  ");
-        assert_eq!(lines[1].spans[1].content.as_ref(), "hello world");
+        assert_eq!(lines[0].spans[2].content.as_ref(), "hello world");
     }
 
     #[test]
@@ -841,9 +795,9 @@ mod tests {
             ..TuiState::default()
         };
         state.transcript = vec![
-            "user> first".to_string(),
-            "assistant> reply".to_string(),
-            "user> second".to_string(),
+            "› first".to_string(),
+            "• reply".to_string(),
+            "› second".to_string(),
         ];
 
         let rendered = build_transcript_lines(&state);
@@ -863,7 +817,7 @@ mod tests {
             inspector: vec!["## Resume".to_string(), "action: reattached".to_string()],
             ..TuiState::default()
         };
-        state.transcript = vec!["assistant> done".to_string()];
+        state.transcript = vec!["• done".to_string()];
 
         let rendered = build_transcript_lines(&state);
 

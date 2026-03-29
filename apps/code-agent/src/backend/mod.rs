@@ -34,7 +34,7 @@ pub(crate) use boot_sandbox::{
     build_sandbox_policy, build_tool_context, inject_process_env, log_sandbox_status,
     tool_context_for_profile,
 };
-pub(crate) use events::{SessionEvent, SessionEventObserver, SessionEventStream};
+pub(crate) use events::{SessionEvent, SessionEventObserver, SessionEventStream, SessionToolCall};
 pub(crate) use session::{
     CodeAgentSession, LiveTaskControlAction, LiveTaskControlOutcome, LiveTaskMessageAction,
     LiveTaskMessageOutcome, LiveTaskSpawnOutcome, LiveTaskSummary, LiveTaskWaitOutcome,

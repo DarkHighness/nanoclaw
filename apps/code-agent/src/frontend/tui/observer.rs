@@ -1,9 +1,11 @@
 use super::state::{SharedUiState, preview_text};
 use crate::backend::SessionEvent;
+use std::collections::HashMap;
 
 pub(crate) struct SharedRenderObserver {
     ui_state: SharedUiState,
     active_assistant_line: Option<usize>,
+    active_tool_lines: HashMap<String, usize>,
 }
 
 impl SharedRenderObserver {
@@ -11,13 +13,21 @@ impl SharedRenderObserver {
         Self {
             ui_state,
             active_assistant_line: None,
+            active_tool_lines: HashMap::new(),
         }
     }
 
     pub(crate) fn apply_event(&mut self, event: SessionEvent) {
         self.ui_state.mutate(|state| match event {
             SessionEvent::SteerApplied { message, reason } => {
-                state.push_transcript(format!("system> {message}"));
+                state.push_transcript(format!(
+                    "• Applied steer\n  └ {}{}",
+                    message,
+                    reason
+                        .as_deref()
+                        .map(|value| format!(" ({value})"))
+                        .unwrap_or_default()
+                ));
                 state.status = "Applied steer".to_string();
                 state.push_activity(format!(
                     "steer applied{}: {}",
@@ -30,7 +40,8 @@ impl SharedRenderObserver {
             }
             SessionEvent::UserPromptAdded { prompt } => {
                 self.active_assistant_line = None;
-                state.push_transcript(format!("user> {prompt}"));
+                self.active_tool_lines.clear();
+                state.push_transcript(format!("› {prompt}"));
                 state.status = "Planning next action".to_string();
                 state.push_activity(format!("user prompt: {}", preview_text(&prompt, 40)));
             }
@@ -38,7 +49,7 @@ impl SharedRenderObserver {
                 if let Some(index) = self.active_assistant_line {
                     state.transcript[index].push_str(&delta);
                 } else {
-                    state.push_transcript(format!("assistant> {delta}"));
+                    state.push_transcript(format!("• {delta}"));
                     self.active_assistant_line = Some(state.transcript.len() - 1);
                 }
                 state.transcript_scroll = u16::MAX;
@@ -50,6 +61,9 @@ impl SharedRenderObserver {
                 retained_message_count,
                 ..
             } => {
+                state.push_transcript(format!(
+                    "• Compacted history\n  └ kept {retained_message_count} of {source_message_count} messages"
+                ));
                 state.status = format!(
                     "Compacted {source_message_count} messages, kept {retained_message_count}"
                 );
@@ -109,10 +123,19 @@ impl SharedRenderObserver {
             } => {
                 if approved {
                     state.status = format!("Approved {}", call.tool_name);
+                    state.push_transcript(format!(
+                        "✔ You approved Code Agent to run {}",
+                        call.tool_name
+                    ));
                     state.push_activity(format!("approved {}", call.tool_name));
                 } else {
                     let reason = reason.unwrap_or_else(|| "permission denied".to_string());
                     state.status = format!("Denied {}: {}", call.tool_name, reason);
+                    state.push_transcript(format!(
+                        "✗ You did not approve Code Agent to run {}\n  └ {}",
+                        call.tool_name,
+                        preview_text(&reason, 72)
+                    ));
                     state.push_activity(format!(
                         "denied {}: {}",
                         call.tool_name,
@@ -122,6 +145,9 @@ impl SharedRenderObserver {
             }
             SessionEvent::ToolLifecycleStarted { call } => {
                 state.status = format!("Running {}", call.tool_name);
+                state.push_transcript(format!("• Running {}", call.tool_name));
+                self.active_tool_lines
+                    .insert(call.call_id.clone(), state.transcript.len() - 1);
                 state.push_activity(format!("running {}", call.tool_name));
             }
             SessionEvent::ToolLifecycleCompleted {
@@ -130,6 +156,11 @@ impl SharedRenderObserver {
                 structured_output_preview,
             } => {
                 state.status = format!("Completed {}", call.tool_name);
+                replace_tool_line(
+                    state,
+                    self.active_tool_lines.remove(&call.call_id),
+                    completed_tool_entry(&call.tool_name, &output_preview),
+                );
                 state.push_activity(format!(
                     "{} -> {}",
                     call.tool_name,
@@ -150,6 +181,15 @@ impl SharedRenderObserver {
             }
             SessionEvent::ToolLifecycleFailed { call, error } => {
                 state.status = format!("{} failed", call.tool_name);
+                replace_tool_line(
+                    state,
+                    self.active_tool_lines.remove(&call.call_id),
+                    format!(
+                        "✗ {} failed\n  └ {}",
+                        call.tool_name,
+                        preview_text(&error, 72)
+                    ),
+                );
                 state.push_activity(format!(
                     "{} failed: {}",
                     call.tool_name,
@@ -158,6 +198,18 @@ impl SharedRenderObserver {
             }
             SessionEvent::ToolLifecycleCancelled { call, reason } => {
                 state.status = format!("{} cancelled", call.tool_name);
+                replace_tool_line(
+                    state,
+                    self.active_tool_lines.remove(&call.call_id),
+                    format!(
+                        "✗ Cancelled {}\n  └ {}",
+                        call.tool_name,
+                        reason
+                            .as_deref()
+                            .map(|value| preview_text(value, 72))
+                            .unwrap_or_else(|| "cancelled".to_string())
+                    ),
+                );
                 state.push_activity(format!(
                     "{} cancelled{}",
                     call.tool_name,
@@ -169,6 +221,7 @@ impl SharedRenderObserver {
             }
             SessionEvent::TurnCompleted { .. } => {
                 self.active_assistant_line = None;
+                self.active_tool_lines.clear();
                 state.status = "Turn complete".to_string();
                 state.push_activity("turn complete");
             }
@@ -176,10 +229,34 @@ impl SharedRenderObserver {
     }
 }
 
+fn completed_tool_entry(tool_name: &str, output_preview: &str) -> String {
+    let output_preview = preview_text(output_preview, 96);
+    if output_preview == "<empty>" {
+        format!("• Called {tool_name}")
+    } else {
+        format!("• Called {tool_name}\n  └ {output_preview}")
+    }
+}
+
+fn replace_tool_line(
+    state: &mut super::state::TuiState,
+    index: Option<usize>,
+    replacement: String,
+) {
+    if let Some(index) = index {
+        if let Some(line) = state.transcript.get_mut(index) {
+            *line = replacement;
+            state.transcript_scroll = u16::MAX;
+            return;
+        }
+    }
+    state.push_transcript(replacement);
+}
+
 #[cfg(test)]
 mod tests {
     use super::SharedRenderObserver;
-    use crate::backend::SessionEvent;
+    use crate::backend::{SessionEvent, SessionToolCall};
     use crate::frontend::tui::state::SharedUiState;
     use agent::types::{ContextWindowUsage, TokenLedgerSnapshot, TokenUsage, TokenUsagePhase};
 
@@ -210,6 +287,34 @@ mod tests {
                 .contains(
                     "context 64000 / 400000 tokens, input 20000 output 1200 prefill 17000 decode 1200 cache 3000"
                 )
+        );
+    }
+
+    #[test]
+    fn tool_lifecycle_events_are_projected_into_transcript_timeline() {
+        let ui_state = SharedUiState::new();
+        let call = SessionToolCall {
+            tool_name: "bash".to_string(),
+            call_id: "call_123".to_string(),
+            origin: "shell".to_string(),
+        };
+        let mut observer = SharedRenderObserver::new(ui_state.clone());
+
+        observer.apply_event(SessionEvent::ModelRequestStarted { iteration: 1 });
+        observer.apply_event(SessionEvent::ToolLifecycleStarted { call: call.clone() });
+        observer.apply_event(SessionEvent::ToolLifecycleCompleted {
+            call,
+            output_preview: "listed files".to_string(),
+            structured_output_preview: None,
+        });
+
+        let snapshot = ui_state.snapshot();
+        assert!(snapshot.transcript.iter().all(|line| !line.contains('>')));
+        assert!(
+            snapshot
+                .transcript
+                .iter()
+                .any(|line| line == "• Called bash\n  └ listed files")
         );
     }
 }
