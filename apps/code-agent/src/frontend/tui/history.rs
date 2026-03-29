@@ -20,14 +20,15 @@ pub(crate) fn format_session_summary_line(summary: &PersistedSessionSummary) -> 
         .as_deref()
         .map(|value| preview_text(value, 36))
         .unwrap_or_else(|| "no prompt yet".to_string());
-    format!(
-        "{}  msgs={} ev={} workers={} resume={}  {}",
-        preview_id(&summary.session_ref),
-        summary.transcript_message_count,
-        summary.event_count,
-        summary.worker_session_count,
-        summary.resume_support.label(),
-        prompt
+    shell_summary(
+        format!("• {}  {}", preview_id(&summary.session_ref), prompt),
+        [format!(
+            "{} messages · {} events · {} agent sessions · resume {}",
+            summary.transcript_message_count,
+            summary.event_count,
+            summary.worker_session_count,
+            summary.resume_support.label()
+        )],
     )
 }
 
@@ -35,40 +36,56 @@ pub(crate) fn format_agent_session_summary_line(summary: &PersistedAgentSessionS
     let prompt = summary
         .last_user_prompt
         .as_deref()
-        .map(|value| preview_text(value, 28))
+        .map(|value| preview_text(value, 36))
         .unwrap_or_else(|| "no prompt yet".to_string());
-    format!(
-        "{}  session={} label={} ev={} msgs={} resume={}  {}",
-        preview_id(&summary.agent_session_ref),
-        preview_id(&summary.session_ref),
-        summary.label,
-        summary.event_count,
-        summary.transcript_message_count,
-        summary.resume_support.label(),
-        prompt
+    shell_summary(
+        format!(
+            "• {}  {}",
+            preview_id(&summary.agent_session_ref),
+            summary.label
+        ),
+        [
+            format!(
+                "session {} · {} messages · {} events · resume {}",
+                preview_id(&summary.session_ref),
+                summary.transcript_message_count,
+                summary.event_count,
+                summary.resume_support.label()
+            ),
+            format!("prompt {prompt}"),
+        ],
     )
 }
 
 pub(crate) fn format_task_summary_line(summary: &PersistedTaskSummary) -> String {
-    format!(
-        "{}  session={} role={} status={}  {}",
-        summary.task_id,
-        preview_id(&summary.session_ref),
-        summary.role,
-        summary.status,
-        preview_text(&summary.summary, 48)
+    shell_summary(
+        format!("• {}  {}", summary.task_id, summary.status),
+        [
+            format!(
+                "role {} · session {}",
+                summary.role,
+                preview_id(&summary.session_ref)
+            ),
+            preview_text(&summary.summary, 72),
+        ],
     )
 }
 
 pub(crate) fn format_live_task_summary_line(summary: &LiveTaskSummary) -> String {
-    format!(
-        "{}  status={} role={} agent={} session={} agent_session={}",
-        summary.task_id,
-        summary.status,
-        summary.role,
-        preview_id(&summary.agent_id),
-        preview_id(&summary.session_ref),
-        preview_id(&summary.agent_session_ref)
+    shell_summary(
+        format!("• {}  {}", summary.task_id, summary.status),
+        [
+            format!(
+                "role {} · agent {}",
+                summary.role,
+                preview_id(&summary.agent_id)
+            ),
+            format!(
+                "session {} · agent session {}",
+                preview_id(&summary.session_ref),
+                preview_id(&summary.agent_session_ref)
+            ),
+        ],
     )
 }
 
@@ -85,16 +102,33 @@ pub(crate) fn format_live_task_spawn_outcome(outcome: &LiveTaskSpawnOutcome) -> 
 }
 
 pub(crate) fn format_session_search_line(result: &PersistedSessionSearchMatch) -> String {
-    let base = format_session_summary_line(&result.summary);
-    if result.preview_matches.is_empty() {
-        format!("{base}  matches={}", result.matched_event_count)
-    } else {
-        format!(
-            "{base}  matches={}  {}",
-            result.matched_event_count,
-            preview_text(&result.preview_matches.join(" | "), 80)
-        )
-    }
+    let prompt = result
+        .summary
+        .last_user_prompt
+        .as_deref()
+        .map(|value| preview_text(value, 36))
+        .unwrap_or_else(|| "no prompt yet".to_string());
+    shell_summary(
+        format!("• {}  {}", preview_id(&result.summary.session_ref), prompt),
+        [
+            format!(
+                "{} messages · {} events · {} agent sessions · resume {}",
+                result.summary.transcript_message_count,
+                result.summary.event_count,
+                result.summary.worker_session_count,
+                result.summary.resume_support.label()
+            ),
+            format!("matched {} event(s)", result.matched_event_count),
+            (!result.preview_matches.is_empty())
+                .then(|| {
+                    format!(
+                        "preview {}",
+                        preview_text(&result.preview_matches.join(" | "), 80)
+                    )
+                })
+                .unwrap_or_default(),
+        ],
+    )
 }
 
 pub(crate) fn format_session_inspector(session: &LoadedSession) -> Vec<String> {
@@ -637,6 +671,14 @@ fn format_hook_event_label(event: HookEvent) -> &'static str {
     }
 }
 
+fn format_tool_origin(origin: &agent::types::ToolOrigin) -> String {
+    match origin {
+        agent::types::ToolOrigin::Local => "local".to_string(),
+        agent::types::ToolOrigin::Mcp { server_name } => format!("mcp:{server_name}"),
+        agent::types::ToolOrigin::Provider { provider } => format!("provider:{provider}"),
+    }
+}
+
 fn task_status_headline(task_id: &str, status: &AgentStatus) -> String {
     match status {
         AgentStatus::Completed => format!("✔ Task {task_id} completed"),
@@ -974,8 +1016,11 @@ fn format_session_event_line(event: &SessionEventEnvelope) -> String {
         ),
         SessionEventKind::ToolApprovalRequested { call, reasons } => shell_summary(
             format!("• Awaiting approval for {}", call.tool_name),
-            tool_argument_preview_lines(call.tool_name.as_str(), &call.arguments)
-                .into_iter()
+            std::iter::once(format!("origin {}", format_tool_origin(&call.origin)))
+                .chain(tool_argument_preview_lines(
+                    call.tool_name.as_str(),
+                    &call.arguments,
+                ))
                 .chain(std::iter::once(
                     reasons
                         .first()
@@ -1102,11 +1147,11 @@ fn format_session_event_line(event: &SessionEventEnvelope) -> String {
 mod tests {
     use super::{
         format_live_task_wait_outcome, format_session_event_line, format_session_export_result,
-        format_session_operation_outcome,
+        format_session_operation_outcome, format_session_summary_line,
     };
     use crate::backend::{
-        LiveTaskWaitOutcome, SessionExportArtifact, SessionExportKind, SessionOperationAction,
-        SessionOperationOutcome, SessionStartupSnapshot,
+        LiveTaskWaitOutcome, PersistedSessionSummary, ResumeSupport, SessionExportArtifact,
+        SessionExportKind, SessionOperationAction, SessionOperationOutcome, SessionStartupSnapshot,
     };
     use agent::types::{
         AgentSessionId, AgentStatus, Message, SessionEventEnvelope, SessionEventKind, SessionId,
@@ -1144,6 +1189,25 @@ mod tests {
         assert_eq!(lines[1], "  └ session session-1");
         assert_eq!(lines[2], "  └ agent session agent-session-2");
         assert_eq!(lines[3], "  └ requested agent-session-1");
+    }
+
+    #[test]
+    fn session_summary_uses_two_line_shell_layout() {
+        let line = format_session_summary_line(&PersistedSessionSummary {
+            session_ref: "session_12345678".to_string(),
+            first_timestamp_ms: 1,
+            last_timestamp_ms: 2,
+            event_count: 40,
+            worker_session_count: 2,
+            transcript_message_count: 12,
+            last_user_prompt: Some("Refine the approval preview".to_string()),
+            resume_support: ResumeSupport::AttachedToActiveRuntime,
+        });
+
+        assert_eq!(
+            line,
+            "• session_  Refine the approval preview\n  └ 12 messages · 40 events · 2 agent sessions · resume attached"
+        );
     }
 
     #[test]
@@ -1203,7 +1267,7 @@ mod tests {
 
         assert_eq!(
             format_session_event_line(&event),
-            "• Awaiting approval for bash\n  └ $ cargo test\n  └ reason sandbox policy requires approval"
+            "• Awaiting approval for bash\n  └ origin local\n  └ $ cargo test\n  └ reason sandbox policy requires approval"
         );
     }
 

@@ -4,6 +4,7 @@ use agent::runtime::{
     ToolApprovalRequest,
 };
 use async_trait::async_trait;
+use serde_json::Value;
 use std::sync::{Arc, RwLock};
 use tokio::sync::oneshot;
 
@@ -11,17 +12,25 @@ use tokio::sync::oneshot;
 pub(crate) struct ApprovalPrompt {
     pub(crate) tool_name: String,
     pub(crate) origin: String,
+    pub(crate) mode: Option<String>,
+    pub(crate) working_directory: Option<String>,
+    pub(crate) content_label: String,
+    pub(crate) content_preview: Vec<String>,
     pub(crate) reasons: Vec<String>,
-    pub(crate) arguments_preview: Vec<String>,
 }
 
 impl ApprovalPrompt {
     pub(crate) fn from_request(request: &ToolApprovalRequest) -> Self {
+        let (content_label, content_preview) =
+            approval_content_preview(request.call.tool_name.as_str(), &request.call.arguments);
         Self {
             tool_name: request.call.tool_name.to_string(),
             origin: tool_origin_label(&request.call.origin),
+            mode: approval_mode(&request.call.arguments),
+            working_directory: approval_working_directory(&request.call.arguments),
+            content_label,
+            content_preview,
             reasons: request.reasons.clone(),
-            arguments_preview: truncate_preview(&request.call.arguments.to_string(), 14, 72),
         }
     }
 }
@@ -139,14 +148,95 @@ fn tool_origin_label(origin: &ToolOrigin) -> String {
     }
 }
 
-fn truncate_preview(value: &str, max_lines: usize, max_columns: usize) -> Vec<String> {
-    let mut lines = Vec::new();
-    for line in value.lines() {
-        if lines.len() == max_lines {
-            lines.push("...".to_string());
-            break;
+fn approval_content_preview(tool_name: &str, arguments: &Value) -> (String, Vec<String>) {
+    if tool_name == "bash"
+        && let Some(command) = arguments.get("command").and_then(Value::as_str)
+        && !command.trim().is_empty()
+    {
+        return (
+            "command".to_string(),
+            collapse_preview(&format!("$ {}", command.trim()), 6, 96),
+        );
+    }
+
+    if tool_name == "todo_read" {
+        let include_completed = arguments
+            .get("include_completed")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        return (
+            "arguments".to_string(),
+            vec![format!(
+                "read todos{}",
+                if include_completed {
+                    " (including completed)"
+                } else {
+                    ""
+                }
+            )],
+        );
+    }
+
+    if tool_name == "todo_write" {
+        let command = arguments
+            .get("command")
+            .and_then(Value::as_str)
+            .unwrap_or("replace");
+        let item_count = arguments
+            .get("items")
+            .and_then(Value::as_array)
+            .map_or(0, Vec::len);
+        return (
+            "arguments".to_string(),
+            vec![format!("{command} {item_count} todo item(s)")],
+        );
+    }
+
+    for key in ["path", "uri", "query", "prompt", "message"] {
+        if let Some(value) = arguments.get(key).and_then(Value::as_str)
+            && !value.trim().is_empty()
+        {
+            return (
+                "arguments".to_string(),
+                collapse_preview(value.trim(), 6, 96),
+            );
         }
-        let clipped = if line.chars().count() > max_columns {
+    }
+
+    (
+        "arguments".to_string(),
+        collapse_preview(&arguments.to_string(), 8, 88),
+    )
+}
+
+fn approval_mode(arguments: &Value) -> Option<String> {
+    arguments
+        .get("mode")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn approval_working_directory(arguments: &Value) -> Option<String> {
+    for key in ["cwd", "workdir", "working_directory", "working_dir"] {
+        if let Some(value) = arguments.get(key).and_then(Value::as_str)
+            && !value.trim().is_empty()
+        {
+            return Some(value.trim().to_string());
+        }
+    }
+    None
+}
+
+fn collapse_preview(value: &str, max_lines: usize, max_columns: usize) -> Vec<String> {
+    let raw_lines = value.lines().collect::<Vec<_>>();
+    if raw_lines.is_empty() {
+        return vec!["<empty>".to_string()];
+    }
+
+    let clip_line = |line: &str| {
+        if line.chars().count() > max_columns {
             format!(
                 "{}...",
                 line.chars()
@@ -155,19 +245,37 @@ fn truncate_preview(value: &str, max_lines: usize, max_columns: usize) -> Vec<St
             )
         } else {
             line.to_string()
-        };
-        lines.push(clipped);
+        }
+    };
+
+    if raw_lines.len() <= max_lines.max(1) {
+        return raw_lines.into_iter().map(clip_line).collect();
     }
-    if lines.is_empty() {
-        lines.push("<empty>".to_string());
-    }
+
+    let head = max_lines.max(2) / 2;
+    let tail = max_lines.max(2) - head;
+    let mut lines = raw_lines
+        .iter()
+        .take(head)
+        .copied()
+        .map(clip_line)
+        .collect::<Vec<_>>();
+    lines.push("...".to_string());
+    lines.extend(
+        raw_lines
+            .iter()
+            .skip(raw_lines.len().saturating_sub(tail))
+            .copied()
+            .map(clip_line),
+    );
     lines
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        ApprovalCoordinator, ApprovalDecision, NonInteractiveToolApprovalHandler, tool_origin_label,
+        ApprovalCoordinator, ApprovalDecision, ApprovalPrompt, NonInteractiveToolApprovalHandler,
+        tool_origin_label,
     };
     use agent::runtime::{ToolApprovalHandler, ToolApprovalOutcome, ToolApprovalRequest};
     use agent::types::{ToolCall, ToolCallId, ToolOrigin, ToolOutputMode, ToolSpec};
@@ -222,5 +330,42 @@ mod tests {
             }),
             "mcp:docs"
         );
+    }
+
+    #[test]
+    fn approval_prompt_extracts_bash_command_context() {
+        let prompt = ApprovalPrompt::from_request(&ToolApprovalRequest {
+            call: ToolCall {
+                id: ToolCallId::new(),
+                call_id: "call-1".into(),
+                tool_name: "bash".into(),
+                arguments: json!({
+                    "command": "cargo test -p code-agent",
+                    "cwd": "/workspace/apps/code-agent",
+                    "mode": "run"
+                }),
+                origin: ToolOrigin::Local,
+            },
+            spec: ToolSpec {
+                name: "bash".into(),
+                description: "run shell commands".to_string(),
+                input_schema: json!({"type":"object"}),
+                output_mode: ToolOutputMode::Text,
+                output_schema: None,
+                origin: ToolOrigin::Local,
+                annotations: BTreeMap::new(),
+            },
+            reasons: vec!["sandbox policy requires approval".to_string()],
+        });
+
+        assert_eq!(prompt.tool_name, "bash");
+        assert_eq!(prompt.origin, "local");
+        assert_eq!(prompt.mode.as_deref(), Some("run"));
+        assert_eq!(
+            prompt.working_directory.as_deref(),
+            Some("/workspace/apps/code-agent")
+        );
+        assert_eq!(prompt.content_label, "command");
+        assert_eq!(prompt.content_preview, vec!["$ cargo test -p code-agent"]);
     }
 }

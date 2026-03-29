@@ -239,26 +239,50 @@ fn composer_inner_area(area: Rect) -> Rect {
 }
 
 fn build_approval_text(approval: &ApprovalPrompt) -> Text<'static> {
-    let headline = if approval.tool_name == "bash" {
-        format!("Run this command from {}?", approval.origin)
-    } else {
-        format!("Continue this tool call from {}?", approval.origin)
-    };
     let mut lines = vec![Line::from(Span::styled(
-        headline,
-        Style::default().fg(HEADER),
+        "Approval required".to_string(),
+        Style::default().fg(HEADER).add_modifier(Modifier::BOLD),
     ))];
-    for line in approval_preview_lines(&approval.arguments_preview) {
+    lines.push(approval_meta_line(
+        "tool",
+        &approval.tool_name,
+        Style::default().fg(TEXT),
+    ));
+    lines.push(approval_meta_line(
+        "origin",
+        &approval.origin,
+        Style::default().fg(MUTED),
+    ));
+    if let Some(mode) = approval.mode.as_deref() {
+        lines.push(approval_meta_line("mode", mode, Style::default().fg(MUTED)));
+    }
+    if let Some(working_directory) = approval.working_directory.as_deref() {
+        lines.push(approval_meta_line(
+            "cwd",
+            &preview_text(working_directory, 96),
+            Style::default().fg(TEXT),
+        ));
+    }
+    lines.push(approval_section_label(&approval.content_label));
+    for line in approval_preview_lines(&approval.content_preview) {
         lines.push(Line::from(vec![
             Span::styled("  ", Style::default().fg(SUBTLE)),
             code_span(&line),
         ]));
     }
     if !approval.reasons.is_empty() {
-        lines.extend(approval.reasons.iter().take(2).map(|reason| {
+        let mut reasons = approval.reasons.iter().take(2);
+        if let Some(first) = reasons.next() {
+            lines.push(approval_meta_line(
+                "reason",
+                &preview_text(first, 96),
+                Style::default().fg(MUTED),
+            ));
+        }
+        lines.extend(reasons.map(|reason| {
             Line::from(vec![
-                Span::styled("  ", Style::default().fg(SUBTLE)),
-                Span::styled(preview_text(reason, 84), Style::default().fg(MUTED)),
+                Span::styled("        ", Style::default().fg(SUBTLE)),
+                Span::styled(preview_text(reason, 96), Style::default().fg(MUTED)),
             ])
         }));
     }
@@ -276,7 +300,24 @@ fn build_approval_text(approval: &ApprovalPrompt) -> Text<'static> {
 }
 
 fn approval_band_height(approval: &ApprovalPrompt) -> u16 {
-    build_approval_text(approval).lines.len().clamp(2, 6) as u16
+    build_approval_text(approval).lines.len().clamp(4, 9) as u16
+}
+
+fn approval_meta_line(label: &str, value: &str, value_style: Style) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(
+            format!("{label:<7}"),
+            Style::default().fg(SUBTLE).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(value.to_string(), value_style),
+    ])
+}
+
+fn approval_section_label(label: &str) -> Line<'static> {
+    Line::from(vec![Span::styled(
+        label.to_string(),
+        Style::default().fg(MUTED).add_modifier(Modifier::BOLD),
+    )])
 }
 
 fn build_command_hint_text(command_hint: &SlashCommandHint) -> Text<'static> {
@@ -1122,6 +1163,7 @@ fn build_command_palette_text(lines: &[String]) -> Text<'static> {
 fn build_collection_text(title: &str, lines: &[String]) -> Text<'static> {
     let accent = inspector_accent(title);
     let mut rendered = Vec::new();
+    let mut saw_entry = false;
     for line in lines {
         if let Some(section) = line.strip_prefix("## ") {
             if !rendered.is_empty() {
@@ -1131,6 +1173,7 @@ fn build_collection_text(title: &str, lines: &[String]) -> Text<'static> {
                 section.to_string(),
                 Style::default().fg(HEADER).add_modifier(Modifier::BOLD),
             )));
+            saw_entry = false;
             continue;
         }
         if line.starts_with("No ") || line.starts_with("no ") {
@@ -1138,10 +1181,22 @@ fn build_collection_text(title: &str, lines: &[String]) -> Text<'static> {
                 line.to_string(),
                 Style::default().fg(SUBTLE),
             )));
+            saw_entry = true;
+            continue;
+        }
+        if is_shell_summary_block(line) {
+            if saw_entry {
+                rendered.push(Line::raw(""));
+            }
+            for raw_line in line.lines() {
+                rendered.extend(render_shell_summary_line(raw_line));
+            }
+            saw_entry = true;
             continue;
         }
         let (primary, secondary) = split_list_entry(line);
         rendered.push(collection_line(primary, secondary, accent));
+        saw_entry = true;
     }
     Text::from(rendered)
 }
@@ -1189,6 +1244,12 @@ fn is_collection_inspector(title: &str) -> bool {
             | "Sessions"
             | "Session Search"
     )
+}
+
+fn is_shell_summary_block(entry: &str) -> bool {
+    entry
+        .lines()
+        .all(|line| line.trim().is_empty() || is_shell_summary_line(line))
 }
 
 fn is_command_palette_title(title: &str) -> bool {
@@ -1472,20 +1533,25 @@ mod tests {
     }
 
     #[test]
-    fn collection_text_promotes_primary_column_for_catalog_rows() {
+    fn collection_text_renders_shell_summary_blocks_for_history_rows() {
         let rendered = build_collection_text(
             "Sessions",
             &[
                 "## Sessions".to_string(),
-                "sess_123  msgs=12 ev=40  no prompt yet".to_string(),
+                "• sess_123  no prompt yet\n  └ 12 messages · 40 events · 2 agent sessions · resume attached"
+                    .to_string(),
             ],
         );
 
-        assert_eq!(rendered.lines[1].spans[0].content.as_ref(), "-");
-        assert_eq!(rendered.lines[1].spans[2].content.as_ref(), "sess_123");
+        assert_eq!(rendered.lines[1].spans[0].content.as_ref(), "•");
         assert_eq!(
-            rendered.lines[1].spans[4].content.as_ref(),
-            "msgs=12 ev=40  no prompt yet"
+            rendered.lines[1].spans[2].content.as_ref(),
+            "sess_123  no prompt yet"
+        );
+        assert_eq!(rendered.lines[2].spans[0].content.as_ref(), "  └ ");
+        assert_eq!(
+            rendered.lines[2].spans[1].content.as_ref(),
+            "12 messages · 40 events · 2 agent sessions · resume attached"
         );
     }
 
@@ -1626,22 +1692,28 @@ mod tests {
     }
 
     #[test]
-    fn approval_band_uses_inline_prompt_language() {
+    fn approval_band_uses_structured_command_preview() {
         let text = build_approval_text(&ApprovalPrompt {
             tool_name: "bash".to_string(),
             origin: "local".to_string(),
+            mode: Some("run".to_string()),
+            working_directory: Some("/workspace/apps/code-agent".to_string()),
+            content_label: "command".to_string(),
+            content_preview: vec!["$ cargo test".to_string()],
             reasons: vec!["sandbox policy requires approval".to_string()],
-            arguments_preview: vec!["$ cargo test".to_string()],
         });
 
-        assert_eq!(
-            text.lines[0].spans[0].content.as_ref(),
-            "Run this command from local?"
-        );
+        assert_eq!(text.lines[0].spans[0].content.as_ref(), "Approval required");
+        assert_eq!(text.lines[1].spans[0].content.as_ref(), "tool   ");
+        assert_eq!(text.lines[1].spans[1].content.as_ref(), "bash");
+        assert_eq!(text.lines[2].spans[0].content.as_ref(), "origin ");
+        assert_eq!(text.lines[3].spans[0].content.as_ref(), "mode   ");
+        assert_eq!(text.lines[4].spans[0].content.as_ref(), "cwd    ");
+        assert_eq!(text.lines[5].spans[0].content.as_ref(), "command");
         assert!(text.lines.iter().any(|line| {
             line.spans
                 .iter()
-                .any(|span| span.content.as_ref().contains("y"))
+                .any(|span| span.content.as_ref().contains("$ cargo test"))
         }));
         assert!(text.lines.iter().any(|line| {
             line.spans.iter().any(|span| {
