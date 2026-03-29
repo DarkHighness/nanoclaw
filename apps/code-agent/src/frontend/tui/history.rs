@@ -7,7 +7,10 @@ use crate::backend::{
     PersistedTaskSummary, SessionExportArtifact, SessionExportKind, SessionOperationAction,
     SessionOperationOutcome, StartupDiagnosticsSnapshot, message_to_text, preview_id,
 };
-use agent::types::{AgentSessionId, Message, SessionEventEnvelope, SessionEventKind};
+use agent::types::{
+    AgentEnvelopeKind, AgentSessionId, AgentStatus, HookEvent, Message, SessionEventEnvelope,
+    SessionEventKind,
+};
 use store::TokenUsageRecord;
 
 pub(crate) fn format_session_summary_line(summary: &PersistedSessionSummary) -> String {
@@ -424,9 +427,9 @@ pub(crate) fn format_live_task_message_outcome(outcome: &LiveTaskMessageOutcome)
 
 pub(crate) fn format_live_task_wait_outcome(outcome: &LiveTaskWaitOutcome) -> Vec<String> {
     let headline = match outcome.status {
-        agent::types::AgentStatus::Completed => format!("✔ Task {} finished", outcome.task_id),
-        agent::types::AgentStatus::Failed => format!("✗ Task {} failed", outcome.task_id),
-        agent::types::AgentStatus::Cancelled => format!("✗ Task {} cancelled", outcome.task_id),
+        AgentStatus::Completed => format!("• Finished waiting for task {}", outcome.task_id),
+        AgentStatus::Failed => format!("✗ Finished waiting for task {}", outcome.task_id),
+        AgentStatus::Cancelled => format!("✗ Waiting cancelled for task {}", outcome.task_id),
         _ => format!("• Waiting finished for task {}", outcome.task_id),
     };
     let mut lines = vec![
@@ -578,30 +581,157 @@ fn format_task_message_line(message: &crate::backend::LoadedTaskMessage) -> Stri
     )
 }
 
+fn shell_summary(headline: impl Into<String>, details: impl IntoIterator<Item = String>) -> String {
+    let mut lines = vec![headline.into()];
+    for detail in details.into_iter().filter(|detail| !detail.is_empty()) {
+        lines.push(format!("  └ {detail}"));
+    }
+    lines.join("\n")
+}
+
+fn format_reason_detail(reason: Option<&str>) -> Option<String> {
+    reason
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| format!("reason {}", preview_text(value, 72)))
+}
+
+fn format_hook_event_label(event: HookEvent) -> &'static str {
+    match event {
+        HookEvent::SessionStart => "session start",
+        HookEvent::InstructionsLoaded => "instructions loaded",
+        HookEvent::UserPromptSubmit => "prompt submit",
+        HookEvent::PreToolUse => "pre-tool hook",
+        HookEvent::PermissionRequest => "permission request",
+        HookEvent::PostToolUse => "post-tool hook",
+        HookEvent::PostToolUseFailure => "post-tool failure hook",
+        HookEvent::Notification => "notification hook",
+        HookEvent::SubagentStart => "subagent start",
+        HookEvent::SubagentStop => "subagent stop",
+        HookEvent::Stop => "stop hook",
+        HookEvent::StopFailure => "stop failure hook",
+        HookEvent::ConfigChange => "config change",
+        HookEvent::PreCompact => "pre-compact hook",
+        HookEvent::PostCompact => "post-compact hook",
+        HookEvent::SessionEnd => "session end",
+        HookEvent::Elicitation => "elicitation",
+        HookEvent::ElicitationResult => "elicitation result",
+    }
+}
+
+fn task_status_headline(task_id: &str, status: &AgentStatus) -> String {
+    match status {
+        AgentStatus::Completed => format!("✔ Task {task_id} completed"),
+        AgentStatus::Failed => format!("✗ Task {task_id} failed"),
+        AgentStatus::Cancelled => format!("✗ Task {task_id} cancelled"),
+        AgentStatus::WaitingApproval => format!("• Task {task_id} is waiting for approval"),
+        AgentStatus::WaitingMessage => format!("• Task {task_id} is waiting for a message"),
+        AgentStatus::Queued => format!("• Task {task_id} is queued"),
+        AgentStatus::Running => format!("• Task {task_id} is running"),
+    }
+}
+
+fn format_agent_envelope_kind(kind: &AgentEnvelopeKind) -> String {
+    match kind {
+        AgentEnvelopeKind::SpawnRequested { task } => shell_summary(
+            format!("• Requested {} task {}", task.role, task.task_id),
+            [format!("prompt {}", preview_text(&task.prompt, 72))],
+        ),
+        AgentEnvelopeKind::Started { task } => shell_summary(
+            format!("• Started {} task {}", task.role, task.task_id),
+            [format!("prompt {}", preview_text(&task.prompt, 72))],
+        ),
+        AgentEnvelopeKind::StatusChanged { status } => match status {
+            AgentStatus::Completed => "✔ Agent completed".to_string(),
+            AgentStatus::Failed => "✗ Agent failed".to_string(),
+            AgentStatus::Cancelled => "✗ Agent cancelled".to_string(),
+            AgentStatus::WaitingApproval => "• Agent is waiting for approval".to_string(),
+            AgentStatus::WaitingMessage => "• Agent is waiting for a message".to_string(),
+            AgentStatus::Queued => "• Agent is queued".to_string(),
+            AgentStatus::Running => "• Agent is running".to_string(),
+        },
+        AgentEnvelopeKind::Message { channel, payload } => shell_summary(
+            format!("• Agent message on {channel}"),
+            [format!(
+                "payload {}",
+                preview_text(&payload.to_string(), 72)
+            )],
+        ),
+        AgentEnvelopeKind::Artifact { artifact } => shell_summary(
+            format!("• Emitted {} artifact", artifact.kind),
+            [format!("uri {}", preview_text(&artifact.uri, 72))],
+        ),
+        AgentEnvelopeKind::ClaimRequested { files } => shell_summary(
+            "• Requested file claim",
+            [format!("files {}", preview_text(&files.join(", "), 72))],
+        ),
+        AgentEnvelopeKind::ClaimGranted { files } => shell_summary(
+            "✔ Claimed files",
+            [format!("files {}", preview_text(&files.join(", "), 72))],
+        ),
+        AgentEnvelopeKind::ClaimRejected { files, owner } => shell_summary(
+            "✗ File claim rejected",
+            [
+                format!("files {}", preview_text(&files.join(", "), 72)),
+                format!("owner {}", preview_id(owner.as_str())),
+            ],
+        ),
+        AgentEnvelopeKind::Result { result } => {
+            let headline = task_status_headline(&result.task_id, &result.status);
+            shell_summary(
+                headline,
+                [
+                    format!("summary {}", preview_text(&result.summary, 72)),
+                    (!result.claimed_files.is_empty())
+                        .then(|| {
+                            format!(
+                                "claimed files {}",
+                                preview_text(&result.claimed_files.join(", "), 72)
+                            )
+                        })
+                        .unwrap_or_default(),
+                ],
+            )
+        }
+        AgentEnvelopeKind::Failed { error } => shell_summary(
+            "✗ Agent failed",
+            [format!("error {}", preview_text(error, 72))],
+        ),
+        AgentEnvelopeKind::Cancelled { reason } => shell_summary(
+            "✗ Agent cancelled",
+            [format_reason_detail(reason.as_deref())
+                .unwrap_or_else(|| "no reason recorded".to_string())],
+        ),
+        AgentEnvelopeKind::Heartbeat => "• Agent heartbeat".to_string(),
+    }
+}
+
 fn format_session_event_line(event: &SessionEventEnvelope) -> String {
     match &event.event {
-        SessionEventKind::SessionStart { reason } => {
-            format!("session_start {}", reason.as_deref().unwrap_or(""))
-                .trim()
-                .to_string()
-        }
-        SessionEventKind::InstructionsLoaded { count } => {
-            format!("instructions_loaded count={count}")
-        }
-        SessionEventKind::SteerApplied { message, reason } => format!(
-            "steer {} {}",
-            reason.as_deref().unwrap_or(""),
-            preview_text(message, 24)
-        )
-        .trim()
-        .to_string(),
+        SessionEventKind::SessionStart { reason } => shell_summary(
+            "• Started session",
+            [format_reason_detail(reason.as_deref()).unwrap_or_default()],
+        ),
+        SessionEventKind::InstructionsLoaded { count } => shell_summary(
+            "• Loaded instructions",
+            [format!("{count} instruction block(s)")],
+        ),
+        SessionEventKind::SteerApplied { message, reason } => shell_summary(
+            "• Applied steer",
+            [
+                format!("message {}", preview_text(message, 72)),
+                format_reason_detail(reason.as_deref()).unwrap_or_default(),
+            ],
+        ),
         SessionEventKind::UserPromptSubmit { prompt } => {
-            format!("user_prompt {}", preview_text(prompt, 42))
+            format!("› {}", preview_text(prompt, 96))
         }
-        SessionEventKind::ModelRequestStarted { request } => format!(
-            "model_request messages={} tools={}",
-            request.messages.len(),
-            request.tools.len()
+        SessionEventKind::ModelRequestStarted { request } => shell_summary(
+            "• Requested model response",
+            [
+                format!("messages {}", request.messages.len()),
+                format!("tools {}", request.tools.len()),
+            ],
         ),
         SessionEventKind::CompactionCompleted {
             reason,
@@ -609,123 +739,194 @@ fn format_session_event_line(event: &SessionEventEnvelope) -> String {
             retained_message_count,
             summary_chars,
             ..
-        } => format!(
-            "compaction {} messages={} kept={} summary_chars={}",
-            reason, source_message_count, retained_message_count, summary_chars
+        } => shell_summary(
+            "• Compacted session context",
+            [
+                format!("reason {}", preview_text(reason, 48)),
+                format!(
+                    "messages {} -> {}",
+                    source_message_count, retained_message_count
+                ),
+                format!("summary chars {summary_chars}"),
+            ],
         ),
         SessionEventKind::ModelResponseCompleted {
             assistant_text,
             tool_calls,
             ..
-        } => format!(
-            "model_response text={} tool_calls={}",
-            preview_text(assistant_text, 24),
-            tool_calls.len()
+        } => shell_summary(
+            "• Finished model response",
+            [
+                (!assistant_text.trim().is_empty())
+                    .then(|| format!("text {}", preview_text(assistant_text, 72)))
+                    .unwrap_or_default(),
+                (!tool_calls.is_empty())
+                    .then(|| format!("tool calls {}", tool_calls.len()))
+                    .unwrap_or_default(),
+            ],
         ),
-        SessionEventKind::TokenUsageUpdated { phase, ledger } => format!(
-            "token_usage {:?} context={} input={} output={}",
-            phase,
-            ledger
-                .context_window
-                .map(|usage| format!("{}/{}", usage.used_tokens, usage.max_tokens))
-                .unwrap_or_else(|| "unknown".to_string()),
-            ledger.cumulative_usage.input_tokens,
-            ledger.cumulative_usage.output_tokens,
+        SessionEventKind::TokenUsageUpdated { phase, ledger } => shell_summary(
+            "• Updated token usage",
+            [
+                format!("phase {:?}", phase),
+                format!(
+                    "context {}",
+                    ledger
+                        .context_window
+                        .map(|usage| format!("{}/{}", usage.used_tokens, usage.max_tokens))
+                        .unwrap_or_else(|| "unknown".to_string())
+                ),
+                format!(
+                    "tokens in={} out={} cache={}",
+                    ledger.cumulative_usage.input_tokens,
+                    ledger.cumulative_usage.output_tokens,
+                    ledger.cumulative_usage.cache_read_tokens
+                ),
+            ],
         ),
-        SessionEventKind::HookInvoked { hook_name, event } => {
-            format!("hook_invoked {hook_name} {:?}", event)
-        }
+        SessionEventKind::HookInvoked { hook_name, event } => shell_summary(
+            format!("• Running hook {hook_name}"),
+            [format!("event {}", format_hook_event_label(*event))],
+        ),
         SessionEventKind::HookCompleted {
             hook_name, output, ..
-        } => format!(
-            "hook_completed {hook_name} effects={}",
-            output.effects.len()
+        } => shell_summary(
+            format!("• Finished hook {hook_name}"),
+            [format!("effects {}", output.effects.len())],
         ),
         SessionEventKind::TranscriptMessage { message } => {
-            format!("transcript {}", preview_text(&message_to_text(message), 42))
+            format_transcript_entry(&message_to_text(message))
         }
         SessionEventKind::TranscriptMessagePatched {
             message_id,
             message,
-        } => format!(
-            "transcript_patch {} {}",
-            preview_id(message_id.as_str()),
-            preview_text(&message_to_text(message), 32)
+        } => shell_summary(
+            "• Updated transcript message",
+            [
+                format!("message {}", preview_id(message_id.as_str())),
+                format!("content {}", preview_text(&message_to_text(message), 72)),
+            ],
         ),
-        SessionEventKind::TranscriptMessageRemoved { message_id } => {
-            format!("transcript_remove {}", preview_id(message_id.as_str()))
-        }
-        SessionEventKind::ToolApprovalRequested { call, .. } => {
-            format!("approval_requested {}", call.tool_name)
-        }
-        SessionEventKind::ToolApprovalResolved { call, approved, .. } => {
-            format!("approval_resolved {} approved={approved}", call.tool_name)
-        }
-        SessionEventKind::ToolCallStarted { call } => format!("tool_started {}", call.tool_name),
-        SessionEventKind::ToolCallCompleted { call, output } => format!(
-            "tool_completed {} {}",
-            call.tool_name,
-            preview_text(&output.text_content(), 24)
+        SessionEventKind::TranscriptMessageRemoved { message_id } => shell_summary(
+            "• Removed transcript message",
+            [format!("message {}", preview_id(message_id.as_str()))],
         ),
-        SessionEventKind::ToolCallFailed { call, error } => {
-            format!("tool_failed {} {}", call.tool_name, preview_text(error, 24))
+        SessionEventKind::ToolApprovalRequested { call, reasons } => shell_summary(
+            format!("• Waiting for approval to run {}", call.tool_name),
+            [reasons
+                .first()
+                .map(|reason| format!("reason {}", preview_text(reason, 72)))
+                .unwrap_or_default()],
+        ),
+        SessionEventKind::ToolApprovalResolved {
+            call,
+            approved,
+            reason,
+        } => shell_summary(
+            if *approved {
+                format!("✔ Approved {}", call.tool_name)
+            } else {
+                format!("✗ Denied {}", call.tool_name)
+            },
+            [format_reason_detail(reason.as_deref()).unwrap_or_default()],
+        ),
+        SessionEventKind::ToolCallStarted { call } => {
+            format!("• Running {}", call.tool_name)
         }
-        SessionEventKind::Notification { source, message } => {
-            format!("notification {source} {}", preview_text(message, 24))
-        }
-        SessionEventKind::TaskCreated { task, .. } => format!(
-            "task_created {} role={} claims={}",
-            task.task_id,
-            task.role,
-            task.requested_write_set.len()
+        SessionEventKind::ToolCallCompleted { call, output } => shell_summary(
+            format!("• Finished {}", call.tool_name),
+            [format!(
+                "output {}",
+                preview_text(&output.text_content(), 72)
+            )],
+        ),
+        SessionEventKind::ToolCallFailed { call, error } => shell_summary(
+            format!("✗ {} failed", call.tool_name),
+            [format!("error {}", preview_text(error, 72))],
+        ),
+        SessionEventKind::Notification { source, message } => shell_summary(
+            format!("• Notification from {source}"),
+            [format!("message {}", preview_text(message, 72))],
+        ),
+        SessionEventKind::TaskCreated { task, .. } => shell_summary(
+            format!("• Spawned task {}", task.task_id),
+            [
+                format!("role {}", task.role),
+                format!("claims {}", task.requested_write_set.len()),
+                format!("prompt {}", preview_text(&task.prompt, 72)),
+            ],
         ),
         SessionEventKind::TaskCompleted {
-            task_id, status, ..
-        } => format!("task_completed {task_id} status={status}"),
-        SessionEventKind::SubagentStart { handle, .. } => format!(
-            "subagent_start {} {}",
-            preview_id(handle.agent_id.as_str()),
-            handle.role
+            task_id,
+            agent_id,
+            status,
+        } => shell_summary(
+            task_status_headline(task_id, status),
+            [format!("agent {}", preview_id(agent_id.as_str()))],
         ),
-        SessionEventKind::AgentEnvelope { envelope } => format!(
-            "agent_envelope {}",
-            preview_text(&format!("{:?}", envelope.kind), 40)
+        SessionEventKind::SubagentStart { handle, .. } => shell_summary(
+            format!(
+                "• Started {} agent {}",
+                handle.role,
+                preview_id(handle.agent_id.as_str())
+            ),
+            [format!("task {}", handle.task_id)],
         ),
-        SessionEventKind::SubagentStop { handle, error, .. } => format!(
-            "subagent_stop {} {}",
-            preview_id(handle.agent_id.as_str()),
-            error
-                .as_deref()
-                .map(|value| preview_text(value, 24))
-                .unwrap_or_else(|| "ok".to_string())
-        ),
-        SessionEventKind::Stop { reason } => format!("stop {}", reason.as_deref().unwrap_or(""))
-            .trim()
-            .to_string(),
-        SessionEventKind::StopFailure { reason } => {
-            format!("stop_failure {}", reason.as_deref().unwrap_or(""))
-                .trim()
-                .to_string()
+        SessionEventKind::AgentEnvelope { envelope } => format_agent_envelope_kind(&envelope.kind),
+        SessionEventKind::SubagentStop {
+            handle,
+            result,
+            error,
+        } => {
+            let headline = if error.is_some() {
+                format!("✗ Stopped agent {}", preview_id(handle.agent_id.as_str()))
+            } else {
+                format!("✔ Stopped agent {}", preview_id(handle.agent_id.as_str()))
+            };
+            shell_summary(
+                headline,
+                [
+                    result
+                        .as_ref()
+                        .map(|value| format!("summary {}", preview_text(&value.summary, 72)))
+                        .unwrap_or_default(),
+                    error
+                        .as_deref()
+                        .map(|value| format!("error {}", preview_text(value, 72)))
+                        .unwrap_or_default(),
+                ],
+            )
         }
-        SessionEventKind::SessionEnd { reason } => {
-            format!("session_end {}", reason.as_deref().unwrap_or(""))
-                .trim()
-                .to_string()
-        }
+        SessionEventKind::Stop { reason } => shell_summary(
+            "• Stopped session",
+            [format_reason_detail(reason.as_deref()).unwrap_or_default()],
+        ),
+        SessionEventKind::StopFailure { reason } => shell_summary(
+            "✗ Failed to stop session",
+            [format_reason_detail(reason.as_deref()).unwrap_or_default()],
+        ),
+        SessionEventKind::SessionEnd { reason } => shell_summary(
+            "• Ended session",
+            [format_reason_detail(reason.as_deref()).unwrap_or_default()],
+        ),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        format_live_task_wait_outcome, format_session_export_result,
+        format_live_task_wait_outcome, format_session_event_line, format_session_export_result,
         format_session_operation_outcome,
     };
     use crate::backend::{
         LiveTaskWaitOutcome, SessionExportArtifact, SessionExportKind, SessionOperationAction,
         SessionOperationOutcome, SessionStartupSnapshot,
     };
-    use agent::types::{AgentStatus, SessionId};
+    use agent::types::{
+        AgentSessionId, AgentStatus, Message, SessionEventEnvelope, SessionEventKind, SessionId,
+        ToolCall, ToolCallId, ToolOrigin, ToolResult,
+    };
+    use serde_json::json;
     use std::path::PathBuf;
 
     #[test]
@@ -770,9 +971,77 @@ mod tests {
             claimed_files: vec!["src/lib.rs".to_string()],
         });
 
-        assert_eq!(lines[0], "✔ Task task_1 finished");
+        assert_eq!(lines[0], "• Finished waiting for task task_1");
         assert_eq!(lines[1], "  └ requested task_1");
         assert_eq!(lines[4], "  └ summary Updated planner and wrote tests");
         assert_eq!(lines[5], "  └ claimed files src/lib.rs");
+    }
+
+    #[test]
+    fn transcript_event_reuses_shell_transcript_prefixes() {
+        let event = SessionEventEnvelope::new(
+            SessionId::from("session-1"),
+            AgentSessionId::from("agent-session-1"),
+            None,
+            None,
+            SessionEventKind::TranscriptMessage {
+                message: Message::user("Explain the failing test"),
+            },
+        );
+
+        assert_eq!(
+            format_session_event_line(&event),
+            "› Explain the failing test"
+        );
+    }
+
+    #[test]
+    fn tool_approval_event_uses_shell_summary_layout() {
+        let call = ToolCall {
+            id: ToolCallId::from("tool-call-1"),
+            call_id: ToolCallId::from("tool-call-1").into(),
+            tool_name: "bash".into(),
+            arguments: json!({"command": "cargo test"}),
+            origin: ToolOrigin::Local,
+        };
+        let event = SessionEventEnvelope::new(
+            SessionId::from("session-1"),
+            AgentSessionId::from("agent-session-1"),
+            None,
+            None,
+            SessionEventKind::ToolApprovalRequested {
+                call,
+                reasons: vec!["sandbox policy requires approval".to_string()],
+            },
+        );
+
+        assert_eq!(
+            format_session_event_line(&event),
+            "• Waiting for approval to run bash\n  └ reason sandbox policy requires approval"
+        );
+    }
+
+    #[test]
+    fn tool_completion_event_includes_shell_summary_details() {
+        let call = ToolCall {
+            id: ToolCallId::from("tool-call-1"),
+            call_id: ToolCallId::from("tool-call-1").into(),
+            tool_name: "bash".into(),
+            arguments: json!({"command": "cargo test"}),
+            origin: ToolOrigin::Local,
+        };
+        let output = ToolResult::text(ToolCallId::from("tool-call-1"), "bash", "tests passed");
+        let event = SessionEventEnvelope::new(
+            SessionId::from("session-1"),
+            AgentSessionId::from("agent-session-1"),
+            None,
+            None,
+            SessionEventKind::ToolCallCompleted { call, output },
+        );
+
+        assert_eq!(
+            format_session_event_line(&event),
+            "• Finished bash\n  └ output tests passed"
+        );
     }
 }

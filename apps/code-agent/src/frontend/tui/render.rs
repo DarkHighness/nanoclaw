@@ -183,9 +183,9 @@ fn approval_sheet_rect(area: Rect) -> Rect {
 
 fn build_approval_text(approval: &ApprovalPrompt) -> Text<'static> {
     let question = if approval.tool_name == "bash" {
-        "  Would you like to run the following command?"
+        "Would you like to run this command?"
     } else {
-        "  Would you like Code Agent to continue with this tool call?"
+        "Would you like to continue with this tool call?"
     };
     let mut lines = vec![
         Line::from(Span::styled(
@@ -198,24 +198,23 @@ fn build_approval_text(approval: &ApprovalPrompt) -> Text<'static> {
     if !approval.reasons.is_empty() {
         let mut reasons = approval.reasons.iter();
         if let Some(reason) = reasons.next() {
-            lines.push(Line::raw(""));
             lines.push(Line::from(vec![
-                Span::styled("  Reason: ", Style::default().fg(MUTED)),
+                Span::styled("Reason: ", Style::default().fg(MUTED)),
                 Span::styled(reason.clone(), Style::default().fg(TEXT)),
             ]));
         }
         for reason in reasons {
             lines.push(Line::from(vec![
-                Span::raw("          "),
+                Span::raw("        "),
                 Span::styled(reason.clone(), Style::default().fg(TEXT)),
             ]));
         }
+        lines.push(Line::raw(""));
     }
 
-    lines.push(Line::raw(""));
     for line in &approval.arguments_preview {
         lines.push(Line::from(Span::styled(
-            format!("  {line}"),
+            line.clone(),
             Style::default().fg(TEXT),
         )));
     }
@@ -223,22 +222,22 @@ fn build_approval_text(approval: &ApprovalPrompt) -> Text<'static> {
     lines.push(Line::raw(""));
     lines.push(Line::from(vec![
         Span::styled(
-            "› 1. Yes, proceed",
+            "1. Yes, proceed",
             Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
         ),
         Span::styled(" (y)", Style::default().fg(MUTED)),
     ]));
     lines.push(Line::from(vec![
-        Span::raw("  2. No, deny"),
+        Span::raw("2. No, deny"),
         Span::styled(" (n)", Style::default().fg(MUTED)),
     ]));
     lines.push(Line::from(vec![
-        Span::raw("  3. Dismiss and deny"),
+        Span::raw("3. Dismiss and deny"),
         Span::styled(" (esc)", Style::default().fg(MUTED)),
     ]));
     lines.push(Line::raw(""));
     lines.push(Line::from(Span::styled(
-        "  Press y to approve, n to deny, or esc to dismiss",
+        "Press y to approve, n to deny, or esc to dismiss.",
         Style::default().fg(MUTED),
     )));
     Text::from(lines)
