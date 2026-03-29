@@ -1,9 +1,10 @@
 use super::state::preview_text;
 use crate::backend::{
-    LoadedAgentSession, LoadedSession, LoadedSubagentSession, McpPromptSummary, McpResourceSummary,
-    McpServerSummary, PersistedAgentSessionSummary, PersistedSessionSearchMatch,
-    PersistedSessionSummary, SessionExportArtifact, SessionExportKind, SessionOperationAction,
-    SessionOperationOutcome, StartupDiagnosticsSnapshot, message_to_text, preview_id,
+    LoadedAgentSession, LoadedSession, LoadedSubagentSession, LoadedTask, McpPromptSummary,
+    McpResourceSummary, McpServerSummary, PersistedAgentSessionSummary,
+    PersistedSessionSearchMatch, PersistedSessionSummary, PersistedTaskSummary,
+    SessionExportArtifact, SessionExportKind, SessionOperationAction, SessionOperationOutcome,
+    StartupDiagnosticsSnapshot, message_to_text, preview_id,
 };
 use agent::types::{AgentSessionId, Message, SessionEventEnvelope, SessionEventKind};
 use store::TokenUsageRecord;
@@ -40,6 +41,17 @@ pub(crate) fn format_agent_session_summary_line(summary: &PersistedAgentSessionS
         summary.transcript_message_count,
         summary.resume_support.label(),
         prompt
+    )
+}
+
+pub(crate) fn format_task_summary_line(summary: &PersistedTaskSummary) -> String {
+    format!(
+        "{}  session={} role={} status={}  {}",
+        summary.task_id,
+        preview_id(&summary.session_ref),
+        summary.role,
+        summary.status,
+        preview_text(&summary.summary, 48)
     )
 }
 
@@ -196,6 +208,91 @@ pub(crate) fn format_agent_session_inspector(session: &LoadedAgentSession) -> Ve
                 .rev()
                 .map(format_session_event_line),
         );
+    }
+    lines
+}
+
+pub(crate) fn format_task_inspector(task: &LoadedTask) -> Vec<String> {
+    let mut lines = vec![
+        "## Task".to_string(),
+        format!("task id: {}", task.summary.task_id),
+        format!("session ref: {}", task.summary.session_ref),
+        format!(
+            "parent agent session ref: {}",
+            task.summary.parent_agent_session_ref
+        ),
+        format!("role: {}", task.summary.role),
+        format!("status: {}", task.summary.status),
+        format!("summary: {}", task.summary.summary),
+    ];
+    if let Some(child_session_ref) = &task.summary.child_session_ref {
+        lines.push("## Runtime".to_string());
+        lines.push(format!("child session ref: {child_session_ref}"));
+        if let Some(child_agent_session_ref) = &task.summary.child_agent_session_ref {
+            lines.push(format!(
+                "child agent session ref: {}",
+                child_agent_session_ref
+            ));
+        }
+    }
+    lines.push("## Prompt".to_string());
+    lines.push(format!("prompt: {}", preview_text(&task.spec.prompt, 96)));
+    if let Some(steer) = &task.spec.steer {
+        lines.push(format!("steer: {}", preview_text(steer, 96)));
+    }
+    if !task.spec.requested_write_set.is_empty() {
+        lines.push(format!(
+            "writes: {}",
+            preview_text(&task.spec.requested_write_set.join(", "), 96)
+        ));
+    }
+    if !task.spec.dependency_ids.is_empty() {
+        lines.push(format!(
+            "deps: {}",
+            preview_text(&task.spec.dependency_ids.join(", "), 96)
+        ));
+    }
+    if let Some(token_usage) = &task.token_usage {
+        lines.push("## Token Budget".to_string());
+        if let Some(window) = token_usage.ledger.context_window {
+            lines.push(format!(
+                "context: {} / {}",
+                window.used_tokens, window.max_tokens
+            ));
+        }
+        lines.push(format!(
+            "task tokens: in={} out={} cache={}",
+            token_usage.ledger.cumulative_usage.input_tokens,
+            token_usage.ledger.cumulative_usage.output_tokens,
+            token_usage.ledger.cumulative_usage.cache_read_tokens,
+        ));
+    }
+    if let Some(result) = &task.result {
+        lines.push("## Result".to_string());
+        lines.push(format!("result: {}", preview_text(&result.summary, 96)));
+        if !result.claimed_files.is_empty() {
+            lines.push(format!(
+                "claimed files: {}",
+                preview_text(&result.claimed_files.join(", "), 96)
+            ));
+        }
+    }
+    if let Some(error) = &task.error {
+        lines.push("## Error".to_string());
+        lines.push(preview_text(error, 96));
+    }
+    if !task.artifacts.is_empty() {
+        lines.push("## Artifacts".to_string());
+        lines.extend(
+            task.artifacts
+                .iter()
+                .take(6)
+                .map(|artifact| preview_text(&format!("{} {}", artifact.kind, artifact.uri), 96)),
+        );
+    }
+    if !task.messages.is_empty() {
+        lines.push("## Agent Messages".to_string());
+        lines.extend(task.messages.iter().take(6).map(format_task_message_line));
     }
     lines
 }
@@ -381,6 +478,14 @@ fn format_loaded_subagent_line(subagent: &LoadedSubagentSession) -> String {
         subagent.status,
         preview_text(&subagent.summary, 28),
         token_summary
+    )
+}
+
+fn format_task_message_line(message: &crate::backend::LoadedTaskMessage) -> String {
+    format!(
+        "{} {}",
+        message.channel,
+        preview_text(&message.payload.to_string(), 72)
     )
 }
 

@@ -16,7 +16,8 @@ use history::{
     format_mcp_prompt_summary_line, format_mcp_resource_summary_line,
     format_mcp_server_summary_line, format_session_export_result, format_session_inspector,
     format_session_operation_outcome, format_session_search_line, format_session_summary_line,
-    format_session_transcript_lines, format_startup_diagnostics, format_visible_transcript_lines,
+    format_session_transcript_lines, format_startup_diagnostics, format_task_inspector,
+    format_task_summary_line, format_visible_transcript_lines,
 };
 use observer::SharedRenderObserver;
 use render::render;
@@ -526,6 +527,8 @@ impl CodeAgentTui {
             }
             command @ (SlashCommand::AgentSessions { .. }
             | SlashCommand::AgentSession { .. }
+            | SlashCommand::Tasks { .. }
+            | SlashCommand::Task { .. }
             | SlashCommand::Sessions { .. }
             | SlashCommand::Session { .. }
             | SlashCommand::Resume { .. }
@@ -610,6 +613,33 @@ impl CodeAgentTui {
                         "loaded agent session {}",
                         agent_session_ref_preview
                     ));
+                });
+                Ok(false)
+            }
+            SlashCommand::Tasks { session_ref } => {
+                let tasks = self.session.list_tasks(session_ref.as_deref()).await?;
+                self.ui_state.mutate(move |state| {
+                    state.inspector_title = "Tasks".to_string();
+                    state.inspector_scroll = 0;
+                    state.inspector = if tasks.is_empty() {
+                        vec![
+                            "## Tasks".to_string(),
+                            "no persisted tasks recorded yet".to_string(),
+                        ]
+                    } else {
+                        std::iter::once("## Tasks".to_string())
+                            .chain(tasks.iter().take(16).map(format_task_summary_line))
+                            .collect()
+                    };
+                    state.status = if tasks.is_empty() {
+                        "No tasks available yet".to_string()
+                    } else {
+                        format!(
+                            "Listed {} tasks. Use /task <task-id> to open one.",
+                            tasks.len()
+                        )
+                    };
+                    state.push_activity("listed persisted tasks");
                 });
                 Ok(false)
             }
@@ -702,6 +732,34 @@ impl CodeAgentTui {
                         session_ref_preview, transcript_count
                     );
                     state.push_activity(format!("loaded session {}", session_ref_preview));
+                });
+                Ok(false)
+            }
+            SlashCommand::Task { task_ref } => {
+                if self.turn_task.is_some() {
+                    self.ui_state.mutate(|state| {
+                        state.status =
+                            "Wait for the current turn before opening another task".to_string();
+                        state.push_activity("task replay blocked while turn running");
+                    });
+                    return Ok(false);
+                }
+                let loaded = self.session.load_task(&task_ref).await?;
+                let inspector = format_task_inspector(&loaded);
+                let transcript = format_visible_transcript_lines(&loaded.child_transcript);
+                let task_id = loaded.summary.task_id.clone();
+                let transcript_count = loaded.child_transcript.len();
+                self.ui_state.mutate(move |state| {
+                    state.inspector_title = "Task".to_string();
+                    state.inspector_scroll = 0;
+                    state.inspector = inspector;
+                    state.transcript = transcript;
+                    state.transcript_scroll = 0;
+                    state.status = format!(
+                        "Loaded task {} with {} child transcript messages",
+                        task_id, transcript_count
+                    );
+                    state.push_activity(format!("loaded task {}", task_id));
                 });
                 Ok(false)
             }
@@ -905,6 +963,8 @@ fn command_palette_lines() -> Vec<String> {
         "/help".to_string(),
         "/agent_sessions [session-ref]".to_string(),
         "/agent_session <agent-session-ref>".to_string(),
+        "/tasks [session-ref]".to_string(),
+        "/task <task-id>".to_string(),
         "/sessions [query]".to_string(),
         "/session <session-ref>".to_string(),
         "/resume <agent-session-ref>".to_string(),
@@ -934,6 +994,7 @@ fn build_startup_inspector(session: &state::SessionSummary) -> Vec<String> {
         "## Workflow".to_string(),
         "Use /sessions to browse persisted sessions and /session <ref> to open one.".to_string(),
         "Use /agent_sessions to browse persisted agent sessions, /agent_session <ref> to inspect one, and /resume <agent-session-ref> to reattach one.".to_string(),
+        "Use /tasks to browse persisted child tasks and /task <task-id> to inspect one.".to_string(),
         "Use /new or /clear to start a fresh top-level session without deleting prior history.".to_string(),
         "Use /export_session or /export_transcript to write durable artifacts.".to_string(),
         "Approvals stay in-line above the composer instead of replacing the screen.".to_string(),

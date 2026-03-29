@@ -11,6 +11,7 @@ mod session_catalog;
 mod session_history;
 mod session_resume;
 mod store;
+mod task_history;
 
 pub(crate) use approval::{
     ApprovalCoordinator, ApprovalDecision, ApprovalPrompt, SessionToolApprovalHandler,
@@ -46,3 +47,4 @@ pub(crate) use session_history::{
     LoadedAgentSession, LoadedSession, LoadedSubagentSession, SessionExportArtifact,
     SessionExportKind, message_to_text, preview_id,
 };
+pub(crate) use task_history::{LoadedTask, LoadedTaskMessage, PersistedTaskSummary};

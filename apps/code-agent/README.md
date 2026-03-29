@@ -140,6 +140,8 @@ not have useful extensions, including `Dockerfile*`, `Containerfile*`, `go.mod`,
 - `/help`
 - `/agent_sessions [session-ref]`
 - `/agent_session <agent-session-ref>`
+- `/tasks [session-ref]`
+- `/task <task-id>`
 - `/sessions [query]`
 - `/session <session-ref>`
 - `/resume <agent-session-ref>`
@@ -164,7 +166,9 @@ conversation history and `agent session` terminology for runtime-resume targets.
 `/session <session-ref>` opens persisted conversation history and exports
 artifacts. `/agent_session <agent-session-ref>` inspects a specific runtime
 window, including its transcript slice, token budget, and spawned subagent
-summaries. `/resume <agent-session-ref>` resolves an `AgentSessionId` instead
+summaries. `/tasks [session-ref]` lists persisted child tasks, and `/task
+<task-id>` opens their prompt/result/artifact view plus the child session
+transcript. `/resume <agent-session-ref>` resolves an `AgentSessionId` instead
 of a top-level `SessionId`. Historical agent sessions can now be reattached
 into the live runtime, and the resumed runtime receives a fresh active
 `AgentSessionId` bound to the original top-level `SessionId`. Older compacted

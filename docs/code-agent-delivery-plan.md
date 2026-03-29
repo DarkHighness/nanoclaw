@@ -125,10 +125,19 @@ Shipped in the eleventh implementation slice:
 - agent-session inspection now includes transcript slices, token usage, and
   spawned subagent summaries
 
+Shipped in the twelfth implementation slice:
+
+- `code-agent` now exposes persisted child-task listing and task inspection
+  contracts on top of the stored event log
+- the TUI can browse persisted tasks directly instead of requiring operators to
+  infer child activity only from agent-session summaries
+- task inspection now includes prompt/result/artifact data plus the child
+  session transcript when one exists
+
 Still pending in the next slices:
 
 - remaining docs and workspace cleanup before `reference-tui` can be retired
-- frontend-neutral contracts for richer subagent/session operator workflows
+- frontend-neutral contracts for richer live subagent/session operator workflows
 
 ## External Product Signals
 
@@ -189,8 +198,8 @@ Current problems:
 
 - legacy host capabilities still need migration into `code-agent`
   - remaining legacy-only host controls
-- subagent execution is available but not yet exposed as a strong product
-  experience
+- subagent execution is available, but live control and richer orchestration
+  still are not exposed as a strong product experience
 
 ### P2
 

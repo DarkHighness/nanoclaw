@@ -3,6 +3,7 @@ use crate::backend::session_history::{
     self, LoadedAgentSession, LoadedSession, SessionExportArtifact,
 };
 use crate::backend::session_resume;
+use crate::backend::task_history::{self, LoadedTask, PersistedTaskSummary};
 use crate::backend::{
     ApprovalCoordinator, ApprovalDecision, ApprovalPrompt, LoadedMcpPrompt, LoadedMcpResource,
     McpPromptSummary, McpResourceSummary, McpServerSummary, ResumeSupport, SessionEvent,
@@ -243,6 +244,13 @@ impl CodeAgentSession {
         Ok(agent_sessions)
     }
 
+    pub(crate) async fn list_tasks(
+        &self,
+        session_ref: Option<&str>,
+    ) -> Result<Vec<PersistedTaskSummary>> {
+        task_history::list_tasks(&self.store, session_ref).await
+    }
+
     pub(crate) async fn load_session(&self, session_ref: &str) -> Result<LoadedSession> {
         session_history::load_session(&self.store, session_ref).await
     }
@@ -256,6 +264,12 @@ impl CodeAgentSession {
             session_catalog::resolve_agent_session_reference(&agent_sessions, agent_session_ref)?
                 .clone();
         session_history::load_agent_session(&self.store, summary).await
+    }
+
+    pub(crate) async fn load_task(&self, task_ref: &str) -> Result<LoadedTask> {
+        let tasks = self.list_tasks(None).await?;
+        let summary = task_history::resolve_task_reference(&tasks, task_ref)?.clone();
+        task_history::load_task(&self.store, summary).await
     }
 
     pub(crate) async fn export_session(
