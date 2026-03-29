@@ -97,6 +97,15 @@ Shipped in the eighth implementation slice:
 - `code-agent` now refreshes its active root-agent-session snapshot after
   prompt/steer and manual compaction operations
 
+Shipped in the ninth implementation slice:
+
+- `/new` and `/clear` now converge on the same backend-owned top-level session
+  operation instead of keeping `/clear` as a frontend-only pane reset
+- starting a fresh session now preserves prior sessions in durable history
+  instead of treating clear/new as destructive deletion
+- queued prompt/steer commands are now dropped when the operator starts a new
+  top-level session so old work does not leak across session boundaries
+
 Still pending in the next slices:
 
 - frontend-neutral session-operation contracts beyond startup, approval, and
@@ -146,7 +155,7 @@ Current problems:
   it still lacks a true runtime resume/reattach lifecycle above persisted
   history.
 - explicit `AgentSession` lifecycle boundaries now exist for compaction, but
-  reset/new-session lifecycle operations still need backend-owned contracts.
+  full persisted runtime reattach still needs backend-owned contracts.
 - legacy `reference-tui` code still duplicates host responsibilities that now
   belong in `code-agent`.
 - `code-agent` now owns durable session browsing/replay/export plus MCP

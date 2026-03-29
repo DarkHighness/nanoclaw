@@ -226,3 +226,72 @@ async fn runtime_apply_control_runs_prompt_and_steer_commands() {
     assert_eq!(transcript[1].text_content(), "hello");
     assert_eq!(transcript[2].text_content(), "hello");
 }
+
+#[tokio::test]
+async fn runtime_new_session_rotates_top_level_session_and_clears_state() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(InMemorySessionStore::new());
+    let mut runtime = AgentRuntimeBuilder::new(Arc::new(StreamingTextBackend), store.clone())
+        .hook_runner(Arc::new(HookRunner::default()))
+        .tool_context(ToolExecutionContext {
+            workspace_root: dir.path().to_path_buf(),
+            workspace_only: true,
+            model_context_window_tokens: Some(128_000),
+            ..Default::default()
+        })
+        .build();
+
+    runtime
+        .apply_control(RuntimeCommand::Steer {
+            message: "prefer terse answers".to_string(),
+            reason: Some("queued".to_string()),
+        })
+        .await
+        .unwrap();
+    runtime
+        .apply_control(RuntimeCommand::Prompt {
+            prompt: "hello".to_string(),
+        })
+        .await
+        .unwrap();
+    let previous_session_id = runtime.session_id();
+    let previous_agent_session_id = runtime.agent_session_id();
+
+    runtime.start_new_session().await.unwrap();
+
+    let next_session_id = runtime.session_id();
+    let next_agent_session_id = runtime.agent_session_id();
+    assert_ne!(next_session_id, previous_session_id);
+    assert_ne!(next_agent_session_id, previous_agent_session_id);
+    assert_eq!(
+        runtime.token_ledger().cumulative_usage,
+        TokenUsage::default()
+    );
+
+    let previous_events = store.events(&previous_session_id).await.unwrap();
+    assert!(previous_events.iter().any(|event| {
+        event.agent_session_id == previous_agent_session_id
+            && matches!(
+                &event.event,
+                SessionEventKind::SessionEnd { reason }
+                    if reason.as_deref() == Some("operator_new_session")
+            )
+    }));
+
+    let next_events = store.events(&next_session_id).await.unwrap();
+    assert!(next_events.iter().any(|event| {
+        event.agent_session_id == next_agent_session_id
+            && matches!(
+                &event.event,
+                SessionEventKind::SessionStart { reason }
+                    if reason.as_deref() == Some("operator_new_session")
+            )
+    }));
+    assert!(
+        store
+            .replay_transcript(&next_session_id)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}

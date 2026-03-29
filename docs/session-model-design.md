@@ -141,10 +141,10 @@ mid-turn, the prompt may remain on the pre-compaction `AgentSession` while the
 rebuilt provider request and response continue on the post-compaction
 `AgentSession`.
 
-`/clear` should not define session semantics by itself if it remains a
-frontend-only visual reset. If the product wants a command that rotates the
-runtime session, it should be modeled as a backend session operation rather than
-overloading a presentation command.
+In the host UX, `/clear` and `/new` should be modeled as the same backend-owned
+operation: start a fresh top-level `Session` while leaving prior sessions
+durably traceable. They are session-rotation commands, not presentation-only
+screen clears.
 
 ## Resume Semantics
 

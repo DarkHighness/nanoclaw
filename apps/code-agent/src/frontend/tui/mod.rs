@@ -485,11 +485,29 @@ impl CodeAgentTui {
                 .await;
                 Ok(false)
             }
-            SlashCommand::Clear => {
+            SlashCommand::New => {
+                if self.turn_task.is_some() {
+                    self.ui_state.mutate(|state| {
+                        state.status =
+                            "Wait for the current turn before starting a new session".to_string();
+                        state.push_activity("new session blocked while turn running");
+                    });
+                    return Ok(false);
+                }
+
+                let dropped_commands = self.command_queue.clear();
+                self.session.start_new_session().await?;
                 let mut startup = self.startup_state();
-                startup.session.queued_commands = self.command_queue.len().await;
-                startup.status = "Cleared conversation pane".to_string();
-                startup.push_activity("cleared transcript");
+                startup.session.queued_commands = 0;
+                startup.status = "Started new session".to_string();
+                startup.push_activity(format!(
+                    "started new session {}",
+                    preview_id(&startup.session.active_session_ref)
+                ));
+                if dropped_commands > 0 {
+                    startup
+                        .push_activity(format!("discarded {} queued command(s)", dropped_commands));
+                }
                 self.ui_state.replace(startup);
                 Ok(false)
             }
@@ -813,8 +831,9 @@ fn command_palette_lines() -> Vec<String> {
         "/prompt <server> <name>".to_string(),
         "/resource <server> <uri>".to_string(),
         "/steer <notes>".to_string(),
+        "/new".to_string(),
         "/compact [notes]".to_string(),
-        "/clear".to_string(),
+        "/clear  (alias of /new)".to_string(),
         "/quit".to_string(),
     ]
 }
@@ -827,6 +846,7 @@ fn build_startup_inspector(session: &state::SessionSummary) -> Vec<String> {
         "## Workflow".to_string(),
         "Use /sessions to browse persisted sessions and /session <ref> to open one.".to_string(),
         "Use /agent_sessions to browse persisted agent sessions and /resume <agent-session-ref> to inspect live reattach support.".to_string(),
+        "Use /new or /clear to start a fresh top-level session without deleting prior history.".to_string(),
         "Use /export_session or /export_transcript to write durable artifacts.".to_string(),
         "Approvals stay in-line above the composer instead of replacing the screen.".to_string(),
         "## Models".to_string(),

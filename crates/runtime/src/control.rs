@@ -101,6 +101,14 @@ impl RuntimeCommandQueue {
         next
     }
 
+    pub fn clear(&mut self) -> usize {
+        let mut cleared = 0usize;
+        while self.pop_next().is_some() {
+            cleared = cleared.saturating_add(1);
+        }
+        cleared
+    }
+
     pub async fn len(&self) -> usize {
         self.len.load(Ordering::Relaxed)
     }
@@ -139,6 +147,19 @@ mod tests {
             RuntimeCommand::Steer { message, reason }
                 if message == "use concise output" && reason.as_deref() == Some("manual")
         ));
+        assert!(queue.is_empty().await);
+    }
+
+    #[tokio::test]
+    async fn clear_drains_pending_commands() {
+        let mut queue = RuntimeCommandQueue::new();
+        queue.push_prompt("one").await;
+        queue
+            .push_steer("use concise output", Some("manual".to_string()))
+            .await;
+
+        assert_eq!(queue.clear(), 2);
+        assert!(queue.pop_next().is_none());
         assert!(queue.is_empty().await);
     }
 }

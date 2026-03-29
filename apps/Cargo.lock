@@ -820,6 +820,7 @@ dependencies = [
  "async-trait",
  "clap",
  "crossterm 0.29.0",
+ "futures",
  "nanoclaw-config",
  "ratatui",
  "serde",

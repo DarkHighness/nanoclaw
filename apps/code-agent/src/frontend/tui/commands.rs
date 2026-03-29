@@ -24,6 +24,7 @@ pub(crate) enum SlashCommand {
     Compact {
         notes: Option<String>,
     },
+    New,
     AgentSessions {
         session_ref: Option<String>,
     },
@@ -44,7 +45,6 @@ pub(crate) enum SlashCommand {
         session_ref: String,
         path: String,
     },
-    Clear,
     Quit,
     InvalidUsage(String),
 }
@@ -96,6 +96,8 @@ enum SlashSubcommand {
         )]
         notes: Vec<String>,
     },
+    #[command(alias = "clear")]
+    New,
     AgentSessions {
         session_ref: Option<String>,
     },
@@ -123,7 +125,6 @@ enum SlashSubcommand {
         #[arg(value_name = "PATH", required = true, trailing_var_arg = true)]
         path: Vec<String>,
     },
-    Clear,
     #[command(alias = "exit")]
     Quit,
 }
@@ -166,6 +167,7 @@ impl From<SlashSubcommand> for SlashCommand {
             SlashSubcommand::Compact { notes } => Self::Compact {
                 notes: join_optional_tail(notes),
             },
+            SlashSubcommand::New => Self::New,
             SlashSubcommand::AgentSessions { session_ref } => Self::AgentSessions { session_ref },
             SlashSubcommand::Sessions { query } => Self::Sessions {
                 query: join_optional_tail(query),
@@ -180,7 +182,6 @@ impl From<SlashSubcommand> for SlashCommand {
                 session_ref,
                 path: join_required_tail(path),
             },
-            SlashSubcommand::Clear => Self::Clear,
             SlashSubcommand::Quit => Self::Quit,
         }
     }
@@ -262,5 +263,11 @@ mod tests {
             }
             _ => panic!("unexpected command"),
         }
+    }
+
+    #[test]
+    fn parses_new_and_clear_as_same_session_operation() {
+        assert!(matches!(parse_slash_command("/new"), SlashCommand::New));
+        assert!(matches!(parse_slash_command("/clear"), SlashCommand::New));
     }
 }

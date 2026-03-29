@@ -58,6 +58,11 @@ impl ToolLoopDetector {
         });
     }
 
+    pub fn reset(&mut self) {
+        self.history.clear();
+        self.last_warning_pattern = None;
+    }
+
     fn record_entry(&mut self, entry: ToolLoopEntry) {
         // Warnings are pattern-scoped; once the tool pattern changes, a future repeat
         // is allowed to emit a fresh warning instead of being permanently suppressed.

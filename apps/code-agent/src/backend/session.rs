@@ -102,7 +102,7 @@ impl CodeAgentSession {
             .apply_control_with_observer(command, &mut observer)
             .await
             .map_err(anyhow::Error::from)?;
-        self.set_active_agent_session_ref(runtime.agent_session_id().to_string());
+        self.sync_runtime_session_refs(&runtime);
         Ok(())
     }
 
@@ -112,8 +112,25 @@ impl CodeAgentSession {
         let compacted = runtime
             .compact_now_with_observer(notes, &mut observer)
             .await?;
-        self.set_active_agent_session_ref(runtime.agent_session_id().to_string());
+        self.sync_runtime_session_refs(&runtime);
         Ok(compacted)
+    }
+
+    pub(crate) async fn start_new_session(&self) -> Result<()> {
+        let (session_ref, agent_session_ref) = {
+            let mut runtime = self.runtime.lock().await;
+            runtime
+                .start_new_session()
+                .await
+                .map_err(anyhow::Error::from)?;
+            (
+                runtime.session_id().to_string(),
+                runtime.agent_session_id().to_string(),
+            )
+        };
+        self.set_runtime_session_refs(session_ref, agent_session_ref);
+        self.refresh_stored_session_count().await?;
+        Ok(())
     }
 
     pub(crate) fn approval_prompt(&self) -> Option<ApprovalPrompt> {
@@ -268,7 +285,100 @@ impl CodeAgentSession {
         self.startup.write().unwrap().stored_session_count = count;
     }
 
-    fn set_active_agent_session_ref(&self, agent_session_ref: String) {
-        self.startup.write().unwrap().root_agent_session_id = agent_session_ref;
+    fn sync_runtime_session_refs(&self, runtime: &AgentRuntime) {
+        self.set_runtime_session_refs(
+            runtime.session_id().to_string(),
+            runtime.agent_session_id().to_string(),
+        );
+    }
+
+    fn set_runtime_session_refs(&self, session_ref: String, agent_session_ref: String) {
+        let mut startup = self.startup.write().unwrap();
+        startup.active_session_ref = session_ref;
+        startup.root_agent_session_id = agent_session_ref;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CodeAgentSession, SessionStartupSnapshot};
+    use crate::backend::{ApprovalCoordinator, SessionEventStream, StartupDiagnosticsSnapshot};
+    use agent::runtime::{HookRunner, ModelBackend, Result as RuntimeResult};
+    use agent::tools::ToolExecutionContext;
+    use agent::types::{ModelEvent, ModelRequest, SessionEventKind, SessionId};
+    use agent::{AgentRuntimeBuilder, Skill};
+    use async_trait::async_trait;
+    use futures::stream::BoxStream;
+    use std::sync::Arc;
+    use store::{InMemorySessionStore, SessionStore};
+
+    struct NeverBackend;
+
+    #[async_trait]
+    impl ModelBackend for NeverBackend {
+        async fn stream_turn(
+            &self,
+            _request: ModelRequest,
+        ) -> RuntimeResult<BoxStream<'static, RuntimeResult<ModelEvent>>> {
+            unreachable!("session-start tests never execute model turns")
+        }
+    }
+
+    #[tokio::test]
+    async fn start_new_session_refreshes_backend_snapshot_refs() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(InMemorySessionStore::new());
+        let runtime = AgentRuntimeBuilder::new(Arc::new(NeverBackend), store.clone())
+            .hook_runner(Arc::new(HookRunner::default()))
+            .tool_context(ToolExecutionContext {
+                workspace_root: dir.path().to_path_buf(),
+                workspace_only: true,
+                ..Default::default()
+            })
+            .build();
+        let initial_session_ref = runtime.session_id().to_string();
+        let initial_agent_session_ref = runtime.agent_session_id().to_string();
+        let session = CodeAgentSession::new(
+            runtime,
+            store.clone(),
+            Vec::new(),
+            ApprovalCoordinator::default(),
+            SessionEventStream::default(),
+            SessionStartupSnapshot {
+                workspace_name: "workspace".to_string(),
+                workspace_root: dir.path().to_path_buf(),
+                active_session_ref: initial_session_ref.clone(),
+                root_agent_session_id: initial_agent_session_ref.clone(),
+                provider_label: "provider".to_string(),
+                model: "model".to_string(),
+                summary_model: "summary".to_string(),
+                memory_model: "memory".to_string(),
+                tool_names: Vec::new(),
+                skill_names: Vec::new(),
+                store_label: "memory".to_string(),
+                store_warning: None,
+                stored_session_count: 0,
+                sandbox_summary: "workspace-write".to_string(),
+                startup_diagnostics: StartupDiagnosticsSnapshot::default(),
+            },
+            Vec::<Skill>::new(),
+        );
+
+        session.start_new_session().await.unwrap();
+
+        let snapshot = session.startup_snapshot();
+        assert_ne!(snapshot.active_session_ref, initial_session_ref);
+        assert_ne!(snapshot.root_agent_session_id, initial_agent_session_ref);
+        assert_eq!(snapshot.stored_session_count, 1);
+
+        let new_events = store
+            .events(&SessionId::from(snapshot.active_session_ref.clone()))
+            .await
+            .unwrap();
+        assert!(new_events.iter().any(|event| matches!(
+            &event.event,
+            SessionEventKind::SessionStart { reason }
+                if reason.as_deref() == Some("operator_new_session")
+        )));
     }
 }

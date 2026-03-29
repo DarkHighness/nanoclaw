@@ -153,8 +153,9 @@ not have useful extensions, including `Dockerfile*`, `Containerfile*`, `go.mod`,
 - `/prompt <server> <name>`
 - `/resource <server> <uri>`
 - `/steer <notes>`
+- `/new`
 - `/compact [notes]`
-- `/clear`
+- `/clear` (alias of `/new`)
 - `/exit`
 
 The product-facing host surface now uses `session` terminology for the durable
@@ -164,6 +165,10 @@ artifacts, while `/resume <agent-session-ref>` now resolves an `AgentSessionId`
 instead of a top-level `SessionId`. Live runtime reattach is still not
 implemented, so resume currently reports whether the target is already attached
 to the active runtime or only available as history.
+
+`/new` and `/clear` now perform the same backend-owned operation: they create a
+fresh active top-level session while keeping prior sessions in durable history
+for browsing, export, and future resume/reattach work.
 
 The startup inspector is now backed by a structured backend snapshot, and the
 MCP-focused commands expose connected server catalogs plus prompt/resource

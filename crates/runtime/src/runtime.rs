@@ -114,6 +114,29 @@ impl AgentRuntime {
             .await
     }
 
+    pub async fn start_new_session(&mut self) -> Result<()> {
+        const NEW_SESSION_REASON: &str = "operator_new_session";
+
+        if self.session.has_activity() {
+            self.append_event(
+                None,
+                None,
+                SessionEventKind::SessionEnd {
+                    reason: Some(NEW_SESSION_REASON.to_string()),
+                },
+            )
+            .await?;
+        }
+
+        self.session = RuntimeSession::new(types::SessionId::new(), types::AgentSessionId::new());
+        self.clear_pending_request_effects();
+        self.tool_loop_detector.reset();
+
+        let hooks = self.hook_registrations.clone();
+        self.start_agent_session(&TurnId::new(), &hooks, NEW_SESSION_REASON)
+            .await
+    }
+
     pub(super) async fn start_agent_session(
         &mut self,
         turn_id: &TurnId,

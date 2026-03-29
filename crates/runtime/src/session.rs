@@ -41,4 +41,17 @@ impl RuntimeSession {
             token_ledger: TokenLedgerSnapshot::default(),
         }
     }
+
+    #[must_use]
+    pub fn has_activity(&self) -> bool {
+        self.agent_session_started
+            || !self.transcript.is_empty()
+            || self.provider_continuation.is_some()
+            || self.provider_transcript_cursor > 0
+            || self.compaction_summary_index.is_some()
+            || !self.retained_tail_indices.is_empty()
+            || self.post_summary_start > 0
+            || !self.removed_message_ids.is_empty()
+            || self.token_ledger != TokenLedgerSnapshot::default()
+    }
 }
