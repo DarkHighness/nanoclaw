@@ -280,9 +280,7 @@ impl CodeAgentTui {
                 Ok(Ok(OperatorTaskOutcome::WaitLiveTask(outcome))) => {
                     let inspector = format_live_task_wait_outcome(&outcome);
                     self.ui_state.mutate(move |state| {
-                        state.inspector_title = "Live Task Wait".to_string();
-                        state.inspector_scroll = 0;
-                        state.inspector = inspector;
+                        state.show_main_view("Live Task Wait", inspector);
                         state.status = format!(
                             "Live task {} finished with status {}",
                             outcome.task_id, outcome.status
@@ -297,9 +295,10 @@ impl CodeAgentTui {
                     let message = error.to_string();
                     self.ui_state.mutate(|state| {
                         state.status = format!("Operator task failed: {message}");
-                        state.inspector_title = "Operator Error".to_string();
-                        state.inspector_scroll = 0;
-                        state.inspector = vec!["## Operator Error".to_string(), message.clone()];
+                        state.show_main_view(
+                            "Operator Error",
+                            vec!["## Operator Error".to_string(), message.clone()],
+                        );
                         state.push_activity(format!(
                             "operator task failed: {}",
                             state::preview_text(&message, 56)
@@ -339,6 +338,7 @@ impl CodeAgentTui {
     async fn start_command(&mut self, command: RuntimeCommand) {
         let preview = queued_command_preview(&command);
         self.ui_state.mutate(|state| {
+            state.show_transcript_pane();
             state.turn_running = true;
             state.status = match &command {
                 RuntimeCommand::Prompt { .. } => "Running prompt".to_string(),
@@ -358,9 +358,7 @@ impl CodeAgentTui {
             SlashCommand::Quit => Ok(true),
             SlashCommand::Status => {
                 self.ui_state.mutate(|state| {
-                    state.inspector_title = "Guide".to_string();
-                    state.inspector_scroll = 0;
-                    state.inspector = build_startup_inspector(&state.session);
+                    state.show_main_view("Guide", build_startup_inspector(&state.session));
                     state.status = "Restored session overview".to_string();
                     state.push_activity("restored session overview");
                 });
@@ -368,9 +366,7 @@ impl CodeAgentTui {
             }
             SlashCommand::Help => {
                 self.ui_state.mutate(|state| {
-                    state.inspector_title = "Command Palette".to_string();
-                    state.inspector_scroll = 0;
-                    state.inspector = command_palette_lines();
+                    state.show_main_view("Command Palette", command_palette_lines());
                     state.status = "Opened command palette".to_string();
                     state.push_activity("opened command palette");
                 });
@@ -379,15 +375,14 @@ impl CodeAgentTui {
             SlashCommand::Tools => {
                 let tool_names = self.session.startup_snapshot().tool_names;
                 self.ui_state.mutate(move |state| {
-                    state.inspector_title = "Tool Catalog".to_string();
-                    state.inspector_scroll = 0;
-                    state.inspector = if tool_names.is_empty() {
+                    let lines = if tool_names.is_empty() {
                         vec!["## Tools".to_string(), "No tools registered.".to_string()]
                     } else {
                         std::iter::once("## Tools".to_string())
                             .chain(tool_names.iter().map(|tool| format!("tool: {tool}")))
                             .collect()
                     };
+                    state.show_main_view("Tool Catalog", lines);
                     state.status = "Listed core tools".to_string();
                     state.push_activity("inspected tool catalog");
                 });
@@ -396,9 +391,7 @@ impl CodeAgentTui {
             SlashCommand::Skills => {
                 let skills = self.session.skills().to_vec();
                 self.ui_state.mutate(move |state| {
-                    state.inspector_title = "Skill Catalog".to_string();
-                    state.inspector_scroll = 0;
-                    state.inspector = if skills.is_empty() {
+                    let lines = if skills.is_empty() {
                         vec![
                             "## Skills".to_string(),
                             "No skills are available in the configured roots.".to_string(),
@@ -414,6 +407,7 @@ impl CodeAgentTui {
                             }))
                             .collect()
                     };
+                    state.show_main_view("Skill Catalog", lines);
                     state.status = "Listed available skills".to_string();
                     state.push_activity("inspected skill catalog");
                 });
@@ -422,9 +416,7 @@ impl CodeAgentTui {
             SlashCommand::Diagnostics => {
                 let diagnostics = self.session.startup_diagnostics();
                 self.ui_state.mutate(move |state| {
-                    state.inspector_title = "Diagnostics".to_string();
-                    state.inspector_scroll = 0;
-                    state.inspector = format_startup_diagnostics(&diagnostics);
+                    state.show_main_view("Diagnostics", format_startup_diagnostics(&diagnostics));
                     state.status = "Opened startup diagnostics".to_string();
                     state.push_activity("inspected startup diagnostics");
                 });
@@ -433,9 +425,7 @@ impl CodeAgentTui {
             SlashCommand::Mcp => {
                 let servers = self.session.list_mcp_servers().await;
                 self.ui_state.mutate(move |state| {
-                    state.inspector_title = "MCP".to_string();
-                    state.inspector_scroll = 0;
-                    state.inspector = if servers.is_empty() {
+                    let lines = if servers.is_empty() {
                         vec![
                             "## MCP".to_string(),
                             "No MCP servers connected.".to_string(),
@@ -445,6 +435,7 @@ impl CodeAgentTui {
                             .chain(servers.iter().map(format_mcp_server_summary_line))
                             .collect()
                     };
+                    state.show_main_view("MCP", lines);
                     state.status = "Listed MCP servers".to_string();
                     state.push_activity("listed mcp servers");
                 });
@@ -453,9 +444,7 @@ impl CodeAgentTui {
             SlashCommand::Prompts => {
                 let prompts = self.session.list_mcp_prompts().await;
                 self.ui_state.mutate(move |state| {
-                    state.inspector_title = "Prompts".to_string();
-                    state.inspector_scroll = 0;
-                    state.inspector = if prompts.is_empty() {
+                    let lines = if prompts.is_empty() {
                         vec![
                             "## MCP Prompts".to_string(),
                             "No MCP prompts available.".to_string(),
@@ -465,6 +454,7 @@ impl CodeAgentTui {
                             .chain(prompts.iter().map(format_mcp_prompt_summary_line))
                             .collect()
                     };
+                    state.show_main_view("Prompts", lines);
                     state.status = "Listed MCP prompts".to_string();
                     state.push_activity("listed mcp prompts");
                 });
@@ -473,9 +463,7 @@ impl CodeAgentTui {
             SlashCommand::Resources => {
                 let resources = self.session.list_mcp_resources().await;
                 self.ui_state.mutate(move |state| {
-                    state.inspector_title = "Resources".to_string();
-                    state.inspector_scroll = 0;
-                    state.inspector = if resources.is_empty() {
+                    let lines = if resources.is_empty() {
                         vec![
                             "## MCP Resources".to_string(),
                             "No MCP resources available.".to_string(),
@@ -485,6 +473,7 @@ impl CodeAgentTui {
                             .chain(resources.iter().map(format_mcp_resource_summary_line))
                             .collect()
                     };
+                    state.show_main_view("Resources", lines);
                     state.status = "Listed MCP resources".to_string();
                     state.push_activity("listed mcp resources");
                 });
@@ -500,9 +489,7 @@ impl CodeAgentTui {
                     .await?;
                 self.ui_state.mutate(move |state| {
                     state.input = loaded.input_text;
-                    state.inspector_title = "Prompt".to_string();
-                    state.inspector_scroll = 0;
-                    state.inspector = loaded.inspector_lines;
+                    state.show_main_view("Prompt", loaded.inspector_lines);
                     state.status =
                         format!("Loaded MCP prompt {server_name}/{prompt_name} into input");
                     state.push_activity(format!("loaded mcp prompt {server_name}/{prompt_name}"));
@@ -513,9 +500,7 @@ impl CodeAgentTui {
                 let loaded = self.session.load_mcp_resource(&server_name, &uri).await?;
                 self.ui_state.mutate(move |state| {
                     state.input = loaded.input_text;
-                    state.inspector_title = "Resource".to_string();
-                    state.inspector_scroll = 0;
-                    state.inspector = loaded.inspector_lines;
+                    state.show_main_view("Resource", loaded.inspector_lines);
                     state.status = format!("Loaded MCP resource {server_name}:{uri} into input");
                     state.push_activity(format!("loaded mcp resource {server_name}:{uri}"));
                 });
@@ -592,9 +577,7 @@ impl CodeAgentTui {
             SlashCommand::LiveTasks => {
                 let live_tasks = self.session.list_live_tasks().await?;
                 self.ui_state.mutate(move |state| {
-                    state.inspector_title = "Live Tasks".to_string();
-                    state.inspector_scroll = 0;
-                    state.inspector = if live_tasks.is_empty() {
+                    let lines = if live_tasks.is_empty() {
                         vec![
                             "## Live Tasks".to_string(),
                             "no live child tasks attached to the active root agent".to_string(),
@@ -604,6 +587,7 @@ impl CodeAgentTui {
                             .chain(live_tasks.iter().map(format_live_task_summary_line))
                             .collect()
                     };
+                    state.show_main_view("Live Tasks", lines);
                     state.status = if live_tasks.is_empty() {
                         "No live child tasks attached".to_string()
                     } else {
@@ -620,9 +604,7 @@ impl CodeAgentTui {
                 let outcome = self.session.spawn_live_task(&role, &prompt).await?;
                 let inspector = format_live_task_spawn_outcome(&outcome);
                 self.ui_state.mutate(move |state| {
-                    state.inspector_title = "Live Task Spawn".to_string();
-                    state.inspector_scroll = 0;
-                    state.inspector = inspector;
+                    state.show_main_view("Live Task Spawn", inspector);
                     state.status = format!("Spawned live task {}", outcome.task.task_id);
                     state.push_activity(format!(
                         "spawned live task {} ({})",
@@ -649,9 +631,7 @@ impl CodeAgentTui {
                     .await?;
                 let inspector = format_live_task_message_outcome(&outcome);
                 self.ui_state.mutate(move |state| {
-                    state.inspector_title = "Live Task Message".to_string();
-                    state.inspector_scroll = 0;
-                    state.inspector = inspector;
+                    state.show_main_view("Live Task Message", inspector);
                     state.status = match outcome.action {
                         LiveTaskMessageAction::Sent => {
                             format!("Sent steer to live task {}", outcome.task_id)
@@ -693,9 +673,7 @@ impl CodeAgentTui {
                     .await?;
                 let inspector = format_live_task_control_outcome(&outcome);
                 self.ui_state.mutate(move |state| {
-                    state.inspector_title = "Live Task Control".to_string();
-                    state.inspector_scroll = 0;
-                    state.inspector = inspector;
+                    state.show_main_view("Live Task Control", inspector);
                     state.status = match outcome.action {
                         LiveTaskControlAction::Cancelled => {
                             format!("Cancelled live task {}", outcome.task_id)
@@ -727,9 +705,10 @@ impl CodeAgentTui {
             SlashCommand::InvalidUsage(message) => {
                 self.ui_state.mutate(|state| {
                     state.status = "Command syntax error".to_string();
-                    state.inspector_title = "Command Error".to_string();
-                    state.inspector_scroll = 0;
-                    state.inspector = message.lines().map(ToOwned::to_owned).collect();
+                    state.show_main_view(
+                        "Command Error",
+                        message.lines().map(ToOwned::to_owned).collect(),
+                    );
                     state.push_activity("command parse error");
                 });
                 Ok(false)
@@ -758,9 +737,7 @@ impl CodeAgentTui {
                     .list_agent_sessions(session_ref.as_deref())
                     .await?;
                 self.ui_state.mutate(move |state| {
-                    state.inspector_title = "Agent Sessions".to_string();
-                    state.inspector_scroll = 0;
-                    state.inspector = if agent_sessions.is_empty() {
+                    let lines = if agent_sessions.is_empty() {
                         vec![
                             "## Agent Sessions".to_string(),
                             "no persisted agent sessions recorded yet".to_string(),
@@ -775,6 +752,7 @@ impl CodeAgentTui {
                             )
                             .collect()
                     };
+                    state.show_main_view("Agent Sessions", lines);
                     state.status = if agent_sessions.is_empty() {
                         "No agent sessions available yet".to_string()
                     } else {
@@ -803,6 +781,7 @@ impl CodeAgentTui {
                 let agent_session_ref_preview = preview_id(&loaded.summary.agent_session_ref);
                 let transcript_count = loaded.summary.transcript_message_count;
                 self.ui_state.mutate(move |state| {
+                    state.show_transcript_pane();
                     state.inspector_title = "Agent Session".to_string();
                     state.inspector_scroll = 0;
                     state.inspector = inspector;
@@ -822,9 +801,7 @@ impl CodeAgentTui {
             SlashCommand::Tasks { session_ref } => {
                 let tasks = self.session.list_tasks(session_ref.as_deref()).await?;
                 self.ui_state.mutate(move |state| {
-                    state.inspector_title = "Tasks".to_string();
-                    state.inspector_scroll = 0;
-                    state.inspector = if tasks.is_empty() {
+                    let lines = if tasks.is_empty() {
                         vec![
                             "## Tasks".to_string(),
                             "no persisted tasks recorded yet".to_string(),
@@ -834,6 +811,7 @@ impl CodeAgentTui {
                             .chain(tasks.iter().take(16).map(format_task_summary_line))
                             .collect()
                     };
+                    state.show_main_view("Tasks", lines);
                     state.status = if tasks.is_empty() {
                         "No tasks available yet".to_string()
                     } else {
@@ -855,9 +833,7 @@ impl CodeAgentTui {
                         if let Some(stored_session_count) = stored_session_count {
                             state.session.stored_session_count = stored_session_count;
                         }
-                        state.inspector_title = "Session Search".to_string();
-                        state.inspector_scroll = 0;
-                        state.inspector = if matches.is_empty() {
+                        let lines = if matches.is_empty() {
                             vec![
                                 "## Session Search".to_string(),
                                 format!("no sessions matched `{query}`"),
@@ -867,6 +843,7 @@ impl CodeAgentTui {
                                 .chain(matches.iter().take(12).map(format_session_search_line))
                                 .collect()
                         };
+                        state.show_main_view("Session Search", lines);
                         state.status = if matches.is_empty() {
                             format!("No sessions matched `{query}`")
                         } else {
@@ -885,9 +862,7 @@ impl CodeAgentTui {
                     let stored_session_count = sessions.len();
                     self.ui_state.mutate(move |state| {
                         state.session.stored_session_count = stored_session_count;
-                        state.inspector_title = "Sessions".to_string();
-                        state.inspector_scroll = 0;
-                        state.inspector = if sessions.is_empty() {
+                        let lines = if sessions.is_empty() {
                             vec![
                                 "## Sessions".to_string(),
                                 "no persisted sessions recorded yet".to_string(),
@@ -897,6 +872,7 @@ impl CodeAgentTui {
                                 .chain(sessions.iter().take(12).map(format_session_summary_line))
                                 .collect()
                         };
+                        state.show_main_view("Sessions", lines);
                         state.status = if sessions.is_empty() {
                             "No sessions available yet".to_string()
                         } else {
@@ -925,6 +901,7 @@ impl CodeAgentTui {
                 let session_ref_preview = preview_id(loaded.summary.session_id.as_str());
                 let transcript_count = loaded.summary.transcript_message_count;
                 self.ui_state.mutate(move |state| {
+                    state.show_transcript_pane();
                     state.inspector_title = "Session".to_string();
                     state.inspector_scroll = 0;
                     state.inspector = inspector;
@@ -953,6 +930,7 @@ impl CodeAgentTui {
                 let task_id = loaded.summary.task_id.clone();
                 let transcript_count = loaded.child_transcript.len();
                 self.ui_state.mutate(move |state| {
+                    state.show_transcript_pane();
                     state.inspector_title = "Task".to_string();
                     state.inspector_scroll = 0;
                     state.inspector = inspector;
@@ -990,9 +968,7 @@ impl CodeAgentTui {
                 let session_ref_preview = preview_id(export.session_id.as_str());
                 let output_path = export.output_path.display().to_string();
                 self.ui_state.mutate(move |state| {
-                    state.inspector_title = "Export".to_string();
-                    state.inspector_scroll = 0;
-                    state.inspector = inspector;
+                    state.show_main_view("Export", inspector);
                     state.status = format!(
                         "Exported session {} to {}",
                         session_ref_preview, output_path
@@ -1010,9 +986,7 @@ impl CodeAgentTui {
                 let session_ref_preview = preview_id(export.session_id.as_str());
                 let output_path = export.output_path.display().to_string();
                 self.ui_state.mutate(move |state| {
-                    state.inspector_title = "Export".to_string();
-                    state.inspector_scroll = 0;
-                    state.inspector = inspector;
+                    state.show_main_view("Export", inspector);
                     state.status = format!(
                         "Exported transcript {} to {}",
                         session_ref_preview, output_path
@@ -1088,6 +1062,7 @@ impl CodeAgentTui {
         let aborted_operator_task = self.abort_operator_task();
         let mut startup = self.startup_state_from_snapshot(&outcome.startup);
         startup.session.queued_commands = 0;
+        startup.show_transcript_pane();
         startup.transcript = format_visible_transcript_lines(&outcome.transcript);
         startup.transcript_scroll = 0;
 

@@ -190,6 +190,24 @@ Shipped in the eighteenth implementation slice:
 - the activity panel now behaves more like a compact recent log than a large
   parallel dashboard pane
 
+Shipped in the nineteenth implementation slice:
+
+- the TUI top line was reduced further to the minimum useful context:
+  workspace, model, session, and status
+- `agent session`, `git`, and zero-queue details were removed from the top bar
+  so the transcript remains the primary visual target
+- queue depth now only surfaces in the top line when it is non-zero
+
+Shipped in the twentieth implementation slice:
+
+- read-heavy slash-command surfaces such as `/help`, catalogs, search results,
+  and export summaries now render in the main pane instead of the side rail
+- the side rail was demoted to brief `Info` plus recent `Log` content only,
+  which fits its narrow width much better
+- transcript-backed replay flows such as `/session`, `/task`, and
+  `/agent_session` still keep the transcript in the main pane with their detail
+  inspector on the right
+
 Still pending in the next slices:
 
 - remaining docs and workspace cleanup before `reference-tui` can be retired

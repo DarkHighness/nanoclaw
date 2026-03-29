@@ -1,5 +1,5 @@
 use super::approval::ApprovalPrompt;
-use super::state::{PaneFocus, TuiState, preview_text};
+use super::state::{MainPaneMode, PaneFocus, TuiState, preview_text};
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Margin, Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
@@ -45,14 +45,14 @@ pub(crate) fn render(
         .constraints([Constraint::Percentage(79), Constraint::Percentage(21)])
         .split(vertical[1]);
 
-    render_transcript(frame, body[0], state);
+    render_main_pane(frame, body[0], state);
 
     let right = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(6), Constraint::Length(5)])
         .split(body[1]);
 
-    render_inspector(frame, right[0], state);
+    render_side_panel(frame, right[0], state);
     render_activity(frame, right[1], state);
     render_composer(frame, vertical[2], state);
 
@@ -72,16 +72,17 @@ pub(crate) fn render(
 }
 
 fn render_header(frame: &mut ratatui::Frame<'_>, area: Rect, state: &TuiState) {
-    let status = Paragraph::new(Line::from(vec![
+    let mut spans = vec![
         Span::styled(
             preview_text(&state.session.workspace_name, 18),
             Style::default().fg(HEADER).add_modifier(Modifier::BOLD),
         ),
         Span::styled("  ", Style::default().fg(MUTED)),
+        Span::styled("model ", Style::default().fg(MUTED)),
         Span::styled(
             preview_text(
                 &format!("{} / {}", state.session.provider_label, state.session.model),
-                28,
+                24,
             ),
             Style::default().fg(TEXT),
         ),
@@ -92,45 +93,33 @@ fn render_header(frame: &mut ratatui::Frame<'_>, area: Rect, state: &TuiState) {
             Style::default().fg(USER),
         ),
         Span::styled("  ", Style::default().fg(MUTED)),
-        Span::styled("agent ", Style::default().fg(MUTED)),
+        Span::styled("status ", Style::default().fg(MUTED)),
         Span::styled(
-            preview_text(&state.session.root_agent_session_id, 10),
-            Style::default().fg(ASSISTANT),
-        ),
-        Span::styled("  ", Style::default().fg(MUTED)),
-        Span::styled("queue ", Style::default().fg(MUTED)),
-        Span::styled(
-            state.session.queued_commands.to_string(),
-            Style::default().fg(if state.session.queued_commands > 0 {
-                WARN
-            } else {
-                HEADER
-            }),
-        ),
-        Span::styled("  ", Style::default().fg(MUTED)),
-        Span::styled("git ", Style::default().fg(MUTED)),
-        Span::styled(
-            if state.session.git.is_dirty() {
-                "dirty"
-            } else {
-                "clean"
-            },
-            Style::default().fg(if state.session.git.is_dirty() {
-                WARN
-            } else {
-                ASSISTANT
-            }),
-        ),
-        Span::styled("  ", Style::default().fg(MUTED)),
-        Span::styled(
-            preview_text(&state.status, 32),
+            preview_text(&state.status, 24),
             Style::default()
                 .fg(status_color(&state.status))
                 .add_modifier(Modifier::BOLD),
         ),
-    ]))
-    .style(Style::default().fg(TEXT).bg(TOP_BG));
+    ];
+    if state.session.queued_commands > 0 {
+        spans.extend([
+            Span::styled("  ", Style::default().fg(MUTED)),
+            Span::styled("queue ", Style::default().fg(MUTED)),
+            Span::styled(
+                state.session.queued_commands.to_string(),
+                Style::default().fg(WARN).add_modifier(Modifier::BOLD),
+            ),
+        ]);
+    }
+    let status = Paragraph::new(Line::from(spans)).style(Style::default().fg(TEXT).bg(TOP_BG));
     frame.render_widget(status, area);
+}
+
+fn render_main_pane(frame: &mut ratatui::Frame<'_>, area: Rect, state: &TuiState) {
+    match state.main_pane {
+        MainPaneMode::Transcript => render_transcript(frame, area, state),
+        MainPaneMode::View => render_main_view(frame, area, state),
+    }
 }
 
 fn render_transcript(frame: &mut ratatui::Frame<'_>, area: Rect, state: &TuiState) {
@@ -152,6 +141,32 @@ fn render_transcript(frame: &mut ratatui::Frame<'_>, area: Rect, state: &TuiStat
         .wrap(Wrap { trim: false })
         .style(Style::default().fg(TEXT).bg(PANEL_BG));
     frame.render_widget(transcript, area);
+}
+
+fn render_main_view(frame: &mut ratatui::Frame<'_>, area: Rect, state: &TuiState) {
+    let title = if state.inspector_title.is_empty() {
+        "View"
+    } else {
+        state.inspector_title.as_str()
+    };
+    let item_count = inspector_collection_count(&state.inspector);
+    let block_title = if is_collection_inspector(title) && item_count > 0 {
+        format!("{title} · {item_count}")
+    } else {
+        title.to_string()
+    };
+    let block = pane_block(block_title, state.focus == PaneFocus::Conversation, BORDER);
+    let scroll = clamp_scroll(
+        state.inspector_scroll,
+        state.inspector.len().max(1),
+        block.inner(area).height,
+    );
+    let view = Paragraph::new(build_inspector_text(title, &state.inspector))
+        .block(block)
+        .scroll((scroll, 0))
+        .wrap(Wrap { trim: false })
+        .style(Style::default().fg(TEXT).bg(PANEL_BG));
+    frame.render_widget(view, area);
 }
 
 fn session_lines(state: &TuiState) -> Vec<String> {
@@ -254,6 +269,13 @@ fn format_token_usage_line(label: &str, usage: agent::types::TokenUsage) -> Stri
     )
 }
 
+fn render_side_panel(frame: &mut ratatui::Frame<'_>, area: Rect, state: &TuiState) {
+    match state.main_pane {
+        MainPaneMode::Transcript => render_inspector(frame, area, state),
+        MainPaneMode::View => render_side_info(frame, area, state),
+    }
+}
+
 fn render_inspector(frame: &mut ratatui::Frame<'_>, area: Rect, state: &TuiState) {
     let title = if state.inspector_title.is_empty() {
         "Info"
@@ -278,6 +300,18 @@ fn render_inspector(frame: &mut ratatui::Frame<'_>, area: Rect, state: &TuiState
         .wrap(Wrap { trim: false })
         .style(Style::default().fg(TEXT).bg(PANEL_ALT_BG));
     frame.render_widget(inspector, area);
+}
+
+fn render_side_info(frame: &mut ratatui::Frame<'_>, area: Rect, state: &TuiState) {
+    let info = Paragraph::new(build_key_value_text(&side_info_lines(state)))
+        .block(pane_block(
+            "Info",
+            state.focus == PaneFocus::Inspector,
+            BORDER,
+        ))
+        .wrap(Wrap { trim: false })
+        .style(Style::default().fg(TEXT).bg(PANEL_ALT_BG));
+    frame.render_widget(info, area);
 }
 
 fn render_activity(frame: &mut ratatui::Frame<'_>, area: Rect, state: &TuiState) {
@@ -467,6 +501,29 @@ fn build_approval_text(approval: &ApprovalPrompt) -> Text<'static> {
         Span::styled(" close", Style::default().fg(MUTED)),
     ]));
     Text::from(lines)
+}
+
+fn side_info_lines(state: &TuiState) -> Vec<String> {
+    let mut lines = vec![
+        "## Runtime".to_string(),
+        format!(
+            "summary: {}",
+            preview_text(&state.session.summary_model, 18)
+        ),
+        format!("memory: {}", preview_text(&state.session.memory_model, 18)),
+        "## Store".to_string(),
+        format!("saved: {}", state.session.stored_session_count),
+        format!("store: {}", preview_text(&state.session.store_label, 18)),
+    ];
+    if let Some(warning) = &state.session.store_warning {
+        lines.push(format!("warning: {}", preview_text(warning, 18)));
+    } else {
+        lines.push(format!(
+            "sandbox: {}",
+            preview_text(&state.session.sandbox_summary, 18)
+        ));
+    }
+    lines
 }
 
 fn panel_block(title: impl Into<String>, border_color: Color) -> Block<'static> {
