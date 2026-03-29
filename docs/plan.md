@@ -66,6 +66,6 @@ Intentionally still documented as not yet implemented:
   - current-state sandbox boundary note
 - `docs/code-agent-delivery-plan.md`
   - active app-convergence and code-agent industrialization plan
- - `docs/code-agent-delivery-plan.md`
-  - active plan for converging `apps/` onto a single `code-agent` product and
-    splitting it into backend/frontend layers
+- `docs/session-model-design.md`
+  - canonical `Session` / `AgentSession` model and rename target for the
+    repository-wide `Run*` migration

@@ -19,6 +19,12 @@ This plan drives two linked changes:
 - align `code-agent` toward an industrial code-agent surface informed by Codex,
   Claude Code, and OpenCode
 
+Design companion:
+
+- `docs/session-model-design.md`
+  - canonical `Session` / `AgentSession` model that defines the pending
+    repository-wide rename away from `Run*`
+
 ## Current Phase Status
 
 Shipped in the first implementation slice:
