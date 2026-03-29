@@ -15,11 +15,12 @@ use commands::{SlashCommand, parse_slash_command};
 use history::{
     format_agent_session_inspector, format_agent_session_summary_line,
     format_live_task_control_outcome, format_live_task_message_outcome,
-    format_live_task_summary_line, format_live_task_wait_outcome, format_mcp_prompt_summary_line,
-    format_mcp_resource_summary_line, format_mcp_server_summary_line, format_session_export_result,
-    format_session_inspector, format_session_operation_outcome, format_session_search_line,
-    format_session_summary_line, format_session_transcript_lines, format_startup_diagnostics,
-    format_task_inspector, format_task_summary_line, format_visible_transcript_lines,
+    format_live_task_spawn_outcome, format_live_task_summary_line, format_live_task_wait_outcome,
+    format_mcp_prompt_summary_line, format_mcp_resource_summary_line,
+    format_mcp_server_summary_line, format_session_export_result, format_session_inspector,
+    format_session_operation_outcome, format_session_search_line, format_session_summary_line,
+    format_session_transcript_lines, format_startup_diagnostics, format_task_inspector,
+    format_task_summary_line, format_visible_transcript_lines,
 };
 use observer::SharedRenderObserver;
 use render::render;
@@ -615,6 +616,21 @@ impl CodeAgentTui {
                 });
                 Ok(false)
             }
+            SlashCommand::SpawnTask { role, prompt } => {
+                let outcome = self.session.spawn_live_task(&role, &prompt).await?;
+                let inspector = format_live_task_spawn_outcome(&outcome);
+                self.ui_state.mutate(move |state| {
+                    state.inspector_title = "Live Task Spawn".to_string();
+                    state.inspector_scroll = 0;
+                    state.inspector = inspector;
+                    state.status = format!("Spawned live task {}", outcome.task.task_id);
+                    state.push_activity(format!(
+                        "spawned live task {} ({})",
+                        outcome.task.task_id, outcome.task.role
+                    ));
+                });
+                Ok(false)
+            }
             SlashCommand::SendTask {
                 task_or_agent_ref,
                 message,
@@ -1164,6 +1180,7 @@ fn command_palette_lines() -> Vec<String> {
         "/agent_sessions [session-ref]".to_string(),
         "/agent_session <agent-session-ref>".to_string(),
         "/live_tasks".to_string(),
+        "/spawn_task <role> <prompt>".to_string(),
         "/send_task <task-or-agent-ref> <message>".to_string(),
         "/wait_task <task-or-agent-ref>".to_string(),
         "/cancel_task <task-or-agent-ref> [reason]".to_string(),
@@ -1198,7 +1215,7 @@ fn build_startup_inspector(session: &state::SessionSummary) -> Vec<String> {
         "## Workflow".to_string(),
         "Use /sessions to browse persisted sessions and /session <ref> to open one.".to_string(),
         "Use /agent_sessions to browse persisted agent sessions, /agent_session <ref> to inspect one, and /resume <agent-session-ref> to reattach one.".to_string(),
-        "Use /live_tasks to inspect active child agents, /send_task <task-or-agent-ref> <message> to steer one, /wait_task <task-or-agent-ref> to wait for one, and /cancel_task <task-or-agent-ref> to stop one without leaving the current session.".to_string(),
+        "Use /spawn_task <role> <prompt> to launch a new live child task, /live_tasks to inspect active child agents, /send_task <task-or-agent-ref> <message> to steer one, /wait_task <task-or-agent-ref> to wait for one, and /cancel_task <task-or-agent-ref> to stop one without leaving the current session.".to_string(),
         "Use /tasks to browse persisted child tasks and /task <task-id> to inspect one.".to_string(),
         "Use /new or /clear to start a fresh top-level session without deleting prior history.".to_string(),
         "Use /export_session or /export_transcript to write durable artifacts.".to_string(),

@@ -13,7 +13,10 @@ use crate::backend::{
 use agent::mcp::ConnectedMcpServer;
 use agent::runtime::Result as RuntimeResult;
 use agent::tools::{SubagentExecutor, SubagentParentContext};
-use agent::types::{AgentSessionId, AgentWaitMode, AgentWaitRequest, Message, SessionId};
+use agent::types::{
+    AgentSessionId, AgentTaskSpec, AgentWaitMode, AgentWaitRequest, Message, SessionId,
+    new_opaque_id,
+};
 use agent::{AgentRuntime, RuntimeCommand, Skill};
 use anyhow::Result;
 use serde_json::json;
@@ -75,6 +78,12 @@ pub(crate) struct LiveTaskSummary {
     pub(crate) status: agent::types::AgentStatus,
     pub(crate) session_ref: String,
     pub(crate) agent_session_ref: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct LiveTaskSpawnOutcome {
+    pub(crate) task: LiveTaskSummary,
+    pub(crate) prompt: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -308,12 +317,52 @@ impl CodeAgentSession {
     }
 
     pub(crate) async fn list_live_tasks(&self) -> Result<Vec<LiveTaskSummary>> {
+        let parent = self.live_task_parent_context();
         let handles = self
             .subagent_executor
-            .list(SubagentParentContext::default())
+            .list(parent)
             .await
             .map_err(|error| anyhow::anyhow!(error.to_string()))?;
         Ok(live_task_summaries(&handles))
+    }
+
+    pub(crate) async fn spawn_live_task(
+        &self,
+        role: &str,
+        prompt: &str,
+    ) -> Result<LiveTaskSpawnOutcome> {
+        let role = role.trim();
+        if role.is_empty() {
+            return Err(anyhow::anyhow!("live task role cannot be empty"));
+        }
+        let prompt = prompt.trim();
+        if prompt.is_empty() {
+            return Err(anyhow::anyhow!("live task prompt cannot be empty"));
+        }
+
+        let parent = self.live_task_parent_context();
+        let task = AgentTaskSpec {
+            task_id: new_live_task_id(),
+            role: role.to_string(),
+            prompt: prompt.to_string(),
+            steer: None,
+            allowed_tools: Vec::new(),
+            requested_write_set: Vec::new(),
+            dependency_ids: Vec::new(),
+            timeout_seconds: None,
+        };
+        let mut handles = self
+            .subagent_executor
+            .spawn(parent, vec![task])
+            .await
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+        let handle = handles
+            .pop()
+            .ok_or_else(|| anyhow::anyhow!("live task spawn returned no child handle"))?;
+        Ok(LiveTaskSpawnOutcome {
+            task: live_task_summary(&handle),
+            prompt: prompt.to_string(),
+        })
     }
 
     pub(crate) async fn send_live_task(
@@ -321,16 +370,17 @@ impl CodeAgentSession {
         task_or_agent_ref: &str,
         message: &str,
     ) -> Result<LiveTaskMessageOutcome> {
+        let parent = self.live_task_parent_context();
         let handles = self
             .subagent_executor
-            .list(SubagentParentContext::default())
+            .list(parent.clone())
             .await
             .map_err(|error| anyhow::anyhow!(error.to_string()))?;
         let handle = resolve_live_task_reference(&handles, task_or_agent_ref)?.clone();
         let updated = self
             .subagent_executor
             .send(
-                SubagentParentContext::default(),
+                parent,
                 handle.agent_id.clone(),
                 "steer".to_string(),
                 json!({ "text": message }),
@@ -355,16 +405,17 @@ impl CodeAgentSession {
         &self,
         task_or_agent_ref: &str,
     ) -> Result<LiveTaskWaitOutcome> {
+        let parent = self.live_task_parent_context();
         let handles = self
             .subagent_executor
-            .list(SubagentParentContext::default())
+            .list(parent.clone())
             .await
             .map_err(|error| anyhow::anyhow!(error.to_string()))?;
         let handle = resolve_live_task_reference(&handles, task_or_agent_ref)?.clone();
         let response = self
             .subagent_executor
             .wait(
-                SubagentParentContext::default(),
+                parent,
                 AgentWaitRequest {
                     agent_ids: vec![handle.agent_id.clone()],
                     mode: AgentWaitMode::All,
@@ -418,19 +469,16 @@ impl CodeAgentSession {
         task_or_agent_ref: &str,
         reason: Option<String>,
     ) -> Result<LiveTaskControlOutcome> {
+        let parent = self.live_task_parent_context();
         let handles = self
             .subagent_executor
-            .list(SubagentParentContext::default())
+            .list(parent.clone())
             .await
             .map_err(|error| anyhow::anyhow!(error.to_string()))?;
         let handle = resolve_live_task_reference(&handles, task_or_agent_ref)?.clone();
         let updated = self
             .subagent_executor
-            .cancel(
-                SubagentParentContext::default(),
-                handle.agent_id.clone(),
-                reason,
-            )
+            .cancel(parent, handle.agent_id.clone(), reason)
             .await
             .map_err(|error| anyhow::anyhow!(error.to_string()))?;
         Ok(LiveTaskControlOutcome {
@@ -577,6 +625,19 @@ impl CodeAgentSession {
         startup.root_agent_session_id = agent_session_ref;
     }
 
+    // Host-initiated live task operations should still append their lifecycle
+    // into the active top-level session, otherwise operator-side spawn/send/
+    // cancel actions disappear from durable task history.
+    fn live_task_parent_context(&self) -> SubagentParentContext {
+        let startup = self.startup_snapshot();
+        SubagentParentContext {
+            session_id: Some(SessionId::from(startup.active_session_ref)),
+            agent_session_id: Some(AgentSessionId::from(startup.root_agent_session_id)),
+            turn_id: None,
+            parent_agent_id: None,
+        }
+    }
+
     async fn build_session_operation_outcome(
         &self,
         action: SessionOperationAction,
@@ -595,18 +656,23 @@ impl CodeAgentSession {
     }
 }
 
+fn new_live_task_id() -> String {
+    format!("task_{}", new_opaque_id())
+}
+
+fn live_task_summary(handle: &agent::types::AgentHandle) -> LiveTaskSummary {
+    LiveTaskSummary {
+        agent_id: handle.agent_id.to_string(),
+        task_id: handle.task_id.clone(),
+        role: handle.role.clone(),
+        status: handle.status.clone(),
+        session_ref: handle.session_id.to_string(),
+        agent_session_ref: handle.agent_session_id.to_string(),
+    }
+}
+
 fn live_task_summaries(handles: &[agent::types::AgentHandle]) -> Vec<LiveTaskSummary> {
-    let mut summaries = handles
-        .iter()
-        .map(|handle| LiveTaskSummary {
-            agent_id: handle.agent_id.to_string(),
-            task_id: handle.task_id.clone(),
-            role: handle.role.clone(),
-            status: handle.status.clone(),
-            session_ref: handle.session_id.to_string(),
-            agent_session_ref: handle.agent_session_id.to_string(),
-        })
-        .collect::<Vec<_>>();
+    let mut summaries = handles.iter().map(live_task_summary).collect::<Vec<_>>();
     summaries.sort_by(|left, right| {
         left.task_id
             .cmp(&right.task_id)
@@ -685,7 +751,7 @@ mod tests {
         ToolExecutionContext,
     };
     use agent::types::{
-        AgentHandle, AgentId, AgentResultEnvelope, AgentStatus, AgentWaitRequest,
+        AgentHandle, AgentId, AgentResultEnvelope, AgentStatus, AgentTaskSpec, AgentWaitRequest,
         AgentWaitResponse, ModelEvent, ModelRequest, SessionEventKind, SessionId,
     };
     use agent::{AgentRuntimeBuilder, RuntimeCommand, Skill};
@@ -782,6 +848,8 @@ mod tests {
 
     struct RecordingSubagentExecutor {
         handles: Mutex<Vec<AgentHandle>>,
+        spawned_tasks: Mutex<Vec<AgentTaskSpec>>,
+        spawn_parents: Mutex<Vec<SubagentParentContext>>,
         sent_messages: Mutex<Vec<(AgentId, String, Value)>>,
         wait_response: Mutex<Option<AgentWaitResponse>>,
     }
@@ -790,6 +858,8 @@ mod tests {
         fn new(handles: Vec<AgentHandle>) -> Self {
             Self {
                 handles: Mutex::new(handles),
+                spawned_tasks: Mutex::new(Vec::new()),
+                spawn_parents: Mutex::new(Vec::new()),
                 sent_messages: Mutex::new(Vec::new()),
                 wait_response: Mutex::new(None),
             }
@@ -798,6 +868,8 @@ mod tests {
         fn with_wait_response(handles: Vec<AgentHandle>, wait_response: AgentWaitResponse) -> Self {
             Self {
                 handles: Mutex::new(handles),
+                spawned_tasks: Mutex::new(Vec::new()),
+                spawn_parents: Mutex::new(Vec::new()),
                 sent_messages: Mutex::new(Vec::new()),
                 wait_response: Mutex::new(Some(wait_response)),
             }
@@ -808,12 +880,30 @@ mod tests {
     impl SubagentExecutor for RecordingSubagentExecutor {
         async fn spawn(
             &self,
-            _parent: SubagentParentContext,
-            _tasks: Vec<agent::types::AgentTaskSpec>,
+            parent: SubagentParentContext,
+            tasks: Vec<agent::types::AgentTaskSpec>,
         ) -> ToolResult<Vec<AgentHandle>> {
-            Err(ToolError::invalid_state(
-                "test executor does not support spawn",
-            ))
+            self.spawn_parents.lock().unwrap().push(parent);
+            self.spawned_tasks.lock().unwrap().extend(tasks.clone());
+            let mut handles = self.handles.lock().unwrap();
+            let mut spawned = Vec::with_capacity(tasks.len());
+            for task in tasks {
+                let handle = AgentHandle {
+                    agent_id: AgentId::from(format!("agent-{}", task.task_id)),
+                    parent_agent_id: None,
+                    session_id: SessionId::from(format!("session-{}", task.task_id)),
+                    agent_session_id: agent::types::AgentSessionId::from(format!(
+                        "agent-session-{}",
+                        task.task_id
+                    )),
+                    task_id: task.task_id.clone(),
+                    role: task.role.clone(),
+                    status: AgentStatus::Queued,
+                };
+                handles.push(handle.clone());
+                spawned.push(handle);
+            }
+            Ok(spawned)
         }
 
         async fn send(
@@ -1065,6 +1155,65 @@ mod tests {
         assert_eq!(live_tasks[0].task_id, "task-a");
         assert_eq!(live_tasks[1].task_id, "task-b");
         assert_eq!(live_tasks[0].role, "researcher");
+    }
+
+    #[tokio::test]
+    async fn spawn_live_task_returns_handle_and_tracks_active_parent_context() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(InMemorySessionStore::new());
+        let runtime = AgentRuntimeBuilder::new(Arc::new(NeverBackend), store.clone())
+            .hook_runner(Arc::new(HookRunner::default()))
+            .tool_context(ToolExecutionContext {
+                workspace_root: dir.path().to_path_buf(),
+                workspace_only: true,
+                ..Default::default()
+            })
+            .build();
+        let startup = startup_snapshot(dir.path());
+        let active_session_ref = startup.active_session_ref.clone();
+        let active_agent_session_ref = startup.root_agent_session_id.clone();
+        let executor = Arc::new(RecordingSubagentExecutor::new(Vec::new()));
+        let session = CodeAgentSession::new(
+            runtime,
+            executor.clone(),
+            store,
+            Vec::new(),
+            ApprovalCoordinator::default(),
+            SessionEventStream::default(),
+            startup,
+            Vec::<Skill>::new(),
+        );
+
+        let outcome = session
+            .spawn_live_task("reviewer", "inspect the failing tests")
+            .await
+            .unwrap();
+
+        assert_eq!(outcome.task.role, "reviewer");
+        assert_eq!(outcome.task.status, AgentStatus::Queued);
+        assert_eq!(outcome.prompt, "inspect the failing tests");
+        assert!(outcome.task.task_id.starts_with("task_"));
+        let spawned_tasks = executor.spawned_tasks.lock().unwrap();
+        assert_eq!(spawned_tasks.len(), 1);
+        assert_eq!(spawned_tasks[0].role, "reviewer");
+        assert_eq!(spawned_tasks[0].prompt, "inspect the failing tests");
+        let spawn_parents = executor.spawn_parents.lock().unwrap();
+        assert_eq!(spawn_parents.len(), 1);
+        assert_eq!(
+            spawn_parents[0]
+                .session_id
+                .as_ref()
+                .map(|value| value.as_str()),
+            Some(active_session_ref.as_str())
+        );
+        assert_eq!(
+            spawn_parents[0]
+                .agent_session_id
+                .as_ref()
+                .map(|value| value.as_str()),
+            Some(active_agent_session_ref.as_str())
+        );
+        assert!(spawn_parents[0].parent_agent_id.is_none());
     }
 
     #[tokio::test]

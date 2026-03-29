@@ -1,8 +1,8 @@
 use super::state::preview_text;
 use crate::backend::{
     LiveTaskControlAction, LiveTaskControlOutcome, LiveTaskMessageAction, LiveTaskMessageOutcome,
-    LiveTaskSummary, LiveTaskWaitOutcome, LoadedAgentSession, LoadedSession, LoadedSubagentSession,
-    LoadedTask, McpPromptSummary, McpResourceSummary, McpServerSummary,
+    LiveTaskSpawnOutcome, LiveTaskSummary, LiveTaskWaitOutcome, LoadedAgentSession, LoadedSession,
+    LoadedSubagentSession, LoadedTask, McpPromptSummary, McpResourceSummary, McpServerSummary,
     PersistedAgentSessionSummary, PersistedSessionSearchMatch, PersistedSessionSummary,
     PersistedTaskSummary, SessionExportArtifact, SessionExportKind, SessionOperationAction,
     SessionOperationOutcome, StartupDiagnosticsSnapshot, message_to_text, preview_id,
@@ -66,6 +66,20 @@ pub(crate) fn format_live_task_summary_line(summary: &LiveTaskSummary) -> String
         preview_id(&summary.session_ref),
         preview_id(&summary.agent_session_ref)
     )
+}
+
+pub(crate) fn format_live_task_spawn_outcome(outcome: &LiveTaskSpawnOutcome) -> Vec<String> {
+    vec![
+        "## Live Task Spawn".to_string(),
+        "action: spawned".to_string(),
+        format!("task id: {}", outcome.task.task_id),
+        format!("role: {}", outcome.task.role),
+        format!("status: {}", outcome.task.status),
+        format!("agent id: {}", outcome.task.agent_id),
+        format!("session ref: {}", outcome.task.session_ref),
+        format!("agent session ref: {}", outcome.task.agent_session_ref),
+        format!("prompt: {}", preview_text(&outcome.prompt, 96)),
+    ]
 }
 
 pub(crate) fn format_session_search_line(result: &PersistedSessionSearchMatch) -> String {

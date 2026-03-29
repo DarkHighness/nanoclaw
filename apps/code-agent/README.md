@@ -142,6 +142,7 @@ not have useful extensions, including `Dockerfile*`, `Containerfile*`, `go.mod`,
 - `/agent_sessions [session-ref]`
 - `/agent_session <agent-session-ref>`
 - `/live_tasks`
+- `/spawn_task <role> <prompt>`
 - `/send_task <task-or-agent-ref> <message>`
 - `/wait_task <task-or-agent-ref>`
 - `/cancel_task <task-or-agent-ref> [reason]`
@@ -171,13 +172,15 @@ conversation history and `agent session` terminology for runtime-resume targets.
 `/session <session-ref>` opens persisted conversation history and exports
 artifacts. `/agent_session <agent-session-ref>` inspects a specific runtime
 window, including its transcript slice, token budget, and spawned subagent
-summaries. `/live_tasks` lists currently attached child agents for the active
-runtime, `/send_task <task-or-agent-ref> <message>` sends parent steering to a
-live child, `/wait_task <task-or-agent-ref>` waits for one child in the
-background, and `/cancel_task <task-or-agent-ref> [reason]` can stop one
-without leaving the current session. `/tasks [session-ref]` lists persisted
-child tasks, and `/task <task-id>` opens their prompt/result/artifact view plus
-the child session transcript. `/resume <agent-session-ref>` resolves an
+summaries. `/spawn_task <role> <prompt>` launches a new live child task from
+the active top-level session, `/live_tasks` lists currently attached child
+agents for that runtime, `/send_task <task-or-agent-ref> <message>` sends
+parent steering to a live child, `/wait_task <task-or-agent-ref>` waits for one
+child in the background, and `/cancel_task <task-or-agent-ref> [reason]` can
+stop one without leaving the current session. `/tasks [session-ref]` lists
+persisted child tasks, and `/task <task-id>` opens their prompt/result/artifact
+view plus the child session transcript. `/resume <agent-session-ref>` resolves
+an
 `AgentSessionId` instead of a top-level `SessionId`. Historical agent sessions
 can now be reattached into the live runtime, and the resumed runtime receives a
 fresh active `AgentSessionId` bound to the original top-level `SessionId`.
@@ -193,9 +196,12 @@ contract, so future frontends do not need to orchestrate separate calls for
 reset, resume, startup refresh, and transcript reload.
 
 The live child-agent operator surface is now backend-owned as well: the TUI no
-longer needs direct runtime access just to inspect, steer, wait on, or cancel
-currently attached subagents. `wait` runs as a background operator task so the
-TUI can keep rendering runtime events while the selected child agent finishes.
+longer needs direct runtime access just to spawn, inspect, steer, wait on, or
+cancel currently attached subagents. Those host-originated live-task actions
+now anchor themselves to the active top-level `SessionId` / `AgentSessionId`,
+so the durable task log can reconstruct operator-created child work later.
+`wait` runs as a background operator task so the TUI can keep rendering runtime
+events while the selected child agent finishes.
 
 The startup inspector is now backed by a structured backend snapshot, and the
 MCP-focused commands expose connected server catalogs plus prompt/resource

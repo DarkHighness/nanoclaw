@@ -32,6 +32,10 @@ pub(crate) enum SlashCommand {
         agent_session_ref: String,
     },
     LiveTasks,
+    SpawnTask {
+        role: String,
+        prompt: String,
+    },
     SendTask {
         task_or_agent_ref: String,
         message: Option<String>,
@@ -126,6 +130,16 @@ enum SlashSubcommand {
         agent_session_ref: String,
     },
     LiveTasks,
+    SpawnTask {
+        role: String,
+        #[arg(
+            value_name = "PROMPT",
+            required = true,
+            trailing_var_arg = true,
+            allow_hyphen_values = true
+        )]
+        prompt: Vec<String>,
+    },
     SendTask {
         task_or_agent_ref: String,
         #[arg(
@@ -225,6 +239,10 @@ impl From<SlashSubcommand> for SlashCommand {
                 Self::AgentSession { agent_session_ref }
             }
             SlashSubcommand::LiveTasks => Self::LiveTasks,
+            SlashSubcommand::SpawnTask { role, prompt } => Self::SpawnTask {
+                role,
+                prompt: join_required_tail(prompt),
+            },
             SlashSubcommand::SendTask {
                 task_or_agent_ref,
                 message,
@@ -349,6 +367,28 @@ mod tests {
             parse_slash_command("/live_tasks"),
             SlashCommand::LiveTasks
         ));
+    }
+
+    #[test]
+    fn parses_spawn_task_with_prompt_tail() {
+        match parse_slash_command("/spawn_task reviewer inspect failing tests") {
+            SlashCommand::SpawnTask { role, prompt } => {
+                assert_eq!(role, "reviewer");
+                assert_eq!(prompt, "inspect failing tests");
+            }
+            _ => panic!("unexpected command"),
+        }
+    }
+
+    #[test]
+    fn spawn_task_requires_prompt() {
+        match parse_slash_command("/spawn_task reviewer") {
+            SlashCommand::InvalidUsage(message) => {
+                assert!(message.contains("Usage:"));
+                assert!(message.contains("spawn_task <ROLE> <PROMPT>"));
+            }
+            _ => panic!("unexpected command"),
+        }
     }
 
     #[test]

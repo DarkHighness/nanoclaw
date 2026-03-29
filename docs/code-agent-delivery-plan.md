@@ -162,11 +162,21 @@ Shipped in the fifteenth implementation slice:
 - the composer now exposes prompt vs command mode more clearly and highlights
   the live-task command path alongside the normal prompt flow
 
+Shipped in the sixteenth implementation slice:
+
+- `code-agent` now exposes a backend-owned live task spawn contract in addition
+  to the existing list/send/wait/cancel controls
+- the TUI can launch new root child tasks with `/spawn_task <role> <prompt>`
+  without holding direct runtime subagent plumbing
+- host-originated live task operations now anchor themselves to the active
+  top-level `SessionId` / `AgentSessionId` so durable task history can recover
+  operator-created child work later
+
 Still pending in the next slices:
 
 - remaining docs and workspace cleanup before `reference-tui` can be retired
 - frontend-neutral contracts for richer live subagent/session operator workflows
-  beyond the current list/send/wait/cancel slice
+  beyond the current spawn/list/send/wait/cancel slice
 
 ## External Product Signals
 

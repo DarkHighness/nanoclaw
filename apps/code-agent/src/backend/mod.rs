@@ -37,8 +37,8 @@ pub(crate) use boot_sandbox::{
 pub(crate) use events::{SessionEvent, SessionEventObserver, SessionEventStream};
 pub(crate) use session::{
     CodeAgentSession, LiveTaskControlAction, LiveTaskControlOutcome, LiveTaskMessageAction,
-    LiveTaskMessageOutcome, LiveTaskSummary, LiveTaskWaitOutcome, SessionOperation,
-    SessionOperationAction, SessionOperationOutcome, SessionStartupSnapshot,
+    LiveTaskMessageOutcome, LiveTaskSpawnOutcome, LiveTaskSummary, LiveTaskWaitOutcome,
+    SessionOperation, SessionOperationAction, SessionOperationOutcome, SessionStartupSnapshot,
 };
 pub(crate) use session_catalog::{
     PersistedAgentSessionSummary, PersistedSessionSearchMatch, PersistedSessionSummary,
