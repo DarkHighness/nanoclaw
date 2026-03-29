@@ -235,7 +235,11 @@ fn render_status_strip(frame: &mut ratatui::Frame<'_>, area: Rect, state: &TuiSt
 fn render_transcript(frame: &mut ratatui::Frame<'_>, area: Rect, state: &TuiState) {
     let lines = build_transcript_lines(&state.transcript);
     let block = pane_block(
-        "Conversation",
+        if state.transcript.is_empty() {
+            "Conversation"
+        } else {
+            "Conversation · live"
+        },
         state.focus == PaneFocus::Conversation,
         BORDER_ACTIVE,
     );
@@ -550,7 +554,7 @@ fn format_token_usage_line(label: &str, usage: agent::types::TokenUsage) -> Stri
 
 fn render_inspector(frame: &mut ratatui::Frame<'_>, area: Rect, state: &TuiState) {
     let title = if state.inspector_title.is_empty() {
-        "Guide"
+        "Guide · operator surface"
     } else {
         state.inspector_title.as_str()
     };
@@ -578,13 +582,23 @@ fn render_activity(frame: &mut ratatui::Frame<'_>, area: Rect, state: &TuiState)
         let mut lines = Vec::new();
         for item in state.activity.iter().rev() {
             lines.push(Line::from(vec![
-                Span::styled("• ", Style::default().fg(WARN)),
-                Span::styled(item.clone(), Style::default().fg(TEXT)),
+                Span::styled(
+                    activity_marker(item),
+                    Style::default()
+                        .fg(activity_color(item))
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(" "),
+                Span::styled(item.clone(), Style::default().fg(activity_color(item))),
             ]));
         }
         Text::from(lines)
     };
-    let block = pane_block("Activity Feed", state.focus == PaneFocus::Activity, BORDER);
+    let block = pane_block(
+        "Activity · latest first",
+        state.focus == PaneFocus::Activity,
+        BORDER,
+    );
     let scroll = clamp_scroll(
         state.activity_scroll,
         state.activity.len().max(1),
@@ -967,17 +981,26 @@ fn format_transcript_entry(entry: &str) -> Vec<Line<'static>> {
             .bg(accent)
             .add_modifier(Modifier::BOLD),
     );
+    lines.push(Line::from(vec![
+        badge,
+        Span::raw(" "),
+        Span::styled(
+            transcript_subtitle(label),
+            Style::default()
+                .fg(accent)
+                .add_modifier(Modifier::ITALIC | Modifier::BOLD),
+        ),
+    ]));
     let mut in_code = false;
-    for (index, raw_line) in body.lines().enumerate() {
-        let prefix = if index == 0 {
-            badge.clone()
-        } else {
-            Span::styled("      ", Style::default().fg(SUBTLE))
-        };
+    let rail = Span::styled(
+        "│",
+        Style::default().fg(accent).add_modifier(Modifier::BOLD),
+    );
+    for raw_line in body.lines() {
         if raw_line.trim_start().starts_with("```") {
             in_code = !in_code;
             lines.push(Line::from(vec![
-                prefix,
+                rail.clone(),
                 Span::raw(" "),
                 Span::styled(
                     if in_code { "code block" } else { "end code" },
@@ -988,15 +1011,19 @@ fn format_transcript_entry(entry: &str) -> Vec<Line<'static>> {
             ]));
             continue;
         }
-        lines.push(render_transcript_body_line(prefix, raw_line, in_code));
+        lines.push(render_transcript_body_line(rail.clone(), raw_line, in_code));
     }
-    if lines.is_empty() {
+    if body.trim().is_empty() {
         lines.push(Line::from(vec![
-            badge,
+            rail.clone(),
             Span::raw(" "),
             Span::styled("<empty>", Style::default().fg(SUBTLE)),
         ]));
     }
+    lines.push(Line::from(Span::styled(
+        "╰",
+        Style::default().fg(accent).add_modifier(Modifier::BOLD),
+    )));
     lines
 }
 
@@ -1009,7 +1036,7 @@ fn render_transcript_body_line(
         return Line::from(vec![
             prefix,
             Span::raw(" "),
-            Span::styled(" ", Style::default()),
+            Span::styled(" ", Style::default().fg(TEXT)),
         ]);
     }
     if in_code {
@@ -1052,6 +1079,15 @@ fn code_span(line: &str) -> Span<'static> {
         Style::default().fg(TEXT).bg(PANEL_ALT_BG)
     };
     Span::styled(line.to_string(), style)
+}
+
+fn transcript_subtitle(label: &str) -> &'static str {
+    match label {
+        "USER" => "operator request",
+        "ASSISTANT" => "agent response",
+        "ERROR" => "failure signal",
+        _ => "runtime event",
+    }
 }
 
 fn build_key_value_text(lines: &[String]) -> Text<'static> {
@@ -1158,10 +1194,64 @@ fn value_style(key: &str, value: &str) -> Style {
 fn plain_text_style(line: &str) -> Style {
     if line.starts_with("Use /") {
         Style::default().fg(MUTED)
+    } else if line.starts_with("warning:") {
+        Style::default().fg(WARN)
+    } else if line.starts_with("diagnostic:") {
+        Style::default().fg(USER)
     } else if line.starts_with("No ") || line.starts_with("no ") {
         Style::default().fg(SUBTLE)
     } else {
         Style::default().fg(TEXT)
+    }
+}
+
+fn activity_color(line: &str) -> Color {
+    let lower = line.to_ascii_lowercase();
+    if lower.contains("failed") || lower.contains("error") || lower.contains("denied") {
+        ERROR
+    } else if lower.contains("approval")
+        || lower.contains("queued")
+        || lower.contains("waiting")
+        || lower.contains("blocked")
+    {
+        WARN
+    } else if lower.contains("approved")
+        || lower.contains("complete")
+        || lower.contains("loaded")
+        || lower.contains("ready")
+        || lower.contains("listed")
+    {
+        ASSISTANT
+    } else if lower.contains("session")
+        || lower.contains("resume")
+        || lower.contains("steer")
+        || lower.contains("prompt")
+    {
+        USER
+    } else {
+        TEXT
+    }
+}
+
+fn activity_marker(line: &str) -> &'static str {
+    let lower = line.to_ascii_lowercase();
+    if lower.contains("failed") || lower.contains("error") || lower.contains("denied") {
+        "!"
+    } else if lower.contains("approval")
+        || lower.contains("queued")
+        || lower.contains("waiting")
+        || lower.contains("blocked")
+    {
+        "•"
+    } else if lower.contains("approved")
+        || lower.contains("complete")
+        || lower.contains("loaded")
+        || lower.contains("ready")
+        || lower.contains("listed")
+    {
+        "✓"
+    } else {
+        "›"
     }
 }
 
@@ -1193,8 +1283,8 @@ fn clamp_scroll(requested: u16, content_lines: usize, viewport_height: u16) -> u
 #[cfg(test)]
 mod tests {
     use super::{
-        build_key_value_text, session_context_line, session_last_token_line, session_lines,
-        session_total_token_line,
+        build_key_value_text, build_transcript_lines, session_context_line,
+        session_last_token_line, session_lines, session_total_token_line,
     };
     use crate::frontend::tui::state::TuiState;
     use agent::types::{ContextWindowUsage, TokenLedgerSnapshot, TokenUsage};
@@ -1253,5 +1343,14 @@ mod tests {
         assert_eq!(lines[0].spans[2].content.as_ref(), "Session");
         assert_eq!(lines[1].spans[0].content.as_ref(), "session ref:");
         assert_eq!(lines[2].spans[0].content.as_ref(), "/sessions [query]");
+    }
+
+    #[test]
+    fn transcript_entries_render_with_header_and_rail() {
+        let lines = build_transcript_lines(&["assistant> hello world".to_string()]);
+
+        assert_eq!(lines[0].spans[0].content.as_ref(), " ASSISTANT ");
+        assert_eq!(lines[1].spans[0].content.as_ref(), "│");
+        assert_eq!(lines[2].spans[0].content.as_ref(), "╰");
     }
 }

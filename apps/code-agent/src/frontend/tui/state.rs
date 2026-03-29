@@ -71,8 +71,8 @@ impl PaneFocus {
     pub(crate) fn title(self) -> &'static str {
         match self {
             Self::Conversation => "Conversation",
-            Self::Inspector => "Focus",
-            Self::Activity => "Activity Feed",
+            Self::Inspector => "Inspector",
+            Self::Activity => "Activity",
         }
     }
 
