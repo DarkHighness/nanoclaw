@@ -4,7 +4,6 @@ use ratatui::layout::{Alignment, Constraint, Direction, Layout, Margin, Position
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 const BG: Color = Color::Rgb(12, 13, 14);
 const MAIN_BG: Color = Color::Rgb(14, 15, 17);
@@ -418,6 +417,13 @@ fn live_progress_line(state: &TuiState) -> Line<'static> {
             .turn_started_at
             .map(|started| started.elapsed().as_secs())
             .unwrap_or(0);
+        let status = match (state.status.as_str(), state.active_tool_label.as_deref()) {
+            ("Working", Some(tool_name)) => format!("Working on {tool_name}"),
+            ("Waiting for approval", Some(tool_name)) => {
+                format!("Waiting for approval to run {tool_name}")
+            }
+            (status, _) => status.to_string(),
+        };
         Line::from(vec![
             Span::styled(
                 progress_marker(state),
@@ -427,7 +433,7 @@ fn live_progress_line(state: &TuiState) -> Line<'static> {
             ),
             Span::raw(" "),
             Span::styled(
-                preview_text(&state.status, 56),
+                preview_text(&status, 56),
                 Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
             ),
             Span::styled(
@@ -463,12 +469,7 @@ fn code_span(line: &str) -> Span<'static> {
 
 fn progress_marker(state: &TuiState) -> &'static str {
     if state.turn_running {
-        const FRAMES: [&str; 4] = ["|", "/", "-", "\\"];
-        let frame = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|duration| ((duration.as_millis() / 120) % FRAMES.len() as u128) as usize)
-            .unwrap_or(0);
-        FRAMES[frame]
+        "•"
     } else if state.session.queued_commands > 0 {
         "+"
     } else {

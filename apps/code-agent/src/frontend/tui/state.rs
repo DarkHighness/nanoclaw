@@ -58,6 +58,7 @@ pub(crate) struct TuiState {
     pub(crate) status: String,
     pub(crate) turn_running: bool,
     pub(crate) turn_started_at: Option<Instant>,
+    pub(crate) active_tool_label: Option<String>,
 }
 
 impl TuiState {

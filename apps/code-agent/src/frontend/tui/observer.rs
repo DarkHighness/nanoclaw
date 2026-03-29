@@ -41,6 +41,7 @@ impl SharedRenderObserver {
             SessionEvent::UserPromptAdded { prompt } => {
                 self.active_assistant_line = None;
                 self.active_tool_lines.clear();
+                state.active_tool_label = None;
                 state.push_transcript(format!("› {prompt}"));
                 state.status = "Planning next action".to_string();
                 state.push_activity(format!("user prompt: {}", preview_text(&prompt, 40)));
@@ -74,9 +75,9 @@ impl SharedRenderObserver {
             }
             SessionEvent::ModelRequestStarted { iteration } => {
                 state.status = if iteration == 1 {
-                    "Waiting for model response".to_string()
+                    "Working".to_string()
                 } else {
-                    format!("Continuing execution loop ({iteration})")
+                    format!("Working ({iteration})")
                 };
             }
             SessionEvent::TokenUsageUpdated { ledger, .. } => {
@@ -105,11 +106,13 @@ impl SharedRenderObserver {
                 };
             }
             SessionEvent::ToolCallRequested { call } => {
-                state.status = format!("Tool requested: {}", call.tool_name);
+                state.status = "Working".to_string();
+                state.active_tool_label = Some(call.tool_name.clone());
                 state.push_activity(format!("requested {}", call.tool_name));
             }
             SessionEvent::ToolApprovalRequested { call, reasons } => {
-                state.status = format!("Approval required: {}", call.tool_name);
+                state.status = "Waiting for approval".to_string();
+                state.active_tool_label = Some(call.tool_name.clone());
                 state.push_activity(format!(
                     "approval needed for {} ({})",
                     call.tool_name,
@@ -121,6 +124,7 @@ impl SharedRenderObserver {
                 approved,
                 reason,
             } => {
+                state.active_tool_label = None;
                 if approved {
                     state.status = format!("Approved {}", call.tool_name);
                     state.push_transcript(format!(
@@ -144,7 +148,8 @@ impl SharedRenderObserver {
                 }
             }
             SessionEvent::ToolLifecycleStarted { call } => {
-                state.status = format!("Running {}", call.tool_name);
+                state.status = "Working".to_string();
+                state.active_tool_label = Some(call.tool_name.clone());
                 state.push_transcript(format!("• Running {}", call.tool_name));
                 self.active_tool_lines
                     .insert(call.call_id.clone(), state.transcript.len() - 1);
@@ -156,6 +161,7 @@ impl SharedRenderObserver {
                 structured_output_preview,
             } => {
                 state.status = format!("Completed {}", call.tool_name);
+                state.active_tool_label = None;
                 replace_tool_line(
                     state,
                     self.active_tool_lines.remove(&call.call_id),
@@ -181,6 +187,7 @@ impl SharedRenderObserver {
             }
             SessionEvent::ToolLifecycleFailed { call, error } => {
                 state.status = format!("{} failed", call.tool_name);
+                state.active_tool_label = None;
                 replace_tool_line(
                     state,
                     self.active_tool_lines.remove(&call.call_id),
@@ -198,6 +205,7 @@ impl SharedRenderObserver {
             }
             SessionEvent::ToolLifecycleCancelled { call, reason } => {
                 state.status = format!("{} cancelled", call.tool_name);
+                state.active_tool_label = None;
                 replace_tool_line(
                     state,
                     self.active_tool_lines.remove(&call.call_id),
@@ -222,6 +230,7 @@ impl SharedRenderObserver {
             SessionEvent::TurnCompleted { .. } => {
                 self.active_assistant_line = None;
                 self.active_tool_lines.clear();
+                state.active_tool_label = None;
                 state.status = "Turn complete".to_string();
                 state.push_activity("turn complete");
             }
