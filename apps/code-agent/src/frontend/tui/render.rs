@@ -558,13 +558,19 @@ fn render_inspector(frame: &mut ratatui::Frame<'_>, area: Rect, state: &TuiState
     } else {
         state.inspector_title.as_str()
     };
-    let block = pane_block(title, state.focus == PaneFocus::Inspector, BORDER);
+    let item_count = inspector_collection_count(&state.inspector);
+    let block_title = if is_collection_inspector(title) && item_count > 0 {
+        format!("{title} · {item_count}")
+    } else {
+        title.to_string()
+    };
+    let block = pane_block(block_title, state.focus == PaneFocus::Inspector, BORDER);
     let scroll = clamp_scroll(
         state.inspector_scroll,
         state.inspector.len().max(1),
         block.inner(area).height,
     );
-    let inspector = Paragraph::new(build_key_value_text(&state.inspector))
+    let inspector = Paragraph::new(build_inspector_text(title, &state.inspector))
         .block(block)
         .scroll((scroll, 0))
         .wrap(Wrap { trim: false })
@@ -863,7 +869,8 @@ fn build_approval_text(approval: &ApprovalPrompt) -> Text<'static> {
     Text::from(lines)
 }
 
-fn panel_block<'a>(title: &'a str, border_color: Color) -> Block<'a> {
+fn panel_block(title: impl Into<String>, border_color: Color) -> Block<'static> {
+    let title = title.into();
     Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(border_color))
@@ -874,7 +881,8 @@ fn panel_block<'a>(title: &'a str, border_color: Color) -> Block<'a> {
         .style(Style::default().bg(PANEL_BG))
 }
 
-fn pane_block<'a>(title: &'a str, focused: bool, base_color: Color) -> Block<'a> {
+fn pane_block(title: impl Into<String>, focused: bool, base_color: Color) -> Block<'static> {
+    let title = title.into();
     Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(base_color))
@@ -887,7 +895,7 @@ fn pane_block<'a>(title: &'a str, focused: bool, base_color: Color) -> Block<'a>
         .style(Style::default().bg(PANEL_BG))
 }
 
-fn composer_block<'a>() -> Block<'a> {
+fn composer_block() -> Block<'static> {
     Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(BORDER_ACTIVE))
@@ -898,7 +906,8 @@ fn composer_block<'a>() -> Block<'a> {
         .style(Style::default().bg(PANEL_ALT_BG))
 }
 
-fn card_block<'a>(title: &'a str, accent: Color) -> Block<'a> {
+fn card_block(title: impl Into<String>, accent: Color) -> Block<'static> {
+    let title = title.into();
     Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(accent))
@@ -1139,6 +1148,113 @@ fn build_key_value_text(lines: &[String]) -> Text<'static> {
     Text::from(rendered)
 }
 
+fn build_inspector_text(title: &str, lines: &[String]) -> Text<'static> {
+    if is_collection_inspector(title) {
+        build_collection_text(title, lines)
+    } else {
+        build_key_value_text(lines)
+    }
+}
+
+fn build_collection_text(title: &str, lines: &[String]) -> Text<'static> {
+    let accent = inspector_accent(title);
+    let mut rendered = Vec::new();
+    for line in lines {
+        if let Some(section) = line.strip_prefix("## ") {
+            if !rendered.is_empty() {
+                rendered.push(Line::raw(""));
+            }
+            rendered.push(Line::from(vec![
+                Span::styled(
+                    "▍",
+                    Style::default().fg(accent).add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(" "),
+                Span::styled(
+                    section.to_string(),
+                    Style::default().fg(HEADER).add_modifier(Modifier::BOLD),
+                ),
+            ]));
+            continue;
+        }
+        if line.starts_with("No ") || line.starts_with("no ") {
+            rendered.push(Line::from(Span::styled(
+                line.to_string(),
+                Style::default().fg(SUBTLE),
+            )));
+            continue;
+        }
+        let (primary, secondary) = split_list_entry(line);
+        rendered.push(collection_line(primary, secondary, accent));
+    }
+    Text::from(rendered)
+}
+
+fn collection_line(primary: &str, secondary: Option<&str>, accent: Color) -> Line<'static> {
+    let mut spans = vec![
+        Span::styled(
+            "›",
+            Style::default().fg(accent).add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(" "),
+        Span::styled(
+            primary.to_string(),
+            Style::default().fg(accent).add_modifier(Modifier::BOLD),
+        ),
+    ];
+    if let Some(secondary) = secondary
+        && !secondary.trim().is_empty()
+    {
+        spans.push(Span::raw("  "));
+        spans.push(Span::styled(
+            secondary.trim().to_string(),
+            Style::default().fg(MUTED),
+        ));
+    }
+    Line::from(spans)
+}
+
+fn split_list_entry(line: &str) -> (&str, Option<&str>) {
+    if let Some((primary, secondary)) = line.split_once("  ") {
+        (primary.trim(), Some(secondary))
+    } else {
+        (line.trim(), None)
+    }
+}
+
+fn is_collection_inspector(title: &str) -> bool {
+    matches!(
+        title,
+        "Command Palette"
+            | "Tool Catalog"
+            | "Skill Catalog"
+            | "MCP"
+            | "Prompts"
+            | "Resources"
+            | "Live Tasks"
+            | "Agent Sessions"
+            | "Tasks"
+            | "Sessions"
+            | "Session Search"
+    )
+}
+
+fn inspector_collection_count(lines: &[String]) -> usize {
+    lines
+        .iter()
+        .filter(|line| !line.starts_with("## ") && !line.trim().is_empty())
+        .count()
+}
+
+fn inspector_accent(title: &str) -> Color {
+    match title {
+        "Live Tasks" => USER,
+        "Sessions" | "Session Search" | "Agent Sessions" | "Tasks" => ASSISTANT,
+        "Command Palette" => HEADER,
+        _ => BORDER_ACTIVE,
+    }
+}
+
 fn value_style(key: &str, value: &str) -> Style {
     if key.contains("warning") {
         Style::default().fg(WARN)
@@ -1283,7 +1399,7 @@ fn clamp_scroll(requested: u16, content_lines: usize, viewport_height: u16) -> u
 #[cfg(test)]
 mod tests {
     use super::{
-        build_key_value_text, build_transcript_lines, session_context_line,
+        build_collection_text, build_key_value_text, build_transcript_lines, session_context_line,
         session_last_token_line, session_lines, session_total_token_line,
     };
     use crate::frontend::tui::state::TuiState;
@@ -1352,5 +1468,23 @@ mod tests {
         assert_eq!(lines[0].spans[0].content.as_ref(), " ASSISTANT ");
         assert_eq!(lines[1].spans[0].content.as_ref(), "│");
         assert_eq!(lines[2].spans[0].content.as_ref(), "╰");
+    }
+
+    #[test]
+    fn collection_text_promotes_primary_column_for_catalog_rows() {
+        let rendered = build_collection_text(
+            "Sessions",
+            &[
+                "## Sessions".to_string(),
+                "sess_123  msgs=12 ev=40  no prompt yet".to_string(),
+            ],
+        );
+
+        assert_eq!(rendered.lines[1].spans[0].content.as_ref(), "›");
+        assert_eq!(rendered.lines[1].spans[2].content.as_ref(), "sess_123");
+        assert_eq!(
+            rendered.lines[1].spans[4].content.as_ref(),
+            "msgs=12 ev=40  no prompt yet"
+        );
     }
 }
