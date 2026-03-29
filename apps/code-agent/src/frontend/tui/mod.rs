@@ -11,7 +11,10 @@ use crate::backend::{
     preview_id,
 };
 use approval::approval_decision_for_key;
-use commands::{SlashCommand, command_palette_lines, cycle_slash_command, parse_slash_command};
+use commands::{
+    SlashCommand, SlashCommandEnterAction, command_palette_lines, cycle_slash_command,
+    parse_slash_command, resolve_slash_enter_action,
+};
 use history::{
     format_agent_session_inspector, format_agent_session_summary_line,
     format_live_task_control_outcome, format_live_task_message_outcome,
@@ -163,6 +166,33 @@ impl CodeAgentTui {
                         return Ok(());
                     }
                     KeyCode::Enter => {
+                        let snapshot = self.ui_state.snapshot();
+                        if snapshot.input.starts_with('/') {
+                            if let Some(action) = resolve_slash_enter_action(
+                                &snapshot.input,
+                                snapshot.command_completion_index,
+                            ) {
+                                match action {
+                                    SlashCommandEnterAction::Complete { input, index } => {
+                                        self.ui_state.mutate(|state| {
+                                            state.input = input;
+                                            state.command_completion_index = index;
+                                        });
+                                        continue;
+                                    }
+                                    SlashCommandEnterAction::Execute(input) => {
+                                        self.ui_state.mutate(|state| {
+                                            state.input.clear();
+                                            state.reset_command_completion();
+                                        });
+                                        if self.apply_command(&input).await? {
+                                            return Ok(());
+                                        }
+                                        continue;
+                                    }
+                                }
+                            }
+                        }
                         let input = self.ui_state.take_input();
                         if input.trim().is_empty() {
                             continue;

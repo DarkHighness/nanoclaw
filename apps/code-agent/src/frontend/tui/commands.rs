@@ -8,6 +8,12 @@ pub(crate) struct SlashCommandSpec {
     pub(crate) summary: &'static str,
 }
 
+impl SlashCommandSpec {
+    pub(crate) fn expects_arguments(self) -> bool {
+        self.usage.split_whitespace().nth(1).is_some()
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct SlashCommandHint {
     pub(crate) selected: SlashCommandSpec,
@@ -26,6 +32,12 @@ pub(crate) struct SlashCommandArgumentHint {
 pub(crate) struct SlashCommandArgumentValue {
     pub(crate) placeholder: &'static str,
     pub(crate) value: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum SlashCommandEnterAction {
+    Complete { input: String, index: usize },
+    Execute(String),
 }
 
 const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
@@ -473,6 +485,31 @@ pub(crate) fn cycle_slash_command(
     Some((format!("/{} ", matches[next].name), next))
 }
 
+pub(crate) fn resolve_slash_enter_action(
+    input: &str,
+    selected_index: usize,
+) -> Option<SlashCommandEnterAction> {
+    let hint = slash_command_hint(input, selected_index)?;
+    if hint.exact {
+        return None;
+    }
+    let index = hint
+        .matches
+        .iter()
+        .position(|spec| spec.name == hint.selected.name)
+        .unwrap_or(0);
+    if hint.matches.len() == 1 && !hint.selected.expects_arguments() {
+        return Some(SlashCommandEnterAction::Execute(format!(
+            "/{}",
+            hint.selected.name
+        )));
+    }
+    Some(SlashCommandEnterAction::Complete {
+        input: format!("/{} ", hint.selected.name),
+        index,
+    })
+}
+
 impl From<SlashSubcommand> for SlashCommand {
     fn from(value: SlashSubcommand) -> Self {
         match value {
@@ -644,8 +681,8 @@ fn build_argument_hint(
 #[cfg(test)]
 mod tests {
     use super::{
-        SlashCommand, command_palette_lines, cycle_slash_command, parse_slash_command,
-        slash_command_hint,
+        SlashCommand, SlashCommandEnterAction, command_palette_lines, cycle_slash_command,
+        parse_slash_command, resolve_slash_enter_action, slash_command_hint,
     };
 
     #[test]
@@ -866,5 +903,28 @@ mod tests {
         assert_eq!(arguments.provided[0].placeholder, "<role>");
         assert_eq!(arguments.provided[0].value, "reviewer");
         assert_eq!(arguments.next, Some("<prompt>"));
+    }
+
+    #[test]
+    fn slash_enter_action_completes_ambiguous_partial_command() {
+        let action = resolve_slash_enter_action("/sess", 0).expect("action");
+
+        assert_eq!(
+            action,
+            SlashCommandEnterAction::Complete {
+                input: "/sessions ".to_string(),
+                index: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn slash_enter_action_executes_unique_no_arg_command() {
+        let action = resolve_slash_enter_action("/he", 0).expect("action");
+
+        assert_eq!(
+            action,
+            SlashCommandEnterAction::Execute("/help".to_string())
+        );
     }
 }

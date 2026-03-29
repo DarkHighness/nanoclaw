@@ -349,12 +349,19 @@ fn build_command_hint_text(command_hint: &SlashCommandHint) -> Text<'static> {
     } else {
         "tab complete"
     };
+    let enter_hint = if command_hint.exact {
+        "enter run"
+    } else if command_hint.matches.len() == 1 && !command_hint.selected.expects_arguments() {
+        "enter run"
+    } else {
+        "enter accept"
+    };
     lines.push(Line::from(vec![
         Span::styled(tab_hint, Style::default().fg(MUTED)),
         Span::styled(" · ", Style::default().fg(SUBTLE)),
         Span::styled("shift+tab previous", Style::default().fg(MUTED)),
         Span::styled(" · ", Style::default().fg(SUBTLE)),
-        Span::styled("enter run", Style::default().fg(MUTED)),
+        Span::styled(enter_hint, Style::default().fg(MUTED)),
     ]));
 
     Text::from(lines)
@@ -1548,6 +1555,7 @@ mod tests {
             "browse persisted sessions"
         );
         assert_eq!(rendered.lines[2].spans[0].content.as_ref(), "tab complete");
+        assert_eq!(rendered.lines[2].spans[4].content.as_ref(), "enter accept");
     }
 
     #[test]
@@ -1584,6 +1592,7 @@ mod tests {
                 .any(|span| span.content.as_ref().contains("<prompt>"))
         );
         assert_eq!(rendered.lines[2].spans[0].content.as_ref(), "keep typing");
+        assert_eq!(rendered.lines[2].spans[4].content.as_ref(), "enter run");
     }
 
     #[test]
