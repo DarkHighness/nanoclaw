@@ -43,7 +43,7 @@ impl SharedRenderObserver {
                 self.active_tool_lines.clear();
                 state.active_tool_label = None;
                 state.push_transcript(format!("› {prompt}"));
-                state.status = "Planning next action".to_string();
+                state.status = "Working".to_string();
                 state.push_activity(format!("user prompt: {}", preview_text(&prompt, 40)));
             }
             SessionEvent::AssistantTextDelta { delta } => {
@@ -54,7 +54,7 @@ impl SharedRenderObserver {
                     self.active_assistant_line = Some(state.transcript.len() - 1);
                 }
                 state.transcript_scroll = u16::MAX;
-                state.status = "Streaming answer".to_string();
+                state.status = "Working".to_string();
             }
             SessionEvent::CompactionCompleted {
                 reason,
@@ -100,9 +100,9 @@ impl SharedRenderObserver {
             } => {
                 self.active_assistant_line = None;
                 state.status = if tool_call_count == 0 {
-                    "Model response complete".to_string()
+                    "Working".to_string()
                 } else {
-                    format!("Model requested {tool_call_count} tool(s)")
+                    "Working".to_string()
                 };
             }
             SessionEvent::ToolCallRequested { call } => {
@@ -231,7 +231,7 @@ impl SharedRenderObserver {
                 self.active_assistant_line = None;
                 self.active_tool_lines.clear();
                 state.active_tool_label = None;
-                state.status = "Turn complete".to_string();
+                state.status = "Ready".to_string();
                 state.push_activity("turn complete");
             }
         });

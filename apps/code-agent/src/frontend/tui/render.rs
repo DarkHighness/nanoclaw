@@ -182,24 +182,23 @@ fn approval_sheet_rect(area: Rect) -> Rect {
 }
 
 fn build_approval_text(approval: &ApprovalPrompt) -> Text<'static> {
+    let question = if approval.tool_name == "bash" {
+        "  Would you like to run the following command?"
+    } else {
+        "  Would you like Code Agent to continue with this tool call?"
+    };
     let mut lines = vec![
         Line::from(Span::styled(
-            format!("  Would you like to run {}?", approval.tool_name),
+            question.to_string(),
             Style::default().fg(HEADER).add_modifier(Modifier::BOLD),
         )),
         Line::raw(""),
     ];
 
-    if !approval.origin.is_empty() {
-        lines.push(Line::from(vec![
-            Span::styled("  Origin: ", Style::default().fg(MUTED)),
-            Span::styled(approval.origin.clone(), Style::default().fg(TEXT)),
-        ]));
-    }
-
     if !approval.reasons.is_empty() {
         let mut reasons = approval.reasons.iter();
         if let Some(reason) = reasons.next() {
+            lines.push(Line::raw(""));
             lines.push(Line::from(vec![
                 Span::styled("  Reason: ", Style::default().fg(MUTED)),
                 Span::styled(reason.clone(), Style::default().fg(TEXT)),
@@ -233,22 +232,15 @@ fn build_approval_text(approval: &ApprovalPrompt) -> Text<'static> {
         Span::raw("  2. No, deny"),
         Span::styled(" (n)", Style::default().fg(MUTED)),
     ]));
-    lines.push(Line::raw(""));
     lines.push(Line::from(vec![
-        Span::styled("  Press ", Style::default().fg(MUTED)),
-        Span::styled(
-            "y",
-            Style::default().fg(ASSISTANT).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(" to approve, ", Style::default().fg(MUTED)),
-        Span::styled("n", Style::default().fg(ERROR).add_modifier(Modifier::BOLD)),
-        Span::styled(" to deny, or ", Style::default().fg(MUTED)),
-        Span::styled(
-            "esc",
-            Style::default().fg(WARN).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(" to cancel", Style::default().fg(MUTED)),
+        Span::raw("  3. Dismiss and deny"),
+        Span::styled(" (esc)", Style::default().fg(MUTED)),
     ]));
+    lines.push(Line::raw(""));
+    lines.push(Line::from(Span::styled(
+        "  Press y to approve, n to deny, or esc to dismiss",
+        Style::default().fg(MUTED),
+    )));
     Text::from(lines)
 }
 
@@ -417,13 +409,7 @@ fn live_progress_line(state: &TuiState) -> Line<'static> {
             .turn_started_at
             .map(|started| started.elapsed().as_secs())
             .unwrap_or(0);
-        let status = match (state.status.as_str(), state.active_tool_label.as_deref()) {
-            ("Working", Some(tool_name)) => format!("Working on {tool_name}"),
-            ("Waiting for approval", Some(tool_name)) => {
-                format!("Waiting for approval to run {tool_name}")
-            }
-            (status, _) => status.to_string(),
-        };
+        let status = live_progress_summary(state);
         Line::from(vec![
             Span::styled(
                 progress_marker(state),
@@ -450,6 +436,16 @@ fn live_progress_line(state: &TuiState) -> Line<'static> {
                 Style::default().fg(MUTED),
             ),
         ])
+    }
+}
+
+fn live_progress_summary(state: &TuiState) -> String {
+    match (state.status.as_str(), state.active_tool_label.as_deref()) {
+        ("Waiting for approval", Some(tool_name)) => {
+            format!("Waiting for approval to run {tool_name}")
+        }
+        ("Waiting for approval", None) => "Waiting for approval".to_string(),
+        _ => "Working".to_string(),
     }
 }
 
@@ -533,6 +529,25 @@ fn build_key_value_text(lines: &[String]) -> Text<'static> {
                     value.trim().to_string(),
                     value_style(key.trim(), value.trim()),
                 ),
+            ]));
+        } else if let Some((marker, accent, body)) = parse_prefixed_entry(line) {
+            rendered.push(Line::from(vec![
+                Span::styled(
+                    marker,
+                    Style::default().fg(accent).add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(" "),
+                Span::styled(body.to_string(), transcript_body_style(marker, body)),
+            ]));
+        } else if let Some(detail) = line.strip_prefix("  └ ") {
+            rendered.push(Line::from(vec![
+                Span::styled("  └ ", Style::default().fg(SUBTLE)),
+                Span::styled(detail.to_string(), Style::default().fg(MUTED)),
+            ]));
+        } else if let Some(detail) = line.strip_prefix("    ") {
+            rendered.push(Line::from(vec![
+                Span::raw("    "),
+                Span::styled(detail.to_string(), Style::default().fg(MUTED)),
             ]));
         } else if let Some(rest) = line.strip_prefix("  ") {
             rendered.push(Line::from(vec![
@@ -793,6 +808,26 @@ mod tests {
         assert_eq!(lines[0].spans[0].content.as_ref(), "Session");
         assert_eq!(lines[1].spans[0].content.as_ref(), "session ref:");
         assert_eq!(lines[2].spans[0].content.as_ref(), "/sessions [query]");
+    }
+
+    #[test]
+    fn key_value_text_preserves_prefixed_summary_blocks() {
+        let rendered = build_key_value_text(&[
+            "✔ Exported transcript text".to_string(),
+            "  └ session-1".to_string(),
+            "    Wrote 4 items to /workspace/out.txt".to_string(),
+        ]);
+        let lines = rendered.lines;
+        assert_eq!(lines[0].spans[0].content.as_ref(), "✔");
+        assert_eq!(
+            lines[0].spans[2].content.as_ref(),
+            "Exported transcript text"
+        );
+        assert_eq!(lines[1].spans[0].content.as_ref(), "  └ ");
+        assert_eq!(
+            lines[2].spans[1].content.as_ref(),
+            "Wrote 4 items to /workspace/out.txt"
+        );
     }
 
     #[test]

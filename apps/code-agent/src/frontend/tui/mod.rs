@@ -337,10 +337,7 @@ impl CodeAgentTui {
             state.turn_running = true;
             state.turn_started_at = Some(Instant::now());
             state.active_tool_label = None;
-            state.status = match &command {
-                RuntimeCommand::Prompt { .. } => "Running prompt".to_string(),
-                RuntimeCommand::Steer { .. } => "Applying steer".to_string(),
-            };
+            state.status = "Working".to_string();
             state.push_activity(preview.clone());
         });
 
