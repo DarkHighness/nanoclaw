@@ -70,15 +70,13 @@ pub(crate) fn format_live_task_summary_line(summary: &LiveTaskSummary) -> String
 
 pub(crate) fn format_live_task_spawn_outcome(outcome: &LiveTaskSpawnOutcome) -> Vec<String> {
     vec![
-        "## Live Task Spawn".to_string(),
-        "action: spawned".to_string(),
-        format!("task id: {}", outcome.task.task_id),
-        format!("role: {}", outcome.task.role),
-        format!("status: {}", outcome.task.status),
-        format!("agent id: {}", outcome.task.agent_id),
-        format!("session ref: {}", outcome.task.session_ref),
-        format!("agent session ref: {}", outcome.task.agent_session_ref),
-        format!("prompt: {}", preview_text(&outcome.prompt, 96)),
+        format!("• Spawned task {}", outcome.task.task_id),
+        format!("  └ role {}", outcome.task.role),
+        format!("  └ status {}", outcome.task.status),
+        format!("  └ agent {}", outcome.task.agent_id),
+        format!("  └ session {}", outcome.task.session_ref),
+        format!("  └ agent session {}", outcome.task.agent_session_ref),
+        format!("  └ prompt {}", preview_text(&outcome.prompt, 96)),
     ]
 }
 
@@ -377,78 +375,70 @@ pub(crate) fn format_session_export_result(result: &SessionExportArtifact) -> Ve
 }
 
 pub(crate) fn format_session_operation_outcome(outcome: &SessionOperationOutcome) -> Vec<String> {
+    let headline = match outcome.action {
+        SessionOperationAction::StartedFresh => "✔ Started new session",
+        SessionOperationAction::AlreadyAttached => "• Agent session already attached",
+        SessionOperationAction::Reattached => "✔ Reattached session",
+    };
     let mut lines = vec![
-        "## Session Operation".to_string(),
-        format!(
-            "action: {}",
-            match outcome.action {
-                SessionOperationAction::StartedFresh => "started_fresh",
-                SessionOperationAction::AlreadyAttached => "already_attached",
-                SessionOperationAction::Reattached => "reattached",
-            }
-        ),
-        format!("session ref: {}", outcome.session_ref),
-        format!(
-            "active agent session ref: {}",
-            outcome.active_agent_session_ref
-        ),
+        headline.to_string(),
+        format!("  └ session {}", outcome.session_ref),
+        format!("  └ agent session {}", outcome.active_agent_session_ref),
     ];
     if let Some(requested_agent_session_ref) = &outcome.requested_agent_session_ref {
-        lines.push(format!(
-            "requested agent session ref: {}",
-            requested_agent_session_ref
-        ));
+        lines.push(format!("  └ requested {}", requested_agent_session_ref));
     }
     lines
 }
 
 pub(crate) fn format_live_task_control_outcome(outcome: &LiveTaskControlOutcome) -> Vec<String> {
+    let headline = match outcome.action {
+        LiveTaskControlAction::Cancelled => format!("✔ Cancelled task {}", outcome.task_id),
+        LiveTaskControlAction::AlreadyTerminal => {
+            format!("• Task {} was already terminal", outcome.task_id)
+        }
+    };
     vec![
-        "## Live Task Control".to_string(),
-        format!(
-            "action: {}",
-            match outcome.action {
-                LiveTaskControlAction::Cancelled => "cancelled",
-                LiveTaskControlAction::AlreadyTerminal => "already_terminal",
-            }
-        ),
-        format!("requested ref: {}", outcome.requested_ref),
-        format!("task id: {}", outcome.task_id),
-        format!("agent id: {}", outcome.agent_id),
-        format!("status: {}", outcome.status),
+        headline,
+        format!("  └ requested {}", outcome.requested_ref),
+        format!("  └ agent {}", outcome.agent_id),
+        format!("  └ status {}", outcome.status),
     ]
 }
 
 pub(crate) fn format_live_task_message_outcome(outcome: &LiveTaskMessageOutcome) -> Vec<String> {
+    let headline = match outcome.action {
+        LiveTaskMessageAction::Sent => format!("• Sent steer message to task {}", outcome.task_id),
+        LiveTaskMessageAction::AlreadyTerminal => {
+            format!("• Task {} was already terminal", outcome.task_id)
+        }
+    };
     vec![
-        "## Live Task Message".to_string(),
-        format!(
-            "action: {}",
-            match outcome.action {
-                LiveTaskMessageAction::Sent => "sent",
-                LiveTaskMessageAction::AlreadyTerminal => "already_terminal",
-            }
-        ),
-        format!("requested ref: {}", outcome.requested_ref),
-        format!("task id: {}", outcome.task_id),
-        format!("agent id: {}", outcome.agent_id),
-        format!("status: {}", outcome.status),
-        format!("message: {}", preview_text(&outcome.message, 96)),
+        headline,
+        format!("  └ requested {}", outcome.requested_ref),
+        format!("  └ agent {}", outcome.agent_id),
+        format!("  └ status {}", outcome.status),
+        format!("  └ message {}", preview_text(&outcome.message, 96)),
     ]
 }
 
 pub(crate) fn format_live_task_wait_outcome(outcome: &LiveTaskWaitOutcome) -> Vec<String> {
+    let headline = match outcome.status {
+        agent::types::AgentStatus::Completed => format!("✔ Task {} finished", outcome.task_id),
+        agent::types::AgentStatus::Failed => format!("✗ Task {} failed", outcome.task_id),
+        agent::types::AgentStatus::Cancelled => format!("✗ Task {} cancelled", outcome.task_id),
+        _ => format!("• Waiting finished for task {}", outcome.task_id),
+    };
     let mut lines = vec![
-        "## Live Task Wait".to_string(),
-        format!("requested ref: {}", outcome.requested_ref),
-        format!("task id: {}", outcome.task_id),
-        format!("agent id: {}", outcome.agent_id),
-        format!("status: {}", outcome.status),
-        format!("summary: {}", preview_text(&outcome.summary, 96)),
+        headline,
+        format!("  └ requested {}", outcome.requested_ref),
+        format!("  └ agent {}", outcome.agent_id),
+        format!("  └ status {}", outcome.status),
+        format!("  └ summary {}", preview_text(&outcome.summary, 96)),
     ];
     if !outcome.claimed_files.is_empty() {
         lines.push(format!(
-            "claimed files: {}",
+            "  └ claimed files {}",
             preview_text(&outcome.claimed_files.join(", "), 96)
         ));
     }
@@ -727,9 +717,15 @@ fn format_session_event_line(event: &SessionEventEnvelope) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::format_session_export_result;
-    use crate::backend::{SessionExportArtifact, SessionExportKind};
-    use agent::types::SessionId;
+    use super::{
+        format_live_task_wait_outcome, format_session_export_result,
+        format_session_operation_outcome,
+    };
+    use crate::backend::{
+        LiveTaskWaitOutcome, SessionExportArtifact, SessionExportKind, SessionOperationAction,
+        SessionOperationOutcome, SessionStartupSnapshot,
+    };
+    use agent::types::{AgentStatus, SessionId};
     use std::path::PathBuf;
 
     #[test]
@@ -744,5 +740,39 @@ mod tests {
         assert!(lines.iter().any(|line| line == "export: transcript text"));
         assert!(lines.iter().any(|line| line == "path: /workspace/out.txt"));
         assert!(lines.iter().any(|line| line == "items: 4"));
+    }
+
+    #[test]
+    fn session_operation_outcome_uses_shell_style_summary() {
+        let lines = format_session_operation_outcome(&SessionOperationOutcome {
+            action: SessionOperationAction::Reattached,
+            session_ref: "session-1".to_string(),
+            active_agent_session_ref: "agent-session-2".to_string(),
+            requested_agent_session_ref: Some("agent-session-1".to_string()),
+            startup: SessionStartupSnapshot::default(),
+            transcript: Vec::new(),
+        });
+
+        assert_eq!(lines[0], "✔ Reattached session");
+        assert_eq!(lines[1], "  └ session session-1");
+        assert_eq!(lines[2], "  └ agent session agent-session-2");
+        assert_eq!(lines[3], "  └ requested agent-session-1");
+    }
+
+    #[test]
+    fn live_task_wait_outcome_uses_terminal_status_marker() {
+        let lines = format_live_task_wait_outcome(&LiveTaskWaitOutcome {
+            requested_ref: "task_1".to_string(),
+            agent_id: "agent_1".to_string(),
+            task_id: "task_1".to_string(),
+            status: AgentStatus::Completed,
+            summary: "Updated planner and wrote tests".to_string(),
+            claimed_files: vec!["src/lib.rs".to_string()],
+        });
+
+        assert_eq!(lines[0], "✔ Task task_1 finished");
+        assert_eq!(lines[1], "  └ requested task_1");
+        assert_eq!(lines[4], "  └ summary Updated planner and wrote tests");
+        assert_eq!(lines[5], "  └ claimed files src/lib.rs");
     }
 }

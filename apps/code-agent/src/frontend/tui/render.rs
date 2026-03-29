@@ -518,6 +518,10 @@ fn build_key_value_text(lines: &[String]) -> Text<'static> {
             )));
             continue;
         }
+        if is_shell_summary_line(line) {
+            rendered.extend(render_shell_summary_line(line));
+            continue;
+        }
         if let Some((key, value)) = line.split_once(':') {
             rendered.push(Line::from(vec![
                 Span::styled(
@@ -548,6 +552,22 @@ fn build_key_value_text(lines: &[String]) -> Text<'static> {
         }
     }
     Text::from(rendered)
+}
+
+fn is_shell_summary_line(line: &str) -> bool {
+    parse_prefixed_entry(line).is_some()
+        || line.starts_with("  └ ")
+        || line.starts_with("    ")
+        || line.starts_with("- ")
+        || line.starts_with("* ")
+}
+
+fn render_shell_summary_line(line: &str) -> Vec<Line<'static>> {
+    if parse_prefixed_entry(line).is_some() {
+        format_transcript_entry(line)
+    } else {
+        vec![render_transcript_body_line(line, false)]
+    }
 }
 
 fn build_inspector_text(title: &str, lines: &[String]) -> Text<'static> {
@@ -776,6 +796,25 @@ mod tests {
     }
 
     #[test]
+    fn key_value_text_reuses_transcript_rendering_for_shell_summary_lines() {
+        let rendered = build_key_value_text(&[
+            "• Reattached session".to_string(),
+            "  └ session session-1".to_string(),
+        ]);
+
+        assert_eq!(rendered.lines[0].spans[0].content.as_ref(), "•");
+        assert_eq!(
+            rendered.lines[0].spans[2].content.as_ref(),
+            "Reattached session"
+        );
+        assert_eq!(rendered.lines[1].spans[0].content.as_ref(), "  └ ");
+        assert_eq!(
+            rendered.lines[1].spans[1].content.as_ref(),
+            "session session-1"
+        );
+    }
+
+    #[test]
     fn transcript_entries_render_with_codex_like_prefixes() {
         let mut state = TuiState {
             main_pane: MainPaneMode::Transcript,
@@ -815,7 +854,10 @@ mod tests {
         let mut state = TuiState {
             main_pane: MainPaneMode::Transcript,
             inspector_title: "Resume".to_string(),
-            inspector: vec!["## Resume".to_string(), "action: reattached".to_string()],
+            inspector: vec![
+                "✔ Reattached session".to_string(),
+                "  └ session session-1".to_string(),
+            ],
             ..TuiState::default()
         };
         state.transcript = vec!["• done".to_string()];
@@ -823,8 +865,8 @@ mod tests {
         let rendered = build_transcript_lines(&state);
 
         assert_eq!(rendered[0].spans[0].content.as_ref(), "Resume");
-        assert_eq!(rendered[2].spans[0].content.as_ref(), "Resume");
-        assert_eq!(rendered[3].spans[0].content.as_ref(), "action:");
+        assert_eq!(rendered[2].spans[0].content.as_ref(), "✔");
+        assert_eq!(rendered[2].spans[2].content.as_ref(), "Reattached session");
     }
 
     #[test]
