@@ -151,18 +151,14 @@ Current problems:
 
 - `code-agent` boot is now split across helper modules, but backend-owned host
   contracts are still incomplete for a future non-TUI frontend.
-- the backend session now exposes startup, approval, and event contracts, but
-  it still lacks a true runtime resume/reattach lifecycle above persisted
-  history.
 - explicit `AgentSession` lifecycle boundaries now exist for compaction, but
-  full persisted runtime reattach still needs backend-owned contracts.
+  `/new`, `/clear`, and historical reattach still need to be generalized into a
+  frontend-neutral session-operation contract.
 - legacy `reference-tui` code still duplicates host responsibilities that now
   belong in `code-agent`.
 - `code-agent` now owns durable session browsing/replay/export plus MCP
-  inspection, but true runtime resume/reattach still has not moved above the
-  stored history catalog.
-- product-facing commands now say `session`, but the host still lacks a true
-  runtime resume/reattach path above the stored run catalog.
+  inspection, and historical `AgentSession` reattach is now implemented for
+  histories that carry compaction checkpoints.
 - repository docs and app workspace defaults were tightened, but the app
   workspace still contains transitional code that must be retired later.
 
@@ -277,9 +273,9 @@ Acceptance:
 
 Current note:
 
-- approval and runtime event flow are now backend-owned contracts, but true
-  runtime resume remains a pending backend capability rather than an
-  implemented feature.
+- approval and runtime event flow are now backend-owned contracts, and
+  historical `AgentSession` reattach is available. Older compacted histories
+  without resume checkpoint metadata still fall back to history-only browsing.
 
 ### Phase E: Delivery Cleanup
 

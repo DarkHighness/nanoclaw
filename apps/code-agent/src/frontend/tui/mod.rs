@@ -9,11 +9,11 @@ use crate::backend::{CodeAgentSession, preview_id};
 use approval::approval_decision_for_key;
 use commands::{SlashCommand, parse_slash_command};
 use history::{
-    format_agent_session_resume_status, format_agent_session_summary_line,
+    format_agent_session_resume_result, format_agent_session_summary_line,
     format_mcp_prompt_summary_line, format_mcp_resource_summary_line,
     format_mcp_server_summary_line, format_session_export_result, format_session_inspector,
     format_session_search_line, format_session_summary_line, format_session_transcript_lines,
-    format_startup_diagnostics,
+    format_startup_diagnostics, format_visible_transcript_lines,
 };
 use observer::SharedRenderObserver;
 use render::render;
@@ -678,19 +678,51 @@ impl CodeAgentTui {
                 Ok(false)
             }
             SlashCommand::Resume { agent_session_ref } => {
-                let status = self.session.resume_status(&agent_session_ref).await?;
-                let inspector = format_agent_session_resume_status(&status);
-                let session_ref_preview = preview_id(&status.agent_session_ref);
-                self.ui_state.mutate(move |state| {
-                    state.inspector_title = "Resume".to_string();
-                    state.inspector_scroll = 0;
-                    state.inspector = inspector;
-                    state.status = format!(
-                        "Checked resume contract for agent session {}",
-                        session_ref_preview
-                    );
-                    state.push_activity(format!("checked resume contract {}", session_ref_preview));
+                if self.turn_task.is_some() {
+                    self.ui_state.mutate(|state| {
+                        state.status =
+                            "Wait for the current turn before resuming another session".to_string();
+                        state.push_activity("resume blocked while turn running");
+                    });
+                    return Ok(false);
+                }
+                let result = self
+                    .session
+                    .resume_agent_session(&agent_session_ref)
+                    .await?;
+                let inspector = format_agent_session_resume_result(&result);
+                let transcript = format_visible_transcript_lines(
+                    &self.session.active_visible_transcript().await,
+                );
+                let mut startup = self.startup_state();
+                startup.inspector_title = "Resume".to_string();
+                startup.inspector_scroll = 0;
+                startup.inspector = inspector;
+                startup.transcript = transcript;
+                startup.transcript_scroll = 0;
+                startup.status = match result.action {
+                    crate::backend::ResumeAction::AlreadyAttached => format!(
+                        "Agent session {} is already attached",
+                        preview_id(&result.requested_agent_session_ref)
+                    ),
+                    crate::backend::ResumeAction::Reattached => format!(
+                        "Reattached session {} as {}",
+                        preview_id(&result.session_ref),
+                        preview_id(&result.active_agent_session_ref)
+                    ),
+                };
+                startup.push_activity(match result.action {
+                    crate::backend::ResumeAction::AlreadyAttached => format!(
+                        "resume no-op {}",
+                        preview_id(&result.requested_agent_session_ref)
+                    ),
+                    crate::backend::ResumeAction::Reattached => format!(
+                        "resumed session {} as {}",
+                        preview_id(&result.session_ref),
+                        preview_id(&result.active_agent_session_ref)
+                    ),
                 });
+                self.ui_state.replace(startup);
                 Ok(false)
             }
             SlashCommand::ExportSession { session_ref, path } => {

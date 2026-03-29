@@ -1,11 +1,11 @@
 use super::state::preview_text;
 use crate::backend::{
-    AgentSessionResumeStatus, LoadedSession, McpPromptSummary, McpResourceSummary,
+    AgentSessionResumeResult, LoadedSession, McpPromptSummary, McpResourceSummary,
     McpServerSummary, PersistedAgentSessionSummary, PersistedSessionSearchMatch,
-    PersistedSessionSummary, ResumeSupport, SessionExportArtifact, SessionExportKind,
+    PersistedSessionSummary, ResumeAction, SessionExportArtifact, SessionExportKind,
     StartupDiagnosticsSnapshot, message_to_text, preview_id,
 };
-use agent::types::{AgentSessionId, SessionEventEnvelope, SessionEventKind};
+use agent::types::{AgentSessionId, Message, SessionEventEnvelope, SessionEventKind};
 use store::TokenUsageRecord;
 
 pub(crate) fn format_session_summary_line(summary: &PersistedSessionSummary) -> String {
@@ -141,11 +141,15 @@ pub(crate) fn format_session_inspector(session: &LoadedSession) -> Vec<String> {
 }
 
 pub(crate) fn format_session_transcript_lines(session: &LoadedSession) -> Vec<String> {
-    let transcript = session
-        .transcript
-        .iter()
-        .map(message_to_text)
-        .collect::<Vec<_>>();
+    format_transcript_lines(&session.transcript)
+}
+
+pub(crate) fn format_visible_transcript_lines(transcript: &[Message]) -> Vec<String> {
+    format_transcript_lines(transcript)
+}
+
+fn format_transcript_lines(transcript: &[Message]) -> Vec<String> {
+    let transcript = transcript.iter().map(message_to_text).collect::<Vec<_>>();
     if transcript.is_empty() {
         vec!["No transcript messages recorded for this session.".to_string()]
     } else {
@@ -169,17 +173,26 @@ pub(crate) fn format_session_export_result(result: &SessionExportArtifact) -> Ve
     ]
 }
 
-pub(crate) fn format_agent_session_resume_status(status: &AgentSessionResumeStatus) -> Vec<String> {
-    let mut lines = vec![
+pub(crate) fn format_agent_session_resume_result(result: &AgentSessionResumeResult) -> Vec<String> {
+    vec![
         "## Resume".to_string(),
-        format!("agent session ref: {}", status.agent_session_ref),
-        format!("session ref: {}", status.session_ref),
-        format!("support: {}", status.support.label()),
-    ];
-    if let ResumeSupport::NotYetSupported { reason } = &status.support {
-        lines.push(format!("reason: {reason}"));
-    }
-    lines
+        format!(
+            "requested agent session ref: {}",
+            result.requested_agent_session_ref
+        ),
+        format!("session ref: {}", result.session_ref),
+        format!(
+            "active agent session ref: {}",
+            result.active_agent_session_ref
+        ),
+        format!(
+            "action: {}",
+            match result.action {
+                ResumeAction::AlreadyAttached => "already_attached",
+                ResumeAction::Reattached => "reattached",
+            }
+        ),
+    ]
 }
 
 pub(crate) fn format_startup_diagnostics(snapshot: &StartupDiagnosticsSnapshot) -> Vec<String> {
@@ -314,6 +327,7 @@ fn format_session_event_line(event: &SessionEventEnvelope) -> String {
             source_message_count,
             retained_message_count,
             summary_chars,
+            ..
         } => format!(
             "compaction {} messages={} kept={} summary_chars={}",
             reason, source_message_count, retained_message_count, summary_chars

@@ -1,3 +1,4 @@
+use crate::backend::session_resume::{HISTORY_ONLY_RESUME_REASON, can_resume_agent_session};
 use agent::types::{AgentSessionId, SessionEventEnvelope, SessionEventKind};
 use anyhow::{Result, anyhow};
 use std::collections::BTreeMap;
@@ -6,6 +7,7 @@ use store::{SessionSearchResult, SessionSummary};
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum ResumeSupport {
     AttachedToActiveRuntime,
+    Reattachable,
     NotYetSupported { reason: String },
 }
 
@@ -13,6 +15,7 @@ impl ResumeSupport {
     pub(crate) fn label(&self) -> &'static str {
         match self {
             Self::AttachedToActiveRuntime => "attached",
+            Self::Reattachable => "reattachable",
             Self::NotYetSupported { .. } => "history-only",
         }
     }
@@ -57,8 +60,22 @@ pub(crate) struct AgentSessionResumeStatus {
     pub(crate) support: ResumeSupport,
 }
 
-const HISTORY_ONLY_REASON: &str =
-    "Persisted agent sessions can be inspected, but runtime reattach is not implemented yet.";
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ResumeAction {
+    AlreadyAttached,
+    Reattached,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct AgentSessionResumeResult {
+    pub(crate) requested_agent_session_ref: String,
+    pub(crate) session_ref: String,
+    pub(crate) active_agent_session_ref: String,
+    pub(crate) action: ResumeAction,
+}
+
+const TOP_LEVEL_HISTORY_ONLY_REASON: &str =
+    "Session history can be inspected, but top-level session refs are not direct resume targets.";
 
 pub(crate) fn persisted_session_summary(
     summary: &SessionSummary,
@@ -72,7 +89,7 @@ pub(crate) fn persisted_session_summary(
         worker_session_count: summary.agent_session_count,
         transcript_message_count: summary.transcript_message_count,
         last_user_prompt: summary.last_user_prompt.clone(),
-        resume_support: resume_support_for(summary.session_id.as_str(), active_session_ref),
+        resume_support: session_resume_support_for(summary.session_id.as_str(), active_session_ref),
     }
 }
 
@@ -151,7 +168,11 @@ pub(crate) fn persisted_agent_session_summaries(
             event_count: entry.event_count,
             transcript_message_count: entry.transcript_message_count,
             last_user_prompt: entry.last_user_prompt,
-            resume_support: resume_support_for(agent_session_id.as_str(), active_agent_session_ref),
+            resume_support: agent_session_resume_support_for(
+                events,
+                &agent_session_id,
+                active_agent_session_ref,
+            ),
         })
         .collect::<Vec<_>>();
     summaries.sort_by(|left, right| {
@@ -166,27 +187,42 @@ pub(crate) fn persisted_agent_session_summaries(
 pub(crate) fn resolve_agent_session_resume_status(
     agent_sessions: &[PersistedAgentSessionSummary],
     agent_session_ref: &str,
-    active_agent_session_ref: &str,
 ) -> Result<AgentSessionResumeStatus> {
     let summary = resolve_agent_session_reference(agent_sessions, agent_session_ref)?;
     Ok(AgentSessionResumeStatus {
         agent_session_ref: summary.agent_session_ref.clone(),
         session_ref: summary.session_ref.clone(),
-        support: resume_support_for(&summary.agent_session_ref, active_agent_session_ref),
+        support: summary.resume_support.clone(),
     })
 }
 
-fn resume_support_for(agent_session_ref: &str, active_agent_session_ref: &str) -> ResumeSupport {
-    if agent_session_ref == active_agent_session_ref {
+fn session_resume_support_for(session_ref: &str, active_session_ref: &str) -> ResumeSupport {
+    if session_ref == active_session_ref {
         ResumeSupport::AttachedToActiveRuntime
     } else {
         ResumeSupport::NotYetSupported {
-            reason: HISTORY_ONLY_REASON.to_string(),
+            reason: TOP_LEVEL_HISTORY_ONLY_REASON.to_string(),
         }
     }
 }
 
-fn resolve_agent_session_reference<'a>(
+fn agent_session_resume_support_for(
+    events: &[SessionEventEnvelope],
+    agent_session_id: &AgentSessionId,
+    active_agent_session_ref: &str,
+) -> ResumeSupport {
+    if agent_session_id.as_str() == active_agent_session_ref {
+        return ResumeSupport::AttachedToActiveRuntime;
+    }
+    match can_resume_agent_session(events, agent_session_id) {
+        Ok(()) => ResumeSupport::Reattachable,
+        Err(_) => ResumeSupport::NotYetSupported {
+            reason: HISTORY_ONLY_RESUME_REASON.to_string(),
+        },
+    }
+}
+
+pub(crate) fn resolve_agent_session_reference<'a>(
     agent_sessions: &'a [PersistedAgentSessionSummary],
     agent_session_ref: &str,
 ) -> Result<&'a PersistedAgentSessionSummary> {
@@ -228,6 +264,7 @@ mod tests {
         ResumeSupport, persisted_agent_session_summaries, persisted_session_summary,
         resolve_agent_session_resume_status,
     };
+    use crate::backend::session_resume::HISTORY_ONLY_RESUME_REASON;
     use agent::types::{AgentSessionId, SessionEventEnvelope, SessionEventKind, SessionId};
     use store::SessionSummary;
 
@@ -265,11 +302,10 @@ mod tests {
                 transcript_message_count: 1,
                 last_user_prompt: None,
                 resume_support: ResumeSupport::NotYetSupported {
-                    reason: "ignored".to_string(),
+                    reason: HISTORY_ONLY_RESUME_REASON.to_string(),
                 },
             }],
             "agent_archived",
-            "agent_active",
         )
         .unwrap();
         assert_eq!(status.support.label(), "history-only");
@@ -277,8 +313,11 @@ mod tests {
             ResumeSupport::AttachedToActiveRuntime => {
                 panic!("expected persisted history to stay history-only")
             }
+            ResumeSupport::Reattachable => {
+                panic!("expected persisted history to stay history-only")
+            }
             ResumeSupport::NotYetSupported { reason } => {
-                assert!(reason.contains("runtime reattach is not implemented yet"));
+                assert!(reason.contains("predates resume checkpoints"));
             }
         }
     }
@@ -329,7 +368,7 @@ mod tests {
             .find(|summary| summary.agent_session_ref == "agent_worker")
             .unwrap();
         assert_eq!(worker.label, "worker");
-        assert_eq!(worker.resume_support.label(), "history-only");
+        assert_eq!(worker.resume_support.label(), "reattachable");
 
         let root = summaries
             .iter()

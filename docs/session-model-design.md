@@ -154,6 +154,13 @@ The operator expectation for `/resume` is:
 - reconstruct or reattach the corresponding runtime window
 - continue against the bound `SessionId`
 
+That resume path should tolerate historical replay boundaries:
+
+- when persisted compaction checkpoints exist, the host can reconstruct the
+  visible transcript window and reattach it into a fresh live `AgentSession`
+- when older compacted history lacks those checkpoints, the target remains
+  history-only and must not pretend to be safely resumable
+
 The operator expectation for browsing durable history is different:
 
 - browse `Session` history

@@ -162,13 +162,14 @@ The product-facing host surface now uses `session` terminology for the durable
 conversation history and `agent session` terminology for runtime-resume targets.
 `/session <session-ref>` opens persisted conversation history and exports
 artifacts, while `/resume <agent-session-ref>` now resolves an `AgentSessionId`
-instead of a top-level `SessionId`. Live runtime reattach is still not
-implemented, so resume currently reports whether the target is already attached
-to the active runtime or only available as history.
+instead of a top-level `SessionId`. Historical agent sessions can now be
+reattached into the live runtime, and the resumed runtime receives a fresh
+active `AgentSessionId` bound to the original top-level `SessionId`. Older
+compacted histories that predate resume checkpoints still remain history-only.
 
 `/new` and `/clear` now perform the same backend-owned operation: they create a
 fresh active top-level session while keeping prior sessions in durable history
-for browsing, export, and future resume/reattach work.
+for browsing, export, and later reattachment.
 
 The startup inspector is now backed by a structured backend snapshot, and the
 MCP-focused commands expose connected server catalogs plus prompt/resource

@@ -283,6 +283,10 @@ pub enum SessionEventKind {
         source_message_count: usize,
         retained_message_count: usize,
         summary_chars: usize,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        summary_message_id: Option<MessageId>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        retained_tail_message_ids: Vec<MessageId>,
     },
     ModelResponseCompleted {
         assistant_text: String,

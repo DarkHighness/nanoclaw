@@ -91,6 +91,11 @@ impl AgentRuntime {
     }
 
     #[must_use]
+    pub fn visible_transcript_snapshot(&self) -> Vec<types::Message> {
+        self.visible_transcript()
+    }
+
+    #[must_use]
     pub fn tool_registry_names(&self) -> Vec<String> {
         self.tool_registry
             .names()
@@ -134,6 +139,36 @@ impl AgentRuntime {
 
         let hooks = self.hook_registrations.clone();
         self.start_agent_session(&TurnId::new(), &hooks, NEW_SESSION_REASON)
+            .await
+    }
+
+    pub async fn resume_session(&mut self, session: RuntimeSession) -> Result<()> {
+        const RESUME_SWITCH_REASON: &str = "operator_resume_switch";
+        const RESUME_START_REASON: &str = "resume";
+
+        if self.session.has_activity() {
+            self.append_event(
+                None,
+                None,
+                SessionEventKind::SessionEnd {
+                    reason: Some(RESUME_SWITCH_REASON.to_string()),
+                },
+            )
+            .await?;
+        }
+
+        let mut session = session;
+        session.agent_session_id = types::AgentSessionId::new();
+        session.agent_session_started = false;
+        session.provider_continuation = None;
+        session.provider_transcript_cursor = 0;
+        session.token_ledger = types::TokenLedgerSnapshot::default();
+        self.session = session;
+        self.clear_pending_request_effects();
+        self.tool_loop_detector.reset();
+
+        let hooks = self.hook_registrations.clone();
+        self.start_agent_session(&TurnId::new(), &hooks, RESUME_START_REASON)
             .await
     }
 

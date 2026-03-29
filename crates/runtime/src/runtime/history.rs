@@ -196,8 +196,18 @@ impl AgentRuntime {
             })
             .await?;
 
+        let retained_tail_message_ids = retained_tail_indices
+            .iter()
+            .filter_map(|index| {
+                self.session
+                    .transcript
+                    .get(*index)
+                    .map(|message| message.message_id.clone())
+            })
+            .collect::<Vec<_>>();
         let summary_index = self.session.transcript.len();
         let summary_message = Message::system(result.summary.clone());
+        let summary_message_id = summary_message.message_id.clone();
         let event = append_transcript_message(
             &mut self.session.transcript,
             summary_message,
@@ -223,6 +233,8 @@ impl AgentRuntime {
                 source_message_count: source_messages.len(),
                 retained_message_count: retained_tail_indices.len(),
                 summary_chars: result.summary.chars().count(),
+                summary_message_id: Some(summary_message_id),
+                retained_tail_message_ids,
             },
         )
         .await?;

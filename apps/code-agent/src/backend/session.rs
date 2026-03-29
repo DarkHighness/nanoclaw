@@ -1,13 +1,16 @@
 use crate::backend::session_catalog;
 use crate::backend::session_history::{self, LoadedSession, SessionExportArtifact};
+use crate::backend::session_resume;
 use crate::backend::{
-    ApprovalCoordinator, ApprovalDecision, ApprovalPrompt, LoadedMcpPrompt, LoadedMcpResource,
-    McpPromptSummary, McpResourceSummary, McpServerSummary, SessionEvent, SessionEventObserver,
-    SessionEventStream, StartupDiagnosticsSnapshot, list_mcp_prompts, list_mcp_resources,
-    list_mcp_servers, load_mcp_prompt, load_mcp_resource,
+    AgentSessionResumeResult, ApprovalCoordinator, ApprovalDecision, ApprovalPrompt,
+    LoadedMcpPrompt, LoadedMcpResource, McpPromptSummary, McpResourceSummary, McpServerSummary,
+    ResumeAction, ResumeSupport, SessionEvent, SessionEventObserver, SessionEventStream,
+    StartupDiagnosticsSnapshot, list_mcp_prompts, list_mcp_resources, list_mcp_servers,
+    load_mcp_prompt, load_mcp_resource,
 };
 use agent::mcp::ConnectedMcpServer;
 use agent::runtime::Result as RuntimeResult;
+use agent::types::{AgentSessionId, Message, SessionId};
 use agent::{AgentRuntime, RuntimeCommand, Skill};
 use anyhow::Result;
 use std::path::{Path, PathBuf};
@@ -240,17 +243,56 @@ impl CodeAgentSession {
         Ok(count)
     }
 
-    pub(crate) async fn resume_status(
+    pub(crate) async fn resume_agent_session(
         &self,
         agent_session_ref: &str,
-    ) -> Result<crate::backend::AgentSessionResumeStatus> {
+    ) -> Result<AgentSessionResumeResult> {
         let agent_sessions = self.list_agent_sessions(None).await?;
-        let active_agent_session_ref = self.startup_snapshot().root_agent_session_id;
-        session_catalog::resolve_agent_session_resume_status(
-            &agent_sessions,
-            agent_session_ref,
-            &active_agent_session_ref,
-        )
+        let summary =
+            session_catalog::resolve_agent_session_reference(&agent_sessions, agent_session_ref)?;
+        match &summary.resume_support {
+            ResumeSupport::AttachedToActiveRuntime => {
+                return Ok(AgentSessionResumeResult {
+                    requested_agent_session_ref: summary.agent_session_ref.clone(),
+                    session_ref: summary.session_ref.clone(),
+                    active_agent_session_ref: summary.agent_session_ref.clone(),
+                    action: ResumeAction::AlreadyAttached,
+                });
+            }
+            ResumeSupport::NotYetSupported { reason } => {
+                return Err(anyhow::anyhow!(reason.clone()));
+            }
+            ResumeSupport::Reattachable => {}
+        }
+
+        let session_id = SessionId::from(summary.session_ref.clone());
+        let target_agent_session_id = AgentSessionId::from(summary.agent_session_ref.clone());
+        let events = self.store.events(&session_id).await?;
+        let runtime_session =
+            session_resume::reconstruct_runtime_session(&events, &target_agent_session_id)?;
+        let (active_session_ref, active_agent_session_ref) = {
+            let mut runtime = self.runtime.lock().await;
+            runtime
+                .resume_session(runtime_session)
+                .await
+                .map_err(anyhow::Error::from)?;
+            (
+                runtime.session_id().to_string(),
+                runtime.agent_session_id().to_string(),
+            )
+        };
+        self.set_runtime_session_refs(active_session_ref.clone(), active_agent_session_ref.clone());
+        self.refresh_stored_session_count().await?;
+        Ok(AgentSessionResumeResult {
+            requested_agent_session_ref: summary.agent_session_ref.clone(),
+            session_ref: active_session_ref,
+            active_agent_session_ref,
+            action: ResumeAction::Reattached,
+        })
+    }
+
+    pub(crate) async fn active_visible_transcript(&self) -> Vec<Message> {
+        self.runtime.lock().await.visible_transcript_snapshot()
     }
 
     pub(crate) async fn list_mcp_servers(&self) -> Vec<McpServerSummary> {
@@ -306,9 +348,9 @@ mod tests {
     use agent::runtime::{HookRunner, ModelBackend, Result as RuntimeResult};
     use agent::tools::ToolExecutionContext;
     use agent::types::{ModelEvent, ModelRequest, SessionEventKind, SessionId};
-    use agent::{AgentRuntimeBuilder, Skill};
+    use agent::{AgentRuntimeBuilder, RuntimeCommand, Skill};
     use async_trait::async_trait;
-    use futures::stream::BoxStream;
+    use futures::{StreamExt, stream, stream::BoxStream};
     use std::sync::Arc;
     use store::{InMemorySessionStore, SessionStore};
 
@@ -321,6 +363,25 @@ mod tests {
             _request: ModelRequest,
         ) -> RuntimeResult<BoxStream<'static, RuntimeResult<ModelEvent>>> {
             unreachable!("session-start tests never execute model turns")
+        }
+    }
+
+    struct StreamingTextBackend;
+
+    #[async_trait]
+    impl ModelBackend for StreamingTextBackend {
+        async fn stream_turn(
+            &self,
+            _request: ModelRequest,
+        ) -> RuntimeResult<BoxStream<'static, RuntimeResult<ModelEvent>>> {
+            Ok(stream::iter(vec![Ok(ModelEvent::ResponseComplete {
+                stop_reason: Some("stop".to_string()),
+                message_id: None,
+                continuation: None,
+                usage: None,
+                reasoning: Vec::new(),
+            })])
+            .boxed())
         }
     }
 
@@ -380,5 +441,71 @@ mod tests {
             SessionEventKind::SessionStart { reason }
                 if reason.as_deref() == Some("operator_new_session")
         )));
+    }
+
+    #[tokio::test]
+    async fn resume_agent_session_reattaches_archived_history() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(InMemorySessionStore::new());
+        let runtime = AgentRuntimeBuilder::new(Arc::new(StreamingTextBackend), store.clone())
+            .hook_runner(Arc::new(HookRunner::default()))
+            .tool_context(ToolExecutionContext {
+                workspace_root: dir.path().to_path_buf(),
+                workspace_only: true,
+                ..Default::default()
+            })
+            .build();
+        let original_session_ref = runtime.session_id().to_string();
+        let original_agent_session_ref = runtime.agent_session_id().to_string();
+        let session = CodeAgentSession::new(
+            runtime,
+            store.clone(),
+            Vec::new(),
+            ApprovalCoordinator::default(),
+            SessionEventStream::default(),
+            SessionStartupSnapshot {
+                workspace_name: "workspace".to_string(),
+                workspace_root: dir.path().to_path_buf(),
+                active_session_ref: original_session_ref.clone(),
+                root_agent_session_id: original_agent_session_ref.clone(),
+                provider_label: "provider".to_string(),
+                model: "model".to_string(),
+                summary_model: "summary".to_string(),
+                memory_model: "memory".to_string(),
+                tool_names: Vec::new(),
+                skill_names: Vec::new(),
+                store_label: "memory".to_string(),
+                store_warning: None,
+                stored_session_count: 0,
+                sandbox_summary: "workspace-write".to_string(),
+                startup_diagnostics: StartupDiagnosticsSnapshot::default(),
+            },
+            Vec::<Skill>::new(),
+        );
+
+        session
+            .apply_control(RuntimeCommand::Prompt {
+                prompt: "resume me".to_string(),
+            })
+            .await
+            .unwrap();
+        session.start_new_session().await.unwrap();
+
+        let result = session
+            .resume_agent_session(&original_agent_session_ref)
+            .await
+            .unwrap();
+        let snapshot = session.startup_snapshot();
+        let transcript = session.active_visible_transcript().await;
+
+        assert_eq!(result.session_ref, original_session_ref);
+        assert_ne!(result.active_agent_session_ref, original_agent_session_ref);
+        assert_eq!(snapshot.active_session_ref, original_session_ref);
+        assert_eq!(
+            snapshot.root_agent_session_id,
+            result.active_agent_session_ref
+        );
+        assert_eq!(transcript.len(), 1);
+        assert_eq!(transcript[0].text_content(), "resume me");
     }
 }

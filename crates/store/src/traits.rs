@@ -329,6 +329,7 @@ pub(crate) fn searchable_event_strings(event: &SessionEventEnvelope) -> Vec<Stri
             source_message_count,
             retained_message_count,
             summary_chars,
+            ..
         } => {
             values.push(reason.clone());
             values.push(format!(

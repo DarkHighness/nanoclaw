@@ -9,6 +9,7 @@ mod events;
 mod session;
 mod session_catalog;
 mod session_history;
+mod session_resume;
 mod store;
 
 pub(crate) use approval::{
@@ -35,8 +36,8 @@ pub(crate) use boot_sandbox::{
 pub(crate) use events::{SessionEvent, SessionEventObserver, SessionEventStream};
 pub(crate) use session::{CodeAgentSession, SessionStartupSnapshot};
 pub(crate) use session_catalog::{
-    AgentSessionResumeStatus, PersistedAgentSessionSummary, PersistedSessionSearchMatch,
-    PersistedSessionSummary, ResumeSupport,
+    AgentSessionResumeResult, PersistedAgentSessionSummary, PersistedSessionSearchMatch,
+    PersistedSessionSummary, ResumeAction, ResumeSupport,
 };
 pub(crate) use session_history::{
     LoadedSession, SessionExportArtifact, SessionExportKind, message_to_text, preview_id,
