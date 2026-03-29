@@ -60,20 +60,6 @@ pub(crate) struct AgentSessionResumeStatus {
     pub(crate) support: ResumeSupport,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ResumeAction {
-    AlreadyAttached,
-    Reattached,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct AgentSessionResumeResult {
-    pub(crate) requested_agent_session_ref: String,
-    pub(crate) session_ref: String,
-    pub(crate) active_agent_session_ref: String,
-    pub(crate) action: ResumeAction,
-}
-
 const TOP_LEVEL_HISTORY_ONLY_REASON: &str =
     "Session history can be inspected, but top-level session refs are not direct resume targets.";
 

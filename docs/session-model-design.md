@@ -144,7 +144,9 @@ rebuilt provider request and response continue on the post-compaction
 In the host UX, `/clear` and `/new` should be modeled as the same backend-owned
 operation: start a fresh top-level `Session` while leaving prior sessions
 durably traceable. They are session-rotation commands, not presentation-only
-screen clears.
+screen clears. A frontend-neutral session-operation contract should own that
+workflow and return the refreshed startup/session snapshot needed by any
+frontend to redraw itself coherently.
 
 ## Resume Semantics
 

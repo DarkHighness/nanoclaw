@@ -171,6 +171,10 @@ compacted histories that predate resume checkpoints still remain history-only.
 fresh active top-level session while keeping prior sessions in durable history
 for browsing, export, and later reattachment.
 
+Those lifecycle actions now flow through a typed backend session-operation
+contract, so future frontends do not need to orchestrate separate calls for
+reset, resume, startup refresh, and transcript reload.
+
 The startup inspector is now backed by a structured backend snapshot, and the
 MCP-focused commands expose connected server catalogs plus prompt/resource
 loading directly from `code-agent` without relying on the legacy

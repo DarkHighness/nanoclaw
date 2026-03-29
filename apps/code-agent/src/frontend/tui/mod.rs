@@ -5,15 +5,18 @@ mod observer;
 mod render;
 mod state;
 
-use crate::backend::{CodeAgentSession, preview_id};
+use crate::backend::{
+    CodeAgentSession, SessionOperation, SessionOperationAction, SessionOperationOutcome,
+    SessionStartupSnapshot, preview_id,
+};
 use approval::approval_decision_for_key;
 use commands::{SlashCommand, parse_slash_command};
 use history::{
-    format_agent_session_resume_result, format_agent_session_summary_line,
-    format_mcp_prompt_summary_line, format_mcp_resource_summary_line,
-    format_mcp_server_summary_line, format_session_export_result, format_session_inspector,
-    format_session_search_line, format_session_summary_line, format_session_transcript_lines,
-    format_startup_diagnostics, format_visible_transcript_lines,
+    format_agent_session_summary_line, format_mcp_prompt_summary_line,
+    format_mcp_resource_summary_line, format_mcp_server_summary_line, format_session_export_result,
+    format_session_inspector, format_session_operation_outcome, format_session_search_line,
+    format_session_summary_line, format_session_transcript_lines, format_startup_diagnostics,
+    format_visible_transcript_lines,
 };
 use observer::SharedRenderObserver;
 use render::render;
@@ -496,19 +499,11 @@ impl CodeAgentTui {
                 }
 
                 let dropped_commands = self.command_queue.clear();
-                self.session.start_new_session().await?;
-                let mut startup = self.startup_state();
-                startup.session.queued_commands = 0;
-                startup.status = "Started new session".to_string();
-                startup.push_activity(format!(
-                    "started new session {}",
-                    preview_id(&startup.session.active_session_ref)
-                ));
-                if dropped_commands > 0 {
-                    startup
-                        .push_activity(format!("discarded {} queued command(s)", dropped_commands));
-                }
-                self.ui_state.replace(startup);
+                let outcome = self
+                    .session
+                    .apply_session_operation(SessionOperation::StartFresh)
+                    .await?;
+                self.replace_after_session_operation(outcome, dropped_commands);
                 Ok(false)
             }
             SlashCommand::Compact { notes } => {
@@ -686,43 +681,13 @@ impl CodeAgentTui {
                     });
                     return Ok(false);
                 }
-                let result = self
+                let outcome = self
                     .session
-                    .resume_agent_session(&agent_session_ref)
+                    .apply_session_operation(SessionOperation::ResumeAgentSession {
+                        agent_session_ref,
+                    })
                     .await?;
-                let inspector = format_agent_session_resume_result(&result);
-                let transcript = format_visible_transcript_lines(
-                    &self.session.active_visible_transcript().await,
-                );
-                let mut startup = self.startup_state();
-                startup.inspector_title = "Resume".to_string();
-                startup.inspector_scroll = 0;
-                startup.inspector = inspector;
-                startup.transcript = transcript;
-                startup.transcript_scroll = 0;
-                startup.status = match result.action {
-                    crate::backend::ResumeAction::AlreadyAttached => format!(
-                        "Agent session {} is already attached",
-                        preview_id(&result.requested_agent_session_ref)
-                    ),
-                    crate::backend::ResumeAction::Reattached => format!(
-                        "Reattached session {} as {}",
-                        preview_id(&result.session_ref),
-                        preview_id(&result.active_agent_session_ref)
-                    ),
-                };
-                startup.push_activity(match result.action {
-                    crate::backend::ResumeAction::AlreadyAttached => format!(
-                        "resume no-op {}",
-                        preview_id(&result.requested_agent_session_ref)
-                    ),
-                    crate::backend::ResumeAction::Reattached => format!(
-                        "resumed session {} as {}",
-                        preview_id(&result.session_ref),
-                        preview_id(&result.active_agent_session_ref)
-                    ),
-                });
-                self.ui_state.replace(startup);
+                self.replace_after_session_operation(outcome, 0);
                 Ok(false)
             }
             SlashCommand::ExportSession { session_ref, path } => {
@@ -767,9 +732,11 @@ impl CodeAgentTui {
     }
 
     fn startup_state(&self) -> TuiState {
-        let snapshot = self.session.startup_snapshot();
-        let workspace_root = snapshot.workspace_root.clone();
+        self.startup_state_from_snapshot(&self.session.startup_snapshot())
+    }
 
+    fn startup_state_from_snapshot(&self, snapshot: &SessionStartupSnapshot) -> TuiState {
+        let workspace_root = snapshot.workspace_root.clone();
         let mut state = TuiState {
             session: state::SessionSummary {
                 workspace_name: snapshot.workspace_name.clone(),
@@ -817,6 +784,61 @@ impl CodeAgentTui {
         };
         state.push_activity("session ready");
         state
+    }
+
+    fn replace_after_session_operation(
+        &self,
+        outcome: SessionOperationOutcome,
+        dropped_commands: usize,
+    ) {
+        let mut startup = self.startup_state_from_snapshot(&outcome.startup);
+        startup.session.queued_commands = 0;
+        startup.transcript = format_visible_transcript_lines(&outcome.transcript);
+        startup.transcript_scroll = 0;
+
+        match outcome.action {
+            SessionOperationAction::StartedFresh => {
+                startup.status = "Started new session".to_string();
+                startup.push_activity(format!(
+                    "started new session {}",
+                    preview_id(&outcome.session_ref)
+                ));
+            }
+            SessionOperationAction::AlreadyAttached => {
+                let requested = outcome
+                    .requested_agent_session_ref
+                    .as_deref()
+                    .unwrap_or(outcome.active_agent_session_ref.as_str());
+                startup.inspector_title = "Resume".to_string();
+                startup.inspector_scroll = 0;
+                startup.inspector = format_session_operation_outcome(&outcome);
+                startup.status = format!(
+                    "Agent session {} is already attached",
+                    preview_id(requested)
+                );
+                startup.push_activity(format!("resume no-op {}", preview_id(requested)));
+            }
+            SessionOperationAction::Reattached => {
+                startup.inspector_title = "Resume".to_string();
+                startup.inspector_scroll = 0;
+                startup.inspector = format_session_operation_outcome(&outcome);
+                startup.status = format!(
+                    "Reattached session {} as {}",
+                    preview_id(&outcome.session_ref),
+                    preview_id(&outcome.active_agent_session_ref)
+                );
+                startup.push_activity(format!(
+                    "resumed session {} as {}",
+                    preview_id(&outcome.session_ref),
+                    preview_id(&outcome.active_agent_session_ref)
+                ));
+            }
+        }
+
+        if dropped_commands > 0 {
+            startup.push_activity(format!("discarded {} queued command(s)", dropped_commands));
+        }
+        self.ui_state.replace(startup);
     }
 
     async fn sync_queue_depth(&self) {
@@ -877,7 +899,7 @@ fn build_startup_inspector(session: &state::SessionSummary) -> Vec<String> {
         format!("agent session id: {}", session.root_agent_session_id),
         "## Workflow".to_string(),
         "Use /sessions to browse persisted sessions and /session <ref> to open one.".to_string(),
-        "Use /agent_sessions to browse persisted agent sessions and /resume <agent-session-ref> to inspect live reattach support.".to_string(),
+        "Use /agent_sessions to browse persisted agent sessions and /resume <agent-session-ref> to reattach one.".to_string(),
         "Use /new or /clear to start a fresh top-level session without deleting prior history.".to_string(),
         "Use /export_session or /export_transcript to write durable artifacts.".to_string(),
         "Approvals stay in-line above the composer instead of replacing the screen.".to_string(),

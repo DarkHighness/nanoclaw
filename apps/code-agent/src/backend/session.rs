@@ -2,11 +2,10 @@ use crate::backend::session_catalog;
 use crate::backend::session_history::{self, LoadedSession, SessionExportArtifact};
 use crate::backend::session_resume;
 use crate::backend::{
-    AgentSessionResumeResult, ApprovalCoordinator, ApprovalDecision, ApprovalPrompt,
-    LoadedMcpPrompt, LoadedMcpResource, McpPromptSummary, McpResourceSummary, McpServerSummary,
-    ResumeAction, ResumeSupport, SessionEvent, SessionEventObserver, SessionEventStream,
-    StartupDiagnosticsSnapshot, list_mcp_prompts, list_mcp_resources, list_mcp_servers,
-    load_mcp_prompt, load_mcp_resource,
+    ApprovalCoordinator, ApprovalDecision, ApprovalPrompt, LoadedMcpPrompt, LoadedMcpResource,
+    McpPromptSummary, McpResourceSummary, McpServerSummary, ResumeSupport, SessionEvent,
+    SessionEventObserver, SessionEventStream, StartupDiagnosticsSnapshot, list_mcp_prompts,
+    list_mcp_resources, list_mcp_servers, load_mcp_prompt, load_mcp_resource,
 };
 use agent::mcp::ConnectedMcpServer;
 use agent::runtime::Result as RuntimeResult;
@@ -38,6 +37,29 @@ pub(crate) struct SessionStartupSnapshot {
     pub(crate) stored_session_count: usize,
     pub(crate) sandbox_summary: String,
     pub(crate) startup_diagnostics: StartupDiagnosticsSnapshot,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum SessionOperation {
+    StartFresh,
+    ResumeAgentSession { agent_session_ref: String },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SessionOperationAction {
+    StartedFresh,
+    AlreadyAttached,
+    Reattached,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct SessionOperationOutcome {
+    pub(crate) action: SessionOperationAction,
+    pub(crate) session_ref: String,
+    pub(crate) active_agent_session_ref: String,
+    pub(crate) requested_agent_session_ref: Option<String>,
+    pub(crate) startup: SessionStartupSnapshot,
+    pub(crate) transcript: Vec<Message>,
 }
 
 /// The backend session owns runtime state so frontends can speak to a stable
@@ -119,7 +141,19 @@ impl CodeAgentSession {
         Ok(compacted)
     }
 
-    pub(crate) async fn start_new_session(&self) -> Result<()> {
+    pub(crate) async fn apply_session_operation(
+        &self,
+        operation: SessionOperation,
+    ) -> Result<SessionOperationOutcome> {
+        match operation {
+            SessionOperation::StartFresh => self.start_fresh_session().await,
+            SessionOperation::ResumeAgentSession { agent_session_ref } => {
+                self.resume_existing_agent_session(&agent_session_ref).await
+            }
+        }
+    }
+
+    async fn start_fresh_session(&self) -> Result<SessionOperationOutcome> {
         let (session_ref, agent_session_ref) = {
             let mut runtime = self.runtime.lock().await;
             runtime
@@ -133,7 +167,9 @@ impl CodeAgentSession {
         };
         self.set_runtime_session_refs(session_ref, agent_session_ref);
         self.refresh_stored_session_count().await?;
-        Ok(())
+        Ok(self
+            .build_session_operation_outcome(SessionOperationAction::StartedFresh, None)
+            .await)
     }
 
     pub(crate) fn approval_prompt(&self) -> Option<ApprovalPrompt> {
@@ -243,21 +279,21 @@ impl CodeAgentSession {
         Ok(count)
     }
 
-    pub(crate) async fn resume_agent_session(
+    async fn resume_existing_agent_session(
         &self,
         agent_session_ref: &str,
-    ) -> Result<AgentSessionResumeResult> {
+    ) -> Result<SessionOperationOutcome> {
         let agent_sessions = self.list_agent_sessions(None).await?;
         let summary =
             session_catalog::resolve_agent_session_reference(&agent_sessions, agent_session_ref)?;
         match &summary.resume_support {
             ResumeSupport::AttachedToActiveRuntime => {
-                return Ok(AgentSessionResumeResult {
-                    requested_agent_session_ref: summary.agent_session_ref.clone(),
-                    session_ref: summary.session_ref.clone(),
-                    active_agent_session_ref: summary.agent_session_ref.clone(),
-                    action: ResumeAction::AlreadyAttached,
-                });
+                return Ok(self
+                    .build_session_operation_outcome(
+                        SessionOperationAction::AlreadyAttached,
+                        Some(summary.agent_session_ref.clone()),
+                    )
+                    .await);
             }
             ResumeSupport::NotYetSupported { reason } => {
                 return Err(anyhow::anyhow!(reason.clone()));
@@ -283,12 +319,12 @@ impl CodeAgentSession {
         };
         self.set_runtime_session_refs(active_session_ref.clone(), active_agent_session_ref.clone());
         self.refresh_stored_session_count().await?;
-        Ok(AgentSessionResumeResult {
-            requested_agent_session_ref: summary.agent_session_ref.clone(),
-            session_ref: active_session_ref,
-            active_agent_session_ref,
-            action: ResumeAction::Reattached,
-        })
+        Ok(self
+            .build_session_operation_outcome(
+                SessionOperationAction::Reattached,
+                Some(summary.agent_session_ref.clone()),
+            )
+            .await)
     }
 
     pub(crate) async fn active_visible_transcript(&self) -> Vec<Message> {
@@ -339,11 +375,30 @@ impl CodeAgentSession {
         startup.active_session_ref = session_ref;
         startup.root_agent_session_id = agent_session_ref;
     }
+
+    async fn build_session_operation_outcome(
+        &self,
+        action: SessionOperationAction,
+        requested_agent_session_ref: Option<String>,
+    ) -> SessionOperationOutcome {
+        let startup = self.startup_snapshot();
+        let transcript = self.active_visible_transcript().await;
+        SessionOperationOutcome {
+            action,
+            session_ref: startup.active_session_ref.clone(),
+            active_agent_session_ref: startup.root_agent_session_id.clone(),
+            requested_agent_session_ref,
+            startup,
+            transcript,
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{CodeAgentSession, SessionStartupSnapshot};
+    use super::{
+        CodeAgentSession, SessionOperation, SessionOperationAction, SessionStartupSnapshot,
+    };
     use crate::backend::{ApprovalCoordinator, SessionEventStream, StartupDiagnosticsSnapshot};
     use agent::runtime::{HookRunner, ModelBackend, Result as RuntimeResult};
     use agent::tools::ToolExecutionContext;
@@ -425,15 +480,22 @@ mod tests {
             Vec::<Skill>::new(),
         );
 
-        session.start_new_session().await.unwrap();
+        let outcome = session
+            .apply_session_operation(SessionOperation::StartFresh)
+            .await
+            .unwrap();
 
-        let snapshot = session.startup_snapshot();
-        assert_ne!(snapshot.active_session_ref, initial_session_ref);
-        assert_ne!(snapshot.root_agent_session_id, initial_agent_session_ref);
-        assert_eq!(snapshot.stored_session_count, 1);
+        assert_eq!(outcome.action, SessionOperationAction::StartedFresh);
+        assert_ne!(outcome.startup.active_session_ref, initial_session_ref);
+        assert_ne!(
+            outcome.startup.root_agent_session_id,
+            initial_agent_session_ref
+        );
+        assert_eq!(outcome.startup.stored_session_count, 1);
+        assert!(outcome.transcript.is_empty());
 
         let new_events = store
-            .events(&SessionId::from(snapshot.active_session_ref.clone()))
+            .events(&SessionId::from(outcome.startup.active_session_ref.clone()))
             .await
             .unwrap();
         assert!(new_events.iter().any(|event| matches!(
@@ -489,23 +551,31 @@ mod tests {
             })
             .await
             .unwrap();
-        session.start_new_session().await.unwrap();
-
-        let result = session
-            .resume_agent_session(&original_agent_session_ref)
+        session
+            .apply_session_operation(SessionOperation::StartFresh)
             .await
             .unwrap();
-        let snapshot = session.startup_snapshot();
-        let transcript = session.active_visible_transcript().await;
 
-        assert_eq!(result.session_ref, original_session_ref);
-        assert_ne!(result.active_agent_session_ref, original_agent_session_ref);
-        assert_eq!(snapshot.active_session_ref, original_session_ref);
+        let outcome = session
+            .apply_session_operation(SessionOperation::ResumeAgentSession {
+                agent_session_ref: original_agent_session_ref.clone(),
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(outcome.action, SessionOperationAction::Reattached);
         assert_eq!(
-            snapshot.root_agent_session_id,
-            result.active_agent_session_ref
+            outcome.requested_agent_session_ref.as_deref(),
+            Some(original_agent_session_ref.as_str())
         );
-        assert_eq!(transcript.len(), 1);
-        assert_eq!(transcript[0].text_content(), "resume me");
+        assert_eq!(outcome.session_ref, original_session_ref);
+        assert_ne!(outcome.active_agent_session_ref, original_agent_session_ref);
+        assert_eq!(outcome.startup.active_session_ref, outcome.session_ref);
+        assert_eq!(
+            outcome.startup.root_agent_session_id,
+            outcome.active_agent_session_ref
+        );
+        assert_eq!(outcome.transcript.len(), 1);
+        assert_eq!(outcome.transcript[0].text_content(), "resume me");
     }
 }

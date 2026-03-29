@@ -106,11 +106,20 @@ Shipped in the ninth implementation slice:
 - queued prompt/steer commands are now dropped when the operator starts a new
   top-level session so old work does not leak across session boundaries
 
+Shipped in the tenth implementation slice:
+
+- historical `AgentSession` reattach is now a real backend capability instead
+  of a history-only status check
+- compaction now persists resume checkpoints so compacted transcript windows can
+  be reconstructed when reattaching historical agent sessions
+- `code-agent` now exposes typed backend session operations for fresh-session
+  rotation and agent-session reattach so frontends do not need to compose
+  multiple backend calls around those flows
+
 Still pending in the next slices:
 
-- frontend-neutral session-operation contracts beyond startup, approval, and
-  event snapshots
 - remaining docs and workspace cleanup before `reference-tui` can be retired
+- frontend-neutral contracts for richer subagent/session operator workflows
 
 ## External Product Signals
 
@@ -151,9 +160,6 @@ Current problems:
 
 - `code-agent` boot is now split across helper modules, but backend-owned host
   contracts are still incomplete for a future non-TUI frontend.
-- explicit `AgentSession` lifecycle boundaries now exist for compaction, but
-  `/new`, `/clear`, and historical reattach still need to be generalized into a
-  frontend-neutral session-operation contract.
 - legacy `reference-tui` code still duplicates host responsibilities that now
   belong in `code-agent`.
 - `code-agent` now owns durable session browsing/replay/export plus MCP
@@ -167,7 +173,6 @@ Current problems:
 ### P0
 
 - strict backend/frontend split is incomplete
-- frontend-neutral session-operation contract is incomplete
 - `apps/` delivery boundary is still transitional while legacy code stays
   in-tree
 
@@ -276,6 +281,9 @@ Current note:
 - approval and runtime event flow are now backend-owned contracts, and
   historical `AgentSession` reattach is available. Older compacted histories
   without resume checkpoint metadata still fall back to history-only browsing.
+- fresh-session reset and historical reattach now share a typed backend
+  session-operation surface, but richer operator flows still need to move onto
+  that same contract family.
 
 ### Phase E: Delivery Cleanup
 

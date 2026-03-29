@@ -1,8 +1,8 @@
 use super::state::preview_text;
 use crate::backend::{
-    AgentSessionResumeResult, LoadedSession, McpPromptSummary, McpResourceSummary,
-    McpServerSummary, PersistedAgentSessionSummary, PersistedSessionSearchMatch,
-    PersistedSessionSummary, ResumeAction, SessionExportArtifact, SessionExportKind,
+    LoadedSession, McpPromptSummary, McpResourceSummary, McpServerSummary,
+    PersistedAgentSessionSummary, PersistedSessionSearchMatch, PersistedSessionSummary,
+    SessionExportArtifact, SessionExportKind, SessionOperationAction, SessionOperationOutcome,
     StartupDiagnosticsSnapshot, message_to_text, preview_id,
 };
 use agent::types::{AgentSessionId, Message, SessionEventEnvelope, SessionEventKind};
@@ -173,26 +173,30 @@ pub(crate) fn format_session_export_result(result: &SessionExportArtifact) -> Ve
     ]
 }
 
-pub(crate) fn format_agent_session_resume_result(result: &AgentSessionResumeResult) -> Vec<String> {
-    vec![
-        "## Resume".to_string(),
-        format!(
-            "requested agent session ref: {}",
-            result.requested_agent_session_ref
-        ),
-        format!("session ref: {}", result.session_ref),
-        format!(
-            "active agent session ref: {}",
-            result.active_agent_session_ref
-        ),
+pub(crate) fn format_session_operation_outcome(outcome: &SessionOperationOutcome) -> Vec<String> {
+    let mut lines = vec![
+        "## Session Operation".to_string(),
         format!(
             "action: {}",
-            match result.action {
-                ResumeAction::AlreadyAttached => "already_attached",
-                ResumeAction::Reattached => "reattached",
+            match outcome.action {
+                SessionOperationAction::StartedFresh => "started_fresh",
+                SessionOperationAction::AlreadyAttached => "already_attached",
+                SessionOperationAction::Reattached => "reattached",
             }
         ),
-    ]
+        format!("session ref: {}", outcome.session_ref),
+        format!(
+            "active agent session ref: {}",
+            outcome.active_agent_session_ref
+        ),
+    ];
+    if let Some(requested_agent_session_ref) = &outcome.requested_agent_session_ref {
+        lines.push(format!(
+            "requested agent session ref: {}",
+            requested_agent_session_ref
+        ));
+    }
+    lines
 }
 
 pub(crate) fn format_startup_diagnostics(snapshot: &StartupDiagnosticsSnapshot) -> Vec<String> {

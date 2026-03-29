@@ -34,10 +34,13 @@ pub(crate) use boot_sandbox::{
     tool_context_for_profile,
 };
 pub(crate) use events::{SessionEvent, SessionEventObserver, SessionEventStream};
-pub(crate) use session::{CodeAgentSession, SessionStartupSnapshot};
+pub(crate) use session::{
+    CodeAgentSession, SessionOperation, SessionOperationAction, SessionOperationOutcome,
+    SessionStartupSnapshot,
+};
 pub(crate) use session_catalog::{
-    AgentSessionResumeResult, PersistedAgentSessionSummary, PersistedSessionSearchMatch,
-    PersistedSessionSummary, ResumeAction, ResumeSupport,
+    PersistedAgentSessionSummary, PersistedSessionSearchMatch, PersistedSessionSummary,
+    ResumeSupport,
 };
 pub(crate) use session_history::{
     LoadedSession, SessionExportArtifact, SessionExportKind, message_to_text, preview_id,
