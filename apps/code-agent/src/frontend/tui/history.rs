@@ -1,11 +1,11 @@
 use super::state::preview_text;
 use crate::backend::{
-    LiveTaskControlAction, LiveTaskControlOutcome, LiveTaskSummary, LoadedAgentSession,
-    LoadedSession, LoadedSubagentSession, LoadedTask, McpPromptSummary, McpResourceSummary,
-    McpServerSummary, PersistedAgentSessionSummary, PersistedSessionSearchMatch,
-    PersistedSessionSummary, PersistedTaskSummary, SessionExportArtifact, SessionExportKind,
-    SessionOperationAction, SessionOperationOutcome, StartupDiagnosticsSnapshot, message_to_text,
-    preview_id,
+    LiveTaskControlAction, LiveTaskControlOutcome, LiveTaskMessageAction, LiveTaskMessageOutcome,
+    LiveTaskSummary, LiveTaskWaitOutcome, LoadedAgentSession, LoadedSession, LoadedSubagentSession,
+    LoadedTask, McpPromptSummary, McpResourceSummary, McpServerSummary,
+    PersistedAgentSessionSummary, PersistedSessionSearchMatch, PersistedSessionSummary,
+    PersistedTaskSummary, SessionExportArtifact, SessionExportKind, SessionOperationAction,
+    SessionOperationOutcome, StartupDiagnosticsSnapshot, message_to_text, preview_id,
 };
 use agent::types::{AgentSessionId, Message, SessionEventEnvelope, SessionEventKind};
 use store::TokenUsageRecord;
@@ -384,6 +384,42 @@ pub(crate) fn format_live_task_control_outcome(outcome: &LiveTaskControlOutcome)
         format!("agent id: {}", outcome.agent_id),
         format!("status: {}", outcome.status),
     ]
+}
+
+pub(crate) fn format_live_task_message_outcome(outcome: &LiveTaskMessageOutcome) -> Vec<String> {
+    vec![
+        "## Live Task Message".to_string(),
+        format!(
+            "action: {}",
+            match outcome.action {
+                LiveTaskMessageAction::Sent => "sent",
+                LiveTaskMessageAction::AlreadyTerminal => "already_terminal",
+            }
+        ),
+        format!("requested ref: {}", outcome.requested_ref),
+        format!("task id: {}", outcome.task_id),
+        format!("agent id: {}", outcome.agent_id),
+        format!("status: {}", outcome.status),
+        format!("message: {}", preview_text(&outcome.message, 96)),
+    ]
+}
+
+pub(crate) fn format_live_task_wait_outcome(outcome: &LiveTaskWaitOutcome) -> Vec<String> {
+    let mut lines = vec![
+        "## Live Task Wait".to_string(),
+        format!("requested ref: {}", outcome.requested_ref),
+        format!("task id: {}", outcome.task_id),
+        format!("agent id: {}", outcome.agent_id),
+        format!("status: {}", outcome.status),
+        format!("summary: {}", preview_text(&outcome.summary, 96)),
+    ];
+    if !outcome.claimed_files.is_empty() {
+        lines.push(format!(
+            "claimed files: {}",
+            preview_text(&outcome.claimed_files.join(", "), 96)
+        ));
+    }
+    lines
 }
 
 pub(crate) fn format_startup_diagnostics(snapshot: &StartupDiagnosticsSnapshot) -> Vec<String> {

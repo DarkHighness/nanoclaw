@@ -6,19 +6,20 @@ mod render;
 mod state;
 
 use crate::backend::{
-    CodeAgentSession, LiveTaskControlAction, SessionOperation, SessionOperationAction,
-    SessionOperationOutcome, SessionStartupSnapshot, preview_id,
+    CodeAgentSession, LiveTaskControlAction, LiveTaskMessageAction, LiveTaskWaitOutcome,
+    SessionOperation, SessionOperationAction, SessionOperationOutcome, SessionStartupSnapshot,
+    preview_id,
 };
 use approval::approval_decision_for_key;
 use commands::{SlashCommand, parse_slash_command};
 use history::{
     format_agent_session_inspector, format_agent_session_summary_line,
-    format_live_task_control_outcome, format_live_task_summary_line,
-    format_mcp_prompt_summary_line, format_mcp_resource_summary_line,
-    format_mcp_server_summary_line, format_session_export_result, format_session_inspector,
-    format_session_operation_outcome, format_session_search_line, format_session_summary_line,
-    format_session_transcript_lines, format_startup_diagnostics, format_task_inspector,
-    format_task_summary_line, format_visible_transcript_lines,
+    format_live_task_control_outcome, format_live_task_message_outcome,
+    format_live_task_summary_line, format_live_task_wait_outcome, format_mcp_prompt_summary_line,
+    format_mcp_resource_summary_line, format_mcp_server_summary_line, format_session_export_result,
+    format_session_inspector, format_session_operation_outcome, format_session_search_line,
+    format_session_summary_line, format_session_transcript_lines, format_startup_diagnostics,
+    format_task_inspector, format_task_summary_line, format_visible_transcript_lines,
 };
 use observer::SharedRenderObserver;
 use render::render;
@@ -45,6 +46,11 @@ pub struct CodeAgentTui {
     event_renderer: SharedRenderObserver,
     command_queue: RuntimeCommandQueue,
     turn_task: Option<JoinHandle<Result<()>>>,
+    operator_task: Option<JoinHandle<Result<OperatorTaskOutcome>>>,
+}
+
+enum OperatorTaskOutcome {
+    WaitLiveTask(LiveTaskWaitOutcome),
 }
 
 impl CodeAgentTui {
@@ -60,6 +66,7 @@ impl CodeAgentTui {
             ui_state,
             command_queue: RuntimeCommandQueue::new(),
             turn_task: None,
+            operator_task: None,
         }
     }
 
@@ -77,6 +84,9 @@ impl CodeAgentTui {
         }
 
         let result = self.event_loop(&mut terminal).await;
+        if let Some(task) = self.operator_task.take() {
+            task.abort();
+        }
         let _ = self
             .session
             .end_session(Some("operator_exit".to_string()))
@@ -95,6 +105,7 @@ impl CodeAgentTui {
         loop {
             self.maybe_finish_turn().await?;
             self.apply_backend_events();
+            self.maybe_finish_operator_task().await?;
 
             let snapshot = self.ui_state.snapshot();
             let approval = self.session.approval_prompt();
@@ -249,6 +260,57 @@ impl CodeAgentTui {
             if let Some(queued) = self.command_queue.pop_next() {
                 self.sync_queue_depth().await;
                 self.start_command(queued.command).await;
+            }
+        }
+        Ok(())
+    }
+
+    async fn maybe_finish_operator_task(&mut self) -> Result<()> {
+        let finished = self
+            .operator_task
+            .as_ref()
+            .map(JoinHandle::is_finished)
+            .unwrap_or(false);
+        if !finished {
+            return Ok(());
+        }
+        if let Some(task) = self.operator_task.take() {
+            match task.await {
+                Ok(Ok(OperatorTaskOutcome::WaitLiveTask(outcome))) => {
+                    let inspector = format_live_task_wait_outcome(&outcome);
+                    self.ui_state.mutate(move |state| {
+                        state.inspector_title = "Live Task Wait".to_string();
+                        state.inspector_scroll = 0;
+                        state.inspector = inspector;
+                        state.status = format!(
+                            "Live task {} finished with status {}",
+                            outcome.task_id, outcome.status
+                        );
+                        state.push_activity(format!(
+                            "wait completed for {} ({})",
+                            outcome.task_id, outcome.status
+                        ));
+                    });
+                }
+                Ok(Err(error)) => {
+                    let message = error.to_string();
+                    self.ui_state.mutate(|state| {
+                        state.status = format!("Operator task failed: {message}");
+                        state.inspector_title = "Operator Error".to_string();
+                        state.inspector_scroll = 0;
+                        state.inspector = vec!["## Operator Error".to_string(), message.clone()];
+                        state.push_activity(format!(
+                            "operator task failed: {}",
+                            state::preview_text(&message, 56)
+                        ));
+                    });
+                }
+                Err(error) => {
+                    self.ui_state.mutate(|state| {
+                        state.status = format!("Operator task join error: {error}");
+                        state.push_activity(format!("operator task join error: {error}"));
+                    });
+                }
             }
         }
         Ok(())
@@ -553,6 +615,58 @@ impl CodeAgentTui {
                 });
                 Ok(false)
             }
+            SlashCommand::SendTask {
+                task_or_agent_ref,
+                message,
+            } => {
+                let Some(message) = message else {
+                    self.ui_state.mutate(|state| {
+                        state.status =
+                            "Usage: /send_task <task-or-agent-ref> <message>".to_string();
+                        state.push_activity("invalid /send_task invocation");
+                    });
+                    return Ok(false);
+                };
+                let outcome = self
+                    .session
+                    .send_live_task(&task_or_agent_ref, &message)
+                    .await?;
+                let inspector = format_live_task_message_outcome(&outcome);
+                self.ui_state.mutate(move |state| {
+                    state.inspector_title = "Live Task Message".to_string();
+                    state.inspector_scroll = 0;
+                    state.inspector = inspector;
+                    state.status = match outcome.action {
+                        LiveTaskMessageAction::Sent => {
+                            format!("Sent steer to live task {}", outcome.task_id)
+                        }
+                        LiveTaskMessageAction::AlreadyTerminal => {
+                            format!("Live task {} was already terminal", outcome.task_id)
+                        }
+                    };
+                    state.push_activity(match outcome.action {
+                        LiveTaskMessageAction::Sent => {
+                            format!("sent steer to {}", outcome.task_id)
+                        }
+                        LiveTaskMessageAction::AlreadyTerminal => {
+                            format!("live task {} already terminal", outcome.task_id)
+                        }
+                    });
+                });
+                Ok(false)
+            }
+            SlashCommand::WaitTask { task_or_agent_ref } => {
+                if self.operator_task.is_some() {
+                    self.ui_state.mutate(|state| {
+                        state.status =
+                            "Wait for the current live-task operator action to finish".to_string();
+                        state.push_activity("live task wait blocked by existing operator task");
+                    });
+                    return Ok(false);
+                }
+                self.start_wait_task(task_or_agent_ref);
+                Ok(false)
+            }
             SlashCommand::CancelTask {
                 task_or_agent_ref,
                 reason,
@@ -605,6 +719,19 @@ impl CodeAgentTui {
                 Ok(false)
             }
         }
+    }
+
+    fn start_wait_task(&mut self, task_or_agent_ref: String) {
+        let wait_ref = task_or_agent_ref.clone();
+        self.ui_state.mutate(|state| {
+            state.status = format!("Waiting for live task {}", preview_id(&wait_ref));
+            state.push_activity(format!("waiting for live task {}", preview_id(&wait_ref)));
+        });
+        let session = self.session.clone();
+        self.operator_task = Some(spawn_local(async move {
+            let outcome = session.wait_live_task(&task_or_agent_ref).await?;
+            Ok(OperatorTaskOutcome::WaitLiveTask(outcome))
+        }));
     }
 
     async fn apply_history_command(&mut self, command: SlashCommand) -> Result<bool> {
@@ -938,10 +1065,11 @@ impl CodeAgentTui {
     }
 
     fn replace_after_session_operation(
-        &self,
+        &mut self,
         outcome: SessionOperationOutcome,
         dropped_commands: usize,
     ) {
+        let aborted_operator_task = self.abort_operator_task();
         let mut startup = self.startup_state_from_snapshot(&outcome.startup);
         startup.session.queued_commands = 0;
         startup.transcript = format_visible_transcript_lines(&outcome.transcript);
@@ -989,6 +1117,9 @@ impl CodeAgentTui {
         if dropped_commands > 0 {
             startup.push_activity(format!("discarded {} queued command(s)", dropped_commands));
         }
+        if aborted_operator_task {
+            startup.push_activity("aborted pending live-task operator wait after session switch");
+        }
         self.ui_state.replace(startup);
     }
 
@@ -1001,6 +1132,15 @@ impl CodeAgentTui {
     fn apply_backend_events(&mut self) {
         for event in self.session.drain_events() {
             self.event_renderer.apply_event(event);
+        }
+    }
+
+    fn abort_operator_task(&mut self) -> bool {
+        if let Some(task) = self.operator_task.take() {
+            task.abort();
+            true
+        } else {
+            false
         }
     }
 }
@@ -1024,6 +1164,8 @@ fn command_palette_lines() -> Vec<String> {
         "/agent_sessions [session-ref]".to_string(),
         "/agent_session <agent-session-ref>".to_string(),
         "/live_tasks".to_string(),
+        "/send_task <task-or-agent-ref> <message>".to_string(),
+        "/wait_task <task-or-agent-ref>".to_string(),
         "/cancel_task <task-or-agent-ref> [reason]".to_string(),
         "/tasks [session-ref]".to_string(),
         "/task <task-id>".to_string(),
@@ -1056,7 +1198,7 @@ fn build_startup_inspector(session: &state::SessionSummary) -> Vec<String> {
         "## Workflow".to_string(),
         "Use /sessions to browse persisted sessions and /session <ref> to open one.".to_string(),
         "Use /agent_sessions to browse persisted agent sessions, /agent_session <ref> to inspect one, and /resume <agent-session-ref> to reattach one.".to_string(),
-        "Use /live_tasks to inspect active child agents and /cancel_task <task-or-agent-ref> to stop one without leaving the current session.".to_string(),
+        "Use /live_tasks to inspect active child agents, /send_task <task-or-agent-ref> <message> to steer one, /wait_task <task-or-agent-ref> to wait for one, and /cancel_task <task-or-agent-ref> to stop one without leaving the current session.".to_string(),
         "Use /tasks to browse persisted child tasks and /task <task-id> to inspect one.".to_string(),
         "Use /new or /clear to start a fresh top-level session without deleting prior history.".to_string(),
         "Use /export_session or /export_transcript to write durable artifacts.".to_string(),

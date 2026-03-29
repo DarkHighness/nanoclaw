@@ -32,6 +32,13 @@ pub(crate) enum SlashCommand {
         agent_session_ref: String,
     },
     LiveTasks,
+    SendTask {
+        task_or_agent_ref: String,
+        message: Option<String>,
+    },
+    WaitTask {
+        task_or_agent_ref: String,
+    },
     CancelTask {
         task_or_agent_ref: String,
         reason: Option<String>,
@@ -119,6 +126,18 @@ enum SlashSubcommand {
         agent_session_ref: String,
     },
     LiveTasks,
+    SendTask {
+        task_or_agent_ref: String,
+        #[arg(
+            value_name = "MESSAGE",
+            trailing_var_arg = true,
+            allow_hyphen_values = true
+        )]
+        message: Vec<String>,
+    },
+    WaitTask {
+        task_or_agent_ref: String,
+    },
     CancelTask {
         task_or_agent_ref: String,
         #[arg(
@@ -206,6 +225,14 @@ impl From<SlashSubcommand> for SlashCommand {
                 Self::AgentSession { agent_session_ref }
             }
             SlashSubcommand::LiveTasks => Self::LiveTasks,
+            SlashSubcommand::SendTask {
+                task_or_agent_ref,
+                message,
+            } => Self::SendTask {
+                task_or_agent_ref,
+                message: join_optional_tail(message),
+            },
+            SlashSubcommand::WaitTask { task_or_agent_ref } => Self::WaitTask { task_or_agent_ref },
             SlashSubcommand::CancelTask {
                 task_or_agent_ref,
                 reason,
@@ -322,6 +349,30 @@ mod tests {
             parse_slash_command("/live_tasks"),
             SlashCommand::LiveTasks
         ));
+    }
+
+    #[test]
+    fn parses_send_task_with_message_tail() {
+        match parse_slash_command("/send_task review-task focus on tests") {
+            SlashCommand::SendTask {
+                task_or_agent_ref,
+                message,
+            } => {
+                assert_eq!(task_or_agent_ref, "review-task");
+                assert_eq!(message, Some("focus on tests".to_string()));
+            }
+            _ => panic!("unexpected command"),
+        }
+    }
+
+    #[test]
+    fn parses_wait_task_lookup() {
+        match parse_slash_command("/wait_task review-task") {
+            SlashCommand::WaitTask { task_or_agent_ref } => {
+                assert_eq!(task_or_agent_ref, "review-task");
+            }
+            _ => panic!("unexpected command"),
+        }
     }
 
     #[test]

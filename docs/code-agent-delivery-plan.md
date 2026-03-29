@@ -143,11 +143,21 @@ Shipped in the thirteenth implementation slice:
 - the first live operator slice intentionally stops at list/cancel so the host
   contract stays small while send/wait semantics are still being designed
 
+Shipped in the fourteenth implementation slice:
+
+- `code-agent` now exposes backend-owned live task steer and wait contracts in
+  addition to list/cancel
+- the TUI can send parent steering to a selected live child and wait on a
+  single child task without freezing the main event loop
+- live wait now runs as a dedicated background operator task so runtime
+  approvals, transcript deltas, and activity updates continue rendering while
+  the operator waits for child completion
+
 Still pending in the next slices:
 
 - remaining docs and workspace cleanup before `reference-tui` can be retired
 - frontend-neutral contracts for richer live subagent/session operator workflows
-  beyond list/cancel
+  beyond the current list/send/wait/cancel slice
 
 ## External Product Signals
 
