@@ -1,5 +1,6 @@
 use super::state::{SharedUiState, preview_text};
 use crate::backend::SessionEvent;
+use serde_json::Value;
 use std::collections::HashMap;
 
 pub(crate) struct SharedRenderObserver {
@@ -127,19 +128,12 @@ impl SharedRenderObserver {
                 state.active_tool_label = None;
                 if approved {
                     state.status = format!("Approved {}", call.tool_name);
-                    state.push_transcript(format!(
-                        "✔ You approved Code Agent to run {}",
-                        call.tool_name
-                    ));
+                    state.push_transcript(approved_tool_entry(&call));
                     state.push_activity(format!("approved {}", call.tool_name));
                 } else {
                     let reason = reason.unwrap_or_else(|| "permission denied".to_string());
                     state.status = format!("Denied {}: {}", call.tool_name, reason);
-                    state.push_transcript(format!(
-                        "✗ You did not approve Code Agent to run {}\n  └ {}",
-                        call.tool_name,
-                        preview_text(&reason, 72)
-                    ));
+                    state.push_transcript(denied_tool_entry(&call, &reason));
                     state.push_activity(format!(
                         "denied {}: {}",
                         call.tool_name,
@@ -150,7 +144,7 @@ impl SharedRenderObserver {
             SessionEvent::ToolLifecycleStarted { call } => {
                 state.status = "Working".to_string();
                 state.active_tool_label = Some(call.tool_name.clone());
-                state.push_transcript(format!("• Running {}", call.tool_name));
+                state.push_transcript(running_tool_entry(&call));
                 self.active_tool_lines
                     .insert(call.call_id.clone(), state.transcript.len() - 1);
                 state.push_activity(format!("running {}", call.tool_name));
@@ -165,7 +159,11 @@ impl SharedRenderObserver {
                 replace_tool_line(
                     state,
                     self.active_tool_lines.remove(&call.call_id),
-                    completed_tool_entry(&call.tool_name, &output_preview),
+                    completed_tool_entry(
+                        &call,
+                        &output_preview,
+                        structured_output_preview.as_deref(),
+                    ),
                 );
                 state.push_activity(format!(
                     "{} -> {}",
@@ -191,11 +189,7 @@ impl SharedRenderObserver {
                 replace_tool_line(
                     state,
                     self.active_tool_lines.remove(&call.call_id),
-                    format!(
-                        "✗ {} failed\n  └ {}",
-                        call.tool_name,
-                        preview_text(&error, 72)
-                    ),
+                    failed_tool_entry(&call, &error),
                 );
                 state.push_activity(format!(
                     "{} failed: {}",
@@ -209,14 +203,7 @@ impl SharedRenderObserver {
                 replace_tool_line(
                     state,
                     self.active_tool_lines.remove(&call.call_id),
-                    format!(
-                        "✗ Cancelled {}\n  └ {}",
-                        call.tool_name,
-                        reason
-                            .as_deref()
-                            .map(|value| preview_text(value, 72))
-                            .unwrap_or_else(|| "cancelled".to_string())
-                    ),
+                    cancelled_tool_entry(&call, reason.as_deref()),
                 );
                 state.push_activity(format!(
                     "{} cancelled{}",
@@ -238,13 +225,216 @@ impl SharedRenderObserver {
     }
 }
 
-fn completed_tool_entry(tool_name: &str, output_preview: &str) -> String {
-    let output_preview = preview_text(output_preview, 96);
-    if output_preview == "<empty>" {
-        format!("• Called {tool_name}")
-    } else {
-        format!("• Called {tool_name}\n  └ {output_preview}")
+fn approved_tool_entry(call: &crate::backend::SessionToolCall) -> String {
+    summarize_tool_entry(
+        format!("✔ Approved {}", call.tool_name),
+        tool_argument_detail_lines(call),
+    )
+}
+
+fn denied_tool_entry(call: &crate::backend::SessionToolCall, reason: &str) -> String {
+    let mut detail_lines = tool_argument_detail_lines(call);
+    detail_lines.push(format!("  └ {}", preview_text(reason, 72)));
+    summarize_tool_entry(format!("✗ Denied {}", call.tool_name), detail_lines)
+}
+
+fn running_tool_entry(call: &crate::backend::SessionToolCall) -> String {
+    summarize_tool_entry(
+        format!("• Running {}", call.tool_name),
+        tool_argument_detail_lines(call),
+    )
+}
+
+fn completed_tool_entry(
+    call: &crate::backend::SessionToolCall,
+    output_preview: &str,
+    structured_output_preview: Option<&str>,
+) -> String {
+    let mut detail_lines = tool_argument_detail_lines(call);
+    detail_lines.extend(tool_output_detail_lines(
+        &call.tool_name,
+        output_preview,
+        structured_output_preview,
+    ));
+    summarize_tool_entry(format!("• Called {}", call.tool_name), detail_lines)
+}
+
+fn failed_tool_entry(call: &crate::backend::SessionToolCall, error: &str) -> String {
+    let mut detail_lines = tool_argument_detail_lines(call);
+    detail_lines.push(format!("  └ {}", preview_text(error, 72)));
+    summarize_tool_entry(format!("✗ {} failed", call.tool_name), detail_lines)
+}
+
+fn cancelled_tool_entry(call: &crate::backend::SessionToolCall, reason: Option<&str>) -> String {
+    let mut detail_lines = tool_argument_detail_lines(call);
+    detail_lines.push(format!(
+        "  └ {}",
+        reason
+            .map(|value| preview_text(value, 72))
+            .unwrap_or_else(|| "cancelled".to_string())
+    ));
+    summarize_tool_entry(format!("✗ Cancelled {}", call.tool_name), detail_lines)
+}
+
+fn summarize_tool_entry(headline: String, detail_lines: Vec<String>) -> String {
+    let mut lines = vec![headline];
+    lines.extend(detail_lines);
+    lines.join("\n")
+}
+
+fn tool_argument_detail_lines(call: &crate::backend::SessionToolCall) -> Vec<String> {
+    prefixed_detail_lines(&call.arguments_preview)
+}
+
+fn tool_output_detail_lines(
+    tool_name: &str,
+    output_preview: &str,
+    structured_output_preview: Option<&str>,
+) -> Vec<String> {
+    if tool_name == "bash" {
+        return bash_output_detail_lines(output_preview, structured_output_preview);
     }
+
+    if output_preview.trim().is_empty() {
+        return Vec::new();
+    }
+
+    if output_preview.lines().count() > 1 || output_preview.chars().count() > 96 {
+        return code_block_lines(&collapse_middle_lines(output_preview, 8, 120));
+    }
+
+    vec![format!("  └ {}", preview_text(output_preview, 96))]
+}
+
+fn bash_output_detail_lines(
+    output_preview: &str,
+    structured_output_preview: Option<&str>,
+) -> Vec<String> {
+    let mut detail_lines = Vec::new();
+    let structured =
+        structured_output_preview.and_then(|raw| serde_json::from_str::<Value>(raw).ok());
+
+    if let Some(exit_code) = structured
+        .as_ref()
+        .and_then(|value| value.get("exit_code"))
+        .and_then(Value::as_i64)
+    {
+        detail_lines.push(format!("  └ exit {exit_code}"));
+    }
+    if structured
+        .as_ref()
+        .and_then(|value| value.get("timed_out"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        detail_lines.push("  └ timed out".to_string());
+    }
+
+    let stdout = structured
+        .as_ref()
+        .and_then(|value| value.pointer("/stdout/text"))
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let stderr = structured
+        .as_ref()
+        .and_then(|value| value.pointer("/stderr/text"))
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+
+    let rendered_output = if !stdout.trim().is_empty() || !stderr.trim().is_empty() {
+        let mut chunks = Vec::new();
+        if !stdout.trim().is_empty() {
+            chunks.push(stdout.trim_end().to_string());
+        }
+        if !stderr.trim().is_empty() {
+            if !chunks.is_empty() {
+                chunks.push(String::new());
+            }
+            chunks.push("stderr:".to_string());
+            chunks.push(stderr.trim_end().to_string());
+        }
+        chunks.join("\n")
+    } else {
+        output_preview.trim().to_string()
+    };
+
+    if !rendered_output.is_empty() && rendered_output != "<empty>" {
+        detail_lines.extend(code_block_lines(&collapse_middle_lines(
+            &rendered_output,
+            12,
+            120,
+        )));
+    }
+
+    detail_lines
+}
+
+fn prefixed_detail_lines(lines: &[String]) -> Vec<String> {
+    let mut rendered = Vec::new();
+    for (index, line) in lines.iter().enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        if index == 0 {
+            rendered.push(format!("  └ {line}"));
+        } else {
+            rendered.push(format!("    {line}"));
+        }
+    }
+    rendered
+}
+
+fn code_block_lines(lines: &[String]) -> Vec<String> {
+    if lines.is_empty() {
+        return Vec::new();
+    }
+    let mut block = Vec::with_capacity(lines.len() + 2);
+    block.push("```text".to_string());
+    block.extend(lines.iter().cloned());
+    block.push("```".to_string());
+    block
+}
+
+fn collapse_middle_lines(value: &str, max_lines: usize, max_columns: usize) -> Vec<String> {
+    let raw_lines = value.lines().collect::<Vec<_>>();
+    if raw_lines.is_empty() {
+        return vec!["<empty>".to_string()];
+    }
+
+    let clip_line = |line: &str| {
+        if line.chars().count() > max_columns {
+            format!(
+                "{}...",
+                line.chars()
+                    .take(max_columns.saturating_sub(3))
+                    .collect::<String>()
+            )
+        } else {
+            line.to_string()
+        }
+    };
+
+    if raw_lines.len() <= max_lines.max(1) {
+        return raw_lines.into_iter().map(clip_line).collect();
+    }
+
+    let head = max_lines.max(2) / 2;
+    let tail = max_lines.max(2) - head;
+    let mut lines = raw_lines
+        .iter()
+        .take(head)
+        .copied()
+        .map(clip_line)
+        .collect::<Vec<_>>();
+    lines.push("...".to_string());
+    lines.extend(
+        raw_lines
+            .iter()
+            .skip(raw_lines.len().saturating_sub(tail))
+            .copied()
+            .map(clip_line),
+    );
+    lines
 }
 
 fn replace_tool_line(
@@ -268,6 +458,7 @@ mod tests {
     use crate::backend::{SessionEvent, SessionToolCall};
     use crate::frontend::tui::state::SharedUiState;
     use agent::types::{ContextWindowUsage, TokenLedgerSnapshot, TokenUsage, TokenUsagePhase};
+    use serde_json::json;
 
     #[test]
     fn token_usage_updates_are_persisted_into_session_state() {
@@ -306,6 +497,7 @@ mod tests {
             tool_name: "bash".to_string(),
             call_id: "call_123".to_string(),
             origin: "shell".to_string(),
+            arguments_preview: vec!["$ ls".to_string()],
         };
         let mut observer = SharedRenderObserver::new(ui_state.clone());
 
@@ -314,7 +506,16 @@ mod tests {
         observer.apply_event(SessionEvent::ToolLifecycleCompleted {
             call,
             output_preview: "listed files".to_string(),
-            structured_output_preview: None,
+            structured_output_preview: Some(
+                json!({
+                    "kind": "run",
+                    "exit_code": 0,
+                    "timed_out": false,
+                    "stdout": {"text": "listed files", "chars": 12, "truncated": false},
+                    "stderr": {"text": "", "chars": 0, "truncated": false}
+                })
+                .to_string(),
+            ),
         });
 
         let snapshot = ui_state.snapshot();
@@ -323,7 +524,8 @@ mod tests {
             snapshot
                 .transcript
                 .iter()
-                .any(|line| line == "• Called bash\n  └ listed files")
+                .any(|line| line
+                    == "• Called bash\n  └ $ ls\n  └ exit 0\n```text\nlisted files\n```")
         );
     }
 }

@@ -1,5 +1,6 @@
 use agent::runtime::{Result as RuntimeResult, RuntimeObserver, RuntimeProgressEvent};
 use agent::types::{TokenLedgerSnapshot, TokenUsagePhase, ToolLifecycleEventKind};
+use serde_json::Value;
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
@@ -8,6 +9,7 @@ pub(crate) struct SessionToolCall {
     pub(crate) call_id: String,
     pub(crate) tool_name: String,
     pub(crate) origin: String,
+    pub(crate) arguments_preview: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -200,13 +202,77 @@ fn session_tool_call(call: &agent::types::ToolCall) -> SessionToolCall {
             agent::ToolOrigin::Mcp { server_name } => format!("mcp:{server_name}"),
             agent::ToolOrigin::Provider { provider } => format!("provider:{provider}"),
         },
+        arguments_preview: tool_arguments_preview(call),
     }
+}
+
+fn tool_arguments_preview(call: &agent::types::ToolCall) -> Vec<String> {
+    if call.tool_name.as_str() == "bash"
+        && let Some(command) = call.arguments.get("command").and_then(Value::as_str)
+        && !command.trim().is_empty()
+    {
+        return truncate_preview(&format!("$ {}", command.trim()), 4, 96);
+    }
+
+    for key in ["path", "uri", "query", "prompt", "message"] {
+        if let Some(value) = call.arguments.get(key).and_then(Value::as_str)
+            && !value.trim().is_empty()
+        {
+            return truncate_preview(value.trim(), 4, 96);
+        }
+    }
+
+    truncate_preview(&call.arguments.to_string(), 4, 96)
+}
+
+fn truncate_preview(value: &str, max_lines: usize, max_columns: usize) -> Vec<String> {
+    let raw_lines = value.lines().collect::<Vec<_>>();
+    if raw_lines.is_empty() {
+        return vec!["<empty>".to_string()];
+    }
+
+    let clip_line = |line: &str| {
+        if line.chars().count() > max_columns {
+            format!(
+                "{}...",
+                line.chars()
+                    .take(max_columns.saturating_sub(3))
+                    .collect::<String>()
+            )
+        } else {
+            line.to_string()
+        }
+    };
+
+    let mut lines = Vec::new();
+    if raw_lines.len() <= max_lines.max(1) {
+        lines.extend(raw_lines.into_iter().map(clip_line));
+        return lines;
+    }
+
+    let head = max_lines.max(2) / 2;
+    let tail = max_lines.max(2) - head;
+    lines.extend(raw_lines.iter().take(head).copied().map(clip_line));
+    lines.push("...".to_string());
+    lines.extend(
+        raw_lines
+            .iter()
+            .skip(raw_lines.len().saturating_sub(tail))
+            .copied()
+            .map(clip_line),
+    );
+    if lines.is_empty() {
+        lines.push("<empty>".to_string());
+    }
+    lines
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{SessionEvent, SessionEventObserver, SessionEventStream};
+    use super::{SessionEvent, SessionEventObserver, SessionEventStream, session_tool_call};
     use agent::runtime::{RuntimeObserver, RuntimeProgressEvent};
+    use agent::types::{ToolCall, ToolCallId, ToolOrigin};
+    use serde_json::json;
 
     #[test]
     fn observer_records_runtime_events_into_stream() {
@@ -224,6 +290,24 @@ mod tests {
             vec![SessionEvent::UserPromptAdded {
                 prompt: "hello".to_string(),
             }]
+        );
+    }
+
+    #[test]
+    fn session_tool_call_formats_bash_commands_for_tui_previews() {
+        let call = ToolCall {
+            id: ToolCallId::from("tool-call-1"),
+            call_id: ToolCallId::from("tool-call-1").into(),
+            tool_name: "bash".into(),
+            arguments: json!({"command": "cargo test -p code-agent"}),
+            origin: ToolOrigin::Local,
+        };
+
+        let projected = session_tool_call(&call);
+
+        assert_eq!(
+            projected.arguments_preview,
+            vec!["$ cargo test -p code-agent"]
         );
     }
 }

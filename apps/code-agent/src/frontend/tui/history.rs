@@ -11,6 +11,7 @@ use agent::types::{
     AgentEnvelopeKind, AgentSessionId, AgentStatus, HookEvent, Message, SessionEventEnvelope,
     SessionEventKind,
 };
+use serde_json::Value;
 use store::TokenUsageRecord;
 
 pub(crate) fn format_session_summary_line(summary: &PersistedSessionSummary) -> String {
@@ -589,6 +590,23 @@ fn shell_summary(headline: impl Into<String>, details: impl IntoIterator<Item = 
     lines.join("\n")
 }
 
+fn shell_summary_with_code_block(
+    headline: impl Into<String>,
+    details: impl IntoIterator<Item = String>,
+    code_block: &[String],
+) -> String {
+    let mut lines = vec![headline.into()];
+    for detail in details.into_iter().filter(|detail| !detail.is_empty()) {
+        lines.push(format!("  └ {detail}"));
+    }
+    if !code_block.is_empty() {
+        lines.push("```text".to_string());
+        lines.extend(code_block.iter().cloned());
+        lines.push("```".to_string());
+    }
+    lines.join("\n")
+}
+
 fn format_reason_detail(reason: Option<&str>) -> Option<String> {
     reason
         .map(str::trim)
@@ -706,6 +724,122 @@ fn format_agent_envelope_kind(kind: &AgentEnvelopeKind) -> String {
     }
 }
 
+fn collapse_middle_lines(value: &str, max_lines: usize, max_columns: usize) -> Vec<String> {
+    let raw_lines = value.lines().collect::<Vec<_>>();
+    if raw_lines.is_empty() {
+        return vec!["<empty>".to_string()];
+    }
+
+    let clip_line = |line: &str| {
+        if line.chars().count() > max_columns {
+            format!(
+                "{}...",
+                line.chars()
+                    .take(max_columns.saturating_sub(3))
+                    .collect::<String>()
+            )
+        } else {
+            line.to_string()
+        }
+    };
+
+    if raw_lines.len() <= max_lines.max(1) {
+        return raw_lines.into_iter().map(clip_line).collect();
+    }
+
+    let head = max_lines.max(2) / 2;
+    let tail = max_lines.max(2) - head;
+    let mut lines = raw_lines
+        .iter()
+        .take(head)
+        .copied()
+        .map(clip_line)
+        .collect::<Vec<_>>();
+    lines.push("...".to_string());
+    lines.extend(
+        raw_lines
+            .iter()
+            .skip(raw_lines.len().saturating_sub(tail))
+            .copied()
+            .map(clip_line),
+    );
+    lines
+}
+
+fn tool_argument_preview_lines(tool_name: &str, arguments: &Value) -> Vec<String> {
+    if tool_name == "bash"
+        && let Some(command) = arguments.get("command").and_then(Value::as_str)
+        && !command.trim().is_empty()
+    {
+        return collapse_middle_lines(&format!("$ {}", command.trim()), 4, 96);
+    }
+
+    for key in ["path", "uri", "query", "prompt", "message"] {
+        if let Some(value) = arguments.get(key).and_then(Value::as_str)
+            && !value.trim().is_empty()
+        {
+            return collapse_middle_lines(value.trim(), 4, 96);
+        }
+    }
+
+    collapse_middle_lines(&arguments.to_string(), 4, 96)
+}
+
+fn bash_output_block(output: &agent::types::ToolResult) -> (Vec<String>, Vec<String>) {
+    let mut details = Vec::new();
+    let mut output_lines = Vec::new();
+
+    if let Some(structured) = output.structured_content.as_ref() {
+        if let Some(exit_code) = structured.get("exit_code").and_then(Value::as_i64) {
+            details.push(format!("exit {exit_code}"));
+        }
+        if structured
+            .get("timed_out")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            details.push("timed out".to_string());
+        }
+
+        let stdout = structured
+            .pointer("/stdout/text")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let stderr = structured
+            .pointer("/stderr/text")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+
+        let rendered = if !stdout.trim().is_empty() || !stderr.trim().is_empty() {
+            let mut chunks = Vec::new();
+            if !stdout.trim().is_empty() {
+                chunks.push(stdout.trim_end().to_string());
+            }
+            if !stderr.trim().is_empty() {
+                if !chunks.is_empty() {
+                    chunks.push(String::new());
+                }
+                chunks.push("stderr:".to_string());
+                chunks.push(stderr.trim_end().to_string());
+            }
+            chunks.join("\n")
+        } else {
+            output.text_content()
+        };
+
+        if !rendered.trim().is_empty() {
+            output_lines = collapse_middle_lines(&rendered, 12, 120);
+        }
+    } else {
+        let text = output.text_content();
+        if !text.trim().is_empty() {
+            output_lines = collapse_middle_lines(&text, 12, 120);
+        }
+    }
+
+    (details, output_lines)
+}
+
 fn format_session_event_line(event: &SessionEventEnvelope) -> String {
     match &event.event {
         SessionEventKind::SessionStart { reason } => shell_summary(
@@ -813,10 +947,14 @@ fn format_session_event_line(event: &SessionEventEnvelope) -> String {
         ),
         SessionEventKind::ToolApprovalRequested { call, reasons } => shell_summary(
             format!("• Waiting for approval to run {}", call.tool_name),
-            [reasons
-                .first()
-                .map(|reason| format!("reason {}", preview_text(reason, 72)))
-                .unwrap_or_default()],
+            tool_argument_preview_lines(call.tool_name.as_str(), &call.arguments)
+                .into_iter()
+                .chain(std::iter::once(
+                    reasons
+                        .first()
+                        .map(|reason| format!("reason {}", preview_text(reason, 72)))
+                        .unwrap_or_default(),
+                )),
         ),
         SessionEventKind::ToolApprovalResolved {
             call,
@@ -830,19 +968,40 @@ fn format_session_event_line(event: &SessionEventEnvelope) -> String {
             },
             [format_reason_detail(reason.as_deref()).unwrap_or_default()],
         ),
-        SessionEventKind::ToolCallStarted { call } => {
-            format!("• Running {}", call.tool_name)
-        }
-        SessionEventKind::ToolCallCompleted { call, output } => shell_summary(
-            format!("• Finished {}", call.tool_name),
-            [format!(
-                "output {}",
-                preview_text(&output.text_content(), 72)
-            )],
+        SessionEventKind::ToolCallStarted { call } => shell_summary(
+            format!("• Running {}", call.tool_name),
+            tool_argument_preview_lines(call.tool_name.as_str(), &call.arguments),
         ),
+        SessionEventKind::ToolCallCompleted { call, output } => {
+            if call.tool_name.as_str() == "bash" {
+                let (extra_details, output_lines) = bash_output_block(output);
+                shell_summary_with_code_block(
+                    format!("• Finished {}", call.tool_name),
+                    tool_argument_preview_lines(call.tool_name.as_str(), &call.arguments)
+                        .into_iter()
+                        .chain(extra_details),
+                    &output_lines,
+                )
+            } else {
+                shell_summary(
+                    format!("• Finished {}", call.tool_name),
+                    tool_argument_preview_lines(call.tool_name.as_str(), &call.arguments)
+                        .into_iter()
+                        .chain(std::iter::once(format!(
+                            "output {}",
+                            preview_text(&output.text_content(), 72)
+                        ))),
+                )
+            }
+        }
         SessionEventKind::ToolCallFailed { call, error } => shell_summary(
             format!("✗ {} failed", call.tool_name),
-            [format!("error {}", preview_text(error, 72))],
+            tool_argument_preview_lines(call.tool_name.as_str(), &call.arguments)
+                .into_iter()
+                .chain(std::iter::once(format!(
+                    "error {}",
+                    preview_text(error, 72)
+                ))),
         ),
         SessionEventKind::Notification { source, message } => shell_summary(
             format!("• Notification from {source}"),
@@ -1017,7 +1176,7 @@ mod tests {
 
         assert_eq!(
             format_session_event_line(&event),
-            "• Waiting for approval to run bash\n  └ reason sandbox policy requires approval"
+            "• Waiting for approval to run bash\n  └ $ cargo test\n  └ reason sandbox policy requires approval"
         );
     }
 
@@ -1041,7 +1200,7 @@ mod tests {
 
         assert_eq!(
             format_session_event_line(&event),
-            "• Finished bash\n  └ output tests passed"
+            "• Finished bash\n  └ $ cargo test\n```text\ntests passed\n```"
         );
     }
 }
