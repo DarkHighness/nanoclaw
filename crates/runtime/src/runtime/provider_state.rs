@@ -50,19 +50,26 @@ impl AgentRuntime {
             .session
             .provider_transcript_cursor
             .min(self.session.transcript.len());
-        (
-            self.session.transcript[start..]
-                .iter()
-                .filter(|message| {
-                    !self
-                        .session
-                        .removed_message_ids
-                        .contains(&message.message_id)
-                })
-                .cloned()
-                .collect(),
-            Some(continuation),
-        )
+        let delta = self.session.transcript[start..]
+            .iter()
+            .filter(|message| {
+                !self
+                    .session
+                    .removed_message_ids
+                    .contains(&message.message_id)
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+
+        if delta.iter().any(message_contains_tool_protocol_items) {
+            // Tool-call replay remains the most provider-sensitive part of the
+            // transcript. Falling back to the full visible transcript keeps the
+            // model-visible tool call/output pairing explicit instead of relying
+            // on provider-native continuation semantics across tool boundaries.
+            return (self.visible_transcript(), None);
+        }
+
+        (delta, Some(continuation))
     }
 
     pub(super) fn update_provider_continuation(
@@ -84,4 +91,13 @@ pub(super) fn is_provider_continuation_lost(error: &RuntimeError) -> bool {
         error,
         RuntimeError::AgentCore(AgentCoreError::ProviderContinuationLost(_))
     )
+}
+
+fn message_contains_tool_protocol_items(message: &Message) -> bool {
+    message.parts.iter().any(|part| {
+        matches!(
+            part,
+            types::MessagePart::ToolCall { .. } | types::MessagePart::ToolResult { .. }
+        )
+    })
 }

@@ -2,16 +2,19 @@ use super::super::AgentRuntime;
 use super::support::{ContinuingBackend, StaticCompactor};
 use crate::{
     AgentRuntimeBuilder, CompactionConfig, DefaultCommandHookExecutor, DefaultWasmHookExecutor,
-    FailClosedAgentHookEvaluator, HookRunner, PromptHookEvaluator, ReqwestHttpHookExecutor, Result,
+    FailClosedAgentHookEvaluator, HookRunner, ModelBackend, ModelBackendCapabilities,
+    PromptHookEvaluator, ReqwestHttpHookExecutor, Result,
 };
 use async_trait::async_trait;
+use futures::{StreamExt, stream, stream::BoxStream};
 use skills::SkillCatalog;
 use std::sync::{Arc, Mutex};
 use store::{InMemorySessionStore, SessionStore};
-use tools::ToolExecutionContext;
+use tools::{ReadTool, ToolExecutionContext, ToolRegistry};
 use types::{
-    HookContext, HookEffect, HookRegistration, HookResult, MessageId, MessagePart, MessagePatch,
-    MessageRole, MessageSelector, ProviderContinuation, SessionEventKind,
+    CallId, HookContext, HookEffect, HookRegistration, HookResult, MessageId, MessagePart,
+    MessagePatch, MessageRole, MessageSelector, ModelEvent, ModelRequest, ProviderContinuation,
+    SessionEventKind, ToolCall, ToolCallId, ToolOrigin,
 };
 
 #[derive(Clone, Default)]
@@ -83,6 +86,83 @@ impl PromptHookEvaluator for LastAssistantPatchPromptEvaluator {
                 },
             }],
         })
+    }
+}
+
+#[derive(Clone, Default)]
+struct ToolLoopContinuingBackend {
+    requests: Arc<Mutex<Vec<ModelRequest>>>,
+}
+
+impl ToolLoopContinuingBackend {
+    fn requests(&self) -> Vec<ModelRequest> {
+        self.requests.lock().unwrap().clone()
+    }
+}
+
+#[async_trait]
+impl ModelBackend for ToolLoopContinuingBackend {
+    fn capabilities(&self) -> ModelBackendCapabilities {
+        ModelBackendCapabilities {
+            provider_managed_history: true,
+            provider_native_compaction: true,
+            ..ModelBackendCapabilities::text_tool_model_defaults()
+        }
+    }
+
+    async fn stream_turn(
+        &self,
+        request: ModelRequest,
+    ) -> Result<BoxStream<'static, Result<ModelEvent>>> {
+        self.requests.lock().unwrap().push(request.clone());
+        let has_tool_result = request.messages.iter().any(|message| {
+            message
+                .parts
+                .iter()
+                .any(|part| matches!(part, MessagePart::ToolResult { .. }))
+        });
+
+        if !has_tool_result {
+            let call = ToolCall {
+                id: ToolCallId::from("tool_call_1"),
+                call_id: CallId::from("call_read_1"),
+                tool_name: "read".into(),
+                arguments: serde_json::json!({
+                    "path": "sample.txt",
+                    "line_count": 1
+                }),
+                origin: ToolOrigin::Local,
+            };
+            Ok(stream::iter(vec![
+                Ok(ModelEvent::ToolCallRequested { call }),
+                Ok(ModelEvent::ResponseComplete {
+                    stop_reason: Some("tool_use".to_string()),
+                    message_id: Some("msg_1".into()),
+                    continuation: Some(ProviderContinuation::OpenAiResponses {
+                        response_id: "resp_1".into(),
+                    }),
+                    usage: None,
+                    reasoning: Vec::new(),
+                }),
+            ])
+            .boxed())
+        } else {
+            Ok(stream::iter(vec![
+                Ok(ModelEvent::TextDelta {
+                    delta: "done".to_string(),
+                }),
+                Ok(ModelEvent::ResponseComplete {
+                    stop_reason: Some("stop".to_string()),
+                    message_id: Some("msg_2".into()),
+                    continuation: Some(ProviderContinuation::OpenAiResponses {
+                        response_id: "resp_2".into(),
+                    }),
+                    usage: None,
+                    reasoning: Vec::new(),
+                }),
+            ])
+            .boxed())
+        }
     }
 }
 
@@ -159,6 +239,55 @@ async fn runtime_retries_full_transcript_when_provider_continuation_is_lost() {
             SessionEventKind::Notification { source, message }
                 if source == "provider_state"
                     && message.contains("provider continuation lost")
+        )
+    }));
+}
+
+#[tokio::test]
+async fn tool_results_disable_provider_continuation_and_replay_visible_transcript() {
+    let dir = tempfile::tempdir().unwrap();
+    tokio::fs::write(dir.path().join("sample.txt"), "hello\nworld")
+        .await
+        .unwrap();
+    let backend = Arc::new(ToolLoopContinuingBackend::default());
+    let store = Arc::new(InMemorySessionStore::new());
+    let mut registry = ToolRegistry::new();
+    registry.register(ReadTool::new());
+    let mut runtime: AgentRuntime = AgentRuntimeBuilder::new(backend.clone(), store)
+        .hook_runner(Arc::new(HookRunner::default()))
+        .tool_registry(registry)
+        .tool_context(ToolExecutionContext {
+            workspace_root: dir.path().to_path_buf(),
+            workspace_only: true,
+            model_context_window_tokens: Some(128_000),
+            ..Default::default()
+        })
+        .skill_catalog(SkillCatalog::default())
+        .build();
+
+    let outcome = runtime.run_user_prompt("please use tool").await.unwrap();
+    assert_eq!(outcome.assistant_text, "done");
+
+    let requests = backend.requests();
+    assert_eq!(requests.len(), 2);
+    assert!(requests[0].continuation.is_none());
+    assert_eq!(requests[1].continuation, None);
+    assert_eq!(requests[1].messages.len(), 3);
+    assert_eq!(requests[1].messages[0].text_content(), "please use tool");
+    assert!(requests[1].messages[1].parts.iter().any(|part| {
+        matches!(
+            part,
+            MessagePart::ToolCall { call }
+                if call.call_id == CallId::from("call_read_1")
+                    && call.tool_name.as_str() == "read"
+        )
+    }));
+    assert!(requests[1].messages[2].parts.iter().any(|part| {
+        matches!(
+            part,
+            MessagePart::ToolResult { result }
+                if result.call_id == CallId::from("call_read_1")
+                    && result.tool_name.as_str() == "read"
         )
     }));
 }
