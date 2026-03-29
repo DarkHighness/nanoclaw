@@ -31,9 +31,9 @@ cp apps/code-agent/.env.example .env
 cargo run --manifest-path apps/Cargo.toml -p code-agent
 ```
 
-This opens a `ratatui` screen with a branded header, a live status strip, a
-conversation pane, a session-radar panel, an inspector, an activity feed, and
-a composer tuned for both prompt and slash-command workflows.
+This opens a compact `ratatui` screen with a single-line status bar, a
+conversation pane, a right-hand inspector/log column, and a minimal composer
+tuned for both prompt and slash-command workflows.
 
 One-shot prompt:
 
@@ -208,9 +208,9 @@ MCP-focused commands expose connected server catalogs plus prompt/resource
 loading directly from `code-agent` without relying on the legacy
 `reference-tui` shell.
 
-The TUI itself now uses a more product-shaped layout instead of a flat debug
-shell: a denser top bar, a live status strip, session radar cards, and a
-composer that surfaces prompt/command mode clearly.
+The TUI now follows a more minimal shell: a single-line status bar, wider
+conversation space, a narrower inspector/log column, and a compact composer
+that keeps prompt/command mode visible without consuming extra rows.
 
 Interactive approval and live runtime updates now also route through
 backend-owned contracts, so the TUI renders session events and approval prompts

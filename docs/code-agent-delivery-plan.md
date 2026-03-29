@@ -172,6 +172,15 @@ Shipped in the sixteenth implementation slice:
   top-level `SessionId` / `AgentSessionId` so durable task history can recover
   operator-created child work later
 
+Shipped in the seventeenth implementation slice:
+
+- the TUI layout was simplified toward a more Codex-like shell with a
+  single-line status bar instead of a stacked header plus status strip
+- the session radar panel was removed so more vertical space goes to the
+  transcript and inspector surfaces
+- transcript rendering and the composer were both reduced to a more minimal
+  presentation so the UI reads as a tool instead of a dashboard
+
 Still pending in the next slices:
 
 - remaining docs and workspace cleanup before `reference-tui` can be retired
