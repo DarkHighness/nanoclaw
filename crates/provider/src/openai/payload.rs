@@ -78,7 +78,12 @@ pub(crate) fn build_openai_responses_body(
             .map(|tool| {
                 let mut schema = tool_schema(tool);
                 if let Some(object) = schema.as_object_mut() {
-                    object.insert("strict".to_string(), Value::Bool(true));
+                    // Responses defaults function tools to strict mode. Our shared
+                    // tool schemas target general JSON Schema compatibility across
+                    // providers, including optional fields and flatten-generated
+                    // compositions that OpenAI strict mode rejects. Opt out here
+                    // unless we add a dedicated OpenAI strict-schema compiler.
+                    object.insert("strict".to_string(), Value::Bool(false));
                 }
                 schema
             })

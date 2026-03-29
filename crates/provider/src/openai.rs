@@ -586,7 +586,7 @@ mod tests {
     }
 
     #[test]
-    fn openai_responses_body_closes_tool_parameters_for_strict_mode() {
+    fn openai_responses_body_explicitly_opts_out_of_default_strict_tools() {
         let mut request = base_request();
         request.tools.push(ToolSpec {
             name: "agent_cancel".into(),
@@ -612,18 +612,10 @@ mod tests {
             build_openai_responses_body("gpt-5.4".to_string(), request, &RequestOptions::default())
                 .unwrap();
 
-        assert_eq!(body["tools"][0]["strict"], json!(true));
+        assert_eq!(body["tools"][0]["strict"], json!(false));
         assert_eq!(
-            body["tools"][0]["parameters"]["additionalProperties"],
-            json!(false)
-        );
-        assert_eq!(
-            body["tools"][0]["parameters"]["properties"]["metadata"]["type"],
-            json!("object")
-        );
-        assert_eq!(
-            body["tools"][0]["parameters"]["properties"]["metadata"]["additionalProperties"],
-            json!(false)
+            body["tools"][0]["parameters"]["required"],
+            json!(["agent_id"])
         );
     }
 
