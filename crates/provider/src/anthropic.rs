@@ -360,17 +360,22 @@ fn anthropic_message(role: &str, parts: Vec<MessagePart>) -> Result<Value> {
 }
 
 fn anthropic_tool_message(parts: Vec<MessagePart>) -> Result<Value> {
-    let mut content = Vec::new();
+    let mut tool_results = Vec::new();
+    let mut trailing_content = Vec::new();
     for part in parts {
         match part {
-            MessagePart::ToolResult { result } => content.push(tool_result_block(result)),
+            MessagePart::ToolResult { result } => tool_results.push(tool_result_block(result)),
             other => {
                 if let Some(text) = message_part_text(&other) {
-                    content.push(json!({"type":"text","text": text}));
+                    trailing_content.push(json!({"type":"text","text": text}));
                 }
             }
         }
     }
+    let mut content = tool_results;
+    // Anthropic requires tool_result blocks to appear before any trailing text
+    // in the user follow-up message that answers a tool_use request.
+    content.extend(trailing_content);
     if content.is_empty() {
         return Err(ProviderError::protocol(
             "Anthropic tool message did not contain any supported content",
@@ -617,6 +622,39 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    #[test]
+    fn anthropic_tool_messages_place_tool_results_before_text() {
+        let mut request = base_request();
+        request.messages = vec![
+            Message::user("inspect the repo"),
+            Message {
+                role: types::MessageRole::Tool,
+                parts: vec![
+                    types::MessagePart::text("What should I do next?"),
+                    types::MessagePart::ToolResult {
+                        result: types::ToolResult::text("call_1".into(), "read", "README heading"),
+                    },
+                ],
+                name: None,
+                message_id: types::MessageId::new(),
+                metadata: Default::default(),
+            },
+        ];
+
+        let body = build_anthropic_messages_body(
+            "claude-sonnet-4-6".to_string(),
+            request,
+            &RequestOptions::default(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            body["messages"][1]["content"][0]["type"],
+            json!("tool_result")
+        );
+        assert_eq!(body["messages"][1]["content"][1]["type"], json!("text"));
     }
 
     #[tokio::test]

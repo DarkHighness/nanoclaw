@@ -7,12 +7,18 @@ use types::{
     Message, MessagePart, MessageRole, ModelRequest, ProviderContinuation, ReasoningContent,
 };
 
+fn openai_instruction_text(request: &ModelRequest) -> Option<String> {
+    let mut frames = request.instructions.clone();
+    frames.extend(request.additional_context.iter().cloned());
+    render_instruction_text(&frames)
+}
+
 pub(crate) fn build_openai_realtime_request_event(
     model: String,
     request: ModelRequest,
     request_options: &RequestOptions,
 ) -> Result<Value> {
-    let instructions = render_instruction_text(&request.instructions);
+    let instructions = openai_instruction_text(&request);
     let mut response = Map::new();
     response.insert("model".to_string(), Value::String(model));
     response.insert(
@@ -55,14 +61,15 @@ pub(crate) fn build_openai_responses_body(
     request: ModelRequest,
     request_options: &RequestOptions,
 ) -> Result<Value> {
-    let instructions = render_instruction_text(&request.instructions);
+    let instructions = openai_instruction_text(&request);
     let mut object = Map::new();
     object.insert("model".to_string(), Value::String(model));
     object.insert("stream".to_string(), Value::Bool(true));
     if let Some(instructions) = instructions {
         // Responses treats `instructions` as a request-level prompt frame.
-        // Keeping it top-level avoids duplicating stable guidance into the
-        // conversation chain when `previous_response_id` is active.
+        // Keeping both stable instructions and injected context top-level
+        // avoids duplicating them into the conversation chain when
+        // `previous_response_id` is active.
         object.insert("instructions".to_string(), Value::String(instructions));
     }
     if let Some(temperature) = request_options.temperature {
@@ -272,10 +279,6 @@ fn openai_user_message_block(part: &MessagePart) -> Option<Value> {
 fn openai_assistant_message_block(part: &MessagePart) -> Option<Value> {
     match part {
         MessagePart::Text { text } => Some(json!({ "type": "output_text", "text": text })),
-        MessagePart::Reasoning { reasoning } => {
-            let text = reasoning.display_text();
-            (!text.is_empty()).then(|| json!({ "type": "output_text", "text": text }))
-        }
         MessagePart::Resource {
             uri,
             text,
@@ -285,7 +288,8 @@ fn openai_assistant_message_block(part: &MessagePart) -> Option<Value> {
             // Assistant replay must use the Responses output-message shape.
             // OpenAI accepts `input_text` for user/system/developer messages,
             // but assistant history content only permits `output_text` or
-            // `refusal`, plus standalone tool/reasoning items.
+            // `refusal`, while reasoning and tool calls are replayed as
+            // standalone items.
             "type": "output_text",
             "text": text.clone().unwrap_or_else(|| {
                 metadata

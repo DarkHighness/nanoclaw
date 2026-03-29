@@ -501,8 +501,9 @@ mod tests {
     use tokio_tungstenite::tungstenite::Message as WsMessage;
     use types::{
         AgentCoreError, AgentSessionId, CallId, Message, MessagePart, ModelEvent, ModelRequest,
-        ProviderContinuation, ResponseId, SessionId, TokenUsage, ToolCall, ToolCallId, ToolName,
-        ToolOrigin, ToolOutputMode, ToolResult, ToolSpec, TurnId,
+        ProviderContinuation, Reasoning, ReasoningContent, ReasoningId, ResponseId, SessionId,
+        TokenUsage, ToolCall, ToolCallId, ToolName, ToolOrigin, ToolOutputMode, ToolResult,
+        ToolSpec, TurnId,
     };
     use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -524,6 +525,7 @@ mod tests {
     #[test]
     fn openai_responses_body_uses_top_level_instructions_and_continuation() {
         let mut request = base_request();
+        request.additional_context = vec!["hook additional context".to_string()];
         request.continuation = Some(ProviderContinuation::OpenAiResponses {
             response_id: ResponseId::from("resp_123"),
         });
@@ -544,7 +546,9 @@ mod tests {
 
         assert_eq!(
             body.get("instructions"),
-            Some(&Value::String("You are a coding agent.".to_string()))
+            Some(&Value::String(
+                "You are a coding agent.\n\nhook additional context".to_string()
+            ))
         );
         assert_eq!(
             body.get("previous_response_id"),
@@ -668,6 +672,52 @@ mod tests {
     }
 
     #[test]
+    fn openai_responses_body_replays_reasoning_items_for_tool_loops() {
+        let mut request = base_request();
+        request.messages = vec![
+            Message::user("inspect the repo"),
+            Message::assistant_parts(vec![
+                MessagePart::Reasoning {
+                    reasoning: Reasoning {
+                        id: Some(ReasoningId::from("rs_123")),
+                        content: vec![
+                            ReasoningContent::Summary("Need to inspect README first.".to_string()),
+                            ReasoningContent::Encrypted("enc_123".to_string()),
+                        ],
+                    },
+                },
+                MessagePart::ToolCall {
+                    call: ToolCall {
+                        id: ToolCallId::from("fc_123"),
+                        call_id: CallId::from("call_123"),
+                        tool_name: ToolName::from("read"),
+                        arguments: json!({"path":"README.md"}),
+                        origin: ToolOrigin::Local,
+                    },
+                },
+            ]),
+            Message::tool_result(
+                ToolResult::text("fc_123".into(), "read", "README heading")
+                    .with_call_id("call_123"),
+            ),
+        ];
+
+        let body =
+            build_openai_responses_body("gpt-5.4".to_string(), request, &RequestOptions::default())
+                .unwrap();
+
+        assert_eq!(body["input"][1]["type"], json!("reasoning"));
+        assert_eq!(body["input"][1]["id"], json!("rs_123"));
+        assert_eq!(
+            body["input"][1]["summary"],
+            json!([{ "type": "summary_text", "text": "Need to inspect README first." }])
+        );
+        assert_eq!(body["input"][1]["encrypted_content"], json!("enc_123"));
+        assert_eq!(body["input"][2]["type"], json!("function_call"));
+        assert_eq!(body["input"][3]["type"], json!("function_call_output"));
+    }
+
+    #[test]
     fn previous_response_not_found_maps_to_continuation_loss() {
         let error = classify_openai_error(
             404,
@@ -684,9 +734,11 @@ mod tests {
 
     #[test]
     fn realtime_request_event_uses_response_create_envelope() {
+        let mut request = base_request();
+        request.additional_context = vec!["hook additional context".to_string()];
         let event = build_openai_realtime_request_event(
             "gpt-realtime".to_string(),
-            base_request(),
+            request,
             &RequestOptions::default(),
         )
         .unwrap();
@@ -706,6 +758,14 @@ mod tests {
                 .get("response")
                 .and_then(|response| response.get("modalities")),
             Some(&Value::Array(vec![Value::String("text".to_string())]))
+        );
+        assert_eq!(
+            event
+                .get("response")
+                .and_then(|response| response.get("instructions")),
+            Some(&Value::String(
+                "You are a coding agent.\n\nhook additional context".to_string()
+            ))
         );
     }
 
