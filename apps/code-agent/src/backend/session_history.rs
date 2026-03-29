@@ -1,10 +1,16 @@
+use super::session_catalog::PersistedAgentSessionSummary;
 use agent::types::{
-    AgentSessionId, Message, MessagePart, MessageRole, SessionEventEnvelope, SessionId,
+    AgentHandle, AgentSessionId, AgentStatus, AgentTaskSpec, Message, MessagePart, MessageRole,
+    SessionEventEnvelope, SessionEventKind, SessionId,
 };
 use anyhow::{Result, anyhow};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use store::{SessionSearchResult, SessionStore, SessionSummary, SessionTokenUsageReport};
+use store::{
+    SessionSearchResult, SessionStore, SessionSummary, SessionTokenUsageReport, TokenUsageRecord,
+    replay_transcript,
+};
 
 #[derive(Clone, Debug)]
 pub(crate) struct LoadedSession {
@@ -13,6 +19,24 @@ pub(crate) struct LoadedSession {
     pub(crate) transcript: Vec<Message>,
     pub(crate) events: Vec<SessionEventEnvelope>,
     pub(crate) token_usage: SessionTokenUsageReport,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct LoadedAgentSession {
+    pub(crate) summary: PersistedAgentSessionSummary,
+    pub(crate) transcript: Vec<Message>,
+    pub(crate) events: Vec<SessionEventEnvelope>,
+    pub(crate) token_usage: Option<TokenUsageRecord>,
+    pub(crate) subagents: Vec<LoadedSubagentSession>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct LoadedSubagentSession {
+    pub(crate) handle: AgentHandle,
+    pub(crate) task: AgentTaskSpec,
+    pub(crate) status: AgentStatus,
+    pub(crate) summary: String,
+    pub(crate) token_usage: Option<TokenUsageRecord>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -58,6 +82,16 @@ pub(crate) async fn load_session(
         events,
         token_usage,
     })
+}
+
+pub(crate) async fn load_agent_session(
+    store: &Arc<dyn SessionStore>,
+    summary: PersistedAgentSessionSummary,
+) -> Result<LoadedAgentSession> {
+    let session_id = SessionId::from(summary.session_ref.clone());
+    let (events, token_usage) =
+        tokio::try_join!(store.events(&session_id), store.token_usage(&session_id),)?;
+    Ok(project_loaded_agent_session(summary, &events, &token_usage))
 }
 
 pub(crate) async fn export_session_events(
@@ -271,14 +305,129 @@ pub(crate) fn preview_id(value: &str) -> String {
     value.chars().take(8).collect()
 }
 
+fn project_loaded_agent_session(
+    summary: PersistedAgentSessionSummary,
+    events: &[SessionEventEnvelope],
+    token_usage: &SessionTokenUsageReport,
+) -> LoadedAgentSession {
+    let agent_session_id = AgentSessionId::from(summary.agent_session_ref.clone());
+    let scoped_events = events
+        .iter()
+        .filter(|event| event.agent_session_id == agent_session_id)
+        .cloned()
+        .collect::<Vec<_>>();
+    let transcript = replay_transcript(&scoped_events);
+    let agent_token_usage = token_usage
+        .agent_sessions
+        .iter()
+        .find(|record| record.agent_session_id.as_ref() == Some(&agent_session_id))
+        .cloned();
+    let subagents = collect_loaded_subagents(&scoped_events, token_usage);
+
+    LoadedAgentSession {
+        summary,
+        transcript,
+        events: scoped_events,
+        token_usage: agent_token_usage,
+        subagents,
+    }
+}
+
+fn collect_loaded_subagents(
+    events: &[SessionEventEnvelope],
+    token_usage: &SessionTokenUsageReport,
+) -> Vec<LoadedSubagentSession> {
+    #[derive(Clone, Debug)]
+    struct SubagentAccumulator {
+        handle: AgentHandle,
+        task: AgentTaskSpec,
+        status: AgentStatus,
+        summary: String,
+    }
+
+    let mut by_session = BTreeMap::<SessionId, SubagentAccumulator>::new();
+    for event in events {
+        match &event.event {
+            SessionEventKind::SubagentStart { handle, task } => {
+                by_session
+                    .entry(handle.session_id.clone())
+                    .or_insert_with(|| SubagentAccumulator {
+                        handle: handle.clone(),
+                        task: task.clone(),
+                        status: handle.status.clone(),
+                        summary: "running".to_string(),
+                    });
+            }
+            SessionEventKind::SubagentStop {
+                handle,
+                result,
+                error,
+            } => {
+                let entry = by_session
+                    .entry(handle.session_id.clone())
+                    .or_insert_with(|| SubagentAccumulator {
+                        handle: handle.clone(),
+                        task: AgentTaskSpec {
+                            task_id: "unknown".to_string(),
+                            role: "worker".to_string(),
+                            prompt: String::new(),
+                            steer: None,
+                            allowed_tools: Vec::new(),
+                            requested_write_set: Vec::new(),
+                            dependency_ids: Vec::new(),
+                            timeout_seconds: None,
+                        },
+                        status: handle.status.clone(),
+                        summary: "stopped".to_string(),
+                    });
+                entry.handle = handle.clone();
+                entry.status = result
+                    .as_ref()
+                    .map(|result| result.status.clone())
+                    .unwrap_or_else(|| handle.status.clone());
+                entry.summary = result
+                    .as_ref()
+                    .map(|result| result.summary.clone())
+                    .or_else(|| error.clone())
+                    .unwrap_or_else(|| "stopped".to_string());
+            }
+            _ => {}
+        }
+    }
+
+    let mut subagents = by_session
+        .into_values()
+        .map(|entry| LoadedSubagentSession {
+            token_usage: token_usage
+                .subagents
+                .iter()
+                .find(|record| record.session_id == entry.handle.session_id)
+                .cloned(),
+            handle: entry.handle,
+            task: entry.task,
+            status: entry.status,
+            summary: entry.summary,
+        })
+        .collect::<Vec<_>>();
+    subagents.sort_by(|left, right| left.task.task_id.cmp(&right.task.task_id));
+    subagents
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{encode_session_events_jsonl, render_transcript_text, resolve_session_reference};
-    use agent::types::{
-        AgentSessionId, Message, MessagePart, MessageRole, SessionEventEnvelope, SessionEventKind,
-        SessionId,
+    use super::{
+        encode_session_events_jsonl, project_loaded_agent_session, render_transcript_text,
+        resolve_session_reference,
     };
-    use store::SessionSummary;
+    use agent::types::{
+        AgentHandle, AgentResultEnvelope, AgentSessionId, AgentStatus, AgentTaskSpec, Message,
+        MessagePart, MessageRole, SessionEventEnvelope, SessionEventKind, SessionId,
+        TokenLedgerSnapshot,
+    };
+    use store::{
+        SessionSummary, SessionTokenUsageReport, TokenUsageRecord,
+        TokenUsageScope as StoreTokenUsageScope,
+    };
 
     #[test]
     fn resolves_unique_session_prefix() {
@@ -371,5 +520,132 @@ mod tests {
         let encoded = encode_session_events_jsonl(&events).unwrap();
         assert!(encoded.ends_with('\n'));
         assert!(encoded.contains("\"kind\":\"session_start\""));
+    }
+
+    #[test]
+    fn projects_agent_session_transcript_and_spawned_subagents() {
+        let session_id = SessionId::from("session-root");
+        let root_agent_session_id = AgentSessionId::from("agent-root");
+        let child_session_id = SessionId::from("session-child");
+        let child_agent_session_id = AgentSessionId::from("agent-child");
+        let handle = AgentHandle {
+            agent_id: "agent-reviewer".into(),
+            parent_agent_id: None,
+            session_id: child_session_id.clone(),
+            agent_session_id: child_agent_session_id.clone(),
+            task_id: "review-task".to_string(),
+            role: "reviewer".to_string(),
+            status: AgentStatus::Completed,
+        };
+        let task = AgentTaskSpec {
+            task_id: "review-task".to_string(),
+            role: "reviewer".to_string(),
+            prompt: "inspect the patch".to_string(),
+            steer: None,
+            allowed_tools: Vec::new(),
+            requested_write_set: Vec::new(),
+            dependency_ids: Vec::new(),
+            timeout_seconds: None,
+        };
+        let events = vec![
+            SessionEventEnvelope::new(
+                session_id.clone(),
+                root_agent_session_id.clone(),
+                None,
+                None,
+                SessionEventKind::UserPromptSubmit {
+                    prompt: "inspect".to_string(),
+                },
+            ),
+            SessionEventEnvelope::new(
+                session_id.clone(),
+                root_agent_session_id.clone(),
+                None,
+                None,
+                SessionEventKind::TranscriptMessage {
+                    message: Message::user("inspect"),
+                },
+            ),
+            SessionEventEnvelope::new(
+                session_id.clone(),
+                root_agent_session_id.clone(),
+                None,
+                None,
+                SessionEventKind::SubagentStart {
+                    handle: handle.clone(),
+                    task: task.clone(),
+                },
+            ),
+            SessionEventEnvelope::new(
+                session_id.clone(),
+                root_agent_session_id.clone(),
+                None,
+                None,
+                SessionEventKind::SubagentStop {
+                    handle: handle.clone(),
+                    result: Some(AgentResultEnvelope {
+                        agent_id: handle.agent_id.clone(),
+                        task_id: task.task_id.clone(),
+                        status: AgentStatus::Completed,
+                        summary: "looks good".to_string(),
+                        text: "looks good".to_string(),
+                        artifacts: Vec::new(),
+                        claimed_files: Vec::new(),
+                        structured_payload: None,
+                    }),
+                    error: None,
+                },
+            ),
+            SessionEventEnvelope::new(
+                session_id.clone(),
+                root_agent_session_id.clone(),
+                None,
+                None,
+                SessionEventKind::TranscriptMessage {
+                    message: Message::assistant("done"),
+                },
+            ),
+        ];
+        let summary = super::PersistedAgentSessionSummary {
+            agent_session_ref: root_agent_session_id.to_string(),
+            session_ref: session_id.to_string(),
+            label: "root".to_string(),
+            first_timestamp_ms: 1,
+            last_timestamp_ms: 5,
+            event_count: events.len(),
+            transcript_message_count: 2,
+            last_user_prompt: Some("inspect".to_string()),
+            resume_support: super::super::session_catalog::ResumeSupport::AttachedToActiveRuntime,
+        };
+        let token_usage = SessionTokenUsageReport {
+            session: None,
+            agent_sessions: vec![TokenUsageRecord {
+                scope: StoreTokenUsageScope::AgentSession,
+                session_id: session_id.clone(),
+                agent_session_id: Some(root_agent_session_id.clone()),
+                agent_name: None,
+                task_id: None,
+                ledger: TokenLedgerSnapshot::default(),
+            }],
+            subagents: vec![TokenUsageRecord {
+                scope: StoreTokenUsageScope::Subagent,
+                session_id: child_session_id.clone(),
+                agent_session_id: Some(child_agent_session_id.clone()),
+                agent_name: Some("reviewer".to_string()),
+                task_id: Some(task.task_id.clone()),
+                ledger: TokenLedgerSnapshot::default(),
+            }],
+            tasks: Vec::new(),
+            aggregate_usage: Default::default(),
+        };
+
+        let loaded = project_loaded_agent_session(summary, &events, &token_usage);
+
+        assert_eq!(loaded.transcript.len(), 2);
+        assert_eq!(loaded.subagents.len(), 1);
+        assert_eq!(loaded.subagents[0].task.role, "reviewer");
+        assert_eq!(loaded.subagents[0].status, AgentStatus::Completed);
+        assert_eq!(loaded.subagents[0].summary, "looks good");
+        assert!(loaded.subagents[0].token_usage.is_some());
     }
 }

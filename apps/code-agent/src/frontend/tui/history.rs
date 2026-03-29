@@ -1,9 +1,9 @@
 use super::state::preview_text;
 use crate::backend::{
-    LoadedSession, McpPromptSummary, McpResourceSummary, McpServerSummary,
-    PersistedAgentSessionSummary, PersistedSessionSearchMatch, PersistedSessionSummary,
-    SessionExportArtifact, SessionExportKind, SessionOperationAction, SessionOperationOutcome,
-    StartupDiagnosticsSnapshot, message_to_text, preview_id,
+    LoadedAgentSession, LoadedSession, LoadedSubagentSession, McpPromptSummary, McpResourceSummary,
+    McpServerSummary, PersistedAgentSessionSummary, PersistedSessionSearchMatch,
+    PersistedSessionSummary, SessionExportArtifact, SessionExportKind, SessionOperationAction,
+    SessionOperationOutcome, StartupDiagnosticsSnapshot, message_to_text, preview_id,
 };
 use agent::types::{AgentSessionId, Message, SessionEventEnvelope, SessionEventKind};
 use store::TokenUsageRecord;
@@ -122,6 +122,66 @@ pub(crate) fn format_session_inspector(session: &LoadedSession) -> Vec<String> {
                 .collect::<Vec<_>>()
                 .join(", ")
         ));
+    }
+    if !session.events.is_empty() {
+        lines.push("## Recent Events".to_string());
+        lines.extend(
+            session
+                .events
+                .iter()
+                .rev()
+                .take(6)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .map(format_session_event_line),
+        );
+    }
+    lines
+}
+
+pub(crate) fn format_agent_session_inspector(session: &LoadedAgentSession) -> Vec<String> {
+    let mut lines = vec![
+        "## Agent Session".to_string(),
+        format!("agent session ref: {}", session.summary.agent_session_ref),
+        format!("session ref: {}", session.summary.session_ref),
+        format!("label: {}", session.summary.label),
+        format!("event count: {}", session.summary.event_count),
+        format!(
+            "message count: {}",
+            session.summary.transcript_message_count
+        ),
+        format!("resume: {}", session.summary.resume_support.label()),
+    ];
+    if let Some(token_usage) = &session.token_usage {
+        lines.push("## Token Budget".to_string());
+        if let Some(window) = token_usage.ledger.context_window {
+            lines.push(format!(
+                "context: {} / {}",
+                window.used_tokens, window.max_tokens
+            ));
+        }
+        lines.push(format!(
+            "agent tokens: in={} out={} cache={}",
+            token_usage.ledger.cumulative_usage.input_tokens,
+            token_usage.ledger.cumulative_usage.output_tokens,
+            token_usage.ledger.cumulative_usage.cache_read_tokens,
+        ));
+    }
+    if let Some(prompt) = &session.summary.last_user_prompt {
+        lines.push("## Prompt".to_string());
+        lines.push(format!("last prompt: {}", preview_text(prompt, 80)));
+    }
+    if !session.subagents.is_empty() {
+        lines.push("## Spawned Subagents".to_string());
+        lines.push(format!("count: {}", session.subagents.len()));
+        lines.extend(
+            session
+                .subagents
+                .iter()
+                .take(6)
+                .map(format_loaded_subagent_line),
+        );
     }
     if !session.events.is_empty() {
         lines.push("## Recent Events".to_string());
@@ -298,6 +358,29 @@ fn format_token_usage_record_line(record: &TokenUsageRecord) -> String {
         record.ledger.cumulative_usage.input_tokens,
         record.ledger.cumulative_usage.output_tokens,
         record.ledger.cumulative_usage.cache_read_tokens,
+    )
+}
+
+fn format_loaded_subagent_line(subagent: &LoadedSubagentSession) -> String {
+    let token_summary = subagent
+        .token_usage
+        .as_ref()
+        .map(|usage| {
+            format!(
+                " in={} out={} cache={}",
+                usage.ledger.cumulative_usage.input_tokens,
+                usage.ledger.cumulative_usage.output_tokens,
+                usage.ledger.cumulative_usage.cache_read_tokens
+            )
+        })
+        .unwrap_or_default();
+    format!(
+        "{} role={} status={} {}{}",
+        preview_id(subagent.handle.agent_session_id.as_str()),
+        subagent.task.role,
+        subagent.status,
+        preview_text(&subagent.summary, 28),
+        token_summary
     )
 }
 

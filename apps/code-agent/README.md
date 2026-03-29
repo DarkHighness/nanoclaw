@@ -139,6 +139,7 @@ not have useful extensions, including `Dockerfile*`, `Containerfile*`, `go.mod`,
 - `/status`
 - `/help`
 - `/agent_sessions [session-ref]`
+- `/agent_session <agent-session-ref>`
 - `/sessions [query]`
 - `/session <session-ref>`
 - `/resume <agent-session-ref>`
@@ -161,11 +162,13 @@ not have useful extensions, including `Dockerfile*`, `Containerfile*`, `go.mod`,
 The product-facing host surface now uses `session` terminology for the durable
 conversation history and `agent session` terminology for runtime-resume targets.
 `/session <session-ref>` opens persisted conversation history and exports
-artifacts, while `/resume <agent-session-ref>` now resolves an `AgentSessionId`
-instead of a top-level `SessionId`. Historical agent sessions can now be
-reattached into the live runtime, and the resumed runtime receives a fresh
-active `AgentSessionId` bound to the original top-level `SessionId`. Older
-compacted histories that predate resume checkpoints still remain history-only.
+artifacts. `/agent_session <agent-session-ref>` inspects a specific runtime
+window, including its transcript slice, token budget, and spawned subagent
+summaries. `/resume <agent-session-ref>` resolves an `AgentSessionId` instead
+of a top-level `SessionId`. Historical agent sessions can now be reattached
+into the live runtime, and the resumed runtime receives a fresh active
+`AgentSessionId` bound to the original top-level `SessionId`. Older compacted
+histories that predate resume checkpoints still remain history-only.
 
 `/new` and `/clear` now perform the same backend-owned operation: they create a
 fresh active top-level session while keeping prior sessions in durable history

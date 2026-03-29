@@ -28,6 +28,9 @@ pub(crate) enum SlashCommand {
     AgentSessions {
         session_ref: Option<String>,
     },
+    AgentSession {
+        agent_session_ref: String,
+    },
     Sessions {
         query: Option<String>,
     },
@@ -101,6 +104,9 @@ enum SlashSubcommand {
     AgentSessions {
         session_ref: Option<String>,
     },
+    AgentSession {
+        agent_session_ref: String,
+    },
     Sessions {
         #[arg(
             value_name = "QUERY",
@@ -169,6 +175,9 @@ impl From<SlashSubcommand> for SlashCommand {
             },
             SlashSubcommand::New => Self::New,
             SlashSubcommand::AgentSessions { session_ref } => Self::AgentSessions { session_ref },
+            SlashSubcommand::AgentSession { agent_session_ref } => {
+                Self::AgentSession { agent_session_ref }
+            }
             SlashSubcommand::Sessions { query } => Self::Sessions {
                 query: join_optional_tail(query),
             },
@@ -235,6 +244,16 @@ mod tests {
         match parse_slash_command("/agent_sessions abc123") {
             SlashCommand::AgentSessions { session_ref } => {
                 assert_eq!(session_ref, Some("abc123".to_string()));
+            }
+            _ => panic!("unexpected command"),
+        }
+    }
+
+    #[test]
+    fn parses_agent_session_lookup() {
+        match parse_slash_command("/agent_session agent123") {
+            SlashCommand::AgentSession { agent_session_ref } => {
+                assert_eq!(agent_session_ref, "agent123");
             }
             _ => panic!("unexpected command"),
         }

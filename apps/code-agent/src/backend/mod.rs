@@ -43,5 +43,6 @@ pub(crate) use session_catalog::{
     ResumeSupport,
 };
 pub(crate) use session_history::{
-    LoadedSession, SessionExportArtifact, SessionExportKind, message_to_text, preview_id,
+    LoadedAgentSession, LoadedSession, LoadedSubagentSession, SessionExportArtifact,
+    SessionExportKind, message_to_text, preview_id,
 };

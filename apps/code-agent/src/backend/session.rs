@@ -1,5 +1,7 @@
 use crate::backend::session_catalog;
-use crate::backend::session_history::{self, LoadedSession, SessionExportArtifact};
+use crate::backend::session_history::{
+    self, LoadedAgentSession, LoadedSession, SessionExportArtifact,
+};
 use crate::backend::session_resume;
 use crate::backend::{
     ApprovalCoordinator, ApprovalDecision, ApprovalPrompt, LoadedMcpPrompt, LoadedMcpResource,
@@ -243,6 +245,17 @@ impl CodeAgentSession {
 
     pub(crate) async fn load_session(&self, session_ref: &str) -> Result<LoadedSession> {
         session_history::load_session(&self.store, session_ref).await
+    }
+
+    pub(crate) async fn load_agent_session(
+        &self,
+        agent_session_ref: &str,
+    ) -> Result<LoadedAgentSession> {
+        let agent_sessions = self.list_agent_sessions(None).await?;
+        let summary =
+            session_catalog::resolve_agent_session_reference(&agent_sessions, agent_session_ref)?
+                .clone();
+        session_history::load_agent_session(&self.store, summary).await
     }
 
     pub(crate) async fn export_session(

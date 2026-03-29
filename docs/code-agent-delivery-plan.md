@@ -116,6 +116,15 @@ Shipped in the tenth implementation slice:
   rotation and agent-session reattach so frontends do not need to compose
   multiple backend calls around those flows
 
+Shipped in the eleventh implementation slice:
+
+- `code-agent` now exposes a backend-owned agent-session inspection contract in
+  addition to top-level session replay
+- the TUI can open a specific `AgentSession` directly instead of limiting the
+  operator surface to listing and resume-only actions
+- agent-session inspection now includes transcript slices, token usage, and
+  spawned subagent summaries
+
 Still pending in the next slices:
 
 - remaining docs and workspace cleanup before `reference-tui` can be retired
@@ -179,7 +188,6 @@ Current problems:
 ### P1
 
 - legacy host capabilities still need migration into `code-agent`
-  - richer session/subagent operator surfaces
   - remaining legacy-only host controls
 - subagent execution is available but not yet exposed as a strong product
   experience
