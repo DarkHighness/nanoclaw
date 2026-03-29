@@ -501,7 +501,7 @@ mod tests {
     use tokio_tungstenite::tungstenite::Message as WsMessage;
     use types::{
         AgentCoreError, AgentSessionId, Message, ModelEvent, ModelRequest, ProviderContinuation,
-        ResponseId, SessionId, TokenUsage, ToolName, TurnId,
+        ResponseId, SessionId, TokenUsage, ToolName, ToolOrigin, ToolOutputMode, ToolSpec, TurnId,
     };
     use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -582,6 +582,48 @@ mod tests {
         assert_eq!(
             body.get("context_management"),
             Some(&json!([{ "type": "compaction", "compact_threshold": 200_000 }]))
+        );
+    }
+
+    #[test]
+    fn openai_responses_body_closes_tool_parameters_for_strict_mode() {
+        let mut request = base_request();
+        request.tools.push(ToolSpec {
+            name: "agent_cancel".into(),
+            description: "Cancel a child agent".to_string(),
+            input_schema: json!({
+                "properties": {
+                    "agent_id": {"type": "string"},
+                    "metadata": {
+                        "properties": {
+                            "reason": {"type": "string"}
+                        }
+                    }
+                },
+                "required": ["agent_id"]
+            }),
+            output_mode: ToolOutputMode::Text,
+            output_schema: None,
+            origin: ToolOrigin::Local,
+            annotations: Default::default(),
+        });
+
+        let body =
+            build_openai_responses_body("gpt-5.4".to_string(), request, &RequestOptions::default())
+                .unwrap();
+
+        assert_eq!(body["tools"][0]["strict"], json!(true));
+        assert_eq!(
+            body["tools"][0]["parameters"]["additionalProperties"],
+            json!(false)
+        );
+        assert_eq!(
+            body["tools"][0]["parameters"]["properties"]["metadata"]["type"],
+            json!("object")
+        );
+        assert_eq!(
+            body["tools"][0]["parameters"]["properties"]["metadata"]["additionalProperties"],
+            json!(false)
         );
     }
 

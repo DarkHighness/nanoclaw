@@ -54,6 +54,93 @@ pub fn stringify_json(value: &Value) -> String {
 }
 
 #[must_use]
+fn normalize_openai_tool_parameters(schema: &Value) -> Value {
+    let mut normalized = schema.clone();
+    normalize_openai_schema_node(&mut normalized);
+    normalized
+}
+
+fn normalize_openai_schema_node(schema: &mut Value) {
+    match schema {
+        Value::Array(values) => {
+            for value in values {
+                normalize_openai_schema_node(value);
+            }
+        }
+        Value::Object(object) => {
+            if looks_like_object_schema(object) && object.get("type").is_none() {
+                object.insert("type".to_string(), Value::String("object".to_string()));
+            }
+
+            if object.get("type").and_then(Value::as_str) == Some("object")
+                && !object.contains_key("additionalProperties")
+            {
+                // OpenAI strict tool validation rejects object schemas that omit
+                // `additionalProperties: false`, even when the tool input struct
+                // itself is already a closed set of named fields.
+                object.insert("additionalProperties".to_string(), Value::Bool(false));
+            }
+
+            for keyword in [
+                "properties",
+                "$defs",
+                "definitions",
+                "patternProperties",
+                "dependentSchemas",
+            ] {
+                if let Some(values) = object.get_mut(keyword).and_then(Value::as_object_mut) {
+                    for value in values.values_mut() {
+                        normalize_openai_schema_node(value);
+                    }
+                }
+            }
+
+            for keyword in ["allOf", "anyOf", "oneOf", "prefixItems"] {
+                if let Some(values) = object.get_mut(keyword).and_then(Value::as_array_mut) {
+                    for value in values {
+                        normalize_openai_schema_node(value);
+                    }
+                }
+            }
+
+            for keyword in [
+                "items",
+                "contains",
+                "additionalProperties",
+                "propertyNames",
+                "unevaluatedProperties",
+                "not",
+                "if",
+                "then",
+                "else",
+            ] {
+                if let Some(value) = object.get_mut(keyword) {
+                    normalize_openai_schema_node(value);
+                }
+            }
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
+    }
+}
+
+fn looks_like_object_schema(object: &Map<String, Value>) -> bool {
+    [
+        "properties",
+        "required",
+        "additionalProperties",
+        "patternProperties",
+        "dependentSchemas",
+        "dependentRequired",
+        "propertyNames",
+        "minProperties",
+        "maxProperties",
+        "unevaluatedProperties",
+    ]
+    .iter()
+    .any(|key| object.contains_key(*key))
+}
+
+#[must_use]
 pub fn data_url(mime_type: &str, data_base64: &str) -> String {
     format!("data:{mime_type};base64,{data_base64}")
 }
@@ -170,7 +257,7 @@ pub fn tool_schema(spec: &ToolSpec) -> Value {
         "type": "function",
         "name": spec.name,
         "description": spec.description,
-        "parameters": coerce_object_schema(&spec.input_schema),
+        "parameters": normalize_openai_tool_parameters(&spec.input_schema),
     })
 }
 
@@ -216,6 +303,116 @@ mod tests {
 
         assert_eq!(definition["name"], json!("read"));
         assert_eq!(definition["parameters"]["type"], json!("object"));
+        assert_eq!(
+            definition["parameters"]["additionalProperties"],
+            json!(false)
+        );
+    }
+
+    #[test]
+    fn tool_schema_closes_nested_openai_object_schemas() {
+        let spec = ToolSpec {
+            name: "agent_cancel".into(),
+            description: "Cancel a child agent".to_string(),
+            input_schema: json!({
+                "properties": {
+                    "agent_id": {"type": "string"},
+                    "metadata": {
+                        "properties": {
+                            "reason": {"type": "string"}
+                        }
+                    },
+                    "targets": {
+                        "type": "array",
+                        "items": {
+                            "properties": {
+                                "path": {"type": "string"}
+                            }
+                        }
+                    },
+                    "override": {
+                        "anyOf": [
+                            {"type": "null"},
+                            {
+                                "properties": {
+                                    "mode": {"type": "string"}
+                                }
+                            }
+                        ]
+                    }
+                },
+                "required": ["agent_id"]
+            }),
+            output_mode: ToolOutputMode::Text,
+            output_schema: None,
+            origin: ToolOrigin::Local,
+            annotations: BTreeMap::new(),
+        };
+
+        let definition = tool_schema(&spec);
+
+        assert_eq!(
+            definition["parameters"]["additionalProperties"],
+            json!(false)
+        );
+        assert_eq!(
+            definition["parameters"]["properties"]["metadata"]["type"],
+            json!("object")
+        );
+        assert_eq!(
+            definition["parameters"]["properties"]["metadata"]["additionalProperties"],
+            json!(false)
+        );
+        assert_eq!(
+            definition["parameters"]["properties"]["targets"]["items"]["type"],
+            json!("object")
+        );
+        assert_eq!(
+            definition["parameters"]["properties"]["targets"]["items"]["additionalProperties"],
+            json!(false)
+        );
+        assert_eq!(
+            definition["parameters"]["properties"]["override"]["anyOf"][1]["type"],
+            json!("object")
+        );
+        assert_eq!(
+            definition["parameters"]["properties"]["override"]["anyOf"][1]["additionalProperties"],
+            json!(false)
+        );
+    }
+
+    #[test]
+    fn tool_schema_preserves_explicit_map_like_additional_properties() {
+        let spec = ToolSpec {
+            name: "bash".into(),
+            description: "Run a shell command".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "env": {
+                        "type": "object",
+                        "additionalProperties": {
+                            "type": "string"
+                        }
+                    }
+                }
+            }),
+            output_mode: ToolOutputMode::Text,
+            output_schema: None,
+            origin: ToolOrigin::Local,
+            annotations: BTreeMap::new(),
+        };
+
+        let definition = tool_schema(&spec);
+
+        assert_eq!(
+            definition["parameters"]["additionalProperties"],
+            json!(false)
+        );
+        assert_eq!(
+            definition["parameters"]["properties"]["env"]["additionalProperties"],
+            json!({"type": "string"})
+        );
     }
 
     #[test]
