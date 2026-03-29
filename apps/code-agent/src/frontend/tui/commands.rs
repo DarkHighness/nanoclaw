@@ -11,7 +11,7 @@ pub(crate) struct SlashCommandSpec {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct SlashCommandHint {
     pub(crate) selected: SlashCommandSpec,
-    pub(crate) matches: Vec<&'static str>,
+    pub(crate) matches: Vec<SlashCommandSpec>,
     pub(crate) exact: bool,
 }
 
@@ -420,7 +420,7 @@ pub(crate) fn slash_command_hint(input: &str, selected_index: usize) -> Option<S
         return Some(SlashCommandHint {
             exact: command_token == selected.name,
             selected,
-            matches: matches.iter().map(|spec| spec.name).take(5).collect(),
+            matches: matches.into_iter().take(5).collect(),
         });
     }
     None
@@ -765,8 +765,8 @@ mod tests {
         let hint = slash_command_hint("/sess", 0).expect("hint");
 
         assert_eq!(hint.selected.name, "sessions");
-        assert!(hint.matches.iter().any(|name| *name == "sessions"));
-        assert!(hint.matches.iter().any(|name| *name == "session"));
+        assert!(hint.matches.iter().any(|spec| spec.name == "sessions"));
+        assert!(hint.matches.iter().any(|spec| spec.name == "session"));
     }
 
     #[test]

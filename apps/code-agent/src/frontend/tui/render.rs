@@ -280,16 +280,27 @@ fn approval_band_height(approval: &ApprovalPrompt) -> u16 {
 }
 
 fn build_command_hint_text(command_hint: &SlashCommandHint) -> Text<'static> {
-    let usage = format!("/{}", command_hint.selected.usage);
-    let mut lines = vec![Line::from(vec![
+    let mut lines = Vec::new();
+    lines.extend(
+        command_hint
+            .matches
+            .iter()
+            .filter(|spec| spec.name != command_hint.selected.name)
+            .map(|spec| {
+                Line::from(Span::styled(
+                    format!("/{}", spec.usage),
+                    Style::default().fg(MUTED),
+                ))
+            }),
+    );
+    lines.push(Line::from(vec![
         Span::styled(
-            usage,
+            format!("/{}", command_hint.selected.usage),
             Style::default().fg(HEADER).add_modifier(Modifier::BOLD),
         ),
         Span::styled("  ", Style::default().fg(SUBTLE)),
         Span::styled(command_hint.selected.summary, Style::default().fg(MUTED)),
-    ])];
-
+    ]));
     let tab_hint = if command_hint.exact {
         if command_hint.matches.len() > 1 {
             "tab next"
@@ -306,20 +317,6 @@ fn build_command_hint_text(command_hint: &SlashCommandHint) -> Text<'static> {
         Span::styled(" · ", Style::default().fg(SUBTLE)),
         Span::styled("enter run", Style::default().fg(MUTED)),
     ]));
-
-    let mut match_spans = vec![Span::styled("matches ", Style::default().fg(SUBTLE))];
-    for (index, name) in command_hint.matches.iter().enumerate() {
-        if index > 0 {
-            match_spans.push(Span::styled("  ", Style::default().fg(SUBTLE)));
-        }
-        let style = if *name == command_hint.selected.name {
-            Style::default().fg(USER).add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(MUTED)
-        };
-        match_spans.push(Span::styled(format!("/{}", name), style));
-    }
-    lines.push(Line::from(match_spans));
 
     Text::from(lines)
 }
@@ -1479,25 +1476,36 @@ mod tests {
                 usage: "sessions [query]",
                 summary: "browse persisted sessions",
             },
-            matches: vec!["sessions", "session"],
+            matches: vec![
+                SlashCommandSpec {
+                    section: "History",
+                    name: "sessions",
+                    usage: "sessions [query]",
+                    summary: "browse persisted sessions",
+                },
+                SlashCommandSpec {
+                    section: "History",
+                    name: "session",
+                    usage: "session <session-ref>",
+                    summary: "open persisted session",
+                },
+            ],
             exact: false,
         });
 
         assert_eq!(
             rendered.lines[0].spans[0].content.as_ref(),
+            "/session <session-ref>"
+        );
+        assert_eq!(
+            rendered.lines[1].spans[0].content.as_ref(),
             "/sessions [query]"
         );
         assert_eq!(
-            rendered.lines[0].spans[2].content.as_ref(),
+            rendered.lines[1].spans[2].content.as_ref(),
             "browse persisted sessions"
         );
-        assert_eq!(rendered.lines[1].spans[0].content.as_ref(), "tab complete");
-        assert!(
-            rendered.lines[2]
-                .spans
-                .iter()
-                .any(|span| span.content.as_ref().contains("/session"))
-        );
+        assert_eq!(rendered.lines[2].spans[0].content.as_ref(), "tab complete");
     }
 
     #[test]
