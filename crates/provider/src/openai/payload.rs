@@ -311,7 +311,11 @@ fn openai_input_item_from_part(part: &MessagePart, role: MessageRole) -> Option<
             "id": call.id,
             "call_id": call.call_id,
             "name": call.tool_name,
-            "arguments": call.arguments,
+            // Responses `function_call` items carry JSON-encoded arguments as a
+            // string. We keep parsed arguments in the runtime transcript for
+            // local tool execution, then re-encode them here so transcript
+            // replay and continuation fallback preserve the provider's item shape.
+            "arguments": stringify_json(&call.arguments),
             "status": "completed",
         })),
         MessagePart::ToolResult { result } => Some(json!({

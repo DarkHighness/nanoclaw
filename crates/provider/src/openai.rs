@@ -500,8 +500,9 @@ mod tests {
     use tokio_tungstenite::accept_async;
     use tokio_tungstenite::tungstenite::Message as WsMessage;
     use types::{
-        AgentCoreError, AgentSessionId, Message, ModelEvent, ModelRequest, ProviderContinuation,
-        ResponseId, SessionId, TokenUsage, ToolName, ToolOrigin, ToolOutputMode, ToolSpec, TurnId,
+        AgentCoreError, AgentSessionId, CallId, Message, MessagePart, ModelEvent, ModelRequest,
+        ProviderContinuation, ResponseId, SessionId, TokenUsage, ToolCall, ToolCallId, ToolName,
+        ToolOrigin, ToolOutputMode, ToolResult, ToolSpec, TurnId,
     };
     use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -617,6 +618,42 @@ mod tests {
             body["tools"][0]["parameters"]["required"],
             json!(["agent_id"])
         );
+    }
+
+    #[test]
+    fn openai_responses_body_reencodes_tool_call_arguments_for_replay() {
+        let call = ToolCall {
+            id: ToolCallId::from("fc_123"),
+            call_id: CallId::from("call_123"),
+            tool_name: ToolName::from("read"),
+            arguments: json!({"path":"README.md","line_count":1}),
+            origin: ToolOrigin::Local,
+        };
+        let result = ToolResult::text(call.id.clone(), call.tool_name.clone(), "ok")
+            .with_call_id(call.call_id.clone());
+
+        let mut request = base_request();
+        request.messages = vec![
+            Message::user("inspect the repo"),
+            Message::assistant_parts(vec![MessagePart::ToolCall { call }]),
+            Message::tool_result(result),
+        ];
+
+        let body =
+            build_openai_responses_body("gpt-5.4".to_string(), request, &RequestOptions::default())
+                .unwrap();
+
+        assert_eq!(body["input"][1]["type"], json!("function_call"));
+        assert_eq!(body["input"][1]["id"], json!("fc_123"));
+        assert_eq!(body["input"][1]["call_id"], json!("call_123"));
+        let replay_arguments = body["input"][1]["arguments"]
+            .as_str()
+            .expect("function_call replay arguments should be encoded as a string");
+        let parsed_arguments: Value = serde_json::from_str(replay_arguments)
+            .expect("replay arguments should stay valid JSON");
+        assert_eq!(parsed_arguments, json!({"path":"README.md","line_count":1}));
+        assert_eq!(body["input"][2]["type"], json!("function_call_output"));
+        assert_eq!(body["input"][2]["call_id"], json!("call_123"));
     }
 
     #[test]
