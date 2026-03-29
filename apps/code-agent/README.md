@@ -33,8 +33,8 @@ cargo run --manifest-path apps/Cargo.toml -p code-agent
 
 This opens a compact `ratatui` screen with a single wide main surface for
 transcript and read-heavy command views, a Codex-style prompt line, a minimal
-context footer, muted approval sheets, and a more neutral dark palette tuned
-for prompt and slash-command workflows.
+context footer, an inline approval band in the bottom pane, and a more neutral
+dark palette tuned for prompt and slash-command workflows.
 
 One-shot prompt:
 
@@ -209,8 +209,9 @@ MCP-focused commands expose connected server catalogs plus prompt/resource
 loading directly from `code-agent` itself.
 
 The TUI now follows a more minimal shell: a single main pane for transcript and
-command views, a bottom context footer, and a compact prompt line instead of
-stacked bars and side rails. The palette is intentionally muted rather than
+command views, a bottom context footer, and a compact prompt line. When LSP or
+TODO context is available on wide terminals, the shell adds only a narrow side
+rail for brief context. The palette is intentionally muted rather than
 blue-accented, transcript turns are separated visually, and read-heavy outputs
 such as `/help`, command catalogs, and history lists now open in the main
 pane.
@@ -221,8 +222,8 @@ turns use `›`, assistant and runtime summaries use `•`, approvals resolve in
 conversation instead of being duplicated into visible `tool>` / `approval>` /
 `model>` tags.
 
-Approval prompts now render as compact bottom-anchored question sheets with a
-Codex-like numbered option list instead of large modal panels.
+Approval prompts now render as compact bottom-pane questions with inline
+command previews instead of large modal panels.
 
 Interactive approval and live runtime updates now also route through
 backend-owned contracts, so the TUI renders session events and approval prompts

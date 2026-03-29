@@ -224,8 +224,8 @@ Shipped in the twenty-second implementation slice:
   simpler Codex-like terminal flow
 - transcript entries now use clearer turn headers, compact inline progress
   updates, and explicit turn dividers instead of a flat undifferentiated stream
-- approval prompts now render as compact bottom-anchored sheets while the shell
-  removes more pane-title chrome and box-heavy structure
+- approval prompts now render inline in the bottom pane while the shell removes
+  more pane-title chrome and box-heavy structure
 
 Shipped in the twenty-third implementation slice:
 
@@ -235,7 +235,7 @@ Shipped in the twenty-third implementation slice:
 - live runtime progress now stays inline in the transcript while the very
   bottom row is reduced to contextual footer data instead of duplicating status
 - approval prompts were tightened further toward the Codex snapshot style:
-  question-first layout, numbered options, and no heavy boxed chrome
+  question-first layout, inline command previews, and no heavy boxed chrome
 
 Shipped in the twenty-fourth implementation slice:
 
