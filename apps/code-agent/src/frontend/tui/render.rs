@@ -1,5 +1,5 @@
 use super::approval::ApprovalPrompt;
-use super::commands::{SlashCommandHint, slash_command_hint};
+use super::commands::{SlashCommandHint, SlashCommandSpec, slash_command_hint};
 use super::state::{MainPaneMode, TodoEntry, TuiState, preview_text};
 use crate::backend::preview_id;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Margin, Position, Rect};
@@ -281,18 +281,22 @@ fn approval_band_height(approval: &ApprovalPrompt) -> u16 {
 
 fn build_command_hint_text(command_hint: &SlashCommandHint) -> Text<'static> {
     let mut lines = Vec::new();
-    lines.extend(
-        command_hint
-            .matches
-            .iter()
-            .filter(|spec| spec.name != command_hint.selected.name)
-            .map(|spec| {
-                Line::from(Span::styled(
-                    format!("/{}", spec.usage),
-                    Style::default().fg(MUTED),
-                ))
-            }),
-    );
+    let window = visible_command_match_window(command_hint, 4);
+    if window.start > 0 {
+        lines.push(Line::from(Span::styled(
+            format!("… {} earlier", window.start),
+            Style::default().fg(SUBTLE),
+        )));
+    }
+    lines.extend(window.items.iter().filter_map(|spec| {
+        (spec.name != command_hint.selected.name).then(|| {
+            Line::from(vec![
+                Span::styled(spec.section, Style::default().fg(SUBTLE)),
+                Span::styled("  ", Style::default().fg(SUBTLE)),
+                Span::styled(format!("/{}", spec.usage), Style::default().fg(MUTED)),
+            ])
+        })
+    }));
     lines.push(Line::from(vec![
         Span::styled(
             format!("/{}", command_hint.selected.usage),
@@ -333,6 +337,12 @@ fn build_command_hint_text(command_hint: &SlashCommandHint) -> Text<'static> {
             lines.push(Line::from(spans));
         }
     }
+    if window.end < command_hint.matches.len() {
+        lines.push(Line::from(Span::styled(
+            format!("… {} more", command_hint.matches.len() - window.end),
+            Style::default().fg(SUBTLE),
+        )));
+    }
     let tab_hint = if command_hint.exact {
         if command_hint
             .arguments
@@ -367,11 +377,38 @@ fn build_command_hint_text(command_hint: &SlashCommandHint) -> Text<'static> {
     Text::from(lines)
 }
 
+struct VisibleCommandMatchWindow<'a> {
+    start: usize,
+    end: usize,
+    items: &'a [SlashCommandSpec],
+}
+
+fn visible_command_match_window(
+    command_hint: &SlashCommandHint,
+    max_items: usize,
+) -> VisibleCommandMatchWindow<'_> {
+    let total = command_hint.matches.len();
+    let window = total.min(max_items.max(1));
+    let mut start = command_hint
+        .selected_match_index
+        .saturating_add(1)
+        .saturating_sub(window);
+    let end = (start + window).min(total);
+    if end - start < window {
+        start = end.saturating_sub(window);
+    }
+    VisibleCommandMatchWindow {
+        start,
+        end,
+        items: &command_hint.matches[start..end],
+    }
+}
+
 fn command_hint_height(command_hint: &SlashCommandHint) -> u16 {
     build_command_hint_text(command_hint)
         .lines
         .len()
-        .clamp(2, 6) as u16
+        .clamp(2, 8) as u16
 }
 
 fn bottom_layout_constraints(
@@ -1538,12 +1575,14 @@ mod tests {
                     summary: "open persisted session",
                 },
             ],
+            selected_match_index: 0,
             arguments: None,
             exact: false,
         });
 
+        assert_eq!(rendered.lines[0].spans[0].content.as_ref(), "History");
         assert_eq!(
-            rendered.lines[0].spans[0].content.as_ref(),
+            rendered.lines[0].spans[2].content.as_ref(),
             "/session <session-ref>"
         );
         assert_eq!(
@@ -1573,6 +1612,7 @@ mod tests {
                 usage: "spawn_task <role> <prompt>",
                 summary: "launch child agent",
             }],
+            selected_match_index: 0,
             arguments: Some(SlashCommandArgumentHint {
                 provided: vec![SlashCommandArgumentValue {
                     placeholder: "<role>",
@@ -1593,6 +1633,72 @@ mod tests {
         );
         assert_eq!(rendered.lines[2].spans[0].content.as_ref(), "keep typing");
         assert_eq!(rendered.lines[2].spans[4].content.as_ref(), "enter run");
+    }
+
+    #[test]
+    fn command_hint_text_shows_browse_window_ellipsis() {
+        let rendered = build_command_hint_text(&SlashCommandHint {
+            selected: SlashCommandSpec {
+                section: "History",
+                name: "resume",
+                usage: "resume <agent-session-ref>",
+                summary: "reattach agent session",
+            },
+            matches: vec![
+                SlashCommandSpec {
+                    section: "Session",
+                    name: "help",
+                    usage: "help",
+                    summary: "browse commands",
+                },
+                SlashCommandSpec {
+                    section: "Session",
+                    name: "status",
+                    usage: "status",
+                    summary: "session overview",
+                },
+                SlashCommandSpec {
+                    section: "Session",
+                    name: "new",
+                    usage: "new",
+                    summary: "fresh top-level session",
+                },
+                SlashCommandSpec {
+                    section: "History",
+                    name: "sessions",
+                    usage: "sessions [query]",
+                    summary: "browse persisted sessions",
+                },
+                SlashCommandSpec {
+                    section: "History",
+                    name: "session",
+                    usage: "session <session-ref>",
+                    summary: "open persisted session",
+                },
+                SlashCommandSpec {
+                    section: "History",
+                    name: "resume",
+                    usage: "resume <agent-session-ref>",
+                    summary: "reattach agent session",
+                },
+                SlashCommandSpec {
+                    section: "Agents",
+                    name: "live_tasks",
+                    usage: "live_tasks",
+                    summary: "list live child agents",
+                },
+            ],
+            selected_match_index: 5,
+            arguments: None,
+            exact: false,
+        });
+
+        assert_eq!(rendered.lines[0].spans[0].content.as_ref(), "… 2 earlier");
+        assert_eq!(
+            rendered.lines[4].spans[0].content.as_ref(),
+            "/resume <agent-session-ref>"
+        );
+        assert_eq!(rendered.lines[5].spans[0].content.as_ref(), "… 1 more");
     }
 
     #[test]

@@ -18,6 +18,7 @@ impl SlashCommandSpec {
 pub(crate) struct SlashCommandHint {
     pub(crate) selected: SlashCommandSpec,
     pub(crate) matches: Vec<SlashCommandSpec>,
+    pub(crate) selected_match_index: usize,
     pub(crate) arguments: Option<SlashCommandArgumentHint>,
     pub(crate) exact: bool,
 }
@@ -447,8 +448,12 @@ pub(crate) fn slash_command_hint(input: &str, selected_index: usize) -> Option<S
             arguments: (command_token == selected.name)
                 .then(|| build_argument_hint(selected, tail))
                 .flatten(),
+            selected_match_index: matches
+                .iter()
+                .position(|spec| spec.name == selected.name)
+                .unwrap_or(0),
             selected,
-            matches: matches.into_iter().take(5).collect(),
+            matches,
         });
     }
     None
@@ -493,11 +498,6 @@ pub(crate) fn resolve_slash_enter_action(
     if hint.exact {
         return None;
     }
-    let index = hint
-        .matches
-        .iter()
-        .position(|spec| spec.name == hint.selected.name)
-        .unwrap_or(0);
     if hint.matches.len() == 1 && !hint.selected.expects_arguments() {
         return Some(SlashCommandEnterAction::Execute(format!(
             "/{}",
@@ -506,7 +506,7 @@ pub(crate) fn resolve_slash_enter_action(
     }
     Some(SlashCommandEnterAction::Complete {
         input: format!("/{} ", hint.selected.name),
-        index,
+        index: hint.selected_match_index,
     })
 }
 
@@ -859,6 +859,7 @@ mod tests {
         let hint = slash_command_hint("/sess", 0).expect("hint");
 
         assert_eq!(hint.selected.name, "sessions");
+        assert_eq!(hint.selected_match_index, 0);
         assert!(hint.matches.iter().any(|spec| spec.name == "sessions"));
         assert!(hint.matches.iter().any(|spec| spec.name == "session"));
         assert!(hint.arguments.is_none());
@@ -892,6 +893,7 @@ mod tests {
         let arguments = hint.arguments.expect("arguments");
         assert_eq!(arguments.next, Some("<session-ref>"));
         assert!(arguments.provided.is_empty());
+        assert_eq!(hint.selected_match_index, 1);
     }
 
     #[test]
@@ -903,6 +905,16 @@ mod tests {
         assert_eq!(arguments.provided[0].placeholder, "<role>");
         assert_eq!(arguments.provided[0].value, "reviewer");
         assert_eq!(arguments.next, Some("<prompt>"));
+    }
+
+    #[test]
+    fn slash_command_hint_browses_all_commands_from_empty_slash() {
+        let hint = slash_command_hint("/", 0).expect("hint");
+
+        assert_eq!(hint.selected.name, "help");
+        assert_eq!(hint.selected_match_index, 0);
+        assert!(hint.matches.len() > 10);
+        assert!(hint.matches.iter().any(|spec| spec.name == "spawn_task"));
     }
 
     #[test]
