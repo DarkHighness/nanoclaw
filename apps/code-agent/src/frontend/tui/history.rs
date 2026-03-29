@@ -4,7 +4,7 @@ use crate::backend::{
     PersistedSessionSummary, RunExportArtifact, RunExportKind, SessionResumeStatus,
     SessionResumeSupport, StartupDiagnosticsSnapshot, message_to_text, preview_id,
 };
-use agent::types::{RunEventEnvelope, RunEventKind, SessionId};
+use agent::types::{AgentSessionId, RunEventEnvelope, RunEventKind};
 use store::TokenUsageRecord;
 
 pub(crate) fn format_session_summary_line(summary: &PersistedSessionSummary) -> String {
@@ -43,7 +43,7 @@ pub(crate) fn format_session_inspector(run: &LoadedRun) -> Vec<String> {
         format!("session ref: {}", run.summary.run_id),
         format!("event count: {}", run.summary.event_count),
         format!("message count: {}", run.summary.transcript_message_count),
-        format!("worker sessions: {}", run.summary.session_count),
+        format!("worker sessions: {}", run.summary.agent_session_count),
     ];
     if let Some(run_usage) = &run.token_usage.run {
         lines.push("## Token Budget".to_string());
@@ -88,13 +88,13 @@ pub(crate) fn format_session_inspector(run: &LoadedRun) -> Vec<String> {
         lines.push("## Prompt".to_string());
         lines.push(format!("last prompt: {}", preview_text(prompt, 80)));
     }
-    if !run.session_ids.is_empty() {
+    if !run.agent_session_ids.is_empty() {
         lines.push("## Runtime IDs".to_string());
         lines.push(format!(
             "runtime sessions: {}",
-            run.session_ids
+            run.agent_session_ids
                 .iter()
-                .map(|session_id: &SessionId| preview_id(session_id.as_str()))
+                .map(|agent_session_id: &AgentSessionId| preview_id(agent_session_id.as_str()))
                 .collect::<Vec<_>>()
                 .join(", ")
         ));

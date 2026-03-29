@@ -86,8 +86,8 @@ impl AgentRuntime {
     }
 
     #[must_use]
-    pub fn session_id(&self) -> types::SessionId {
-        self.session.session_id.clone()
+    pub fn agent_session_id(&self) -> types::AgentSessionId {
+        self.session.agent_session_id.clone()
     }
 
     #[must_use]
@@ -159,7 +159,7 @@ impl AgentRuntime {
             &mut self.session.transcript,
             Message::system(message.clone()),
             self.session.run_id.clone(),
-            self.session.session_id.clone(),
+            self.session.agent_session_id.clone(),
             turn_id.clone(),
         );
         self.store.append(event).await?;
@@ -213,7 +213,7 @@ impl AgentRuntime {
         let instructions = self.base_instructions.clone();
         info!(
             run_id = %self.session.run_id,
-            session_id = %self.session.session_id,
+            agent_session_id = %self.session.agent_session_id,
             turn_id = %turn_id,
             prompt_chars = prompt.chars().count(),
             "starting user turn"

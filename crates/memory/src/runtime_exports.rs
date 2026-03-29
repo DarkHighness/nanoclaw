@@ -10,14 +10,14 @@ use store::{
     RunStore,
 };
 use tokio::fs;
-use types::SessionId;
+use types::AgentSessionId;
 
 const RUNTIME_EXPORTS_LIFECYCLE_ID: &str = "runtime-exports";
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MemoryRuntimeExportStats {
     pub exported_runs: usize,
-    pub exported_sessions: usize,
+    pub exported_agent_sessions: usize,
     pub exported_subagents: usize,
     pub exported_tasks: usize,
     pub exported_documents: usize,
@@ -101,7 +101,7 @@ fn read_runtime_export_stats(
     };
     Ok(MemoryRuntimeExportStats {
         exported_runs: lifecycle.exported_run_count,
-        exported_sessions: lifecycle.exported_session_count,
+        exported_agent_sessions: lifecycle.exported_agent_session_count,
         exported_subagents: lifecycle.exported_subagent_count,
         exported_tasks: lifecycle.exported_task_count,
         exported_documents: lifecycle.exported_document_count,
@@ -166,7 +166,7 @@ async fn materialize_runtime_exports(
             status: MemorySidecarStatus::Ready,
             artifact_path: output_dir.relative_display(),
             exported_run_count: stats.exported_runs,
-            exported_session_count: stats.exported_sessions,
+            exported_agent_session_count: stats.exported_agent_sessions,
             exported_subagent_count: stats.exported_subagents,
             exported_task_count: stats.exported_tasks,
             exported_document_count: stats.exported_documents,
@@ -194,7 +194,7 @@ async fn write_export_bundle(
     write_scope_records(
         root_dir,
         "sessions",
-        &bundle.sessions,
+        &bundle.agent_sessions,
         include_search_corpus,
         &mut keep,
     )
@@ -277,20 +277,24 @@ async fn prune_scope_dir(path: PathBuf, keep: Option<&BTreeSet<String>>) -> Resu
 fn export_file_name(record: &RunMemoryExportRecord) -> String {
     match record.summary.scope {
         MemoryExportScope::Run => format!("{}.md", record.summary.run_id.as_str()),
-        MemoryExportScope::Session => format!(
+        MemoryExportScope::AgentSession => format!(
             "{}.md",
             record
                 .summary
-                .session_id
+                .agent_session_id
                 .as_ref()
-                .map(SessionId::as_str)
+                .map(AgentSessionId::as_str)
                 .unwrap_or(record.summary.run_id.as_str())
         ),
         MemoryExportScope::Subagent => format!(
             "{}.md",
             export_name_parts([
                 Some(record.summary.run_id.as_str()),
-                record.summary.session_id.as_ref().map(SessionId::as_str),
+                record
+                    .summary
+                    .agent_session_id
+                    .as_ref()
+                    .map(AgentSessionId::as_str),
                 record.summary.agent_name.as_deref(),
             ])
         ),
@@ -298,7 +302,11 @@ fn export_file_name(record: &RunMemoryExportRecord) -> String {
             "{}.md",
             export_name_parts([
                 Some(record.summary.run_id.as_str()),
-                record.summary.session_id.as_ref().map(SessionId::as_str),
+                record
+                    .summary
+                    .agent_session_id
+                    .as_ref()
+                    .map(AgentSessionId::as_str),
                 record.summary.task_id.as_deref(),
             ])
         ),
@@ -346,8 +354,8 @@ fn render_export_markdown(record: &RunMemoryExportRecord, include_search_corpus:
         "  - runtime-export".to_string(),
     ];
 
-    if let Some(session_id) = &record.summary.session_id {
-        out.push(format!("session_id: {session_id}"));
+    if let Some(agent_session_id) = &record.summary.agent_session_id {
+        out.push(format!("agent_session_id: {agent_session_id}"));
     }
     if let Some(agent_name) = &record.summary.agent_name {
         out.push(format!("agent_name: {agent_name}"));
@@ -415,13 +423,13 @@ fn push_list_section(lines: &mut Vec<String>, title: &str, entries: &[String]) {
 fn export_heading(record: &RunMemoryExportRecord) -> String {
     match record.summary.scope {
         MemoryExportScope::Run => format!("# Run {}", record.summary.run_id),
-        MemoryExportScope::Session => format!(
-            "# Session {}",
+        MemoryExportScope::AgentSession => format!(
+            "# Agent Session {}",
             record
                 .summary
-                .session_id
+                .agent_session_id
                 .as_ref()
-                .map(SessionId::as_str)
+                .map(AgentSessionId::as_str)
                 .unwrap_or(record.summary.run_id.as_str())
         ),
         MemoryExportScope::Subagent => format!(
@@ -438,7 +446,7 @@ fn export_heading(record: &RunMemoryExportRecord) -> String {
 fn scope_layer(scope: MemoryExportScope) -> &'static str {
     match scope {
         MemoryExportScope::Run => "runtime-run",
-        MemoryExportScope::Session => "runtime-session",
+        MemoryExportScope::AgentSession => "runtime-agent-session",
         MemoryExportScope::Subagent => "runtime-subagent",
         MemoryExportScope::Task => "runtime-task",
     }
@@ -450,11 +458,11 @@ fn stats_from_bundle(
 ) -> MemoryRuntimeExportStats {
     MemoryRuntimeExportStats {
         exported_runs: bundle.runs.len(),
-        exported_sessions: bundle.sessions.len(),
+        exported_agent_sessions: bundle.agent_sessions.len(),
         exported_subagents: bundle.subagents.len(),
         exported_tasks: bundle.tasks.len(),
         exported_documents: bundle.runs.len()
-            + bundle.sessions.len()
+            + bundle.agent_sessions.len()
             + bundle.subagents.len()
             + bundle.tasks.len(),
         output_dir,
@@ -474,7 +482,7 @@ mod tests {
         RunMemoryExportRecord, RunMemoryExportRequest, RunStore, RunStoreError,
     };
     use tempfile::tempdir;
-    use types::{Message, RunEventEnvelope, RunEventKind, RunId, SessionId};
+    use types::{AgentSessionId, Message, RunEventEnvelope, RunEventKind, RunId};
 
     macro_rules! bounded_async_test {
         (async fn $name:ident() $body:block) => {
@@ -490,11 +498,11 @@ mod tests {
             let dir = tempdir().unwrap();
             let store = Arc::new(InMemoryRunStore::new());
             let run_id = RunId::new();
-            let session_id = SessionId::new();
+            let agent_session_id = AgentSessionId::new();
             store
                 .append(RunEventEnvelope::new(
                     run_id.clone(),
-                    session_id,
+                    agent_session_id,
                     None,
                     None,
                     RunEventKind::UserPromptSubmit {
@@ -512,7 +520,7 @@ mod tests {
                     .await
                     .unwrap();
             assert_eq!(stats.exported_runs, 1);
-            assert_eq!(stats.exported_sessions, 1);
+            assert_eq!(stats.exported_agent_sessions, 1);
             assert!(corpus.documents.iter().any(|doc| {
                 doc.path.starts_with(".nanoclaw/memory/episodic/runs/") && doc.path.ends_with(".md")
             }));
@@ -526,7 +534,7 @@ mod tests {
                 .unwrap();
             assert_eq!(lifecycle.status, MemorySidecarStatus::Ready);
             assert_eq!(lifecycle.exported_run_count, 1);
-            assert_eq!(lifecycle.exported_session_count, 1);
+            assert_eq!(lifecycle.exported_agent_session_count, 1);
             assert_eq!(lifecycle.exported_document_count, 2);
             assert_eq!(lifecycle.artifact_path, ".nanoclaw/memory/episodic");
         }
@@ -544,7 +552,7 @@ mod tests {
                 .unwrap();
 
             assert_eq!(stats.exported_runs, 1);
-            assert_eq!(stats.exported_sessions, 1);
+            assert_eq!(stats.exported_agent_sessions, 1);
             assert_eq!(stats.exported_subagents, 1);
             assert_eq!(stats.exported_tasks, 1);
             assert_eq!(stats.exported_documents, 4);
@@ -632,10 +640,10 @@ mod tests {
             Ok(Vec::new())
         }
 
-        async fn session_ids(
+        async fn agent_session_ids(
             &self,
             _run_id: &RunId,
-        ) -> std::result::Result<Vec<SessionId>, RunStoreError> {
+        ) -> std::result::Result<Vec<AgentSessionId>, RunStoreError> {
             Ok(Vec::new())
         }
 
@@ -653,8 +661,8 @@ mod tests {
             self.export_calls.fetch_add(1, Ordering::SeqCst);
             Ok(RunMemoryExportBundle {
                 runs: vec![fixture_record(MemoryExportScope::Run, None, None)],
-                sessions: vec![fixture_record(
-                    MemoryExportScope::Session,
+                agent_sessions: vec![fixture_record(
+                    MemoryExportScope::AgentSession,
                     Some("session-fixture"),
                     None,
                 )],
@@ -702,14 +710,14 @@ mod tests {
 
     fn fixture_record(
         scope: MemoryExportScope,
-        session_id: Option<&str>,
+        agent_session_id: Option<&str>,
         detail: Option<&str>,
     ) -> RunMemoryExportRecord {
         RunMemoryExportRecord {
             summary: store::MemoryExportSummary {
                 scope,
                 run_id: RunId::from("run-fixture"),
-                session_id: session_id.map(SessionId::from),
+                agent_session_id: agent_session_id.map(AgentSessionId::from),
                 agent_name: (scope == MemoryExportScope::Subagent)
                     .then(|| detail.unwrap_or("reviewer").to_string()),
                 task_id: (scope == MemoryExportScope::Task)

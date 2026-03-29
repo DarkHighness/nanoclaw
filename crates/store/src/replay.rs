@@ -39,14 +39,14 @@ pub fn replay_transcript(events: &[RunEventEnvelope]) -> Vec<Message> {
 #[cfg(test)]
 mod tests {
     use super::replay_transcript;
-    use types::{Message, MessageId, RunEventEnvelope, RunEventKind, RunId, SessionId};
+    use types::{AgentSessionId, Message, MessageId, RunEventEnvelope, RunEventKind, RunId};
 
     #[test]
     fn replay_only_keeps_transcript_messages() {
         let events = vec![
             RunEventEnvelope::new(
                 RunId::new(),
-                SessionId::new(),
+                AgentSessionId::new(),
                 None,
                 None,
                 RunEventKind::TranscriptMessage {
@@ -55,7 +55,7 @@ mod tests {
             ),
             RunEventEnvelope::new(
                 RunId::new(),
-                SessionId::new(),
+                AgentSessionId::new(),
                 None,
                 None,
                 RunEventKind::Stop { reason: None },
@@ -67,13 +67,13 @@ mod tests {
     #[test]
     fn replay_applies_message_patch_and_remove_events() {
         let run_id = RunId::new();
-        let session_id = SessionId::new();
+        let agent_session_id = AgentSessionId::new();
         let message_id = MessageId::from("msg_1");
         let removed_id = MessageId::from("msg_2");
         let events = vec![
             RunEventEnvelope::new(
                 run_id.clone(),
-                session_id.clone(),
+                agent_session_id.clone(),
                 None,
                 None,
                 RunEventKind::TranscriptMessage {
@@ -82,7 +82,7 @@ mod tests {
             ),
             RunEventEnvelope::new(
                 run_id.clone(),
-                session_id.clone(),
+                agent_session_id.clone(),
                 None,
                 None,
                 RunEventKind::TranscriptMessage {
@@ -91,7 +91,7 @@ mod tests {
             ),
             RunEventEnvelope::new(
                 run_id.clone(),
-                session_id.clone(),
+                agent_session_id.clone(),
                 None,
                 None,
                 RunEventKind::TranscriptMessagePatched {
@@ -101,7 +101,7 @@ mod tests {
             ),
             RunEventEnvelope::new(
                 run_id,
-                session_id,
+                agent_session_id,
                 None,
                 None,
                 RunEventKind::TranscriptMessageRemoved {

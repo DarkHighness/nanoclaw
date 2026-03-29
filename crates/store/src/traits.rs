@@ -6,8 +6,8 @@ use serde_json::Value;
 use std::collections::{BTreeMap, HashSet};
 use thiserror::Error;
 use types::{
-    HookEffect, Message, RunEventEnvelope, RunEventKind, RunId, SessionId, TokenLedgerSnapshot,
-    TokenUsage,
+    AgentSessionId, HookEffect, Message, RunEventEnvelope, RunEventKind, RunId,
+    TokenLedgerSnapshot, TokenUsage,
 };
 
 const TOKEN_USAGE_CHILD_FETCH_CONCURRENCY_LIMIT: usize = 8;
@@ -30,7 +30,7 @@ pub struct RunSummary {
     pub first_timestamp_ms: u128,
     pub last_timestamp_ms: u128,
     pub event_count: usize,
-    pub session_count: usize,
+    pub agent_session_count: usize,
     pub transcript_message_count: usize,
     pub last_user_prompt: Option<String>,
 }
@@ -46,7 +46,7 @@ pub struct RunSearchResult {
 #[serde(rename_all = "kebab-case")]
 pub enum TokenUsageScope {
     Run,
-    Session,
+    AgentSession,
     Subagent,
     Task,
 }
@@ -56,7 +56,7 @@ pub struct TokenUsageRecord {
     pub scope: TokenUsageScope,
     pub run_id: RunId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub session_id: Option<SessionId>,
+    pub agent_session_id: Option<AgentSessionId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -69,7 +69,7 @@ pub struct RunTokenUsageReport {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run: Option<TokenUsageRecord>,
     #[serde(default)]
-    pub sessions: Vec<TokenUsageRecord>,
+    pub agent_sessions: Vec<TokenUsageRecord>,
     #[serde(default)]
     pub subagents: Vec<TokenUsageRecord>,
     #[serde(default)]
@@ -90,7 +90,7 @@ pub struct RunMemoryExportRequest {
 #[serde(rename_all = "kebab-case")]
 pub enum MemoryExportScope {
     Run,
-    Session,
+    AgentSession,
     Subagent,
     Task,
 }
@@ -99,7 +99,7 @@ pub enum MemoryExportScope {
 pub struct MemoryExportSummary {
     pub scope: MemoryExportScope,
     pub run_id: RunId,
-    pub session_id: Option<SessionId>,
+    pub agent_session_id: Option<AgentSessionId>,
     pub agent_name: Option<String>,
     pub task_id: Option<String>,
     pub first_timestamp_ms: u128,
@@ -135,7 +135,7 @@ pub struct RunMemoryExportBundle {
     #[serde(default)]
     pub runs: Vec<RunMemoryExportRecord>,
     #[serde(default)]
-    pub sessions: Vec<RunMemoryExportRecord>,
+    pub agent_sessions: Vec<RunMemoryExportRecord>,
     #[serde(default)]
     pub subagents: Vec<RunMemoryExportRecord>,
     #[serde(default)]
@@ -144,14 +144,14 @@ pub struct RunMemoryExportBundle {
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct GroupedMemoryExportEvents {
-    pub(crate) sessions: Vec<(SessionId, Vec<RunEventEnvelope>)>,
+    pub(crate) agent_sessions: Vec<(AgentSessionId, Vec<RunEventEnvelope>)>,
     pub(crate) subagents: Vec<ScopedMemoryExportEvents>,
     pub(crate) tasks: Vec<ScopedMemoryExportEvents>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct ScopedMemoryExportEvents {
-    pub(crate) session_id: Option<SessionId>,
+    pub(crate) agent_session_id: Option<AgentSessionId>,
     pub(crate) agent_name: Option<String>,
     pub(crate) task_id: Option<String>,
     pub(crate) events: Vec<RunEventEnvelope>,
@@ -159,7 +159,7 @@ pub(crate) struct ScopedMemoryExportEvents {
 
 #[derive(Clone, Debug, Default)]
 struct AgentMemoryExportContext {
-    session_id: Option<SessionId>,
+    agent_session_id: Option<AgentSessionId>,
     agent_name: Option<String>,
     task_id: Option<String>,
 }
@@ -167,7 +167,7 @@ struct AgentMemoryExportContext {
 #[derive(Clone, Debug, Default)]
 struct ChildRunTokenUsageContext {
     run_id: Option<RunId>,
-    session_id: Option<SessionId>,
+    agent_session_id: Option<AgentSessionId>,
     agent_name: Option<String>,
     task_id: Option<String>,
 }
@@ -175,7 +175,7 @@ struct ChildRunTokenUsageContext {
 #[derive(Clone, Debug)]
 struct ResolvedChildRunTokenUsageContext {
     run_id: RunId,
-    session_id: Option<SessionId>,
+    agent_session_id: Option<AgentSessionId>,
     agent_name: Option<String>,
     task_id: Option<String>,
 }
@@ -188,13 +188,13 @@ pub fn summarize_run_events(run_id: &RunId, events: &[RunEventEnvelope]) -> Opti
 
     let mut first_timestamp_ms = u128::MAX;
     let mut last_timestamp_ms = 0;
-    let mut session_ids = HashSet::new();
+    let mut agent_session_ids = HashSet::new();
     let mut last_user_prompt = None;
 
     for event in events {
         first_timestamp_ms = first_timestamp_ms.min(event.timestamp_ms);
         last_timestamp_ms = last_timestamp_ms.max(event.timestamp_ms);
-        session_ids.insert(event.session_id.clone());
+        agent_session_ids.insert(event.agent_session_id.clone());
         if let RunEventKind::UserPromptSubmit { prompt } = &event.event {
             last_user_prompt = Some(prompt.clone());
         }
@@ -206,7 +206,7 @@ pub fn summarize_run_events(run_id: &RunId, events: &[RunEventEnvelope]) -> Opti
         first_timestamp_ms,
         last_timestamp_ms,
         event_count: events.len(),
-        session_count: session_ids.len(),
+        agent_session_count: agent_session_ids.len(),
         transcript_message_count,
         last_user_prompt,
     })
@@ -288,7 +288,7 @@ pub fn search_run_events(
 }
 
 pub(crate) fn searchable_event_strings(event: &RunEventEnvelope) -> Vec<String> {
-    let mut values = vec![event.session_id.to_string()];
+    let mut values = vec![event.agent_session_id.to_string()];
     match &event.event {
         RunEventKind::SessionStart { reason }
         | RunEventKind::Stop { reason }
@@ -543,22 +543,22 @@ pub fn latest_token_usage_snapshot(events: &[RunEventEnvelope]) -> Option<TokenL
 }
 
 #[must_use]
-pub fn session_token_usage_records(
+pub fn agent_session_token_usage_records(
     run_id: &RunId,
     events: &[RunEventEnvelope],
 ) -> Vec<TokenUsageRecord> {
-    let mut by_session = BTreeMap::<SessionId, TokenLedgerSnapshot>::new();
+    let mut by_session = BTreeMap::<AgentSessionId, TokenLedgerSnapshot>::new();
     for event in events {
         if let RunEventKind::TokenUsageUpdated { ledger, .. } = &event.event {
-            by_session.insert(event.session_id.clone(), ledger.clone());
+            by_session.insert(event.agent_session_id.clone(), ledger.clone());
         }
     }
     by_session
         .into_iter()
-        .map(|(session_id, ledger)| TokenUsageRecord {
-            scope: TokenUsageScope::Session,
+        .map(|(agent_session_id, ledger)| TokenUsageRecord {
+            scope: TokenUsageScope::AgentSession,
             run_id: run_id.clone(),
-            session_id: Some(session_id),
+            agent_session_id: Some(agent_session_id),
             agent_name: None,
             task_id: None,
             ledger,
@@ -575,7 +575,7 @@ fn collect_child_run_token_usage_contexts(
             RunEventKind::SubagentStart { handle, task } => {
                 let context = by_agent.entry(handle.agent_id.to_string()).or_default();
                 context.run_id = Some(handle.run_id.clone());
-                context.session_id = Some(handle.session_id.clone());
+                context.agent_session_id = Some(handle.agent_session_id.clone());
                 if context.agent_name.is_none() {
                     context.agent_name = Some(task.role.clone());
                 }
@@ -586,7 +586,7 @@ fn collect_child_run_token_usage_contexts(
             RunEventKind::SubagentStop { handle, .. } => {
                 let context = by_agent.entry(handle.agent_id.to_string()).or_default();
                 context.run_id = Some(handle.run_id.clone());
-                context.session_id = Some(handle.session_id.clone());
+                context.agent_session_id = Some(handle.agent_session_id.clone());
                 if context.agent_name.is_none() {
                     context.agent_name = Some(handle.role.clone());
                 }
@@ -599,8 +599,8 @@ fn collect_child_run_token_usage_contexts(
                 if context.run_id.is_none() {
                     context.run_id = Some(envelope.run_id.clone());
                 }
-                if context.session_id.is_none() {
-                    context.session_id = Some(envelope.session_id.clone());
+                if context.agent_session_id.is_none() {
+                    context.agent_session_id = Some(envelope.agent_session_id.clone());
                 }
                 match &envelope.kind {
                     types::AgentEnvelopeKind::SpawnRequested { task }
@@ -629,7 +629,7 @@ fn collect_child_run_token_usage_contexts(
         .filter_map(|context| {
             Some(ResolvedChildRunTokenUsageContext {
                 run_id: context.run_id?,
-                session_id: context.session_id,
+                agent_session_id: context.agent_session_id,
                 agent_name: context.agent_name,
                 task_id: context.task_id,
             })
@@ -661,14 +661,14 @@ pub(crate) fn build_search_corpus(events: &[RunEventEnvelope]) -> String {
 pub(crate) fn group_events_for_memory_export(
     events: &[RunEventEnvelope],
 ) -> GroupedMemoryExportEvents {
-    let mut sessions = BTreeMap::<SessionId, Vec<RunEventEnvelope>>::new();
+    let mut agent_sessions = BTreeMap::<AgentSessionId, Vec<RunEventEnvelope>>::new();
     let mut subagents = BTreeMap::<String, ScopedMemoryExportEvents>::new();
     let mut tasks = BTreeMap::<String, ScopedMemoryExportEvents>::new();
     let mut agent_contexts = BTreeMap::<String, AgentMemoryExportContext>::new();
 
     for event in events {
-        sessions
-            .entry(event.session_id.clone())
+        agent_sessions
+            .entry(event.agent_session_id.clone())
             .or_default()
             .push(event.clone());
 
@@ -679,8 +679,8 @@ pub(crate) fn group_events_for_memory_export(
             RunEventKind::TaskCreated { task, .. } => {
                 let group = tasks.entry(task.task_id.clone()).or_default();
                 group.task_id = Some(task.task_id.clone());
-                if group.session_id.is_none() {
-                    group.session_id = Some(event.session_id.clone());
+                if group.agent_session_id.is_none() {
+                    group.agent_session_id = Some(event.agent_session_id.clone());
                 }
                 group.events.push(event.clone());
             }
@@ -695,7 +695,7 @@ pub(crate) fn group_events_for_memory_export(
                     &mut tasks,
                     task_id.clone(),
                     Some(&context),
-                    Some(&event.session_id),
+                    Some(&event.agent_session_id),
                     event,
                 );
                 if !context.agent_name.is_none() || subagents.contains_key(&agent_id.to_string()) {
@@ -706,7 +706,7 @@ pub(crate) fn group_events_for_memory_export(
                 let context = update_agent_memory_export_context(
                     &mut agent_contexts,
                     &handle.agent_id.to_string(),
-                    Some(&handle.session_id),
+                    Some(&handle.agent_session_id),
                     Some(handle.role.as_str()),
                     Some(task.task_id.as_str()),
                 );
@@ -715,7 +715,7 @@ pub(crate) fn group_events_for_memory_export(
                     &mut tasks,
                     task.task_id.clone(),
                     Some(&context),
-                    Some(&handle.session_id),
+                    Some(&handle.agent_session_id),
                     event,
                 );
             }
@@ -727,7 +727,7 @@ pub(crate) fn group_events_for_memory_export(
                         let context = update_agent_memory_export_context(
                             &mut agent_contexts,
                             &agent_key,
-                            Some(&envelope.session_id),
+                            Some(&envelope.agent_session_id),
                             Some(task.role.as_str()),
                             Some(task.task_id.as_str()),
                         );
@@ -735,7 +735,7 @@ pub(crate) fn group_events_for_memory_export(
                             &mut tasks,
                             task.task_id.clone(),
                             Some(&context),
-                            Some(&envelope.session_id),
+                            Some(&envelope.agent_session_id),
                             event,
                         );
                         context
@@ -744,7 +744,7 @@ pub(crate) fn group_events_for_memory_export(
                         let context = update_agent_memory_export_context(
                             &mut agent_contexts,
                             &agent_key,
-                            Some(&envelope.session_id),
+                            Some(&envelope.agent_session_id),
                             None,
                             Some(result.task_id.as_str()),
                         );
@@ -752,7 +752,7 @@ pub(crate) fn group_events_for_memory_export(
                             &mut tasks,
                             result.task_id.clone(),
                             Some(&context),
-                            Some(&envelope.session_id),
+                            Some(&envelope.agent_session_id),
                             event,
                         );
                         context
@@ -761,7 +761,7 @@ pub(crate) fn group_events_for_memory_export(
                         let context = update_agent_memory_export_context(
                             &mut agent_contexts,
                             &agent_key,
-                            Some(&envelope.session_id),
+                            Some(&envelope.agent_session_id),
                             None,
                             None,
                         );
@@ -770,7 +770,7 @@ pub(crate) fn group_events_for_memory_export(
                                 &mut tasks,
                                 task_id.clone(),
                                 Some(&context),
-                                Some(&envelope.session_id),
+                                Some(&envelope.agent_session_id),
                                 event,
                             );
                         }
@@ -783,7 +783,7 @@ pub(crate) fn group_events_for_memory_export(
                 let context = update_agent_memory_export_context(
                     &mut agent_contexts,
                     &handle.agent_id.to_string(),
-                    Some(&handle.session_id),
+                    Some(&handle.agent_session_id),
                     Some(handle.role.as_str()),
                     Some(handle.task_id.as_str()),
                 );
@@ -792,7 +792,7 @@ pub(crate) fn group_events_for_memory_export(
                     &mut tasks,
                     handle.task_id.clone(),
                     Some(&context),
-                    Some(&handle.session_id),
+                    Some(&handle.agent_session_id),
                     event,
                 );
             }
@@ -801,7 +801,7 @@ pub(crate) fn group_events_for_memory_export(
     }
 
     GroupedMemoryExportEvents {
-        sessions: sessions.into_iter().collect(),
+        agent_sessions: agent_sessions.into_iter().collect(),
         subagents: subagents.into_values().collect(),
         tasks: tasks.into_values().collect(),
     }
@@ -810,13 +810,13 @@ pub(crate) fn group_events_for_memory_export(
 fn update_agent_memory_export_context(
     contexts: &mut BTreeMap<String, AgentMemoryExportContext>,
     agent_key: &str,
-    session_id: Option<&SessionId>,
+    agent_session_id: Option<&AgentSessionId>,
     agent_name: Option<&str>,
     task_id: Option<&str>,
 ) -> AgentMemoryExportContext {
     let context = contexts.entry(agent_key.to_string()).or_default();
-    if let Some(session_id) = session_id {
-        context.session_id = Some(session_id.clone());
+    if let Some(agent_session_id) = agent_session_id {
+        context.agent_session_id = Some(agent_session_id.clone());
     }
     if let Some(agent_name) = agent_name {
         let agent_name = agent_name.trim();
@@ -848,15 +848,15 @@ fn push_task_event(
     groups: &mut BTreeMap<String, ScopedMemoryExportEvents>,
     task_key: String,
     context: Option<&AgentMemoryExportContext>,
-    fallback_session_id: Option<&SessionId>,
+    fallback_agent_session_id: Option<&AgentSessionId>,
     event: &RunEventEnvelope,
 ) {
     let group = groups.entry(task_key.clone()).or_default();
     group.task_id = Some(task_key);
     if let Some(context) = context {
-        apply_memory_export_context(group, context, fallback_session_id);
-    } else if group.session_id.is_none() {
-        group.session_id = fallback_session_id.cloned();
+        apply_memory_export_context(group, context, fallback_agent_session_id);
+    } else if group.agent_session_id.is_none() {
+        group.agent_session_id = fallback_agent_session_id.cloned();
     }
     group.events.push(event.clone());
 }
@@ -864,12 +864,12 @@ fn push_task_event(
 fn apply_memory_export_context(
     group: &mut ScopedMemoryExportEvents,
     context: &AgentMemoryExportContext,
-    fallback_session_id: Option<&SessionId>,
+    fallback_agent_session_id: Option<&AgentSessionId>,
 ) {
-    if let Some(session_id) = &context.session_id {
-        group.session_id = Some(session_id.clone());
-    } else if group.session_id.is_none() {
-        group.session_id = fallback_session_id.cloned();
+    if let Some(agent_session_id) = &context.agent_session_id {
+        group.agent_session_id = Some(agent_session_id.clone());
+    } else if group.agent_session_id.is_none() {
+        group.agent_session_id = fallback_agent_session_id.cloned();
     }
     if let Some(agent_name) = &context.agent_name {
         group.agent_name = Some(agent_name.clone());
@@ -883,7 +883,7 @@ fn apply_memory_export_context(
 pub fn build_memory_export_record(
     scope: MemoryExportScope,
     run_id: &RunId,
-    session_id: Option<SessionId>,
+    agent_session_id: Option<AgentSessionId>,
     agent_name: Option<String>,
     task_id: Option<String>,
     events: &[RunEventEnvelope],
@@ -909,7 +909,7 @@ pub fn build_memory_export_record(
         summary: MemoryExportSummary {
             scope,
             run_id: run_id.clone(),
-            session_id,
+            agent_session_id,
             agent_name,
             task_id,
             first_timestamp_ms,
@@ -935,7 +935,11 @@ pub(crate) fn sort_memory_export_records(records: &mut [RunMemoryExportRecord]) 
                     .as_str()
                     .cmp(right.summary.run_id.as_str())
             })
-            .then_with(|| left.summary.session_id.cmp(&right.summary.session_id))
+            .then_with(|| {
+                left.summary
+                    .agent_session_id
+                    .cmp(&right.summary.agent_session_id)
+            })
             .then_with(|| left.summary.agent_name.cmp(&right.summary.agent_name))
             .then_with(|| left.summary.task_id.cmp(&right.summary.task_id))
     });
@@ -947,7 +951,7 @@ pub(crate) fn apply_memory_export_request(
 ) {
     if let Some(max_runs) = request.max_runs {
         bundle.runs.truncate(max_runs);
-        bundle.sessions.truncate(max_runs);
+        bundle.agent_sessions.truncate(max_runs);
         bundle.subagents.truncate(max_runs);
         bundle.tasks.truncate(max_runs);
     }
@@ -955,7 +959,7 @@ pub(crate) fn apply_memory_export_request(
         for record in bundle
             .runs
             .iter_mut()
-            .chain(bundle.sessions.iter_mut())
+            .chain(bundle.agent_sessions.iter_mut())
             .chain(bundle.subagents.iter_mut())
             .chain(bundle.tasks.iter_mut())
         {
@@ -1185,19 +1189,19 @@ pub trait RunStore: EventSink {
     async fn list_runs(&self) -> Result<Vec<RunSummary>>;
     async fn search_runs(&self, query: &str) -> Result<Vec<RunSearchResult>>;
     async fn events(&self, run_id: &RunId) -> Result<Vec<RunEventEnvelope>>;
-    async fn session_ids(&self, run_id: &RunId) -> Result<Vec<SessionId>>;
+    async fn agent_session_ids(&self, run_id: &RunId) -> Result<Vec<AgentSessionId>>;
     async fn replay_transcript(&self, run_id: &RunId) -> Result<Vec<Message>>;
     async fn token_usage(&self, run_id: &RunId) -> Result<RunTokenUsageReport> {
         let root_events = self.events(run_id).await?;
         let run = latest_token_usage_snapshot(&root_events).map(|ledger| TokenUsageRecord {
             scope: TokenUsageScope::Run,
             run_id: run_id.clone(),
-            session_id: None,
+            agent_session_id: None,
             agent_name: None,
             task_id: None,
             ledger,
         });
-        let sessions = session_token_usage_records(run_id, &root_events);
+        let agent_sessions = agent_session_token_usage_records(run_id, &root_events);
         let mut aggregate_usage = run
             .as_ref()
             .map(|record| record.ledger.cumulative_usage)
@@ -1223,7 +1227,7 @@ pub trait RunStore: EventSink {
             subagents.push(TokenUsageRecord {
                 scope: TokenUsageScope::Subagent,
                 run_id: context.run_id.clone(),
-                session_id: context.session_id.clone(),
+                agent_session_id: context.agent_session_id.clone(),
                 agent_name: context.agent_name.clone(),
                 task_id: context.task_id.clone(),
                 ledger: ledger.clone(),
@@ -1231,7 +1235,7 @@ pub trait RunStore: EventSink {
             tasks.push(TokenUsageRecord {
                 scope: TokenUsageScope::Task,
                 run_id: context.run_id,
-                session_id: context.session_id,
+                agent_session_id: context.agent_session_id,
                 agent_name: context.agent_name,
                 task_id: context.task_id,
                 ledger,
@@ -1240,7 +1244,7 @@ pub trait RunStore: EventSink {
 
         Ok(RunTokenUsageReport {
             run,
-            sessions,
+            agent_sessions,
             subagents,
             tasks,
             aggregate_usage,

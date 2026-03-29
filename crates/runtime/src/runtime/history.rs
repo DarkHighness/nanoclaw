@@ -155,7 +155,7 @@ impl AgentRuntime {
                 HookContext {
                     event: HookEvent::PreCompact,
                     run_id: self.session.run_id.clone(),
-                    session_id: self.session.session_id.clone(),
+                    agent_session_id: self.session.agent_session_id.clone(),
                     turn_id: Some(turn_id.clone()),
                     fields: [("reason".to_string(), reason.to_string())]
                         .into_iter()
@@ -188,7 +188,7 @@ impl AgentRuntime {
             .conversation_compactor
             .compact(CompactionRequest {
                 run_id: self.session.run_id.clone(),
-                session_id: self.session.session_id.clone(),
+                agent_session_id: self.session.agent_session_id.clone(),
                 turn_id: turn_id.clone(),
                 messages: source_messages.clone(),
                 instructions: compaction_instructions,
@@ -201,7 +201,7 @@ impl AgentRuntime {
             &mut self.session.transcript,
             summary_message,
             self.session.run_id.clone(),
-            self.session.session_id.clone(),
+            self.session.agent_session_id.clone(),
             turn_id.clone(),
         );
         self.store.append(event).await?;
@@ -238,7 +238,7 @@ impl AgentRuntime {
                 HookContext {
                     event: HookEvent::PostCompact,
                     run_id: self.session.run_id.clone(),
-                    session_id: self.session.session_id.clone(),
+                    agent_session_id: self.session.agent_session_id.clone(),
                     turn_id: Some(turn_id.clone()),
                     fields: [("reason".to_string(), reason.to_string())]
                         .into_iter()

@@ -65,7 +65,7 @@ pub struct MemorySidecarLifecycle {
     #[serde(default)]
     pub exported_run_count: usize,
     #[serde(default)]
-    pub exported_session_count: usize,
+    pub exported_agent_session_count: usize,
     #[serde(default)]
     pub exported_subagent_count: usize,
     #[serde(default)]

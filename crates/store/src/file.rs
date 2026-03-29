@@ -17,7 +17,7 @@ use tokio::fs::{self, OpenOptions};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
 use tracing::{debug, info};
-use types::{Message, RunEventEnvelope, RunId, SessionId};
+use types::{AgentSessionId, Message, RunEventEnvelope, RunId};
 const SEARCH_REPLAY_CONCURRENCY_LIMIT: usize = 8;
 
 use self::index_sidecar::{
@@ -285,23 +285,23 @@ impl RunStore for FileRunStore {
         load_events_from_path(&path).await
     }
 
-    async fn session_ids(&self, run_id: &RunId) -> Result<Vec<SessionId>> {
+    async fn agent_session_ids(&self, run_id: &RunId) -> Result<Vec<AgentSessionId>> {
         let cached = {
             let index = self.index.read().expect("file run store read lock");
             index
                 .runs
                 .get(run_id)
-                .map(|record| record.session_ids.clone())
+                .map(|record| record.agent_session_ids.clone())
         };
-        if let Some(session_ids) = cached {
-            return Ok(session_ids);
+        if let Some(agent_session_ids) = cached {
+            return Ok(agent_session_ids);
         }
 
         let mut seen = HashSet::new();
         let mut ordered = Vec::new();
         for event in self.events(run_id).await? {
-            if seen.insert(event.session_id.clone()) {
-                ordered.push(event.session_id);
+            if seen.insert(event.agent_session_id.clone()) {
+                ordered.push(event.agent_session_id);
             }
         }
         Ok(ordered)
@@ -338,16 +338,16 @@ impl RunStore for FileRunStore {
 
             let groups = group_events_for_memory_export(&events);
 
-            for (session_id, session_events) in groups.sessions {
+            for (agent_session_id, session_events) in groups.agent_sessions {
                 if let Some(record) = build_memory_export_record(
-                    crate::MemoryExportScope::Session,
+                    crate::MemoryExportScope::AgentSession,
                     &run_id,
-                    Some(session_id),
+                    Some(agent_session_id),
                     None,
                     None,
                     &session_events,
                 ) {
-                    bundle.sessions.push(record);
+                    bundle.agent_sessions.push(record);
                 }
             }
 
@@ -355,7 +355,7 @@ impl RunStore for FileRunStore {
                 if let Some(record) = build_memory_export_record(
                     crate::MemoryExportScope::Subagent,
                     &run_id,
-                    group.session_id,
+                    group.agent_session_id,
                     group.agent_name,
                     None,
                     &group.events,
@@ -368,7 +368,7 @@ impl RunStore for FileRunStore {
                 if let Some(record) = build_memory_export_record(
                     crate::MemoryExportScope::Task,
                     &run_id,
-                    group.session_id,
+                    group.agent_session_id,
                     None,
                     group.task_id,
                     &group.events,
@@ -379,7 +379,7 @@ impl RunStore for FileRunStore {
         }
 
         sort_export_records(&mut bundle.runs);
-        sort_export_records(&mut bundle.sessions);
+        sort_export_records(&mut bundle.agent_sessions);
         sort_export_records(&mut bundle.subagents);
         sort_export_records(&mut bundle.tasks);
         apply_memory_export_request(&mut bundle, &request);
@@ -402,11 +402,11 @@ fn default_indexed_record(event: RunEventEnvelope) -> IndexedRunRecord {
             first_timestamp_ms: event.timestamp_ms,
             last_timestamp_ms: event.timestamp_ms,
             event_count: 0,
-            session_count: 0,
+            agent_session_count: 0,
             transcript_message_count: 0,
             last_user_prompt: None,
         },
-        session_ids: Vec::new(),
+        agent_session_ids: Vec::new(),
         search_corpus: String::new(),
     }
 }
@@ -440,8 +440,8 @@ mod tests {
     use std::time::Duration;
     use types::{
         AgentArtifact, AgentEnvelope, AgentEnvelopeKind, AgentHandle, AgentId, AgentResultEnvelope,
-        AgentStatus, AgentTaskSpec, ContextWindowUsage, Message, MessageId, RunEventEnvelope,
-        RunEventKind, RunId, SessionId, TokenLedgerSnapshot, TokenUsage, TokenUsagePhase,
+        AgentSessionId, AgentStatus, AgentTaskSpec, ContextWindowUsage, Message, MessageId,
+        RunEventEnvelope, RunEventKind, RunId, TokenLedgerSnapshot, TokenUsage, TokenUsagePhase,
     };
 
     use super::index_sidecar::append_search_text;
@@ -459,13 +459,13 @@ mod tests {
         async fn persists_events_across_store_reopen() {
             let dir = tempfile::tempdir().unwrap();
             let run_id = RunId::new();
-            let session_id = SessionId::new();
+            let agent_session_id = AgentSessionId::new();
 
             let store = FileRunStore::open(dir.path()).await.unwrap();
             store
                 .append(RunEventEnvelope::new(
                     run_id.clone(),
-                    session_id.clone(),
+                    agent_session_id.clone(),
                     None,
                     None,
                     RunEventKind::TranscriptMessage {
@@ -479,7 +479,7 @@ mod tests {
             let reopened = FileRunStore::open(dir.path()).await.unwrap();
             let events = reopened.events(&run_id).await.unwrap();
             assert_eq!(events.len(), 1);
-            assert_eq!(events[0].session_id, session_id);
+            assert_eq!(events[0].agent_session_id, agent_session_id);
             assert_eq!(reopened.replay_transcript(&run_id).await.unwrap().len(), 1);
             assert_eq!(reopened.list_runs().await.unwrap().len(), 1);
         }
@@ -489,14 +489,14 @@ mod tests {
         async fn append_batch_persists_multiple_events_in_order() {
             let dir = tempfile::tempdir().unwrap();
             let run_id = RunId::new();
-            let session_id = SessionId::new();
+            let agent_session_id = AgentSessionId::new();
 
             let store = FileRunStore::open(dir.path()).await.unwrap();
             store
                 .append_batch(vec![
                     RunEventEnvelope::new(
                         run_id.clone(),
-                        session_id.clone(),
+                        agent_session_id.clone(),
                         None,
                         None,
                         RunEventKind::UserPromptSubmit {
@@ -505,7 +505,7 @@ mod tests {
                     ),
                     RunEventEnvelope::new(
                         run_id.clone(),
-                        session_id.clone(),
+                        agent_session_id.clone(),
                         None,
                         None,
                         RunEventKind::TranscriptMessage {
@@ -539,8 +539,8 @@ mod tests {
         async fn returns_session_ids_in_encounter_order() {
             let dir = tempfile::tempdir().unwrap();
             let run_id = RunId::new();
-            let session_a = SessionId::new();
-            let session_b = SessionId::new();
+            let session_a = AgentSessionId::new();
+            let session_b = AgentSessionId::new();
 
             let store = FileRunStore::open(dir.path()).await.unwrap();
             for session in [&session_a, &session_a, &session_b] {
@@ -559,7 +559,7 @@ mod tests {
                     .unwrap();
             }
 
-            let sessions = store.session_ids(&run_id).await.unwrap();
+            let sessions = store.agent_session_ids(&run_id).await.unwrap();
             assert_eq!(sessions, vec![session_a, session_b]);
         }
     );
@@ -568,12 +568,12 @@ mod tests {
         async fn lists_persisted_runs_newest_first() {
             let dir = tempfile::tempdir().unwrap();
             let store = FileRunStore::open(dir.path()).await.unwrap();
-            let session_id = SessionId::new();
+            let agent_session_id = AgentSessionId::new();
             let older_run = RunId::new();
             let newer_run = RunId::new();
             let mut older_event = RunEventEnvelope::new(
                 older_run.clone(),
-                session_id.clone(),
+                agent_session_id.clone(),
                 None,
                 None,
                 RunEventKind::UserPromptSubmit {
@@ -583,7 +583,7 @@ mod tests {
             older_event.timestamp_ms = 1;
             let mut newer_event = RunEventEnvelope::new(
                 newer_run.clone(),
-                session_id,
+                agent_session_id,
                 None,
                 None,
                 RunEventKind::UserPromptSubmit {
@@ -608,11 +608,11 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let store = FileRunStore::open(dir.path()).await.unwrap();
             let run_id = RunId::new();
-            let session_id = SessionId::new();
+            let agent_session_id = AgentSessionId::new();
             store
                 .append(RunEventEnvelope::new(
                     run_id.clone(),
-                    session_id,
+                    agent_session_id,
                     None,
                     None,
                     RunEventKind::TranscriptMessage {
@@ -640,9 +640,9 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let store = FileRunStore::open(dir.path()).await.unwrap();
             let run_id = RunId::new();
-            let parent_session_id = SessionId::new();
+            let parent_session_id = AgentSessionId::new();
             let child_run_id = RunId::new();
-            let child_session_id = SessionId::new();
+            let child_session_id = AgentSessionId::new();
             let agent_id = AgentId::new();
             let task = AgentTaskSpec {
                 task_id: "task-usage".to_string(),
@@ -686,7 +686,7 @@ mod tests {
                             agent_id,
                             parent_agent_id: None,
                             run_id: child_run_id.clone(),
-                            session_id: child_session_id.clone(),
+                            agent_session_id: child_session_id.clone(),
                             task_id: task.task_id.clone(),
                             role: task.role.clone(),
                             status: AgentStatus::Running,
@@ -725,10 +725,10 @@ mod tests {
                     .map(|record| record.ledger.cumulative_usage),
                 Some(TokenUsage::from_input_output(100, 20, 10))
             );
-            assert_eq!(report.sessions.len(), 1);
+            assert_eq!(report.agent_sessions.len(), 1);
             assert_eq!(report.subagents.len(), 1);
             assert_eq!(
-                report.subagents[0].session_id.as_ref(),
+                report.subagents[0].agent_session_id.as_ref(),
                 Some(&child_session_id)
             );
             assert_eq!(report.subagents[0].agent_name.as_deref(), Some("reviewer"));
@@ -746,13 +746,13 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let store = FileRunStore::open(dir.path()).await.unwrap();
             let run_id = RunId::new();
-            let session_id = SessionId::new();
+            let agent_session_id = AgentSessionId::new();
             let checklist_id = MessageId::from("msg_checklist");
             let temporary_id = MessageId::from("msg_2");
             store
                 .append(RunEventEnvelope::new(
                     run_id.clone(),
-                    session_id.clone(),
+                    agent_session_id.clone(),
                     None,
                     None,
                     RunEventKind::TranscriptMessage {
@@ -765,7 +765,7 @@ mod tests {
             store
                 .append(RunEventEnvelope::new(
                     run_id.clone(),
-                    session_id.clone(),
+                    agent_session_id.clone(),
                     None,
                     None,
                     RunEventKind::TranscriptMessage {
@@ -778,7 +778,7 @@ mod tests {
             store
                 .append(RunEventEnvelope::new(
                     run_id.clone(),
-                    session_id.clone(),
+                    agent_session_id.clone(),
                     None,
                     None,
                     RunEventKind::TranscriptMessagePatched {
@@ -791,7 +791,7 @@ mod tests {
             store
                 .append(RunEventEnvelope::new(
                     run_id.clone(),
-                    session_id,
+                    agent_session_id,
                     None,
                     None,
                     RunEventKind::TranscriptMessageRemoved {
@@ -836,12 +836,12 @@ mod tests {
             )
             .await
             .unwrap();
-            let session_id = SessionId::new();
+            let agent_session_id = AgentSessionId::new();
             let older_run = RunId::new();
             let newer_run = RunId::new();
             let mut older_event = RunEventEnvelope::new(
                 older_run.clone(),
-                session_id.clone(),
+                agent_session_id.clone(),
                 None,
                 None,
                 RunEventKind::UserPromptSubmit {
@@ -851,7 +851,7 @@ mod tests {
             older_event.timestamp_ms = current_timestamp_ms().saturating_sub(10_000);
             let mut newer_event = RunEventEnvelope::new(
                 newer_run.clone(),
-                session_id,
+                agent_session_id,
                 None,
                 None,
                 RunEventKind::UserPromptSubmit {
@@ -874,12 +874,12 @@ mod tests {
         async fn retention_policy_prunes_runs_by_age_on_open() {
             let dir = tempfile::tempdir().unwrap();
             let store = FileRunStore::open(dir.path()).await.unwrap();
-            let session_id = SessionId::new();
+            let agent_session_id = AgentSessionId::new();
             let old_run = RunId::new();
             let fresh_run = RunId::new();
             let mut old_event = RunEventEnvelope::new(
                 old_run.clone(),
-                session_id.clone(),
+                agent_session_id.clone(),
                 None,
                 None,
                 RunEventKind::UserPromptSubmit {
@@ -889,7 +889,7 @@ mod tests {
             old_event.timestamp_ms = current_timestamp_ms().saturating_sub(10_000);
             let mut fresh_event = RunEventEnvelope::new(
                 fresh_run.clone(),
-                session_id,
+                agent_session_id,
                 None,
                 None,
                 RunEventKind::UserPromptSubmit {
@@ -932,11 +932,11 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let store = FileRunStore::open(dir.path()).await.unwrap();
             let run_id = RunId::new();
-            let session_id = SessionId::new();
+            let agent_session_id = AgentSessionId::new();
             store
                 .append(RunEventEnvelope::new(
                     run_id.clone(),
-                    session_id.clone(),
+                    agent_session_id.clone(),
                     None,
                     None,
                     RunEventKind::UserPromptSubmit {
@@ -956,10 +956,10 @@ mod tests {
             assert_eq!(exports.runs.len(), 1);
             assert_eq!(exports.runs[0].summary.run_id, run_id);
             assert!(exports.runs[0].search_corpus.contains("ship release"));
-            assert_eq!(exports.sessions.len(), 1);
+            assert_eq!(exports.agent_sessions.len(), 1);
             assert_eq!(
-                exports.sessions[0].summary.session_id.as_ref(),
-                Some(&session_id)
+                exports.agent_sessions[0].summary.agent_session_id.as_ref(),
+                Some(&agent_session_id)
             );
         }
     );
@@ -969,8 +969,8 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let store = FileRunStore::open(dir.path()).await.unwrap();
             let run_id = RunId::new();
-            let parent_session_id = SessionId::new();
-            let child_session_id = SessionId::new();
+            let parent_session_id = AgentSessionId::new();
+            let child_session_id = AgentSessionId::new();
             let child_run_id = RunId::new();
             let agent_id = AgentId::new();
             let task = AgentTaskSpec {
@@ -987,7 +987,7 @@ mod tests {
                 agent_id: agent_id.clone(),
                 parent_agent_id: None,
                 run_id: child_run_id.clone(),
-                session_id: child_session_id.clone(),
+                agent_session_id: child_session_id.clone(),
                 task_id: task.task_id.clone(),
                 role: task.role.clone(),
                 status: AgentStatus::Running,
@@ -1084,7 +1084,7 @@ mod tests {
                 .unwrap();
             assert_eq!(exports.subagents.len(), 1);
             assert_eq!(
-                exports.subagents[0].summary.session_id.as_ref(),
+                exports.subagents[0].summary.agent_session_id.as_ref(),
                 Some(&child_session_id)
             );
             assert_eq!(
@@ -1099,7 +1099,7 @@ mod tests {
 
             assert_eq!(exports.tasks.len(), 1);
             assert_eq!(
-                exports.tasks[0].summary.session_id.as_ref(),
+                exports.tasks[0].summary.agent_session_id.as_ref(),
                 Some(&child_session_id)
             );
             assert_eq!(exports.tasks[0].summary.task_id.as_deref(), Some("task-17"));

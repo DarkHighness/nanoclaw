@@ -79,7 +79,7 @@ pub struct BashToolInput {
     #[serde(default)]
     pub command: Option<String>,
     #[serde(default)]
-    pub session_id: Option<String>,
+    pub agent_session_id: Option<String>,
     pub cwd: Option<String>,
     pub timeout_ms: Option<u64>,
     #[serde(default)]
@@ -164,7 +164,7 @@ enum BashToolOutput {
         env_keys: Vec<String>,
     },
     Start {
-        session_id: String,
+        agent_session_id: String,
         state: String,
         command: String,
         cwd: String,
@@ -174,7 +174,7 @@ enum BashToolOutput {
         env_keys: Vec<String>,
     },
     Poll {
-        session_id: String,
+        agent_session_id: String,
         state: String,
         exit_code: Option<i32>,
         timed_out: bool,
@@ -193,7 +193,7 @@ enum BashToolOutput {
         env_keys: Vec<String>,
     },
     Cancel {
-        session_id: String,
+        agent_session_id: String,
         cancellation_requested: bool,
         state: String,
         exit_code: Option<i32>,
@@ -613,9 +613,9 @@ async fn execute_start(
     // Keep the protocol surface stringly for compatibility, but use a typed
     // id inside the registry so poll/cancel paths cannot accidentally mix bash
     // session ids with unrelated strings.
-    let session_id = BashSessionId::new();
+    let agent_session_id = BashSessionId::new();
     debug!(
-        session_id = %session_id,
+        agent_session_id = %agent_session_id,
         cwd = %cwd.display(),
         timeout_ms,
         "started background bash session"
@@ -627,7 +627,7 @@ async fn execute_start(
     let (cancel_tx, cancel_rx) = oneshot::channel();
 
     let session = Arc::new(BashSession {
-        id: session_id.clone(),
+        id: agent_session_id.clone(),
         command: command.clone(),
         cwd: cwd.clone(),
         shell: shell.clone(),
@@ -655,15 +655,15 @@ async fn execute_start(
         call_id: external_call_id,
         tool_name: "bash".into(),
         parts: vec![MessagePart::text(format!(
-            "[bash session_id={} state=running mode=start]\ncommand> {}\ncwd> {}\ntimeout_ms> {}\n\nUse mode=\"poll\" with this session_id to collect output.\nUse mode=\"cancel\" to stop the session.",
-            session_id,
+            "[bash agent_session_id={} state=running mode=start]\ncommand> {}\ncwd> {}\ntimeout_ms> {}\n\nUse mode=\"poll\" with this agent_session_id to collect output.\nUse mode=\"cancel\" to stop the session.",
+            agent_session_id,
             command,
             cwd.display(),
             timeout_ms
         ))],
         structured_content: Some(
             serde_json::to_value(BashToolOutput::Start {
-                session_id: session_id.as_str().to_string(),
+                agent_session_id: agent_session_id.as_str().to_string(),
                 state: "running".to_string(),
                 command: command.clone(),
                 cwd: cwd.display().to_string(),
@@ -676,7 +676,7 @@ async fn execute_start(
         ),
         metadata: Some(serde_json::json!({
             "mode": "start",
-            "session_id": session_id.as_str(),
+            "agent_session_id": agent_session_id.as_str(),
             "state": "running",
             "command": command,
             "cwd": cwd,
@@ -690,7 +690,7 @@ async fn execute_start(
 
 async fn execute_poll(call_id: ToolCallId, input: BashToolInput) -> Result<ToolResult> {
     let external_call_id = types::CallId::from(&call_id);
-    let session_id = resolve_session_id(&input)?;
+    let agent_session_id = resolve_session_id(&input)?;
     let max_output_chars = input
         .max_output_chars
         .unwrap_or(DEFAULT_MAX_OUTPUT_CHARS)
@@ -702,12 +702,12 @@ async fn execute_poll(call_id: ToolCallId, input: BashToolInput) -> Result<ToolR
     let stdout_start_char = input.stdout_start_char.unwrap_or(0);
     let stderr_start_char = input.stderr_start_char.unwrap_or(0);
 
-    let session = get_session(&session_id);
+    let session = get_session(&agent_session_id);
     let Some(session) = session else {
         return Ok(ToolResult::error(
             call_id,
             "bash",
-            format!("Unknown bash session_id `{session_id}`"),
+            format!("Unknown bash agent_session_id `{agent_session_id}`"),
         ));
     };
 
@@ -722,7 +722,7 @@ async fn execute_poll(call_id: ToolCallId, input: BashToolInput) -> Result<ToolR
     let (stdout, stderr) =
         session.output_windows(max_output_chars, stdout_start_char, stderr_start_char);
     debug!(
-        session_id = %session.id,
+        agent_session_id = %session.id,
         state = status.state,
         stdout_start = stdout.start_char,
         stderr_start = stderr.start_char,
@@ -740,7 +740,7 @@ async fn execute_poll(call_id: ToolCallId, input: BashToolInput) -> Result<ToolR
         // scraping prose.
         structured_content: Some(
             serde_json::to_value(BashToolOutput::Poll {
-                session_id: session.id.as_str().to_string(),
+                agent_session_id: session.id.as_str().to_string(),
                 state: status.state.to_string(),
                 exit_code: status.exit_code,
                 timed_out: status.timed_out,
@@ -762,7 +762,7 @@ async fn execute_poll(call_id: ToolCallId, input: BashToolInput) -> Result<ToolR
         ),
         metadata: Some(serde_json::json!({
             "mode": "poll",
-            "session_id": session.id.as_str(),
+            "agent_session_id": session.id.as_str(),
             "state": status.state,
             "exit_code": status.exit_code,
             "timed_out": status.timed_out,
@@ -803,21 +803,21 @@ async fn execute_poll(call_id: ToolCallId, input: BashToolInput) -> Result<ToolR
 
 async fn execute_cancel(call_id: ToolCallId, input: BashToolInput) -> Result<ToolResult> {
     let external_call_id = types::CallId::from(&call_id);
-    let session_id = resolve_session_id(&input)?;
+    let agent_session_id = resolve_session_id(&input)?;
     let poll_wait_ms = input.poll_wait_ms.unwrap_or(1_000).min(MAX_POLL_WAIT_MS);
 
-    let session = get_session(&session_id);
+    let session = get_session(&agent_session_id);
     let Some(session) = session else {
         return Ok(ToolResult::error(
             call_id,
             "bash",
-            format!("Unknown bash session_id `{session_id}`"),
+            format!("Unknown bash agent_session_id `{agent_session_id}`"),
         ));
     };
 
     let cancellation_requested = session.cancel();
     debug!(
-        session_id = %session.id,
+        agent_session_id = %session.id,
         cancellation_requested,
         "requested bash session cancellation"
     );
@@ -834,7 +834,7 @@ async fn execute_cancel(call_id: ToolCallId, input: BashToolInput) -> Result<Too
         call_id: external_call_id,
         tool_name: "bash".into(),
         parts: vec![MessagePart::text(format!(
-            "[bash session_id={} mode=cancel]\ncancellation_requested> {}\nstate> {}\nexit_code> {}\n",
+            "[bash agent_session_id={} mode=cancel]\ncancellation_requested> {}\nstate> {}\nexit_code> {}\n",
             session.id,
             cancellation_requested,
             status.state,
@@ -845,7 +845,7 @@ async fn execute_cancel(call_id: ToolCallId, input: BashToolInput) -> Result<Too
         ))],
         structured_content: Some(
             serde_json::to_value(BashToolOutput::Cancel {
-                session_id: session.id.as_str().to_string(),
+                agent_session_id: session.id.as_str().to_string(),
                 cancellation_requested,
                 state: status.state.to_string(),
                 exit_code: status.exit_code,
@@ -858,7 +858,7 @@ async fn execute_cancel(call_id: ToolCallId, input: BashToolInput) -> Result<Too
         ),
         metadata: Some(serde_json::json!({
             "mode": "cancel",
-            "session_id": session.id.as_str(),
+            "agent_session_id": session.id.as_str(),
             "cancellation_requested": cancellation_requested,
             "state": status.state,
             "exit_code": status.exit_code,
@@ -961,12 +961,14 @@ fn resolve_command(input: &BashToolInput) -> Result<String> {
 
 fn resolve_session_id(input: &BashToolInput) -> Result<BashSessionId> {
     input
-        .session_id
+        .agent_session_id
         .as_ref()
         .map(|value| value.trim())
         .filter(|value| !value.is_empty())
         .map(BashSessionId::from)
-        .ok_or_else(|| ToolError::invalid("bash requires a non-empty `session_id` for this mode"))
+        .ok_or_else(|| {
+            ToolError::invalid("bash requires a non-empty `agent_session_id` for this mode")
+        })
 }
 
 fn resolve_cwd(input: &BashToolInput, ctx: &ToolExecutionContext) -> Result<PathBuf> {
@@ -982,7 +984,7 @@ fn resolve_cwd(input: &BashToolInput, ctx: &ToolExecutionContext) -> Result<Path
 fn runtime_scope_from_context(ctx: &ToolExecutionContext) -> RuntimeScope {
     RuntimeScope {
         run_id: ctx.run_id.clone(),
-        session_id: ctx.session_id.clone(),
+        agent_session_id: ctx.agent_session_id.clone(),
         turn_id: ctx.turn_id.clone(),
         tool_name: ctx.tool_name.clone().map(|name| name.to_string()),
         tool_call_id: ctx.tool_call_id.clone(),
@@ -1017,7 +1019,7 @@ fn render_poll_output(
 ) -> String {
     let mut sections = vec![
         format!(
-            "[bash session_id={} state={} mode=poll]",
+            "[bash agent_session_id={} state={} mode=poll]",
             session.id, status.state
         ),
         format!("command> {}", session.command),
@@ -1160,7 +1162,7 @@ mod tests {
                 serde_json::to_value(BashToolInput {
                     mode: None,
                     command: Some("printf hello".to_string()),
-                    session_id: None,
+                    agent_session_id: None,
                     cwd: None,
                     timeout_ms: Some(5_000),
                     poll_wait_ms: None,
@@ -1196,7 +1198,7 @@ mod tests {
                 serde_json::to_value(BashToolInput {
                     mode: None,
                     command: Some("printf %s \"$PATCH_ENV\"".to_string()),
-                    session_id: None,
+                    agent_session_id: None,
                     cwd: None,
                     timeout_ms: Some(5_000),
                     poll_wait_ms: None,
@@ -1238,7 +1240,7 @@ mod tests {
                 serde_json::to_value(BashToolInput {
                     mode: None,
                     command: Some("printf hello".to_string()),
-                    session_id: None,
+                    agent_session_id: None,
                     cwd: Some(".".to_string()),
                     timeout_ms: Some(5_000),
                     poll_wait_ms: None,
@@ -1298,7 +1300,7 @@ mod tests {
                 serde_json::to_value(BashToolInput {
                     mode: None,
                     command: Some("printf hello".to_string()),
-                    session_id: None,
+                    agent_session_id: None,
                     cwd: Some(".".to_string()),
                     timeout_ms: Some(5_000),
                     poll_wait_ms: None,
@@ -1334,7 +1336,7 @@ mod tests {
                 serde_json::to_value(BashToolInput {
                     mode: Some(BashExecutionMode::Start),
                     command: Some("printf begin; sleep 5; printf end".to_string()),
-                    session_id: None,
+                    agent_session_id: None,
                     cwd: None,
                     timeout_ms: Some(10_000),
                     poll_wait_ms: None,
@@ -1353,20 +1355,20 @@ mod tests {
             .await
             .unwrap();
 
-        let session_id = start.metadata.unwrap()["session_id"]
+        let agent_session_id = start.metadata.unwrap()["agent_session_id"]
             .as_str()
             .unwrap()
             .to_string();
         let start_structured = start.structured_content.unwrap();
         assert_eq!(start_structured["kind"], "start");
-        assert_eq!(start_structured["session_id"], session_id);
+        assert_eq!(start_structured["agent_session_id"], agent_session_id);
         let poll = tool
             .execute(
                 ToolCallId::new(),
                 serde_json::to_value(BashToolInput {
                     mode: Some(BashExecutionMode::Poll),
                     command: None,
-                    session_id: Some(session_id.clone()),
+                    agent_session_id: Some(agent_session_id.clone()),
                     cwd: None,
                     timeout_ms: None,
                     poll_wait_ms: Some(100),
@@ -1383,7 +1385,10 @@ mod tests {
         assert!(poll.text_content().contains("state="));
         let poll_structured = poll.structured_content.clone().unwrap();
         assert_eq!(poll_structured["kind"], "poll");
-        assert_eq!(poll_structured["session_id"], session_id.clone());
+        assert_eq!(
+            poll_structured["agent_session_id"],
+            agent_session_id.clone()
+        );
 
         let cancel = tool
             .execute(
@@ -1391,7 +1396,7 @@ mod tests {
                 serde_json::to_value(BashToolInput {
                     mode: Some(BashExecutionMode::Cancel),
                     command: None,
-                    session_id: Some(session_id.clone()),
+                    agent_session_id: Some(agent_session_id.clone()),
                     cwd: None,
                     timeout_ms: None,
                     poll_wait_ms: Some(2_000),
@@ -1417,7 +1422,7 @@ mod tests {
                 serde_json::to_value(BashToolInput {
                     mode: Some(BashExecutionMode::Poll),
                     command: None,
-                    session_id: Some(session_id),
+                    agent_session_id: Some(agent_session_id),
                     cwd: None,
                     timeout_ms: None,
                     poll_wait_ms: Some(1_000),
@@ -1448,7 +1453,7 @@ mod tests {
                 serde_json::to_value(BashToolInput {
                     mode: Some(BashExecutionMode::Start),
                     command: Some("printf abcdef".to_string()),
-                    session_id: None,
+                    agent_session_id: None,
                     cwd: None,
                     timeout_ms: Some(5_000),
                     poll_wait_ms: None,
@@ -1466,7 +1471,7 @@ mod tests {
             )
             .await
             .unwrap();
-        let session_id = start.metadata.unwrap()["session_id"]
+        let agent_session_id = start.metadata.unwrap()["agent_session_id"]
             .as_str()
             .unwrap()
             .to_string();
@@ -1476,7 +1481,7 @@ mod tests {
                 serde_json::to_value(BashToolInput {
                     mode: Some(BashExecutionMode::Poll),
                     command: None,
-                    session_id: Some(session_id),
+                    agent_session_id: Some(agent_session_id),
                     cwd: None,
                     timeout_ms: None,
                     poll_wait_ms: Some(1_000),

@@ -8,7 +8,7 @@ use crate::{
 use async_trait::async_trait;
 use dashmap::DashMap;
 use std::sync::Arc;
-use types::{Message, RunEventEnvelope, RunId, SessionId};
+use types::{AgentSessionId, Message, RunEventEnvelope, RunId};
 
 #[derive(Clone, Default)]
 pub struct InMemoryRunStore {
@@ -99,15 +99,15 @@ impl RunStore for InMemoryRunStore {
             .ok_or_else(|| RunStoreError::RunNotFound(run_id.clone()))
     }
 
-    async fn session_ids(&self, run_id: &RunId) -> Result<Vec<SessionId>> {
+    async fn agent_session_ids(&self, run_id: &RunId) -> Result<Vec<AgentSessionId>> {
         let events = self.events(run_id).await?;
         let mut seen = Vec::new();
         for event in events {
             if !seen
                 .iter()
-                .any(|value: &SessionId| value == &event.session_id)
+                .any(|value: &AgentSessionId| value == &event.agent_session_id)
             {
-                seen.push(event.session_id);
+                seen.push(event.agent_session_id);
             }
         }
         Ok(seen)
@@ -137,16 +137,16 @@ impl RunStore for InMemoryRunStore {
 
             let groups = group_events_for_memory_export(entry.value());
 
-            for (session_id, events) in groups.sessions {
+            for (agent_session_id, events) in groups.agent_sessions {
                 if let Some(record) = build_memory_export_record(
-                    crate::MemoryExportScope::Session,
+                    crate::MemoryExportScope::AgentSession,
                     entry.key(),
-                    Some(session_id),
+                    Some(agent_session_id),
                     None,
                     None,
                     &events,
                 ) {
-                    bundle.sessions.push(record);
+                    bundle.agent_sessions.push(record);
                 }
             }
 
@@ -154,7 +154,7 @@ impl RunStore for InMemoryRunStore {
                 if let Some(record) = build_memory_export_record(
                     crate::MemoryExportScope::Subagent,
                     entry.key(),
-                    group.session_id,
+                    group.agent_session_id,
                     group.agent_name,
                     None,
                     &group.events,
@@ -167,7 +167,7 @@ impl RunStore for InMemoryRunStore {
                 if let Some(record) = build_memory_export_record(
                     crate::MemoryExportScope::Task,
                     entry.key(),
-                    group.session_id,
+                    group.agent_session_id,
                     None,
                     group.task_id,
                     &group.events,
@@ -178,7 +178,7 @@ impl RunStore for InMemoryRunStore {
         }
 
         sort_memory_export_records(&mut bundle.runs);
-        sort_memory_export_records(&mut bundle.sessions);
+        sort_memory_export_records(&mut bundle.agent_sessions);
         sort_memory_export_records(&mut bundle.subagents);
         sort_memory_export_records(&mut bundle.tasks);
         apply_memory_export_request(&mut bundle, &request);
@@ -194,8 +194,8 @@ mod tests {
     use serde_json::json;
     use types::{
         AgentArtifact, AgentEnvelope, AgentEnvelopeKind, AgentHandle, AgentId, AgentResultEnvelope,
-        AgentStatus, AgentTaskSpec, ContextWindowUsage, Message, RunEventEnvelope, RunEventKind,
-        RunId, SessionId, TokenLedgerSnapshot, TokenUsage, TokenUsagePhase,
+        AgentSessionId, AgentStatus, AgentTaskSpec, ContextWindowUsage, Message, RunEventEnvelope,
+        RunEventKind, RunId, TokenLedgerSnapshot, TokenUsage, TokenUsagePhase,
     };
 
     macro_rules! bounded_async_test {
@@ -211,11 +211,11 @@ mod tests {
         async fn replays_basic_transcript() {
             let store = InMemoryRunStore::new();
             let run_id = RunId::new();
-            let session_id = SessionId::new();
+            let agent_session_id = AgentSessionId::new();
             store
                 .append(RunEventEnvelope::new(
                     run_id.clone(),
-                    session_id.clone(),
+                    agent_session_id.clone(),
                     None,
                     None,
                     RunEventKind::TranscriptMessage {
@@ -227,7 +227,7 @@ mod tests {
             store
                 .append(RunEventEnvelope::new(
                     run_id.clone(),
-                    session_id,
+                    agent_session_id,
                     None,
                     None,
                     RunEventKind::TranscriptMessage {
@@ -247,12 +247,12 @@ mod tests {
     bounded_async_test!(
         async fn lists_runs_with_latest_first_and_prompt_preview() {
             let store = InMemoryRunStore::new();
-            let session_id = SessionId::new();
+            let agent_session_id = AgentSessionId::new();
             let older_run = RunId::new();
             let newer_run = RunId::new();
             let mut older_event = RunEventEnvelope::new(
                 older_run.clone(),
-                session_id.clone(),
+                agent_session_id.clone(),
                 None,
                 None,
                 RunEventKind::UserPromptSubmit {
@@ -262,7 +262,7 @@ mod tests {
             older_event.timestamp_ms = 1;
             let mut newer_event = RunEventEnvelope::new(
                 newer_run.clone(),
-                session_id,
+                agent_session_id,
                 None,
                 None,
                 RunEventKind::UserPromptSubmit {
@@ -286,11 +286,11 @@ mod tests {
         async fn searches_runs_by_prompt_or_transcript() {
             let store = InMemoryRunStore::new();
             let run_id = RunId::new();
-            let session_id = SessionId::new();
+            let agent_session_id = AgentSessionId::new();
             store
                 .append(RunEventEnvelope::new(
                     run_id.clone(),
-                    session_id.clone(),
+                    agent_session_id.clone(),
                     None,
                     None,
                     RunEventKind::UserPromptSubmit {
@@ -302,7 +302,7 @@ mod tests {
             store
                 .append(RunEventEnvelope::new(
                     run_id.clone(),
-                    session_id,
+                    agent_session_id,
                     None,
                     None,
                     RunEventKind::TranscriptMessage {
@@ -328,11 +328,11 @@ mod tests {
         async fn exports_runs_for_memory_newest_first() {
             let store = InMemoryRunStore::new();
             let run_id = RunId::new();
-            let session_id = SessionId::new();
+            let agent_session_id = AgentSessionId::new();
             store
                 .append(RunEventEnvelope::new(
                     run_id.clone(),
-                    session_id.clone(),
+                    agent_session_id.clone(),
                     None,
                     None,
                     RunEventKind::UserPromptSubmit {
@@ -352,10 +352,10 @@ mod tests {
             assert_eq!(exports.runs.len(), 1);
             assert_eq!(exports.runs[0].summary.run_id, run_id);
             assert!(exports.runs[0].search_corpus.contains("deploy release"));
-            assert_eq!(exports.sessions.len(), 1);
+            assert_eq!(exports.agent_sessions.len(), 1);
             assert_eq!(
-                exports.sessions[0].summary.session_id.as_ref(),
-                Some(&session_id)
+                exports.agent_sessions[0].summary.agent_session_id.as_ref(),
+                Some(&agent_session_id)
             );
         }
     );
@@ -364,8 +364,8 @@ mod tests {
         async fn exports_subagent_and_task_runtime_records() {
             let store = InMemoryRunStore::new();
             let run_id = RunId::new();
-            let parent_session_id = SessionId::new();
-            let child_session_id = SessionId::new();
+            let parent_session_id = AgentSessionId::new();
+            let child_session_id = AgentSessionId::new();
             let child_run_id = RunId::new();
             let agent_id = AgentId::new();
             let task = AgentTaskSpec {
@@ -382,7 +382,7 @@ mod tests {
                 agent_id: agent_id.clone(),
                 parent_agent_id: None,
                 run_id: child_run_id.clone(),
-                session_id: child_session_id.clone(),
+                agent_session_id: child_session_id.clone(),
                 task_id: task.task_id.clone(),
                 role: task.role.clone(),
                 status: AgentStatus::Running,
@@ -479,7 +479,7 @@ mod tests {
                 .unwrap();
             assert_eq!(exports.subagents.len(), 1);
             assert_eq!(
-                exports.subagents[0].summary.session_id.as_ref(),
+                exports.subagents[0].summary.agent_session_id.as_ref(),
                 Some(&child_session_id)
             );
             assert_eq!(
@@ -494,7 +494,7 @@ mod tests {
 
             assert_eq!(exports.tasks.len(), 1);
             assert_eq!(
-                exports.tasks[0].summary.session_id.as_ref(),
+                exports.tasks[0].summary.agent_session_id.as_ref(),
                 Some(&child_session_id)
             );
             assert_eq!(exports.tasks[0].summary.task_id.as_deref(), Some("task-17"));
@@ -506,9 +506,9 @@ mod tests {
         async fn reports_root_and_subagent_token_usage() {
             let store = InMemoryRunStore::new();
             let run_id = RunId::new();
-            let parent_session_id = SessionId::new();
+            let parent_session_id = AgentSessionId::new();
             let child_run_id = RunId::new();
-            let child_session_id = SessionId::new();
+            let child_session_id = AgentSessionId::new();
             let agent_id = AgentId::new();
             let task = AgentTaskSpec {
                 task_id: "task-usage".to_string(),
@@ -552,7 +552,7 @@ mod tests {
                             agent_id,
                             parent_agent_id: None,
                             run_id: child_run_id.clone(),
-                            session_id: child_session_id.clone(),
+                            agent_session_id: child_session_id.clone(),
                             task_id: task.task_id.clone(),
                             role: task.role.clone(),
                             status: AgentStatus::Running,
@@ -591,10 +591,10 @@ mod tests {
                     .map(|record| record.ledger.cumulative_usage),
                 Some(TokenUsage::from_input_output(100, 20, 10))
             );
-            assert_eq!(report.sessions.len(), 1);
+            assert_eq!(report.agent_sessions.len(), 1);
             assert_eq!(report.subagents.len(), 1);
             assert_eq!(
-                report.subagents[0].session_id.as_ref(),
+                report.subagents[0].agent_session_id.as_ref(),
                 Some(&child_session_id)
             );
             assert_eq!(report.subagents[0].agent_name.as_deref(), Some("reviewer"));

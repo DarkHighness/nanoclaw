@@ -139,7 +139,7 @@ impl CommandHookExecutor for DefaultCommandHookExecutor {
                 origin: ExecutionOrigin::HookCommand,
                 runtime_scope: RuntimeScope {
                     run_id: Some(context.run_id.clone()),
-                    session_id: Some(context.session_id.clone()),
+                    agent_session_id: Some(context.agent_session_id.clone()),
                     turn_id: context.turn_id.clone(),
                     tool_name: None,
                     tool_call_id: None,
@@ -240,8 +240,8 @@ mod tests {
         RuntimeScope as ExecRuntimeScope, SandboxError, SandboxMode,
     };
     use types::{
-        HookContext, HookEffect, HookEvent, HookExecutionPolicy, HookHandler, HookRegistration,
-        HookResult, MessagePart, MessageRole, RunId, SessionId,
+        AgentSessionId, HookContext, HookEffect, HookEvent, HookExecutionPolicy, HookHandler,
+        HookRegistration, HookResult, MessagePart, MessageRole, RunId,
     };
 
     #[derive(Clone)]
@@ -286,7 +286,7 @@ mod tests {
         }
 
         let run_id = RunId::from("run_1");
-        let session_id = SessionId::from("session_1");
+        let agent_session_id = AgentSessionId::from("session_1");
         let requests = Arc::new(Mutex::new(Vec::new()));
         let process_executor = Arc::new(RecordingExecutor {
             inner: Arc::new(HostProcessExecutor),
@@ -316,7 +316,7 @@ mod tests {
                 HookContext {
                     event: HookEvent::Notification,
                     run_id: run_id.clone(),
-                    session_id: session_id.clone(),
+                    agent_session_id: agent_session_id.clone(),
                     turn_id: None,
                     fields: BTreeMap::new(),
                     payload: serde_json::json!({"hello":"world"}),
@@ -349,7 +349,7 @@ mod tests {
             logged[0].runtime_scope,
             ExecRuntimeScope {
                 run_id: Some(run_id),
-                session_id: Some(session_id),
+                agent_session_id: Some(agent_session_id),
                 turn_id: None,
                 tool_name: None,
                 tool_call_id: None,
@@ -393,7 +393,7 @@ mod tests {
                 HookContext {
                     event: HookEvent::Notification,
                     run_id: RunId::from("run_1"),
-                    session_id: SessionId::from("session_1"),
+                    agent_session_id: AgentSessionId::from("session_1"),
                     turn_id: None,
                     fields: BTreeMap::new(),
                     payload: serde_json::json!({}),
@@ -455,7 +455,7 @@ mod tests {
                 HookContext {
                     event: HookEvent::Notification,
                     run_id: RunId::from("run_1"),
-                    session_id: SessionId::from("session_1"),
+                    agent_session_id: AgentSessionId::from("session_1"),
                     turn_id: None,
                     fields: BTreeMap::new(),
                     payload: serde_json::json!({}),

@@ -41,7 +41,7 @@ impl GitSnapshot {
 pub(crate) struct SessionSummary {
     pub(crate) workspace_name: String,
     pub(crate) active_session_ref: String,
-    pub(crate) root_session_id: String,
+    pub(crate) root_agent_session_id: String,
     pub(crate) provider_label: String,
     pub(crate) model: String,
     pub(crate) summary_model: String,

@@ -3,7 +3,7 @@ use agent::skills::Skill;
 use serde_json::Value;
 use store::{RunSearchResult, RunSummary, RunTokenUsageReport, TokenUsageRecord};
 use types::{
-    Message, MessagePart, MessageRole, RunEventEnvelope, RunEventKind, SessionId, ToolOrigin,
+    AgentSessionId, Message, MessagePart, MessageRole, RunEventEnvelope, RunEventKind, ToolOrigin,
     ToolSpec,
 };
 
@@ -39,7 +39,7 @@ pub(super) fn format_run_summary_line(summary: &RunSummary) -> String {
         preview_id(summary.run_id.as_str()),
         summary.transcript_message_count,
         summary.event_count,
-        summary.session_count,
+        summary.agent_session_count,
         prompt
     )
 }
@@ -59,7 +59,7 @@ pub(super) fn format_run_search_line(result: &RunSearchResult) -> String {
 
 pub(super) fn format_run_sidebar(
     summary: &RunSummary,
-    session_ids: &[SessionId],
+    agent_session_ids: &[AgentSessionId],
     events: &[RunEventEnvelope],
     token_usage: &RunTokenUsageReport,
 ) -> Vec<String> {
@@ -67,7 +67,7 @@ pub(super) fn format_run_sidebar(
         format!("run: {}", summary.run_id),
         format!("events: {}", summary.event_count),
         format!("messages: {}", summary.transcript_message_count),
-        format!("sessions: {}", summary.session_count),
+        format!("sessions: {}", summary.agent_session_count),
     ];
     if let Some(run_usage) = &token_usage.run {
         if let Some(window) = run_usage.ledger.context_window {
@@ -106,12 +106,12 @@ pub(super) fn format_run_sidebar(
     if let Some(prompt) = &summary.last_user_prompt {
         sidebar.push(format!("last prompt: {}", preview_text(prompt, 80)));
     }
-    if !session_ids.is_empty() {
+    if !agent_session_ids.is_empty() {
         sidebar.push(format!(
             "session ids: {}",
-            session_ids
+            agent_session_ids
                 .iter()
-                .map(|session_id| preview_id(session_id.as_str()))
+                .map(|agent_session_id| preview_id(agent_session_id.as_str()))
                 .collect::<Vec<_>>()
                 .join(", ")
         ));

@@ -34,7 +34,7 @@ impl AgentRuntime {
         turn_id: &TurnId,
         hooks: &[HookRegistration],
     ) -> Result<()> {
-        if self.session.session_started {
+        if self.session.agent_session_started {
             return Ok(());
         }
 
@@ -44,7 +44,7 @@ impl AgentRuntime {
                 HookContext {
                     event: HookEvent::SessionStart,
                     run_id: self.session.run_id.clone(),
-                    session_id: self.session.session_id.clone(),
+                    agent_session_id: self.session.agent_session_id.clone(),
                     turn_id: None,
                     fields: [("reason".to_string(), "new_session".to_string())]
                         .into_iter()
@@ -67,7 +67,7 @@ impl AgentRuntime {
             },
         )
         .await?;
-        self.session.session_started = true;
+        self.session.agent_session_started = true;
         Ok(())
     }
 
@@ -87,7 +87,7 @@ impl AgentRuntime {
                 HookContext {
                     event: HookEvent::InstructionsLoaded,
                     run_id: self.session.run_id.clone(),
-                    session_id: self.session.session_id.clone(),
+                    agent_session_id: self.session.agent_session_id.clone(),
                     turn_id: Some(turn_id.clone()),
                     fields: [("reason".to_string(), "runtime_instructions".to_string())]
                         .into_iter()
@@ -125,7 +125,7 @@ impl AgentRuntime {
                 HookContext {
                     event: HookEvent::UserPromptSubmit,
                     run_id: self.session.run_id.clone(),
-                    session_id: self.session.session_id.clone(),
+                    agent_session_id: self.session.agent_session_id.clone(),
                     turn_id: Some(turn_id.clone()),
                     fields: BTreeMap::new(),
                     payload: json!({ "prompt": prompt }),
@@ -153,7 +153,7 @@ impl AgentRuntime {
             &mut self.session.transcript,
             user_message,
             self.session.run_id.clone(),
-            self.session.session_id.clone(),
+            self.session.agent_session_id.clone(),
             turn_id.clone(),
         );
         self.store.append(transcript_event).await?;

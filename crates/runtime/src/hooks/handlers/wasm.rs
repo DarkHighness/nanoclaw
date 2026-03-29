@@ -567,8 +567,8 @@ mod tests {
     };
     use std::sync::{Arc, Mutex};
     use types::{
-        HookContext, HookEvent, HookExecutionPolicy, HookHandler, HookHostApiGrant,
-        HookRegistration, HookResult, MessagePart, MessageRole, RunId, SessionId, WasmHookHandler,
+        AgentSessionId, HookContext, HookEvent, HookExecutionPolicy, HookHandler, HookHostApiGrant,
+        HookRegistration, HookResult, MessagePart, MessageRole, RunId, WasmHookHandler,
     };
 
     #[derive(Default)]
@@ -662,7 +662,7 @@ mod tests {
                 HookContext {
                     event: HookEvent::UserPromptSubmit,
                     run_id: RunId::from("run_1"),
-                    session_id: SessionId::from("session_1"),
+                    agent_session_id: AgentSessionId::from("session_1"),
                     turn_id: None,
                     fields: Default::default(),
                     payload: serde_json::json!({"prompt":"hello"}),
@@ -723,7 +723,7 @@ mod tests {
                 HookContext {
                     event: HookEvent::UserPromptSubmit,
                     run_id: RunId::from("run_1"),
-                    session_id: SessionId::from("session_1"),
+                    agent_session_id: AgentSessionId::from("session_1"),
                     turn_id: None,
                     fields: Default::default(),
                     payload: serde_json::json!({}),
@@ -756,7 +756,7 @@ mod tests {
                 HookContext {
                     event: HookEvent::UserPromptSubmit,
                     run_id: RunId::from("run_1"),
-                    session_id: SessionId::from("session_1"),
+                    agent_session_id: AgentSessionId::from("session_1"),
                     turn_id: None,
                     fields: Default::default(),
                     payload: serde_json::json!({}),
@@ -815,7 +815,7 @@ mod tests {
                 HookContext {
                     event: HookEvent::UserPromptSubmit,
                     run_id: RunId::from("run_1"),
-                    session_id: SessionId::from("session_1"),
+                    agent_session_id: AgentSessionId::from("session_1"),
                     turn_id: None,
                     fields: Default::default(),
                     payload: serde_json::json!({}),
@@ -838,7 +838,7 @@ mod tests {
                 HookContext {
                     event: HookEvent::UserPromptSubmit,
                     run_id: RunId::from("run_2"),
-                    session_id: SessionId::from("session_2"),
+                    agent_session_id: AgentSessionId::from("session_2"),
                     turn_id: None,
                     fields: Default::default(),
                     payload: serde_json::json!({}),
@@ -856,7 +856,7 @@ mod tests {
                 HookContext {
                     event: HookEvent::UserPromptSubmit,
                     run_id: RunId::from("run_3"),
-                    session_id: SessionId::from("session_3"),
+                    agent_session_id: AgentSessionId::from("session_3"),
                     turn_id: None,
                     fields: Default::default(),
                     payload: serde_json::json!({}),
@@ -914,7 +914,7 @@ mod tests {
                 HookContext {
                     event: HookEvent::UserPromptSubmit,
                     run_id: RunId::from("run_1"),
-                    session_id: SessionId::from("session_1"),
+                    agent_session_id: AgentSessionId::from("session_1"),
                     turn_id: None,
                     fields: Default::default(),
                     payload: serde_json::json!({}),

@@ -20,8 +20,8 @@ use tools::{
 };
 use types::{
     AgentArtifact, AgentEnvelope, AgentEnvelopeKind, AgentHandle, AgentId, AgentResultEnvelope,
-    AgentStatus, AgentTaskSpec, AgentWaitRequest, AgentWaitResponse, HookRegistration,
-    RunEventEnvelope, RunEventKind, RunId, SessionId, ToolName,
+    AgentSessionId, AgentStatus, AgentTaskSpec, AgentWaitRequest, AgentWaitResponse,
+    HookRegistration, RunEventEnvelope, RunEventKind, RunId, ToolName,
 };
 
 const DEFAULT_EXCLUDED_CHILD_TOOLS: &[&str] = &[
@@ -178,7 +178,7 @@ impl RuntimeSubagentExecutor {
         let Some(run_id) = parent.run_id.clone() else {
             return Ok(());
         };
-        let Some(session_id) = parent.session_id.clone() else {
+        let Some(agent_session_id) = parent.agent_session_id.clone() else {
             return Ok(());
         };
         self.store
@@ -188,7 +188,7 @@ impl RuntimeSubagentExecutor {
                     .map(|event| {
                         RunEventEnvelope::new(
                             run_id.clone(),
-                            session_id.clone(),
+                            agent_session_id.clone(),
                             parent.turn_id.clone(),
                             None,
                             event,
@@ -225,7 +225,7 @@ impl RuntimeSubagentExecutor {
                         handle.agent_id.clone(),
                         handle.parent_agent_id.clone(),
                         handle.run_id.clone(),
-                        handle.session_id.clone(),
+                        handle.agent_session_id.clone(),
                         kind,
                     ),
                 })
@@ -287,7 +287,7 @@ impl RuntimeSubagentExecutor {
                         child.handle.agent_id.clone(),
                         child.handle.parent_agent_id.clone(),
                         child.handle.run_id.clone(),
-                        child.handle.session_id.clone(),
+                        child.handle.agent_session_id.clone(),
                         AgentEnvelopeKind::SpawnRequested {
                             task: child.task.clone(),
                         },
@@ -300,7 +300,7 @@ impl RuntimeSubagentExecutor {
                         child.handle.agent_id.clone(),
                         child.handle.parent_agent_id.clone(),
                         child.handle.run_id.clone(),
-                        child.handle.session_id.clone(),
+                        child.handle.agent_session_id.clone(),
                         AgentEnvelopeKind::ClaimRequested {
                             files: child.task.requested_write_set.clone(),
                         },
@@ -311,7 +311,7 @@ impl RuntimeSubagentExecutor {
                         child.handle.agent_id.clone(),
                         child.handle.parent_agent_id.clone(),
                         child.handle.run_id.clone(),
-                        child.handle.session_id.clone(),
+                        child.handle.agent_session_id.clone(),
                         AgentEnvelopeKind::ClaimGranted {
                             files: child.task.requested_write_set.clone(),
                         },
@@ -441,7 +441,7 @@ impl RuntimeSubagentExecutor {
             .skill_catalog(self.skill_catalog.clone())
             .session(RuntimeSession::new(
                 plan.handle.run_id.clone(),
-                plan.handle.session_id.clone(),
+                plan.handle.agent_session_id.clone(),
             ))
             .build()
     }
@@ -831,7 +831,7 @@ impl SubagentExecutor for RuntimeSubagentExecutor {
                     agent_id: AgentId::new(),
                     parent_agent_id: parent.parent_agent_id.clone(),
                     run_id: RunId::new(),
-                    session_id: SessionId::new(),
+                    agent_session_id: AgentSessionId::new(),
                     task_id: task.task_id.clone(),
                     role: task.role.clone(),
                     status: AgentStatus::Queued,
@@ -1058,7 +1058,7 @@ impl ChildAgentWorker {
                         self.handle.agent_id.clone(),
                         self.handle.parent_agent_id.clone(),
                         self.handle.run_id.clone(),
-                        self.handle.session_id.clone(),
+                        self.handle.agent_session_id.clone(),
                         AgentEnvelopeKind::StatusChanged {
                             status: AgentStatus::Running,
                         },
@@ -1069,7 +1069,7 @@ impl ChildAgentWorker {
                         self.handle.agent_id.clone(),
                         self.handle.parent_agent_id.clone(),
                         self.handle.run_id.clone(),
-                        self.handle.session_id.clone(),
+                        self.handle.agent_session_id.clone(),
                         AgentEnvelopeKind::Started {
                             task: self.task.clone(),
                         },
@@ -1189,7 +1189,7 @@ impl ChildAgentWorker {
                 self.handle.agent_id.clone(),
                 self.handle.parent_agent_id.clone(),
                 self.handle.run_id.clone(),
-                self.handle.session_id.clone(),
+                self.handle.agent_session_id.clone(),
                 AgentEnvelopeKind::StatusChanged {
                     status: result.status.clone(),
                 },
@@ -1201,7 +1201,7 @@ impl ChildAgentWorker {
                     self.handle.agent_id.clone(),
                     self.handle.parent_agent_id.clone(),
                     self.handle.run_id.clone(),
-                    self.handle.session_id.clone(),
+                    self.handle.agent_session_id.clone(),
                     AgentEnvelopeKind::Artifact { artifact },
                 ),
             }
@@ -1211,7 +1211,7 @@ impl ChildAgentWorker {
                 self.handle.agent_id.clone(),
                 self.handle.parent_agent_id.clone(),
                 self.handle.run_id.clone(),
-                self.handle.session_id.clone(),
+                self.handle.agent_session_id.clone(),
                 AgentEnvelopeKind::Result {
                     result: result.clone(),
                 },
@@ -1265,7 +1265,7 @@ impl ChildAgentWorker {
                         self.handle.agent_id.clone(),
                         self.handle.parent_agent_id.clone(),
                         self.handle.run_id.clone(),
-                        self.handle.session_id.clone(),
+                        self.handle.agent_session_id.clone(),
                         AgentEnvelopeKind::StatusChanged {
                             status: AgentStatus::Cancelled,
                         },
@@ -1276,7 +1276,7 @@ impl ChildAgentWorker {
                         self.handle.agent_id.clone(),
                         self.handle.parent_agent_id.clone(),
                         self.handle.run_id.clone(),
-                        self.handle.session_id.clone(),
+                        self.handle.agent_session_id.clone(),
                         AgentEnvelopeKind::Cancelled {
                             reason: reason.clone(),
                         },
@@ -1326,7 +1326,7 @@ impl ChildAgentWorker {
                         self.handle.agent_id.clone(),
                         self.handle.parent_agent_id.clone(),
                         self.handle.run_id.clone(),
-                        self.handle.session_id.clone(),
+                        self.handle.agent_session_id.clone(),
                         AgentEnvelopeKind::StatusChanged {
                             status: AgentStatus::Failed,
                         },
@@ -1337,7 +1337,7 @@ impl ChildAgentWorker {
                         self.handle.agent_id.clone(),
                         self.handle.parent_agent_id.clone(),
                         self.handle.run_id.clone(),
-                        self.handle.session_id.clone(),
+                        self.handle.agent_session_id.clone(),
                         AgentEnvelopeKind::Failed {
                             error: error.clone(),
                         },
@@ -1363,7 +1363,7 @@ impl ChildAgentWorker {
         let Some(run_id) = self.parent.run_id.clone() else {
             return Ok(());
         };
-        let Some(session_id) = self.parent.session_id.clone() else {
+        let Some(agent_session_id) = self.parent.agent_session_id.clone() else {
             return Ok(());
         };
         self.store
@@ -1373,7 +1373,7 @@ impl ChildAgentWorker {
                     .map(|event| {
                         RunEventEnvelope::new(
                             run_id.clone(),
-                            session_id.clone(),
+                            agent_session_id.clone(),
                             self.parent.turn_id.clone(),
                             None,
                             event,
@@ -1792,7 +1792,7 @@ mod tests {
         let executor = make_executor(backend, store);
         let parent = SubagentParentContext {
             run_id: Some("run_parent".into()),
-            session_id: Some("session_parent".into()),
+            agent_session_id: Some("session_parent".into()),
             turn_id: Some("turn_parent".into()),
             parent_agent_id: Some("agent_parent".into()),
         };
@@ -1934,7 +1934,7 @@ mod tests {
         let executor = make_executor(backend.clone(), store.clone());
         let parent = SubagentParentContext {
             run_id: Some("run_parent".into()),
-            session_id: Some("session_parent".into()),
+            agent_session_id: Some("session_parent".into()),
             turn_id: Some("turn_parent".into()),
             parent_agent_id: Some("agent_parent".into()),
         };
@@ -2180,7 +2180,7 @@ mod tests {
         let executor = make_executor(backend, store.clone());
         let parent = SubagentParentContext {
             run_id: Some("run_parent".into()),
-            session_id: Some("session_parent".into()),
+            agent_session_id: Some("session_parent".into()),
             turn_id: Some("turn_parent".into()),
             parent_agent_id: Some("agent_parent".into()),
         };
@@ -2344,7 +2344,7 @@ mod tests {
         let executor = make_executor(backend.clone(), store);
         let parent = SubagentParentContext {
             run_id: Some("run_parent".into()),
-            session_id: Some("session_parent".into()),
+            agent_session_id: Some("session_parent".into()),
             turn_id: Some("turn_parent".into()),
             parent_agent_id: Some("agent_parent".into()),
         };
@@ -2435,7 +2435,7 @@ mod tests {
         let executor = make_executor(backend.clone(), store);
         let parent = SubagentParentContext {
             run_id: Some("run_parent".into()),
-            session_id: Some("session_parent".into()),
+            agent_session_id: Some("session_parent".into()),
             turn_id: Some("turn_parent".into()),
             parent_agent_id: Some("agent_parent".into()),
         };
@@ -2718,7 +2718,7 @@ mod tests {
         let executor = make_executor(backend, store);
         let owner = SubagentParentContext {
             run_id: Some("run_parent".into()),
-            session_id: Some("session_parent".into()),
+            agent_session_id: Some("session_parent".into()),
             turn_id: Some("turn_parent".into()),
             parent_agent_id: Some("agent_owner".into()),
         };

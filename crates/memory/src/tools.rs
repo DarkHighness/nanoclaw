@@ -26,7 +26,7 @@ pub struct MemorySearchToolInput {
     #[serde(default)]
     pub run_id: Option<String>,
     #[serde(default)]
-    pub session_id: Option<String>,
+    pub agent_session_id: Option<String>,
     #[serde(default)]
     pub agent_name: Option<String>,
     #[serde(default)]
@@ -57,7 +57,7 @@ pub struct MemoryListToolInput {
     #[serde(default)]
     pub run_id: Option<String>,
     #[serde(default)]
-    pub session_id: Option<String>,
+    pub agent_session_id: Option<String>,
     #[serde(default)]
     pub agent_name: Option<String>,
     #[serde(default)]
@@ -78,7 +78,7 @@ pub struct MemoryRecordToolInput {
     #[serde(default)]
     pub run_id: Option<String>,
     #[serde(default)]
-    pub session_id: Option<String>,
+    pub agent_session_id: Option<String>,
     #[serde(default)]
     pub agent_name: Option<String>,
     #[serde(default)]
@@ -204,8 +204,8 @@ impl Tool for MemorySearchTool {
                 scopes: input.scopes,
                 tags: normalize_list(input.tags),
                 run_id: normalize_id(input.run_id).or_else(|| ctx.run_id.clone()),
-                session_id: normalize_session_id(input.session_id)
-                    .or_else(|| ctx.session_id.clone()),
+                agent_session_id: normalize_session_id(input.agent_session_id)
+                    .or_else(|| ctx.agent_session_id.clone()),
                 agent_name: normalize_string(input.agent_name)
                     .or_else(|| inherited_agent_name(ctx)),
                 task_id: normalize_string(input.task_id).or_else(|| inherited_task_id(ctx)),
@@ -344,8 +344,8 @@ impl Tool for MemoryListTool {
                 scopes: input.scopes,
                 tags: normalize_list(input.tags),
                 run_id: normalize_id(input.run_id).or_else(|| ctx.run_id.clone()),
-                session_id: normalize_session_id(input.session_id)
-                    .or_else(|| ctx.session_id.clone()),
+                agent_session_id: normalize_session_id(input.agent_session_id)
+                    .or_else(|| ctx.agent_session_id.clone()),
                 agent_name: normalize_string(input.agent_name)
                     .or_else(|| inherited_agent_name(ctx)),
                 task_id: normalize_string(input.task_id).or_else(|| inherited_task_id(ctx)),
@@ -408,8 +408,8 @@ impl Tool for MemoryRecordTool {
                 layer: input.layer,
                 tags: input.tags,
                 run_id: normalize_id(input.run_id).or_else(|| ctx.run_id.clone()),
-                session_id: normalize_session_id(input.session_id)
-                    .or_else(|| ctx.session_id.clone()),
+                agent_session_id: normalize_session_id(input.agent_session_id)
+                    .or_else(|| ctx.agent_session_id.clone()),
                 agent_name: normalize_string(input.agent_name)
                     .or_else(|| inherited_agent_name(ctx)),
                 task_id: normalize_string(input.task_id).or_else(|| inherited_task_id(ctx)),
@@ -528,8 +528,8 @@ fn normalize_id(value: Option<String>) -> Option<types::RunId> {
     normalize_string(value).map(types::RunId::from)
 }
 
-fn normalize_session_id(value: Option<String>) -> Option<types::SessionId> {
-    normalize_string(value).map(types::SessionId::from)
+fn normalize_session_id(value: Option<String>) -> Option<types::AgentSessionId> {
+    normalize_string(value).map(types::AgentSessionId::from)
 }
 
 fn normalize_string(value: Option<String>) -> Option<String> {
@@ -576,7 +576,7 @@ mod tests {
     use tempfile::tempdir;
     use tokio::fs;
     use tools::{Tool, ToolExecutionContext};
-    use types::{AgentId, RunId, SessionId, ToolCallId};
+    use types::{AgentId, AgentSessionId, RunId, ToolCallId};
 
     #[tokio::test]
     async fn memory_get_tool_formats_numbered_lines() {
@@ -638,7 +638,7 @@ mod tests {
         let ctx = ToolExecutionContext {
             workspace_root: dir.path().to_path_buf(),
             run_id: Some(RunId::from("run_1")),
-            session_id: Some(SessionId::from("session_1")),
+            agent_session_id: Some(AgentSessionId::from("session_1")),
             ..ToolExecutionContext::default()
         };
         let result = tool
@@ -675,7 +675,7 @@ mod tests {
         let ctx = ToolExecutionContext {
             workspace_root: dir.path().to_path_buf(),
             run_id: Some(RunId::from("run_1")),
-            session_id: Some(SessionId::from("session_1")),
+            agent_session_id: Some(AgentSessionId::from("session_1")),
             agent_id: Some(AgentId::from("agent_child")),
             agent_name: Some("reviewer".to_string()),
             task_id: Some("task_17".to_string()),
@@ -713,14 +713,14 @@ mod tests {
         fs::write(
             dir.path()
                 .join(".nanoclaw/memory/episodic/tasks/run-1--session-1--task-17.md"),
-            "---\nscope: episodic\nlayer: runtime-task\nrun_id: run_1\nsession_id: session_1\nagent_name: reviewer\ntask_id: task_17\nstatus: ready\n---\n# Task task_17\n\nchecked ownership",
+            "---\nscope: episodic\nlayer: runtime-task\nrun_id: run_1\nagent_session_id: session_1\nagent_name: reviewer\ntask_id: task_17\nstatus: ready\n---\n# Task task_17\n\nchecked ownership",
         )
         .await
         .unwrap();
         fs::write(
             dir.path()
                 .join(".nanoclaw/memory/episodic/tasks/run-1--session-1--task-99.md"),
-            "---\nscope: episodic\nlayer: runtime-task\nrun_id: run_1\nsession_id: session_1\nagent_name: reviewer\ntask_id: task_99\nstatus: ready\n---\n# Task task_99\n\nchecked ownership elsewhere",
+            "---\nscope: episodic\nlayer: runtime-task\nrun_id: run_1\nagent_session_id: session_1\nagent_name: reviewer\ntask_id: task_99\nstatus: ready\n---\n# Task task_99\n\nchecked ownership elsewhere",
         )
         .await
         .unwrap();
@@ -733,7 +733,7 @@ mod tests {
         let ctx = ToolExecutionContext {
             workspace_root: dir.path().to_path_buf(),
             run_id: Some(RunId::from("run_1")),
-            session_id: Some(SessionId::from("session_1")),
+            agent_session_id: Some(AgentSessionId::from("session_1")),
             agent_id: Some(AgentId::from("agent_child")),
             agent_name: Some("reviewer".to_string()),
             task_id: Some("task_17".to_string()),

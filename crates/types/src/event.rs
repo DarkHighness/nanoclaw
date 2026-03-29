@@ -1,7 +1,7 @@
 use crate::{
-    AgentId, CallId, EnvelopeId, EventId, HookEvent, HookResult, Message, MessageId, Reasoning,
-    ResponseId, RunId, SessionId, TokenLedgerSnapshot, TokenUsage, TokenUsagePhase, ToolCall,
-    ToolCallId, ToolName, ToolSpec, TurnId,
+    AgentId, AgentSessionId, CallId, EnvelopeId, EventId, HookEvent, HookResult, Message,
+    MessageId, Reasoning, ResponseId, RunId, TokenLedgerSnapshot, TokenUsage, TokenUsagePhase,
+    ToolCall, ToolCallId, ToolName, ToolSpec, TurnId,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -55,7 +55,7 @@ pub struct AgentHandle {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_agent_id: Option<AgentId>,
     pub run_id: RunId,
-    pub session_id: SessionId,
+    pub agent_session_id: AgentSessionId,
     pub task_id: String,
     pub role: String,
     pub status: AgentStatus,
@@ -127,7 +127,7 @@ pub struct AgentEnvelope {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_agent_id: Option<AgentId>,
     pub run_id: RunId,
-    pub session_id: SessionId,
+    pub agent_session_id: AgentSessionId,
     pub timestamp_ms: u64,
     pub kind: AgentEnvelopeKind,
 }
@@ -138,7 +138,7 @@ impl AgentEnvelope {
         agent_id: AgentId,
         parent_agent_id: Option<AgentId>,
         run_id: RunId,
-        session_id: SessionId,
+        agent_session_id: AgentSessionId,
         kind: AgentEnvelopeKind,
     ) -> Self {
         Self {
@@ -146,7 +146,7 @@ impl AgentEnvelope {
             agent_id,
             parent_agent_id,
             run_id,
-            session_id,
+            agent_session_id,
             timestamp_ms: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .map_or(0, |value| {
@@ -190,7 +190,7 @@ fn default_agent_wait_mode() -> AgentWaitMode {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ModelRequest {
     pub run_id: RunId,
-    pub session_id: SessionId,
+    pub agent_session_id: AgentSessionId,
     pub turn_id: TurnId,
     pub instructions: Vec<String>,
     pub messages: Vec<Message>,
@@ -250,7 +250,7 @@ pub enum ToolLifecycleEventKind {
 pub struct ToolLifecycleEventEnvelope {
     pub id: EventId,
     pub run_id: RunId,
-    pub session_id: SessionId,
+    pub agent_session_id: AgentSessionId,
     pub turn_id: Option<TurnId>,
     pub tool_call_id: ToolCallId,
     pub call_id: CallId,
@@ -375,7 +375,7 @@ pub enum RunEventKind {
 pub struct RunEventEnvelope {
     pub id: EventId,
     pub run_id: RunId,
-    pub session_id: SessionId,
+    pub agent_session_id: AgentSessionId,
     pub turn_id: Option<TurnId>,
     pub tool_call_id: Option<ToolCallId>,
     pub timestamp_ms: u128,
@@ -386,7 +386,7 @@ impl RunEventEnvelope {
     #[must_use]
     pub fn new(
         run_id: RunId,
-        session_id: SessionId,
+        agent_session_id: AgentSessionId,
         turn_id: Option<TurnId>,
         tool_call_id: Option<ToolCallId>,
         event: RunEventKind,
@@ -394,7 +394,7 @@ impl RunEventEnvelope {
         Self {
             id: EventId::new(),
             run_id,
-            session_id,
+            agent_session_id,
             turn_id,
             tool_call_id,
             timestamp_ms: SystemTime::now()
@@ -435,7 +435,7 @@ impl RunEventEnvelope {
         Some(ToolLifecycleEventEnvelope {
             id: self.id.clone(),
             run_id: self.run_id.clone(),
-            session_id: self.session_id.clone(),
+            agent_session_id: self.agent_session_id.clone(),
             turn_id: self.turn_id.clone(),
             tool_call_id,
             call_id,

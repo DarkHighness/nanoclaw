@@ -8,7 +8,7 @@ use std::collections::BTreeSet;
 use std::path::Path;
 use tokio::fs;
 use tokio::io::{AsyncBufReadExt, BufReader};
-use types::{RunEventEnvelope, RunEventKind, RunId, SessionId};
+use types::{AgentSessionId, RunEventEnvelope, RunEventKind, RunId};
 
 pub(super) const INDEX_FILE_NAME: &str = "runs.index.json";
 const INDEX_VERSION: u32 = 2;
@@ -20,7 +20,7 @@ pub(super) struct IndexedRunRecord {
     // Session ids must preserve first-seen order because hosts may use the
     // sequence to reconstruct hand-offs across attached sessions. A sorted set
     // makes the durable transcript look different from the original stream.
-    pub(super) session_ids: Vec<SessionId>,
+    pub(super) agent_session_ids: Vec<AgentSessionId>,
     // The sidecar keeps only a bounded search corpus for prefiltering. The
     // append-only JSONL transcript remains the source of truth for replay and
     // exact preview generation.
@@ -46,8 +46,8 @@ pub(super) fn apply_event_to_record(record: &mut IndexedRunRecord, event: &RunEv
     record.summary.first_timestamp_ms = record.summary.first_timestamp_ms.min(event.timestamp_ms);
     record.summary.last_timestamp_ms = record.summary.last_timestamp_ms.max(event.timestamp_ms);
     record.summary.event_count += 1;
-    if push_unique_session_id(&mut record.session_ids, &event.session_id) {
-        record.summary.session_count = record.session_ids.len();
+    if push_unique_session_id(&mut record.agent_session_ids, &event.agent_session_id) {
+        record.summary.agent_session_count = record.agent_session_ids.len();
     }
     if matches!(&event.event, RunEventKind::TranscriptMessage { .. }) {
         record.summary.transcript_message_count += 1;
@@ -168,11 +168,17 @@ pub(super) async fn delete_run_file(root_dir: &Path, run_id: &RunId) -> Result<(
     Ok(())
 }
 
-fn push_unique_session_id(session_ids: &mut Vec<SessionId>, session_id: &SessionId) -> bool {
-    if session_ids.iter().any(|existing| existing == session_id) {
+fn push_unique_session_id(
+    agent_session_ids: &mut Vec<AgentSessionId>,
+    agent_session_id: &AgentSessionId,
+) -> bool {
+    if agent_session_ids
+        .iter()
+        .any(|existing| existing == agent_session_id)
+    {
         return false;
     }
-    session_ids.push(session_id.clone());
+    agent_session_ids.push(agent_session_id.clone());
     true
 }
 
@@ -193,13 +199,13 @@ pub(super) fn indexed_record_from_events(
 ) -> Option<IndexedRunRecord> {
     let run_id = events.first()?.run_id.clone();
     let summary = summarize_run_events(&run_id, &events)?;
-    let mut session_ids = Vec::new();
+    let mut agent_session_ids = Vec::new();
     for event in &events {
-        push_unique_session_id(&mut session_ids, &event.session_id);
+        push_unique_session_id(&mut agent_session_ids, &event.agent_session_id);
     }
     Some(IndexedRunRecord {
         summary,
-        session_ids,
+        agent_session_ids,
         search_corpus: build_search_corpus(&events),
     })
 }

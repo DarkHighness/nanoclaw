@@ -69,7 +69,7 @@ define_id!(EventId);
 define_id!(EnvelopeId);
 define_id!(MessageId);
 define_id!(RunId);
-define_id!(SessionId);
+define_id!(AgentSessionId);
 define_id!(TurnId);
 define_id!(ToolCallId);
 define_id!(CallId);

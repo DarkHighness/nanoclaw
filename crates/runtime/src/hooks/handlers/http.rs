@@ -136,8 +136,9 @@ mod tests {
     use std::collections::BTreeMap;
     use std::sync::{Arc, Mutex};
     use types::{
-        HookContext, HookEffect, HookEvent, HookExecutionPolicy, HookHandler, HookNetworkPolicy,
-        HookRegistration, HookResult, HttpHookHandler, MessagePart, MessageRole, RunId, SessionId,
+        AgentSessionId, HookContext, HookEffect, HookEvent, HookExecutionPolicy, HookHandler,
+        HookNetworkPolicy, HookRegistration, HookResult, HttpHookHandler, MessagePart, MessageRole,
+        RunId,
     };
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -157,7 +158,7 @@ mod tests {
         HookContext {
             event: HookEvent::Notification,
             run_id: RunId::from("run_1"),
-            session_id: SessionId::from("session_1"),
+            agent_session_id: AgentSessionId::from("session_1"),
             turn_id: None,
             fields: BTreeMap::new(),
             payload: serde_json::json!({"hello":"world"}),

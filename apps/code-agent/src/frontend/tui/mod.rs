@@ -687,7 +687,7 @@ impl CodeAgentTui {
             session: state::SessionSummary {
                 workspace_name: snapshot.workspace_name.clone(),
                 active_session_ref: snapshot.active_session_ref.clone(),
-                root_session_id: snapshot.root_session_id.clone(),
+                root_agent_session_id: snapshot.root_agent_session_id.clone(),
                 provider_label: snapshot.provider_label.clone(),
                 model: snapshot.model.clone(),
                 summary_model: snapshot.summary_model.clone(),
@@ -708,7 +708,7 @@ impl CodeAgentTui {
             inspector: build_startup_inspector(&state::SessionSummary {
                 workspace_name: snapshot.workspace_name.clone(),
                 active_session_ref: snapshot.active_session_ref.clone(),
-                root_session_id: snapshot.root_session_id.clone(),
+                root_agent_session_id: snapshot.root_agent_session_id.clone(),
                 provider_label: snapshot.provider_label.clone(),
                 model: snapshot.model.clone(),
                 summary_model: snapshot.summary_model.clone(),
@@ -785,7 +785,7 @@ fn build_startup_inspector(session: &state::SessionSummary) -> Vec<String> {
     let mut lines = vec![
         "## Session".to_string(),
         format!("session ref: {}", session.active_session_ref),
-        format!("runtime id: {}", session.root_session_id),
+        format!("agent session id: {}", session.root_agent_session_id),
         "## Workflow".to_string(),
         "Use /sessions to browse persisted sessions and /session <ref> to open one.".to_string(),
         "Use /resume <ref> to inspect whether a session can reattach to a live runtime."
@@ -853,7 +853,7 @@ mod tests {
         let lines = build_startup_inspector(&SessionSummary {
             workspace_name: "nanoclaw".to_string(),
             active_session_ref: "run_123".to_string(),
-            root_session_id: "session_123".to_string(),
+            root_agent_session_id: "session_123".to_string(),
             provider_label: "openai".to_string(),
             model: "gpt-5.4".to_string(),
             summary_model: "gpt-5.4-mini".to_string(),

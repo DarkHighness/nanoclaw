@@ -20,8 +20,8 @@ pub fn matches_hook(registration: &HookRegistration, context: &HookContext) -> R
 mod tests {
     use super::matches_hook;
     use types::{
-        CommandHookHandler, HookContext, HookEvent, HookHandler, HookMatcher, HookRegistration,
-        RunId, SessionId,
+        AgentSessionId, CommandHookHandler, HookContext, HookEvent, HookHandler, HookMatcher,
+        HookRegistration, RunId,
     };
 
     #[test]
@@ -43,7 +43,7 @@ mod tests {
         let context = HookContext {
             event: HookEvent::PreToolUse,
             run_id: RunId::new(),
-            session_id: SessionId::new(),
+            agent_session_id: AgentSessionId::new(),
             turn_id: None,
             fields: [("tool_name".to_string(), "read".to_string())]
                 .into_iter()

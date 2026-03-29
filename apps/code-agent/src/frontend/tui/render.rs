@@ -199,8 +199,8 @@ fn session_lines(state: &TuiState) -> Vec<String> {
             preview_text(&state.session.active_session_ref, 28)
         ),
         format!(
-            "runtime id: {}",
-            preview_text(&state.session.root_session_id, 28)
+            "agent session id: {}",
+            preview_text(&state.session.root_agent_session_id, 28)
         ),
         format!("persisted sessions: {}", state.session.stored_session_count),
         "## Runtime".to_string(),
@@ -873,7 +873,7 @@ mod tests {
         let mut state = TuiState::default();
         state.session.workspace_name = "workspace".to_string();
         state.session.active_session_ref = "run_123".to_string();
-        state.session.root_session_id = "session_123".to_string();
+        state.session.root_agent_session_id = "session_123".to_string();
         state.session.workspace_root = PathBuf::from("/tmp/workspace");
 
         assert_eq!(session_context_line(&state), "context: unknown");
@@ -887,7 +887,7 @@ mod tests {
         let mut state = TuiState::default();
         state.session.workspace_name = "workspace".to_string();
         state.session.active_session_ref = "run_123".to_string();
-        state.session.root_session_id = "session_123".to_string();
+        state.session.root_agent_session_id = "session_123".to_string();
         state.session.workspace_root = PathBuf::from("/tmp/workspace");
         state.session.token_ledger = TokenLedgerSnapshot {
             context_window: Some(ContextWindowUsage {

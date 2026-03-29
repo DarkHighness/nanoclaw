@@ -15,7 +15,7 @@ use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 use tokio::fs;
 use tokio::sync::Mutex as AsyncMutex;
-use types::{RunId, SessionId};
+use types::{AgentSessionId, RunId};
 
 #[derive(Clone, Debug)]
 pub(crate) struct ManagedMemoryFile {
@@ -32,16 +32,16 @@ pub(crate) async fn record_memory(
     workspace_root: &Path,
     request: MemoryRecordRequest,
     default_run_id: Option<&RunId>,
-    default_session_id: Option<&SessionId>,
+    default_agent_session_id: Option<&AgentSessionId>,
 ) -> Result<MemoryMutationResponse> {
     let layout = MemoryStateLayout::new(workspace_root);
     let now_ms = current_timestamp_ms();
     let run_id = request.run_id.clone().or_else(|| default_run_id.cloned());
-    let session_id = request
-        .session_id
+    let agent_session_id = request
+        .agent_session_id
         .clone()
-        .or_else(|| default_session_id.cloned());
-    let target = resolve_record_target(&request, session_id.as_ref())?;
+        .or_else(|| default_agent_session_id.cloned());
+    let target = resolve_record_target(&request, agent_session_id.as_ref())?;
     let resolved = layout.resolve_managed_memory_path(Path::new(&target.relative_path))?;
     // `memory_record` is an append-style read-modify-write API. Lock the
     // target path before reading so concurrent agents cannot both observe the
@@ -59,7 +59,7 @@ pub(crate) async fn record_memory(
     metadata.scope = request.scope;
     metadata.layer = target.layer.clone();
     metadata.run_id = run_id;
-    metadata.session_id = session_id;
+    metadata.agent_session_id = agent_session_id;
     metadata.agent_name = normalize_optional(request.agent_name);
     metadata.task_id = normalize_optional(request.task_id);
     metadata.updated_at_ms = Some(now_ms);
@@ -172,8 +172,8 @@ pub(crate) fn render_memory_markdown(
     if let Some(run_id) = &metadata.run_id {
         out.push(format!("run_id: {run_id}"));
     }
-    if let Some(session_id) = &metadata.session_id {
-        out.push(format!("session_id: {session_id}"));
+    if let Some(agent_session_id) = &metadata.agent_session_id {
+        out.push(format!("agent_session_id: {agent_session_id}"));
     }
     if let Some(agent_name) = &metadata.agent_name {
         out.push(format!("agent_name: {agent_name}"));
@@ -246,7 +246,7 @@ pub(crate) fn current_timestamp_ms() -> u64 {
 
 fn resolve_record_target(
     request: &MemoryRecordRequest,
-    session_id: Option<&SessionId>,
+    agent_session_id: Option<&AgentSessionId>,
 ) -> Result<RecordTarget> {
     match request.scope {
         MemoryScope::Working => {
@@ -263,16 +263,18 @@ fn resolve_record_target(
                 });
             }
 
-            let session_id = session_id.ok_or_else(|| {
-                MemoryError::invalid("working memory record requires `session_id` or `task_id`")
+            let agent_session_id = agent_session_id.ok_or_else(|| {
+                MemoryError::invalid(
+                    "working memory record requires `agent_session_id` or `task_id`",
+                )
             })?;
             Ok(RecordTarget {
                 relative_path: format!(
                     "{MEMORY_WORKING_SESSIONS_RELATIVE}/{}.md",
-                    session_id.as_str()
+                    agent_session_id.as_str()
                 ),
-                layer: "working-session".to_string(),
-                document_title: format!("Session {}", session_id.as_str()),
+                layer: "working-agent-session".to_string(),
+                document_title: format!("Session {}", agent_session_id.as_str()),
             })
         }
         MemoryScope::Coordination => {
@@ -472,7 +474,7 @@ mod tests {
                         layer: None,
                         tags: Vec::new(),
                         run_id: None,
-                        session_id: None,
+                        agent_session_id: None,
                         agent_name: None,
                         task_id: Some("task-1".to_string()),
                     },
@@ -494,7 +496,7 @@ mod tests {
                         layer: None,
                         tags: Vec::new(),
                         run_id: None,
-                        session_id: None,
+                        agent_session_id: None,
                         agent_name: None,
                         task_id: Some("task-1".to_string()),
                     },
@@ -528,7 +530,7 @@ mod tests {
                 layer: None,
                 tags: Vec::new(),
                 run_id: None,
-                session_id: None,
+                agent_session_id: None,
                 agent_name: None,
                 task_id: Some("任务".to_string()),
             },

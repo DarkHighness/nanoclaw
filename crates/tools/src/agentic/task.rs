@@ -9,15 +9,15 @@ use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use types::{
-    AgentHandle, AgentId, AgentResultEnvelope, AgentStatus, AgentTaskSpec, AgentWaitMode,
-    AgentWaitRequest, AgentWaitResponse, CallId, MessagePart, RunId, SessionId, ToolCallId,
+    AgentHandle, AgentId, AgentResultEnvelope, AgentSessionId, AgentStatus, AgentTaskSpec,
+    AgentWaitMode, AgentWaitRequest, AgentWaitResponse, CallId, MessagePart, RunId, ToolCallId,
     ToolName, ToolOrigin, ToolOutputMode, ToolResult, ToolSpec, TurnId,
 };
 
 #[derive(Clone, Debug, Default)]
 pub struct SubagentParentContext {
     pub run_id: Option<RunId>,
-    pub session_id: Option<SessionId>,
+    pub agent_session_id: Option<AgentSessionId>,
     pub turn_id: Option<TurnId>,
     pub parent_agent_id: Option<AgentId>,
 }
@@ -26,7 +26,7 @@ impl From<&ToolExecutionContext> for SubagentParentContext {
     fn from(ctx: &ToolExecutionContext) -> Self {
         Self {
             run_id: ctx.run_id.clone(),
-            session_id: ctx.session_id.clone(),
+            agent_session_id: ctx.agent_session_id.clone(),
             turn_id: ctx.turn_id.clone(),
             parent_agent_id: ctx.agent_id.clone(),
         }
@@ -664,7 +664,7 @@ fn render_wait_summary(tool_name: &str, wait: &AgentWaitResponse) -> String {
 fn render_handle_line(handle: &AgentHandle) -> String {
     format!(
         "{} status={} task={} run={} session={}",
-        handle.agent_id, handle.status, handle.task_id, handle.run_id, handle.session_id
+        handle.agent_id, handle.status, handle.task_id, handle.run_id, handle.agent_session_id
     )
 }
 
@@ -711,8 +711,8 @@ mod tests {
     use std::collections::{BTreeMap, BTreeSet};
     use std::sync::{Arc, Mutex};
     use types::{
-        AgentHandle, AgentId, AgentResultEnvelope, AgentStatus, AgentTaskSpec, AgentWaitMode,
-        AgentWaitRequest, AgentWaitResponse, RunId, SessionId, ToolCallId, ToolName,
+        AgentHandle, AgentId, AgentResultEnvelope, AgentSessionId, AgentStatus, AgentTaskSpec,
+        AgentWaitMode, AgentWaitRequest, AgentWaitResponse, RunId, ToolCallId, ToolName,
     };
 
     #[derive(Default)]
@@ -746,7 +746,7 @@ mod tests {
                     agent_id: agent_id.clone(),
                     parent_agent_id: Some(AgentId::from("agent_parent")),
                     run_id: RunId::from(format!("run_{}", task.task_id)),
-                    session_id: SessionId::from(format!("session_{}", task.task_id)),
+                    agent_session_id: AgentSessionId::from(format!("session_{}", task.task_id)),
                     task_id: task.task_id.clone(),
                     role: task.role.clone(),
                     status: AgentStatus::Running,

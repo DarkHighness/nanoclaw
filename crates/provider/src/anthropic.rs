@@ -569,7 +569,7 @@ mod tests {
     use futures::StreamExt;
     use serde_json::{Value, json};
     use types::{
-        Message, ModelEvent, ModelRequest, RunId, SessionId, TokenUsage, ToolName, ToolOrigin,
+        AgentSessionId, Message, ModelEvent, ModelRequest, RunId, TokenUsage, ToolName, ToolOrigin,
         ToolOutputMode, ToolSpec, TurnId,
     };
     use wiremock::matchers::{header, method, path};
@@ -578,7 +578,7 @@ mod tests {
     fn base_request() -> ModelRequest {
         ModelRequest {
             run_id: RunId::new(),
-            session_id: SessionId::new(),
+            agent_session_id: AgentSessionId::new(),
             turn_id: TurnId::new(),
             instructions: vec!["You are a coding agent.".to_string()],
             messages: vec![Message::user("inspect the repo")],

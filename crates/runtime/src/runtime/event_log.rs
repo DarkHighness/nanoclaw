@@ -14,7 +14,7 @@ impl AgentRuntime {
         self.store
             .append(RunEventEnvelope::new(
                 self.session.run_id.clone(),
-                self.session.session_id.clone(),
+                self.session.agent_session_id.clone(),
                 turn_id,
                 tool_call_id,
                 event,
@@ -34,7 +34,7 @@ impl AgentRuntime {
         // once, append it, then project the host-facing typed event from it.
         let envelope = RunEventEnvelope::new(
             self.session.run_id.clone(),
-            self.session.session_id.clone(),
+            self.session.agent_session_id.clone(),
             Some(turn_id.clone()),
             Some(call.id.clone()),
             event,
@@ -56,7 +56,7 @@ impl AgentRuntime {
                 &mut self.session.transcript,
                 message.clone(),
                 self.session.run_id.clone(),
-                self.session.session_id.clone(),
+                self.session.agent_session_id.clone(),
                 turn_id.clone(),
             );
             self.store.append(event).await?;

@@ -138,7 +138,7 @@ pub(crate) async fn build_session(
     // the operator-facing session reference until the host grows a first-class
     // resumable session catalog above the raw runtime/store layer.
     let active_session_ref = runtime.run_id().to_string();
-    let root_session_id = runtime.session_id().to_string();
+    let root_agent_session_id = runtime.agent_session_id().to_string();
     let skill_names = skills.iter().map(|skill| skill.name.clone()).collect();
 
     Ok(super::CodeAgentSession::new(
@@ -155,7 +155,7 @@ pub(crate) async fn build_session(
                 .to_string(),
             workspace_root: workspace_root.to_path_buf(),
             active_session_ref,
-            root_session_id,
+            root_agent_session_id,
             provider_label: provider_label(&options.primary_profile),
             model: options.primary_profile.model.model.clone(),
             summary_model: provider_summary(&options.summary_profile.model),

@@ -50,7 +50,7 @@ pub(crate) async fn promote_memory(
         scope: request.target_scope,
         layer,
         run_id: None,
-        session_id: None,
+        agent_session_id: None,
         agent_name: None,
         task_id: None,
         updated_at_ms: Some(now_ms),

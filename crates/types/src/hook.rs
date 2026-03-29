@@ -1,4 +1,6 @@
-use crate::{Message, MessageId, MessagePart, MessageRole, RunId, SessionId, ToolName, TurnId};
+use crate::{
+    AgentSessionId, Message, MessageId, MessagePart, MessageRole, RunId, ToolName, TurnId,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -333,7 +335,7 @@ pub struct HookResult {
 pub struct HookContext {
     pub event: HookEvent,
     pub run_id: RunId,
-    pub session_id: SessionId,
+    pub agent_session_id: AgentSessionId,
     pub turn_id: Option<TurnId>,
     #[serde(default)]
     pub fields: BTreeMap<String, String>,

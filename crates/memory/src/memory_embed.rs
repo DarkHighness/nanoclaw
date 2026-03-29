@@ -56,7 +56,7 @@ struct CandidateAccumulator {
     scope_weight: f64,
     recency_multiplier: f64,
     run_match_bonus: f64,
-    session_match_bonus: f64,
+    agent_session_match_bonus: f64,
     agent_match_bonus: f64,
     task_match_bonus: f64,
     stale_penalty: f64,
@@ -917,8 +917,8 @@ impl MemoryBackend for MemoryEmbedBackend {
                     json!(candidate.run_match_bonus),
                 );
                 metadata.insert(
-                    "session_match_bonus".to_string(),
-                    json!(candidate.session_match_bonus),
+                    "agent_session_match_bonus".to_string(),
+                    json!(candidate.agent_session_match_bonus),
                 );
                 metadata.insert(
                     "agent_match_bonus".to_string(),
@@ -1256,7 +1256,7 @@ fn apply_ranked_list(
                 scope_weight: 1.0,
                 recency_multiplier: 1.0,
                 run_match_bonus: 0.0,
-                session_match_bonus: 0.0,
+                agent_session_match_bonus: 0.0,
                 agent_match_bonus: 0.0,
                 task_match_bonus: 0.0,
                 stale_penalty: 1.0,
@@ -1288,7 +1288,7 @@ fn apply_temporal_scoring(candidates: &mut [CandidateAccumulator], request: &Mem
         candidate.scope_weight = signals.scope_weight;
         candidate.recency_multiplier = signals.recency_multiplier;
         candidate.run_match_bonus = signals.run_match_bonus;
-        candidate.session_match_bonus = signals.session_match_bonus;
+        candidate.agent_session_match_bonus = signals.agent_session_match_bonus;
         candidate.agent_match_bonus = signals.agent_match_bonus;
         candidate.task_match_bonus = signals.task_match_bonus;
         candidate.stale_penalty = signals.stale_penalty;
@@ -1659,7 +1659,7 @@ mod tests {
                     scopes: None,
                     tags: None,
                     run_id: None,
-                    session_id: None,
+                    agent_session_id: None,
                     agent_name: None,
                     task_id: None,
                     include_stale: None,
@@ -1762,7 +1762,7 @@ mod tests {
                     scopes: None,
                     tags: None,
                     run_id: None,
-                    session_id: None,
+                    agent_session_id: None,
                     agent_name: None,
                     task_id: None,
                     include_stale: None,
@@ -1930,7 +1930,7 @@ mod tests {
                     scopes: None,
                     tags: None,
                     run_id: None,
-                    session_id: None,
+                    agent_session_id: None,
                     agent_name: None,
                     task_id: None,
                     include_stale: None,
@@ -2066,7 +2066,7 @@ mod tests {
                     scopes: None,
                     tags: None,
                     run_id: None,
-                    session_id: None,
+                    agent_session_id: None,
                     agent_name: None,
                     task_id: None,
                     include_stale: None,
@@ -2166,7 +2166,7 @@ mod tests {
                 scope_weight: 1.0,
                 recency_multiplier: 1.0,
                 run_match_bonus: 0.0,
-                session_match_bonus: 0.0,
+                agent_session_match_bonus: 0.0,
                 agent_match_bonus: 0.0,
                 task_match_bonus: 0.0,
                 stale_penalty: 1.0,
@@ -2194,7 +2194,7 @@ mod tests {
                 scope_weight: 1.0,
                 recency_multiplier: 1.0,
                 run_match_bonus: 0.0,
-                session_match_bonus: 0.0,
+                agent_session_match_bonus: 0.0,
                 agent_match_bonus: 0.0,
                 task_match_bonus: 0.0,
                 stale_penalty: 1.0,
@@ -2222,7 +2222,7 @@ mod tests {
                 scope_weight: 1.0,
                 recency_multiplier: 1.0,
                 run_match_bonus: 0.0,
-                session_match_bonus: 0.0,
+                agent_session_match_bonus: 0.0,
                 agent_match_bonus: 0.0,
                 task_match_bonus: 0.0,
                 stale_penalty: 1.0,

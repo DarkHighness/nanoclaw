@@ -14,6 +14,7 @@ mod store;
 pub(crate) use approval::{
     ApprovalCoordinator, ApprovalDecision, ApprovalPrompt, SessionToolApprovalHandler,
 };
+#[allow(unused_imports)]
 pub(crate) use boot::CodeAgentSubagentProfileResolver;
 pub(crate) use boot::build_session;
 #[cfg(test)]

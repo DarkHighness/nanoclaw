@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::UNIX_EPOCH;
 use tokio::fs;
-use types::{RunId, SessionId};
+use types::{AgentSessionId, RunId};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MemoryCorpusDocument {
@@ -43,7 +43,7 @@ struct MemoryFrontmatter {
     scope: Option<MemoryScope>,
     layer: Option<String>,
     run_id: Option<RunId>,
-    session_id: Option<SessionId>,
+    agent_session_id: Option<AgentSessionId>,
     agent_name: Option<String>,
     task_id: Option<String>,
     updated_at_ms: Option<u64>,
@@ -111,6 +111,9 @@ static CORPUS_DISK_READS: std::sync::atomic::AtomicUsize = std::sync::atomic::At
 #[cfg(test)]
 static CORPUS_DISCOVERY_RUNS: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
+
+#[cfg(test)]
+static MEMORY_CORPUS_TEST_LOAD_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
 
 impl MemoryCorpus {
     #[must_use]
@@ -197,6 +200,16 @@ pub fn chunk_corpus(
 }
 
 pub async fn load_memory_corpus(
+    workspace_root: &Path,
+    config: &MemoryCorpusConfig,
+) -> Result<MemoryCorpus> {
+    #[cfg(test)]
+    let _test_guard = memory_corpus_test_load_lock().lock().await;
+
+    load_memory_corpus_inner(workspace_root, config).await
+}
+
+async fn load_memory_corpus_inner(
     workspace_root: &Path,
     config: &MemoryCorpusConfig,
 ) -> Result<MemoryCorpus> {
@@ -290,6 +303,11 @@ pub async fn load_memory_corpus(
 fn memory_corpus_cache()
 -> &'static Mutex<HashMap<MemoryCorpusCacheKey, Arc<MemoryCorpusCacheEntry>>> {
     MEMORY_CORPUS_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+#[cfg(test)]
+fn memory_corpus_test_load_lock() -> &'static tokio::sync::Mutex<()> {
+    MEMORY_CORPUS_TEST_LOAD_LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
 }
 
 fn reuse_cached_document(
@@ -569,8 +587,8 @@ fn infer_metadata_from_path(path: &str) -> MemoryDocumentMetadata {
         if path.starts_with(".nanoclaw/memory/episodic/sessions/") {
             return MemoryDocumentMetadata {
                 scope: MemoryScope::Episodic,
-                layer: "runtime-session".to_string(),
-                session_id: Some(SessionId::from(stem)),
+                layer: "runtime-agent-session".to_string(),
+                agent_session_id: Some(AgentSessionId::from(stem)),
                 ..MemoryDocumentMetadata::default()
             };
         }
@@ -593,8 +611,8 @@ fn infer_metadata_from_path(path: &str) -> MemoryDocumentMetadata {
         if path.starts_with(".nanoclaw/memory/working/sessions/") {
             return MemoryDocumentMetadata {
                 scope: MemoryScope::Working,
-                layer: "working-session".to_string(),
-                session_id: Some(SessionId::from(stem)),
+                layer: "working-agent-session".to_string(),
+                agent_session_id: Some(AgentSessionId::from(stem)),
                 ..MemoryDocumentMetadata::default()
             };
         }
@@ -673,8 +691,8 @@ fn merge_metadata(
         if let Some(run_id) = frontmatter.run_id {
             inferred.run_id = Some(run_id);
         }
-        if let Some(session_id) = frontmatter.session_id {
-            inferred.session_id = Some(session_id);
+        if let Some(agent_session_id) = frontmatter.agent_session_id {
+            inferred.agent_session_id = Some(agent_session_id);
         }
         if let Some(agent_name) = normalize_optional_string(frontmatter.agent_name) {
             inferred.agent_name = Some(agent_name);
@@ -902,7 +920,8 @@ fn is_daily_log_path(path: &str) -> bool {
 mod tests {
     use super::{
         chunk_corpus, corpus_discovery_run_count, corpus_disk_read_count, load_memory_corpus,
-        reset_corpus_discovery_run_count, reset_corpus_disk_read_count,
+        load_memory_corpus_inner, memory_corpus_test_load_lock, reset_corpus_discovery_run_count,
+        reset_corpus_disk_read_count,
     };
     use crate::{MemoryChunkingConfig, MemoryCorpusConfig, MemoryScope};
     use std::time::Duration;
@@ -1020,6 +1039,7 @@ mod tests {
 
     #[tokio::test]
     async fn reuses_unchanged_documents_without_re_reading_disk() {
+        let _guard = memory_corpus_test_load_lock().lock().await;
         let dir = tempdir().unwrap();
         fs::write(dir.path().join("MEMORY.md"), "# Root\nfact")
             .await
@@ -1030,11 +1050,11 @@ mod tests {
             .unwrap();
 
         reset_corpus_disk_read_count();
-        let first = load_memory_corpus(dir.path(), &MemoryCorpusConfig::default())
+        let first = load_memory_corpus_inner(dir.path(), &MemoryCorpusConfig::default())
             .await
             .unwrap();
         let first_reads = corpus_disk_read_count();
-        let second = load_memory_corpus(dir.path(), &MemoryCorpusConfig::default())
+        let second = load_memory_corpus_inner(dir.path(), &MemoryCorpusConfig::default())
             .await
             .unwrap();
 
@@ -1045,6 +1065,7 @@ mod tests {
 
     #[tokio::test]
     async fn reuses_directory_snapshot_without_rewalking_candidates() {
+        let _guard = memory_corpus_test_load_lock().lock().await;
         let dir = tempdir().unwrap();
         fs::write(dir.path().join("MEMORY.md"), "# Root\nfact")
             .await
@@ -1056,13 +1077,13 @@ mod tests {
 
         reset_corpus_disk_read_count();
         reset_corpus_discovery_run_count();
-        load_memory_corpus(dir.path(), &MemoryCorpusConfig::default())
+        load_memory_corpus_inner(dir.path(), &MemoryCorpusConfig::default())
             .await
             .unwrap();
         let first_discovers = corpus_discovery_run_count();
         let first_reads = corpus_disk_read_count();
 
-        load_memory_corpus(dir.path(), &MemoryCorpusConfig::default())
+        load_memory_corpus_inner(dir.path(), &MemoryCorpusConfig::default())
             .await
             .unwrap();
 
@@ -1073,6 +1094,7 @@ mod tests {
 
     #[tokio::test]
     async fn reloads_only_documents_whose_fingerprint_changed() {
+        let _guard = memory_corpus_test_load_lock().lock().await;
         let dir = tempdir().unwrap();
         fs::write(dir.path().join("MEMORY.md"), "# Root\nfact")
             .await
@@ -1083,7 +1105,7 @@ mod tests {
             .unwrap();
 
         reset_corpus_disk_read_count();
-        load_memory_corpus(dir.path(), &MemoryCorpusConfig::default())
+        load_memory_corpus_inner(dir.path(), &MemoryCorpusConfig::default())
             .await
             .unwrap();
         let baseline_reads = corpus_disk_read_count();
@@ -1092,7 +1114,7 @@ mod tests {
         fs::write(dir.path().join("memory/cache.md"), "# Cache\nupdated entry")
             .await
             .unwrap();
-        let corpus = load_memory_corpus(dir.path(), &MemoryCorpusConfig::default())
+        let corpus = load_memory_corpus_inner(dir.path(), &MemoryCorpusConfig::default())
             .await
             .unwrap();
 
@@ -1103,6 +1125,7 @@ mod tests {
 
     #[tokio::test]
     async fn directory_snapshot_invalidates_when_new_candidate_is_added() {
+        let _guard = memory_corpus_test_load_lock().lock().await;
         let dir = tempdir().unwrap();
         fs::write(dir.path().join("MEMORY.md"), "# Root\nfact")
             .await
@@ -1114,7 +1137,7 @@ mod tests {
 
         reset_corpus_disk_read_count();
         reset_corpus_discovery_run_count();
-        load_memory_corpus(dir.path(), &MemoryCorpusConfig::default())
+        load_memory_corpus_inner(dir.path(), &MemoryCorpusConfig::default())
             .await
             .unwrap();
         let baseline_reads = corpus_disk_read_count();
@@ -1123,7 +1146,7 @@ mod tests {
         fs::write(dir.path().join("memory/new.md"), "# New\nentry")
             .await
             .unwrap();
-        let corpus = load_memory_corpus(dir.path(), &MemoryCorpusConfig::default())
+        let corpus = load_memory_corpus_inner(dir.path(), &MemoryCorpusConfig::default())
             .await
             .unwrap();
 

@@ -339,7 +339,7 @@ impl AgentRuntime {
             &mut self.session.transcript,
             message,
             self.session.run_id.clone(),
-            self.session.session_id.clone(),
+            self.session.agent_session_id.clone(),
             turn_id.clone(),
         );
         self.store.append(event).await?;
@@ -358,7 +358,7 @@ impl AgentRuntime {
                 HookContext {
                     event: HookEvent::Stop,
                     run_id: self.session.run_id.clone(),
-                    session_id: self.session.session_id.clone(),
+                    agent_session_id: self.session.agent_session_id.clone(),
                     turn_id: Some(turn_id.clone()),
                     fields: [("reason".to_string(), "assistant_complete".to_string())]
                         .into_iter()

@@ -37,7 +37,7 @@ impl AgentRuntime {
                 HookContext {
                     event: HookEvent::PreToolUse,
                     run_id: self.session.run_id.clone(),
-                    session_id: self.session.session_id.clone(),
+                    agent_session_id: self.session.agent_session_id.clone(),
                     turn_id: Some(turn_id.clone()),
                     fields: fields.clone(),
                     payload: json!({ "tool_call": call.clone() }),
@@ -76,7 +76,7 @@ impl AgentRuntime {
                         HookContext {
                             event: HookEvent::PermissionRequest,
                             run_id: self.session.run_id.clone(),
-                            session_id: self.session.session_id.clone(),
+                            agent_session_id: self.session.agent_session_id.clone(),
                             turn_id: Some(turn_id.clone()),
                             fields,
                             payload: json!({ "tool_call": call.clone() }),
@@ -270,7 +270,7 @@ impl AgentRuntime {
 
         let scoped_tool_context = self.tool_context.with_runtime_scope(
             self.session.run_id.clone(),
-            self.session.session_id.clone(),
+            self.session.agent_session_id.clone(),
             turn_id.clone(),
             tool_name.clone(),
             call.call_id.clone(),
@@ -291,7 +291,7 @@ impl AgentRuntime {
                     &mut self.session.transcript,
                     Message::tool_result(result.clone()),
                     self.session.run_id.clone(),
-                    self.session.session_id.clone(),
+                    self.session.agent_session_id.clone(),
                     turn_id.clone(),
                 );
                 self.store.append(event).await?;
@@ -315,7 +315,7 @@ impl AgentRuntime {
                         HookContext {
                             event: HookEvent::PostToolUse,
                             run_id: self.session.run_id.clone(),
-                            session_id: self.session.session_id.clone(),
+                            agent_session_id: self.session.agent_session_id.clone(),
                             turn_id: Some(turn_id.clone()),
                             fields: [("tool_name".to_string(), tool_name.to_string())]
                                 .into_iter()
@@ -357,7 +357,7 @@ impl AgentRuntime {
             &mut self.session.transcript,
             Message::tool_result(result.clone()),
             self.session.run_id.clone(),
-            self.session.session_id.clone(),
+            self.session.agent_session_id.clone(),
             turn_id.clone(),
         );
         self.store.append(event).await?;
@@ -380,7 +380,7 @@ impl AgentRuntime {
                 HookContext {
                     event: HookEvent::PostToolUseFailure,
                     run_id: self.session.run_id.clone(),
-                    session_id: self.session.session_id.clone(),
+                    agent_session_id: self.session.agent_session_id.clone(),
                     turn_id: Some(turn_id.clone()),
                     fields: [("tool_name".to_string(), call.tool_name.clone())]
                         .into_iter()

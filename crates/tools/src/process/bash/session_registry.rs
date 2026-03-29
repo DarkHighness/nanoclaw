@@ -9,9 +9,9 @@ type SessionRegistry = DashMap<BashSessionId, Arc<BashSession>>;
 
 static BASH_SESSIONS: OnceLock<SessionRegistry> = OnceLock::new();
 
-pub(super) fn get_session(session_id: &BashSessionId) -> Option<Arc<BashSession>> {
+pub(super) fn get_session(agent_session_id: &BashSessionId) -> Option<Arc<BashSession>> {
     bash_sessions()
-        .get(session_id)
+        .get(agent_session_id)
         .map(|entry| Arc::clone(entry.value()))
 }
 
@@ -42,7 +42,7 @@ fn prune_completed_sessions(registry: &SessionRegistry) {
     completed.sort_by_key(|(_, finished_at)| *finished_at);
 
     let remove_count = registry.len().saturating_sub(MAX_TRACKED_BASH_SESSIONS) + 1;
-    for (session_id, _) in completed.into_iter().take(remove_count) {
-        registry.remove(&session_id);
+    for (agent_session_id, _) in completed.into_iter().take(remove_count) {
+        registry.remove(&agent_session_id);
     }
 }

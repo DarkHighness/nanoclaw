@@ -1,4 +1,4 @@
-use agent::types::{Message, MessagePart, MessageRole, RunEventEnvelope, RunId, SessionId};
+use agent::types::{AgentSessionId, Message, MessagePart, MessageRole, RunEventEnvelope, RunId};
 use anyhow::{Result, anyhow};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -7,7 +7,7 @@ use store::{RunSearchResult, RunStore, RunSummary, RunTokenUsageReport};
 #[derive(Clone, Debug)]
 pub(crate) struct LoadedRun {
     pub(crate) summary: RunSummary,
-    pub(crate) session_ids: Vec<SessionId>,
+    pub(crate) agent_session_ids: Vec<AgentSessionId>,
     pub(crate) transcript: Vec<Message>,
     pub(crate) events: Vec<RunEventEnvelope>,
     pub(crate) token_usage: RunTokenUsageReport,
@@ -40,15 +40,15 @@ pub(crate) async fn search_runs(
 
 pub(crate) async fn load_run(store: &Arc<dyn RunStore>, run_ref: &str) -> Result<LoadedRun> {
     let (run_id, summary) = resolve_run(store, run_ref).await?;
-    let (events, session_ids, transcript, token_usage) = tokio::try_join!(
+    let (events, agent_session_ids, transcript, token_usage) = tokio::try_join!(
         store.events(&run_id),
-        store.session_ids(&run_id),
+        store.agent_session_ids(&run_id),
         store.replay_transcript(&run_id),
         store.token_usage(&run_id),
     )?;
     Ok(LoadedRun {
         summary,
-        session_ids,
+        agent_session_ids,
         transcript,
         events,
         token_usage,
@@ -264,7 +264,7 @@ pub(crate) fn preview_id(value: &str) -> String {
 mod tests {
     use super::{encode_run_events_jsonl, render_transcript_text, resolve_run_reference};
     use agent::types::{
-        Message, MessagePart, MessageRole, RunEventEnvelope, RunEventKind, RunId, SessionId,
+        AgentSessionId, Message, MessagePart, MessageRole, RunEventEnvelope, RunEventKind, RunId,
     };
     use store::RunSummary;
 
@@ -276,7 +276,7 @@ mod tests {
                 first_timestamp_ms: 1,
                 last_timestamp_ms: 2,
                 event_count: 3,
-                session_count: 1,
+                agent_session_count: 1,
                 transcript_message_count: 2,
                 last_user_prompt: Some("first".to_string()),
             },
@@ -285,7 +285,7 @@ mod tests {
                 first_timestamp_ms: 4,
                 last_timestamp_ms: 5,
                 event_count: 6,
-                session_count: 1,
+                agent_session_count: 1,
                 transcript_message_count: 2,
                 last_user_prompt: Some("second".to_string()),
             },
@@ -305,7 +305,7 @@ mod tests {
                 first_timestamp_ms: 1,
                 last_timestamp_ms: 2,
                 event_count: 3,
-                session_count: 1,
+                agent_session_count: 1,
                 transcript_message_count: 2,
                 last_user_prompt: None,
             },
@@ -314,7 +314,7 @@ mod tests {
                 first_timestamp_ms: 4,
                 last_timestamp_ms: 5,
                 event_count: 6,
-                session_count: 1,
+                agent_session_count: 1,
                 transcript_message_count: 2,
                 last_user_prompt: None,
             },
@@ -350,7 +350,7 @@ mod tests {
     fn event_export_writes_jsonl_lines() {
         let events = vec![RunEventEnvelope::new(
             RunId::from("run-1"),
-            SessionId::from("session-1"),
+            AgentSessionId::from("session-1"),
             None,
             None,
             RunEventKind::SessionStart { reason: None },

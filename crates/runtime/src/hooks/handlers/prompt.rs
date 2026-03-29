@@ -34,7 +34,8 @@ impl PromptHookEvaluator for FailClosedPromptHookEvaluator {
 mod tests {
     use super::{FailClosedPromptHookEvaluator, PromptHookEvaluator};
     use types::{
-        HookContext, HookEvent, HookHandler, HookRegistration, PromptHookHandler, RunId, SessionId,
+        AgentSessionId, HookContext, HookEvent, HookHandler, HookRegistration, PromptHookHandler,
+        RunId,
     };
 
     #[tokio::test]
@@ -54,7 +55,7 @@ mod tests {
                 HookContext {
                     event: HookEvent::UserPromptSubmit,
                     run_id: RunId::from("run_1"),
-                    session_id: SessionId::from("session_1"),
+                    agent_session_id: AgentSessionId::from("session_1"),
                     turn_id: None,
                     fields: Default::default(),
                     payload: serde_json::json!({}),

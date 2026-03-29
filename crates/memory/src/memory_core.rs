@@ -184,8 +184,8 @@ impl MemoryBackend for MemoryCoreBackend {
                     json!(signals.recency_multiplier),
                 );
                 metadata.insert(
-                    "session_match_bonus".to_string(),
-                    json!(signals.session_match_bonus),
+                    "agent_session_match_bonus".to_string(),
+                    json!(signals.agent_session_match_bonus),
                 );
                 metadata.insert(
                     "agent_match_bonus".to_string(),
@@ -424,7 +424,7 @@ mod tests {
     use tempfile::tempdir;
     use time::{Duration, OffsetDateTime};
     use tokio::fs;
-    use types::{Message, RunEventEnvelope, RunId, SessionId};
+    use types::{AgentSessionId, Message, RunEventEnvelope, RunId};
 
     macro_rules! bounded_async_test {
         (async fn $name:ident() $body:block) => {
@@ -462,7 +462,7 @@ mod tests {
                     scopes: None,
                     tags: None,
                     run_id: None,
-                    session_id: None,
+                    agent_session_id: None,
                     agent_name: None,
                     task_id: None,
                     include_stale: None,
@@ -520,7 +520,7 @@ mod tests {
                     scopes: None,
                     tags: None,
                     run_id: None,
-                    session_id: None,
+                    agent_session_id: None,
                     agent_name: None,
                     task_id: None,
                     include_stale: None,
@@ -553,7 +553,7 @@ mod tests {
                     scopes: None,
                     tags: None,
                     run_id: None,
-                    session_id: None,
+                    agent_session_id: None,
                     agent_name: None,
                     task_id: None,
                     include_stale: None,
@@ -595,7 +595,7 @@ mod tests {
                     scopes: None,
                     tags: None,
                     run_id: None,
-                    session_id: None,
+                    agent_session_id: None,
                     agent_name: None,
                     task_id: None,
                     include_stale: None,
@@ -624,7 +624,7 @@ mod tests {
                     scopes: None,
                     tags: None,
                     run_id: None,
-                    session_id: None,
+                    agent_session_id: None,
                     agent_name: None,
                     task_id: None,
                     include_stale: None,
@@ -644,7 +644,7 @@ mod tests {
                     scopes: None,
                     tags: None,
                     run_id: None,
-                    session_id: None,
+                    agent_session_id: None,
                     agent_name: None,
                     task_id: None,
                     include_stale: None,
@@ -715,7 +715,7 @@ mod tests {
                     scopes: None,
                     tags: None,
                     run_id: None,
-                    session_id: None,
+                    agent_session_id: None,
                     agent_name: None,
                     task_id: None,
                     include_stale: None,
@@ -750,7 +750,7 @@ mod tests {
             fs::write(
             dir.path()
                 .join(".nanoclaw/memory/working/sessions/session_1.md"),
-            "---\nscope: working\nlayer: working-session\nsession_id: session_1\ntags:\n  - debug\nstatus: ready\n---\n# Session session_1\n\ndeploy checklist",
+            "---\nscope: working\nlayer: working-agent-session\nagent_session_id: session_1\ntags:\n  - debug\nstatus: ready\n---\n# Agent Session session_1\n\ndeploy checklist",
         )
         .await
         .unwrap();
@@ -765,7 +765,7 @@ mod tests {
                     scopes: Some(vec![MemoryScope::Working]),
                     tags: Some(vec!["debug".to_string()]),
                     run_id: None,
-                    session_id: Some("session_1".into()),
+                    agent_session_id: Some("session_1".into()),
                     agent_name: None,
                     task_id: None,
                     include_stale: Some(false),
@@ -794,7 +794,7 @@ mod tests {
                     layer: None,
                     tags: vec!["deploy".to_string()],
                     run_id: Some("run_1".into()),
-                    session_id: Some("session_1".into()),
+                    agent_session_id: Some("session_1".into()),
                     agent_name: None,
                     task_id: None,
                 })
@@ -831,7 +831,7 @@ mod tests {
                     scopes: Some(vec![MemoryScope::Semantic]),
                     tags: Some(vec!["verified".to_string()]),
                     run_id: None,
-                    session_id: None,
+                    agent_session_id: None,
                     agent_name: None,
                     task_id: None,
                     include_stale: Some(false),
@@ -856,7 +856,7 @@ mod tests {
                     scopes: Some(vec![MemoryScope::Semantic]),
                     tags: None,
                     run_id: None,
-                    session_id: None,
+                    agent_session_id: None,
                     agent_name: None,
                     task_id: None,
                     include_stale: Some(true),
@@ -902,7 +902,7 @@ mod tests {
                     scopes: Some(vec![MemoryScope::Semantic]),
                     tags: None,
                     run_id: None,
-                    session_id: None,
+                    agent_session_id: None,
                     agent_name: None,
                     task_id: None,
                     include_stale: None,
@@ -919,7 +919,7 @@ mod tests {
                     scopes: Some(vec![MemoryScope::Semantic]),
                     tags: None,
                     run_id: None,
-                    session_id: None,
+                    agent_session_id: None,
                     agent_name: None,
                     task_id: None,
                     include_stale: Some(true),
@@ -980,10 +980,10 @@ mod tests {
             Ok(Vec::new())
         }
 
-        async fn session_ids(
+        async fn agent_session_ids(
             &self,
             _run_id: &RunId,
-        ) -> std::result::Result<Vec<SessionId>, RunStoreError> {
+        ) -> std::result::Result<Vec<AgentSessionId>, RunStoreError> {
             Ok(Vec::new())
         }
 
