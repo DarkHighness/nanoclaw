@@ -5,18 +5,18 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 
-const BG: Color = Color::Rgb(9, 13, 20);
-const TOP_BG: Color = Color::Rgb(9, 13, 20);
-const PANEL_BG: Color = Color::Rgb(10, 14, 21);
-const PANEL_ALT_BG: Color = Color::Rgb(12, 17, 26);
-const OVERLAY_BG: Color = Color::Rgb(20, 28, 42);
-const BORDER: Color = Color::Rgb(37, 48, 66);
-const BORDER_ACTIVE: Color = Color::Rgb(96, 180, 255);
-const TEXT: Color = Color::Rgb(228, 233, 242);
-const MUTED: Color = Color::Rgb(139, 152, 172);
-const SUBTLE: Color = Color::Rgb(97, 111, 133);
-const USER: Color = Color::Rgb(111, 203, 255);
-const ASSISTANT: Color = Color::Rgb(151, 223, 181);
+const BG: Color = Color::Rgb(13, 14, 16);
+const TOP_BG: Color = Color::Rgb(13, 14, 16);
+const PANEL_BG: Color = Color::Rgb(16, 17, 20);
+const PANEL_ALT_BG: Color = Color::Rgb(19, 21, 24);
+const OVERLAY_BG: Color = Color::Rgb(24, 26, 30);
+const BORDER: Color = Color::Rgb(58, 61, 66);
+const BORDER_ACTIVE: Color = Color::Rgb(141, 151, 132);
+const TEXT: Color = Color::Rgb(228, 229, 226);
+const MUTED: Color = Color::Rgb(150, 151, 147);
+const SUBTLE: Color = Color::Rgb(108, 110, 106);
+const USER: Color = Color::Rgb(205, 194, 166);
+const ASSISTANT: Color = Color::Rgb(170, 188, 150);
 const ERROR: Color = Color::Rgb(255, 133, 133);
 const WARN: Color = Color::Rgb(255, 196, 92);
 const HEADER: Color = Color::Rgb(235, 240, 247);
@@ -42,14 +42,14 @@ pub(crate) fn render(
 
     let body = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(79), Constraint::Percentage(21)])
+        .constraints([Constraint::Percentage(83), Constraint::Percentage(17)])
         .split(vertical[1]);
 
     render_main_pane(frame, body[0], state);
 
     let right = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(6), Constraint::Length(5)])
+        .constraints([Constraint::Min(4), Constraint::Length(4)])
         .split(body[1]);
 
     render_side_panel(frame, right[0], state);
@@ -322,7 +322,7 @@ fn render_activity(frame: &mut ratatui::Frame<'_>, area: Rect, state: &TuiState)
         ))])
     } else {
         let mut lines = Vec::new();
-        for item in state.activity.iter().rev().take(8) {
+        for item in state.activity.iter().rev().take(6) {
             lines.push(Line::from(vec![
                 Span::styled(
                     activity_marker(item),
@@ -505,22 +505,20 @@ fn build_approval_text(approval: &ApprovalPrompt) -> Text<'static> {
 
 fn side_info_lines(state: &TuiState) -> Vec<String> {
     let mut lines = vec![
-        "## Runtime".to_string(),
         format!(
             "summary: {}",
-            preview_text(&state.session.summary_model, 18)
+            preview_text(&state.session.summary_model, 14)
         ),
-        format!("memory: {}", preview_text(&state.session.memory_model, 18)),
-        "## Store".to_string(),
+        format!("memory: {}", preview_text(&state.session.memory_model, 14)),
         format!("saved: {}", state.session.stored_session_count),
-        format!("store: {}", preview_text(&state.session.store_label, 18)),
+        format!("store: {}", preview_text(&state.session.store_label, 14)),
     ];
     if let Some(warning) = &state.session.store_warning {
-        lines.push(format!("warning: {}", preview_text(warning, 18)));
+        lines.push(format!("warning: {}", preview_text(warning, 14)));
     } else {
         lines.push(format!(
             "sandbox: {}",
-            preview_text(&state.session.sandbox_summary, 18)
+            preview_text(&state.session.sandbox_summary, 14)
         ));
     }
     lines

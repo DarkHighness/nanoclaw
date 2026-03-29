@@ -33,8 +33,9 @@ cargo run --manifest-path apps/Cargo.toml -p code-agent
 
 This opens a compact `ratatui` screen with a minimal top line for
 workspace/model/session status, a wide primary pane for transcript and
-read-heavy command surfaces, a restrained right-hand info/log rail, and a
-minimal composer tuned for both prompt and slash-command workflows.
+read-heavy command surfaces, a restrained right-hand info/log rail, a more
+neutral dark palette, and a minimal composer tuned for both prompt and
+slash-command workflows.
 
 One-shot prompt:
 
@@ -212,8 +213,9 @@ loading directly from `code-agent` without relying on the legacy
 The TUI now follows a more minimal shell: a compact top line for the current
 context, most of the screen dedicated to the transcript or active command view,
 and a restrained side rail that only carries brief info plus recent log
-entries. Read-heavy outputs such as `/help`, command catalogs, and history
-lists now open in the main pane instead of the side rail.
+entries. The palette is intentionally muted rather than blue-accented, and
+read-heavy outputs such as `/help`, command catalogs, and history lists now
+open in the main pane instead of the side rail.
 
 Interactive approval and live runtime updates now also route through
 backend-owned contracts, so the TUI renders session events and approval prompts

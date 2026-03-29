@@ -208,6 +208,15 @@ Shipped in the twentieth implementation slice:
   `/agent_session` still keep the transcript in the main pane with their detail
   inspector on the right
 
+Shipped in the twenty-first implementation slice:
+
+- the TUI palette was pulled away from blue accents toward a more neutral dark
+  shell so the host feels closer to a restrained terminal tool
+- the right-hand rail was compressed again and now only carries very short info
+  plus a small recent log window
+- the side rail content was shortened to match its narrow width instead of
+  relying on wrapping dense structured output
+
 Still pending in the next slices:
 
 - remaining docs and workspace cleanup before `reference-tui` can be retired
