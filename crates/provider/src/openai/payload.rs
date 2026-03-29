@@ -181,7 +181,6 @@ fn serialize_openai_input_items(messages: &[Message]) -> Result<Vec<Value>> {
                     items.push(json!({
                         "type": "message",
                         "role": "assistant",
-                        "id": message.message_id,
                         "content": content,
                     }));
                 }
@@ -272,10 +271,10 @@ fn openai_user_message_block(part: &MessagePart) -> Option<Value> {
 
 fn openai_assistant_message_block(part: &MessagePart) -> Option<Value> {
     match part {
-        MessagePart::Text { text } => Some(json!({ "type": "output_text", "text": text })),
+        MessagePart::Text { text } => Some(json!({ "type": "input_text", "text": text })),
         MessagePart::Reasoning { reasoning } => {
             let text = reasoning.display_text();
-            (!text.is_empty()).then(|| json!({ "type": "output_text", "text": text }))
+            (!text.is_empty()).then(|| json!({ "type": "input_text", "text": text }))
         }
         MessagePart::Resource {
             uri,
@@ -283,7 +282,7 @@ fn openai_assistant_message_block(part: &MessagePart) -> Option<Value> {
             metadata,
             ..
         } => Some(json!({
-            "type": "output_text",
+            "type": "input_text",
             "text": text.clone().unwrap_or_else(|| {
                 metadata
                     .as_ref()
@@ -292,11 +291,11 @@ fn openai_assistant_message_block(part: &MessagePart) -> Option<Value> {
             }),
         })),
         MessagePart::Json { value } => Some(json!({
-            "type": "output_text",
+            "type": "input_text",
             "text": stringify_json(value),
         })),
         MessagePart::ProviderExtension { payload, .. } => Some(json!({
-            "type": "output_text",
+            "type": "input_text",
             "text": stringify_json(payload),
         })),
         _ => None,

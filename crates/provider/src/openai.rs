@@ -648,7 +648,10 @@ mod tests {
 
         assert_eq!(body["input"][1]["type"], json!("message"));
         assert_eq!(body["input"][1]["role"], json!("assistant"));
+        assert!(body["input"][1].get("id").is_none());
         assert!(body["input"][1].get("status").is_none());
+        assert_eq!(body["input"][1]["content"][0]["type"], json!("input_text"));
+        assert_eq!(body["input"][1]["content"][0]["text"], json!("working"));
         assert_eq!(body["input"][2]["type"], json!("function_call"));
         assert_eq!(body["input"][2]["id"], json!("fc_123"));
         assert_eq!(body["input"][2]["call_id"], json!("call_123"));
