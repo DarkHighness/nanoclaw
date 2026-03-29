@@ -1,6 +1,6 @@
 use crate::backend::session_catalog;
 use crate::backend::session_history::{
-    self, LoadedAgentSession, LoadedSession, SessionExportArtifact,
+    self, LoadedAgentSession, LoadedSession, SessionExportArtifact, preview_id,
 };
 use crate::backend::session_resume;
 use crate::backend::task_history::{self, LoadedTask, PersistedTaskSummary};
@@ -12,6 +12,7 @@ use crate::backend::{
 };
 use agent::mcp::ConnectedMcpServer;
 use agent::runtime::Result as RuntimeResult;
+use agent::tools::{SubagentExecutor, SubagentParentContext};
 use agent::types::{AgentSessionId, Message, SessionId};
 use agent::{AgentRuntime, RuntimeCommand, Skill};
 use anyhow::Result;
@@ -65,11 +66,37 @@ pub(crate) struct SessionOperationOutcome {
     pub(crate) transcript: Vec<Message>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct LiveTaskSummary {
+    pub(crate) agent_id: String,
+    pub(crate) task_id: String,
+    pub(crate) role: String,
+    pub(crate) status: agent::types::AgentStatus,
+    pub(crate) session_ref: String,
+    pub(crate) agent_session_ref: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LiveTaskControlAction {
+    Cancelled,
+    AlreadyTerminal,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct LiveTaskControlOutcome {
+    pub(crate) requested_ref: String,
+    pub(crate) agent_id: String,
+    pub(crate) task_id: String,
+    pub(crate) status: agent::types::AgentStatus,
+    pub(crate) action: LiveTaskControlAction,
+}
+
 /// The backend session owns runtime state so frontends can speak to a stable
 /// host contract instead of sharing `AgentRuntime` directly.
 #[derive(Clone)]
 pub(crate) struct CodeAgentSession {
     runtime: Arc<AsyncMutex<AgentRuntime>>,
+    subagent_executor: Arc<dyn SubagentExecutor>,
     store: Arc<dyn SessionStore>,
     mcp_servers: Arc<Vec<ConnectedMcpServer>>,
     approvals: ApprovalCoordinator,
@@ -82,6 +109,7 @@ pub(crate) struct CodeAgentSession {
 impl CodeAgentSession {
     pub(crate) fn new(
         runtime: AgentRuntime,
+        subagent_executor: Arc<dyn SubagentExecutor>,
         store: Arc<dyn SessionStore>,
         mcp_servers: Vec<ConnectedMcpServer>,
         approvals: ApprovalCoordinator,
@@ -92,6 +120,7 @@ impl CodeAgentSession {
         let workspace_root = startup.workspace_root.clone();
         Self {
             runtime: Arc::new(AsyncMutex::new(runtime)),
+            subagent_executor,
             store,
             mcp_servers: Arc::new(mcp_servers),
             approvals,
@@ -251,6 +280,15 @@ impl CodeAgentSession {
         task_history::list_tasks(&self.store, session_ref).await
     }
 
+    pub(crate) async fn list_live_tasks(&self) -> Result<Vec<LiveTaskSummary>> {
+        let handles = self
+            .subagent_executor
+            .list(SubagentParentContext::default())
+            .await
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+        Ok(live_task_summaries(&handles))
+    }
+
     pub(crate) async fn load_session(&self, session_ref: &str) -> Result<LoadedSession> {
         session_history::load_session(&self.store, session_ref).await
     }
@@ -270,6 +308,39 @@ impl CodeAgentSession {
         let tasks = self.list_tasks(None).await?;
         let summary = task_history::resolve_task_reference(&tasks, task_ref)?.clone();
         task_history::load_task(&self.store, summary).await
+    }
+
+    pub(crate) async fn cancel_live_task(
+        &self,
+        task_or_agent_ref: &str,
+        reason: Option<String>,
+    ) -> Result<LiveTaskControlOutcome> {
+        let handles = self
+            .subagent_executor
+            .list(SubagentParentContext::default())
+            .await
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+        let handle = resolve_live_task_reference(&handles, task_or_agent_ref)?.clone();
+        let updated = self
+            .subagent_executor
+            .cancel(
+                SubagentParentContext::default(),
+                handle.agent_id.clone(),
+                reason,
+            )
+            .await
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+        Ok(LiveTaskControlOutcome {
+            requested_ref: task_or_agent_ref.to_string(),
+            agent_id: updated.agent_id.to_string(),
+            task_id: updated.task_id,
+            status: updated.status.clone(),
+            action: if handle.status.is_terminal() {
+                LiveTaskControlAction::AlreadyTerminal
+            } else {
+                LiveTaskControlAction::Cancelled
+            },
+        })
     }
 
     pub(crate) async fn export_session(
@@ -421,6 +492,84 @@ impl CodeAgentSession {
     }
 }
 
+fn live_task_summaries(handles: &[agent::types::AgentHandle]) -> Vec<LiveTaskSummary> {
+    let mut summaries = handles
+        .iter()
+        .map(|handle| LiveTaskSummary {
+            agent_id: handle.agent_id.to_string(),
+            task_id: handle.task_id.clone(),
+            role: handle.role.clone(),
+            status: handle.status.clone(),
+            session_ref: handle.session_id.to_string(),
+            agent_session_ref: handle.agent_session_id.to_string(),
+        })
+        .collect::<Vec<_>>();
+    summaries.sort_by(|left, right| {
+        left.task_id
+            .cmp(&right.task_id)
+            .then_with(|| left.agent_id.cmp(&right.agent_id))
+    });
+    summaries
+}
+
+fn resolve_live_task_reference<'a>(
+    handles: &'a [agent::types::AgentHandle],
+    task_or_agent_ref: &str,
+) -> Result<&'a agent::types::AgentHandle> {
+    if let Some(handle) = handles
+        .iter()
+        .find(|handle| handle.task_id == task_or_agent_ref)
+    {
+        return Ok(handle);
+    }
+    if let Some(handle) = handles
+        .iter()
+        .find(|handle| handle.agent_id.as_str() == task_or_agent_ref)
+    {
+        return Ok(handle);
+    }
+
+    let task_matches = handles
+        .iter()
+        .filter(|handle| handle.task_id.starts_with(task_or_agent_ref))
+        .collect::<Vec<_>>();
+    match task_matches.as_slice() {
+        [handle] => return Ok(handle),
+        [] => {}
+        _ => {
+            return Err(anyhow::anyhow!(
+                "ambiguous live task prefix {task_or_agent_ref}: {}",
+                task_matches
+                    .iter()
+                    .take(6)
+                    .map(|handle| handle.task_id.clone())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+    }
+
+    let agent_matches = handles
+        .iter()
+        .filter(|handle| handle.agent_id.as_str().starts_with(task_or_agent_ref))
+        .collect::<Vec<_>>();
+    match agent_matches.as_slice() {
+        [] => Err(anyhow::anyhow!(
+            "unknown live task or agent id: {task_or_agent_ref}"
+        )),
+        [handle] => Ok(handle),
+        _ => Err(anyhow::anyhow!(
+            "ambiguous live agent prefix {task_or_agent_ref}: {}",
+            agent_matches
+                .iter()
+                .take(6)
+                .map(|handle| preview_id(handle.agent_id.as_str()))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -428,12 +577,19 @@ mod tests {
     };
     use crate::backend::{ApprovalCoordinator, SessionEventStream, StartupDiagnosticsSnapshot};
     use agent::runtime::{HookRunner, ModelBackend, Result as RuntimeResult};
-    use agent::tools::ToolExecutionContext;
-    use agent::types::{ModelEvent, ModelRequest, SessionEventKind, SessionId};
+    use agent::tools::{
+        Result as ToolResult, SubagentExecutor, SubagentParentContext, ToolError,
+        ToolExecutionContext,
+    };
+    use agent::types::{
+        AgentHandle, AgentId, AgentResultEnvelope, AgentWaitRequest, AgentWaitResponse, ModelEvent,
+        ModelRequest, SessionEventKind, SessionId,
+    };
     use agent::{AgentRuntimeBuilder, RuntimeCommand, Skill};
     use async_trait::async_trait;
     use futures::{StreamExt, stream, stream::BoxStream};
-    use std::sync::Arc;
+    use serde_json::Value;
+    use std::sync::{Arc, Mutex};
     use store::{InMemorySessionStore, SessionStore};
 
     struct NeverBackend;
@@ -467,6 +623,150 @@ mod tests {
         }
     }
 
+    struct NoopSubagentExecutor;
+
+    #[async_trait]
+    impl SubagentExecutor for NoopSubagentExecutor {
+        async fn spawn(
+            &self,
+            _parent: SubagentParentContext,
+            _tasks: Vec<agent::types::AgentTaskSpec>,
+        ) -> ToolResult<Vec<AgentHandle>> {
+            Err(ToolError::invalid_state(
+                "test executor does not support spawn",
+            ))
+        }
+
+        async fn send(
+            &self,
+            _parent: SubagentParentContext,
+            _agent_id: AgentId,
+            _channel: String,
+            _payload: Value,
+        ) -> ToolResult<AgentHandle> {
+            Err(ToolError::invalid_state(
+                "test executor does not support send",
+            ))
+        }
+
+        async fn wait(
+            &self,
+            _parent: SubagentParentContext,
+            _request: AgentWaitRequest,
+        ) -> ToolResult<AgentWaitResponse> {
+            Ok(AgentWaitResponse {
+                completed: Vec::new(),
+                pending: Vec::new(),
+                results: Vec::<AgentResultEnvelope>::new(),
+            })
+        }
+
+        async fn list(&self, _parent: SubagentParentContext) -> ToolResult<Vec<AgentHandle>> {
+            Ok(Vec::new())
+        }
+
+        async fn cancel(
+            &self,
+            _parent: SubagentParentContext,
+            _agent_id: AgentId,
+            _reason: Option<String>,
+        ) -> ToolResult<AgentHandle> {
+            Err(ToolError::invalid_state(
+                "test executor does not support cancel",
+            ))
+        }
+    }
+
+    struct RecordingSubagentExecutor {
+        handles: Mutex<Vec<AgentHandle>>,
+    }
+
+    impl RecordingSubagentExecutor {
+        fn new(handles: Vec<AgentHandle>) -> Self {
+            Self {
+                handles: Mutex::new(handles),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl SubagentExecutor for RecordingSubagentExecutor {
+        async fn spawn(
+            &self,
+            _parent: SubagentParentContext,
+            _tasks: Vec<agent::types::AgentTaskSpec>,
+        ) -> ToolResult<Vec<AgentHandle>> {
+            Err(ToolError::invalid_state(
+                "test executor does not support spawn",
+            ))
+        }
+
+        async fn send(
+            &self,
+            _parent: SubagentParentContext,
+            _agent_id: AgentId,
+            _channel: String,
+            _payload: Value,
+        ) -> ToolResult<AgentHandle> {
+            Err(ToolError::invalid_state(
+                "test executor does not support send",
+            ))
+        }
+
+        async fn wait(
+            &self,
+            _parent: SubagentParentContext,
+            _request: AgentWaitRequest,
+        ) -> ToolResult<AgentWaitResponse> {
+            Ok(AgentWaitResponse {
+                completed: Vec::new(),
+                pending: Vec::new(),
+                results: Vec::new(),
+            })
+        }
+
+        async fn list(&self, _parent: SubagentParentContext) -> ToolResult<Vec<AgentHandle>> {
+            Ok(self.handles.lock().unwrap().clone())
+        }
+
+        async fn cancel(
+            &self,
+            _parent: SubagentParentContext,
+            agent_id: AgentId,
+            _reason: Option<String>,
+        ) -> ToolResult<AgentHandle> {
+            let mut handles = self.handles.lock().unwrap();
+            let handle = handles
+                .iter_mut()
+                .find(|handle| handle.agent_id == agent_id)
+                .ok_or_else(|| ToolError::invalid_state("unknown agent"))?;
+            if !handle.status.is_terminal() {
+                handle.status = agent::types::AgentStatus::Cancelled;
+            }
+            Ok(handle.clone())
+        }
+    }
+
+    fn startup_snapshot(workspace_root: &std::path::Path) -> SessionStartupSnapshot {
+        SessionStartupSnapshot {
+            workspace_name: "workspace".to_string(),
+            workspace_root: workspace_root.to_path_buf(),
+            active_session_ref: "session-active".to_string(),
+            root_agent_session_id: "agent-session-active".to_string(),
+            provider_label: "provider".to_string(),
+            model: "model".to_string(),
+            summary_model: "summary".to_string(),
+            memory_model: "memory".to_string(),
+            tool_names: Vec::new(),
+            skill_names: Vec::new(),
+            store_label: "memory".to_string(),
+            store_warning: None,
+            stored_session_count: 0,
+            sandbox_summary: "workspace-write".to_string(),
+            startup_diagnostics: StartupDiagnosticsSnapshot::default(),
+        }
+    }
+
     #[tokio::test]
     async fn start_new_session_refreshes_backend_snapshot_refs() {
         let dir = tempfile::tempdir().unwrap();
@@ -481,29 +781,17 @@ mod tests {
             .build();
         let initial_session_ref = runtime.session_id().to_string();
         let initial_agent_session_ref = runtime.agent_session_id().to_string();
+        let mut startup = startup_snapshot(dir.path());
+        startup.active_session_ref = initial_session_ref.clone();
+        startup.root_agent_session_id = initial_agent_session_ref.clone();
         let session = CodeAgentSession::new(
             runtime,
+            Arc::new(NoopSubagentExecutor),
             store.clone(),
             Vec::new(),
             ApprovalCoordinator::default(),
             SessionEventStream::default(),
-            SessionStartupSnapshot {
-                workspace_name: "workspace".to_string(),
-                workspace_root: dir.path().to_path_buf(),
-                active_session_ref: initial_session_ref.clone(),
-                root_agent_session_id: initial_agent_session_ref.clone(),
-                provider_label: "provider".to_string(),
-                model: "model".to_string(),
-                summary_model: "summary".to_string(),
-                memory_model: "memory".to_string(),
-                tool_names: Vec::new(),
-                skill_names: Vec::new(),
-                store_label: "memory".to_string(),
-                store_warning: None,
-                stored_session_count: 0,
-                sandbox_summary: "workspace-write".to_string(),
-                startup_diagnostics: StartupDiagnosticsSnapshot::default(),
-            },
+            startup,
             Vec::<Skill>::new(),
         );
 
@@ -546,29 +834,17 @@ mod tests {
             .build();
         let original_session_ref = runtime.session_id().to_string();
         let original_agent_session_ref = runtime.agent_session_id().to_string();
+        let mut startup = startup_snapshot(dir.path());
+        startup.active_session_ref = original_session_ref.clone();
+        startup.root_agent_session_id = original_agent_session_ref.clone();
         let session = CodeAgentSession::new(
             runtime,
+            Arc::new(NoopSubagentExecutor),
             store.clone(),
             Vec::new(),
             ApprovalCoordinator::default(),
             SessionEventStream::default(),
-            SessionStartupSnapshot {
-                workspace_name: "workspace".to_string(),
-                workspace_root: dir.path().to_path_buf(),
-                active_session_ref: original_session_ref.clone(),
-                root_agent_session_id: original_agent_session_ref.clone(),
-                provider_label: "provider".to_string(),
-                model: "model".to_string(),
-                summary_model: "summary".to_string(),
-                memory_model: "memory".to_string(),
-                tool_names: Vec::new(),
-                skill_names: Vec::new(),
-                store_label: "memory".to_string(),
-                store_warning: None,
-                stored_session_count: 0,
-                sandbox_summary: "workspace-write".to_string(),
-                startup_diagnostics: StartupDiagnosticsSnapshot::default(),
-            },
+            startup,
             Vec::<Skill>::new(),
         );
 
@@ -604,5 +880,97 @@ mod tests {
         );
         assert_eq!(outcome.transcript.len(), 1);
         assert_eq!(outcome.transcript[0].text_content(), "resume me");
+    }
+
+    #[tokio::test]
+    async fn live_task_listing_projects_sorted_child_handles() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(InMemorySessionStore::new());
+        let runtime = AgentRuntimeBuilder::new(Arc::new(NeverBackend), store.clone())
+            .hook_runner(Arc::new(HookRunner::default()))
+            .tool_context(ToolExecutionContext {
+                workspace_root: dir.path().to_path_buf(),
+                workspace_only: true,
+                ..Default::default()
+            })
+            .build();
+        let executor = Arc::new(RecordingSubagentExecutor::new(vec![
+            AgentHandle {
+                agent_id: AgentId::from("agent-b"),
+                parent_agent_id: None,
+                session_id: SessionId::from("session-1"),
+                agent_session_id: agent::types::AgentSessionId::from("agent-session-2"),
+                task_id: "task-b".to_string(),
+                role: "reviewer".to_string(),
+                status: agent::types::AgentStatus::Running,
+            },
+            AgentHandle {
+                agent_id: AgentId::from("agent-a"),
+                parent_agent_id: None,
+                session_id: SessionId::from("session-1"),
+                agent_session_id: agent::types::AgentSessionId::from("agent-session-1"),
+                task_id: "task-a".to_string(),
+                role: "researcher".to_string(),
+                status: agent::types::AgentStatus::Queued,
+            },
+        ]));
+        let session = CodeAgentSession::new(
+            runtime,
+            executor,
+            store,
+            Vec::new(),
+            ApprovalCoordinator::default(),
+            SessionEventStream::default(),
+            startup_snapshot(dir.path()),
+            Vec::<Skill>::new(),
+        );
+
+        let live_tasks = session.list_live_tasks().await.unwrap();
+
+        assert_eq!(live_tasks.len(), 2);
+        assert_eq!(live_tasks[0].task_id, "task-a");
+        assert_eq!(live_tasks[1].task_id, "task-b");
+        assert_eq!(live_tasks[0].role, "researcher");
+    }
+
+    #[tokio::test]
+    async fn cancel_live_task_updates_backend_outcome() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(InMemorySessionStore::new());
+        let runtime = AgentRuntimeBuilder::new(Arc::new(NeverBackend), store.clone())
+            .hook_runner(Arc::new(HookRunner::default()))
+            .tool_context(ToolExecutionContext {
+                workspace_root: dir.path().to_path_buf(),
+                workspace_only: true,
+                ..Default::default()
+            })
+            .build();
+        let session = CodeAgentSession::new(
+            runtime,
+            Arc::new(RecordingSubagentExecutor::new(vec![AgentHandle {
+                agent_id: AgentId::from("agent-cancel"),
+                parent_agent_id: None,
+                session_id: SessionId::from("session-1"),
+                agent_session_id: agent::types::AgentSessionId::from("agent-session-1"),
+                task_id: "task-cancel".to_string(),
+                role: "editor".to_string(),
+                status: agent::types::AgentStatus::Running,
+            }])),
+            store,
+            Vec::new(),
+            ApprovalCoordinator::default(),
+            SessionEventStream::default(),
+            startup_snapshot(dir.path()),
+            Vec::<Skill>::new(),
+        );
+
+        let outcome = session
+            .cancel_live_task("task-cancel", Some("operator_cancel".to_string()))
+            .await
+            .unwrap();
+
+        assert_eq!(outcome.action, super::LiveTaskControlAction::Cancelled);
+        assert_eq!(outcome.task_id, "task-cancel");
+        assert_eq!(outcome.status, agent::types::AgentStatus::Cancelled);
     }
 }

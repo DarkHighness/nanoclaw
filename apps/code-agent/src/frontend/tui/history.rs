@@ -1,10 +1,11 @@
 use super::state::preview_text;
 use crate::backend::{
-    LoadedAgentSession, LoadedSession, LoadedSubagentSession, LoadedTask, McpPromptSummary,
-    McpResourceSummary, McpServerSummary, PersistedAgentSessionSummary,
-    PersistedSessionSearchMatch, PersistedSessionSummary, PersistedTaskSummary,
-    SessionExportArtifact, SessionExportKind, SessionOperationAction, SessionOperationOutcome,
-    StartupDiagnosticsSnapshot, message_to_text, preview_id,
+    LiveTaskControlAction, LiveTaskControlOutcome, LiveTaskSummary, LoadedAgentSession,
+    LoadedSession, LoadedSubagentSession, LoadedTask, McpPromptSummary, McpResourceSummary,
+    McpServerSummary, PersistedAgentSessionSummary, PersistedSessionSearchMatch,
+    PersistedSessionSummary, PersistedTaskSummary, SessionExportArtifact, SessionExportKind,
+    SessionOperationAction, SessionOperationOutcome, StartupDiagnosticsSnapshot, message_to_text,
+    preview_id,
 };
 use agent::types::{AgentSessionId, Message, SessionEventEnvelope, SessionEventKind};
 use store::TokenUsageRecord;
@@ -52,6 +53,18 @@ pub(crate) fn format_task_summary_line(summary: &PersistedTaskSummary) -> String
         summary.role,
         summary.status,
         preview_text(&summary.summary, 48)
+    )
+}
+
+pub(crate) fn format_live_task_summary_line(summary: &LiveTaskSummary) -> String {
+    format!(
+        "{}  status={} role={} agent={} session={} agent_session={}",
+        summary.task_id,
+        summary.status,
+        summary.role,
+        preview_id(&summary.agent_id),
+        preview_id(&summary.session_ref),
+        preview_id(&summary.agent_session_ref)
     )
 }
 
@@ -354,6 +367,23 @@ pub(crate) fn format_session_operation_outcome(outcome: &SessionOperationOutcome
         ));
     }
     lines
+}
+
+pub(crate) fn format_live_task_control_outcome(outcome: &LiveTaskControlOutcome) -> Vec<String> {
+    vec![
+        "## Live Task Control".to_string(),
+        format!(
+            "action: {}",
+            match outcome.action {
+                LiveTaskControlAction::Cancelled => "cancelled",
+                LiveTaskControlAction::AlreadyTerminal => "already_terminal",
+            }
+        ),
+        format!("requested ref: {}", outcome.requested_ref),
+        format!("task id: {}", outcome.task_id),
+        format!("agent id: {}", outcome.agent_id),
+        format!("status: {}", outcome.status),
+    ]
 }
 
 pub(crate) fn format_startup_diagnostics(snapshot: &StartupDiagnosticsSnapshot) -> Vec<String> {

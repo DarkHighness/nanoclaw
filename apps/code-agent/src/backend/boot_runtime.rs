@@ -1,7 +1,6 @@
 use crate::options::AppOptions;
-use agent::runtime::{
-    DefaultCommandHookExecutor, HookRunner, LoopDetectionConfig, RuntimeSubagentExecutor,
-};
+use agent::runtime::{DefaultCommandHookExecutor, HookRunner, LoopDetectionConfig};
+use agent::tools::SubagentExecutor;
 use agent::{
     BashTool, CodeDefinitionsTool, CodeDocumentSymbolsTool, CodeIntelBackend, CodeReferencesTool,
     CodeSymbolSearchTool, EditTool, GlobTool, GrepTool, ListTool, ManagedCodeIntelBackend,
@@ -54,7 +53,7 @@ pub(crate) fn build_runtime_tooling(
 
 pub(crate) fn register_subagent_tools(
     tools: &mut ToolRegistry,
-    subagent_executor: Arc<RuntimeSubagentExecutor>,
+    subagent_executor: Arc<dyn SubagentExecutor>,
 ) {
     tools.register(TaskTool::new(subagent_executor.clone()));
     tools.register(agent::tools::TaskBatchTool::new(subagent_executor.clone()));

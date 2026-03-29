@@ -31,6 +31,11 @@ pub(crate) enum SlashCommand {
     AgentSession {
         agent_session_ref: String,
     },
+    LiveTasks,
+    CancelTask {
+        task_or_agent_ref: String,
+        reason: Option<String>,
+    },
     Tasks {
         session_ref: Option<String>,
     },
@@ -113,6 +118,16 @@ enum SlashSubcommand {
     AgentSession {
         agent_session_ref: String,
     },
+    LiveTasks,
+    CancelTask {
+        task_or_agent_ref: String,
+        #[arg(
+            value_name = "REASON",
+            trailing_var_arg = true,
+            allow_hyphen_values = true
+        )]
+        reason: Vec<String>,
+    },
     Tasks {
         session_ref: Option<String>,
     },
@@ -190,6 +205,14 @@ impl From<SlashSubcommand> for SlashCommand {
             SlashSubcommand::AgentSession { agent_session_ref } => {
                 Self::AgentSession { agent_session_ref }
             }
+            SlashSubcommand::LiveTasks => Self::LiveTasks,
+            SlashSubcommand::CancelTask {
+                task_or_agent_ref,
+                reason,
+            } => Self::CancelTask {
+                task_or_agent_ref,
+                reason: join_optional_tail(reason),
+            },
             SlashSubcommand::Tasks { session_ref } => Self::Tasks { session_ref },
             SlashSubcommand::Task { task_ref } => Self::Task { task_ref },
             SlashSubcommand::Sessions { query } => Self::Sessions {
@@ -288,6 +311,28 @@ mod tests {
         match parse_slash_command("/task review-task") {
             SlashCommand::Task { task_ref } => {
                 assert_eq!(task_ref, "review-task");
+            }
+            _ => panic!("unexpected command"),
+        }
+    }
+
+    #[test]
+    fn parses_live_task_listing() {
+        assert!(matches!(
+            parse_slash_command("/live_tasks"),
+            SlashCommand::LiveTasks
+        ));
+    }
+
+    #[test]
+    fn parses_cancel_task_with_optional_reason_tail() {
+        match parse_slash_command("/cancel_task review-task fix it now") {
+            SlashCommand::CancelTask {
+                task_or_agent_ref,
+                reason,
+            } => {
+                assert_eq!(task_or_agent_ref, "review-task");
+                assert_eq!(reason, Some("fix it now".to_string()));
             }
             _ => panic!("unexpected command"),
         }

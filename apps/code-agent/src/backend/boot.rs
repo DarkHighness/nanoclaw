@@ -22,7 +22,7 @@ use agent::runtime::{
     NoopToolApprovalPolicy, RuntimeSubagentExecutor, SubagentProfileResolver,
     SubagentRuntimeProfile, ToolApprovalHandler,
 };
-use agent::tools::{describe_sandbox_policy, ensure_sandbox_policy_supported};
+use agent::tools::{SubagentExecutor, describe_sandbox_policy, ensure_sandbox_policy_supported};
 use agent::types::AgentTaskSpec;
 use agent::{
     AgentRuntime, AgentRuntimeBuilder, SandboxPolicy, Skill, SkillCatalog, ToolExecutionContext,
@@ -37,6 +37,7 @@ use tracing::{info, warn};
 
 struct RuntimeBuildResult {
     runtime: AgentRuntime,
+    subagent_executor: Arc<dyn SubagentExecutor>,
     store: Arc<dyn store::SessionStore>,
     skills: Vec<Skill>,
     mcp_servers: Vec<ConnectedMcpServer>,
@@ -118,6 +119,7 @@ pub(crate) async fn build_session(
 
     let RuntimeBuildResult {
         runtime,
+        subagent_executor,
         store,
         skills,
         mcp_servers,
@@ -143,6 +145,7 @@ pub(crate) async fn build_session(
 
     Ok(super::CodeAgentSession::new(
         runtime,
+        subagent_executor,
         store,
         mcp_servers,
         approvals,
@@ -300,7 +303,7 @@ async fn build_runtime(
         skill_catalog: skill_catalog.clone(),
         plugin_instructions: plugin_instructions.clone(),
     });
-    let subagent_executor = RuntimeSubagentExecutor::new(
+    let subagent_executor: Arc<dyn SubagentExecutor> = Arc::new(RuntimeSubagentExecutor::new(
         hook_runner.clone(),
         store.clone(),
         tools.clone(),
@@ -311,9 +314,8 @@ async fn build_runtime(
         runtime_hooks.clone(),
         skill_catalog.clone(),
         subagent_profile_resolver,
-    );
-    let subagent_executor = Arc::new(subagent_executor);
-    register_subagent_tools(&mut tools, subagent_executor);
+    ));
+    register_subagent_tools(&mut tools, subagent_executor.clone());
     let tool_specs = tools.specs();
     let startup_diagnostics = build_startup_diagnostics_snapshot(
         workspace_root,
@@ -343,6 +345,7 @@ async fn build_runtime(
 
     Ok(RuntimeBuildResult {
         runtime,
+        subagent_executor,
         store,
         skills,
         mcp_servers: connected_mcp_servers,

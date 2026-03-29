@@ -140,6 +140,8 @@ not have useful extensions, including `Dockerfile*`, `Containerfile*`, `go.mod`,
 - `/help`
 - `/agent_sessions [session-ref]`
 - `/agent_session <agent-session-ref>`
+- `/live_tasks`
+- `/cancel_task <task-or-agent-ref> [reason]`
 - `/tasks [session-ref]`
 - `/task <task-id>`
 - `/sessions [query]`
@@ -166,13 +168,16 @@ conversation history and `agent session` terminology for runtime-resume targets.
 `/session <session-ref>` opens persisted conversation history and exports
 artifacts. `/agent_session <agent-session-ref>` inspects a specific runtime
 window, including its transcript slice, token budget, and spawned subagent
-summaries. `/tasks [session-ref]` lists persisted child tasks, and `/task
-<task-id>` opens their prompt/result/artifact view plus the child session
-transcript. `/resume <agent-session-ref>` resolves an `AgentSessionId` instead
-of a top-level `SessionId`. Historical agent sessions can now be reattached
-into the live runtime, and the resumed runtime receives a fresh active
-`AgentSessionId` bound to the original top-level `SessionId`. Older compacted
-histories that predate resume checkpoints still remain history-only.
+summaries. `/live_tasks` lists currently attached child agents for the active
+runtime, and `/cancel_task <task-or-agent-ref> [reason]` can stop one without
+leaving the current session. `/tasks [session-ref]` lists persisted child
+tasks, and `/task <task-id>` opens their prompt/result/artifact view plus the
+child session transcript. `/resume <agent-session-ref>` resolves an
+`AgentSessionId` instead of a top-level `SessionId`. Historical agent sessions
+can now be reattached into the live runtime, and the resumed runtime receives a
+fresh active `AgentSessionId` bound to the original top-level `SessionId`.
+Older compacted histories that predate resume checkpoints still remain
+history-only.
 
 `/new` and `/clear` now perform the same backend-owned operation: they create a
 fresh active top-level session while keeping prior sessions in durable history
@@ -181,6 +186,10 @@ for browsing, export, and later reattachment.
 Those lifecycle actions now flow through a typed backend session-operation
 contract, so future frontends do not need to orchestrate separate calls for
 reset, resume, startup refresh, and transcript reload.
+
+The live child-agent operator surface is now backend-owned as well: the TUI no
+longer needs direct runtime access just to inspect or cancel currently attached
+subagents. Richer live controls such as send/wait are still pending.
 
 The startup inspector is now backed by a structured backend snapshot, and the
 MCP-focused commands expose connected server catalogs plus prompt/resource

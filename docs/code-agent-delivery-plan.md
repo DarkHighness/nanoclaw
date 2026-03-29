@@ -134,10 +134,20 @@ Shipped in the twelfth implementation slice:
 - task inspection now includes prompt/result/artifact data plus the child
   session transcript when one exists
 
+Shipped in the thirteenth implementation slice:
+
+- `code-agent` now exposes a backend-owned live child-task contract on top of
+  the runtime subagent executor
+- the TUI can inspect currently attached child agents and cancel them without
+  holding direct runtime subagent plumbing
+- the first live operator slice intentionally stops at list/cancel so the host
+  contract stays small while send/wait semantics are still being designed
+
 Still pending in the next slices:
 
 - remaining docs and workspace cleanup before `reference-tui` can be retired
 - frontend-neutral contracts for richer live subagent/session operator workflows
+  beyond list/cancel
 
 ## External Product Signals
 

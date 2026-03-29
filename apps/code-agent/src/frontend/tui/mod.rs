@@ -6,13 +6,14 @@ mod render;
 mod state;
 
 use crate::backend::{
-    CodeAgentSession, SessionOperation, SessionOperationAction, SessionOperationOutcome,
-    SessionStartupSnapshot, preview_id,
+    CodeAgentSession, LiveTaskControlAction, SessionOperation, SessionOperationAction,
+    SessionOperationOutcome, SessionStartupSnapshot, preview_id,
 };
 use approval::approval_decision_for_key;
 use commands::{SlashCommand, parse_slash_command};
 use history::{
     format_agent_session_inspector, format_agent_session_summary_line,
+    format_live_task_control_outcome, format_live_task_summary_line,
     format_mcp_prompt_summary_line, format_mcp_resource_summary_line,
     format_mcp_server_summary_line, format_session_export_result, format_session_inspector,
     format_session_operation_outcome, format_session_search_line, format_session_summary_line,
@@ -525,6 +526,65 @@ impl CodeAgentTui {
                 }
                 Ok(false)
             }
+            SlashCommand::LiveTasks => {
+                let live_tasks = self.session.list_live_tasks().await?;
+                self.ui_state.mutate(move |state| {
+                    state.inspector_title = "Live Tasks".to_string();
+                    state.inspector_scroll = 0;
+                    state.inspector = if live_tasks.is_empty() {
+                        vec![
+                            "## Live Tasks".to_string(),
+                            "no live child tasks attached to the active root agent".to_string(),
+                        ]
+                    } else {
+                        std::iter::once("## Live Tasks".to_string())
+                            .chain(live_tasks.iter().map(format_live_task_summary_line))
+                            .collect()
+                    };
+                    state.status = if live_tasks.is_empty() {
+                        "No live child tasks attached".to_string()
+                    } else {
+                        format!(
+                            "Listed {} live child task(s). Use /cancel_task <task-or-agent-ref> to stop one.",
+                            live_tasks.len()
+                        )
+                    };
+                    state.push_activity("listed live child tasks");
+                });
+                Ok(false)
+            }
+            SlashCommand::CancelTask {
+                task_or_agent_ref,
+                reason,
+            } => {
+                let outcome = self
+                    .session
+                    .cancel_live_task(&task_or_agent_ref, reason.clone())
+                    .await?;
+                let inspector = format_live_task_control_outcome(&outcome);
+                self.ui_state.mutate(move |state| {
+                    state.inspector_title = "Live Task Control".to_string();
+                    state.inspector_scroll = 0;
+                    state.inspector = inspector;
+                    state.status = match outcome.action {
+                        LiveTaskControlAction::Cancelled => {
+                            format!("Cancelled live task {}", outcome.task_id)
+                        }
+                        LiveTaskControlAction::AlreadyTerminal => {
+                            format!("Live task {} was already terminal", outcome.task_id)
+                        }
+                    };
+                    state.push_activity(match outcome.action {
+                        LiveTaskControlAction::Cancelled => {
+                            format!("cancelled live task {}", outcome.task_id)
+                        }
+                        LiveTaskControlAction::AlreadyTerminal => {
+                            format!("live task {} already terminal", outcome.task_id)
+                        }
+                    });
+                });
+                Ok(false)
+            }
             command @ (SlashCommand::AgentSessions { .. }
             | SlashCommand::AgentSession { .. }
             | SlashCommand::Tasks { .. }
@@ -963,6 +1023,8 @@ fn command_palette_lines() -> Vec<String> {
         "/help".to_string(),
         "/agent_sessions [session-ref]".to_string(),
         "/agent_session <agent-session-ref>".to_string(),
+        "/live_tasks".to_string(),
+        "/cancel_task <task-or-agent-ref> [reason]".to_string(),
         "/tasks [session-ref]".to_string(),
         "/task <task-id>".to_string(),
         "/sessions [query]".to_string(),
@@ -994,6 +1056,7 @@ fn build_startup_inspector(session: &state::SessionSummary) -> Vec<String> {
         "## Workflow".to_string(),
         "Use /sessions to browse persisted sessions and /session <ref> to open one.".to_string(),
         "Use /agent_sessions to browse persisted agent sessions, /agent_session <ref> to inspect one, and /resume <agent-session-ref> to reattach one.".to_string(),
+        "Use /live_tasks to inspect active child agents and /cancel_task <task-or-agent-ref> to stop one without leaving the current session.".to_string(),
         "Use /tasks to browse persisted child tasks and /task <task-id> to inspect one.".to_string(),
         "Use /new or /clear to start a fresh top-level session without deleting prior history.".to_string(),
         "Use /export_session or /export_transcript to write durable artifacts.".to_string(),
