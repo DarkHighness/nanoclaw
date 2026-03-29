@@ -4,10 +4,10 @@ use crate::{AgentRuntimeBuilder, HookRunner, ModelBackend, Result, RuntimeProgre
 use async_trait::async_trait;
 use futures::{StreamExt, stream, stream::BoxStream};
 use std::sync::Arc;
-use store::{InMemoryRunStore, RunStore};
+use store::{InMemorySessionStore, SessionStore};
 use tools::{ReadTool, ToolExecutionContext, ToolRegistry};
 use types::{
-    ModelEvent, ModelRequest, RunEventKind, ToolCall, ToolCallId, ToolLifecycleEventEnvelope,
+    ModelEvent, ModelRequest, SessionEventKind, ToolCall, ToolCallId, ToolLifecycleEventEnvelope,
     ToolLifecycleEventKind, ToolOrigin,
 };
 
@@ -19,7 +19,7 @@ async fn runtime_handles_tool_loop() {
         .unwrap();
     let mut registry = ToolRegistry::new();
     registry.register(ReadTool::new());
-    let store = Arc::new(InMemoryRunStore::new());
+    let store = Arc::new(InMemorySessionStore::new());
     let mut runtime: AgentRuntime = AgentRuntimeBuilder::new(Arc::new(MockBackend), store)
         .hook_runner(Arc::new(HookRunner::default()))
         .tool_registry(registry)
@@ -43,7 +43,7 @@ async fn observer_tool_lifecycle_events_share_store_event_ids() {
         .unwrap();
     let mut registry = ToolRegistry::new();
     registry.register(ReadTool::new());
-    let store = Arc::new(InMemoryRunStore::new());
+    let store = Arc::new(InMemorySessionStore::new());
     let mut runtime: AgentRuntime = AgentRuntimeBuilder::new(Arc::new(MockBackend), store.clone())
         .hook_runner(Arc::new(HookRunner::default()))
         .tool_registry(registry)
@@ -81,7 +81,7 @@ async fn observer_tool_lifecycle_events_share_store_event_ids() {
     ));
 
     let stored_lifecycle = store
-        .events(&runtime.run_id())
+        .events(&runtime.session_id())
         .await
         .unwrap()
         .into_iter()
@@ -165,7 +165,7 @@ async fn runtime_continues_after_tool_error_result() {
     let dir = tempfile::tempdir().unwrap();
     let mut registry = ToolRegistry::new();
     registry.register(FailingTool);
-    let store = Arc::new(InMemoryRunStore::new());
+    let store = Arc::new(InMemorySessionStore::new());
     let mut runtime: AgentRuntime =
         AgentRuntimeBuilder::new(Arc::new(ToolErrorRecoveringBackend), store.clone())
             .hook_runner(Arc::new(HookRunner::default()))
@@ -184,17 +184,17 @@ async fn runtime_continues_after_tool_error_result() {
         .unwrap();
     assert_eq!(outcome.assistant_text, "recovered");
 
-    let events = store.events(&runtime.run_id()).await.unwrap();
+    let events = store.events(&runtime.session_id()).await.unwrap();
     assert!(events.iter().any(|event| {
         matches!(
             &event.event,
-            RunEventKind::ToolCallFailed { error, .. } if error.contains("boom")
+            SessionEventKind::ToolCallFailed { error, .. } if error.contains("boom")
         )
     }));
     assert!(events.iter().any(|event| {
         matches!(
             &event.event,
-            RunEventKind::TranscriptMessage { message }
+            SessionEventKind::TranscriptMessage { message }
                 if message.parts.iter().any(|part| matches!(
                     part,
                     types::MessagePart::ToolResult { result }

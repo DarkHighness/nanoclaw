@@ -44,8 +44,9 @@ pub enum RuntimeProgressEvent {
         reason: Option<String>,
     },
     // Host-facing tool lifecycle events reuse the same event ids and normalized
-    // call ids that are persisted in the run store, so live UIs can correlate
-    // streaming updates with durable history without reparsing transcript text.
+    // call ids that are persisted in the session store, so live UIs can
+    // correlate streaming updates with durable history without reparsing
+    // transcript text.
     ToolLifecycle {
         event: ToolLifecycleEventEnvelope,
     },

@@ -1,5 +1,5 @@
 use skills::SkillError;
-use store::RunStoreError;
+use store::SessionStoreError;
 use thiserror::Error;
 use tools::ToolError;
 use types::AgentCoreError;
@@ -11,7 +11,7 @@ pub enum RuntimeError {
     #[error(transparent)]
     Skills(#[from] SkillError),
     #[error(transparent)]
-    Store(#[from] RunStoreError),
+    Store(#[from] SessionStoreError),
     #[error(transparent)]
     Tools(#[from] ToolError),
     #[error("runtime I/O error: {0}")]

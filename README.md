@@ -40,7 +40,7 @@ The directory layout follows that split directly:
 Every workspace now also has a standard mutable-state layout under `.nanoclaw/`:
 
 - `logs/`: host tracing output
-- `store/`: run persistence
+- `store/`: session persistence
 - `skills/`: workspace-local skill packs
 - `tools/lsp/`: managed language-server cache and install roots
 - `plugins/`: workspace-local plugin bundles
@@ -56,13 +56,13 @@ The primary integration path is Rust code, not TOML. A host application should a
 use std::sync::Arc;
 
 use agent::{
-    AgentRuntimeBuilder, HookRunner, InMemoryRunStore, ReadTool, SkillCatalog,
+    AgentRuntimeBuilder, HookRunner, InMemorySessionStore, ReadTool, SkillCatalog,
     ToolExecutionContext, ToolRegistry, WriteTool,
 };
 use agent::provider::{ProviderBackend, ProviderDescriptor};
 
 let cwd = std::env::current_dir()?;
-let store = Arc::new(InMemoryRunStore::new());
+let store = Arc::new(InMemorySessionStore::new());
 let backend = Arc::new(ProviderBackend::new(ProviderDescriptor::openai("gpt-5.4"))?);
 
 let mut tools = ToolRegistry::new();
@@ -101,7 +101,7 @@ The core workspace now provides:
 - context compaction that summarizes only the older visible prefix while keeping a recent raw tail
 - runtime-level steer and queue primitives for host-controlled session coordination
 - loop detection for repeated tool-call churn, without a fixed global iteration cap in the runtime API
-- stable `message_id` and `call_id` fields across provider events, tool calls, and persisted run history
+- stable `message_id` and `call_id` fields across provider events, tool calls, and persisted session history
 - runtime-level tool approval hooks rather than shell-specific hardcoding
 - a deterministic sorted tool registry
 - skills as first-class catalog assets and hook carriers, without prompt-string activation heuristics

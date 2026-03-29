@@ -5,14 +5,14 @@ use crate::{
 };
 use skills::SkillCatalog;
 use std::sync::Arc;
-use store::RunStore;
+use store::SessionStore;
 use tools::{ToolExecutionContext, ToolRegistry};
 use types::HookRegistration;
 
 pub struct AgentRuntimeBuilder {
     backend: Arc<dyn ModelBackend>,
     hook_runner: Arc<HookRunner>,
-    store: Arc<dyn RunStore>,
+    store: Arc<dyn SessionStore>,
     tool_registry: ToolRegistry,
     tool_context: ToolExecutionContext,
     tool_approval_handler: Arc<dyn ToolApprovalHandler>,
@@ -28,7 +28,7 @@ pub struct AgentRuntimeBuilder {
 
 impl AgentRuntimeBuilder {
     #[must_use]
-    pub fn new(backend: Arc<dyn ModelBackend>, store: Arc<dyn RunStore>) -> Self {
+    pub fn new(backend: Arc<dyn ModelBackend>, store: Arc<dyn SessionStore>) -> Self {
         Self {
             backend,
             hook_runner: Arc::new(HookRunner::default()),

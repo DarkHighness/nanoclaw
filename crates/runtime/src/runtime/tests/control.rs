@@ -5,9 +5,9 @@ use crate::{
 use async_trait::async_trait;
 use futures::{StreamExt, stream, stream::BoxStream};
 use std::sync::Arc;
-use store::{InMemoryRunStore, RunStore};
+use store::{InMemorySessionStore, SessionStore};
 use tools::ToolExecutionContext;
-use types::{ModelEvent, ModelRequest, RunEventKind, TokenUsage, TokenUsagePhase};
+use types::{ModelEvent, ModelRequest, SessionEventKind, TokenUsage, TokenUsagePhase};
 
 struct StreamingTextBackend;
 
@@ -39,7 +39,7 @@ impl ModelBackend for StreamingTextBackend {
 #[tokio::test]
 async fn runtime_notifies_observer_of_streaming_text_progress() {
     let dir = tempfile::tempdir().unwrap();
-    let store = Arc::new(InMemoryRunStore::new());
+    let store = Arc::new(InMemorySessionStore::new());
     let mut runtime = AgentRuntimeBuilder::new(Arc::new(StreamingTextBackend), store)
         .hook_runner(Arc::new(HookRunner::default()))
         .tool_context(ToolExecutionContext {
@@ -78,7 +78,7 @@ async fn runtime_notifies_observer_of_streaming_text_progress() {
 #[tokio::test]
 async fn runtime_tracks_token_usage_and_context_window() {
     let dir = tempfile::tempdir().unwrap();
-    let store = Arc::new(InMemoryRunStore::new());
+    let store = Arc::new(InMemorySessionStore::new());
     let mut runtime = AgentRuntimeBuilder::new(Arc::new(StreamingTextBackend), store.clone())
         .hook_runner(Arc::new(HookRunner::default()))
         .tool_context(ToolExecutionContext {
@@ -128,10 +128,10 @@ async fn runtime_tracks_token_usage_and_context_window() {
         TokenUsage::from_input_output(120, 30, 20)
     );
 
-    let events = store.events(&runtime.run_id()).await.unwrap();
+    let events = store.events(&runtime.session_id()).await.unwrap();
     assert!(events.iter().any(|event| matches!(
         &event.event,
-        RunEventKind::TokenUsageUpdated {
+        SessionEventKind::TokenUsageUpdated {
             phase: TokenUsagePhase::ResponseCompleted,
             ledger,
         } if ledger.cumulative_usage == TokenUsage::from_input_output(120, 30, 20)
@@ -141,7 +141,7 @@ async fn runtime_tracks_token_usage_and_context_window() {
 #[tokio::test]
 async fn runtime_steer_appends_system_message_and_event() {
     let dir = tempfile::tempdir().unwrap();
-    let store = Arc::new(InMemoryRunStore::new());
+    let store = Arc::new(InMemorySessionStore::new());
     let mut runtime = AgentRuntimeBuilder::new(Arc::new(StreamingTextBackend), store.clone())
         .hook_runner(Arc::new(HookRunner::default()))
         .tool_context(ToolExecutionContext {
@@ -162,16 +162,19 @@ async fn runtime_steer_appends_system_message_and_event() {
         .await
         .unwrap();
 
-    let transcript = store.replay_transcript(&runtime.run_id()).await.unwrap();
+    let transcript = store
+        .replay_transcript(&runtime.session_id())
+        .await
+        .unwrap();
     assert_eq!(transcript.len(), 1);
     assert_eq!(transcript[0].role, types::MessageRole::System);
     assert_eq!(transcript[0].text_content(), "stay focused on tests");
 
-    let events = store.events(&runtime.run_id()).await.unwrap();
+    let events = store.events(&runtime.session_id()).await.unwrap();
     assert!(events.iter().any(|event| {
         matches!(
             &event.event,
-            RunEventKind::SteerApplied { message, reason }
+            SessionEventKind::SteerApplied { message, reason }
                 if message == "stay focused on tests"
                     && reason.as_deref() == Some("manual")
         )
@@ -186,7 +189,7 @@ async fn runtime_steer_appends_system_message_and_event() {
 #[tokio::test]
 async fn runtime_apply_control_runs_prompt_and_steer_commands() {
     let dir = tempfile::tempdir().unwrap();
-    let store = Arc::new(InMemoryRunStore::new());
+    let store = Arc::new(InMemorySessionStore::new());
     let mut runtime = AgentRuntimeBuilder::new(Arc::new(StreamingTextBackend), store.clone())
         .hook_runner(Arc::new(HookRunner::default()))
         .tool_context(ToolExecutionContext {
@@ -215,7 +218,10 @@ async fn runtime_apply_control_runs_prompt_and_steer_commands() {
         .unwrap();
     assert_eq!(prompt.assistant_text, "hello");
 
-    let transcript = store.replay_transcript(&runtime.run_id()).await.unwrap();
+    let transcript = store
+        .replay_transcript(&runtime.session_id())
+        .await
+        .unwrap();
     assert_eq!(transcript[0].text_content(), "prefer terse answers");
     assert_eq!(transcript[1].text_content(), "hello");
     assert_eq!(transcript[2].text_content(), "hello");

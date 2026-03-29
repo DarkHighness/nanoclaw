@@ -16,7 +16,7 @@ impl AgentRuntime {
             self.request_window()
         };
         ModelRequest {
-            run_id: self.session.run_id.clone(),
+            session_id: self.session.session_id.clone(),
             agent_session_id: self.session.agent_session_id.clone(),
             turn_id: turn_id.clone(),
             instructions: instructions

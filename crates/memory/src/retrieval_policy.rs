@@ -2,7 +2,7 @@ use crate::{
     MemoryDocumentMetadata, MemoryListRequest, MemoryScope, MemorySearchRequest, MemoryStatus,
 };
 use time::{Date, Month, OffsetDateTime};
-use types::{AgentSessionId, RunId};
+use types::{AgentSessionId, SessionId};
 
 const DAILY_LOG_HALF_LIFE_DAYS: f64 = 30.0;
 const RUNTIME_EPISODIC_HALF_LIFE_DAYS: f64 = 14.0;
@@ -13,7 +13,7 @@ const COORDINATION_HALF_LIFE_DAYS: f64 = 3.0;
 pub(crate) struct MemoryRetrievalSignals {
     pub(crate) scope_weight: f64,
     pub(crate) recency_multiplier: f64,
-    pub(crate) run_match_bonus: f64,
+    pub(crate) session_match_bonus: f64,
     pub(crate) agent_session_match_bonus: f64,
     pub(crate) agent_match_bonus: f64,
     pub(crate) task_match_bonus: f64,
@@ -24,7 +24,7 @@ impl MemoryRetrievalSignals {
     #[must_use]
     pub(crate) fn total_multiplier(&self) -> f64 {
         let context_bonus = 1.0
-            + self.run_match_bonus
+            + self.session_match_bonus
             + self.agent_session_match_bonus
             + self.agent_match_bonus
             + self.task_match_bonus;
@@ -43,7 +43,7 @@ pub(crate) fn matches_search_filters(
         request.path_prefix.as_deref(),
         request.scopes.as_deref(),
         request.tags.as_deref(),
-        request.run_id.as_ref(),
+        request.session_id.as_ref(),
         request.agent_session_id.as_ref(),
         request.agent_name.as_deref(),
         request.task_id.as_deref(),
@@ -62,7 +62,7 @@ pub(crate) fn matches_list_filters(
         request.path_prefix.as_deref(),
         request.scopes.as_deref(),
         request.tags.as_deref(),
-        request.run_id.as_ref(),
+        request.session_id.as_ref(),
         request.agent_session_id.as_ref(),
         request.agent_name.as_deref(),
         request.task_id.as_deref(),
@@ -84,7 +84,7 @@ fn matches_filters(
     path_prefix: Option<&str>,
     scopes: Option<&[MemoryScope]>,
     tags: Option<&[String]>,
-    run_id: Option<&RunId>,
+    session_id: Option<&SessionId>,
     agent_session_id: Option<&AgentSessionId>,
     agent_name: Option<&str>,
     task_id: Option<&str>,
@@ -114,8 +114,8 @@ fn matches_filters(
         return false;
     }
 
-    if let Some(run_id) = run_id
-        && metadata.run_id.as_ref() != Some(run_id)
+    if let Some(session_id) = session_id
+        && metadata.session_id.as_ref() != Some(session_id)
     {
         return false;
     }
@@ -165,7 +165,11 @@ fn search_signals_on(
     MemoryRetrievalSignals {
         scope_weight: scope_weight(metadata.scope),
         recency_multiplier: recency_multiplier(path, metadata, now),
-        run_match_bonus: match_bonus(metadata.run_id.as_ref(), request.run_id.as_ref(), 0.10),
+        session_match_bonus: match_bonus(
+            metadata.session_id.as_ref(),
+            request.session_id.as_ref(),
+            0.10,
+        ),
         agent_session_match_bonus: match_bonus(
             metadata.agent_session_id.as_ref(),
             request.agent_session_id.as_ref(),
@@ -333,7 +337,7 @@ mod tests {
         MemoryDocumentMetadata, MemoryListRequest, MemoryScope, MemorySearchRequest, MemoryStatus,
     };
     use time::{Date, Month, PrimitiveDateTime, Time};
-    use types::{AgentSessionId, RunId};
+    use types::{AgentSessionId, SessionId};
 
     fn ts_ms(year: i32, month: Month, day: u8, hour: u8) -> u64 {
         PrimitiveDateTime::new(
@@ -352,7 +356,7 @@ mod tests {
         let metadata = MemoryDocumentMetadata {
             scope: MemoryScope::Working,
             layer: "working-agent-session".to_string(),
-            run_id: Some(RunId::from("run_1")),
+            session_id: Some(SessionId::from("run_1")),
             agent_session_id: Some(AgentSessionId::from("session_1")),
             agent_name: Some("planner".to_string()),
             task_id: Some("task-1".to_string()),
@@ -368,7 +372,7 @@ mod tests {
             path_prefix: Some(".nanoclaw/memory/working".to_string()),
             scopes: Some(vec![MemoryScope::Working]),
             tags: Some(vec!["deploy".to_string()]),
-            run_id: Some(RunId::from("run_1")),
+            session_id: Some(SessionId::from("run_1")),
             agent_session_id: Some(AgentSessionId::from("session_1")),
             agent_name: Some("planner".to_string()),
             task_id: Some("task-1".to_string()),
@@ -376,12 +380,12 @@ mod tests {
         };
 
         assert!(matches_search_filters(
-            ".nanoclaw/memory/working/sessions/session_1.md",
+            ".nanoclaw/memory/working/agent-sessions/session_1.md",
             &metadata,
             &request
         ));
         assert!(!matches_search_filters(
-            ".nanoclaw/memory/working/sessions/session_1.md",
+            ".nanoclaw/memory/working/agent-sessions/session_1.md",
             &MemoryDocumentMetadata {
                 status: MemoryStatus::Superseded,
                 ..metadata.clone()
@@ -389,7 +393,7 @@ mod tests {
             &request
         ));
         assert!(matches_search_filters(
-            ".nanoclaw/memory/working/sessions/session_1.md",
+            ".nanoclaw/memory/working/agent-sessions/session_1.md",
             &MemoryDocumentMetadata {
                 status: MemoryStatus::Archived,
                 ..metadata.clone()
@@ -441,7 +445,7 @@ mod tests {
             path_prefix: None,
             scopes: None,
             tags: None,
-            run_id: None,
+            session_id: None,
             agent_session_id: Some(AgentSessionId::from("session_1")),
             agent_name: None,
             task_id: None,
@@ -455,7 +459,7 @@ mod tests {
 
         assert_eq!(
             search_signals_on(
-                ".nanoclaw/memory/working/sessions/session_1.md",
+                ".nanoclaw/memory/working/agent-sessions/session_1.md",
                 &metadata,
                 &request,
                 now
@@ -463,7 +467,7 @@ mod tests {
             MemoryRetrievalSignals {
                 scope_weight: 0.70,
                 recency_multiplier: 0.9438743126816935,
-                run_match_bonus: 0.0,
+                session_match_bonus: 0.0,
                 agent_session_match_bonus: 0.75,
                 agent_match_bonus: 0.0,
                 task_match_bonus: 0.0,
@@ -485,7 +489,7 @@ mod tests {
             path_prefix: None,
             scopes: None,
             tags: None,
-            run_id: None,
+            session_id: None,
             agent_session_id: None,
             agent_name: None,
             task_id: None,

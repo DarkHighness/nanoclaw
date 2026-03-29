@@ -983,7 +983,7 @@ fn resolve_cwd(input: &BashToolInput, ctx: &ToolExecutionContext) -> Result<Path
 
 fn runtime_scope_from_context(ctx: &ToolExecutionContext) -> RuntimeScope {
     RuntimeScope {
-        run_id: ctx.run_id.clone(),
+        session_id: ctx.session_id.clone(),
         agent_session_id: ctx.agent_session_id.clone(),
         turn_id: ctx.turn_id.clone(),
         tool_name: ctx.tool_name.clone().map(|name| name.to_string()),

@@ -14,15 +14,15 @@ use crate::{
 };
 use skills::SkillCatalog;
 use std::sync::Arc;
-use store::RunStore;
+use store::SessionStore;
 use tools::{ToolExecutionContext, ToolRegistry};
 use tracing::info;
-use types::{HookContext, HookRegistration, Message, RunEventKind, TurnId};
+use types::{HookContext, HookRegistration, Message, SessionEventKind, TurnId};
 
 pub struct AgentRuntime {
     backend: Arc<dyn ModelBackend>,
     hook_runner: Arc<HookRunner>,
-    store: Arc<dyn RunStore>,
+    store: Arc<dyn SessionStore>,
     tool_registry: ToolRegistry,
     tool_context: ToolExecutionContext,
     tool_approval_handler: Arc<dyn ToolApprovalHandler>,
@@ -48,7 +48,7 @@ impl AgentRuntime {
     pub fn new(
         backend: Arc<dyn ModelBackend>,
         hook_runner: Arc<HookRunner>,
-        store: Arc<dyn RunStore>,
+        store: Arc<dyn SessionStore>,
         tool_registry: ToolRegistry,
         tool_context: ToolExecutionContext,
         tool_approval_handler: Arc<dyn ToolApprovalHandler>,
@@ -81,8 +81,8 @@ impl AgentRuntime {
     }
 
     #[must_use]
-    pub fn run_id(&self) -> types::RunId {
-        self.session.run_id.clone()
+    pub fn session_id(&self) -> types::SessionId {
+        self.session.session_id.clone()
     }
 
     #[must_use]
@@ -110,7 +110,7 @@ impl AgentRuntime {
     }
 
     pub async fn end_session(&mut self, reason: Option<String>) -> Result<()> {
-        self.append_event(None, None, RunEventKind::SessionEnd { reason })
+        self.append_event(None, None, SessionEventKind::SessionEnd { reason })
             .await
     }
 
@@ -158,7 +158,7 @@ impl AgentRuntime {
         let event = append_transcript_message(
             &mut self.session.transcript,
             Message::system(message.clone()),
-            self.session.run_id.clone(),
+            self.session.session_id.clone(),
             self.session.agent_session_id.clone(),
             turn_id.clone(),
         );
@@ -166,7 +166,7 @@ impl AgentRuntime {
         self.append_event(
             Some(turn_id),
             None,
-            RunEventKind::SteerApplied {
+            SessionEventKind::SteerApplied {
                 message: message.clone(),
                 reason: reason.clone(),
             },
@@ -212,7 +212,7 @@ impl AgentRuntime {
         let hooks = self.hook_registrations.clone();
         let instructions = self.base_instructions.clone();
         info!(
-            run_id = %self.session.run_id,
+            session_id = %self.session.session_id,
             agent_session_id = %self.session.agent_session_id,
             turn_id = %turn_id,
             prompt_chars = prompt.chars().count(),

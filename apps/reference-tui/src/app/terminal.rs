@@ -70,7 +70,7 @@ impl RuntimeTui {
                             Ok(outcome) => self.apply_outcome(state, outcome).await?,
                             Err(error) => {
                                 if let Ok(lines) =
-                                    self.replay_run_lines(&self.runtime.run_id()).await
+                                    self.replay_run_lines(&self.runtime.session_id()).await
                                 {
                                     if !lines.is_empty() {
                                         state.transcript = lines;

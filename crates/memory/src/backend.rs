@@ -3,7 +3,7 @@ use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use types::{AgentSessionId, RunId};
+use types::{AgentSessionId, SessionId};
 
 #[derive(
     Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
@@ -62,7 +62,7 @@ pub struct MemoryDocumentMetadata {
     #[serde(default)]
     pub layer: String,
     #[serde(default)]
-    pub run_id: Option<RunId>,
+    pub session_id: Option<SessionId>,
     #[serde(default)]
     pub agent_session_id: Option<AgentSessionId>,
     #[serde(default)]
@@ -92,7 +92,7 @@ pub struct MemorySearchRequest {
     #[serde(default)]
     pub tags: Option<Vec<String>>,
     #[serde(default)]
-    pub run_id: Option<RunId>,
+    pub session_id: Option<SessionId>,
     #[serde(default)]
     pub agent_session_id: Option<AgentSessionId>,
     #[serde(default)]
@@ -161,7 +161,7 @@ pub struct MemoryListRequest {
     #[serde(default)]
     pub tags: Option<Vec<String>>,
     #[serde(default)]
-    pub run_id: Option<RunId>,
+    pub session_id: Option<SessionId>,
     #[serde(default)]
     pub agent_session_id: Option<AgentSessionId>,
     #[serde(default)]
@@ -198,7 +198,7 @@ pub struct MemoryRecordRequest {
     #[serde(default)]
     pub tags: Vec<String>,
     #[serde(default)]
-    pub run_id: Option<RunId>,
+    pub session_id: Option<SessionId>,
     #[serde(default)]
     pub agent_session_id: Option<AgentSessionId>,
     #[serde(default)]

@@ -110,14 +110,17 @@ impl PluginDriverFactory for MemoryCoreDriverFactory {
                     activation.plugin_id
                 )
             })?;
-        if config.corpus.runtime_export.enabled && context.run_store.is_none() {
+        if config.corpus.runtime_export.enabled && context.session_store.is_none() {
             outcome.warnings.push(format!(
-                "plugin `{}` enabled runtime memory export without a run store; only existing sidecars will be indexed",
+                "plugin `{}` enabled runtime memory export without a session store; only existing sidecars will be indexed",
                 activation.plugin_id
             ));
         }
-        let backend =
-            memory_core_backend(context.workspace_root, &config, context.run_store.clone());
+        let backend = memory_core_backend(
+            context.workspace_root,
+            &config,
+            context.session_store.clone(),
+        );
         context
             .tools
             .register_arc(Arc::new(MemorySearchTool::new(backend.clone())));
@@ -166,16 +169,16 @@ impl PluginDriverFactory for MemoryEmbedDriverFactory {
         // secrets in nested embedding/query/rerank service configs.
         materialize_api_key_envs(&mut table, context.env_map, &activation.plugin_id)?;
         let config = resolve_memory_embed_driver_config(table, activation, context, outcome)?;
-        if config.corpus.runtime_export.enabled && context.run_store.is_none() {
+        if config.corpus.runtime_export.enabled && context.session_store.is_none() {
             outcome.warnings.push(format!(
-                "plugin `{}` enabled runtime memory export without a run store; only existing sidecars will be indexed",
+                "plugin `{}` enabled runtime memory export without a session store; only existing sidecars will be indexed",
                 activation.plugin_id
             ));
         }
         let backend = memory_embed_backend(
             context.workspace_root,
             config.clone(),
-            context.run_store.clone(),
+            context.session_store.clone(),
         )
         .with_context(|| {
             format!(
@@ -322,11 +325,11 @@ impl PluginDriverFactory for WasmHookValidatorDriverFactory {
 fn memory_core_backend(
     workspace_root: &Path,
     config: &MemoryCoreConfig,
-    run_store: Option<Arc<dyn store::RunStore>>,
+    session_store: Option<Arc<dyn store::SessionStore>>,
 ) -> Arc<dyn MemoryBackend> {
     let backend = MemoryCoreBackend::new(workspace_root.to_path_buf(), config.clone());
-    if let Some(run_store) = run_store {
-        Arc::new(backend.with_run_store(run_store))
+    if let Some(session_store) = session_store {
+        Arc::new(backend.with_session_store(session_store))
     } else {
         Arc::new(backend)
     }
@@ -335,11 +338,11 @@ fn memory_core_backend(
 fn memory_embed_backend(
     workspace_root: &Path,
     config: MemoryEmbedConfig,
-    run_store: Option<Arc<dyn store::RunStore>>,
+    session_store: Option<Arc<dyn store::SessionStore>>,
 ) -> Result<Arc<dyn MemoryBackend>> {
     let backend = MemoryEmbedBackend::from_http_config(workspace_root.to_path_buf(), config)?;
-    Ok(if let Some(run_store) = run_store {
-        Arc::new(backend.with_run_store(run_store))
+    Ok(if let Some(session_store) = session_store {
+        Arc::new(backend.with_session_store(session_store))
     } else {
         Arc::new(backend)
     })
@@ -573,7 +576,7 @@ mod tests {
             &PluginDriverContext {
                 workspace_root: dir.path(),
                 env_map: &env_map,
-                run_store: None,
+                session_store: None,
                 memory_reasoning_service: Some(&memory_reasoning_service("gpt-5.4-mini")),
                 tools: &mut tools,
             },
@@ -644,7 +647,7 @@ mod tests {
             &PluginDriverContext {
                 workspace_root: dir.path(),
                 env_map: &env_map,
-                run_store: None,
+                session_store: None,
                 memory_reasoning_service: Some(&memory_reasoning_service("gpt-5.4-mini")),
                 tools: &mut tools,
             },

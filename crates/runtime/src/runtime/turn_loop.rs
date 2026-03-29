@@ -8,7 +8,7 @@ use serde_json::json;
 use tracing::{debug, info, warn};
 use types::{
     AgentCoreError, ContextWindowUsage, HookContext, HookEvent, HookRegistration, Message,
-    MessageId, MessagePart, ModelEvent, RunEventKind, TokenLedgerSnapshot, TokenUsage,
+    MessageId, MessagePart, ModelEvent, SessionEventKind, TokenLedgerSnapshot, TokenUsage,
     TokenUsagePhase, ToolCall, TurnId,
 };
 
@@ -44,7 +44,7 @@ impl AgentRuntime {
             if !response.tool_calls.is_empty() {
                 for call in response.tool_calls {
                     debug!(
-                        run_id = %self.session.run_id,
+                        session_id = %self.session.session_id,
                         turn_id = %turn_id,
                         tool_name = %call.tool_name,
                         call_id = %call.call_id,
@@ -70,13 +70,13 @@ impl AgentRuntime {
             self.append_event(
                 Some(turn_id.clone()),
                 None,
-                RunEventKind::Stop {
+                SessionEventKind::Stop {
                     reason: Some("assistant_complete".to_string()),
                 },
             )
             .await?;
             info!(
-                run_id = %self.session.run_id,
+                session_id = %self.session.session_id,
                 turn_id = %turn_id,
                 assistant_chars = response.assistant_text.chars().count(),
                 "completed user turn"
@@ -103,7 +103,7 @@ impl AgentRuntime {
         self.append_event(
             Some(turn_id.clone()),
             None,
-            RunEventKind::ModelRequestStarted {
+            SessionEventKind::ModelRequestStarted {
                 request: request.clone(),
             },
         )
@@ -121,14 +121,14 @@ impl AgentRuntime {
         self.append_event(
             Some(turn_id.clone()),
             None,
-            RunEventKind::TokenUsageUpdated {
+            SessionEventKind::TokenUsageUpdated {
                 phase: TokenUsagePhase::RequestStarted,
                 ledger: request_ledger.clone(),
             },
         )
         .await?;
         debug!(
-            run_id = %self.session.run_id,
+            session_id = %self.session.session_id,
             turn_id = %turn_id,
             iteration,
             uses_provider_continuation = request.continuation.is_some(),
@@ -150,7 +150,7 @@ impl AgentRuntime {
             Ok(stream) => stream,
             Err(error) if used_continuation && is_provider_continuation_lost(&error) => {
                 warn!(
-                    run_id = %self.session.run_id,
+                    session_id = %self.session.session_id,
                     turn_id = %turn_id,
                     iteration,
                     error = %error,
@@ -160,7 +160,7 @@ impl AgentRuntime {
                 self.append_event(
                     Some(turn_id.clone()),
                     None,
-                    RunEventKind::Notification {
+                    SessionEventKind::Notification {
                         source: "provider_state".to_string(),
                         message: error.to_string(),
                     },
@@ -170,7 +170,7 @@ impl AgentRuntime {
                 self.append_event(
                     Some(turn_id.clone()),
                     None,
-                    RunEventKind::ModelRequestStarted {
+                    SessionEventKind::ModelRequestStarted {
                         request: request.clone(),
                     },
                 )
@@ -192,7 +192,7 @@ impl AgentRuntime {
                 self.append_event(
                     Some(turn_id.clone()),
                     None,
-                    RunEventKind::TokenUsageUpdated {
+                    SessionEventKind::TokenUsageUpdated {
                         phase: TokenUsagePhase::RequestStarted,
                         ledger: retried_ledger.clone(),
                     },
@@ -246,7 +246,7 @@ impl AgentRuntime {
         self.append_event(
             Some(turn_id.clone()),
             None,
-            RunEventKind::ModelResponseCompleted {
+            SessionEventKind::ModelResponseCompleted {
                 assistant_text: response.assistant_text.clone(),
                 tool_calls: response.tool_calls.clone(),
                 continuation: response.provider_continuation.clone(),
@@ -254,7 +254,7 @@ impl AgentRuntime {
         )
         .await?;
         debug!(
-            run_id = %self.session.run_id,
+            session_id = %self.session.session_id,
             turn_id = %turn_id,
             iteration,
             assistant_chars = response.assistant_text.chars().count(),
@@ -269,7 +269,7 @@ impl AgentRuntime {
         self.append_event(
             Some(turn_id.clone()),
             None,
-            RunEventKind::TokenUsageUpdated {
+            SessionEventKind::TokenUsageUpdated {
                 phase: TokenUsagePhase::ResponseCompleted,
                 ledger: response_ledger.clone(),
             },
@@ -338,7 +338,7 @@ impl AgentRuntime {
         let event = append_transcript_message(
             &mut self.session.transcript,
             message,
-            self.session.run_id.clone(),
+            self.session.session_id.clone(),
             self.session.agent_session_id.clone(),
             turn_id.clone(),
         );
@@ -357,7 +357,7 @@ impl AgentRuntime {
                 hooks,
                 HookContext {
                     event: HookEvent::Stop,
-                    run_id: self.session.run_id.clone(),
+                    session_id: self.session.session_id.clone(),
                     agent_session_id: self.session.agent_session_id.clone(),
                     turn_id: Some(turn_id.clone()),
                     fields: [("reason".to_string(), "assistant_complete".to_string())]
@@ -374,7 +374,7 @@ impl AgentRuntime {
             self.append_event(
                 Some(turn_id.clone()),
                 None,
-                RunEventKind::StopFailure {
+                SessionEventKind::StopFailure {
                     reason: Some(reason.clone()),
                 },
             )

@@ -32,7 +32,7 @@ use runtime::{
 use runtime_settings::{build_sandbox_policy, context_tokens};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use store::RunStore;
+use store::SessionStore;
 use store_support::{StoreHandle, build_store};
 use summary::build_startup_summary;
 #[cfg(test)]
@@ -51,7 +51,7 @@ pub struct BootArtifacts {
     pub workspace_root: PathBuf,
     pub config: AgentCoreConfig,
     pub runtime: AgentRuntime,
-    pub store: Arc<dyn RunStore>,
+    pub store: Arc<dyn SessionStore>,
     pub connected_mcp_servers: Vec<ConnectedMcpServer>,
     pub startup_summary: TuiStartupSummary,
     pub skills: Vec<Skill>,
@@ -134,7 +134,7 @@ async fn bootstrap_from_parts(
 
     let store_handle = build_store(&config, &workspace_root).await?;
     let store = store_handle.store.clone();
-    let stored_run_count = store.list_runs().await.unwrap_or_default().len();
+    let stored_run_count = store.list_sessions().await.unwrap_or_default().len();
     let backend = Arc::new(
         build_backend(&config, &env_map).context("failed to initialize provider backend")?,
     );
@@ -281,7 +281,7 @@ async fn bootstrap_from_parts(
         .skill_catalog(skill_catalog)
         .build();
     let startup_summary = build_startup_summary(
-        &runtime.run_id(),
+        &runtime.session_id(),
         &workspace_root,
         &primary_provider_summary,
         &summary_provider_summary,
@@ -557,7 +557,7 @@ Use this skill when asked.
                 .filter(|tool| matches!(tool.origin, ToolOrigin::Local))
                 .any(|tool| tool.name == types::ToolName::from("web_fetch"))
         );
-        assert!(artifacts.store.list_runs().await.unwrap().is_empty());
+        assert!(artifacts.store.list_sessions().await.unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -725,7 +725,7 @@ Use this skill when asked.
                 .iter()
                 .any(|line| line.starts_with("warning: failed to initialize file run store"))
         );
-        assert!(artifacts.store.list_runs().await.unwrap().is_empty());
+        assert!(artifacts.store.list_sessions().await.unwrap().is_empty());
     }
 
     #[tokio::test]

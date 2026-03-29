@@ -6,27 +6,27 @@ use serde_json::Value;
 use std::collections::{BTreeMap, HashSet};
 use thiserror::Error;
 use types::{
-    AgentSessionId, HookEffect, Message, RunEventEnvelope, RunEventKind, RunId,
+    AgentSessionId, HookEffect, Message, SessionEventEnvelope, SessionEventKind, SessionId,
     TokenLedgerSnapshot, TokenUsage,
 };
 
 const TOKEN_USAGE_CHILD_FETCH_CONCURRENCY_LIMIT: usize = 8;
 
 #[derive(Debug, Error)]
-pub enum RunStoreError {
-    #[error("run not found: {0}")]
-    RunNotFound(RunId),
-    #[error("run store IO error: {0}")]
+pub enum SessionStoreError {
+    #[error("session not found: {0}")]
+    SessionNotFound(SessionId),
+    #[error("session store IO error: {0}")]
     Io(#[from] std::io::Error),
-    #[error("run store JSON error: {0}")]
+    #[error("session store JSON error: {0}")]
     Json(#[from] serde_json::Error),
 }
 
-pub type Result<T> = std::result::Result<T, RunStoreError>;
+pub type Result<T> = std::result::Result<T, SessionStoreError>;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RunSummary {
-    pub run_id: RunId,
+pub struct SessionSummary {
+    pub session_id: SessionId,
     pub first_timestamp_ms: u128,
     pub last_timestamp_ms: u128,
     pub event_count: usize,
@@ -36,8 +36,8 @@ pub struct RunSummary {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RunSearchResult {
-    pub summary: RunSummary,
+pub struct SessionSearchResult {
+    pub summary: SessionSummary,
     pub matched_event_count: usize,
     pub preview_matches: Vec<String>,
 }
@@ -45,7 +45,7 @@ pub struct RunSearchResult {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum TokenUsageScope {
-    Run,
+    Session,
     AgentSession,
     Subagent,
     Task,
@@ -54,7 +54,7 @@ pub enum TokenUsageScope {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TokenUsageRecord {
     pub scope: TokenUsageScope,
-    pub run_id: RunId,
+    pub session_id: SessionId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_session_id: Option<AgentSessionId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -65,9 +65,9 @@ pub struct TokenUsageRecord {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RunTokenUsageReport {
+pub struct SessionTokenUsageReport {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub run: Option<TokenUsageRecord>,
+    pub session: Option<TokenUsageRecord>,
     #[serde(default)]
     pub agent_sessions: Vec<TokenUsageRecord>,
     #[serde(default)]
@@ -79,9 +79,9 @@ pub struct RunTokenUsageReport {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RunMemoryExportRequest {
+pub struct SessionMemoryExportRequest {
     #[serde(default)]
-    pub max_runs: Option<usize>,
+    pub max_sessions: Option<usize>,
     #[serde(default)]
     pub max_search_corpus_chars: Option<usize>,
 }
@@ -89,7 +89,7 @@ pub struct RunMemoryExportRequest {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum MemoryExportScope {
-    Run,
+    Session,
     AgentSession,
     Subagent,
     Task,
@@ -98,7 +98,7 @@ pub enum MemoryExportScope {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MemoryExportSummary {
     pub scope: MemoryExportScope,
-    pub run_id: RunId,
+    pub session_id: SessionId,
     pub agent_session_id: Option<AgentSessionId>,
     pub agent_name: Option<String>,
     pub task_id: Option<String>,
@@ -124,27 +124,27 @@ pub struct MemoryExportSections {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RunMemoryExportRecord {
+pub struct SessionMemoryExportRecord {
     pub summary: MemoryExportSummary,
     pub search_corpus: String,
     pub sections: MemoryExportSections,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RunMemoryExportBundle {
+pub struct SessionMemoryExportBundle {
     #[serde(default)]
-    pub runs: Vec<RunMemoryExportRecord>,
+    pub sessions: Vec<SessionMemoryExportRecord>,
     #[serde(default)]
-    pub agent_sessions: Vec<RunMemoryExportRecord>,
+    pub agent_sessions: Vec<SessionMemoryExportRecord>,
     #[serde(default)]
-    pub subagents: Vec<RunMemoryExportRecord>,
+    pub subagents: Vec<SessionMemoryExportRecord>,
     #[serde(default)]
-    pub tasks: Vec<RunMemoryExportRecord>,
+    pub tasks: Vec<SessionMemoryExportRecord>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct GroupedMemoryExportEvents {
-    pub(crate) agent_sessions: Vec<(AgentSessionId, Vec<RunEventEnvelope>)>,
+    pub(crate) agent_sessions: Vec<(AgentSessionId, Vec<SessionEventEnvelope>)>,
     pub(crate) subagents: Vec<ScopedMemoryExportEvents>,
     pub(crate) tasks: Vec<ScopedMemoryExportEvents>,
 }
@@ -154,7 +154,7 @@ pub(crate) struct ScopedMemoryExportEvents {
     pub(crate) agent_session_id: Option<AgentSessionId>,
     pub(crate) agent_name: Option<String>,
     pub(crate) task_id: Option<String>,
-    pub(crate) events: Vec<RunEventEnvelope>,
+    pub(crate) events: Vec<SessionEventEnvelope>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -165,23 +165,26 @@ struct AgentMemoryExportContext {
 }
 
 #[derive(Clone, Debug, Default)]
-struct ChildRunTokenUsageContext {
-    run_id: Option<RunId>,
+struct ChildSessionTokenUsageContext {
+    session_id: Option<SessionId>,
     agent_session_id: Option<AgentSessionId>,
     agent_name: Option<String>,
     task_id: Option<String>,
 }
 
 #[derive(Clone, Debug)]
-struct ResolvedChildRunTokenUsageContext {
-    run_id: RunId,
+struct ResolvedChildSessionTokenUsageContext {
+    session_id: SessionId,
     agent_session_id: Option<AgentSessionId>,
     agent_name: Option<String>,
     task_id: Option<String>,
 }
 
 #[must_use]
-pub fn summarize_run_events(run_id: &RunId, events: &[RunEventEnvelope]) -> Option<RunSummary> {
+pub fn summarize_session_events(
+    session_id: &SessionId,
+    events: &[SessionEventEnvelope],
+) -> Option<SessionSummary> {
     if events.is_empty() {
         return None;
     }
@@ -195,14 +198,14 @@ pub fn summarize_run_events(run_id: &RunId, events: &[RunEventEnvelope]) -> Opti
         first_timestamp_ms = first_timestamp_ms.min(event.timestamp_ms);
         last_timestamp_ms = last_timestamp_ms.max(event.timestamp_ms);
         agent_session_ids.insert(event.agent_session_id.clone());
-        if let RunEventKind::UserPromptSubmit { prompt } = &event.event {
+        if let SessionEventKind::UserPromptSubmit { prompt } = &event.event {
             last_user_prompt = Some(prompt.clone());
         }
     }
     let transcript_message_count = replay_transcript(events).len();
 
-    Some(RunSummary {
-        run_id: run_id.clone(),
+    Some(SessionSummary {
+        session_id: session_id.clone(),
         first_timestamp_ms,
         last_timestamp_ms,
         event_count: events.len(),
@@ -213,14 +216,14 @@ pub fn summarize_run_events(run_id: &RunId, events: &[RunEventEnvelope]) -> Opti
 }
 
 #[must_use]
-pub fn search_run_events(
-    summary: &RunSummary,
-    events: &[RunEventEnvelope],
+pub fn search_session_events(
+    summary: &SessionSummary,
+    events: &[SessionEventEnvelope],
     query: &str,
-) -> Option<RunSearchResult> {
+) -> Option<SessionSearchResult> {
     let query = query.trim();
     if query.is_empty() {
-        return Some(RunSearchResult {
+        return Some(SessionSearchResult {
             summary: summary.clone(),
             matched_event_count: 0,
             preview_matches: Vec::new(),
@@ -232,12 +235,12 @@ pub fn search_run_events(
     let mut matched_event_count = 0;
 
     if summary
-        .run_id
+        .session_id
         .as_str()
         .to_lowercase()
         .contains(&query_lower)
     {
-        matches.push(format!("run id: {}", summary.run_id));
+        matches.push(format!("session id: {}", summary.session_id));
     }
     if let Some(prompt) = &summary.last_user_prompt {
         if prompt.to_lowercase().contains(&query_lower) {
@@ -279,7 +282,7 @@ pub fn search_run_events(
     if matches.is_empty() {
         None
     } else {
-        Some(RunSearchResult {
+        Some(SessionSearchResult {
             summary: summary.clone(),
             matched_event_count,
             preview_matches: matches,
@@ -287,30 +290,30 @@ pub fn search_run_events(
     }
 }
 
-pub(crate) fn searchable_event_strings(event: &RunEventEnvelope) -> Vec<String> {
+pub(crate) fn searchable_event_strings(event: &SessionEventEnvelope) -> Vec<String> {
     let mut values = vec![event.agent_session_id.to_string()];
     match &event.event {
-        RunEventKind::SessionStart { reason }
-        | RunEventKind::Stop { reason }
-        | RunEventKind::StopFailure { reason }
-        | RunEventKind::SessionEnd { reason } => {
+        SessionEventKind::SessionStart { reason }
+        | SessionEventKind::Stop { reason }
+        | SessionEventKind::StopFailure { reason }
+        | SessionEventKind::SessionEnd { reason } => {
             if let Some(reason) = reason {
                 values.push(reason.clone());
             }
         }
-        RunEventKind::InstructionsLoaded { count } => {
+        SessionEventKind::InstructionsLoaded { count } => {
             values.push(format!("instructions {count}"));
         }
-        RunEventKind::SteerApplied { message, reason } => {
+        SessionEventKind::SteerApplied { message, reason } => {
             values.push(message.clone());
             if let Some(reason) = reason {
                 values.push(reason.clone());
             }
         }
-        RunEventKind::UserPromptSubmit { prompt } => {
+        SessionEventKind::UserPromptSubmit { prompt } => {
             values.push(prompt.clone());
         }
-        RunEventKind::ModelRequestStarted { request } => {
+        SessionEventKind::ModelRequestStarted { request } => {
             values.push(
                 request
                     .messages
@@ -321,7 +324,7 @@ pub(crate) fn searchable_event_strings(event: &RunEventEnvelope) -> Vec<String> 
             );
             values.extend(request.tools.iter().map(|tool| tool.name.to_string()));
         }
-        RunEventKind::CompactionCompleted {
+        SessionEventKind::CompactionCompleted {
             reason,
             source_message_count,
             retained_message_count,
@@ -332,7 +335,7 @@ pub(crate) fn searchable_event_strings(event: &RunEventEnvelope) -> Vec<String> 
                 "compaction {source_message_count} {retained_message_count} {summary_chars}"
             ));
         }
-        RunEventKind::ModelResponseCompleted {
+        SessionEventKind::ModelResponseCompleted {
             assistant_text,
             tool_calls,
             ..
@@ -340,7 +343,7 @@ pub(crate) fn searchable_event_strings(event: &RunEventEnvelope) -> Vec<String> 
             values.push(assistant_text.clone());
             values.extend(tool_calls.iter().map(|call| call.tool_name.to_string()));
         }
-        RunEventKind::TokenUsageUpdated { phase, ledger } => {
+        SessionEventKind::TokenUsageUpdated { phase, ledger } => {
             values.push(format!(
                 "token_usage {:?} context={} input={} output={} prefill={} decode={} cache_read={}",
                 phase,
@@ -355,10 +358,10 @@ pub(crate) fn searchable_event_strings(event: &RunEventEnvelope) -> Vec<String> 
                 ledger.cumulative_usage.cache_read_tokens,
             ));
         }
-        RunEventKind::HookInvoked { hook_name, .. } => {
+        SessionEventKind::HookInvoked { hook_name, .. } => {
             values.push(hook_name.clone());
         }
-        RunEventKind::HookCompleted {
+        SessionEventKind::HookCompleted {
             hook_name, output, ..
         } => {
             values.push(hook_name.clone());
@@ -399,41 +402,41 @@ pub(crate) fn searchable_event_strings(event: &RunEventEnvelope) -> Vec<String> 
                 }
             }
         }
-        RunEventKind::TranscriptMessage { .. } => {}
-        RunEventKind::TranscriptMessagePatched { message_id, .. } => {
+        SessionEventKind::TranscriptMessage { .. } => {}
+        SessionEventKind::TranscriptMessagePatched { message_id, .. } => {
             values.push(message_id.to_string());
             values.push("transcript patched".to_string());
         }
-        RunEventKind::TranscriptMessageRemoved { message_id } => {
+        SessionEventKind::TranscriptMessageRemoved { message_id } => {
             values.push(message_id.to_string());
             values.push("transcript removed".to_string());
         }
-        RunEventKind::ToolApprovalRequested { call, reasons } => {
+        SessionEventKind::ToolApprovalRequested { call, reasons } => {
             values.push(call.tool_name.to_string());
             values.extend(reasons.clone());
         }
-        RunEventKind::ToolApprovalResolved { call, reason, .. } => {
+        SessionEventKind::ToolApprovalResolved { call, reason, .. } => {
             values.push(call.tool_name.to_string());
             if let Some(reason) = reason {
                 values.push(reason.clone());
             }
         }
-        RunEventKind::ToolCallStarted { call } => {
+        SessionEventKind::ToolCallStarted { call } => {
             values.push(call.tool_name.to_string());
             values.push(call.arguments.to_string());
         }
-        RunEventKind::ToolCallCompleted { call, output } => {
+        SessionEventKind::ToolCallCompleted { call, output } => {
             values.push(call.tool_name.to_string());
             values.push(output.text_content());
             if let Some(metadata) = &output.metadata {
                 values.push(metadata.to_string());
             }
         }
-        RunEventKind::ToolCallFailed { call, error } => {
+        SessionEventKind::ToolCallFailed { call, error } => {
             values.push(call.tool_name.to_string());
             values.push(error.clone());
         }
-        RunEventKind::TaskCreated {
+        SessionEventKind::TaskCreated {
             task,
             parent_agent_id,
         } => {
@@ -445,7 +448,7 @@ pub(crate) fn searchable_event_strings(event: &RunEventEnvelope) -> Vec<String> 
                 values.push(parent_agent_id.to_string());
             }
         }
-        RunEventKind::TaskCompleted {
+        SessionEventKind::TaskCompleted {
             task_id,
             agent_id,
             status,
@@ -454,14 +457,14 @@ pub(crate) fn searchable_event_strings(event: &RunEventEnvelope) -> Vec<String> 
             values.push(agent_id.to_string());
             values.push(status.to_string());
         }
-        RunEventKind::SubagentStart { handle, task } => {
+        SessionEventKind::SubagentStart { handle, task } => {
             values.push(handle.agent_id.to_string());
             values.push(handle.task_id.clone());
             values.push(handle.role.clone());
             values.push(task.prompt.clone());
             values.extend(task.requested_write_set.clone());
         }
-        RunEventKind::AgentEnvelope { envelope } => match &envelope.kind {
+        SessionEventKind::AgentEnvelope { envelope } => match &envelope.kind {
             types::AgentEnvelopeKind::SpawnRequested { task }
             | types::AgentEnvelopeKind::Started { task } => {
                 values.push(task.task_id.clone());
@@ -508,7 +511,7 @@ pub(crate) fn searchable_event_strings(event: &RunEventEnvelope) -> Vec<String> 
             }
             types::AgentEnvelopeKind::Heartbeat => values.push("heartbeat".to_string()),
         },
-        RunEventKind::SubagentStop {
+        SessionEventKind::SubagentStop {
             handle,
             result,
             error,
@@ -525,7 +528,7 @@ pub(crate) fn searchable_event_strings(event: &RunEventEnvelope) -> Vec<String> 
                 values.push(error.clone());
             }
         }
-        RunEventKind::Notification { source, message } => {
+        SessionEventKind::Notification { source, message } => {
             values.push(source.clone());
             values.push(message.clone());
         }
@@ -535,21 +538,21 @@ pub(crate) fn searchable_event_strings(event: &RunEventEnvelope) -> Vec<String> 
 }
 
 #[must_use]
-pub fn latest_token_usage_snapshot(events: &[RunEventEnvelope]) -> Option<TokenLedgerSnapshot> {
+pub fn latest_token_usage_snapshot(events: &[SessionEventEnvelope]) -> Option<TokenLedgerSnapshot> {
     events.iter().rev().find_map(|event| match &event.event {
-        RunEventKind::TokenUsageUpdated { ledger, .. } => Some(ledger.clone()),
+        SessionEventKind::TokenUsageUpdated { ledger, .. } => Some(ledger.clone()),
         _ => None,
     })
 }
 
 #[must_use]
 pub fn agent_session_token_usage_records(
-    run_id: &RunId,
-    events: &[RunEventEnvelope],
+    session_id: &SessionId,
+    events: &[SessionEventEnvelope],
 ) -> Vec<TokenUsageRecord> {
     let mut by_session = BTreeMap::<AgentSessionId, TokenLedgerSnapshot>::new();
     for event in events {
-        if let RunEventKind::TokenUsageUpdated { ledger, .. } = &event.event {
+        if let SessionEventKind::TokenUsageUpdated { ledger, .. } = &event.event {
             by_session.insert(event.agent_session_id.clone(), ledger.clone());
         }
     }
@@ -557,7 +560,7 @@ pub fn agent_session_token_usage_records(
         .into_iter()
         .map(|(agent_session_id, ledger)| TokenUsageRecord {
             scope: TokenUsageScope::AgentSession,
-            run_id: run_id.clone(),
+            session_id: session_id.clone(),
             agent_session_id: Some(agent_session_id),
             agent_name: None,
             task_id: None,
@@ -567,14 +570,14 @@ pub fn agent_session_token_usage_records(
 }
 
 fn collect_child_run_token_usage_contexts(
-    events: &[RunEventEnvelope],
-) -> Vec<ResolvedChildRunTokenUsageContext> {
-    let mut by_agent = BTreeMap::<String, ChildRunTokenUsageContext>::new();
+    events: &[SessionEventEnvelope],
+) -> Vec<ResolvedChildSessionTokenUsageContext> {
+    let mut by_agent = BTreeMap::<String, ChildSessionTokenUsageContext>::new();
     for event in events {
         match &event.event {
-            RunEventKind::SubagentStart { handle, task } => {
+            SessionEventKind::SubagentStart { handle, task } => {
                 let context = by_agent.entry(handle.agent_id.to_string()).or_default();
-                context.run_id = Some(handle.run_id.clone());
+                context.session_id = Some(handle.session_id.clone());
                 context.agent_session_id = Some(handle.agent_session_id.clone());
                 if context.agent_name.is_none() {
                     context.agent_name = Some(task.role.clone());
@@ -583,9 +586,9 @@ fn collect_child_run_token_usage_contexts(
                     context.task_id = Some(task.task_id.clone());
                 }
             }
-            RunEventKind::SubagentStop { handle, .. } => {
+            SessionEventKind::SubagentStop { handle, .. } => {
                 let context = by_agent.entry(handle.agent_id.to_string()).or_default();
-                context.run_id = Some(handle.run_id.clone());
+                context.session_id = Some(handle.session_id.clone());
                 context.agent_session_id = Some(handle.agent_session_id.clone());
                 if context.agent_name.is_none() {
                     context.agent_name = Some(handle.role.clone());
@@ -594,10 +597,10 @@ fn collect_child_run_token_usage_contexts(
                     context.task_id = Some(handle.task_id.clone());
                 }
             }
-            RunEventKind::AgentEnvelope { envelope } => {
+            SessionEventKind::AgentEnvelope { envelope } => {
                 let context = by_agent.entry(envelope.agent_id.to_string()).or_default();
-                if context.run_id.is_none() {
-                    context.run_id = Some(envelope.run_id.clone());
+                if context.session_id.is_none() {
+                    context.session_id = Some(envelope.session_id.clone());
                 }
                 if context.agent_session_id.is_none() {
                     context.agent_session_id = Some(envelope.agent_session_id.clone());
@@ -627,8 +630,8 @@ fn collect_child_run_token_usage_contexts(
     let mut contexts = by_agent
         .into_values()
         .filter_map(|context| {
-            Some(ResolvedChildRunTokenUsageContext {
-                run_id: context.run_id?,
+            Some(ResolvedChildSessionTokenUsageContext {
+                session_id: context.session_id?,
                 agent_session_id: context.agent_session_id,
                 agent_name: context.agent_name,
                 task_id: context.task_id,
@@ -639,12 +642,12 @@ fn collect_child_run_token_usage_contexts(
         left.agent_name
             .cmp(&right.agent_name)
             .then_with(|| left.task_id.cmp(&right.task_id))
-            .then_with(|| left.run_id.as_str().cmp(right.run_id.as_str()))
+            .then_with(|| left.session_id.as_str().cmp(right.session_id.as_str()))
     });
     contexts
 }
 
-pub(crate) fn build_search_corpus(events: &[RunEventEnvelope]) -> String {
+pub(crate) fn build_search_corpus(events: &[SessionEventEnvelope]) -> String {
     let mut corpus = String::new();
     for event in events {
         for value in searchable_event_strings(event) {
@@ -659,9 +662,9 @@ pub(crate) fn build_search_corpus(events: &[RunEventEnvelope]) -> String {
 
 #[must_use]
 pub(crate) fn group_events_for_memory_export(
-    events: &[RunEventEnvelope],
+    events: &[SessionEventEnvelope],
 ) -> GroupedMemoryExportEvents {
-    let mut agent_sessions = BTreeMap::<AgentSessionId, Vec<RunEventEnvelope>>::new();
+    let mut agent_sessions = BTreeMap::<AgentSessionId, Vec<SessionEventEnvelope>>::new();
     let mut subagents = BTreeMap::<String, ScopedMemoryExportEvents>::new();
     let mut tasks = BTreeMap::<String, ScopedMemoryExportEvents>::new();
     let mut agent_contexts = BTreeMap::<String, AgentMemoryExportContext>::new();
@@ -676,7 +679,7 @@ pub(crate) fn group_events_for_memory_export(
             // Task lifecycle lives on the parent session stream. We keep those
             // records under task scope and later overwrite the fallback session
             // with the child session once spawn/start events provide it.
-            RunEventKind::TaskCreated { task, .. } => {
+            SessionEventKind::TaskCreated { task, .. } => {
                 let group = tasks.entry(task.task_id.clone()).or_default();
                 group.task_id = Some(task.task_id.clone());
                 if group.agent_session_id.is_none() {
@@ -684,7 +687,7 @@ pub(crate) fn group_events_for_memory_export(
                 }
                 group.events.push(event.clone());
             }
-            RunEventKind::TaskCompleted {
+            SessionEventKind::TaskCompleted {
                 task_id, agent_id, ..
             } => {
                 let context = agent_contexts
@@ -702,7 +705,7 @@ pub(crate) fn group_events_for_memory_export(
                     push_subagent_event(&mut subagents, agent_id.to_string(), &context, event);
                 }
             }
-            RunEventKind::SubagentStart { handle, task } => {
+            SessionEventKind::SubagentStart { handle, task } => {
                 let context = update_agent_memory_export_context(
                     &mut agent_contexts,
                     &handle.agent_id.to_string(),
@@ -719,7 +722,7 @@ pub(crate) fn group_events_for_memory_export(
                     event,
                 );
             }
-            RunEventKind::AgentEnvelope { envelope } => {
+            SessionEventKind::AgentEnvelope { envelope } => {
                 let agent_key = envelope.agent_id.to_string();
                 let context = match &envelope.kind {
                     types::AgentEnvelopeKind::SpawnRequested { task }
@@ -779,7 +782,7 @@ pub(crate) fn group_events_for_memory_export(
                 };
                 push_subagent_event(&mut subagents, agent_key, &context, event);
             }
-            RunEventKind::SubagentStop { handle, .. } => {
+            SessionEventKind::SubagentStop { handle, .. } => {
                 let context = update_agent_memory_export_context(
                     &mut agent_contexts,
                     &handle.agent_id.to_string(),
@@ -837,7 +840,7 @@ fn push_subagent_event(
     groups: &mut BTreeMap<String, ScopedMemoryExportEvents>,
     agent_key: String,
     context: &AgentMemoryExportContext,
-    event: &RunEventEnvelope,
+    event: &SessionEventEnvelope,
 ) {
     let group = groups.entry(agent_key).or_default();
     apply_memory_export_context(group, context, None);
@@ -849,7 +852,7 @@ fn push_task_event(
     task_key: String,
     context: Option<&AgentMemoryExportContext>,
     fallback_agent_session_id: Option<&AgentSessionId>,
-    event: &RunEventEnvelope,
+    event: &SessionEventEnvelope,
 ) {
     let group = groups.entry(task_key.clone()).or_default();
     group.task_id = Some(task_key);
@@ -882,12 +885,12 @@ fn apply_memory_export_context(
 #[must_use]
 pub fn build_memory_export_record(
     scope: MemoryExportScope,
-    run_id: &RunId,
+    session_id: &SessionId,
     agent_session_id: Option<AgentSessionId>,
     agent_name: Option<String>,
     task_id: Option<String>,
-    events: &[RunEventEnvelope],
-) -> Option<RunMemoryExportRecord> {
+    events: &[SessionEventEnvelope],
+) -> Option<SessionMemoryExportRecord> {
     if events.is_empty() {
         return None;
     }
@@ -899,16 +902,16 @@ pub fn build_memory_export_record(
     for event in events {
         first_timestamp_ms = first_timestamp_ms.min(event.timestamp_ms);
         last_timestamp_ms = last_timestamp_ms.max(event.timestamp_ms);
-        if let RunEventKind::UserPromptSubmit { prompt } = &event.event {
+        if let SessionEventKind::UserPromptSubmit { prompt } = &event.event {
             last_user_prompt = Some(prompt.clone());
         }
     }
     let transcript_message_count = replay_transcript(events).len();
 
-    Some(RunMemoryExportRecord {
+    Some(SessionMemoryExportRecord {
         summary: MemoryExportSummary {
             scope,
-            run_id: run_id.clone(),
+            session_id: session_id.clone(),
             agent_session_id,
             agent_name,
             task_id,
@@ -923,7 +926,7 @@ pub fn build_memory_export_record(
     })
 }
 
-pub(crate) fn sort_memory_export_records(records: &mut [RunMemoryExportRecord]) {
+pub(crate) fn sort_memory_export_records(records: &mut [SessionMemoryExportRecord]) {
     records.sort_by(|left, right| {
         right
             .summary
@@ -931,9 +934,9 @@ pub(crate) fn sort_memory_export_records(records: &mut [RunMemoryExportRecord]) 
             .cmp(&left.summary.last_timestamp_ms)
             .then_with(|| {
                 left.summary
-                    .run_id
+                    .session_id
                     .as_str()
-                    .cmp(right.summary.run_id.as_str())
+                    .cmp(right.summary.session_id.as_str())
             })
             .then_with(|| {
                 left.summary
@@ -946,18 +949,18 @@ pub(crate) fn sort_memory_export_records(records: &mut [RunMemoryExportRecord]) 
 }
 
 pub(crate) fn apply_memory_export_request(
-    bundle: &mut RunMemoryExportBundle,
-    request: &RunMemoryExportRequest,
+    bundle: &mut SessionMemoryExportBundle,
+    request: &SessionMemoryExportRequest,
 ) {
-    if let Some(max_runs) = request.max_runs {
-        bundle.runs.truncate(max_runs);
-        bundle.agent_sessions.truncate(max_runs);
-        bundle.subagents.truncate(max_runs);
-        bundle.tasks.truncate(max_runs);
+    if let Some(max_sessions) = request.max_sessions {
+        bundle.sessions.truncate(max_sessions);
+        bundle.agent_sessions.truncate(max_sessions);
+        bundle.subagents.truncate(max_sessions);
+        bundle.tasks.truncate(max_sessions);
     }
     if let Some(max_chars) = request.max_search_corpus_chars {
         for record in bundle
-            .runs
+            .sessions
             .iter_mut()
             .chain(bundle.agent_sessions.iter_mut())
             .chain(bundle.subagents.iter_mut())
@@ -996,24 +999,24 @@ pub(crate) fn keep_recent_chars(search_corpus: &str, max_chars: usize) -> String
         .collect::<String>()
 }
 
-fn collect_memory_export_sections(events: &[RunEventEnvelope]) -> MemoryExportSections {
+fn collect_memory_export_sections(events: &[SessionEventEnvelope]) -> MemoryExportSections {
     let mut sections = MemoryExportSections::default();
 
     for event in events {
         match &event.event {
-            RunEventKind::SteerApplied { message, reason } => {
+            SessionEventKind::SteerApplied { message, reason } => {
                 push_unique(&mut sections.decisions, preview_text(message, 120));
                 if let Some(reason) = reason {
                     push_unique(&mut sections.decisions, preview_text(reason, 120));
                 }
             }
-            RunEventKind::CompactionCompleted { reason, .. } => {
+            SessionEventKind::CompactionCompleted { reason, .. } => {
                 push_unique(
                     &mut sections.follow_up,
                     format!("compaction: {}", preview_text(reason, 120)),
                 );
             }
-            RunEventKind::HookCompleted {
+            SessionEventKind::HookCompleted {
                 hook_name, output, ..
             } => {
                 for effect in &output.effects {
@@ -1080,7 +1083,7 @@ fn collect_memory_export_sections(events: &[RunEventEnvelope]) -> MemoryExportSe
                     }
                 }
             }
-            RunEventKind::ToolApprovalResolved {
+            SessionEventKind::ToolApprovalResolved {
                 call,
                 approved,
                 reason,
@@ -1093,7 +1096,7 @@ fn collect_memory_export_sections(events: &[RunEventEnvelope]) -> MemoryExportSe
                 }
                 push_unique(&mut sections.decisions, line);
             }
-            RunEventKind::ToolCallCompleted { call, output } => {
+            SessionEventKind::ToolCallCompleted { call, output } => {
                 push_unique(
                     &mut sections.tool_summary,
                     format!("{} completed", call.tool_name),
@@ -1105,7 +1108,7 @@ fn collect_memory_export_sections(events: &[RunEventEnvelope]) -> MemoryExportSe
                     push_unique(&mut sections.produced_artifacts, artifact);
                 }
             }
-            RunEventKind::ToolCallFailed { call, error } => {
+            SessionEventKind::ToolCallFailed { call, error } => {
                 push_unique(
                     &mut sections.tool_summary,
                     format!("{} failed", call.tool_name),
@@ -1115,18 +1118,18 @@ fn collect_memory_export_sections(events: &[RunEventEnvelope]) -> MemoryExportSe
                     format!("{}: {}", call.tool_name, preview_text(error, 120)),
                 );
             }
-            RunEventKind::Notification { source, message } => {
+            SessionEventKind::Notification { source, message } => {
                 push_unique(
                     &mut sections.follow_up,
                     format!("{source}: {}", preview_text(message, 120)),
                 );
             }
-            RunEventKind::StopFailure { reason } => {
+            SessionEventKind::StopFailure { reason } => {
                 if let Some(reason) = reason {
                     push_unique(&mut sections.failures, preview_text(reason, 120));
                 }
             }
-            RunEventKind::Stop { reason } | RunEventKind::SessionEnd { reason } => {
+            SessionEventKind::Stop { reason } | SessionEventKind::SessionEnd { reason } => {
                 if let Some(reason) = reason {
                     push_unique(&mut sections.follow_up, preview_text(reason, 120));
                 }
@@ -1174,9 +1177,9 @@ fn preview_text(value: &str, max_chars: usize) -> String {
 
 #[async_trait]
 pub trait EventSink: Send + Sync {
-    async fn append(&self, event: RunEventEnvelope) -> Result<()>;
+    async fn append(&self, event: SessionEventEnvelope) -> Result<()>;
 
-    async fn append_batch(&self, events: Vec<RunEventEnvelope>) -> Result<()> {
+    async fn append_batch(&self, events: Vec<SessionEventEnvelope>) -> Result<()> {
         for event in events {
             self.append(event).await?;
         }
@@ -1185,32 +1188,32 @@ pub trait EventSink: Send + Sync {
 }
 
 #[async_trait]
-pub trait RunStore: EventSink {
-    async fn list_runs(&self) -> Result<Vec<RunSummary>>;
-    async fn search_runs(&self, query: &str) -> Result<Vec<RunSearchResult>>;
-    async fn events(&self, run_id: &RunId) -> Result<Vec<RunEventEnvelope>>;
-    async fn agent_session_ids(&self, run_id: &RunId) -> Result<Vec<AgentSessionId>>;
-    async fn replay_transcript(&self, run_id: &RunId) -> Result<Vec<Message>>;
-    async fn token_usage(&self, run_id: &RunId) -> Result<RunTokenUsageReport> {
-        let root_events = self.events(run_id).await?;
-        let run = latest_token_usage_snapshot(&root_events).map(|ledger| TokenUsageRecord {
-            scope: TokenUsageScope::Run,
-            run_id: run_id.clone(),
+pub trait SessionStore: EventSink {
+    async fn list_sessions(&self) -> Result<Vec<SessionSummary>>;
+    async fn search_sessions(&self, query: &str) -> Result<Vec<SessionSearchResult>>;
+    async fn events(&self, session_id: &SessionId) -> Result<Vec<SessionEventEnvelope>>;
+    async fn agent_session_ids(&self, session_id: &SessionId) -> Result<Vec<AgentSessionId>>;
+    async fn replay_transcript(&self, session_id: &SessionId) -> Result<Vec<Message>>;
+    async fn token_usage(&self, session_id: &SessionId) -> Result<SessionTokenUsageReport> {
+        let root_events = self.events(session_id).await?;
+        let session = latest_token_usage_snapshot(&root_events).map(|ledger| TokenUsageRecord {
+            scope: TokenUsageScope::Session,
+            session_id: session_id.clone(),
             agent_session_id: None,
             agent_name: None,
             task_id: None,
             ledger,
         });
-        let agent_sessions = agent_session_token_usage_records(run_id, &root_events);
-        let mut aggregate_usage = run
+        let agent_sessions = agent_session_token_usage_records(session_id, &root_events);
+        let mut aggregate_usage = session
             .as_ref()
             .map(|record| record.ledger.cumulative_usage)
             .unwrap_or_default();
 
         let child_contexts = collect_child_run_token_usage_contexts(&root_events);
         let child_records = stream::iter(child_contexts.into_iter().map(|context| async move {
-            let events = self.events(&context.run_id).await?;
-            Ok::<_, RunStoreError>((context, latest_token_usage_snapshot(&events)))
+            let events = self.events(&context.session_id).await?;
+            Ok::<_, SessionStoreError>((context, latest_token_usage_snapshot(&events)))
         }))
         .buffer_unordered(TOKEN_USAGE_CHILD_FETCH_CONCURRENCY_LIMIT)
         .collect::<Vec<_>>()
@@ -1226,7 +1229,7 @@ pub trait RunStore: EventSink {
             aggregate_usage.accumulate(&ledger.cumulative_usage);
             subagents.push(TokenUsageRecord {
                 scope: TokenUsageScope::Subagent,
-                run_id: context.run_id.clone(),
+                session_id: context.session_id.clone(),
                 agent_session_id: context.agent_session_id.clone(),
                 agent_name: context.agent_name.clone(),
                 task_id: context.task_id.clone(),
@@ -1234,7 +1237,7 @@ pub trait RunStore: EventSink {
             });
             tasks.push(TokenUsageRecord {
                 scope: TokenUsageScope::Task,
-                run_id: context.run_id,
+                session_id: context.session_id,
                 agent_session_id: context.agent_session_id,
                 agent_name: context.agent_name,
                 task_id: context.task_id,
@@ -1242,8 +1245,8 @@ pub trait RunStore: EventSink {
             });
         }
 
-        Ok(RunTokenUsageReport {
-            run,
+        Ok(SessionTokenUsageReport {
+            session,
             agent_sessions,
             subagents,
             tasks,
@@ -1252,6 +1255,6 @@ pub trait RunStore: EventSink {
     }
     async fn export_for_memory(
         &self,
-        request: RunMemoryExportRequest,
-    ) -> Result<RunMemoryExportBundle>;
+        request: SessionMemoryExportRequest,
+    ) -> Result<SessionMemoryExportBundle>;
 }

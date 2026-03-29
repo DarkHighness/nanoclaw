@@ -1,10 +1,10 @@
 use agent::mcp::{McpPrompt, McpResource};
 use agent::skills::Skill;
 use serde_json::Value;
-use store::{RunSearchResult, RunSummary, RunTokenUsageReport, TokenUsageRecord};
+use store::{SessionSearchResult, SessionSummary, SessionTokenUsageReport, TokenUsageRecord};
 use types::{
-    AgentSessionId, Message, MessagePart, MessageRole, RunEventEnvelope, RunEventKind, ToolOrigin,
-    ToolSpec,
+    AgentSessionId, Message, MessagePart, MessageRole, SessionEventEnvelope, SessionEventKind,
+    ToolOrigin, ToolSpec,
 };
 
 pub(super) fn format_tool_line(spec: &ToolSpec) -> String {
@@ -28,7 +28,7 @@ pub(super) fn format_tool_line(spec: &ToolSpec) -> String {
     )
 }
 
-pub(super) fn format_run_summary_line(summary: &RunSummary) -> String {
+pub(super) fn format_run_summary_line(summary: &SessionSummary) -> String {
     let prompt = summary
         .last_user_prompt
         .as_deref()
@@ -36,7 +36,7 @@ pub(super) fn format_run_summary_line(summary: &RunSummary) -> String {
         .unwrap_or_else(|| "no prompt yet".to_string());
     format!(
         "{}  msg={} ev={} sess={}  {}",
-        preview_id(summary.run_id.as_str()),
+        preview_id(summary.session_id.as_str()),
         summary.transcript_message_count,
         summary.event_count,
         summary.agent_session_count,
@@ -44,7 +44,7 @@ pub(super) fn format_run_summary_line(summary: &RunSummary) -> String {
     )
 }
 
-pub(super) fn format_run_search_line(result: &RunSearchResult) -> String {
+pub(super) fn format_run_search_line(result: &SessionSearchResult) -> String {
     let base = format_run_summary_line(&result.summary);
     if result.preview_matches.is_empty() {
         format!("{base}  matches={}", result.matched_event_count)
@@ -58,18 +58,18 @@ pub(super) fn format_run_search_line(result: &RunSearchResult) -> String {
 }
 
 pub(super) fn format_run_sidebar(
-    summary: &RunSummary,
+    summary: &SessionSummary,
     agent_session_ids: &[AgentSessionId],
-    events: &[RunEventEnvelope],
-    token_usage: &RunTokenUsageReport,
+    events: &[SessionEventEnvelope],
+    token_usage: &SessionTokenUsageReport,
 ) -> Vec<String> {
     let mut sidebar = vec![
-        format!("run: {}", summary.run_id),
+        format!("session: {}", summary.session_id),
         format!("events: {}", summary.event_count),
         format!("messages: {}", summary.transcript_message_count),
         format!("sessions: {}", summary.agent_session_count),
     ];
-    if let Some(run_usage) = &token_usage.run {
+    if let Some(run_usage) = &token_usage.session {
         if let Some(window) = run_usage.ledger.context_window {
             sidebar.push(format!(
                 "context: {} / {}",
@@ -77,7 +77,7 @@ pub(super) fn format_run_sidebar(
             ));
         }
         sidebar.push(format!(
-            "run tokens: in={} out={} cache={}",
+            "session tokens: in={} out={} cache={}",
             run_usage.ledger.cumulative_usage.input_tokens,
             run_usage.ledger.cumulative_usage.output_tokens,
             run_usage.ledger.cumulative_usage.cache_read_tokens,
@@ -138,7 +138,7 @@ fn format_token_usage_record_line(record: &TokenUsageRecord) -> String {
         .as_deref()
         .or(record.task_id.as_deref())
         .map(|value| preview_text(value, 20))
-        .unwrap_or_else(|| preview_id(record.run_id.as_str()));
+        .unwrap_or_else(|| preview_id(record.session_id.as_str()));
     format!(
         "{} in={} out={} cache={}",
         name,
@@ -148,30 +148,32 @@ fn format_token_usage_record_line(record: &TokenUsageRecord) -> String {
     )
 }
 
-pub(super) fn format_run_event_line(event: &RunEventEnvelope) -> String {
+pub(super) fn format_run_event_line(event: &SessionEventEnvelope) -> String {
     match &event.event {
-        RunEventKind::SessionStart { reason } => {
+        SessionEventKind::SessionStart { reason } => {
             format!("session_start {}", reason.as_deref().unwrap_or(""))
                 .trim()
                 .to_string()
         }
-        RunEventKind::InstructionsLoaded { count } => format!("instructions_loaded count={count}"),
-        RunEventKind::SteerApplied { message, reason } => format!(
+        SessionEventKind::InstructionsLoaded { count } => {
+            format!("instructions_loaded count={count}")
+        }
+        SessionEventKind::SteerApplied { message, reason } => format!(
             "steer {} {}",
             reason.as_deref().unwrap_or(""),
             preview_text(message, 24)
         )
         .trim()
         .to_string(),
-        RunEventKind::UserPromptSubmit { prompt } => {
+        SessionEventKind::UserPromptSubmit { prompt } => {
             format!("user_prompt {}", preview_text(prompt, 42))
         }
-        RunEventKind::ModelRequestStarted { request } => format!(
+        SessionEventKind::ModelRequestStarted { request } => format!(
             "model_request messages={} tools={}",
             request.messages.len(),
             request.tools.len()
         ),
-        RunEventKind::CompactionCompleted {
+        SessionEventKind::CompactionCompleted {
             reason,
             source_message_count,
             retained_message_count,
@@ -180,7 +182,7 @@ pub(super) fn format_run_event_line(event: &RunEventEnvelope) -> String {
             "compaction {} messages={} kept={} summary_chars={}",
             reason, source_message_count, retained_message_count, summary_chars
         ),
-        RunEventKind::ModelResponseCompleted {
+        SessionEventKind::ModelResponseCompleted {
             assistant_text,
             tool_calls,
             ..
@@ -189,7 +191,7 @@ pub(super) fn format_run_event_line(event: &RunEventEnvelope) -> String {
             preview_text(assistant_text, 24),
             tool_calls.len()
         ),
-        RunEventKind::TokenUsageUpdated { phase, ledger } => format!(
+        SessionEventKind::TokenUsageUpdated { phase, ledger } => format!(
             "token_usage {:?} context={} input={} output={}",
             phase,
             ledger
@@ -199,19 +201,19 @@ pub(super) fn format_run_event_line(event: &RunEventEnvelope) -> String {
             ledger.cumulative_usage.input_tokens,
             ledger.cumulative_usage.output_tokens,
         ),
-        RunEventKind::HookInvoked { hook_name, event } => {
+        SessionEventKind::HookInvoked { hook_name, event } => {
             format!("hook_invoked {hook_name} {:?}", event)
         }
-        RunEventKind::HookCompleted {
+        SessionEventKind::HookCompleted {
             hook_name, output, ..
         } => format!(
             "hook_completed {hook_name} effects={}",
             output.effects.len()
         ),
-        RunEventKind::TranscriptMessage { message } => {
+        SessionEventKind::TranscriptMessage { message } => {
             format!("transcript {}", preview_text(&message_to_text(message), 42))
         }
-        RunEventKind::TranscriptMessagePatched {
+        SessionEventKind::TranscriptMessagePatched {
             message_id,
             message,
         } => format!(
@@ -219,39 +221,39 @@ pub(super) fn format_run_event_line(event: &RunEventEnvelope) -> String {
             preview_id(message_id.as_str()),
             preview_text(&message_to_text(message), 32)
         ),
-        RunEventKind::TranscriptMessageRemoved { message_id } => {
+        SessionEventKind::TranscriptMessageRemoved { message_id } => {
             format!("transcript_remove {}", preview_id(message_id.as_str()))
         }
-        RunEventKind::ToolApprovalRequested { call, .. } => {
+        SessionEventKind::ToolApprovalRequested { call, .. } => {
             format!("approval_requested {}", call.tool_name)
         }
-        RunEventKind::ToolApprovalResolved { call, approved, .. } => {
+        SessionEventKind::ToolApprovalResolved { call, approved, .. } => {
             format!("approval_resolved {} approved={approved}", call.tool_name)
         }
-        RunEventKind::ToolCallStarted { call } => format!("tool_started {}", call.tool_name),
-        RunEventKind::ToolCallCompleted { call, output } => format!(
+        SessionEventKind::ToolCallStarted { call } => format!("tool_started {}", call.tool_name),
+        SessionEventKind::ToolCallCompleted { call, output } => format!(
             "tool_completed {} {}",
             call.tool_name,
             preview_text(&output.text_content(), 24)
         ),
-        RunEventKind::ToolCallFailed { call, error } => {
+        SessionEventKind::ToolCallFailed { call, error } => {
             format!("tool_failed {} {}", call.tool_name, preview_text(error, 24))
         }
-        RunEventKind::TaskCreated { task, .. } => format!(
+        SessionEventKind::TaskCreated { task, .. } => format!(
             "task_created {} role={} claims={}",
             task.task_id,
             task.role,
             task.requested_write_set.len()
         ),
-        RunEventKind::TaskCompleted {
+        SessionEventKind::TaskCompleted {
             task_id, status, ..
         } => format!("task_completed {task_id} status={status}"),
-        RunEventKind::SubagentStart { handle, .. } => format!(
+        SessionEventKind::SubagentStart { handle, .. } => format!(
             "subagent_start {} {}",
             preview_id(handle.agent_id.as_str()),
             handle.role
         ),
-        RunEventKind::AgentEnvelope { envelope } => match &envelope.kind {
+        SessionEventKind::AgentEnvelope { envelope } => match &envelope.kind {
             types::AgentEnvelopeKind::SpawnRequested { task } => {
                 format!("agent_spawn {}", task.task_id)
             }
@@ -294,7 +296,7 @@ pub(super) fn format_run_event_line(event: &RunEventEnvelope) -> String {
             .to_string(),
             types::AgentEnvelopeKind::Heartbeat => "agent_heartbeat".to_string(),
         },
-        RunEventKind::SubagentStop { handle, result, .. } => format!(
+        SessionEventKind::SubagentStop { handle, result, .. } => format!(
             "subagent_stop {} status={} {}",
             preview_id(handle.agent_id.as_str()),
             handle.status,
@@ -305,18 +307,18 @@ pub(super) fn format_run_event_line(event: &RunEventEnvelope) -> String {
         )
         .trim()
         .to_string(),
-        RunEventKind::Notification { source, message } => {
+        SessionEventKind::Notification { source, message } => {
             format!("notification {source} {}", preview_text(message, 24))
         }
-        RunEventKind::Stop { reason } => format!("stop {}", reason.as_deref().unwrap_or(""))
+        SessionEventKind::Stop { reason } => format!("stop {}", reason.as_deref().unwrap_or(""))
             .trim()
             .to_string(),
-        RunEventKind::StopFailure { reason } => {
+        SessionEventKind::StopFailure { reason } => {
             format!("stop_failure {}", reason.as_deref().unwrap_or(""))
                 .trim()
                 .to_string()
         }
-        RunEventKind::SessionEnd { reason } => {
+        SessionEventKind::SessionEnd { reason } => {
             format!("session_end {}", reason.as_deref().unwrap_or(""))
                 .trim()
                 .to_string()
@@ -324,7 +326,7 @@ pub(super) fn format_run_event_line(event: &RunEventEnvelope) -> String {
     }
 }
 
-pub(super) fn build_turn_sidebar(events: &[RunEventEnvelope]) -> Vec<String> {
+pub(super) fn build_turn_sidebar(events: &[SessionEventEnvelope]) -> Vec<String> {
     let mut sidebar = Vec::new();
     if !events.is_empty() {
         sidebar.push("recent events:".to_string());

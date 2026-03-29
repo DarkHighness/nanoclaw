@@ -1,9 +1,11 @@
 use std::collections::HashSet;
-use types::{AgentSessionId, Message, MessageId, ProviderContinuation, RunId, TokenLedgerSnapshot};
+use types::{
+    AgentSessionId, Message, MessageId, ProviderContinuation, SessionId, TokenLedgerSnapshot,
+};
 
 #[derive(Clone, Debug)]
 pub struct RuntimeSession {
-    pub run_id: RunId,
+    pub session_id: SessionId,
     pub agent_session_id: AgentSessionId,
     pub transcript: Vec<Message>,
     pub provider_continuation: Option<ProviderContinuation>,
@@ -18,15 +20,15 @@ pub struct RuntimeSession {
 
 impl Default for RuntimeSession {
     fn default() -> Self {
-        Self::new(RunId::new(), AgentSessionId::new())
+        Self::new(SessionId::new(), AgentSessionId::new())
     }
 }
 
 impl RuntimeSession {
     #[must_use]
-    pub fn new(run_id: RunId, agent_session_id: AgentSessionId) -> Self {
+    pub fn new(session_id: SessionId, agent_session_id: AgentSessionId) -> Self {
         Self {
-            run_id,
+            session_id,
             agent_session_id,
             transcript: Vec::new(),
             provider_continuation: None,

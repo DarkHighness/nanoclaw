@@ -24,7 +24,7 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
-use store::RunStore;
+use store::SessionStore;
 use wide::f32x8;
 
 const INDEX_SCHEMA_VERSION: u32 = 2;
@@ -55,7 +55,7 @@ struct CandidateAccumulator {
     title: String,
     scope_weight: f64,
     recency_multiplier: f64,
-    run_match_bonus: f64,
+    session_match_bonus: f64,
     agent_session_match_bonus: f64,
     agent_match_bonus: f64,
     task_match_bonus: f64,
@@ -77,7 +77,7 @@ pub struct MemoryEmbedBackend {
     client: Arc<dyn EmbeddingClient>,
     query_expander: Option<Arc<dyn QueryExpansionClient>>,
     reranker: Option<Arc<dyn RerankClient>>,
-    run_store: Option<Arc<dyn RunStore>>,
+    session_store: Option<Arc<dyn SessionStore>>,
     vector_store: MemoryVectorStore,
     lexical_index: LexicalIndex,
     state: RwLock<Option<CachedMemoryEmbedIndex>>,
@@ -99,7 +99,7 @@ impl MemoryEmbedBackend {
             client,
             query_expander: None,
             reranker: None,
-            run_store: None,
+            session_store: None,
             vector_store,
             lexical_index: LexicalIndex::new(
                 &workspace_root,
@@ -123,8 +123,8 @@ impl MemoryEmbedBackend {
     }
 
     #[must_use]
-    pub fn with_run_store(mut self, run_store: Arc<dyn RunStore>) -> Self {
-        self.run_store = Some(run_store);
+    pub fn with_session_store(mut self, session_store: Arc<dyn SessionStore>) -> Self {
+        self.session_store = Some(session_store);
         self
     }
 
@@ -133,8 +133,8 @@ impl MemoryEmbedBackend {
             self.workspace_root.clone(),
             self.config.as_core_config(),
         );
-        if let Some(run_store) = self.run_store.as_ref() {
-            backend.with_run_store(run_store.clone())
+        if let Some(session_store) = self.session_store.as_ref() {
+            backend.with_session_store(session_store.clone())
         } else {
             backend
         }
@@ -236,7 +236,7 @@ impl MemoryEmbedBackend {
         &self,
         corpus: &crate::MemoryCorpus,
         chunks: &[crate::MemoryCorpusChunk],
-        exported_run_count: usize,
+        exported_session_count: usize,
     ) -> Result<()> {
         self.lexical_index
             .ensure_ready(
@@ -246,7 +246,7 @@ impl MemoryEmbedBackend {
                 }))?,
                 &document_snapshots(corpus),
                 &lexical_index_chunks(chunks),
-                exported_run_count,
+                exported_session_count,
             )
             .await?;
         Ok(())
@@ -731,11 +731,11 @@ impl MemoryBackend for MemoryEmbedBackend {
         let (corpus, runtime_exports) = load_configured_memory_corpus(
             &self.workspace_root,
             &self.config.corpus,
-            self.run_store.as_ref(),
+            self.session_store.as_ref(),
         )
         .await?;
         let chunks = chunk_corpus(&corpus, &self.config.chunking);
-        self.ensure_lexical_index(&corpus, &chunks, runtime_exports.exported_runs)
+        self.ensure_lexical_index(&corpus, &chunks, runtime_exports.exported_sessions)
             .await?;
         self.ensure_chunk_index(&corpus, &chunks).await?;
         Ok(MemorySyncStatus {
@@ -761,7 +761,7 @@ impl MemoryBackend for MemoryEmbedBackend {
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(ToOwned::to_owned);
-        self.ensure_lexical_index(&corpus, &chunks, runtime_exports.exported_runs)
+        self.ensure_lexical_index(&corpus, &chunks, runtime_exports.exported_sessions)
             .await?;
         let cached = self.ensure_chunk_index(&corpus, &chunks).await?;
         let titles = document_titles(&corpus);
@@ -913,8 +913,8 @@ impl MemoryBackend for MemoryEmbedBackend {
                     json!(candidate.recency_multiplier),
                 );
                 metadata.insert(
-                    "run_match_bonus".to_string(),
-                    json!(candidate.run_match_bonus),
+                    "session_match_bonus".to_string(),
+                    json!(candidate.session_match_bonus),
                 );
                 metadata.insert(
                     "agent_session_match_bonus".to_string(),
@@ -974,8 +974,8 @@ impl MemoryBackend for MemoryEmbedBackend {
             json!(corpus.documents.len()),
         );
         metadata.insert(
-            "runtime_exported_runs".to_string(),
-            json!(runtime_exports.exported_runs),
+            "runtime_exported_sessions".to_string(),
+            json!(runtime_exports.exported_sessions),
         );
         metadata.insert(
             "runtime_exported_documents".to_string(),
@@ -1255,7 +1255,7 @@ fn apply_ranked_list(
                 applied_mmr: false,
                 scope_weight: 1.0,
                 recency_multiplier: 1.0,
-                run_match_bonus: 0.0,
+                session_match_bonus: 0.0,
                 agent_session_match_bonus: 0.0,
                 agent_match_bonus: 0.0,
                 task_match_bonus: 0.0,
@@ -1287,7 +1287,7 @@ fn apply_temporal_scoring(candidates: &mut [CandidateAccumulator], request: &Mem
         );
         candidate.scope_weight = signals.scope_weight;
         candidate.recency_multiplier = signals.recency_multiplier;
-        candidate.run_match_bonus = signals.run_match_bonus;
+        candidate.session_match_bonus = signals.session_match_bonus;
         candidate.agent_session_match_bonus = signals.agent_session_match_bonus;
         candidate.agent_match_bonus = signals.agent_match_bonus;
         candidate.task_match_bonus = signals.task_match_bonus;
@@ -1658,7 +1658,7 @@ mod tests {
                     path_prefix: None,
                     scopes: None,
                     tags: None,
-                    run_id: None,
+                    session_id: None,
                     agent_session_id: None,
                     agent_name: None,
                     task_id: None,
@@ -1761,7 +1761,7 @@ mod tests {
                     path_prefix: None,
                     scopes: None,
                     tags: None,
-                    run_id: None,
+                    session_id: None,
                     agent_session_id: None,
                     agent_name: None,
                     task_id: None,
@@ -1929,7 +1929,7 @@ mod tests {
                     path_prefix: Some("memory/".to_string()),
                     scopes: None,
                     tags: None,
-                    run_id: None,
+                    session_id: None,
                     agent_session_id: None,
                     agent_name: None,
                     task_id: None,
@@ -2065,7 +2065,7 @@ mod tests {
                     path_prefix: None,
                     scopes: None,
                     tags: None,
-                    run_id: None,
+                    session_id: None,
                     agent_session_id: None,
                     agent_name: None,
                     task_id: None,
@@ -2165,7 +2165,7 @@ mod tests {
                 title: "Memory".to_string(),
                 scope_weight: 1.0,
                 recency_multiplier: 1.0,
-                run_match_bonus: 0.0,
+                session_match_bonus: 0.0,
                 agent_session_match_bonus: 0.0,
                 agent_match_bonus: 0.0,
                 task_match_bonus: 0.0,
@@ -2193,7 +2193,7 @@ mod tests {
                 title: "Memory".to_string(),
                 scope_weight: 1.0,
                 recency_multiplier: 1.0,
-                run_match_bonus: 0.0,
+                session_match_bonus: 0.0,
                 agent_session_match_bonus: 0.0,
                 agent_match_bonus: 0.0,
                 task_match_bonus: 0.0,
@@ -2221,7 +2221,7 @@ mod tests {
                 title: "Other".to_string(),
                 scope_weight: 1.0,
                 recency_multiplier: 1.0,
-                run_match_bonus: 0.0,
+                session_match_bonus: 0.0,
                 agent_session_match_bonus: 0.0,
                 agent_match_bonus: 0.0,
                 task_match_bonus: 0.0,

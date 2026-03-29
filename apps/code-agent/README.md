@@ -158,7 +158,7 @@ not have useful extensions, including `Dockerfile*`, `Containerfile*`, `go.mod`,
 
 The product-facing host surface now uses `session` terminology to match Codex,
 Claude Code, and OpenCode. The durable history backend still stores entries by
-substrate `run_id`, so `/session <session-ref>` currently opens persisted
+substrate `session_id`, so `/session <session-ref>` currently opens persisted
 history and exports artifacts, but it does not yet resume a live runtime from
 that stored state.
 

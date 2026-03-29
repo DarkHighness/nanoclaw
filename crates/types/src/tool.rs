@@ -14,7 +14,8 @@ pub enum ToolOutputMode {
 }
 
 /// Tool names are shared protocol identifiers across registry lookup,
-/// approval policy, provider mapping, and persisted run events. Keeping them
+/// approval policy, provider mapping, and persisted session events.
+/// Keeping them
 /// typed inside the substrate avoids repeatedly degrading them into raw
 /// strings before crossing a real JSON or UI boundary.
 #[derive(

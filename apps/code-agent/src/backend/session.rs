@@ -1,5 +1,5 @@
-use crate::backend::run_history::{self, LoadedRun, RunExportArtifact};
 use crate::backend::session_catalog;
+use crate::backend::session_history::{self, LoadedSession, SessionExportArtifact};
 use crate::backend::{
     ApprovalCoordinator, ApprovalDecision, ApprovalPrompt, LoadedMcpPrompt, LoadedMcpResource,
     McpPromptSummary, McpResourceSummary, McpServerSummary, SessionEvent, SessionEventObserver,
@@ -12,7 +12,7 @@ use agent::{AgentRuntime, RuntimeCommand, Skill};
 use anyhow::Result;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
-use store::RunStore;
+use store::SessionStore;
 use tokio::sync::Mutex as AsyncMutex;
 
 /// This snapshot is the frontend-facing startup contract. It keeps stable host
@@ -42,7 +42,7 @@ pub(crate) struct SessionStartupSnapshot {
 #[derive(Clone)]
 pub(crate) struct CodeAgentSession {
     runtime: Arc<AsyncMutex<AgentRuntime>>,
-    store: Arc<dyn RunStore>,
+    store: Arc<dyn SessionStore>,
     mcp_servers: Arc<Vec<ConnectedMcpServer>>,
     approvals: ApprovalCoordinator,
     events: SessionEventStream,
@@ -54,7 +54,7 @@ pub(crate) struct CodeAgentSession {
 impl CodeAgentSession {
     pub(crate) fn new(
         runtime: AgentRuntime,
-        store: Arc<dyn RunStore>,
+        store: Arc<dyn SessionStore>,
         mcp_servers: Vec<ConnectedMcpServer>,
         approvals: ApprovalCoordinator,
         events: SessionEventStream,
@@ -128,10 +128,10 @@ impl CodeAgentSession {
     pub(crate) async fn list_sessions(
         &self,
     ) -> Result<Vec<crate::backend::PersistedSessionSummary>> {
-        let runs = run_history::list_runs(&self.store).await?;
-        self.set_stored_session_count(runs.len());
+        let sessions = session_history::list_sessions(&self.store).await?;
+        self.set_stored_session_count(sessions.len());
         let active_session_ref = self.startup_snapshot().active_session_ref;
-        Ok(runs
+        Ok(sessions
             .iter()
             .map(|summary| session_catalog::persisted_session_summary(summary, &active_session_ref))
             .collect())
@@ -141,7 +141,7 @@ impl CodeAgentSession {
         &self,
         query: &str,
     ) -> Result<Vec<crate::backend::PersistedSessionSearchMatch>> {
-        let matches = run_history::search_runs(&self.store, query).await?;
+        let matches = session_history::search_sessions(&self.store, query).await?;
         let active_session_ref = self.startup_snapshot().active_session_ref;
         Ok(matches
             .iter()
@@ -151,19 +151,19 @@ impl CodeAgentSession {
             .collect())
     }
 
-    pub(crate) async fn load_session(&self, run_ref: &str) -> Result<LoadedRun> {
-        run_history::load_run(&self.store, run_ref).await
+    pub(crate) async fn load_session(&self, session_ref: &str) -> Result<LoadedSession> {
+        session_history::load_session(&self.store, session_ref).await
     }
 
     pub(crate) async fn export_session(
         &self,
-        run_ref: &str,
+        session_ref: &str,
         relative_or_absolute: &str,
-    ) -> Result<RunExportArtifact> {
-        run_history::export_run_events(
+    ) -> Result<SessionExportArtifact> {
+        session_history::export_session_events(
             &self.store,
             self.workspace_root(),
-            run_ref,
+            session_ref,
             relative_or_absolute,
         )
         .await
@@ -171,20 +171,20 @@ impl CodeAgentSession {
 
     pub(crate) async fn export_session_transcript(
         &self,
-        run_ref: &str,
+        session_ref: &str,
         relative_or_absolute: &str,
-    ) -> Result<RunExportArtifact> {
-        run_history::export_run_transcript(
+    ) -> Result<SessionExportArtifact> {
+        session_history::export_session_transcript(
             &self.store,
             self.workspace_root(),
-            run_ref,
+            session_ref,
             relative_or_absolute,
         )
         .await
     }
 
     pub(crate) async fn refresh_stored_session_count(&self) -> Result<usize> {
-        let count = run_history::list_runs(&self.store).await?.len();
+        let count = session_history::list_sessions(&self.store).await?.len();
         self.set_stored_session_count(count);
         Ok(count)
     }
@@ -196,7 +196,7 @@ impl CodeAgentSession {
         let loaded = self.load_session(session_ref).await?;
         let active_session_ref = self.startup_snapshot().active_session_ref;
         Ok(session_catalog::resume_status(
-            loaded.summary.run_id.as_str(),
+            loaded.summary.session_id.as_str(),
             &active_session_ref,
         ))
     }

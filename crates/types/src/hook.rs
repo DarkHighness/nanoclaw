@@ -1,5 +1,5 @@
 use crate::{
-    AgentSessionId, Message, MessageId, MessagePart, MessageRole, RunId, ToolName, TurnId,
+    AgentSessionId, Message, MessageId, MessagePart, MessageRole, SessionId, ToolName, TurnId,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -334,7 +334,7 @@ pub struct HookResult {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct HookContext {
     pub event: HookEvent,
-    pub run_id: RunId,
+    pub session_id: SessionId,
     pub agent_session_id: AgentSessionId,
     pub turn_id: Option<TurnId>,
     #[serde(default)]

@@ -21,7 +21,7 @@ mod tests {
     use super::matches_hook;
     use types::{
         AgentSessionId, CommandHookHandler, HookContext, HookEvent, HookHandler, HookMatcher,
-        HookRegistration, RunId,
+        HookRegistration, SessionId,
     };
 
     #[test]
@@ -42,7 +42,7 @@ mod tests {
         };
         let context = HookContext {
             event: HookEvent::PreToolUse,
-            run_id: RunId::new(),
+            session_id: SessionId::new(),
             agent_session_id: AgentSessionId::new(),
             turn_id: None,
             fields: [("tool_name".to_string(), "read".to_string())]

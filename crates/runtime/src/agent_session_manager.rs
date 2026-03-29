@@ -281,7 +281,7 @@ mod tests {
             AgentHandle {
                 agent_id: "agent_1".into(),
                 parent_agent_id: None,
-                run_id: "run_1".into(),
+                session_id: "run_1".into(),
                 agent_session_id: "session_1".into(),
                 task_id: "task_1".to_string(),
                 role: "explorer".to_string(),
@@ -347,7 +347,7 @@ mod tests {
             AgentHandle {
                 agent_id: "agent_1".into(),
                 parent_agent_id: None,
-                run_id: "run_1".into(),
+                session_id: "run_1".into(),
                 agent_session_id: "session_1".into(),
                 task_id: "task_1".to_string(),
                 role: "explorer".to_string(),
@@ -386,7 +386,7 @@ mod tests {
             AgentHandle {
                 agent_id: "agent_1".into(),
                 parent_agent_id: None,
-                run_id: "run_1".into(),
+                session_id: "run_1".into(),
                 agent_session_id: "session_1".into(),
                 task_id: "task_1".to_string(),
                 role: "explorer".to_string(),
@@ -420,7 +420,7 @@ mod tests {
                 AgentHandle {
                     agent_id: agent_id.into(),
                     parent_agent_id: None,
-                    run_id: "run_1".into(),
+                    session_id: "run_1".into(),
                     agent_session_id: "session_1".into(),
                     task_id: format!("task_{agent_id}"),
                     role: "explorer".to_string(),
@@ -495,7 +495,7 @@ mod tests {
                 AgentHandle {
                     agent_id: agent_id.into(),
                     parent_agent_id: None,
-                    run_id: "run_1".into(),
+                    session_id: "run_1".into(),
                     agent_session_id: "session_1".into(),
                     task_id: format!("task_{agent_id}"),
                     role: "explorer".to_string(),

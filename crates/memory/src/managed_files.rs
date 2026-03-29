@@ -1,7 +1,7 @@
 use crate::corpus::{parse_memory_text, stable_hash};
 use crate::state::{
     MEMORY_COORDINATION_CLAIMS_RELATIVE, MEMORY_COORDINATION_HANDOFFS_RELATIVE,
-    MEMORY_COORDINATION_PLANS_RELATIVE, MEMORY_WORKING_SESSIONS_RELATIVE,
+    MEMORY_COORDINATION_PLANS_RELATIVE, MEMORY_WORKING_AGENT_SESSIONS_RELATIVE,
     MEMORY_WORKING_TASKS_RELATIVE,
 };
 use crate::{
@@ -15,7 +15,7 @@ use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 use tokio::fs;
 use tokio::sync::Mutex as AsyncMutex;
-use types::{AgentSessionId, RunId};
+use types::{AgentSessionId, SessionId};
 
 #[derive(Clone, Debug)]
 pub(crate) struct ManagedMemoryFile {
@@ -31,12 +31,15 @@ static MANAGED_MEMORY_FILE_LOCKS: OnceLock<Mutex<HashMap<PathBuf, Arc<AsyncMutex
 pub(crate) async fn record_memory(
     workspace_root: &Path,
     request: MemoryRecordRequest,
-    default_run_id: Option<&RunId>,
+    default_session_id: Option<&SessionId>,
     default_agent_session_id: Option<&AgentSessionId>,
 ) -> Result<MemoryMutationResponse> {
     let layout = MemoryStateLayout::new(workspace_root);
     let now_ms = current_timestamp_ms();
-    let run_id = request.run_id.clone().or_else(|| default_run_id.cloned());
+    let session_id = request
+        .session_id
+        .clone()
+        .or_else(|| default_session_id.cloned());
     let agent_session_id = request
         .agent_session_id
         .clone()
@@ -58,7 +61,7 @@ pub(crate) async fn record_memory(
         .unwrap_or_default();
     metadata.scope = request.scope;
     metadata.layer = target.layer.clone();
-    metadata.run_id = run_id;
+    metadata.session_id = session_id;
     metadata.agent_session_id = agent_session_id;
     metadata.agent_name = normalize_optional(request.agent_name);
     metadata.task_id = normalize_optional(request.task_id);
@@ -169,8 +172,8 @@ pub(crate) fn render_memory_markdown(
         format!("layer: {}", metadata.layer),
         format!("status: {}", metadata.status.as_str()),
     ];
-    if let Some(run_id) = &metadata.run_id {
-        out.push(format!("run_id: {run_id}"));
+    if let Some(session_id) = &metadata.session_id {
+        out.push(format!("session_id: {session_id}"));
     }
     if let Some(agent_session_id) = &metadata.agent_session_id {
         out.push(format!("agent_session_id: {agent_session_id}"));
@@ -270,7 +273,7 @@ fn resolve_record_target(
             })?;
             Ok(RecordTarget {
                 relative_path: format!(
-                    "{MEMORY_WORKING_SESSIONS_RELATIVE}/{}.md",
+                    "{MEMORY_WORKING_AGENT_SESSIONS_RELATIVE}/{}.md",
                     agent_session_id.as_str()
                 ),
                 layer: "working-agent-session".to_string(),
@@ -473,7 +476,7 @@ mod tests {
                         content: "alpha".to_string(),
                         layer: None,
                         tags: Vec::new(),
-                        run_id: None,
+                        session_id: None,
                         agent_session_id: None,
                         agent_name: None,
                         task_id: Some("task-1".to_string()),
@@ -495,7 +498,7 @@ mod tests {
                         content: "beta".to_string(),
                         layer: None,
                         tags: Vec::new(),
-                        run_id: None,
+                        session_id: None,
                         agent_session_id: None,
                         agent_name: None,
                         task_id: Some("task-1".to_string()),
@@ -529,7 +532,7 @@ mod tests {
                 content: "保留这段内容".to_string(),
                 layer: None,
                 tags: Vec::new(),
-                run_id: None,
+                session_id: None,
                 agent_session_id: None,
                 agent_name: None,
                 task_id: Some("任务".to_string()),

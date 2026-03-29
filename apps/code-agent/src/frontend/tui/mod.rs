@@ -606,7 +606,7 @@ impl CodeAgentTui {
                 let loaded = self.session.load_session(&session_ref).await?;
                 let inspector = format_session_inspector(&loaded);
                 let transcript = format_session_transcript_lines(&loaded);
-                let session_ref_preview = preview_id(loaded.summary.run_id.as_str());
+                let session_ref_preview = preview_id(loaded.summary.session_id.as_str());
                 let transcript_count = loaded.summary.transcript_message_count;
                 self.ui_state.mutate(move |state| {
                     state.inspector_title = "Session".to_string();
@@ -641,7 +641,7 @@ impl CodeAgentTui {
             SlashCommand::ExportSession { session_ref, path } => {
                 let export = self.session.export_session(&session_ref, &path).await?;
                 let inspector = format_session_export_result(&export);
-                let session_ref_preview = preview_id(export.run_id.as_str());
+                let session_ref_preview = preview_id(export.session_id.as_str());
                 let output_path = export.output_path.display().to_string();
                 self.ui_state.mutate(move |state| {
                     state.inspector_title = "Export".to_string();
@@ -661,7 +661,7 @@ impl CodeAgentTui {
                     .export_session_transcript(&session_ref, &path)
                     .await?;
                 let inspector = format_session_export_result(&export);
-                let session_ref_preview = preview_id(export.run_id.as_str());
+                let session_ref_preview = preview_id(export.session_id.as_str());
                 let output_path = export.output_path.display().to_string();
                 self.ui_state.mutate(move |state| {
                     state.inspector_title = "Export".to_string();

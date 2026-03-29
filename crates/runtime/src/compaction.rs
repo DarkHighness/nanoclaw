@@ -3,7 +3,7 @@ use async_trait::async_trait;
 use futures::StreamExt;
 use serde_json::json;
 use std::sync::Arc;
-use types::{AgentCoreError, AgentSessionId, ModelEvent, ModelRequest, RunId, TurnId};
+use types::{AgentCoreError, AgentSessionId, ModelEvent, ModelRequest, SessionId, TurnId};
 
 #[derive(Clone, Debug)]
 pub struct CompactionConfig {
@@ -26,7 +26,7 @@ impl Default for CompactionConfig {
 
 #[derive(Clone, Debug)]
 pub struct CompactionRequest {
-    pub run_id: RunId,
+    pub session_id: SessionId,
     pub agent_session_id: AgentSessionId,
     pub turn_id: TurnId,
     pub messages: Vec<types::Message>,
@@ -78,7 +78,7 @@ impl ConversationCompactor for ModelConversationCompactor {
         let mut stream = self
             .backend
             .stream_turn(ModelRequest {
-                run_id: request.run_id,
+                session_id: request.session_id,
                 agent_session_id: request.agent_session_id,
                 turn_id: request.turn_id,
                 instructions,

@@ -7,14 +7,14 @@ use skills::{Skill, SkillCatalog};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use store::{InMemoryRunStore, RunStore};
+use store::{InMemorySessionStore, SessionStore};
 use tools::ToolExecutionContext;
-use types::{HookEvent, HookHandler, HookRegistration, PromptHookHandler, RunEventKind};
+use types::{HookEvent, HookHandler, HookRegistration, PromptHookHandler, SessionEventKind};
 
 #[tokio::test]
 async fn runtime_applies_hook_effects_without_mutating_base_instructions() {
     let dir = tempfile::tempdir().unwrap();
-    let store = Arc::new(InMemoryRunStore::new());
+    let store = Arc::new(InMemorySessionStore::new());
     let backend = Arc::new(RecordingBackend::default());
     let skill_catalog = SkillCatalog::new(vec![Skill {
         name: "pdf".to_string(),
@@ -84,7 +84,10 @@ async fn runtime_applies_hook_effects_without_mutating_base_instructions() {
         "please use acrobat skill on this file"
     );
 
-    let transcript = store.replay_transcript(&runtime.run_id()).await.unwrap();
+    let transcript = store
+        .replay_transcript(&runtime.session_id())
+        .await
+        .unwrap();
     assert_eq!(transcript.len(), 3);
     assert_eq!(transcript[0].text_content(), "hook system message");
     assert_eq!(
@@ -93,15 +96,15 @@ async fn runtime_applies_hook_effects_without_mutating_base_instructions() {
     );
     assert_eq!(transcript[2].text_content(), "ok");
 
-    let events = store.events(&runtime.run_id()).await.unwrap();
+    let events = store.events(&runtime.session_id()).await.unwrap();
     assert!(events.iter().any(|event| matches!(
         &event.event,
-        RunEventKind::HookInvoked { hook_name, event }
+        SessionEventKind::HookInvoked { hook_name, event }
             if hook_name == "inject_context" && event == &HookEvent::UserPromptSubmit
     )));
     assert!(events.iter().any(|event| matches!(
         &event.event,
-        RunEventKind::HookCompleted {
+        SessionEventKind::HookCompleted {
             hook_name,
             event,
             output,

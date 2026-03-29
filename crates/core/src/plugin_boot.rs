@@ -20,7 +20,7 @@ pub use registry::{
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use store::RunStore;
+use store::SessionStore;
 use tools::ToolRegistry;
 
 #[derive(Clone, Debug)]
@@ -74,7 +74,7 @@ pub fn build_plugin_activation_plan(
 pub fn activate_driver_requests(
     requests: &[PluginExecutableActivation],
     workspace_root: &Path,
-    run_store: Option<Arc<dyn RunStore>>,
+    session_store: Option<Arc<dyn SessionStore>>,
     memory_reasoning_service: Option<inference::LlmServiceConfig>,
     tools: &mut ToolRegistry,
     unknown_driver_policy: UnknownDriverPolicy,
@@ -88,7 +88,7 @@ pub fn activate_driver_requests(
         &mut registry::PluginDriverContext {
             workspace_root,
             env_map: &env_map,
-            run_store,
+            session_store,
             memory_reasoning_service,
             tools,
         },

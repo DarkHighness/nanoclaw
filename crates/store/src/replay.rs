@@ -1,18 +1,18 @@
 use std::collections::BTreeMap;
-use types::{Message, RunEventEnvelope, RunEventKind};
+use types::{Message, SessionEventEnvelope, SessionEventKind};
 
 #[must_use]
-pub fn replay_transcript(events: &[RunEventEnvelope]) -> Vec<Message> {
+pub fn replay_transcript(events: &[SessionEventEnvelope]) -> Vec<Message> {
     let mut transcript = Vec::<Option<Message>>::new();
     let mut by_message_id = BTreeMap::new();
 
     for event in events {
         match &event.event {
-            RunEventKind::TranscriptMessage { message } => {
+            SessionEventKind::TranscriptMessage { message } => {
                 by_message_id.insert(message.message_id.clone(), transcript.len());
                 transcript.push(Some(message.clone()));
             }
-            RunEventKind::TranscriptMessagePatched {
+            SessionEventKind::TranscriptMessagePatched {
                 message_id,
                 message,
             } => {
@@ -23,7 +23,7 @@ pub fn replay_transcript(events: &[RunEventEnvelope]) -> Vec<Message> {
                 patched.message_id = message_id.clone();
                 transcript[index] = Some(patched);
             }
-            RunEventKind::TranscriptMessageRemoved { message_id } => {
+            SessionEventKind::TranscriptMessageRemoved { message_id } => {
                 let Some(index) = by_message_id.remove(message_id) else {
                     continue;
                 };
@@ -39,26 +39,28 @@ pub fn replay_transcript(events: &[RunEventEnvelope]) -> Vec<Message> {
 #[cfg(test)]
 mod tests {
     use super::replay_transcript;
-    use types::{AgentSessionId, Message, MessageId, RunEventEnvelope, RunEventKind, RunId};
+    use types::{
+        AgentSessionId, Message, MessageId, SessionEventEnvelope, SessionEventKind, SessionId,
+    };
 
     #[test]
     fn replay_only_keeps_transcript_messages() {
         let events = vec![
-            RunEventEnvelope::new(
-                RunId::new(),
+            SessionEventEnvelope::new(
+                SessionId::new(),
                 AgentSessionId::new(),
                 None,
                 None,
-                RunEventKind::TranscriptMessage {
+                SessionEventKind::TranscriptMessage {
                     message: Message::user("hello"),
                 },
             ),
-            RunEventEnvelope::new(
-                RunId::new(),
+            SessionEventEnvelope::new(
+                SessionId::new(),
                 AgentSessionId::new(),
                 None,
                 None,
-                RunEventKind::Stop { reason: None },
+                SessionEventKind::Stop { reason: None },
             ),
         ];
         assert_eq!(replay_transcript(&events).len(), 1);
@@ -66,45 +68,45 @@ mod tests {
 
     #[test]
     fn replay_applies_message_patch_and_remove_events() {
-        let run_id = RunId::new();
+        let session_id = SessionId::new();
         let agent_session_id = AgentSessionId::new();
         let message_id = MessageId::from("msg_1");
         let removed_id = MessageId::from("msg_2");
         let events = vec![
-            RunEventEnvelope::new(
-                run_id.clone(),
+            SessionEventEnvelope::new(
+                session_id.clone(),
                 agent_session_id.clone(),
                 None,
                 None,
-                RunEventKind::TranscriptMessage {
+                SessionEventKind::TranscriptMessage {
                     message: Message::user("draft one").with_message_id(message_id.clone()),
                 },
             ),
-            RunEventEnvelope::new(
-                run_id.clone(),
+            SessionEventEnvelope::new(
+                session_id.clone(),
                 agent_session_id.clone(),
                 None,
                 None,
-                RunEventKind::TranscriptMessage {
+                SessionEventKind::TranscriptMessage {
                     message: Message::assistant("draft two").with_message_id(removed_id.clone()),
                 },
             ),
-            RunEventEnvelope::new(
-                run_id.clone(),
+            SessionEventEnvelope::new(
+                session_id.clone(),
                 agent_session_id.clone(),
                 None,
                 None,
-                RunEventKind::TranscriptMessagePatched {
+                SessionEventKind::TranscriptMessagePatched {
                     message_id: message_id.clone(),
                     message: Message::user("patched one"),
                 },
             ),
-            RunEventEnvelope::new(
-                run_id,
+            SessionEventEnvelope::new(
+                session_id,
                 agent_session_id,
                 None,
                 None,
-                RunEventKind::TranscriptMessageRemoved {
+                SessionEventKind::TranscriptMessageRemoved {
                     message_id: removed_id,
                 },
             ),

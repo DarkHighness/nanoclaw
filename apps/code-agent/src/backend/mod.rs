@@ -6,9 +6,9 @@ mod boot_preamble;
 mod boot_runtime;
 mod boot_sandbox;
 mod events;
-mod run_history;
 mod session;
 mod session_catalog;
+mod session_history;
 mod store;
 
 pub(crate) use approval::{
@@ -33,10 +33,10 @@ pub(crate) use boot_sandbox::{
     tool_context_for_profile,
 };
 pub(crate) use events::{SessionEvent, SessionEventObserver, SessionEventStream};
-pub(crate) use run_history::{
-    LoadedRun, RunExportArtifact, RunExportKind, message_to_text, preview_id,
-};
 pub(crate) use session::{CodeAgentSession, SessionStartupSnapshot};
 pub(crate) use session_catalog::{
     PersistedSessionSearchMatch, PersistedSessionSummary, SessionResumeStatus, SessionResumeSupport,
+};
+pub(crate) use session_history::{
+    LoadedSession, SessionExportArtifact, SessionExportKind, message_to_text, preview_id,
 };

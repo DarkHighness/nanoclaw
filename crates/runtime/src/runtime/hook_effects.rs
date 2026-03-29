@@ -2,8 +2,8 @@ use super::AgentRuntime;
 use crate::{HookInvocationBatch, Result, RuntimeError};
 use types::{
     GateDecision, HookEffect, HookHandlerKind, HookMutationPermission, HookRegistration, Message,
-    MessageId, MessageRole, MessageSelector, PermissionBehavior, PermissionDecision, RunEventKind,
-    ToolName, TurnId,
+    MessageId, MessageRole, MessageSelector, PermissionBehavior, PermissionDecision,
+    SessionEventKind, ToolName, TurnId,
 };
 
 #[derive(Clone, Debug, PartialEq)]
@@ -79,7 +79,7 @@ impl AgentRuntime {
             self.append_event(
                 Some(turn_id.clone()),
                 None,
-                RunEventKind::HookInvoked {
+                SessionEventKind::HookInvoked {
                     hook_name: invocation.registration.name.clone(),
                     event: invocation.registration.event,
                 },
@@ -98,7 +98,7 @@ impl AgentRuntime {
             self.append_event(
                 Some(turn_id.clone()),
                 None,
-                RunEventKind::HookCompleted {
+                SessionEventKind::HookCompleted {
                     hook_name: invocation.registration.name.clone(),
                     event: invocation.registration.event,
                     output,
@@ -157,7 +157,7 @@ impl AgentRuntime {
         self.append_event(
             Some(turn_id.clone()),
             None,
-            RunEventKind::TranscriptMessagePatched {
+            SessionEventKind::TranscriptMessagePatched {
                 message_id,
                 message,
             },
@@ -192,7 +192,7 @@ impl AgentRuntime {
         self.append_event(
             Some(turn_id.clone()),
             None,
-            RunEventKind::TranscriptMessagePatched {
+            SessionEventKind::TranscriptMessagePatched {
                 message_id: message_id.clone(),
                 message: patched_message,
             },
@@ -212,7 +212,7 @@ impl AgentRuntime {
         self.append_event(
             Some(turn_id.clone()),
             None,
-            RunEventKind::TranscriptMessageRemoved { message_id },
+            SessionEventKind::TranscriptMessageRemoved { message_id },
         )
         .await?;
         self.reset_provider_continuation();

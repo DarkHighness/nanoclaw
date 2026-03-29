@@ -160,7 +160,7 @@ mod tests {
     use super::HookRunner;
     use types::{
         AgentHookHandler, AgentSessionId, HookContext, HookEvent, HookHandler, HookRegistration,
-        PromptHookHandler, RunId,
+        PromptHookHandler, SessionId,
     };
 
     #[tokio::test]
@@ -180,7 +180,7 @@ mod tests {
                 }],
                 HookContext {
                     event: HookEvent::UserPromptSubmit,
-                    run_id: RunId::from("run_1"),
+                    session_id: SessionId::from("run_1"),
                     agent_session_id: AgentSessionId::from("session_1"),
                     turn_id: None,
                     fields: Default::default(),
@@ -210,7 +210,7 @@ mod tests {
                 }],
                 HookContext {
                     event: HookEvent::SubagentStart,
-                    run_id: RunId::from("run_1"),
+                    session_id: SessionId::from("run_1"),
                     agent_session_id: AgentSessionId::from("session_1"),
                     turn_id: None,
                     fields: Default::default(),

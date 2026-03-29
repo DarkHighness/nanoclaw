@@ -34,7 +34,7 @@ mod tests {
     use super::{AgentHookEvaluator, FailClosedAgentHookEvaluator};
     use types::{
         AgentHookHandler, AgentSessionId, HookContext, HookEvent, HookHandler, HookRegistration,
-        RunId,
+        SessionId,
     };
 
     #[tokio::test]
@@ -54,7 +54,7 @@ mod tests {
                 },
                 HookContext {
                     event: HookEvent::SubagentStart,
-                    run_id: RunId::from("run_1"),
+                    session_id: SessionId::from("run_1"),
                     agent_session_id: AgentSessionId::from("session_1"),
                     turn_id: None,
                     fields: Default::default(),

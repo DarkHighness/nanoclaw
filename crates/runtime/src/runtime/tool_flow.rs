@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use tracing::warn;
 use types::{
     AgentCoreError, HookContext, HookEvent, HookRegistration, Message, PermissionBehavior,
-    PermissionDecision, RunEventKind, ToolCall, ToolSpec, TurnId,
+    PermissionDecision, SessionEventKind, ToolCall, ToolSpec, TurnId,
 };
 
 impl AgentRuntime {
@@ -36,7 +36,7 @@ impl AgentRuntime {
                 hooks,
                 HookContext {
                     event: HookEvent::PreToolUse,
-                    run_id: self.session.run_id.clone(),
+                    session_id: self.session.session_id.clone(),
                     agent_session_id: self.session.agent_session_id.clone(),
                     turn_id: Some(turn_id.clone()),
                     fields: fields.clone(),
@@ -75,7 +75,7 @@ impl AgentRuntime {
                         hooks,
                         HookContext {
                             event: HookEvent::PermissionRequest,
-                            run_id: self.session.run_id.clone(),
+                            session_id: self.session.session_id.clone(),
                             agent_session_id: self.session.agent_session_id.clone(),
                             turn_id: Some(turn_id.clone()),
                             fields,
@@ -153,7 +153,7 @@ impl AgentRuntime {
             self.append_event(
                 Some(turn_id.clone()),
                 Some(call.id.clone()),
-                RunEventKind::ToolApprovalRequested {
+                SessionEventKind::ToolApprovalRequested {
                     call: call.clone(),
                     reasons: approval_reasons.clone(),
                 },
@@ -176,7 +176,7 @@ impl AgentRuntime {
                     self.append_event(
                         Some(turn_id.clone()),
                         Some(call.id.clone()),
-                        RunEventKind::ToolApprovalResolved {
+                        SessionEventKind::ToolApprovalResolved {
                             call: call.clone(),
                             approved: true,
                             reason: None,
@@ -193,7 +193,7 @@ impl AgentRuntime {
                     self.append_event(
                         Some(turn_id.clone()),
                         Some(call.id.clone()),
-                        RunEventKind::ToolApprovalResolved {
+                        SessionEventKind::ToolApprovalResolved {
                             call: call.clone(),
                             approved: false,
                             reason: reason.clone(),
@@ -224,7 +224,7 @@ impl AgentRuntime {
             .append_tool_lifecycle_event(
                 turn_id,
                 &call,
-                RunEventKind::ToolCallStarted { call: call.clone() },
+                SessionEventKind::ToolCallStarted { call: call.clone() },
             )
             .await?;
         observer.on_event(RuntimeProgressEvent::ToolLifecycle {
@@ -240,7 +240,7 @@ impl AgentRuntime {
             self.append_event(
                 Some(turn_id.clone()),
                 Some(call.id.clone()),
-                RunEventKind::Notification {
+                SessionEventKind::Notification {
                     source: "loop_detector".to_string(),
                     message: message.clone(),
                 },
@@ -250,7 +250,7 @@ impl AgentRuntime {
                 // Critical loop signals are fed back as tool failures so the model can
                 // recover in-band instead of the runtime hard-aborting the whole turn.
                 warn!(
-                    run_id = %self.session.run_id,
+                    session_id = %self.session.session_id,
                     turn_id = %turn_id,
                     tool_name = %call.tool_name,
                     reason = %signal.reason,
@@ -269,7 +269,7 @@ impl AgentRuntime {
         }
 
         let scoped_tool_context = self.tool_context.with_runtime_scope(
-            self.session.run_id.clone(),
+            self.session.session_id.clone(),
             self.session.agent_session_id.clone(),
             turn_id.clone(),
             tool_name.clone(),
@@ -290,7 +290,7 @@ impl AgentRuntime {
                 let event = append_transcript_message(
                     &mut self.session.transcript,
                     Message::tool_result(result.clone()),
-                    self.session.run_id.clone(),
+                    self.session.session_id.clone(),
                     self.session.agent_session_id.clone(),
                     turn_id.clone(),
                 );
@@ -299,7 +299,7 @@ impl AgentRuntime {
                     .append_tool_lifecycle_event(
                         turn_id,
                         &call,
-                        RunEventKind::ToolCallCompleted {
+                        SessionEventKind::ToolCallCompleted {
                             call: call.clone(),
                             output: result.clone(),
                         },
@@ -314,7 +314,7 @@ impl AgentRuntime {
                         hooks,
                         HookContext {
                             event: HookEvent::PostToolUse,
-                            run_id: self.session.run_id.clone(),
+                            session_id: self.session.session_id.clone(),
                             agent_session_id: self.session.agent_session_id.clone(),
                             turn_id: Some(turn_id.clone()),
                             fields: [("tool_name".to_string(), tool_name.to_string())]
@@ -356,7 +356,7 @@ impl AgentRuntime {
         let event = append_transcript_message(
             &mut self.session.transcript,
             Message::tool_result(result.clone()),
-            self.session.run_id.clone(),
+            self.session.session_id.clone(),
             self.session.agent_session_id.clone(),
             turn_id.clone(),
         );
@@ -365,7 +365,7 @@ impl AgentRuntime {
             .append_tool_lifecycle_event(
                 turn_id,
                 call,
-                RunEventKind::ToolCallFailed {
+                SessionEventKind::ToolCallFailed {
                     call: call.clone(),
                     error: error.clone(),
                 },
@@ -379,7 +379,7 @@ impl AgentRuntime {
                 hooks,
                 HookContext {
                     event: HookEvent::PostToolUseFailure,
-                    run_id: self.session.run_id.clone(),
+                    session_id: self.session.session_id.clone(),
                     agent_session_id: self.session.agent_session_id.clone(),
                     turn_id: Some(turn_id.clone()),
                     fields: [("tool_name".to_string(), call.tool_name.clone())]

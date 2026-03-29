@@ -568,7 +568,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use types::{
         AgentSessionId, HookContext, HookEvent, HookExecutionPolicy, HookHandler, HookHostApiGrant,
-        HookRegistration, HookResult, MessagePart, MessageRole, RunId, WasmHookHandler,
+        HookRegistration, HookResult, MessagePart, MessageRole, SessionId, WasmHookHandler,
     };
 
     #[derive(Default)]
@@ -661,7 +661,7 @@ mod tests {
                 &registration,
                 HookContext {
                     event: HookEvent::UserPromptSubmit,
-                    run_id: RunId::from("run_1"),
+                    session_id: SessionId::from("run_1"),
                     agent_session_id: AgentSessionId::from("session_1"),
                     turn_id: None,
                     fields: Default::default(),
@@ -722,7 +722,7 @@ mod tests {
                 &registration,
                 HookContext {
                     event: HookEvent::UserPromptSubmit,
-                    run_id: RunId::from("run_1"),
+                    session_id: SessionId::from("run_1"),
                     agent_session_id: AgentSessionId::from("session_1"),
                     turn_id: None,
                     fields: Default::default(),
@@ -755,7 +755,7 @@ mod tests {
                 &registration,
                 HookContext {
                     event: HookEvent::UserPromptSubmit,
-                    run_id: RunId::from("run_1"),
+                    session_id: SessionId::from("run_1"),
                     agent_session_id: AgentSessionId::from("session_1"),
                     turn_id: None,
                     fields: Default::default(),
@@ -814,7 +814,7 @@ mod tests {
                 &registration,
                 HookContext {
                     event: HookEvent::UserPromptSubmit,
-                    run_id: RunId::from("run_1"),
+                    session_id: SessionId::from("run_1"),
                     agent_session_id: AgentSessionId::from("session_1"),
                     turn_id: None,
                     fields: Default::default(),
@@ -837,7 +837,7 @@ mod tests {
                 &registration,
                 HookContext {
                     event: HookEvent::UserPromptSubmit,
-                    run_id: RunId::from("run_2"),
+                    session_id: SessionId::from("run_2"),
                     agent_session_id: AgentSessionId::from("session_2"),
                     turn_id: None,
                     fields: Default::default(),
@@ -855,7 +855,7 @@ mod tests {
                 &registration,
                 HookContext {
                     event: HookEvent::UserPromptSubmit,
-                    run_id: RunId::from("run_3"),
+                    session_id: SessionId::from("run_3"),
                     agent_session_id: AgentSessionId::from("session_3"),
                     turn_id: None,
                     fields: Default::default(),
@@ -913,7 +913,7 @@ mod tests {
                 &registration,
                 HookContext {
                     event: HookEvent::UserPromptSubmit,
-                    run_id: RunId::from("run_1"),
+                    session_id: SessionId::from("run_1"),
                     agent_session_id: AgentSessionId::from("session_1"),
                     turn_id: None,
                     fields: Default::default(),

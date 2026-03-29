@@ -13,7 +13,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::future::Future;
 use std::path::PathBuf;
 use std::sync::Arc;
-use store::RunStore;
+use store::SessionStore;
 use tools::{
     SubagentExecutor, SubagentParentContext, ToolError, ToolExecutionContext, ToolRegistry,
     resolve_tool_path_against_workspace_root,
@@ -21,7 +21,7 @@ use tools::{
 use types::{
     AgentArtifact, AgentEnvelope, AgentEnvelopeKind, AgentHandle, AgentId, AgentResultEnvelope,
     AgentSessionId, AgentStatus, AgentTaskSpec, AgentWaitRequest, AgentWaitResponse,
-    HookRegistration, RunEventEnvelope, RunEventKind, RunId, ToolName,
+    HookRegistration, SessionEventEnvelope, SessionEventKind, SessionId, ToolName,
 };
 
 const DEFAULT_EXCLUDED_CHILD_TOOLS: &[&str] = &[
@@ -55,7 +55,7 @@ pub trait SubagentProfileResolver: Send + Sync {
 #[derive(Clone)]
 pub struct RuntimeSubagentExecutor {
     hook_runner: Arc<HookRunner>,
-    store: Arc<dyn RunStore>,
+    store: Arc<dyn SessionStore>,
     tool_registry: ToolRegistry,
     tool_context: ToolExecutionContext,
     tool_approval_handler: Arc<dyn ToolApprovalHandler>,
@@ -116,7 +116,7 @@ impl RuntimeSubagentExecutor {
     #[must_use]
     pub fn new(
         hook_runner: Arc<HookRunner>,
-        store: Arc<dyn RunStore>,
+        store: Arc<dyn SessionStore>,
         tool_registry: ToolRegistry,
         tool_context: ToolExecutionContext,
         tool_approval_handler: Arc<dyn ToolApprovalHandler>,
@@ -165,7 +165,7 @@ impl RuntimeSubagentExecutor {
     async fn append_parent_event(
         &self,
         parent: &SubagentParentContext,
-        event: RunEventKind,
+        event: SessionEventKind,
     ) -> Result<()> {
         self.append_parent_events(parent, vec![event]).await
     }
@@ -173,9 +173,9 @@ impl RuntimeSubagentExecutor {
     async fn append_parent_events(
         &self,
         parent: &SubagentParentContext,
-        events: Vec<RunEventKind>,
+        events: Vec<SessionEventKind>,
     ) -> Result<()> {
-        let Some(run_id) = parent.run_id.clone() else {
+        let Some(session_id) = parent.session_id.clone() else {
             return Ok(());
         };
         let Some(agent_session_id) = parent.agent_session_id.clone() else {
@@ -186,8 +186,8 @@ impl RuntimeSubagentExecutor {
                 events
                     .into_iter()
                     .map(|event| {
-                        RunEventEnvelope::new(
-                            run_id.clone(),
+                        SessionEventEnvelope::new(
+                            session_id.clone(),
                             agent_session_id.clone(),
                             parent.turn_id.clone(),
                             None,
@@ -220,11 +220,11 @@ impl RuntimeSubagentExecutor {
             parent,
             kinds
                 .into_iter()
-                .map(|kind| RunEventKind::AgentEnvelope {
+                .map(|kind| SessionEventKind::AgentEnvelope {
                     envelope: AgentEnvelope::new(
                         handle.agent_id.clone(),
                         handle.parent_agent_id.clone(),
-                        handle.run_id.clone(),
+                        handle.session_id.clone(),
                         handle.agent_session_id.clone(),
                         kind,
                     ),
@@ -278,15 +278,15 @@ impl RuntimeSubagentExecutor {
     ) -> std::result::Result<(), ToolError> {
         for child in planned {
             let mut events = vec![
-                RunEventKind::TaskCreated {
+                SessionEventKind::TaskCreated {
                     task: child.task.clone(),
                     parent_agent_id: parent.parent_agent_id.clone(),
                 },
-                RunEventKind::AgentEnvelope {
+                SessionEventKind::AgentEnvelope {
                     envelope: AgentEnvelope::new(
                         child.handle.agent_id.clone(),
                         child.handle.parent_agent_id.clone(),
-                        child.handle.run_id.clone(),
+                        child.handle.session_id.clone(),
                         child.handle.agent_session_id.clone(),
                         AgentEnvelopeKind::SpawnRequested {
                             task: child.task.clone(),
@@ -295,22 +295,22 @@ impl RuntimeSubagentExecutor {
                 },
             ];
             if !child.task.requested_write_set.is_empty() {
-                events.push(RunEventKind::AgentEnvelope {
+                events.push(SessionEventKind::AgentEnvelope {
                     envelope: AgentEnvelope::new(
                         child.handle.agent_id.clone(),
                         child.handle.parent_agent_id.clone(),
-                        child.handle.run_id.clone(),
+                        child.handle.session_id.clone(),
                         child.handle.agent_session_id.clone(),
                         AgentEnvelopeKind::ClaimRequested {
                             files: child.task.requested_write_set.clone(),
                         },
                     ),
                 });
-                events.push(RunEventKind::AgentEnvelope {
+                events.push(SessionEventKind::AgentEnvelope {
                     envelope: AgentEnvelope::new(
                         child.handle.agent_id.clone(),
                         child.handle.parent_agent_id.clone(),
-                        child.handle.run_id.clone(),
+                        child.handle.session_id.clone(),
                         child.handle.agent_session_id.clone(),
                         AgentEnvelopeKind::ClaimGranted {
                             files: child.task.requested_write_set.clone(),
@@ -440,7 +440,7 @@ impl RuntimeSubagentExecutor {
             .hooks(self.hooks.clone())
             .skill_catalog(self.skill_catalog.clone())
             .session(RuntimeSession::new(
-                plan.handle.run_id.clone(),
+                plan.handle.session_id.clone(),
                 plan.handle.agent_session_id.clone(),
             ))
             .build()
@@ -698,7 +698,7 @@ impl RuntimeSubagentExecutor {
         let _ = self
             .append_parent_event(
                 parent,
-                RunEventKind::TaskCompleted {
+                SessionEventKind::TaskCompleted {
                     task_id: task.task_id.clone(),
                     agent_id: handle.agent_id.clone(),
                     status: status.clone(),
@@ -708,7 +708,7 @@ impl RuntimeSubagentExecutor {
         let _ = self
             .append_parent_event(
                 parent,
-                RunEventKind::SubagentStop {
+                SessionEventKind::SubagentStop {
                     handle,
                     result: Some(result),
                     error: Some(summary),
@@ -775,7 +775,7 @@ impl RuntimeSubagentExecutor {
         let _ = self
             .append_parent_event(
                 parent,
-                RunEventKind::TaskCompleted {
+                SessionEventKind::TaskCompleted {
                     task_id: task.task_id.clone(),
                     agent_id: handle.agent_id.clone(),
                     status: AgentStatus::Failed,
@@ -785,7 +785,7 @@ impl RuntimeSubagentExecutor {
         let _ = self
             .append_parent_event(
                 parent,
-                RunEventKind::SubagentStop {
+                SessionEventKind::SubagentStop {
                     handle,
                     result: Some(result),
                     error: Some(summary),
@@ -830,7 +830,7 @@ impl SubagentExecutor for RuntimeSubagentExecutor {
                 handle: AgentHandle {
                     agent_id: AgentId::new(),
                     parent_agent_id: parent.parent_agent_id.clone(),
-                    run_id: RunId::new(),
+                    session_id: SessionId::new(),
                     agent_session_id: AgentSessionId::new(),
                     task_id: task.task_id.clone(),
                     role: task.role.clone(),
@@ -1004,7 +1004,7 @@ impl SubagentExecutor for RuntimeSubagentExecutor {
         .map_err(|error| ToolError::invalid_state(error.to_string()))?;
         self.append_parent_event(
             &parent,
-            RunEventKind::TaskCompleted {
+            SessionEventKind::TaskCompleted {
                 task_id: handle.task_id.clone(),
                 agent_id: handle.agent_id.clone(),
                 status: AgentStatus::Cancelled,
@@ -1014,7 +1014,7 @@ impl SubagentExecutor for RuntimeSubagentExecutor {
         .map_err(|error| ToolError::invalid_state(error.to_string()))?;
         self.append_parent_event(
             &parent,
-            RunEventKind::SubagentStop {
+            SessionEventKind::SubagentStop {
                 handle: handle.clone(),
                 result: Some(result),
                 error: reason,
@@ -1028,7 +1028,7 @@ impl SubagentExecutor for RuntimeSubagentExecutor {
 
 struct ChildAgentWorker {
     parent: SubagentParentContext,
-    store: Arc<dyn RunStore>,
+    store: Arc<dyn SessionStore>,
     session_manager: AgentSessionManager,
     write_lease_manager: Arc<WriteLeaseManager>,
     handle: AgentHandle,
@@ -1049,26 +1049,26 @@ impl ChildAgentWorker {
         self.handle = handle.clone();
         let _ = self
             .append_parent_events(vec![
-                RunEventKind::SubagentStart {
+                SessionEventKind::SubagentStart {
                     handle: handle.clone(),
                     task: self.task.clone(),
                 },
-                RunEventKind::AgentEnvelope {
+                SessionEventKind::AgentEnvelope {
                     envelope: AgentEnvelope::new(
                         self.handle.agent_id.clone(),
                         self.handle.parent_agent_id.clone(),
-                        self.handle.run_id.clone(),
+                        self.handle.session_id.clone(),
                         self.handle.agent_session_id.clone(),
                         AgentEnvelopeKind::StatusChanged {
                             status: AgentStatus::Running,
                         },
                     ),
                 },
-                RunEventKind::AgentEnvelope {
+                SessionEventKind::AgentEnvelope {
                     envelope: AgentEnvelope::new(
                         self.handle.agent_id.clone(),
                         self.handle.parent_agent_id.clone(),
-                        self.handle.run_id.clone(),
+                        self.handle.session_id.clone(),
                         self.handle.agent_session_id.clone(),
                         AgentEnvelopeKind::Started {
                             task: self.task.clone(),
@@ -1184,11 +1184,11 @@ impl ChildAgentWorker {
         ) else {
             return;
         };
-        let mut events = vec![RunEventKind::AgentEnvelope {
+        let mut events = vec![SessionEventKind::AgentEnvelope {
             envelope: AgentEnvelope::new(
                 self.handle.agent_id.clone(),
                 self.handle.parent_agent_id.clone(),
-                self.handle.run_id.clone(),
+                self.handle.session_id.clone(),
                 self.handle.agent_session_id.clone(),
                 AgentEnvelopeKind::StatusChanged {
                     status: result.status.clone(),
@@ -1196,33 +1196,33 @@ impl ChildAgentWorker {
             ),
         }];
         events.extend(result.artifacts.iter().cloned().map(|artifact| {
-            RunEventKind::AgentEnvelope {
+            SessionEventKind::AgentEnvelope {
                 envelope: AgentEnvelope::new(
                     self.handle.agent_id.clone(),
                     self.handle.parent_agent_id.clone(),
-                    self.handle.run_id.clone(),
+                    self.handle.session_id.clone(),
                     self.handle.agent_session_id.clone(),
                     AgentEnvelopeKind::Artifact { artifact },
                 ),
             }
         }));
-        events.push(RunEventKind::AgentEnvelope {
+        events.push(SessionEventKind::AgentEnvelope {
             envelope: AgentEnvelope::new(
                 self.handle.agent_id.clone(),
                 self.handle.parent_agent_id.clone(),
-                self.handle.run_id.clone(),
+                self.handle.session_id.clone(),
                 self.handle.agent_session_id.clone(),
                 AgentEnvelopeKind::Result {
                     result: result.clone(),
                 },
             ),
         });
-        events.push(RunEventKind::TaskCompleted {
+        events.push(SessionEventKind::TaskCompleted {
             task_id: self.task.task_id.clone(),
             agent_id: handle.agent_id.clone(),
             status: result.status.clone(),
         });
-        events.push(RunEventKind::SubagentStop {
+        events.push(SessionEventKind::SubagentStop {
             handle,
             result: Some(result),
             error: None,
@@ -1260,34 +1260,34 @@ impl ChildAgentWorker {
         };
         let _ = self
             .append_parent_events(vec![
-                RunEventKind::AgentEnvelope {
+                SessionEventKind::AgentEnvelope {
                     envelope: AgentEnvelope::new(
                         self.handle.agent_id.clone(),
                         self.handle.parent_agent_id.clone(),
-                        self.handle.run_id.clone(),
+                        self.handle.session_id.clone(),
                         self.handle.agent_session_id.clone(),
                         AgentEnvelopeKind::StatusChanged {
                             status: AgentStatus::Cancelled,
                         },
                     ),
                 },
-                RunEventKind::AgentEnvelope {
+                SessionEventKind::AgentEnvelope {
                     envelope: AgentEnvelope::new(
                         self.handle.agent_id.clone(),
                         self.handle.parent_agent_id.clone(),
-                        self.handle.run_id.clone(),
+                        self.handle.session_id.clone(),
                         self.handle.agent_session_id.clone(),
                         AgentEnvelopeKind::Cancelled {
                             reason: reason.clone(),
                         },
                     ),
                 },
-                RunEventKind::TaskCompleted {
+                SessionEventKind::TaskCompleted {
                     task_id: self.task.task_id.clone(),
                     agent_id: handle.agent_id.clone(),
                     status: AgentStatus::Cancelled,
                 },
-                RunEventKind::SubagentStop {
+                SessionEventKind::SubagentStop {
                     handle,
                     result: Some(result),
                     error: reason.clone(),
@@ -1321,34 +1321,34 @@ impl ChildAgentWorker {
         };
         let _ = self
             .append_parent_events(vec![
-                RunEventKind::AgentEnvelope {
+                SessionEventKind::AgentEnvelope {
                     envelope: AgentEnvelope::new(
                         self.handle.agent_id.clone(),
                         self.handle.parent_agent_id.clone(),
-                        self.handle.run_id.clone(),
+                        self.handle.session_id.clone(),
                         self.handle.agent_session_id.clone(),
                         AgentEnvelopeKind::StatusChanged {
                             status: AgentStatus::Failed,
                         },
                     ),
                 },
-                RunEventKind::AgentEnvelope {
+                SessionEventKind::AgentEnvelope {
                     envelope: AgentEnvelope::new(
                         self.handle.agent_id.clone(),
                         self.handle.parent_agent_id.clone(),
-                        self.handle.run_id.clone(),
+                        self.handle.session_id.clone(),
                         self.handle.agent_session_id.clone(),
                         AgentEnvelopeKind::Failed {
                             error: error.clone(),
                         },
                     ),
                 },
-                RunEventKind::TaskCompleted {
+                SessionEventKind::TaskCompleted {
                     task_id: self.task.task_id.clone(),
                     agent_id: handle.agent_id.clone(),
                     status: AgentStatus::Failed,
                 },
-                RunEventKind::SubagentStop {
+                SessionEventKind::SubagentStop {
                     handle,
                     result: Some(result),
                     error: Some(error),
@@ -1359,8 +1359,8 @@ impl ChildAgentWorker {
         let _ = self.runtime.end_session(Some("failed".to_string())).await;
     }
 
-    async fn append_parent_events(&self, events: Vec<RunEventKind>) -> Result<()> {
-        let Some(run_id) = self.parent.run_id.clone() else {
+    async fn append_parent_events(&self, events: Vec<SessionEventKind>) -> Result<()> {
+        let Some(session_id) = self.parent.session_id.clone() else {
             return Ok(());
         };
         let Some(agent_session_id) = self.parent.agent_session_id.clone() else {
@@ -1371,8 +1371,8 @@ impl ChildAgentWorker {
                 events
                     .into_iter()
                     .map(|event| {
-                        RunEventEnvelope::new(
-                            run_id.clone(),
+                        SessionEventEnvelope::new(
+                            session_id.clone(),
                             agent_session_id.clone(),
                             self.parent.turn_id.clone(),
                             None,
@@ -1541,14 +1541,14 @@ mod tests {
     use skills::SkillCatalog;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
-    use store::{InMemoryRunStore, RunStore};
+    use store::{InMemorySessionStore, SessionStore};
     use tokio::sync::Notify;
     use tools::{
         ReadTool, SubagentExecutor, SubagentParentContext, ToolExecutionContext, ToolRegistry,
     };
     use types::{
         AgentEnvelopeKind, AgentStatus, AgentTaskSpec, AgentWaitMode, AgentWaitRequest,
-        MessageRole, ModelEvent, ModelRequest, RunEventKind, ToolName,
+        MessageRole, ModelEvent, ModelRequest, SessionEventKind, ToolName,
     };
 
     #[derive(Clone)]
@@ -1749,14 +1749,14 @@ mod tests {
 
     fn make_executor(
         backend: Arc<dyn ModelBackend>,
-        store: Arc<dyn RunStore>,
+        store: Arc<dyn SessionStore>,
     ) -> RuntimeSubagentExecutor {
         make_executor_with_tool_calls(backend, store, true)
     }
 
     fn make_executor_with_tool_calls(
         backend: Arc<dyn ModelBackend>,
-        store: Arc<dyn RunStore>,
+        store: Arc<dyn SessionStore>,
         supports_tool_calls: bool,
     ) -> RuntimeSubagentExecutor {
         let dir = tempfile::tempdir().unwrap();
@@ -1788,10 +1788,10 @@ mod tests {
     #[tokio::test]
     async fn runtime_subagent_executor_spawns_batch_and_waits_all() {
         let backend = Arc::new(ImmediateBackend::default());
-        let store = Arc::new(InMemoryRunStore::new());
+        let store = Arc::new(InMemorySessionStore::new());
         let executor = make_executor(backend, store);
         let parent = SubagentParentContext {
-            run_id: Some("run_parent".into()),
+            session_id: Some("run_parent".into()),
             agent_session_id: Some("session_parent".into()),
             turn_id: Some("turn_parent".into()),
             parent_agent_id: Some("agent_parent".into()),
@@ -1852,7 +1852,7 @@ mod tests {
     #[tokio::test]
     async fn runtime_subagent_executor_uses_role_specific_profile_instructions() {
         let backend = Arc::new(ImmediateBackend::default());
-        let store = Arc::new(InMemoryRunStore::new());
+        let store = Arc::new(InMemorySessionStore::new());
         let executor = make_executor(backend.clone(), store);
 
         let handles = executor
@@ -1897,7 +1897,7 @@ mod tests {
     #[tokio::test]
     async fn runtime_subagent_executor_fails_fast_when_profile_disables_tool_calls() {
         let backend = Arc::new(ImmediateBackend::default());
-        let store = Arc::new(InMemoryRunStore::new());
+        let store = Arc::new(InMemorySessionStore::new());
         let executor = make_executor_with_tool_calls(backend, store, false);
 
         let error = executor
@@ -1930,10 +1930,10 @@ mod tests {
             release: release.clone(),
             first_user_request_pending: Arc::new(Mutex::new(true)),
         });
-        let store = Arc::new(InMemoryRunStore::new());
+        let store = Arc::new(InMemorySessionStore::new());
         let executor = make_executor(backend.clone(), store.clone());
         let parent = SubagentParentContext {
-            run_id: Some("run_parent".into()),
+            session_id: Some("run_parent".into()),
             agent_session_id: Some("session_parent".into()),
             turn_id: Some("turn_parent".into()),
             parent_agent_id: Some("agent_parent".into()),
@@ -1990,16 +1990,16 @@ mod tests {
         assert!(
             events
                 .iter()
-                .any(|event| matches!(event.event, RunEventKind::TaskCreated { .. }))
+                .any(|event| matches!(event.event, SessionEventKind::TaskCreated { .. }))
         );
         assert!(
             events
                 .iter()
-                .any(|event| matches!(event.event, RunEventKind::SubagentStart { .. }))
+                .any(|event| matches!(event.event, SessionEventKind::SubagentStart { .. }))
         );
         assert!(events.iter().any(|event| matches!(
             &event.event,
-            RunEventKind::AgentEnvelope {
+            SessionEventKind::AgentEnvelope {
                 envelope: types::AgentEnvelope {
                     kind: AgentEnvelopeKind::Message { .. },
                     ..
@@ -2008,7 +2008,7 @@ mod tests {
         )));
         assert!(events.iter().any(|event| matches!(
             &event.event,
-            RunEventKind::AgentEnvelope {
+            SessionEventKind::AgentEnvelope {
                 envelope: types::AgentEnvelope {
                     kind: AgentEnvelopeKind::Result { .. },
                     ..
@@ -2018,7 +2018,7 @@ mod tests {
         assert!(
             events
                 .iter()
-                .any(|event| matches!(event.event, RunEventKind::SubagentStop { .. }))
+                .any(|event| matches!(event.event, SessionEventKind::SubagentStop { .. }))
         );
     }
 
@@ -2032,7 +2032,7 @@ mod tests {
             release: release.clone(),
             first_user_request_pending: Arc::new(Mutex::new(true)),
         });
-        let store = Arc::new(InMemoryRunStore::new());
+        let store = Arc::new(InMemorySessionStore::new());
         let executor = make_executor(backend.clone(), store);
 
         let handles = executor
@@ -2109,7 +2109,7 @@ mod tests {
     #[tokio::test]
     async fn runtime_subagent_executor_propagates_dependency_failures_without_launching_child() {
         let backend = Arc::new(ConditionalBackend::default());
-        let store = Arc::new(InMemoryRunStore::new());
+        let store = Arc::new(InMemorySessionStore::new());
         let executor = make_executor(backend.clone(), store);
 
         let handles = executor
@@ -2176,10 +2176,10 @@ mod tests {
             release,
             first_user_request_pending: Arc::new(Mutex::new(true)),
         });
-        let store = Arc::new(InMemoryRunStore::new());
+        let store = Arc::new(InMemorySessionStore::new());
         let executor = make_executor(backend, store.clone());
         let parent = SubagentParentContext {
-            run_id: Some("run_parent".into()),
+            session_id: Some("run_parent".into()),
             agent_session_id: Some("session_parent".into()),
             turn_id: Some("turn_parent".into()),
             parent_agent_id: Some("agent_parent".into()),
@@ -2227,7 +2227,7 @@ mod tests {
     #[tokio::test]
     async fn runtime_subagent_executor_rejects_conflicting_write_leases() {
         let backend = Arc::new(ImmediateBackend::default());
-        let store = Arc::new(InMemoryRunStore::new());
+        let store = Arc::new(InMemorySessionStore::new());
         let executor = make_executor(backend, store);
 
         executor
@@ -2269,7 +2269,7 @@ mod tests {
     #[tokio::test]
     async fn runtime_subagent_executor_batch_spawn_is_atomic_on_conflict() {
         let backend = Arc::new(ImmediateBackend::default());
-        let store = Arc::new(InMemoryRunStore::new());
+        let store = Arc::new(InMemorySessionStore::new());
         let executor = make_executor(backend, store);
 
         let error = executor
@@ -2340,10 +2340,10 @@ mod tests {
             release: release.clone(),
             first_user_request_pending: Arc::new(Mutex::new(true)),
         });
-        let store = Arc::new(InMemoryRunStore::new());
+        let store = Arc::new(InMemorySessionStore::new());
         let executor = make_executor(backend.clone(), store);
         let parent = SubagentParentContext {
-            run_id: Some("run_parent".into()),
+            session_id: Some("run_parent".into()),
             agent_session_id: Some("session_parent".into()),
             turn_id: Some("turn_parent".into()),
             parent_agent_id: Some("agent_parent".into()),
@@ -2431,10 +2431,10 @@ mod tests {
     #[tokio::test]
     async fn runtime_subagent_executor_fails_downstream_when_dependency_fails() {
         let backend = Arc::new(FailingBackend::default());
-        let store = Arc::new(InMemoryRunStore::new());
+        let store = Arc::new(InMemorySessionStore::new());
         let executor = make_executor(backend.clone(), store);
         let parent = SubagentParentContext {
-            run_id: Some("run_parent".into()),
+            session_id: Some("run_parent".into()),
             agent_session_id: Some("session_parent".into()),
             turn_id: Some("turn_parent".into()),
             parent_agent_id: Some("agent_parent".into()),
@@ -2515,7 +2515,7 @@ mod tests {
             release: release.clone(),
             first_user_request_pending: Arc::new(Mutex::new(true)),
         });
-        let store = Arc::new(InMemoryRunStore::new());
+        let store = Arc::new(InMemorySessionStore::new());
         let executor = make_executor(backend.clone(), store);
 
         let handles = executor
@@ -2607,7 +2607,7 @@ mod tests {
     #[tokio::test]
     async fn runtime_subagent_executor_fails_dependents_after_upstream_failure() {
         let backend = Arc::new(ConditionalBackend::default());
-        let store = Arc::new(InMemoryRunStore::new());
+        let store = Arc::new(InMemorySessionStore::new());
         let executor = make_executor(backend.clone(), store);
 
         let handles = executor
@@ -2671,7 +2671,7 @@ mod tests {
     #[tokio::test]
     async fn runtime_subagent_executor_rejects_dependency_cycles() {
         let backend = Arc::new(ImmediateBackend::default());
-        let store = Arc::new(InMemoryRunStore::new());
+        let store = Arc::new(InMemorySessionStore::new());
         let executor = make_executor(backend, store);
 
         let error = executor
@@ -2714,10 +2714,10 @@ mod tests {
             release: Arc::new(Notify::new()),
             first_user_request_pending: Arc::new(Mutex::new(false)),
         });
-        let store = Arc::new(InMemoryRunStore::new());
+        let store = Arc::new(InMemorySessionStore::new());
         let executor = make_executor(backend, store);
         let owner = SubagentParentContext {
-            run_id: Some("run_parent".into()),
+            session_id: Some("run_parent".into()),
             agent_session_id: Some("session_parent".into()),
             turn_id: Some("turn_parent".into()),
             parent_agent_id: Some("agent_owner".into()),
@@ -2785,7 +2785,7 @@ mod tests {
     #[tokio::test]
     async fn runtime_subagent_executor_root_list_only_shows_root_owned_children() {
         let backend = Arc::new(ImmediateBackend::default());
-        let store = Arc::new(InMemoryRunStore::new());
+        let store = Arc::new(InMemorySessionStore::new());
         let executor = make_executor(backend, store);
         executor
             .spawn(

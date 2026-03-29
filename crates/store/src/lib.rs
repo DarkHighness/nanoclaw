@@ -1,8 +1,8 @@
-//! Run persistence and replay support.
+//! Session persistence and replay support.
 //!
 //! Storage is intentionally separated from the core turn loop so embeddings can
-//! choose in-memory, file-backed, or custom run stores without changing runtime
-//! semantics.
+//! choose in-memory, file-backed, or custom session stores without changing
+//! runtime semantics.
 
 mod file;
 mod memory;

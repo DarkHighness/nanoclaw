@@ -1,7 +1,7 @@
 use super::AgentRuntime;
 use crate::{Result, append_transcript_message};
 use types::{
-    Message, RunEventEnvelope, RunEventKind, ToolCall, ToolLifecycleEventEnvelope, TurnId,
+    Message, SessionEventEnvelope, SessionEventKind, ToolCall, ToolLifecycleEventEnvelope, TurnId,
 };
 
 impl AgentRuntime {
@@ -9,11 +9,11 @@ impl AgentRuntime {
         &self,
         turn_id: Option<TurnId>,
         tool_call_id: Option<types::ToolCallId>,
-        event: RunEventKind,
+        event: SessionEventKind,
     ) -> Result<()> {
         self.store
-            .append(RunEventEnvelope::new(
-                self.session.run_id.clone(),
+            .append(SessionEventEnvelope::new(
+                self.session.session_id.clone(),
                 self.session.agent_session_id.clone(),
                 turn_id,
                 tool_call_id,
@@ -27,13 +27,13 @@ impl AgentRuntime {
         &self,
         turn_id: &TurnId,
         call: &ToolCall,
-        event: RunEventKind,
+        event: SessionEventKind,
     ) -> Result<ToolLifecycleEventEnvelope> {
         // Tool lifecycle updates are one of the few events that outer hosts
-        // often need both live and durably. Build the canonical RunEventEnvelope
+        // often need both live and durably. Build the canonical SessionEventEnvelope
         // once, append it, then project the host-facing typed event from it.
-        let envelope = RunEventEnvelope::new(
-            self.session.run_id.clone(),
+        let envelope = SessionEventEnvelope::new(
+            self.session.session_id.clone(),
             self.session.agent_session_id.clone(),
             Some(turn_id.clone()),
             Some(call.id.clone()),
@@ -55,7 +55,7 @@ impl AgentRuntime {
             let event = append_transcript_message(
                 &mut self.session.transcript,
                 message.clone(),
-                self.session.run_id.clone(),
+                self.session.session_id.clone(),
                 self.session.agent_session_id.clone(),
                 turn_id.clone(),
             );

@@ -8,12 +8,13 @@ pub const MEMORY_STATE_ROOT_RELATIVE: &str = ".nanoclaw/memory";
 pub const MEMORY_PROCEDURAL_RELATIVE: &str = ".nanoclaw/memory/procedural";
 pub const MEMORY_SEMANTIC_RELATIVE: &str = ".nanoclaw/memory/semantic";
 pub const MEMORY_EPISODIC_RELATIVE: &str = ".nanoclaw/memory/episodic";
-pub const MEMORY_EPISODIC_RUNS_RELATIVE: &str = ".nanoclaw/memory/episodic/runs";
 pub const MEMORY_EPISODIC_SESSIONS_RELATIVE: &str = ".nanoclaw/memory/episodic/sessions";
+pub const MEMORY_EPISODIC_AGENT_SESSIONS_RELATIVE: &str =
+    ".nanoclaw/memory/episodic/agent-sessions";
 pub const MEMORY_EPISODIC_SUBAGENTS_RELATIVE: &str = ".nanoclaw/memory/episodic/subagents";
 pub const MEMORY_EPISODIC_TASKS_RELATIVE: &str = ".nanoclaw/memory/episodic/tasks";
 pub const MEMORY_WORKING_RELATIVE: &str = ".nanoclaw/memory/working";
-pub const MEMORY_WORKING_SESSIONS_RELATIVE: &str = ".nanoclaw/memory/working/sessions";
+pub const MEMORY_WORKING_AGENT_SESSIONS_RELATIVE: &str = ".nanoclaw/memory/working/agent-sessions";
 pub const MEMORY_WORKING_TASKS_RELATIVE: &str = ".nanoclaw/memory/working/tasks";
 pub const MEMORY_COORDINATION_RELATIVE: &str = ".nanoclaw/memory/coordination";
 pub const MEMORY_COORDINATION_PLANS_RELATIVE: &str = ".nanoclaw/memory/coordination/plans";
@@ -63,7 +64,7 @@ pub struct MemorySidecarLifecycle {
     #[serde(default)]
     pub indexed_document_count: usize,
     #[serde(default)]
-    pub exported_run_count: usize,
+    pub exported_session_count: usize,
     #[serde(default)]
     pub exported_agent_session_count: usize,
     #[serde(default)]

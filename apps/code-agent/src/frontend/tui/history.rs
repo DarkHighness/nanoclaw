@@ -1,10 +1,11 @@
 use super::state::preview_text;
 use crate::backend::{
-    LoadedRun, McpPromptSummary, McpResourceSummary, McpServerSummary, PersistedSessionSearchMatch,
-    PersistedSessionSummary, RunExportArtifact, RunExportKind, SessionResumeStatus,
-    SessionResumeSupport, StartupDiagnosticsSnapshot, message_to_text, preview_id,
+    LoadedSession, McpPromptSummary, McpResourceSummary, McpServerSummary,
+    PersistedSessionSearchMatch, PersistedSessionSummary, SessionExportArtifact, SessionExportKind,
+    SessionResumeStatus, SessionResumeSupport, StartupDiagnosticsSnapshot, message_to_text,
+    preview_id,
 };
-use agent::types::{AgentSessionId, RunEventEnvelope, RunEventKind};
+use agent::types::{AgentSessionId, SessionEventEnvelope, SessionEventKind};
 use store::TokenUsageRecord;
 
 pub(crate) fn format_session_summary_line(summary: &PersistedSessionSummary) -> String {
@@ -37,17 +38,20 @@ pub(crate) fn format_session_search_line(result: &PersistedSessionSearchMatch) -
     }
 }
 
-pub(crate) fn format_session_inspector(run: &LoadedRun) -> Vec<String> {
+pub(crate) fn format_session_inspector(session: &LoadedSession) -> Vec<String> {
     let mut lines = vec![
         "## Session".to_string(),
-        format!("session ref: {}", run.summary.run_id),
-        format!("event count: {}", run.summary.event_count),
-        format!("message count: {}", run.summary.transcript_message_count),
-        format!("worker sessions: {}", run.summary.agent_session_count),
+        format!("session ref: {}", session.summary.session_id),
+        format!("event count: {}", session.summary.event_count),
+        format!(
+            "message count: {}",
+            session.summary.transcript_message_count
+        ),
+        format!("worker sessions: {}", session.summary.agent_session_count),
     ];
-    if let Some(run_usage) = &run.token_usage.run {
+    if let Some(session_usage) = &session.token_usage.session {
         lines.push("## Token Budget".to_string());
-        if let Some(window) = run_usage.ledger.context_window {
+        if let Some(window) = session_usage.ledger.context_window {
             lines.push(format!(
                 "context: {} / {}",
                 window.used_tokens, window.max_tokens
@@ -55,68 +59,71 @@ pub(crate) fn format_session_inspector(run: &LoadedRun) -> Vec<String> {
         }
         lines.push(format!(
             "session tokens: in={} out={} cache={}",
-            run_usage.ledger.cumulative_usage.input_tokens,
-            run_usage.ledger.cumulative_usage.output_tokens,
-            run_usage.ledger.cumulative_usage.cache_read_tokens,
+            session_usage.ledger.cumulative_usage.input_tokens,
+            session_usage.ledger.cumulative_usage.output_tokens,
+            session_usage.ledger.cumulative_usage.cache_read_tokens,
         ));
     }
-    if !run.token_usage.aggregate_usage.is_zero() {
+    if !session.token_usage.aggregate_usage.is_zero() {
         lines.push(format!(
             "total tokens: in={} out={} prefill={} decode={} cache={}",
-            run.token_usage.aggregate_usage.input_tokens,
-            run.token_usage.aggregate_usage.output_tokens,
-            run.token_usage.aggregate_usage.prefill_tokens,
-            run.token_usage.aggregate_usage.decode_tokens,
-            run.token_usage.aggregate_usage.cache_read_tokens,
+            session.token_usage.aggregate_usage.input_tokens,
+            session.token_usage.aggregate_usage.output_tokens,
+            session.token_usage.aggregate_usage.prefill_tokens,
+            session.token_usage.aggregate_usage.decode_tokens,
+            session.token_usage.aggregate_usage.cache_read_tokens,
         ));
     }
-    if !run.token_usage.subagents.is_empty() {
+    if !session.token_usage.subagents.is_empty() {
         lines.push("## Subagents".to_string());
         lines.push(format!(
             "subagent count: {}",
-            run.token_usage.subagents.len()
+            session.token_usage.subagents.len()
         ));
         lines.extend(
-            run.token_usage
+            session
+                .token_usage
                 .subagents
                 .iter()
                 .take(4)
                 .map(format_token_usage_record_line),
         );
     }
-    if let Some(prompt) = &run.summary.last_user_prompt {
+    if let Some(prompt) = &session.summary.last_user_prompt {
         lines.push("## Prompt".to_string());
         lines.push(format!("last prompt: {}", preview_text(prompt, 80)));
     }
-    if !run.agent_session_ids.is_empty() {
+    if !session.agent_session_ids.is_empty() {
         lines.push("## Runtime IDs".to_string());
         lines.push(format!(
             "runtime sessions: {}",
-            run.agent_session_ids
+            session
+                .agent_session_ids
                 .iter()
                 .map(|agent_session_id: &AgentSessionId| preview_id(agent_session_id.as_str()))
                 .collect::<Vec<_>>()
                 .join(", ")
         ));
     }
-    if !run.events.is_empty() {
+    if !session.events.is_empty() {
         lines.push("## Recent Events".to_string());
         lines.extend(
-            run.events
+            session
+                .events
                 .iter()
                 .rev()
                 .take(6)
                 .collect::<Vec<_>>()
                 .into_iter()
                 .rev()
-                .map(format_run_event_line),
+                .map(format_session_event_line),
         );
     }
     lines
 }
 
-pub(crate) fn format_session_transcript_lines(run: &LoadedRun) -> Vec<String> {
-    let transcript = run
+pub(crate) fn format_session_transcript_lines(session: &LoadedSession) -> Vec<String> {
+    let transcript = session
         .transcript
         .iter()
         .map(message_to_text)
@@ -128,17 +135,17 @@ pub(crate) fn format_session_transcript_lines(run: &LoadedRun) -> Vec<String> {
     }
 }
 
-pub(crate) fn format_session_export_result(result: &RunExportArtifact) -> Vec<String> {
+pub(crate) fn format_session_export_result(result: &SessionExportArtifact) -> Vec<String> {
     vec![
         "## Export".to_string(),
         format!(
             "export: {}",
             match result.kind {
-                RunExportKind::EventsJsonl => "events jsonl",
-                RunExportKind::TranscriptText => "transcript text",
+                SessionExportKind::EventsJsonl => "events jsonl",
+                SessionExportKind::TranscriptText => "transcript text",
             }
         ),
-        format!("session ref: {}", result.run_id),
+        format!("session ref: {}", result.session_id),
         format!("path: {}", result.output_path.display()),
         format!("items: {}", result.item_count),
     ]
@@ -248,7 +255,7 @@ fn format_token_usage_record_line(record: &TokenUsageRecord) -> String {
         .as_deref()
         .or(record.task_id.as_deref())
         .map(|value| preview_text(value, 20))
-        .unwrap_or_else(|| preview_id(record.run_id.as_str()));
+        .unwrap_or_else(|| preview_id(record.session_id.as_str()));
     format!(
         "{} in={} out={} cache={}",
         name,
@@ -258,30 +265,32 @@ fn format_token_usage_record_line(record: &TokenUsageRecord) -> String {
     )
 }
 
-fn format_run_event_line(event: &RunEventEnvelope) -> String {
+fn format_session_event_line(event: &SessionEventEnvelope) -> String {
     match &event.event {
-        RunEventKind::SessionStart { reason } => {
+        SessionEventKind::SessionStart { reason } => {
             format!("session_start {}", reason.as_deref().unwrap_or(""))
                 .trim()
                 .to_string()
         }
-        RunEventKind::InstructionsLoaded { count } => format!("instructions_loaded count={count}"),
-        RunEventKind::SteerApplied { message, reason } => format!(
+        SessionEventKind::InstructionsLoaded { count } => {
+            format!("instructions_loaded count={count}")
+        }
+        SessionEventKind::SteerApplied { message, reason } => format!(
             "steer {} {}",
             reason.as_deref().unwrap_or(""),
             preview_text(message, 24)
         )
         .trim()
         .to_string(),
-        RunEventKind::UserPromptSubmit { prompt } => {
+        SessionEventKind::UserPromptSubmit { prompt } => {
             format!("user_prompt {}", preview_text(prompt, 42))
         }
-        RunEventKind::ModelRequestStarted { request } => format!(
+        SessionEventKind::ModelRequestStarted { request } => format!(
             "model_request messages={} tools={}",
             request.messages.len(),
             request.tools.len()
         ),
-        RunEventKind::CompactionCompleted {
+        SessionEventKind::CompactionCompleted {
             reason,
             source_message_count,
             retained_message_count,
@@ -290,7 +299,7 @@ fn format_run_event_line(event: &RunEventEnvelope) -> String {
             "compaction {} messages={} kept={} summary_chars={}",
             reason, source_message_count, retained_message_count, summary_chars
         ),
-        RunEventKind::ModelResponseCompleted {
+        SessionEventKind::ModelResponseCompleted {
             assistant_text,
             tool_calls,
             ..
@@ -299,7 +308,7 @@ fn format_run_event_line(event: &RunEventEnvelope) -> String {
             preview_text(assistant_text, 24),
             tool_calls.len()
         ),
-        RunEventKind::TokenUsageUpdated { phase, ledger } => format!(
+        SessionEventKind::TokenUsageUpdated { phase, ledger } => format!(
             "token_usage {:?} context={} input={} output={}",
             phase,
             ledger
@@ -309,19 +318,19 @@ fn format_run_event_line(event: &RunEventEnvelope) -> String {
             ledger.cumulative_usage.input_tokens,
             ledger.cumulative_usage.output_tokens,
         ),
-        RunEventKind::HookInvoked { hook_name, event } => {
+        SessionEventKind::HookInvoked { hook_name, event } => {
             format!("hook_invoked {hook_name} {:?}", event)
         }
-        RunEventKind::HookCompleted {
+        SessionEventKind::HookCompleted {
             hook_name, output, ..
         } => format!(
             "hook_completed {hook_name} effects={}",
             output.effects.len()
         ),
-        RunEventKind::TranscriptMessage { message } => {
+        SessionEventKind::TranscriptMessage { message } => {
             format!("transcript {}", preview_text(&message_to_text(message), 42))
         }
-        RunEventKind::TranscriptMessagePatched {
+        SessionEventKind::TranscriptMessagePatched {
             message_id,
             message,
         } => format!(
@@ -329,46 +338,46 @@ fn format_run_event_line(event: &RunEventEnvelope) -> String {
             preview_id(message_id.as_str()),
             preview_text(&message_to_text(message), 32)
         ),
-        RunEventKind::TranscriptMessageRemoved { message_id } => {
+        SessionEventKind::TranscriptMessageRemoved { message_id } => {
             format!("transcript_remove {}", preview_id(message_id.as_str()))
         }
-        RunEventKind::ToolApprovalRequested { call, .. } => {
+        SessionEventKind::ToolApprovalRequested { call, .. } => {
             format!("approval_requested {}", call.tool_name)
         }
-        RunEventKind::ToolApprovalResolved { call, approved, .. } => {
+        SessionEventKind::ToolApprovalResolved { call, approved, .. } => {
             format!("approval_resolved {} approved={approved}", call.tool_name)
         }
-        RunEventKind::ToolCallStarted { call } => format!("tool_started {}", call.tool_name),
-        RunEventKind::ToolCallCompleted { call, output } => format!(
+        SessionEventKind::ToolCallStarted { call } => format!("tool_started {}", call.tool_name),
+        SessionEventKind::ToolCallCompleted { call, output } => format!(
             "tool_completed {} {}",
             call.tool_name,
             preview_text(&output.text_content(), 24)
         ),
-        RunEventKind::ToolCallFailed { call, error } => {
+        SessionEventKind::ToolCallFailed { call, error } => {
             format!("tool_failed {} {}", call.tool_name, preview_text(error, 24))
         }
-        RunEventKind::Notification { source, message } => {
+        SessionEventKind::Notification { source, message } => {
             format!("notification {source} {}", preview_text(message, 24))
         }
-        RunEventKind::TaskCreated { task, .. } => format!(
+        SessionEventKind::TaskCreated { task, .. } => format!(
             "task_created {} role={} claims={}",
             task.task_id,
             task.role,
             task.requested_write_set.len()
         ),
-        RunEventKind::TaskCompleted {
+        SessionEventKind::TaskCompleted {
             task_id, status, ..
         } => format!("task_completed {task_id} status={status}"),
-        RunEventKind::SubagentStart { handle, .. } => format!(
+        SessionEventKind::SubagentStart { handle, .. } => format!(
             "subagent_start {} {}",
             preview_id(handle.agent_id.as_str()),
             handle.role
         ),
-        RunEventKind::AgentEnvelope { envelope } => format!(
+        SessionEventKind::AgentEnvelope { envelope } => format!(
             "agent_envelope {}",
             preview_text(&format!("{:?}", envelope.kind), 40)
         ),
-        RunEventKind::SubagentStop { handle, error, .. } => format!(
+        SessionEventKind::SubagentStop { handle, error, .. } => format!(
             "subagent_stop {} {}",
             preview_id(handle.agent_id.as_str()),
             error
@@ -376,15 +385,15 @@ fn format_run_event_line(event: &RunEventEnvelope) -> String {
                 .map(|value| preview_text(value, 24))
                 .unwrap_or_else(|| "ok".to_string())
         ),
-        RunEventKind::Stop { reason } => format!("stop {}", reason.as_deref().unwrap_or(""))
+        SessionEventKind::Stop { reason } => format!("stop {}", reason.as_deref().unwrap_or(""))
             .trim()
             .to_string(),
-        RunEventKind::StopFailure { reason } => {
+        SessionEventKind::StopFailure { reason } => {
             format!("stop_failure {}", reason.as_deref().unwrap_or(""))
                 .trim()
                 .to_string()
         }
-        RunEventKind::SessionEnd { reason } => {
+        SessionEventKind::SessionEnd { reason } => {
             format!("session_end {}", reason.as_deref().unwrap_or(""))
                 .trim()
                 .to_string()
@@ -395,15 +404,15 @@ fn format_run_event_line(event: &RunEventEnvelope) -> String {
 #[cfg(test)]
 mod tests {
     use super::format_session_export_result;
-    use crate::backend::{RunExportArtifact, RunExportKind};
-    use agent::types::RunId;
+    use crate::backend::{SessionExportArtifact, SessionExportKind};
+    use agent::types::SessionId;
     use std::path::PathBuf;
 
     #[test]
     fn export_result_includes_kind_path_and_item_count() {
-        let lines = format_session_export_result(&RunExportArtifact {
-            kind: RunExportKind::TranscriptText,
-            run_id: RunId::from("run-1"),
+        let lines = format_session_export_result(&SessionExportArtifact {
+            kind: SessionExportKind::TranscriptText,
+            session_id: SessionId::from("session-1"),
             output_path: PathBuf::from("/workspace/out.txt"),
             item_count: 4,
         });

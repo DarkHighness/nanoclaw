@@ -1,18 +1,18 @@
-use types::{AgentSessionId, Message, RunEventEnvelope, RunEventKind, RunId, TurnId};
+use types::{AgentSessionId, Message, SessionEventEnvelope, SessionEventKind, SessionId, TurnId};
 
 pub fn append_transcript_message(
     transcript: &mut Vec<Message>,
     message: Message,
-    run_id: RunId,
+    session_id: SessionId,
     agent_session_id: AgentSessionId,
     turn_id: TurnId,
-) -> RunEventEnvelope {
+) -> SessionEventEnvelope {
     transcript.push(message.clone());
-    RunEventEnvelope::new(
-        run_id,
+    SessionEventEnvelope::new(
+        session_id,
         agent_session_id,
         Some(turn_id),
         None,
-        RunEventKind::TranscriptMessage { message },
+        SessionEventKind::TranscriptMessage { message },
     )
 }

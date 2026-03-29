@@ -49,7 +49,7 @@ pub(crate) async fn promote_memory(
     let metadata = MemoryDocumentMetadata {
         scope: request.target_scope,
         layer,
-        run_id: None,
+        session_id: None,
         agent_session_id: None,
         agent_name: None,
         task_id: None,

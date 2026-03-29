@@ -154,7 +154,7 @@ impl AgentRuntime {
                 &self.hook_registrations,
                 HookContext {
                     event: HookEvent::PreCompact,
-                    run_id: self.session.run_id.clone(),
+                    session_id: self.session.session_id.clone(),
                     agent_session_id: self.session.agent_session_id.clone(),
                     turn_id: Some(turn_id.clone()),
                     fields: [("reason".to_string(), reason.to_string())]
@@ -187,7 +187,7 @@ impl AgentRuntime {
         let result = self
             .conversation_compactor
             .compact(CompactionRequest {
-                run_id: self.session.run_id.clone(),
+                session_id: self.session.session_id.clone(),
                 agent_session_id: self.session.agent_session_id.clone(),
                 turn_id: turn_id.clone(),
                 messages: source_messages.clone(),
@@ -200,7 +200,7 @@ impl AgentRuntime {
         let event = append_transcript_message(
             &mut self.session.transcript,
             summary_message,
-            self.session.run_id.clone(),
+            self.session.session_id.clone(),
             self.session.agent_session_id.clone(),
             turn_id.clone(),
         );
@@ -217,7 +217,7 @@ impl AgentRuntime {
         self.append_event(
             Some(turn_id.clone()),
             None,
-            types::RunEventKind::CompactionCompleted {
+            types::SessionEventKind::CompactionCompleted {
                 reason: reason.to_string(),
                 source_message_count: source_messages.len(),
                 retained_message_count: retained_tail_indices.len(),
@@ -237,7 +237,7 @@ impl AgentRuntime {
                 &self.hook_registrations,
                 HookContext {
                     event: HookEvent::PostCompact,
-                    run_id: self.session.run_id.clone(),
+                    session_id: self.session.session_id.clone(),
                     agent_session_id: self.session.agent_session_id.clone(),
                     turn_id: Some(turn_id.clone()),
                     fields: [("reason".to_string(), reason.to_string())]

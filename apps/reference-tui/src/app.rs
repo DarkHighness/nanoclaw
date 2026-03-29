@@ -11,7 +11,7 @@ use agent::skills::Skill;
 use runtime::{AgentRuntime, RunTurnOutcome};
 use std::path::PathBuf;
 use std::sync::Arc;
-use store::RunStore;
+use store::SessionStore;
 use types::ToolSpec;
 
 pub use approval::InteractiveToolApprovalHandler;
@@ -19,7 +19,7 @@ use presenters::*;
 
 pub struct RuntimeTui {
     runtime: AgentRuntime,
-    store: Arc<dyn RunStore>,
+    store: Arc<dyn SessionStore>,
     workspace_root: PathBuf,
     command_prefix: String,
     mcp_servers: Vec<ConnectedMcpServer>,
@@ -57,7 +57,7 @@ impl RuntimeTui {
     #[must_use]
     pub fn new(
         runtime: AgentRuntime,
-        store: Arc<dyn RunStore>,
+        store: Arc<dyn SessionStore>,
         workspace_root: PathBuf,
         config: &AgentCoreConfig,
         mcp_servers: Vec<ConnectedMcpServer>,
@@ -106,8 +106,8 @@ impl RuntimeTui {
         state: &mut TuiState,
         outcome: RunTurnOutcome,
     ) -> anyhow::Result<()> {
-        state.transcript = self.replay_run_lines(&self.runtime.run_id()).await?;
-        let events = self.store.events(&self.runtime.run_id()).await?;
+        state.transcript = self.replay_run_lines(&self.runtime.session_id()).await?;
+        let events = self.store.events(&self.runtime.session_id()).await?;
         state.sidebar = build_turn_sidebar(&events);
         state.sidebar_title = "Turn".to_string();
         state.status = format!(

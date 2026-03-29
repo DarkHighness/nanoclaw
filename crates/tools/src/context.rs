@@ -2,7 +2,7 @@ use crate::Result;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use types::{AgentId, AgentSessionId, CallId, RunId, ToolName, TurnId};
+use types::{AgentId, AgentSessionId, CallId, SessionId, ToolName, TurnId};
 
 pub trait ToolWriteGuard: Send + Sync {
     fn assert_write_paths(&self, agent_id: Option<&AgentId>, paths: &[PathBuf]) -> Result<()>;
@@ -22,7 +22,7 @@ pub struct ToolExecutionContext {
     pub workspace_only: bool,
     pub container_workdir: Option<String>,
     pub model_context_window_tokens: Option<usize>,
-    pub run_id: Option<RunId>,
+    pub session_id: Option<SessionId>,
     pub agent_session_id: Option<AgentSessionId>,
     pub turn_id: Option<TurnId>,
     pub agent_id: Option<AgentId>,
@@ -47,7 +47,7 @@ impl fmt::Debug for ToolExecutionContext {
                 "model_context_window_tokens",
                 &self.model_context_window_tokens,
             )
-            .field("run_id", &self.run_id)
+            .field("session_id", &self.session_id)
             .field("agent_session_id", &self.agent_session_id)
             .field("turn_id", &self.turn_id)
             .field("agent_id", &self.agent_id)
@@ -158,14 +158,14 @@ impl ToolExecutionContext {
     #[must_use]
     pub fn with_runtime_scope(
         &self,
-        run_id: RunId,
+        session_id: SessionId,
         agent_session_id: AgentSessionId,
         turn_id: TurnId,
         tool_name: impl Into<ToolName>,
         tool_call_id: impl Into<CallId>,
     ) -> Self {
         let mut scoped = self.clone();
-        scoped.run_id = Some(run_id);
+        scoped.session_id = Some(session_id);
         scoped.agent_session_id = Some(agent_session_id);
         scoped.turn_id = Some(turn_id);
         scoped.tool_name = Some(tool_name.into());
@@ -211,7 +211,7 @@ mod tests {
     use crate::{Result, ToolError};
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
-    use types::{AgentId, AgentSessionId, CallId, RunId, ToolName, TurnId};
+    use types::{AgentId, AgentSessionId, CallId, SessionId, ToolName, TurnId};
 
     #[derive(Default)]
     struct RecordingWriteGuard {
@@ -260,7 +260,7 @@ mod tests {
         };
 
         let scoped = base.with_runtime_scope(
-            RunId::from("run_1"),
+            SessionId::from("run_1"),
             AgentSessionId::from("session_1"),
             TurnId::from("turn_1"),
             "read",
@@ -269,7 +269,7 @@ mod tests {
 
         assert_eq!(scoped.workspace_root, base.workspace_root);
         assert!(scoped.workspace_only);
-        assert_eq!(scoped.run_id.unwrap().as_str(), "run_1");
+        assert_eq!(scoped.session_id.unwrap().as_str(), "run_1");
         assert_eq!(scoped.agent_session_id.unwrap().as_str(), "session_1");
         assert_eq!(scoped.turn_id.unwrap().as_str(), "turn_1");
         assert_eq!(scoped.tool_name.unwrap(), ToolName::from("read"));

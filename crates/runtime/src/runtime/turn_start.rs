@@ -3,7 +3,7 @@ use crate::{Result, RuntimeObserver, RuntimeProgressEvent, append_transcript_mes
 use serde_json::json;
 use std::collections::BTreeMap;
 use types::{
-    AgentCoreError, HookContext, HookEvent, HookRegistration, Message, RunEventKind, TurnId,
+    AgentCoreError, HookContext, HookEvent, HookRegistration, Message, SessionEventKind, TurnId,
 };
 
 impl AgentRuntime {
@@ -43,7 +43,7 @@ impl AgentRuntime {
                 hooks,
                 HookContext {
                     event: HookEvent::SessionStart,
-                    run_id: self.session.run_id.clone(),
+                    session_id: self.session.session_id.clone(),
                     agent_session_id: self.session.agent_session_id.clone(),
                     turn_id: None,
                     fields: [("reason".to_string(), "new_session".to_string())]
@@ -62,7 +62,7 @@ impl AgentRuntime {
         self.append_event(
             None,
             None,
-            RunEventKind::SessionStart {
+            SessionEventKind::SessionStart {
                 reason: Some("new_session".to_string()),
             },
         )
@@ -86,7 +86,7 @@ impl AgentRuntime {
                 hooks,
                 HookContext {
                     event: HookEvent::InstructionsLoaded,
-                    run_id: self.session.run_id.clone(),
+                    session_id: self.session.session_id.clone(),
                     agent_session_id: self.session.agent_session_id.clone(),
                     turn_id: Some(turn_id.clone()),
                     fields: [("reason".to_string(), "runtime_instructions".to_string())]
@@ -105,7 +105,7 @@ impl AgentRuntime {
         self.append_event(
             Some(turn_id.clone()),
             None,
-            RunEventKind::InstructionsLoaded {
+            SessionEventKind::InstructionsLoaded {
                 count: instructions.len(),
             },
         )
@@ -124,7 +124,7 @@ impl AgentRuntime {
                 hooks,
                 HookContext {
                     event: HookEvent::UserPromptSubmit,
-                    run_id: self.session.run_id.clone(),
+                    session_id: self.session.session_id.clone(),
                     agent_session_id: self.session.agent_session_id.clone(),
                     turn_id: Some(turn_id.clone()),
                     fields: BTreeMap::new(),
@@ -152,7 +152,7 @@ impl AgentRuntime {
         let transcript_event = append_transcript_message(
             &mut self.session.transcript,
             user_message,
-            self.session.run_id.clone(),
+            self.session.session_id.clone(),
             self.session.agent_session_id.clone(),
             turn_id.clone(),
         );
@@ -160,7 +160,7 @@ impl AgentRuntime {
         self.append_event(
             Some(turn_id.clone()),
             None,
-            RunEventKind::UserPromptSubmit {
+            SessionEventKind::UserPromptSubmit {
                 prompt: prompt.to_string(),
             },
         )

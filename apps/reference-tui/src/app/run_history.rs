@@ -1,13 +1,16 @@
 use super::{RuntimeTui, message_to_text, preview_id};
 use std::path::{Path, PathBuf};
-use store::RunSummary;
-use types::{RunEventEnvelope, RunId};
+use store::SessionSummary;
+use types::{SessionEventEnvelope, SessionId};
 
 impl RuntimeTui {
-    pub(super) async fn replay_run_lines(&self, run_id: &RunId) -> anyhow::Result<Vec<String>> {
+    pub(super) async fn replay_run_lines(
+        &self,
+        session_id: &SessionId,
+    ) -> anyhow::Result<Vec<String>> {
         Ok(self
             .store
-            .replay_transcript(run_id)
+            .replay_transcript(session_id)
             .await?
             .iter()
             .map(message_to_text)
@@ -28,34 +31,37 @@ impl RuntimeTui {
     }
 }
 
-pub(super) fn resolve_run_reference(runs: &[RunSummary], run_ref: &str) -> anyhow::Result<RunId> {
-    if let Some(run) = runs
+pub(super) fn resolve_run_reference(
+    sessions: &[SessionSummary],
+    run_ref: &str,
+) -> anyhow::Result<SessionId> {
+    if let Some(session) = sessions
         .iter()
-        .find(|summary| summary.run_id.as_str() == run_ref)
+        .find(|summary| summary.session_id.as_str() == run_ref)
     {
-        return Ok(run.run_id.clone());
+        return Ok(session.session_id.clone());
     }
 
-    let matches = runs
+    let matches = sessions
         .iter()
-        .filter(|summary| summary.run_id.as_str().starts_with(run_ref))
+        .filter(|summary| summary.session_id.as_str().starts_with(run_ref))
         .collect::<Vec<_>>();
     match matches.as_slice() {
-        [] => Err(anyhow::anyhow!("unknown run id or prefix: {run_ref}")),
-        [run] => Ok(run.run_id.clone()),
+        [] => Err(anyhow::anyhow!("unknown session id or prefix: {run_ref}")),
+        [session] => Ok(session.session_id.clone()),
         _ => Err(anyhow::anyhow!(
-            "ambiguous run prefix {run_ref}: {}",
+            "ambiguous session prefix {run_ref}: {}",
             matches
                 .iter()
                 .take(6)
-                .map(|run| preview_id(run.run_id.as_str()))
+                .map(|session| preview_id(session.session_id.as_str()))
                 .collect::<Vec<_>>()
                 .join(", ")
         )),
     }
 }
 
-pub(super) fn encode_run_events_jsonl(events: &[RunEventEnvelope]) -> anyhow::Result<String> {
+pub(super) fn encode_run_events_jsonl(events: &[SessionEventEnvelope]) -> anyhow::Result<String> {
     let mut lines = Vec::with_capacity(events.len());
     for event in events {
         lines.push(serde_json::to_string(event)?);
@@ -79,14 +85,14 @@ fn resolve_output_path(workspace_root: &Path, value: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::resolve_run_reference;
-    use store::RunSummary;
-    use types::RunId;
+    use store::SessionSummary;
+    use types::SessionId;
 
     #[test]
     fn resolves_unique_run_prefix() {
-        let runs = vec![
-            RunSummary {
-                run_id: RunId::from("abc12345"),
+        let sessions = vec![
+            SessionSummary {
+                session_id: SessionId::from("abc12345"),
                 first_timestamp_ms: 1,
                 last_timestamp_ms: 2,
                 event_count: 3,
@@ -94,8 +100,8 @@ mod tests {
                 transcript_message_count: 2,
                 last_user_prompt: Some("first".to_string()),
             },
-            RunSummary {
-                run_id: RunId::from("def67890"),
+            SessionSummary {
+                session_id: SessionId::from("def67890"),
                 first_timestamp_ms: 4,
                 last_timestamp_ms: 5,
                 event_count: 6,
@@ -106,16 +112,16 @@ mod tests {
         ];
 
         assert_eq!(
-            resolve_run_reference(&runs, "abc").unwrap(),
-            RunId::from("abc12345")
+            resolve_run_reference(&sessions, "abc").unwrap(),
+            SessionId::from("abc12345")
         );
     }
 
     #[test]
     fn rejects_ambiguous_run_prefix() {
-        let runs = vec![
-            RunSummary {
-                run_id: RunId::from("abc12345"),
+        let sessions = vec![
+            SessionSummary {
+                session_id: SessionId::from("abc12345"),
                 first_timestamp_ms: 1,
                 last_timestamp_ms: 2,
                 event_count: 3,
@@ -123,8 +129,8 @@ mod tests {
                 transcript_message_count: 2,
                 last_user_prompt: None,
             },
-            RunSummary {
-                run_id: RunId::from("abc67890"),
+            SessionSummary {
+                session_id: SessionId::from("abc67890"),
                 first_timestamp_ms: 4,
                 last_timestamp_ms: 5,
                 event_count: 6,
@@ -134,6 +140,6 @@ mod tests {
             },
         ];
 
-        assert!(resolve_run_reference(&runs, "abc").is_err());
+        assert!(resolve_run_reference(&sessions, "abc").is_err());
     }
 }

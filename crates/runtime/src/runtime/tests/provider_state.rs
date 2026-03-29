@@ -7,11 +7,11 @@ use crate::{
 use async_trait::async_trait;
 use skills::SkillCatalog;
 use std::sync::{Arc, Mutex};
-use store::{InMemoryRunStore, RunStore};
+use store::{InMemorySessionStore, SessionStore};
 use tools::ToolExecutionContext;
 use types::{
     HookContext, HookEffect, HookRegistration, HookResult, MessageId, MessagePart, MessagePatch,
-    MessageRole, MessageSelector, ProviderContinuation, RunEventKind,
+    MessageRole, MessageSelector, ProviderContinuation, SessionEventKind,
 };
 
 #[derive(Clone, Default)]
@@ -90,7 +90,7 @@ impl PromptHookEvaluator for LastAssistantPatchPromptEvaluator {
 async fn runtime_uses_provider_continuation_for_follow_up_turns() {
     let dir = tempfile::tempdir().unwrap();
     let backend = Arc::new(ContinuingBackend::default());
-    let store = Arc::new(InMemoryRunStore::new());
+    let store = Arc::new(InMemorySessionStore::new());
     let mut runtime: AgentRuntime = AgentRuntimeBuilder::new(backend.clone(), store)
         .hook_runner(Arc::new(HookRunner::default()))
         .tool_context(ToolExecutionContext {
@@ -124,7 +124,7 @@ async fn runtime_uses_provider_continuation_for_follow_up_turns() {
 async fn runtime_retries_full_transcript_when_provider_continuation_is_lost() {
     let dir = tempfile::tempdir().unwrap();
     let backend = Arc::new(ContinuingBackend::with_failed_continuation());
-    let store = Arc::new(InMemoryRunStore::new());
+    let store = Arc::new(InMemorySessionStore::new());
     let mut runtime: AgentRuntime = AgentRuntimeBuilder::new(backend.clone(), store.clone())
         .hook_runner(Arc::new(HookRunner::default()))
         .tool_context(ToolExecutionContext {
@@ -152,11 +152,11 @@ async fn runtime_retries_full_transcript_when_provider_continuation_is_lost() {
         requests[2].messages.len() >= 3,
         "fallback request should resend visible transcript"
     );
-    let events = store.events(&runtime.run_id()).await.unwrap();
+    let events = store.events(&runtime.session_id()).await.unwrap();
     assert!(events.iter().any(|event| {
         matches!(
             &event.event,
-            RunEventKind::Notification { source, message }
+            SessionEventKind::Notification { source, message }
                 if source == "provider_state"
                     && message.contains("provider continuation lost")
         )
@@ -167,7 +167,7 @@ async fn runtime_retries_full_transcript_when_provider_continuation_is_lost() {
 async fn local_compaction_resets_provider_continuation() {
     let dir = tempfile::tempdir().unwrap();
     let backend = Arc::new(ContinuingBackend::default());
-    let store = Arc::new(InMemoryRunStore::new());
+    let store = Arc::new(InMemorySessionStore::new());
     let mut runtime: AgentRuntime = AgentRuntimeBuilder::new(backend.clone(), store)
         .hook_runner(Arc::new(HookRunner::default()))
         .conversation_compactor(Arc::new(StaticCompactor))
@@ -206,7 +206,7 @@ async fn local_compaction_resets_provider_continuation() {
 async fn message_id_patch_resets_provider_continuation_and_replays_full_visible_transcript() {
     let dir = tempfile::tempdir().unwrap();
     let backend = Arc::new(ContinuingBackend::default());
-    let store = Arc::new(InMemoryRunStore::new());
+    let store = Arc::new(InMemorySessionStore::new());
     let prompt_evaluator = Arc::new(MessageIdPatchPromptEvaluator::default());
     let mut runtime: AgentRuntime = AgentRuntimeBuilder::new(backend.clone(), store.clone())
         .hook_runner(Arc::new(HookRunner::with_services(
@@ -237,7 +237,7 @@ async fn message_id_patch_resets_provider_continuation_and_replays_full_visible_
 
     runtime.run_user_prompt("first task").await.unwrap();
     let first_message_id = store
-        .replay_transcript(&runtime.run_id())
+        .replay_transcript(&runtime.session_id())
         .await
         .unwrap()
         .first()
@@ -260,7 +260,10 @@ async fn message_id_patch_resets_provider_continuation_and_replays_full_visible_
                 ]
     }));
 
-    let transcript = store.replay_transcript(&runtime.run_id()).await.unwrap();
+    let transcript = store
+        .replay_transcript(&runtime.session_id())
+        .await
+        .unwrap();
     assert_eq!(
         transcript[0].parts,
         vec![
@@ -270,14 +273,14 @@ async fn message_id_patch_resets_provider_continuation_and_replays_full_visible_
     );
     assert!(
         store
-            .events(&runtime.run_id())
+            .events(&runtime.session_id())
             .await
             .unwrap()
             .iter()
             .any(|event| {
                 matches!(
                     &event.event,
-                    RunEventKind::TranscriptMessagePatched { message_id, .. }
+                    SessionEventKind::TranscriptMessagePatched { message_id, .. }
                         if message_id == &first_message_id
                 )
             })
@@ -288,7 +291,7 @@ async fn message_id_patch_resets_provider_continuation_and_replays_full_visible_
 async fn last_of_role_patch_targets_last_visible_assistant_message() {
     let dir = tempfile::tempdir().unwrap();
     let backend = Arc::new(ContinuingBackend::default());
-    let store = Arc::new(InMemoryRunStore::new());
+    let store = Arc::new(InMemorySessionStore::new());
     let mut runtime: AgentRuntime = AgentRuntimeBuilder::new(backend.clone(), store.clone())
         .hook_runner(Arc::new(HookRunner::with_services(
             Arc::new(DefaultCommandHookExecutor::default()),
@@ -319,7 +322,10 @@ async fn last_of_role_patch_targets_last_visible_assistant_message() {
     runtime.run_user_prompt("first task").await.unwrap();
     runtime.run_user_prompt("second task").await.unwrap();
 
-    let transcript_after_second_turn = store.replay_transcript(&runtime.run_id()).await.unwrap();
+    let transcript_after_second_turn = store
+        .replay_transcript(&runtime.session_id())
+        .await
+        .unwrap();
     let assistant_messages = transcript_after_second_turn
         .iter()
         .filter(|message| message.role == MessageRole::Assistant)
@@ -350,7 +356,10 @@ async fn last_of_role_patch_targets_last_visible_assistant_message() {
                 && message.text_content() == "response 1")
     );
 
-    let transcript = store.replay_transcript(&runtime.run_id()).await.unwrap();
+    let transcript = store
+        .replay_transcript(&runtime.session_id())
+        .await
+        .unwrap();
     let assistant_messages = transcript
         .iter()
         .filter(|message| message.role == MessageRole::Assistant)
@@ -361,14 +370,14 @@ async fn last_of_role_patch_targets_last_visible_assistant_message() {
     assert_eq!(assistant_messages[2].text_content(), "response 3");
     assert!(
         store
-            .events(&runtime.run_id())
+            .events(&runtime.session_id())
             .await
             .unwrap()
             .iter()
             .any(|event| {
                 matches!(
                     &event.event,
-                    RunEventKind::TranscriptMessagePatched { message_id, .. }
+                    SessionEventKind::TranscriptMessagePatched { message_id, .. }
                         if message_id == &second_assistant_id
                 )
             })

@@ -1,6 +1,6 @@
 use crate::{
     AgentId, AgentSessionId, CallId, EnvelopeId, EventId, HookEvent, HookResult, Message,
-    MessageId, Reasoning, ResponseId, RunId, TokenLedgerSnapshot, TokenUsage, TokenUsagePhase,
+    MessageId, Reasoning, ResponseId, SessionId, TokenLedgerSnapshot, TokenUsage, TokenUsagePhase,
     ToolCall, ToolCallId, ToolName, ToolSpec, TurnId,
 };
 use schemars::JsonSchema;
@@ -54,7 +54,7 @@ pub struct AgentHandle {
     pub agent_id: AgentId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_agent_id: Option<AgentId>,
-    pub run_id: RunId,
+    pub session_id: SessionId,
     pub agent_session_id: AgentSessionId,
     pub task_id: String,
     pub role: String,
@@ -126,7 +126,7 @@ pub struct AgentEnvelope {
     pub agent_id: AgentId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_agent_id: Option<AgentId>,
-    pub run_id: RunId,
+    pub session_id: SessionId,
     pub agent_session_id: AgentSessionId,
     pub timestamp_ms: u64,
     pub kind: AgentEnvelopeKind,
@@ -137,7 +137,7 @@ impl AgentEnvelope {
     pub fn new(
         agent_id: AgentId,
         parent_agent_id: Option<AgentId>,
-        run_id: RunId,
+        session_id: SessionId,
         agent_session_id: AgentSessionId,
         kind: AgentEnvelopeKind,
     ) -> Self {
@@ -145,7 +145,7 @@ impl AgentEnvelope {
             envelope_id: EnvelopeId::new(),
             agent_id,
             parent_agent_id,
-            run_id,
+            session_id,
             agent_session_id,
             timestamp_ms: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -189,7 +189,7 @@ fn default_agent_wait_mode() -> AgentWaitMode {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ModelRequest {
-    pub run_id: RunId,
+    pub session_id: SessionId,
     pub agent_session_id: AgentSessionId,
     pub turn_id: TurnId,
     pub instructions: Vec<String>,
@@ -249,7 +249,7 @@ pub enum ToolLifecycleEventKind {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ToolLifecycleEventEnvelope {
     pub id: EventId,
-    pub run_id: RunId,
+    pub session_id: SessionId,
     pub agent_session_id: AgentSessionId,
     pub turn_id: Option<TurnId>,
     pub tool_call_id: ToolCallId,
@@ -261,7 +261,7 @@ pub struct ToolLifecycleEventEnvelope {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-pub enum RunEventKind {
+pub enum SessionEventKind {
     SessionStart {
         reason: Option<String>,
     },
@@ -372,28 +372,28 @@ pub enum RunEventKind {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct RunEventEnvelope {
+pub struct SessionEventEnvelope {
     pub id: EventId,
-    pub run_id: RunId,
+    pub session_id: SessionId,
     pub agent_session_id: AgentSessionId,
     pub turn_id: Option<TurnId>,
     pub tool_call_id: Option<ToolCallId>,
     pub timestamp_ms: u128,
-    pub event: RunEventKind,
+    pub event: SessionEventKind,
 }
 
-impl RunEventEnvelope {
+impl SessionEventEnvelope {
     #[must_use]
     pub fn new(
-        run_id: RunId,
+        session_id: SessionId,
         agent_session_id: AgentSessionId,
         turn_id: Option<TurnId>,
         tool_call_id: Option<ToolCallId>,
-        event: RunEventKind,
+        event: SessionEventKind,
     ) -> Self {
         Self {
             id: EventId::new(),
-            run_id,
+            session_id,
             agent_session_id,
             turn_id,
             tool_call_id,
@@ -407,14 +407,16 @@ impl RunEventEnvelope {
     #[must_use]
     pub fn tool_lifecycle_event(&self) -> Option<ToolLifecycleEventEnvelope> {
         let lifecycle = match &self.event {
-            RunEventKind::ToolCallStarted { call } => {
+            SessionEventKind::ToolCallStarted { call } => {
                 ToolLifecycleEventKind::Started { call: call.clone() }
             }
-            RunEventKind::ToolCallCompleted { call, output } => ToolLifecycleEventKind::Completed {
-                call: call.clone(),
-                output: output.clone(),
-            },
-            RunEventKind::ToolCallFailed { call, error } => ToolLifecycleEventKind::Failed {
+            SessionEventKind::ToolCallCompleted { call, output } => {
+                ToolLifecycleEventKind::Completed {
+                    call: call.clone(),
+                    output: output.clone(),
+                }
+            }
+            SessionEventKind::ToolCallFailed { call, error } => ToolLifecycleEventKind::Failed {
                 call: call.clone(),
                 error: error.clone(),
             },
@@ -434,7 +436,7 @@ impl RunEventEnvelope {
 
         Some(ToolLifecycleEventEnvelope {
             id: self.id.clone(),
-            run_id: self.run_id.clone(),
+            session_id: self.session_id.clone(),
             agent_session_id: self.agent_session_id.clone(),
             turn_id: self.turn_id.clone(),
             tool_call_id,
@@ -450,7 +452,7 @@ impl RunEventEnvelope {
 mod tests {
     use super::{
         AgentEnvelope, AgentEnvelopeKind, AgentResultEnvelope, AgentStatus, AgentTaskSpec,
-        RunEventEnvelope, RunEventKind, ToolLifecycleEventKind,
+        SessionEventEnvelope, SessionEventKind, ToolLifecycleEventKind,
     };
     use crate::{AgentId, ToolCall, ToolCallId, ToolName, ToolOrigin, ToolResult};
 
@@ -465,12 +467,12 @@ mod tests {
         };
         let output =
             ToolResult::text(call.id.clone(), "read", "ok").with_call_id(call.call_id.clone());
-        let envelope = RunEventEnvelope::new(
+        let envelope = SessionEventEnvelope::new(
             "run_1".into(),
             "session_1".into(),
             Some("turn_1".into()),
             Some(call.id.clone()),
-            RunEventKind::ToolCallCompleted {
+            SessionEventKind::ToolCallCompleted {
                 call: call.clone(),
                 output: output.clone(),
             },
@@ -536,12 +538,12 @@ mod tests {
 
     #[test]
     fn task_completed_event_keeps_agent_status() {
-        let event = RunEventEnvelope::new(
+        let event = SessionEventEnvelope::new(
             "run_1".into(),
             "session_1".into(),
             None,
             None,
-            RunEventKind::TaskCompleted {
+            SessionEventKind::TaskCompleted {
                 task_id: "task_1".to_string(),
                 agent_id: "agent_1".into(),
                 status: AgentStatus::Cancelled,
@@ -550,7 +552,7 @@ mod tests {
 
         assert!(matches!(
             event.event,
-            RunEventKind::TaskCompleted {
+            SessionEventKind::TaskCompleted {
                 status: AgentStatus::Cancelled,
                 ..
             }

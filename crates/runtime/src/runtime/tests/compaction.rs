@@ -1,14 +1,14 @@
 use super::support::{RecordingBackend, RecordingObserver, StaticCompactor};
 use crate::{AgentRuntimeBuilder, CompactionConfig, HookRunner, RuntimeProgressEvent};
 use std::sync::Arc;
-use store::{InMemoryRunStore, RunStore};
+use store::{InMemorySessionStore, SessionStore};
 use tools::ToolExecutionContext;
-use types::RunEventKind;
+use types::SessionEventKind;
 
 #[tokio::test]
 async fn runtime_auto_compacts_visible_history_before_request() {
     let dir = tempfile::tempdir().unwrap();
-    let store = Arc::new(InMemoryRunStore::new());
+    let store = Arc::new(InMemorySessionStore::new());
     let backend = Arc::new(RecordingBackend::default());
     let mut runtime = AgentRuntimeBuilder::new(backend.clone(), store.clone())
         .hook_runner(Arc::new(HookRunner::default()))
@@ -44,16 +44,16 @@ async fn runtime_auto_compacts_visible_history_before_request() {
     assert_eq!(last_request.messages.len(), 2);
     assert_eq!(last_request.messages[1].text_content(), "second turn");
 
-    let events = store.events(&runtime.run_id()).await.unwrap();
+    let events = store.events(&runtime.session_id()).await.unwrap();
     assert!(
         events
             .iter()
-            .any(|event| matches!(event.event, RunEventKind::CompactionCompleted { .. }))
+            .any(|event| matches!(event.event, SessionEventKind::CompactionCompleted { .. }))
     );
     assert!(events.iter().any(|event| {
         matches!(
             event.event,
-            RunEventKind::CompactionCompleted {
+            SessionEventKind::CompactionCompleted {
                 source_message_count: 2,
                 retained_message_count: 1,
                 ..
@@ -65,7 +65,7 @@ async fn runtime_auto_compacts_visible_history_before_request() {
 #[tokio::test]
 async fn manual_compaction_notifies_observer() {
     let dir = tempfile::tempdir().unwrap();
-    let store = Arc::new(InMemoryRunStore::new());
+    let store = Arc::new(InMemorySessionStore::new());
     let backend = Arc::new(RecordingBackend::default());
     let mut runtime = AgentRuntimeBuilder::new(backend, store)
         .hook_runner(Arc::new(HookRunner::default()))

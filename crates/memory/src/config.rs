@@ -45,8 +45,8 @@ pub struct MemoryRuntimeExportConfig {
     pub enabled: bool,
     #[serde(default = "default_runtime_export_output_dir")]
     pub output_dir: PathBuf,
-    #[serde(default = "default_runtime_export_max_runs")]
-    pub max_runs: usize,
+    #[serde(default = "default_runtime_export_max_sessions")]
+    pub max_sessions: usize,
     #[serde(default = "default_runtime_export_include_search_corpus")]
     pub include_search_corpus: bool,
     #[serde(default = "default_runtime_export_max_search_corpus_chars")]
@@ -58,7 +58,7 @@ impl Default for MemoryRuntimeExportConfig {
         Self {
             enabled: false,
             output_dir: default_runtime_export_output_dir(),
-            max_runs: default_runtime_export_max_runs(),
+            max_sessions: default_runtime_export_max_sessions(),
             include_search_corpus: default_runtime_export_include_search_corpus(),
             max_search_corpus_chars: default_runtime_export_max_search_corpus_chars(),
         }
@@ -256,7 +256,7 @@ fn default_runtime_export_output_dir() -> PathBuf {
     PathBuf::from(".nanoclaw/memory/episodic")
 }
 
-fn default_runtime_export_max_runs() -> usize {
+fn default_runtime_export_max_sessions() -> usize {
     24
 }
 

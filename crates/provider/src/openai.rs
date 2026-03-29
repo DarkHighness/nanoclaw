@@ -501,14 +501,14 @@ mod tests {
     use tokio_tungstenite::tungstenite::Message as WsMessage;
     use types::{
         AgentCoreError, AgentSessionId, Message, ModelEvent, ModelRequest, ProviderContinuation,
-        ResponseId, RunId, TokenUsage, ToolName, TurnId,
+        ResponseId, SessionId, TokenUsage, ToolName, TurnId,
     };
     use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     fn base_request() -> ModelRequest {
         ModelRequest {
-            run_id: RunId::new(),
+            session_id: SessionId::new(),
             agent_session_id: AgentSessionId::new(),
             turn_id: TurnId::new(),
             instructions: vec!["You are a coding agent.".to_string()],

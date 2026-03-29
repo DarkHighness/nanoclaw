@@ -4,7 +4,7 @@ use mcp::McpServerConfig;
 use plugins::PluginExecutableActivation;
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use store::RunStore;
+use store::SessionStore;
 use tools::ToolRegistry;
 use types::HookRegistration;
 
@@ -77,7 +77,7 @@ impl DriverActivationOutcome {
 pub struct PluginDriverContext<'a> {
     pub workspace_root: &'a std::path::Path,
     pub env_map: &'a agent_env::EnvMap,
-    pub run_store: Option<Arc<dyn RunStore>>,
+    pub session_store: Option<Arc<dyn SessionStore>>,
     pub memory_reasoning_service: Option<&'a LlmServiceConfig>,
     pub tools: &'a mut ToolRegistry,
 }

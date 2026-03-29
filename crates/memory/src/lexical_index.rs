@@ -79,7 +79,7 @@ impl LexicalIndex {
         config_fingerprint: &str,
         document_snapshots: &BTreeMap<String, String>,
         chunks: &[LexicalIndexChunk],
-        exported_run_count: usize,
+        exported_session_count: usize,
     ) -> Result<ResolvedStatePath> {
         let artifact_path = self.artifact_path()?;
         let lifecycle = self.layout.load_lifecycle(self.backend_id)?;
@@ -100,7 +100,7 @@ impl LexicalIndex {
                         config_fingerprint: config_fingerprint.to_string(),
                         indexed_chunk_count: chunks.len(),
                         indexed_document_count: document_snapshots.len(),
-                        exported_run_count,
+                        exported_session_count,
                         artifact_path: artifact_path.relative_display(),
                         document_snapshots: document_snapshots.clone(),
                         ..MemorySidecarLifecycle::default()
@@ -126,7 +126,7 @@ impl LexicalIndex {
                         config_fingerprint: config_fingerprint.to_string(),
                         indexed_chunk_count: chunks.len(),
                         indexed_document_count: document_snapshots.len(),
-                        exported_run_count,
+                        exported_session_count,
                         artifact_path: artifact_path.relative_display(),
                         document_snapshots: document_snapshots.clone(),
                         ..MemorySidecarLifecycle::default()
@@ -175,7 +175,7 @@ impl LexicalIndex {
                 config_fingerprint: config_fingerprint.to_string(),
                 indexed_chunk_count: chunks.len(),
                 indexed_document_count: document_snapshots.len(),
-                exported_run_count,
+                exported_session_count,
                 artifact_path: artifact_path.relative_display(),
                 document_snapshots: document_snapshots.clone(),
                 ..MemorySidecarLifecycle::default()

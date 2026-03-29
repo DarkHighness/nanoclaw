@@ -5,10 +5,10 @@ use agent::plugins::{PluginActivationPlan, PluginDiagnosticLevel};
 use std::path::{Path, PathBuf};
 use tools::{SandboxBackendStatus, SandboxPolicy, describe_sandbox_policy};
 use types::{HookHostApiGrant, HookMutationPermission, HookNetworkPolicy};
-use types::{RunId, ToolOrigin, ToolSpec};
+use types::{SessionId, ToolOrigin, ToolSpec};
 
 pub(super) fn build_startup_summary(
-    run_id: &RunId,
+    session_id: &SessionId,
     workspace_root: &std::path::Path,
     provider_summary: &str,
     summary_provider_summary: &str,
@@ -31,7 +31,7 @@ pub(super) fn build_startup_summary(
         .count();
     let mcp_tools = tool_specs.len().saturating_sub(local_tools);
     let mut sidebar = vec![
-        format!("run: {}", preview_id(run_id.as_str())),
+        format!("run: {}", preview_id(session_id.as_str())),
         format!("workspace: {}", workspace_root.display()),
         format!("primary lane: {provider_summary}"),
         format!("summary lane: {summary_provider_summary}"),
@@ -285,13 +285,13 @@ mod tests {
         PluginActivationPlan, PluginContributionSummary, PluginResolvedPermissions, PluginState,
     };
     use std::sync::Arc;
-    use store::InMemoryRunStore;
+    use store::InMemorySessionStore;
     use tempfile::tempdir;
     use tools::{
         HostEscapePolicy, NetworkPolicy, SandboxBackendStatus, SandboxMode, SandboxPolicy,
     };
     use types::{
-        HookHostApiGrant, HookMutationPermission, HookNetworkPolicy, RunId, ToolOrigin,
+        HookHostApiGrant, HookMutationPermission, HookNetworkPolicy, SessionId, ToolOrigin,
         ToolOutputMode, ToolSpec,
     };
 
@@ -299,13 +299,13 @@ mod tests {
     fn startup_summary_lists_enabled_plugin_contributions_and_permissions() {
         let workspace = tempdir().unwrap();
         let summary = build_startup_summary(
-            &RunId::from("run_test"),
+            &SessionId::from("run_test"),
             workspace.path(),
             "openai / gpt-test",
             "openai / gpt-summary",
             "openai / gpt-memory",
             &StoreHandle {
-                store: Arc::new(InMemoryRunStore::new()),
+                store: Arc::new(InMemorySessionStore::new()),
                 label: "memory fallback".to_string(),
                 warning: None,
             },
@@ -393,13 +393,13 @@ mod tests {
     fn startup_summary_includes_driver_warnings_and_diagnostics() {
         let workspace = tempdir().unwrap();
         let summary = build_startup_summary(
-            &RunId::from("run_test"),
+            &SessionId::from("run_test"),
             workspace.path(),
             "openai / gpt-test",
             "openai / gpt-summary",
             "openai / gpt-memory",
             &StoreHandle {
-                store: Arc::new(InMemoryRunStore::new()),
+                store: Arc::new(InMemorySessionStore::new()),
                 label: "memory fallback".to_string(),
                 warning: None,
             },

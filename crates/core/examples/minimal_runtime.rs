@@ -1,5 +1,5 @@
 use agent::{
-    AgentRuntimeBuilder, BashTool, EditTool, GlobTool, GrepTool, HookRunner, InMemoryRunStore,
+    AgentRuntimeBuilder, BashTool, EditTool, GlobTool, GrepTool, HookRunner, InMemorySessionStore,
     ListTool, Message, MessageRole, ModelBackend, ModelEvent, ModelRequest, PatchTool, ReadTool,
     Skill, SkillCatalog, ToolExecutionContext, ToolRegistry, WriteTool,
 };
@@ -84,7 +84,7 @@ fn example_skill(workspace_root: &std::path::Path) -> Skill {
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
     let workspace_root = std::env::current_dir()?;
-    let store = Arc::new(InMemoryRunStore::new());
+    let store = Arc::new(InMemorySessionStore::new());
     let backend = Arc::new(EchoBackend);
 
     let skill_catalog = SkillCatalog::new(vec![example_skill(&workspace_root)]);
@@ -127,7 +127,7 @@ async fn main() -> Result<()> {
         .run_user_prompt("Summarize this runtime setup in one paragraph.")
         .await?;
 
-    println!("run_id={}", runtime.run_id());
+    println!("session_id={}", runtime.session_id());
     println!("tools={}", runtime.tool_registry_names().join(", "));
     println!("{}", outcome.assistant_text);
 

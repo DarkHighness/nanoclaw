@@ -37,12 +37,12 @@ use tracing::{info, warn};
 
 struct RuntimeBuildResult {
     runtime: AgentRuntime,
-    store: Arc<dyn store::RunStore>,
+    store: Arc<dyn store::SessionStore>,
     skills: Vec<Skill>,
     mcp_servers: Vec<ConnectedMcpServer>,
     store_label: String,
     store_warning: Option<String>,
-    stored_run_count: usize,
+    stored_session_count: usize,
     startup_diagnostics: crate::backend::StartupDiagnosticsSnapshot,
 }
 
@@ -123,7 +123,7 @@ pub(crate) async fn build_session(
         mcp_servers,
         store_label,
         store_warning,
-        stored_run_count,
+        stored_session_count,
         startup_diagnostics,
     } = build_runtime(
         options,
@@ -134,10 +134,10 @@ pub(crate) async fn build_session(
     )
     .await?;
     let tool_names = runtime.tool_registry_names();
-    // Persisted history is still keyed by substrate `run_id`. Expose that ID as
+    // Persisted history is still keyed by substrate `session_id`. Expose that ID as
     // the operator-facing session reference until the host grows a first-class
     // resumable session catalog above the raw runtime/store layer.
-    let active_session_ref = runtime.run_id().to_string();
+    let active_session_ref = runtime.session_id().to_string();
     let root_agent_session_id = runtime.agent_session_id().to_string();
     let skill_names = skills.iter().map(|skill| skill.name.clone()).collect();
 
@@ -164,7 +164,7 @@ pub(crate) async fn build_session(
             skill_names,
             store_label,
             store_warning,
-            stored_session_count: stored_run_count,
+            stored_session_count: stored_session_count,
             sandbox_summary,
             startup_diagnostics,
         },
@@ -189,10 +189,10 @@ async fn build_runtime(
     )?);
     let store_handle = build_store(&options.core, workspace_root).await?;
     let store = store_handle.store.clone();
-    let stored_run_count = match store_handle.store.list_runs().await {
-        Ok(runs) => runs.len(),
+    let stored_session_count = match store_handle.store.list_sessions().await {
+        Ok(sessions) => sessions.len(),
         Err(error) => {
-            warn!("failed to list persisted runs during startup: {error}");
+            warn!("failed to list persisted sessions during startup: {error}");
             0
         }
     };
@@ -348,7 +348,7 @@ async fn build_runtime(
         mcp_servers: connected_mcp_servers,
         store_label: store_handle.label,
         store_warning: store_handle.warning,
-        stored_run_count,
+        stored_session_count,
         startup_diagnostics,
     })
 }

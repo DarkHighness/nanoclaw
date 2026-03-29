@@ -7,9 +7,9 @@ use crate::{
 use async_trait::async_trait;
 use futures::{StreamExt, stream, stream::BoxStream};
 use std::sync::Arc;
-use store::{InMemoryRunStore, RunStore};
+use store::{InMemorySessionStore, SessionStore};
 use tools::{ReadTool, ToolExecutionContext, ToolRegistry};
-use types::{ModelEvent, ModelRequest, RunEventKind, ToolCall, ToolCallId, ToolOrigin};
+use types::{ModelEvent, ModelRequest, SessionEventKind, ToolCall, ToolCallId, ToolOrigin};
 
 struct ApprovalRecoveringBackend;
 
@@ -72,7 +72,7 @@ async fn runtime_continues_after_tool_approval_denied() {
             reason: Some("user denied dangerous tool".to_string()),
         },
     ]));
-    let store = Arc::new(InMemoryRunStore::new());
+    let store = Arc::new(InMemorySessionStore::new());
     let mut runtime: AgentRuntime =
         AgentRuntimeBuilder::new(Arc::new(ApprovalRecoveringBackend), store.clone())
             .hook_runner(Arc::new(HookRunner::default()))
@@ -102,25 +102,25 @@ async fn runtime_continues_after_tool_approval_denied() {
             .any(|reason: &String| reason.contains("destructive"))
     );
 
-    let events = store.events(&runtime.run_id()).await.unwrap();
+    let events = store.events(&runtime.session_id()).await.unwrap();
     assert!(events.iter().any(|event| {
         matches!(
             &event.event,
-            RunEventKind::ToolApprovalRequested { call, .. }
+            SessionEventKind::ToolApprovalRequested { call, .. }
                 if call.tool_name == types::ToolName::from("danger")
         )
     }));
     assert!(events.iter().any(|event| {
         matches!(
             &event.event,
-            RunEventKind::ToolApprovalResolved { call, approved, .. }
+            SessionEventKind::ToolApprovalResolved { call, approved, .. }
                 if call.tool_name == types::ToolName::from("danger") && !approved
         )
     }));
     assert!(events.iter().any(|event| {
         matches!(
             &event.event,
-            RunEventKind::TranscriptMessage { message }
+            SessionEventKind::TranscriptMessage { message }
                 if message.parts.iter().any(|part| matches!(
                     part,
                     types::MessagePart::ToolResult { result }
@@ -152,7 +152,7 @@ async fn approval_policy_can_auto_allow_matching_tool_calls() {
         },
         "allow the sample fixture destructive tool",
     )]));
-    let store = Arc::new(InMemoryRunStore::new());
+    let store = Arc::new(InMemorySessionStore::new());
     let mut runtime: AgentRuntime =
         AgentRuntimeBuilder::new(Arc::new(ApprovalRecoveringBackend), store)
             .hook_runner(Arc::new(HookRunner::default()))
@@ -200,7 +200,7 @@ async fn approval_policy_can_require_review_for_otherwise_safe_tools() {
         },
         "sensitive file read requires review",
     )]));
-    let store = Arc::new(InMemoryRunStore::new());
+    let store = Arc::new(InMemorySessionStore::new());
     let mut runtime: AgentRuntime = AgentRuntimeBuilder::new(Arc::new(MockBackend), store.clone())
         .hook_runner(Arc::new(HookRunner::default()))
         .tool_registry(registry)
@@ -225,11 +225,11 @@ async fn approval_policy_can_require_review_for_otherwise_safe_tools() {
             .iter()
             .any(|reason: &String| reason.contains("sensitive file read requires review"))
     );
-    let events = store.events(&runtime.run_id()).await.unwrap();
+    let events = store.events(&runtime.session_id()).await.unwrap();
     assert!(events.iter().any(|event| {
         matches!(
             &event.event,
-            RunEventKind::ToolApprovalRequested { reasons, .. }
+            SessionEventKind::ToolApprovalRequested { reasons, .. }
                 if reasons
                     .iter()
                     .any(|reason: &String| reason.contains("sensitive file read requires review"))

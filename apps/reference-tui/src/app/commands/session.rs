@@ -21,8 +21,8 @@ impl RuntimeTui {
             }
             TuiCommand::Compact { instructions } => {
                 if self.runtime.compact_now(instructions.clone()).await? {
-                    state.transcript = self.replay_run_lines(&self.runtime.run_id()).await?;
-                    let events = self.store.events(&self.runtime.run_id()).await?;
+                    state.transcript = self.replay_run_lines(&self.runtime.session_id()).await?;
+                    let events = self.store.events(&self.runtime.session_id()).await?;
                     state.sidebar = build_turn_sidebar(&events);
                     state.sidebar_title = "Turn".to_string();
                     state.status = if let Some(instructions) = instructions {

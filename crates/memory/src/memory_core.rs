@@ -16,7 +16,7 @@ use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use store::RunStore;
+use store::SessionStore;
 use tools::format_numbered_lines;
 
 const INDEX_BACKEND_ID: &str = "memory-core";
@@ -25,7 +25,7 @@ const INDEX_SCHEMA_VERSION: u32 = 1;
 pub struct MemoryCoreBackend {
     workspace_root: PathBuf,
     config: MemoryCoreConfig,
-    run_store: Option<Arc<dyn RunStore>>,
+    session_store: Option<Arc<dyn SessionStore>>,
     lexical_index: LexicalIndex,
 }
 
@@ -35,7 +35,7 @@ impl MemoryCoreBackend {
         Self {
             workspace_root: workspace_root.clone(),
             config,
-            run_store: None,
+            session_store: None,
             lexical_index: LexicalIndex::new(
                 &workspace_root,
                 INDEX_BACKEND_ID,
@@ -46,8 +46,8 @@ impl MemoryCoreBackend {
     }
 
     #[must_use]
-    pub fn with_run_store(mut self, run_store: Arc<dyn RunStore>) -> Self {
-        self.run_store = Some(run_store);
+    pub fn with_session_store(mut self, session_store: Arc<dyn SessionStore>) -> Self {
+        self.session_store = Some(session_store);
         self
     }
 
@@ -66,14 +66,14 @@ impl MemoryCoreBackend {
         &self,
         corpus: &crate::MemoryCorpus,
         chunks: &[crate::MemoryCorpusChunk],
-        exported_run_count: usize,
+        exported_session_count: usize,
     ) -> Result<()> {
         self.lexical_index
             .ensure_ready(
                 &self.config_fingerprint()?,
                 &document_snapshots(corpus),
                 &lexical_index_chunks(chunks),
-                exported_run_count,
+                exported_session_count,
             )
             .await?;
         Ok(())
@@ -93,7 +93,7 @@ impl MemoryCoreBackend {
         load_configured_memory_corpus(
             &self.workspace_root,
             &self.config.corpus,
-            self.run_store.as_ref(),
+            self.session_store.as_ref(),
         )
         .await
     }
@@ -112,7 +112,7 @@ impl MemoryBackend for MemoryCoreBackend {
         let indexed_documents = corpus.documents.len();
         let indexed_lines = corpus.total_lines();
         let chunks = chunk_corpus(&corpus, &self.config.chunking);
-        self.ensure_index_ready(&corpus, &chunks, runtime_exports.exported_runs)
+        self.ensure_index_ready(&corpus, &chunks, runtime_exports.exported_sessions)
             .await?;
 
         Ok(MemorySyncStatus {
@@ -141,7 +141,7 @@ impl MemoryBackend for MemoryCoreBackend {
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(ToOwned::to_owned);
-        self.ensure_index_ready(&corpus, &chunks, runtime_exports.exported_runs)
+        self.ensure_index_ready(&corpus, &chunks, runtime_exports.exported_sessions)
             .await?;
         let lifecycle = self.load_index_lifecycle()?;
         let chunk_map = chunks
@@ -196,8 +196,8 @@ impl MemoryBackend for MemoryCoreBackend {
                     json!(signals.task_match_bonus),
                 );
                 metadata.insert(
-                    "run_match_bonus".to_string(),
-                    json!(signals.run_match_bonus),
+                    "session_match_bonus".to_string(),
+                    json!(signals.session_match_bonus),
                 );
                 metadata.insert("stale_penalty".to_string(), json!(signals.stale_penalty));
                 metadata.insert("retrieval_score".to_string(), json!(retrieval_score));
@@ -230,8 +230,8 @@ impl MemoryBackend for MemoryCoreBackend {
             json!(lifecycle.indexed_chunk_count),
         );
         metadata.insert(
-            "runtime_exported_runs".to_string(),
-            json!(runtime_exports.exported_runs),
+            "runtime_exported_sessions".to_string(),
+            json!(runtime_exports.exported_sessions),
         );
         metadata.insert(
             "runtime_exported_documents".to_string(),
@@ -419,12 +419,13 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
     use store::{
-        EventSink, RunMemoryExportBundle, RunMemoryExportRequest, RunStore, RunStoreError,
+        EventSink, SessionMemoryExportBundle, SessionMemoryExportRequest, SessionStore,
+        SessionStoreError,
     };
     use tempfile::tempdir;
     use time::{Duration, OffsetDateTime};
     use tokio::fs;
-    use types::{AgentSessionId, Message, RunEventEnvelope, RunId};
+    use types::{AgentSessionId, Message, SessionEventEnvelope, SessionId};
 
     macro_rules! bounded_async_test {
         (async fn $name:ident() $body:block) => {
@@ -461,7 +462,7 @@ mod tests {
                     path_prefix: None,
                     scopes: None,
                     tags: None,
-                    run_id: None,
+                    session_id: None,
                     agent_session_id: None,
                     agent_name: None,
                     task_id: None,
@@ -519,7 +520,7 @@ mod tests {
                     path_prefix: Some("memory/".to_string()),
                     scopes: None,
                     tags: None,
-                    run_id: None,
+                    session_id: None,
                     agent_session_id: None,
                     agent_name: None,
                     task_id: None,
@@ -541,9 +542,9 @@ mod tests {
 
             let mut config = MemoryCoreConfig::default();
             config.corpus.runtime_export.enabled = true;
-            let store = Arc::new(CountingRunStore::default());
+            let store = Arc::new(CountingSessionStore::default());
             let backend = MemoryCoreBackend::new(dir.path().to_path_buf(), config)
-                .with_run_store(store.clone());
+                .with_session_store(store.clone());
 
             let response = backend
                 .search(MemorySearchRequest {
@@ -552,7 +553,7 @@ mod tests {
                     path_prefix: None,
                     scopes: None,
                     tags: None,
-                    run_id: None,
+                    session_id: None,
                     agent_session_id: None,
                     agent_name: None,
                     task_id: None,
@@ -594,7 +595,7 @@ mod tests {
                     path_prefix: None,
                     scopes: None,
                     tags: None,
-                    run_id: None,
+                    session_id: None,
                     agent_session_id: None,
                     agent_name: None,
                     task_id: None,
@@ -623,7 +624,7 @@ mod tests {
                     path_prefix: None,
                     scopes: None,
                     tags: None,
-                    run_id: None,
+                    session_id: None,
                     agent_session_id: None,
                     agent_name: None,
                     task_id: None,
@@ -643,7 +644,7 @@ mod tests {
                     path_prefix: None,
                     scopes: None,
                     tags: None,
-                    run_id: None,
+                    session_id: None,
                     agent_session_id: None,
                     agent_name: None,
                     task_id: None,
@@ -714,7 +715,7 @@ mod tests {
                     path_prefix: Some("memory/".to_string()),
                     scopes: None,
                     tags: None,
-                    run_id: None,
+                    session_id: None,
                     agent_session_id: None,
                     agent_name: None,
                     task_id: None,
@@ -744,16 +745,16 @@ mod tests {
             fs::write(dir.path().join("MEMORY.md"), "deploy checklist")
                 .await
                 .unwrap();
-            fs::create_dir_all(dir.path().join(".nanoclaw/memory/working/sessions"))
+            fs::create_dir_all(dir.path().join(".nanoclaw/memory/working/agent-sessions"))
                 .await
                 .unwrap();
             fs::write(
-            dir.path()
-                .join(".nanoclaw/memory/working/sessions/session_1.md"),
-            "---\nscope: working\nlayer: working-agent-session\nagent_session_id: session_1\ntags:\n  - debug\nstatus: ready\n---\n# Agent Session session_1\n\ndeploy checklist",
-        )
-        .await
-        .unwrap();
+                dir.path()
+                    .join(".nanoclaw/memory/working/agent-sessions/agent_session_1.md"),
+                "---\nscope: working\nlayer: working-agent-session\nagent_session_id: agent_session_1\ntags:\n  - debug\nstatus: ready\n---\n# Agent Session agent_session_1\n\ndeploy checklist",
+            )
+            .await
+            .unwrap();
 
             let backend =
                 MemoryCoreBackend::new(dir.path().to_path_buf(), MemoryCoreConfig::default());
@@ -764,8 +765,8 @@ mod tests {
                     path_prefix: None,
                     scopes: Some(vec![MemoryScope::Working]),
                     tags: Some(vec!["debug".to_string()]),
-                    run_id: None,
-                    agent_session_id: Some("session_1".into()),
+                    session_id: None,
+                    agent_session_id: Some("agent_session_1".into()),
                     agent_name: None,
                     task_id: None,
                     include_stale: Some(false),
@@ -776,7 +777,7 @@ mod tests {
             assert_eq!(response.hits.len(), 1);
             assert_eq!(
                 response.hits[0].path,
-                ".nanoclaw/memory/working/sessions/session_1.md"
+                ".nanoclaw/memory/working/agent-sessions/agent_session_1.md"
             );
         }
     );
@@ -793,8 +794,8 @@ mod tests {
                     content: "Use a canary deploy before restart.".to_string(),
                     layer: None,
                     tags: vec!["deploy".to_string()],
-                    run_id: Some("run_1".into()),
-                    agent_session_id: Some("session_1".into()),
+                    session_id: Some("session_1".into()),
+                    agent_session_id: Some("agent_session_1".into()),
                     agent_name: None,
                     task_id: None,
                 })
@@ -830,7 +831,7 @@ mod tests {
                     path_prefix: Some(".nanoclaw/memory/semantic/".to_string()),
                     scopes: Some(vec![MemoryScope::Semantic]),
                     tags: Some(vec!["verified".to_string()]),
-                    run_id: None,
+                    session_id: None,
                     agent_session_id: None,
                     agent_name: None,
                     task_id: None,
@@ -855,7 +856,7 @@ mod tests {
                     path_prefix: Some(".nanoclaw/memory/semantic/".to_string()),
                     scopes: Some(vec![MemoryScope::Semantic]),
                     tags: None,
-                    run_id: None,
+                    session_id: None,
                     agent_session_id: None,
                     agent_name: None,
                     task_id: None,
@@ -901,7 +902,7 @@ mod tests {
                     path_prefix: Some(".nanoclaw/memory/semantic/".to_string()),
                     scopes: Some(vec![MemoryScope::Semantic]),
                     tags: None,
-                    run_id: None,
+                    session_id: None,
                     agent_session_id: None,
                     agent_name: None,
                     task_id: None,
@@ -918,7 +919,7 @@ mod tests {
                     path_prefix: Some(".nanoclaw/memory/semantic/".to_string()),
                     scopes: Some(vec![MemoryScope::Semantic]),
                     tags: None,
-                    run_id: None,
+                    session_id: None,
                     agent_session_id: None,
                     agent_name: None,
                     task_id: None,
@@ -943,63 +944,68 @@ mod tests {
     );
 
     #[derive(Default)]
-    struct CountingRunStore {
+    struct CountingSessionStore {
         export_calls: AtomicUsize,
     }
 
-    impl CountingRunStore {
+    impl CountingSessionStore {
         fn export_call_count(&self) -> usize {
             self.export_calls.load(AtomicOrdering::SeqCst)
         }
     }
 
     #[async_trait]
-    impl EventSink for CountingRunStore {
-        async fn append(&self, _event: RunEventEnvelope) -> std::result::Result<(), RunStoreError> {
+    impl EventSink for CountingSessionStore {
+        async fn append(
+            &self,
+            _event: SessionEventEnvelope,
+        ) -> std::result::Result<(), SessionStoreError> {
             Ok(())
         }
     }
 
     #[async_trait]
-    impl RunStore for CountingRunStore {
-        async fn list_runs(&self) -> std::result::Result<Vec<store::RunSummary>, RunStoreError> {
+    impl SessionStore for CountingSessionStore {
+        async fn list_sessions(
+            &self,
+        ) -> std::result::Result<Vec<store::SessionSummary>, SessionStoreError> {
             Ok(Vec::new())
         }
 
-        async fn search_runs(
+        async fn search_sessions(
             &self,
             _query: &str,
-        ) -> std::result::Result<Vec<store::RunSearchResult>, RunStoreError> {
+        ) -> std::result::Result<Vec<store::SessionSearchResult>, SessionStoreError> {
             Ok(Vec::new())
         }
 
         async fn events(
             &self,
-            _run_id: &RunId,
-        ) -> std::result::Result<Vec<RunEventEnvelope>, RunStoreError> {
+            _session_id: &SessionId,
+        ) -> std::result::Result<Vec<SessionEventEnvelope>, SessionStoreError> {
             Ok(Vec::new())
         }
 
         async fn agent_session_ids(
             &self,
-            _run_id: &RunId,
-        ) -> std::result::Result<Vec<AgentSessionId>, RunStoreError> {
+            _session_id: &SessionId,
+        ) -> std::result::Result<Vec<AgentSessionId>, SessionStoreError> {
             Ok(Vec::new())
         }
 
         async fn replay_transcript(
             &self,
-            _run_id: &RunId,
-        ) -> std::result::Result<Vec<Message>, RunStoreError> {
+            _session_id: &SessionId,
+        ) -> std::result::Result<Vec<Message>, SessionStoreError> {
             Ok(Vec::new())
         }
 
         async fn export_for_memory(
             &self,
-            _request: RunMemoryExportRequest,
-        ) -> std::result::Result<RunMemoryExportBundle, RunStoreError> {
+            _request: SessionMemoryExportRequest,
+        ) -> std::result::Result<SessionMemoryExportBundle, SessionStoreError> {
             self.export_calls.fetch_add(1, AtomicOrdering::SeqCst);
-            Ok(RunMemoryExportBundle::default())
+            Ok(SessionMemoryExportBundle::default())
         }
     }
 }

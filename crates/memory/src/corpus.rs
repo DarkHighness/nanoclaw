@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::UNIX_EPOCH;
 use tokio::fs;
-use types::{AgentSessionId, RunId};
+use types::{AgentSessionId, SessionId};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MemoryCorpusDocument {
@@ -42,7 +42,7 @@ pub struct MemoryCorpusChunk {
 struct MemoryFrontmatter {
     scope: Option<MemoryScope>,
     layer: Option<String>,
-    run_id: Option<RunId>,
+    session_id: Option<SessionId>,
     agent_session_id: Option<AgentSessionId>,
     agent_name: Option<String>,
     task_id: Option<String>,
@@ -576,15 +576,15 @@ fn infer_metadata_from_path(path: &str) -> MemoryDocumentMetadata {
                 ..MemoryDocumentMetadata::default()
             };
         }
-        if path.starts_with(".nanoclaw/memory/episodic/runs/") {
+        if path.starts_with(".nanoclaw/memory/episodic/sessions/") {
             return MemoryDocumentMetadata {
                 scope: MemoryScope::Episodic,
-                layer: "runtime-run".to_string(),
-                run_id: Some(RunId::from(stem)),
+                layer: "runtime-session".to_string(),
+                session_id: Some(SessionId::from(stem)),
                 ..MemoryDocumentMetadata::default()
             };
         }
-        if path.starts_with(".nanoclaw/memory/episodic/sessions/") {
+        if path.starts_with(".nanoclaw/memory/episodic/agent-sessions/") {
             return MemoryDocumentMetadata {
                 scope: MemoryScope::Episodic,
                 layer: "runtime-agent-session".to_string(),
@@ -608,7 +608,7 @@ fn infer_metadata_from_path(path: &str) -> MemoryDocumentMetadata {
                 ..MemoryDocumentMetadata::default()
             };
         }
-        if path.starts_with(".nanoclaw/memory/working/sessions/") {
+        if path.starts_with(".nanoclaw/memory/working/agent-sessions/") {
             return MemoryDocumentMetadata {
                 scope: MemoryScope::Working,
                 layer: "working-agent-session".to_string(),
@@ -688,8 +688,8 @@ fn merge_metadata(
                 inferred.layer = layer.to_string();
             }
         }
-        if let Some(run_id) = frontmatter.run_id {
-            inferred.run_id = Some(run_id);
+        if let Some(session_id) = frontmatter.session_id {
+            inferred.session_id = Some(session_id);
         }
         if let Some(agent_session_id) = frontmatter.agent_session_id {
             inferred.agent_session_id = Some(agent_session_id);
@@ -986,12 +986,12 @@ mod tests {
         fs::write(dir.path().join("MEMORY.md"), "# Root\nworkspace fact")
             .await
             .unwrap();
-        fs::create_dir_all(dir.path().join(".nanoclaw/memory/working/sessions"))
+        fs::create_dir_all(dir.path().join(".nanoclaw/memory/working/agent-sessions"))
             .await
             .unwrap();
         fs::write(
             dir.path()
-                .join(".nanoclaw/memory/working/sessions/session_1.md"),
+                .join(".nanoclaw/memory/working/agent-sessions/agent_session_1.md"),
             "# Scratch\nactive task",
         )
         .await
@@ -1026,7 +1026,7 @@ mod tests {
             MemoryScope::Episodic
         );
         assert_eq!(
-            by_path[".nanoclaw/memory/working/sessions/session_1.md"]
+            by_path[".nanoclaw/memory/working/agent-sessions/agent_session_1.md"]
                 .metadata
                 .scope,
             MemoryScope::Working

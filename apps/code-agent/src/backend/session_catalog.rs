@@ -1,4 +1,4 @@
-use store::{RunSearchResult, RunSummary};
+use store::{SessionSearchResult, SessionSummary};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum SessionResumeSupport {
@@ -44,23 +44,23 @@ const HISTORY_ONLY_REASON: &str =
     "Persisted sessions can be replayed and exported, but runtime reattach is not implemented yet.";
 
 pub(crate) fn persisted_session_summary(
-    summary: &RunSummary,
+    summary: &SessionSummary,
     active_session_ref: &str,
 ) -> PersistedSessionSummary {
     PersistedSessionSummary {
-        session_ref: summary.run_id.to_string(),
+        session_ref: summary.session_id.to_string(),
         first_timestamp_ms: summary.first_timestamp_ms,
         last_timestamp_ms: summary.last_timestamp_ms,
         event_count: summary.event_count,
         worker_session_count: summary.agent_session_count,
         transcript_message_count: summary.transcript_message_count,
         last_user_prompt: summary.last_user_prompt.clone(),
-        resume_support: resume_support_for(summary.run_id.as_str(), active_session_ref),
+        resume_support: resume_support_for(summary.session_id.as_str(), active_session_ref),
     }
 }
 
 pub(crate) fn persisted_session_search_match(
-    result: &RunSearchResult,
+    result: &SessionSearchResult,
     active_session_ref: &str,
 ) -> PersistedSessionSearchMatch {
     PersistedSessionSearchMatch {
@@ -90,14 +90,14 @@ fn resume_support_for(session_ref: &str, active_session_ref: &str) -> SessionRes
 #[cfg(test)]
 mod tests {
     use super::{SessionResumeSupport, persisted_session_summary, resume_status};
-    use agent::types::RunId;
-    use store::RunSummary;
+    use agent::types::SessionId;
+    use store::SessionSummary;
 
     #[test]
     fn active_runtime_session_reports_attached_resume_support() {
         let summary = persisted_session_summary(
-            &RunSummary {
-                run_id: RunId::from("run_active"),
+            &SessionSummary {
+                session_id: SessionId::from("active_session"),
                 first_timestamp_ms: 1,
                 last_timestamp_ms: 2,
                 event_count: 3,
@@ -105,7 +105,7 @@ mod tests {
                 transcript_message_count: 4,
                 last_user_prompt: Some("inspect".to_string()),
             },
-            "run_active",
+            "active_session",
         );
 
         assert_eq!(
@@ -116,7 +116,7 @@ mod tests {
 
     #[test]
     fn persisted_session_resume_status_is_explicitly_history_only() {
-        let status = resume_status("run_old", "run_active");
+        let status = resume_status("archived_session", "active_session");
         assert_eq!(status.support.label(), "history-only");
         match status.support {
             SessionResumeSupport::AttachedToActiveRuntime => {

@@ -138,7 +138,7 @@ impl CommandHookExecutor for DefaultCommandHookExecutor {
                 kill_on_drop: true,
                 origin: ExecutionOrigin::HookCommand,
                 runtime_scope: RuntimeScope {
-                    run_id: Some(context.run_id.clone()),
+                    session_id: Some(context.session_id.clone()),
                     agent_session_id: Some(context.agent_session_id.clone()),
                     turn_id: context.turn_id.clone(),
                     tool_name: None,
@@ -241,7 +241,7 @@ mod tests {
     };
     use types::{
         AgentSessionId, HookContext, HookEffect, HookEvent, HookExecutionPolicy, HookHandler,
-        HookRegistration, HookResult, MessagePart, MessageRole, RunId,
+        HookRegistration, HookResult, MessagePart, MessageRole, SessionId,
     };
 
     #[derive(Clone)]
@@ -285,7 +285,7 @@ mod tests {
             std::fs::set_permissions(&command_path, permissions).unwrap();
         }
 
-        let run_id = RunId::from("run_1");
+        let session_id = SessionId::from("run_1");
         let agent_session_id = AgentSessionId::from("session_1");
         let requests = Arc::new(Mutex::new(Vec::new()));
         let process_executor = Arc::new(RecordingExecutor {
@@ -315,7 +315,7 @@ mod tests {
                 },
                 HookContext {
                     event: HookEvent::Notification,
-                    run_id: run_id.clone(),
+                    session_id: session_id.clone(),
                     agent_session_id: agent_session_id.clone(),
                     turn_id: None,
                     fields: BTreeMap::new(),
@@ -342,13 +342,13 @@ mod tests {
         );
         assert!(logged[0].args.is_empty());
         assert!(logged[0].env.contains_key("NANOCLAW_CORE_HOOK_PAYLOAD"));
-        assert_eq!(logged[0].runtime_scope.run_id, Some(run_id.clone()));
+        assert_eq!(logged[0].runtime_scope.session_id, Some(session_id.clone()));
         assert_eq!(logged[0].sandbox_policy.mode, SandboxMode::WorkspaceWrite);
         assert_eq!(logged[0].sandbox_policy.network, NetworkPolicy::Off);
         assert_eq!(
             logged[0].runtime_scope,
             ExecRuntimeScope {
-                run_id: Some(run_id),
+                session_id: Some(session_id),
                 agent_session_id: Some(agent_session_id),
                 turn_id: None,
                 tool_name: None,
@@ -392,7 +392,7 @@ mod tests {
                 },
                 HookContext {
                     event: HookEvent::Notification,
-                    run_id: RunId::from("run_1"),
+                    session_id: SessionId::from("run_1"),
                     agent_session_id: AgentSessionId::from("session_1"),
                     turn_id: None,
                     fields: BTreeMap::new(),
@@ -454,7 +454,7 @@ mod tests {
                 },
                 HookContext {
                     event: HookEvent::Notification,
-                    run_id: RunId::from("run_1"),
+                    session_id: SessionId::from("run_1"),
                     agent_session_id: AgentSessionId::from("session_1"),
                     turn_id: None,
                     fields: BTreeMap::new(),

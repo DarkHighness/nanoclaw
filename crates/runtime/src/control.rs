@@ -21,7 +21,7 @@ pub struct RuntimeCommandId(String);
 impl RuntimeCommandId {
     fn new() -> Self {
         // Queue ids are operator-facing correlation handles for queued prompts
-        // and steer commands. Keeping them distinct from run/tool ids avoids
+        // and steer commands. Keeping them distinct from session/tool ids avoids
         // accidentally reusing substrate-wide ids for a purely local queue.
         Self(new_opaque_id())
     }

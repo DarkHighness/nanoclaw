@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use tokio::process::Command;
-use types::{AgentSessionId, CallId, RunId, TurnId};
+use types::{AgentSessionId, CallId, SessionId, TurnId};
 
 const DEFAULT_PROTECTED_DIRS: &[&str] = &[".git", ".nanoclaw", ".codex"];
 
@@ -216,7 +216,7 @@ pub enum ExecutionOrigin {
 
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct RuntimeScope {
-    pub run_id: Option<RunId>,
+    pub session_id: Option<SessionId>,
     pub agent_session_id: Option<AgentSessionId>,
     pub turn_id: Option<TurnId>,
     pub tool_name: Option<String>,

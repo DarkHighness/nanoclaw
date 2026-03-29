@@ -1,7 +1,7 @@
 //! Memory retrieval substrate for workspace Markdown memories.
 //!
-//! This crate keeps memory retrieval independent from run-store persistence:
-//! run-store tracks append-only runtime events, while memory retrieval reads
+//! This crate keeps memory retrieval independent from session-store persistence:
+//! session-store tracks append-only session events, while memory retrieval reads
 //! operator-curated Markdown files (`MEMORY.md`, `memory/**/*.md`, and explicit
 //! extras) and exposes lookup tools for model turns.
 

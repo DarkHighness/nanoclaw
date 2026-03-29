@@ -1,22 +1,22 @@
-use super::RunStoreRetentionPolicy;
+use super::SessionStoreRetentionPolicy;
 use crate::{
-    Result, RunSummary, append_search_corpus_line, build_search_corpus, keep_recent_chars,
-    searchable_event_strings, summarize_run_events,
+    Result, SessionSummary, append_search_corpus_line, build_search_corpus, keep_recent_chars,
+    searchable_event_strings, summarize_session_events,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::path::Path;
 use tokio::fs;
 use tokio::io::{AsyncBufReadExt, BufReader};
-use types::{AgentSessionId, RunEventEnvelope, RunEventKind, RunId};
+use types::{AgentSessionId, SessionEventEnvelope, SessionEventKind, SessionId};
 
-pub(super) const INDEX_FILE_NAME: &str = "runs.index.json";
+pub(super) const INDEX_FILE_NAME: &str = "sessions.index.json";
 const INDEX_VERSION: u32 = 2;
 const MAX_SEARCH_CORPUS_CHARS: usize = 16_384;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub(super) struct IndexedRunRecord {
-    pub(super) summary: RunSummary,
+pub(super) struct IndexedSessionRecord {
+    pub(super) summary: SessionSummary,
     // Session ids must preserve first-seen order because hosts may use the
     // sequence to reconstruct hand-offs across attached sessions. A sorted set
     // makes the durable transcript look different from the original stream.
@@ -28,39 +28,42 @@ pub(super) struct IndexedRunRecord {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub(super) struct FileRunStoreIndex {
+pub(super) struct FileSessionStoreIndex {
     pub(super) version: u32,
-    pub(super) runs: std::collections::BTreeMap<RunId, IndexedRunRecord>,
+    pub(super) sessions: std::collections::BTreeMap<SessionId, IndexedSessionRecord>,
 }
 
-impl Default for FileRunStoreIndex {
+impl Default for FileSessionStoreIndex {
     fn default() -> Self {
         Self {
             version: INDEX_VERSION,
-            runs: std::collections::BTreeMap::new(),
+            sessions: std::collections::BTreeMap::new(),
         }
     }
 }
 
-pub(super) fn apply_event_to_record(record: &mut IndexedRunRecord, event: &RunEventEnvelope) {
+pub(super) fn apply_event_to_record(
+    record: &mut IndexedSessionRecord,
+    event: &SessionEventEnvelope,
+) {
     record.summary.first_timestamp_ms = record.summary.first_timestamp_ms.min(event.timestamp_ms);
     record.summary.last_timestamp_ms = record.summary.last_timestamp_ms.max(event.timestamp_ms);
     record.summary.event_count += 1;
     if push_unique_session_id(&mut record.agent_session_ids, &event.agent_session_id) {
         record.summary.agent_session_count = record.agent_session_ids.len();
     }
-    if matches!(&event.event, RunEventKind::TranscriptMessage { .. }) {
+    if matches!(&event.event, SessionEventKind::TranscriptMessage { .. }) {
         record.summary.transcript_message_count += 1;
     }
-    if let RunEventKind::UserPromptSubmit { prompt } = &event.event {
+    if let SessionEventKind::UserPromptSubmit { prompt } = &event.event {
         record.summary.last_user_prompt = Some(prompt.clone());
     }
     match &event.event {
-        RunEventKind::TranscriptMessage { message } => {
+        SessionEventKind::TranscriptMessage { message } => {
             append_search_text(&mut record.search_corpus, &message.text_content());
         }
-        RunEventKind::TranscriptMessagePatched { .. }
-        | RunEventKind::TranscriptMessageRemoved { .. } => {}
+        SessionEventKind::TranscriptMessagePatched { .. }
+        | SessionEventKind::TranscriptMessageRemoved { .. } => {}
         _ => {
             for value in searchable_event_strings(event) {
                 append_search_text(&mut record.search_corpus, &value);
@@ -77,10 +80,10 @@ pub(super) fn append_search_text(search_corpus: &mut String, value: &str) {
     }
 }
 
-pub(super) fn record_matches_query(record: &IndexedRunRecord, query_lower: &str) -> bool {
+pub(super) fn record_matches_query(record: &IndexedSessionRecord, query_lower: &str) -> bool {
     record
         .summary
-        .run_id
+        .session_id
         .as_str()
         .to_lowercase()
         .contains(query_lower)
@@ -92,53 +95,53 @@ pub(super) fn record_matches_query(record: &IndexedRunRecord, query_lower: &str)
         || record.search_corpus.to_lowercase().contains(query_lower)
 }
 
-pub(super) fn select_runs_to_prune(
-    index: &FileRunStoreIndex,
-    retention: &RunStoreRetentionPolicy,
+pub(super) fn select_sessions_to_prune(
+    index: &FileSessionStoreIndex,
+    retention: &SessionStoreRetentionPolicy,
     now_ms: u128,
-) -> Vec<RunId> {
+) -> Vec<SessionId> {
     let mut prune = BTreeSet::new();
     if let Some(max_age) = retention.max_age {
         let max_age_ms = max_age.as_millis();
-        for (run_id, record) in &index.runs {
+        for (session_id, record) in &index.sessions {
             if now_ms.saturating_sub(record.summary.last_timestamp_ms) > max_age_ms {
-                prune.insert(run_id.clone());
+                prune.insert(session_id.clone());
             }
         }
     }
-    if let Some(max_runs) = retention.max_runs {
+    if let Some(max_sessions) = retention.max_sessions {
         let mut remaining = index
-            .runs
+            .sessions
             .iter()
-            .filter(|(run_id, _)| !prune.contains(*run_id))
-            .map(|(run_id, record)| (run_id.clone(), record.summary.last_timestamp_ms))
+            .filter(|(session_id, _)| !prune.contains(*session_id))
+            .map(|(session_id, record)| (session_id.clone(), record.summary.last_timestamp_ms))
             .collect::<Vec<_>>();
         remaining.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
-        for (run_id, _) in remaining.into_iter().skip(max_runs) {
-            prune.insert(run_id);
+        for (session_id, _) in remaining.into_iter().skip(max_sessions) {
+            prune.insert(session_id);
         }
     }
     prune.into_iter().collect()
 }
 
-pub(super) async fn load_or_rebuild_index(root_dir: &Path) -> Result<FileRunStoreIndex> {
-    let run_files = list_run_file_ids(root_dir).await?;
+pub(super) async fn load_or_rebuild_index(root_dir: &Path) -> Result<FileSessionStoreIndex> {
+    let session_files = list_session_file_ids(root_dir).await?;
     let index_path = root_dir.join(INDEX_FILE_NAME);
     if fs::try_exists(&index_path).await? {
         let contents = fs::read_to_string(&index_path).await?;
-        if let Ok(index) = serde_json::from_str::<FileRunStoreIndex>(&contents) {
-            let indexed_runs = index.runs.keys().cloned().collect::<BTreeSet<_>>();
-            // A stale or partially-written sidecar should not hide durable run
-            // transcripts. Rebuild whenever the file set diverges.
-            if index.version == INDEX_VERSION && indexed_runs == run_files {
+        if let Ok(index) = serde_json::from_str::<FileSessionStoreIndex>(&contents) {
+            let indexed_sessions = index.sessions.keys().cloned().collect::<BTreeSet<_>>();
+            // A stale or partially-written sidecar should not hide durable
+            // session transcripts. Rebuild whenever the file set diverges.
+            if index.version == INDEX_VERSION && indexed_sessions == session_files {
                 return Ok(index);
             }
         }
     }
-    rebuild_index(root_dir, run_files).await
+    rebuild_index(root_dir, session_files).await
 }
 
-pub(super) async fn load_events_from_path(path: &Path) -> Result<Vec<RunEventEnvelope>> {
+pub(super) async fn load_events_from_path(path: &Path) -> Result<Vec<SessionEventEnvelope>> {
     let file = fs::File::open(path).await?;
     let mut lines = BufReader::new(file).lines();
     let mut events = Vec::new();
@@ -151,7 +154,10 @@ pub(super) async fn load_events_from_path(path: &Path) -> Result<Vec<RunEventEnv
     Ok(events)
 }
 
-pub(super) async fn persist_index_file(root_dir: &Path, index: &FileRunStoreIndex) -> Result<()> {
+pub(super) async fn persist_index_file(
+    root_dir: &Path,
+    index: &FileSessionStoreIndex,
+) -> Result<()> {
     let path = root_dir.join(INDEX_FILE_NAME);
     let temp_path = root_dir.join(format!("{INDEX_FILE_NAME}.tmp"));
     let encoded = serde_json::to_vec_pretty(index)?;
@@ -160,8 +166,8 @@ pub(super) async fn persist_index_file(root_dir: &Path, index: &FileRunStoreInde
     Ok(())
 }
 
-pub(super) async fn delete_run_file(root_dir: &Path, run_id: &RunId) -> Result<()> {
-    let path = root_dir.join(format!("{run_id}.jsonl"));
+pub(super) async fn delete_session_file(root_dir: &Path, session_id: &SessionId) -> Result<()> {
+    let path = root_dir.join(format!("{session_id}.jsonl"));
     if fs::try_exists(&path).await? {
         fs::remove_file(path).await?;
     }
@@ -182,35 +188,38 @@ fn push_unique_session_id(
     true
 }
 
-async fn rebuild_index(root_dir: &Path, run_files: BTreeSet<RunId>) -> Result<FileRunStoreIndex> {
-    let mut index = FileRunStoreIndex::default();
-    for run_id in run_files {
-        let path = root_dir.join(format!("{run_id}.jsonl"));
+async fn rebuild_index(
+    root_dir: &Path,
+    session_files: BTreeSet<SessionId>,
+) -> Result<FileSessionStoreIndex> {
+    let mut index = FileSessionStoreIndex::default();
+    for session_id in session_files {
+        let path = root_dir.join(format!("{session_id}.jsonl"));
         let events = load_events_from_path(&path).await?;
         if let Some(record) = indexed_record_from_events(events) {
-            index.runs.insert(run_id, record);
+            index.sessions.insert(session_id, record);
         }
     }
     Ok(index)
 }
 
 pub(super) fn indexed_record_from_events(
-    events: Vec<RunEventEnvelope>,
-) -> Option<IndexedRunRecord> {
-    let run_id = events.first()?.run_id.clone();
-    let summary = summarize_run_events(&run_id, &events)?;
+    events: Vec<SessionEventEnvelope>,
+) -> Option<IndexedSessionRecord> {
+    let session_id = events.first()?.session_id.clone();
+    let summary = summarize_session_events(&session_id, &events)?;
     let mut agent_session_ids = Vec::new();
     for event in &events {
         push_unique_session_id(&mut agent_session_ids, &event.agent_session_id);
     }
-    Some(IndexedRunRecord {
+    Some(IndexedSessionRecord {
         summary,
         agent_session_ids,
         search_corpus: build_search_corpus(&events),
     })
 }
 
-async fn list_run_file_ids(root_dir: &Path) -> Result<BTreeSet<RunId>> {
+async fn list_session_file_ids(root_dir: &Path) -> Result<BTreeSet<SessionId>> {
     let mut ids = BTreeSet::new();
     let mut entries = fs::read_dir(root_dir).await?;
     while let Some(entry) = entries.next_entry().await? {
@@ -225,7 +234,7 @@ async fn list_run_file_ids(root_dir: &Path) -> Result<BTreeSet<RunId>> {
             continue;
         }
         if let Some(stem) = path.file_stem().and_then(|value| value.to_str()) {
-            ids.insert(RunId::from(stem));
+            ids.insert(SessionId::from(stem));
         }
     }
     Ok(ids)
