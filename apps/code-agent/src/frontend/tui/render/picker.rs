@@ -359,14 +359,6 @@ fn build_selected_pending_control_block(
     };
     vec![
         Line::from(vec![
-            Span::styled("selected", Style::default().fg(HEADER)),
-            Span::styled(" · ", Style::default().fg(SUBTLE)),
-            Span::styled(
-                pending_control_focus_label(selected_index, total),
-                Style::default().fg(ACCENT),
-            ),
-        ]),
-        Line::from(vec![
             Span::styled(
                 "›",
                 Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
@@ -375,6 +367,11 @@ fn build_selected_pending_control_block(
             Span::styled(
                 kind_label,
                 Style::default().fg(accent).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" · ", Style::default().fg(SUBTLE)),
+            Span::styled(
+                pending_control_focus_label(selected_index, total),
+                Style::default().fg(ACCENT),
             ),
         ]),
         Line::from(vec![
