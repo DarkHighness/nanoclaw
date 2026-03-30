@@ -27,7 +27,7 @@ use history::{
     format_task_summary_line, format_visible_transcript_lines,
 };
 use observer::SharedRenderObserver;
-use render::render;
+use render::{main_pane_viewport_height, render};
 pub(crate) use state::SharedUiState;
 use state::TuiState;
 
@@ -43,6 +43,7 @@ use crossterm::terminal::{
 };
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
+use ratatui::layout::Rect;
 use std::io::{self, Stdout};
 use std::time::Instant;
 use tokio::task::{JoinHandle, spawn_local};
@@ -122,6 +123,12 @@ impl CodeAgentTui {
 
             let snapshot = self.ui_state.snapshot();
             let approval = self.session.approval_prompt();
+            let terminal_size = terminal.size()?;
+            let viewport_height = main_pane_viewport_height(
+                Rect::new(0, 0, terminal_size.width, terminal_size.height),
+                &snapshot,
+                approval.as_ref(),
+            );
             terminal.draw(|frame| render(frame, &snapshot, approval.as_ref()))?;
 
             if !event::poll(Duration::ZERO)? {
@@ -163,16 +170,30 @@ impl CodeAgentTui {
                             self.ui_state.mutate(|state| state.scroll_focused(1));
                         }
                         KeyCode::PageUp => {
-                            self.ui_state.mutate(|state| state.scroll_focused(-8));
+                            self.ui_state.mutate(|state| {
+                                state.scroll_focused_page(viewport_height, false, true)
+                            });
                         }
                         KeyCode::PageDown => {
-                            self.ui_state.mutate(|state| state.scroll_focused(8));
+                            self.ui_state.mutate(|state| {
+                                state.scroll_focused_page(viewport_height, false, false)
+                            });
                         }
                         KeyCode::Home => {
                             self.ui_state.mutate(|state| state.scroll_focused_home());
                         }
                         KeyCode::End => {
                             self.ui_state.mutate(|state| state.scroll_focused_end());
+                        }
+                        KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            self.ui_state.mutate(|state| {
+                                state.scroll_focused_page(viewport_height, true, true)
+                            });
+                        }
+                        KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            self.ui_state.mutate(|state| {
+                                state.scroll_focused_page(viewport_height, true, false)
+                            });
                         }
                         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                             return Ok(());

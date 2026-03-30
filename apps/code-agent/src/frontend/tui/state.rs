@@ -170,6 +170,17 @@ impl TuiState {
         }
     }
 
+    pub(crate) fn scroll_focused_page(
+        &mut self,
+        viewport_height: u16,
+        half_page: bool,
+        backwards: bool,
+    ) {
+        let amount = page_scroll_amount(viewport_height, half_page);
+        let delta = if backwards { -amount } else { amount };
+        self.scroll_focused(delta);
+    }
+
     pub(crate) fn scroll_focused_home(&mut self) {
         match self.main_pane {
             MainPaneMode::Transcript => {
@@ -197,6 +208,12 @@ fn bump_scroll(value: &mut u16, delta: i16) {
     } else {
         *value = value.saturating_sub(delta.unsigned_abs());
     }
+}
+
+fn page_scroll_amount(viewport_height: u16, half_page: bool) -> i16 {
+    let page = viewport_height.saturating_sub(2).max(1);
+    let amount = if half_page { (page / 2).max(1) } else { page };
+    amount.min(i16::MAX as u16) as i16
 }
 
 #[derive(Clone, Default)]
@@ -323,7 +340,7 @@ fn git_repo_name(workspace_root: &Path) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{MainPaneMode, TuiState, git_snapshot};
+    use super::{MainPaneMode, TuiState, git_snapshot, page_scroll_amount};
     use tempfile::tempdir;
 
     #[test]
@@ -375,5 +392,30 @@ mod tests {
         state.scroll_focused_end();
         assert_eq!(state.transcript_scroll, u16::MAX);
         assert!(state.follow_transcript);
+    }
+
+    #[test]
+    fn page_scroll_amount_keeps_overlap_and_supports_half_pages() {
+        assert_eq!(page_scroll_amount(20, false), 18);
+        assert_eq!(page_scroll_amount(20, true), 9);
+        assert_eq!(page_scroll_amount(1, false), 1);
+        assert_eq!(page_scroll_amount(2, true), 1);
+    }
+
+    #[test]
+    fn transcript_page_scroll_uses_viewport_height() {
+        let mut state = TuiState {
+            main_pane: MainPaneMode::Transcript,
+            follow_transcript: true,
+            transcript_scroll: 40,
+            ..TuiState::default()
+        };
+
+        state.scroll_focused_page(20, true, true);
+        assert_eq!(state.transcript_scroll, 31);
+        assert!(!state.follow_transcript);
+
+        state.scroll_focused_page(20, false, false);
+        assert_eq!(state.transcript_scroll, 49);
     }
 }

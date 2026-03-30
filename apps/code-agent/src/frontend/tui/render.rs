@@ -16,7 +16,7 @@ use chrome::{
     render_composer, should_render_side_rail, side_rail_width,
 };
 use picker::{build_command_hint_text, command_hint_height, render_command_hint_band};
-use ratatui::layout::{Constraint, Direction, Layout, Position};
+use ratatui::layout::{Constraint, Direction, Layout, Position, Rect};
 use ratatui::style::Style;
 use ratatui::widgets::Block;
 use shared::composer_cursor_width;
@@ -96,6 +96,30 @@ pub(crate) fn render(
             .saturating_add(composer_cursor_width(&state.input)),
         composer_inner.y,
     ));
+}
+
+pub(crate) fn main_pane_viewport_height(
+    area: Rect,
+    state: &TuiState,
+    approval: Option<&ApprovalPrompt>,
+) -> u16 {
+    let approval_height = approval.map(approval_band_height);
+    let command_hint = approval
+        .is_none()
+        .then(|| slash_command_hint(&state.input, state.command_completion_index))
+        .flatten();
+    let command_hint_height = command_hint.as_ref().map(command_hint_height);
+    let vertical = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(bottom_layout_constraints(
+            approval_height,
+            command_hint_height,
+        ))
+        .split(area);
+    vertical
+        .first()
+        .map(|rect| rect.height.max(1))
+        .unwrap_or(area.height.max(1))
 }
 
 #[cfg(test)]
