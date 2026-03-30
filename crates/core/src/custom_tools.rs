@@ -1,4 +1,4 @@
-//! Host-side loader for lightweight workspace custom tools.
+//! Host-side loader for lightweight workspace and plugin custom tools.
 //!
 //! This intentionally sits next to plugin boot instead of inside the runtime or
 //! tool crates. Loose tool manifests are a host discovery concern, but once
@@ -8,6 +8,7 @@
 
 use crate::AgentWorkspaceLayout;
 use anyhow::{Context, Result};
+use plugins::{PluginCustomToolActivation, PluginResolvedPermissions};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use std::collections::{BTreeMap, BTreeSet};
@@ -16,8 +17,9 @@ use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
 use tokio::time::{Duration, timeout};
 use tools::{
-    DynamicTool, DynamicToolHandler, ExecRequest, ExecutionOrigin, ProcessExecutor, ProcessStdio,
-    RuntimeScope, ToolError, ToolExecutionContext, ToolRegistry,
+    DynamicTool, DynamicToolHandler, ExecRequest, ExecutionOrigin, FilesystemPolicy,
+    HostEscapePolicy, NetworkPolicy, ProcessExecutor, ProcessStdio, RuntimeScope, SandboxMode,
+    SandboxPolicy, ToolError, ToolExecutionContext, ToolRegistry,
 };
 use types::{
     CallId, MessagePart, ToolApprovalProfile, ToolAttachment, ToolCallId, ToolContinuation,
@@ -34,46 +36,221 @@ pub struct CustomToolLoadOutcome {
     pub warnings: Vec<String>,
 }
 
+#[derive(Clone)]
+enum CustomToolLoadRequest {
+    Workspace {
+        scan_root: PathBuf,
+    },
+    Plugin {
+        plugin_id: String,
+        plugin_root: PathBuf,
+        manifest_path: PathBuf,
+        scan_root: PathBuf,
+        granted_permissions: PluginResolvedPermissions,
+    },
+}
+
+#[derive(Clone)]
+struct PluginToolRuntime {
+    plugin_id: String,
+    plugin_root: PathBuf,
+    granted_permissions: PluginResolvedPermissions,
+}
+
 pub fn register_workspace_custom_tools(
     workspace_root: &Path,
     process_executor: Option<Arc<dyn ProcessExecutor>>,
     tools: &ToolRegistry,
 ) -> Result<CustomToolLoadOutcome> {
     let tools_dir = AgentWorkspaceLayout::new(workspace_root).tools_dir();
-    let manifest_paths = discover_manifest_paths(&tools_dir)
-        .with_context(|| format!("failed to scan custom tools under {}", tools_dir.display()))?;
-    if manifest_paths.is_empty() {
+    register_custom_tools(
+        vec![CustomToolLoadRequest::Workspace {
+            scan_root: tools_dir,
+        }],
+        process_executor,
+        tools,
+    )
+}
+
+pub fn register_plugin_custom_tools(
+    activations: &[PluginCustomToolActivation],
+    process_executor: Option<Arc<dyn ProcessExecutor>>,
+    tools: &ToolRegistry,
+) -> Result<CustomToolLoadOutcome> {
+    let requests =
+        activations
+            .iter()
+            .flat_map(|activation| {
+                activation.tool_roots.iter().cloned().map(|scan_root| {
+                    CustomToolLoadRequest::Plugin {
+                        plugin_id: activation.plugin_id.clone(),
+                        plugin_root: activation.root_dir.clone(),
+                        manifest_path: activation.manifest_path.clone(),
+                        scan_root,
+                        granted_permissions: activation.granted_permissions.clone(),
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+    register_custom_tools(requests, process_executor, tools)
+}
+
+fn register_custom_tools(
+    requests: Vec<CustomToolLoadRequest>,
+    process_executor: Option<Arc<dyn ProcessExecutor>>,
+    tools: &ToolRegistry,
+) -> Result<CustomToolLoadOutcome> {
+    if requests.is_empty() {
         return Ok(CustomToolLoadOutcome::default());
     }
 
-    let Some(process_executor) = process_executor else {
+    let mut scans = Vec::new();
+    let mut warnings = Vec::new();
+    for request in requests {
+        if !request.scan_root().is_dir() {
+            if let Some(warning) = request.missing_root_warning() {
+                warnings.push(warning);
+            }
+            continue;
+        }
+        let manifest_paths = discover_manifest_paths(request.scan_root()).with_context(|| {
+            format!(
+                "failed to scan custom tools under {}",
+                request.scan_root().display()
+            )
+        })?;
+        if manifest_paths.is_empty() {
+            continue;
+        }
+        scans.push((request, manifest_paths));
+    }
+
+    if scans.is_empty() {
         return Ok(CustomToolLoadOutcome {
             loaded_tools: Vec::new(),
-            warnings: vec![format!(
-                "custom tools found under {} but host process surfaces are disabled",
-                tools_dir.display()
-            )],
+            warnings,
+        });
+    }
+
+    let Some(process_executor) = process_executor else {
+        warnings.extend(scans.iter().map(|(request, _)| request.disabled_warning()));
+        warnings.sort();
+        warnings.dedup();
+        return Ok(CustomToolLoadOutcome {
+            loaded_tools: Vec::new(),
+            warnings,
         });
     };
 
-    let mut outcome = CustomToolLoadOutcome::default();
-    for manifest_path in manifest_paths {
-        match load_custom_tool(manifest_path.clone(), process_executor.clone()) {
-            Ok((name, tool)) => match tools.try_register_arc(Arc::new(tool)) {
-                Ok(()) => outcome.loaded_tools.push(name),
+    let mut outcome = CustomToolLoadOutcome {
+        loaded_tools: Vec::new(),
+        warnings,
+    };
+    for (request, manifest_paths) in scans {
+        for manifest_path in manifest_paths {
+            match load_custom_tool(manifest_path.clone(), process_executor.clone(), &request) {
+                Ok((name, tool)) => match tools.try_register_arc(Arc::new(tool)) {
+                    Ok(()) => outcome.loaded_tools.push(request.loaded_tool_label(&name)),
+                    Err(error) => outcome.warnings.push(format!(
+                        "failed to register {} from {}: {error:#}",
+                        request.scope_label(),
+                        manifest_path.display()
+                    )),
+                },
                 Err(error) => outcome.warnings.push(format!(
-                    "failed to register custom tool from {}: {error:#}",
+                    "failed to load {} from {}: {error:#}",
+                    request.scope_label(),
                     manifest_path.display()
                 )),
-            },
-            Err(error) => outcome.warnings.push(format!(
-                "failed to load custom tool from {}: {error:#}",
+            }
+        }
+    }
+    outcome.loaded_tools.sort();
+    outcome.warnings.sort();
+    outcome.warnings.dedup();
+    Ok(outcome)
+}
+
+impl CustomToolLoadRequest {
+    fn scan_root(&self) -> &Path {
+        match self {
+            Self::Workspace { scan_root } | Self::Plugin { scan_root, .. } => scan_root,
+        }
+    }
+
+    fn missing_root_warning(&self) -> Option<String> {
+        match self {
+            Self::Workspace { .. } => None,
+            Self::Plugin {
+                plugin_id,
+                manifest_path,
+                scan_root,
+                ..
+            } => Some(format!(
+                "plugin `{plugin_id}` declares custom tool root {} in {} but the directory does not exist",
+                scan_root.display(),
                 manifest_path.display()
             )),
         }
     }
-    outcome.loaded_tools.sort();
-    Ok(outcome)
+
+    fn disabled_warning(&self) -> String {
+        match self {
+            Self::Workspace { scan_root } => format!(
+                "custom tools found under {} but host process surfaces are disabled",
+                scan_root.display()
+            ),
+            Self::Plugin {
+                plugin_id,
+                scan_root,
+                manifest_path,
+                ..
+            } => format!(
+                "plugin `{plugin_id}` declares custom tools under {} in {} but host process surfaces are disabled",
+                scan_root.display(),
+                manifest_path.display()
+            ),
+        }
+    }
+
+    fn scope_label(&self) -> String {
+        match self {
+            Self::Workspace { .. } => "workspace custom tool".to_string(),
+            Self::Plugin { plugin_id, .. } => format!("plugin `{plugin_id}` custom tool"),
+        }
+    }
+
+    fn loaded_tool_label(&self, name: &str) -> String {
+        match self {
+            Self::Workspace { .. } => name.to_string(),
+            Self::Plugin { plugin_id, .. } => format!("{plugin_id}:{name}"),
+        }
+    }
+
+    fn tool_source(&self) -> ToolSource {
+        match self {
+            Self::Workspace { .. } => ToolSource::Dynamic,
+            Self::Plugin { plugin_id, .. } => ToolSource::Plugin {
+                plugin: plugin_id.clone(),
+            },
+        }
+    }
+
+    fn plugin_runtime(&self) -> Option<PluginToolRuntime> {
+        match self {
+            Self::Workspace { .. } => None,
+            Self::Plugin {
+                plugin_id,
+                plugin_root,
+                granted_permissions,
+                ..
+            } => Some(PluginToolRuntime {
+                plugin_id: plugin_id.clone(),
+                plugin_root: plugin_root.clone(),
+                granted_permissions: granted_permissions.clone(),
+            }),
+        }
+    }
 }
 
 fn discover_manifest_paths(tools_dir: &Path) -> Result<Vec<PathBuf>> {
@@ -82,6 +259,10 @@ fn discover_manifest_paths(tools_dir: &Path) -> Result<Vec<PathBuf>> {
     }
 
     let mut manifests = Vec::new();
+    let root_manifest = tools_dir.join("tool.toml");
+    if root_manifest.is_file() {
+        manifests.push(root_manifest);
+    }
     for entry in std::fs::read_dir(tools_dir)? {
         let entry = entry?;
         let path = entry.path();
@@ -99,12 +280,14 @@ fn discover_manifest_paths(tools_dir: &Path) -> Result<Vec<PathBuf>> {
         }
     }
     manifests.sort();
+    manifests.dedup();
     Ok(manifests)
 }
 
 fn load_custom_tool(
     manifest_path: PathBuf,
     process_executor: Arc<dyn ProcessExecutor>,
+    request: &CustomToolLoadRequest,
 ) -> Result<(String, DynamicTool)> {
     let manifest_dir = manifest_path
         .parent()
@@ -114,7 +297,8 @@ fn load_custom_tool(
         .with_context(|| format!("failed to read {}", manifest_path.display()))?;
     let manifest: CustomToolManifest = toml::from_str(&raw)
         .with_context(|| format!("failed to parse {}", manifest_path.display()))?;
-    let definition = CustomToolDefinition::from_manifest(manifest, &manifest_path, &manifest_dir)?;
+    let definition =
+        CustomToolDefinition::from_manifest(manifest, &manifest_path, &manifest_dir, request)?;
     let name = definition.spec.name.to_string();
     let handler = definition.into_handler(process_executor);
     Ok((
@@ -133,6 +317,7 @@ impl CustomToolDefinition {
         manifest: CustomToolManifest,
         manifest_path: &Path,
         manifest_dir: &Path,
+        request: &CustomToolLoadRequest,
     ) -> Result<Self> {
         let default_name =
             if manifest_path.file_name().and_then(|value| value.to_str()) == Some("tool.toml") {
@@ -163,7 +348,7 @@ impl CustomToolDefinition {
             build_input_schema(&manifest.parameters)?,
             manifest.output_mode,
             types::ToolOrigin::Local,
-            ToolSource::Dynamic,
+            request.tool_source(),
         )
         .with_aliases(validate_aliases(&manifest.aliases)?)
         .with_parallel_support(manifest.supports_parallel_tool_calls)
@@ -182,6 +367,7 @@ impl CustomToolDefinition {
                     .timeout_ms
                     .unwrap_or(DEFAULT_TIMEOUT_MS)
                     .clamp(1, MAX_TIMEOUT_MS),
+                plugin: request.plugin_runtime(),
             },
         })
     }
@@ -221,6 +407,7 @@ struct CustomToolRuntime {
     args: Vec<String>,
     env: BTreeMap<String, String>,
     timeout_ms: u64,
+    plugin: Option<PluginToolRuntime>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -321,6 +508,13 @@ async fn execute_custom_tool(
         "NANOCLAW_WORKSPACE_ROOT".to_string(),
         ctx.workspace_root.display().to_string(),
     );
+    if let Some(plugin) = &runtime.plugin {
+        env.insert("NANOCLAW_PLUGIN_ID".to_string(), plugin.plugin_id.clone());
+        env.insert(
+            "NANOCLAW_PLUGIN_ROOT".to_string(),
+            plugin.plugin_root.display().to_string(),
+        );
+    }
 
     let payload = json!({
         "arguments": arguments,
@@ -352,7 +546,7 @@ async fn execute_custom_tool(
                 name: format!("custom_tool:{}", runtime.tool_name),
             },
             runtime_scope: runtime_scope_from_context(&ctx),
-            sandbox_policy: ctx.sandbox_policy(),
+            sandbox_policy: sandbox_policy_for_tool(runtime, &ctx),
         })
         .map_err(|error| ToolError::invalid_state(error.to_string()))?
         .spawn()
@@ -408,6 +602,12 @@ async fn execute_custom_tool(
         "program".to_string(),
         Value::String(runtime.program.clone()),
     );
+    if let Some(plugin) = &runtime.plugin {
+        metadata.insert(
+            "plugin_id".to_string(),
+            Value::String(plugin.plugin_id.clone()),
+        );
+    }
     metadata.insert(
         "exit_code".to_string(),
         Value::Number(output.status.code().unwrap_or(-1).into()),
@@ -498,6 +698,146 @@ fn runtime_scope_from_context(ctx: &ToolExecutionContext) -> RuntimeScope {
         tool_name: ctx.tool_name.clone().map(|name| name.to_string()),
         tool_call_id: ctx.tool_call_id.clone(),
     }
+}
+
+fn sandbox_policy_for_tool(
+    runtime: &CustomToolRuntime,
+    ctx: &ToolExecutionContext,
+) -> SandboxPolicy {
+    let base = ctx.sandbox_policy();
+    let Some(plugin) = runtime.plugin.as_ref() else {
+        return base;
+    };
+
+    let workspace_read_roots = union_paths(
+        &plugin.granted_permissions.read_roots,
+        &union_paths(
+            &plugin.granted_permissions.write_roots,
+            &plugin.granted_permissions.exec_roots,
+        ),
+    );
+    let plugin_roots = vec![plugin.plugin_root.clone()];
+    // Plugin-owned code must stay readable/executable even when the host
+    // workspace sandbox is narrower than the plugin install location. Workspace
+    // access still stays capped by the granted plugin permission roots.
+    let readable_roots = union_paths(
+        &plugin_roots,
+        &restrict_path_roots(&base.filesystem.readable_roots, &workspace_read_roots),
+    );
+    let executable_roots = union_paths(
+        &plugin_roots,
+        &restrict_path_roots(
+            &base.filesystem.executable_roots,
+            &plugin.granted_permissions.exec_roots,
+        ),
+    );
+    let writable_roots = restrict_path_roots(
+        &base.filesystem.writable_roots,
+        &plugin.granted_permissions.write_roots,
+    );
+
+    SandboxPolicy {
+        mode: stricter_mode(
+            &base.mode,
+            if writable_roots.is_empty() {
+                &SandboxMode::ReadOnly
+            } else {
+                &SandboxMode::WorkspaceWrite
+            },
+        ),
+        filesystem: FilesystemPolicy {
+            readable_roots,
+            writable_roots,
+            executable_roots,
+            protected_paths: base.filesystem.protected_paths.clone(),
+        },
+        network: intersect_network_policy(
+            &base.network,
+            &hook_network_to_sandbox(&plugin.granted_permissions.network),
+        ),
+        host_escape: stricter_host_escape(&base.host_escape, &HostEscapePolicy::Deny),
+        fail_if_unavailable: base.fail_if_unavailable,
+    }
+}
+
+fn hook_network_to_sandbox(policy: &types::HookNetworkPolicy) -> NetworkPolicy {
+    match policy {
+        types::HookNetworkPolicy::Deny => NetworkPolicy::Off,
+        types::HookNetworkPolicy::Allow => NetworkPolicy::Full,
+        types::HookNetworkPolicy::AllowDomains { domains } => {
+            NetworkPolicy::AllowDomains(domains.clone())
+        }
+    }
+}
+
+fn stricter_mode(left: &SandboxMode, right: &SandboxMode) -> SandboxMode {
+    match (left, right) {
+        (SandboxMode::ReadOnly, _) | (_, SandboxMode::ReadOnly) => SandboxMode::ReadOnly,
+        (SandboxMode::WorkspaceWrite, _) | (_, SandboxMode::WorkspaceWrite) => {
+            SandboxMode::WorkspaceWrite
+        }
+        (SandboxMode::DangerFullAccess, SandboxMode::DangerFullAccess) => {
+            SandboxMode::DangerFullAccess
+        }
+    }
+}
+
+fn stricter_host_escape(left: &HostEscapePolicy, right: &HostEscapePolicy) -> HostEscapePolicy {
+    match (left, right) {
+        (HostEscapePolicy::Deny, _) | (_, HostEscapePolicy::Deny) => HostEscapePolicy::Deny,
+        (HostEscapePolicy::HostManaged, HostEscapePolicy::HostManaged) => {
+            HostEscapePolicy::HostManaged
+        }
+    }
+}
+
+fn intersect_network_policy(left: &NetworkPolicy, right: &NetworkPolicy) -> NetworkPolicy {
+    match (left, right) {
+        (NetworkPolicy::Off, _) | (_, NetworkPolicy::Off) => NetworkPolicy::Off,
+        (NetworkPolicy::Full, policy) | (policy, NetworkPolicy::Full) => policy.clone(),
+        (NetworkPolicy::AllowDomains(left_domains), NetworkPolicy::AllowDomains(right_domains)) => {
+            let allowed = left_domains
+                .iter()
+                .filter(|domain| right_domains.contains(*domain))
+                .cloned()
+                .collect::<Vec<_>>();
+            if allowed.is_empty() {
+                NetworkPolicy::Off
+            } else {
+                NetworkPolicy::AllowDomains(allowed)
+            }
+        }
+    }
+}
+
+fn restrict_path_roots(base_roots: &[PathBuf], desired_roots: &[PathBuf]) -> Vec<PathBuf> {
+    if desired_roots.is_empty() {
+        return Vec::new();
+    }
+    if base_roots.is_empty() {
+        return union_paths(&[], desired_roots);
+    }
+
+    let mut overlap = BTreeSet::new();
+    for base_root in base_roots {
+        for desired_root in desired_roots {
+            if desired_root.starts_with(base_root) {
+                overlap.insert(desired_root.clone());
+            } else if base_root.starts_with(desired_root) {
+                overlap.insert(base_root.clone());
+            }
+        }
+    }
+    overlap.into_iter().collect()
+}
+
+fn union_paths(left: &[PathBuf], right: &[PathBuf]) -> Vec<PathBuf> {
+    left.iter()
+        .chain(right.iter())
+        .cloned()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
 }
 
 fn merge_metadata(existing: Option<Value>, extra: Map<String, Value>) -> Map<String, Value> {
@@ -656,12 +996,15 @@ impl CustomToolParameterType {
 
 #[cfg(test)]
 mod tests {
-    use super::register_workspace_custom_tools;
+    use super::{register_plugin_custom_tools, register_workspace_custom_tools};
     use crate::AgentWorkspaceLayout;
+    use plugins::{PluginCustomToolActivation, PluginResolvedPermissions};
     use serde_json::json;
     use std::sync::Arc;
     use tempfile::tempdir;
-    use tools::{HostProcessExecutor, ToolExecutionContext, ToolRegistry};
+    use tools::{
+        HostProcessExecutor, NetworkPolicy, SandboxPolicy, ToolExecutionContext, ToolRegistry,
+    };
     use types::ToolCallId;
 
     #[tokio::test]
@@ -763,5 +1106,86 @@ program = ""
         assert!(outcome.loaded_tools.is_empty());
         assert_eq!(outcome.warnings.len(), 1);
         assert!(registry.names().is_empty());
+    }
+
+    #[tokio::test]
+    async fn plugin_custom_tools_register_with_plugin_source_and_env() {
+        let workspace = tempdir().unwrap();
+        let plugin_root = workspace.path().join("plugins/team-tools");
+        let tool_dir = plugin_root.join("tools/echo_payload");
+        std::fs::create_dir_all(&tool_dir).unwrap();
+        let script_path = tool_dir.join("run.sh");
+        std::fs::write(
+            &script_path,
+            "#!/bin/sh\ncat >/dev/null\nprintf '{\"text\":\"plugin ok\",\"metadata\":{\"plugin_id\":\"%s\"}}' \"$NANOCLAW_PLUGIN_ID\"\n",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut permissions = std::fs::metadata(&script_path).unwrap().permissions();
+            permissions.set_mode(0o755);
+            std::fs::set_permissions(&script_path, permissions).unwrap();
+        }
+        std::fs::write(
+            tool_dir.join("tool.toml"),
+            r#"
+description = "Echo plugin metadata."
+program = "./run.sh"
+
+[approval]
+read_only = true
+mutates_state = false
+"#,
+        )
+        .unwrap();
+
+        let registry = ToolRegistry::new();
+        let outcome = register_plugin_custom_tools(
+            &[PluginCustomToolActivation {
+                plugin_id: "team_tools".to_string(),
+                root_dir: plugin_root.clone(),
+                manifest_path: plugin_root.join(".nanoclaw-plugin/plugin.toml"),
+                tool_roots: vec![plugin_root.join("tools")],
+                granted_permissions: PluginResolvedPermissions::default(),
+            }],
+            Some(Arc::new(HostProcessExecutor)),
+            &registry,
+        )
+        .unwrap();
+        assert_eq!(
+            outcome.loaded_tools,
+            vec!["team_tools:echo_payload".to_string()],
+            "{:?}",
+            outcome.warnings
+        );
+        assert!(outcome.warnings.is_empty(), "{:?}", outcome.warnings);
+
+        let tool = registry
+            .get("echo_payload")
+            .expect("plugin tool should register");
+        assert!(matches!(
+            tool.spec().source,
+            types::ToolSource::Plugin { ref plugin } if plugin == "team_tools"
+        ));
+        let result = tool
+            .execute(
+                ToolCallId::new(),
+                json!({}),
+                &ToolExecutionContext {
+                    workspace_root: workspace.path().to_path_buf(),
+                    workspace_only: false,
+                    effective_sandbox_policy: Some(SandboxPolicy {
+                        mode: tools::SandboxMode::DangerFullAccess,
+                        network: NetworkPolicy::Full,
+                        ..SandboxPolicy::permissive()
+                    }),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.text_content(), "plugin ok");
+        assert_eq!(result.metadata.unwrap()["plugin_id"], "team_tools");
     }
 }

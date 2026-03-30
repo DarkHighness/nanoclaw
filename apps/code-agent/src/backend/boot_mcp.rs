@@ -324,6 +324,12 @@ fn describe_plugin_contributions(plugin: &agent::plugins::PluginState) -> String
     if !contributions.skill_roots.is_empty() {
         parts.push(format!("skills={}", contributions.skill_roots.len()));
     }
+    if contributions.custom_tool_root_count > 0 {
+        parts.push(format!(
+            "custom_tools={}",
+            contributions.custom_tool_root_count
+        ));
+    }
     if !contributions.hook_names.is_empty() {
         parts.push(format!(
             "hooks={}",

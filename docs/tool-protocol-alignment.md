@@ -235,9 +235,10 @@ industrial baseline:
 - `ToolResult` now has first-class attachments and a standard continuation
   envelope, but only part of the tool surface emits typed continuations so far
 - result metadata is still loosely typed and varies by tool family
-- directory-scanned custom tools now load from `.nanoclaw/tools`, but plugin
-  manifests still cannot contribute model-visible custom tools through the same
-  contract
+- directory-scanned custom tools now load from `.nanoclaw/tools`, and plugin
+  manifests can now contribute model-visible custom tools through the same
+  command-backed contract, but plugin/runtime identifiers are still weakly
+  typed strings
 - the agent tool family is useful but fragmented; naming and lifecycle are not
   yet normalized to one clear task/session/close/resume model
 - tool exposure is not yet model-aware in the OpenCode sense, where one model
@@ -506,7 +507,8 @@ Once the shared protocol exists, add the missing industrial extension surfaces:
     structured answer vectors, and host-supplied `Other` note capture
   - add directory-scanned command-backed custom tools from `.nanoclaw/tools`
     on top of the existing dynamic registry path
-- plugin-defined custom tool loading
+  - add plugin-defined custom tool exports through plugin activation plans so
+    workspace and plugin tools reuse one manifest/execution contract
 
 ### P2
 
@@ -521,18 +523,19 @@ Then add higher-variance parity work:
 
 The shared protocol foundation is now in place, and MCP resources now have
 their own first-class tool surfaces. The next slice should stop expanding local
-tool contracts and instead close the remaining workflow and extension gaps.
+tool contracts and instead close the remaining typing and high-variance parity
+gaps.
 
 The recommended order is:
 
-1. decide whether plugin-defined custom tools or freeform `apply_patch`
-   should land first
+1. tighten remaining weak protocol identifiers such as `PluginId`,
+   driver ids, hook names, and MCP server names
 2. only then add the remaining higher-variance parity work such as
-   `tool_search` or model-aware tool substitution rules
+   freeform `apply_patch`, `tool_search`, or model-aware tool substitution
+   rules
 
-That keeps the protocol phase bounded and moves the project toward the missing
-industrial surfaces instead of polishing the already-upgraded local results
-indefinitely.
+That keeps the protocol phase bounded and avoids mixing control-plane type
+cleanup with broader tool-surface expansion.
 
 ## Archive Trigger
 

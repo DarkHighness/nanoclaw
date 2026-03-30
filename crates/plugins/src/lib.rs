@@ -39,6 +39,7 @@ enabled_by_default = true
 
 [components]
 skill_roots = ["skills"]
+tool_roots = ["tools"]
 hook_files = [".nanoclaw-plugin/hooks.toml"]
 mcp_files = [".nanoclaw-plugin/mcp.toml"]
 
@@ -87,6 +88,7 @@ cwd = "."
         let plugin = &discovered.plugins[0];
         assert_eq!(plugin.manifest.id, "demo");
         assert_eq!(plugin.skill_roots, vec![plugin_root.join("skills")]);
+        assert_eq!(plugin.tool_roots, vec![plugin_root.join("tools")]);
         assert_eq!(plugin.hooks.len(), 1);
         match &plugin.hooks[0].handler {
             types::HookHandler::Wasm(wasm) => {
@@ -210,6 +212,55 @@ cwd = "."
         assert_eq!(
             plan.runtime_activations[0].granted_permissions.exec_roots,
             vec![dir.path().join(".nanoclaw/plugins-cache/team-policy")]
+        );
+    }
+
+    #[test]
+    fn activation_plan_carries_custom_tool_exports() {
+        let dir = tempdir().unwrap();
+        let mut plugin = sample_plugin(dir.path(), "team-tools", PluginKind::Bundle, true, None);
+        plugin.tool_roots = vec![dir.path().join("team-tools/tools")];
+        plugin.manifest.permissions = PluginPermissionRequest {
+            read: vec!["docs".to_string()],
+            exec: vec!["bin".to_string()],
+            network: PluginNetworkAccess::AllowDomains(vec!["example.com".to_string()]),
+            ..PluginPermissionRequest::default()
+        };
+        let discovery = PluginDiscovery {
+            plugins: vec![plugin],
+            diagnostics: Vec::new(),
+        };
+        let mut resolver = PluginResolverConfig::default();
+        resolver.entries.insert(
+            "team-tools".to_string(),
+            PluginEntryConfig {
+                enabled: Some(true),
+                permissions: PluginPermissionGrant {
+                    read: vec!["docs".to_string()],
+                    exec: vec!["bin".to_string()],
+                    network: PluginNetworkAccess::AllowDomains(vec!["example.com".to_string()]),
+                    ..PluginPermissionGrant::default()
+                },
+                config: Map::new(),
+            },
+        );
+
+        let plan = build_activation_plan(discovery, &resolver, dir.path());
+        assert_eq!(plan.custom_tool_activations.len(), 1);
+        assert_eq!(plan.custom_tool_activations[0].plugin_id, "team-tools");
+        assert_eq!(
+            plan.custom_tool_activations[0].tool_roots,
+            vec![dir.path().join("team-tools/tools")]
+        );
+        assert_eq!(
+            plan.custom_tool_activations[0]
+                .granted_permissions
+                .read_roots,
+            vec![dir.path().join("docs")]
+        );
+        assert_eq!(
+            plan.plugin_states[0].contributions.custom_tool_root_count,
+            1
         );
     }
 
@@ -486,6 +537,7 @@ message_mutation = "allow"
             root_dir: workspace_root.join(id),
             manifest_path: workspace_root.join(format!("{id}/.nanoclaw-plugin/plugin.toml")),
             skill_roots: Vec::new(),
+            tool_roots: Vec::new(),
             hooks: Vec::new(),
             mcp_servers: Vec::new(),
         }

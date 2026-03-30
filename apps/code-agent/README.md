@@ -29,6 +29,10 @@ manifests. The host scans:
 - `.nanoclaw/tools/*.toml`
 - `.nanoclaw/tools/<tool_name>/tool.toml`
 
+Plugins can export the same manifest contract by declaring
+`components.tool_roots` in `.nanoclaw-plugin/plugin.toml`; those plugin tools
+load through the same dynamic registry path with plugin-scoped sandbox grants.
+
 Each manifest registers one dynamic tool backed by a local command. The command
 receives the JSON invocation payload on stdin and can either print plain text or
 return a JSON envelope with `text`, `structured_content`, `metadata`,

@@ -33,10 +33,20 @@ pub struct PluginExecutableActivation {
     pub granted_permissions: PluginResolvedPermissions,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PluginCustomToolActivation {
+    pub plugin_id: String,
+    pub root_dir: PathBuf,
+    pub manifest_path: PathBuf,
+    pub tool_roots: Vec<PathBuf>,
+    pub granted_permissions: PluginResolvedPermissions,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct PluginContributionSummary {
     pub instruction_count: usize,
     pub skill_roots: Vec<PathBuf>,
+    pub custom_tool_root_count: usize,
     pub hook_names: Vec<String>,
     pub mcp_servers: Vec<String>,
     pub runtime_driver: Option<String>,
@@ -61,6 +71,7 @@ pub struct PluginSlotSelection {
 pub struct PluginActivationPlan {
     pub instructions: Vec<String>,
     pub skill_roots: Vec<PathBuf>,
+    pub custom_tool_activations: Vec<PluginCustomToolActivation>,
     pub hooks: Vec<HookRegistration>,
     pub mcp_servers: Vec<McpServerConfig>,
     pub runtime_activations: Vec<PluginExecutableActivation>,
@@ -208,6 +219,7 @@ fn contribution_summary(plugin: &DiscoveredPlugin) -> PluginContributionSummary 
     PluginContributionSummary {
         instruction_count: plugin.manifest.instructions.len(),
         skill_roots: plugin.skill_roots.clone(),
+        custom_tool_root_count: plugin.tool_roots.len(),
         hook_names: plugin.hooks.iter().map(|hook| hook.name.clone()).collect(),
         mcp_servers: plugin
             .mcp_servers
@@ -236,6 +248,16 @@ fn collect_plugin_activation(
             .map(|instruction| instruction.text.clone()),
     );
     plan.skill_roots.extend(plugin.skill_roots.clone());
+    if !plugin.tool_roots.is_empty() {
+        plan.custom_tool_activations
+            .push(PluginCustomToolActivation {
+                plugin_id: plugin.manifest.id.clone(),
+                root_dir: plugin.root_dir.clone(),
+                manifest_path: plugin.manifest_path.clone(),
+                tool_roots: plugin.tool_roots.clone(),
+                granted_permissions: granted_permissions.clone(),
+            });
+    }
     plan.hooks.extend(
         plugin
             .hooks

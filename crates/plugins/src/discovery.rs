@@ -14,6 +14,7 @@ pub struct DiscoveredPlugin {
     pub root_dir: PathBuf,
     pub manifest_path: PathBuf,
     pub skill_roots: Vec<PathBuf>,
+    pub tool_roots: Vec<PathBuf>,
     pub hooks: Vec<HookRegistration>,
     pub mcp_servers: Vec<McpServerConfig>,
 }
@@ -165,6 +166,12 @@ fn load_plugin(plugin_root: &Path, manifest_path: &Path) -> Result<DiscoveredPlu
         .iter()
         .map(|value| resolve_safe_relative_path(plugin_root, value))
         .collect::<Result<Vec<_>>>()?;
+    let tool_roots = manifest
+        .components
+        .tool_roots
+        .iter()
+        .map(|value| resolve_safe_relative_path(plugin_root, value))
+        .collect::<Result<Vec<_>>>()?;
 
     let hook_paths = manifest
         .components
@@ -204,6 +211,7 @@ fn load_plugin(plugin_root: &Path, manifest_path: &Path) -> Result<DiscoveredPlu
         root_dir: plugin_root.to_path_buf(),
         manifest_path: manifest_path.to_path_buf(),
         skill_roots,
+        tool_roots,
         hooks,
         mcp_servers,
     })

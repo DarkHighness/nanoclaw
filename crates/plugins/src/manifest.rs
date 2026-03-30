@@ -22,6 +22,8 @@ pub struct PluginComponents {
     #[serde(default)]
     pub skill_roots: Vec<String>,
     #[serde(default)]
+    pub tool_roots: Vec<String>,
+    #[serde(default)]
     pub hook_files: Vec<String>,
     #[serde(default)]
     pub mcp_files: Vec<String>,
