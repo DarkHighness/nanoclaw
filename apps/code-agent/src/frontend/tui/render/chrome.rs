@@ -54,7 +54,9 @@ pub(super) fn build_approval_text(approval: &ApprovalPrompt) -> Text<'static> {
             Style::default().fg(HEADER).add_modifier(Modifier::BOLD),
         ),
     ])];
-    lines.push(approval_context_line(approval));
+    if let Some(context) = approval_context_line(approval) {
+        lines.push(context);
+    }
     lines.push(approval_section_label(&approval.content_label));
     for line in approval_preview_lines(&approval.content_preview) {
         lines.push(Line::from(vec![
@@ -182,23 +184,30 @@ fn approval_section_label(label: &str) -> Line<'static> {
     )])
 }
 
-fn approval_context_line(approval: &ApprovalPrompt) -> Line<'static> {
-    let mut spans = vec![Span::styled(
-        approval.origin.clone(),
-        Style::default().fg(MUTED),
-    )];
+fn approval_context_line(approval: &ApprovalPrompt) -> Option<Line<'static>> {
+    let mut spans = Vec::new();
+    if approval.origin != "local" {
+        spans.push(Span::styled(
+            approval.origin.clone(),
+            Style::default().fg(MUTED),
+        ));
+    }
     if let Some(working_directory) = approval.working_directory.as_deref() {
-        spans.push(Span::styled(" · ", Style::default().fg(SUBTLE)));
+        if !spans.is_empty() {
+            spans.push(Span::styled(" · ", Style::default().fg(SUBTLE)));
+        }
         spans.push(Span::styled(
             preview_text(working_directory, 56),
             Style::default().fg(TEXT),
         ));
     }
     if let Some(mode) = approval.mode.as_deref() {
-        spans.push(Span::styled(" · ", Style::default().fg(SUBTLE)));
+        if !spans.is_empty() {
+            spans.push(Span::styled(" · ", Style::default().fg(SUBTLE)));
+        }
         spans.push(Span::styled(mode.to_string(), Style::default().fg(ACCENT)));
     }
-    Line::from(spans)
+    (!spans.is_empty()).then(|| Line::from(spans))
 }
 
 pub(super) fn approval_preview_lines(lines: &[String]) -> Vec<String> {

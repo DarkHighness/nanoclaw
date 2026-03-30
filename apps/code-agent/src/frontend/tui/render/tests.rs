@@ -546,6 +546,7 @@ fn approval_band_uses_structured_command_preview() {
             .iter()
             .any(|span| { span.content.as_ref().contains("/workspace/apps/code-agent") })
     );
+    assert!(!line_text_for(&text.lines[1]).contains("local"));
     assert_eq!(text.lines[2].spans[0].content.as_ref(), "command");
     assert_eq!(text.lines[4].spans[0].content.as_ref(), "why");
     assert!(text.lines.iter().any(|line| {
@@ -560,6 +561,27 @@ fn approval_band_uses_structured_command_preview() {
                 .contains("sandbox policy requires approval")
         })
     }));
+}
+
+#[test]
+fn approval_band_hides_local_origin_when_it_adds_no_operator_value() {
+    let text = build_approval_text(&ApprovalPrompt {
+        tool_name: "write".to_string(),
+        origin: "local".to_string(),
+        mode: None,
+        working_directory: None,
+        content_label: "arguments".to_string(),
+        content_preview: vec!["src/main.rs".to_string()],
+        reasons: vec!["needs approval".to_string()],
+    });
+
+    assert!(line_text_for(&text.lines[0]).contains("Approve write?"));
+    assert_eq!(text.lines[1].spans[0].content.as_ref(), "arguments");
+    assert!(
+        text.lines
+            .iter()
+            .all(|line| !line_text_for(line).contains("local"))
+    );
 }
 
 #[test]
