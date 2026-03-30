@@ -14,8 +14,10 @@ use serde_json::{Map, Value};
 use std::sync::{Arc, RwLock};
 
 const DEFAULT_INTERNAL_MEMORY_TIMEOUT_MS: u64 = 30_000;
-const OPENAI_REASONING_LEVELS: &[&str] = &["low", "medium", "high"];
-const OPENAI_EXTENDED_REASONING_LEVELS: &[&str] = &["none", "low", "medium", "high"];
+const OPENAI_GPT5_REASONING_LEVELS: &[&str] = &["minimal", "low", "medium", "high"];
+const OPENAI_GPT51_REASONING_LEVELS: &[&str] = &["none", "low", "medium", "high"];
+const OPENAI_GPT52_PLUS_REASONING_LEVELS: &[&str] = &["none", "low", "medium", "high", "xhigh"];
+const OPENAI_GPT52_PLUS_PRO_REASONING_LEVELS: &[&str] = &["medium", "high", "xhigh"];
 const OPENAI_HIGH_ONLY_REASONING_LEVELS: &[&str] = &["high"];
 const ANTHROPIC_REASONING_LEVELS: &[&str] = &["low", "medium", "high"];
 const ANTHROPIC_MAX_REASONING_LEVELS: &[&str] = &["low", "medium", "high", "max"];
@@ -377,11 +379,27 @@ fn default_supported_reasoning_efforts(
     model: &str,
 ) -> &'static [&'static str] {
     match provider {
-        ProviderKind::OpenAi if model.starts_with("gpt-5-pro") => OPENAI_HIGH_ONLY_REASONING_LEVELS,
-        ProviderKind::OpenAi if model.starts_with("gpt-5.1") || model.starts_with("gpt-5.2") => {
-            OPENAI_EXTENDED_REASONING_LEVELS
+        ProviderKind::OpenAi if matches_model_family_or_snapshot(model, "gpt-5-pro") => {
+            OPENAI_HIGH_ONLY_REASONING_LEVELS
         }
-        ProviderKind::OpenAi if model.starts_with("gpt-5") => OPENAI_REASONING_LEVELS,
+        ProviderKind::OpenAi if matches_model_family_or_snapshot(model, "gpt-5.4-pro") => {
+            OPENAI_GPT52_PLUS_PRO_REASONING_LEVELS
+        }
+        ProviderKind::OpenAi if matches_model_family_or_snapshot(model, "gpt-5.2-pro") => {
+            OPENAI_GPT52_PLUS_PRO_REASONING_LEVELS
+        }
+        ProviderKind::OpenAi if matches_model_family_or_snapshot(model, "gpt-5.4") => {
+            OPENAI_GPT52_PLUS_REASONING_LEVELS
+        }
+        ProviderKind::OpenAi if matches_model_family_or_snapshot(model, "gpt-5.2") => {
+            OPENAI_GPT52_PLUS_REASONING_LEVELS
+        }
+        ProviderKind::OpenAi if matches_model_family_or_snapshot(model, "gpt-5.1") => {
+            OPENAI_GPT51_REASONING_LEVELS
+        }
+        ProviderKind::OpenAi if matches_model_family_or_snapshot(model, "gpt-5") => {
+            OPENAI_GPT5_REASONING_LEVELS
+        }
         ProviderKind::Anthropic if model.starts_with("claude-opus-4-6") => {
             ANTHROPIC_MAX_REASONING_LEVELS
         }
@@ -392,6 +410,16 @@ fn default_supported_reasoning_efforts(
         }
         _ => &[],
     }
+}
+
+fn matches_model_family_or_snapshot(model: &str, family: &str) -> bool {
+    // OpenAI family aliases and dated snapshots share a stable prefix, while
+    // sibling variants such as `gpt-5.4-mini` or `gpt-5.4-pro` must not inherit
+    // the parent family's picker defaults by accident.
+    model == family
+        || model
+            .strip_prefix(family)
+            .is_some_and(|suffix| suffix.starts_with("-20"))
 }
 
 fn normalized_reasoning_effort(value: Option<&str>) -> Option<String> {
@@ -425,7 +453,10 @@ fn provider_api_key(model: &ResolvedModel, env_map: &EnvMap) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{MutableAgentBackend, build_memory_reasoning_service, with_reasoning_effort};
+    use super::{
+        MutableAgentBackend, build_memory_reasoning_service, default_supported_reasoning_efforts,
+        with_reasoning_effort,
+    };
     use agent_env::EnvMap;
     use nanoclaw_config::{
         AgentSandboxMode, ModelCapabilitiesConfig, ProviderKind, ResolvedAgentProfile,
@@ -536,5 +567,53 @@ mod tests {
         assert_eq!(update.previous.as_deref(), Some("medium"));
         assert_eq!(update.current.as_deref(), Some("high"));
         assert_eq!(backend.reasoning_effort().as_deref(), Some("high"));
+    }
+
+    #[test]
+    fn openai_reasoning_effort_defaults_follow_model_pages() {
+        assert_eq!(
+            default_supported_reasoning_efforts(&ProviderKind::OpenAi, "gpt-5"),
+            &["minimal", "low", "medium", "high"]
+        );
+        assert_eq!(
+            default_supported_reasoning_efforts(&ProviderKind::OpenAi, "gpt-5.1"),
+            &["none", "low", "medium", "high"]
+        );
+        assert_eq!(
+            default_supported_reasoning_efforts(&ProviderKind::OpenAi, "gpt-5.2"),
+            &["none", "low", "medium", "high", "xhigh"]
+        );
+        assert_eq!(
+            default_supported_reasoning_efforts(&ProviderKind::OpenAi, "gpt-5.4"),
+            &["none", "low", "medium", "high", "xhigh"]
+        );
+        assert_eq!(
+            default_supported_reasoning_efforts(&ProviderKind::OpenAi, "gpt-5-pro"),
+            &["high"]
+        );
+        assert_eq!(
+            default_supported_reasoning_efforts(&ProviderKind::OpenAi, "gpt-5.2-pro"),
+            &["medium", "high", "xhigh"]
+        );
+        assert_eq!(
+            default_supported_reasoning_efforts(&ProviderKind::OpenAi, "gpt-5.4-pro"),
+            &["medium", "high", "xhigh"]
+        );
+    }
+
+    #[test]
+    fn openai_reasoning_effort_mapping_does_not_confuse_subfamilies_with_snapshots() {
+        assert_eq!(
+            default_supported_reasoning_efforts(&ProviderKind::OpenAi, "gpt-5.4-2026-03-05"),
+            &["none", "low", "medium", "high", "xhigh"]
+        );
+        assert_eq!(
+            default_supported_reasoning_efforts(&ProviderKind::OpenAi, "gpt-5.4-pro-2026-03-05"),
+            &["medium", "high", "xhigh"]
+        );
+        assert_eq!(
+            default_supported_reasoning_efforts(&ProviderKind::OpenAi, "gpt-5.4-mini"),
+            &[] as &[&str]
+        );
     }
 }
