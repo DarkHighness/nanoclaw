@@ -1,4 +1,4 @@
-use super::state::{SharedUiState, TodoEntry, preview_text};
+use super::state::{PlanEntry, SharedUiState, preview_text};
 use crate::backend::SessionEvent;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -172,10 +172,10 @@ impl SharedRenderObserver {
             } => {
                 state.status = format!("Completed {}", call.tool_name);
                 state.active_tool_label = None;
-                if let Some(todo_items) =
-                    todo_items_from_output(&call.tool_name, structured_output_preview.as_deref())
+                if let Some(plan_items) =
+                    plan_items_from_output(&call.tool_name, structured_output_preview.as_deref())
                 {
-                    state.todo_items = todo_items;
+                    state.plan_items = plan_items;
                 }
                 replace_tool_line(
                     state,
@@ -534,11 +534,11 @@ fn collapse_middle_lines(value: &str, max_lines: usize, max_columns: usize) -> V
     lines
 }
 
-fn todo_items_from_output(
+fn plan_items_from_output(
     tool_name: &str,
     structured_output_preview: Option<&str>,
-) -> Option<Vec<TodoEntry>> {
-    if !matches!(tool_name, "todo_read" | "todo_write") {
+) -> Option<Vec<PlanEntry>> {
+    if tool_name != "update_plan" {
         return None;
     }
     let value = serde_json::from_str::<Value>(structured_output_preview?).ok()?;
@@ -547,9 +547,10 @@ fn todo_items_from_output(
         items
             .iter()
             .filter_map(|item| {
-                Some(TodoEntry {
-                    id: item.get("id")?.as_str()?.to_string(),
-                    content: item.get("content")?.as_str()?.to_string(),
+                let step = item.get("step")?.as_str()?.to_string();
+                Some(PlanEntry {
+                    id: step.clone(),
+                    content: step,
                     status: item.get("status")?.as_str()?.to_string(),
                 })
             })
@@ -706,13 +707,13 @@ mod tests {
     }
 
     #[test]
-    fn todo_tool_results_update_side_rail_snapshot() {
+    fn update_plan_results_update_side_rail_snapshot() {
         let ui_state = SharedUiState::new();
         let call = SessionToolCall {
-            tool_name: "todo_write".to_string(),
+            tool_name: "update_plan".to_string(),
             call_id: "call_123".to_string(),
             origin: "local".to_string(),
-            arguments_preview: vec!["replace todos".to_string()],
+            arguments_preview: vec!["set 2 plan step(s)".to_string()],
         };
         let mut observer = SharedRenderObserver::new(ui_state.clone());
 
@@ -723,8 +724,8 @@ mod tests {
                 json!({
                     "kind": "success",
                     "items": [
-                        {"id": "t1", "content": "Inspect repo", "status": "completed"},
-                        {"id": "t2", "content": "Refine TUI", "status": "in_progress"}
+                        {"step": "Inspect repo", "status": "completed"},
+                        {"step": "Refine TUI", "status": "in_progress"}
                     ]
                 })
                 .to_string(),
@@ -732,9 +733,9 @@ mod tests {
         });
 
         let snapshot = ui_state.snapshot();
-        assert_eq!(snapshot.todo_items.len(), 2);
-        assert_eq!(snapshot.todo_items[1].content, "Refine TUI");
-        assert_eq!(snapshot.todo_items[1].status, "in_progress");
+        assert_eq!(snapshot.plan_items.len(), 2);
+        assert_eq!(snapshot.plan_items[1].content, "Refine TUI");
+        assert_eq!(snapshot.plan_items[1].status, "in_progress");
     }
 
     #[test]

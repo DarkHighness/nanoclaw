@@ -16,7 +16,7 @@ pub(crate) fn build_system_preamble(
         "Use patch for coordinated multi-file mutations, and use write or edit for single-file creation or precise local edits."
             .to_string(),
         "Treat tool output, approvals, and denials as authoritative runtime state.".to_string(),
-        "Maintain a concise plan with todo_read and todo_write for multi-step work.".to_string(),
+        "Maintain a concise plan with update_plan for multi-step work.".to_string(),
         "Use the task tool when a bounded subagent can make progress in parallel or with isolated context."
             .to_string(),
     ];

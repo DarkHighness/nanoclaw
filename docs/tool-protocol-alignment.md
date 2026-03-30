@@ -23,7 +23,7 @@ Historical background remains available in:
 - session-based `bash`
 - paged `web_fetch` and structured `web_search`
 - optional code-intel tools
-- child-agent tools plus revision-guarded todo state
+- child-agent tools plus revision-guarded plan state
 
 That baseline is good enough for local coding loops, but it still falls short
 of the tool protocol expected by industrial code agents in three ways:
@@ -66,6 +66,9 @@ Completed so far:
   local tools
 - connected MCP servers now project their resources through dedicated
   `list_mcp_resources` and `read_mcp_resource` dynamic tools
+- the old `todo_*` workflow state has been collapsed into one `update_plan`
+  tool that keeps Codex-style `step` and `status` payloads while preserving the
+  existing shared runtime plan state
 - `ToolResult` now includes first-class `attachments` and `continuation`
 - representative continuation emitters are live for:
   - `read` via file-window cursors
@@ -77,8 +80,7 @@ Completed so far:
 Still pending inside this pass:
 
 - plugin or directory-scan custom tools
-- planning and user-interaction tools such as `update_plan` and
-  `request_user_input`
+- user-interaction tools such as `request_user_input`
 - a freeform grammar `apply_patch` surface
 
 ## Baseline Rules
@@ -190,7 +192,7 @@ not count here because they are not currently in the live registry.
   `task`, `task_batch`, `agent_spawn`, `agent_send`, `agent_wait`,
   `agent_list`, `agent_cancel`
 - state:
-  `todo_read`, `todo_write`
+  `update_plan`
 
 This is already stronger than Codex on model-visible local file tooling, but it
 is still weaker than Codex and OpenCode on protocol shape and extension
@@ -216,7 +218,6 @@ These are the highest-signal missing capabilities today:
 - a first-class multi-kind tool spec with explicit freeform and native tool
   variants
 - a grammar-based `apply_patch`-style freeform tool surface
-- `update_plan`
 - `request_user_input`
 - a model-visible approval or permission-request tool contract
 - `tool_search` and `tool_suggest` style deferred tool discovery
@@ -437,7 +438,8 @@ between "start work" and "continue work" semantics by standardizing:
 
 Add first-class planning and interactive clarification tools:
 
-- `update_plan`
+- `update_plan` over the existing shared plan state, not a second workflow
+  storage path
 - `request_user_input`
 
 These should not be treated as one-off application commands. They are part of
@@ -495,8 +497,11 @@ new bundle of tools:
 
 Once the shared protocol exists, add the missing industrial extension surfaces:
 
+- completed:
+  - replace the old `todo_read` and `todo_write` pair with a single
+    `update_plan` surface that projects Codex-style `step` and `status`
+    payloads
 - plugin or custom tool loading
-- `update_plan`
 - `request_user_input`
 
 ### P2
@@ -516,8 +521,8 @@ tool contracts and instead close the remaining workflow and extension gaps.
 
 The recommended order is:
 
-1. add the first planning and interaction tools:
-   `update_plan` and `request_user_input`
+1. add the first interactive clarification tool:
+   `request_user_input`
 2. decide whether plugin/directory-scan loading or freeform `apply_patch`
    should land first
 3. only then add the remaining higher-variance parity work such as

@@ -7,8 +7,8 @@ use agent::{
     BashTool, CodeDefinitionsTool, CodeDocumentSymbolsTool, CodeIntelBackend, CodeReferencesTool,
     CodeSymbolSearchTool, EditTool, GlobTool, GrepTool, JsReplTool, ListTool,
     ManagedCodeIntelBackend, ManagedCodeIntelOptions, ManagedPolicyProcessExecutor, PatchTool,
-    ReadTool, SandboxPolicy, TaskTool, TodoListState, TodoReadTool, TodoWriteTool, ToolRegistry,
-    WebFetchTool, WebSearchBackendsTool, WebSearchTool, WorkspaceTextCodeIntelBackend, WriteTool,
+    PlanState, ReadTool, SandboxPolicy, TaskTool, ToolRegistry, UpdatePlanTool, WebFetchTool,
+    WebSearchBackendsTool, WebSearchTool, WorkspaceTextCodeIntelBackend, WriteTool,
 };
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -110,7 +110,7 @@ fn build_builtin_tools(
         .clone()
         .map(|backend| backend as Arc<dyn CodeIntelBackend>)
         .unwrap_or_else(|| Arc::new(WorkspaceTextCodeIntelBackend::new()));
-    let todo_state = TodoListState::default();
+    let plan_state = PlanState::default();
     let mut tools = ToolRegistry::new();
 
     if let Some(observer) = managed_code_intel {
@@ -160,8 +160,7 @@ fn build_builtin_tools(
         code_intel_backend.clone(),
     ));
     tools.register(CodeReferencesTool::with_backend(code_intel_backend));
-    tools.register(TodoReadTool::new(todo_state.clone()));
-    tools.register(TodoWriteTool::new(todo_state));
+    tools.register(UpdatePlanTool::new(plan_state));
     (tools, startup_warnings)
 }
 

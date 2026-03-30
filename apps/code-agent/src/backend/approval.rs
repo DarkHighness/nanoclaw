@@ -159,37 +159,25 @@ fn approval_content_preview(tool_name: &str, arguments: &Value) -> (String, Vec<
         );
     }
 
-    if tool_name == "todo_read" {
-        let include_completed = arguments
-            .get("include_completed")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
-        return (
-            "arguments".to_string(),
-            vec![format!(
-                "read todos{}",
-                if include_completed {
-                    " (including completed)"
-                } else {
-                    ""
-                }
-            )],
-        );
-    }
-
-    if tool_name == "todo_write" {
-        let command = arguments
-            .get("command")
-            .and_then(Value::as_str)
-            .unwrap_or("replace");
+    if tool_name == "update_plan" {
         let item_count = arguments
-            .get("items")
+            .get("plan")
             .and_then(Value::as_array)
             .map_or(0, Vec::len);
-        return (
-            "arguments".to_string(),
-            vec![format!("{command} {item_count} todo item(s)")],
-        );
+        let mut lines = vec![if item_count == 0 {
+            "clear plan".to_string()
+        } else {
+            format!("set {item_count} plan step(s)")
+        }];
+        if let Some(explanation) = arguments
+            .get("explanation")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            lines.extend(collapse_preview(explanation, 2, 96));
+        }
+        return ("arguments".to_string(), lines);
     }
 
     for key in ["path", "uri", "query", "prompt", "message"] {

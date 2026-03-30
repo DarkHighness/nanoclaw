@@ -32,8 +32,7 @@ const DEFAULT_EXCLUDED_CHILD_TOOLS: &[&str] = &[
     "agent_wait",
     "agent_list",
     "agent_cancel",
-    "todo_read",
-    "todo_write",
+    "update_plan",
 ];
 const READY_CHILD_LAUNCH_CONCURRENCY: usize = 4;
 

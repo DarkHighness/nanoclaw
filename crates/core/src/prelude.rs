@@ -16,7 +16,7 @@ pub use tools::{
     ManagedCodeIntelOptions, WorkspaceTextCodeIntelBackend,
 };
 #[cfg(feature = "agentic-tools")]
-pub use tools::{TaskTool, TodoItem, TodoListState, TodoReadTool, TodoStatus, TodoWriteTool};
+pub use tools::{PlanItem, PlanState, PlanStatus, TaskTool, UpdatePlanTool};
 #[cfg(feature = "web-tools")]
 pub use tools::{WebFetchTool, WebSearchBackendsTool, WebSearchTool};
 pub use types::*;

@@ -214,34 +214,27 @@ fn tool_arguments_preview(call: &agent::types::ToolCall) -> Vec<String> {
         return truncate_preview(&format!("$ {}", command.trim()), 4, 96);
     }
 
-    if call.tool_name.as_str() == "todo_read" {
-        let include_completed = call
-            .arguments
-            .get("include_completed")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
-        return vec![format!(
-            "read todos{}",
-            if include_completed {
-                " (including completed)"
-            } else {
-                ""
-            }
-        )];
-    }
-
-    if call.tool_name.as_str() == "todo_write" {
-        let command = call
-            .arguments
-            .get("command")
-            .and_then(Value::as_str)
-            .unwrap_or("replace");
+    if call.tool_name.as_str() == "update_plan" {
         let item_count = call
             .arguments
-            .get("items")
+            .get("plan")
             .and_then(Value::as_array)
             .map_or(0, Vec::len);
-        return vec![format!("{command} {item_count} todo item(s)")];
+        let mut lines = vec![if item_count == 0 {
+            "clear plan".to_string()
+        } else {
+            format!("set {item_count} plan step(s)")
+        }];
+        if let Some(explanation) = call
+            .arguments
+            .get("explanation")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            lines.extend(truncate_preview(explanation, 2, 96));
+        }
+        return lines;
     }
 
     for key in ["path", "uri", "query", "prompt", "message"] {

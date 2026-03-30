@@ -7,7 +7,7 @@ It intentionally keeps the host layer thin:
 
 - core coding tools: `read`, `write`, `edit`, `patch`, `glob`, `grep`, `list`, `bash`
 - optional code-intel tools: `code_symbol_search`, `code_document_symbols`, `code_definitions`, `code_references`
-- agentic tools: `todo_read`, `todo_write`, `task`
+- agentic tools: `update_plan`, `task`
 - append-only runtime loop from `runtime`
 - runtime steering and queued command support
 - loop detection as the primary guard against tool-call churn, without a fixed global iteration cap

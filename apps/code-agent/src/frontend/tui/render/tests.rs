@@ -19,7 +19,7 @@ use crate::frontend::tui::commands::{
     SlashCommandArgumentHint, SlashCommandArgumentSpec, SlashCommandArgumentValue,
     SlashCommandHint, SlashCommandSpec,
 };
-use crate::frontend::tui::state::{MainPaneMode, StatusLinePickerState, TodoEntry, TuiState};
+use crate::frontend::tui::state::{MainPaneMode, PlanEntry, StatusLinePickerState, TuiState};
 use ratatui::layout::Rect;
 
 #[test]
@@ -989,23 +989,23 @@ fn line_text_for(line: &ratatui::text::Line<'_>) -> String {
 }
 
 #[test]
-fn side_rail_surfaces_todos_and_lsp_summary() {
+fn side_rail_surfaces_plan_and_lsp_summary() {
     let mut state = TuiState::default();
     state.main_pane = MainPaneMode::Transcript;
     state.session.tool_names = vec!["code_symbol_search".to_string()];
     state.session.startup_diagnostics.diagnostics = vec!["rust-analyzer attached".to_string()];
-    state.todo_items = vec![
-        TodoEntry {
+    state.plan_items = vec![
+        PlanEntry {
             id: "t1".to_string(),
             content: "Refine transcript".to_string(),
             status: "in_progress".to_string(),
         },
-        TodoEntry {
+        PlanEntry {
             id: "t2".to_string(),
             content: "Tighten command palette".to_string(),
             status: "pending".to_string(),
         },
-        TodoEntry {
+        PlanEntry {
             id: "t3".to_string(),
             content: "Finish diagnostics".to_string(),
             status: "completed".to_string(),

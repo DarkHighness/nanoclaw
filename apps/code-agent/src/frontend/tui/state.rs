@@ -47,7 +47,7 @@ pub(crate) enum MainPaneMode {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) struct TodoEntry {
+pub(crate) struct PlanEntry {
     pub(crate) id: String,
     pub(crate) content: String,
     pub(crate) status: String,
@@ -93,7 +93,7 @@ pub(crate) struct TuiState {
     pub(crate) turn_running: bool,
     pub(crate) turn_started_at: Option<Instant>,
     pub(crate) active_tool_label: Option<String>,
-    pub(crate) todo_items: Vec<TodoEntry>,
+    pub(crate) plan_items: Vec<PlanEntry>,
     pub(crate) pending_controls: Vec<PendingControlSummary>,
     pub(crate) pending_control_picker: Option<PendingControlPickerState>,
     pub(crate) editing_pending_control: Option<PendingControlEditorState>,

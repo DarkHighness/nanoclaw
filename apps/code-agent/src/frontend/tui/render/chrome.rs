@@ -1,5 +1,5 @@
 use super::super::approval::ApprovalPrompt;
-use super::super::state::{MainPaneMode, TodoEntry, TuiState, preview_text};
+use super::super::state::{MainPaneMode, PlanEntry, TuiState, preview_text};
 use super::shared::{pending_control_focus_label, pending_control_kind_label};
 use super::shell::bottom_band_inner_area;
 use super::theme::{
@@ -89,7 +89,7 @@ pub(super) fn approval_band_height(approval: &ApprovalPrompt) -> u16 {
 pub(super) fn should_render_side_rail(state: &TuiState, area: Rect) -> bool {
     state.main_pane == MainPaneMode::Transcript
         && area.width >= 128
-        && (lsp_side_rail_available(state) || !state.todo_items.is_empty())
+        && (lsp_side_rail_available(state) || !state.plan_items.is_empty())
 }
 
 pub(super) fn side_rail_width(total_width: u16) -> u16 {
@@ -144,20 +144,20 @@ pub(super) fn build_side_rail_lines(state: &TuiState) -> Vec<Line<'static>> {
         lines.push(Line::raw(""));
     }
 
-    if !state.todo_items.is_empty() {
-        lines.push(section_title_line("TODO", USER));
-        let (active, pending, done) = todo_counts(&state.todo_items);
+    if !state.plan_items.is_empty() {
+        lines.push(section_title_line("Plan", USER));
+        let (active, pending, done) = plan_counts(&state.plan_items);
         lines.push(rail_summary_line(format!(
             "{active} active · {pending} pending · {done} done"
         )));
-        let mut todo_items = state.todo_items.iter().collect::<Vec<_>>();
-        todo_items.sort_by_key(|item| (todo_status_rank(&item.status), item.content.as_str()));
-        let visible = todo_items.iter().take(5).copied().collect::<Vec<_>>();
-        lines.extend(visible.iter().map(|item| render_todo_line(item)));
-        if todo_items.len() > visible.len() {
+        let mut plan_items = state.plan_items.iter().collect::<Vec<_>>();
+        plan_items.sort_by_key(|item| (plan_status_rank(&item.status), item.content.as_str()));
+        let visible = plan_items.iter().take(5).copied().collect::<Vec<_>>();
+        lines.extend(visible.iter().map(|item| render_plan_line(item)));
+        if plan_items.len() > visible.len() {
             lines.push(rail_summary_line(format!(
                 "+{} more",
-                todo_items.len() - visible.len()
+                plan_items.len() - visible.len()
             )));
         }
     }
@@ -335,7 +335,7 @@ fn rail_summary_line(body: impl Into<String>) -> Line<'static> {
     Line::from(Span::styled(body.into(), Style::default().fg(SUBTLE)))
 }
 
-fn todo_counts(items: &[TodoEntry]) -> (usize, usize, usize) {
+fn plan_counts(items: &[PlanEntry]) -> (usize, usize, usize) {
     items
         .iter()
         .fold((0, 0, 0), |(active, pending, done), item| {
@@ -347,7 +347,7 @@ fn todo_counts(items: &[TodoEntry]) -> (usize, usize, usize) {
         })
 }
 
-fn todo_status_rank(status: &str) -> usize {
+fn plan_status_rank(status: &str) -> usize {
     match status {
         "in_progress" => 0,
         "pending" => 1,
@@ -356,7 +356,7 @@ fn todo_status_rank(status: &str) -> usize {
     }
 }
 
-fn render_todo_line(item: &TodoEntry) -> Line<'static> {
+fn render_plan_line(item: &PlanEntry) -> Line<'static> {
     let (marker, color) = match item.status.as_str() {
         "completed" => ("x", ASSISTANT),
         "in_progress" => ("~", WARN),
