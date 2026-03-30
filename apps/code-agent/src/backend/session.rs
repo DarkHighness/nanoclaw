@@ -13,7 +13,9 @@ use crate::backend::{
 use crate::provider::{MutableAgentBackend, ReasoningEffortUpdate};
 use crate::statusline::StatusLineConfig;
 use agent::mcp::ConnectedMcpServer;
-use agent::runtime::{Result as RuntimeResult, RunTurnOutcome, RuntimeSteerMailbox};
+use agent::runtime::{
+    Result as RuntimeResult, RunTurnOutcome, RuntimeCommandQueue, RuntimeSteerMailbox,
+};
 use agent::tools::{SubagentExecutor, SubagentParentContext};
 use agent::types::{
     AgentSessionId, AgentTaskSpec, AgentWaitMode, AgentWaitRequest, Message, SessionId,
@@ -142,6 +144,7 @@ pub(crate) struct ModelReasoningEffortOutcome {
 #[derive(Clone)]
 pub(crate) struct CodeAgentSession {
     runtime: Arc<AsyncMutex<AgentRuntime>>,
+    command_queue: RuntimeCommandQueue,
     steer_mailbox: RuntimeSteerMailbox,
     model_backend: Option<MutableAgentBackend>,
     subagent_executor: Arc<dyn SubagentExecutor>,
@@ -167,9 +170,11 @@ impl CodeAgentSession {
         skills: Vec<Skill>,
     ) -> Self {
         let workspace_root = startup.workspace_root.clone();
+        let command_queue = runtime.command_queue();
         let steer_mailbox = runtime.steer_mailbox();
         Self {
             runtime: Arc::new(AsyncMutex::new(runtime)),
+            command_queue,
             steer_mailbox,
             model_backend,
             subagent_executor,
@@ -238,6 +243,36 @@ impl CodeAgentSession {
             .map_err(anyhow::Error::from)?;
         self.sync_runtime_session_refs(&runtime);
         Ok(())
+    }
+
+    pub(crate) async fn queue_prompt_command(&self, prompt: impl Into<String>) -> Result<String> {
+        let queued = self.command_queue.push_prompt(prompt).await;
+        Ok(queued.id.to_string())
+    }
+
+    pub(crate) fn queued_command_count(&self) -> usize {
+        self.command_queue.len()
+    }
+
+    pub(crate) async fn clear_queued_commands(&self) -> usize {
+        let mut runtime = self.runtime.lock().await;
+        let cleared = runtime.clear_pending_runtime_commands_for_host();
+        self.sync_runtime_session_refs(&runtime);
+        cleared
+    }
+
+    pub(crate) async fn drain_queued_controls(&self) -> Result<bool> {
+        let mut runtime = self.runtime.lock().await;
+        let mut observer = SessionEventObserver::new(self.events.clone());
+        // Frontends never pop queued prompts themselves. They only wake the
+        // runtime at an idle edge so the runtime can drain its own queue and
+        // emit one consistent event stream for every dequeued control.
+        let drained = runtime
+            .drain_queued_controls_with_observer(&mut observer)
+            .await
+            .map_err(anyhow::Error::from)?;
+        self.sync_runtime_session_refs(&runtime);
+        Ok(drained)
     }
 
     pub(crate) fn schedule_runtime_steer(
@@ -869,6 +904,35 @@ mod tests {
         }
     }
 
+    #[derive(Clone, Default)]
+    struct RecordingPromptBackend {
+        requests: Arc<Mutex<Vec<ModelRequest>>>,
+    }
+
+    impl RecordingPromptBackend {
+        fn requests(&self) -> Vec<ModelRequest> {
+            self.requests.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait]
+    impl ModelBackend for RecordingPromptBackend {
+        async fn stream_turn(
+            &self,
+            request: ModelRequest,
+        ) -> RuntimeResult<BoxStream<'static, RuntimeResult<ModelEvent>>> {
+            self.requests.lock().unwrap().push(request);
+            Ok(stream::iter(vec![Ok(ModelEvent::ResponseComplete {
+                stop_reason: Some("stop".to_string()),
+                message_id: None,
+                continuation: None,
+                usage: None,
+                reasoning: Vec::new(),
+            })])
+            .boxed())
+        }
+    }
+
     struct NoopSubagentExecutor;
 
     #[async_trait]
@@ -1135,6 +1199,55 @@ mod tests {
             SessionEventKind::SessionStart { reason }
                 if reason.as_deref() == Some("operator_new_session")
         )));
+    }
+
+    #[tokio::test]
+    async fn queued_prompts_are_drained_by_runtime_owned_queue() {
+        let dir = tempfile::tempdir().unwrap();
+        let backend = RecordingPromptBackend::default();
+        let store = Arc::new(InMemorySessionStore::new());
+        let runtime = AgentRuntimeBuilder::new(Arc::new(backend.clone()), store.clone())
+            .hook_runner(Arc::new(HookRunner::default()))
+            .tool_context(ToolExecutionContext {
+                workspace_root: dir.path().to_path_buf(),
+                workspace_only: true,
+                ..Default::default()
+            })
+            .build();
+        let mut startup = startup_snapshot(dir.path());
+        startup.active_session_ref = runtime.session_id().to_string();
+        startup.root_agent_session_id = runtime.agent_session_id().to_string();
+        let session = CodeAgentSession::new(
+            runtime,
+            None,
+            Arc::new(NoopSubagentExecutor),
+            store,
+            Vec::new(),
+            ApprovalCoordinator::default(),
+            SessionEventStream::default(),
+            startup,
+            Vec::<Skill>::new(),
+        );
+
+        let queued_id = session.queue_prompt_command("second").await.unwrap();
+        assert!(!queued_id.is_empty());
+        assert_eq!(session.queued_command_count(), 1);
+
+        session
+            .apply_control(RuntimeCommand::Prompt {
+                prompt: "first".to_string(),
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(session.queued_command_count(), 0);
+        let requests = backend.requests();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].messages.last().unwrap().text_content(), "first");
+        assert_eq!(
+            requests[1].messages.last().unwrap().text_content(),
+            "second"
+        );
     }
 
     #[tokio::test]

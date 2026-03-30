@@ -193,7 +193,8 @@ not have useful extensions, including `Dockerfile*`, `Containerfile*`, `go.mod`,
 ## TUI shortcuts
 
 - `Ctrl+T` cycles the active model reasoning effort through the levels exposed by the active model.
-- While a turn is running, `Enter` queues a steer note and `Tab` queues a follow-up prompt.
+- While a turn is running, `Enter` schedules a safe-point steer note and `Tab`
+  enqueues a follow-up prompt into the runtime-owned control queue.
 - `/resources`
 - `/prompt <server> <name>`
 - `/resource <server> <uri>`

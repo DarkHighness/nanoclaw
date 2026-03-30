@@ -31,7 +31,7 @@ use render::{main_pane_viewport_height, render};
 pub(crate) use state::SharedUiState;
 use state::TuiState;
 
-use agent::{RuntimeCommand, RuntimeCommandQueue};
+use agent::RuntimeCommand;
 use anyhow::Result;
 use crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
@@ -54,7 +54,6 @@ pub struct CodeAgentTui {
     initial_prompt: Option<String>,
     ui_state: SharedUiState,
     event_renderer: SharedRenderObserver,
-    command_queue: RuntimeCommandQueue,
     turn_task: Option<JoinHandle<Result<()>>>,
     operator_task: Option<JoinHandle<Result<OperatorTaskOutcome>>>,
 }
@@ -81,7 +80,6 @@ impl CodeAgentTui {
             initial_prompt,
             event_renderer: SharedRenderObserver::new(ui_state.clone()),
             ui_state,
-            command_queue: RuntimeCommandQueue::new(),
             turn_task: None,
             operator_task: None,
         }
@@ -127,6 +125,7 @@ impl CodeAgentTui {
             self.maybe_finish_turn().await?;
             self.apply_backend_events();
             self.maybe_finish_operator_task().await?;
+            self.sync_queue_depth();
 
             let snapshot = self.ui_state.snapshot();
             let approval = self.session.approval_prompt();
@@ -534,12 +533,9 @@ impl CodeAgentTui {
                 }
             }
         }
-        self.sync_queue_depth().await;
-        if self.turn_task.is_none() {
-            if let Some(queued) = self.command_queue.pop_next() {
-                self.sync_queue_depth().await;
-                self.start_command(queued.command).await;
-            }
+        self.sync_queue_depth();
+        if self.turn_task.is_none() && self.session.queued_command_count() > 0 {
+            self.start_runtime_queue_drain();
         }
         Ok(())
     }
@@ -617,17 +613,30 @@ impl CodeAgentTui {
     }
 
     async fn queue_prompt_behind_active_turn(&mut self, prompt: String) {
-        let queued = self.command_queue.push_prompt(prompt.clone()).await;
-        let depth = self.command_queue.len().await;
-        self.ui_state.mutate(|state| {
-            state.session.queued_commands = depth;
-            state.status = "Queued prompt behind the active turn".to_string();
-            state.push_activity(format!(
-                "queued prompt {}: {}",
-                queued.id,
-                state::preview_text(&prompt, 40)
-            ));
-        });
+        match self.session.queue_prompt_command(prompt.clone()).await {
+            Ok(queued_id) => {
+                let depth = self.session.queued_command_count();
+                self.ui_state.mutate(|state| {
+                    state.session.queued_commands = depth;
+                    state.status = "Queued prompt behind the active turn".to_string();
+                    state.push_activity(format!(
+                        "queued prompt {}: {}",
+                        queued_id,
+                        state::preview_text(&prompt, 40)
+                    ));
+                });
+            }
+            Err(error) => {
+                let message = error.to_string();
+                self.ui_state.mutate(|state| {
+                    state.status = format!("Failed to queue prompt: {message}");
+                    state.push_activity(format!(
+                        "failed to queue prompt: {}",
+                        state::preview_text(&message, 56)
+                    ));
+                });
+            }
+        }
     }
 
     async fn schedule_runtime_steer_while_active(
@@ -671,6 +680,28 @@ impl CodeAgentTui {
         self.turn_task = Some(spawn_local(
             async move { session.apply_control(command).await },
         ));
+    }
+
+    fn start_runtime_queue_drain(&mut self) {
+        // The host only restarts draining once the active task goes idle. The
+        // runtime still owns dequeue order and queue depth, so the TUI reads
+        // the current depth instead of speculating about the next popped item.
+        let queued = self.session.queued_command_count();
+        self.ui_state.mutate(|state| {
+            state.show_transcript_pane();
+            state.follow_transcript = true;
+            state.transcript_scroll = u16::MAX;
+            state.turn_running = true;
+            state.turn_started_at = Some(Instant::now());
+            state.active_tool_label = None;
+            state.session.queued_commands = queued;
+            state.status = "Working".to_string();
+        });
+
+        let session = self.session.clone();
+        self.turn_task = Some(spawn_local(async move {
+            session.drain_queued_controls().await.map(|_| ())
+        }));
     }
 
     fn cycle_model_reasoning_effort(&mut self) {
@@ -942,7 +973,7 @@ impl CodeAgentTui {
                     return Ok(false);
                 }
 
-                let dropped_commands = self.command_queue.clear();
+                let dropped_commands = self.session.clear_queued_commands().await;
                 let outcome = self
                     .session
                     .apply_session_operation(SessionOperation::StartFresh)
@@ -1498,8 +1529,8 @@ impl CodeAgentTui {
         self.ui_state.replace(startup);
     }
 
-    async fn sync_queue_depth(&self) {
-        let depth = self.command_queue.len().await;
+    fn sync_queue_depth(&self) {
+        let depth = self.session.queued_command_count();
         self.ui_state
             .mutate(|state| state.session.queued_commands = depth);
     }
