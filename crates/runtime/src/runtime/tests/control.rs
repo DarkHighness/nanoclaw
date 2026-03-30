@@ -1,4 +1,4 @@
-use super::support::RecordingObserver;
+use super::support::{RecordingBackend, RecordingObserver};
 use crate::{
     AgentRuntimeBuilder, HookRunner, ModelBackend, Result, RuntimeCommand, RuntimeProgressEvent,
     RuntimeSteerMailbox,
@@ -325,6 +325,42 @@ async fn runtime_apply_control_runs_prompt_and_steer_commands() {
     assert_eq!(transcript[0].text_content(), "prefer terse answers");
     assert_eq!(transcript[1].text_content(), "hello");
     assert_eq!(transcript[2].text_content(), "hello");
+}
+
+#[tokio::test]
+async fn runtime_apply_control_drains_runtime_prompt_queue_before_returning_idle() {
+    let dir = tempfile::tempdir().unwrap();
+    let backend = RecordingBackend::default();
+    let store = Arc::new(InMemorySessionStore::new());
+    let mut runtime = AgentRuntimeBuilder::new(Arc::new(backend.clone()), store)
+        .hook_runner(Arc::new(HookRunner::default()))
+        .tool_context(ToolExecutionContext {
+            workspace_root: dir.path().to_path_buf(),
+            workspace_only: true,
+            model_context_window_tokens: Some(128_000),
+            ..Default::default()
+        })
+        .build();
+
+    runtime.command_queue().push_prompt("second").await;
+
+    let outcome = runtime
+        .apply_control(RuntimeCommand::Prompt {
+            prompt: "first".to_string(),
+        })
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(outcome.assistant_text, "ok");
+    assert!(runtime.command_queue().is_empty());
+    let requests = backend.requests();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0].messages.last().unwrap().text_content(), "first");
+    assert_eq!(
+        requests[1].messages.last().unwrap().text_content(),
+        "second"
+    );
 }
 
 #[tokio::test]

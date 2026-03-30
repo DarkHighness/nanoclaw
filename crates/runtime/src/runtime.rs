@@ -8,9 +8,10 @@ mod turn_start;
 
 use crate::{
     CompactionConfig, ConversationCompactor, HookInvocationBatch, HookRunner, LoopDetectionConfig,
-    ModelBackend, NoopRuntimeObserver, Result, RuntimeCommand, RuntimeObserver,
-    RuntimeProgressEvent, RuntimeSession, RuntimeSteerMailbox, RuntimeSteerMailboxReceiver,
-    ToolApprovalHandler, ToolApprovalPolicy, ToolLoopDetector, append_transcript_message,
+    ModelBackend, NoopRuntimeObserver, Result, RuntimeCommand, RuntimeCommandQueue,
+    RuntimeCommandQueueReceiver, RuntimeObserver, RuntimeProgressEvent, RuntimeSession,
+    RuntimeSteerMailbox, RuntimeSteerMailboxReceiver, ToolApprovalHandler, ToolApprovalPolicy,
+    ToolLoopDetector, append_transcript_message, runtime_command_queue_channel,
     runtime_steer_mailbox_channel,
 };
 use skills::SkillCatalog;
@@ -35,6 +36,8 @@ pub struct AgentRuntime {
     hook_registrations: Vec<HookRegistration>,
     pending_additional_context: Vec<String>,
     pending_injected_instructions: Vec<String>,
+    command_queue: RuntimeCommandQueue,
+    command_queue_rx: RuntimeCommandQueueReceiver,
     steer_mailbox: RuntimeSteerMailbox,
     steer_mailbox_rx: RuntimeSteerMailboxReceiver,
     session: RuntimeSession,
@@ -64,6 +67,7 @@ impl AgentRuntime {
         _skill_catalog: SkillCatalog,
         session: RuntimeSession,
     ) -> Self {
+        let (command_queue, command_queue_rx) = runtime_command_queue_channel();
         let (steer_mailbox, steer_mailbox_rx) = runtime_steer_mailbox_channel();
         Self {
             backend,
@@ -80,6 +84,8 @@ impl AgentRuntime {
             hook_registrations,
             pending_additional_context: Vec::new(),
             pending_injected_instructions: Vec::new(),
+            command_queue,
+            command_queue_rx,
             steer_mailbox,
             steer_mailbox_rx,
             session,
@@ -121,6 +127,11 @@ impl AgentRuntime {
     }
 
     #[must_use]
+    pub fn command_queue(&self) -> RuntimeCommandQueue {
+        self.command_queue.clone()
+    }
+
+    #[must_use]
     pub fn token_ledger(&self) -> types::TokenLedgerSnapshot {
         self.session.token_ledger.clone()
     }
@@ -146,6 +157,7 @@ impl AgentRuntime {
 
         self.session = RuntimeSession::new(types::SessionId::new(), types::AgentSessionId::new());
         self.clear_pending_request_effects();
+        self.clear_pending_runtime_commands();
         self.clear_pending_runtime_steers();
         self.tool_loop_detector.reset();
 
@@ -177,6 +189,7 @@ impl AgentRuntime {
         session.token_ledger = types::TokenLedgerSnapshot::default();
         self.session = session;
         self.clear_pending_request_effects();
+        self.clear_pending_runtime_commands();
         self.clear_pending_runtime_steers();
         self.tool_loop_detector.reset();
 
@@ -337,7 +350,7 @@ impl AgentRuntime {
         command: RuntimeCommand,
         observer: &mut dyn RuntimeObserver,
     ) -> Result<Option<RunTurnOutcome>> {
-        match command {
+        let outcome = match command {
             RuntimeCommand::Prompt { prompt } => self
                 .run_user_prompt_with_observer(prompt, observer)
                 .await
@@ -346,7 +359,9 @@ impl AgentRuntime {
                 self.steer_with_observer(message, reason, observer).await?;
                 Ok(None)
             }
-        }
+        }?;
+        let _ = self.drain_queued_controls_with_observer(observer).await?;
+        Ok(outcome)
     }
 
     pub async fn run_user_prompt_with_observer(
@@ -384,6 +399,46 @@ impl AgentRuntime {
             applied_any = true;
         }
         Ok(applied_any)
+    }
+
+    pub async fn drain_queued_controls(&mut self) -> Result<bool> {
+        let mut observer = NoopRuntimeObserver;
+        self.drain_queued_controls_with_observer(&mut observer)
+            .await
+    }
+
+    pub async fn drain_queued_controls_with_observer(
+        &mut self,
+        observer: &mut dyn RuntimeObserver,
+    ) -> Result<bool> {
+        let mut applied_any = false;
+        // Queued prompts/steers live inside the runtime control plane so an
+        // active driver task can drain them before yielding back to the host.
+        // The host may trigger this method at an idle edge, but it never owns
+        // dequeue order or command consumption itself.
+        while let Some(queued) = self.command_queue_rx.pop_next() {
+            applied_any = true;
+            match queued.command {
+                RuntimeCommand::Prompt { prompt } => {
+                    let _ = self.run_user_prompt_with_observer(prompt, observer).await?;
+                }
+                RuntimeCommand::Steer { message, reason } => {
+                    self.steer_with_observer(message, reason, observer).await?;
+                }
+            }
+        }
+        Ok(applied_any)
+    }
+
+    fn clear_pending_runtime_commands(&mut self) {
+        let _ = self.command_queue_rx.clear();
+    }
+
+    pub fn clear_pending_runtime_commands_for_host(&mut self) -> usize {
+        // Session-switch operations still originate in the host, but the queue
+        // itself remains runtime-owned. This narrow escape hatch only supports
+        // explicit destructive lifecycle boundaries such as /new or /resume.
+        self.command_queue_rx.clear()
     }
 
     fn clear_pending_runtime_steers(&mut self) {

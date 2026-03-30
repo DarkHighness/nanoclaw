@@ -2,7 +2,10 @@ use tokio::sync::mpsc;
 use types::new_opaque_id;
 
 use std::fmt;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RuntimeCommand {
@@ -78,21 +81,16 @@ pub fn runtime_steer_mailbox_channel() -> (RuntimeSteerMailbox, RuntimeSteerMail
 
 const RUNTIME_COMMAND_QUEUE_CAPACITY: usize = 64;
 
+#[derive(Clone)]
 pub struct RuntimeCommandQueue {
     sender: mpsc::Sender<QueuedRuntimeCommand>,
-    receiver: mpsc::Receiver<QueuedRuntimeCommand>,
-    len: AtomicUsize,
+    len: Arc<AtomicUsize>,
 }
 
 impl RuntimeCommandQueue {
     #[must_use]
-    pub fn new() -> Self {
-        let (sender, receiver) = mpsc::channel(RUNTIME_COMMAND_QUEUE_CAPACITY);
-        Self {
-            sender,
-            receiver,
-            len: AtomicUsize::new(0),
-        }
+    pub fn new(sender: mpsc::Sender<QueuedRuntimeCommand>, len: Arc<AtomicUsize>) -> Self {
+        Self { sender, len }
     }
 
     pub async fn push(&self, command: RuntimeCommand) -> QueuedRuntimeCommand {
@@ -130,6 +128,28 @@ impl RuntimeCommandQueue {
         .await
     }
 
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.len.load(Ordering::Relaxed)
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+pub struct RuntimeCommandQueueReceiver {
+    receiver: mpsc::Receiver<QueuedRuntimeCommand>,
+    len: Arc<AtomicUsize>,
+}
+
+impl RuntimeCommandQueueReceiver {
+    #[must_use]
+    pub fn new(receiver: mpsc::Receiver<QueuedRuntimeCommand>, len: Arc<AtomicUsize>) -> Self {
+        Self { receiver, len }
+    }
+
     pub fn pop_next(&mut self) -> Option<QueuedRuntimeCommand> {
         let next = self.receiver.try_recv().ok();
         if next.is_some() {
@@ -145,38 +165,41 @@ impl RuntimeCommandQueue {
         }
         cleared
     }
+}
 
-    pub async fn len(&self) -> usize {
-        self.len.load(Ordering::Relaxed)
-    }
-
-    pub async fn is_empty(&self) -> bool {
-        self.len().await == 0
-    }
+#[must_use]
+pub fn runtime_command_queue_channel() -> (RuntimeCommandQueue, RuntimeCommandQueueReceiver) {
+    let (sender, receiver) = mpsc::channel(RUNTIME_COMMAND_QUEUE_CAPACITY);
+    let len = Arc::new(AtomicUsize::new(0));
+    (
+        RuntimeCommandQueue::new(sender, len.clone()),
+        RuntimeCommandQueueReceiver::new(receiver, len),
+    )
 }
 
 impl Default for RuntimeCommandQueue {
     fn default() -> Self {
-        Self::new()
+        let (queue, _) = runtime_command_queue_channel();
+        queue
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{RuntimeCommand, RuntimeCommandQueue, runtime_steer_mailbox_channel};
+    use super::{RuntimeCommand, runtime_command_queue_channel, runtime_steer_mailbox_channel};
 
     #[tokio::test]
     async fn queue_preserves_fifo_order() {
-        let mut queue = RuntimeCommandQueue::new();
+        let (queue, mut receiver) = runtime_command_queue_channel();
         let first = queue.push_prompt("one").await;
         let second = queue
             .push_steer("use concise output", Some("manual".to_string()))
             .await;
 
-        assert_eq!(queue.len().await, 2);
+        assert_eq!(queue.len(), 2);
 
-        let popped_first = queue.pop_next().unwrap();
-        let popped_second = queue.pop_next().unwrap();
+        let popped_first = receiver.pop_next().unwrap();
+        let popped_second = receiver.pop_next().unwrap();
         assert_eq!(popped_first.id, first.id);
         assert_eq!(popped_second.id, second.id);
         assert!(matches!(
@@ -184,20 +207,20 @@ mod tests {
             RuntimeCommand::Steer { message, reason }
                 if message == "use concise output" && reason.as_deref() == Some("manual")
         ));
-        assert!(queue.is_empty().await);
+        assert!(queue.is_empty());
     }
 
     #[tokio::test]
     async fn clear_drains_pending_commands() {
-        let mut queue = RuntimeCommandQueue::new();
+        let (queue, mut receiver) = runtime_command_queue_channel();
         queue.push_prompt("one").await;
         queue
             .push_steer("use concise output", Some("manual".to_string()))
             .await;
 
-        assert_eq!(queue.clear(), 2);
-        assert!(queue.pop_next().is_none());
-        assert!(queue.is_empty().await);
+        assert_eq!(receiver.clear(), 2);
+        assert!(receiver.pop_next().is_none());
+        assert!(queue.is_empty());
     }
 
     #[tokio::test]
