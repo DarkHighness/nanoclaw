@@ -192,7 +192,7 @@ not have useful extensions, including `Dockerfile*`, `Containerfile*`, `go.mod`,
 
 ## TUI shortcuts
 
-- `Ctrl+T` cycles the active model reasoning effort when the current provider/model exposes a safe effort control surface.
+- `Ctrl+T` cycles the active model reasoning effort through the levels exposed by the active model.
 - While a turn is running, `Enter` queues a steer note and `Tab` queues a follow-up prompt.
 - `/resources`
 - `/prompt <server> <name>`
@@ -222,6 +222,17 @@ can now be reattached into the live runtime, and the resumed runtime receives a
 fresh active `AgentSessionId` bound to the original top-level `SessionId`.
 Older compacted histories that predate resume checkpoints still remain
 history-only.
+
+`/thinking` opens a picker when invoked without an explicit level. Hosts can
+also declare model-specific effort support in the core model config:
+
+```toml
+[models.gpt_5_4_default]
+provider = "openai"
+model = "gpt-5.4"
+reasoning_effort = "medium"
+supported_reasoning_efforts = ["low", "medium", "high"]
+```
 
 `/new` and `/clear` now perform the same backend-owned operation: they create a
 fresh active top-level session while keeping prior sessions in durable history

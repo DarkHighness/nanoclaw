@@ -162,6 +162,7 @@ pub(crate) async fn build_session_with_approval_mode(
     )
     .await?;
     let tool_names = runtime.tool_registry_names();
+    let supported_model_reasoning_efforts = model_backend.supported_reasoning_efforts();
     // Persisted history is still keyed by substrate `session_id`. Expose that ID as
     // the operator-facing session reference until the host grows a first-class
     // resumable session catalog above the raw runtime/store layer.
@@ -188,6 +189,7 @@ pub(crate) async fn build_session_with_approval_mode(
             provider_label: provider_label(&options.primary_profile),
             model: options.primary_profile.model.model.clone(),
             model_reasoning_effort: options.primary_profile.reasoning_effort.clone(),
+            supported_model_reasoning_efforts,
             tool_names,
             store_label,
             store_warning,

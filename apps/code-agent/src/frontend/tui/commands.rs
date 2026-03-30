@@ -106,7 +106,7 @@ const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
         section: "Session",
         name: "thinking",
         usage: "thinking [level]",
-        summary: "cycle or set thinking effort",
+        summary: "pick or set thinking effort",
     },
     SlashCommandSpec {
         section: "Session",
@@ -130,7 +130,7 @@ const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
         section: "Session",
         name: "steer",
         usage: "steer <notes>",
-        summary: "inject guidance",
+        summary: "queue interrupt-safe guidance",
     },
     SlashCommandSpec {
         section: "Session",
@@ -1052,7 +1052,7 @@ mod tests {
         assert!(
             lines
                 .iter()
-                .any(|line| line == "/thinking [level]  cycle or set thinking effort")
+                .any(|line| line == "/thinking [level]  pick or set thinking effort")
         );
         assert!(lines.iter().any(|line| line == "/clear  alias of /new"));
         assert!(

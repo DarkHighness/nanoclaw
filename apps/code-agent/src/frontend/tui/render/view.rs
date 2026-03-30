@@ -1,4 +1,4 @@
-use super::super::state::StatusLinePickerState;
+use super::super::state::{StatusLinePickerState, ThinkingEffortPickerState};
 use super::theme::{ASSISTANT, BORDER_ACTIVE, ERROR, HEADER, MUTED, SUBTLE, TEXT, USER, WARN};
 use crate::statusline::{StatusLineConfig, status_line_fields};
 use ratatui::style::{Color, Modifier, Style};
@@ -194,6 +194,68 @@ pub(super) fn build_statusline_picker_text(
     lines.push(Line::raw(""));
     lines.push(Line::from(Span::styled(
         "Changes apply immediately for this TUI session.",
+        Style::default().fg(SUBTLE),
+    )));
+    Text::from(lines)
+}
+
+pub(super) fn build_thinking_effort_picker_text(
+    current: Option<&str>,
+    supported: &[String],
+    picker: &ThinkingEffortPickerState,
+) -> Text<'static> {
+    let current = current.unwrap_or("default");
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled("thinking effort", Style::default().fg(HEADER)),
+            Span::styled(" · ", Style::default().fg(SUBTLE)),
+            Span::styled(current.to_string(), Style::default().fg(USER)),
+        ]),
+        Line::from(Span::styled(
+            "enter apply · ↑↓ move · esc close",
+            Style::default().fg(SUBTLE),
+        )),
+        Line::raw(""),
+    ];
+
+    if supported.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "No configurable thinking effort levels are available for this model.",
+            Style::default().fg(SUBTLE),
+        )));
+        return Text::from(lines);
+    }
+
+    for (index, level) in supported.iter().enumerate() {
+        let selected = picker.selected == index;
+        let active = Some(level.as_str()) == Some(current);
+        lines.push(Line::from(vec![
+            Span::styled(
+                if selected { "›" } else { " " },
+                Style::default().fg(if selected { USER } else { SUBTLE }),
+            ),
+            Span::raw(" "),
+            Span::styled(
+                if active { "[x]" } else { "[ ]" },
+                Style::default().fg(if active { ASSISTANT } else { SUBTLE }),
+            ),
+            Span::raw(" "),
+            Span::styled(
+                level.clone(),
+                Style::default()
+                    .fg(if selected { HEADER } else { TEXT })
+                    .add_modifier(if selected {
+                        Modifier::BOLD
+                    } else {
+                        Modifier::empty()
+                    }),
+            ),
+        ]));
+    }
+
+    lines.push(Line::raw(""));
+    lines.push(Line::from(Span::styled(
+        "Changes apply to the next model request in this TUI session.",
         Style::default().fg(SUBTLE),
     )));
     Text::from(lines)

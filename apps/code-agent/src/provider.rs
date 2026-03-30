@@ -86,10 +86,7 @@ impl MutableAgentBackend {
 
     pub(crate) fn supported_reasoning_efforts(&self) -> Vec<String> {
         let state = self.state.read().unwrap();
-        supported_reasoning_efforts(&state.config.model.provider, &state.config.model.model)
-            .iter()
-            .map(|level| (*level).to_string())
-            .collect()
+        supported_reasoning_efforts(&state.config.model)
     }
 
     pub(crate) fn reasoning_effort(&self) -> Option<String> {
@@ -360,11 +357,25 @@ fn nested_object<'a>(object: &'a mut Map<String, Value>, key: &str) -> &'a mut M
         .expect("nested reasoning config must be an object")
 }
 
-fn supported_reasoning_efforts(provider: &ProviderKind, model: &str) -> &'static [&'static str] {
+fn supported_reasoning_efforts(model: &ResolvedModel) -> Vec<String> {
+    if !model.supported_reasoning_efforts.is_empty() {
+        return model.supported_reasoning_efforts.clone();
+    }
+
     // The TUI cycles only through the levels we can describe consistently
     // across providers today. Model-specific extremes (for example OpenAI's
     // newer `xhigh` or provider-only budget knobs) can still be added later
     // once the host grows a richer picker than a single cycle shortcut.
+    default_supported_reasoning_efforts(&model.provider, &model.model)
+        .iter()
+        .map(|level| (*level).to_string())
+        .collect()
+}
+
+fn default_supported_reasoning_efforts(
+    provider: &ProviderKind,
+    model: &str,
+) -> &'static [&'static str] {
     match provider {
         ProviderKind::OpenAi if model.starts_with("gpt-5-pro") => OPENAI_HIGH_ONLY_REASONING_LEVELS,
         ProviderKind::OpenAi if model.starts_with("gpt-5.1") || model.starts_with("gpt-5.2") => {
@@ -441,6 +452,7 @@ mod tests {
                 compact_preserve_recent_messages: 8,
                 temperature: None,
                 reasoning_effort: Some("medium".to_string()),
+                supported_reasoning_efforts: Vec::new(),
                 additional_params: None,
                 capabilities: ModelCapabilitiesConfig::default(),
             },
@@ -501,6 +513,7 @@ mod tests {
                 compact_preserve_recent_messages: 8,
                 temperature: None,
                 reasoning_effort: Some("medium".to_string()),
+                supported_reasoning_efforts: Vec::new(),
                 additional_params: None,
                 capabilities: ModelCapabilitiesConfig::default(),
             },

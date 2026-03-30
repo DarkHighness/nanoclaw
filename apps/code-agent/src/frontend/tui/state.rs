@@ -24,6 +24,7 @@ pub(crate) struct SessionSummary {
     pub(crate) provider_label: String,
     pub(crate) model: String,
     pub(crate) model_reasoning_effort: Option<String>,
+    pub(crate) supported_model_reasoning_efforts: Vec<String>,
     pub(crate) workspace_root: PathBuf,
     pub(crate) git: GitSnapshot,
     pub(crate) tool_names: Vec<String>,
@@ -58,6 +59,11 @@ pub(crate) struct StatusLinePickerState {
 }
 
 #[derive(Clone, Debug, Default)]
+pub(crate) struct ThinkingEffortPickerState {
+    pub(crate) selected: usize,
+}
+
+#[derive(Clone, Debug, Default)]
 pub(crate) struct TuiState {
     pub(crate) session: SessionSummary,
     pub(crate) main_pane: MainPaneMode,
@@ -78,6 +84,7 @@ pub(crate) struct TuiState {
     pub(crate) active_tool_label: Option<String>,
     pub(crate) todo_items: Vec<TodoEntry>,
     pub(crate) statusline_picker: Option<StatusLinePickerState>,
+    pub(crate) thinking_effort_picker: Option<ThinkingEffortPickerState>,
 }
 
 impl TuiState {
@@ -87,11 +94,13 @@ impl TuiState {
         self.inspector = lines;
         self.inspector_scroll = 0;
         self.statusline_picker = None;
+        self.thinking_effort_picker = None;
     }
 
     pub(crate) fn show_transcript_pane(&mut self) {
         self.main_pane = MainPaneMode::Transcript;
         self.statusline_picker = None;
+        self.thinking_effort_picker = None;
     }
 
     pub(crate) fn open_statusline_picker(&mut self) {
@@ -99,13 +108,36 @@ impl TuiState {
         self.inspector_title = "Status Line".to_string();
         self.inspector.clear();
         self.inspector_scroll = 0;
+        self.thinking_effort_picker = None;
         self.statusline_picker
             .get_or_insert_with(StatusLinePickerState::default)
             .selected = 0;
     }
 
+    pub(crate) fn open_thinking_effort_picker(&mut self) {
+        self.main_pane = MainPaneMode::View;
+        self.inspector_title = "Thinking Effort".to_string();
+        self.inspector.clear();
+        self.inspector_scroll = 0;
+        self.statusline_picker = None;
+        let selected = self
+            .session
+            .supported_model_reasoning_efforts
+            .iter()
+            .position(|level| {
+                Some(level.as_str()) == self.session.model_reasoning_effort.as_deref()
+            })
+            .unwrap_or(0);
+        self.thinking_effort_picker = Some(ThinkingEffortPickerState { selected });
+    }
+
     pub(crate) fn close_statusline_picker(&mut self) {
         self.statusline_picker = None;
+        self.show_transcript_pane();
+    }
+
+    pub(crate) fn close_thinking_effort_picker(&mut self) {
+        self.thinking_effort_picker = None;
         self.show_transcript_pane();
     }
 
@@ -136,6 +168,30 @@ impl TuiState {
         let field = self.selected_statusline_field()?;
         let enabled = self.session.statusline.toggle(field);
         Some((field, enabled))
+    }
+
+    pub(crate) fn move_thinking_effort_picker(&mut self, backwards: bool) -> bool {
+        let Some(picker) = self.thinking_effort_picker.as_mut() else {
+            return false;
+        };
+        let total = self.session.supported_model_reasoning_efforts.len();
+        if total == 0 {
+            return false;
+        }
+        picker.selected = if backwards {
+            picker.selected.checked_sub(1).unwrap_or(total - 1)
+        } else {
+            (picker.selected + 1) % total
+        };
+        true
+    }
+
+    pub(crate) fn selected_thinking_effort(&self) -> Option<String> {
+        let picker = self.thinking_effort_picker.as_ref()?;
+        self.session
+            .supported_model_reasoning_efforts
+            .get(picker.selected)
+            .cloned()
     }
 
     pub(crate) fn push_activity(&mut self, line: impl Into<String>) {

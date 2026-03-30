@@ -153,6 +153,9 @@ impl CodeAgentTui {
                     if self.handle_statusline_picker_key(key) {
                         continue;
                     }
+                    if self.handle_thinking_effort_picker_key(key) {
+                        continue;
+                    }
                     match key.code {
                         KeyCode::Tab => {
                             let snapshot = self.ui_state.snapshot();
@@ -417,6 +420,65 @@ impl CodeAgentTui {
         }
     }
 
+    fn handle_thinking_effort_picker_key(&mut self, key: KeyEvent) -> bool {
+        let snapshot = self.ui_state.snapshot();
+        if snapshot.thinking_effort_picker.is_none() || !snapshot.input.is_empty() {
+            return false;
+        }
+
+        match key.code {
+            KeyCode::Up => {
+                self.ui_state.mutate(|state| {
+                    let _ = state.move_thinking_effort_picker(true);
+                });
+                true
+            }
+            KeyCode::Down => {
+                self.ui_state.mutate(|state| {
+                    let _ = state.move_thinking_effort_picker(false);
+                });
+                true
+            }
+            KeyCode::Home => {
+                self.ui_state.mutate(|state| {
+                    if let Some(picker) = state.thinking_effort_picker.as_mut() {
+                        picker.selected = 0;
+                    }
+                });
+                true
+            }
+            KeyCode::End => {
+                self.ui_state.mutate(|state| {
+                    if let Some(picker) = state.thinking_effort_picker.as_mut() {
+                        picker.selected = state
+                            .session
+                            .supported_model_reasoning_efforts
+                            .len()
+                            .saturating_sub(1);
+                    }
+                });
+                true
+            }
+            KeyCode::Enter => {
+                if let Some(level) = snapshot.selected_thinking_effort() {
+                    self.set_model_reasoning_effort(&level);
+                }
+                self.ui_state
+                    .mutate(|state| state.close_thinking_effort_picker());
+                true
+            }
+            KeyCode::Esc => {
+                self.ui_state.mutate(|state| {
+                    state.close_thinking_effort_picker();
+                    state.status = "Closed thinking effort picker".to_string();
+                    state.push_activity("closed thinking effort picker");
+                });
+                true
+            }
+            _ => false,
+        }
+    }
+
     async fn maybe_finish_turn(&mut self) -> Result<()> {
         let finished = self
             .turn_task
@@ -576,9 +638,9 @@ impl CodeAgentTui {
         let depth = self.command_queue.len().await;
         self.ui_state.mutate(|state| {
             state.session.queued_commands = depth;
-            state.status = "Queued steer behind the active turn".to_string();
+            state.status = "Queued steer for the next interrupt-safe boundary".to_string();
             state.push_activity(format!(
-                "queued steer {}: {}",
+                "queued interrupt-safe steer {}: {}",
                 queued.id,
                 state::preview_text(&message, 40)
             ));
@@ -684,7 +746,11 @@ impl CodeAgentTui {
             SlashCommand::Thinking { effort } => {
                 match effort.as_deref() {
                     Some(effort) => self.set_model_reasoning_effort(effort),
-                    None => self.cycle_model_reasoning_effort(),
+                    None => self.ui_state.mutate(|state| {
+                        state.open_thinking_effort_picker();
+                        state.status = "Opened thinking effort picker".to_string();
+                        state.push_activity("opened thinking effort picker");
+                    }),
                 }
                 Ok(false)
             }
@@ -1335,6 +1401,9 @@ impl CodeAgentTui {
                 provider_label: snapshot.provider_label.clone(),
                 model: snapshot.model.clone(),
                 model_reasoning_effort: snapshot.model_reasoning_effort.clone(),
+                supported_model_reasoning_efforts: snapshot
+                    .supported_model_reasoning_efforts
+                    .clone(),
                 workspace_root: workspace_root.clone(),
                 git: state::git_snapshot(&workspace_root, snapshot.host_process_surfaces_allowed),
                 tool_names: snapshot.tool_names.clone(),
@@ -1485,7 +1554,7 @@ fn build_startup_inspector(session: &state::SessionSummary) -> Vec<String> {
         "## Next".to_string(),
         "/help [query]  browse commands".to_string(),
         "/statusline  choose footer items".to_string(),
-        "/thinking [level]  cycle or set model effort".to_string(),
+        "/thinking [level]  pick or set model effort".to_string(),
         "/details  toggle tool details".to_string(),
         "/sessions  browse history".to_string(),
         "/agent_sessions  inspect or resume agents".to_string(),
@@ -1580,6 +1649,11 @@ mod tests {
             provider_label: "openai".to_string(),
             model: "gpt-5.4".to_string(),
             model_reasoning_effort: Some("high".to_string()),
+            supported_model_reasoning_efforts: vec![
+                "low".to_string(),
+                "medium".to_string(),
+                "high".to_string(),
+            ],
             workspace_root: PathBuf::from("/workspace"),
             git: Default::default(),
             tool_names: vec!["read".to_string(), "write".to_string()],
@@ -1617,7 +1691,7 @@ mod tests {
         assert!(
             lines
                 .iter()
-                .any(|line| line == "/thinking [level]  cycle or set model effort")
+                .any(|line| line == "/thinking [level]  pick or set model effort")
         );
         assert!(
             lines

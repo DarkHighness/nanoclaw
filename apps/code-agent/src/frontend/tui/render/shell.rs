@@ -3,7 +3,10 @@ use super::chrome::build_side_rail_lines;
 use super::shared::clamp_scroll;
 use super::theme::{MAIN_BG, MUTED, TEXT};
 use super::transcript::render_transcript;
-use super::view::{build_inspector_text, build_statusline_picker_text, should_render_view_title};
+use super::view::{
+    build_inspector_text, build_statusline_picker_text, build_thinking_effort_picker_text,
+    should_render_view_title,
+};
 use ratatui::layout::{Constraint, Margin, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span, Text};
@@ -64,6 +67,12 @@ fn render_main_view(frame: &mut ratatui::Frame<'_>, area: Rect, state: &TuiState
     };
     let text = if let Some(picker) = state.statusline_picker.as_ref() {
         build_statusline_picker_text(&state.session.statusline, picker)
+    } else if let Some(picker) = state.thinking_effort_picker.as_ref() {
+        build_thinking_effort_picker_text(
+            state.session.model_reasoning_effort.as_deref(),
+            &state.session.supported_model_reasoning_efforts,
+            picker,
+        )
     } else {
         let mut lines = Vec::new();
         if should_render_view_title(title, &state.inspector) {
