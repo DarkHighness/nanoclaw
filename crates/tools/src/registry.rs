@@ -37,6 +37,11 @@ impl DynamicTool {
             handler,
         }
     }
+
+    #[must_use]
+    pub fn from_tool_spec(spec: ToolSpec, handler: DynamicToolHandler) -> Self {
+        Self { spec, handler }
+    }
 }
 
 #[async_trait]

@@ -73,8 +73,10 @@ async fn stdio_server_supports_catalog_tool_prompt_and_resource_round_trips() {
             server_name: "fixture".to_string()
         }
     );
-    assert_eq!(tool.annotations.get("readOnlyHint"), Some(&json!(true)));
-    assert_eq!(tool.annotations.get("openWorldHint"), Some(&json!(false)));
+    assert!(tool.approval.read_only);
+    assert!(!tool.approval.mutates_state);
+    assert_eq!(tool.approval.idempotent, Some(true));
+    assert!(!tool.approval.open_world);
     assert!(tool.output_schema.is_some());
 
     assert_eq!(server.catalog.prompts.len(), 1);

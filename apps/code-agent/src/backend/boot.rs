@@ -15,7 +15,8 @@ use crate::provider::{
 };
 use agent::mcp::{
     ConnectedMcpServer, McpConnectOptions, McpServerConfig, McpTransportConfig,
-    catalog_tools_as_registry_entries, connect_and_catalog_mcp_servers_with_options,
+    catalog_resource_tools_as_registry_entries, catalog_tools_as_registry_entries,
+    connect_and_catalog_mcp_servers_with_options,
 };
 use agent::runtime::{
     CompactionConfig, ConversationCompactor, ModelBackend, ModelConversationCompactor,
@@ -312,6 +313,9 @@ async fn build_runtime(
             {
                 tools.register(adapter);
             }
+        }
+        for resource_tool in catalog_resource_tools_as_registry_entries(connected.clone()) {
+            tools.register(resource_tool);
         }
         connected_mcp_servers = connected;
     }

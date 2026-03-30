@@ -64,6 +64,8 @@ Completed so far:
 - runtime `ToolRegistry` now exposes a shared-state dynamic registration path
 - `DynamicToolSpec` now exists as a first-class protocol type for runtime-added
   local tools
+- connected MCP servers now project their resources through dedicated
+  `list_mcp_resources` and `read_mcp_resource` dynamic tools
 - `ToolResult` now includes first-class `attachments` and `continuation`
 - representative continuation emitters are live for:
   - `read` via file-window cursors
@@ -74,7 +76,6 @@ Completed so far:
 
 Still pending inside this pass:
 
-- MCP resource tools
 - plugin or directory-scan custom tools
 - planning and user-interaction tools such as `update_plan` and
   `request_user_input`
@@ -219,10 +220,7 @@ These are the highest-signal missing capabilities today:
 - `request_user_input`
 - a model-visible approval or permission-request tool contract
 - `tool_search` and `tool_suggest` style deferred tool discovery
-- dynamic tool registration as a protocol-level runtime feature
 - plugin or config-directory custom tool loading
-- MCP resources exposed as dedicated resource tools rather than only
-  host-mediated commands
 - image or binary-view tool surfaces comparable to `view_image`
 
 ### Implemented But Still Protocol-Weaker
@@ -238,8 +236,8 @@ industrial baseline:
 - `ToolResult` now has first-class attachments and a standard continuation
   envelope, but only part of the tool surface emits typed continuations so far
 - result metadata is still loosely typed and varies by tool family
-- tool loading is mostly bootstrap-time and static; there is no Codex-style
-  dynamic tool spec path and no OpenCode-style custom tool scan
+- tool loading still lacks the OpenCode-style plugin or custom tool scan even
+  though the substrate now has a Codex-style dynamic tool registration path
 - the agent tool family is useful but fragmented; naming and lifecycle are not
   yet normalized to one clear task/session/close/resume model
 - tool exposure is not yet model-aware in the OpenCode sense, where one model
@@ -497,7 +495,6 @@ new bundle of tools:
 
 Once the shared protocol exists, add the missing industrial extension surfaces:
 
-- MCP resource tools
 - plugin or custom tool loading
 - `update_plan`
 - `request_user_input`
@@ -513,16 +510,18 @@ Then add higher-variance parity work:
 
 ## Immediate Next Implementation Slice
 
-The shared protocol foundation is now in place. The next slice should stop
-expanding local tool contracts and instead close the biggest capability gaps.
+The shared protocol foundation is now in place, and MCP resources now have
+their own first-class tool surfaces. The next slice should stop expanding local
+tool contracts and instead close the remaining workflow and extension gaps.
 
 The recommended order is:
 
-1. expose MCP resources as dedicated resource tools
-2. add the first planning and interaction tools:
+1. add the first planning and interaction tools:
    `update_plan` and `request_user_input`
-3. only then decide whether freeform `apply_patch` or plugin/directory-scan
-   loading should land first
+2. decide whether plugin/directory-scan loading or freeform `apply_patch`
+   should land first
+3. only then add the remaining higher-variance parity work such as
+   `tool_search` or model-aware tool substitution rules
 
 That keeps the protocol phase bounded and moves the project toward the missing
 industrial surfaces instead of polishing the already-upgraded local results
