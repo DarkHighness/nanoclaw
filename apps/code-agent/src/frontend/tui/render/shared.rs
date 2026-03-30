@@ -15,3 +15,12 @@ pub(super) fn clamp_scroll(requested: u16, content_lines: usize, viewport_height
             .min(u16::MAX as usize) as u16
     }
 }
+
+pub(super) fn pending_control_reason_label(reason: Option<&str>) -> Option<String> {
+    let reason = reason.map(str::trim).filter(|value| !value.is_empty())?;
+    Some(match reason {
+        "inline_enter" => "from Enter while running".to_string(),
+        "manual_command" => "from /steer".to_string(),
+        _ => reason.replace('_', " "),
+    })
+}

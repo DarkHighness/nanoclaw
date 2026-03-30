@@ -503,17 +503,75 @@ fn live_progress_surfaces_latest_pending_controls() {
     assert!(
         rendered
             .iter()
-            .any(|line| line_text_for(line).contains("prompt write a regression test"))
+            .any(|line| line_text_for(line).contains("older queued prompt"))
     );
     assert!(
         rendered
             .iter()
-            .any(|line| line_text_for(line).contains("steer keep the diff small"))
+            .any(|line| line_text_for(line).contains("write a regression test"))
     );
     assert!(
         rendered
             .iter()
-            .any(|line| line_text_for(line).contains("inline_enter"))
+            .any(|line| line_text_for(line).contains("latest pending steer"))
+    );
+    assert!(
+        rendered
+            .iter()
+            .any(|line| line_text_for(line).contains("keep the diff small"))
+    );
+    assert!(
+        rendered
+            .iter()
+            .any(|line| line_text_for(line).contains("from Enter while running"))
+    );
+}
+
+#[test]
+fn live_progress_collapses_older_pending_controls_into_a_summary_line() {
+    let mut state = TuiState {
+        main_pane: MainPaneMode::Transcript,
+        turn_running: true,
+        status: "Working".to_string(),
+        ..TuiState::default()
+    };
+    state.pending_controls = vec![
+        PendingControlSummary {
+            id: "cmd_1".to_string(),
+            kind: PendingControlKind::Prompt,
+            preview: "first".to_string(),
+            reason: None,
+        },
+        PendingControlSummary {
+            id: "cmd_2".to_string(),
+            kind: PendingControlKind::Prompt,
+            preview: "second".to_string(),
+            reason: None,
+        },
+        PendingControlSummary {
+            id: "cmd_3".to_string(),
+            kind: PendingControlKind::Steer,
+            preview: "third".to_string(),
+            reason: Some("manual_command".to_string()),
+        },
+    ];
+
+    let rendered = live_progress_lines(&state);
+
+    assert!(
+        rendered
+            .iter()
+            .any(|line| line_text_for(line).contains("… 1 older pending"))
+    );
+    assert!(
+        rendered
+            .iter()
+            .any(|line| line_text_for(line).contains("latest pending steer"))
+    );
+    assert!(
+        rendered
+            .iter()
+            .any(|line| line_text_for(line).contains("from /steer"))
     );
 }
 

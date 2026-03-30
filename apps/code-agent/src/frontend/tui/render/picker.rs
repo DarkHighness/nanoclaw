@@ -1,6 +1,7 @@
 use super::super::state::{
     PendingControlEditorState, PendingControlPickerState, TuiState, preview_text,
 };
+use super::shared::pending_control_reason_label as format_pending_control_reason;
 use super::theme::{ACCENT, ASSISTANT, BOTTOM_PANE_BG, HEADER, MUTED, SUBTLE, TEXT, USER, WARN};
 use crate::frontend::tui::commands::{SlashCommandHint, SlashCommandSpec};
 use ratatui::layout::Margin;
@@ -351,7 +352,7 @@ fn build_pending_control_detail_row(
             Style::default().fg(SUBTLE),
         ),
     ];
-    if let Some(reason) = pending_control_reason_label(control.reason.as_deref()) {
+    if let Some(reason) = format_pending_control_reason(control.reason.as_deref()) {
         spans.push(Span::styled(" · ", Style::default().fg(SUBTLE)));
         spans.push(Span::styled(reason, Style::default().fg(MUTED)));
     }
@@ -373,15 +374,6 @@ fn pending_control_position_label(selected_index: usize, total: usize) -> String
         (index, count) if index + 1 == count => "latest item".to_string(),
         (index, count) => format!("item {} of {}", index + 1, count),
     }
-}
-
-fn pending_control_reason_label(reason: Option<&str>) -> Option<String> {
-    let reason = reason.map(str::trim).filter(|value| !value.is_empty())?;
-    Some(match reason {
-        "inline_enter" => "from Enter while running".to_string(),
-        "manual_command" => "from /steer".to_string(),
-        _ => reason.replace('_', " "),
-    })
 }
 
 struct VisiblePendingControlWindow<'a> {

@@ -1,4 +1,5 @@
 use super::super::state::{TuiState, preview_text};
+use super::shared::pending_control_reason_label;
 use super::statusline::status_color;
 use super::theme::{ASSISTANT, ERROR, HEADER, MUTED, SUBTLE, TEXT, USER, WARN};
 use super::transcript::TranscriptEntryKind;
@@ -296,7 +297,19 @@ fn pending_control_progress_lines(state: &TuiState) -> Vec<Line<'static>> {
         return Vec::new();
     }
 
-    state
+    let total = state.pending_controls.len();
+    let mut lines = Vec::new();
+    if total > 2 {
+        lines.push(Line::from(vec![
+            Span::styled("  ↳ ", Style::default().fg(SUBTLE)),
+            Span::styled(
+                format!("… {} older pending", total - 2),
+                Style::default().fg(SUBTLE),
+            ),
+        ]));
+    }
+
+    let recent_controls = state
         .pending_controls
         .iter()
         .rev()
@@ -304,30 +317,48 @@ fn pending_control_progress_lines(state: &TuiState) -> Vec<Line<'static>> {
         .collect::<Vec<_>>()
         .into_iter()
         .rev()
-        .map(|control| {
-            let (label, accent) = match control.kind {
-                crate::backend::PendingControlKind::Prompt => ("prompt", USER),
-                crate::backend::PendingControlKind::Steer => ("steer", ASSISTANT),
-            };
-            let mut spans = vec![
-                Span::styled("  ↳ ", Style::default().fg(SUBTLE)),
-                Span::styled(label, Style::default().fg(accent)),
-                Span::styled(" ", Style::default().fg(SUBTLE)),
-                Span::styled(
-                    preview_text(&control.preview, 56),
-                    Style::default().fg(MUTED),
-                ),
-            ];
-            if let Some(reason) = control.reason.as_deref() {
-                spans.push(Span::styled(" · ", Style::default().fg(SUBTLE)));
-                spans.push(Span::styled(
-                    preview_text(reason, 20),
-                    Style::default().fg(SUBTLE),
-                ));
-            }
-            Line::from(spans)
-        })
-        .collect()
+        .collect::<Vec<_>>();
+    let visible_total = recent_controls.len();
+
+    lines.extend(
+        recent_controls
+            .into_iter()
+            .enumerate()
+            .map(|(index, control)| {
+                let relative_label = if total == 1 {
+                    "next"
+                } else if visible_total == 2 && index == 0 {
+                    "older"
+                } else {
+                    "latest"
+                };
+                let (label, accent) = match control.kind {
+                    crate::backend::PendingControlKind::Prompt => ("queued prompt", USER),
+                    crate::backend::PendingControlKind::Steer => ("pending steer", ASSISTANT),
+                };
+                let mut spans = vec![
+                    Span::styled("  ↳ ", Style::default().fg(SUBTLE)),
+                    Span::styled(relative_label, Style::default().fg(SUBTLE)),
+                    Span::styled(" ", Style::default().fg(SUBTLE)),
+                    Span::styled(label, Style::default().fg(accent)),
+                    Span::styled(" · ", Style::default().fg(SUBTLE)),
+                    Span::styled(
+                        preview_text(&control.preview, 56),
+                        Style::default().fg(MUTED),
+                    ),
+                ];
+                if let Some(reason) = pending_control_reason_label(control.reason.as_deref()) {
+                    spans.push(Span::styled(" · ", Style::default().fg(SUBTLE)));
+                    spans.push(Span::styled(
+                        preview_text(&reason, 28),
+                        Style::default().fg(SUBTLE),
+                    ));
+                }
+                Line::from(spans)
+            }),
+    );
+
+    lines
 }
 
 pub(super) fn animated_progress_text_spans(text: &str, frame_ms: u128) -> Vec<Span<'static>> {
