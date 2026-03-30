@@ -280,6 +280,11 @@ fn pending_control_band_surfaces_selected_prompt_and_editing_state() {
             .iter()
             .any(|line| line_text_for(line).contains("keep the diff small"))
     );
+    assert!(
+        text.lines
+            .iter()
+            .any(|line| line_text_for(line).contains("selected · latest draft"))
+    );
     let prompt_row = text
         .lines
         .iter()
@@ -294,7 +299,7 @@ fn pending_control_band_surfaces_selected_prompt_and_editing_state() {
     assert!(
         text.lines
             .iter()
-            .any(|line| line_text_for(line).contains("latest item"))
+            .any(|line| line_text_for(line).contains("after 1 older item(s)"))
     );
     assert!(
         text.lines

@@ -261,6 +261,14 @@ pub(super) fn build_pending_control_text(state: &TuiState) -> Text<'static> {
             )));
         }
         if let Some(selected) = state.pending_controls.get(selected_index) {
+            lines.push(Line::from(vec![
+                Span::styled("selected", Style::default().fg(HEADER)),
+                Span::styled(" · ", Style::default().fg(SUBTLE)),
+                Span::styled(
+                    pending_control_focus_label(selected_index, state.pending_controls.len()),
+                    Style::default().fg(ACCENT),
+                ),
+            ]));
             lines.push(build_pending_control_row(selected, true));
             lines.push(build_pending_control_detail_row(
                 selected,
@@ -348,7 +356,7 @@ fn build_pending_control_detail_row(
     let mut spans = vec![
         Span::styled("  ", Style::default().fg(SUBTLE)),
         Span::styled(
-            pending_control_position_label(selected_index, total),
+            pending_control_queue_position_label(selected_index, total),
             Style::default().fg(SUBTLE),
         ),
     ];
@@ -366,13 +374,22 @@ fn pending_kind_label(editing: &PendingControlEditorState) -> &'static str {
     }
 }
 
-fn pending_control_position_label(selected_index: usize, total: usize) -> String {
+fn pending_control_focus_label(selected_index: usize, total: usize) -> String {
     match (selected_index, total) {
-        (_, 0) => "no items".to_string(),
+        (_, 0) => "empty queue".to_string(),
         (_, 1) => "only item".to_string(),
-        (0, _) => "oldest item".to_string(),
-        (index, count) if index + 1 == count => "latest item".to_string(),
+        (0, _) => "next to run".to_string(),
+        (index, count) if index + 1 == count => "latest draft".to_string(),
         (index, count) => format!("item {} of {}", index + 1, count),
+    }
+}
+
+fn pending_control_queue_position_label(selected_index: usize, total: usize) -> String {
+    match (selected_index, total) {
+        (_, 0) => "no queued work".to_string(),
+        (0, _) => "runs next".to_string(),
+        (index, count) if index + 1 == count => format!("after {} older item(s)", index),
+        (index, _) => format!("after {} older item(s)", index),
     }
 }
 
