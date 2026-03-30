@@ -1,5 +1,6 @@
 use super::super::state::{MainPaneMode, TuiState};
 use super::chrome::build_side_rail_lines;
+use super::shared::clamp_scroll;
 use super::theme::{MAIN_BG, MUTED, TEXT};
 use super::transcript::render_transcript;
 use super::view::{build_inspector_text, build_statusline_picker_text, should_render_view_title};
@@ -75,7 +76,7 @@ fn render_main_view(frame: &mut ratatui::Frame<'_>, area: Rect, state: &TuiState
         lines.extend(build_inspector_text(title, &state.inspector).lines);
         Text::from(lines)
     };
-    let scroll = super::clamp_scroll(
+    let scroll = clamp_scroll(
         state.inspector_scroll,
         text.lines.len().max(1),
         inner.height,

@@ -31,7 +31,7 @@ pub(super) fn render_transcript(frame: &mut ratatui::Frame<'_>, area: Rect, stat
     }
 
     let lines = build_transcript_lines(state);
-    let scroll = super::clamp_scroll(state.transcript_scroll, lines.len(), inner.height);
+    let scroll = super::shared::clamp_scroll(state.transcript_scroll, lines.len(), inner.height);
     let transcript = Paragraph::new(Text::from(lines))
         .scroll((scroll, 0))
         .alignment(Alignment::Left)
