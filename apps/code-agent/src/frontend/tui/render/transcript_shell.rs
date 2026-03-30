@@ -308,6 +308,10 @@ pub(super) fn pending_control_timeline_entry(state: &TuiState) -> Option<String>
     Some(lines.join("\n"))
 }
 
+pub(super) fn pending_control_picker_bridge_entry(state: &TuiState) -> Option<String> {
+    pending_control_picker_bridge_label(state).map(|label| format!("• {label}"))
+}
+
 pub(super) fn pending_control_embedded_lines(
     state: &TuiState,
     animation_frame: Option<u128>,
@@ -345,6 +349,30 @@ pub(super) fn pending_control_embedded_lines(
             .map(render_pending_control_embedded_detail),
     );
     Some(lines)
+}
+
+pub(super) fn pending_control_picker_embedded_lines(
+    state: &TuiState,
+    animation_frame: Option<u128>,
+) -> Option<Vec<Line<'static>>> {
+    let label = pending_control_picker_bridge_label(state)?;
+    Some(
+        render_shell_summary_body(
+            &label,
+            "•",
+            TranscriptEntryKind::ShellSummary,
+            animation_frame,
+        )
+        .into_iter()
+        .map(|line| {
+            let mut spans = vec![transcript_continuation_prefix(
+                TranscriptEntryKind::ShellSummary,
+            )];
+            spans.extend(line.spans);
+            Line::from(spans)
+        })
+        .collect(),
+    )
 }
 
 struct PendingControlTimeline {
@@ -447,6 +475,16 @@ fn pending_control_timeline(state: &TuiState) -> Option<PendingControlTimeline> 
         older_hidden_count: total.saturating_sub(2),
         recent,
     })
+}
+
+fn pending_control_picker_bridge_label(state: &TuiState) -> Option<String> {
+    if state.pending_controls.is_empty() || state.pending_control_picker.is_none() {
+        return None;
+    }
+    Some(format!(
+        "Queued follow-ups below · {}",
+        state.pending_controls.len()
+    ))
 }
 
 pub(super) fn animated_progress_text_spans(text: &str, frame_ms: u128) -> Vec<Span<'static>> {

@@ -2,6 +2,7 @@ use super::super::state::TuiState;
 use super::transcript_markdown::render_markdown_body;
 use super::transcript_shell::{
     animation_frame_ms, live_progress_lines, pending_control_embedded_lines,
+    pending_control_picker_bridge_entry, pending_control_picker_embedded_lines,
     pending_control_timeline_entry, prefix_transcript_marker, render_collapsed_shell_summary,
     render_shell_summary_body, should_collapse_shell_details,
 };
@@ -84,28 +85,38 @@ pub(super) fn build_transcript_lines(state: &TuiState) -> Vec<Line<'static>> {
                     .then_some(tool_timeline_animation)
                     .flatten(),
             ));
-            if active_tool_entry
-                && let Some(embedded) =
+            if active_tool_entry {
+                if let Some(embedded) =
                     pending_control_embedded_lines(state, tool_timeline_animation)
-            {
-                pending_controls_embedded = true;
-                lines.extend(embedded);
+                {
+                    pending_controls_embedded = true;
+                    lines.extend(embedded);
+                } else if let Some(bridge) =
+                    pending_control_picker_embedded_lines(state, tool_timeline_animation)
+                {
+                    pending_controls_embedded = true;
+                    lines.extend(bridge);
+                }
             }
         }
     }
 
-    if !pending_controls_embedded && let Some(entry) = pending_control_timeline_entry(state) {
-        if !lines.is_empty() {
-            lines.push(Line::raw(""));
+    if !pending_controls_embedded {
+        let queued_entry = pending_control_timeline_entry(state)
+            .or_else(|| pending_control_picker_bridge_entry(state));
+        if let Some(entry) = queued_entry {
+            if !lines.is_empty() {
+                lines.push(Line::raw(""));
+            }
+            lines.extend(format_transcript_entry_with_mode(
+                &entry,
+                true,
+                state
+                    .turn_running
+                    .then_some(tool_timeline_animation)
+                    .flatten(),
+            ));
         }
-        lines.extend(format_transcript_entry_with_mode(
-            &entry,
-            true,
-            state
-                .turn_running
-                .then_some(tool_timeline_animation)
-                .flatten(),
-        ));
     }
 
     let progress_lines = live_progress_lines(state);

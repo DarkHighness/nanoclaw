@@ -612,6 +612,76 @@ fn transcript_merges_pending_controls_into_the_active_tool_timeline_cell() {
 }
 
 #[test]
+fn transcript_bridges_pending_picker_into_the_active_tool_timeline() {
+    let mut state = TuiState {
+        main_pane: MainPaneMode::Transcript,
+        turn_running: true,
+        status: "Working".to_string(),
+        active_tool_label: Some("bash".to_string()),
+        transcript: vec!["• Running bash\n  └ $ cargo test".to_string()],
+        ..TuiState::default()
+    };
+    state.pending_controls = vec![
+        PendingControlSummary {
+            id: "cmd_1".to_string(),
+            kind: PendingControlKind::Prompt,
+            preview: "write a regression test".to_string(),
+            reason: None,
+        },
+        PendingControlSummary {
+            id: "cmd_2".to_string(),
+            kind: PendingControlKind::Steer,
+            preview: "keep the diff small".to_string(),
+            reason: Some("inline_enter".to_string()),
+        },
+    ];
+    state.session.queued_commands = state.pending_controls.len();
+    let _ = state.open_pending_control_picker(true);
+
+    let rendered = build_transcript_lines(&state);
+
+    assert!(
+        rendered
+            .iter()
+            .any(|line| line_text_for(line).contains("Queued follow-ups below · 2"))
+    );
+    assert!(
+        !rendered
+            .iter()
+            .any(|line| { line_text_for(line).contains("latest pending steer") })
+    );
+    assert!(
+        !rendered
+            .iter()
+            .any(|line| { line_text_for(line).contains("queued behind current tool") })
+    );
+}
+
+#[test]
+fn transcript_surfaces_pending_picker_bridge_without_an_active_tool() {
+    let mut state = TuiState {
+        main_pane: MainPaneMode::Transcript,
+        ..TuiState::default()
+    };
+    state.pending_controls = vec![PendingControlSummary {
+        id: "cmd_1".to_string(),
+        kind: PendingControlKind::Prompt,
+        preview: "write a regression test".to_string(),
+        reason: None,
+    }];
+    state.session.queued_commands = state.pending_controls.len();
+    let _ = state.open_pending_control_picker(true);
+
+    let rendered = build_transcript_lines(&state);
+
+    assert!(
+        rendered
+            .iter()
+            .any(|line| line_text_for(line).contains("Queued follow-ups below · 1"))
+    );
+}
+
+#[test]
 fn transcript_surfaces_pending_control_timeline_summary() {
     let mut state = TuiState {
         main_pane: MainPaneMode::Transcript,
