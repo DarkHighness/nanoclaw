@@ -387,6 +387,18 @@ impl CodeAgentSession {
         Ok(queued.id.to_string())
     }
 
+    pub(crate) fn take_pending_steers(&self) -> Result<Vec<PendingControlSummary>> {
+        let steers = self
+            .pending_controls()
+            .into_iter()
+            .filter(|control| control.kind == PendingControlKind::Steer)
+            .collect::<Vec<_>>();
+        for steer in &steers {
+            let _ = self.remove_pending_control(&steer.id)?;
+        }
+        Ok(steers)
+    }
+
     pub(crate) async fn run_one_shot_prompt(&self, prompt: &str) -> Result<RunTurnOutcome> {
         let mut runtime = self.runtime.lock().await;
         let outcome = runtime
@@ -1436,6 +1448,64 @@ mod tests {
         assert_eq!(removed_steer.kind, PendingControlKind::Steer);
         assert_eq!(removed_steer.preview, "focus on tests");
         assert_eq!(session.pending_controls().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn take_pending_steers_drains_all_steers_in_fifo_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(InMemorySessionStore::new());
+        let runtime = AgentRuntimeBuilder::new(Arc::new(NeverBackend), store.clone())
+            .hook_runner(Arc::new(HookRunner::default()))
+            .tool_context(ToolExecutionContext {
+                workspace_root: dir.path().to_path_buf(),
+                workspace_only: true,
+                ..Default::default()
+            })
+            .build();
+        let mut startup = startup_snapshot(dir.path());
+        startup.active_session_ref = runtime.session_id().to_string();
+        startup.root_agent_session_id = runtime.agent_session_id().to_string();
+        let session = CodeAgentSession::new(
+            runtime,
+            None,
+            Arc::new(NoopSubagentExecutor),
+            store,
+            Vec::new(),
+            ApprovalCoordinator::default(),
+            UserInputCoordinator::default(),
+            SessionEventStream::default(),
+            startup,
+            Vec::<Skill>::new(),
+        );
+
+        let prompt_id = session
+            .queue_prompt_command("follow-up prompt")
+            .await
+            .unwrap();
+        let steer_one = session
+            .schedule_runtime_steer("first steer", Some("manual_command".to_string()))
+            .unwrap();
+        let steer_two = session
+            .schedule_runtime_steer("latest steer", Some("inline_enter".to_string()))
+            .unwrap();
+
+        let promoted = session.take_pending_steers().unwrap();
+
+        assert_eq!(promoted.len(), 2);
+        assert_eq!(promoted[0].id, steer_one);
+        assert_eq!(promoted[0].kind, PendingControlKind::Steer);
+        assert_eq!(promoted[0].preview, "first steer");
+        assert_eq!(promoted[0].reason.as_deref(), Some("manual_command"));
+        assert_eq!(promoted[1].id, steer_two);
+        assert_eq!(promoted[1].kind, PendingControlKind::Steer);
+        assert_eq!(promoted[1].preview, "latest steer");
+        assert_eq!(promoted[1].reason.as_deref(), Some("inline_enter"));
+
+        let remaining = session.pending_controls();
+        assert_eq!(remaining.len(), 1);
+        assert!(remaining.iter().any(|control| control.id == prompt_id));
+        assert!(!remaining.iter().any(|control| control.id == steer_one));
+        assert!(!remaining.iter().any(|control| control.id == steer_two));
     }
 
     #[tokio::test]

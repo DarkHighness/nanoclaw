@@ -231,6 +231,9 @@ not have useful extensions, including `Dockerfile*`, `Containerfile*`, `go.mod`,
 - `Ctrl+T` cycles the active model reasoning effort through the levels exposed by the active model.
 - While a turn is running, `Enter` schedules a safe-point steer note and `Tab`
   enqueues a follow-up prompt into the runtime-owned control queue.
+- While a turn is running, `Esc` interrupts immediately. If pending steers
+  exist, all pending steers are merged in FIFO order into the next user
+  message; otherwise the composer returns to an idle "what next?" state.
 - `Alt+Up` opens the pending-control picker from the bottom pane.
 - In the pending-control picker: `Enter` edits the selected item, `Delete`
   withdraws it, and `Esc` closes the picker.

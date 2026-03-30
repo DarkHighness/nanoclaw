@@ -353,6 +353,10 @@ impl CodeAgentTui {
                                 });
                                 continue;
                             }
+                            if self.turn_task.is_some() {
+                                self.interrupt_active_turn().await?;
+                                continue;
+                            }
                         }
                         KeyCode::Backspace => {
                             self.ui_state.mutate(|state| {
@@ -1143,6 +1147,50 @@ impl CodeAgentTui {
         self.turn_task = Some(spawn_local(async move {
             session.drain_queued_controls().await.map(|_| ())
         }));
+    }
+
+    async fn interrupt_active_turn(&mut self) -> Result<()> {
+        if !self.abort_turn_task() {
+            return Ok(());
+        }
+
+        // Once the live task is aborted, any safe-point steer would never be
+        // merged in-band. Resubmit all pending steers as one fresh prompt in
+        // FIFO order so their intent matches the sequence the operator entered.
+        let pending_steers = self.session.take_pending_steers()?;
+        self.sync_runtime_control_state();
+
+        let steers = pending_steers
+            .into_iter()
+            .map(|steer| steer.preview)
+            .collect::<Vec<_>>();
+        let steer_count = steers.len();
+
+        if let Some(prompt) = merge_interrupt_steers(steers) {
+            let preview = state::preview_text(&prompt, 40);
+            self.ui_state.mutate(|state| {
+                state.turn_running = false;
+                state.turn_started_at = None;
+                state.active_tool_label = None;
+                state.push_transcript("✗ Interrupted current turn".to_string());
+                state.push_activity(format!(
+                    "interrupted current turn and resubmitted {steer_count} steer(s): {preview}"
+                ));
+            });
+            self.start_command(RuntimeCommand::Prompt { prompt }).await;
+        } else {
+            self.ui_state.mutate(|state| {
+                state.turn_running = false;
+                state.turn_started_at = None;
+                state.active_tool_label = None;
+                state.status =
+                    "Interrupted current turn. What should nanoclaw do next?".to_string();
+                state.push_transcript("✗ Interrupted current turn".to_string());
+                state.push_activity("interrupted current turn");
+            });
+        }
+
+        Ok(())
     }
 
     fn cycle_model_reasoning_effort(&mut self) {
@@ -2012,6 +2060,15 @@ impl CodeAgentTui {
             false
         }
     }
+
+    fn abort_turn_task(&mut self) -> bool {
+        if let Some(task) = self.turn_task.take() {
+            task.abort();
+            true
+        } else {
+            false
+        }
+    }
 }
 
 fn plain_input_submit_action(
@@ -2027,6 +2084,14 @@ fn plain_input_submit_action(
         (true, KeyCode::Tab) => Some(PlainInputSubmitAction::QueuePrompt),
         (false, KeyCode::Enter) => Some(PlainInputSubmitAction::StartPrompt),
         _ => None,
+    }
+}
+
+fn merge_interrupt_steers(steers: Vec<String>) -> Option<String> {
+    if steers.is_empty() {
+        None
+    } else {
+        Some(steers.join("\n"))
     }
 }
 
@@ -2145,7 +2210,7 @@ mod tests {
     use super::build_startup_inspector;
     use super::commands::command_palette_lines;
     use super::state::SessionSummary;
-    use super::{PlainInputSubmitAction, plain_input_submit_action};
+    use super::{PlainInputSubmitAction, merge_interrupt_steers, plain_input_submit_action};
     use crossterm::event::KeyCode;
     use std::path::PathBuf;
 
@@ -2253,5 +2318,21 @@ mod tests {
             plain_input_submit_action("/help", true, KeyCode::Enter),
             None
         );
+    }
+
+    #[test]
+    fn interrupt_merge_keeps_steer_order() {
+        assert_eq!(
+            merge_interrupt_steers(vec![
+                "first pending steer".to_string(),
+                "second pending steer".to_string(),
+            ]),
+            Some("first pending steer\nsecond pending steer".to_string())
+        );
+    }
+
+    #[test]
+    fn interrupt_merge_ignores_empty_steer_list() {
+        assert_eq!(merge_interrupt_steers(Vec::new()), None);
     }
 }
