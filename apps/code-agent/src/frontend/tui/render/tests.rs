@@ -220,12 +220,12 @@ fn welcome_lines_keep_the_start_screen_sparse() {
     assert!(
         lines
             .iter()
-            .any(|line| { line_text_for(line).contains(" _   _    _    _   _  ___   ____") })
+            .any(|line| { line_text_for(line).contains("N A N O C L A W") })
     );
     assert!(
         lines
             .iter()
-            .any(|line| { line_text_for(line).contains("|_| \\_/_/   \\_\\_| \\_|\\___/ \\____") })
+            .any(|line| { line_text_for(line).contains(" N A N O C L A W") })
     );
     assert!(lines.iter().any(|line| {
         line_text_for(line).contains("workspace nanoclaw  ·  model gpt-5.4 · high")

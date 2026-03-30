@@ -7,16 +7,10 @@ const PLATE_FACE: Color = Color::Rgb(30, 34, 39);
 const PLATE_HIGHLIGHT: Color = Color::Rgb(37, 42, 48);
 const PLATE_SHADOW: Color = Color::Rgb(11, 13, 16);
 const WORDMARK_SHADOW: Color = Color::Rgb(86, 92, 98);
-const PLATE_WIDTH: usize = 60;
+const PLATE_WIDTH: usize = 44;
 const PLATE_SIDE_SHADOW_WIDTH: usize = 2;
-
-const WORDMARK_ROWS: [&str; 5] = [
-    " _   _    _    _   _  ___   ____ _        _ __        __ ",
-    "| \\ | |  / \\  | \\ | |/ _ \\ / ___| |      / \\\\ \\      / / ",
-    "|  \\| | / _ \\ |  \\| | | | | |   | |     / _ \\\\ \\ /\\ / /  ",
-    "| |\\  |/ ___ \\| |\\  | |_| | |___| |___ / ___ \\\\ V  V /   ",
-    "|_| \\_/_/   \\_\\_| \\_|\\___/ \\____|_____/_/   \\_\\\\_/\\_/    ",
-];
+const FULL_WORDMARK: &str = "N A N O C L A W";
+const COMPACT_WORDMARK: &str = "NANOCLAW";
 
 pub(super) fn build_welcome_lines(
     state: &TuiState,
@@ -45,22 +39,32 @@ fn build_welcome_logo_lines(compact: bool) -> Vec<Line<'static>> {
     if compact {
         return vec![
             plate_blank_line(PLATE_HIGHLIGHT),
-            compact_logo_line(),
-            compact_logo_shadow_line(),
-            plate_blank_line(PLATE_FACE),
+            embossed_wordmark_line(COMPACT_WORDMARK, HEADER, PLATE_HIGHLIGHT, 0, true),
+            embossed_wordmark_line(COMPACT_WORDMARK, WORDMARK_SHADOW, PLATE_FACE, 1, false),
             plate_shadow_line(),
         ];
     }
 
-    // Render the full word on a raised plate with a bevel row and an offset
-    // shadow row so the logo reads like one embossed mark instead of split
-    // halves with decorative echoes.
-    let mut lines = Vec::with_capacity(WORDMARK_ROWS.len() * 2 + 3);
+    // Keep the welcome brand restrained: a single spaced word on a raised
+    // plate reads cleaner in a terminal than a sprawling ASCII banner, while
+    // the bevel + offset shadow still gives the mark depth.
+    let mut lines = Vec::with_capacity(5);
     lines.push(plate_blank_line(PLATE_HIGHLIGHT));
-    for row in WORDMARK_ROWS {
-        lines.push(wordmark_face_line(row));
-        lines.push(wordmark_relief_line(row));
-    }
+    lines.push(embossed_wordmark_line(
+        FULL_WORDMARK,
+        HEADER,
+        PLATE_HIGHLIGHT,
+        0,
+        true,
+    ));
+    lines.push(embossed_wordmark_line(
+        FULL_WORDMARK,
+        WORDMARK_SHADOW,
+        PLATE_FACE,
+        1,
+        false,
+    ));
+    lines.push(plate_blank_line(PLATE_FACE));
     lines.push(plate_shadow_line());
     lines
 }
@@ -87,71 +91,23 @@ fn model_label(state: &TuiState) -> String {
     }
 }
 
-fn compact_logo_line() -> Line<'static> {
-    let content = "NANOCLAW";
-    let side_padding = PLATE_WIDTH.saturating_sub(content.len()) / 2;
-    let right_padding = PLATE_WIDTH.saturating_sub(content.len() + side_padding);
-    let mut spans = plate_padding(side_padding, PLATE_HIGHLIGHT);
-    spans.push(Span::styled(
-        content.to_string(),
-        Style::default()
-            .fg(HEADER)
-            .bg(PLATE_HIGHLIGHT)
-            .add_modifier(Modifier::BOLD),
-    ));
-    spans.extend(plate_padding(right_padding, PLATE_HIGHLIGHT));
-    spans.push(Span::styled(
-        " ".repeat(PLATE_SIDE_SHADOW_WIDTH),
-        Style::default().bg(PLATE_SHADOW),
-    ));
-    Line::from(spans)
-}
-
-fn compact_logo_shadow_line() -> Line<'static> {
-    let content = "NANOCLAW";
-    let side_padding = PLATE_WIDTH.saturating_sub(content.len() + 1) / 2;
-    let right_padding = PLATE_WIDTH.saturating_sub(content.len() + side_padding + 1);
-    let mut spans = plate_padding(side_padding + 1, PLATE_FACE);
-    spans.push(Span::styled(
-        content.to_string(),
-        Style::default().fg(WORDMARK_SHADOW).bg(PLATE_FACE),
-    ));
-    spans.extend(plate_padding(right_padding, PLATE_FACE));
-    spans.push(Span::styled(
-        " ".repeat(PLATE_SIDE_SHADOW_WIDTH),
-        Style::default().bg(PLATE_SHADOW),
-    ));
-    Line::from(spans)
-}
-
-fn wordmark_face_line(row: &'static str) -> Line<'static> {
-    let side_padding = PLATE_WIDTH.saturating_sub(row.len()) / 2;
-    let right_padding = PLATE_WIDTH.saturating_sub(row.len() + side_padding);
-    let mut spans = plate_padding(side_padding, PLATE_HIGHLIGHT);
-    spans.push(Span::styled(
-        row.to_string(),
-        Style::default()
-            .fg(HEADER)
-            .bg(PLATE_HIGHLIGHT)
-            .add_modifier(Modifier::BOLD),
-    ));
-    spans.extend(plate_padding(right_padding, PLATE_HIGHLIGHT));
-    spans.push(Span::styled(
-        " ".repeat(PLATE_SIDE_SHADOW_WIDTH),
-        Style::default().bg(PLATE_SHADOW),
-    ));
-    Line::from(spans)
-}
-
-fn wordmark_relief_line(row: &'static str) -> Line<'static> {
-    let side_padding = PLATE_WIDTH.saturating_sub(row.len() + 1) / 2;
-    let right_padding = PLATE_WIDTH.saturating_sub(row.len() + side_padding + 1);
-    let mut spans = plate_padding(side_padding + 1, PLATE_FACE);
-    spans.push(Span::styled(
-        row.to_string(),
-        Style::default().fg(WORDMARK_SHADOW).bg(PLATE_FACE),
-    ));
-    spans.extend(plate_padding(right_padding, PLATE_FACE));
+fn embossed_wordmark_line(
+    text: &str,
+    foreground: Color,
+    background: Color,
+    horizontal_offset: usize,
+    bold: bool,
+) -> Line<'static> {
+    let content_width = text.len() + horizontal_offset;
+    let side_padding = PLATE_WIDTH.saturating_sub(content_width) / 2;
+    let right_padding = PLATE_WIDTH.saturating_sub(content_width + side_padding);
+    let mut spans = plate_padding(side_padding + horizontal_offset, background);
+    let mut style = Style::default().fg(foreground).bg(background);
+    if bold {
+        style = style.add_modifier(Modifier::BOLD);
+    }
+    spans.push(Span::styled(text.to_string(), style));
+    spans.extend(plate_padding(right_padding, background));
     spans.push(Span::styled(
         " ".repeat(PLATE_SIDE_SHADOW_WIDTH),
         Style::default().bg(PLATE_SHADOW),
