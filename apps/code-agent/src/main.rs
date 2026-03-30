@@ -10,6 +10,7 @@ use crate::backend::{
     SandboxFallbackNotice, SessionApprovalMode, build_sandbox_fallback_notice, build_session,
     build_session_with_approval_mode, inject_process_env, inspect_sandbox_preflight,
 };
+use crate::frontend::startup_prompt::confirm_unsandboxed_startup_screen;
 use crate::frontend::tui::{CodeAgentTui, SharedUiState};
 use crate::options::AppOptions;
 use agent::AgentWorkspaceLayout;
@@ -184,11 +185,7 @@ fn confirm_unsandboxed_startup_if_needed(
             Ok(())
         }
         SandboxFallbackAction::Prompt => {
-            print_sandbox_fallback_notice(
-                &notice,
-                "Continue without sandbox enforcement for this run? [y/N]: ",
-            )?;
-            if operator_confirms_unsandboxed_startup()? {
+            if operator_confirms_unsandboxed_startup(&notice)? {
                 options.sandbox_fail_if_unavailable = false;
                 Ok(())
             } else {
@@ -232,13 +229,9 @@ fn print_sandbox_fallback_notice(notice: &SandboxFallbackNotice, trailer: &str) 
     Ok(())
 }
 
-fn operator_confirms_unsandboxed_startup() -> Result<bool> {
-    let mut answer = String::new();
-    io::stdin()
-        .read_line(&mut answer)
-        .context("failed to read sandbox confirmation response")?;
-    let normalized = answer.trim().to_ascii_lowercase();
-    Ok(matches!(normalized.as_str(), "y" | "yes"))
+fn operator_confirms_unsandboxed_startup(notice: &SandboxFallbackNotice) -> Result<bool> {
+    confirm_unsandboxed_startup_screen(notice)
+        .context("failed to render sandbox confirmation screen")
 }
 
 fn format_sandbox_abort_message(notice: &SandboxFallbackNotice) -> String {
