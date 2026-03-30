@@ -9,8 +9,9 @@ mod turn_start;
 use crate::{
     CompactionConfig, ConversationCompactor, HookInvocationBatch, HookRunner, LoopDetectionConfig,
     ModelBackend, NoopRuntimeObserver, Result, RuntimeCommand, RuntimeObserver,
-    RuntimeProgressEvent, RuntimeSession, ToolApprovalHandler, ToolApprovalPolicy,
-    ToolLoopDetector, append_transcript_message,
+    RuntimeProgressEvent, RuntimeSession, RuntimeSteerMailbox, RuntimeSteerMailboxReceiver,
+    ToolApprovalHandler, ToolApprovalPolicy, ToolLoopDetector, append_transcript_message,
+    runtime_steer_mailbox_channel,
 };
 use skills::SkillCatalog;
 use std::sync::Arc;
@@ -34,6 +35,8 @@ pub struct AgentRuntime {
     hook_registrations: Vec<HookRegistration>,
     pending_additional_context: Vec<String>,
     pending_injected_instructions: Vec<String>,
+    steer_mailbox: RuntimeSteerMailbox,
+    steer_mailbox_rx: RuntimeSteerMailboxReceiver,
     session: RuntimeSession,
 }
 
@@ -61,6 +64,7 @@ impl AgentRuntime {
         _skill_catalog: SkillCatalog,
         session: RuntimeSession,
     ) -> Self {
+        let (steer_mailbox, steer_mailbox_rx) = runtime_steer_mailbox_channel();
         Self {
             backend,
             hook_runner,
@@ -76,6 +80,8 @@ impl AgentRuntime {
             hook_registrations,
             pending_additional_context: Vec::new(),
             pending_injected_instructions: Vec::new(),
+            steer_mailbox,
+            steer_mailbox_rx,
             session,
         }
     }
@@ -110,6 +116,11 @@ impl AgentRuntime {
     }
 
     #[must_use]
+    pub fn steer_mailbox(&self) -> RuntimeSteerMailbox {
+        self.steer_mailbox.clone()
+    }
+
+    #[must_use]
     pub fn token_ledger(&self) -> types::TokenLedgerSnapshot {
         self.session.token_ledger.clone()
     }
@@ -135,6 +146,7 @@ impl AgentRuntime {
 
         self.session = RuntimeSession::new(types::SessionId::new(), types::AgentSessionId::new());
         self.clear_pending_request_effects();
+        self.clear_pending_runtime_steers();
         self.tool_loop_detector.reset();
 
         let hooks = self.hook_registrations.clone();
@@ -165,6 +177,7 @@ impl AgentRuntime {
         session.token_ledger = types::TokenLedgerSnapshot::default();
         self.session = session;
         self.clear_pending_request_effects();
+        self.clear_pending_runtime_steers();
         self.tool_loop_detector.reset();
 
         let hooks = self.hook_registrations.clone();
@@ -356,6 +369,25 @@ impl AgentRuntime {
             .await?;
         self.run_turn_loop(&turn_id, &hooks, &instructions, observer)
             .await
+    }
+
+    pub(super) async fn drain_runtime_steers(
+        &mut self,
+        observer: &mut dyn RuntimeObserver,
+    ) -> Result<bool> {
+        let mut applied_any = false;
+        while let Ok(steer) = self.steer_mailbox_rx.try_recv() {
+            // Root-turn steer is mailbox-driven so the runtime can merge it only
+            // at explicit safe points between model/tool phases.
+            self.steer_with_observer(steer.message, steer.reason, observer)
+                .await?;
+            applied_any = true;
+        }
+        Ok(applied_any)
+    }
+
+    fn clear_pending_runtime_steers(&mut self) {
+        while self.steer_mailbox_rx.try_recv().is_ok() {}
     }
 
     async fn run_hooks(

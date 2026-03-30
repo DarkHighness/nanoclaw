@@ -39,6 +39,43 @@ pub struct QueuedRuntimeCommand {
     pub command: RuntimeCommand,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RuntimeSteerMessage {
+    pub message: String,
+    pub reason: Option<String>,
+}
+
+#[derive(Clone)]
+pub struct RuntimeSteerMailbox {
+    sender: mpsc::UnboundedSender<RuntimeSteerMessage>,
+}
+
+impl RuntimeSteerMailbox {
+    #[must_use]
+    pub fn new(sender: mpsc::UnboundedSender<RuntimeSteerMessage>) -> Self {
+        Self { sender }
+    }
+
+    pub fn send(
+        &self,
+        message: impl Into<String>,
+        reason: Option<String>,
+    ) -> Result<(), mpsc::error::SendError<RuntimeSteerMessage>> {
+        self.sender.send(RuntimeSteerMessage {
+            message: message.into(),
+            reason,
+        })
+    }
+}
+
+pub type RuntimeSteerMailboxReceiver = mpsc::UnboundedReceiver<RuntimeSteerMessage>;
+
+#[must_use]
+pub fn runtime_steer_mailbox_channel() -> (RuntimeSteerMailbox, RuntimeSteerMailboxReceiver) {
+    let (sender, receiver) = mpsc::unbounded_channel();
+    (RuntimeSteerMailbox::new(sender), receiver)
+}
+
 const RUNTIME_COMMAND_QUEUE_CAPACITY: usize = 64;
 
 pub struct RuntimeCommandQueue {
@@ -126,7 +163,7 @@ impl Default for RuntimeCommandQueue {
 
 #[cfg(test)]
 mod tests {
-    use super::{RuntimeCommand, RuntimeCommandQueue};
+    use super::{RuntimeCommand, RuntimeCommandQueue, runtime_steer_mailbox_channel};
 
     #[tokio::test]
     async fn queue_preserves_fifo_order() {
@@ -161,5 +198,21 @@ mod tests {
         assert_eq!(queue.clear(), 2);
         assert!(queue.pop_next().is_none());
         assert!(queue.is_empty().await);
+    }
+
+    #[tokio::test]
+    async fn steer_mailbox_preserves_message_order() {
+        let (mailbox, mut receiver) = runtime_steer_mailbox_channel();
+        mailbox
+            .send("focus on tests", Some("inline_enter".to_string()))
+            .unwrap();
+        mailbox.send("prefer terse answers", None).unwrap();
+
+        let first = receiver.recv().await.unwrap();
+        let second = receiver.recv().await.unwrap();
+        assert_eq!(first.message, "focus on tests");
+        assert_eq!(first.reason.as_deref(), Some("inline_enter"));
+        assert_eq!(second.message, "prefer terse answers");
+        assert_eq!(second.reason, None);
     }
 }

@@ -57,6 +57,7 @@ impl AgentRuntime {
                 let _ = self
                     .apply_hook_effects(turn_id, drained, None, None)
                     .await?;
+                let _ = self.drain_runtime_steers(observer).await?;
                 continue;
             }
 
@@ -64,6 +65,9 @@ impl AgentRuntime {
                 .handle_stop_hooks(turn_id, hooks, &response.assistant_text)
                 .await?
             {
+                continue;
+            }
+            if self.drain_runtime_steers(observer).await? {
                 continue;
             }
 

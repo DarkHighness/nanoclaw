@@ -1,15 +1,30 @@
 use super::support::RecordingObserver;
 use crate::{
     AgentRuntimeBuilder, HookRunner, ModelBackend, Result, RuntimeCommand, RuntimeProgressEvent,
+    RuntimeSteerMailbox,
 };
 use async_trait::async_trait;
 use futures::{StreamExt, stream, stream::BoxStream};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use store::{InMemorySessionStore, SessionStore};
-use tools::ToolExecutionContext;
-use types::{ModelEvent, ModelRequest, SessionEventKind, TokenUsage, TokenUsagePhase};
+use tools::{ReadTool, ToolExecutionContext, ToolRegistry};
+use types::{
+    ModelEvent, ModelRequest, SessionEventKind, TokenUsage, TokenUsagePhase, ToolCall, ToolCallId,
+    ToolLifecycleEventKind, ToolOrigin,
+};
 
 struct StreamingTextBackend;
+
+#[derive(Clone, Default)]
+struct ToolTurnRecordingBackend {
+    requests: Arc<Mutex<Vec<ModelRequest>>>,
+}
+
+impl ToolTurnRecordingBackend {
+    fn requests(&self) -> Vec<ModelRequest> {
+        self.requests.lock().unwrap().clone()
+    }
+}
 
 #[async_trait]
 impl ModelBackend for StreamingTextBackend {
@@ -33,6 +48,91 @@ impl ModelBackend for StreamingTextBackend {
             }),
         ])
         .boxed())
+    }
+}
+
+#[async_trait]
+impl ModelBackend for ToolTurnRecordingBackend {
+    async fn stream_turn(
+        &self,
+        request: ModelRequest,
+    ) -> Result<BoxStream<'static, Result<ModelEvent>>> {
+        self.requests.lock().unwrap().push(request.clone());
+        let has_tool_result = request.messages.iter().any(|message| {
+            message
+                .parts
+                .iter()
+                .any(|part| matches!(part, types::MessagePart::ToolResult { .. }))
+        });
+        if !has_tool_result {
+            let call = ToolCall {
+                id: ToolCallId::new(),
+                call_id: "call-read-1".into(),
+                tool_name: "read".into(),
+                arguments: serde_json::json!({"path":"sample.txt","line_count":1}),
+                origin: ToolOrigin::Local,
+            };
+            return Ok(stream::iter(vec![
+                Ok(ModelEvent::ToolCallRequested { call }),
+                Ok(ModelEvent::ResponseComplete {
+                    stop_reason: Some("tool_use".to_string()),
+                    message_id: None,
+                    continuation: None,
+                    usage: None,
+                    reasoning: Vec::new(),
+                }),
+            ])
+            .boxed());
+        }
+
+        Ok(stream::iter(vec![
+            Ok(ModelEvent::TextDelta {
+                delta: "done".to_string(),
+            }),
+            Ok(ModelEvent::ResponseComplete {
+                stop_reason: Some("stop".to_string()),
+                message_id: None,
+                continuation: None,
+                usage: None,
+                reasoning: Vec::new(),
+            }),
+        ])
+        .boxed())
+    }
+}
+
+struct SteeringObserver {
+    mailbox: RuntimeSteerMailbox,
+    sent: bool,
+    events: Vec<RuntimeProgressEvent>,
+}
+
+impl SteeringObserver {
+    fn new(mailbox: RuntimeSteerMailbox) -> Self {
+        Self {
+            mailbox,
+            sent: false,
+            events: Vec::new(),
+        }
+    }
+}
+
+impl crate::RuntimeObserver for SteeringObserver {
+    fn on_event(&mut self, event: RuntimeProgressEvent) -> Result<()> {
+        if !self.sent
+            && matches!(
+                &event,
+                RuntimeProgressEvent::ToolLifecycle { event }
+                    if matches!(event.event, ToolLifecycleEventKind::Completed { .. })
+            )
+        {
+            self.mailbox
+                .send("prefer terse answers", Some("tool_safe_point".to_string()))
+                .unwrap();
+            self.sent = true;
+        }
+        self.events.push(event);
+        Ok(())
     }
 }
 
@@ -294,4 +394,66 @@ async fn runtime_new_session_rotates_top_level_session_and_clears_state() {
             .unwrap()
             .is_empty()
     );
+}
+
+#[tokio::test]
+async fn runtime_mailbox_steer_merges_at_safe_point_before_followup_request() {
+    let dir = tempfile::tempdir().unwrap();
+    tokio::fs::write(dir.path().join("sample.txt"), "hello\nworld")
+        .await
+        .unwrap();
+    let backend = ToolTurnRecordingBackend::default();
+    let store = Arc::new(InMemorySessionStore::new());
+    let mut registry = ToolRegistry::new();
+    registry.register(ReadTool::new());
+    let mut runtime = AgentRuntimeBuilder::new(Arc::new(backend.clone()), store.clone())
+        .hook_runner(Arc::new(HookRunner::default()))
+        .tool_registry(registry)
+        .tool_context(ToolExecutionContext {
+            workspace_root: dir.path().to_path_buf(),
+            workspace_only: true,
+            model_context_window_tokens: Some(128_000),
+            ..Default::default()
+        })
+        .build();
+    let mut observer = SteeringObserver::new(runtime.steer_mailbox());
+
+    let outcome = runtime
+        .run_user_prompt_with_observer("please use tool", &mut observer)
+        .await
+        .unwrap();
+
+    assert_eq!(outcome.assistant_text, "done");
+    let requests = backend.requests();
+    assert_eq!(requests.len(), 2);
+    assert!(
+        requests[1]
+            .messages
+            .iter()
+            .any(|message| message.role == types::MessageRole::System
+                && message.text_content() == "prefer terse answers")
+    );
+
+    let transcript = store
+        .replay_transcript(&runtime.session_id())
+        .await
+        .unwrap();
+    assert!(transcript.iter().any(|message| {
+        message.role == types::MessageRole::System
+            && message.text_content() == "prefer terse answers"
+    }));
+    assert!(observer.events.iter().any(|event| matches!(
+        event,
+        RuntimeProgressEvent::SteerApplied { message, reason }
+            if message == "prefer terse answers"
+                && reason.as_deref() == Some("tool_safe_point")
+    )));
+
+    let events = store.events(&runtime.session_id()).await.unwrap();
+    assert!(events.iter().any(|event| matches!(
+        &event.event,
+        SessionEventKind::SteerApplied { message, reason }
+            if message == "prefer terse answers"
+                && reason.as_deref() == Some("tool_safe_point")
+    )));
 }
