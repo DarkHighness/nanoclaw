@@ -143,7 +143,7 @@ fn transcript_separates_assistant_and_tool_entries_with_breathing_room() {
     assert!(
         rendered
             .iter()
-            .any(|line| line_text_for(line).contains("hidden line"))
+            .any(|line| line_text_for(line).contains("$ cargo test"))
     );
 }
 
@@ -153,7 +153,7 @@ fn transcript_collapses_tool_details_by_default() {
         main_pane: MainPaneMode::Transcript,
         ..TuiState::default()
     };
-    state.transcript = vec!["• Finished bash\n  └ exit 0\n```text\nok\n```".to_string()];
+    state.transcript = vec!["• Finished bash\n  └ $ cargo test\n  └ exit 0\n    ok".to_string()];
 
     let rendered = build_transcript_lines(&state);
 
@@ -165,12 +165,17 @@ fn transcript_collapses_tool_details_by_default() {
     assert!(rendered.iter().any(|line| {
         line.spans
             .iter()
-            .any(|span| span.content.as_ref().contains("hidden lines"))
+            .any(|span| span.content.as_ref().contains("hidden line"))
+    }));
+    assert!(rendered.iter().any(|line| {
+        line.spans
+            .iter()
+            .any(|span| span.content.as_ref().contains("exit 0"))
     }));
     assert!(!rendered.iter().any(|line| {
         line.spans
             .iter()
-            .any(|span| span.content.as_ref().contains("exit 0"))
+            .any(|span| span.content.as_ref().contains("ok"))
     }));
 }
 
@@ -181,7 +186,7 @@ fn transcript_expands_tool_details_when_enabled() {
         show_tool_details: true,
         ..TuiState::default()
     };
-    state.transcript = vec!["• Finished bash\n  └ exit 0\n```text\nok\n```".to_string()];
+    state.transcript = vec!["• Finished bash\n  └ $ cargo test\n  └ exit 0\n    ok".to_string()];
 
     let rendered = build_transcript_lines(&state);
 

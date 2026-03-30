@@ -10,6 +10,8 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use std::time::Instant;
 
+const COLLAPSED_SHELL_PREVIEW_DETAIL_LINES: usize = 2;
+
 pub(super) fn should_collapse_shell_details(
     kind: TranscriptEntryKind,
     body: &str,
@@ -19,7 +21,7 @@ pub(super) fn should_collapse_shell_details(
     // opt back into the full tool payload stream via `/details`.
     !show_tool_details
         && kind == TranscriptEntryKind::ShellSummary
-        && body.lines().skip(1).any(|line| !line.trim().is_empty())
+        && hidden_shell_detail_line_count(body) > 0
 }
 
 pub(super) fn render_collapsed_shell_summary(
@@ -29,14 +31,10 @@ pub(super) fn render_collapsed_shell_summary(
     kind: TranscriptEntryKind,
     animation_frame: Option<u128>,
 ) -> Vec<Line<'static>> {
-    let headline = body.lines().next().unwrap_or_default();
-    let hidden_line_count = body
-        .lines()
-        .skip(1)
-        .filter(|line| !line.trim().is_empty())
-        .count();
+    let preview_body = collapsed_shell_preview_body(body);
+    let hidden_line_count = hidden_shell_detail_line_count(body);
 
-    let mut rendered = render_shell_summary_body(headline, marker, kind, animation_frame);
+    let mut rendered = render_shell_summary_body(&preview_body, marker, kind, animation_frame);
     if hidden_line_count > 0 {
         rendered.push(Line::from(vec![
             transcript_continuation_prefix(kind),
@@ -52,6 +50,26 @@ pub(super) fn render_collapsed_shell_summary(
     }
     prefix_transcript_marker(&mut rendered, marker, accent, kind);
     rendered
+}
+
+fn collapsed_shell_preview_body(body: &str) -> String {
+    let mut lines = body.lines();
+    let mut preview_lines = vec![lines.next().unwrap_or_default().to_string()];
+    preview_lines.extend(
+        lines
+            .filter(|line| !line.trim().is_empty())
+            .take(COLLAPSED_SHELL_PREVIEW_DETAIL_LINES)
+            .map(str::to_string),
+    );
+    preview_lines.join("\n")
+}
+
+fn hidden_shell_detail_line_count(body: &str) -> usize {
+    body.lines()
+        .skip(1)
+        .filter(|line| !line.trim().is_empty())
+        .count()
+        .saturating_sub(COLLAPSED_SHELL_PREVIEW_DETAIL_LINES)
 }
 
 pub(super) fn transcript_entry_kind(marker: &str, body: &str) -> TranscriptEntryKind {

@@ -1,6 +1,8 @@
 use super::state::{PlanEntry, SharedUiState, preview_text};
 use crate::backend::SessionEvent;
-use crate::preview::{PreviewCollapse, collapse_preview_text, command_output_collapse};
+use crate::tool_render::{
+    prefixed_detail_lines, summarize_tool_entry, tool_output_detail_lines_from_preview,
+};
 use serde_json::Value;
 use std::collections::HashMap;
 
@@ -284,7 +286,7 @@ fn completed_tool_entry(
     structured_output_preview: Option<&str>,
 ) -> String {
     let mut detail_lines = tool_argument_detail_lines(call);
-    detail_lines.extend(tool_output_detail_lines(
+    detail_lines.extend(tool_output_detail_lines_from_preview(
         &call.tool_name,
         output_preview,
         structured_output_preview,
@@ -309,195 +311,8 @@ fn cancelled_tool_entry(call: &crate::backend::SessionToolCall, reason: Option<&
     summarize_tool_entry(format!("✗ Cancelled {}", call.tool_name), detail_lines)
 }
 
-fn summarize_tool_entry(headline: String, detail_lines: Vec<String>) -> String {
-    let mut lines = vec![headline];
-    lines.extend(detail_lines);
-    lines.join("\n")
-}
-
 fn tool_argument_detail_lines(call: &crate::backend::SessionToolCall) -> Vec<String> {
     prefixed_detail_lines(&call.arguments_preview)
-}
-
-fn tool_output_detail_lines(
-    tool_name: &str,
-    output_preview: &str,
-    structured_output_preview: Option<&str>,
-) -> Vec<String> {
-    let structured =
-        structured_output_preview.and_then(|raw| serde_json::from_str::<Value>(raw).ok());
-
-    if tool_name == "bash" {
-        return bash_output_detail_lines(output_preview, structured.as_ref());
-    }
-
-    if let Some(detail_lines) =
-        file_mutation_output_detail_lines(tool_name, output_preview, structured.as_ref())
-    {
-        return detail_lines;
-    }
-
-    if output_preview.trim().is_empty() {
-        return Vec::new();
-    }
-
-    if output_preview.lines().count() > 1 || output_preview.chars().count() > 96 {
-        return code_block_lines(&collapse_preview_text(
-            output_preview,
-            8,
-            120,
-            PreviewCollapse::HeadTail,
-        ));
-    }
-
-    vec![format!("  └ {}", preview_text(output_preview, 96))]
-}
-
-fn bash_output_detail_lines(output_preview: &str, structured: Option<&Value>) -> Vec<String> {
-    let mut detail_lines = Vec::new();
-
-    let exit_code = structured
-        .and_then(|value| value.get("exit_code"))
-        .and_then(Value::as_i64);
-    if let Some(exit_code) = exit_code {
-        detail_lines.push(format!("  └ exit {exit_code}"));
-    }
-    let timed_out = structured
-        .and_then(|value| value.get("timed_out"))
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-    if timed_out {
-        detail_lines.push("  └ timed out".to_string());
-    }
-
-    let stdout = structured
-        .and_then(|value| value.pointer("/stdout/text"))
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    let stderr = structured
-        .and_then(|value| value.pointer("/stderr/text"))
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    let collapse = command_output_collapse(exit_code, timed_out, !stderr.trim().is_empty());
-
-    let rendered_output = if !stdout.trim().is_empty() || !stderr.trim().is_empty() {
-        let mut chunks = Vec::new();
-        if !stdout.trim().is_empty() {
-            chunks.push(stdout.trim_end().to_string());
-        }
-        if !stderr.trim().is_empty() {
-            if !chunks.is_empty() {
-                chunks.push(String::new());
-            }
-            chunks.push("stderr:".to_string());
-            chunks.push(stderr.trim_end().to_string());
-        }
-        chunks.join("\n")
-    } else {
-        output_preview.trim().to_string()
-    };
-
-    if !rendered_output.is_empty() && rendered_output != "<empty>" {
-        detail_lines.extend(code_block_lines(&collapse_preview_text(
-            &rendered_output,
-            12,
-            120,
-            collapse,
-        )));
-    }
-
-    detail_lines
-}
-
-fn file_mutation_output_detail_lines(
-    tool_name: &str,
-    output_preview: &str,
-    structured: Option<&Value>,
-) -> Option<Vec<String>> {
-    if !matches!(tool_name, "write" | "edit" | "patch") {
-        return None;
-    }
-
-    let mut detail_lines = Vec::new();
-    if let Some(summary) = structured
-        .and_then(|value| value.get("summary"))
-        .and_then(Value::as_str)
-        && !summary.trim().is_empty()
-    {
-        detail_lines.push(format!("  └ {}", preview_text(summary, 96)));
-    } else if !output_preview.trim().is_empty() {
-        let first_line = output_preview.lines().next().unwrap_or_default().trim();
-        if !first_line.is_empty() {
-            detail_lines.push(format!("  └ {}", preview_text(first_line, 96)));
-        }
-    }
-
-    if let Some(before) = structured
-        .and_then(|value| value.get("snapshot_before"))
-        .and_then(Value::as_str)
-    {
-        let after = structured
-            .and_then(|value| value.get("snapshot_after"))
-            .and_then(Value::as_str)
-            .unwrap_or("missing");
-        detail_lines.push(format!(
-            "  └ snapshot {} -> {}",
-            preview_text(before, 16),
-            preview_text(after, 16)
-        ));
-    }
-
-    let file_diffs = structured
-        .and_then(|value| value.get("file_diffs"))
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-    for (index, diff) in file_diffs.iter().enumerate() {
-        if file_diffs.len() > 1
-            && let Some(path) = diff.get("path").and_then(Value::as_str)
-        {
-            detail_lines.push(format!("  └ diff {}", preview_text(path, 96)));
-        }
-        if let Some(preview) = diff.get("preview").and_then(Value::as_str) {
-            let max_lines = if index == 0 { 16 } else { 12 };
-            detail_lines.extend(fenced_block_lines(
-                "diff",
-                &collapse_preview_text(preview, max_lines, 120, PreviewCollapse::HeadTail),
-            ));
-        }
-    }
-
-    Some(detail_lines)
-}
-
-fn prefixed_detail_lines(lines: &[String]) -> Vec<String> {
-    let mut rendered = Vec::new();
-    for (index, line) in lines.iter().enumerate() {
-        if line.trim().is_empty() {
-            continue;
-        }
-        if index == 0 {
-            rendered.push(format!("  └ {line}"));
-        } else {
-            rendered.push(format!("    {line}"));
-        }
-    }
-    rendered
-}
-
-fn code_block_lines(lines: &[String]) -> Vec<String> {
-    fenced_block_lines("text", lines)
-}
-
-fn fenced_block_lines(language: &str, lines: &[String]) -> Vec<String> {
-    if lines.is_empty() {
-        return Vec::new();
-    }
-    let mut block = Vec::with_capacity(lines.len() + 2);
-    block.push(format!("```{language}"));
-    block.extend(lines.iter().cloned());
-    block.push("```".to_string());
-    block
 }
 
 fn plan_items_from_output(
@@ -631,9 +446,12 @@ mod tests {
 
         let snapshot = ui_state.snapshot();
         assert!(snapshot.transcript.iter().all(|line| !line.contains('>')));
-        assert!(snapshot.transcript.iter().any(
-            |line| line == "• Finished bash\n  └ $ ls\n  └ exit 0\n```text\nlisted files\n```"
-        ));
+        assert!(
+            snapshot
+                .transcript
+                .iter()
+                .any(|line| line == "• Finished bash\n  └ $ ls\n  └ exit 0\n  └ listed files")
+        );
     }
 
     #[test]
@@ -668,7 +486,7 @@ mod tests {
         assert_eq!(snapshot.transcript.len(), 1);
         assert_eq!(
             snapshot.transcript[0],
-            "• Finished bash\n  └ $ ls\n  └ exit 0\n```text\nlisted files\n```"
+            "• Finished bash\n  └ $ ls\n  └ exit 0\n  └ listed files"
         );
     }
 
@@ -744,7 +562,7 @@ mod tests {
         assert_eq!(snapshot.transcript.len(), 1);
         assert_eq!(
             snapshot.transcript[0],
-            "• Finished bash\n  └ $ cargo test\n  └ exit 0\n```text\nok\n```"
+            "• Finished bash\n  └ $ cargo test\n  └ exit 0\n  └ ok"
         );
     }
 
@@ -780,10 +598,10 @@ mod tests {
 
         let transcript = &ui_state.snapshot().transcript[0];
         assert!(transcript.contains("  └ exit 1"));
-        assert!(transcript.contains("… +10 lines"));
-        assert!(transcript.contains("\n10\n"));
-        assert!(transcript.contains("\n20\n"));
-        assert!(!transcript.contains("\n1\n"));
+        assert!(transcript.contains("  └ stderr"));
+        assert!(transcript.contains("… +"));
+        assert!(transcript.contains("    20"));
+        assert!(!transcript.contains("    1\n"));
     }
 
     #[test]
@@ -822,7 +640,7 @@ mod tests {
         });
 
         let snapshot = ui_state.snapshot();
-        assert!(snapshot.transcript[0].contains("```diff"));
+        assert!(snapshot.transcript[0].contains("  └ diff src/lib.rs"));
         assert!(snapshot.transcript[0].contains("@@ -1,1 +1,1 @@"));
         assert!(snapshot.transcript[0].contains("+new()"));
     }

@@ -5,6 +5,7 @@ mod options;
 mod preview;
 mod provider;
 mod statusline;
+mod tool_render;
 
 use crate::backend::{
     SandboxFallbackNotice, SessionApprovalMode, build_sandbox_fallback_notice, build_session,

@@ -1,7 +1,6 @@
-use crate::preview::{PreviewCollapse, collapse_preview_text};
+use crate::tool_render::tool_arguments_preview_lines;
 use agent::runtime::{Result as RuntimeResult, RuntimeObserver, RuntimeProgressEvent};
 use agent::types::{TokenLedgerSnapshot, TokenUsagePhase, ToolLifecycleEventKind};
-use serde_json::Value;
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
@@ -203,60 +202,8 @@ fn session_tool_call(call: &agent::types::ToolCall) -> SessionToolCall {
             agent::ToolOrigin::Mcp { server_name } => format!("mcp:{server_name}"),
             agent::ToolOrigin::Provider { provider } => format!("provider:{provider}"),
         },
-        arguments_preview: tool_arguments_preview(call),
+        arguments_preview: tool_arguments_preview_lines(call.tool_name.as_str(), &call.arguments),
     }
-}
-
-fn tool_arguments_preview(call: &agent::types::ToolCall) -> Vec<String> {
-    if call.tool_name.as_str() == "bash"
-        && let Some(command) = call.arguments.get("command").and_then(Value::as_str)
-        && !command.trim().is_empty()
-    {
-        return collapse_preview_text(
-            &format!("$ {}", command.trim()),
-            4,
-            96,
-            PreviewCollapse::Head,
-        );
-    }
-
-    if call.tool_name.as_str() == "update_plan" {
-        let item_count = call
-            .arguments
-            .get("plan")
-            .and_then(Value::as_array)
-            .map_or(0, Vec::len);
-        let mut lines = vec![if item_count == 0 {
-            "clear plan".to_string()
-        } else {
-            format!("set {item_count} plan step(s)")
-        }];
-        if let Some(explanation) = call
-            .arguments
-            .get("explanation")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        {
-            lines.extend(collapse_preview_text(
-                explanation,
-                2,
-                96,
-                PreviewCollapse::Head,
-            ));
-        }
-        return lines;
-    }
-
-    for key in ["path", "uri", "query", "prompt", "message"] {
-        if let Some(value) = call.arguments.get(key).and_then(Value::as_str)
-            && !value.trim().is_empty()
-        {
-            return collapse_preview_text(value.trim(), 4, 96, PreviewCollapse::Head);
-        }
-    }
-
-    collapse_preview_text(&call.arguments.to_string(), 4, 96, PreviewCollapse::Head)
 }
 
 #[cfg(test)]

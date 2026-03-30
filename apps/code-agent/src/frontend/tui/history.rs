@@ -7,12 +7,14 @@ use crate::backend::{
     PersistedTaskSummary, SessionExportArtifact, SessionExportKind, SessionOperationAction,
     SessionOperationOutcome, StartupDiagnosticsSnapshot, message_to_text, preview_id,
 };
-use crate::preview::{PreviewCollapse, collapse_preview_text, command_output_collapse};
+use crate::tool_render::{
+    prefixed_detail_lines, summarize_tool_entry, tool_arguments_preview_lines,
+    tool_output_detail_lines,
+};
 use agent::types::{
     AgentEnvelopeKind, AgentSessionId, AgentStatus, HookEvent, Message, SessionEventEnvelope,
     SessionEventKind,
 };
-use serde_json::Value;
 use store::TokenUsageRecord;
 
 pub(crate) fn format_session_summary_line(summary: &PersistedSessionSummary) -> String {
@@ -623,34 +625,6 @@ fn shell_summary(headline: impl Into<String>, details: impl IntoIterator<Item = 
     lines.join("\n")
 }
 
-fn shell_summary_with_code_block(
-    headline: impl Into<String>,
-    details: impl IntoIterator<Item = String>,
-    code_block: &[String],
-) -> String {
-    let mut lines = vec![headline.into()];
-    for detail in details.into_iter().filter(|detail| !detail.is_empty()) {
-        lines.push(format!("  └ {detail}"));
-    }
-    if !code_block.is_empty() {
-        lines.push("```text".to_string());
-        lines.extend(code_block.iter().cloned());
-        lines.push("```".to_string());
-    }
-    lines.join("\n")
-}
-
-fn shell_code_block(language: &str, code_block: &[String]) -> String {
-    if code_block.is_empty() {
-        return String::new();
-    }
-    let mut lines = Vec::with_capacity(code_block.len() + 2);
-    lines.push(format!("```{language}"));
-    lines.extend(code_block.iter().cloned());
-    lines.push("```".to_string());
-    lines.join("\n")
-}
-
 fn format_reason_detail(reason: Option<&str>) -> Option<String> {
     reason
         .map(str::trim)
@@ -776,161 +750,6 @@ fn format_agent_envelope_kind(kind: &AgentEnvelopeKind) -> String {
     }
 }
 
-fn tool_argument_preview_lines(tool_name: &str, arguments: &Value) -> Vec<String> {
-    if tool_name == "bash"
-        && let Some(command) = arguments.get("command").and_then(Value::as_str)
-        && !command.trim().is_empty()
-    {
-        return collapse_preview_text(
-            &format!("$ {}", command.trim()),
-            4,
-            96,
-            PreviewCollapse::Head,
-        );
-    }
-
-    if tool_name == "update_plan" {
-        let item_count = arguments
-            .get("plan")
-            .and_then(Value::as_array)
-            .map_or(0, Vec::len);
-        let mut lines = vec![if item_count == 0 {
-            "clear plan".to_string()
-        } else {
-            format!("set {item_count} plan step(s)")
-        }];
-        if let Some(explanation) = arguments
-            .get("explanation")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        {
-            lines.extend(collapse_preview_text(
-                explanation,
-                2,
-                96,
-                PreviewCollapse::Head,
-            ));
-        }
-        return lines;
-    }
-
-    for key in ["path", "uri", "query", "prompt", "message"] {
-        if let Some(value) = arguments.get(key).and_then(Value::as_str)
-            && !value.trim().is_empty()
-        {
-            return collapse_preview_text(value.trim(), 4, 96, PreviewCollapse::Head);
-        }
-    }
-
-    collapse_preview_text(&arguments.to_string(), 4, 96, PreviewCollapse::Head)
-}
-
-fn bash_output_block(output: &agent::types::ToolResult) -> (Vec<String>, Vec<String>) {
-    let mut details = Vec::new();
-    let mut output_lines = Vec::new();
-
-    if let Some(structured) = output.structured_content.as_ref() {
-        let exit_code = structured.get("exit_code").and_then(Value::as_i64);
-        if let Some(exit_code) = exit_code {
-            details.push(format!("exit {exit_code}"));
-        }
-        let timed_out = structured
-            .get("timed_out")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
-        if timed_out {
-            details.push("timed out".to_string());
-        }
-
-        let stdout = structured
-            .pointer("/stdout/text")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        let stderr = structured
-            .pointer("/stderr/text")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        let collapse = command_output_collapse(exit_code, timed_out, !stderr.trim().is_empty());
-
-        let rendered = if !stdout.trim().is_empty() || !stderr.trim().is_empty() {
-            let mut chunks = Vec::new();
-            if !stdout.trim().is_empty() {
-                chunks.push(stdout.trim_end().to_string());
-            }
-            if !stderr.trim().is_empty() {
-                if !chunks.is_empty() {
-                    chunks.push(String::new());
-                }
-                chunks.push("stderr:".to_string());
-                chunks.push(stderr.trim_end().to_string());
-            }
-            chunks.join("\n")
-        } else {
-            output.text_content()
-        };
-
-        if !rendered.trim().is_empty() {
-            output_lines = collapse_preview_text(&rendered, 12, 120, collapse);
-        }
-    } else {
-        let text = output.text_content();
-        if !text.trim().is_empty() {
-            output_lines = collapse_preview_text(&text, 12, 120, PreviewCollapse::HeadTail);
-        }
-    }
-
-    (details, output_lines)
-}
-
-fn file_mutation_output_block(
-    output: &agent::types::ToolResult,
-) -> (Vec<String>, Vec<Vec<String>>) {
-    let mut details = Vec::new();
-    let mut diff_blocks = Vec::new();
-
-    if let Some(structured) = output.structured_content.as_ref() {
-        if let Some(summary) = structured.get("summary").and_then(Value::as_str)
-            && !summary.trim().is_empty()
-        {
-            details.push(format!("summary {}", preview_text(summary, 72)));
-        } else {
-            let first_line = output.text_content();
-            let first_line = first_line.lines().next().unwrap_or_default().trim();
-            if !first_line.is_empty() {
-                details.push(format!("output {}", preview_text(first_line, 72)));
-            }
-        }
-
-        if let Some(before) = structured.get("snapshot_before").and_then(Value::as_str) {
-            let after = structured
-                .get("snapshot_after")
-                .and_then(Value::as_str)
-                .unwrap_or("missing");
-            details.push(format!(
-                "snapshot {} -> {}",
-                preview_text(before, 16),
-                preview_text(after, 16)
-            ));
-        }
-
-        if let Some(file_diffs) = structured.get("file_diffs").and_then(Value::as_array) {
-            for diff in file_diffs {
-                if let Some(preview) = diff.get("preview").and_then(Value::as_str) {
-                    diff_blocks.push(collapse_preview_text(
-                        preview,
-                        16,
-                        120,
-                        PreviewCollapse::HeadTail,
-                    ));
-                }
-            }
-        }
-    }
-
-    (details, diff_blocks)
-}
-
 fn format_session_event_line(event: &SessionEventEnvelope) -> String {
     match &event.event {
         SessionEventKind::SessionStart { reason } => shell_summary(
@@ -1036,20 +855,20 @@ fn format_session_event_line(event: &SessionEventEnvelope) -> String {
             "• Removed transcript message",
             [format!("message {}", preview_id(message_id.as_str()))],
         ),
-        SessionEventKind::ToolApprovalRequested { call, reasons } => shell_summary(
-            format!("• Awaiting approval for {}", call.tool_name),
-            std::iter::once(format!("origin {}", format_tool_origin(&call.origin)))
-                .chain(tool_argument_preview_lines(
-                    call.tool_name.as_str(),
-                    &call.arguments,
-                ))
-                .chain(std::iter::once(
-                    reasons
-                        .first()
-                        .map(|reason| format!("reason {}", preview_text(reason, 72)))
-                        .unwrap_or_default(),
-                )),
-        ),
+        SessionEventKind::ToolApprovalRequested { call, reasons } => {
+            let mut detail_lines = vec![format!("  └ origin {}", format_tool_origin(&call.origin))];
+            detail_lines.extend(prefixed_detail_lines(&tool_arguments_preview_lines(
+                call.tool_name.as_str(),
+                &call.arguments,
+            )));
+            if let Some(reason) = reasons.first() {
+                detail_lines.push(format!("  └ reason {}", preview_text(reason, 72)));
+            }
+            summarize_tool_entry(
+                format!("• Awaiting approval for {}", call.tool_name),
+                detail_lines,
+            )
+        }
         SessionEventKind::ToolApprovalResolved {
             call,
             approved,
@@ -1062,54 +881,33 @@ fn format_session_event_line(event: &SessionEventEnvelope) -> String {
             },
             [format_reason_detail(reason.as_deref()).unwrap_or_default()],
         ),
-        SessionEventKind::ToolCallStarted { call } => shell_summary(
+        SessionEventKind::ToolCallStarted { call } => summarize_tool_entry(
             format!("• Running {}", call.tool_name),
-            tool_argument_preview_lines(call.tool_name.as_str(), &call.arguments),
+            prefixed_detail_lines(&tool_arguments_preview_lines(
+                call.tool_name.as_str(),
+                &call.arguments,
+            )),
         ),
         SessionEventKind::ToolCallCompleted { call, output } => {
-            if call.tool_name.as_str() == "bash" {
-                let (extra_details, output_lines) = bash_output_block(output);
-                shell_summary_with_code_block(
-                    format!("• Finished {}", call.tool_name),
-                    tool_argument_preview_lines(call.tool_name.as_str(), &call.arguments)
-                        .into_iter()
-                        .chain(extra_details),
-                    &output_lines,
-                )
-            } else if matches!(call.tool_name.as_str(), "write" | "edit" | "patch") {
-                let (extra_details, diff_blocks) = file_mutation_output_block(output);
-                let mut rendered = shell_summary(
-                    format!("• Finished {}", call.tool_name),
-                    tool_argument_preview_lines(call.tool_name.as_str(), &call.arguments)
-                        .into_iter()
-                        .chain(extra_details),
-                );
-                for block in diff_blocks {
-                    rendered.push('\n');
-                    rendered.push_str(&shell_code_block("diff", &block));
-                }
-                rendered
-            } else {
-                shell_summary(
-                    format!("• Finished {}", call.tool_name),
-                    tool_argument_preview_lines(call.tool_name.as_str(), &call.arguments)
-                        .into_iter()
-                        .chain(std::iter::once(format!(
-                            "output {}",
-                            preview_text(&output.text_content(), 72)
-                        ))),
-                )
-            }
+            let mut detail_lines = prefixed_detail_lines(&tool_arguments_preview_lines(
+                call.tool_name.as_str(),
+                &call.arguments,
+            ));
+            detail_lines.extend(tool_output_detail_lines(
+                call.tool_name.as_str(),
+                &output.text_content(),
+                output.structured_content.as_ref(),
+            ));
+            summarize_tool_entry(format!("• Finished {}", call.tool_name), detail_lines)
         }
-        SessionEventKind::ToolCallFailed { call, error } => shell_summary(
-            format!("✗ {} failed", call.tool_name),
-            tool_argument_preview_lines(call.tool_name.as_str(), &call.arguments)
-                .into_iter()
-                .chain(std::iter::once(format!(
-                    "error {}",
-                    preview_text(error, 72)
-                ))),
-        ),
+        SessionEventKind::ToolCallFailed { call, error } => {
+            let mut detail_lines = prefixed_detail_lines(&tool_arguments_preview_lines(
+                call.tool_name.as_str(),
+                &call.arguments,
+            ));
+            detail_lines.push(format!("  └ error {}", preview_text(error, 72)));
+            summarize_tool_entry(format!("✗ {} failed", call.tool_name), detail_lines)
+        }
         SessionEventKind::Notification { source, message } => shell_summary(
             format!("• Notification from {source}"),
             [format!("message {}", preview_text(message, 72))],
@@ -1371,7 +1169,7 @@ mod tests {
 
         assert_eq!(
             format_session_event_line(&event),
-            "• Finished bash\n  └ $ cargo test\n```text\ntests passed\n```"
+            "• Finished bash\n  └ $ cargo test\n  └ tests passed"
         );
     }
 
@@ -1416,7 +1214,7 @@ mod tests {
 
         let rendered = format_session_event_line(&event);
         assert!(rendered.contains("• Finished write"));
-        assert!(rendered.contains("```diff"));
+        assert!(rendered.contains("  └ diff src/lib.rs"));
         assert!(rendered.contains("@@ -1,1 +1,1 @@"));
         assert!(rendered.contains("+new()"));
     }
