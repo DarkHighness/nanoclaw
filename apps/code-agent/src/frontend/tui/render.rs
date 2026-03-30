@@ -1,7 +1,18 @@
+mod chrome;
+mod picker;
+mod theme;
+mod welcome;
+
 use super::approval::ApprovalPrompt;
-use super::commands::{SlashCommandHint, SlashCommandSpec, slash_command_hint};
-use super::state::{MainPaneMode, TodoEntry, TuiState, preview_text};
+use super::commands::slash_command_hint;
+use super::state::{MainPaneMode, TuiState, preview_text};
 use crate::backend::preview_id;
+use chrome::{
+    approval_band_height, approval_preview_lines, build_approval_text, build_side_rail_lines,
+    format_footer_context, render_approval_band, render_composer, render_status_line,
+    should_render_side_rail, side_rail_width, status_color,
+};
+use picker::{build_command_hint_text, command_hint_height, render_command_hint_band};
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Margin, Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
@@ -9,65 +20,9 @@ use ratatui::widgets::{Block, Paragraph, Wrap};
 use ratatui_core::layout::Alignment as CoreAlignment;
 use ratatui_core::style::{Color as CoreColor, Modifier as CoreModifier, Style as CoreStyle};
 use ratatui_core::text::{Line as CoreLine, Span as CoreSpan};
-use tui_markdown::{
-    Options as MarkdownOptions, StyleSheet as MarkdownStyleSheet, from_str_with_options,
-};
-
-const BG: Color = Color::Rgb(14, 15, 17);
-const MAIN_BG: Color = Color::Rgb(16, 17, 19);
-const FOOTER_BG: Color = Color::Rgb(18, 19, 21);
-const BOTTOM_PANE_BG: Color = Color::Rgb(24, 25, 28);
-const BORDER_ACTIVE: Color = Color::Rgb(178, 176, 168);
-const TEXT: Color = Color::Rgb(231, 231, 227);
-const MUTED: Color = Color::Rgb(157, 158, 152);
-const SUBTLE: Color = Color::Rgb(112, 114, 109);
-const USER: Color = Color::Rgb(214, 197, 167);
-const ASSISTANT: Color = Color::Rgb(196, 205, 197);
-const ERROR: Color = Color::Rgb(224, 134, 130);
-const WARN: Color = Color::Rgb(214, 183, 96);
-const HEADER: Color = Color::Rgb(242, 242, 238);
-
-#[derive(Clone, Copy, Debug, Default)]
-struct NanoclawMarkdownStyleSheet;
-
-impl MarkdownStyleSheet for NanoclawMarkdownStyleSheet {
-    fn heading(&self, level: u8) -> CoreStyle {
-        match level {
-            1 => CoreStyle::new()
-                .fg(core_color(HEADER))
-                .add_modifier(CoreModifier::BOLD),
-            2 => CoreStyle::new()
-                .fg(core_color(HEADER))
-                .add_modifier(CoreModifier::BOLD),
-            3 => CoreStyle::new()
-                .fg(core_color(TEXT))
-                .add_modifier(CoreModifier::BOLD),
-            _ => CoreStyle::new().fg(core_color(TEXT)),
-        }
-    }
-
-    fn code(&self) -> CoreStyle {
-        CoreStyle::new().fg(core_color(TEXT))
-    }
-
-    fn link(&self) -> CoreStyle {
-        CoreStyle::new()
-            .fg(core_color(USER))
-            .add_modifier(CoreModifier::UNDERLINED)
-    }
-
-    fn blockquote(&self) -> CoreStyle {
-        CoreStyle::new().fg(core_color(MUTED))
-    }
-
-    fn heading_meta(&self) -> CoreStyle {
-        CoreStyle::new().fg(core_color(SUBTLE))
-    }
-
-    fn metadata_block(&self) -> CoreStyle {
-        CoreStyle::new().fg(core_color(MUTED))
-    }
-}
+use theme::*;
+use tui_markdown::{Options as MarkdownOptions, from_str_with_options};
+use welcome::build_welcome_lines;
 
 pub(crate) fn render(
     frame: &mut ratatui::Frame<'_>,
@@ -220,294 +175,11 @@ fn render_side_rail(frame: &mut ratatui::Frame<'_>, area: Rect, state: &TuiState
     frame.render_widget(rail, inner);
 }
 
-fn render_status_line(frame: &mut ratatui::Frame<'_>, area: Rect, state: &TuiState) {
-    frame.render_widget(Block::default().style(Style::default().bg(FOOTER_BG)), area);
-    let inner = area.inner(Margin {
-        vertical: 0,
-        horizontal: 1,
-    });
-    let status = Paragraph::new(format_footer_context(state))
-        .style(Style::default().fg(TEXT).bg(FOOTER_BG))
-        .wrap(Wrap { trim: true });
-    frame.render_widget(status, inner);
-}
-
-fn render_composer(frame: &mut ratatui::Frame<'_>, area: Rect, state: &TuiState) {
-    frame.render_widget(Block::default().style(Style::default().bg(FOOTER_BG)), area);
-    let inner = area.inner(Margin {
-        vertical: 0,
-        horizontal: 1,
-    });
-    frame.render_widget(
-        Paragraph::new(build_composer_line(state)).style(Style::default().fg(TEXT).bg(FOOTER_BG)),
-        inner,
-    );
-}
-
-fn render_approval_band(frame: &mut ratatui::Frame<'_>, area: Rect, approval: &ApprovalPrompt) {
-    frame.render_widget(
-        Block::default().style(Style::default().bg(BOTTOM_PANE_BG)),
-        area,
-    );
-    let inner = area.inner(Margin {
-        vertical: 0,
-        horizontal: 2,
-    });
-    frame.render_widget(
-        Paragraph::new(build_approval_text(approval))
-            .wrap(Wrap { trim: false })
-            .style(Style::default().fg(TEXT).bg(BOTTOM_PANE_BG)),
-        inner,
-    );
-}
-
-fn render_command_hint_band(
-    frame: &mut ratatui::Frame<'_>,
-    area: Rect,
-    command_hint: &SlashCommandHint,
-) {
-    frame.render_widget(
-        Block::default().style(Style::default().bg(BOTTOM_PANE_BG)),
-        area,
-    );
-    let inner = area.inner(Margin {
-        vertical: 0,
-        horizontal: 2,
-    });
-    frame.render_widget(
-        Paragraph::new(build_command_hint_text(command_hint))
-            .wrap(Wrap { trim: false })
-            .style(Style::default().fg(TEXT).bg(BOTTOM_PANE_BG)),
-        inner,
-    );
-}
-
 fn composer_inner_area(area: Rect) -> Rect {
     area.inner(Margin {
         vertical: 0,
         horizontal: 1,
     })
-}
-
-fn build_approval_text(approval: &ApprovalPrompt) -> Text<'static> {
-    let mut lines = vec![Line::from(Span::styled(
-        format!("Approve {}?", approval.tool_name),
-        Style::default().fg(HEADER).add_modifier(Modifier::BOLD),
-    ))];
-    lines.push(approval_context_line(approval));
-    lines.push(approval_section_label(&approval.content_label));
-    for line in approval_preview_lines(&approval.content_preview) {
-        lines.push(Line::from(vec![
-            Span::styled("  ", Style::default().fg(SUBTLE)),
-            code_span(&line),
-        ]));
-    }
-    if !approval.reasons.is_empty() {
-        lines.push(approval_section_label("why"));
-        lines.extend(approval.reasons.iter().take(2).map(|reason| {
-            Line::from(vec![
-                Span::styled("  • ", Style::default().fg(SUBTLE)),
-                Span::styled(preview_text(reason, 96), Style::default().fg(MUTED)),
-            ])
-        }));
-    }
-    lines.push(Line::from(vec![
-        Span::styled("y", Style::default().fg(HEADER)),
-        Span::styled(" approve", Style::default().fg(MUTED)),
-        Span::styled(" · ", Style::default().fg(SUBTLE)),
-        Span::styled("n", Style::default().fg(HEADER)),
-        Span::styled(" deny", Style::default().fg(MUTED)),
-        Span::styled(" · ", Style::default().fg(SUBTLE)),
-        Span::styled("esc", Style::default().fg(HEADER)),
-        Span::styled(" dismiss", Style::default().fg(MUTED)),
-    ]));
-    Text::from(lines)
-}
-
-fn approval_band_height(approval: &ApprovalPrompt) -> u16 {
-    build_approval_text(approval).lines.len().clamp(5, 10) as u16
-}
-
-fn approval_section_label(label: &str) -> Line<'static> {
-    Line::from(vec![Span::styled(
-        label.to_string(),
-        Style::default().fg(MUTED).add_modifier(Modifier::BOLD),
-    )])
-}
-
-fn approval_context_line(approval: &ApprovalPrompt) -> Line<'static> {
-    let mut spans = vec![Span::styled(
-        approval.origin.clone(),
-        Style::default().fg(MUTED),
-    )];
-    if let Some(working_directory) = approval.working_directory.as_deref() {
-        spans.push(Span::styled(" · ", Style::default().fg(SUBTLE)));
-        spans.push(Span::styled(
-            preview_text(working_directory, 56),
-            Style::default().fg(TEXT),
-        ));
-    }
-    if let Some(mode) = approval.mode.as_deref() {
-        spans.push(Span::styled(" · ", Style::default().fg(SUBTLE)));
-        spans.push(Span::styled(mode.to_string(), Style::default().fg(MUTED)));
-    }
-    Line::from(spans)
-}
-
-fn build_command_hint_text(command_hint: &SlashCommandHint) -> Text<'static> {
-    let mut lines = vec![Line::from(vec![
-        Span::styled("commands", Style::default().fg(MUTED)),
-        Span::styled(" · ", Style::default().fg(SUBTLE)),
-        Span::styled(
-            format!("{} matches", command_hint.matches.len()),
-            Style::default().fg(SUBTLE),
-        ),
-    ])];
-    let window = visible_command_match_window(command_hint, 4);
-    if window.start > 0 {
-        lines.push(Line::from(Span::styled(
-            format!("… {} earlier", window.start),
-            Style::default().fg(SUBTLE),
-        )));
-    }
-    for spec in window.items {
-        if spec.name == command_hint.selected.name {
-            lines.push(Line::from(vec![
-                Span::styled("›", Style::default().fg(USER).add_modifier(Modifier::BOLD)),
-                Span::raw(" "),
-                Span::styled(
-                    format!("/{}", spec.usage),
-                    Style::default().fg(HEADER).add_modifier(Modifier::BOLD),
-                ),
-                Span::styled("  ", Style::default().fg(SUBTLE)),
-                Span::styled(spec.summary, Style::default().fg(MUTED)),
-            ]));
-        } else {
-            lines.push(Line::from(vec![
-                Span::styled("  ", Style::default().fg(SUBTLE)),
-                Span::styled(format!("/{}", spec.usage), Style::default().fg(MUTED)),
-                Span::styled("  ", Style::default().fg(SUBTLE)),
-                Span::styled(spec.section, Style::default().fg(SUBTLE)),
-            ]));
-        }
-    }
-    if let Some(arguments) = command_hint.arguments.as_ref() {
-        let mut spans = Vec::new();
-        if arguments.provided.is_empty() {
-            if let Some(next) = arguments.next {
-                spans.push(Span::styled("  next ", Style::default().fg(SUBTLE)));
-                spans.push(Span::styled(next.placeholder, Style::default().fg(MUTED)));
-            }
-        } else {
-            spans.push(Span::styled("  ", Style::default().fg(SUBTLE)));
-            for (index, argument) in arguments.provided.iter().enumerate() {
-                if index > 0 {
-                    spans.push(Span::styled(" · ", Style::default().fg(SUBTLE)));
-                }
-                spans.push(Span::styled(
-                    argument.placeholder,
-                    Style::default().fg(SUBTLE),
-                ));
-                spans.push(Span::raw(" "));
-                spans.push(Span::styled(
-                    argument.value.clone(),
-                    Style::default().fg(TEXT),
-                ));
-            }
-            if let Some(next) = arguments.next {
-                spans.push(Span::styled(" · ", Style::default().fg(SUBTLE)));
-                spans.push(Span::styled("next ", Style::default().fg(SUBTLE)));
-                spans.push(Span::styled(next.placeholder, Style::default().fg(MUTED)));
-            }
-        }
-        if !spans.is_empty() {
-            lines.push(Line::from(spans));
-        }
-    }
-    if window.end < command_hint.matches.len() {
-        lines.push(Line::from(Span::styled(
-            format!("… {} more", command_hint.matches.len() - window.end),
-            Style::default().fg(SUBTLE),
-        )));
-    }
-    let tab_hint = if command_hint.exact {
-        if command_hint
-            .arguments
-            .as_ref()
-            .and_then(|arguments| arguments.next)
-            .is_some_and(|argument| argument.required)
-        {
-            "keep typing"
-        } else if command_hint.matches.len() > 1 {
-            "tab next"
-        } else {
-            "enter run"
-        }
-    } else {
-        "tab complete"
-    };
-    let enter_hint = if command_hint.exact {
-        if command_hint
-            .arguments
-            .as_ref()
-            .and_then(|arguments| arguments.next)
-            .is_some_and(|argument| argument.required)
-        {
-            "keep typing"
-        } else {
-            "enter run"
-        }
-    } else if command_hint.matches.len() == 1 && !command_hint.selected.requires_arguments() {
-        "enter run"
-    } else {
-        "enter accept"
-    };
-    lines.push(Line::from(vec![
-        Span::styled("↑↓", Style::default().fg(MUTED)),
-        Span::styled(" move", Style::default().fg(MUTED)),
-        Span::styled(" · ", Style::default().fg(SUBTLE)),
-        Span::styled(tab_hint, Style::default().fg(MUTED)),
-        Span::styled(" · ", Style::default().fg(SUBTLE)),
-        Span::styled("shift+tab previous", Style::default().fg(MUTED)),
-        Span::styled(" · ", Style::default().fg(SUBTLE)),
-        Span::styled(enter_hint, Style::default().fg(MUTED)),
-    ]));
-
-    Text::from(lines)
-}
-
-struct VisibleCommandMatchWindow<'a> {
-    start: usize,
-    end: usize,
-    items: &'a [SlashCommandSpec],
-}
-
-fn visible_command_match_window(
-    command_hint: &SlashCommandHint,
-    max_items: usize,
-) -> VisibleCommandMatchWindow<'_> {
-    let total = command_hint.matches.len();
-    let window = total.min(max_items.max(1));
-    let mut start = command_hint
-        .selected_match_index
-        .saturating_add(1)
-        .saturating_sub(window);
-    let end = (start + window).min(total);
-    if end - start < window {
-        start = end.saturating_sub(window);
-    }
-    VisibleCommandMatchWindow {
-        start,
-        end,
-        items: &command_hint.matches[start..end],
-    }
-}
-
-fn command_hint_height(command_hint: &SlashCommandHint) -> u16 {
-    build_command_hint_text(command_hint)
-        .lines
-        .len()
-        .clamp(2, 8) as u16
 }
 
 fn bottom_layout_constraints(
@@ -524,17 +196,6 @@ fn bottom_layout_constraints(
     constraints.push(Constraint::Length(1));
     constraints.push(Constraint::Length(1));
     constraints
-}
-
-fn approval_preview_lines(lines: &[String]) -> Vec<String> {
-    if lines.len() <= 4 {
-        return lines.to_vec();
-    }
-
-    let mut preview = lines.iter().take(2).cloned().collect::<Vec<_>>();
-    preview.push("...".to_string());
-    preview.extend(lines.iter().skip(lines.len().saturating_sub(1)).cloned());
-    preview
 }
 
 fn build_transcript_lines(state: &TuiState) -> Vec<Line<'static>> {
@@ -575,50 +236,6 @@ fn build_transcript_lines(state: &TuiState) -> Vec<Line<'static>> {
     }
 
     lines
-}
-
-fn build_welcome_lines(state: &TuiState, viewport_height: u16) -> Vec<Line<'static>> {
-    let compact = viewport_height < 16;
-    let mut core = build_welcome_logo_lines(compact);
-    core.push(Line::raw(""));
-    core.push(Line::from(Span::styled(
-        format!("{} · {}", state.session.workspace_name, state.session.model),
-        Style::default().fg(MUTED),
-    )));
-    core.push(Line::from(Span::styled(
-        "Type a prompt or /help.",
-        Style::default().fg(SUBTLE),
-    )));
-
-    let top_padding = usize::from(viewport_height.saturating_sub(core.len() as u16) / 2);
-    let mut lines = vec![Line::raw(""); top_padding];
-    lines.extend(core);
-    lines
-}
-
-fn build_welcome_logo_lines(compact: bool) -> Vec<Line<'static>> {
-    if compact {
-        return vec![Line::from(Span::styled(
-            "NANOCLAW".to_string(),
-            Style::default().fg(HEADER).add_modifier(Modifier::BOLD),
-        ))];
-    }
-
-    [
-        "N   N  AAA  N   N  OOO   CCCC L      AAA  W   W",
-        "NN  N A   A NN  N O   O C    L     A   A W   W",
-        "N N N AAAAA N N N O   O C    L     AAAAA W W W",
-        "N  NN A   A N  NN O   O C    L     A   A WW WW",
-        "N   N A   A N   N  OOO   CCCC LLLLL A   A W   W",
-    ]
-    .into_iter()
-    .map(|line| {
-        Line::from(Span::styled(
-            line.to_string(),
-            Style::default().fg(HEADER).add_modifier(Modifier::BOLD),
-        ))
-    })
-    .collect()
 }
 
 fn should_render_transcript_context(title: &str) -> bool {
@@ -1021,30 +638,6 @@ fn core_line_to_plain_text(line: &CoreLine<'_>) -> String {
         .iter()
         .map(|span| span.content.as_ref())
         .collect::<String>()
-}
-
-fn core_color(color: Color) -> CoreColor {
-    match color {
-        Color::Reset => CoreColor::Reset,
-        Color::Black => CoreColor::Black,
-        Color::Red => CoreColor::Red,
-        Color::Green => CoreColor::Green,
-        Color::Yellow => CoreColor::Yellow,
-        Color::Blue => CoreColor::Blue,
-        Color::Magenta => CoreColor::Magenta,
-        Color::Cyan => CoreColor::Cyan,
-        Color::Gray => CoreColor::Gray,
-        Color::DarkGray => CoreColor::DarkGray,
-        Color::LightRed => CoreColor::LightRed,
-        Color::LightGreen => CoreColor::LightGreen,
-        Color::LightYellow => CoreColor::LightYellow,
-        Color::LightBlue => CoreColor::LightBlue,
-        Color::LightMagenta => CoreColor::LightMagenta,
-        Color::LightCyan => CoreColor::LightCyan,
-        Color::White => CoreColor::White,
-        Color::Rgb(r, g, b) => CoreColor::Rgb(r, g, b),
-        Color::Indexed(index) => CoreColor::Indexed(index),
-    }
 }
 
 fn trim_blank_markdown_lines(lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
@@ -1470,203 +1063,6 @@ fn live_progress_summary(state: &TuiState) -> String {
     }
 }
 
-fn build_composer_line(state: &TuiState) -> Line<'static> {
-    let mut spans = vec![
-        Span::styled("›", Style::default().fg(USER).add_modifier(Modifier::BOLD)),
-        Span::raw(" "),
-    ];
-    if state.input.is_empty() {
-        spans.push(Span::styled(
-            "Type a prompt or /help",
-            Style::default().fg(SUBTLE),
-        ));
-        return Line::from(spans);
-    }
-
-    if state.input.starts_with('/') {
-        let (command, tail) = state
-            .input
-            .split_once(' ')
-            .map_or((state.input.as_str(), None), |(command, tail)| {
-                (command, Some(tail))
-            });
-        spans.push(Span::styled(
-            command.to_string(),
-            Style::default().fg(USER).add_modifier(Modifier::BOLD),
-        ));
-        if let Some(tail) = tail {
-            spans.push(Span::raw(" "));
-            spans.push(Span::styled(tail.to_string(), Style::default().fg(TEXT)));
-        }
-    } else {
-        spans.push(Span::styled(state.input.clone(), Style::default().fg(TEXT)));
-    }
-
-    Line::from(spans)
-}
-
-fn should_render_side_rail(state: &TuiState, area: Rect) -> bool {
-    state.main_pane == MainPaneMode::Transcript
-        && area.width >= 128
-        && (lsp_side_rail_available(state) || !state.todo_items.is_empty())
-}
-
-fn side_rail_width(total_width: u16) -> u16 {
-    total_width.saturating_mul(22) / 100
-}
-
-fn lsp_side_rail_available(state: &TuiState) -> bool {
-    state.session.tool_names.iter().any(|tool| {
-        matches!(
-            tool.as_str(),
-            "code_symbol_search" | "code_document_symbols" | "code_definitions" | "code_references"
-        )
-    })
-}
-
-fn build_side_rail_lines(state: &TuiState) -> Vec<Line<'static>> {
-    let mut lines = Vec::new();
-
-    if lsp_side_rail_available(state) {
-        lines.push(section_title_line("LSP"));
-        let degraded = state
-            .session
-            .startup_diagnostics
-            .warnings
-            .iter()
-            .any(|warning| warning.contains("managed code-intel"));
-        let warning_count = state.session.startup_diagnostics.warnings.len();
-        let diagnostic_count = state.session.startup_diagnostics.diagnostics.len();
-        lines.push(status_line(
-            if degraded { "degraded" } else { "ready" },
-            if degraded { WARN } else { ASSISTANT },
-        ));
-        lines.push(rail_summary_line(format!(
-            "{warning_count} warnings · {diagnostic_count} diagnostics"
-        )));
-        let lsp_notes = state
-            .session
-            .startup_diagnostics
-            .warnings
-            .iter()
-            .map(|warning| (preview_text(warning, 40), WARN))
-            .chain(
-                state
-                    .session
-                    .startup_diagnostics
-                    .diagnostics
-                    .iter()
-                    .map(|diagnostic| (preview_text(diagnostic, 40), USER)),
-            )
-            .take(3)
-            .collect::<Vec<_>>();
-        if lsp_notes.is_empty() {
-            lines.push(rail_summary_line("No diagnostics yet."));
-        } else {
-            lines.extend(
-                lsp_notes
-                    .into_iter()
-                    .map(|(note, color)| bullet_line(&note, color)),
-            );
-        }
-        lines.push(Line::raw(""));
-    }
-
-    if !state.todo_items.is_empty() {
-        lines.push(section_title_line("TODO"));
-        let (active, pending, done) = todo_counts(&state.todo_items);
-        lines.push(rail_summary_line(format!(
-            "{active} active · {pending} pending · {done} done"
-        )));
-        let mut todo_items = state.todo_items.iter().collect::<Vec<_>>();
-        todo_items.sort_by_key(|item| (todo_status_rank(&item.status), item.content.as_str()));
-        let visible = todo_items.iter().take(5).copied().collect::<Vec<_>>();
-        lines.extend(visible.iter().map(|item| render_todo_line(item)));
-        if todo_items.len() > visible.len() {
-            lines.push(rail_summary_line(format!(
-                "+{} more",
-                todo_items.len() - visible.len()
-            )));
-        }
-    }
-
-    if lines.is_empty() {
-        lines.push(section_title_line("Context"));
-        lines.push(Line::from(Span::styled(
-            "No live side context.",
-            Style::default().fg(SUBTLE),
-        )));
-    }
-
-    lines
-}
-
-fn section_title_line(title: &str) -> Line<'static> {
-    Line::from(Span::styled(title.to_string(), Style::default().fg(MUTED)))
-}
-
-fn bullet_line(body: &str, color: Color) -> Line<'static> {
-    Line::from(vec![
-        Span::styled("•", Style::default().fg(color)),
-        Span::raw(" "),
-        Span::styled(body.to_string(), Style::default().fg(MUTED)),
-    ])
-}
-
-fn status_line(body: &str, color: Color) -> Line<'static> {
-    Line::from(Span::styled(body.to_string(), Style::default().fg(color)))
-}
-
-fn rail_summary_line(body: impl Into<String>) -> Line<'static> {
-    Line::from(Span::styled(body.into(), Style::default().fg(SUBTLE)))
-}
-
-fn todo_counts(items: &[TodoEntry]) -> (usize, usize, usize) {
-    items
-        .iter()
-        .fold((0, 0, 0), |(active, pending, done), item| {
-            match item.status.as_str() {
-                "in_progress" => (active + 1, pending, done),
-                "completed" => (active, pending, done + 1),
-                _ => (active, pending + 1, done),
-            }
-        })
-}
-
-fn todo_status_rank(status: &str) -> usize {
-    match status {
-        "in_progress" => 0,
-        "pending" => 1,
-        "completed" => 2,
-        _ => 3,
-    }
-}
-
-fn render_todo_line(item: &TodoEntry) -> Line<'static> {
-    let (marker, color) = match item.status.as_str() {
-        "completed" => ("x", ASSISTANT),
-        "in_progress" => ("~", WARN),
-        _ => ("·", MUTED),
-    };
-    Line::from(vec![
-        Span::styled("[", Style::default().fg(SUBTLE)),
-        Span::styled(
-            marker,
-            Style::default().fg(color).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled("]", Style::default().fg(SUBTLE)),
-        Span::raw(" "),
-        Span::styled(
-            preview_text(&item.content, 30),
-            if item.status == "completed" {
-                Style::default().fg(MUTED)
-            } else {
-                Style::default().fg(TEXT)
-            },
-        ),
-    ])
-}
-
 fn code_span(line: &str) -> Span<'static> {
     let trimmed = line.trim_start();
     let style = if trimmed.starts_with('+') && !trimmed.starts_with("+++") {
@@ -1689,79 +1085,6 @@ fn progress_marker(state: &TuiState) -> &'static str {
     } else {
         "·"
     }
-}
-
-fn format_footer_context(state: &TuiState) -> Line<'static> {
-    let status = if state.status.is_empty() {
-        "Ready"
-    } else {
-        state.status.as_str()
-    };
-    let mut spans = vec![
-        Span::styled(
-            if state.turn_running { "●" } else { "•" },
-            Style::default()
-                .fg(status_color(status))
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::raw(" "),
-        Span::styled(
-            preview_text(status, 28),
-            Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(" · ", Style::default().fg(SUBTLE)),
-        Span::styled(
-            state.session.workspace_name.clone(),
-            Style::default().fg(TEXT),
-        ),
-        Span::styled(" · ", Style::default().fg(SUBTLE)),
-        Span::styled(state.session.model.clone(), Style::default().fg(MUTED)),
-        Span::styled(" · ", Style::default().fg(SUBTLE)),
-        Span::styled(
-            if state.show_tool_details {
-                "details on"
-            } else {
-                "details off"
-            },
-            Style::default().fg(MUTED),
-        ),
-    ];
-
-    if state.session.queued_commands > 0 {
-        spans.push(Span::styled(" · ", Style::default().fg(SUBTLE)));
-        spans.push(Span::styled(
-            format!("{} queued", state.session.queued_commands),
-            Style::default().fg(WARN),
-        ));
-    }
-
-    if state.turn_running {
-        let elapsed_secs = state
-            .turn_started_at
-            .map(|started| started.elapsed().as_secs())
-            .unwrap_or(0);
-        spans.push(Span::styled(" · ", Style::default().fg(SUBTLE)));
-        spans.push(Span::styled(
-            format!("{elapsed_secs}s"),
-            Style::default().fg(MUTED),
-        ));
-    }
-
-    if state.session.git.available {
-        spans.push(Span::styled(" · ", Style::default().fg(SUBTLE)));
-        spans.push(Span::styled(
-            state.session.git.branch.clone(),
-            Style::default().fg(MUTED),
-        ));
-    }
-
-    spans.push(Span::styled(" · ", Style::default().fg(SUBTLE)));
-    spans.push(Span::styled(
-        preview_id(&state.session.active_session_ref),
-        Style::default().fg(MUTED),
-    ));
-
-    Line::from(spans)
 }
 
 fn build_key_value_text(lines: &[String]) -> Text<'static> {
@@ -2138,19 +1461,6 @@ fn summary_color(line: &str) -> Color {
     }
 }
 
-fn status_color(status: &str) -> Color {
-    let lower = status.to_ascii_lowercase();
-    if lower.contains("error") || lower.contains("failed") || lower.contains("denied") {
-        ERROR
-    } else if lower.contains("approval") || lower.contains("running") || lower.contains("waiting") {
-        WARN
-    } else if lower.contains("ready") || lower.contains("complete") || lower.contains("approved") {
-        ASSISTANT
-    } else {
-        USER
-    }
-}
-
 fn clamp_scroll(requested: u16, content_lines: usize, viewport_height: u16) -> u16 {
     let viewport = usize::from(viewport_height.max(1));
     let max_scroll = content_lines.saturating_sub(viewport);
@@ -2373,23 +1683,21 @@ mod tests {
 
         let lines = build_welcome_lines(&state, 20);
 
-        assert!(lines.iter().any(|line| {
-            line.spans.iter().any(|span| {
-                span.content
-                    .as_ref()
-                    .contains("N   N  AAA  N   N  OOO   CCCC")
-            })
-        }));
-        assert!(lines.iter().any(|line| {
-            line.spans
+        assert!(
+            lines
                 .iter()
-                .any(|span| span.content.as_ref().contains("nanoclaw · gpt-5.4"))
-        }));
-        assert!(lines.iter().any(|line| {
-            line.spans
+                .any(|line| { line_text_for(line).contains("N   N  AAA  N   N  OOO   CCCC") })
+        );
+        assert!(
+            lines
                 .iter()
-                .any(|span| span.content.as_ref().contains("Type a prompt or /help."))
-        }));
+                .any(|line| { line_text_for(line).contains("nanoclaw · gpt-5.4") })
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| { line_text_for(line).contains("Type a prompt or /help.") })
+        );
     }
 
     #[test]
@@ -2627,7 +1935,7 @@ mod tests {
 
         let lines = build_side_rail_lines(&state);
 
-        assert_eq!(lines[0].spans[0].content.as_ref(), "LSP");
+        assert!(line_text_for(&lines[0]).contains("LSP"));
         assert!(lines.iter().any(|line| {
             line.spans
                 .iter()
@@ -2681,7 +1989,7 @@ mod tests {
             reasons: vec!["sandbox policy requires approval".to_string()],
         });
 
-        assert_eq!(text.lines[0].spans[0].content.as_ref(), "Approve bash?");
+        assert!(line_text_for(&text.lines[0]).contains("Approve bash?"));
         assert!(
             text.lines[1]
                 .spans
