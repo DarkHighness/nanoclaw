@@ -72,6 +72,8 @@ pub struct ModelConfig {
     #[serde(default)]
     pub reasoning_effort: Option<String>,
     #[serde(default)]
+    pub supported_reasoning_efforts: Option<Vec<String>>,
+    #[serde(default)]
     pub additional_params: Option<Value>,
     #[serde(default)]
     pub capabilities: ModelCapabilitiesConfig,
@@ -222,6 +224,7 @@ pub struct ResolvedModel {
     pub compact_preserve_recent_messages: usize,
     pub temperature: Option<f64>,
     pub reasoning_effort: Option<String>,
+    pub supported_reasoning_efforts: Vec<String>,
     pub additional_params: Option<Value>,
     pub capabilities: ModelCapabilitiesConfig,
 }
@@ -400,6 +403,9 @@ impl NanoclawCoreConfig {
             compact_preserve_recent_messages: model.compact_preserve_recent_messages.unwrap_or(8),
             temperature: model.temperature,
             reasoning_effort: normalize_optional_string(model.reasoning_effort.clone()),
+            supported_reasoning_efforts: normalize_optional_string_list(
+                model.supported_reasoning_efforts.clone(),
+            ),
             additional_params: normalize_object(
                 format!("models.{alias}.additional_params"),
                 model.additional_params.clone(),
@@ -652,6 +658,7 @@ fn default_models() -> BTreeMap<String, ModelConfig> {
             compact_preserve_recent_messages: Some(8),
             temperature: Some(0.2),
             reasoning_effort: Some("medium".to_string()),
+            supported_reasoning_efforts: None,
             additional_params: None,
             capabilities: ModelCapabilitiesConfig {
                 tool_calls: true,
@@ -711,6 +718,18 @@ fn validate_model(alias: &str, model: &ModelConfig) -> Result<()> {
         format!("models.{alias}.additional_params"),
         model.additional_params.clone(),
     )?;
+    let supported_reasoning_efforts =
+        normalize_optional_string_list(model.supported_reasoning_efforts.clone());
+    if let Some(default_effort) = normalize_optional_string(model.reasoning_effort.clone())
+        && !supported_reasoning_efforts.is_empty()
+    {
+        ensure!(
+            supported_reasoning_efforts
+                .iter()
+                .any(|level| level == &default_effort),
+            "models.{alias}.reasoning_effort must be present in supported_reasoning_efforts"
+        );
+    }
     Ok(())
 }
 
@@ -798,6 +817,22 @@ fn normalize_optional_string(value: Option<String>) -> Option<String> {
         let trimmed = entry.trim();
         (!trimmed.is_empty()).then(|| trimmed.to_string())
     })
+}
+
+fn normalize_optional_string_list(value: Option<Vec<String>>) -> Vec<String> {
+    let mut normalized = Vec::new();
+    let mut seen = BTreeSet::new();
+    for entry in value.into_iter().flatten() {
+        let trimmed = entry.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let value = trimmed.to_string();
+        if seen.insert(value.clone()) {
+            normalized.push(value);
+        }
+    }
+    normalized
 }
 
 fn split_env_paths(value: &str) -> Vec<String> {
@@ -897,6 +932,7 @@ mod tests {
                 max_output_tokens = 32000
                 compact_trigger_tokens = 160000
                 reasoning_effort = "low"
+                supported_reasoning_efforts = ["low", "medium", "high"]
 
                 [agents.primary]
                 model = "fast_review"
@@ -953,6 +989,10 @@ mod tests {
         );
         assert_eq!(primary.sandbox, AgentSandboxMode::WorkspaceWrite);
         assert_eq!(primary.max_output_tokens, 32_000);
+        assert_eq!(
+            primary.model.supported_reasoning_efforts,
+            vec!["low".to_string(), "medium".to_string(), "high".to_string()]
+        );
         assert_eq!(reviewer.reasoning_effort.as_deref(), Some("low"));
         assert_eq!(summary.max_output_tokens, 16_000);
         assert_eq!(
@@ -970,6 +1010,39 @@ mod tests {
             config.resolved_store_dir(dir.path()),
             dir.path().join(".nanoclaw/custom-store")
         );
+    }
+
+    #[tokio::test]
+    async fn rejects_reasoning_effort_outside_supported_model_levels() {
+        let _guard = env_test_lock().lock().unwrap();
+        let dir = tempdir().unwrap();
+        let layout = AgentWorkspaceLayout::new(dir.path());
+        layout.ensure_standard_layout().unwrap();
+        std::fs::write(
+            layout.core_config_path(),
+            r#"
+                [models.gpt_5_4_default]
+                provider = "openai"
+                model = "gpt-5.4"
+                context_window_tokens = 400000
+                max_output_tokens = 128000
+                compact_trigger_tokens = 300000
+                reasoning_effort = "medium"
+                supported_reasoning_efforts = ["low", "high"]
+
+                [agents.primary]
+                model = "gpt_5_4_default"
+                sandbox = "workspace_write"
+            "#,
+        )
+        .unwrap();
+
+        let error = NanoclawCoreConfig::load_from_dir(dir.path())
+            .and_then(|config| config.resolve_primary_agent())
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("supported_reasoning_efforts"));
     }
 
     #[tokio::test]
