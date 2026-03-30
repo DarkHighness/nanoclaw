@@ -557,14 +557,17 @@ fn build_transcript_lines(state: &TuiState) -> Vec<Line<'static>> {
 
     if !state.transcript.is_empty() {
         for (index, entry) in state.transcript.iter().enumerate() {
-            if index > 0 && entry.starts_with("› ") {
-                lines.push(turn_divider());
+            if index > 0 {
                 lines.push(Line::raw(""));
+                if transcript_entry_kind_for_entry(entry) == Some(TranscriptEntryKind::UserPrompt) {
+                    lines.push(turn_divider());
+                    lines.push(Line::raw(""));
+                }
             }
-            lines.extend(format_transcript_entry(entry));
-            if transcript_entry_needs_spacing(entry) {
-                lines.push(Line::raw(""));
-            }
+            lines.extend(format_transcript_entry_with_mode(
+                entry,
+                state.show_tool_details,
+            ));
         }
     }
 
@@ -655,11 +658,11 @@ enum TranscriptEntryKind {
     WarningSummary,
 }
 
-fn transcript_entry_needs_spacing(entry: &str) -> bool {
-    entry.starts_with("› ")
+fn format_transcript_entry(entry: &str) -> Vec<Line<'static>> {
+    format_transcript_entry_with_mode(entry, true)
 }
 
-fn format_transcript_entry(entry: &str) -> Vec<Line<'static>> {
+fn format_transcript_entry_with_mode(entry: &str, show_tool_details: bool) -> Vec<Line<'static>> {
     let Some((marker, accent, body)) = parse_prefixed_entry(entry) else {
         return vec![Line::from(Span::styled(
             entry.to_string(),
@@ -668,9 +671,60 @@ fn format_transcript_entry(entry: &str) -> Vec<Line<'static>> {
     };
 
     let kind = transcript_entry_kind(marker, body);
+    if should_collapse_shell_details(kind, body, show_tool_details) {
+        return render_collapsed_shell_summary(marker, accent, body, kind);
+    }
     let mut rendered = render_transcript_body(body, marker, kind);
     prefix_transcript_marker(&mut rendered, marker, accent, kind);
     rendered
+}
+
+fn should_collapse_shell_details(
+    kind: TranscriptEntryKind,
+    body: &str,
+    show_tool_details: bool,
+) -> bool {
+    // Keep the default transcript on a single readable timeline. Operators can
+    // opt back into the full tool payload stream via `/details`.
+    !show_tool_details
+        && kind == TranscriptEntryKind::ShellSummary
+        && body.lines().skip(1).any(|line| !line.trim().is_empty())
+}
+
+fn render_collapsed_shell_summary(
+    marker: &str,
+    accent: Color,
+    body: &str,
+    kind: TranscriptEntryKind,
+) -> Vec<Line<'static>> {
+    let headline = body.lines().next().unwrap_or_default();
+    let hidden_line_count = body
+        .lines()
+        .skip(1)
+        .filter(|line| !line.trim().is_empty())
+        .count();
+
+    let mut rendered = render_transcript_body(headline, marker, kind);
+    if hidden_line_count > 0 {
+        rendered.push(Line::from(vec![
+            transcript_continuation_prefix(kind),
+            Span::styled(
+                format!(
+                    "{} hidden line{} · /details",
+                    hidden_line_count,
+                    if hidden_line_count == 1 { "" } else { "s" }
+                ),
+                Style::default().fg(SUBTLE),
+            ),
+        ]));
+    }
+    prefix_transcript_marker(&mut rendered, marker, accent, kind);
+    rendered
+}
+
+fn transcript_entry_kind_for_entry(entry: &str) -> Option<TranscriptEntryKind> {
+    let (marker, _, body) = parse_prefixed_entry(entry)?;
+    Some(transcript_entry_kind(marker, body))
 }
 
 fn transcript_entry_kind(marker: &str, body: &str) -> TranscriptEntryKind {
@@ -2064,6 +2118,85 @@ mod tests {
                 .first()
                 .is_some_and(|span| span.content.contains("┈"))
         }));
+    }
+
+    #[test]
+    fn transcript_separates_assistant_and_tool_entries_with_breathing_room() {
+        let mut state = TuiState {
+            main_pane: MainPaneMode::Transcript,
+            ..TuiState::default()
+        };
+        state.transcript = vec![
+            "• assistant reply".to_string(),
+            "• Running bash\n  └ $ cargo test".to_string(),
+            "› next prompt".to_string(),
+        ];
+
+        let rendered = build_transcript_lines(&state);
+
+        assert_eq!(line_text_for(&rendered[0]), "• assistant reply");
+        assert!(line_text_for(&rendered[1]).is_empty());
+        assert_eq!(line_text_for(&rendered[2]), "• Running bash");
+        assert!(
+            rendered
+                .iter()
+                .any(|line| line_text_for(line).contains("hidden line"))
+        );
+        assert!(rendered.iter().any(|line| {
+            line.spans
+                .first()
+                .is_some_and(|span| span.content.contains("┈"))
+        }));
+    }
+
+    #[test]
+    fn transcript_collapses_tool_details_by_default() {
+        let mut state = TuiState {
+            main_pane: MainPaneMode::Transcript,
+            ..TuiState::default()
+        };
+        state.transcript = vec!["• Finished bash\n  └ exit 0\n```text\nok\n```".to_string()];
+
+        let rendered = build_transcript_lines(&state);
+
+        assert!(rendered.iter().any(|line| {
+            line.spans
+                .iter()
+                .any(|span| span.content.as_ref().contains("Finished bash"))
+        }));
+        assert!(rendered.iter().any(|line| {
+            line.spans
+                .iter()
+                .any(|span| span.content.as_ref().contains("hidden lines"))
+        }));
+        assert!(!rendered.iter().any(|line| {
+            line.spans
+                .iter()
+                .any(|span| span.content.as_ref().contains("exit 0"))
+        }));
+    }
+
+    #[test]
+    fn transcript_expands_tool_details_when_enabled() {
+        let mut state = TuiState {
+            main_pane: MainPaneMode::Transcript,
+            show_tool_details: true,
+            ..TuiState::default()
+        };
+        state.transcript = vec!["• Finished bash\n  └ exit 0\n```text\nok\n```".to_string()];
+
+        let rendered = build_transcript_lines(&state);
+
+        assert!(rendered.iter().any(|line| {
+            line.spans
+                .iter()
+                .any(|span| span.content.as_ref().contains("exit 0"))
+        }));
+        assert!(
+            rendered
+                .iter()
+                .any(|line| line_text_for(line).contains("ok"))
+        );
     }
 
     #[test]

@@ -239,6 +239,15 @@ Shipped in the twenty-third implementation slice:
 
 Shipped in the twenty-fourth implementation slice:
 
+- tool-heavy transcript cells now collapse their secondary detail lines by
+  default so the main timeline remains readable during long tool runs
+- `/details` restores the full inline tool payload stream on demand without
+  moving operators into a separate inspector or modal
+- user-turn separators now keep a larger visual gap around the transcript
+  divider so `assistant -> tool -> user` boundaries read more clearly
+
+Shipped in the twenty-fifth implementation slice:
+
 - the legacy shell was removed from the active `apps/` workspace
 - repository delivery docs now describe `code-agent` as the sole shipped app
 - active workspace cleanup no longer depends on keeping a legacy shell in-tree

@@ -140,6 +140,7 @@ not have useful extensions, including `Dockerfile*`, `Containerfile*`, `go.mod`,
 
 - `/status`
 - `/help`
+- `/details`
 - `/agent_sessions [session-ref]`
 - `/agent_session <agent-session-ref>`
 - `/live_tasks`
@@ -215,6 +216,11 @@ rail for brief context. The palette is intentionally muted rather than
 blue-accented, transcript turns are separated visually, and read-heavy outputs
 such as `/help`, command catalogs, and history lists now open in the main
 pane.
+
+Tool-heavy transcript entries now default to a collapsed shell summary so the
+main timeline stays readable. `/details` toggles the full tool payload stream
+back on when an operator needs to inspect command previews, structured output,
+or diff blocks inline.
 
 Transcript rendering is now closer to Codex's own TUI implementation: user
 turns use `›`, assistant and runtime summaries use `•`, approvals resolve into

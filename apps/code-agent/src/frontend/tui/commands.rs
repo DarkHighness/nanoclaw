@@ -75,6 +75,12 @@ const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
     },
     SlashCommandSpec {
         section: "Session",
+        name: "details",
+        usage: "details",
+        summary: "toggle tool details",
+    },
+    SlashCommandSpec {
+        section: "Session",
         name: "new",
         usage: "new",
         summary: "fresh top-level session",
@@ -240,6 +246,7 @@ const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum SlashCommand {
     Status,
+    Details,
     Help {
         query: Option<String>,
     },
@@ -329,6 +336,7 @@ struct SlashCli {
 #[command(rename_all = "snake_case")]
 enum SlashSubcommand {
     Status,
+    Details,
     Help {
         #[arg(
             value_name = "QUERY",
@@ -560,6 +568,7 @@ impl From<SlashSubcommand> for SlashCommand {
     fn from(value: SlashSubcommand) -> Self {
         match value {
             SlashSubcommand::Status => Self::Status,
+            SlashSubcommand::Details => Self::Details,
             SlashSubcommand::Help { query } => Self::Help {
                 query: join_optional_tail(query),
             },
@@ -909,6 +918,14 @@ mod tests {
     }
 
     #[test]
+    fn parses_details_toggle() {
+        assert!(matches!(
+            parse_slash_command("/details"),
+            SlashCommand::Details
+        ));
+    }
+
+    #[test]
     fn command_palette_includes_help_and_clear_alias() {
         let lines = command_palette_lines();
 
@@ -917,6 +934,11 @@ mod tests {
             lines
                 .iter()
                 .any(|line| line == "/help [query]  browse commands")
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line == "/details  toggle tool details")
         );
         assert!(lines.iter().any(|line| line == "/clear  alias of /new"));
     }

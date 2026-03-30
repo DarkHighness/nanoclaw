@@ -423,6 +423,19 @@ impl CodeAgentTui {
                 });
                 Ok(false)
             }
+            SlashCommand::Details => {
+                self.ui_state.mutate(|state| {
+                    state.show_tool_details = !state.show_tool_details;
+                    let visibility = if state.show_tool_details {
+                        "expanded"
+                    } else {
+                        "collapsed"
+                    };
+                    state.status = format!("Tool details {visibility}");
+                    state.push_activity(format!("tool details {visibility}"));
+                });
+                Ok(false)
+            }
             SlashCommand::Help { query } => {
                 let title = query
                     .as_deref()
@@ -1100,7 +1113,9 @@ impl CodeAgentTui {
         dropped_commands: usize,
     ) {
         let aborted_operator_task = self.abort_operator_task();
+        let show_tool_details = self.ui_state.snapshot().show_tool_details;
         let mut startup = self.startup_state_from_snapshot(&outcome.startup);
+        startup.show_tool_details = show_tool_details;
         startup.session.queued_commands = 0;
         startup.show_transcript_pane();
         startup.transcript = format_visible_transcript_lines(&outcome.transcript);
@@ -1200,6 +1215,7 @@ fn build_startup_inspector(session: &state::SessionSummary) -> Vec<String> {
         ),
         "## Next".to_string(),
         "/help [query]  browse commands".to_string(),
+        "/details  toggle tool details".to_string(),
         "/sessions  browse history".to_string(),
         "/agent_sessions  inspect or resume agents".to_string(),
         "/spawn_task <role> <prompt>  launch child agent".to_string(),
@@ -1317,6 +1333,11 @@ mod tests {
             lines
                 .iter()
                 .any(|line| line.contains("warning: falling back soon"))
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line == "/details  toggle tool details")
         );
     }
 

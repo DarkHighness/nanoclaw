@@ -52,6 +52,7 @@ pub(crate) struct TodoEntry {
 pub(crate) struct TuiState {
     pub(crate) session: SessionSummary,
     pub(crate) main_pane: MainPaneMode,
+    pub(crate) show_tool_details: bool,
     pub(crate) input: String,
     pub(crate) command_completion_index: usize,
     pub(crate) transcript: Vec<String>,
