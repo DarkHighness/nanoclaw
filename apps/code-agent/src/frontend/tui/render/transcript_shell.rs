@@ -274,17 +274,60 @@ pub(super) fn live_progress_lines(state: &TuiState) -> Vec<Line<'static>> {
             format!(" ({}s · esc to interrupt)", elapsed_secs),
             Style::default().fg(MUTED),
         ));
-        vec![Line::from(spans)]
+        let mut lines = vec![Line::from(spans)];
+        lines.extend(pending_control_progress_lines(state));
+        lines
     } else {
-        vec![Line::from(vec![
+        let mut lines = vec![Line::from(vec![
             Span::styled("+", Style::default().fg(WARN).add_modifier(Modifier::BOLD)),
             Span::raw(" "),
             Span::styled(
                 format!("{} queued command(s)", state.session.queued_commands),
                 Style::default().fg(MUTED),
             ),
-        ])]
+        ])];
+        lines.extend(pending_control_progress_lines(state));
+        lines
     }
+}
+
+fn pending_control_progress_lines(state: &TuiState) -> Vec<Line<'static>> {
+    if state.pending_controls.is_empty() || state.pending_control_picker.is_some() {
+        return Vec::new();
+    }
+
+    state
+        .pending_controls
+        .iter()
+        .rev()
+        .take(2)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .map(|control| {
+            let (label, accent) = match control.kind {
+                crate::backend::PendingControlKind::Prompt => ("prompt", USER),
+                crate::backend::PendingControlKind::Steer => ("steer", ASSISTANT),
+            };
+            let mut spans = vec![
+                Span::styled("  ↳ ", Style::default().fg(SUBTLE)),
+                Span::styled(label, Style::default().fg(accent)),
+                Span::styled(" ", Style::default().fg(SUBTLE)),
+                Span::styled(
+                    preview_text(&control.preview, 56),
+                    Style::default().fg(MUTED),
+                ),
+            ];
+            if let Some(reason) = control.reason.as_deref() {
+                spans.push(Span::styled(" · ", Style::default().fg(SUBTLE)));
+                spans.push(Span::styled(
+                    preview_text(reason, 20),
+                    Style::default().fg(SUBTLE),
+                ));
+            }
+            Line::from(spans)
+        })
+        .collect()
 }
 
 pub(super) fn animated_progress_text_spans(text: &str, frame_ms: u128) -> Vec<Span<'static>> {

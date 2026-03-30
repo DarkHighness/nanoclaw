@@ -2,7 +2,9 @@ use super::chrome::build_side_rail_lines;
 use super::statusline::format_footer_context;
 use super::transcript::TranscriptEntryKind;
 use super::transcript::build_transcript_lines;
-use super::transcript_shell::{animated_progress_text_spans, render_shell_summary_body};
+use super::transcript_shell::{
+    animated_progress_text_spans, live_progress_lines, render_shell_summary_body,
+};
 use super::view::{
     build_collection_text, build_command_palette_text, build_key_value_text,
     build_statusline_picker_text, should_render_view_title,
@@ -444,6 +446,53 @@ fn transcript_hides_progress_line_while_tool_cell_is_active() {
         rendered
             .iter()
             .any(|line| line_text_for(line).contains("Working · bash"))
+    );
+}
+
+#[test]
+fn live_progress_surfaces_latest_pending_controls() {
+    let mut state = TuiState {
+        main_pane: MainPaneMode::Transcript,
+        turn_running: true,
+        status: "Working".to_string(),
+        ..TuiState::default()
+    };
+    state.pending_controls = vec![
+        PendingControlSummary {
+            id: "cmd_1".to_string(),
+            kind: PendingControlKind::Prompt,
+            preview: "write a regression test".to_string(),
+            reason: None,
+        },
+        PendingControlSummary {
+            id: "cmd_2".to_string(),
+            kind: PendingControlKind::Steer,
+            preview: "keep the diff small".to_string(),
+            reason: Some("inline_enter".to_string()),
+        },
+    ];
+
+    let rendered = live_progress_lines(&state);
+
+    assert!(
+        rendered
+            .iter()
+            .any(|line| line_text_for(line).contains("Working"))
+    );
+    assert!(
+        rendered
+            .iter()
+            .any(|line| line_text_for(line).contains("prompt write a regression test"))
+    );
+    assert!(
+        rendered
+            .iter()
+            .any(|line| line_text_for(line).contains("steer keep the diff small"))
+    );
+    assert!(
+        rendered
+            .iter()
+            .any(|line| line_text_for(line).contains("inline_enter"))
     );
 }
 
