@@ -86,16 +86,31 @@ pub(crate) async fn stream_anthropic_turn(
             .json(&body)
             .send()
             .await
-            .map_err(runtime::RuntimeError::from)?;
+            .map_err(|error| {
+                runtime::RuntimeError::from(ProviderError::request_with_source(
+                    "failed to send Anthropic streaming request",
+                    error,
+                ))
+            })?;
 
         let status = response.status();
         let mut stream = if status.is_success() {
             response
                 .bytes_stream()
                 .eventsource()
-                .map_err(|error| runtime::RuntimeError::from(ProviderError::request(error.to_string())))
+                .map_err(|error| {
+                    runtime::RuntimeError::from(ProviderError::request_with_source(
+                        "failed to decode Anthropic event stream",
+                        error,
+                    ))
+                })
         } else {
-            let body = response.text().await.map_err(runtime::RuntimeError::from)?;
+            let body = response.text().await.map_err(|error| {
+                runtime::RuntimeError::from(ProviderError::request_with_source(
+                    "failed to read Anthropic error response body",
+                    error,
+                ))
+            })?;
             Err::<(), runtime::RuntimeError>(classify_anthropic_error(status.as_u16(), &body)?)?;
             unreachable!();
         };
@@ -111,8 +126,12 @@ pub(crate) async fn stream_anthropic_turn(
             if event.data == "[DONE]" {
                 break;
             }
-            let payload: Value = serde_json::from_str(&event.data)
-                .map_err(runtime::RuntimeError::from)?;
+            let payload: Value = serde_json::from_str(&event.data).map_err(|error| {
+                runtime::RuntimeError::from(ProviderError::protocol_with_source(
+                    "failed to parse Anthropic event payload",
+                    error,
+                ))
+            })?;
             let kind = payload
                 .get("type")
                 .and_then(Value::as_str)

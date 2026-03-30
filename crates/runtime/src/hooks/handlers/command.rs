@@ -14,6 +14,9 @@ use tools::{
 };
 use types::{HookContext, HookHandler, HookRegistration, HookResult};
 
+type SharedProcessExecutor = Arc<dyn ProcessExecutor>;
+type SharedHookObserver = Arc<dyn HookExecutionObserver>;
+
 #[async_trait]
 pub trait CommandHookExecutor: Send + Sync {
     async fn execute(
@@ -26,9 +29,9 @@ pub trait CommandHookExecutor: Send + Sync {
 #[derive(Clone)]
 pub struct DefaultCommandHookExecutor {
     extra_env: BTreeMap<String, String>,
-    process_executor: Arc<dyn ProcessExecutor>,
+    process_executor: SharedProcessExecutor,
     sandbox_policy: SandboxPolicy,
-    observer: Arc<dyn HookExecutionObserver>,
+    observer: SharedHookObserver,
 }
 
 impl fmt::Debug for DefaultCommandHookExecutor {
@@ -59,7 +62,7 @@ impl DefaultCommandHookExecutor {
     #[must_use]
     pub fn with_process_executor(
         extra_env: BTreeMap<String, String>,
-        process_executor: Arc<dyn ProcessExecutor>,
+        process_executor: SharedProcessExecutor,
     ) -> Self {
         Self {
             extra_env,
@@ -72,7 +75,7 @@ impl DefaultCommandHookExecutor {
     #[must_use]
     pub fn with_process_executor_and_policy(
         extra_env: BTreeMap<String, String>,
-        process_executor: Arc<dyn ProcessExecutor>,
+        process_executor: SharedProcessExecutor,
         sandbox_policy: SandboxPolicy,
     ) -> Self {
         Self {
@@ -86,9 +89,9 @@ impl DefaultCommandHookExecutor {
     #[cfg(test)]
     fn with_process_executor_policy_and_observer(
         extra_env: BTreeMap<String, String>,
-        process_executor: Arc<dyn ProcessExecutor>,
+        process_executor: SharedProcessExecutor,
         sandbox_policy: SandboxPolicy,
-        observer: Arc<dyn HookExecutionObserver>,
+        observer: SharedHookObserver,
     ) -> Self {
         Self {
             extra_env,
@@ -150,7 +153,8 @@ impl CommandHookExecutor for DefaultCommandHookExecutor {
                 ),
             })
             .map_err(|error| {
-                let error = RuntimeError::hook(error.to_string());
+                let error =
+                    RuntimeError::hook_with_source("failed to prepare hook command process", error);
                 record_failure(
                     self.observer.as_ref(),
                     registration,
@@ -162,7 +166,7 @@ impl CommandHookExecutor for DefaultCommandHookExecutor {
                 error
             })?;
         let output = process.output().await.map_err(|error| {
-            let error = RuntimeError::hook(error.to_string());
+            let error = RuntimeError::hook_with_source("failed to run hook command", error);
             record_failure(
                 self.observer.as_ref(),
                 registration,
@@ -228,11 +232,12 @@ fn default_hook_command_sandbox_policy() -> SandboxPolicy {
 
 #[cfg(test)]
 mod tests {
-    use super::{CommandHookExecutor, DefaultCommandHookExecutor};
+    use super::{CommandHookExecutor, DefaultCommandHookExecutor, SharedProcessExecutor};
     use crate::hooks::handlers::execution::{
         HookAuditAction, HookAuditEvent, HookAuditOutcome, HookExecutionObserver,
     };
     use std::collections::BTreeMap;
+    use std::error::Error as _;
     use std::sync::{Arc, Mutex};
     use tokio::process::Command;
     use tools::{
@@ -246,7 +251,7 @@ mod tests {
 
     #[derive(Clone)]
     struct RecordingExecutor {
-        inner: Arc<dyn ProcessExecutor>,
+        inner: SharedProcessExecutor,
         requests: Arc<Mutex<Vec<ExecRequest>>>,
     }
 
@@ -254,6 +259,14 @@ mod tests {
         fn prepare(&self, request: ExecRequest) -> std::result::Result<Command, SandboxError> {
             self.requests.lock().unwrap().push(request.clone());
             self.inner.prepare(request)
+        }
+    }
+
+    struct FailingPrepareExecutor;
+
+    impl ProcessExecutor for FailingPrepareExecutor {
+        fn prepare(&self, _request: ExecRequest) -> std::result::Result<Command, SandboxError> {
+            Err(SandboxError::invalid_state("executor offline"))
         }
     }
 
@@ -469,5 +482,54 @@ mod tests {
         assert_eq!(events[0].action, HookAuditAction::ExecutePath);
         assert_eq!(events[0].outcome, HookAuditOutcome::Allowed);
         assert_eq!(events[1].outcome, HookAuditOutcome::Completed);
+    }
+
+    #[tokio::test]
+    async fn command_hook_prepare_failures_preserve_diagnostic_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let command_path = dir.path().join("hook.sh");
+
+        let observer = Arc::new(RecordingObserver::default());
+        let executor = DefaultCommandHookExecutor::with_process_executor_policy_and_observer(
+            BTreeMap::new(),
+            Arc::new(FailingPrepareExecutor),
+            super::default_hook_command_sandbox_policy(),
+            observer,
+        );
+
+        let error = executor
+            .execute(
+                &HookRegistration {
+                    name: "hook".into(),
+                    event: HookEvent::Notification,
+                    matcher: None,
+                    handler: HookHandler::Command(types::CommandHookHandler {
+                        command: command_path.to_string_lossy().to_string(),
+                        asynchronous: false,
+                    }),
+                    timeout_ms: None,
+                    execution: Some(HookExecutionPolicy {
+                        exec_roots: vec![dir.path().to_path_buf()],
+                        ..HookExecutionPolicy::default()
+                    }),
+                },
+                HookContext {
+                    event: HookEvent::Notification,
+                    session_id: SessionId::from("run_1"),
+                    agent_session_id: AgentSessionId::from("session_1"),
+                    turn_id: None,
+                    fields: BTreeMap::new(),
+                    payload: serde_json::json!({}),
+                },
+            )
+            .await
+            .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("failed to prepare hook command process")
+        );
+        assert!(error.source().is_some());
     }
 }

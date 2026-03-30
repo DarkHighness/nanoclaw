@@ -68,7 +68,7 @@ impl OpenAiTransport {
 
     pub(crate) fn realtime_ws_url(&self, model: &str) -> Result<String> {
         let mut url = reqwest::Url::parse(&self.base_url)
-            .map_err(|error| ProviderError::config(error.to_string()))?;
+            .map_err(|error| ProviderError::config_with_source("invalid OpenAI base URL", error))?;
         let path = format!("{}/realtime", url.path().trim_end_matches('/'));
         url.set_path(&path);
         match url.scheme() {
@@ -174,16 +174,31 @@ pub(crate) async fn stream_openai_responses_turn(
             .json(&body)
             .send()
             .await
-            .map_err(runtime::RuntimeError::from)?;
+            .map_err(|error| {
+                runtime::RuntimeError::from(ProviderError::request_with_source(
+                    "failed to send OpenAI Responses request",
+                    error,
+                ))
+            })?;
 
         let status = response.status();
         let mut stream = if status.is_success() {
             response
                 .bytes_stream()
                 .eventsource()
-                .map_err(|error| runtime::RuntimeError::from(ProviderError::request(error.to_string())))
+                .map_err(|error| {
+                    runtime::RuntimeError::from(ProviderError::request_with_source(
+                        "failed to decode OpenAI Responses event stream",
+                        error,
+                    ))
+                })
         } else {
-            let body = response.text().await.map_err(runtime::RuntimeError::from)?;
+            let body = response.text().await.map_err(|error| {
+                runtime::RuntimeError::from(ProviderError::request_with_source(
+                    "failed to read OpenAI Responses error body",
+                    error,
+                ))
+            })?;
             Err::<(), runtime::RuntimeError>(classify_openai_error(status.as_u16(), &body)?)?;
             unreachable!();
         };
@@ -200,7 +215,12 @@ pub(crate) async fn stream_openai_responses_turn(
                 break;
             }
 
-            let chunk: Value = serde_json::from_str(&event.data).map_err(runtime::RuntimeError::from)?;
+            let chunk: Value = serde_json::from_str(&event.data).map_err(|error| {
+                runtime::RuntimeError::from(ProviderError::protocol_with_source(
+                    "failed to parse OpenAI Responses event payload",
+                    error,
+                ))
+            })?;
             match chunk.get("type").and_then(Value::as_str) {
                 Some("response.output_text.delta") | Some("response.refusal.delta") => {
                     if let Some(delta) = chunk.get("delta").and_then(Value::as_str) {
@@ -291,13 +311,21 @@ pub(crate) async fn stream_openai_realtime_turn(
     let request_event = build_openai_realtime_request_event(model, request, &request_options)
         .map_err(runtime::RuntimeError::from)?;
     let ws_url = transport.realtime_ws_url(&websocket_model)?;
-    let mut ws_request = ws_url
-        .into_client_request()
-        .map_err(|error| ProviderError::request(error.to_string()))?;
+    let mut ws_request = ws_url.into_client_request().map_err(|error| {
+        ProviderError::request_with_source(
+            "failed to build OpenAI realtime websocket request",
+            error,
+        )
+    })?;
     ws_request.headers_mut().insert(
         "Authorization",
         format!("Bearer {}", transport.api_key).parse().map_err(
-            |error: reqwest::header::InvalidHeaderValue| ProviderError::request(error.to_string()),
+            |error: reqwest::header::InvalidHeaderValue| {
+                ProviderError::request_with_source(
+                    "failed to encode OpenAI realtime authorization header",
+                    error,
+                )
+            },
         )?,
     );
     ws_request.headers_mut().insert(
@@ -305,20 +333,33 @@ pub(crate) async fn stream_openai_realtime_turn(
         "realtime=v1"
             .parse()
             .map_err(|error: reqwest::header::InvalidHeaderValue| {
-                ProviderError::request(error.to_string())
+                ProviderError::request_with_source(
+                    "failed to encode OpenAI realtime beta header",
+                    error,
+                )
             })?,
     );
 
     Ok(Box::pin(try_stream! {
         let (ws_stream, _) = connect_async(ws_request)
             .await
-            .map_err(|error| runtime::RuntimeError::from(ProviderError::request(error.to_string())))?;
+            .map_err(|error| {
+                runtime::RuntimeError::from(ProviderError::request_with_source(
+                    "failed to establish OpenAI realtime websocket connection",
+                    error,
+                ))
+            })?;
         let (mut ws_sink, mut ws_source) = ws_stream.split();
 
         ws_sink
             .send(WsMessage::Text(request_event.to_string().into()))
             .await
-            .map_err(|error| runtime::RuntimeError::from(ProviderError::request(error.to_string())))?;
+            .map_err(|error| {
+                runtime::RuntimeError::from(ProviderError::request_with_source(
+                    "failed to send OpenAI realtime request event",
+                    error,
+                ))
+            })?;
 
         let mut saw_tool_call = false;
         let mut reasoning = Vec::new();
@@ -329,7 +370,12 @@ pub(crate) async fn stream_openai_realtime_turn(
 
         while let Some(frame) = ws_source.next().await {
             let frame = frame
-                .map_err(|error| runtime::RuntimeError::from(ProviderError::request(error.to_string())))?;
+                .map_err(|error| {
+                    runtime::RuntimeError::from(ProviderError::request_with_source(
+                        "failed to read OpenAI realtime websocket frame",
+                        error,
+                    ))
+                })?;
             let WsMessage::Text(text) = frame else {
                 if matches!(frame, WsMessage::Close(_)) {
                     break;
@@ -337,7 +383,12 @@ pub(crate) async fn stream_openai_realtime_turn(
                 continue;
             };
 
-            let chunk: Value = serde_json::from_str(&text).map_err(runtime::RuntimeError::from)?;
+            let chunk: Value = serde_json::from_str(&text).map_err(|error| {
+                runtime::RuntimeError::from(ProviderError::protocol_with_source(
+                    "failed to parse OpenAI realtime event payload",
+                    error,
+                ))
+            })?;
             match chunk.get("type").and_then(Value::as_str) {
                 Some("response.output_text.delta") | Some("response.refusal.delta") => {
                     if let Some(delta) = chunk.get("delta").and_then(Value::as_str) {

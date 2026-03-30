@@ -8,6 +8,8 @@ use reqwest::Method;
 use std::sync::Arc;
 use types::{HookContext, HookHandler, HookRegistration, HookResult};
 
+type SharedHookObserver = Arc<dyn HookExecutionObserver>;
+
 #[async_trait]
 pub trait HttpHookExecutor: Send + Sync {
     async fn execute(
@@ -20,7 +22,7 @@ pub trait HttpHookExecutor: Send + Sync {
 #[derive(Clone)]
 pub struct ReqwestHttpHookExecutor {
     client: reqwest::Client,
-    observer: Arc<dyn HookExecutionObserver>,
+    observer: SharedHookObserver,
 }
 
 impl Default for ReqwestHttpHookExecutor {
@@ -34,10 +36,7 @@ impl Default for ReqwestHttpHookExecutor {
 
 impl ReqwestHttpHookExecutor {
     #[cfg(test)]
-    fn with_client_and_observer(
-        client: reqwest::Client,
-        observer: Arc<dyn HookExecutionObserver>,
-    ) -> Self {
+    fn with_client_and_observer(client: reqwest::Client, observer: SharedHookObserver) -> Self {
         Self { client, observer }
     }
 }
@@ -80,7 +79,8 @@ impl HttpHookExecutor for ReqwestHttpHookExecutor {
             .send()
             .await
             .map_err(|error| {
-                let error = RuntimeError::hook(error.to_string());
+                let error =
+                    RuntimeError::hook_with_source("failed to send hook HTTP request", error);
                 record_failure(
                     self.observer.as_ref(),
                     registration,
@@ -93,7 +93,10 @@ impl HttpHookExecutor for ReqwestHttpHookExecutor {
             })?
             .error_for_status()
             .map_err(|error| {
-                let error = RuntimeError::hook(error.to_string());
+                let error = RuntimeError::hook_with_source(
+                    "hook HTTP request returned unsuccessful status",
+                    error,
+                );
                 record_failure(
                     self.observer.as_ref(),
                     registration,
@@ -105,7 +108,8 @@ impl HttpHookExecutor for ReqwestHttpHookExecutor {
                 error
             })?;
         let result = response.json::<HookResult>().await.map_err(|error| {
-            let error = RuntimeError::hook(error.to_string());
+            let error =
+                RuntimeError::hook_with_source("failed to decode hook HTTP response", error);
             record_failure(
                 self.observer.as_ref(),
                 registration,
@@ -134,6 +138,7 @@ mod tests {
         HookAuditAction, HookAuditEvent, HookAuditOutcome, HookExecutionObserver,
     };
     use std::collections::BTreeMap;
+    use std::error::Error as _;
     use std::sync::{Arc, Mutex};
     use types::{
         AgentSessionId, HookContext, HookEffect, HookEvent, HookExecutionPolicy, HookHandler,
@@ -264,5 +269,49 @@ mod tests {
                 reason: error.to_string()
             }
         );
+    }
+
+    #[tokio::test]
+    async fn http_hook_transport_failures_preserve_diagnostic_source() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/hook"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+
+        let observer = Arc::new(RecordingObserver::default());
+        let executor =
+            ReqwestHttpHookExecutor::with_client_and_observer(reqwest::Client::new(), observer);
+        let error = executor
+            .execute(
+                &HookRegistration {
+                    name: "http".into(),
+                    event: HookEvent::Notification,
+                    matcher: None,
+                    handler: HookHandler::Http(HttpHookHandler {
+                        url: format!("{}/hook", &server.uri()),
+                        method: "POST".to_string(),
+                        headers: BTreeMap::new(),
+                    }),
+                    timeout_ms: None,
+                    execution: Some(HookExecutionPolicy {
+                        network: HookNetworkPolicy::AllowDomains {
+                            domains: vec!["127.0.0.1".to_string(), "localhost".to_string()],
+                        },
+                        ..HookExecutionPolicy::default()
+                    }),
+                },
+                base_context(),
+            )
+            .await
+            .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("hook HTTP request returned unsuccessful status")
+        );
+        assert!(error.source().is_some());
     }
 }

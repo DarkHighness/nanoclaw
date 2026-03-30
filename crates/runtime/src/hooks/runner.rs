@@ -7,6 +7,12 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 use types::{HookContext, HookHandler, HookRegistration, HookResult};
 
+type SharedCommandHookExecutor = Arc<dyn CommandHookExecutor>;
+type SharedHttpHookExecutor = Arc<dyn HttpHookExecutor>;
+type SharedPromptHookEvaluator = Arc<dyn PromptHookEvaluator>;
+type SharedAgentHookEvaluator = Arc<dyn AgentHookEvaluator>;
+type SharedWasmHookExecutor = Arc<dyn WasmHookExecutor>;
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct HookInvocation {
     pub registration: HookRegistration,
@@ -28,11 +34,11 @@ impl HookInvocationBatch {
 }
 
 pub struct HookRunner {
-    command_executor: Arc<dyn CommandHookExecutor>,
-    http_executor: Arc<dyn HttpHookExecutor>,
-    prompt_evaluator: Arc<dyn PromptHookEvaluator>,
-    agent_evaluator: Arc<dyn AgentHookEvaluator>,
-    wasm_executor: Arc<dyn WasmHookExecutor>,
+    command_executor: SharedCommandHookExecutor,
+    http_executor: SharedHttpHookExecutor,
+    prompt_evaluator: SharedPromptHookEvaluator,
+    agent_evaluator: SharedAgentHookEvaluator,
+    wasm_executor: SharedWasmHookExecutor,
     async_tx: mpsc::Sender<HookInvocation>,
     async_rx: Mutex<mpsc::Receiver<HookInvocation>>,
 }
@@ -57,11 +63,11 @@ impl Default for HookRunner {
 impl HookRunner {
     #[must_use]
     pub fn with_services(
-        command_executor: Arc<dyn CommandHookExecutor>,
-        http_executor: Arc<dyn HttpHookExecutor>,
-        prompt_evaluator: Arc<dyn PromptHookEvaluator>,
-        agent_evaluator: Arc<dyn AgentHookEvaluator>,
-        wasm_executor: Arc<dyn WasmHookExecutor>,
+        command_executor: SharedCommandHookExecutor,
+        http_executor: SharedHttpHookExecutor,
+        prompt_evaluator: SharedPromptHookEvaluator,
+        agent_evaluator: SharedAgentHookEvaluator,
+        wasm_executor: SharedWasmHookExecutor,
     ) -> Self {
         let (async_tx, async_rx) = mpsc::channel(ASYNC_HOOK_BUFFER_CAPACITY);
         Self {

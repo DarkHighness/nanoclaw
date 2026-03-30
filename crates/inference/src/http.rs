@@ -88,17 +88,21 @@ impl HttpChatClient {
             }))
             .send()
             .await
-            .map_err(|error| InferenceError::invalid(error.to_string()))?;
+            .map_err(|error| {
+                InferenceError::service_with_source("failed to send generation request", error)
+            })?;
         if !response.status().is_success() {
-            return Err(InferenceError::invalid(format!(
+            return Err(InferenceError::service(format!(
                 "generation service returned HTTP {}",
                 response.status()
             )));
         }
-        let payload: ChatCompletionResponse = response
-            .json()
-            .await
-            .map_err(|error| InferenceError::invalid(error.to_string()))?;
+        let payload: ChatCompletionResponse = response.json().await.map_err(|error| {
+            InferenceError::service_with_source(
+                "failed to decode generation response payload",
+                error,
+            )
+        })?;
         let content = payload
             .choices
             .first()
@@ -200,17 +204,21 @@ impl EmbeddingClient for HttpEmbeddingClient {
             }))
             .send()
             .await
-            .map_err(|error| InferenceError::invalid(error.to_string()))?;
+            .map_err(|error| {
+                InferenceError::service_with_source("failed to send embedding request", error)
+            })?;
         if !response.status().is_success() {
-            return Err(InferenceError::invalid(format!(
+            return Err(InferenceError::service(format!(
                 "embedding service returned HTTP {}",
                 response.status()
             )));
         }
-        let payload: EmbeddingResponse = response
-            .json()
-            .await
-            .map_err(|error| InferenceError::invalid(error.to_string()))?;
+        let payload: EmbeddingResponse = response.json().await.map_err(|error| {
+            InferenceError::service_with_source(
+                "failed to decode embedding response payload",
+                error,
+            )
+        })?;
         Ok(payload
             .data
             .into_iter()
@@ -263,7 +271,12 @@ impl RerankClient for HttpRerankClient {
                 &format!(
                     "Query: {query}\nCandidates: {}\nReturn JSON only.",
                     serde_json::to_string(documents)
-                        .map_err(|error| InferenceError::invalid(error.to_string()))?
+                        .map_err(|error| {
+                            InferenceError::invalid_with_source(
+                                "failed to serialize rerank candidates",
+                                error,
+                            )
+                        })?
                 ),
             )
             .await?;
@@ -289,23 +302,28 @@ pub fn http_client_from_service_parts(
     if let Some(api_key) = api_key {
         default_headers.insert(
             AUTHORIZATION,
-            HeaderValue::from_str(&format!("Bearer {api_key}"))
-                .map_err(|error| InferenceError::invalid(error.to_string()))?,
+            HeaderValue::from_str(&format!("Bearer {api_key}")).map_err(|error| {
+                InferenceError::invalid_with_source("invalid authorization header value", error)
+            })?,
         );
     }
     for (key, value) in headers {
         default_headers.insert(
-            HeaderName::from_bytes(key.as_bytes())
-                .map_err(|error| InferenceError::invalid(error.to_string()))?,
-            HeaderValue::from_str(value)
-                .map_err(|error| InferenceError::invalid(error.to_string()))?,
+            HeaderName::from_bytes(key.as_bytes()).map_err(|error| {
+                InferenceError::invalid_with_source("invalid custom header name", error)
+            })?,
+            HeaderValue::from_str(value).map_err(|error| {
+                InferenceError::invalid_with_source("invalid custom header value", error)
+            })?,
         );
     }
     reqwest::Client::builder()
         .timeout(Duration::from_millis(timeout_ms))
         .default_headers(default_headers)
         .build()
-        .map_err(|error| InferenceError::invalid(error.to_string()))
+        .map_err(|error| {
+            InferenceError::service_with_source("failed to build inference HTTP client", error)
+        })
 }
 
 fn extract_chat_content(content: &Value) -> Option<String> {
