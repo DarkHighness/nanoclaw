@@ -1,4 +1,5 @@
 mod chrome;
+mod history_rollback_overlay;
 mod picker;
 mod shared;
 mod shell;
@@ -20,6 +21,7 @@ use chrome::{
     approval_band_height, render_approval_band, render_composer, render_user_input_band,
     should_render_side_rail, side_rail_width, user_input_band_height,
 };
+use history_rollback_overlay::render_history_rollback_overlay;
 use picker::{
     command_hint_height, pending_control_height, render_command_hint_band,
     render_pending_control_band,
@@ -114,16 +116,21 @@ pub(crate) fn render(
     }
     render_composer(frame, composer_area, state, user_input);
     render_status_line(frame, status_area, state);
+    if state.history_rollback_overlay().is_some() {
+        render_history_rollback_overlay(frame, area, state);
+    }
 
-    let composer_inner = composer_inner_area(composer_area);
-    let prefix_width = 2_u16;
-    frame.set_cursor_position(Position::new(
-        composer_inner
-            .x
-            .saturating_add(prefix_width)
-            .saturating_add(composer_cursor_width(&state.input)),
-        composer_inner.y,
-    ));
+    if state.history_rollback_overlay().is_none() {
+        let composer_inner = composer_inner_area(composer_area);
+        let prefix_width = 2_u16;
+        frame.set_cursor_position(Position::new(
+            composer_inner
+                .x
+                .saturating_add(prefix_width)
+                .saturating_add(composer_cursor_width(&state.input)),
+            composer_inner.y,
+        ));
+    }
 }
 
 pub(crate) fn main_pane_viewport_height(

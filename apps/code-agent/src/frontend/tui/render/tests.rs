@@ -2,6 +2,9 @@ use super::chrome::{
     approval_preview_lines, build_approval_text, build_composer_line, build_side_rail_lines,
     build_user_input_text,
 };
+use super::history_rollback_overlay::{
+    build_history_rollback_list_text, build_history_rollback_preview_text,
+};
 use super::picker::build_command_hint_text;
 use super::should_render_side_rail;
 use super::statusline::format_footer_context;
@@ -23,8 +26,11 @@ use crate::frontend::tui::commands::{
     SlashCommandArgumentHint, SlashCommandArgumentSpec, SlashCommandArgumentValue,
     SlashCommandHint, SlashCommandSpec,
 };
-use crate::frontend::tui::state::{MainPaneMode, PlanEntry, StatusLinePickerState, TuiState};
+use crate::frontend::tui::state::{
+    HistoryRollbackCandidate, MainPaneMode, PlanEntry, StatusLinePickerState, TuiState,
+};
 use agent::tools::{UserInputAnswer, UserInputOption, UserInputQuestion};
+use agent::types::MessageId;
 use ratatui::layout::Rect;
 use std::collections::BTreeMap;
 
@@ -209,6 +215,62 @@ fn transcript_renders_resume_summary_above_history() {
     assert_eq!(rendered[0].spans[0].content.as_ref(), "Resume");
     assert_eq!(rendered[2].spans[0].content.as_ref(), "✔");
     assert_eq!(rendered[2].spans[2].content.as_ref(), "Reattached session");
+}
+
+#[test]
+fn composer_line_describes_armed_history_rollback() {
+    let mut state = TuiState::default();
+    state.prime_history_rollback();
+
+    let line = build_composer_line(&state);
+
+    assert!(line_text_for(&line).contains("history rollback armed"));
+    assert!(line_text_for(&line).contains("esc choose turn"));
+}
+
+#[test]
+fn history_rollback_overlay_renders_selection_list_and_preview() {
+    let mut state = TuiState::default();
+    let _ = state.open_history_rollback_overlay(vec![
+        HistoryRollbackCandidate {
+            message_id: MessageId::from("msg-1"),
+            prompt: "first prompt".to_string(),
+            turn_preview_lines: vec!["› first prompt".to_string(), "• first answer".to_string()],
+            removed_turn_count: 2,
+            removed_message_count: 4,
+        },
+        HistoryRollbackCandidate {
+            message_id: MessageId::from("msg-2"),
+            prompt: "second prompt".to_string(),
+            turn_preview_lines: vec!["› second prompt".to_string(), "• second answer".to_string()],
+            removed_turn_count: 1,
+            removed_message_count: 2,
+        },
+    ]);
+
+    let list = build_history_rollback_list_text(&state);
+    let preview = build_history_rollback_preview_text(&state);
+
+    assert!(
+        text_lines(&list)
+            .iter()
+            .any(|line| line.contains("first prompt"))
+    );
+    assert!(
+        text_lines(&list)
+            .iter()
+            .any(|line| line.contains("second prompt"))
+    );
+    assert!(
+        text_lines(&preview)
+            .iter()
+            .any(|line| line.contains("Turn Preview"))
+    );
+    assert!(
+        text_lines(&preview)
+            .iter()
+            .any(|line| line.contains("second answer"))
+    );
 }
 
 #[test]
@@ -1114,6 +1176,10 @@ fn line_text_for(line: &ratatui::text::Line<'_>) -> String {
         .iter()
         .map(|span| span.content.as_ref())
         .collect::<String>()
+}
+
+fn text_lines(text: &ratatui::text::Text<'_>) -> Vec<String> {
+    text.lines.iter().map(line_text_for).collect()
 }
 
 #[test]

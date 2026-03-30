@@ -332,6 +332,70 @@ async fn local_compaction_resets_provider_continuation() {
 }
 
 #[tokio::test]
+async fn history_rollback_resets_provider_continuation_and_replays_surviving_transcript() {
+    let dir = tempfile::tempdir().unwrap();
+    let backend = Arc::new(ContinuingBackend::default());
+    let store = Arc::new(InMemorySessionStore::new());
+    let mut runtime: AgentRuntime = AgentRuntimeBuilder::new(backend.clone(), store.clone())
+        .hook_runner(Arc::new(HookRunner::default()))
+        .tool_context(ToolExecutionContext {
+            workspace_root: dir.path().to_path_buf(),
+            workspace_only: true,
+            model_context_window_tokens: Some(128_000),
+            ..Default::default()
+        })
+        .skill_catalog(SkillCatalog::default())
+        .build();
+
+    runtime.run_user_prompt("first task").await.unwrap();
+    runtime.run_user_prompt("second task").await.unwrap();
+
+    let second_user_id = runtime
+        .visible_transcript_snapshot()
+        .into_iter()
+        .filter(|message| message.role == MessageRole::User)
+        .nth(1)
+        .expect("second user turn should exist")
+        .message_id;
+
+    let rollback = runtime
+        .rollback_visible_history_to_message(second_user_id.clone())
+        .await
+        .unwrap();
+    assert_eq!(rollback.removed_message_ids.len(), 2);
+
+    let transcript = store
+        .replay_transcript(&runtime.session_id())
+        .await
+        .unwrap();
+    assert_eq!(transcript.len(), 2);
+    assert_eq!(transcript[0].text_content(), "first task");
+    assert_eq!(transcript[1].text_content(), "response 1");
+
+    runtime.run_user_prompt("third task").await.unwrap();
+
+    let requests = backend.requests();
+    assert_eq!(requests.len(), 3);
+    assert!(requests[2].continuation.is_none());
+    assert_eq!(requests[2].messages.len(), 3);
+    assert_eq!(requests[2].messages[0].text_content(), "first task");
+    assert_eq!(requests[2].messages[1].text_content(), "response 1");
+    assert_eq!(requests[2].messages[2].text_content(), "third task");
+
+    let events = store.events(&runtime.session_id()).await.unwrap();
+    assert!(
+        events.iter().any(|event| {
+            matches!(
+                &event.event,
+                SessionEventKind::TranscriptMessageRemoved { message_id }
+                    if message_id == &second_user_id
+            )
+        }),
+        "rollback should persist a remove event for the selected user message"
+    );
+}
+
+#[tokio::test]
 async fn message_id_patch_resets_provider_continuation_and_replays_full_visible_transcript() {
     let dir = tempfile::tempdir().unwrap();
     let backend = Arc::new(ContinuingBackend::default());

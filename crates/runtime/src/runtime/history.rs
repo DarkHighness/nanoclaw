@@ -1,7 +1,7 @@
 use super::AgentRuntime;
 use crate::{
-    CompactionRequest, Result, RuntimeObserver, RuntimeProgressEvent, append_transcript_message,
-    estimate_prompt_tokens,
+    CompactionRequest, Result, RuntimeError, RuntimeObserver, RuntimeProgressEvent,
+    append_transcript_message, estimate_prompt_tokens,
 };
 use serde_json::json;
 use types::{HookContext, HookEvent, Message, MessageId, MessageRole, TurnId};
@@ -84,6 +84,64 @@ impl AgentRuntime {
             .transcript
             .iter()
             .any(|message| &message.role == role)
+    }
+
+    pub(crate) async fn rollback_visible_history_from_message(
+        &mut self,
+        message_id: &MessageId,
+    ) -> Result<crate::RollbackVisibleHistoryOutcome> {
+        let visible_indices = self.visible_message_indices();
+        let Some(start_at) = visible_indices.iter().position(|index| {
+            self.session
+                .transcript
+                .get(*index)
+                .is_some_and(|message| &message.message_id == message_id)
+        }) else {
+            return Err(RuntimeError::invalid_state(format!(
+                "cannot roll back from unknown visible message `{message_id}`"
+            )));
+        };
+
+        let removed_message_ids = visible_indices[start_at..]
+            .iter()
+            .filter_map(|index| {
+                self.session
+                    .transcript
+                    .get(*index)
+                    .map(|message| message.message_id.clone())
+            })
+            .collect::<Vec<_>>();
+        if removed_message_ids.is_empty() {
+            return Ok(crate::RollbackVisibleHistoryOutcome {
+                removed_message_ids,
+            });
+        }
+
+        let turn_id = TurnId::new();
+        for removed_message_id in &removed_message_ids {
+            // History rollback keeps earlier transcript nodes stable and
+            // persists removals as append-only events so replayed sessions
+            // reconstruct the same visible history after resume.
+            self.session
+                .removed_message_ids
+                .insert(removed_message_id.clone());
+            self.append_event(
+                Some(turn_id.clone()),
+                None,
+                types::SessionEventKind::TranscriptMessageRemoved {
+                    message_id: removed_message_id.clone(),
+                },
+            )
+            .await?;
+        }
+        // Provider-native continuation chains assume append-only growth. Once
+        // visible history is truncated, the next request must replay from the
+        // surviving transcript boundary instead of the old upstream response id.
+        self.reset_provider_continuation();
+
+        Ok(crate::RollbackVisibleHistoryOutcome {
+            removed_message_ids,
+        })
     }
 
     pub(super) async fn compact_if_needed(

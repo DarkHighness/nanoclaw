@@ -43,6 +43,10 @@ pub struct RunTurnOutcome {
     pub assistant_text: String,
 }
 
+pub struct RollbackVisibleHistoryOutcome {
+    pub removed_message_ids: Vec<types::MessageId>,
+}
+
 impl AgentRuntime {
     #[allow(clippy::too_many_arguments)]
     #[must_use]
@@ -279,6 +283,14 @@ impl AgentRuntime {
     pub async fn compact_now(&mut self, instructions: Option<String>) -> Result<bool> {
         let mut observer = NoopRuntimeObserver;
         self.compact_now_with_observer(instructions, &mut observer)
+            .await
+    }
+
+    pub async fn rollback_visible_history_to_message(
+        &mut self,
+        message_id: types::MessageId,
+    ) -> Result<RollbackVisibleHistoryOutcome> {
+        self.rollback_visible_history_from_message(&message_id)
             .await
     }
 

@@ -1,5 +1,6 @@
 use crate::backend::{PendingControlKind, PendingControlSummary, StartupDiagnosticsSnapshot};
 use crate::statusline::{StatusLineConfig, StatusLineField, status_line_fields};
+use agent::types::MessageId;
 use agent::types::TokenLedgerSnapshot;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -74,6 +75,27 @@ pub(crate) struct PendingControlEditorState {
     pub(crate) kind: PendingControlKind,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct HistoryRollbackCandidate {
+    pub(crate) message_id: MessageId,
+    pub(crate) prompt: String,
+    pub(crate) turn_preview_lines: Vec<String>,
+    pub(crate) removed_turn_count: usize,
+    pub(crate) removed_message_count: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct HistoryRollbackOverlayState {
+    pub(crate) selected: usize,
+    pub(crate) candidates: Vec<HistoryRollbackCandidate>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum HistoryRollbackState {
+    Primed,
+    Selecting(HistoryRollbackOverlayState),
+}
+
 #[derive(Clone, Debug, Default)]
 pub(crate) struct TuiState {
     pub(crate) session: SessionSummary,
@@ -99,6 +121,7 @@ pub(crate) struct TuiState {
     pub(crate) editing_pending_control: Option<PendingControlEditorState>,
     pub(crate) statusline_picker: Option<StatusLinePickerState>,
     pub(crate) thinking_effort_picker: Option<ThinkingEffortPickerState>,
+    pub(crate) history_rollback: Option<HistoryRollbackState>,
 }
 
 impl TuiState {
@@ -110,6 +133,7 @@ impl TuiState {
         self.pending_control_picker = None;
         self.statusline_picker = None;
         self.thinking_effort_picker = None;
+        self.history_rollback = None;
     }
 
     pub(crate) fn show_transcript_pane(&mut self) {
@@ -117,6 +141,7 @@ impl TuiState {
         self.pending_control_picker = None;
         self.statusline_picker = None;
         self.thinking_effort_picker = None;
+        self.history_rollback = None;
     }
 
     pub(crate) fn open_statusline_picker(&mut self) {
@@ -126,6 +151,7 @@ impl TuiState {
         self.inspector_scroll = 0;
         self.pending_control_picker = None;
         self.thinking_effort_picker = None;
+        self.history_rollback = None;
         self.statusline_picker
             .get_or_insert_with(StatusLinePickerState::default)
             .selected = 0;
@@ -138,6 +164,7 @@ impl TuiState {
         self.inspector_scroll = 0;
         self.pending_control_picker = None;
         self.statusline_picker = None;
+        self.history_rollback = None;
         let selected = self
             .session
             .supported_model_reasoning_efforts
@@ -176,6 +203,7 @@ impl TuiState {
         self.pending_control_picker = Some(PendingControlPickerState { selected });
         self.statusline_picker = None;
         self.thinking_effort_picker = None;
+        self.history_rollback = None;
         true
     }
 
@@ -217,6 +245,85 @@ impl TuiState {
 
     pub(crate) fn clear_pending_control_edit(&mut self) {
         self.editing_pending_control = None;
+    }
+
+    pub(crate) fn prime_history_rollback(&mut self) {
+        self.main_pane = MainPaneMode::Transcript;
+        self.pending_control_picker = None;
+        self.statusline_picker = None;
+        self.thinking_effort_picker = None;
+        self.history_rollback = Some(HistoryRollbackState::Primed);
+    }
+
+    pub(crate) fn open_history_rollback_overlay(
+        &mut self,
+        candidates: Vec<HistoryRollbackCandidate>,
+    ) -> bool {
+        if candidates.is_empty() {
+            return false;
+        }
+        self.main_pane = MainPaneMode::Transcript;
+        self.pending_control_picker = None;
+        self.statusline_picker = None;
+        self.thinking_effort_picker = None;
+        self.history_rollback = Some(HistoryRollbackState::Selecting(
+            HistoryRollbackOverlayState {
+                selected: candidates.len().saturating_sub(1),
+                candidates,
+            },
+        ));
+        true
+    }
+
+    pub(crate) fn clear_history_rollback(&mut self) {
+        self.history_rollback = None;
+    }
+
+    pub(crate) fn history_rollback_is_primed(&self) -> bool {
+        matches!(self.history_rollback, Some(HistoryRollbackState::Primed))
+    }
+
+    pub(crate) fn history_rollback_overlay(&self) -> Option<&HistoryRollbackOverlayState> {
+        match self.history_rollback.as_ref() {
+            Some(HistoryRollbackState::Selecting(overlay)) => Some(overlay),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn move_history_rollback_selection(&mut self, backwards: bool) -> bool {
+        let Some(HistoryRollbackState::Selecting(overlay)) = self.history_rollback.as_mut() else {
+            return false;
+        };
+        let total = overlay.candidates.len();
+        if total == 0 {
+            return false;
+        }
+        overlay.selected = if backwards {
+            overlay.selected.checked_sub(1).unwrap_or(total - 1)
+        } else {
+            (overlay.selected + 1) % total
+        };
+        true
+    }
+
+    pub(crate) fn jump_history_rollback_selection(&mut self, oldest: bool) -> bool {
+        let Some(HistoryRollbackState::Selecting(overlay)) = self.history_rollback.as_mut() else {
+            return false;
+        };
+        if overlay.candidates.is_empty() {
+            return false;
+        }
+        overlay.selected = if oldest {
+            0
+        } else {
+            overlay.candidates.len().saturating_sub(1)
+        };
+        true
+    }
+
+    pub(crate) fn selected_history_rollback_candidate(&self) -> Option<&HistoryRollbackCandidate> {
+        let overlay = self.history_rollback_overlay()?;
+        overlay.candidates.get(overlay.selected)
     }
 
     pub(crate) fn sync_pending_controls(&mut self, controls: Vec<PendingControlSummary>) {
@@ -494,7 +601,10 @@ fn git_repo_name(workspace_root: &Path) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{MainPaneMode, TuiState, git_snapshot, page_scroll_amount};
+    use super::{
+        HistoryRollbackCandidate, MainPaneMode, TuiState, git_snapshot, page_scroll_amount,
+    };
+    use agent::types::MessageId;
     use tempfile::tempdir;
 
     #[test]
@@ -571,5 +681,50 @@ mod tests {
 
         state.scroll_focused_page(20, false, false);
         assert_eq!(state.transcript_scroll, 49);
+    }
+
+    #[test]
+    fn history_rollback_overlay_opens_on_latest_candidate_and_wraps_navigation() {
+        let mut state = TuiState::default();
+        let candidates = vec![
+            HistoryRollbackCandidate {
+                message_id: MessageId::from("msg-1"),
+                prompt: "first".to_string(),
+                turn_preview_lines: vec!["› first".to_string()],
+                removed_turn_count: 2,
+                removed_message_count: 4,
+            },
+            HistoryRollbackCandidate {
+                message_id: MessageId::from("msg-2"),
+                prompt: "second".to_string(),
+                turn_preview_lines: vec!["› second".to_string()],
+                removed_turn_count: 1,
+                removed_message_count: 2,
+            },
+        ];
+
+        assert!(state.open_history_rollback_overlay(candidates));
+        assert_eq!(
+            state
+                .selected_history_rollback_candidate()
+                .map(|candidate| candidate.prompt.as_str()),
+            Some("second")
+        );
+
+        assert!(state.move_history_rollback_selection(true));
+        assert_eq!(
+            state
+                .selected_history_rollback_candidate()
+                .map(|candidate| candidate.prompt.as_str()),
+            Some("first")
+        );
+
+        assert!(state.move_history_rollback_selection(true));
+        assert_eq!(
+            state
+                .selected_history_rollback_candidate()
+                .map(|candidate| candidate.prompt.as_str()),
+            Some("second")
+        );
     }
 }

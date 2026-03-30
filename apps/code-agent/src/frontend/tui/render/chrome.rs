@@ -262,7 +262,39 @@ pub(super) fn build_composer_line(state: &TuiState) -> Line<'static> {
         spans.push(Span::styled(" · ", Style::default().fg(SUBTLE)));
     }
     if state.input.is_empty() {
-        if state.pending_control_picker.is_some() {
+        if state.history_rollback_is_primed() {
+            spans.push(Span::styled(
+                "history rollback armed",
+                Style::default().fg(HEADER),
+            ));
+            spans.push(Span::styled(" · ", Style::default().fg(SUBTLE)));
+            spans.push(Span::styled("esc choose turn", Style::default().fg(MUTED)));
+            spans.push(Span::styled(" · ", Style::default().fg(SUBTLE)));
+            spans.push(Span::styled("type to cancel", Style::default().fg(MUTED)));
+        } else if let Some(overlay) = state.history_rollback_overlay() {
+            if let Some(selected) = state.selected_history_rollback_candidate() {
+                spans.push(Span::styled("rollback ", Style::default().fg(MUTED)));
+                spans.push(Span::styled(
+                    format!("{}/{}", overlay.selected + 1, overlay.candidates.len()),
+                    Style::default().fg(HEADER),
+                ));
+                spans.push(Span::styled(" · ", Style::default().fg(SUBTLE)));
+                spans.push(Span::styled(
+                    preview_text(&selected.prompt, 32),
+                    Style::default().fg(TEXT),
+                ));
+            } else {
+                spans.push(Span::styled("history rollback", Style::default().fg(MUTED)));
+            }
+            spans.push(Span::styled(" · ", Style::default().fg(SUBTLE)));
+            spans.push(Span::styled("enter rollback", Style::default().fg(MUTED)));
+            spans.push(Span::styled(" · ", Style::default().fg(SUBTLE)));
+            spans.push(Span::styled("esc/← older", Style::default().fg(MUTED)));
+            spans.push(Span::styled(" · ", Style::default().fg(SUBTLE)));
+            spans.push(Span::styled("→ newer", Style::default().fg(MUTED)));
+            spans.push(Span::styled(" · ", Style::default().fg(SUBTLE)));
+            spans.push(Span::styled("q cancel", Style::default().fg(MUTED)));
+        } else if state.pending_control_picker.is_some() {
             if let (Some(selected), Some(picker)) = (
                 state.selected_pending_control(),
                 state.pending_control_picker.as_ref(),

@@ -234,6 +234,11 @@ not have useful extensions, including `Dockerfile*`, `Containerfile*`, `go.mod`,
 - While a turn is running, `Esc` interrupts immediately. If pending steers
   exist, all pending steers are merged in FIFO order into the next user
   message; otherwise the composer returns to an idle "what next?" state.
+- While idle with an empty composer, `Esc` arms history rollback. Press `Esc`
+  again to open the rollback overlay, `Esc`/`Left` to move to older user turns,
+  `Right` to move forward, `Enter` to confirm, and `q` to cancel. Confirming a
+  rollback removes the selected user turn and everything after it, then restores
+  that user prompt into the composer for editing.
 - `Alt+Up` opens the pending-control picker from the bottom pane.
 - In the pending-control picker: `Enter` edits the selected item, `Delete`
   withdraws it, and `Esc` closes the picker.

@@ -33,6 +33,7 @@ use state::TuiState;
 
 use agent::RuntimeCommand;
 use agent::tools::{UserInputAnswer, UserInputResponse};
+use agent::types::MessageRole;
 use anyhow::Result;
 use crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
@@ -203,6 +204,9 @@ impl CodeAgentTui {
                     if self.handle_thinking_effort_picker_key(key) {
                         continue;
                     }
+                    if self.handle_history_rollback_key(key).await? {
+                        continue;
+                    }
                     match key.code {
                         KeyCode::Up if key.modifiers.contains(KeyModifiers::ALT) => {
                             self.ui_state.mutate(|state| {
@@ -355,6 +359,12 @@ impl CodeAgentTui {
                             }
                             if self.turn_task.is_some() {
                                 self.interrupt_active_turn().await?;
+                                continue;
+                            }
+                            if snapshot.input.is_empty()
+                                && snapshot.main_pane == state::MainPaneMode::Transcript
+                            {
+                                self.prime_history_rollback().await?;
                                 continue;
                             }
                         }
@@ -805,6 +815,194 @@ impl CodeAgentTui {
             }
             _ => false,
         }
+    }
+
+    async fn handle_history_rollback_key(&mut self, key: KeyEvent) -> Result<bool> {
+        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+            return Ok(false);
+        }
+        let snapshot = self.ui_state.snapshot();
+        if snapshot.history_rollback.is_none() {
+            return Ok(false);
+        }
+        if !snapshot.input.is_empty() {
+            self.ui_state.mutate(|state| state.clear_history_rollback());
+            return Ok(false);
+        }
+
+        if snapshot.history_rollback_is_primed() {
+            if key.code == KeyCode::Esc {
+                self.open_history_rollback_overlay().await?;
+                return Ok(true);
+            }
+            self.ui_state.mutate(|state| state.clear_history_rollback());
+            return Ok(false);
+        }
+
+        match key.code {
+            KeyCode::Esc | KeyCode::Left | KeyCode::Up => {
+                self.ui_state.mutate(|state| {
+                    let _ = state.move_history_rollback_selection(true);
+                });
+                self.refresh_history_rollback_selection_status();
+            }
+            KeyCode::Right | KeyCode::Down => {
+                self.ui_state.mutate(|state| {
+                    let _ = state.move_history_rollback_selection(false);
+                });
+                self.refresh_history_rollback_selection_status();
+            }
+            KeyCode::Home => {
+                self.ui_state.mutate(|state| {
+                    let _ = state.jump_history_rollback_selection(true);
+                });
+                self.refresh_history_rollback_selection_status();
+            }
+            KeyCode::End => {
+                self.ui_state.mutate(|state| {
+                    let _ = state.jump_history_rollback_selection(false);
+                });
+                self.refresh_history_rollback_selection_status();
+            }
+            KeyCode::Enter => {
+                self.confirm_history_rollback().await?;
+            }
+            KeyCode::Char('q') | KeyCode::Backspace | KeyCode::Delete => {
+                self.ui_state.mutate(|state| {
+                    state.clear_history_rollback();
+                    state.status = "Closed history rollback".to_string();
+                    state.push_activity("closed history rollback overlay");
+                });
+            }
+            _ => {}
+        }
+
+        Ok(true)
+    }
+
+    async fn prime_history_rollback(&mut self) -> Result<()> {
+        if self
+            .history_rollback_candidates()
+            .await
+            .into_iter()
+            .next()
+            .is_none()
+        {
+            self.ui_state.mutate(|state| {
+                state.clear_history_rollback();
+                state.status = "No visible user turns are available to roll back".to_string();
+                state.push_activity("history rollback unavailable");
+            });
+            return Ok(());
+        }
+
+        self.ui_state.mutate(|state| {
+            state.prime_history_rollback();
+            state.status = "History rollback armed. Press Esc again to choose a turn".to_string();
+            state.push_activity("armed history rollback");
+        });
+        Ok(())
+    }
+
+    async fn open_history_rollback_overlay(&mut self) -> Result<()> {
+        let candidates = self.history_rollback_candidates().await;
+        if candidates.is_empty() {
+            self.ui_state.mutate(|state| {
+                state.clear_history_rollback();
+                state.status = "No visible user turns are available to roll back".to_string();
+                state.push_activity("history rollback unavailable");
+            });
+            return Ok(());
+        }
+
+        self.ui_state.mutate(|state| {
+            let opened = state.open_history_rollback_overlay(candidates);
+            if opened {
+                state.status =
+                    "History rollback overlay opened. Select a turn to rewind to".to_string();
+                state.push_activity("opened history rollback overlay");
+            }
+        });
+        self.refresh_history_rollback_selection_status();
+        Ok(())
+    }
+
+    async fn history_rollback_candidates(&self) -> Vec<state::HistoryRollbackCandidate> {
+        let transcript = self.session.active_visible_transcript().await;
+        build_history_rollback_candidates(&transcript)
+    }
+
+    fn refresh_history_rollback_selection_status(&self) {
+        let snapshot = self.ui_state.snapshot();
+        let Some(overlay) = snapshot.history_rollback_overlay() else {
+            return;
+        };
+        let Some(candidate) = overlay.candidates.get(overlay.selected) else {
+            return;
+        };
+        let status = history_rollback_status(candidate, overlay.selected, overlay.candidates.len());
+        self.ui_state.mutate(|state| {
+            state.status = status;
+        });
+    }
+
+    async fn confirm_history_rollback(&mut self) -> Result<()> {
+        let snapshot = self.ui_state.snapshot();
+        let Some(overlay) = snapshot.history_rollback_overlay() else {
+            return Ok(());
+        };
+        let Some(candidate) = overlay.candidates.get(overlay.selected).cloned() else {
+            return Ok(());
+        };
+        let total = overlay.candidates.len();
+        let selected = overlay.selected;
+
+        match self
+            .session
+            .rollback_visible_history_to_message(candidate.message_id.as_str())
+            .await
+        {
+            Ok(outcome) => {
+                let transcript = format_visible_transcript_lines(&outcome.transcript);
+                let preview = state::preview_text(&candidate.prompt, 48);
+                self.ui_state.mutate(move |state| {
+                    state.clear_history_rollback();
+                    state.show_transcript_pane();
+                    state.transcript = transcript;
+                    state.follow_transcript = true;
+                    state.transcript_scroll = u16::MAX;
+                    state.input = candidate.prompt.clone();
+                    state.status = if candidate.prompt.trim().is_empty() {
+                        format!(
+                            "Rolled back {} message(s). Selected turn had no text to restore",
+                            outcome.removed_message_count
+                        )
+                    } else {
+                        format!(
+                            "Rolled back {} message(s). Edit the restored prompt and press Enter",
+                            outcome.removed_message_count
+                        )
+                    };
+                    state.push_activity(format!(
+                        "rolled back history to turn {} of {}: {}",
+                        selected + 1,
+                        total,
+                        preview
+                    ));
+                });
+            }
+            Err(error) => {
+                let message = error.to_string();
+                self.ui_state.mutate(|state| {
+                    state.status = format!("History rollback failed: {message}");
+                    state.push_activity(format!(
+                        "history rollback failed: {}",
+                        state::preview_text(&message, 56)
+                    ));
+                });
+            }
+        }
+        Ok(())
     }
 
     async fn maybe_finish_turn(&mut self) -> Result<()> {
@@ -2095,6 +2293,53 @@ fn merge_interrupt_steers(steers: Vec<String>) -> Option<String> {
     }
 }
 
+fn build_history_rollback_candidates(
+    transcript: &[agent::types::Message],
+) -> Vec<state::HistoryRollbackCandidate> {
+    let user_indices = transcript
+        .iter()
+        .enumerate()
+        .filter_map(|(index, message)| (message.role == MessageRole::User).then_some(index))
+        .collect::<Vec<_>>();
+    let total_turns = user_indices.len();
+
+    user_indices
+        .iter()
+        .enumerate()
+        .filter_map(|(turn_index, start_index)| {
+            let start_index = *start_index;
+            let message = transcript.get(start_index)?;
+            let end_index = user_indices
+                .get(turn_index + 1)
+                .copied()
+                .unwrap_or(transcript.len());
+            let turn_slice = transcript.get(start_index..end_index)?;
+            Some(state::HistoryRollbackCandidate {
+                message_id: message.message_id.clone(),
+                prompt: message.text_content(),
+                turn_preview_lines: format_visible_transcript_lines(turn_slice),
+                removed_turn_count: total_turns.saturating_sub(turn_index),
+                removed_message_count: transcript.len().saturating_sub(start_index),
+            })
+        })
+        .collect()
+}
+
+fn history_rollback_status(
+    candidate: &state::HistoryRollbackCandidate,
+    selected: usize,
+    total: usize,
+) -> String {
+    format!(
+        "Rollback turn {} of {} · removes {} turn(s) / {} message(s) · {}",
+        selected + 1,
+        total,
+        candidate.removed_turn_count,
+        candidate.removed_message_count,
+        state::preview_text(&candidate.prompt, 40)
+    )
+}
+
 fn queued_command_preview(command: &RuntimeCommand) -> String {
     match command {
         RuntimeCommand::Prompt { prompt } => {
@@ -2207,10 +2452,12 @@ fn build_command_error_view(input: &str, message: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    use super::build_history_rollback_candidates;
     use super::build_startup_inspector;
     use super::commands::command_palette_lines;
     use super::state::SessionSummary;
     use super::{PlainInputSubmitAction, merge_interrupt_steers, plain_input_submit_action};
+    use agent::types::{Message, MessageId};
     use crossterm::event::KeyCode;
     use std::path::PathBuf;
 
@@ -2334,5 +2581,34 @@ mod tests {
     #[test]
     fn interrupt_merge_ignores_empty_steer_list() {
         assert_eq!(merge_interrupt_steers(Vec::new()), None);
+    }
+
+    #[test]
+    fn history_rollback_candidates_track_turn_slice_and_removed_counts() {
+        let transcript = vec![
+            Message::user("first").with_message_id(MessageId::from("msg-1")),
+            Message::assistant("answer one").with_message_id(MessageId::from("msg-2")),
+            Message::user("second").with_message_id(MessageId::from("msg-3")),
+            Message::assistant("answer two").with_message_id(MessageId::from("msg-4")),
+        ];
+
+        let candidates = build_history_rollback_candidates(&transcript);
+
+        assert_eq!(candidates.len(), 2);
+        assert_eq!(candidates[0].message_id, MessageId::from("msg-1"));
+        assert_eq!(candidates[0].removed_turn_count, 2);
+        assert_eq!(candidates[0].removed_message_count, 4);
+        assert_eq!(
+            candidates[0].turn_preview_lines,
+            vec!["› first".to_string(), "• answer one".to_string()]
+        );
+
+        assert_eq!(candidates[1].message_id, MessageId::from("msg-3"));
+        assert_eq!(candidates[1].removed_turn_count, 1);
+        assert_eq!(candidates[1].removed_message_count, 2);
+        assert_eq!(
+            candidates[1].turn_preview_lines,
+            vec!["› second".to_string(), "• answer two".to_string()]
+        );
     }
 }

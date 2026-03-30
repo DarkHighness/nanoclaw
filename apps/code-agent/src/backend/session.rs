@@ -15,7 +15,8 @@ use crate::provider::{MutableAgentBackend, ReasoningEffortUpdate};
 use crate::statusline::StatusLineConfig;
 use agent::mcp::ConnectedMcpServer;
 use agent::runtime::{
-    Result as RuntimeResult, RunTurnOutcome, RuntimeCommandId, RuntimeControlPlane,
+    Result as RuntimeResult, RollbackVisibleHistoryOutcome, RunTurnOutcome, RuntimeCommandId,
+    RuntimeControlPlane,
 };
 use agent::tools::{SubagentExecutor, SubagentParentContext, UserInputResponse};
 use agent::types::{
@@ -152,6 +153,12 @@ pub(crate) struct PendingControlSummary {
     pub(crate) kind: PendingControlKind,
     pub(crate) preview: String,
     pub(crate) reason: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct HistoryRollbackOutcome {
+    pub(crate) transcript: Vec<Message>,
+    pub(crate) removed_message_count: usize,
 }
 
 /// The backend session owns runtime state so frontends can speak to a stable
@@ -407,6 +414,25 @@ impl CodeAgentSession {
             .map_err(anyhow::Error::from)?;
         self.sync_runtime_session_refs(&runtime);
         Ok(outcome)
+    }
+
+    pub(crate) async fn rollback_visible_history_to_message(
+        &self,
+        message_id: &str,
+    ) -> Result<HistoryRollbackOutcome> {
+        let mut runtime = self.runtime.lock().await;
+        let RollbackVisibleHistoryOutcome {
+            removed_message_ids,
+        } = runtime
+            .rollback_visible_history_to_message(message_id.into())
+            .await
+            .map_err(anyhow::Error::from)?;
+        let transcript = runtime.visible_transcript_snapshot();
+        self.sync_runtime_session_refs(&runtime);
+        Ok(HistoryRollbackOutcome {
+            transcript,
+            removed_message_count: removed_message_ids.len(),
+        })
     }
 
     pub(crate) async fn compact_now(&self, notes: Option<String>) -> RuntimeResult<bool> {
