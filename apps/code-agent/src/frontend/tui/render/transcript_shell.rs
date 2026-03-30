@@ -1,5 +1,7 @@
 use super::super::state::{TuiState, preview_text};
-use super::shared::pending_control_reason_label;
+use super::shared::{
+    pending_control_focus_label, pending_control_kind_label, pending_control_reason_label,
+};
 use super::statusline::status_color;
 use super::theme::{ASSISTANT, ERROR, HEADER, MUTED, SUBTLE, TEXT, USER, WARN};
 use super::transcript::TranscriptEntryKind;
@@ -388,7 +390,7 @@ struct PendingControlTimelineItem {
 }
 
 fn render_pending_control_embedded_detail(item: &PendingControlTimelineItem) -> Line<'static> {
-    let (kind_label, kind_color) = pending_control_kind_label(item.kind);
+    let (kind_label, kind_color) = pending_control_timeline_kind_label(item.kind);
     let mut spans = vec![
         transcript_continuation_prefix(TranscriptEntryKind::ShellSummary),
         Span::styled("  └ ", Style::default().fg(SUBTLE)),
@@ -411,7 +413,7 @@ fn render_pending_control_embedded_detail(item: &PendingControlTimelineItem) -> 
 }
 
 fn pending_control_timeline_detail_text(item: &PendingControlTimelineItem) -> String {
-    let (kind_label, _) = pending_control_kind_label(item.kind);
+    let (kind_label, _) = pending_control_timeline_kind_label(item.kind);
     let mut detail = format!(
         "  └ {} {} · {}",
         item.relative_label, kind_label, item.preview
@@ -423,7 +425,9 @@ fn pending_control_timeline_detail_text(item: &PendingControlTimelineItem) -> St
     detail
 }
 
-fn pending_control_kind_label(kind: crate::backend::PendingControlKind) -> (&'static str, Color) {
+fn pending_control_timeline_kind_label(
+    kind: crate::backend::PendingControlKind,
+) -> (&'static str, Color) {
     match kind {
         crate::backend::PendingControlKind::Prompt => ("queued prompt", USER),
         crate::backend::PendingControlKind::Steer => ("pending steer", ASSISTANT),
@@ -480,6 +484,16 @@ fn pending_control_timeline(state: &TuiState) -> Option<PendingControlTimeline> 
 fn pending_control_picker_bridge_label(state: &TuiState) -> Option<String> {
     if state.pending_controls.is_empty() || state.pending_control_picker.is_none() {
         return None;
+    }
+    if let (Some(selected), Some(picker)) = (
+        state.selected_pending_control(),
+        state.pending_control_picker.as_ref(),
+    ) {
+        return Some(format!(
+            "Queued follow-ups below · selected {} · {}",
+            pending_control_kind_label(selected.kind),
+            pending_control_focus_label(picker.selected, state.pending_controls.len()),
+        ));
     }
     Some(format!(
         "Queued follow-ups below · {}",

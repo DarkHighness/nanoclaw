@@ -652,7 +652,17 @@ fn transcript_bridges_pending_picker_into_the_active_tool_timeline() {
     assert!(
         rendered
             .iter()
-            .any(|line| line_text_for(line).contains("Queued follow-ups below · 2"))
+            .any(|line| line_text_for(line).contains("Queued follow-ups below"))
+    );
+    assert!(
+        rendered
+            .iter()
+            .any(|line| line_text_for(line).contains("selected steer"))
+    );
+    assert!(
+        rendered
+            .iter()
+            .any(|line| line_text_for(line).contains("latest draft"))
     );
     assert!(
         !rendered
@@ -686,7 +696,17 @@ fn transcript_surfaces_pending_picker_bridge_without_an_active_tool() {
     assert!(
         rendered
             .iter()
-            .any(|line| line_text_for(line).contains("Queued follow-ups below · 1"))
+            .any(|line| line_text_for(line).contains("Queued follow-ups below"))
+    );
+    assert!(
+        rendered
+            .iter()
+            .any(|line| line_text_for(line).contains("selected prompt"))
+    );
+    assert!(
+        rendered
+            .iter()
+            .any(|line| line_text_for(line).contains("only item"))
     );
 }
 
