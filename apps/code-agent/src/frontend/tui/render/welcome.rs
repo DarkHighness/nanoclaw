@@ -4,12 +4,9 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
 pub(super) fn build_welcome_lines(state: &TuiState, viewport_height: u16) -> Vec<Line<'static>> {
-    let compact = viewport_height < 18;
+    let compact = viewport_height < 22;
     let mut core = build_welcome_logo_lines(compact);
     core.push(Line::raw(""));
-    if !compact {
-        core.push(Line::raw(""));
-    }
     core.push(meta_line("workspace", &state.session.workspace_name, MUTED));
     core.push(meta_line("model", &model_label(state), ACCENT));
     core.push(Line::raw(""));
@@ -20,8 +17,7 @@ pub(super) fn build_welcome_lines(state: &TuiState, viewport_height: u16) -> Vec
         Span::styled(".", Style::default().fg(SUBTLE)),
     ]));
 
-    let top_padding = usize::from(viewport_height.saturating_sub(core.len() as u16) / 2)
-        .saturating_sub((!compact) as usize);
+    let top_padding = usize::from(viewport_height.saturating_sub(core.len() as u16) / 2);
     let mut lines = vec![Line::raw(""); top_padding];
     lines.extend(core);
     lines
@@ -41,28 +37,35 @@ fn build_welcome_logo_lines(compact: bool) -> Vec<Line<'static>> {
         ])];
     }
 
-    vec![
-        wordmark_line(
+    let rows = [
+        (
             " _   _    _    _   _   ___ ",
-            "  ____ _        ___        __",
+            "   ____ _        _    __        __",
         ),
-        wordmark_line(
+        (
             "| \\ | |  / \\  | \\ | | / _ \\",
-            " / ___| |      / \\\\ \\      / /",
+            " / ___| |      / \\   \\ \\      / /",
         ),
-        wordmark_line(
+        (
             "|  \\| | / _ \\ |  \\| || | | |",
-            "| |   | |     / _ \\\\ \\ /\\ / / ",
+            "| |   | |     / _ \\   \\ \\ /\\ / / ",
         ),
-        wordmark_line(
+        (
             "| |\\  |/ ___ \\| |\\  || |_| |",
-            "| |___| |___ / ___ \\\\ V  V /  ",
+            "| |___| |___ / ___ \\   \\ V  V /  ",
         ),
-        wordmark_line(
+        (
             "|_| \\_/_/   \\_\\_| \\_| \\___/ ",
-            "\\____|_____/_/   \\_\\\\_/\\_/   ",
+            "\\____|_____/_/   \\_\\   \\_/\\_/   ",
         ),
-    ]
+    ];
+
+    let mut lines = Vec::with_capacity(rows.len() * 2);
+    for (left, right) in rows {
+        lines.push(wordmark_line(left, right));
+        lines.push(wordmark_shadow_line(left, right));
+    }
+    lines
 }
 
 fn meta_line(label: &str, value: &str, value_color: ratatui::style::Color) -> Line<'static> {
@@ -90,5 +93,12 @@ fn wordmark_line(left: &'static str, right: &'static str) -> Line<'static> {
             right.to_string(),
             Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
         ),
+    ])
+}
+
+fn wordmark_shadow_line(left: &'static str, right: &'static str) -> Line<'static> {
+    Line::from(vec![
+        Span::styled("  ", Style::default().fg(SUBTLE)),
+        Span::styled(format!("{left}{right}"), Style::default().fg(SUBTLE)),
     ])
 }

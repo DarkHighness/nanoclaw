@@ -212,12 +212,17 @@ fn welcome_lines_keep_the_start_screen_sparse() {
     state.session.model = "gpt-5.4".to_string();
     state.session.model_reasoning_effort = Some("high".to_string());
 
-    let lines = build_welcome_lines(&state, 20);
+    let lines = build_welcome_lines(&state, 28);
 
     assert!(
         lines
             .iter()
             .any(|line| { line_text_for(line).contains(" _   _    _    _   _   ___") })
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|line| { line_text_for(line).contains("   _   _    _    _   _   ___") })
     );
     assert!(
         lines
