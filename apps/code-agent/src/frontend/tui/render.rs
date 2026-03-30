@@ -1,5 +1,6 @@
 mod chrome;
 mod picker;
+mod shell;
 mod statusline;
 mod theme;
 mod transcript;
@@ -8,20 +9,18 @@ mod welcome;
 
 use super::approval::ApprovalPrompt;
 use super::commands::slash_command_hint;
-use super::state::{MainPaneMode, TuiState};
+use super::state::TuiState;
 use chrome::{
-    approval_band_height, approval_preview_lines, build_approval_text, build_side_rail_lines,
-    render_approval_band, render_composer, should_render_side_rail, side_rail_width,
+    approval_band_height, approval_preview_lines, build_approval_text, render_approval_band,
+    render_composer, should_render_side_rail, side_rail_width,
 };
 use picker::{build_command_hint_text, command_hint_height, render_command_hint_band};
-use ratatui::layout::{Constraint, Direction, Layout, Margin, Position, Rect};
+use ratatui::layout::{Constraint, Direction, Layout, Position};
 use ratatui::style::Style;
-use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Paragraph, Wrap};
+use ratatui::widgets::Block;
+use shell::{bottom_layout_constraints, composer_inner_area, render_main_pane, render_side_rail};
 use statusline::render_status_line;
 use theme::*;
-use transcript::render_transcript;
-use view::{build_inspector_text, should_render_view_title};
 
 pub(crate) fn render(
     frame: &mut ratatui::Frame<'_>,
@@ -97,80 +96,6 @@ pub(crate) fn render(
     ));
 }
 
-fn render_main_pane(frame: &mut ratatui::Frame<'_>, area: Rect, state: &TuiState) {
-    match state.main_pane {
-        MainPaneMode::Transcript => render_transcript(frame, area, state),
-        MainPaneMode::View => render_main_view(frame, area, state),
-    }
-}
-
-fn render_main_view(frame: &mut ratatui::Frame<'_>, area: Rect, state: &TuiState) {
-    frame.render_widget(Block::default().style(Style::default().bg(MAIN_BG)), area);
-    let inner = area.inner(Margin {
-        vertical: 0,
-        horizontal: 2,
-    });
-    let title = if state.inspector_title.is_empty() {
-        "View"
-    } else {
-        state.inspector_title.as_str()
-    };
-    let scroll = clamp_scroll(
-        state.inspector_scroll,
-        state.inspector.len().saturating_add(2).max(1),
-        inner.height,
-    );
-    let mut lines = Vec::new();
-    if should_render_view_title(title, &state.inspector) {
-        lines.push(Line::from(Span::styled(
-            title.to_string(),
-            Style::default().fg(MUTED),
-        )));
-        lines.push(Line::raw(""));
-    }
-    lines.extend(build_inspector_text(title, &state.inspector).lines);
-    let view = Paragraph::new(Text::from(lines))
-        .scroll((scroll, 0))
-        .wrap(Wrap { trim: false })
-        .style(Style::default().fg(TEXT).bg(MAIN_BG));
-    frame.render_widget(view, inner);
-}
-
-fn render_side_rail(frame: &mut ratatui::Frame<'_>, area: Rect, state: &TuiState) {
-    frame.render_widget(Block::default().style(Style::default().bg(MAIN_BG)), area);
-    let inner = area.inner(Margin {
-        vertical: 0,
-        horizontal: 1,
-    });
-    let rail = Paragraph::new(Text::from(build_side_rail_lines(state)))
-        .wrap(Wrap { trim: false })
-        .style(Style::default().fg(TEXT).bg(MAIN_BG));
-    frame.render_widget(rail, inner);
-}
-
-fn composer_inner_area(area: Rect) -> Rect {
-    area.inner(Margin {
-        vertical: 0,
-        horizontal: 1,
-    })
-}
-
-fn bottom_layout_constraints(
-    approval_height: Option<u16>,
-    command_hint_height: Option<u16>,
-) -> Vec<Constraint> {
-    let mut constraints = vec![Constraint::Min(10)];
-    if let Some(height) = approval_height {
-        constraints.push(Constraint::Length(height));
-    }
-    if let Some(height) = command_hint_height {
-        constraints.push(Constraint::Length(height));
-    }
-    constraints.push(Constraint::Length(1));
-    constraints.push(Constraint::Length(1));
-    constraints
-}
-
 fn clamp_scroll(requested: u16, content_lines: usize, viewport_height: u16) -> u16 {
     let viewport = usize::from(viewport_height.max(1));
     let max_scroll = content_lines.saturating_sub(viewport);
@@ -185,20 +110,24 @@ fn clamp_scroll(requested: u16, content_lines: usize, viewport_height: u16) -> u
 
 #[cfg(test)]
 mod tests {
+    use super::chrome::build_side_rail_lines;
     use super::statusline::format_footer_context;
     use super::transcript::build_transcript_lines;
-    use super::view::{build_collection_text, build_command_palette_text, build_key_value_text};
+    use super::view::{
+        build_collection_text, build_command_palette_text, build_key_value_text,
+        build_statusline_picker_text, should_render_view_title,
+    };
     use super::welcome::build_welcome_lines;
     use super::{
         approval_preview_lines, build_approval_text, build_command_hint_text,
-        build_side_rail_lines, should_render_side_rail, should_render_view_title,
+        should_render_side_rail,
     };
     use crate::frontend::tui::approval::ApprovalPrompt;
     use crate::frontend::tui::commands::{
         SlashCommandArgumentHint, SlashCommandArgumentSpec, SlashCommandArgumentValue,
         SlashCommandHint, SlashCommandSpec,
     };
-    use crate::frontend::tui::state::{MainPaneMode, TodoEntry, TuiState};
+    use crate::frontend::tui::state::{MainPaneMode, StatusLinePickerState, TodoEntry, TuiState};
     use ratatui::layout::Rect;
 
     #[test]
@@ -398,7 +327,7 @@ mod tests {
         assert!(
             lines
                 .iter()
-                .any(|line| { line_text_for(line).contains("N   N  AAA  N   N  OOO   CCCC") })
+                .any(|line| { line_text_for(line).contains("_   _    _    _   _  ___") })
         );
         assert!(
             lines
@@ -449,6 +378,28 @@ mod tests {
         assert_eq!(
             rendered.lines[2].spans[2].content.as_ref(),
             "sess_456  resume prompt"
+        );
+    }
+
+    #[test]
+    fn statusline_picker_text_renders_checked_rows() {
+        let rendered = build_statusline_picker_text(
+            &TuiState::default().session.statusline,
+            &StatusLinePickerState { selected: 1 },
+        );
+
+        assert_eq!(rendered.lines[0].spans[0].content.as_ref(), "status line");
+        assert!(
+            rendered
+                .lines
+                .iter()
+                .any(|line| line_text_for(line).contains("› [x] model"))
+        );
+        assert!(
+            rendered
+                .lines
+                .iter()
+                .any(|line| line_text_for(line).contains("[ ] session"))
         );
     }
 

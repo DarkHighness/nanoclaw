@@ -41,6 +41,8 @@ By default it surfaces the current status, full model name plus reasoning
 effort, current directory name, git repository and branch when available,
 context-window usage, cumulative input/output tokens, queued command depth, and
 local time.
+Use `/statusline` inside the TUI to open a multi-select picker and toggle those
+footer items on or off for the current operator session.
 
 One-shot prompt:
 
@@ -164,6 +166,7 @@ not have useful extensions, including `Dockerfile*`, `Containerfile*`, `go.mod`,
 ## Commands
 
 - `/status`
+- `/statusline`
 - `/help`
 - `/details`
 - `/agent_sessions [session-ref]`

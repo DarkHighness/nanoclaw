@@ -1,5 +1,5 @@
 use crate::backend::StartupDiagnosticsSnapshot;
-use crate::statusline::StatusLineConfig;
+use crate::statusline::{StatusLineConfig, StatusLineField, status_line_fields};
 use agent::types::TokenLedgerSnapshot;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -53,6 +53,11 @@ pub(crate) struct TodoEntry {
 }
 
 #[derive(Clone, Debug, Default)]
+pub(crate) struct StatusLinePickerState {
+    pub(crate) selected: usize,
+}
+
+#[derive(Clone, Debug, Default)]
 pub(crate) struct TuiState {
     pub(crate) session: SessionSummary,
     pub(crate) main_pane: MainPaneMode,
@@ -71,6 +76,7 @@ pub(crate) struct TuiState {
     pub(crate) turn_started_at: Option<Instant>,
     pub(crate) active_tool_label: Option<String>,
     pub(crate) todo_items: Vec<TodoEntry>,
+    pub(crate) statusline_picker: Option<StatusLinePickerState>,
 }
 
 impl TuiState {
@@ -79,10 +85,56 @@ impl TuiState {
         self.inspector_title = title.into();
         self.inspector = lines;
         self.inspector_scroll = 0;
+        self.statusline_picker = None;
     }
 
     pub(crate) fn show_transcript_pane(&mut self) {
         self.main_pane = MainPaneMode::Transcript;
+        self.statusline_picker = None;
+    }
+
+    pub(crate) fn open_statusline_picker(&mut self) {
+        self.main_pane = MainPaneMode::View;
+        self.inspector_title = "Status Line".to_string();
+        self.inspector.clear();
+        self.inspector_scroll = 0;
+        self.statusline_picker
+            .get_or_insert_with(StatusLinePickerState::default)
+            .selected = 0;
+    }
+
+    pub(crate) fn close_statusline_picker(&mut self) {
+        self.statusline_picker = None;
+        self.show_transcript_pane();
+    }
+
+    pub(crate) fn move_statusline_picker(&mut self, backwards: bool) -> bool {
+        let Some(picker) = self.statusline_picker.as_mut() else {
+            return false;
+        };
+        let total = status_line_fields().len();
+        if total == 0 {
+            return false;
+        }
+        picker.selected = if backwards {
+            picker.selected.checked_sub(1).unwrap_or(total - 1)
+        } else {
+            (picker.selected + 1) % total
+        };
+        true
+    }
+
+    pub(crate) fn selected_statusline_field(&self) -> Option<StatusLineField> {
+        let picker = self.statusline_picker.as_ref()?;
+        status_line_fields()
+            .get(picker.selected)
+            .map(|spec| spec.field)
+    }
+
+    pub(crate) fn toggle_selected_statusline_field(&mut self) -> Option<(StatusLineField, bool)> {
+        let field = self.selected_statusline_field()?;
+        let enabled = self.session.statusline.toggle(field);
+        Some((field, enabled))
     }
 
     pub(crate) fn push_activity(&mut self, line: impl Into<String>) {

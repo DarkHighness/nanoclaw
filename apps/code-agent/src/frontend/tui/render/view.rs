@@ -1,4 +1,6 @@
+use super::super::state::StatusLinePickerState;
 use super::theme::{ASSISTANT, BORDER_ACTIVE, ERROR, HEADER, MUTED, SUBTLE, TEXT, USER, WARN};
+use crate::statusline::{StatusLineConfig, status_line_fields};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 
@@ -133,6 +135,68 @@ pub(super) fn build_command_palette_text(lines: &[String]) -> Text<'static> {
         }
     }
     Text::from(rendered)
+}
+
+pub(super) fn build_statusline_picker_text(
+    config: &StatusLineConfig,
+    picker: &StatusLinePickerState,
+) -> Text<'static> {
+    let enabled_count = status_line_fields()
+        .iter()
+        .filter(|spec| config.enabled(spec.field))
+        .count();
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled("status line", Style::default().fg(HEADER)),
+            Span::styled(" · ", Style::default().fg(SUBTLE)),
+            Span::styled(
+                format!("{enabled_count}/{} visible", status_line_fields().len()),
+                Style::default().fg(USER),
+            ),
+        ]),
+        Line::from(Span::styled(
+            "space toggle · enter close · esc close",
+            Style::default().fg(SUBTLE),
+        )),
+        Line::raw(""),
+    ];
+
+    for (index, spec) in status_line_fields().iter().enumerate() {
+        let enabled = config.enabled(spec.field);
+        let selected = picker.selected == index;
+        let marker = if selected { "›" } else { " " };
+        let checkbox = if enabled { "[x]" } else { "[ ]" };
+        lines.push(Line::from(vec![
+            Span::styled(
+                marker,
+                Style::default().fg(if selected { USER } else { SUBTLE }),
+            ),
+            Span::raw(" "),
+            Span::styled(
+                checkbox,
+                Style::default().fg(if enabled { ASSISTANT } else { SUBTLE }),
+            ),
+            Span::raw(" "),
+            Span::styled(
+                format!("{:<8}", spec.label),
+                Style::default()
+                    .fg(if selected { HEADER } else { TEXT })
+                    .add_modifier(if selected {
+                        Modifier::BOLD
+                    } else {
+                        Modifier::empty()
+                    }),
+            ),
+            Span::styled(spec.summary, Style::default().fg(MUTED)),
+        ]));
+    }
+
+    lines.push(Line::raw(""));
+    lines.push(Line::from(Span::styled(
+        "Changes apply immediately for this TUI session.",
+        Style::default().fg(SUBTLE),
+    )));
+    Text::from(lines)
 }
 
 pub(super) fn build_collection_text(title: &str, lines: &[String]) -> Text<'static> {

@@ -35,11 +35,11 @@ fn build_welcome_logo_lines(compact: bool) -> Vec<Line<'static>> {
     }
 
     [
-        "N   N  AAA  N   N  OOO   CCCC L      AAA  W   W",
-        "NN  N A   A NN  N O   O C    L     A   A W   W",
-        "N N N AAAAA N N N O   O C    L     AAAAA W W W",
-        "N  NN A   A N  NN O   O C    L     A   A WW WW",
-        "N   N A   A N   N  OOO   CCCC LLLLL A   A W   W",
+        " _   _    _    _   _  ___   ____ _        _    _    _",
+        "| \\ | |  / \\  | \\ | |/ _ \\ / ___| |      / \\  | |  | |",
+        "|  \\| | / _ \\ |  \\| | | | | |   | |     / _ \\ | |  | |",
+        "| |\\  |/ ___ \\| |\\  | |_| | |___| |___ / ___ \\| |__| |",
+        "|_| \\_/_/   \\_\\_| \\_|\\___/ \\____|_____/_/   \\_\\\\____/ ",
     ]
     .into_iter()
     .map(|line| {

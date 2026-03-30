@@ -10,6 +10,7 @@ use crate::backend::{
     SessionOperation, SessionOperationAction, SessionOperationOutcome, SessionStartupSnapshot,
     preview_id,
 };
+use crate::statusline::status_line_fields;
 use approval::approval_decision_for_key;
 use commands::{
     SlashCommand, SlashCommandEnterAction, command_palette_lines_for, cycle_slash_command,
@@ -125,6 +126,9 @@ impl CodeAgentTui {
                     continue;
                 }
                 if self.handle_approval_key(key) {
+                    continue;
+                }
+                if self.handle_statusline_picker_key(key) {
                     continue;
                 }
                 match key.code {
@@ -273,6 +277,75 @@ impl CodeAgentTui {
             return true;
         }
         true
+    }
+
+    fn handle_statusline_picker_key(&mut self, key: KeyEvent) -> bool {
+        let snapshot = self.ui_state.snapshot();
+        if snapshot.statusline_picker.is_none() || !snapshot.input.is_empty() {
+            return false;
+        }
+
+        match key.code {
+            KeyCode::Up => {
+                self.ui_state.mutate(|state| {
+                    let _ = state.move_statusline_picker(true);
+                });
+                true
+            }
+            KeyCode::Down => {
+                self.ui_state.mutate(|state| {
+                    let _ = state.move_statusline_picker(false);
+                });
+                true
+            }
+            KeyCode::Home => {
+                self.ui_state.mutate(|state| {
+                    if let Some(picker) = state.statusline_picker.as_mut() {
+                        picker.selected = 0;
+                    }
+                });
+                true
+            }
+            KeyCode::End => {
+                self.ui_state.mutate(|state| {
+                    if let Some(picker) = state.statusline_picker.as_mut() {
+                        picker.selected = status_line_fields().len().saturating_sub(1);
+                    }
+                });
+                true
+            }
+            KeyCode::Char(' ') => {
+                self.ui_state.mutate(|state| {
+                    if let Some((field, enabled)) = state.toggle_selected_statusline_field() {
+                        let label = status_line_fields()
+                            .iter()
+                            .find(|spec| spec.field == field)
+                            .map(|spec| spec.label)
+                            .unwrap_or("field");
+                        state.status = format!(
+                            "Status line {} {}",
+                            label,
+                            if enabled { "enabled" } else { "hidden" }
+                        );
+                        state.push_activity(format!(
+                            "status line {} {}",
+                            label,
+                            if enabled { "enabled" } else { "hidden" }
+                        ));
+                    }
+                });
+                true
+            }
+            KeyCode::Enter | KeyCode::Esc => {
+                self.ui_state.mutate(|state| {
+                    state.close_statusline_picker();
+                    state.status = "Closed status line picker".to_string();
+                    state.push_activity("closed status line picker");
+                });
+                true
+            }
+            _ => false,
+        }
     }
 
     async fn maybe_finish_turn(&mut self) -> Result<()> {
@@ -447,6 +520,14 @@ impl CodeAgentTui {
                     };
                     state.status = format!("Tool details {visibility}");
                     state.push_activity(format!("tool details {visibility}"));
+                });
+                Ok(false)
+            }
+            SlashCommand::StatusLine => {
+                self.ui_state.mutate(|state| {
+                    state.open_statusline_picker();
+                    state.status = "Opened status line picker".to_string();
+                    state.push_activity("opened status line picker");
                 });
                 Ok(false)
             }
@@ -1129,9 +1210,12 @@ impl CodeAgentTui {
         dropped_commands: usize,
     ) {
         let aborted_operator_task = self.abort_operator_task();
-        let show_tool_details = self.ui_state.snapshot().show_tool_details;
+        let previous = self.ui_state.snapshot();
+        let show_tool_details = previous.show_tool_details;
+        let statusline = previous.session.statusline.clone();
         let mut startup = self.startup_state_from_snapshot(&outcome.startup);
         startup.show_tool_details = show_tool_details;
+        startup.session.statusline = statusline;
         startup.session.queued_commands = 0;
         startup.show_transcript_pane();
         startup.transcript = format_visible_transcript_lines(&outcome.transcript);
@@ -1231,6 +1315,7 @@ fn build_startup_inspector(session: &state::SessionSummary) -> Vec<String> {
         ),
         "## Next".to_string(),
         "/help [query]  browse commands".to_string(),
+        "/statusline  choose footer items".to_string(),
         "/details  toggle tool details".to_string(),
         "/sessions  browse history".to_string(),
         "/agent_sessions  inspect or resume agents".to_string(),
@@ -1351,6 +1436,11 @@ mod tests {
             lines
                 .iter()
                 .any(|line| line.contains("warning: falling back soon"))
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line == "/statusline  choose footer items")
         );
         assert!(
             lines
