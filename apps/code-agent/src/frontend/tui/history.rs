@@ -1,4 +1,4 @@
-use super::state::preview_text;
+use super::state::{TranscriptEntry, preview_text};
 use crate::backend::{
     LiveTaskControlAction, LiveTaskControlOutcome, LiveTaskMessageAction, LiveTaskMessageOutcome,
     LiveTaskSpawnOutcome, LiveTaskSummary, LiveTaskWaitOutcome, LoadedAgentSession, LoadedSession,
@@ -361,40 +361,58 @@ pub(crate) fn format_task_inspector(task: &LoadedTask) -> Vec<String> {
     lines
 }
 
-pub(crate) fn format_session_transcript_lines(session: &LoadedSession) -> Vec<String> {
-    format_transcript_lines(&session.transcript)
+pub(crate) fn format_session_transcript_lines(session: &LoadedSession) -> Vec<TranscriptEntry> {
+    project_transcript_lines(&session.transcript)
 }
 
-pub(crate) fn format_visible_transcript_lines(transcript: &[Message]) -> Vec<String> {
-    format_transcript_lines(transcript)
+pub(crate) fn format_visible_transcript_lines(transcript: &[Message]) -> Vec<TranscriptEntry> {
+    project_transcript_lines(transcript)
 }
 
-fn format_transcript_lines(transcript: &[Message]) -> Vec<String> {
-    let transcript = transcript
-        .iter()
-        .map(|message| format_transcript_entry(&message_to_text(message)))
-        .collect::<Vec<_>>();
+pub(crate) fn format_visible_transcript_preview_lines(transcript: &[Message]) -> Vec<String> {
+    let transcript = project_transcript_lines(transcript);
     if transcript.is_empty() {
         vec!["No transcript messages recorded for this session.".to_string()]
+    } else {
+        transcript
+            .iter()
+            .map(TranscriptEntry::serialized)
+            .collect::<Vec<_>>()
+    }
+}
+
+fn project_transcript_lines(transcript: &[Message]) -> Vec<TranscriptEntry> {
+    let transcript = transcript
+        .iter()
+        .map(|message| project_transcript_entry(&message_to_text(message)))
+        .collect::<Vec<_>>();
+    if transcript.is_empty() {
+        vec![TranscriptEntry::AssistantMessage(
+            "No transcript messages recorded for this session.".to_string(),
+        )]
     } else {
         transcript
     }
 }
 
-fn format_transcript_entry(raw: &str) -> String {
+fn project_transcript_entry(raw: &str) -> TranscriptEntry {
     if let Some(body) = raw.strip_prefix("user> ") {
-        format!("› {body}")
+        TranscriptEntry::UserPrompt(body.to_string())
     } else if let Some(body) = raw.strip_prefix("assistant> ") {
-        format!("• {body}")
+        TranscriptEntry::AssistantMessage(body.to_string())
     } else if let Some(body) = raw.strip_prefix("system> ") {
-        format!("• {body}")
+        TranscriptEntry::AssistantMessage(body.to_string())
     } else if let Some(body) = raw.strip_prefix("tool> ") {
-        format!("• {body}")
+        TranscriptEntry::AssistantMessage(body.to_string())
     } else if let Some(body) = raw.strip_prefix("error> ") {
-        format!("✗ {body}")
+        TranscriptEntry::error_summary_entry(body.to_string(), &[])
     } else {
-        raw.to_string()
+        TranscriptEntry::AssistantMessage(raw.to_string())
     }
+}
+
+fn format_transcript_entry(raw: &str) -> String {
+    project_transcript_entry(raw).serialized()
 }
 
 pub(crate) fn format_session_export_result(result: &SessionExportArtifact) -> Vec<String> {

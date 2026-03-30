@@ -25,6 +25,7 @@ use history::{
     format_session_operation_outcome, format_session_search_line, format_session_summary_line,
     format_session_transcript_lines, format_startup_diagnostics, format_task_inspector,
     format_task_summary_line, format_visible_transcript_lines,
+    format_visible_transcript_preview_lines,
 };
 use observer::SharedRenderObserver;
 use render::{main_pane_viewport_height, render};
@@ -1024,10 +1025,7 @@ impl CodeAgentTui {
             .await
         {
             Ok(outcome) => {
-                let transcript = format_visible_transcript_lines(&outcome.transcript)
-                    .into_iter()
-                    .map(Into::into)
-                    .collect();
+                let transcript = format_visible_transcript_lines(&outcome.transcript);
                 let preview = state::preview_text(&candidate.prompt, 48);
                 self.ui_state.mutate(move |state| {
                     state.clear_history_rollback();
@@ -2038,10 +2036,7 @@ impl CodeAgentTui {
                 }
                 let loaded = self.session.load_agent_session(&agent_session_ref).await?;
                 let inspector = format_agent_session_inspector(&loaded);
-                let transcript = format_visible_transcript_lines(&loaded.transcript)
-                    .into_iter()
-                    .map(Into::into)
-                    .collect();
+                let transcript = format_visible_transcript_lines(&loaded.transcript);
                 let agent_session_ref_preview = preview_id(&loaded.summary.agent_session_ref);
                 let transcript_count = loaded.summary.transcript_message_count;
                 self.ui_state.mutate(move |state| {
@@ -2162,10 +2157,7 @@ impl CodeAgentTui {
                 }
                 let loaded = self.session.load_session(&session_ref).await?;
                 let inspector = format_session_inspector(&loaded);
-                let transcript = format_session_transcript_lines(&loaded)
-                    .into_iter()
-                    .map(Into::into)
-                    .collect();
+                let transcript = format_session_transcript_lines(&loaded);
                 let session_ref_preview = preview_id(loaded.summary.session_id.as_str());
                 let transcript_count = loaded.summary.transcript_message_count;
                 self.ui_state.mutate(move |state| {
@@ -2195,10 +2187,7 @@ impl CodeAgentTui {
                 }
                 let loaded = self.session.load_task(&task_ref).await?;
                 let inspector = format_task_inspector(&loaded);
-                let transcript = format_visible_transcript_lines(&loaded.child_transcript)
-                    .into_iter()
-                    .map(Into::into)
-                    .collect();
+                let transcript = format_visible_transcript_lines(&loaded.child_transcript);
                 let task_id = loaded.summary.task_id.clone();
                 let transcript_count = loaded.child_transcript.len();
                 self.ui_state.mutate(move |state| {
@@ -2356,10 +2345,7 @@ impl CodeAgentTui {
         startup.session.queued_commands = 0;
         startup.show_transcript_pane();
         startup.follow_transcript = true;
-        startup.transcript = format_visible_transcript_lines(&outcome.transcript)
-            .into_iter()
-            .map(Into::into)
-            .collect();
+        startup.transcript = format_visible_transcript_lines(&outcome.transcript);
         startup.transcript_scroll = u16::MAX;
 
         match outcome.action {
@@ -2491,7 +2477,7 @@ fn build_history_rollback_candidates(
             Some(state::HistoryRollbackCandidate {
                 message_id: message.message_id.clone(),
                 prompt: message.text_content(),
-                turn_preview_lines: format_visible_transcript_lines(turn_slice),
+                turn_preview_lines: format_visible_transcript_preview_lines(turn_slice),
                 removed_turn_count: total_turns.saturating_sub(turn_index),
                 removed_message_count: transcript.len().saturating_sub(start_index),
             })
