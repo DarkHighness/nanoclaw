@@ -16,6 +16,7 @@ impl AgentRuntime {
         observer: &mut dyn RuntimeObserver,
     ) -> Result<()> {
         self.clear_pending_request_effects();
+        self.permission_grants.clear_turn();
         self.ensure_session_started(turn_id, hooks).await?;
         self.record_instruction_load(turn_id, hooks, instructions)
             .await?;

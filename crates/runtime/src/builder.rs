@@ -1,7 +1,8 @@
 use crate::{
     AgentRuntime, AlwaysAllowToolApprovalHandler, CompactionConfig, ConversationCompactor,
     HookRunner, LoopDetectionConfig, ModelBackend, NoopConversationCompactor,
-    NoopToolApprovalPolicy, RuntimeSession, ToolApprovalHandler, ToolApprovalPolicy,
+    NoopToolApprovalPolicy, PermissionGrantStore, RuntimeSession, ToolApprovalHandler,
+    ToolApprovalPolicy,
 };
 use skills::SkillCatalog;
 use std::sync::Arc;
@@ -24,6 +25,7 @@ pub struct AgentRuntimeBuilder {
     hooks: Vec<HookRegistration>,
     skill_catalog: SkillCatalog,
     session: RuntimeSession,
+    permission_grants: PermissionGrantStore,
 }
 
 impl AgentRuntimeBuilder {
@@ -44,6 +46,7 @@ impl AgentRuntimeBuilder {
             hooks: Vec::new(),
             skill_catalog: SkillCatalog::default(),
             session: RuntimeSession::default(),
+            permission_grants: PermissionGrantStore::default(),
         }
     }
 
@@ -129,6 +132,12 @@ impl AgentRuntimeBuilder {
     }
 
     #[must_use]
+    pub fn permission_grants(mut self, permission_grants: PermissionGrantStore) -> Self {
+        self.permission_grants = permission_grants;
+        self
+    }
+
+    #[must_use]
     pub fn build(self) -> AgentRuntime {
         AgentRuntime::new(
             self.backend,
@@ -145,6 +154,7 @@ impl AgentRuntimeBuilder {
             self.hooks,
             self.skill_catalog,
             self.session,
+            self.permission_grants,
         )
     }
 }

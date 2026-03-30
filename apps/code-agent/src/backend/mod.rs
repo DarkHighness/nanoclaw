@@ -6,6 +6,7 @@ mod boot_preamble;
 mod boot_runtime;
 mod boot_sandbox;
 mod events;
+mod permission_request;
 mod session;
 mod session_catalog;
 mod session_history;
@@ -37,11 +38,15 @@ pub(crate) use boot_sandbox::{
     inject_process_env, inspect_sandbox_preflight, log_sandbox_status, tool_context_for_profile,
 };
 pub(crate) use events::{SessionEvent, SessionEventObserver, SessionEventStream, SessionToolCall};
+pub(crate) use permission_request::{
+    NonInteractivePermissionRequestHandler, PermissionRequestCoordinator, PermissionRequestPrompt,
+    SessionPermissionRequestHandler,
+};
 pub(crate) use session::{
     CodeAgentSession, LiveTaskControlAction, LiveTaskControlOutcome, LiveTaskMessageAction,
     LiveTaskMessageOutcome, LiveTaskSpawnOutcome, LiveTaskSummary, LiveTaskWaitOutcome,
     ModelReasoningEffortOutcome, PendingControlKind, PendingControlSummary, SessionOperation,
-    SessionOperationAction, SessionOperationOutcome, SessionStartupSnapshot,
+    SessionOperationAction, SessionOperationOutcome, SessionPermissionMode, SessionStartupSnapshot,
 };
 pub(crate) use session_catalog::{
     PersistedAgentSessionSummary, PersistedSessionSearchMatch, PersistedSessionSummary,

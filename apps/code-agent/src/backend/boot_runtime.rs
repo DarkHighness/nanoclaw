@@ -7,8 +7,8 @@ use agent::{
     ApplyPatchTool, BashTool, CodeDefinitionsTool, CodeDocumentSymbolsTool, CodeIntelBackend,
     CodeReferencesTool, CodeSymbolSearchTool, EditTool, GlobTool, GrepTool, JsReplTool, ListTool,
     ManagedCodeIntelBackend, ManagedCodeIntelOptions, ManagedPolicyProcessExecutor, PatchTool,
-    PlanState, ReadTool, RequestUserInputTool, SandboxPolicy, TaskTool, ToolRegistry,
-    UpdatePlanTool, WebFetchTool, WebSearchBackendsTool, WebSearchTool,
+    PlanState, ReadTool, RequestPermissionsTool, RequestUserInputTool, SandboxPolicy, TaskTool,
+    ToolRegistry, UpdatePlanTool, WebFetchTool, WebSearchBackendsTool, WebSearchTool,
     WorkspaceTextCodeIntelBackend, WriteTool,
 };
 use std::collections::BTreeMap;
@@ -139,22 +139,14 @@ fn build_builtin_tools(
     tools.register(WebFetchTool::new());
     tools.register(WebSearchTool::new());
     tools.register(WebSearchBackendsTool::new());
-    if host_process_surfaces_allowed {
-        tools.register(BashTool::with_process_executor_and_policy(
-            process_executor.clone(),
-            sandbox_policy.clone(),
-        ));
-    } else if let Some(reason) = sandbox_status.reason() {
-        // File tools still enforce workspace/protected-path policy in-process,
-        // but exposing a model-driven shell would silently widen to full host
-        // execution when the enforcing backend is missing.
-        warn!(
-            "sandbox enforcement backend unavailable; disabling bash tool to avoid host fallback: {reason}"
-        );
-        startup_warnings.push(format!(
-            "sandbox backend unavailable; disabled bash tool to avoid host subprocess execution: {reason}"
-        ));
-    }
+    // Keep `bash` on the normal tool surface so `/permissions danger-full-access`
+    // can widen the current session without rebuilding the registry. The tool
+    // itself now fails closed whenever the active sandbox mode would otherwise
+    // fall back to unsandboxed host execution.
+    tools.register(BashTool::with_process_executor_and_policy(
+        process_executor.clone(),
+        sandbox_policy.clone(),
+    ));
     tools.register(CodeSymbolSearchTool::with_backend(
         code_intel_backend.clone(),
     ));
@@ -167,6 +159,7 @@ fn build_builtin_tools(
     tools.register(CodeReferencesTool::with_backend(code_intel_backend));
     tools.register(UpdatePlanTool::new(plan_state));
     tools.register(RequestUserInputTool::new());
+    tools.register(RequestPermissionsTool::new());
     (tools, startup_warnings)
 }
 
@@ -288,19 +281,13 @@ mod tests {
         );
 
         assert!(
-            !tooling
+            tooling
                 .tools
                 .names()
                 .into_iter()
                 .any(|name| name.as_str() == "bash")
         );
         assert!(!tooling.host_process_surfaces_allowed);
-        assert!(
-            tooling
-                .startup_warnings
-                .iter()
-                .any(|warning| warning.contains("disabled bash tool"))
-        );
         assert!(
             tooling
                 .startup_warnings

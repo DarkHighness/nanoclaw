@@ -8,9 +8,11 @@ pub use js_repl::*;
 // crate. Re-export them here as a compatibility facade for existing call sites
 // that still import via `tools::process`.
 pub use sandbox::{
-    ExecRequest, ExecutionOrigin, FilesystemPolicy, HostEscapePolicy, HostProcessExecutor,
+    ExecRequest, ExecutionOrigin, FilesystemPolicy, GrantedFilesystemPermissions,
+    GrantedNetworkPermissions, GrantedPermissionProfile, HostEscapePolicy, HostProcessExecutor,
     ManagedPolicyProcessExecutor, NetworkPolicy, ProcessExecutor, ProcessStdio, RuntimeScope,
     SandboxBackendKind, SandboxBackendStatus, SandboxError, SandboxMode, SandboxPolicy,
-    SandboxScope, describe_sandbox_policy, ensure_sandbox_policy_supported,
+    SandboxScope, apply_granted_permission_profile, describe_sandbox_policy,
+    ensure_sandbox_policy_supported, normalize_granted_permission_path,
     platform_sandbox_backend_available, sandbox_backend_status,
 };

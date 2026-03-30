@@ -11,7 +11,9 @@ pub use manager::{
     sandbox_backend_status,
 };
 pub use policy::{
-    ExecRequest, ExecutionOrigin, FilesystemAccess, FilesystemPolicy, HostEscapePolicy,
-    HostProcessExecutor, NetworkPolicy, ProcessExecutor, ProcessStdio, RuntimeScope, SandboxMode,
-    SandboxPolicy, SandboxScope, assert_filesystem_access,
+    ExecRequest, ExecutionOrigin, FilesystemAccess, FilesystemPolicy, GrantedFilesystemPermissions,
+    GrantedNetworkPermissions, GrantedPermissionProfile, HostEscapePolicy, HostProcessExecutor,
+    NetworkPolicy, ProcessExecutor, ProcessStdio, RuntimeScope, SandboxMode, SandboxPolicy,
+    SandboxScope, apply_granted_permission_profile, assert_filesystem_access,
+    normalize_granted_permission_path,
 };

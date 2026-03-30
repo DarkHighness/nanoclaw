@@ -1,4 +1,6 @@
-use crate::backend::{PendingControlKind, PendingControlSummary, StartupDiagnosticsSnapshot};
+use crate::backend::{
+    PendingControlKind, PendingControlSummary, SessionPermissionMode, StartupDiagnosticsSnapshot,
+};
 use crate::statusline::{StatusLineConfig, StatusLineField, status_line_fields};
 use agent::types::MessageId;
 use agent::types::TokenLedgerSnapshot;
@@ -32,7 +34,9 @@ pub(crate) struct SessionSummary {
     pub(crate) store_label: String,
     pub(crate) store_warning: Option<String>,
     pub(crate) stored_session_count: usize,
+    pub(crate) default_sandbox_summary: String,
     pub(crate) sandbox_summary: String,
+    pub(crate) permission_mode: SessionPermissionMode,
     pub(crate) host_process_surfaces_allowed: bool,
     pub(crate) startup_diagnostics: StartupDiagnosticsSnapshot,
     pub(crate) queued_commands: usize,

@@ -1,3 +1,4 @@
+use crate::PermissionRequestHandler;
 use crate::Result;
 use crate::UserInputHandler;
 use std::fmt;
@@ -33,6 +34,7 @@ pub struct ToolExecutionContext {
     pub tool_call_id: Option<CallId>,
     pub write_guard: Option<Arc<dyn ToolWriteGuard>>,
     pub user_input_handler: Option<Arc<dyn UserInputHandler>>,
+    pub permission_request_handler: Option<Arc<dyn PermissionRequestHandler>>,
 }
 
 impl fmt::Debug for ToolExecutionContext {

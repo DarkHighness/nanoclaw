@@ -7,7 +7,9 @@ use super::theme::{
     ACCENT, ASSISTANT, BOTTOM_PANE_BG, ERROR, FOOTER_BG, HEADER, MUTED, SUBTLE, TEXT, USER, WARN,
 };
 use super::transcript_markdown::code_span;
+use crate::backend::PermissionRequestPrompt;
 use crate::preview::{PreviewCollapse, collapse_preview_lines};
+use agent::tools::RequestPermissionProfile;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
@@ -67,6 +69,24 @@ pub(super) fn render_user_input_band(
     );
 }
 
+pub(super) fn render_permission_request_band(
+    frame: &mut ratatui::Frame<'_>,
+    area: Rect,
+    prompt: &PermissionRequestPrompt,
+) {
+    frame.render_widget(
+        Block::default().style(Style::default().bg(BOTTOM_PANE_BG)),
+        area,
+    );
+    let inner = bottom_band_inner_area(area);
+    frame.render_widget(
+        Paragraph::new(build_permission_request_text(prompt))
+            .wrap(Wrap { trim: false })
+            .style(Style::default().fg(TEXT).bg(BOTTOM_PANE_BG)),
+        inner,
+    );
+}
+
 pub(super) fn build_approval_text(approval: &ApprovalPrompt) -> Text<'static> {
     let mut lines = vec![Line::from(vec![
         Span::styled(
@@ -113,6 +133,13 @@ pub(super) fn build_approval_text(approval: &ApprovalPrompt) -> Text<'static> {
 
 pub(super) fn approval_band_height(approval: &ApprovalPrompt) -> u16 {
     build_approval_text(approval).lines.len().clamp(5, 10) as u16
+}
+
+pub(super) fn permission_request_band_height(prompt: &PermissionRequestPrompt) -> u16 {
+    build_permission_request_text(prompt)
+        .lines
+        .len()
+        .clamp(6, 12) as u16
 }
 
 pub(super) fn user_input_band_height(user_input: &UserInputView<'_>) -> u16 {
@@ -464,6 +491,96 @@ pub(super) fn build_user_input_text(user_input: &UserInputView<'_>) -> Text<'sta
     }
 
     Text::from(lines)
+}
+
+pub(super) fn build_permission_request_text(prompt: &PermissionRequestPrompt) -> Text<'static> {
+    let mut lines = vec![Line::from(vec![
+        Span::styled(
+            "permissions",
+            Style::default().fg(WARN).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" · ", Style::default().fg(SUBTLE)),
+        Span::styled(
+            "Grant additional permissions?",
+            Style::default().fg(HEADER).add_modifier(Modifier::BOLD),
+        ),
+    ])];
+    if let Some(reason) = prompt.reason.as_deref() {
+        lines.push(Line::from(vec![
+            Span::styled("reason", Style::default().fg(MUTED)),
+            Span::styled(" · ", Style::default().fg(SUBTLE)),
+            Span::styled(preview_text(reason, 96), Style::default().fg(TEXT)),
+        ]));
+    }
+    lines.push(approval_section_label("requested"));
+    lines.extend(permission_profile_lines(&prompt.requested));
+    if !prompt.current_turn.is_empty() || !prompt.current_session.is_empty() {
+        if !prompt.current_turn.is_empty() {
+            lines.push(approval_section_label("current turn"));
+            lines.extend(permission_profile_lines(&prompt.current_turn));
+        }
+        if !prompt.current_session.is_empty() {
+            lines.push(approval_section_label("current session"));
+            lines.extend(permission_profile_lines(&prompt.current_session));
+        }
+    }
+    lines.push(Line::from(vec![
+        Span::styled("y", Style::default().fg(ACCENT)),
+        Span::styled(" grant once", Style::default().fg(MUTED)),
+        Span::styled(" · ", Style::default().fg(SUBTLE)),
+        Span::styled("a", Style::default().fg(HEADER)),
+        Span::styled(" grant for session", Style::default().fg(MUTED)),
+        Span::styled(" · ", Style::default().fg(SUBTLE)),
+        Span::styled("n", Style::default().fg(ERROR)),
+        Span::styled(" deny", Style::default().fg(MUTED)),
+    ]));
+    Text::from(lines)
+}
+
+fn permission_profile_lines(profile: &RequestPermissionProfile) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    if let Some(file_system) = profile.file_system.as_ref() {
+        if let Some(read) = file_system.read.as_ref() {
+            lines.push(permission_profile_line("read", read));
+        }
+        if let Some(write) = file_system.write.as_ref() {
+            lines.push(permission_profile_line("write", write));
+        }
+    }
+    if let Some(network) = profile.network.as_ref() {
+        if network.enabled == Some(true) {
+            lines.push(permission_profile_line("network", &["full".to_string()]));
+        }
+        if let Some(domains) = network.allow_domains.as_ref() {
+            lines.push(permission_profile_line("domains", domains));
+        }
+    }
+    if lines.is_empty() {
+        lines.push(Line::from(vec![
+            Span::styled("  • ", Style::default().fg(SUBTLE)),
+            Span::styled("none", Style::default().fg(MUTED)),
+        ]));
+    }
+    lines
+}
+
+fn permission_profile_line(label: &str, values: &[String]) -> Line<'static> {
+    let clipped = values
+        .iter()
+        .map(|value| {
+            if value.chars().count() > 88 {
+                format!("{}...", value.chars().take(85).collect::<String>())
+            } else {
+                value.clone()
+            }
+        })
+        .collect::<Vec<_>>();
+    let preview = collapse_preview_lines(&clipped, 2, PreviewCollapse::HeadTail).join(" · ");
+    Line::from(vec![
+        Span::styled("  • ", Style::default().fg(SUBTLE)),
+        Span::styled(format!("{label}: "), Style::default().fg(MUTED)),
+        Span::styled(preview, Style::default().fg(TEXT)),
+    ])
 }
 
 fn build_user_input_composer_line(user_input: &UserInputView<'_>) -> Line<'static> {

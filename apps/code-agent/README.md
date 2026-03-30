@@ -7,7 +7,7 @@ It intentionally keeps the host layer thin:
 
 - core coding tools: `read`, `write`, `edit`, provider-specific patch tools (`apply_patch` on OpenAI, `patch` on Anthropic), `glob`, `grep`, `list`, `bash`
 - optional code-intel tools: `code_symbol_search`, `code_document_symbols`, `code_definitions`, `code_references`
-- agentic tools: `update_plan`, `request_user_input`, `task`
+- agentic tools: `update_plan`, `request_user_input`, `request_permissions`, `task`
 - append-only runtime loop from `runtime`
 - runtime steering and queued command support
 - loop detection as the primary guard against tool-call churn, without a fixed global iteration cap
@@ -70,6 +70,11 @@ This opens a compact `ratatui` screen with a single wide main surface for
 transcript and read-heavy command views, a Codex-style prompt line, a minimal
 context footer, inline approval and user-input bands in the bottom pane, and a
 more neutral dark palette tuned for prompt and slash-command workflows.
+
+Use `/permissions` inside the TUI to inspect or switch the session base sandbox
+mode between `default` and `danger-full-access`. Model-issued
+`request_permissions` grants stay separate and layer on top of that base mode
+for the current turn or session.
 
 The bottom status line is configurable through `.nanoclaw/apps/code-agent.toml`.
 By default it surfaces the current status, full model name plus reasoning

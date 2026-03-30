@@ -29,6 +29,55 @@ pub enum NetworkPolicy {
     Full,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct GrantedFilesystemPermissions {
+    pub read_roots: Vec<PathBuf>,
+    pub write_roots: Vec<PathBuf>,
+}
+
+impl GrantedFilesystemPermissions {
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.read_roots.is_empty() && self.write_roots.is_empty()
+    }
+
+    pub fn merge_in_place(&mut self, other: &Self) {
+        self.read_roots = union_paths(&self.read_roots, &other.read_roots);
+        self.write_roots = union_paths(&self.write_roots, &other.write_roots);
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum GrantedNetworkPermissions {
+    AllowDomains(Vec<String>),
+    Full,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct GrantedPermissionProfile {
+    pub file_system: GrantedFilesystemPermissions,
+    pub network: Option<GrantedNetworkPermissions>,
+}
+
+impl GrantedPermissionProfile {
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.file_system.is_empty() && self.network.is_none()
+    }
+
+    pub fn merge_in_place(&mut self, other: &Self) {
+        self.file_system.merge_in_place(&other.file_system);
+        self.network = merge_granted_network(self.network.as_ref(), other.network.as_ref());
+    }
+
+    #[must_use]
+    pub fn merged(&self, other: &Self) -> Self {
+        let mut merged = self.clone();
+        merged.merge_in_place(other);
+        merged
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum HostEscapePolicy {
     Deny,
@@ -186,7 +235,9 @@ pub fn assert_filesystem_access(
         FilesystemAccess::Write => filesystem.writable_roots,
         FilesystemAccess::Execute => filesystem.executable_roots,
     };
-    if allowed_roots.is_empty() || path_is_inside_any_root(&path, &allowed_roots) {
+    if filesystem_access_is_unrestricted(policy, access, &allowed_roots)
+        || path_is_inside_any_root(&path, &allowed_roots)
+    {
         return Ok(());
     }
 
@@ -204,6 +255,32 @@ pub fn assert_filesystem_access(
         "sandbox denies {action} access to {}; allowed roots: [{allowed}]",
         path.display()
     )))
+}
+
+pub fn apply_granted_permission_profile(
+    base: &SandboxPolicy,
+    granted: &GrantedPermissionProfile,
+) -> Result<SandboxPolicy> {
+    if granted.is_empty() {
+        return Ok(base.clone());
+    }
+
+    let filesystem = canonicalize_filesystem_policy(&base.filesystem)?;
+    let granted_filesystem = canonicalize_granted_filesystem_permissions(&granted.file_system)?;
+    let writable_roots = widen_write_roots(base, &filesystem.writable_roots, &granted_filesystem);
+
+    Ok(SandboxPolicy {
+        mode: widened_mode(base, &writable_roots),
+        filesystem: FilesystemPolicy {
+            readable_roots: widen_read_roots(base, &filesystem.readable_roots, &granted_filesystem),
+            writable_roots,
+            executable_roots: filesystem.executable_roots,
+            protected_paths: filesystem.protected_paths,
+        },
+        network: widen_network_policy(base, granted.network.as_ref()),
+        host_escape: base.host_escape.clone(),
+        fail_if_unavailable: base.fail_if_unavailable,
+    })
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -346,6 +423,10 @@ pub(crate) fn canonicalize_optional_path(path: Option<&Path>) -> Result<Option<P
     path.map(canonicalize_policy_path).transpose()
 }
 
+pub fn normalize_granted_permission_path(path: &Path) -> Result<PathBuf> {
+    canonicalize_policy_path(path)
+}
+
 pub(crate) fn canonicalize_policy_path(path: &Path) -> Result<PathBuf> {
     if path.exists() {
         return std::fs::canonicalize(path).map_err(|source| {
@@ -414,11 +495,137 @@ fn accessible_roots_for_filesystem(filesystem: &FilesystemPolicy) -> Vec<PathBuf
     dedup_paths(roots)
 }
 
+fn canonicalize_granted_filesystem_permissions(
+    permissions: &GrantedFilesystemPermissions,
+) -> Result<GrantedFilesystemPermissions> {
+    Ok(GrantedFilesystemPermissions {
+        read_roots: dedup_paths(
+            permissions
+                .read_roots
+                .iter()
+                .map(|path| canonicalize_policy_path(path))
+                .collect::<Result<Vec<_>>>()?,
+        ),
+        write_roots: dedup_paths(
+            permissions
+                .write_roots
+                .iter()
+                .map(|path| canonicalize_policy_path(path))
+                .collect::<Result<Vec<_>>>()?,
+        ),
+    })
+}
+
+fn widened_mode(base: &SandboxPolicy, writable_roots: &[PathBuf]) -> SandboxMode {
+    match base.mode {
+        SandboxMode::DangerFullAccess => SandboxMode::DangerFullAccess,
+        SandboxMode::WorkspaceWrite => SandboxMode::WorkspaceWrite,
+        SandboxMode::ReadOnly if writable_roots.is_empty() => SandboxMode::ReadOnly,
+        SandboxMode::ReadOnly => SandboxMode::WorkspaceWrite,
+    }
+}
+
+fn widen_read_roots(
+    base: &SandboxPolicy,
+    current: &[PathBuf],
+    granted: &GrantedFilesystemPermissions,
+) -> Vec<PathBuf> {
+    if matches!(base.mode, SandboxMode::DangerFullAccess) && current.is_empty() {
+        return Vec::new();
+    }
+    union_paths(
+        current,
+        &union_paths(&granted.read_roots, &granted.write_roots),
+    )
+}
+
+fn widen_write_roots(
+    base: &SandboxPolicy,
+    current: &[PathBuf],
+    granted: &GrantedFilesystemPermissions,
+) -> Vec<PathBuf> {
+    if matches!(base.mode, SandboxMode::DangerFullAccess) && current.is_empty() {
+        return Vec::new();
+    }
+    union_paths(current, &granted.write_roots)
+}
+
+fn widen_network_policy(
+    base: &SandboxPolicy,
+    granted: Option<&GrantedNetworkPermissions>,
+) -> NetworkPolicy {
+    match (&base.network, granted) {
+        (NetworkPolicy::Full, _) => NetworkPolicy::Full,
+        (policy, None) => policy.clone(),
+        (_, Some(GrantedNetworkPermissions::Full)) => NetworkPolicy::Full,
+        (NetworkPolicy::Off, Some(GrantedNetworkPermissions::AllowDomains(domains))) => {
+            NetworkPolicy::AllowDomains(domains.clone())
+        }
+        (
+            NetworkPolicy::AllowDomains(existing),
+            Some(GrantedNetworkPermissions::AllowDomains(domains)),
+        ) => NetworkPolicy::AllowDomains(
+            existing
+                .iter()
+                .chain(domains.iter())
+                .cloned()
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect(),
+        ),
+    }
+}
+
+fn merge_granted_network(
+    left: Option<&GrantedNetworkPermissions>,
+    right: Option<&GrantedNetworkPermissions>,
+) -> Option<GrantedNetworkPermissions> {
+    match (left, right) {
+        (Some(GrantedNetworkPermissions::Full), _) | (_, Some(GrantedNetworkPermissions::Full)) => {
+            Some(GrantedNetworkPermissions::Full)
+        }
+        (
+            Some(GrantedNetworkPermissions::AllowDomains(left_domains)),
+            Some(GrantedNetworkPermissions::AllowDomains(right_domains)),
+        ) => Some(GrantedNetworkPermissions::AllowDomains(
+            left_domains
+                .iter()
+                .chain(right_domains.iter())
+                .cloned()
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect(),
+        )),
+        (Some(network), None) | (None, Some(network)) => Some(network.clone()),
+        (None, None) => None,
+    }
+}
+
+fn filesystem_access_is_unrestricted(
+    policy: &SandboxPolicy,
+    access: FilesystemAccess,
+    allowed_roots: &[PathBuf],
+) -> bool {
+    allowed_roots.is_empty()
+        && matches!(policy.mode, SandboxMode::DangerFullAccess)
+        && matches!(access, FilesystemAccess::Read | FilesystemAccess::Write)
+}
+
+fn union_paths(left: &[PathBuf], right: &[PathBuf]) -> Vec<PathBuf> {
+    left.iter()
+        .chain(right.iter())
+        .cloned()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        FilesystemAccess, HostEscapePolicy, NetworkPolicy, SandboxMode, SandboxPolicy,
-        SandboxScope, assert_filesystem_access,
+        FilesystemAccess, GrantedFilesystemPermissions, GrantedNetworkPermissions,
+        GrantedPermissionProfile, HostEscapePolicy, NetworkPolicy, SandboxMode, SandboxPolicy,
+        SandboxScope, apply_granted_permission_profile, assert_filesystem_access,
     };
     use tempfile::tempdir;
 
@@ -520,6 +727,81 @@ mod tests {
                 FilesystemAccess::Read,
             )
             .is_ok()
+        );
+    }
+
+    #[test]
+    fn read_only_policy_denies_writes_when_no_write_roots_exist() {
+        let workspace = tempdir().unwrap();
+        let policy = SandboxPolicy {
+            mode: SandboxMode::ReadOnly,
+            filesystem: super::FilesystemPolicy {
+                readable_roots: vec![workspace.path().to_path_buf()],
+                writable_roots: Vec::new(),
+                executable_roots: Vec::new(),
+                protected_paths: Vec::new(),
+            },
+            network: NetworkPolicy::Off,
+            host_escape: HostEscapePolicy::Deny,
+            fail_if_unavailable: false,
+        };
+
+        let error = assert_filesystem_access(
+            &policy,
+            &workspace.path().join("file.txt"),
+            FilesystemAccess::Write,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("sandbox denies write access"));
+    }
+
+    #[test]
+    fn granted_permissions_widen_restrictive_policies() {
+        let workspace = tempdir().unwrap();
+        let extra = tempdir().unwrap();
+        let base = SandboxPolicy {
+            mode: SandboxMode::ReadOnly,
+            filesystem: super::FilesystemPolicy {
+                readable_roots: vec![workspace.path().to_path_buf()],
+                writable_roots: Vec::new(),
+                executable_roots: Vec::new(),
+                protected_paths: vec![workspace.path().join(".git")],
+            },
+            network: NetworkPolicy::Off,
+            host_escape: HostEscapePolicy::Deny,
+            fail_if_unavailable: false,
+        };
+
+        let widened = apply_granted_permission_profile(
+            &base,
+            &GrantedPermissionProfile {
+                file_system: GrantedFilesystemPermissions {
+                    read_roots: vec![extra.path().to_path_buf()],
+                    write_roots: vec![extra.path().to_path_buf()],
+                },
+                network: Some(GrantedNetworkPermissions::AllowDomains(vec![
+                    "example.com".to_string(),
+                ])),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(widened.mode, SandboxMode::WorkspaceWrite);
+        assert!(
+            widened
+                .filesystem
+                .readable_roots
+                .contains(&extra.path().to_path_buf())
+        );
+        assert!(
+            widened
+                .filesystem
+                .writable_roots
+                .contains(&extra.path().to_path_buf())
+        );
+        assert_eq!(
+            widened.network,
+            NetworkPolicy::AllowDomains(vec!["example.com".to_string()])
         );
     }
 }

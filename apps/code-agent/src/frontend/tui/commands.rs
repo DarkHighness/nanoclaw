@@ -1,4 +1,5 @@
-use clap::{CommandFactory, Parser, Subcommand};
+use crate::backend::SessionPermissionMode;
+use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct SlashCommandSpec {
@@ -137,6 +138,12 @@ const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
         name: "queue",
         usage: "queue",
         summary: "browse pending prompts and steers",
+    },
+    SlashCommandSpec {
+        section: "Session",
+        name: "permissions",
+        usage: "permissions [default|danger-full-access]",
+        summary: "inspect or switch the session sandbox mode",
     },
     SlashCommandSpec {
         section: "Session",
@@ -307,6 +314,9 @@ pub(crate) enum SlashCommand {
         message: Option<String>,
     },
     Queue,
+    Permissions {
+        mode: Option<SessionPermissionMode>,
+    },
     Compact {
         notes: Option<String>,
     },
@@ -412,6 +422,10 @@ enum SlashSubcommand {
         message: Vec<String>,
     },
     Queue,
+    Permissions {
+        #[arg(value_enum)]
+        mode: Option<PermissionModeArg>,
+    },
     Compact {
         #[arg(
             value_name = "NOTES",
@@ -492,6 +506,26 @@ enum SlashSubcommand {
     },
     #[command(name = "exit", alias = "quit", alias = "q")]
     Quit,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+enum PermissionModeArg {
+    Default,
+    #[value(
+        name = "danger-full-access",
+        alias = "dangerous-full-access",
+        alias = "danger"
+    )]
+    DangerFullAccess,
+}
+
+impl From<PermissionModeArg> for SessionPermissionMode {
+    fn from(value: PermissionModeArg) -> Self {
+        match value {
+            PermissionModeArg::Default => SessionPermissionMode::Default,
+            PermissionModeArg::DangerFullAccess => SessionPermissionMode::DangerFullAccess,
+        }
+    }
 }
 
 pub(crate) fn parse_slash_command(input: &str) -> SlashCommand {
@@ -682,6 +716,9 @@ impl From<SlashSubcommand> for SlashCommand {
                 message: join_optional_tail(message),
             },
             SlashSubcommand::Queue => Self::Queue,
+            SlashSubcommand::Permissions { mode } => Self::Permissions {
+                mode: mode.map(Into::into),
+            },
             SlashSubcommand::Compact { notes } => Self::Compact {
                 notes: join_optional_tail(notes),
             },
@@ -915,6 +952,19 @@ mod tests {
             parse_slash_command("/live_tasks"),
             SlashCommand::LiveTasks
         ));
+    }
+
+    #[test]
+    fn parses_permissions_mode_switch() {
+        match parse_slash_command("/permissions danger-full-access") {
+            SlashCommand::Permissions { mode } => {
+                assert_eq!(
+                    mode,
+                    Some(crate::backend::SessionPermissionMode::DangerFullAccess)
+                );
+            }
+            _ => panic!("unexpected command"),
+        }
     }
 
     #[test]

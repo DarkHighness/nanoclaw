@@ -4,7 +4,7 @@ use crate::annotations::{builtin_tool_spec, tool_approval_profile};
 use crate::fs::resolve_tool_path_against_workspace_root;
 use crate::process::{
     ExecRequest, ExecutionOrigin, HostProcessExecutor, ProcessExecutor, ProcessStdio, RuntimeScope,
-    SandboxPolicy,
+    SandboxPolicy, sandbox_backend_status,
 };
 use crate::registry::Tool;
 use crate::{Result, ToolError, ToolExecutionContext};
@@ -399,6 +399,28 @@ impl BashTool {
             .clone()
             .unwrap_or_else(|| self.sandbox_policy.clone())
     }
+
+    fn ensure_effective_policy_supported(
+        &self,
+        ctx: &ToolExecutionContext,
+    ) -> Result<SandboxPolicy> {
+        let policy = self.effective_sandbox_policy(ctx);
+        let status = sandbox_backend_status(&policy);
+        // `bash` stays model-visible even when the host booted in a restrictive
+        // mode without an enforcing backend so `/permissions danger-full-access`
+        // can widen the session later. The tool still has to fail closed while
+        // the active policy would otherwise degrade to unsandboxed host
+        // execution.
+        if policy.requires_enforcement() && !status.is_available() {
+            let reason = status
+                .reason()
+                .unwrap_or("no compatible sandbox backend is available");
+            return Err(ToolError::invalid_state(format!(
+                "bash is unavailable while the current sandbox mode requires enforcement, but {reason}. Switch /permissions to danger-full-access or enable a supported sandbox backend."
+            )));
+        }
+        Ok(policy)
+    }
 }
 
 #[async_trait]
@@ -444,6 +466,7 @@ async fn execute_run(
     let command = resolve_command(&input)?;
     let cwd = resolve_cwd(&input, ctx)?;
     let shell = shell_or_default("/bin/sh");
+    let sandbox_policy = tool.ensure_effective_policy_supported(ctx)?;
     let max_output_chars = input
         .max_output_chars
         .unwrap_or(DEFAULT_MAX_OUTPUT_CHARS)
@@ -461,7 +484,7 @@ async fn execute_run(
         kill_on_drop: true,
         origin: ExecutionOrigin::BashTool,
         runtime_scope: runtime_scope_from_context(ctx),
-        sandbox_policy: tool.effective_sandbox_policy(ctx),
+        sandbox_policy,
     })?;
 
     let future = child.output();
@@ -592,6 +615,7 @@ async fn execute_start(
     let command = resolve_command(&input)?;
     let cwd = resolve_cwd(&input, ctx)?;
     let shell = shell_or_default("/bin/sh");
+    let sandbox_policy = tool.ensure_effective_policy_supported(ctx)?;
     let timeout_ms = input.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS).max(1);
     let env = input.env.unwrap_or_default();
     let env_keys = env.keys().cloned().collect::<Vec<_>>();
@@ -610,7 +634,7 @@ async fn execute_start(
             kill_on_drop: true,
             origin: ExecutionOrigin::BashTool,
             runtime_scope: runtime_scope_from_context(ctx),
-            sandbox_policy: tool.effective_sandbox_policy(ctx),
+            sandbox_policy,
         })?
         .spawn()?;
     // Keep the protocol surface stringly for compatibility, but use a typed
@@ -1320,18 +1344,7 @@ mod tests {
             }),
             sandbox::SandboxPolicy::permissive(),
         );
-        let policy = sandbox::SandboxPolicy {
-            mode: sandbox::SandboxMode::ReadOnly,
-            filesystem: sandbox::FilesystemPolicy {
-                readable_roots: vec![dir.path().to_path_buf()],
-                writable_roots: Vec::new(),
-                executable_roots: Vec::new(),
-                protected_paths: Vec::new(),
-            },
-            network: sandbox::NetworkPolicy::Off,
-            host_escape: sandbox::HostEscapePolicy::Deny,
-            fail_if_unavailable: true,
-        };
+        let policy = sandbox::SandboxPolicy::permissive().with_fail_if_unavailable(true);
         let result = tool
             .execute(
                 ToolCallId::new(),

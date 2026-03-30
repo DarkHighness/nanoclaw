@@ -8,9 +8,9 @@ mod turn_start;
 
 use crate::{
     CompactionConfig, ConversationCompactor, HookInvocationBatch, HookRunner, LoopDetectionConfig,
-    ModelBackend, NoopRuntimeObserver, Result, RuntimeCommand, RuntimeControlPlane,
-    RuntimeObserver, RuntimeProgressEvent, RuntimeSession, ToolApprovalHandler, ToolApprovalPolicy,
-    ToolLoopDetector, append_transcript_message,
+    ModelBackend, NoopRuntimeObserver, PermissionGrantStore, Result, RuntimeCommand,
+    RuntimeControlPlane, RuntimeObserver, RuntimeProgressEvent, RuntimeSession,
+    ToolApprovalHandler, ToolApprovalPolicy, ToolLoopDetector, append_transcript_message,
 };
 use skills::SkillCatalog;
 use std::sync::Arc;
@@ -36,6 +36,7 @@ pub struct AgentRuntime {
     pending_injected_instructions: Vec<String>,
     control_plane: RuntimeControlPlane,
     session: RuntimeSession,
+    permission_grants: PermissionGrantStore,
 }
 
 pub struct RunTurnOutcome {
@@ -65,6 +66,7 @@ impl AgentRuntime {
         hook_registrations: Vec<HookRegistration>,
         _skill_catalog: SkillCatalog,
         session: RuntimeSession,
+        permission_grants: PermissionGrantStore,
     ) -> Self {
         Self {
             backend,
@@ -83,6 +85,7 @@ impl AgentRuntime {
             pending_injected_instructions: Vec::new(),
             control_plane: RuntimeControlPlane::new(),
             session,
+            permission_grants,
         }
     }
 
@@ -129,6 +132,23 @@ impl AgentRuntime {
         self.session.token_ledger.clone()
     }
 
+    #[must_use]
+    pub fn permission_grants(&self) -> PermissionGrantStore {
+        self.permission_grants.clone()
+    }
+
+    #[must_use]
+    pub fn base_sandbox_policy(&self) -> tools::SandboxPolicy {
+        self.tool_context.sandbox_policy()
+    }
+
+    pub fn set_base_sandbox_policy(&mut self, policy: tools::SandboxPolicy) {
+        // `request_permissions` widens the per-turn execution policy separately.
+        // This setter only updates the host-selected base mode (`default` vs
+        // `danger-full-access`) that future tool calls inherit.
+        self.tool_context.effective_sandbox_policy = Some(policy);
+    }
+
     pub(crate) fn model_visible_tool_specs(&self) -> Vec<types::ToolSpec> {
         let provider_name = self.backend.provider_name();
         self.tool_registry
@@ -161,6 +181,7 @@ impl AgentRuntime {
         self.clear_pending_request_effects();
         self.clear_pending_runtime_commands();
         self.tool_loop_detector.reset();
+        self.permission_grants.clear_all();
 
         let hooks = self.hook_registrations.clone();
         self.start_agent_session(&TurnId::new(), &hooks, NEW_SESSION_REASON)
@@ -192,6 +213,7 @@ impl AgentRuntime {
         self.clear_pending_request_effects();
         self.clear_pending_runtime_commands();
         self.tool_loop_detector.reset();
+        self.permission_grants.clear_all();
 
         let hooks = self.hook_registrations.clone();
         self.start_agent_session(&TurnId::new(), &hooks, RESUME_START_REASON)

@@ -3,11 +3,12 @@ use crate::backend::boot_mcp::build_startup_diagnostics_snapshot;
 use crate::backend::boot_runtime::{build_runtime_tooling, register_subagent_tools};
 use crate::backend::store::build_store;
 use crate::backend::{
-    ApprovalCoordinator, NonInteractiveToolApprovalHandler, NonInteractiveUserInputHandler,
-    SessionEventStream, SessionToolApprovalHandler, SessionUserInputHandler, UserInputCoordinator,
-    build_plugin_activation_plan, build_sandbox_policy, build_system_preamble, build_tool_context,
-    dedup_mcp_servers, log_sandbox_status, merge_driver_host_inputs, resolve_mcp_servers,
-    resolve_skill_roots, tool_context_for_profile,
+    ApprovalCoordinator, NonInteractivePermissionRequestHandler, NonInteractiveToolApprovalHandler,
+    NonInteractiveUserInputHandler, PermissionRequestCoordinator, SessionEventStream,
+    SessionPermissionRequestHandler, SessionToolApprovalHandler, SessionUserInputHandler,
+    UserInputCoordinator, build_plugin_activation_plan, build_sandbox_policy,
+    build_system_preamble, build_tool_context, dedup_mcp_servers, log_sandbox_status,
+    merge_driver_host_inputs, resolve_mcp_servers, resolve_skill_roots, tool_context_for_profile,
 };
 use crate::options::AppOptions;
 use crate::provider::{
@@ -21,7 +22,7 @@ use agent::mcp::{
 };
 use agent::runtime::{
     CompactionConfig, ConversationCompactor, ModelBackend, ModelConversationCompactor,
-    NoopToolApprovalPolicy, RuntimeSubagentExecutor, SubagentProfileResolver,
+    NoopToolApprovalPolicy, PermissionGrantStore, RuntimeSubagentExecutor, SubagentProfileResolver,
     SubagentRuntimeProfile, ToolApprovalHandler,
 };
 use agent::tools::{SubagentExecutor, describe_sandbox_policy, ensure_sandbox_policy_supported};
@@ -34,7 +35,7 @@ use agent_env::EnvMap;
 use anyhow::{Context, Result, bail};
 use nanoclaw_config::{CoreConfig, ResolvedAgentProfile};
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use tracing::{info, warn};
 
 struct RuntimeBuildResult {
@@ -61,7 +62,7 @@ pub(crate) enum SessionApprovalMode {
 pub(crate) struct CodeAgentSubagentProfileResolver {
     pub(crate) core: CoreConfig,
     pub(crate) env_map: EnvMap,
-    pub(crate) base_tool_context: ToolExecutionContext,
+    pub(crate) base_tool_context: Arc<RwLock<ToolExecutionContext>>,
     pub(crate) skill_catalog: SkillCatalog,
     pub(crate) plugin_instructions: Vec<String>,
 }
@@ -71,6 +72,7 @@ impl SubagentProfileResolver for CodeAgentSubagentProfileResolver {
         &self,
         task: &AgentTaskSpec,
     ) -> agent::runtime::Result<SubagentRuntimeProfile> {
+        let base_tool_context = self.base_tool_context.read().unwrap().clone();
         let profile = self
             .core
             .resolve_subagent_profile(Some(task.role.as_str()))
@@ -93,7 +95,7 @@ impl SubagentProfileResolver for CodeAgentSubagentProfileResolver {
         Ok(SubagentRuntimeProfile {
             profile_name: profile.profile_name.clone(),
             backend,
-            tool_context: tool_context_for_profile(&self.base_tool_context, &profile),
+            tool_context: tool_context_for_profile(&base_tool_context, &profile),
             conversation_compactor: compactor,
             compaction_config: CompactionConfig {
                 enabled: profile.auto_compact,
@@ -126,6 +128,8 @@ pub(crate) async fn build_session_with_approval_mode(
 ) -> Result<super::CodeAgentSession> {
     let approvals = ApprovalCoordinator::default();
     let user_inputs = UserInputCoordinator::default();
+    let permission_requests = PermissionRequestCoordinator::default();
+    let permission_grants = PermissionGrantStore::default();
     let events = SessionEventStream::default();
     let approval_handler: Arc<dyn ToolApprovalHandler> = match approval_mode {
         SessionApprovalMode::Interactive => {
@@ -143,10 +147,24 @@ pub(crate) async fn build_session_with_approval_mode(
             "non-interactive one-shot mode cannot request user input",
         )),
     };
+    let permission_request_handler: Arc<dyn agent::tools::PermissionRequestHandler> =
+        match approval_mode {
+            SessionApprovalMode::Interactive => Arc::new(SessionPermissionRequestHandler::new(
+                permission_requests.clone(),
+                permission_grants.clone(),
+            )),
+            SessionApprovalMode::NonInteractive => {
+                Arc::new(NonInteractivePermissionRequestHandler::new(
+                    "non-interactive one-shot mode cannot request additional permissions",
+                ))
+            }
+        };
     let mut base_tool_context = build_tool_context(workspace_root, options);
     base_tool_context.user_input_handler = Some(user_input_handler);
+    base_tool_context.permission_request_handler = Some(permission_request_handler);
     let sandbox_policy = build_sandbox_policy(options, &base_tool_context);
     let tool_context = base_tool_context.with_sandbox_policy(sandbox_policy.clone());
+    let session_tool_context = Arc::new(RwLock::new(tool_context.clone()));
     let sandbox_status = ensure_sandbox_policy_supported(&sandbox_policy)
         .context("sandbox policy cannot be enforced on this host")?;
     log_sandbox_status(&sandbox_status);
@@ -169,8 +187,10 @@ pub(crate) async fn build_session_with_approval_mode(
         workspace_root,
         approval_handler,
         tool_context,
-        sandbox_policy,
+        session_tool_context.clone(),
+        sandbox_policy.clone(),
         sandbox_status,
+        permission_grants.clone(),
     )
     .await?;
     let tool_names = runtime.tool_registry_names();
@@ -189,7 +209,11 @@ pub(crate) async fn build_session_with_approval_mode(
         mcp_servers,
         approvals,
         user_inputs,
+        permission_requests,
         events,
+        permission_grants,
+        session_tool_context,
+        sandbox_policy.clone(),
         super::SessionStartupSnapshot {
             workspace_name: workspace_root
                 .file_name()
@@ -207,7 +231,9 @@ pub(crate) async fn build_session_with_approval_mode(
             store_label,
             store_warning,
             stored_session_count: stored_session_count,
+            default_sandbox_summary: sandbox_summary.clone(),
             sandbox_summary,
+            permission_mode: super::SessionPermissionMode::Default,
             host_process_surfaces_allowed,
             startup_diagnostics,
             statusline: options.statusline.clone(),
@@ -221,8 +247,10 @@ async fn build_runtime(
     workspace_root: &Path,
     approval_handler: Arc<dyn ToolApprovalHandler>,
     tool_context: ToolExecutionContext,
+    session_tool_context: Arc<RwLock<ToolExecutionContext>>,
     sandbox_policy: SandboxPolicy,
     sandbox_status: agent::tools::SandboxBackendStatus,
+    permission_grants: PermissionGrantStore,
 ) -> Result<RuntimeBuildResult> {
     let model_backend = build_mutable_agent_backend(&options.primary_profile, &options.env_map)?;
     let backend: Arc<dyn ModelBackend> = Arc::new(model_backend.clone());
@@ -381,7 +409,7 @@ async fn build_runtime(
     let subagent_profile_resolver = Arc::new(CodeAgentSubagentProfileResolver {
         core: options.core.clone(),
         env_map: options.env_map.clone(),
-        base_tool_context: tool_context.clone(),
+        base_tool_context: session_tool_context,
         skill_catalog: skill_catalog.clone(),
         plugin_instructions: plugin_instructions.clone(),
     });
@@ -418,6 +446,7 @@ async fn build_runtime(
         .tool_registry(tools)
         .tool_context(tool_context)
         .tool_approval_handler(approval_handler)
+        .permission_grants(permission_grants)
         .conversation_compactor(compactor)
         .compaction_config(CompactionConfig {
             enabled: options.primary_profile.auto_compact,

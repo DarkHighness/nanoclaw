@@ -19,10 +19,21 @@ use anyhow::{Context, Result, bail};
 use std::env;
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
+use std::process::ExitCode;
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::EnvFilter;
 
-fn main() -> Result<()> {
+fn main() -> ExitCode {
+    match try_main() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            print_fatal_error(&error);
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn try_main() -> Result<()> {
     let workspace_root = env::current_dir().context("failed to resolve current workspace")?;
     let env_map = EnvMap::from_workspace_dir(&workspace_root)?;
     inject_process_env(&env_map);
@@ -36,6 +47,24 @@ fn main() -> Result<()> {
     .context("failed to build tokio runtime")?;
     let local = tokio::task::LocalSet::new();
     runtime.block_on(local.run_until(async_main(workspace_root, options)))
+}
+
+fn print_fatal_error(error: &anyhow::Error) {
+    let _ = writeln!(io::stderr().lock(), "error: {error}");
+    if should_render_diagnostic_details(error) {
+        let _ = writeln!(
+            io::stderr().lock(),
+            "\ninternal diagnostic report:\n{error:?}"
+        );
+    }
+}
+
+fn should_render_diagnostic_details(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause.is::<agent::runtime::RuntimeError>()
+            || cause.is::<agent::provider::ProviderError>()
+            || cause.is::<agent::inference::InferenceError>()
+    })
 }
 
 fn init_tracing(workspace_root: &Path) -> Result<WorkerGuard> {
@@ -234,6 +263,26 @@ fn format_sandbox_abort_message(notice: &SandboxFallbackNotice) -> String {
 }
 
 #[cfg(test)]
+mod diagnostic_tests {
+    use super::should_render_diagnostic_details;
+    use anyhow::anyhow;
+
+    #[test]
+    fn internal_runtime_errors_request_diagnostic_output() {
+        let error = anyhow::Error::from(agent::runtime::RuntimeError::model_backend(
+            "provider transport failed",
+        ));
+        assert!(should_render_diagnostic_details(&error));
+    }
+
+    #[test]
+    fn plain_operator_errors_stay_concise() {
+        let error = anyhow!("missing prompt");
+        assert!(!should_render_diagnostic_details(&error));
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::{
         SandboxFallbackAction, choose_sandbox_fallback_action, format_sandbox_abort_message,
@@ -257,7 +306,7 @@ mod tests {
     };
     use std::collections::BTreeMap;
     use std::path::PathBuf;
-    use std::sync::{Mutex, OnceLock};
+    use std::sync::{Arc, Mutex, OnceLock};
     use tempfile::tempdir;
 
     fn env_test_lock() -> &'static Mutex<()> {
@@ -487,12 +536,12 @@ mod tests {
                 );
             }),
             env_map: EnvMap::from_workspace_dir(dir.path()).unwrap(),
-            base_tool_context: ToolExecutionContext {
+            base_tool_context: Arc::new(std::sync::RwLock::new(ToolExecutionContext {
                 workspace_root: PathBuf::from("/workspace"),
                 worktree_root: Some(PathBuf::from("/workspace")),
                 workspace_only: true,
                 ..Default::default()
-            },
+            })),
             skill_catalog: agent::SkillCatalog::default(),
             plugin_instructions: vec!["Plugin instruction".to_string()],
         };

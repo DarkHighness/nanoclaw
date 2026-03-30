@@ -1959,6 +1959,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "error-stack"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b878b3fac9613c3c7f22eb70bc8a3c6ebdc03cc11479ee60fde1692d747fd45f"
+dependencies = [
+ "anyhow",
+ "rustc_version",
+]
+
+[[package]]
 name = "ethnum"
 version = "1.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2769,6 +2779,7 @@ name = "inference"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "error-stack",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
@@ -4545,6 +4556,7 @@ dependencies = [
  "agent-env",
  "async-stream",
  "async-trait",
+ "error-stack",
  "eventsource-stream",
  "futures",
  "reqwest 0.12.28",
@@ -5094,6 +5106,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "dashmap",
+ "error-stack",
  "futures",
  "regex",
  "reqwest 0.12.28",

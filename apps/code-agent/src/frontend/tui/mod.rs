@@ -7,8 +7,8 @@ mod state;
 
 use crate::backend::{
     CodeAgentSession, LiveTaskControlAction, LiveTaskMessageAction, LiveTaskWaitOutcome,
-    SessionOperation, SessionOperationAction, SessionOperationOutcome, SessionStartupSnapshot,
-    UserInputPrompt, preview_id,
+    SessionOperation, SessionOperationAction, SessionOperationOutcome, SessionPermissionMode,
+    SessionStartupSnapshot, UserInputPrompt, preview_id,
 };
 use crate::statusline::status_line_fields;
 use approval::approval_decision_for_key;
@@ -32,7 +32,10 @@ pub(crate) use state::SharedUiState;
 use state::TuiState;
 
 use agent::RuntimeCommand;
-use agent::tools::{UserInputAnswer, UserInputResponse};
+use agent::tools::{
+    GrantedPermissionResponse, PermissionGrantScope, RequestPermissionProfile, UserInputAnswer,
+    UserInputResponse,
+};
 use agent::types::MessageRole;
 use anyhow::Result;
 use crossterm::event::{
@@ -51,6 +54,7 @@ use std::io::{self, Stdout};
 use std::time::Instant;
 use tokio::task::{JoinHandle, spawn_local};
 use tokio::time::{Duration, sleep};
+use tracing::error;
 
 pub struct CodeAgentTui {
     session: CodeAgentSession,
@@ -94,6 +98,11 @@ struct UserInputView<'a> {
     prompt: &'a UserInputPrompt,
     flow: Option<&'a ActiveUserInputState>,
     input: &'a str,
+}
+
+fn summarize_nonfatal_error(operation: &'static str, error: &anyhow::Error) -> String {
+    error!(operation, error = ?error, "UI operation failed");
+    error.to_string()
 }
 
 impl CodeAgentTui {
@@ -154,6 +163,7 @@ impl CodeAgentTui {
             self.apply_backend_events();
             self.maybe_finish_operator_task().await?;
             self.sync_runtime_control_state();
+            let permission_request_prompt = self.session.permission_request_prompt();
             let user_input_prompt = self.session.user_input_prompt();
             self.sync_user_input_prompt(user_input_prompt.as_ref());
 
@@ -169,6 +179,7 @@ impl CodeAgentTui {
                 Rect::new(0, 0, terminal_size.width, terminal_size.height),
                 &snapshot,
                 approval.as_ref(),
+                permission_request_prompt.as_ref(),
                 user_input_view.as_ref(),
             );
             terminal.draw(|frame| {
@@ -176,6 +187,7 @@ impl CodeAgentTui {
                     frame,
                     &snapshot,
                     approval.as_ref(),
+                    permission_request_prompt.as_ref(),
                     user_input_view.as_ref(),
                 )
             })?;
@@ -190,6 +202,9 @@ impl CodeAgentTui {
                         continue;
                     }
                     if self.handle_approval_key(key) {
+                        continue;
+                    }
+                    if self.handle_permission_request_key(key) {
                         continue;
                     }
                     if self.handle_user_input_key(key) {
@@ -441,6 +456,51 @@ impl CodeAgentTui {
                     } else {
                         state.status = format!("Denied {}", prompt.tool_name);
                         state.push_activity(format!("denied {}", prompt.tool_name));
+                    }
+                });
+            }
+            return true;
+        }
+        true
+    }
+
+    fn handle_permission_request_key(&mut self, key: KeyEvent) -> bool {
+        let Some(prompt) = self.session.permission_request_prompt() else {
+            return false;
+        };
+        let response = match key.code {
+            KeyCode::Char('y') => Some(GrantedPermissionResponse {
+                permissions: prompt.requested_normalized.clone(),
+                scope: PermissionGrantScope::Turn,
+            }),
+            KeyCode::Char('a') => Some(GrantedPermissionResponse {
+                permissions: prompt.requested_normalized.clone(),
+                scope: PermissionGrantScope::Session,
+            }),
+            KeyCode::Char('n') | KeyCode::Esc => Some(GrantedPermissionResponse {
+                permissions: agent::tools::GrantedPermissionProfile::default(),
+                scope: PermissionGrantScope::Turn,
+            }),
+            _ => None,
+        };
+        if let Some(response) = response {
+            let granted = !response.permissions.is_empty();
+            let scope = response.scope;
+            if self.session.resolve_permission_request(response) {
+                self.ui_state.mutate(|state| {
+                    if granted {
+                        let scope_label = match scope {
+                            PermissionGrantScope::Turn => "turn",
+                            PermissionGrantScope::Session => "session",
+                        };
+                        state.status =
+                            format!("Granted additional permissions for the {scope_label}");
+                        state.push_activity(format!(
+                            "granted additional permissions for the {scope_label}"
+                        ));
+                    } else {
+                        state.status = "Denied additional permissions".to_string();
+                        state.push_activity("denied additional permissions");
                     }
                 });
             }
@@ -714,7 +774,8 @@ impl CodeAgentTui {
                             });
                         }
                         Err(error) => {
-                            let message = error.to_string();
+                            let message =
+                                summarize_nonfatal_error("withdraw pending control", &error);
                             self.ui_state.mutate(|state| {
                                 state.status =
                                     format!("Failed to withdraw pending control: {message}");
@@ -992,7 +1053,7 @@ impl CodeAgentTui {
                 });
             }
             Err(error) => {
-                let message = error.to_string();
+                let message = summarize_nonfatal_error("history rollback", &error);
                 self.ui_state.mutate(|state| {
                     state.status = format!("History rollback failed: {message}");
                     state.push_activity(format!(
@@ -1034,7 +1095,7 @@ impl CodeAgentTui {
                     });
                 }
                 Ok(Err(error)) => {
-                    let message = error.to_string();
+                    let message = summarize_nonfatal_error("turn task", &error);
                     self.ui_state.mutate(|state| {
                         state.turn_running = false;
                         state.turn_started_at = None;
@@ -1155,7 +1216,7 @@ impl CodeAgentTui {
                     });
                 }
                 Ok(Err(error)) => {
-                    let message = error.to_string();
+                    let message = summarize_nonfatal_error("operator task", &error);
                     self.ui_state.mutate(|state| {
                         state.status = format!("Operator task failed: {message}");
                         state.show_main_view(
@@ -1223,7 +1284,7 @@ impl CodeAgentTui {
                 });
             }
             Err(error) => {
-                let message = error.to_string();
+                let message = summarize_nonfatal_error("update pending control", &error);
                 self.ui_state.mutate(|state| {
                     state.status = format!("Failed to update pending control: {message}");
                     state.push_activity(format!(
@@ -1262,7 +1323,7 @@ impl CodeAgentTui {
                 });
             }
             Err(error) => {
-                let message = error.to_string();
+                let message = summarize_nonfatal_error("queue prompt", &error);
                 self.ui_state.mutate(|state| {
                     state.status = format!("Failed to queue prompt: {message}");
                     state.push_activity(format!(
@@ -1294,7 +1355,7 @@ impl CodeAgentTui {
                 })
             }
             Err(error) => {
-                let message = error.to_string();
+                let message = summarize_nonfatal_error("schedule runtime steer", &error);
                 self.ui_state.mutate(|state| {
                     state.status = format!("Failed to schedule steer: {message}");
                     state.push_activity(format!(
@@ -1394,14 +1455,20 @@ impl CodeAgentTui {
     fn cycle_model_reasoning_effort(&mut self) {
         match self.session.cycle_model_reasoning_effort() {
             Ok(outcome) => self.apply_model_reasoning_effort_outcome(outcome, "cycled"),
-            Err(error) => self.record_model_reasoning_effort_error(error.to_string()),
+            Err(error) => self.record_model_reasoning_effort_error(summarize_nonfatal_error(
+                "cycle model reasoning effort",
+                &error,
+            )),
         }
     }
 
     fn set_model_reasoning_effort(&mut self, effort: &str) {
         match self.session.set_model_reasoning_effort(effort) {
             Ok(outcome) => self.apply_model_reasoning_effort_outcome(outcome, "set"),
-            Err(error) => self.record_model_reasoning_effort_error(error.to_string()),
+            Err(error) => self.record_model_reasoning_effort_error(summarize_nonfatal_error(
+                "set model reasoning effort",
+                &error,
+            )),
         }
     }
 
@@ -1668,6 +1735,58 @@ impl CodeAgentTui {
                         state.push_activity("no pending controls");
                     }
                 });
+                Ok(false)
+            }
+            SlashCommand::Permissions { mode } => {
+                if let Some(mode) = mode {
+                    if self.turn_task.is_some() {
+                        self.ui_state.mutate(|state| {
+                            state.status =
+                                "Wait for the current turn before switching sandbox mode"
+                                    .to_string();
+                            state.push_activity(
+                                "permissions mode switch blocked while turn running",
+                            );
+                        });
+                        return Ok(false);
+                    }
+
+                    let outcome = self.session.set_permission_mode(mode).await?;
+                    let snapshot = self.session.startup_snapshot();
+                    let (turn_grants, session_grants) = self.session.permission_grant_profiles();
+                    let inspector =
+                        build_permissions_inspector(&snapshot, &turn_grants, &session_grants);
+                    self.sync_session_summary_from_snapshot(&snapshot);
+                    self.ui_state.mutate(move |state| {
+                        state.show_main_view("Permissions", inspector);
+                        if outcome.previous == outcome.current {
+                            state.status =
+                                format!("Permissions mode already {}", outcome.current.as_str());
+                            state.push_activity(format!(
+                                "inspected permissions mode {}",
+                                outcome.current.as_str()
+                            ));
+                        } else {
+                            state.status =
+                                format!("Permissions mode set to {}", outcome.current.as_str());
+                            state.push_activity(format!(
+                                "permissions mode {} -> {}",
+                                outcome.previous.as_str(),
+                                outcome.current.as_str()
+                            ));
+                        }
+                    });
+                } else {
+                    let snapshot = self.session.startup_snapshot();
+                    let (turn_grants, session_grants) = self.session.permission_grant_profiles();
+                    let inspector =
+                        build_permissions_inspector(&snapshot, &turn_grants, &session_grants);
+                    self.ui_state.mutate(move |state| {
+                        state.show_main_view("Permissions", inspector);
+                        state.status = "Opened permissions inspector".to_string();
+                        state.push_activity("opened permissions inspector");
+                    });
+                }
                 Ok(false)
             }
             SlashCommand::New => {
@@ -2155,7 +2274,9 @@ impl CodeAgentTui {
                 store_label: snapshot.store_label.clone(),
                 store_warning: snapshot.store_warning.clone(),
                 stored_session_count: snapshot.stored_session_count,
+                default_sandbox_summary: snapshot.default_sandbox_summary.clone(),
                 sandbox_summary: snapshot.sandbox_summary.clone(),
+                permission_mode: snapshot.permission_mode,
                 host_process_surfaces_allowed: snapshot.host_process_surfaces_allowed,
                 startup_diagnostics: snapshot.startup_diagnostics.clone(),
                 queued_commands: 0,
@@ -2168,6 +2289,35 @@ impl CodeAgentTui {
         };
         state.push_activity("session ready");
         state
+    }
+
+    fn sync_session_summary_from_snapshot(&mut self, snapshot: &SessionStartupSnapshot) {
+        let git = state::git_snapshot(
+            &snapshot.workspace_root,
+            snapshot.host_process_surfaces_allowed,
+        );
+        self.ui_state.mutate(|state| {
+            state.session.workspace_name = snapshot.workspace_name.clone();
+            state.session.active_session_ref = snapshot.active_session_ref.clone();
+            state.session.root_agent_session_id = snapshot.root_agent_session_id.clone();
+            state.session.provider_label = snapshot.provider_label.clone();
+            state.session.model = snapshot.model.clone();
+            state.session.model_reasoning_effort = snapshot.model_reasoning_effort.clone();
+            state.session.supported_model_reasoning_efforts =
+                snapshot.supported_model_reasoning_efforts.clone();
+            state.session.workspace_root = snapshot.workspace_root.clone();
+            state.session.git = git;
+            state.session.tool_names = snapshot.tool_names.clone();
+            state.session.store_label = snapshot.store_label.clone();
+            state.session.store_warning = snapshot.store_warning.clone();
+            state.session.stored_session_count = snapshot.stored_session_count;
+            state.session.default_sandbox_summary = snapshot.default_sandbox_summary.clone();
+            state.session.sandbox_summary = snapshot.sandbox_summary.clone();
+            state.session.permission_mode = snapshot.permission_mode;
+            state.session.host_process_surfaces_allowed = snapshot.host_process_surfaces_allowed;
+            state.session.startup_diagnostics = snapshot.startup_diagnostics.clone();
+            state.session.statusline = snapshot.statusline.clone();
+        });
     }
 
     fn replace_after_session_operation(
@@ -2374,6 +2524,7 @@ fn build_startup_inspector(session: &state::SessionSummary) -> Vec<String> {
         "/statusline  choose footer items".to_string(),
         "/thinking [level]  pick or set model effort".to_string(),
         "/details  toggle tool details".to_string(),
+        "/permissions [mode]  inspect or switch sandbox mode".to_string(),
         "/queue  browse pending prompts and steers".to_string(),
         "/sessions  browse history".to_string(),
         "/agent_sessions  inspect or resume agents".to_string(),
@@ -2384,6 +2535,7 @@ fn build_startup_inspector(session: &state::SessionSummary) -> Vec<String> {
             "store: {} ({} sessions)",
             session.store_label, session.stored_session_count
         ),
+        format!("permissions: {}", session.permission_mode.as_str()),
         format!("sandbox: {}", session.sandbox_summary),
         format!(
             "tools: {} local / {} mcp",
@@ -2435,6 +2587,73 @@ fn build_startup_inspector(session: &state::SessionSummary) -> Vec<String> {
     lines
 }
 
+fn build_permissions_inspector(
+    snapshot: &SessionStartupSnapshot,
+    turn_grants: &RequestPermissionProfile,
+    session_grants: &RequestPermissionProfile,
+) -> Vec<String> {
+    let mut lines = vec![
+        "## Permissions".to_string(),
+        format!("mode: {}", snapshot.permission_mode.as_str()),
+        format!("default sandbox: {}", snapshot.default_sandbox_summary),
+        format!("effective sandbox: {}", snapshot.sandbox_summary),
+        format!(
+            "host subprocesses: {}",
+            if snapshot.host_process_surfaces_allowed {
+                "enabled"
+            } else {
+                "blocked until danger-full-access or a real sandbox backend is available"
+            }
+        ),
+        "## Modes".to_string(),
+        "/permissions default".to_string(),
+        "/permissions danger-full-access".to_string(),
+        "## Additional Grants".to_string(),
+        format!("turn: {}", permission_profile_summary(turn_grants)),
+        format!("session: {}", permission_profile_summary(session_grants)),
+    ];
+    if snapshot.permission_mode != SessionPermissionMode::Default {
+        lines.push(format!(
+            "note: returning to `/permissions default` keeps request_permissions grants, but reapplies the configured base sandbox."
+        ));
+    }
+    lines
+}
+
+fn permission_profile_summary(profile: &RequestPermissionProfile) -> String {
+    let mut entries = Vec::new();
+    if let Some(file_system) = profile.file_system.as_ref() {
+        if let Some(read) = file_system.read.as_ref() {
+            entries.push(format!(
+                "read {}",
+                state::preview_text(&read.join(", "), 56)
+            ));
+        }
+        if let Some(write) = file_system.write.as_ref() {
+            entries.push(format!(
+                "write {}",
+                state::preview_text(&write.join(", "), 56)
+            ));
+        }
+    }
+    if let Some(network) = profile.network.as_ref() {
+        if network.enabled == Some(true) {
+            entries.push("network full".to_string());
+        }
+        if let Some(domains) = network.allow_domains.as_ref() {
+            entries.push(format!(
+                "domains {}",
+                state::preview_text(&domains.join(", "), 56)
+            ));
+        }
+    }
+    if entries.is_empty() {
+        "none".to_string()
+    } else {
+        entries.join(" · ")
+    }
+}
+
 fn build_command_error_view(input: &str, message: &str) -> Vec<String> {
     let mut lines = message.lines().map(ToOwned::to_owned).collect::<Vec<_>>();
     let query = input
@@ -2457,6 +2676,7 @@ mod tests {
     use super::commands::command_palette_lines;
     use super::state::SessionSummary;
     use super::{PlainInputSubmitAction, merge_interrupt_steers, plain_input_submit_action};
+    use crate::backend::SessionPermissionMode;
     use agent::types::{Message, MessageId};
     use crossterm::event::KeyCode;
     use std::path::PathBuf;
@@ -2481,7 +2701,9 @@ mod tests {
             store_label: "file /workspace/.nanoclaw/store".to_string(),
             store_warning: Some("falling back soon".to_string()),
             stored_session_count: 12,
+            default_sandbox_summary: "workspace-write".to_string(),
             sandbox_summary: "enforced via seatbelt".to_string(),
+            permission_mode: SessionPermissionMode::Default,
             host_process_surfaces_allowed: true,
             startup_diagnostics: Default::default(),
             queued_commands: 0,

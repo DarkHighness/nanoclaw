@@ -17,9 +17,11 @@ use super::UserInputView;
 use super::approval::ApprovalPrompt;
 use super::commands::slash_command_hint;
 use super::state::TuiState;
+use crate::backend::PermissionRequestPrompt;
 use chrome::{
-    approval_band_height, render_approval_band, render_composer, render_user_input_band,
-    should_render_side_rail, side_rail_width, user_input_band_height,
+    approval_band_height, permission_request_band_height, render_approval_band, render_composer,
+    render_permission_request_band, render_user_input_band, should_render_side_rail,
+    side_rail_width, user_input_band_height,
 };
 use history_rollback_overlay::render_history_rollback_overlay;
 use picker::{
@@ -38,6 +40,7 @@ pub(crate) fn render(
     frame: &mut ratatui::Frame<'_>,
     state: &TuiState,
     approval: Option<&ApprovalPrompt>,
+    permission_request: Option<&PermissionRequestPrompt>,
     user_input: Option<&UserInputView<'_>>,
 ) {
     let area = frame.area();
@@ -45,13 +48,16 @@ pub(crate) fn render(
 
     let prompt_height = approval
         .map(approval_band_height)
+        .or_else(|| permission_request.map(permission_request_band_height))
         .or_else(|| user_input.map(user_input_band_height));
-    let pending_height = if approval.is_none() && user_input.is_none() {
-        pending_control_height(state)
-    } else {
-        None
-    };
-    let command_hint = if approval.is_none() && user_input.is_none() {
+    let pending_height =
+        if approval.is_none() && permission_request.is_none() && user_input.is_none() {
+            pending_control_height(state)
+        } else {
+            None
+        };
+    let command_hint = if approval.is_none() && permission_request.is_none() && user_input.is_none()
+    {
         slash_command_hint(&state.input, state.command_completion_index)
     } else {
         None
@@ -101,6 +107,12 @@ pub(crate) fn render(
     }
     if let Some(approval) = approval {
         render_approval_band(frame, prompt_area.expect("approval area"), approval);
+    } else if let Some(permission_request) = permission_request {
+        render_permission_request_band(
+            frame,
+            prompt_area.expect("permission request area"),
+            permission_request,
+        );
     } else if let Some(user_input) = user_input {
         render_user_input_band(frame, prompt_area.expect("user input area"), user_input);
     }
@@ -137,17 +149,21 @@ pub(crate) fn main_pane_viewport_height(
     area: Rect,
     state: &TuiState,
     approval: Option<&ApprovalPrompt>,
+    permission_request: Option<&PermissionRequestPrompt>,
     user_input: Option<&UserInputView<'_>>,
 ) -> u16 {
     let prompt_height = approval
         .map(approval_band_height)
+        .or_else(|| permission_request.map(permission_request_band_height))
         .or_else(|| user_input.map(user_input_band_height));
-    let pending_height = if approval.is_none() && user_input.is_none() {
-        pending_control_height(state)
-    } else {
-        None
-    };
-    let command_hint = if approval.is_none() && user_input.is_none() {
+    let pending_height =
+        if approval.is_none() && permission_request.is_none() && user_input.is_none() {
+            pending_control_height(state)
+        } else {
+            None
+        };
+    let command_hint = if approval.is_none() && permission_request.is_none() && user_input.is_none()
+    {
         slash_command_hint(&state.input, state.command_completion_index)
     } else {
         None

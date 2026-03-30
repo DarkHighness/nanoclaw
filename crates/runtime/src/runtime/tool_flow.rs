@@ -268,13 +268,22 @@ impl AgentRuntime {
             }
         }
 
-        let scoped_tool_context = self.tool_context.with_runtime_scope(
-            self.session.session_id.clone(),
-            self.session.agent_session_id.clone(),
-            turn_id.clone(),
-            tool_name.clone(),
-            call.call_id.clone(),
-        );
+        // Sticky grants are applied on top of the host-selected base policy so
+        // later tools in the same turn or session inherit request_permissions
+        // outcomes without mutating the original session sandbox contract.
+        let scoped_tool_context = self
+            .tool_context
+            .with_sandbox_policy(
+                self.permission_grants
+                    .effective_sandbox_policy(&self.tool_context.sandbox_policy())?,
+            )
+            .with_runtime_scope(
+                self.session.session_id.clone(),
+                self.session.agent_session_id.clone(),
+                turn_id.clone(),
+                tool_name.clone(),
+                call.call_id.clone(),
+            );
 
         match tool
             .execute(

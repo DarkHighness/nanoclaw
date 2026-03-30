@@ -6,24 +6,28 @@ use crate::backend::session_resume;
 use crate::backend::task_history::{self, LoadedTask, PersistedTaskSummary};
 use crate::backend::{
     ApprovalCoordinator, ApprovalDecision, ApprovalPrompt, LoadedMcpPrompt, LoadedMcpResource,
-    McpPromptSummary, McpResourceSummary, McpServerSummary, ResumeSupport, SessionEvent,
-    SessionEventObserver, SessionEventStream, StartupDiagnosticsSnapshot, UserInputCoordinator,
-    UserInputPrompt, list_mcp_prompts, list_mcp_resources, list_mcp_servers, load_mcp_prompt,
-    load_mcp_resource,
+    McpPromptSummary, McpResourceSummary, McpServerSummary, PermissionRequestCoordinator,
+    PermissionRequestPrompt, ResumeSupport, SessionEvent, SessionEventObserver, SessionEventStream,
+    StartupDiagnosticsSnapshot, UserInputCoordinator, UserInputPrompt, list_mcp_prompts,
+    list_mcp_resources, list_mcp_servers, load_mcp_prompt, load_mcp_resource,
 };
 use crate::provider::{MutableAgentBackend, ReasoningEffortUpdate};
 use crate::statusline::StatusLineConfig;
 use agent::mcp::ConnectedMcpServer;
 use agent::runtime::{
-    Result as RuntimeResult, RollbackVisibleHistoryOutcome, RunTurnOutcome, RuntimeCommandId,
-    RuntimeControlPlane,
+    PermissionGrantSnapshot, PermissionGrantStore, Result as RuntimeResult,
+    RollbackVisibleHistoryOutcome, RunTurnOutcome, RuntimeCommandId, RuntimeControlPlane,
 };
-use agent::tools::{SubagentExecutor, SubagentParentContext, UserInputResponse};
+use agent::tools::{
+    GrantedPermissionResponse, RequestPermissionProfile, SandboxPolicy, SubagentExecutor,
+    SubagentParentContext, UserInputResponse, describe_sandbox_policy,
+    request_permission_profile_from_granted, sandbox_backend_status,
+};
 use agent::types::{
     AgentSessionId, AgentTaskSpec, AgentWaitMode, AgentWaitRequest, Message, SessionId,
     new_opaque_id,
 };
-use agent::{AgentRuntime, RuntimeCommand, Skill};
+use agent::{AgentRuntime, RuntimeCommand, Skill, ToolExecutionContext};
 use anyhow::Result;
 use serde_json::json;
 use std::path::{Path, PathBuf};
@@ -48,10 +52,36 @@ pub(crate) struct SessionStartupSnapshot {
     pub(crate) store_label: String,
     pub(crate) store_warning: Option<String>,
     pub(crate) stored_session_count: usize,
+    pub(crate) default_sandbox_summary: String,
     pub(crate) sandbox_summary: String,
+    pub(crate) permission_mode: SessionPermissionMode,
     pub(crate) host_process_surfaces_allowed: bool,
     pub(crate) startup_diagnostics: StartupDiagnosticsSnapshot,
     pub(crate) statusline: StatusLineConfig,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum SessionPermissionMode {
+    #[default]
+    Default,
+    DangerFullAccess,
+}
+
+impl SessionPermissionMode {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::DangerFullAccess => "danger-full-access",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SessionPermissionModeOutcome {
+    pub(crate) previous: SessionPermissionMode,
+    pub(crate) current: SessionPermissionMode,
+    pub(crate) sandbox_summary: String,
+    pub(crate) host_process_surfaces_allowed: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -173,10 +203,14 @@ pub(crate) struct CodeAgentSession {
     mcp_servers: Arc<Vec<ConnectedMcpServer>>,
     approvals: ApprovalCoordinator,
     user_inputs: UserInputCoordinator,
+    permission_requests: PermissionRequestCoordinator,
     events: SessionEventStream,
     workspace_root: PathBuf,
     startup: Arc<RwLock<SessionStartupSnapshot>>,
     skills: Arc<Vec<Skill>>,
+    permission_grants: PermissionGrantStore,
+    session_tool_context: Arc<RwLock<ToolExecutionContext>>,
+    default_sandbox_policy: SandboxPolicy,
 }
 
 impl CodeAgentSession {
@@ -188,7 +222,11 @@ impl CodeAgentSession {
         mcp_servers: Vec<ConnectedMcpServer>,
         approvals: ApprovalCoordinator,
         user_inputs: UserInputCoordinator,
+        permission_requests: PermissionRequestCoordinator,
         events: SessionEventStream,
+        permission_grants: PermissionGrantStore,
+        session_tool_context: Arc<RwLock<ToolExecutionContext>>,
+        default_sandbox_policy: SandboxPolicy,
         startup: SessionStartupSnapshot,
         skills: Vec<Skill>,
     ) -> Self {
@@ -203,10 +241,14 @@ impl CodeAgentSession {
             mcp_servers: Arc::new(mcp_servers),
             approvals,
             user_inputs,
+            permission_requests,
             events,
             workspace_root,
             startup: Arc::new(RwLock::new(startup)),
             skills: Arc::new(skills),
+            permission_grants,
+            session_tool_context,
+            default_sandbox_policy,
         }
     }
 
@@ -220,6 +262,18 @@ impl CodeAgentSession {
 
     pub(crate) fn host_process_surfaces_allowed(&self) -> bool {
         self.startup.read().unwrap().host_process_surfaces_allowed
+    }
+
+    pub(crate) fn permission_mode(&self) -> SessionPermissionMode {
+        self.startup.read().unwrap().permission_mode
+    }
+
+    fn sandbox_policy_for_mode(&self, mode: SessionPermissionMode) -> SandboxPolicy {
+        match mode {
+            SessionPermissionMode::Default => self.default_sandbox_policy.clone(),
+            SessionPermissionMode::DangerFullAccess => SandboxPolicy::permissive()
+                .with_fail_if_unavailable(self.default_sandbox_policy.fail_if_unavailable),
+        }
     }
 
     pub(crate) fn skills(&self) -> &[Skill] {
@@ -253,6 +307,7 @@ impl CodeAgentSession {
 
     pub(crate) async fn end_session(&self, reason: Option<String>) -> RuntimeResult<()> {
         self.user_inputs.cancel("session ended");
+        self.permission_requests.cancel("session ended");
         let mut runtime = self.runtime.lock().await;
         runtime.end_session(reason).await
     }
@@ -496,6 +551,67 @@ impl CodeAgentSession {
         self.user_inputs.cancel(reason)
     }
 
+    pub(crate) fn permission_request_prompt(&self) -> Option<PermissionRequestPrompt> {
+        self.permission_requests.snapshot()
+    }
+
+    pub(crate) fn resolve_permission_request(&self, response: GrantedPermissionResponse) -> bool {
+        self.permission_requests.resolve(response)
+    }
+
+    pub(crate) async fn set_permission_mode(
+        &self,
+        mode: SessionPermissionMode,
+    ) -> Result<SessionPermissionModeOutcome> {
+        let previous = self.permission_mode();
+        let policy = self.sandbox_policy_for_mode(mode);
+        let backend_status = sandbox_backend_status(&policy);
+        let sandbox_summary = describe_sandbox_policy(&policy, &backend_status);
+        let host_process_surfaces_allowed =
+            !policy.requires_enforcement() || backend_status.is_available();
+
+        {
+            let mut runtime = self.runtime.lock().await;
+            // Sticky `request_permissions` grants stay in the runtime-owned
+            // grant store. This setter only swaps the session's base sandbox
+            // mode so later tool calls and newly spawned subagents inherit the
+            // same host-selected baseline.
+            runtime.set_base_sandbox_policy(policy.clone());
+            self.sync_runtime_session_refs(&runtime);
+        }
+        {
+            let mut tool_context = self.session_tool_context.write().unwrap();
+            tool_context.effective_sandbox_policy = Some(policy);
+        }
+        {
+            let mut startup = self.startup.write().unwrap();
+            startup.permission_mode = mode;
+            startup.sandbox_summary = sandbox_summary.clone();
+            startup.host_process_surfaces_allowed = host_process_surfaces_allowed;
+        }
+
+        Ok(SessionPermissionModeOutcome {
+            previous,
+            current: mode,
+            sandbox_summary,
+            host_process_surfaces_allowed,
+        })
+    }
+
+    pub(crate) fn permission_grant_snapshot(&self) -> PermissionGrantSnapshot {
+        self.permission_grants.snapshot()
+    }
+
+    pub(crate) fn permission_grant_profiles(
+        &self,
+    ) -> (RequestPermissionProfile, RequestPermissionProfile) {
+        let snapshot = self.permission_grant_snapshot();
+        (
+            request_permission_profile_from_granted(&snapshot.turn),
+            request_permission_profile_from_granted(&snapshot.session),
+        )
+    }
+
     pub(crate) fn drain_events(&self) -> Vec<SessionEvent> {
         self.events.drain()
     }
@@ -570,7 +686,7 @@ impl CodeAgentSession {
             .subagent_executor
             .list(parent)
             .await
-            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+            .map_err(anyhow::Error::from)?;
         Ok(live_task_summaries(&handles))
     }
 
@@ -603,7 +719,7 @@ impl CodeAgentSession {
             .subagent_executor
             .spawn(parent, vec![task])
             .await
-            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+            .map_err(anyhow::Error::from)?;
         let handle = handles
             .pop()
             .ok_or_else(|| anyhow::anyhow!("live task spawn returned no child handle"))?;
@@ -623,7 +739,7 @@ impl CodeAgentSession {
             .subagent_executor
             .list(parent.clone())
             .await
-            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+            .map_err(anyhow::Error::from)?;
         let handle = resolve_live_task_reference(&handles, task_or_agent_ref)?.clone();
         let updated = self
             .subagent_executor
@@ -634,7 +750,7 @@ impl CodeAgentSession {
                 json!({ "text": message }),
             )
             .await
-            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+            .map_err(anyhow::Error::from)?;
         Ok(LiveTaskMessageOutcome {
             requested_ref: task_or_agent_ref.to_string(),
             agent_id: updated.agent_id.to_string(),
@@ -658,7 +774,7 @@ impl CodeAgentSession {
             .subagent_executor
             .list(parent.clone())
             .await
-            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+            .map_err(anyhow::Error::from)?;
         let handle = resolve_live_task_reference(&handles, task_or_agent_ref)?.clone();
         let response = self
             .subagent_executor
@@ -670,7 +786,7 @@ impl CodeAgentSession {
                 },
             )
             .await
-            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+            .map_err(anyhow::Error::from)?;
         let completed = response
             .completed
             .into_iter()
@@ -722,13 +838,13 @@ impl CodeAgentSession {
             .subagent_executor
             .list(parent.clone())
             .await
-            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+            .map_err(anyhow::Error::from)?;
         let handle = resolve_live_task_reference(&handles, task_or_agent_ref)?.clone();
         let updated = self
             .subagent_executor
             .cancel(parent, handle.agent_id.clone(), reason)
             .await
-            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+            .map_err(anyhow::Error::from)?;
         Ok(LiveTaskControlOutcome {
             requested_ref: task_or_agent_ref.to_string(),
             agent_id: updated.agent_id.to_string(),
@@ -1030,13 +1146,14 @@ fn resolve_live_task_reference<'a>(
 mod tests {
     use super::{
         CodeAgentSession, PendingControlKind, SessionOperation, SessionOperationAction,
-        SessionStartupSnapshot,
+        SessionPermissionMode, SessionStartupSnapshot,
     };
     use crate::backend::{
-        ApprovalCoordinator, SessionEventStream, StartupDiagnosticsSnapshot, UserInputCoordinator,
+        ApprovalCoordinator, PermissionRequestCoordinator, SessionEventStream,
+        StartupDiagnosticsSnapshot, UserInputCoordinator,
     };
     use crate::statusline::StatusLineConfig;
-    use agent::runtime::{HookRunner, ModelBackend, Result as RuntimeResult};
+    use agent::runtime::{HookRunner, ModelBackend, PermissionGrantStore, Result as RuntimeResult};
     use agent::tools::{
         Result as ToolResult, SubagentExecutor, SubagentParentContext, ToolError,
         ToolExecutionContext,
@@ -1049,7 +1166,7 @@ mod tests {
     use async_trait::async_trait;
     use futures::{StreamExt, stream, stream::BoxStream};
     use serde_json::Value;
-    use std::sync::{Arc, Mutex};
+    use std::sync::{Arc, Mutex, RwLock};
     use store::{InMemorySessionStore, SessionStore};
 
     struct NeverBackend;
@@ -1305,11 +1422,45 @@ mod tests {
             store_label: "memory".to_string(),
             store_warning: None,
             stored_session_count: 0,
+            default_sandbox_summary: "workspace-write".to_string(),
             sandbox_summary: "workspace-write".to_string(),
+            permission_mode: SessionPermissionMode::Default,
             host_process_surfaces_allowed: true,
             startup_diagnostics: StartupDiagnosticsSnapshot::default(),
             statusline: StatusLineConfig::default(),
         }
+    }
+
+    fn build_session(
+        runtime: agent::AgentRuntime,
+        subagent_executor: Arc<dyn SubagentExecutor>,
+        store: Arc<dyn SessionStore>,
+        startup: SessionStartupSnapshot,
+    ) -> CodeAgentSession {
+        let default_sandbox_policy = runtime.base_sandbox_policy();
+        let session_tool_context = Arc::new(RwLock::new(ToolExecutionContext {
+            workspace_root: startup.workspace_root.clone(),
+            worktree_root: Some(startup.workspace_root.clone()),
+            effective_sandbox_policy: Some(default_sandbox_policy.clone()),
+            workspace_only: true,
+            ..Default::default()
+        }));
+        CodeAgentSession::new(
+            runtime,
+            None,
+            subagent_executor,
+            store,
+            Vec::new(),
+            ApprovalCoordinator::default(),
+            UserInputCoordinator::default(),
+            PermissionRequestCoordinator::default(),
+            SessionEventStream::default(),
+            PermissionGrantStore::default(),
+            session_tool_context,
+            default_sandbox_policy,
+            startup,
+            Vec::<Skill>::new(),
+        )
     }
 
     fn sample_handle(task_id: &str, agent_id: &str, status: AgentStatus) -> AgentHandle {
@@ -1343,17 +1494,11 @@ mod tests {
         let mut startup = startup_snapshot(dir.path());
         startup.active_session_ref = initial_session_ref.clone();
         startup.root_agent_session_id = initial_agent_session_ref.clone();
-        let session = CodeAgentSession::new(
+        let session = build_session(
             runtime,
-            None,
             Arc::new(NoopSubagentExecutor),
             store.clone(),
-            Vec::new(),
-            ApprovalCoordinator::default(),
-            UserInputCoordinator::default(),
-            SessionEventStream::default(),
             startup,
-            Vec::<Skill>::new(),
         );
 
         let outcome = session
@@ -1397,18 +1542,7 @@ mod tests {
         let mut startup = startup_snapshot(dir.path());
         startup.active_session_ref = runtime.session_id().to_string();
         startup.root_agent_session_id = runtime.agent_session_id().to_string();
-        let session = CodeAgentSession::new(
-            runtime,
-            None,
-            Arc::new(NoopSubagentExecutor),
-            store,
-            Vec::new(),
-            ApprovalCoordinator::default(),
-            UserInputCoordinator::default(),
-            SessionEventStream::default(),
-            startup,
-            Vec::<Skill>::new(),
-        );
+        let session = build_session(runtime, Arc::new(NoopSubagentExecutor), store, startup);
 
         let queued_id = session.queue_prompt_command("second").await.unwrap();
         assert!(!queued_id.is_empty());
@@ -1432,6 +1566,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn permission_mode_switch_updates_frontend_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(InMemorySessionStore::new());
+        let runtime = AgentRuntimeBuilder::new(Arc::new(NeverBackend), store.clone())
+            .hook_runner(Arc::new(HookRunner::default()))
+            .tool_context(ToolExecutionContext {
+                workspace_root: dir.path().to_path_buf(),
+                workspace_only: true,
+                ..Default::default()
+            })
+            .build();
+        let session = build_session(
+            runtime,
+            Arc::new(NoopSubagentExecutor),
+            store,
+            startup_snapshot(dir.path()),
+        );
+
+        let outcome = session
+            .set_permission_mode(SessionPermissionMode::DangerFullAccess)
+            .await
+            .unwrap();
+        let snapshot = session.startup_snapshot();
+
+        assert_eq!(outcome.current, SessionPermissionMode::DangerFullAccess);
+        assert_eq!(
+            snapshot.permission_mode,
+            SessionPermissionMode::DangerFullAccess
+        );
+        assert!(snapshot.host_process_surfaces_allowed);
+        assert!(snapshot.sandbox_summary.contains("danger-full-access"));
+    }
+
+    #[tokio::test]
     async fn pending_controls_can_be_updated_and_removed() {
         let dir = tempfile::tempdir().unwrap();
         let store = Arc::new(InMemorySessionStore::new());
@@ -1446,18 +1614,7 @@ mod tests {
         let mut startup = startup_snapshot(dir.path());
         startup.active_session_ref = runtime.session_id().to_string();
         startup.root_agent_session_id = runtime.agent_session_id().to_string();
-        let session = CodeAgentSession::new(
-            runtime,
-            None,
-            Arc::new(NoopSubagentExecutor),
-            store,
-            Vec::new(),
-            ApprovalCoordinator::default(),
-            UserInputCoordinator::default(),
-            SessionEventStream::default(),
-            startup,
-            Vec::<Skill>::new(),
-        );
+        let session = build_session(runtime, Arc::new(NoopSubagentExecutor), store, startup);
 
         let prompt_id = session.queue_prompt_command("draft").await.unwrap();
         let steer_id = session
@@ -1491,18 +1648,7 @@ mod tests {
         let mut startup = startup_snapshot(dir.path());
         startup.active_session_ref = runtime.session_id().to_string();
         startup.root_agent_session_id = runtime.agent_session_id().to_string();
-        let session = CodeAgentSession::new(
-            runtime,
-            None,
-            Arc::new(NoopSubagentExecutor),
-            store,
-            Vec::new(),
-            ApprovalCoordinator::default(),
-            UserInputCoordinator::default(),
-            SessionEventStream::default(),
-            startup,
-            Vec::<Skill>::new(),
-        );
+        let session = build_session(runtime, Arc::new(NoopSubagentExecutor), store, startup);
 
         let prompt_id = session
             .queue_prompt_command("follow-up prompt")
@@ -1551,17 +1697,11 @@ mod tests {
         let mut startup = startup_snapshot(dir.path());
         startup.active_session_ref = original_session_ref.clone();
         startup.root_agent_session_id = original_agent_session_ref.clone();
-        let session = CodeAgentSession::new(
+        let session = build_session(
             runtime,
-            None,
             Arc::new(NoopSubagentExecutor),
             store.clone(),
-            Vec::new(),
-            ApprovalCoordinator::default(),
-            UserInputCoordinator::default(),
-            SessionEventStream::default(),
             startup,
-            Vec::<Skill>::new(),
         );
 
         session
@@ -1620,18 +1760,7 @@ mod tests {
                 ..sample_handle("task-a", "agent-a", AgentStatus::Queued)
             },
         ]));
-        let session = CodeAgentSession::new(
-            runtime,
-            None,
-            executor,
-            store,
-            Vec::new(),
-            ApprovalCoordinator::default(),
-            UserInputCoordinator::default(),
-            SessionEventStream::default(),
-            startup_snapshot(dir.path()),
-            Vec::<Skill>::new(),
-        );
+        let session = build_session(runtime, executor, store, startup_snapshot(dir.path()));
 
         let live_tasks = session.list_live_tasks().await.unwrap();
 
@@ -1657,18 +1786,7 @@ mod tests {
         let active_session_ref = startup.active_session_ref.clone();
         let active_agent_session_ref = startup.root_agent_session_id.clone();
         let executor = Arc::new(RecordingSubagentExecutor::new(Vec::new()));
-        let session = CodeAgentSession::new(
-            runtime,
-            None,
-            executor.clone(),
-            store,
-            Vec::new(),
-            ApprovalCoordinator::default(),
-            UserInputCoordinator::default(),
-            SessionEventStream::default(),
-            startup,
-            Vec::<Skill>::new(),
-        );
+        let session = build_session(runtime, executor.clone(), store, startup);
 
         let outcome = session
             .spawn_live_task("reviewer", "inspect the failing tests")
@@ -1714,20 +1832,14 @@ mod tests {
                 ..Default::default()
             })
             .build();
-        let session = CodeAgentSession::new(
+        let session = build_session(
             runtime,
-            None,
             Arc::new(RecordingSubagentExecutor::new(vec![AgentHandle {
                 role: "editor".to_string(),
                 ..sample_handle("task-cancel", "agent-cancel", AgentStatus::Running)
             }])),
             store,
-            Vec::new(),
-            ApprovalCoordinator::default(),
-            UserInputCoordinator::default(),
-            SessionEventStream::default(),
             startup_snapshot(dir.path()),
-            Vec::<Skill>::new(),
         );
 
         let outcome = session
@@ -1757,17 +1869,11 @@ mod tests {
             "agent-send",
             AgentStatus::Running,
         )]));
-        let session = CodeAgentSession::new(
+        let session = build_session(
             runtime,
-            None,
             executor.clone(),
             store,
-            Vec::new(),
-            ApprovalCoordinator::default(),
-            UserInputCoordinator::default(),
-            SessionEventStream::default(),
             startup_snapshot(dir.path()),
-            Vec::<Skill>::new(),
         );
 
         let outcome = session
@@ -1811,9 +1917,8 @@ mod tests {
                 structured_payload: None,
             }],
         };
-        let session = CodeAgentSession::new(
+        let session = build_session(
             runtime,
-            None,
             Arc::new(RecordingSubagentExecutor::with_wait_response(
                 vec![sample_handle(
                     "task-wait",
@@ -1823,12 +1928,7 @@ mod tests {
                 wait_response,
             )),
             store,
-            Vec::new(),
-            ApprovalCoordinator::default(),
-            UserInputCoordinator::default(),
-            SessionEventStream::default(),
             startup_snapshot(dir.path()),
-            Vec::<Skill>::new(),
         );
 
         let outcome = session.wait_live_task("task-wait").await.unwrap();

@@ -17,6 +17,10 @@ The short version is:
 - approval answers "may this action be attempted?"
 - sandbox answers "what can this action technically touch even if it is approved?"
 - host escape answers "who can widen that boundary, and through which control plane?"
+- `request_permissions` grants extra read, write, or network access on top of
+  the current base sandbox for the rest of the turn or session
+- `/permissions` changes the session base sandbox mode itself (`default` vs
+  `danger-full-access`)
 
 Those mechanisms solve different problems and stay separate.
 
@@ -70,6 +74,21 @@ The host injects a typed `SandboxPolicy` into each local child-process launch.
 `SandboxScope` is the host/tool-facing input used to derive recommended policies
 from workspace layout. This keeps the sandbox API independent from
 `ToolExecutionContext`.
+
+## Session Controls
+
+The host now exposes two distinct permission control planes:
+
+- `request_permissions` is model-visible workflow state. It widens the current
+  effective sandbox additively and can be granted for a turn or the whole
+  session.
+- `/permissions` is operator-visible session state. It swaps the base sandbox
+  mode between the configured default policy and `danger-full-access`.
+
+That split matters because the operator may intentionally widen the whole
+session even when the model never requested a narrower additive grant, and a
+model-granted permission should not silently rewrite the host's configured base
+mode.
 
 ## Platform Backends
 

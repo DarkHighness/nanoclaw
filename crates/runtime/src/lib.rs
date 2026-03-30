@@ -16,6 +16,7 @@ mod hooks;
 mod host_runtime;
 mod loop_detection;
 mod observer;
+mod permissions;
 mod runtime;
 mod session;
 #[cfg(feature = "agentic-tools")]
@@ -36,6 +37,7 @@ pub use hooks::*;
 pub use host_runtime::*;
 pub use loop_detection::*;
 pub use observer::*;
+pub use permissions::*;
 pub use runtime::*;
 pub use session::*;
 #[cfg(feature = "agentic-tools")]

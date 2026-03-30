@@ -199,7 +199,11 @@ not count here because they are not currently in the live registry.
   `task`, `task_batch`, `agent_spawn`, `agent_send`, `agent_wait`,
   `agent_list`, `agent_cancel`
 - state:
-  `update_plan`
+  `update_plan`, `request_user_input`, `request_permissions`
+
+The `code-agent` host also now exposes a Codex-style `/permissions` control
+plane command that switches the session base sandbox mode between `default` and
+`danger-full-access`.
 
 This is already stronger than Codex on model-visible local file tooling, but it
 is still weaker than Codex and OpenCode on protocol shape and extension
@@ -225,7 +229,6 @@ These are the highest-signal missing capabilities today:
 - a first-class multi-kind tool spec with explicit freeform and native tool
   variants
 - a grammar-based `apply_patch`-style freeform tool surface
-- a model-visible approval or permission-request tool contract
 - `tool_search` and `tool_suggest` style deferred tool discovery
 - plugin-defined custom tool loading
 - image or binary-view tool surfaces comparable to `view_image`
@@ -254,6 +257,10 @@ industrial baseline:
   yet normalized to one clear task/session/close/resume model
 - tool exposure is not yet model-aware in the OpenCode sense, where one model
   family may see `apply_patch` while another sees `edit` and `write`
+- `request_permissions` and `/permissions` now cover the two Codex-like
+  permission control planes, but non-bash host subprocess surfaces are still
+  partially decided at boot instead of being re-evaluated uniformly from the
+  active session permission mode
 
 ## Target Protocol
 
