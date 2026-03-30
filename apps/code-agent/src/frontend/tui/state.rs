@@ -1,4 +1,5 @@
 use crate::backend::StartupDiagnosticsSnapshot;
+use crate::statusline::StatusLineConfig;
 use agent::types::TokenLedgerSnapshot;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -8,6 +9,7 @@ use std::time::Instant;
 #[derive(Clone, Debug, Default)]
 pub(crate) struct GitSnapshot {
     pub(crate) available: bool,
+    pub(crate) repo_name: String,
     pub(crate) branch: String,
     pub(crate) staged: usize,
     pub(crate) modified: usize,
@@ -21,6 +23,7 @@ pub(crate) struct SessionSummary {
     pub(crate) root_agent_session_id: String,
     pub(crate) provider_label: String,
     pub(crate) model: String,
+    pub(crate) model_reasoning_effort: Option<String>,
     pub(crate) workspace_root: PathBuf,
     pub(crate) git: GitSnapshot,
     pub(crate) tool_names: Vec<String>,
@@ -32,6 +35,7 @@ pub(crate) struct SessionSummary {
     pub(crate) startup_diagnostics: StartupDiagnosticsSnapshot,
     pub(crate) queued_commands: usize,
     pub(crate) token_ledger: TokenLedgerSnapshot,
+    pub(crate) statusline: StatusLineConfig,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -206,6 +210,7 @@ pub(crate) fn git_snapshot(
         .next()
         .map(|line| line.trim_start_matches("## ").to_string())
         .unwrap_or_else(|| "unknown".to_string());
+    let repo_name = git_repo_name(workspace_root).unwrap_or_default();
     let mut staged = 0;
     let mut modified = 0;
     let mut untracked = 0;
@@ -224,11 +229,30 @@ pub(crate) fn git_snapshot(
     }
     GitSnapshot {
         available: true,
+        repo_name,
         branch,
         staged,
         modified,
         untracked,
     }
+}
+
+fn git_repo_name(workspace_root: &Path) -> Option<String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(workspace_root)
+        .arg("rev-parse")
+        .arg("--show-toplevel")
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let root = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    Path::new(&root)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .map(str::to_string)
 }
 
 #[cfg(test)]
@@ -242,6 +266,7 @@ mod tests {
         let snapshot = git_snapshot(dir.path(), false);
 
         assert!(!snapshot.available);
+        assert!(snapshot.repo_name.is_empty());
         assert!(snapshot.branch.is_empty());
     }
 }

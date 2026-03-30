@@ -1,16 +1,16 @@
 mod chrome;
 mod picker;
+mod statusline;
 mod theme;
+mod view;
 mod welcome;
 
 use super::approval::ApprovalPrompt;
 use super::commands::slash_command_hint;
 use super::state::{MainPaneMode, TuiState, preview_text};
-use crate::backend::preview_id;
 use chrome::{
     approval_band_height, approval_preview_lines, build_approval_text, build_side_rail_lines,
-    format_footer_context, render_approval_band, render_composer, render_status_line,
-    should_render_side_rail, side_rail_width, status_color,
+    render_approval_band, render_composer, should_render_side_rail, side_rail_width,
 };
 use picker::{build_command_hint_text, command_hint_height, render_command_hint_band};
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Margin, Position, Rect};
@@ -20,8 +20,10 @@ use ratatui::widgets::{Block, Paragraph, Wrap};
 use ratatui_core::layout::Alignment as CoreAlignment;
 use ratatui_core::style::{Color as CoreColor, Modifier as CoreModifier, Style as CoreStyle};
 use ratatui_core::text::{Line as CoreLine, Span as CoreSpan};
+use statusline::{render_status_line, status_color};
 use theme::*;
 use tui_markdown::{Options as MarkdownOptions, from_str_with_options};
+use view::{build_inspector_text, should_render_view_title};
 use welcome::build_welcome_lines;
 
 pub(crate) fn render(
@@ -1087,354 +1089,6 @@ fn progress_marker(state: &TuiState) -> &'static str {
     }
 }
 
-fn build_key_value_text(lines: &[String]) -> Text<'static> {
-    let mut rendered = Vec::new();
-    for line in lines {
-        if let Some(title) = line.strip_prefix("## ") {
-            if !rendered.is_empty() {
-                rendered.push(Line::raw(""));
-            }
-            rendered.push(Line::from(Span::styled(
-                title.to_string(),
-                Style::default().fg(HEADER).add_modifier(Modifier::BOLD),
-            )));
-            continue;
-        }
-        if is_shell_summary_line(line) {
-            rendered.extend(render_shell_summary_line(line));
-            continue;
-        }
-        if let Some((key, value)) = line.split_once(':') {
-            rendered.push(Line::from(vec![
-                Span::styled(
-                    format!("{key}:"),
-                    Style::default().fg(MUTED).add_modifier(Modifier::BOLD),
-                ),
-                Span::raw(" "),
-                Span::styled(
-                    value.trim().to_string(),
-                    value_style(key.trim(), value.trim()),
-                ),
-            ]));
-        } else if let Some((marker, accent, body)) = parse_prefixed_entry(line) {
-            let kind = transcript_entry_kind(marker, body);
-            rendered.push(Line::from(vec![
-                Span::styled(
-                    marker,
-                    Style::default().fg(accent).add_modifier(Modifier::BOLD),
-                ),
-                Span::raw(" "),
-                Span::styled(body.to_string(), transcript_body_style(marker, kind, body)),
-            ]));
-        } else if let Some(detail) = line.strip_prefix("  └ ") {
-            rendered.push(Line::from(vec![
-                Span::styled("  └ ", Style::default().fg(SUBTLE)),
-                Span::styled(detail.to_string(), Style::default().fg(MUTED)),
-            ]));
-        } else if let Some(detail) = line.strip_prefix("    ") {
-            rendered.push(Line::from(vec![
-                Span::raw("    "),
-                Span::styled(detail.to_string(), Style::default().fg(MUTED)),
-            ]));
-        } else if let Some(rest) = line.strip_prefix("  ") {
-            rendered.push(Line::from(vec![
-                Span::raw("  "),
-                Span::styled(rest.to_string(), Style::default().fg(TEXT)),
-            ]));
-        } else if line.starts_with('/') {
-            rendered.push(Line::from(Span::styled(
-                line.to_string(),
-                Style::default().fg(USER).add_modifier(Modifier::BOLD),
-            )));
-        } else {
-            rendered.push(Line::from(Span::styled(
-                line.to_string(),
-                plain_text_style(line),
-            )));
-        }
-    }
-    Text::from(rendered)
-}
-
-fn is_shell_summary_line(line: &str) -> bool {
-    parse_prefixed_entry(line).is_some()
-        || line.starts_with("  └ ")
-        || line.starts_with("    ")
-        || line.starts_with("- ")
-        || line.starts_with("* ")
-}
-
-fn render_shell_summary_line(line: &str) -> Vec<Line<'static>> {
-    if parse_prefixed_entry(line).is_some() {
-        format_transcript_entry(line)
-    } else {
-        vec![render_transcript_body_line(
-            line,
-            "•",
-            TranscriptEntryKind::ShellSummary,
-            false,
-            false,
-        )]
-    }
-}
-
-fn build_inspector_text(title: &str, lines: &[String]) -> Text<'static> {
-    if is_command_palette_title(title) {
-        build_command_palette_text(lines)
-    } else if is_collection_inspector(title) {
-        build_collection_text(title, lines)
-    } else {
-        build_key_value_text(lines)
-    }
-}
-
-fn build_command_palette_text(lines: &[String]) -> Text<'static> {
-    let mut rendered = Vec::new();
-    for line in lines {
-        if let Some(section) = line.strip_prefix("## ") {
-            if !rendered.is_empty() {
-                rendered.push(Line::raw(""));
-            }
-            rendered.push(Line::from(Span::styled(
-                section.to_string(),
-                Style::default().fg(MUTED),
-            )));
-            continue;
-        }
-        if line.starts_with("No ") {
-            rendered.push(Line::from(Span::styled(
-                line.to_string(),
-                Style::default().fg(SUBTLE),
-            )));
-            continue;
-        }
-        if let Some((command, summary)) = line.split_once("  ") {
-            rendered.push(Line::from(vec![
-                Span::styled("›", Style::default().fg(USER).add_modifier(Modifier::BOLD)),
-                Span::raw(" "),
-                Span::styled(
-                    command.to_string(),
-                    Style::default().fg(HEADER).add_modifier(Modifier::BOLD),
-                ),
-                Span::styled("  ", Style::default().fg(SUBTLE)),
-                Span::styled(summary.to_string(), Style::default().fg(MUTED)),
-            ]));
-        } else {
-            rendered.push(Line::from(Span::styled(
-                line.to_string(),
-                Style::default().fg(TEXT),
-            )));
-        }
-    }
-    Text::from(rendered)
-}
-
-fn build_collection_text(title: &str, lines: &[String]) -> Text<'static> {
-    let accent = inspector_accent(title);
-    let mut rendered = Vec::new();
-    for line in lines {
-        if let Some(section) = line.strip_prefix("## ") {
-            rendered.push(Line::from(Span::styled(
-                section.to_string(),
-                Style::default().fg(MUTED),
-            )));
-            continue;
-        }
-        if line.starts_with("No ") || line.starts_with("no ") {
-            rendered.push(Line::from(Span::styled(
-                line.to_string(),
-                Style::default().fg(SUBTLE),
-            )));
-            continue;
-        }
-        if is_shell_summary_block(line) {
-            rendered.extend(render_collection_summary_block(line, accent));
-            continue;
-        }
-        let (primary, secondary) = split_list_entry(line);
-        rendered.push(collection_line(primary, secondary, accent));
-    }
-    Text::from(rendered)
-}
-
-fn render_collection_summary_block(entry: &str, accent: Color) -> Vec<Line<'static>> {
-    let mut rendered = Vec::new();
-    for (index, raw_line) in entry.lines().enumerate() {
-        if index == 0
-            && let Some((_, _, body)) = parse_prefixed_entry(raw_line)
-        {
-            rendered.push(Line::from(vec![
-                Span::styled(
-                    "›",
-                    Style::default().fg(accent).add_modifier(Modifier::BOLD),
-                ),
-                Span::raw(" "),
-                Span::styled(
-                    body.to_string(),
-                    Style::default().fg(accent).add_modifier(Modifier::BOLD),
-                ),
-            ]));
-            continue;
-        }
-        if let Some(detail) = raw_line.strip_prefix("  └ ") {
-            rendered.push(Line::from(vec![
-                Span::styled("  ", Style::default().fg(SUBTLE)),
-                Span::styled(detail.to_string(), Style::default().fg(MUTED)),
-            ]));
-            continue;
-        }
-        if let Some(detail) = raw_line.strip_prefix("    ") {
-            rendered.push(Line::from(vec![
-                Span::styled("  ", Style::default().fg(SUBTLE)),
-                Span::styled(detail.to_string(), Style::default().fg(SUBTLE)),
-            ]));
-            continue;
-        }
-        rendered.extend(render_shell_summary_line(raw_line));
-    }
-    rendered
-}
-
-fn collection_line(primary: &str, secondary: Option<&str>, accent: Color) -> Line<'static> {
-    let mut spans = vec![
-        Span::styled("-", Style::default().fg(MUTED)),
-        Span::raw(" "),
-        Span::styled(
-            primary.to_string(),
-            Style::default().fg(accent).add_modifier(Modifier::BOLD),
-        ),
-    ];
-    if let Some(secondary) = secondary
-        && !secondary.trim().is_empty()
-    {
-        spans.push(Span::raw("  "));
-        spans.push(Span::styled(
-            secondary.trim().to_string(),
-            Style::default().fg(MUTED),
-        ));
-    }
-    Line::from(spans)
-}
-
-fn split_list_entry(line: &str) -> (&str, Option<&str>) {
-    if let Some((primary, secondary)) = line.split_once("  ") {
-        (primary.trim(), Some(secondary))
-    } else {
-        (line.trim(), None)
-    }
-}
-
-fn is_collection_inspector(title: &str) -> bool {
-    matches!(
-        title,
-        "Tool Catalog"
-            | "Skill Catalog"
-            | "MCP"
-            | "Prompts"
-            | "Resources"
-            | "Live Tasks"
-            | "Agent Sessions"
-            | "Tasks"
-            | "Sessions"
-            | "Session Search"
-    )
-}
-
-fn is_shell_summary_block(entry: &str) -> bool {
-    entry
-        .lines()
-        .all(|line| line.trim().is_empty() || is_shell_summary_line(line))
-}
-
-fn is_command_palette_title(title: &str) -> bool {
-    title.starts_with("Command Palette")
-}
-
-fn should_render_view_title(title: &str, lines: &[String]) -> bool {
-    let Some(first_non_empty) = lines.iter().find(|line| !line.trim().is_empty()) else {
-        return true;
-    };
-    if let Some(section) = first_non_empty.strip_prefix("## ") {
-        return section != title;
-    }
-    !is_command_palette_title(title)
-}
-
-fn inspector_accent(title: &str) -> Color {
-    match title {
-        "Live Tasks" => USER,
-        "Sessions" | "Session Search" | "Agent Sessions" | "Tasks" => ASSISTANT,
-        "Command Palette" => HEADER,
-        _ => BORDER_ACTIVE,
-    }
-}
-
-fn value_style(key: &str, value: &str) -> Style {
-    if key.contains("warning") {
-        Style::default().fg(WARN)
-    } else if key.contains("status") {
-        if value.contains("completed") || value.contains("ready") {
-            Style::default().fg(ASSISTANT)
-        } else if value.contains("cancel") || value.contains("failed") {
-            Style::default().fg(ERROR)
-        } else {
-            Style::default().fg(WARN)
-        }
-    } else if key.contains("action") {
-        if value.contains("sent")
-            || value.contains("cancelled")
-            || value.contains("reattached")
-            || value.contains("started")
-        {
-            Style::default().fg(ASSISTANT)
-        } else {
-            Style::default().fg(WARN)
-        }
-    } else if key.contains("sandbox") {
-        Style::default().fg(USER)
-    } else if key.contains("dirty") {
-        if value.contains("modified 0")
-            && value.contains("untracked 0")
-            && value.contains("staged 0")
-        {
-            Style::default().fg(ASSISTANT)
-        } else {
-            Style::default().fg(WARN)
-        }
-    } else if key.contains("queue") {
-        if value.starts_with('0') {
-            Style::default().fg(ASSISTANT)
-        } else {
-            Style::default().fg(WARN)
-        }
-    } else if key.contains("active ref")
-        || key.contains("runtime id")
-        || key.contains("session ref")
-        || key.contains("agent id")
-        || key.contains("task id")
-    {
-        Style::default().fg(USER)
-    } else if key.contains("summary") {
-        Style::default().fg(HEADER)
-    } else {
-        Style::default().fg(TEXT)
-    }
-}
-
-fn plain_text_style(line: &str) -> Style {
-    if line.starts_with("Use /") {
-        Style::default().fg(MUTED)
-    } else if line.starts_with("warning:") {
-        Style::default().fg(WARN)
-    } else if line.starts_with("diagnostic:") {
-        Style::default().fg(USER)
-    } else if line.starts_with("No ") || line.starts_with("no ") {
-        Style::default().fg(SUBTLE)
-    } else {
-        Style::default().fg(TEXT)
-    }
-}
-
 fn summary_color(line: &str) -> Color {
     let lower = line.to_ascii_lowercase();
     if lower.contains("failed")
@@ -1475,10 +1129,11 @@ fn clamp_scroll(requested: u16, content_lines: usize, viewport_height: u16) -> u
 
 #[cfg(test)]
 mod tests {
+    use super::statusline::format_footer_context;
+    use super::view::{build_collection_text, build_command_palette_text, build_key_value_text};
     use super::{
-        approval_preview_lines, build_approval_text, build_collection_text,
-        build_command_hint_text, build_command_palette_text, build_key_value_text,
-        build_side_rail_lines, build_transcript_lines, build_welcome_lines, format_footer_context,
+        approval_preview_lines, build_approval_text, build_command_hint_text,
+        build_side_rail_lines, build_transcript_lines, build_welcome_lines,
         should_render_side_rail, should_render_view_title,
     };
     use crate::frontend::tui::approval::ApprovalPrompt;
@@ -2211,12 +1866,18 @@ mod tests {
     }
 
     #[test]
-    fn footer_context_prefers_workspace_and_session_ref() {
+    fn footer_context_renders_configured_status_items() {
         let mut state = TuiState::default();
         state.status = "Ready".to_string();
         state.session.workspace_name = "nanoclaw".to_string();
         state.session.model = "gpt-5.4".to_string();
+        state.session.model_reasoning_effort = Some("high".to_string());
         state.session.active_session_ref = "session_123456".to_string();
+        state.session.git.available = true;
+        state.session.git.repo_name = "nanoclaw-repo".to_string();
+        state.session.git.branch = "main".to_string();
+        state.session.statusline.clock = false;
+        state.session.statusline.session = true;
 
         let footer = format_footer_context(&state);
 
@@ -2237,7 +1898,43 @@ mod tests {
             footer
                 .spans
                 .iter()
-                .any(|span| { span.content.as_ref().contains("details off") })
+                .any(|span| { span.content.as_ref().contains("gpt-5.4 (high)") })
+        );
+        assert!(
+            footer
+                .spans
+                .iter()
+                .any(|span| { span.content.as_ref().contains("nanoclaw-repo") })
+        );
+        assert!(
+            footer
+                .spans
+                .iter()
+                .any(|span| { span.content.as_ref().contains("main") })
+        );
+        assert!(
+            footer
+                .spans
+                .iter()
+                .any(|span| { span.content.as_ref().contains("ctx --") })
+        );
+        assert!(
+            footer
+                .spans
+                .iter()
+                .any(|span| { span.content.as_ref().contains("in 0") })
+        );
+        assert!(
+            footer
+                .spans
+                .iter()
+                .any(|span| { span.content.as_ref().contains("out 0") })
+        );
+        assert!(
+            footer
+                .spans
+                .iter()
+                .any(|span| { span.content.as_ref().contains("queue 0") })
         );
         assert!(
             footer

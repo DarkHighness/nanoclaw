@@ -1,25 +1,13 @@
 use super::super::approval::ApprovalPrompt;
 use super::super::state::{MainPaneMode, TodoEntry, TuiState, preview_text};
+use super::code_span;
 use super::theme::{
     ACCENT, ASSISTANT, BOTTOM_PANE_BG, ERROR, FOOTER_BG, HEADER, MUTED, SUBTLE, TEXT, USER, WARN,
 };
-use super::{code_span, preview_id};
 use ratatui::layout::{Margin, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Paragraph, Wrap};
-
-pub(super) fn render_status_line(frame: &mut ratatui::Frame<'_>, area: Rect, state: &TuiState) {
-    frame.render_widget(Block::default().style(Style::default().bg(FOOTER_BG)), area);
-    let inner = area.inner(Margin {
-        vertical: 0,
-        horizontal: 1,
-    });
-    let status = Paragraph::new(format_footer_context(state))
-        .style(Style::default().fg(TEXT).bg(FOOTER_BG))
-        .wrap(Wrap { trim: true });
-    frame.render_widget(status, inner);
-}
 
 pub(super) fn render_composer(frame: &mut ratatui::Frame<'_>, area: Rect, state: &TuiState) {
     frame.render_widget(Block::default().style(Style::default().bg(FOOTER_BG)), area);
@@ -187,79 +175,6 @@ pub(super) fn build_side_rail_lines(state: &TuiState) -> Vec<Line<'static>> {
     lines
 }
 
-pub(super) fn format_footer_context(state: &TuiState) -> Line<'static> {
-    let status = if state.status.is_empty() {
-        "Ready"
-    } else {
-        state.status.as_str()
-    };
-    let mut spans = vec![
-        Span::styled(
-            if state.turn_running { "●" } else { "•" },
-            Style::default()
-                .fg(status_color(status))
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::raw(" "),
-        Span::styled(
-            preview_text(status, 28),
-            Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(" · ", Style::default().fg(SUBTLE)),
-        Span::styled(
-            state.session.workspace_name.clone(),
-            Style::default().fg(MUTED),
-        ),
-        Span::styled(" · ", Style::default().fg(SUBTLE)),
-        Span::styled(state.session.model.clone(), Style::default().fg(ACCENT)),
-        Span::styled(" · ", Style::default().fg(SUBTLE)),
-        Span::styled(
-            if state.show_tool_details {
-                "details on"
-            } else {
-                "details off"
-            },
-            Style::default().fg(MUTED),
-        ),
-    ];
-
-    if state.session.queued_commands > 0 {
-        spans.push(Span::styled(" · ", Style::default().fg(SUBTLE)));
-        spans.push(Span::styled(
-            format!("{} queued", state.session.queued_commands),
-            Style::default().fg(WARN),
-        ));
-    }
-
-    if state.turn_running {
-        let elapsed_secs = state
-            .turn_started_at
-            .map(|started| started.elapsed().as_secs())
-            .unwrap_or(0);
-        spans.push(Span::styled(" · ", Style::default().fg(SUBTLE)));
-        spans.push(Span::styled(
-            format!("{elapsed_secs}s"),
-            Style::default().fg(MUTED),
-        ));
-    }
-
-    if state.session.git.available {
-        spans.push(Span::styled(" · ", Style::default().fg(SUBTLE)));
-        spans.push(Span::styled(
-            state.session.git.branch.clone(),
-            Style::default().fg(MUTED),
-        ));
-    }
-
-    spans.push(Span::styled(" · ", Style::default().fg(SUBTLE)));
-    spans.push(Span::styled(
-        preview_id(&state.session.active_session_ref),
-        Style::default().fg(MUTED),
-    ));
-
-    Line::from(spans)
-}
-
 fn approval_section_label(label: &str) -> Line<'static> {
     Line::from(vec![Span::styled(
         label.to_string(),
@@ -416,17 +331,4 @@ fn render_todo_line(item: &TodoEntry) -> Line<'static> {
             },
         ),
     ])
-}
-
-pub(super) fn status_color(status: &str) -> Color {
-    let lower = status.to_ascii_lowercase();
-    if lower.contains("error") || lower.contains("failed") || lower.contains("denied") {
-        ERROR
-    } else if lower.contains("approval") || lower.contains("running") || lower.contains("waiting") {
-        WARN
-    } else if lower.contains("ready") || lower.contains("complete") || lower.contains("approved") {
-        ASSISTANT
-    } else {
-        USER
-    }
 }

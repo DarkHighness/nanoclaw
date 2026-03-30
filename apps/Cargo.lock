@@ -840,6 +840,7 @@ dependencies = [
  "agent-env",
  "anyhow",
  "async-trait",
+ "chrono",
  "clap",
  "crossterm 0.29.0",
  "futures",

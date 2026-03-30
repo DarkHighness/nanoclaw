@@ -10,6 +10,7 @@ use crate::backend::{
     SessionEventObserver, SessionEventStream, StartupDiagnosticsSnapshot, list_mcp_prompts,
     list_mcp_resources, list_mcp_servers, load_mcp_prompt, load_mcp_resource,
 };
+use crate::statusline::StatusLineConfig;
 use agent::mcp::ConnectedMcpServer;
 use agent::runtime::{Result as RuntimeResult, RunTurnOutcome};
 use agent::tools::{SubagentExecutor, SubagentParentContext};
@@ -36,6 +37,7 @@ pub(crate) struct SessionStartupSnapshot {
     pub(crate) root_agent_session_id: String,
     pub(crate) provider_label: String,
     pub(crate) model: String,
+    pub(crate) model_reasoning_effort: Option<String>,
     pub(crate) tool_names: Vec<String>,
     pub(crate) store_label: String,
     pub(crate) store_warning: Option<String>,
@@ -43,6 +45,7 @@ pub(crate) struct SessionStartupSnapshot {
     pub(crate) sandbox_summary: String,
     pub(crate) host_process_surfaces_allowed: bool,
     pub(crate) startup_diagnostics: StartupDiagnosticsSnapshot,
+    pub(crate) statusline: StatusLineConfig,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -757,6 +760,7 @@ mod tests {
         CodeAgentSession, SessionOperation, SessionOperationAction, SessionStartupSnapshot,
     };
     use crate::backend::{ApprovalCoordinator, SessionEventStream, StartupDiagnosticsSnapshot};
+    use crate::statusline::StatusLineConfig;
     use agent::runtime::{HookRunner, ModelBackend, Result as RuntimeResult};
     use agent::tools::{
         Result as ToolResult, SubagentExecutor, SubagentParentContext, ToolError,
@@ -987,6 +991,7 @@ mod tests {
             root_agent_session_id: "agent-session-active".to_string(),
             provider_label: "provider".to_string(),
             model: "model".to_string(),
+            model_reasoning_effort: Some("medium".to_string()),
             tool_names: Vec::new(),
             store_label: "memory".to_string(),
             store_warning: None,
@@ -994,6 +999,7 @@ mod tests {
             sandbox_summary: "workspace-write".to_string(),
             host_process_surfaces_allowed: true,
             startup_diagnostics: StartupDiagnosticsSnapshot::default(),
+            statusline: StatusLineConfig::default(),
         }
     }
 

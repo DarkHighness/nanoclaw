@@ -4,6 +4,7 @@
 //! code-agent-specific LSP helper settings layered on top of the shared core
 //! config surface.
 
+use crate::statusline::StatusLineConfig;
 use agent_env::{EnvMap, EnvVar};
 use anyhow::Result;
 use nanoclaw_config::{CoreConfig, load_optional_app_config};
@@ -30,12 +31,20 @@ pub(crate) struct CodeAgentConfig {
     pub lsp_enabled: bool,
     pub lsp_auto_install: bool,
     pub lsp_install_root: Option<PathBuf>,
+    pub statusline: StatusLineConfig,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default)]
 struct CodeAgentAppConfig {
     lsp: CodeAgentLspConfig,
+    tui: CodeAgentTuiConfig,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
+struct CodeAgentTuiConfig {
+    statusline: StatusLineConfig,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -80,6 +89,7 @@ impl CodeAgentConfig {
                 .install_root
                 .as_deref()
                 .map(|value| resolve_path(workspace_root, value)),
+            statusline: app.tui.statusline,
         })
     }
 }
@@ -123,5 +133,33 @@ mod tests {
         assert!(!config.lsp_enabled);
         assert!(config.lsp_auto_install);
         assert_eq!(config.lsp_install_root, Some(dir.path().join(".cache/lsp")));
+    }
+
+    #[tokio::test]
+    async fn loads_statusline_flags_from_app_config() {
+        let _guard = env_test_lock().lock().unwrap();
+        let dir = tempdir().unwrap();
+        let app_dir = dir.path().join(".nanoclaw/apps");
+        std::fs::create_dir_all(&app_dir).unwrap();
+        std::fs::write(
+            app_dir.join("code-agent.toml"),
+            r#"
+                [tui.statusline]
+                model = false
+                repo = true
+                branch = false
+                clock = false
+                session = true
+            "#,
+        )
+        .unwrap();
+        let env_map = EnvMap::from_workspace_dir(dir.path()).unwrap();
+        let config = CodeAgentConfig::load_from_dir(dir.path(), &env_map).unwrap();
+
+        assert!(!config.statusline.model);
+        assert!(config.statusline.repo);
+        assert!(!config.statusline.branch);
+        assert!(!config.statusline.clock);
+        assert!(config.statusline.session);
     }
 }

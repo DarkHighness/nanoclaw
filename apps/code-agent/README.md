@@ -36,6 +36,12 @@ transcript and read-heavy command views, a Codex-style prompt line, a minimal
 context footer, an inline approval band in the bottom pane, and a more neutral
 dark palette tuned for prompt and slash-command workflows.
 
+The bottom status line is configurable through `.nanoclaw/apps/code-agent.toml`.
+By default it surfaces the current status, full model name plus reasoning
+effort, current directory name, git repository and branch when available,
+context-window usage, cumulative input/output tokens, queued command depth, and
+local time.
+
 One-shot prompt:
 
 ```bash
@@ -59,6 +65,25 @@ The prompt is submitted as the first turn, then the TUI stays open.
 - `CODE_AGENT_LSP_INSTALL_ROOT`: optional override for the managed LSP cache/install directory (defaults to `.nanoclaw/tools/lsp` under the workspace)
 - `OPENAI_API_KEY` / `ANTHROPIC_API_KEY`: provider credentials
 - `OPENAI_BASE_URL` / `ANTHROPIC_BASE_URL`: provider-specific API base URL overrides
+
+Example app-local TUI settings:
+
+```toml
+[tui.statusline]
+status = true
+model = true
+cwd = true
+repo = true
+branch = true
+context_window = true
+input_tokens = true
+output_tokens = true
+queue = true
+clock = true
+session = false
+```
+
+Set any field to `false` to hide it from the bottom status line.
 
 Example:
 

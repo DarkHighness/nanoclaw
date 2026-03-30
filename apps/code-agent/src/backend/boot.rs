@@ -184,6 +184,7 @@ pub(crate) async fn build_session_with_approval_mode(
             root_agent_session_id,
             provider_label: provider_label(&options.primary_profile),
             model: options.primary_profile.model.model.clone(),
+            model_reasoning_effort: options.primary_profile.reasoning_effort.clone(),
             tool_names,
             store_label,
             store_warning,
@@ -191,6 +192,7 @@ pub(crate) async fn build_session_with_approval_mode(
             sandbox_summary,
             host_process_surfaces_allowed,
             startup_diagnostics,
+            statusline: options.statusline.clone(),
         },
         skills,
     ))

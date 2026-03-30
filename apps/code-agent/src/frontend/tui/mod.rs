@@ -1102,6 +1102,7 @@ impl CodeAgentTui {
                 root_agent_session_id: snapshot.root_agent_session_id.clone(),
                 provider_label: snapshot.provider_label.clone(),
                 model: snapshot.model.clone(),
+                model_reasoning_effort: snapshot.model_reasoning_effort.clone(),
                 workspace_root: workspace_root.clone(),
                 git: state::git_snapshot(&workspace_root, snapshot.host_process_surfaces_allowed),
                 tool_names: snapshot.tool_names.clone(),
@@ -1113,6 +1114,7 @@ impl CodeAgentTui {
                 startup_diagnostics: snapshot.startup_diagnostics.clone(),
                 queued_commands: 0,
                 token_ledger: Default::default(),
+                statusline: snapshot.statusline.clone(),
             },
             status: "Ready for your next instruction".to_string(),
             ..TuiState::default()
@@ -1320,6 +1322,7 @@ mod tests {
             root_agent_session_id: "session_123".to_string(),
             provider_label: "openai".to_string(),
             model: "gpt-5.4".to_string(),
+            model_reasoning_effort: Some("high".to_string()),
             workspace_root: PathBuf::from("/workspace"),
             git: Default::default(),
             tool_names: vec!["read".to_string(), "write".to_string()],
@@ -1331,6 +1334,7 @@ mod tests {
             startup_diagnostics: Default::default(),
             queued_commands: 0,
             token_ledger: Default::default(),
+            statusline: Default::default(),
         });
 
         assert!(

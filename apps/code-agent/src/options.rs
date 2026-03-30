@@ -1,5 +1,6 @@
 use crate::config::CodeAgentConfig;
 use crate::provider::ensure_api_key_available;
+use crate::statusline::StatusLineConfig;
 use agent_env::EnvMap;
 use anyhow::{Context, Result, bail};
 use nanoclaw_config::{CoreConfig, PluginsConfig, ResolvedAgentProfile, ResolvedInternalProfile};
@@ -23,6 +24,7 @@ pub(crate) struct AppOptions {
     pub(crate) lsp_enabled: bool,
     pub(crate) lsp_auto_install: bool,
     pub(crate) lsp_install_root: Option<PathBuf>,
+    pub(crate) statusline: StatusLineConfig,
     pub(crate) one_shot_prompt: Option<String>,
 }
 
@@ -111,6 +113,7 @@ impl AppOptions {
             lsp_enabled,
             lsp_auto_install,
             lsp_install_root,
+            statusline: workspace_config.statusline,
             one_shot_prompt,
         })
     }

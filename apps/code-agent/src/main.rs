@@ -3,6 +3,7 @@ mod config;
 mod frontend;
 mod options;
 mod provider;
+mod statusline;
 
 use crate::backend::{
     SandboxFallbackNotice, SessionApprovalMode, build_sandbox_fallback_notice, build_session,
