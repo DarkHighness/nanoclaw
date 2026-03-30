@@ -821,6 +821,68 @@ fn transcript_collapses_older_pending_controls_into_a_summary_line() {
 }
 
 #[test]
+fn transcript_keeps_an_older_editing_pending_control_visible() {
+    let mut state = TuiState {
+        main_pane: MainPaneMode::Transcript,
+        turn_running: true,
+        status: "Working".to_string(),
+        ..TuiState::default()
+    };
+    state.pending_controls = vec![
+        PendingControlSummary {
+            id: "cmd_1".to_string(),
+            kind: PendingControlKind::Prompt,
+            preview: "rewrite the summary".to_string(),
+            reason: None,
+        },
+        PendingControlSummary {
+            id: "cmd_2".to_string(),
+            kind: PendingControlKind::Prompt,
+            preview: "second".to_string(),
+            reason: None,
+        },
+        PendingControlSummary {
+            id: "cmd_3".to_string(),
+            kind: PendingControlKind::Steer,
+            preview: "latest steer".to_string(),
+            reason: Some("manual_command".to_string()),
+        },
+    ];
+    state.editing_pending_control = Some(crate::frontend::tui::state::PendingControlEditorState {
+        id: "cmd_1".to_string(),
+        kind: PendingControlKind::Prompt,
+    });
+
+    let rendered = build_transcript_lines(&state);
+
+    assert!(
+        rendered
+            .iter()
+            .any(|line| line_text_for(line).contains("editing queued prompt"))
+    );
+    assert!(
+        rendered
+            .iter()
+            .any(|line| line_text_for(line).contains("rewrite the summary"))
+    );
+    assert!(
+        rendered
+            .iter()
+            .any(|line| line_text_for(line).contains("latest pending steer"))
+    );
+    assert!(
+        rendered
+            .iter()
+            .any(|line| line_text_for(line).contains("latest steer"))
+    );
+    assert!(
+        rendered
+            .iter()
+            .all(|line| !line_text_for(line).contains("second"))
+    );
+}
+
+#[test]
 fn transcript_renders_markdown_blocks_without_fence_noise() {
     let mut state = TuiState {
         main_pane: MainPaneMode::Transcript,

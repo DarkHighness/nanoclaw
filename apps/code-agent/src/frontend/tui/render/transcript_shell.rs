@@ -387,24 +387,29 @@ struct PendingControlTimelineItem {
     kind: crate::backend::PendingControlKind,
     preview: String,
     reason: Option<String>,
+    editing: bool,
 }
 
 fn render_pending_control_embedded_detail(item: &PendingControlTimelineItem) -> Line<'static> {
-    let (kind_label, kind_color) = pending_control_timeline_kind_label(item.kind);
+    let (kind_label, kind_color) = pending_control_timeline_kind_label(item.kind, item.editing);
     let mut spans = vec![
         transcript_continuation_prefix(TranscriptEntryKind::ShellSummary),
         Span::styled("  └ ", Style::default().fg(SUBTLE)),
-        Span::styled(
+    ];
+    if !item.editing {
+        spans.push(Span::styled(
             format!("{} ", item.relative_label),
             Style::default().fg(MUTED),
-        ),
+        ));
+    }
+    spans.extend([
         Span::styled(
             kind_label,
             Style::default().fg(kind_color).add_modifier(Modifier::BOLD),
         ),
         Span::styled(" · ", Style::default().fg(SUBTLE)),
         Span::styled(item.preview.clone(), Style::default().fg(TEXT)),
-    ];
+    ]);
     if let Some(reason) = item.reason.as_deref() {
         spans.push(Span::styled(" · ", Style::default().fg(SUBTLE)));
         spans.push(Span::styled(reason.to_string(), Style::default().fg(MUTED)));
@@ -413,11 +418,15 @@ fn render_pending_control_embedded_detail(item: &PendingControlTimelineItem) -> 
 }
 
 fn pending_control_timeline_detail_text(item: &PendingControlTimelineItem) -> String {
-    let (kind_label, _) = pending_control_timeline_kind_label(item.kind);
-    let mut detail = format!(
-        "  └ {} {} · {}",
-        item.relative_label, kind_label, item.preview
-    );
+    let (kind_label, _) = pending_control_timeline_kind_label(item.kind, item.editing);
+    let mut detail = if item.editing {
+        format!("  └ {} · {}", kind_label, item.preview)
+    } else {
+        format!(
+            "  └ {} {} · {}",
+            item.relative_label, kind_label, item.preview
+        )
+    };
     if let Some(reason) = item.reason.as_deref() {
         detail.push_str(" · ");
         detail.push_str(reason);
@@ -427,10 +436,13 @@ fn pending_control_timeline_detail_text(item: &PendingControlTimelineItem) -> St
 
 fn pending_control_timeline_kind_label(
     kind: crate::backend::PendingControlKind,
+    editing: bool,
 ) -> (&'static str, Color) {
-    match kind {
-        crate::backend::PendingControlKind::Prompt => ("queued prompt", USER),
-        crate::backend::PendingControlKind::Steer => ("pending steer", ASSISTANT),
+    match (kind, editing) {
+        (crate::backend::PendingControlKind::Prompt, true) => ("editing queued prompt", USER),
+        (crate::backend::PendingControlKind::Steer, true) => ("editing queued steer", ASSISTANT),
+        (crate::backend::PendingControlKind::Prompt, false) => ("queued prompt", USER),
+        (crate::backend::PendingControlKind::Steer, false) => ("pending steer", ASSISTANT),
     }
 }
 
@@ -443,27 +455,38 @@ fn pending_control_timeline(state: &TuiState) -> Option<PendingControlTimeline> 
     // and the embedded tool continuation so both surfaces describe the same
     // runtime-owned queue ordering.
     let total = state.pending_controls.len();
-    let recent_controls = state
-        .pending_controls
-        .iter()
-        .rev()
-        .take(2)
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .collect::<Vec<_>>();
-    let visible_total = recent_controls.len();
+    let mut visible_indices = if total <= 2 {
+        (0..total).collect::<Vec<_>>()
+    } else {
+        vec![total - 2, total - 1]
+    };
+    if let Some(editing) = state.editing_pending_control.as_ref()
+        && let Some(editing_index) = state
+            .pending_controls
+            .iter()
+            .position(|control| control.id == editing.id)
+        && !visible_indices.contains(&editing_index)
+    {
+        // Editing a queued control should keep that exact item visible in the
+        // transcript, even when it is older than the normal "latest two"
+        // summary window. Otherwise the operator loses the connection between
+        // the composer edit state and the runtime-owned pending queue.
+        visible_indices = vec![editing_index, total - 1];
+        visible_indices.sort_unstable();
+    }
 
-    let recent = recent_controls
+    let visible_total = visible_indices.len();
+    let recent = visible_indices
         .into_iter()
         .enumerate()
-        .map(|(index, control)| {
-            let relative_label = if total == 1 {
+        .map(|(index, control_index)| {
+            let control = &state.pending_controls[control_index];
+            let relative_label = if visible_total == 1 {
                 "next"
-            } else if visible_total == 2 && index == 0 {
-                "older"
-            } else {
+            } else if index + 1 == visible_total {
                 "latest"
+            } else {
+                "older"
             };
             PendingControlTimelineItem {
                 relative_label,
@@ -471,6 +494,10 @@ fn pending_control_timeline(state: &TuiState) -> Option<PendingControlTimeline> 
                 preview: preview_text(&control.preview, 72),
                 reason: pending_control_reason_label(control.reason.as_deref())
                     .map(|reason| preview_text(&reason, 28)),
+                editing: state
+                    .editing_pending_control
+                    .as_ref()
+                    .is_some_and(|editing| editing.id == control.id),
             }
         })
         .collect();
