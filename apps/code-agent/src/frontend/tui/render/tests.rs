@@ -572,10 +572,15 @@ fn transcript_merges_pending_controls_into_the_active_tool_timeline_cell() {
             .iter()
             .any(|line| line_text_for(line).contains("latest pending steer"))
     );
+    let queued_prompt_line = rendered
+        .iter()
+        .find(|line| line_text_for(line).contains("  └ older queued prompt"))
+        .expect("expected embedded queued prompt continuation");
     assert!(
-        rendered
+        queued_prompt_line
+            .spans
             .iter()
-            .any(|line| line_text_for(line).contains("  └ older queued prompt"))
+            .any(|span| span.content.as_ref() == "queued prompt")
     );
 }
 
