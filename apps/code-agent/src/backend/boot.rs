@@ -12,7 +12,7 @@ use crate::backend::{
 use crate::options::AppOptions;
 use crate::provider::{
     MutableAgentBackend, agent_backend_capabilities, build_agent_backend, build_internal_backend,
-    build_memory_reasoning_service, build_mutable_agent_backend, provider_label,
+    build_memory_reasoning_service, build_mutable_agent_backend, provider_label, provider_name,
 };
 use agent::mcp::{
     ConnectedMcpServer, McpConnectOptions, McpServerConfig, McpTransportConfig,
@@ -398,7 +398,12 @@ async fn build_runtime(
         subagent_profile_resolver,
     ));
     register_subagent_tools(&mut tools, subagent_executor.clone());
-    let tool_specs = tools.specs();
+    let provider_name = provider_name(&options.primary_profile.model.provider);
+    let tool_specs = tools
+        .specs()
+        .into_iter()
+        .filter(|spec| spec.is_model_visible_for_provider(provider_name))
+        .collect::<Vec<_>>();
     let startup_diagnostics = build_startup_diagnostics_snapshot(
         workspace_root,
         &tool_specs,

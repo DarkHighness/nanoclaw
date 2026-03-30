@@ -229,7 +229,7 @@ pub(crate) fn provider_label(profile: &ResolvedAgentProfile) -> String {
     format!("{} -> {provider}", profile.model.alias)
 }
 
-fn provider_name(provider: &ProviderKind) -> &'static str {
+pub(crate) fn provider_name(provider: &ProviderKind) -> &'static str {
     match provider {
         ProviderKind::OpenAi => "openai",
         ProviderKind::Anthropic => "anthropic",

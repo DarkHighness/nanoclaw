@@ -25,7 +25,7 @@ impl AgentRuntime {
                 .cloned()
                 .collect(),
             messages,
-            tools: self.tool_registry.specs(),
+            tools: self.model_visible_tool_specs(),
             additional_context: self.pending_additional_context.clone(),
             continuation,
             metadata: json!({}),

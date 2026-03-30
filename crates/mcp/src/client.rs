@@ -402,6 +402,7 @@ fn tool_spec_from_rmcp(server_name: &McpServerName, tool: Tool) -> Result<ToolSp
             .unwrap_or_default(),
         kind: ToolKind::Function,
         input_schema: Some(Value::Object((*tool.input_schema).clone())),
+        freeform_format: None,
         output_mode: ToolOutputMode::ContentParts,
         output_schema: tool
             .output_schema

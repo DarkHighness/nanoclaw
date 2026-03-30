@@ -4,8 +4,8 @@ use agent::runtime::{
 };
 use agent::tools::{SandboxBackendStatus, SubagentExecutor};
 use agent::{
-    BashTool, CodeDefinitionsTool, CodeDocumentSymbolsTool, CodeIntelBackend, CodeReferencesTool,
-    CodeSymbolSearchTool, EditTool, GlobTool, GrepTool, JsReplTool, ListTool,
+    ApplyPatchTool, BashTool, CodeDefinitionsTool, CodeDocumentSymbolsTool, CodeIntelBackend,
+    CodeReferencesTool, CodeSymbolSearchTool, EditTool, GlobTool, GrepTool, JsReplTool, ListTool,
     ManagedCodeIntelBackend, ManagedCodeIntelOptions, ManagedPolicyProcessExecutor, PatchTool,
     PlanState, ReadTool, RequestUserInputTool, SandboxPolicy, TaskTool, ToolRegistry,
     UpdatePlanTool, WebFetchTool, WebSearchBackendsTool, WebSearchTool,
@@ -118,11 +118,15 @@ fn build_builtin_tools(
         tools.register(ReadTool::with_file_activity_observer(observer.clone()));
         tools.register(WriteTool::with_file_activity_observer(observer.clone()));
         tools.register(EditTool::with_file_activity_observer(observer.clone()));
+        tools.register(ApplyPatchTool::with_file_activity_observer(
+            observer.clone(),
+        ));
         tools.register(PatchTool::with_file_activity_observer(observer));
     } else {
         tools.register(ReadTool::new());
         tools.register(WriteTool::new());
         tools.register(EditTool::new());
+        tools.register(ApplyPatchTool::new());
         tools.register(PatchTool::new());
     }
     tools.register(GlobTool::new());

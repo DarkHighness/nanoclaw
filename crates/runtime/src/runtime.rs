@@ -99,16 +99,15 @@ impl AgentRuntime {
 
     #[must_use]
     pub fn tool_registry_names(&self) -> Vec<String> {
-        self.tool_registry
-            .names()
+        self.model_visible_tool_specs()
             .into_iter()
-            .map(|name| name.to_string())
+            .map(|spec| spec.name.to_string())
             .collect()
     }
 
     #[must_use]
     pub fn tool_specs(&self) -> Vec<types::ToolSpec> {
-        self.tool_registry.specs()
+        self.model_visible_tool_specs()
     }
 
     #[must_use]
@@ -124,6 +123,15 @@ impl AgentRuntime {
     #[must_use]
     pub fn token_ledger(&self) -> types::TokenLedgerSnapshot {
         self.session.token_ledger.clone()
+    }
+
+    pub(crate) fn model_visible_tool_specs(&self) -> Vec<types::ToolSpec> {
+        let provider_name = self.backend.provider_name();
+        self.tool_registry
+            .specs()
+            .into_iter()
+            .filter(|spec| spec.is_model_visible_for_provider(provider_name))
+            .collect()
     }
 
     pub async fn end_session(&mut self, reason: Option<String>) -> Result<()> {

@@ -9,7 +9,8 @@ pub(super) fn parse_openai_tool_call_item(
     item: &Value,
     tool_origins: &BTreeMap<ToolName, ToolOrigin>,
 ) -> Option<ToolCall> {
-    if item.get("type").and_then(Value::as_str) != Some("function_call") {
+    let item_type = item.get("type").and_then(Value::as_str)?;
+    if !matches!(item_type, "function_call" | "custom_tool_call") {
         return None;
     }
     let tool_name: ToolName = item
@@ -24,14 +25,26 @@ pub(super) fn parse_openai_tool_call_item(
             provider: "openai".to_string(),
         });
     Some(ToolCall {
-        id: ToolCallId::from(item.get("id").and_then(Value::as_str).unwrap_or_default()),
+        id: ToolCallId::from(
+            item.get("id")
+                .and_then(Value::as_str)
+                .or_else(|| item.get("call_id").and_then(Value::as_str))
+                .unwrap_or_default(),
+        ),
         call_id: item
             .get("call_id")
             .and_then(Value::as_str)
             .map(CallId::from)
             .unwrap_or_else(CallId::new),
         tool_name,
-        arguments: parse_openai_arguments(item.get("arguments")),
+        arguments: match item_type {
+            "custom_tool_call" => item
+                .get("input")
+                .and_then(Value::as_str)
+                .map(|input| Value::String(input.to_string()))
+                .unwrap_or_else(|| Value::String(String::new())),
+            _ => parse_openai_arguments(item.get("arguments")),
+        },
         origin,
     })
 }

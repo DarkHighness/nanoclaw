@@ -1,3 +1,4 @@
+mod apply_patch;
 mod edit;
 mod glob;
 mod grep;
@@ -9,6 +10,7 @@ mod read;
 mod text_buffer;
 mod write;
 
+pub use apply_patch::*;
 pub use edit::*;
 pub use glob::*;
 pub use grep::*;

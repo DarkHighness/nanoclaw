@@ -22,6 +22,31 @@ pub enum ToolKind {
     Native,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolFreeformFormatKind {
+    Grammar,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ToolFreeformFormat {
+    #[serde(rename = "type")]
+    pub kind: ToolFreeformFormatKind,
+    pub syntax: String,
+    pub definition: String,
+}
+
+impl ToolFreeformFormat {
+    #[must_use]
+    pub fn grammar(syntax: impl Into<String>, definition: impl Into<String>) -> Self {
+        Self {
+            kind: ToolFreeformFormatKind::Grammar,
+            syntax: syntax.into(),
+            definition: definition.into(),
+        }
+    }
+}
+
 /// Tool names are shared protocol identifiers across registry lookup,
 /// approval policy, provider mapping, and persisted session events.
 /// Keeping them
@@ -120,6 +145,8 @@ pub struct DynamicToolSpec {
     pub name: ToolName,
     pub description: String,
     pub input_schema: Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub freeform_format: Option<ToolFreeformFormat>,
     #[serde(default)]
     pub output_mode: ToolOutputMode,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -147,6 +174,7 @@ impl DynamicToolSpec {
             name: name.into(),
             description: description.into(),
             input_schema,
+            freeform_format: None,
             output_mode: ToolOutputMode::Text,
             output_schema: None,
             defer_loading: false,
@@ -160,6 +188,12 @@ impl DynamicToolSpec {
     #[must_use]
     pub fn with_output_mode(mut self, output_mode: ToolOutputMode) -> Self {
         self.output_mode = output_mode;
+        self
+    }
+
+    #[must_use]
+    pub fn with_freeform_format(mut self, freeform_format: ToolFreeformFormat) -> Self {
+        self.freeform_format = Some(freeform_format);
         self
     }
 
@@ -214,6 +248,9 @@ impl DynamicToolSpec {
         .with_availability(self.availability)
         .with_approval(self.approval)
         .with_defer_loading(self.defer_loading);
+        if let Some(freeform_format) = self.freeform_format {
+            tool = tool.with_freeform_format(freeform_format);
+        }
         if let Some(output_schema) = self.output_schema {
             tool = tool.with_output_schema(output_schema);
         }
@@ -297,6 +334,8 @@ pub struct ToolSpec {
     pub kind: ToolKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input_schema: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub freeform_format: Option<ToolFreeformFormat>,
     pub output_mode: ToolOutputMode,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_schema: Option<Value>,
@@ -330,6 +369,7 @@ impl ToolSpec {
             description: description.into(),
             kind: ToolKind::Function,
             input_schema: Some(input_schema),
+            freeform_format: None,
             output_mode,
             output_schema: None,
             defer_loading: false,
@@ -345,6 +385,39 @@ impl ToolSpec {
     #[must_use]
     pub fn with_output_schema(mut self, output_schema: Value) -> Self {
         self.output_schema = Some(output_schema);
+        self
+    }
+
+    #[must_use]
+    pub fn freeform(
+        name: impl Into<ToolName>,
+        description: impl Into<String>,
+        freeform_format: ToolFreeformFormat,
+        output_mode: ToolOutputMode,
+        origin: ToolOrigin,
+        source: ToolSource,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            description: description.into(),
+            kind: ToolKind::Freeform,
+            input_schema: None,
+            freeform_format: Some(freeform_format),
+            output_mode,
+            output_schema: None,
+            defer_loading: false,
+            origin,
+            source,
+            aliases: Vec::new(),
+            supports_parallel_tool_calls: false,
+            availability: ToolAvailability::default(),
+            approval: ToolApprovalProfile::default(),
+        }
+    }
+
+    #[must_use]
+    pub fn with_freeform_format(mut self, freeform_format: ToolFreeformFormat) -> Self {
+        self.freeform_format = Some(freeform_format);
         self
     }
 
@@ -376,6 +449,22 @@ impl ToolSpec {
     pub fn with_availability(mut self, availability: ToolAvailability) -> Self {
         self.availability = availability;
         self
+    }
+
+    #[must_use]
+    pub fn is_model_visible_for_provider(&self, provider_name: &str) -> bool {
+        if self.availability.hidden_from_model {
+            return false;
+        }
+        if provider_name == "unknown" {
+            return true;
+        }
+        self.availability.provider_allowlist.is_empty()
+            || self
+                .availability
+                .provider_allowlist
+                .iter()
+                .any(|allowed| allowed == provider_name)
     }
 }
 

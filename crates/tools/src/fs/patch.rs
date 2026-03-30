@@ -15,7 +15,7 @@ use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use types::{MessagePart, ToolCallId, ToolOutputMode, ToolResult, ToolSpec};
+use types::{MessagePart, ToolAvailability, ToolCallId, ToolOutputMode, ToolResult, ToolSpec};
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(tag = "command", rename_all = "snake_case")]
@@ -75,7 +75,7 @@ struct StagedFile {
 
 #[derive(Clone, Debug, Serialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-enum PatchToolOutput {
+pub(crate) enum PatchToolOutput {
     Success {
         operation_count: usize,
         changed_files: Vec<String>,
@@ -137,6 +137,10 @@ impl Tool for PatchTool {
         .with_output_schema(
             serde_json::to_value(schema_for!(PatchToolOutput)).expect("patch output schema"),
         )
+        .with_availability(ToolAvailability {
+            provider_allowlist: vec!["anthropic".to_string()],
+            ..ToolAvailability::default()
+        })
     }
 
     async fn execute(
@@ -145,395 +149,420 @@ impl Tool for PatchTool {
         arguments: Value,
         ctx: &ToolExecutionContext,
     ) -> Result<ToolResult> {
-        let external_call_id = types::CallId::from(&call_id);
         let input: PatchToolInput = serde_json::from_value(arguments)?;
-        if input.operations.is_empty() {
-            return Err(ToolError::invalid("patch requires at least one operation"));
-        }
+        execute_patch_operations(
+            "patch",
+            self.activity_observer.clone(),
+            call_id,
+            input.operations,
+            ctx,
+        )
+        .await
+    }
+}
 
-        let mut staged = BTreeMap::<PathBuf, StagedFile>::new();
-        let mut operation_summaries = Vec::with_capacity(input.operations.len());
-        let mut operation_metadata = Vec::with_capacity(input.operations.len());
+pub(crate) async fn execute_patch_operations(
+    tool_name: &str,
+    activity_observer: Option<Arc<dyn FileActivityObserver>>,
+    call_id: ToolCallId,
+    operations: Vec<PatchOperation>,
+    ctx: &ToolExecutionContext,
+) -> Result<ToolResult> {
+    if operations.is_empty() {
+        return Err(ToolError::invalid(format!(
+            "{tool_name} requires at least one operation"
+        )));
+    }
 
-        // Stage mutations in memory first so a failing later operation does not partially
-        // commit an earlier file change. Later operations against the same path observe the
-        // already-staged content, which matches normal patch application semantics.
-        for (index, operation) in input.operations.iter().enumerate() {
-            let operation_index = index + 1;
-            match operation {
-                PatchOperation::Write {
+    let external_call_id = types::CallId::from(&call_id);
+    let mut staged = BTreeMap::<PathBuf, StagedFile>::new();
+    let mut operation_summaries = Vec::with_capacity(operations.len());
+    let mut operation_metadata = Vec::with_capacity(operations.len());
+
+    // Stage mutations in memory first so a failing later operation does not partially
+    // commit an earlier file change. Later operations against the same path observe the
+    // already-staged content, which matches normal patch application semantics.
+    for (index, operation) in operations.iter().enumerate() {
+        let operation_index = index + 1;
+        match operation {
+            PatchOperation::Write {
+                path,
+                content,
+                if_exists,
+                if_missing,
+                expected_snapshot,
+            } => {
+                let mut entry = stage_entry(path, ctx, &mut staged).await?;
+                let outcome = apply_write(
+                    entry.content.as_deref(),
                     path,
-                    content,
-                    if_exists,
-                    if_missing,
-                    expected_snapshot,
-                } => {
-                    let mut entry = stage_entry(path, ctx, &mut staged).await?;
-                    let outcome = apply_write(
-                        entry.content.as_deref(),
-                        path,
-                        &WriteRequest {
-                            content: content.clone(),
-                            if_exists: if_exists.unwrap_or_default(),
-                            if_missing: if_missing.unwrap_or_default(),
-                            expected_snapshot: expected_snapshot.clone(),
-                        },
-                    );
-                    if outcome.is_error {
-                        return Ok(patch_error_result(
-                            call_id,
-                            external_call_id,
-                            operation,
-                            operation_index,
-                            operation_metadata,
-                            outcome.summary,
-                            outcome.metadata,
-                        ));
-                    }
-
-                    entry.content = outcome.next_content;
-                    operation_summaries.push(format!(
-                        "- op#{operation_index} {} [{} -> {}]",
+                    &WriteRequest {
+                        content: content.clone(),
+                        if_exists: if_exists.unwrap_or_default(),
+                        if_missing: if_missing.unwrap_or_default(),
+                        expected_snapshot: expected_snapshot.clone(),
+                    },
+                );
+                if outcome.is_error {
+                    return Ok(patch_error_result(
+                        tool_name,
+                        call_id.clone(),
+                        external_call_id,
+                        operation,
+                        operation_index,
+                        operation_metadata,
                         outcome.summary,
-                        outcome.snapshot_before.as_deref().unwrap_or("missing"),
-                        outcome.snapshot_after.as_deref().unwrap_or("deleted"),
+                        outcome.metadata,
                     ));
-                    operation_metadata.push(json!({
-                        "index": operation_index,
-                        "command": operation.command_name(),
-                        "path": path,
-                        "summary": outcome.summary,
-                        "snapshot_before": outcome.snapshot_before,
-                        "snapshot_after": outcome.snapshot_after,
-                        "operation": outcome.metadata,
-                    }));
-                    staged.insert(entry.resolved_path.clone(), entry);
                 }
-                PatchOperation::Edit {
+
+                entry.content = outcome.next_content;
+                operation_summaries.push(format!(
+                    "- op#{operation_index} {} [{} -> {}]",
+                    outcome.summary,
+                    outcome.snapshot_before.as_deref().unwrap_or("missing"),
+                    outcome.snapshot_after.as_deref().unwrap_or("deleted"),
+                ));
+                operation_metadata.push(json!({
+                    "index": operation_index,
+                    "command": operation.command_name(),
+                    "path": path,
+                    "summary": outcome.summary,
+                    "snapshot_before": outcome.snapshot_before,
+                    "snapshot_after": outcome.snapshot_after,
+                    "operation": outcome.metadata,
+                }));
+                staged.insert(entry.resolved_path.clone(), entry);
+            }
+            PatchOperation::Edit {
+                path,
+                edits,
+                expected_snapshot,
+            } => {
+                let mut entry = stage_entry(path, ctx, &mut staged).await?;
+                let outcome = apply_text_edits(
+                    entry.content.as_deref(),
                     path,
+                    expected_snapshot.as_deref(),
                     edits,
-                    expected_snapshot,
-                } => {
-                    let mut entry = stage_entry(path, ctx, &mut staged).await?;
-                    let outcome = apply_text_edits(
-                        entry.content.as_deref(),
-                        path,
-                        expected_snapshot.as_deref(),
-                        edits,
-                    )?;
-                    if outcome.is_error {
-                        return Ok(patch_error_result(
-                            call_id,
-                            external_call_id,
-                            operation,
-                            operation_index,
-                            operation_metadata,
-                            outcome.summary,
-                            outcome.metadata,
-                        ));
-                    }
-
-                    entry.content = outcome.next_content;
-                    operation_summaries.push(format!(
-                        "- op#{operation_index} {} [{} -> {}]",
+                )?;
+                if outcome.is_error {
+                    return Ok(patch_error_result(
+                        tool_name,
+                        call_id.clone(),
+                        external_call_id,
+                        operation,
+                        operation_index,
+                        operation_metadata,
                         outcome.summary,
-                        outcome.snapshot_before.as_deref().unwrap_or("missing"),
-                        outcome.snapshot_after.as_deref().unwrap_or("deleted"),
+                        outcome.metadata,
                     ));
-                    operation_metadata.push(json!({
-                        "index": operation_index,
-                        "command": operation.command_name(),
-                        "path": path,
-                        "summary": outcome.summary,
-                        "snapshot_before": outcome.snapshot_before,
-                        "snapshot_after": outcome.snapshot_after,
-                        "operation": outcome.metadata,
-                    }));
-                    staged.insert(entry.resolved_path.clone(), entry);
                 }
-                PatchOperation::Delete {
+
+                entry.content = outcome.next_content;
+                operation_summaries.push(format!(
+                    "- op#{operation_index} {} [{} -> {}]",
+                    outcome.summary,
+                    outcome.snapshot_before.as_deref().unwrap_or("missing"),
+                    outcome.snapshot_after.as_deref().unwrap_or("deleted"),
+                ));
+                operation_metadata.push(json!({
+                    "index": operation_index,
+                    "command": operation.command_name(),
+                    "path": path,
+                    "summary": outcome.summary,
+                    "snapshot_before": outcome.snapshot_before,
+                    "snapshot_after": outcome.snapshot_after,
+                    "operation": outcome.metadata,
+                }));
+                staged.insert(entry.resolved_path.clone(), entry);
+            }
+            PatchOperation::Delete {
+                path,
+                expected_snapshot,
+                ignore_missing,
+            } => {
+                let mut entry = stage_entry(path, ctx, &mut staged).await?;
+                let outcome = apply_delete(
+                    entry.content.as_deref(),
                     path,
-                    expected_snapshot,
-                    ignore_missing,
-                } => {
-                    let mut entry = stage_entry(path, ctx, &mut staged).await?;
-                    let outcome = apply_delete(
-                        entry.content.as_deref(),
-                        path,
-                        expected_snapshot.as_deref(),
-                        ignore_missing.unwrap_or(false),
-                    );
-                    if outcome.is_error {
-                        return Ok(patch_error_result(
-                            call_id,
-                            external_call_id,
-                            operation,
-                            operation_index,
-                            operation_metadata,
-                            outcome.summary,
-                            outcome.metadata,
-                        ));
-                    }
-
-                    entry.content = outcome.next_content;
-                    operation_summaries.push(format!(
-                        "- op#{operation_index} {} [{} -> {}]",
+                    expected_snapshot.as_deref(),
+                    ignore_missing.unwrap_or(false),
+                );
+                if outcome.is_error {
+                    return Ok(patch_error_result(
+                        tool_name,
+                        call_id.clone(),
+                        external_call_id,
+                        operation,
+                        operation_index,
+                        operation_metadata,
                         outcome.summary,
-                        outcome.snapshot_before.as_deref().unwrap_or("missing"),
-                        outcome.snapshot_after.as_deref().unwrap_or("deleted"),
+                        outcome.metadata,
                     ));
-                    operation_metadata.push(json!({
-                        "index": operation_index,
-                        "command": operation.command_name(),
-                        "path": path,
-                        "summary": outcome.summary,
-                        "snapshot_before": outcome.snapshot_before,
-                        "snapshot_after": outcome.snapshot_after,
-                        "operation": outcome.metadata,
-                    }));
-                    staged.insert(entry.resolved_path.clone(), entry);
                 }
-                PatchOperation::Move {
+
+                entry.content = outcome.next_content;
+                operation_summaries.push(format!(
+                    "- op#{operation_index} {} [{} -> {}]",
+                    outcome.summary,
+                    outcome.snapshot_before.as_deref().unwrap_or("missing"),
+                    outcome.snapshot_after.as_deref().unwrap_or("deleted"),
+                ));
+                operation_metadata.push(json!({
+                    "index": operation_index,
+                    "command": operation.command_name(),
+                    "path": path,
+                    "summary": outcome.summary,
+                    "snapshot_before": outcome.snapshot_before,
+                    "snapshot_after": outcome.snapshot_after,
+                    "operation": outcome.metadata,
+                }));
+                staged.insert(entry.resolved_path.clone(), entry);
+            }
+            PatchOperation::Move {
+                from_path,
+                to_path,
+                expected_snapshot,
+                if_destination_exists,
+                ignore_missing,
+            } => {
+                let from_resolved = resolve_tool_path_against_workspace_root(
                     from_path,
+                    ctx.effective_root(),
+                    ctx.container_workdir.as_deref(),
+                )?;
+                let to_resolved = resolve_tool_path_against_workspace_root(
                     to_path,
-                    expected_snapshot,
-                    if_destination_exists,
-                    ignore_missing,
-                } => {
-                    let from_resolved = resolve_tool_path_against_workspace_root(
-                        from_path,
-                        ctx.effective_root(),
-                        ctx.container_workdir.as_deref(),
-                    )?;
-                    let to_resolved = resolve_tool_path_against_workspace_root(
-                        to_path,
-                        ctx.effective_root(),
-                        ctx.container_workdir.as_deref(),
-                    )?;
-                    ctx.assert_path_write_allowed(&from_resolved)?;
-                    ctx.assert_path_write_allowed(&to_resolved)?;
-                    if from_resolved == to_resolved {
-                        return Ok(patch_error_result(
-                            call_id,
-                            external_call_id,
-                            operation,
-                            operation_index,
-                            operation_metadata,
-                            format!(
-                                "Cannot move {from_path} to itself. Provide a different destination path."
-                            ),
-                            json!({
-                                "command": "move",
-                                "from_path": from_path,
-                                "to_path": to_path,
-                            }),
-                        ));
-                    }
-
-                    let mut from_entry =
-                        stage_entry_by_resolved(from_path, from_resolved.clone(), &mut staged)
-                            .await?;
-                    let source_snapshot_before =
-                        from_entry.content.as_deref().map(crate::stable_text_hash);
-
-                    if from_entry.content.is_none() {
-                        if ignore_missing.unwrap_or(false) {
-                            operation_summaries.push(format!(
-                                "- op#{operation_index} Skipped move for missing source {from_path}"
-                            ));
-                            operation_metadata.push(json!({
-                                "index": operation_index,
-                                "command": operation.command_name(),
-                                "from_path": from_path,
-                                "to_path": to_path,
-                                "summary": format!("Skipped move for missing source {from_path}"),
-                                "moved": false,
-                                "ignore_missing": true,
-                            }));
-                            staged.insert(from_resolved, from_entry);
-                            continue;
-                        }
-                        return Ok(patch_error_result(
-                            call_id,
-                            external_call_id,
-                            operation,
-                            operation_index,
-                            operation_metadata,
-                            format!(
-                                "{from_path} does not exist. Re-run with ignore_missing=true to treat as a no-op."
-                            ),
-                            json!({
-                                "command": "move",
-                                "from_path": from_path,
-                                "to_path": to_path,
-                                "ignore_missing": false,
-                            }),
-                        ));
-                    }
-
-                    if let Some(expected_snapshot) = expected_snapshot.as_deref()
-                        && source_snapshot_before.as_deref() != Some(expected_snapshot)
-                    {
-                        return Ok(patch_error_result(
-                            call_id,
-                            external_call_id,
-                            operation,
-                            operation_index,
-                            operation_metadata,
-                            format!(
-                                "Snapshot mismatch for {from_path}. Expected {expected_snapshot}, re-read before moving."
-                            ),
-                            json!({
-                                "command": "move",
-                                "from_path": from_path,
-                                "to_path": to_path,
-                                "expected_snapshot": expected_snapshot,
-                                "snapshot_before": source_snapshot_before,
-                            }),
-                        ));
-                    }
-
-                    let mut to_entry =
-                        stage_entry_by_resolved(to_path, to_resolved.clone(), &mut staged).await?;
-                    if to_entry.content.is_some()
-                        && matches!(
-                            if_destination_exists.unwrap_or_default(),
-                            WriteExistingBehavior::Error
-                        )
-                    {
-                        staged.insert(from_resolved, from_entry);
-                        staged.insert(to_resolved, to_entry);
-                        return Ok(patch_error_result(
-                            call_id,
-                            external_call_id,
-                            operation,
-                            operation_index,
-                            operation_metadata,
-                            format!(
-                                "{to_path} already exists. Re-run with if_destination_exists=overwrite."
-                            ),
-                            json!({
-                                "command": "move",
-                                "from_path": from_path,
-                                "to_path": to_path,
-                                "if_destination_exists": if_destination_exists.unwrap_or_default(),
-                            }),
-                        ));
-                    }
-
-                    let destination_snapshot_before =
-                        to_entry.content.as_deref().map(crate::stable_text_hash);
-                    // A move is modeled as delete+create in the staged map so later operations in
-                    // the same patch observe the renamed state before anything is committed.
-                    to_entry.content = from_entry.content.take();
-                    let destination_snapshot_after =
-                        to_entry.content.as_deref().map(crate::stable_text_hash);
-                    let source_snapshot_after =
-                        from_entry.content.as_deref().map(crate::stable_text_hash);
-
-                    operation_summaries.push(format!(
-                        "- op#{operation_index} Moved {from_path} -> {to_path} [{} -> {}]",
-                        source_snapshot_before.as_deref().unwrap_or("missing"),
-                        destination_snapshot_after.as_deref().unwrap_or("missing"),
+                    ctx.effective_root(),
+                    ctx.container_workdir.as_deref(),
+                )?;
+                ctx.assert_path_write_allowed(&from_resolved)?;
+                ctx.assert_path_write_allowed(&to_resolved)?;
+                if from_resolved == to_resolved {
+                    return Ok(patch_error_result(
+                        tool_name,
+                        call_id.clone(),
+                        external_call_id,
+                        operation,
+                        operation_index,
+                        operation_metadata,
+                        format!(
+                            "Cannot move {from_path} to itself. Provide a different destination path."
+                        ),
+                        json!({
+                            "command": "move",
+                            "from_path": from_path,
+                            "to_path": to_path,
+                        }),
                     ));
-                    operation_metadata.push(json!({
-                        "index": operation_index,
-                        "command": operation.command_name(),
-                        "from_path": from_path,
-                        "to_path": to_path,
-                        "summary": format!("Moved {from_path} -> {to_path}"),
-                        "source_snapshot_before": source_snapshot_before,
-                        "source_snapshot_after": source_snapshot_after,
-                        "destination_snapshot_before": destination_snapshot_before,
-                        "destination_snapshot_after": destination_snapshot_after,
-                        "if_destination_exists": if_destination_exists.unwrap_or_default(),
-                        "ignore_missing": ignore_missing.unwrap_or(false),
-                    }));
+                }
 
+                let mut from_entry =
+                    stage_entry_by_resolved(from_path, from_resolved.clone(), &mut staged).await?;
+                let source_snapshot_before =
+                    from_entry.content.as_deref().map(crate::stable_text_hash);
+
+                if from_entry.content.is_none() {
+                    if ignore_missing.unwrap_or(false) {
+                        operation_summaries.push(format!(
+                            "- op#{operation_index} Skipped move for missing source {from_path}"
+                        ));
+                        operation_metadata.push(json!({
+                            "index": operation_index,
+                            "command": operation.command_name(),
+                            "from_path": from_path,
+                            "to_path": to_path,
+                            "summary": format!("Skipped move for missing source {from_path}"),
+                            "moved": false,
+                            "ignore_missing": true,
+                        }));
+                        staged.insert(from_resolved, from_entry);
+                        continue;
+                    }
+                    return Ok(patch_error_result(
+                        tool_name,
+                        call_id.clone(),
+                        external_call_id,
+                        operation,
+                        operation_index,
+                        operation_metadata,
+                        format!(
+                            "{from_path} does not exist. Re-run with ignore_missing=true to treat as a no-op."
+                        ),
+                        json!({
+                            "command": "move",
+                            "from_path": from_path,
+                            "to_path": to_path,
+                            "ignore_missing": false,
+                        }),
+                    ));
+                }
+
+                if let Some(expected_snapshot) = expected_snapshot.as_deref()
+                    && source_snapshot_before.as_deref() != Some(expected_snapshot)
+                {
+                    return Ok(patch_error_result(
+                        tool_name,
+                        call_id.clone(),
+                        external_call_id,
+                        operation,
+                        operation_index,
+                        operation_metadata,
+                        format!(
+                            "Snapshot mismatch for {from_path}. Expected {expected_snapshot}, re-read before moving."
+                        ),
+                        json!({
+                            "command": "move",
+                            "from_path": from_path,
+                            "to_path": to_path,
+                            "expected_snapshot": expected_snapshot,
+                            "snapshot_before": source_snapshot_before,
+                        }),
+                    ));
+                }
+
+                let mut to_entry =
+                    stage_entry_by_resolved(to_path, to_resolved.clone(), &mut staged).await?;
+                if to_entry.content.is_some()
+                    && matches!(
+                        if_destination_exists.unwrap_or_default(),
+                        WriteExistingBehavior::Error
+                    )
+                {
                     staged.insert(from_resolved, from_entry);
                     staged.insert(to_resolved, to_entry);
+                    return Ok(patch_error_result(
+                        tool_name,
+                        call_id.clone(),
+                        external_call_id,
+                        operation,
+                        operation_index,
+                        operation_metadata,
+                        format!(
+                            "{to_path} already exists. Re-run with if_destination_exists=overwrite."
+                        ),
+                        json!({
+                            "command": "move",
+                            "from_path": from_path,
+                            "to_path": to_path,
+                            "if_destination_exists": if_destination_exists.unwrap_or_default(),
+                        }),
+                    ));
                 }
+
+                let destination_snapshot_before =
+                    to_entry.content.as_deref().map(crate::stable_text_hash);
+                // A move is modeled as delete+create in the staged map so later operations in
+                // the same patch observe the renamed state before anything is committed.
+                to_entry.content = from_entry.content.take();
+                let destination_snapshot_after =
+                    to_entry.content.as_deref().map(crate::stable_text_hash);
+                let source_snapshot_after =
+                    from_entry.content.as_deref().map(crate::stable_text_hash);
+
+                operation_summaries.push(format!(
+                    "- op#{operation_index} Moved {from_path} -> {to_path} [{} -> {}]",
+                    source_snapshot_before.as_deref().unwrap_or("missing"),
+                    destination_snapshot_after.as_deref().unwrap_or("missing"),
+                ));
+                operation_metadata.push(json!({
+                    "index": operation_index,
+                    "command": operation.command_name(),
+                    "from_path": from_path,
+                    "to_path": to_path,
+                    "summary": format!("Moved {from_path} -> {to_path}"),
+                    "source_snapshot_before": source_snapshot_before,
+                    "source_snapshot_after": source_snapshot_after,
+                    "destination_snapshot_before": destination_snapshot_before,
+                    "destination_snapshot_after": destination_snapshot_after,
+                    "if_destination_exists": if_destination_exists.unwrap_or_default(),
+                    "ignore_missing": ignore_missing.unwrap_or(false),
+                }));
+
+                staged.insert(from_resolved, from_entry);
+                staged.insert(to_resolved, to_entry);
             }
         }
+    }
 
-        let changed_entries: Vec<&StagedFile> = staged
-            .values()
-            .filter(|entry| entry.baseline_content != entry.content)
-            .collect();
+    let changed_entries: Vec<&StagedFile> = staged
+        .values()
+        .filter(|entry| entry.baseline_content != entry.content)
+        .collect();
 
+    for entry in &changed_entries {
+        commit_text_file(&entry.resolved_path, entry.content.as_deref()).await?;
+    }
+    if let Some(observer) = &activity_observer {
         for entry in &changed_entries {
-            commit_text_file(&entry.resolved_path, entry.content.as_deref()).await?;
-        }
-        if let Some(observer) = &self.activity_observer {
-            for entry in &changed_entries {
-                if entry.content.is_some() {
-                    observer.did_change(entry.resolved_path.clone());
-                    observer.did_save(entry.resolved_path.clone());
-                } else {
-                    observer.did_remove(entry.resolved_path.clone());
-                }
+            if entry.content.is_some() {
+                observer.did_change(entry.resolved_path.clone());
+                observer.did_save(entry.resolved_path.clone());
+            } else {
+                observer.did_remove(entry.resolved_path.clone());
             }
         }
+    }
 
-        let diff_previews: Vec<Value> = changed_entries
+    let diff_previews: Vec<Value> = changed_entries
+        .iter()
+        .filter_map(|entry| {
+            compute_diff_preview(
+                &entry.display_path,
+                entry.baseline_content.as_deref(),
+                entry.content.as_deref(),
+            )
+        })
+        .collect();
+
+    let mut text = format!(
+        "[{tool_name} operations={} changed_files={}]\n{}",
+        operations.len(),
+        changed_entries.len(),
+        operation_summaries.join("\n")
+    );
+    if !diff_previews.is_empty() {
+        let previews = diff_previews
             .iter()
-            .filter_map(|entry| {
-                compute_diff_preview(
-                    &entry.display_path,
-                    entry.baseline_content.as_deref(),
-                    entry.content.as_deref(),
-                )
-            })
-            .collect();
-
-        let mut text = format!(
-            "[patch operations={} changed_files={}]\n{}",
-            input.operations.len(),
-            changed_entries.len(),
-            operation_summaries.join("\n")
-        );
-        if !diff_previews.is_empty() {
-            let previews = diff_previews
-                .iter()
-                .filter_map(|entry| entry["preview"].as_str())
-                .collect::<Vec<_>>();
-            if !previews.is_empty() {
-                text.push_str("\n\n[diff_preview]");
-                text.push('\n');
-                text.push_str(&previews.join("\n\n"));
-            }
+            .filter_map(|entry| entry["preview"].as_str())
+            .collect::<Vec<_>>();
+        if !previews.is_empty() {
+            text.push_str("\n\n[diff_preview]");
+            text.push('\n');
+            text.push_str(&previews.join("\n\n"));
         }
-        Ok(ToolResult {
-            id: call_id,
-            call_id: external_call_id,
-            tool_name: "patch".into(),
-            parts: vec![MessagePart::text(text)],
-            attachments: Vec::new(),
-            structured_content: Some(
-                serde_json::to_value(PatchToolOutput::Success {
-                    operation_count: input.operations.len(),
-                    changed_files: changed_entries
-                        .iter()
-                        .map(|entry| entry.display_path.clone())
-                        .collect(),
-                    operations: operation_metadata.clone(),
-                    file_diffs: diff_previews.clone(),
-                })
-                .expect("patch success output"),
-            ),
-            continuation: None,
-            metadata: Some(json!({
-                "operation_count": input.operations.len(),
-                "changed_files": changed_entries
+    }
+    Ok(ToolResult {
+        id: call_id,
+        call_id: external_call_id,
+        tool_name: tool_name.into(),
+        parts: vec![MessagePart::text(text)],
+        attachments: Vec::new(),
+        structured_content: Some(
+            serde_json::to_value(PatchToolOutput::Success {
+                operation_count: operations.len(),
+                changed_files: changed_entries
                     .iter()
                     .map(|entry| entry.display_path.clone())
-                    .collect::<Vec<_>>(),
-                "operations": operation_metadata,
-                "file_diffs": diff_previews,
-            })),
-            is_error: false,
-        })
-    }
+                    .collect(),
+                operations: operation_metadata.clone(),
+                file_diffs: diff_previews.clone(),
+            })
+            .expect("patch success output"),
+        ),
+        continuation: None,
+        metadata: Some(json!({
+            "operation_count": operations.len(),
+            "changed_files": changed_entries
+                .iter()
+                .map(|entry| entry.display_path.clone())
+                .collect::<Vec<_>>(),
+            "operations": operation_metadata,
+            "file_diffs": diff_previews,
+        })),
+        is_error: false,
+    })
 }
 
 async fn stage_entry(
@@ -570,6 +599,7 @@ async fn stage_entry_by_resolved(
 }
 
 fn patch_error_result(
+    tool_name: &str,
     call_id: ToolCallId,
     external_call_id: types::CallId,
     operation: &PatchOperation,
@@ -587,7 +617,7 @@ fn patch_error_result(
     ToolResult {
         id: call_id,
         call_id: external_call_id,
-        tool_name: "patch".into(),
+        tool_name: tool_name.into(),
         parts: vec![MessagePart::text(summary)],
         attachments: Vec::new(),
         structured_content: Some(

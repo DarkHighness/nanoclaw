@@ -3,8 +3,10 @@ use crate::{
     render_instruction_text, stringify_json, tool_result_roundtrip_text, tool_schema,
 };
 use serde_json::{Map, Value, json};
+use std::collections::BTreeMap;
 use types::{
     Message, MessagePart, MessageRole, ModelRequest, ProviderContinuation, ReasoningContent,
+    ToolKind, ToolName, ToolSpec,
 };
 
 fn openai_instruction_text(request: &ModelRequest) -> Option<String> {
@@ -13,11 +15,31 @@ fn openai_instruction_text(request: &ModelRequest) -> Option<String> {
     render_instruction_text(&frames)
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OpenAiToolTransport {
+    Function,
+    Custom,
+}
+
+fn openai_tool_transports(tools: &[ToolSpec]) -> BTreeMap<ToolName, OpenAiToolTransport> {
+    tools
+        .iter()
+        .map(|tool| {
+            let transport = match tool.kind {
+                ToolKind::Freeform => OpenAiToolTransport::Custom,
+                _ => OpenAiToolTransport::Function,
+            };
+            (tool.name.clone(), transport)
+        })
+        .collect()
+}
+
 pub(crate) fn build_openai_realtime_request_event(
     model: String,
     request: ModelRequest,
     request_options: &RequestOptions,
 ) -> Result<Value> {
+    let tool_transports = openai_tool_transports(&request.tools);
     let instructions = openai_instruction_text(&request);
     let mut response = Map::new();
     response.insert("model".to_string(), Value::String(model));
@@ -40,7 +62,7 @@ pub(crate) fn build_openai_realtime_request_event(
             Value::Array(request.tools.iter().map(tool_schema).collect()),
         );
     }
-    let input = serialize_openai_input_items(&request.messages)?;
+    let input = serialize_openai_input_items(&request.messages, &tool_transports)?;
     if !input.is_empty() {
         response.insert("input".to_string(), Value::Array(input));
     }
@@ -61,6 +83,7 @@ pub(crate) fn build_openai_responses_body(
     request: ModelRequest,
     request_options: &RequestOptions,
 ) -> Result<Value> {
+    let tool_transports = openai_tool_transports(&request.tools);
     let instructions = openai_instruction_text(&request);
     let mut object = Map::new();
     object.insert("model".to_string(), Value::String(model));
@@ -84,7 +107,9 @@ pub(crate) fn build_openai_responses_body(
             .iter()
             .map(|tool| {
                 let mut schema = tool_schema(tool);
-                if let Some(object) = schema.as_object_mut() {
+                if matches!(tool.kind, ToolKind::Function)
+                    && let Some(object) = schema.as_object_mut()
+                {
                     // Responses defaults function tools to strict mode. Our shared
                     // tool schemas target general JSON Schema compatibility across
                     // providers, including optional fields and flatten-generated
@@ -97,7 +122,7 @@ pub(crate) fn build_openai_responses_body(
             .collect::<Vec<_>>();
         object.insert("tools".to_string(), Value::Array(tools));
     }
-    let input = serialize_openai_input_items(&request.messages)?;
+    let input = serialize_openai_input_items(&request.messages, &tool_transports)?;
     if !input.is_empty() {
         object.insert("input".to_string(), Value::Array(input));
     }
@@ -144,7 +169,10 @@ pub(crate) fn build_openai_responses_body(
     Ok(Value::Object(object))
 }
 
-fn serialize_openai_input_items(messages: &[Message]) -> Result<Vec<Value>> {
+fn serialize_openai_input_items(
+    messages: &[Message],
+    tool_transports: &BTreeMap<ToolName, OpenAiToolTransport>,
+) -> Result<Vec<Value>> {
     let mut items = Vec::new();
     for message in messages {
         match message.role {
@@ -155,7 +183,7 @@ fn serialize_openai_input_items(messages: &[Message]) -> Result<Vec<Value>> {
                     if let Some(block) = openai_user_message_block(part) {
                         content.push(block);
                     } else if let Some(item) =
-                        openai_input_item_from_part(part, message.role.clone())
+                        openai_input_item_from_part(part, message.role.clone(), tool_transports)
                     {
                         trailing_items.push(item);
                     }
@@ -179,7 +207,7 @@ fn serialize_openai_input_items(messages: &[Message]) -> Result<Vec<Value>> {
                     if let Some(block) = openai_assistant_message_block(part) {
                         content.push(block);
                     } else if let Some(item) =
-                        openai_input_item_from_part(part, message.role.clone())
+                        openai_input_item_from_part(part, message.role.clone(), tool_transports)
                     {
                         standalone_items.push(item);
                     }
@@ -194,12 +222,9 @@ fn serialize_openai_input_items(messages: &[Message]) -> Result<Vec<Value>> {
                 items.extend(standalone_items);
             }
             MessageRole::Tool => {
-                items.extend(
-                    message
-                        .parts
-                        .iter()
-                        .filter_map(|part| openai_input_item_from_part(part, message.role.clone())),
-                );
+                items.extend(message.parts.iter().filter_map(|part| {
+                    openai_input_item_from_part(part, message.role.clone(), tool_transports)
+                }));
             }
         }
     }
@@ -310,26 +335,56 @@ fn openai_assistant_message_block(part: &MessagePart) -> Option<Value> {
     }
 }
 
-fn openai_input_item_from_part(part: &MessagePart, role: MessageRole) -> Option<Value> {
+fn openai_input_item_from_part(
+    part: &MessagePart,
+    role: MessageRole,
+    tool_transports: &BTreeMap<ToolName, OpenAiToolTransport>,
+) -> Option<Value> {
     match part {
-        MessagePart::ToolCall { call } if matches!(role, MessageRole::Assistant) => Some(json!({
-            "type": "function_call",
-            "id": call.id,
-            "call_id": call.call_id,
-            "name": call.tool_name,
-            // Responses `function_call` items carry JSON-encoded arguments as a
-            // string. We keep parsed arguments in the runtime transcript for
-            // local tool execution, then re-encode them here so transcript
-            // replay and continuation fallback preserve the provider's item shape.
-            "arguments": stringify_json(&call.arguments),
-        })),
-        MessagePart::ToolResult { result } => Some(json!({
-            "type": "function_call_output",
-            "call_id": result.call_id,
-            // Responses currently treat tool output as text, so rich local tool
-            // results travel through the versioned round-trip envelope.
-            "output": tool_result_roundtrip_text(result),
-        })),
+        MessagePart::ToolCall { call } if matches!(role, MessageRole::Assistant) => {
+            let transport = tool_transports
+                .get(&call.tool_name)
+                .copied()
+                .unwrap_or(OpenAiToolTransport::Function);
+            Some(match transport {
+                OpenAiToolTransport::Function => json!({
+                    "type": "function_call",
+                    "id": call.id,
+                    "call_id": call.call_id,
+                    "name": call.tool_name,
+                    // Responses `function_call` items carry JSON-encoded arguments as a
+                    // string. We keep parsed arguments in the runtime transcript for
+                    // local tool execution, then re-encode them here so transcript
+                    // replay and continuation fallback preserve the provider's item shape.
+                    "arguments": stringify_json(&call.arguments),
+                }),
+                OpenAiToolTransport::Custom => json!({
+                    "type": "custom_tool_call",
+                    "call_id": call.call_id,
+                    "name": call.tool_name,
+                    "input": match &call.arguments {
+                        Value::String(input) => input.clone(),
+                        arguments => stringify_json(arguments),
+                    },
+                }),
+            })
+        }
+        MessagePart::ToolResult { result } => {
+            let transport = tool_transports
+                .get(&result.tool_name)
+                .copied()
+                .unwrap_or(OpenAiToolTransport::Function);
+            Some(json!({
+                "type": match transport {
+                    OpenAiToolTransport::Function => "function_call_output",
+                    OpenAiToolTransport::Custom => "custom_tool_call_output",
+                },
+                "call_id": result.call_id,
+                // Responses currently treat tool output as text, so rich local tool
+                // results travel through the versioned round-trip envelope.
+                "output": tool_result_roundtrip_text(result),
+            }))
+        }
         MessagePart::Reasoning { reasoning } if matches!(role, MessageRole::Assistant) => {
             let Some(id) = reasoning.id.clone() else {
                 return None;

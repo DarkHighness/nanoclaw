@@ -145,6 +145,13 @@ impl ProviderBackend {
 
 #[async_trait]
 impl ModelBackend for ProviderBackend {
+    fn provider_name(&self) -> &'static str {
+        match self.descriptor.provider.kind {
+            ProviderKind::OpenAi => "openai",
+            ProviderKind::Anthropic => "anthropic",
+        }
+    }
+
     fn capabilities(&self) -> ModelBackendCapabilities {
         self.descriptor.capabilities
     }

@@ -183,20 +183,35 @@ pub fn tool_result_roundtrip_text(result: &ToolResult) -> String {
 
 #[must_use]
 pub fn tool_schema(spec: &ToolSpec) -> Value {
-    debug_assert!(
-        matches!(spec.kind, ToolKind::Function),
-        "provider adapters currently only expose function tools"
-    );
-    let input_schema = spec
-        .input_schema
-        .as_ref()
-        .expect("function tools must define an input schema");
-    serde_json::json!({
-        "type": "function",
-        "name": spec.name,
-        "description": spec.description,
-        "parameters": coerce_object_schema(input_schema),
-    })
+    match spec.kind {
+        ToolKind::Function => {
+            let input_schema = spec
+                .input_schema
+                .as_ref()
+                .expect("function tools must define an input schema");
+            serde_json::json!({
+                "type": "function",
+                "name": spec.name,
+                "description": spec.description,
+                "parameters": coerce_object_schema(input_schema),
+            })
+        }
+        ToolKind::Freeform => {
+            let format = spec
+                .freeform_format
+                .as_ref()
+                .expect("freeform tools must define a freeform format");
+            serde_json::json!({
+                "type": "custom",
+                "name": spec.name,
+                "description": spec.description,
+                "format": serde_json::to_value(format).expect("freeform format"),
+            })
+        }
+        ToolKind::Native => {
+            panic!("native tools are host control surfaces and must not be exposed to providers")
+        }
+    }
 }
 
 #[cfg(test)]
@@ -204,8 +219,8 @@ mod tests {
     use super::{coerce_object_schema, tool_result_roundtrip_text, tool_schema};
     use serde_json::json;
     use types::{
-        MessagePart, ToolAttachment, ToolContinuation, ToolOrigin, ToolOutputMode, ToolResult,
-        ToolSource, ToolSpec,
+        MessagePart, ToolAttachment, ToolContinuation, ToolFreeformFormat, ToolOrigin,
+        ToolOutputMode, ToolResult, ToolSource, ToolSpec,
     };
 
     #[test]
@@ -242,6 +257,25 @@ mod tests {
 
         assert_eq!(definition["name"], json!("read"));
         assert_eq!(definition["parameters"]["type"], json!("object"));
+    }
+
+    #[test]
+    fn tool_schema_emits_openai_custom_tools_for_freeform_specs() {
+        let spec = ToolSpec::freeform(
+            "apply_patch",
+            "Apply a patch",
+            ToolFreeformFormat::grammar("lark", "start: \"*** Begin Patch\""),
+            ToolOutputMode::Text,
+            ToolOrigin::Local,
+            ToolSource::Builtin,
+        );
+
+        let definition = tool_schema(&spec);
+
+        assert_eq!(definition["type"], json!("custom"));
+        assert_eq!(definition["name"], json!("apply_patch"));
+        assert_eq!(definition["format"]["type"], json!("grammar"));
+        assert_eq!(definition["format"]["syntax"], json!("lark"));
     }
 
     #[test]

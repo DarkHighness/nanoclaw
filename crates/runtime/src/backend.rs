@@ -48,6 +48,10 @@ impl ModelBackendCapabilities {
 
 #[async_trait]
 pub trait ModelBackend: Send + Sync {
+    fn provider_name(&self) -> &'static str {
+        "unknown"
+    }
+
     fn capabilities(&self) -> ModelBackendCapabilities {
         ModelBackendCapabilities::default()
     }

@@ -1,9 +1,10 @@
 //! Local tool abstraction plus the default built-in tool set.
 //!
 //! The default surface is intentionally small: `read`, `write`, `edit`,
-//! `patch`, `glob`, `grep`, `list`, and `bash`. Non-essential tool bundles should be exposed
-//! through explicit Cargo features instead of silently expanding the default
-//! runtime surface.
+//! provider-specific patch tooling (`apply_patch` on OpenAI-oriented surfaces,
+//! `patch` on Anthropic-oriented surfaces), `glob`, `grep`, `list`, and
+//! `bash`. Non-essential tool bundles should be exposed through explicit Cargo
+//! features instead of silently expanding the default runtime surface.
 
 #[cfg(feature = "agentic-tools")]
 pub mod agentic;

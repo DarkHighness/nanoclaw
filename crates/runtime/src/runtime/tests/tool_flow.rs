@@ -3,13 +3,59 @@ use super::support::{FailingTool, MockBackend, RecordingObserver};
 use crate::{AgentRuntimeBuilder, HookRunner, ModelBackend, Result, RuntimeProgressEvent};
 use async_trait::async_trait;
 use futures::{StreamExt, stream, stream::BoxStream};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use store::{InMemorySessionStore, SessionStore};
-use tools::{ReadTool, ToolExecutionContext, ToolRegistry};
+use tools::{ApplyPatchTool, PatchTool, ReadTool, ToolExecutionContext, ToolRegistry};
 use types::{
     DynamicToolSpec, ModelEvent, ModelRequest, SessionEventKind, ToolCall, ToolCallId,
     ToolLifecycleEventEnvelope, ToolLifecycleEventKind, ToolOrigin, ToolSource,
 };
+
+#[derive(Clone)]
+struct ProviderRecordingBackend {
+    provider_name: &'static str,
+    requests: Arc<Mutex<Vec<ModelRequest>>>,
+}
+
+impl ProviderRecordingBackend {
+    fn new(provider_name: &'static str) -> Self {
+        Self {
+            provider_name,
+            requests: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    fn requests(&self) -> Vec<ModelRequest> {
+        self.requests.lock().unwrap().clone()
+    }
+}
+
+#[async_trait]
+impl ModelBackend for ProviderRecordingBackend {
+    fn provider_name(&self) -> &'static str {
+        self.provider_name
+    }
+
+    async fn stream_turn(
+        &self,
+        request: ModelRequest,
+    ) -> Result<BoxStream<'static, Result<ModelEvent>>> {
+        self.requests.lock().unwrap().push(request);
+        Ok(stream::iter(vec![
+            Ok(ModelEvent::TextDelta {
+                delta: "done".to_string(),
+            }),
+            Ok(ModelEvent::ResponseComplete {
+                stop_reason: Some("stop".to_string()),
+                message_id: None,
+                continuation: None,
+                usage: None,
+                reasoning: Vec::new(),
+            }),
+        ])
+        .boxed())
+    }
+}
 
 #[tokio::test]
 async fn runtime_handles_tool_loop() {
@@ -73,6 +119,35 @@ async fn runtime_sees_dynamic_tools_registered_after_build() {
     assert_eq!(specs.len(), 1);
     assert_eq!(specs[0].name.as_str(), "dynamic_echo");
     assert_eq!(specs[0].source, ToolSource::Dynamic);
+}
+
+#[tokio::test]
+async fn runtime_filters_patch_tools_by_provider_surface() {
+    let store = Arc::new(InMemorySessionStore::new());
+    let backend = Arc::new(ProviderRecordingBackend::new("openai"));
+    let mut registry = ToolRegistry::new();
+    registry.register(ApplyPatchTool::new());
+    registry.register(PatchTool::new());
+    let mut runtime: AgentRuntime = AgentRuntimeBuilder::new(backend.clone(), store)
+        .hook_runner(Arc::new(HookRunner::default()))
+        .tool_registry(registry)
+        .build();
+
+    let tool_names = runtime
+        .tool_specs()
+        .into_iter()
+        .map(|spec| spec.name.to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(tool_names, vec!["apply_patch"]);
+
+    runtime.run_user_prompt("noop").await.unwrap();
+    let requests = backend.requests();
+    let request_tool_names = requests[0]
+        .tools
+        .iter()
+        .map(|spec| spec.name.to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(request_tool_names, vec!["apply_patch"]);
 }
 
 #[tokio::test]

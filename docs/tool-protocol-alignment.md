@@ -76,11 +76,18 @@ Completed so far:
   - `web_fetch` via document-window cursors
 - image reads now emit a first attachment record instead of hiding artifact
   identity only inside ad hoc metadata
+- runtime now filters model-visible tools by typed availability instead of
+  blindly forwarding every registered tool to every provider
+- OpenAI Responses mapping now supports freeform/custom tools, including
+  transcript replay through `custom_tool_call` and
+  `custom_tool_call_output`
+- provider-specific patch surfaces are now live:
+  - `apply_patch` is exposed as a freeform grammar tool for OpenAI
+  - `patch` remains a structured function tool for Anthropic
 
 Still pending inside this pass:
 
-- plugin-defined custom tool contributions
-- a freeform grammar `apply_patch` surface
+- a model-visible approval or permission-request tool contract
 
 ## Baseline Rules
 
@@ -179,7 +186,8 @@ not count here because they are not currently in the live registry.
 `nanoclaw` currently exposes these major families from the code-agent runtime:
 
 - file and code:
-  `read`, `write`, `edit`, `patch`, `glob`, `grep`, `list`
+  `read`, `write`, `edit`, provider-specific patch surfaces (`apply_patch` on
+  OpenAI, `patch` on Anthropic), `glob`, `grep`, `list`
 - execution:
   `bash`, `js_repl`
 - web:

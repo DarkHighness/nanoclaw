@@ -502,8 +502,8 @@ mod tests {
     use types::{
         AgentCoreError, AgentSessionId, CallId, Message, MessagePart, ModelEvent, ModelRequest,
         ProviderContinuation, Reasoning, ReasoningContent, ReasoningId, ResponseId, SessionId,
-        TokenUsage, ToolCall, ToolCallId, ToolName, ToolOrigin, ToolOutputMode, ToolResult,
-        ToolSpec, TurnId,
+        TokenUsage, ToolCall, ToolCallId, ToolFreeformFormat, ToolName, ToolOrigin, ToolOutputMode,
+        ToolResult, ToolSpec, TurnId,
     };
     use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -624,6 +624,28 @@ mod tests {
     }
 
     #[test]
+    fn openai_responses_body_serializes_freeform_tools_as_custom_tools() {
+        let mut request = base_request();
+        request.tools.push(ToolSpec::freeform(
+            "apply_patch",
+            "Apply a patch",
+            ToolFreeformFormat::grammar("lark", "start: begin_patch"),
+            ToolOutputMode::Text,
+            ToolOrigin::Local,
+            types::ToolSource::Builtin,
+        ));
+
+        let body =
+            build_openai_responses_body("gpt-5.4".to_string(), request, &RequestOptions::default())
+                .unwrap();
+
+        assert_eq!(body["tools"][0]["type"], json!("custom"));
+        assert_eq!(body["tools"][0]["name"], json!("apply_patch"));
+        assert_eq!(body["tools"][0]["format"]["type"], json!("grammar"));
+        assert!(body["tools"][0].get("strict").is_none());
+    }
+
+    #[test]
     fn openai_responses_body_reencodes_tool_call_arguments_for_replay() {
         let call = ToolCall {
             id: ToolCallId::from("fc_123"),
@@ -714,6 +736,47 @@ mod tests {
         assert_eq!(body["input"][1]["encrypted_content"], json!("enc_123"));
         assert_eq!(body["input"][2]["type"], json!("function_call"));
         assert_eq!(body["input"][3]["type"], json!("function_call_output"));
+    }
+
+    #[test]
+    fn openai_responses_body_replays_freeform_tool_items_as_custom_calls() {
+        let mut request = base_request();
+        request.tools.push(ToolSpec::freeform(
+            "apply_patch",
+            "Apply a patch",
+            ToolFreeformFormat::grammar("lark", "start: begin_patch"),
+            ToolOutputMode::Text,
+            ToolOrigin::Local,
+            types::ToolSource::Builtin,
+        ));
+        let call = ToolCall {
+            id: ToolCallId::from("fc_123"),
+            call_id: CallId::from("call_123"),
+            tool_name: ToolName::from("apply_patch"),
+            arguments: Value::String("*** Begin Patch\n*** End Patch".to_string()),
+            origin: ToolOrigin::Local,
+        };
+        request.messages = vec![
+            Message::user("apply the patch"),
+            Message::assistant_parts(vec![MessagePart::ToolCall { call }]),
+            Message::tool_result(
+                ToolResult::text("fc_123".into(), "apply_patch", "ok").with_call_id("call_123"),
+            ),
+        ];
+
+        let body =
+            build_openai_responses_body("gpt-5.4".to_string(), request, &RequestOptions::default())
+                .unwrap();
+
+        assert_eq!(body["input"][1]["type"], json!("custom_tool_call"));
+        assert_eq!(body["input"][1]["call_id"], json!("call_123"));
+        assert_eq!(body["input"][1]["name"], json!("apply_patch"));
+        assert_eq!(
+            body["input"][1]["input"],
+            json!("*** Begin Patch\n*** End Patch")
+        );
+        assert_eq!(body["input"][2]["type"], json!("custom_tool_call_output"));
+        assert_eq!(body["input"][2]["call_id"], json!("call_123"));
     }
 
     #[test]

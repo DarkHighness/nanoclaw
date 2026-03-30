@@ -5,7 +5,7 @@ compact `ratatui` terminal UI that still feels like a real product surface.
 
 It intentionally keeps the host layer thin:
 
-- core coding tools: `read`, `write`, `edit`, `patch`, `glob`, `grep`, `list`, `bash`
+- core coding tools: `read`, `write`, `edit`, provider-specific patch tools (`apply_patch` on OpenAI, `patch` on Anthropic), `glob`, `grep`, `list`, `bash`
 - optional code-intel tools: `code_symbol_search`, `code_document_symbols`, `code_definitions`, `code_references`
 - agentic tools: `update_plan`, `request_user_input`, `task`
 - append-only runtime loop from `runtime`
@@ -162,7 +162,7 @@ The app now materializes the standard workspace state layout on startup:
 `code-agent` now follows the same broad LSP lifecycle that `opencode` uses for its code-aware file tools:
 
 - reading a supported source file triggers a best-effort `didOpen`
-- write/edit/patch mutations trigger best-effort document sync so later semantic queries see fresh content
+- write/edit/patch/apply_patch mutations trigger best-effort document sync so later semantic queries see fresh content
 - code-intel tools reuse the same per-language server session instead of spawning one process per query
 
 The difference is that `code-agent` also supports a managed install path when `CODE_AGENT_LSP_AUTO_INSTALL=true`.

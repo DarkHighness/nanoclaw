@@ -101,10 +101,10 @@ mod tests {
             json!({"type": "object"}),
             ToolOutputMode::Text,
             ToolOrigin::Mcp {
-                server_name: "test-server".to_string(),
+                server_name: "test-server".into(),
             },
             ToolSource::McpTool {
-                server_name: "test-server".to_string(),
+                server_name: "test-server".into(),
             },
         )
     }
