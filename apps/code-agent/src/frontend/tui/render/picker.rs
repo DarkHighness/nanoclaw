@@ -241,20 +241,31 @@ pub(super) fn build_pending_control_text(state: &TuiState) -> Text<'static> {
         let window = visible_pending_control_window(&state.pending_controls, picker, 4);
         if window.start > 0 {
             lines.push(Line::from(Span::styled(
-                format!("… {} earlier", window.start),
+                format!("… {} older", window.start),
                 Style::default().fg(SUBTLE),
             )));
         }
+        let selected_index = picker.selected;
         for (index, control) in window.items.iter().enumerate() {
             let actual_index = window.start + index;
-            let is_selected = actual_index == picker.selected;
-            lines.push(build_pending_control_row(control, is_selected));
+            if actual_index == selected_index {
+                continue;
+            }
+            lines.push(build_pending_control_row(control, false));
         }
         if window.end < state.pending_controls.len() {
             lines.push(Line::from(Span::styled(
-                format!("… {} more", state.pending_controls.len() - window.end),
+                format!("… {} newer", state.pending_controls.len() - window.end),
                 Style::default().fg(SUBTLE),
             )));
+        }
+        if let Some(selected) = state.pending_controls.get(selected_index) {
+            lines.push(build_pending_control_row(selected, true));
+            lines.push(build_pending_control_detail_row(
+                selected,
+                selected_index,
+                state.pending_controls.len(),
+            ));
         }
         lines.push(Line::from(vec![
             Span::styled("↑↓", Style::default().fg(MUTED)),
@@ -328,11 +339,49 @@ fn build_pending_control_row(
     Line::from(spans)
 }
 
+fn build_pending_control_detail_row(
+    control: &crate::backend::PendingControlSummary,
+    selected_index: usize,
+    total: usize,
+) -> Line<'static> {
+    let mut spans = vec![
+        Span::styled("  ", Style::default().fg(SUBTLE)),
+        Span::styled(
+            pending_control_position_label(selected_index, total),
+            Style::default().fg(SUBTLE),
+        ),
+    ];
+    if let Some(reason) = pending_control_reason_label(control.reason.as_deref()) {
+        spans.push(Span::styled(" · ", Style::default().fg(SUBTLE)));
+        spans.push(Span::styled(reason, Style::default().fg(MUTED)));
+    }
+    Line::from(spans)
+}
+
 fn pending_kind_label(editing: &PendingControlEditorState) -> &'static str {
     match editing.kind {
         crate::backend::PendingControlKind::Prompt => "queued prompt",
         crate::backend::PendingControlKind::Steer => "queued steer",
     }
+}
+
+fn pending_control_position_label(selected_index: usize, total: usize) -> String {
+    match (selected_index, total) {
+        (_, 0) => "no items".to_string(),
+        (_, 1) => "only item".to_string(),
+        (0, _) => "oldest item".to_string(),
+        (index, count) if index + 1 == count => "latest item".to_string(),
+        (index, count) => format!("item {} of {}", index + 1, count),
+    }
+}
+
+fn pending_control_reason_label(reason: Option<&str>) -> Option<String> {
+    let reason = reason.map(str::trim).filter(|value| !value.is_empty())?;
+    Some(match reason {
+        "inline_enter" => "from Enter while running".to_string(),
+        "manual_command" => "from /steer".to_string(),
+        _ => reason.replace('_', " "),
+    })
 }
 
 struct VisiblePendingControlWindow<'a> {

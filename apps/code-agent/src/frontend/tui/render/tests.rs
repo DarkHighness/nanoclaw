@@ -280,6 +280,27 @@ fn pending_control_band_surfaces_selected_prompt_and_editing_state() {
             .iter()
             .any(|line| line_text_for(line).contains("keep the diff small"))
     );
+    let prompt_row = text
+        .lines
+        .iter()
+        .position(|line| line_text_for(line).contains("write a regression test"))
+        .expect("expected prompt row");
+    let selected_row = text
+        .lines
+        .iter()
+        .position(|line| line_text_for(line).contains("keep the diff small"))
+        .expect("expected selected steer row");
+    assert!(selected_row > prompt_row);
+    assert!(
+        text.lines
+            .iter()
+            .any(|line| line_text_for(line).contains("latest item"))
+    );
+    assert!(
+        text.lines
+            .iter()
+            .any(|line| line_text_for(line).contains("from Enter while running"))
+    );
 
     let selected = state.begin_pending_control_edit().unwrap();
     assert_eq!(selected.id, "cmd_2");
