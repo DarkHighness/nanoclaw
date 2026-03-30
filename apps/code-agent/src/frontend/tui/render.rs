@@ -817,33 +817,110 @@ fn render_shell_summary_body(
 }
 
 fn render_markdown_body(body: &str, kind: TranscriptEntryKind) -> Vec<Line<'static>> {
-    let mut compact = render_markdown_lines(body);
-    apply_markdown_prefixes(&mut compact, kind, false);
-    if compact.is_empty() {
+    let mut rendered = Vec::new();
+    let mut text_chunk = Vec::new();
+    let mut is_first_visible = true;
+    let mut lines = body.lines();
+
+    while let Some(raw_line) = lines.next() {
+        if let Some(language) = raw_line.trim_start().strip_prefix("```") {
+            if !text_chunk.is_empty() {
+                let chunk = render_markdown_chunk(&text_chunk.join("\n"), kind, is_first_visible);
+                if chunk.iter().any(line_has_visible_content) {
+                    is_first_visible = false;
+                }
+                rendered.extend(chunk);
+                text_chunk.clear();
+            }
+
+            let mut code_lines = Vec::new();
+            for code_line in lines.by_ref() {
+                if code_line.trim_start().starts_with("```") {
+                    break;
+                }
+                code_lines.push(code_line);
+            }
+            let block = render_shell_code_block(
+                language.trim(),
+                &code_lines.join("\n"),
+                kind,
+                is_first_visible,
+            );
+            if block.iter().any(line_has_visible_content) {
+                is_first_visible = false;
+            }
+            rendered.extend(block);
+            continue;
+        }
+        text_chunk.push(raw_line);
+    }
+
+    if !text_chunk.is_empty() {
+        rendered.extend(render_markdown_chunk(
+            &text_chunk.join("\n"),
+            kind,
+            is_first_visible,
+        ));
+    }
+
+    if rendered.is_empty() {
         vec![Line::from(Span::raw(""))]
     } else {
-        compact
+        rendered
     }
+}
+
+fn render_markdown_chunk(
+    body: &str,
+    kind: TranscriptEntryKind,
+    is_first_visible: bool,
+) -> Vec<Line<'static>> {
+    let mut compact = render_markdown_lines(body);
+    apply_markdown_prefixes(&mut compact, kind, !is_first_visible);
+    compact
 }
 
 fn render_shell_code_block(
     language: &str,
     code: &str,
     kind: TranscriptEntryKind,
-    prefix_first_visible: bool,
+    is_first_visible: bool,
 ) -> Vec<Line<'static>> {
     let fence = if language.is_empty() {
         "text"
     } else {
         language
     };
+    let mut rendered = vec![code_block_label_line(fence, kind, is_first_visible)];
     let mut compact = render_markdown_lines(&format!("```{fence}\n{code}\n```"));
-    apply_markdown_prefixes(&mut compact, kind, prefix_first_visible);
-    if compact.is_empty() {
-        vec![Line::from(Span::raw(""))]
+    // The label line already occupies the first visible slot for this block, so the
+    // rendered code lines should always behave like continuation lines.
+    apply_markdown_prefixes(&mut compact, kind, true);
+    rendered.extend(compact);
+    if rendered.iter().any(line_has_visible_content) {
+        rendered
     } else {
-        compact
+        vec![Line::from(Span::raw(""))]
     }
+}
+
+fn code_block_label_line(
+    language: &str,
+    kind: TranscriptEntryKind,
+    is_first_visible: bool,
+) -> Line<'static> {
+    line_with_indent(
+        kind,
+        is_first_visible,
+        vec![
+            Span::styled("···", Style::default().fg(SUBTLE)),
+            Span::raw(" "),
+            Span::styled(
+                language.to_string(),
+                Style::default().fg(MUTED).add_modifier(Modifier::BOLD),
+            ),
+        ],
+    )
 }
 
 fn render_markdown_lines(body: &str) -> Vec<Line<'static>> {
@@ -2522,6 +2599,33 @@ mod tests {
             rendered
                 .iter()
                 .any(|line| line_text_for(line).contains("@@ hunk"))
+        );
+        assert!(
+            rendered
+                .iter()
+                .any(|line| line_text_for(line).contains("··· diff"))
+        );
+    }
+
+    #[test]
+    fn transcript_keeps_fenced_block_label_as_first_visible_line() {
+        let mut state = TuiState {
+            main_pane: MainPaneMode::Transcript,
+            ..TuiState::default()
+        };
+        state.transcript = vec!["• ```rust\nfn main() {}\n```".to_string()];
+
+        let rendered = build_transcript_lines(&state);
+
+        let first_visible = rendered
+            .iter()
+            .find(|line| !line_text_for(line).trim().is_empty())
+            .expect("expected visible transcript line");
+        assert_eq!(line_text_for(first_visible), "• ··· rust");
+        assert!(
+            rendered
+                .iter()
+                .any(|line| line_text_for(line).contains("fn main() {}"))
         );
     }
 
