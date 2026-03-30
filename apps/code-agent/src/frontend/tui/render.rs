@@ -605,8 +605,12 @@ fn build_welcome_logo_lines(compact: bool) -> Vec<Line<'static>> {
     if compact {
         return vec![
             Line::from(Span::styled(
-                "NANOCLAW".to_string(),
-                Style::default().fg(HEADER),
+                "NANO CLAW".to_string(),
+                Style::default().fg(HEADER).add_modifier(Modifier::BOLD),
+            )),
+            Line::from(Span::styled(
+                " NANO CLAW".to_string(),
+                Style::default().fg(SUBTLE).add_modifier(Modifier::DIM),
             )),
             Line::from(Span::styled(
                 "code-agent".to_string(),
@@ -615,24 +619,36 @@ fn build_welcome_logo_lines(compact: bool) -> Vec<Line<'static>> {
         ];
     }
 
-    [
-        " _   _    _    _   _  ___   ____  _        _    __        __",
-        "| \\ | |  / \\  | \\ | |/ _ \\ / ___|| |      / \\   \\ \\      / /",
-        "|  \\| | / _ \\ |  \\| | | | | |    | |     / _ \\   \\ \\ /\\ / / ",
-        "| |\\  |/ ___ \\| |\\  | |_| | |___ | |___ / ___ \\   \\ V  V /  ",
-        "|_| \\_/_/   \\_\\_| \\_|\\___/ \\____||_____/_/   \\_\\   \\_/\\_/   ",
-    ]
-    .into_iter()
-    .map(|line| Line::from(Span::styled(line.to_string(), Style::default().fg(HEADER))))
-    .chain(std::iter::once(Line::from(Span::styled(
-        "NANOCLAW".to_string(),
-        Style::default().fg(MUTED),
-    ))))
-    .chain(std::iter::once(Line::from(Span::styled(
+    let mut lines = Vec::new();
+    for line in [
+        " _   _    _    _   _  ___     ____ _        _ __        __",
+        "| \\ | |  / \\  | \\ | |/ _ \\   / ___| |      / \\\\ \\      / /",
+        "|  \\| | / _ \\ |  \\| | | | | | |   | |     / _ \\\\ \\ /\\ / / ",
+        "| |\\  |/ ___ \\| |\\  | |_| | | |___| |___ / ___ \\\\ V  V /  ",
+        "|_| \\_/_/   \\_\\_| \\_|\\___/   \\____|_____/_/   \\_\\\\_/\\_/   ",
+    ] {
+        lines.push(Line::from(Span::styled(
+            line.to_string(),
+            Style::default().fg(HEADER).add_modifier(Modifier::BOLD),
+        )));
+        lines.push(Line::from(Span::styled(
+            format!(" {line}"),
+            Style::default().fg(SUBTLE).add_modifier(Modifier::DIM),
+        )));
+    }
+    lines.push(Line::from(Span::styled(
+        "NANO CLAW".to_string(),
+        Style::default().fg(MUTED).add_modifier(Modifier::BOLD),
+    )));
+    lines.push(Line::from(Span::styled(
+        " NANO CLAW".to_string(),
+        Style::default().fg(SUBTLE).add_modifier(Modifier::DIM),
+    )));
+    lines.push(Line::from(Span::styled(
         "code-agent".to_string(),
         Style::default().fg(MUTED),
-    ))))
-    .collect()
+    )));
+    lines
 }
 
 fn should_render_transcript_context(title: &str) -> bool {
@@ -2313,7 +2329,12 @@ mod tests {
         assert!(lines.iter().any(|line| {
             line.spans
                 .iter()
-                .any(|span| span.content.as_ref().contains("NANOCLAW"))
+                .any(|span| span.content.as_ref().contains("NANO CLAW"))
+        }));
+        assert!(lines.iter().any(|line| {
+            line.spans
+                .iter()
+                .any(|span| span.content.as_ref().contains(" NANO CLAW"))
         }));
         assert!(lines.iter().any(|line| {
             line.spans.iter().any(|span| {
