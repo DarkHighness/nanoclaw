@@ -130,30 +130,29 @@ fn parse_patch(patch_text: &str) -> Result<Vec<ApplyPatchHunk>> {
     while index < end_index {
         let line = lines[index];
         if let Some(path) = line.strip_prefix("*** Add File: ") {
+            let path = parse_non_empty_path(path, "add file")?;
             let (contents, next_index) = parse_add_contents(&lines, index + 1, end_index)?;
-            hunks.push(ApplyPatchHunk::Add {
-                path: path.trim().to_string(),
-                contents,
-            });
+            hunks.push(ApplyPatchHunk::Add { path, contents });
             index = next_index;
             continue;
         }
         if let Some(path) = line.strip_prefix("*** Delete File: ") {
-            hunks.push(ApplyPatchHunk::Delete {
-                path: path.trim().to_string(),
-            });
+            let path = parse_non_empty_path(path, "delete file")?;
+            hunks.push(ApplyPatchHunk::Delete { path });
             index += 1;
             continue;
         }
         if let Some(path) = line.strip_prefix("*** Update File: ") {
+            let path = parse_non_empty_path(path, "update file")?;
             let mut next_index = index + 1;
             let move_path = if next_index < end_index {
                 lines[next_index]
                     .strip_prefix("*** Move to: ")
                     .map(|value| {
                         next_index += 1;
-                        value.trim().to_string()
+                        parse_non_empty_path(value, "move target")
                     })
+                    .transpose()?
             } else {
                 None
             };
@@ -161,11 +160,11 @@ fn parse_patch(patch_text: &str) -> Result<Vec<ApplyPatchHunk>> {
             if chunks.is_empty() && move_path.is_none() {
                 return Err(ToolError::invalid(format!(
                     "update hunk for `{}` must include at least one change or a move target",
-                    path.trim()
+                    path
                 )));
             }
             hunks.push(ApplyPatchHunk::Update {
-                path: path.trim().to_string(),
+                path,
                 move_path,
                 chunks,
             });
@@ -187,6 +186,16 @@ fn parse_patch(patch_text: &str) -> Result<Vec<ApplyPatchHunk>> {
         ));
     }
     Ok(hunks)
+}
+
+fn parse_non_empty_path(raw: &str, label: &str) -> Result<String> {
+    let path = raw.trim();
+    if path.is_empty() {
+        return Err(ToolError::invalid(format!(
+            "apply_patch {label} path must not be empty"
+        )));
+    }
+    Ok(path.to_string())
 }
 
 fn parse_add_contents(
@@ -217,7 +226,9 @@ fn parse_update_chunks(
     end_index: usize,
 ) -> Result<(Vec<UpdateChunk>, usize)> {
     let mut chunks = Vec::new();
-    while index < end_index && !lines[index].starts_with("***") {
+    while index < end_index
+        && (!lines[index].starts_with("***") || lines[index] == "*** End of File")
+    {
         let line = lines[index];
         let Some(context) = line.strip_prefix("@@") else {
             return Err(ToolError::invalid(format!(
@@ -231,13 +242,18 @@ fn parse_update_chunks(
         let mut is_end_of_file = false;
         while index < end_index
             && !lines[index].starts_with("@@")
-            && !lines[index].starts_with("***")
+            && (!lines[index].starts_with("***") || lines[index] == "*** End of File")
         {
             let change_line = lines[index];
             if change_line == "*** End of File" {
                 is_end_of_file = true;
                 index += 1;
                 break;
+            }
+            if change_line.is_empty() {
+                return Err(ToolError::invalid(
+                    "apply_patch change lines must begin with ` `, `+`, or `-`",
+                ));
             }
             let (prefix, content) = change_line.split_at(1);
             match prefix {
@@ -617,4 +633,122 @@ mod tests {
             );
         }
     );
+
+    bounded_async_test!(
+        async fn apply_patch_tool_supports_move_only_hunks() {
+            let dir = tempfile::tempdir().unwrap();
+            tokio::fs::write(dir.path().join("sample.txt"), "alpha\nbeta\n")
+                .await
+                .unwrap();
+
+            let result = ApplyPatchTool::new()
+                .execute(
+                    ToolCallId::new(),
+                    Value::String(
+                        "*** Begin Patch\n*** Update File: sample.txt\n*** Move to: renamed.txt\n*** End Patch"
+                            .to_string(),
+                    ),
+                    &ToolExecutionContext {
+                        workspace_root: dir.path().to_path_buf(),
+                        workspace_only: true,
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap();
+
+            assert!(!result.is_error);
+            assert!(!dir.path().join("sample.txt").exists());
+            assert_eq!(
+                tokio::fs::read_to_string(dir.path().join("renamed.txt"))
+                    .await
+                    .unwrap(),
+                "alpha\nbeta\n"
+            );
+        }
+    );
+
+    bounded_async_test!(
+        async fn apply_patch_tool_uses_end_of_file_anchor_for_repeated_lines() {
+            let dir = tempfile::tempdir().unwrap();
+            tokio::fs::write(dir.path().join("sample.txt"), "value\nkeep\nvalue\n")
+                .await
+                .unwrap();
+
+            let result = ApplyPatchTool::new()
+                .execute(
+                    ToolCallId::new(),
+                    Value::String(
+                        "*** Begin Patch\n*** Update File: sample.txt\n@@\n-value\n+tail\n*** End of File\n*** End Patch"
+                            .to_string(),
+                    ),
+                    &ToolExecutionContext {
+                        workspace_root: dir.path().to_path_buf(),
+                        workspace_only: true,
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap();
+
+            assert!(!result.is_error);
+            assert_eq!(
+                tokio::fs::read_to_string(dir.path().join("sample.txt"))
+                    .await
+                    .unwrap(),
+                "value\nkeep\ntail\n"
+            );
+        }
+    );
+
+    bounded_async_test!(
+        async fn apply_patch_tool_applies_multiple_chunks_in_one_file() {
+            let dir = tempfile::tempdir().unwrap();
+            tokio::fs::write(dir.path().join("sample.txt"), "alpha\nbeta\ngamma\ndelta\n")
+                .await
+                .unwrap();
+
+            let result = ApplyPatchTool::new()
+                .execute(
+                    ToolCallId::new(),
+                    Value::String(
+                        "*** Begin Patch\n*** Update File: sample.txt\n@@\n-beta\n+beta-2\n@@\n-delta\n+delta-2\n*** End Patch"
+                            .to_string(),
+                    ),
+                    &ToolExecutionContext {
+                        workspace_root: dir.path().to_path_buf(),
+                        workspace_only: true,
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap();
+
+            assert!(!result.is_error);
+            assert_eq!(
+                tokio::fs::read_to_string(dir.path().join("sample.txt"))
+                    .await
+                    .unwrap(),
+                "alpha\nbeta-2\ngamma\ndelta-2\n"
+            );
+        }
+    );
+
+    #[test]
+    fn parse_patch_rejects_empty_paths() {
+        let error =
+            parse_patch("*** Begin Patch\n*** Add File:   \n+hello\n*** End Patch").unwrap_err();
+
+        assert!(error.to_string().contains("path must not be empty"));
+    }
+
+    #[test]
+    fn parse_patch_rejects_empty_change_lines_instead_of_panicking() {
+        let error = parse_patch(
+            "*** Begin Patch\n*** Update File: sample.txt\n@@\n-old\n\n+new\n*** End Patch",
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("change lines must begin"));
+    }
 }
