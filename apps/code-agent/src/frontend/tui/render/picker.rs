@@ -239,7 +239,7 @@ pub(super) fn build_pending_control_text(state: &TuiState) -> Text<'static> {
 
     let picker = state.pending_control_picker.as_ref();
     if let Some(picker) = picker {
-        let window = visible_pending_control_window(&state.pending_controls, picker, 4);
+        let window = visible_pending_control_window(&state.pending_controls, picker, 3);
         if window.start > 0 {
             lines.push(Line::from(Span::styled(
                 format!("… {} older", window.start),
@@ -252,7 +252,7 @@ pub(super) fn build_pending_control_text(state: &TuiState) -> Text<'static> {
             if actual_index == selected_index {
                 continue;
             }
-            lines.push(build_pending_control_row(control, false));
+            lines.push(build_pending_control_context_row(control));
         }
         if window.end < state.pending_controls.len() {
             lines.push(Line::from(Span::styled(
@@ -340,6 +340,24 @@ fn build_pending_control_row(
         ));
     }
     Line::from(spans)
+}
+
+fn build_pending_control_context_row(
+    control: &crate::backend::PendingControlSummary,
+) -> Line<'static> {
+    let kind_label = match control.kind {
+        crate::backend::PendingControlKind::Prompt => "prompt",
+        crate::backend::PendingControlKind::Steer => "steer",
+    };
+    Line::from(vec![
+        Span::styled("  ", Style::default().fg(SUBTLE)),
+        Span::styled(kind_label, Style::default().fg(MUTED)),
+        Span::styled(" ", Style::default().fg(SUBTLE)),
+        Span::styled(
+            preview_text(&control.preview, 56),
+            Style::default().fg(TEXT),
+        ),
+    ])
 }
 
 fn build_selected_pending_control_block(

@@ -286,6 +286,11 @@ fn pending_control_band_surfaces_selected_prompt_and_editing_state() {
     assert!(
         text.lines
             .iter()
+            .any(|line| line_text_for(line) == "  prompt write a regression test")
+    );
+    assert!(
+        text.lines
+            .iter()
             .any(|line| line_text_for(line) == "› steer")
     );
     let prompt_row = text
