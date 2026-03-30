@@ -298,20 +298,32 @@ pub(super) fn pending_control_timeline_entry(state: &TuiState) -> Option<String>
     Some(lines.join("\n"))
 }
 
-pub(super) fn pending_control_embedded_lines(state: &TuiState) -> Option<Vec<Line<'static>>> {
+pub(super) fn pending_control_embedded_lines(
+    state: &TuiState,
+    animation_frame: Option<u128>,
+) -> Option<Vec<Line<'static>>> {
     let follow_ups = pending_control_timeline_lines(state)?;
-    let mut lines = vec![Line::from(vec![
-        Span::styled("    ", Style::default().fg(SUBTLE)),
-        Span::styled(
-            format!("Queued follow-ups · {}", state.pending_controls.len()),
-            Style::default().fg(WARN),
-        ),
-    ])];
+    let mut lines = render_shell_summary_body(
+        &format!("Queued follow-ups · {}", state.pending_controls.len()),
+        "•",
+        TranscriptEntryKind::ShellSummary,
+        animation_frame,
+    )
+    .into_iter()
+    .map(|line| {
+        let mut spans = vec![transcript_continuation_prefix(
+            TranscriptEntryKind::ShellSummary,
+        )];
+        spans.extend(line.spans);
+        Line::from(spans)
+    })
+    .collect::<Vec<_>>();
     lines.extend(follow_ups.into_iter().map(|line| {
-        let detail = line.replacen("  └ ", "", 1);
+        let detail = line.strip_prefix("  └ ").unwrap_or(&line);
         Line::from(vec![
-            Span::styled("    ", Style::default().fg(SUBTLE)),
-            Span::styled(detail, Style::default().fg(MUTED)),
+            transcript_continuation_prefix(TranscriptEntryKind::ShellSummary),
+            Span::styled("  └ ", Style::default().fg(SUBTLE)),
+            Span::styled(detail.to_string(), Style::default().fg(MUTED)),
         ])
     }));
     Some(lines)

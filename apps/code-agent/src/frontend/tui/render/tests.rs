@@ -537,15 +537,20 @@ fn transcript_merges_pending_controls_into_the_active_tool_timeline_cell() {
         .filter(|line| line_text_for(line).contains("Running bash"))
         .count();
     assert_eq!(running_count, 1);
-    assert!(
-        rendered
-            .iter()
-            .any(|line| line_text_for(line).contains("Queued follow-ups · 2"))
-    );
+    let queued_headline = rendered
+        .iter()
+        .find(|line| line_text_for(line).contains("Queued follow-ups · 2"))
+        .expect("expected embedded queued follow-ups headline");
+    assert!(queued_headline.spans.len() > 3);
     assert!(
         rendered
             .iter()
             .any(|line| line_text_for(line).contains("latest pending steer"))
+    );
+    assert!(
+        rendered
+            .iter()
+            .any(|line| line_text_for(line).contains("  └ older queued prompt"))
     );
 }
 

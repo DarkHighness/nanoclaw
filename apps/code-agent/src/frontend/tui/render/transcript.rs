@@ -84,7 +84,10 @@ pub(super) fn build_transcript_lines(state: &TuiState) -> Vec<Line<'static>> {
                     .then_some(tool_timeline_animation)
                     .flatten(),
             ));
-            if active_tool_entry && let Some(embedded) = pending_control_embedded_lines(state) {
+            if active_tool_entry
+                && let Some(embedded) =
+                    pending_control_embedded_lines(state, tool_timeline_animation)
+            {
                 pending_controls_embedded = true;
                 lines.extend(embedded);
             }
