@@ -67,7 +67,7 @@ enum OperatorTaskOutcome {
 enum PlainInputSubmitAction {
     StartPrompt,
     QueuePrompt,
-    QueueSteer,
+    SteerActiveTurn,
 }
 
 impl CodeAgentTui {
@@ -600,8 +600,8 @@ impl CodeAgentTui {
             PlainInputSubmitAction::QueuePrompt => {
                 self.queue_prompt_behind_active_turn(input).await;
             }
-            PlainInputSubmitAction::QueueSteer => {
-                self.queue_steer_behind_active_turn(input, Some("inline_enter".to_string()))
+            PlainInputSubmitAction::SteerActiveTurn => {
+                self.schedule_runtime_steer_while_active(input, Some("inline_enter".to_string()))
                     .await;
             }
         }
@@ -630,21 +630,28 @@ impl CodeAgentTui {
         });
     }
 
-    async fn queue_steer_behind_active_turn(&mut self, message: String, reason: Option<String>) {
-        // The root runtime still executes one turn at a time under a single
-        // host-owned handle. Queueing keeps the operator shortcut honest until
-        // the runtime grows an actual concurrent steer mailbox for root turns.
-        let queued = self.command_queue.push_steer(message.clone(), reason).await;
-        let depth = self.command_queue.len().await;
-        self.ui_state.mutate(|state| {
-            state.session.queued_commands = depth;
-            state.status = "Queued steer for the next interrupt-safe boundary".to_string();
-            state.push_activity(format!(
-                "queued interrupt-safe steer {}: {}",
-                queued.id,
-                state::preview_text(&message, 40)
-            ));
-        });
+    async fn schedule_runtime_steer_while_active(
+        &mut self,
+        message: String,
+        reason: Option<String>,
+    ) {
+        let preview = state::preview_text(&message, 40);
+        match self.session.schedule_runtime_steer(message, reason) {
+            Ok(()) => self.ui_state.mutate(|state| {
+                state.status = "Scheduled steer for the active turn".to_string();
+                state.push_activity(format!("scheduled active-turn steer: {preview}"));
+            }),
+            Err(error) => {
+                let message = error.to_string();
+                self.ui_state.mutate(|state| {
+                    state.status = format!("Failed to schedule steer: {message}");
+                    state.push_activity(format!(
+                        "failed to schedule active-turn steer: {}",
+                        state::preview_text(&message, 56)
+                    ));
+                });
+            }
+        }
     }
 
     async fn start_command(&mut self, command: RuntimeCommand) {
@@ -911,9 +918,9 @@ impl CodeAgentTui {
                     return Ok(false);
                 };
                 if self.turn_task.is_some() {
-                    self.queue_steer_behind_active_turn(
+                    self.schedule_runtime_steer_while_active(
                         message,
-                        Some("queued_command".to_string()),
+                        Some("manual_command".to_string()),
                     )
                     .await;
                     return Ok(false);
@@ -1522,7 +1529,7 @@ fn plain_input_submit_action(
         return None;
     }
     match (turn_running, key) {
-        (true, KeyCode::Enter) => Some(PlainInputSubmitAction::QueueSteer),
+        (true, KeyCode::Enter) => Some(PlainInputSubmitAction::SteerActiveTurn),
         (true, KeyCode::Tab) => Some(PlainInputSubmitAction::QueuePrompt),
         (false, KeyCode::Enter) => Some(PlainInputSubmitAction::StartPrompt),
         _ => None,
@@ -1715,10 +1722,10 @@ mod tests {
     }
 
     #[test]
-    fn running_enter_queues_steer() {
+    fn running_enter_targets_active_turn_steer() {
         assert_eq!(
             plain_input_submit_action("tighten the plan", true, KeyCode::Enter),
-            Some(PlainInputSubmitAction::QueueSteer)
+            Some(PlainInputSubmitAction::SteerActiveTurn)
         );
     }
 

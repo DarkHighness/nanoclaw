@@ -13,7 +13,7 @@ use crate::backend::{
 use crate::provider::{MutableAgentBackend, ReasoningEffortUpdate};
 use crate::statusline::StatusLineConfig;
 use agent::mcp::ConnectedMcpServer;
-use agent::runtime::{Result as RuntimeResult, RunTurnOutcome};
+use agent::runtime::{Result as RuntimeResult, RunTurnOutcome, RuntimeSteerMailbox};
 use agent::tools::{SubagentExecutor, SubagentParentContext};
 use agent::types::{
     AgentSessionId, AgentTaskSpec, AgentWaitMode, AgentWaitRequest, Message, SessionId,
@@ -142,6 +142,7 @@ pub(crate) struct ModelReasoningEffortOutcome {
 #[derive(Clone)]
 pub(crate) struct CodeAgentSession {
     runtime: Arc<AsyncMutex<AgentRuntime>>,
+    steer_mailbox: RuntimeSteerMailbox,
     model_backend: Option<MutableAgentBackend>,
     subagent_executor: Arc<dyn SubagentExecutor>,
     store: Arc<dyn SessionStore>,
@@ -166,8 +167,10 @@ impl CodeAgentSession {
         skills: Vec<Skill>,
     ) -> Self {
         let workspace_root = startup.workspace_root.clone();
+        let steer_mailbox = runtime.steer_mailbox();
         Self {
             runtime: Arc::new(AsyncMutex::new(runtime)),
+            steer_mailbox,
             model_backend,
             subagent_executor,
             store,
@@ -234,6 +237,19 @@ impl CodeAgentSession {
             .await
             .map_err(anyhow::Error::from)?;
         self.sync_runtime_session_refs(&runtime);
+        Ok(())
+    }
+
+    pub(crate) fn schedule_runtime_steer(
+        &self,
+        message: impl Into<String>,
+        reason: Option<String>,
+    ) -> Result<()> {
+        // Active-turn steer must bypass the host prompt queue so the runtime can
+        // merge it only at its own safe points between model/tool phases.
+        self.steer_mailbox
+            .send(message, reason)
+            .map_err(|error| anyhow::anyhow!("runtime steer mailbox closed: {error}"))?;
         Ok(())
     }
 

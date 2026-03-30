@@ -130,7 +130,7 @@ const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
         section: "Session",
         name: "steer",
         usage: "steer <notes>",
-        summary: "queue interrupt-safe guidance",
+        summary: "schedule safe-point guidance",
     },
     SlashCommandSpec {
         section: "Session",
