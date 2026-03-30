@@ -30,6 +30,7 @@ dependencies = [
  "provider",
  "runtime",
  "serde",
+ "serde_json",
  "skills",
  "store",
  "tokio",

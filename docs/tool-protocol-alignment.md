@@ -79,7 +79,7 @@ Completed so far:
 
 Still pending inside this pass:
 
-- plugin or directory-scan custom tools
+- plugin-defined custom tool contributions
 - a freeform grammar `apply_patch` surface
 
 ## Baseline Rules
@@ -219,7 +219,7 @@ These are the highest-signal missing capabilities today:
 - a grammar-based `apply_patch`-style freeform tool surface
 - a model-visible approval or permission-request tool contract
 - `tool_search` and `tool_suggest` style deferred tool discovery
-- plugin or config-directory custom tool loading
+- plugin-defined custom tool loading
 - image or binary-view tool surfaces comparable to `view_image`
 
 ### Implemented But Still Protocol-Weaker
@@ -235,8 +235,9 @@ industrial baseline:
 - `ToolResult` now has first-class attachments and a standard continuation
   envelope, but only part of the tool surface emits typed continuations so far
 - result metadata is still loosely typed and varies by tool family
-- tool loading still lacks the OpenCode-style plugin or custom tool scan even
-  though the substrate now has a Codex-style dynamic tool registration path
+- directory-scanned custom tools now load from `.nanoclaw/tools`, but plugin
+  manifests still cannot contribute model-visible custom tools through the same
+  contract
 - the agent tool family is useful but fragmented; naming and lifecycle are not
   yet normalized to one clear task/session/close/resume model
 - tool exposure is not yet model-aware in the OpenCode sense, where one model
@@ -503,7 +504,9 @@ Once the shared protocol exists, add the missing industrial extension surfaces:
   - add `request_user_input` as a host-mediated workflow tool over a shared
     backend prompt/response coordinator, with multi-question batches,
     structured answer vectors, and host-supplied `Other` note capture
-- plugin or custom tool loading
+  - add directory-scanned command-backed custom tools from `.nanoclaw/tools`
+    on top of the existing dynamic registry path
+- plugin-defined custom tool loading
 
 ### P2
 
@@ -522,7 +525,7 @@ tool contracts and instead close the remaining workflow and extension gaps.
 
 The recommended order is:
 
-1. decide whether plugin/directory-scan loading or freeform `apply_patch`
+1. decide whether plugin-defined custom tools or freeform `apply_patch`
    should land first
 2. only then add the remaining higher-variance parity work such as
    `tool_search` or model-aware tool substitution rules

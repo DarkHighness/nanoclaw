@@ -6,6 +6,7 @@
 //! one inseparable runtime unit.
 
 mod builder;
+mod custom_tools;
 mod plugin_boot;
 mod prelude;
 mod workspace_layout;
@@ -22,6 +23,7 @@ pub use tools;
 pub use types;
 
 pub use builder::*;
+pub use custom_tools::*;
 pub use plugin_boot::*;
 pub use prelude::*;
 pub use workspace_layout::*;

@@ -21,6 +21,37 @@ It intentionally keeps the host layer thin:
 - MCP server, prompt, and resource inspection from the TUI
 - backend-owned startup diagnostics surfaced through the inspector
 
+## Custom Tools
+
+Workspace-local custom tools can be dropped into `.nanoclaw/tools` as command
+manifests. The host scans:
+
+- `.nanoclaw/tools/*.toml`
+- `.nanoclaw/tools/<tool_name>/tool.toml`
+
+Each manifest registers one dynamic tool backed by a local command. The command
+receives the JSON invocation payload on stdin and can either print plain text or
+return a JSON envelope with `text`, `structured_content`, `metadata`,
+`continuation`, and `attachments`.
+
+Minimal example:
+
+```toml
+description = "Summarize a workspace-specific checklist."
+program = "./run.sh"
+
+[[parameters]]
+name = "topic"
+type = "string"
+description = "Checklist topic."
+required = true
+
+[approval]
+read_only = true
+mutates_state = false
+idempotent = true
+```
+
 ## Usage
 
 Interactive REPL:

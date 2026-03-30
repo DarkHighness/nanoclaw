@@ -261,6 +261,17 @@ async fn build_runtime(
     let mut startup_warnings = runtime_tooling.startup_warnings.clone();
     let hook_runner = runtime_tooling.hook_runner.clone();
     let mut tools = runtime_tooling.tools;
+    let custom_tool_executor: Option<Arc<dyn agent::tools::ProcessExecutor>> =
+        host_process_surfaces_allowed.then(|| process_executor.clone() as Arc<_>);
+    let custom_tool_outcome =
+        agent::register_workspace_custom_tools(workspace_root, custom_tool_executor, &tools)?;
+    if !custom_tool_outcome.loaded_tools.is_empty() {
+        info!(
+            tools = ?custom_tool_outcome.loaded_tools,
+            "registered workspace custom tools"
+        );
+    }
+    startup_warnings.extend(custom_tool_outcome.warnings.clone());
     // Driver-backed plugins expand into normal local tools here so the runtime
     // and subagent surfaces stay identical regardless of whether a capability
     // came from builtin boot code or a plugin slot selection.
