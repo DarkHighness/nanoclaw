@@ -24,6 +24,7 @@ pub(super) fn render_collapsed_shell_summary(
     accent: Color,
     body: &str,
     kind: TranscriptEntryKind,
+    animation_frame: Option<u128>,
 ) -> Vec<Line<'static>> {
     let headline = body.lines().next().unwrap_or_default();
     let hidden_line_count = body
@@ -32,7 +33,7 @@ pub(super) fn render_collapsed_shell_summary(
         .filter(|line| !line.trim().is_empty())
         .count();
 
-    let mut rendered = render_shell_summary_body(headline, marker, kind);
+    let mut rendered = render_shell_summary_body(headline, marker, kind, animation_frame);
     if hidden_line_count > 0 {
         rendered.push(Line::from(vec![
             transcript_continuation_prefix(kind),
@@ -70,6 +71,7 @@ pub(super) fn render_shell_summary_body(
     body: &str,
     marker: &str,
     kind: TranscriptEntryKind,
+    animation_frame: Option<u128>,
 ) -> Vec<Line<'static>> {
     let mut rendered = Vec::new();
     let mut first_visible = true;
@@ -94,13 +96,20 @@ pub(super) fn render_shell_summary_body(
             continue;
         }
 
-        rendered.push(render_transcript_body_line(
-            raw_line,
-            marker,
-            kind,
-            false,
-            first_visible,
-        ));
+        if first_visible
+            && let Some(animated) =
+                render_animated_shell_status_line(raw_line, marker, kind, animation_frame)
+        {
+            rendered.push(animated);
+        } else {
+            rendered.push(render_transcript_body_line(
+                raw_line,
+                marker,
+                kind,
+                false,
+                first_visible,
+            ));
+        }
         if !raw_line.trim().is_empty() {
             first_visible = false;
         }
@@ -111,6 +120,24 @@ pub(super) fn render_shell_summary_body(
     }
 
     rendered
+}
+
+fn render_animated_shell_status_line(
+    raw_line: &str,
+    marker: &str,
+    kind: TranscriptEntryKind,
+    animation_frame: Option<u128>,
+) -> Option<Line<'static>> {
+    let frame_ms = animation_frame?;
+    let (status, remainder, accent) = shell_status_phrase(raw_line)?;
+    let mut spans = animated_status_phrase_spans(status, frame_ms, accent);
+    if !remainder.is_empty() {
+        spans.push(Span::styled(
+            remainder.to_string(),
+            transcript_body_style(marker, kind, raw_line),
+        ));
+    }
+    Some(Line::from(spans))
 }
 
 pub(super) fn prefix_transcript_marker(
@@ -261,6 +288,22 @@ pub(super) fn live_progress_lines(state: &TuiState) -> Vec<Line<'static>> {
 }
 
 pub(super) fn animated_progress_text_spans(text: &str, frame_ms: u128) -> Vec<Span<'static>> {
+    animated_emphasis_text_spans(text, frame_ms, HEADER, USER, TEXT, ASSISTANT, MUTED)
+}
+
+fn animated_status_phrase_spans(text: &str, frame_ms: u128, accent: Color) -> Vec<Span<'static>> {
+    animated_emphasis_text_spans(text, frame_ms, HEADER, accent, TEXT, accent, MUTED)
+}
+
+fn animated_emphasis_text_spans(
+    text: &str,
+    frame_ms: u128,
+    head_color: Color,
+    leading_color: Color,
+    mid_color: Color,
+    trailing_color: Color,
+    base_color: Color,
+) -> Vec<Span<'static>> {
     let chars = text.chars().collect::<Vec<_>>();
     if chars.is_empty() {
         return vec![Span::raw("")];
@@ -280,11 +323,11 @@ pub(super) fn animated_progress_text_spans(text: &str, frame_ms: u128) -> Vec<Sp
 
             let delta = index as isize - head;
             let (color, modifier) = match delta {
-                0 => (HEADER, Modifier::BOLD),
-                1 => (USER, Modifier::BOLD),
-                2 | 3 => (TEXT, Modifier::BOLD),
-                4 | 5 => (ASSISTANT, Modifier::empty()),
-                _ => (MUTED, Modifier::empty()),
+                0 => (head_color, Modifier::BOLD),
+                1 => (leading_color, Modifier::BOLD),
+                2 | 3 => (mid_color, Modifier::BOLD),
+                4 | 5 => (trailing_color, Modifier::empty()),
+                _ => (base_color, Modifier::empty()),
             };
             Span::styled(
                 ch.to_string(),
@@ -294,7 +337,7 @@ pub(super) fn animated_progress_text_spans(text: &str, frame_ms: u128) -> Vec<Sp
         .collect()
 }
 
-fn animation_frame_ms(started_at: Instant, now: Instant) -> u128 {
+pub(super) fn animation_frame_ms(started_at: Instant, now: Instant) -> u128 {
     now.duration_since(started_at).as_millis()
 }
 
@@ -340,4 +383,32 @@ fn summary_color(line: &str) -> Color {
     } else {
         TEXT
     }
+}
+
+fn shell_status_phrase(line: &str) -> Option<(&str, &str, Color)> {
+    if line.starts_with("Awaiting approval for ") {
+        let phrase = "Awaiting approval";
+        return Some((phrase, &line[phrase.len()..], WARN));
+    }
+    if line.starts_with("Requested ") {
+        let phrase = "Requested";
+        return Some((phrase, &line[phrase.len()..], WARN));
+    }
+    if line.starts_with("Running ") {
+        let phrase = "Running";
+        return Some((phrase, &line[phrase.len()..], USER));
+    }
+    if line.starts_with("Finished ") {
+        let phrase = "Finished";
+        return Some((phrase, &line[phrase.len()..], ASSISTANT));
+    }
+    if line.starts_with("Approved ") {
+        let phrase = "Approved";
+        return Some((phrase, &line[phrase.len()..], ASSISTANT));
+    }
+    if line.starts_with("Denied ") {
+        let phrase = "Denied";
+        return Some((phrase, &line[phrase.len()..], ERROR));
+    }
+    None
 }

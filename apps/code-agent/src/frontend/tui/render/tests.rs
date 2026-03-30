@@ -1,7 +1,8 @@
 use super::chrome::build_side_rail_lines;
 use super::statusline::format_footer_context;
+use super::transcript::TranscriptEntryKind;
 use super::transcript::build_transcript_lines;
-use super::transcript_shell::animated_progress_text_spans;
+use super::transcript_shell::{animated_progress_text_spans, render_shell_summary_body};
 use super::view::{
     build_collection_text, build_command_palette_text, build_key_value_text,
     build_statusline_picker_text, should_render_view_title,
@@ -242,6 +243,16 @@ fn animated_progress_text_preserves_the_full_status_label() {
 }
 
 #[test]
+fn shell_summary_highlights_requested_running_and_finished_status_phrases() {
+    for headline in ["Requested bash", "Running bash", "Finished bash"] {
+        let rendered =
+            render_shell_summary_body(headline, "•", TranscriptEntryKind::ShellSummary, Some(225));
+        assert_eq!(line_text_for(&rendered[0]), headline);
+        assert!(rendered[0].spans.len() > 2);
+    }
+}
+
+#[test]
 fn collection_text_renders_shell_summary_blocks_for_history_rows() {
     let rendered = build_collection_text(
         "Sessions",
@@ -362,11 +373,7 @@ fn transcript_hides_progress_line_while_tool_cell_is_active() {
 
     let running_count = rendered
         .iter()
-        .filter(|line| {
-            line.spans
-                .iter()
-                .any(|span| span.content.as_ref().contains("Running bash"))
-        })
+        .filter(|line| line_text_for(line).contains("Running bash"))
         .count();
     assert_eq!(running_count, 1);
     assert!(
