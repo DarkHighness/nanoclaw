@@ -1,20 +1,18 @@
 use super::super::approval::ApprovalPrompt;
 use super::super::state::{MainPaneMode, TodoEntry, TuiState, preview_text};
+use super::shell::bottom_band_inner_area;
 use super::theme::{
     ACCENT, ASSISTANT, BOTTOM_PANE_BG, ERROR, FOOTER_BG, HEADER, MUTED, SUBTLE, TEXT, USER, WARN,
 };
 use super::transcript_markdown::code_span;
-use ratatui::layout::{Margin, Rect};
+use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Paragraph, Wrap};
 
 pub(super) fn render_composer(frame: &mut ratatui::Frame<'_>, area: Rect, state: &TuiState) {
     frame.render_widget(Block::default().style(Style::default().bg(FOOTER_BG)), area);
-    let inner = area.inner(Margin {
-        vertical: 0,
-        horizontal: 1,
-    });
+    let inner = bottom_band_inner_area(area);
     frame.render_widget(
         Paragraph::new(build_composer_line(state)).style(Style::default().fg(TEXT).bg(FOOTER_BG)),
         inner,
@@ -30,10 +28,7 @@ pub(super) fn render_approval_band(
         Block::default().style(Style::default().bg(BOTTOM_PANE_BG)),
         area,
     );
-    let inner = area.inner(Margin {
-        vertical: 0,
-        horizontal: 2,
-    });
+    let inner = bottom_band_inner_area(area);
     frame.render_widget(
         Paragraph::new(build_approval_text(approval))
             .wrap(Wrap { trim: false })

@@ -2,9 +2,9 @@ use super::super::state::{
     PendingControlEditorState, PendingControlPickerState, TuiState, preview_text,
 };
 use super::shared::pending_control_reason_label as format_pending_control_reason;
+use super::shell::bottom_band_inner_area;
 use super::theme::{ACCENT, ASSISTANT, BOTTOM_PANE_BG, HEADER, MUTED, SUBTLE, TEXT, USER, WARN};
 use crate::frontend::tui::commands::{SlashCommandHint, SlashCommandSpec};
-use ratatui::layout::Margin;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Paragraph, Wrap};
@@ -18,10 +18,7 @@ pub(super) fn render_command_hint_band(
         Block::default().style(Style::default().bg(BOTTOM_PANE_BG)),
         area,
     );
-    let inner = area.inner(Margin {
-        vertical: 0,
-        horizontal: 2,
-    });
+    let inner = bottom_band_inner_area(area);
     frame.render_widget(
         Paragraph::new(build_command_hint_text(command_hint))
             .wrap(Wrap { trim: false })
@@ -189,10 +186,7 @@ pub(super) fn render_pending_control_band(
         Block::default().style(Style::default().bg(BOTTOM_PANE_BG)),
         area,
     );
-    let inner = area.inner(Margin {
-        vertical: 0,
-        horizontal: 2,
-    });
+    let inner = bottom_band_inner_area(area);
     frame.render_widget(
         Paragraph::new(build_pending_control_text(state))
             .wrap(Wrap { trim: false })

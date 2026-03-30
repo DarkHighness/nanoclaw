@@ -31,11 +31,15 @@ pub(super) fn render_side_rail(frame: &mut ratatui::Frame<'_>, area: Rect, state
     frame.render_widget(rail, inner);
 }
 
-pub(super) fn composer_inner_area(area: Rect) -> Rect {
+pub(super) fn bottom_band_inner_area(area: Rect) -> Rect {
     area.inner(Margin {
         vertical: 0,
         horizontal: 1,
     })
+}
+
+pub(super) fn composer_inner_area(area: Rect) -> Rect {
+    bottom_band_inner_area(area)
 }
 
 pub(super) fn bottom_layout_constraints(
