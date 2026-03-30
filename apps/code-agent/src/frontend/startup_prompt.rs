@@ -13,7 +13,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Margin, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use std::io::{self, Stdout};
 
 const BG: Color = Color::Rgb(15, 17, 20);
@@ -27,6 +27,7 @@ const USER: Color = Color::Rgb(221, 188, 128);
 const HEADER: Color = Color::Rgb(244, 244, 239);
 const WARN: Color = Color::Rgb(223, 179, 88);
 const ERROR: Color = Color::Rgb(227, 125, 118);
+const BORDER_ACTIVE: Color = Color::Rgb(165, 168, 160);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum StartupPromptSelection {
@@ -99,7 +100,10 @@ impl StartupPromptState {
 struct StartupPromptLayout {
     popup: Rect,
     summary: Rect,
-    body: Rect,
+    risk_card: Rect,
+    policy_card: Rect,
+    reason_card: Rect,
+    fix_card: Rect,
     action_area: Rect,
     action_prompt: Rect,
     abort_button: Rect,
@@ -200,11 +204,29 @@ fn render_prompt(
             .style(Style::default().fg(TEXT).bg(FOOTER_BG)),
         layout.summary,
     );
-    frame.render_widget(
-        Paragraph::new(build_notice_text(notice))
-            .wrap(Wrap { trim: false })
-            .style(Style::default().fg(TEXT).bg(FOOTER_BG)),
-        layout.body,
+    render_section_card(
+        frame,
+        layout.risk_card,
+        build_risk_card_text(),
+        Style::default().bg(BOTTOM_PANE_BG),
+    );
+    render_section_card(
+        frame,
+        layout.policy_card,
+        build_policy_card_text(notice),
+        Style::default().bg(BOTTOM_PANE_BG),
+    );
+    render_section_card(
+        frame,
+        layout.reason_card,
+        build_reason_card_text(notice),
+        Style::default().bg(BOTTOM_PANE_BG),
+    );
+    render_section_card(
+        frame,
+        layout.fix_card,
+        build_fix_card_text(notice),
+        Style::default().bg(BOTTOM_PANE_BG),
     );
     frame.render_widget(
         Block::default().style(Style::default().bg(BOTTOM_PANE_BG)),
@@ -219,6 +241,7 @@ fn render_prompt(
     render_action_button(
         frame,
         layout.abort_button,
+        "Esc",
         "Abort Startup",
         state.selection == StartupPromptSelection::Abort,
         ERROR,
@@ -226,6 +249,7 @@ fn render_prompt(
     render_action_button(
         frame,
         layout.continue_button,
+        "Y",
         "Continue Without Sandbox",
         state.selection == StartupPromptSelection::Continue,
         ACCENT,
@@ -238,32 +262,65 @@ fn render_prompt(
     );
 }
 
+fn render_section_card(
+    frame: &mut ratatui::Frame<'_>,
+    area: Rect,
+    text: Text<'static>,
+    style: Style,
+) {
+    frame.render_widget(Block::default().style(style), area);
+    let inner = area.inner(Margin {
+        vertical: 1,
+        horizontal: 2,
+    });
+    frame.render_widget(
+        Paragraph::new(text)
+            .wrap(Wrap { trim: false })
+            .style(style.fg(TEXT)),
+        inner,
+    );
+}
+
 fn render_action_button(
     frame: &mut ratatui::Frame<'_>,
     area: Rect,
+    shortcut: &'static str,
     label: &'static str,
     selected: bool,
     accent: Color,
 ) {
-    let (background, foreground) = if selected {
-        (accent, BG)
+    let (background, foreground, border) = if selected {
+        (accent, BG, accent)
     } else {
-        (FOOTER_BG, MUTED)
+        (FOOTER_BG, TEXT, BORDER_ACTIVE)
     };
     frame.render_widget(
-        Paragraph::new(format!(" {label} "))
-            .alignment(Alignment::Center)
-            .block(Block::default().style(Style::default().bg(background)))
-            .style(
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                format!("{shortcut} "),
                 Style::default()
-                    .fg(foreground)
-                    .bg(background)
-                    .add_modifier(if selected {
-                        Modifier::BOLD
-                    } else {
-                        Modifier::empty()
-                    }),
+                    .fg(if selected { BG } else { accent })
+                    .add_modifier(Modifier::BOLD),
             ),
+            Span::styled(label, Style::default().fg(foreground)),
+        ]))
+        .alignment(Alignment::Center)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(border))
+                .style(Style::default().bg(background)),
+        )
+        .style(
+            Style::default()
+                .fg(foreground)
+                .bg(background)
+                .add_modifier(if selected {
+                    Modifier::BOLD
+                } else {
+                    Modifier::empty()
+                }),
+        ),
         area,
     );
 }
@@ -293,22 +350,47 @@ fn build_summary_text() -> Text<'static> {
             ),
         ]),
         Line::from(vec![Span::styled(
-            "Shell access, command hooks, stdio MCP servers, and managed code-intel helpers stay degraded.",
+            "Review the degraded surfaces and host-side fixes below before you continue.",
             Style::default().fg(MUTED),
         )]),
     ])
 }
 
-fn build_notice_text(notice: &SandboxFallbackNotice) -> Text<'static> {
-    let mut lines = Vec::new();
-    lines.extend(build_detail_section("policy", &notice.policy_summary, USER));
-    lines.push(Line::raw(""));
-    lines.extend(build_detail_section("reason", &notice.reason, ACCENT));
-    lines.push(Line::raw(""));
-    lines.push(build_section_label("fix on host", WARN));
+fn build_risk_card_text() -> Text<'static> {
+    Text::from(vec![
+        build_section_label("What Changes Now", ERROR),
+        Line::raw(""),
+        Line::from(vec![Span::styled(
+            "Sandbox enforcement is disabled for this run.",
+            Style::default().fg(ERROR).add_modifier(Modifier::BOLD),
+        )]),
+        Line::raw(""),
+        bullet_line("shell access stays degraded"),
+        bullet_line("command hooks stay disabled"),
+        bullet_line("stdio MCP + managed code-intel helpers stay degraded"),
+    ])
+}
+
+fn build_policy_card_text(notice: &SandboxFallbackNotice) -> Text<'static> {
+    Text::from(vec![
+        build_section_label("Current Policy", USER),
+        Line::raw(""),
+        detail_line(&notice.policy_summary),
+    ])
+}
+
+fn build_reason_card_text(notice: &SandboxFallbackNotice) -> Text<'static> {
+    Text::from(vec![
+        build_section_label("Why This Failed", ACCENT),
+        Line::raw(""),
+        detail_line(&notice.reason),
+    ])
+}
+
+fn build_fix_card_text(notice: &SandboxFallbackNotice) -> Text<'static> {
+    let mut lines = vec![build_section_label("Fix On Host", WARN), Line::raw("")];
     lines.extend(notice.setup_steps.iter().enumerate().map(|(index, step)| {
         Line::from(vec![
-            Span::styled("  ", Style::default().fg(SUBTLE)),
             Span::styled(
                 format!("{}. ", index + 1),
                 Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
@@ -327,7 +409,7 @@ fn build_prompt_text() -> Text<'static> {
         ),
         Span::styled(" · ", Style::default().fg(SUBTLE)),
         Span::styled(
-            "Continue without sandbox enforcement for this run?",
+            "Choose one option to continue startup.",
             Style::default().fg(HEADER).add_modifier(Modifier::BOLD),
         ),
     ])])
@@ -335,7 +417,9 @@ fn build_prompt_text() -> Text<'static> {
 
 fn build_footer_text() -> Text<'static> {
     Text::from(vec![Line::from(vec![
-        Span::styled("default deny", Style::default().fg(ERROR)),
+        Span::styled("safe default", Style::default().fg(MUTED)),
+        Span::styled(" · ", Style::default().fg(SUBTLE)),
+        Span::styled("abort startup", Style::default().fg(ERROR)),
         Span::styled(" · ", Style::default().fg(SUBTLE)),
         Span::styled("Tab", Style::default().fg(ACCENT)),
         Span::styled(" switch", Style::default().fg(MUTED)),
@@ -358,18 +442,23 @@ fn build_section_label(label: &'static str, color: Color) -> Line<'static> {
     )])
 }
 
-fn build_detail_section(label: &'static str, value: &str, color: Color) -> Vec<Line<'static>> {
-    vec![
-        build_section_label(label, color),
-        Line::from(vec![
-            Span::styled("  ", Style::default().fg(SUBTLE)),
-            Span::styled(value.to_string(), Style::default().fg(TEXT)),
-        ]),
-    ]
+fn bullet_line(text: &str) -> Line<'static> {
+    Line::from(vec![
+        Span::styled("• ", Style::default().fg(SUBTLE)),
+        Span::styled(text.to_string(), Style::default().fg(TEXT)),
+    ])
+}
+
+fn detail_line(text: &str) -> Line<'static> {
+    Line::from(vec![Span::styled(
+        text.to_string(),
+        Style::default().fg(TEXT),
+    )])
 }
 
 fn startup_prompt_layout(area: Rect) -> StartupPromptLayout {
-    let popup = centered_rect(area, 74, 68);
+    let popup = centered_rect(area, 84, 78);
+    let stack_buttons = popup.width < 92;
     let inner = popup.inner(Margin {
         vertical: 1,
         horizontal: 2,
@@ -377,12 +466,36 @@ fn startup_prompt_layout(area: Rect) -> StartupPromptLayout {
     let sections = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),
-            Constraint::Min(10),
-            Constraint::Length(3),
+            Constraint::Length(4),
+            Constraint::Min(14),
+            Constraint::Length(if stack_buttons { 9 } else { 4 }),
             Constraint::Length(1),
         ])
         .split(inner);
+    let body_rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage(44),
+            Constraint::Length(1),
+            Constraint::Percentage(56),
+        ])
+        .split(sections[1]);
+    let top_cards = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(49),
+            Constraint::Percentage(2),
+            Constraint::Percentage(49),
+        ])
+        .split(body_rows[0]);
+    let bottom_cards = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(49),
+            Constraint::Percentage(2),
+            Constraint::Percentage(49),
+        ])
+        .split(body_rows[2]);
     let action_inner = sections[2].inner(Margin {
         vertical: 0,
         horizontal: 0,
@@ -392,24 +505,42 @@ fn startup_prompt_layout(area: Rect) -> StartupPromptLayout {
         // Keep the buttons on a two-row hit target so mouse interactions are
         // forgiving inside the prompt footer instead of requiring a single
         // exact terminal row.
-        .constraints([Constraint::Length(1), Constraint::Length(2)])
+        .constraints(if stack_buttons {
+            vec![
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Length(3),
+                Constraint::Length(1),
+                Constraint::Length(3),
+            ]
+        } else {
+            vec![Constraint::Length(1), Constraint::Length(3)]
+        })
         .split(action_inner);
-    let buttons = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage(38),
-            Constraint::Percentage(4),
-            Constraint::Percentage(58),
-        ])
-        .split(action_sections[1]);
+    let (abort_button, continue_button) = if stack_buttons {
+        (action_sections[2], action_sections[4])
+    } else {
+        let buttons = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Percentage(38),
+                Constraint::Percentage(4),
+                Constraint::Percentage(58),
+            ])
+            .split(action_sections[1]);
+        (buttons[0], buttons[2])
+    };
     StartupPromptLayout {
         popup,
         summary: sections[0],
-        body: sections[1],
+        risk_card: top_cards[0],
+        policy_card: top_cards[2],
+        reason_card: bottom_cards[0],
+        fix_card: bottom_cards[2],
         action_area: sections[2],
         action_prompt: action_sections[0],
-        abort_button: buttons[0],
-        continue_button: buttons[2],
+        abort_button,
+        continue_button,
         footer: sections[3],
     }
 }
@@ -443,8 +574,9 @@ fn rect_contains(rect: Rect, column: u16, row: u16) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        StartupPromptSelection, StartupPromptState, build_footer_text, build_notice_text,
-        build_summary_text, startup_prompt_layout,
+        StartupPromptSelection, StartupPromptState, build_fix_card_text, build_footer_text,
+        build_policy_card_text, build_reason_card_text, build_risk_card_text, build_summary_text,
+        startup_prompt_layout,
     };
     use crate::backend::SandboxFallbackNotice;
     use crossterm::event::{
@@ -516,7 +648,14 @@ mod tests {
     }
 
     #[test]
-    fn startup_prompt_notice_text_lists_policy_reason_risk_and_setup() {
+    fn startup_prompt_stacks_buttons_on_narrow_viewports() {
+        let layout = startup_prompt_layout(Rect::new(0, 0, 80, 40));
+        assert!(layout.continue_button.y > layout.abort_button.y);
+        assert_eq!(layout.continue_button.x, layout.abort_button.x);
+    }
+
+    #[test]
+    fn startup_prompt_cards_surface_policy_reason_and_host_fixes() {
         let notice = SandboxFallbackNotice {
             policy_summary: "workspace-write, network off".to_string(),
             reason: "uid map denied".to_string(),
@@ -527,32 +666,28 @@ mod tests {
             ],
         };
 
-        let text = build_notice_text(&notice);
-        let lines = text
-            .lines
-            .iter()
-            .map(|line| {
-                line.spans
-                    .iter()
-                    .map(|span| span.content.as_ref())
-                    .collect::<String>()
-            })
-            .collect::<Vec<_>>();
+        let policy = flatten_text(build_policy_card_text(&notice));
+        let reason = flatten_text(build_reason_card_text(&notice));
+        let fix = flatten_text(build_fix_card_text(&notice));
+        let risk = flatten_text(build_risk_card_text());
 
-        assert!(lines.iter().any(|line| line == "policy"));
-        assert!(lines.iter().any(|line| line.contains("  workspace-write")));
-        assert!(lines.iter().any(|line| line == "reason"));
-        assert!(lines.iter().any(|line| line.contains("uid map denied")));
-        assert!(lines.iter().any(|line| line == "fix on host"));
+        assert!(policy.iter().any(|line| line == "Current Policy"));
+        assert!(policy.iter().any(|line| line.contains("workspace-write")));
+        assert!(reason.iter().any(|line| line == "Why This Failed"));
+        assert!(reason.iter().any(|line| line.contains("uid map denied")));
+        assert!(fix.iter().any(|line| line == "Fix On Host"));
         assert!(
-            lines
-                .iter()
-                .any(|line| line.contains("  1. Install bubblewrap"))
+            fix.iter()
+                .any(|line| line.contains("1. Install bubblewrap"))
         );
         assert!(
-            lines
-                .iter()
-                .any(|line| line.contains("  2. Enable user namespaces"))
+            fix.iter()
+                .any(|line| line.contains("2. Enable user namespaces"))
+        );
+        assert!(risk.iter().any(|line| line == "What Changes Now"));
+        assert!(
+            risk.iter()
+                .any(|line| line.contains("Sandbox enforcement is disabled"))
         );
     }
 
@@ -570,7 +705,8 @@ mod tests {
     #[test]
     fn startup_prompt_footer_stays_short_and_operator_facing() {
         let line = flatten_text(build_footer_text()).join(" ");
-        assert!(line.contains("default deny"));
+        assert!(line.contains("safe default"));
+        assert!(line.contains("abort startup"));
         assert!(line.contains("Tab switch"));
         assert!(line.contains("Enter confirm"));
     }
