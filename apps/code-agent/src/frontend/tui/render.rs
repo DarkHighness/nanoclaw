@@ -1140,7 +1140,7 @@ fn transcript_continuation_prefix(kind: TranscriptEntryKind) -> Span<'static> {
         TranscriptEntryKind::ShellSummary
         | TranscriptEntryKind::SuccessSummary
         | TranscriptEntryKind::ErrorSummary
-        | TranscriptEntryKind::WarningSummary => Span::styled("  │ ", Style::default().fg(SUBTLE)),
+        | TranscriptEntryKind::WarningSummary => Span::styled("    ", Style::default().fg(SUBTLE)),
         _ => Span::raw("  "),
     }
 }
@@ -1853,15 +1853,51 @@ fn build_collection_text(title: &str, lines: &[String]) -> Text<'static> {
             continue;
         }
         if is_shell_summary_block(line) {
-            for raw_line in line.lines() {
-                rendered.extend(render_shell_summary_line(raw_line));
-            }
+            rendered.extend(render_collection_summary_block(line, accent));
             continue;
         }
         let (primary, secondary) = split_list_entry(line);
         rendered.push(collection_line(primary, secondary, accent));
     }
     Text::from(rendered)
+}
+
+fn render_collection_summary_block(entry: &str, accent: Color) -> Vec<Line<'static>> {
+    let mut rendered = Vec::new();
+    for (index, raw_line) in entry.lines().enumerate() {
+        if index == 0
+            && let Some((_, _, body)) = parse_prefixed_entry(raw_line)
+        {
+            rendered.push(Line::from(vec![
+                Span::styled(
+                    "›",
+                    Style::default().fg(accent).add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(" "),
+                Span::styled(
+                    body.to_string(),
+                    Style::default().fg(accent).add_modifier(Modifier::BOLD),
+                ),
+            ]));
+            continue;
+        }
+        if let Some(detail) = raw_line.strip_prefix("  └ ") {
+            rendered.push(Line::from(vec![
+                Span::styled("  ", Style::default().fg(SUBTLE)),
+                Span::styled(detail.to_string(), Style::default().fg(MUTED)),
+            ]));
+            continue;
+        }
+        if let Some(detail) = raw_line.strip_prefix("    ") {
+            rendered.push(Line::from(vec![
+                Span::styled("  ", Style::default().fg(SUBTLE)),
+                Span::styled(detail.to_string(), Style::default().fg(SUBTLE)),
+            ]));
+            continue;
+        }
+        rendered.extend(render_shell_summary_line(raw_line));
+    }
+    rendered
 }
 
 fn collection_line(primary: &str, secondary: Option<&str>, accent: Color) -> Line<'static> {
@@ -2295,12 +2331,12 @@ mod tests {
             ],
         );
 
-        assert_eq!(rendered.lines[1].spans[0].content.as_ref(), "•");
+        assert_eq!(rendered.lines[1].spans[0].content.as_ref(), "›");
         assert_eq!(
             rendered.lines[1].spans[2].content.as_ref(),
             "sess_123  no prompt yet"
         );
-        assert_eq!(rendered.lines[2].spans[0].content.as_ref(), "  └ ");
+        assert_eq!(rendered.lines[2].spans[0].content.as_ref(), "  ");
         assert_eq!(
             rendered.lines[2].spans[1].content.as_ref(),
             "12 messages · 40 events · 2 agent sessions · resume attached"
@@ -2317,7 +2353,7 @@ mod tests {
             ],
         );
 
-        assert_eq!(rendered.lines[2].spans[0].content.as_ref(), "•");
+        assert_eq!(rendered.lines[2].spans[0].content.as_ref(), "›");
         assert_eq!(
             rendered.lines[2].spans[2].content.as_ref(),
             "sess_456  resume prompt"
