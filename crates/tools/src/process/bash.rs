@@ -24,7 +24,9 @@ use tokio::sync::{Notify, oneshot};
 use tokio::task::JoinHandle;
 use tokio::time::{sleep, timeout};
 use tracing::{debug, warn};
-use types::{MessagePart, ToolCallId, ToolOutputMode, ToolResult, ToolSpec, new_opaque_id};
+use types::{
+    MessagePart, ToolCallId, ToolContinuation, ToolOutputMode, ToolResult, ToolSpec, new_opaque_id,
+};
 
 use self::session_registry::{get_session, insert_session};
 
@@ -509,6 +511,8 @@ async fn execute_run(
                     })
                     .expect("bash run timeout output"),
                 ),
+                attachments: Vec::new(),
+                continuation: None,
                 metadata: Some(serde_json::json!({
                     "mode": "run",
                     "cwd": cwd,
@@ -538,6 +542,7 @@ async fn execute_run(
         call_id: external_call_id,
         tool_name: "bash".into(),
         parts: vec![MessagePart::text(text)],
+        attachments: Vec::new(),
         structured_content: Some(
             serde_json::to_value(BashToolOutput::Run {
                 command: command.clone(),
@@ -553,6 +558,7 @@ async fn execute_run(
             })
             .expect("bash run output"),
         ),
+        continuation: None,
         metadata: Some(serde_json::json!({
             "mode": "run",
             "cwd": cwd,
@@ -671,6 +677,8 @@ async fn execute_start(
             })
             .expect("bash start output"),
         ),
+        attachments: Vec::new(),
+        continuation: Some(bash_stream_continuation(&agent_session_id, 0, 0)),
         metadata: Some(serde_json::json!({
             "mode": "start",
             "agent_session_id": agent_session_id.as_str(),
@@ -732,6 +740,7 @@ async fn execute_poll(call_id: ToolCallId, input: BashToolInput) -> Result<ToolR
         call_id: external_call_id,
         tool_name: "bash".into(),
         parts: vec![MessagePart::text(text)],
+        attachments: Vec::new(),
         // The text rendering is for the transcript. Structured output is derived
         // from the same window snapshots so hosts can continue polling without
         // scraping prose.
@@ -757,6 +766,11 @@ async fn execute_poll(call_id: ToolCallId, input: BashToolInput) -> Result<ToolR
             })
             .expect("bash poll output"),
         ),
+        continuation: Some(bash_stream_continuation(
+            &session.id,
+            stdout.end_char,
+            stderr.end_char,
+        )),
         metadata: Some(serde_json::json!({
             "mode": "poll",
             "agent_session_id": session.id.as_str(),
@@ -825,6 +839,7 @@ async fn execute_cancel(call_id: ToolCallId, input: BashToolInput) -> Result<Too
         }
     }
     let status = session.snapshot_status();
+    let (stdout_resume_char, stderr_resume_char) = session_resume_offsets(&session);
 
     Ok(ToolResult {
         id: call_id,
@@ -853,6 +868,12 @@ async fn execute_cancel(call_id: ToolCallId, input: BashToolInput) -> Result<Too
             })
             .expect("bash cancel output"),
         ),
+        attachments: Vec::new(),
+        continuation: Some(bash_stream_continuation(
+            &session.id,
+            stdout_resume_char,
+            stderr_resume_char,
+        )),
         metadata: Some(serde_json::json!({
             "mode": "cancel",
             "agent_session_id": session.id.as_str(),
@@ -866,6 +887,26 @@ async fn execute_cancel(call_id: ToolCallId, input: BashToolInput) -> Result<Too
         })),
         is_error: false,
     })
+}
+
+fn bash_stream_continuation(
+    session_id: &BashSessionId,
+    stdout_start_char: usize,
+    stderr_start_char: usize,
+) -> ToolContinuation {
+    ToolContinuation::StreamWindow {
+        session_id: session_id.as_str().to_string(),
+        stdout_start_char: Some(stdout_start_char),
+        stderr_start_char: Some(stderr_start_char),
+    }
+}
+
+fn session_resume_offsets(session: &BashSession) -> (usize, usize) {
+    // Resume offsets follow the delivered stream boundary rather than only the
+    // truncation cursor so callers can safely request incremental output even
+    // while the session is still producing more logs.
+    let (stdout, stderr) = session.output_windows(1, usize::MAX, usize::MAX);
+    (stdout.total_chars, stderr.total_chars)
 }
 
 async fn run_background_command(

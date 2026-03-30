@@ -523,7 +523,9 @@ impl Tool for WebSearchTool {
                     "query> {query}\nstatus> {status}\n\n{}",
                     summarize_remote_body(&body, content_type.as_deref())
                 ))],
+                attachments: Vec::new(),
                 structured_content: None,
+                continuation: None,
                 metadata: Some(serde_json::json!({
                     "query": query,
                     "request_query": request.query,
@@ -696,7 +698,9 @@ impl Tool for WebSearchTool {
             call_id: external_call_id,
             tool_name: "web_search".into(),
             parts: vec![MessagePart::text(sections.join("\n"))],
+            attachments: Vec::new(),
             structured_content: Some(structured_output_value.clone()),
+            continuation: None,
             metadata: Some(structured_output_value),
             is_error: false,
         })
@@ -825,7 +829,9 @@ impl Tool for WebSearchBackendsTool {
             parts: vec![MessagePart::text(
                 sections.join("\n").trim_end().to_string(),
             )],
+            attachments: Vec::new(),
             structured_content: Some(structured_output_value.clone()),
+            continuation: None,
             metadata: Some(structured_output_value),
             is_error: false,
         })

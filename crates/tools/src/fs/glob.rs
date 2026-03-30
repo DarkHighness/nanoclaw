@@ -150,9 +150,11 @@ impl Tool for GlobTool {
             call_id: external_call_id,
             tool_name: "glob".into(),
             parts: vec![MessagePart::text(output_lines.join("\n"))],
+            attachments: Vec::new(),
             structured_content: Some(
                 serde_json::to_value(&structured_output).expect("glob structured output"),
             ),
+            continuation: None,
             metadata: Some(serde_json::json!({
                 "path": root,
                 "requested_path": requested_path,

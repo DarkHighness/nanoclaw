@@ -17,7 +17,7 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
 use std::time::{SystemTime, UNIX_EPOCH};
-use types::{MessagePart, ToolCallId, ToolOutputMode, ToolResult, ToolSpec};
+use types::{MessagePart, ToolCallId, ToolContinuation, ToolOutputMode, ToolResult, ToolSpec};
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 pub struct WebFetchToolInput {
@@ -178,7 +178,9 @@ impl Tool for WebFetchTool {
                         summary
                     }
                 ))],
+                attachments: Vec::new(),
                 structured_content: None,
+                continuation: None,
                 metadata: Some(serde_json::json!({
                     "url": url.as_str(),
                     "final_url": final_url.as_str(),
@@ -203,7 +205,9 @@ impl Tool for WebFetchTool {
                     status,
                     content_type.as_deref().unwrap_or("unknown"),
                 ))],
+                attachments: Vec::new(),
                 structured_content: None,
+                continuation: None,
                 metadata: Some(serde_json::json!({
                     "url": url.as_str(),
                     "final_url": final_url.as_str(),
@@ -251,7 +255,9 @@ impl Tool for WebFetchTool {
                 parts: vec![MessagePart::text(format!(
                     "url> {url}\nfinal_url> {final_url}\nstatus> {status}\nexpected_document_id> {expected_document_id}\nactual_document_id> {document_id}\n\nDocument id mismatch. The page content changed or a different resource was returned."
                 ))],
+                attachments: Vec::new(),
                 structured_content: None,
+                continuation: None,
                 metadata: Some(serde_json::json!({
                     "url": url.as_str(),
                     "final_url": final_url.as_str(),
@@ -355,9 +361,14 @@ impl Tool for WebFetchTool {
             call_id: external_call_id,
             tool_name: "web_fetch".into(),
             parts: vec![MessagePart::text(sections.join("\n"))],
+            attachments: Vec::new(),
             structured_content: Some(
                 serde_json::to_value(&structured_output).expect("web_fetch structured output"),
             ),
+            continuation: Some(ToolContinuation::DocumentWindow {
+                document_id: document_id.clone(),
+                next_start_index,
+            }),
             metadata: Some(serde_json::json!({
                 "url": url.as_str(),
                 "final_url": final_url.as_str(),

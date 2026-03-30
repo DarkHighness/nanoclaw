@@ -319,9 +319,11 @@ impl Tool for GrepTool {
             call_id: external_call_id,
             tool_name: "grep".into(),
             parts: vec![MessagePart::text(output)],
+            attachments: Vec::new(),
             structured_content: Some(
                 serde_json::to_value(&structured_output).expect("grep structured output"),
             ),
+            continuation: None,
             metadata: Some(serde_json::json!({
                 "path": search_path_string,
                 "requested_path": requested_path,

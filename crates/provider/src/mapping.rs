@@ -115,7 +115,12 @@ pub fn tool_result_roundtrip_text(result: &ToolResult) -> String {
         .parts
         .iter()
         .all(|part| matches!(part, MessagePart::Text { .. }));
-    if plain_text_only && result.structured_content.is_none() && result.metadata.is_none() {
+    if plain_text_only
+        && result.attachments.is_empty()
+        && result.structured_content.is_none()
+        && result.continuation.is_none()
+        && result.metadata.is_none()
+    {
         return result.text_content();
     }
 
@@ -155,8 +160,20 @@ pub fn tool_result_roundtrip_text(result: &ToolResult) -> String {
             serde_json::to_value(&result.parts).unwrap_or(Value::Null),
         );
     }
+    if !result.attachments.is_empty() {
+        envelope.insert(
+            "attachments".to_string(),
+            serde_json::to_value(&result.attachments).unwrap_or(Value::Null),
+        );
+    }
     if let Some(structured_content) = &result.structured_content {
         envelope.insert("structured_content".to_string(), structured_content.clone());
+    }
+    if let Some(continuation) = &result.continuation {
+        envelope.insert(
+            "continuation".to_string(),
+            serde_json::to_value(continuation).unwrap_or(Value::Null),
+        );
     }
     if let Some(metadata) = &result.metadata {
         envelope.insert("metadata".to_string(), metadata.clone());
@@ -186,7 +203,10 @@ pub fn tool_schema(spec: &ToolSpec) -> Value {
 mod tests {
     use super::{coerce_object_schema, tool_result_roundtrip_text, tool_schema};
     use serde_json::json;
-    use types::{MessagePart, ToolOrigin, ToolOutputMode, ToolResult, ToolSource, ToolSpec};
+    use types::{
+        MessagePart, ToolAttachment, ToolContinuation, ToolOrigin, ToolOutputMode, ToolResult,
+        ToolSource, ToolSpec,
+    };
 
     #[test]
     fn coerce_object_schema_adds_missing_type_for_property_schemas() {
@@ -231,9 +251,21 @@ mod tests {
             call_id: "opaque_123".into(),
             tool_name: "list".into(),
             parts: vec![MessagePart::text("[list entries=1]")],
+            attachments: vec![ToolAttachment {
+                kind: "report".to_string(),
+                name: Some("entries.json".to_string()),
+                mime_type: Some("application/json".to_string()),
+                uri: None,
+                metadata: None,
+            }],
             structured_content: Some(json!({
                 "entries": [{"path": "src/lib.rs", "kind": "file"}]
             })),
+            continuation: Some(ToolContinuation::FileWindow {
+                snapshot_id: "snap_123".to_string(),
+                selection_hash: Some("slice_123".to_string()),
+                next_start_line: Some(41),
+            }),
             metadata: Some(json!({
                 "header": "[list entries=1]"
             })),
@@ -250,10 +282,13 @@ mod tests {
         assert_eq!(parsed["tool_name"], json!("list"));
         assert_eq!(parsed["is_error"], json!(false));
         assert_eq!(parsed["summary_text"], json!("[list entries=1]"));
+        assert_eq!(parsed["attachments"][0]["kind"], json!("report"));
         assert_eq!(
             parsed["structured_content"]["entries"][0]["path"],
             json!("src/lib.rs")
         );
+        assert_eq!(parsed["continuation"]["kind"], json!("file_window"));
+        assert_eq!(parsed["continuation"]["next_start_line"], json!(41));
         assert_eq!(parsed["metadata"]["header"], json!("[list entries=1]"));
     }
 }

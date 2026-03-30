@@ -120,7 +120,9 @@ mod tests {
                         call_id: "remote-call-1".into(),
                         tool_name: "other-name".into(),
                         parts: vec![MessagePart::text("ok")],
+                        attachments: Vec::new(),
                         structured_content: None,
+                        continuation: None,
                         metadata: Some(json!({"raw": true})),
                         is_error: false,
                     })
@@ -157,7 +159,9 @@ mod tests {
                         call_id: "remote-call-2".into(),
                         tool_name: "remote_echo".into(),
                         parts: vec![MessagePart::text("ok")],
+                        attachments: Vec::new(),
                         structured_content: None,
+                        continuation: None,
                         metadata: Some(json!("plain")),
                         is_error: false,
                     })

@@ -1421,6 +1421,7 @@ mod tests {
             parts: vec![agent::types::MessagePart::text(
                 "Wrote 18 bytes to src/lib.rs\n[diff_preview]\n--- src/lib.rs\n+++ src/lib.rs\n@@ -1,1 +1,1 @@\n-old()\n+new()",
             )],
+            attachments: Vec::new(),
             structured_content: Some(json!({
                 "kind": "success",
                 "summary": "Wrote 18 bytes to src/lib.rs",
@@ -1431,6 +1432,7 @@ mod tests {
                     "preview": "--- src/lib.rs\n+++ src/lib.rs\n@@ -1,1 +1,1 @@\n-old()\n+new()"
                 }]
             })),
+            continuation: None,
             metadata: None,
             is_error: false,
         };

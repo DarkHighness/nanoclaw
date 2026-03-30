@@ -425,7 +425,9 @@ fn tool_result_from_rmcp(tool_name: &str, result: rmcp::model::CallToolResult) -
         call_id: new_opaque_id().into(),
         tool_name: tool_name.to_string().into(),
         parts: rmcp_content_to_parts(result.content),
+        attachments: Vec::new(),
         structured_content: result.structured_content,
+        continuation: None,
         metadata: serde_json::to_value(result.meta).ok(),
         is_error: result.is_error.unwrap_or(false),
     }

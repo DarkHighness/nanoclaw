@@ -242,10 +242,12 @@ impl Tool for CodeSymbolSearchTool {
             call_id: external_call_id,
             tool_name: "code_symbol_search".into(),
             parts: vec![MessagePart::text(text)],
+            attachments: Vec::new(),
             structured_content: Some(
                 serde_json::to_value(structured_output)
                     .expect("code_symbol_search structured output"),
             ),
+            continuation: None,
             metadata: Some(json!({
                 "query": query,
                 "limit": limit,
@@ -318,10 +320,12 @@ impl Tool for CodeDocumentSymbolsTool {
             call_id: external_call_id,
             tool_name: "code_document_symbols".into(),
             parts: vec![MessagePart::text(text)],
+            attachments: Vec::new(),
             structured_content: Some(
                 serde_json::to_value(structured_output)
                     .expect("code_document_symbols structured output"),
             ),
+            continuation: None,
             metadata: Some(json!({
                 "path": resolved,
                 "limit": limit,
@@ -386,10 +390,12 @@ impl Tool for CodeDefinitionsTool {
             call_id: external_call_id,
             tool_name: "code_definitions".into(),
             parts: vec![MessagePart::text(text)],
+            attachments: Vec::new(),
             structured_content: Some(
                 serde_json::to_value(structured_output)
                     .expect("code_definitions structured output"),
             ),
+            continuation: None,
             metadata: Some(json!({
                 "target": navigation_target_to_json(&target),
                 "limit": limit,
@@ -464,9 +470,11 @@ impl Tool for CodeReferencesTool {
             call_id: external_call_id,
             tool_name: "code_references".into(),
             parts: vec![MessagePart::text(text)],
+            attachments: Vec::new(),
             structured_content: Some(
                 serde_json::to_value(structured_output).expect("code_references structured output"),
             ),
+            continuation: None,
             metadata: Some(json!({
                 "target": navigation_target_to_json(&target),
                 "limit": limit,

@@ -508,6 +508,7 @@ impl Tool for PatchTool {
             call_id: external_call_id,
             tool_name: "patch".into(),
             parts: vec![MessagePart::text(text)],
+            attachments: Vec::new(),
             structured_content: Some(
                 serde_json::to_value(PatchToolOutput::Success {
                     operation_count: input.operations.len(),
@@ -520,6 +521,7 @@ impl Tool for PatchTool {
                 })
                 .expect("patch success output"),
             ),
+            continuation: None,
             metadata: Some(json!({
                 "operation_count": input.operations.len(),
                 "changed_files": changed_entries
@@ -587,6 +589,7 @@ fn patch_error_result(
         call_id: external_call_id,
         tool_name: "patch".into(),
         parts: vec![MessagePart::text(summary)],
+        attachments: Vec::new(),
         structured_content: Some(
             serde_json::to_value(PatchToolOutput::Error {
                 failed_path: operation.primary_path().to_string(),
@@ -596,6 +599,7 @@ fn patch_error_result(
             })
             .expect("patch error output"),
         ),
+        continuation: None,
         metadata: Some(json!({
             "failed_path": operation.primary_path(),
             "failed_operation_index": operation_index,

@@ -667,7 +667,9 @@ where
         call_id: CallId::from(&call_id),
         tool_name: ToolName::from(tool_name),
         parts: vec![MessagePart::text(text)],
+        attachments: Vec::new(),
         structured_content: Some(structured.clone()),
+        continuation: None,
         metadata: Some(structured),
         is_error: false,
     })

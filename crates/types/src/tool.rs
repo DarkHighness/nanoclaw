@@ -273,6 +273,48 @@ pub struct ToolCall {
     pub origin: ToolOrigin,
 }
 
+/// Tool continuations carry the stable machine-readable cursor that a follow-up
+/// call should reuse instead of scraping prose from the transcript.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ToolContinuation {
+    FileWindow {
+        snapshot_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        selection_hash: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        next_start_line: Option<usize>,
+    },
+    StreamWindow {
+        session_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        stdout_start_char: Option<usize>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        stderr_start_char: Option<usize>,
+    },
+    DocumentWindow {
+        document_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        next_start_index: Option<usize>,
+    },
+}
+
+/// Attachments describe side-band artifacts that hosts may render or persist
+/// without forcing every provider transport to understand the local message-part
+/// variants directly.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ToolAttachment {
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mime_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uri: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<Value>,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ToolResult {
     pub id: ToolCallId,
@@ -280,8 +322,13 @@ pub struct ToolResult {
     pub call_id: CallId,
     pub tool_name: ToolName,
     pub parts: Vec<MessagePart>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<ToolAttachment>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub structured_content: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continuation: Option<ToolContinuation>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<Value>,
     pub is_error: bool,
 }
@@ -294,7 +341,9 @@ impl ToolResult {
             call_id: CallId::new(),
             tool_name: tool_name.into(),
             parts: vec![MessagePart::text(text)],
+            attachments: Vec::new(),
             structured_content: None,
+            continuation: None,
             metadata: None,
             is_error: false,
         }
@@ -307,7 +356,9 @@ impl ToolResult {
             call_id: CallId::new(),
             tool_name: tool_name.into(),
             parts: vec![MessagePart::text(text)],
+            attachments: Vec::new(),
             structured_content: None,
+            continuation: None,
             metadata: None,
             is_error: true,
         }
@@ -322,6 +373,18 @@ impl ToolResult {
     #[must_use]
     pub fn with_structured_content(mut self, structured_content: Value) -> Self {
         self.structured_content = Some(structured_content);
+        self
+    }
+
+    #[must_use]
+    pub fn with_continuation(mut self, continuation: ToolContinuation) -> Self {
+        self.continuation = Some(continuation);
+        self
+    }
+
+    #[must_use]
+    pub fn with_attachment(mut self, attachment: ToolAttachment) -> Self {
+        self.attachments.push(attachment);
         self
     }
 

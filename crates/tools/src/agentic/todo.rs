@@ -192,9 +192,11 @@ impl Tool for TodoReadTool {
             call_id: external_call_id,
             tool_name: "todo_read".into(),
             parts: vec![MessagePart::text(text)],
+            attachments: Vec::new(),
             structured_content: Some(
                 serde_json::to_value(structured_output).expect("todo_read structured output"),
             ),
+            continuation: None,
             metadata: Some(serde_json::json!({
                 "count": items.len(),
                 "include_completed": input.include_completed,
@@ -261,10 +263,12 @@ impl Tool for TodoWriteTool {
                 parts: vec![MessagePart::text(format!(
                     "Todo revision mismatch. Expected {expected_revision}, found {revision_before}. Re-read todos before writing."
                 ))],
+                attachments: Vec::new(),
                 structured_content: Some(
                     serde_json::to_value(structured_output)
                         .expect("todo_write error structured output"),
                 ),
+                continuation: None,
                 metadata: Some(serde_json::json!({
                     "command": command,
                     "expected_revision": expected_revision,
@@ -302,9 +306,11 @@ impl Tool for TodoWriteTool {
             call_id: external_call_id,
             tool_name: "todo_write".into(),
             parts: vec![MessagePart::text(summary)],
+            attachments: Vec::new(),
             structured_content: Some(
                 serde_json::to_value(structured_output).expect("todo_write structured output"),
             ),
+            continuation: None,
             metadata: Some(serde_json::json!({
                 "command": command,
                 "count": updated.len(),

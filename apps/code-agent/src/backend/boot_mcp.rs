@@ -463,7 +463,7 @@ fn describe_host_api_grant(grant: &HookHostApiGrant) -> String {
 mod tests {
     use super::{McpServerSummary, StartupDiagnosticsSnapshot, build_startup_diagnostics_snapshot};
     use agent::DriverActivationOutcome;
-    use agent::types::{ToolOrigin, ToolOutputMode, ToolSpec};
+    use agent::types::{ToolOrigin, ToolOutputMode, ToolSource, ToolSpec};
     use tempfile::tempdir;
 
     #[test]
@@ -475,22 +475,34 @@ mod tests {
                 ToolSpec {
                     name: "read".into(),
                     description: "read".to_string(),
-                    input_schema: serde_json::json!({}),
+                    kind: Default::default(),
+                    input_schema: Some(serde_json::json!({})),
                     output_mode: ToolOutputMode::Text,
                     output_schema: None,
                     origin: ToolOrigin::Local,
-                    annotations: Default::default(),
+                    source: ToolSource::Builtin,
+                    aliases: Vec::new(),
+                    supports_parallel_tool_calls: false,
+                    availability: Default::default(),
+                    approval: Default::default(),
                 },
                 ToolSpec {
                     name: "remote".into(),
                     description: "remote".to_string(),
-                    input_schema: serde_json::json!({}),
+                    kind: Default::default(),
+                    input_schema: Some(serde_json::json!({})),
                     output_mode: ToolOutputMode::Text,
                     output_schema: None,
                     origin: ToolOrigin::Mcp {
                         server_name: "fs".to_string(),
                     },
-                    annotations: Default::default(),
+                    source: ToolSource::McpTool {
+                        server_name: "fs".to_string(),
+                    },
+                    aliases: Vec::new(),
+                    supports_parallel_tool_calls: false,
+                    availability: Default::default(),
+                    approval: Default::default(),
                 },
             ],
             &[],

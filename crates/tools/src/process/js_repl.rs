@@ -378,6 +378,8 @@ async fn execute_start(call_id: ToolCallId) -> Result<ToolResult> {
             })
             .expect("js_repl start output"),
         ),
+        attachments: Vec::new(),
+        continuation: None,
         metadata: Some(serde_json::json!({
             "mode": "start",
             "session_id": session.id.as_str(),
@@ -462,6 +464,7 @@ async fn execute_eval(call_id: ToolCallId, input: JsReplToolInput) -> Result<Too
                 call_id: external_call_id,
                 tool_name: "js_repl".into(),
                 parts: vec![MessagePart::text(text)],
+                attachments: Vec::new(),
                 structured_content: Some(
                     serde_json::to_value(JsReplToolOutput::Eval {
                         session_id: session_id.clone(),
@@ -477,6 +480,7 @@ async fn execute_eval(call_id: ToolCallId, input: JsReplToolInput) -> Result<Too
                     })
                     .expect("js_repl eval output"),
                 ),
+                continuation: None,
                 metadata: Some(serde_json::json!({
                     "mode": "eval",
                     "session_id": session_id,
@@ -508,6 +512,7 @@ async fn execute_eval(call_id: ToolCallId, input: JsReplToolInput) -> Result<Too
                 call_id: external_call_id,
                 tool_name: "js_repl".into(),
                 parts: vec![MessagePart::text(text)],
+                attachments: Vec::new(),
                 structured_content: Some(
                     serde_json::to_value(JsReplToolOutput::Error {
                         session_id: session_id.clone(),
@@ -524,6 +529,7 @@ async fn execute_eval(call_id: ToolCallId, input: JsReplToolInput) -> Result<Too
                     })
                     .expect("js_repl error output"),
                 ),
+                continuation: None,
                 metadata: Some(serde_json::json!({
                     "mode": "eval",
                     "session_id": session_id,
@@ -579,6 +585,8 @@ async fn execute_reset(call_id: ToolCallId, input: JsReplToolInput) -> Result<To
             })
             .expect("js_repl reset output"),
         ),
+        attachments: Vec::new(),
+        continuation: None,
         metadata: Some(serde_json::json!({
             "mode": "reset",
             "session_id": session.id.as_str(),
@@ -617,6 +625,8 @@ async fn execute_close(call_id: ToolCallId, input: JsReplToolInput) -> Result<To
             })
             .expect("js_repl close output"),
         ),
+        attachments: Vec::new(),
+        continuation: None,
         metadata: Some(serde_json::json!({
             "mode": "close",
             "session_id": session_id.as_str(),

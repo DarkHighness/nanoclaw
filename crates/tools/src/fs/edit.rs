@@ -113,9 +113,11 @@ impl Tool for EditTool {
                 call_id: external_call_id,
                 tool_name: "edit".into(),
                 parts: vec![MessagePart::text(outcome.summary)],
+                attachments: Vec::new(),
                 structured_content: Some(
                     serde_json::to_value(structured_output).expect("edit error output"),
                 ),
+                continuation: None,
                 metadata: Some(outcome.metadata),
                 is_error: true,
             });
@@ -157,9 +159,11 @@ impl Tool for EditTool {
             call_id: external_call_id,
             tool_name: "edit".into(),
             parts: vec![MessagePart::text(text)],
+            attachments: Vec::new(),
             structured_content: Some(
                 serde_json::to_value(structured_output).expect("edit success output"),
             ),
+            continuation: None,
             metadata: Some(serde_json::json!({
                 "path": resolved,
                 "snapshot_before": outcome.snapshot_before,

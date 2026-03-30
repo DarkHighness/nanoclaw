@@ -2,7 +2,7 @@
 
 Date: 2026-03-30
 
-Status: Active
+Status: Active (`P0` partially implemented)
 
 This note is the live entry point for the current tool-surface alignment pass
 against OpenAI Codex and OpenCode. It converts the earlier review into a
@@ -51,6 +51,32 @@ This pass explicitly does **not** count:
 - OpenCode source files that exist on disk but are not currently registered in
   the live tool registry
 - UI-only commands that never become tool calls
+
+## Implementation Progress
+
+The shared protocol work has already started landing in the substrate.
+
+Completed so far:
+
+- `ToolSpec` now carries typed `kind`, `source`, aliases, parallel-call support,
+  typed availability, and typed approval metadata
+- provider and MCP mapping layers preserve the richer `ToolSpec` contract
+- `ToolResult` now includes first-class `attachments` and `continuation`
+- representative continuation emitters are live for:
+  - `read` via file-window cursors
+  - `bash` via session stream cursors
+  - `web_fetch` via document-window cursors
+- image reads now emit a first attachment record instead of hiding artifact
+  identity only inside ad hoc metadata
+
+Still pending inside this pass:
+
+- dynamic tool registration
+- MCP resource tools
+- plugin or directory-scan custom tools
+- planning and user-interaction tools such as `update_plan` and
+  `request_user_input`
+- a freeform grammar `apply_patch` surface
 
 ## Baseline Rules
 
@@ -207,8 +233,8 @@ industrial baseline:
   stable source descriptor beyond the current coarse origin enum
 - approval and capability hints are stored in generic annotations instead of a
   typed approval profile
-- `ToolResult` already has `parts` and `structured_content`, but it still lacks
-  first-class attachments and a standard continuation envelope
+- `ToolResult` now has first-class attachments and a standard continuation
+  envelope, but only part of the tool surface emits typed continuations so far
 - result metadata is still loosely typed and varies by tool family
 - tool loading is mostly bootstrap-time and static; there is no Codex-style
   dynamic tool spec path and no OpenCode-style custom tool scan
@@ -452,13 +478,17 @@ Both paths should resolve into one registry representation once loaded.
 The first implementation slice should change protocol shape, not add a large
 new bundle of tools:
 
-- extend `crates/types/src/tool.rs` with `ToolKind`,
-  `supports_parallel_tool_calls`, typed availability, and typed approval
-  metadata
-- extend `ToolResult` with attachments and continuation
-- teach `crates/tools/src/registry.rs` to register richer specs
-- preserve current tool behavior while upgrading the shared contract
-- add golden tests for local, MCP, and dynamic tool spec serialization
+- completed:
+  - extend `crates/types/src/tool.rs` with `ToolKind`,
+    `supports_parallel_tool_calls`, typed availability, and typed approval
+    metadata
+  - extend `ToolResult` with attachments and continuation
+  - preserve current tool behavior while upgrading the shared contract
+  - adapt representative continuation emitters in `read`, `bash`, and
+    `web_fetch`
+- still open:
+  - teach `crates/tools/src/registry.rs` to register richer dynamic specs
+  - add golden tests for local, MCP, and dynamic tool spec serialization
 
 ### P1
 
@@ -481,20 +511,21 @@ Then add higher-variance parity work:
 
 ## Immediate Next Implementation Slice
 
-The next code changes should be constrained to the shared substrate and should
-not immediately rewrite every tool implementation.
+The shared protocol foundation is now in place. The next slice should stop
+expanding local tool contracts and instead close the biggest capability gaps.
 
-The recommended slice is:
+The recommended order is:
 
-1. land the shared protocol additions in `crates/types`
-2. upgrade the registry and provider mapping layers to preserve the richer
-   shapes
-3. adapt one representative tool from each family to emit the new continuation
-   and attachment fields
-4. only then start adding missing tools or dynamic/plugin loading
+1. add runtime dynamic tool registration on top of the richer `ToolSpec`
+2. expose MCP resources as dedicated resource tools
+3. add the first planning and interaction tools:
+   `update_plan` and `request_user_input`
+4. only then decide whether freeform `apply_patch` or plugin/directory-scan
+   loading should land first
 
-That ordering keeps the migration additive and makes the later tool additions
-fit one stable contract instead of inventing per-tool exceptions.
+That keeps the protocol phase bounded and moves the project toward the missing
+industrial surfaces instead of polishing the already-upgraded local results
+indefinitely.
 
 ## Archive Trigger
 

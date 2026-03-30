@@ -13,7 +13,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
 use tokio::fs;
-use types::{MessagePart, ToolCallId, ToolOutputMode, ToolResult, ToolSpec};
+use types::{
+    MessagePart, ToolAttachment, ToolCallId, ToolContinuation, ToolOutputMode, ToolResult, ToolSpec,
+};
 
 const DEFAULT_READ_PAGE_MAX_BYTES: usize = 50 * 1024;
 const MAX_ADAPTIVE_READ_MAX_BYTES: usize = 512 * 1024;
@@ -148,6 +150,20 @@ impl Tool for ReadTool {
                         data_base64: base64::engine::general_purpose::STANDARD.encode(bytes),
                     },
                 ],
+                attachments: vec![ToolAttachment {
+                    kind: "image".to_string(),
+                    name: resolved
+                        .file_name()
+                        .and_then(|value| value.to_str())
+                        .map(str::to_string),
+                    mime_type: Some(mime.to_string()),
+                    uri: Some(resolved.display().to_string()),
+                    metadata: Some(serde_json::json!({
+                        "requested_path": input.path,
+                        "resolved_path": resolved,
+                        "byte_length": byte_length,
+                    })),
+                }],
                 structured_content: Some(
                     serde_json::to_value(ReadToolOutput::Image {
                         requested_path: input.path.clone(),
@@ -157,6 +173,7 @@ impl Tool for ReadTool {
                     })
                     .expect("read image output"),
                 ),
+                continuation: None,
                 metadata: Some(serde_json::json!({ "path": resolved })),
                 is_error: false,
             });
@@ -205,9 +222,15 @@ impl Tool for ReadTool {
                 call_id: external_call_id,
                 tool_name: "read".into(),
                 parts: vec![MessagePart::text(output)],
+                attachments: Vec::new(),
                 structured_content: Some(
                     serde_json::to_value(structured_output).expect("read empty output"),
                 ),
+                continuation: Some(ToolContinuation::FileWindow {
+                    snapshot_id: snapshot_id.clone(),
+                    selection_hash: Some(stable_text_hash("")),
+                    next_start_line: None,
+                }),
                 metadata: Some(serde_json::json!({
                     "path": resolved,
                     "snapshot_id": snapshot_id,
@@ -302,6 +325,7 @@ impl Tool for ReadTool {
                         call_id: external_call_id,
                         tool_name: "read".into(),
                         parts: vec![MessagePart::text(notice.clone())],
+                        attachments: Vec::new(),
                         structured_content: Some(
                             serde_json::to_value(ReadToolOutput::Notice {
                                 requested_path: input.path.clone(),
@@ -314,6 +338,7 @@ impl Tool for ReadTool {
                             })
                             .expect("read notice output"),
                         ),
+                        continuation: None,
                         metadata: Some(serde_json::json!({
                             "path": resolved,
                             "snapshot_id": snapshot_id,
@@ -401,11 +426,17 @@ impl Tool for ReadTool {
             call_id: external_call_id,
             tool_name: "read".into(),
             parts: vec![MessagePart::text(output)],
+            attachments: Vec::new(),
             // The text or image body stays in `parts`; structured content carries
             // the stable window anchors that follow-up edits and pagination rely on.
             structured_content: Some(
                 serde_json::to_value(structured_output).expect("read window output"),
             ),
+            continuation: Some(ToolContinuation::FileWindow {
+                snapshot_id: snapshot_id.clone(),
+                selection_hash: Some(selection_hash.clone()),
+                next_start_line,
+            }),
             metadata: Some(serde_json::json!({
                 "path": resolved,
                 "snapshot_id": snapshot_id,

@@ -278,9 +278,8 @@ mod tests {
         tool_origin_label,
     };
     use agent::runtime::{ToolApprovalHandler, ToolApprovalOutcome, ToolApprovalRequest};
-    use agent::types::{ToolCall, ToolCallId, ToolOrigin, ToolOutputMode, ToolSpec};
+    use agent::types::{ToolCall, ToolCallId, ToolOrigin, ToolOutputMode, ToolSource, ToolSpec};
     use serde_json::json;
-    use std::collections::BTreeMap;
 
     #[test]
     fn resolving_missing_request_is_a_noop() {
@@ -299,15 +298,14 @@ mod tests {
                     arguments: json!({"path":"sample.txt"}),
                     origin: ToolOrigin::Local,
                 },
-                spec: ToolSpec {
-                    name: "write".into(),
-                    description: "write".to_string(),
-                    input_schema: json!({"type":"object"}),
-                    output_mode: ToolOutputMode::Text,
-                    output_schema: None,
-                    origin: ToolOrigin::Local,
-                    annotations: BTreeMap::new(),
-                },
+                spec: ToolSpec::function(
+                    "write",
+                    "write",
+                    json!({"type":"object"}),
+                    ToolOutputMode::Text,
+                    ToolOrigin::Local,
+                    ToolSource::Builtin,
+                ),
                 reasons: vec!["destructive".to_string()],
             })
             .await
@@ -346,15 +344,14 @@ mod tests {
                 }),
                 origin: ToolOrigin::Local,
             },
-            spec: ToolSpec {
-                name: "bash".into(),
-                description: "run shell commands".to_string(),
-                input_schema: json!({"type":"object"}),
-                output_mode: ToolOutputMode::Text,
-                output_schema: None,
-                origin: ToolOrigin::Local,
-                annotations: BTreeMap::new(),
-            },
+            spec: ToolSpec::function(
+                "bash",
+                "run shell commands",
+                json!({"type":"object"}),
+                ToolOutputMode::Text,
+                ToolOrigin::Local,
+                ToolSource::Builtin,
+            ),
             reasons: vec!["sandbox policy requires approval".to_string()],
         });
 
