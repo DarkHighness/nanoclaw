@@ -167,6 +167,7 @@ not have useful extensions, including `Dockerfile*`, `Containerfile*`, `go.mod`,
 
 - `/status`
 - `/statusline`
+- `/thinking [level]`
 - `/help`
 - `/details`
 - `/agent_sessions [session-ref]`
@@ -188,6 +189,11 @@ not have useful extensions, including `Dockerfile*`, `Containerfile*`, `go.mod`,
 - `/diagnostics`
 - `/mcp`
 - `/prompts`
+
+## TUI shortcuts
+
+- `Ctrl+T` cycles the active model reasoning effort when the current provider/model exposes a safe effort control surface.
+- While a turn is running, `Enter` queues a steer note and `Tab` queues a follow-up prompt.
 - `/resources`
 - `/prompt <server> <name>`
 - `/resource <server> <uri>`

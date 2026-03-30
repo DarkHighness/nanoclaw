@@ -212,6 +212,10 @@ impl CodeAgentTui {
                                 state.scroll_focused_page(viewport_height, true, false)
                             });
                         }
+                        KeyCode::Char('t') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            self.cycle_model_reasoning_effort();
+                            continue;
+                        }
                         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                             return Ok(());
                         }
@@ -600,6 +604,51 @@ impl CodeAgentTui {
         ));
     }
 
+    fn cycle_model_reasoning_effort(&mut self) {
+        match self.session.cycle_model_reasoning_effort() {
+            Ok(outcome) => self.apply_model_reasoning_effort_outcome(outcome, "cycled"),
+            Err(error) => self.record_model_reasoning_effort_error(error.to_string()),
+        }
+    }
+
+    fn set_model_reasoning_effort(&mut self, effort: &str) {
+        match self.session.set_model_reasoning_effort(effort) {
+            Ok(outcome) => self.apply_model_reasoning_effort_outcome(outcome, "set"),
+            Err(error) => self.record_model_reasoning_effort_error(error.to_string()),
+        }
+    }
+
+    fn apply_model_reasoning_effort_outcome(
+        &mut self,
+        outcome: crate::backend::ModelReasoningEffortOutcome,
+        verb: &str,
+    ) {
+        let current = outcome
+            .current
+            .clone()
+            .unwrap_or_else(|| "default".to_string());
+        let previous = outcome
+            .previous
+            .clone()
+            .unwrap_or_else(|| "default".to_string());
+        self.ui_state.mutate(|state| {
+            state.session.model_reasoning_effort = outcome.current;
+            state.status =
+                format!("Thinking effort {verb} to {current}; next model request will use it");
+            state.push_activity(format!("thinking effort {previous} -> {current}"));
+        });
+    }
+
+    fn record_model_reasoning_effort_error(&mut self, message: String) {
+        self.ui_state.mutate(|state| {
+            state.status = format!("Thinking effort unavailable: {message}");
+            state.push_activity(format!(
+                "thinking effort rejected: {}",
+                state::preview_text(&message, 56)
+            ));
+        });
+    }
+
     async fn apply_command(&mut self, input: &str) -> Result<bool> {
         match parse_slash_command(input) {
             SlashCommand::Quit => Ok(true),
@@ -630,6 +679,13 @@ impl CodeAgentTui {
                     state.status = "Opened status line picker".to_string();
                     state.push_activity("opened status line picker");
                 });
+                Ok(false)
+            }
+            SlashCommand::Thinking { effort } => {
+                match effort.as_deref() {
+                    Some(effort) => self.set_model_reasoning_effort(effort),
+                    None => self.cycle_model_reasoning_effort(),
+                }
                 Ok(false)
             }
             SlashCommand::Help { query } => {
@@ -1429,6 +1485,7 @@ fn build_startup_inspector(session: &state::SessionSummary) -> Vec<String> {
         "## Next".to_string(),
         "/help [query]  browse commands".to_string(),
         "/statusline  choose footer items".to_string(),
+        "/thinking [level]  cycle or set model effort".to_string(),
         "/details  toggle tool details".to_string(),
         "/sessions  browse history".to_string(),
         "/agent_sessions  inspect or resume agents".to_string(),
@@ -1556,6 +1613,11 @@ mod tests {
             lines
                 .iter()
                 .any(|line| line == "/statusline  choose footer items")
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line == "/thinking [level]  cycle or set model effort")
         );
         assert!(
             lines

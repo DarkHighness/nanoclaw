@@ -104,6 +104,12 @@ const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
     },
     SlashCommandSpec {
         section: "Session",
+        name: "thinking",
+        usage: "thinking [level]",
+        summary: "cycle or set thinking effort",
+    },
+    SlashCommandSpec {
+        section: "Session",
         name: "new",
         usage: "new",
         summary: "fresh top-level session",
@@ -271,6 +277,9 @@ pub(crate) enum SlashCommand {
     Status,
     Details,
     StatusLine,
+    Thinking {
+        effort: Option<String>,
+    },
     Help {
         query: Option<String>,
     },
@@ -362,6 +371,9 @@ enum SlashSubcommand {
     Status,
     Details,
     Statusline,
+    Thinking {
+        effort: Option<String>,
+    },
     Help {
         #[arg(
             value_name = "QUERY",
@@ -640,6 +652,7 @@ impl From<SlashSubcommand> for SlashCommand {
             SlashSubcommand::Status => Self::Status,
             SlashSubcommand::Details => Self::Details,
             SlashSubcommand::Statusline => Self::StatusLine,
+            SlashSubcommand::Thinking { effort } => Self::Thinking { effort },
             SlashSubcommand::Help { query } => Self::Help {
                 query: join_optional_tail(query),
             },
@@ -1003,6 +1016,20 @@ mod tests {
     }
 
     #[test]
+    fn parses_thinking_effort_command() {
+        assert_eq!(
+            parse_slash_command("/thinking high"),
+            SlashCommand::Thinking {
+                effort: Some("high".to_string())
+            }
+        );
+        assert_eq!(
+            parse_slash_command("/thinking"),
+            SlashCommand::Thinking { effort: None }
+        );
+    }
+
+    #[test]
     fn command_palette_includes_help_and_clear_alias() {
         let lines = command_palette_lines();
 
@@ -1021,6 +1048,11 @@ mod tests {
             lines
                 .iter()
                 .any(|line| line == "/statusline  toggle footer items")
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line == "/thinking [level]  cycle or set thinking effort")
         );
         assert!(lines.iter().any(|line| line == "/clear  alias of /new"));
         assert!(

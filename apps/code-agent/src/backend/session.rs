@@ -10,6 +10,7 @@ use crate::backend::{
     SessionEventObserver, SessionEventStream, StartupDiagnosticsSnapshot, list_mcp_prompts,
     list_mcp_resources, list_mcp_servers, load_mcp_prompt, load_mcp_resource,
 };
+use crate::provider::{MutableAgentBackend, ReasoningEffortUpdate};
 use crate::statusline::StatusLineConfig;
 use agent::mcp::ConnectedMcpServer;
 use agent::runtime::{Result as RuntimeResult, RunTurnOutcome};
@@ -128,11 +129,19 @@ pub(crate) struct LiveTaskWaitOutcome {
     pub(crate) claimed_files: Vec<String>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ModelReasoningEffortOutcome {
+    pub(crate) previous: Option<String>,
+    pub(crate) current: Option<String>,
+    pub(crate) supported: Vec<String>,
+}
+
 /// The backend session owns runtime state so frontends can speak to a stable
 /// host contract instead of sharing `AgentRuntime` directly.
 #[derive(Clone)]
 pub(crate) struct CodeAgentSession {
     runtime: Arc<AsyncMutex<AgentRuntime>>,
+    model_backend: Option<MutableAgentBackend>,
     subagent_executor: Arc<dyn SubagentExecutor>,
     store: Arc<dyn SessionStore>,
     mcp_servers: Arc<Vec<ConnectedMcpServer>>,
@@ -146,6 +155,7 @@ pub(crate) struct CodeAgentSession {
 impl CodeAgentSession {
     pub(crate) fn new(
         runtime: AgentRuntime,
+        model_backend: Option<MutableAgentBackend>,
         subagent_executor: Arc<dyn SubagentExecutor>,
         store: Arc<dyn SessionStore>,
         mcp_servers: Vec<ConnectedMcpServer>,
@@ -157,6 +167,7 @@ impl CodeAgentSession {
         let workspace_root = startup.workspace_root.clone();
         Self {
             runtime: Arc::new(AsyncMutex::new(runtime)),
+            model_backend,
             subagent_executor,
             store,
             mcp_servers: Arc::new(mcp_servers),
@@ -186,6 +197,27 @@ impl CodeAgentSession {
 
     pub(crate) fn startup_diagnostics(&self) -> StartupDiagnosticsSnapshot {
         self.startup.read().unwrap().startup_diagnostics.clone()
+    }
+
+    pub(crate) fn cycle_model_reasoning_effort(&self) -> Result<ModelReasoningEffortOutcome> {
+        let backend = self
+            .model_backend
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("thinking effort controls are unavailable"))?;
+        let update = backend.cycle_reasoning_effort()?;
+        Ok(self.apply_model_reasoning_effort_update(update))
+    }
+
+    pub(crate) fn set_model_reasoning_effort(
+        &self,
+        effort: &str,
+    ) -> Result<ModelReasoningEffortOutcome> {
+        let backend = self
+            .model_backend
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("thinking effort controls are unavailable"))?;
+        let update = backend.set_reasoning_effort(effort)?;
+        Ok(self.apply_model_reasoning_effort_update(update))
     }
 
     pub(crate) async fn end_session(&self, reason: Option<String>) -> RuntimeResult<()> {
@@ -541,6 +573,18 @@ impl CodeAgentSession {
         let count = session_history::list_sessions(&self.store).await?.len();
         self.set_stored_session_count(count);
         Ok(count)
+    }
+
+    fn apply_model_reasoning_effort_update(
+        &self,
+        update: ReasoningEffortUpdate,
+    ) -> ModelReasoningEffortOutcome {
+        self.startup.write().unwrap().model_reasoning_effort = update.current.clone();
+        ModelReasoningEffortOutcome {
+            previous: update.previous,
+            current: update.current,
+            supported: update.supported,
+        }
     }
 
     async fn resume_existing_agent_session(
@@ -1036,6 +1080,7 @@ mod tests {
         startup.root_agent_session_id = initial_agent_session_ref.clone();
         let session = CodeAgentSession::new(
             runtime,
+            None,
             Arc::new(NoopSubagentExecutor),
             store.clone(),
             Vec::new(),
@@ -1089,6 +1134,7 @@ mod tests {
         startup.root_agent_session_id = original_agent_session_ref.clone();
         let session = CodeAgentSession::new(
             runtime,
+            None,
             Arc::new(NoopSubagentExecutor),
             store.clone(),
             Vec::new(),
@@ -1156,6 +1202,7 @@ mod tests {
         ]));
         let session = CodeAgentSession::new(
             runtime,
+            None,
             executor,
             store,
             Vec::new(),
@@ -1191,6 +1238,7 @@ mod tests {
         let executor = Arc::new(RecordingSubagentExecutor::new(Vec::new()));
         let session = CodeAgentSession::new(
             runtime,
+            None,
             executor.clone(),
             store,
             Vec::new(),
@@ -1246,6 +1294,7 @@ mod tests {
             .build();
         let session = CodeAgentSession::new(
             runtime,
+            None,
             Arc::new(RecordingSubagentExecutor::new(vec![AgentHandle {
                 role: "editor".to_string(),
                 ..sample_handle("task-cancel", "agent-cancel", AgentStatus::Running)
@@ -1287,6 +1336,7 @@ mod tests {
         )]));
         let session = CodeAgentSession::new(
             runtime,
+            None,
             executor.clone(),
             store,
             Vec::new(),
@@ -1339,6 +1389,7 @@ mod tests {
         };
         let session = CodeAgentSession::new(
             runtime,
+            None,
             Arc::new(RecordingSubagentExecutor::with_wait_response(
                 vec![sample_handle(
                     "task-wait",

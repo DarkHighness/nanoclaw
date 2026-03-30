@@ -10,8 +10,8 @@ use crate::backend::{
 };
 use crate::options::AppOptions;
 use crate::provider::{
-    agent_backend_capabilities, build_agent_backend, build_internal_backend,
-    build_memory_reasoning_service, provider_label,
+    MutableAgentBackend, agent_backend_capabilities, build_agent_backend, build_internal_backend,
+    build_memory_reasoning_service, build_mutable_agent_backend, provider_label,
 };
 use agent::mcp::{
     ConnectedMcpServer, McpConnectOptions, McpServerConfig, McpTransportConfig,
@@ -37,6 +37,7 @@ use tracing::{info, warn};
 
 struct RuntimeBuildResult {
     runtime: AgentRuntime,
+    model_backend: MutableAgentBackend,
     subagent_executor: Arc<dyn SubagentExecutor>,
     store: Arc<dyn store::SessionStore>,
     skills: Vec<Skill>,
@@ -141,6 +142,7 @@ pub(crate) async fn build_session_with_approval_mode(
 
     let RuntimeBuildResult {
         runtime,
+        model_backend,
         subagent_executor,
         store,
         skills,
@@ -168,6 +170,7 @@ pub(crate) async fn build_session_with_approval_mode(
 
     Ok(super::CodeAgentSession::new(
         runtime,
+        Some(model_backend),
         subagent_executor,
         store,
         mcp_servers,
@@ -206,10 +209,8 @@ async fn build_runtime(
     sandbox_policy: SandboxPolicy,
     sandbox_status: agent::tools::SandboxBackendStatus,
 ) -> Result<RuntimeBuildResult> {
-    let backend = Arc::new(build_agent_backend(
-        &options.primary_profile,
-        &options.env_map,
-    )?);
+    let model_backend = build_mutable_agent_backend(&options.primary_profile, &options.env_map)?;
+    let backend: Arc<dyn ModelBackend> = Arc::new(model_backend.clone());
     let summary_backend = Arc::new(build_internal_backend(
         &options.summary_profile,
         &options.env_map,
@@ -383,6 +384,7 @@ async fn build_runtime(
 
     Ok(RuntimeBuildResult {
         runtime,
+        model_backend,
         subagent_executor,
         store,
         skills,
