@@ -257,7 +257,7 @@ pub(super) fn live_progress_lines(state: &TuiState) -> Vec<Line<'static>> {
             &progress_label,
             animation_frame_ms(state.turn_started_at.unwrap_or(frame_time), frame_time),
         ));
-        if state.session.queued_commands > 0 {
+        if state.session.queued_commands > 0 && state.pending_control_picker.is_none() {
             spans.push(Span::styled(" · ", Style::default().fg(SUBTLE)));
             spans.push(Span::styled(
                 if state.active_tool_label.is_some() {
@@ -276,7 +276,7 @@ pub(super) fn live_progress_lines(state: &TuiState) -> Vec<Line<'static>> {
             Style::default().fg(MUTED),
         ));
         vec![Line::from(spans)]
-    } else {
+    } else if state.pending_control_picker.is_none() {
         vec![Line::from(vec![
             Span::styled("+", Style::default().fg(WARN).add_modifier(Modifier::BOLD)),
             Span::raw(" "),
@@ -285,6 +285,8 @@ pub(super) fn live_progress_lines(state: &TuiState) -> Vec<Line<'static>> {
                 Style::default().fg(MUTED),
             ),
         ])]
+    } else {
+        Vec::new()
     }
 }
 
