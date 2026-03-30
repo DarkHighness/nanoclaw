@@ -1,6 +1,6 @@
 use super::state::{PlanEntry, SharedUiState, preview_text};
 use crate::backend::SessionEvent;
-use crate::preview::{PreviewCollapse, collapse_preview_text};
+use crate::preview::{PreviewCollapse, collapse_preview_text, command_output_collapse};
 use serde_json::Value;
 use std::collections::HashMap;
 
@@ -356,17 +356,17 @@ fn tool_output_detail_lines(
 fn bash_output_detail_lines(output_preview: &str, structured: Option<&Value>) -> Vec<String> {
     let mut detail_lines = Vec::new();
 
-    if let Some(exit_code) = structured
+    let exit_code = structured
         .and_then(|value| value.get("exit_code"))
-        .and_then(Value::as_i64)
-    {
+        .and_then(Value::as_i64);
+    if let Some(exit_code) = exit_code {
         detail_lines.push(format!("  └ exit {exit_code}"));
     }
-    if structured
+    let timed_out = structured
         .and_then(|value| value.get("timed_out"))
         .and_then(Value::as_bool)
-        .unwrap_or(false)
-    {
+        .unwrap_or(false);
+    if timed_out {
         detail_lines.push("  └ timed out".to_string());
     }
 
@@ -378,6 +378,7 @@ fn bash_output_detail_lines(output_preview: &str, structured: Option<&Value>) ->
         .and_then(|value| value.pointer("/stderr/text"))
         .and_then(Value::as_str)
         .unwrap_or_default();
+    let collapse = command_output_collapse(exit_code, timed_out, !stderr.trim().is_empty());
 
     let rendered_output = if !stdout.trim().is_empty() || !stderr.trim().is_empty() {
         let mut chunks = Vec::new();
@@ -401,7 +402,7 @@ fn bash_output_detail_lines(output_preview: &str, structured: Option<&Value>) ->
             &rendered_output,
             12,
             120,
-            PreviewCollapse::HeadTail,
+            collapse,
         )));
     }
 
@@ -745,6 +746,44 @@ mod tests {
             snapshot.transcript[0],
             "• Finished bash\n  └ $ cargo test\n  └ exit 0\n```text\nok\n```"
         );
+    }
+
+    #[test]
+    fn bash_failures_prefer_tail_output_preview() {
+        let ui_state = SharedUiState::new();
+        let call = SessionToolCall {
+            tool_name: "bash".to_string(),
+            call_id: "call_999".to_string(),
+            origin: "local".to_string(),
+            arguments_preview: vec!["$ cargo test".to_string()],
+        };
+        let stderr = (1..=20)
+            .map(|value| value.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut observer = SharedRenderObserver::new(ui_state.clone());
+
+        observer.apply_event(SessionEvent::ToolLifecycleCompleted {
+            call,
+            output_preview: stderr.clone(),
+            structured_output_preview: Some(
+                json!({
+                    "kind": "run",
+                    "exit_code": 1,
+                    "timed_out": false,
+                    "stdout": {"text": "", "chars": 0, "truncated": false},
+                    "stderr": {"text": stderr, "chars": 50, "truncated": false}
+                })
+                .to_string(),
+            ),
+        });
+
+        let transcript = &ui_state.snapshot().transcript[0];
+        assert!(transcript.contains("  └ exit 1"));
+        assert!(transcript.contains("… +10 lines"));
+        assert!(transcript.contains("\n10\n"));
+        assert!(transcript.contains("\n20\n"));
+        assert!(!transcript.contains("\n1\n"));
     }
 
     #[test]

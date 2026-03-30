@@ -1,6 +1,7 @@
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PreviewCollapse {
     Head,
+    Tail,
     HeadTail,
 }
 
@@ -43,6 +44,14 @@ pub(crate) fn collapse_preview_lines(
             preview.push(omitted_lines_label(hidden));
             preview
         }
+        PreviewCollapse::Tail => {
+            let tail = max_lines.saturating_sub(1).max(1);
+            let hidden = lines.len().saturating_sub(tail);
+            let mut preview = Vec::with_capacity(tail + 1);
+            preview.push(omitted_lines_label(hidden));
+            preview.extend(lines.iter().skip(lines.len().saturating_sub(tail)).cloned());
+            preview
+        }
         PreviewCollapse::HeadTail => {
             // Keep the omission marker inside the line budget so previews stay
             // compact while still preserving tail context for diffs and output.
@@ -75,9 +84,23 @@ fn omitted_lines_label(hidden: usize) -> String {
     format!("… +{hidden} lines")
 }
 
+pub(crate) fn command_output_collapse(
+    exit_code: Option<i64>,
+    timed_out: bool,
+    has_stderr: bool,
+) -> PreviewCollapse {
+    if timed_out || has_stderr || exit_code.is_some_and(|code| code != 0) {
+        PreviewCollapse::Tail
+    } else {
+        PreviewCollapse::HeadTail
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{PreviewCollapse, collapse_preview_lines, collapse_preview_text};
+    use super::{
+        PreviewCollapse, collapse_preview_lines, collapse_preview_text, command_output_collapse,
+    };
 
     #[test]
     fn head_collapse_keeps_prefix_and_reports_hidden_count() {
@@ -100,6 +123,14 @@ mod tests {
     }
 
     #[test]
+    fn tail_collapse_keeps_suffix_and_reports_hidden_count() {
+        let lines =
+            collapse_preview_text("one\ntwo\nthree\nfour\nfive", 4, 80, PreviewCollapse::Tail);
+
+        assert_eq!(lines, vec!["… +2 lines", "three", "four", "five"]);
+    }
+
+    #[test]
     fn line_collapse_operates_on_prebuilt_lines() {
         let lines = collapse_preview_lines(
             &[
@@ -114,5 +145,21 @@ mod tests {
         );
 
         assert_eq!(lines, vec!["alpha", "beta", "… +2 lines", "omega"]);
+    }
+
+    #[test]
+    fn command_output_prefers_tail_for_diagnostics() {
+        assert_eq!(
+            command_output_collapse(Some(1), false, false),
+            PreviewCollapse::Tail
+        );
+        assert_eq!(
+            command_output_collapse(Some(0), false, true),
+            PreviewCollapse::Tail
+        );
+        assert_eq!(
+            command_output_collapse(Some(0), false, false),
+            PreviewCollapse::HeadTail
+        );
     }
 }

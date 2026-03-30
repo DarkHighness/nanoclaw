@@ -7,7 +7,7 @@ use crate::backend::{
     PersistedTaskSummary, SessionExportArtifact, SessionExportKind, SessionOperationAction,
     SessionOperationOutcome, StartupDiagnosticsSnapshot, message_to_text, preview_id,
 };
-use crate::preview::{PreviewCollapse, collapse_preview_text};
+use crate::preview::{PreviewCollapse, collapse_preview_text, command_output_collapse};
 use agent::types::{
     AgentEnvelopeKind, AgentSessionId, AgentStatus, HookEvent, Message, SessionEventEnvelope,
     SessionEventKind,
@@ -831,14 +831,15 @@ fn bash_output_block(output: &agent::types::ToolResult) -> (Vec<String>, Vec<Str
     let mut output_lines = Vec::new();
 
     if let Some(structured) = output.structured_content.as_ref() {
-        if let Some(exit_code) = structured.get("exit_code").and_then(Value::as_i64) {
+        let exit_code = structured.get("exit_code").and_then(Value::as_i64);
+        if let Some(exit_code) = exit_code {
             details.push(format!("exit {exit_code}"));
         }
-        if structured
+        let timed_out = structured
             .get("timed_out")
             .and_then(Value::as_bool)
-            .unwrap_or(false)
-        {
+            .unwrap_or(false);
+        if timed_out {
             details.push("timed out".to_string());
         }
 
@@ -850,6 +851,7 @@ fn bash_output_block(output: &agent::types::ToolResult) -> (Vec<String>, Vec<Str
             .pointer("/stderr/text")
             .and_then(Value::as_str)
             .unwrap_or_default();
+        let collapse = command_output_collapse(exit_code, timed_out, !stderr.trim().is_empty());
 
         let rendered = if !stdout.trim().is_empty() || !stderr.trim().is_empty() {
             let mut chunks = Vec::new();
@@ -869,7 +871,7 @@ fn bash_output_block(output: &agent::types::ToolResult) -> (Vec<String>, Vec<Str
         };
 
         if !rendered.trim().is_empty() {
-            output_lines = collapse_preview_text(&rendered, 12, 120, PreviewCollapse::HeadTail);
+            output_lines = collapse_preview_text(&rendered, 12, 120, collapse);
         }
     } else {
         let text = output.text_content();
