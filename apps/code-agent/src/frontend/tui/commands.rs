@@ -15,6 +15,23 @@ impl SlashCommandSpec {
             .any(|argument| argument.required)
     }
 
+    pub(crate) fn aliases(self) -> &'static [&'static str] {
+        match self.name {
+            "exit" => &["quit", "q"],
+            _ => &[],
+        }
+    }
+
+    pub(crate) fn matches_prefix(self, prefix: &str) -> bool {
+        prefix.is_empty()
+            || self.name.starts_with(prefix)
+            || self.aliases().iter().any(|alias| alias.starts_with(prefix))
+    }
+
+    pub(crate) fn matches_token(self, token: &str) -> bool {
+        self.name == token || self.aliases().contains(&token)
+    }
+
     pub(crate) fn argument_specs(self) -> Vec<SlashCommandArgumentSpec> {
         self.usage
             .split_whitespace()
@@ -105,9 +122,9 @@ const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
     },
     SlashCommandSpec {
         section: "Session",
-        name: "quit",
-        usage: "quit",
-        summary: "exit",
+        name: "exit",
+        usage: "exit",
+        summary: "leave tui",
     },
     SlashCommandSpec {
         section: "Agents",
@@ -445,7 +462,7 @@ enum SlashSubcommand {
         #[arg(value_name = "PATH", required = true, trailing_var_arg = true)]
         path: Vec<String>,
     },
-    #[command(alias = "exit")]
+    #[command(name = "exit", alias = "quit", alias = "q")]
     Quit,
 }
 
@@ -488,7 +505,19 @@ pub(crate) fn command_palette_lines_for(query: Option<&str>) -> Vec<String> {
             current_section = Some(spec.section);
             lines.push(format!("## {}", spec.section));
         }
-        lines.push(format!("/{}  {}", spec.usage, spec.summary));
+        let alias_suffix = if spec.aliases().is_empty() {
+            String::new()
+        } else {
+            format!(
+                " · aliases: {}",
+                spec.aliases()
+                    .iter()
+                    .map(|alias| format!("/{alias}"))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            )
+        };
+        lines.push(format!("/{}  {}{}", spec.usage, spec.summary, alias_suffix));
     }
     lines
 }
@@ -498,8 +527,9 @@ pub(crate) fn slash_command_hint(input: &str, selected_index: usize) -> Option<S
     let matches = matching_specs(command_token);
     if let Some(selected) = selected_spec(command_token, tail, selected_index, &matches) {
         return Some(SlashCommandHint {
-            exact: command_token == selected.name,
-            arguments: (command_token == selected.name)
+            exact: selected.matches_token(command_token),
+            arguments: selected
+                .matches_token(command_token)
                 .then(|| build_argument_hint(selected, tail))
                 .flatten(),
             selected_match_index: matches
@@ -702,9 +732,9 @@ fn matching_specs(prefix: &str) -> Vec<SlashCommandSpec> {
     let mut matches = SLASH_COMMAND_SPECS
         .iter()
         .copied()
-        .filter(|spec| prefix.is_empty() || spec.name.starts_with(&prefix))
+        .filter(|spec| spec.matches_prefix(&prefix))
         .collect::<Vec<_>>();
-    if let Some(exact_index) = matches.iter().position(|spec| spec.name == prefix) {
+    if let Some(exact_index) = matches.iter().position(|spec| spec.matches_token(&prefix)) {
         matches.swap(0, exact_index);
     }
     matches
@@ -716,9 +746,7 @@ fn palette_matching_specs(prefix: &str) -> Vec<SlashCommandSpec> {
         .iter()
         .copied()
         .filter(|spec| {
-            prefix.is_empty()
-                || spec.name.starts_with(&prefix)
-                || spec.section.to_ascii_lowercase().starts_with(&prefix)
+            spec.matches_prefix(&prefix) || spec.section.to_ascii_lowercase().starts_with(&prefix)
         })
         .collect()
 }
@@ -733,7 +761,7 @@ fn selected_spec(
         return SLASH_COMMAND_SPECS
             .iter()
             .copied()
-            .find(|spec| spec.name == command_token);
+            .find(|spec| spec.matches_token(command_token));
     }
     matches
         .get(selected_index.min(matches.len().saturating_sub(1)))
@@ -973,6 +1001,11 @@ mod tests {
                 .any(|line| line == "/details  toggle tool details")
         );
         assert!(lines.iter().any(|line| line == "/clear  alias of /new"));
+        assert!(
+            lines
+                .iter()
+                .any(|line| { line == "/exit  leave tui · aliases: /quit /q" })
+        );
     }
 
     #[test]
@@ -1007,6 +1040,15 @@ mod tests {
         assert!(hint.matches.iter().any(|spec| spec.name == "sessions"));
         assert!(hint.matches.iter().any(|spec| spec.name == "session"));
         assert!(hint.arguments.is_none());
+    }
+
+    #[test]
+    fn slash_command_hint_matches_exit_alias_prefix() {
+        let hint = slash_command_hint("/q", 0).expect("hint");
+
+        assert_eq!(hint.selected.name, "exit");
+        assert!(hint.exact);
+        assert!(hint.matches.iter().any(|spec| spec.name == "exit"));
     }
 
     #[test]
