@@ -1105,7 +1105,10 @@ impl CodeAgentTui {
                         state.active_tool_label = None;
                         state.session.git = git.clone();
                         state.status = format!("Error: {message}");
-                        state.push_transcript(format!("✗ {message}"));
+                        state.push_transcript(state::TranscriptEntry::error_summary_entry(
+                            message.clone(),
+                            &[],
+                        ));
                         state.push_activity(format!(
                             "turn failed: {}",
                             state::preview_text(&message, 56)
@@ -1434,7 +1437,10 @@ impl CodeAgentTui {
                 state.turn_running = false;
                 state.turn_started_at = None;
                 state.active_tool_label = None;
-                state.push_transcript("✗ Interrupted current turn".to_string());
+                state.push_transcript(state::TranscriptEntry::error_summary_entry(
+                    "Interrupted current turn",
+                    &[],
+                ));
                 state.push_activity(format!(
                     "interrupted current turn and resubmitted {steer_count} steer(s): {preview}"
                 ));
@@ -1447,7 +1453,10 @@ impl CodeAgentTui {
                 state.active_tool_label = None;
                 state.status =
                     "Interrupted current turn. What should nanoclaw do next?".to_string();
-                state.push_transcript("✗ Interrupted current turn".to_string());
+                state.push_transcript(state::TranscriptEntry::error_summary_entry(
+                    "Interrupted current turn",
+                    &[],
+                ));
                 state.push_activity("interrupted current turn");
             });
         }

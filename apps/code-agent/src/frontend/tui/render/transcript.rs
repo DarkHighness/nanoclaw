@@ -109,7 +109,6 @@ pub(super) fn build_transcript_lines_for_width(
         let queued_entry = pending_control_timeline_entry(state)
             .or_else(|| pending_control_picker_bridge_entry(state));
         if let Some(entry) = queued_entry {
-            let entry = TranscriptEntry::from(entry);
             if !lines.is_empty() {
                 lines.push(Line::raw(""));
             }

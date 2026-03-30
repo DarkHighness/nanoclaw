@@ -311,26 +311,27 @@ pub(super) fn live_progress_lines(state: &TuiState) -> Vec<Line<'static>> {
     }
 }
 
-pub(super) fn pending_control_timeline_entry(state: &TuiState) -> Option<String> {
+pub(super) fn pending_control_timeline_entry(state: &TuiState) -> Option<TranscriptEntry> {
     let timeline = pending_control_timeline(state)?;
-    let mut lines = vec![format!(
-        "• Queued follow-ups · {}",
-        state.pending_controls.len()
-    )];
+    let mut detail_lines = Vec::new();
     if timeline.older_hidden_count > 0 {
-        lines.push(format!("  └ {} older pending", timeline.older_hidden_count));
+        detail_lines.push(format!("  └ {} older pending", timeline.older_hidden_count));
     }
-    lines.extend(
+    detail_lines.extend(
         timeline
             .recent
             .iter()
             .map(pending_control_timeline_detail_text),
     );
-    Some(lines.join("\n"))
+    Some(TranscriptEntry::shell_summary_entry(
+        format!("Queued follow-ups · {}", state.pending_controls.len()),
+        &detail_lines,
+    ))
 }
 
-pub(super) fn pending_control_picker_bridge_entry(state: &TuiState) -> Option<String> {
-    pending_control_picker_bridge_label(state).map(|label| format!("• {label}"))
+pub(super) fn pending_control_picker_bridge_entry(state: &TuiState) -> Option<TranscriptEntry> {
+    pending_control_picker_bridge_label(state)
+        .map(|label| TranscriptEntry::shell_summary_entry(label, &[]))
 }
 
 pub(super) fn pending_control_embedded_lines(

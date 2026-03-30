@@ -107,6 +107,19 @@ pub(crate) struct TranscriptDetailLine {
 }
 
 impl TranscriptDetailLine {
+    pub(crate) fn from_prefixed(raw: &str) -> Option<Self> {
+        if let Some(detail) = raw.strip_prefix("  └ ") {
+            return Some(Self::tree(detail.to_string()));
+        }
+        if let Some(detail) = raw.strip_prefix("    ") {
+            return Some(Self::continuation(detail.to_string()));
+        }
+        if raw.trim().is_empty() {
+            return None;
+        }
+        Some(Self::tree(raw.to_string()))
+    }
+
     fn tree(text: impl Into<String>) -> Self {
         Self {
             text: text.into(),
@@ -137,25 +150,41 @@ pub(crate) struct TranscriptShellEntry {
 }
 
 impl TranscriptShellEntry {
+    pub(crate) fn new(
+        headline: impl Into<String>,
+        detail_lines: Vec<TranscriptDetailLine>,
+    ) -> Self {
+        Self {
+            headline: headline.into(),
+            detail_lines,
+        }
+    }
+
+    pub(crate) fn from_prefixed_detail_lines(
+        headline: impl Into<String>,
+        detail_lines: &[String],
+    ) -> Self {
+        Self::new(
+            headline,
+            detail_lines
+                .iter()
+                .filter_map(|line| TranscriptDetailLine::from_prefixed(line))
+                .collect(),
+        )
+    }
+
     fn from_body(body: &str) -> Self {
         let mut lines = body.lines();
         let headline = lines.next().unwrap_or_default().to_string();
         let mut detail_lines = Vec::new();
 
         for raw_line in lines {
-            if let Some(detail) = raw_line.strip_prefix("  └ ") {
-                detail_lines.push(TranscriptDetailLine::tree(detail.to_string()));
-            } else if let Some(detail) = raw_line.strip_prefix("    ") {
-                detail_lines.push(TranscriptDetailLine::continuation(detail.to_string()));
-            } else if !raw_line.trim().is_empty() {
-                detail_lines.push(TranscriptDetailLine::tree(raw_line.to_string()));
+            if let Some(detail_line) = TranscriptDetailLine::from_prefixed(raw_line) {
+                detail_lines.push(detail_line);
             }
         }
 
-        Self {
-            headline,
-            detail_lines,
-        }
+        Self::new(headline, detail_lines)
     }
 
     pub(crate) fn serialized_body(&self) -> String {
@@ -180,6 +209,26 @@ pub(crate) enum TranscriptEntry {
 }
 
 impl TranscriptEntry {
+    pub(crate) fn shell_summary_entry(
+        headline: impl Into<String>,
+        detail_lines: &[String],
+    ) -> Self {
+        Self::ShellSummary(TranscriptShellEntry::from_prefixed_detail_lines(
+            headline,
+            detail_lines,
+        ))
+    }
+
+    pub(crate) fn error_summary_entry(
+        headline: impl Into<String>,
+        detail_lines: &[String],
+    ) -> Self {
+        Self::ErrorSummary(TranscriptShellEntry::from_prefixed_detail_lines(
+            headline,
+            detail_lines,
+        ))
+    }
+
     pub(crate) fn append_text(&mut self, delta: &str) -> bool {
         match self {
             Self::UserPrompt(text) | Self::AssistantMessage(text) => {

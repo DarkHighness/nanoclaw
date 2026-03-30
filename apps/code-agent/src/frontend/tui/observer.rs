@@ -1,8 +1,6 @@
-use super::state::{PlanEntry, SharedUiState, preview_text};
+use super::state::{PlanEntry, SharedUiState, TranscriptEntry, preview_text};
 use crate::backend::SessionEvent;
-use crate::tool_render::{
-    prefixed_detail_lines, summarize_tool_entry, tool_output_detail_lines_from_preview,
-};
+use crate::tool_render::{prefixed_detail_lines, tool_output_detail_lines_from_preview};
 use serde_json::Value;
 use std::collections::HashMap;
 
@@ -24,13 +22,16 @@ impl SharedRenderObserver {
     pub(crate) fn apply_event(&mut self, event: SessionEvent) {
         self.ui_state.mutate(|state| match event {
             SessionEvent::SteerApplied { message, reason } => {
-                state.push_transcript(format!(
-                    "• Applied steer\n  └ {}{}",
-                    message,
-                    reason
-                        .as_deref()
-                        .map(|value| format!(" ({value})"))
-                        .unwrap_or_default()
+                state.push_transcript(TranscriptEntry::shell_summary_entry(
+                    "Applied steer",
+                    &[format!(
+                        "  └ {}{}",
+                        message,
+                        reason
+                            .as_deref()
+                            .map(|value| format!(" ({value})"))
+                            .unwrap_or_default()
+                    )],
                 ));
                 state.status = "Applied steer".to_string();
                 state.push_activity(format!(
@@ -46,18 +47,18 @@ impl SharedRenderObserver {
                 self.active_assistant_line = None;
                 self.active_tool_lines.clear();
                 state.active_tool_label = None;
-                state.push_transcript(format!("› {prompt}"));
+                state.push_transcript(TranscriptEntry::UserPrompt(prompt.clone()));
                 state.status = "Working".to_string();
                 state.push_activity(format!("user prompt: {}", preview_text(&prompt, 40)));
             }
             SessionEvent::AssistantTextDelta { delta } => {
                 if let Some(index) = self.active_assistant_line {
                     if !state.append_transcript_text(index, &delta) {
-                        state.push_transcript(format!("• {delta}"));
+                        state.push_transcript(TranscriptEntry::AssistantMessage(delta.clone()));
                         self.active_assistant_line = Some(state.transcript.len() - 1);
                     }
                 } else {
-                    state.push_transcript(format!("• {delta}"));
+                    state.push_transcript(TranscriptEntry::AssistantMessage(delta.clone()));
                     self.active_assistant_line = Some(state.transcript.len() - 1);
                 }
                 state.status = "Working".to_string();
@@ -68,8 +69,11 @@ impl SharedRenderObserver {
                 retained_message_count,
                 ..
             } => {
-                state.push_transcript(format!(
-                    "• Compacted history\n  └ kept {retained_message_count} of {source_message_count} messages"
+                state.push_transcript(TranscriptEntry::shell_summary_entry(
+                    "Compacted history",
+                    &[format!(
+                        "  └ kept {retained_message_count} of {source_message_count} messages"
+                    )],
                 ));
                 state.status = format!(
                     "Compacted {source_message_count} messages, kept {retained_message_count}"
@@ -119,7 +123,8 @@ impl SharedRenderObserver {
                     self.active_tool_lines.get(&call.call_id).copied(),
                     requested_tool_entry(&call),
                 );
-                self.active_tool_lines.insert(call.call_id.clone(), line_index);
+                self.active_tool_lines
+                    .insert(call.call_id.clone(), line_index);
                 state.push_activity(format!("requested {}", call.tool_name));
             }
             SessionEvent::ToolApprovalRequested { call, reasons } => {
@@ -130,7 +135,8 @@ impl SharedRenderObserver {
                     self.active_tool_lines.get(&call.call_id).copied(),
                     waiting_tool_entry(&call, &reasons),
                 );
-                self.active_tool_lines.insert(call.call_id.clone(), line_index);
+                self.active_tool_lines
+                    .insert(call.call_id.clone(), line_index);
                 state.push_activity(format!(
                     "approval needed for {} ({})",
                     call.tool_name,
@@ -165,7 +171,8 @@ impl SharedRenderObserver {
                 let existing = self.active_tool_lines.get(&call.call_id).copied();
                 let line_index =
                     replace_or_push_tool_line(state, existing, running_tool_entry(&call));
-                self.active_tool_lines.insert(call.call_id.clone(), line_index);
+                self.active_tool_lines
+                    .insert(call.call_id.clone(), line_index);
                 state.push_activity(format!("running {}", call.tool_name));
             }
             SessionEvent::ToolLifecycleCompleted {
@@ -249,34 +256,37 @@ impl SharedRenderObserver {
     }
 }
 
-fn requested_tool_entry(call: &crate::backend::SessionToolCall) -> String {
-    summarize_tool_entry(
-        format!("• Requested {}", call.tool_name),
-        tool_argument_detail_lines(call),
+fn requested_tool_entry(call: &crate::backend::SessionToolCall) -> TranscriptEntry {
+    TranscriptEntry::shell_summary_entry(
+        format!("Requested {}", call.tool_name),
+        &tool_argument_detail_lines(call),
     )
 }
 
-fn denied_tool_entry(call: &crate::backend::SessionToolCall, reason: &str) -> String {
+fn denied_tool_entry(call: &crate::backend::SessionToolCall, reason: &str) -> TranscriptEntry {
     let mut detail_lines = tool_argument_detail_lines(call);
     detail_lines.push(format!("  └ {}", preview_text(reason, 72)));
-    summarize_tool_entry(format!("✗ Denied {}", call.tool_name), detail_lines)
+    TranscriptEntry::error_summary_entry(format!("Denied {}", call.tool_name), &detail_lines)
 }
 
-fn waiting_tool_entry(call: &crate::backend::SessionToolCall, reasons: &[String]) -> String {
+fn waiting_tool_entry(
+    call: &crate::backend::SessionToolCall,
+    reasons: &[String],
+) -> TranscriptEntry {
     let mut detail_lines = tool_argument_detail_lines(call);
     if let Some(reason) = reasons.first() {
         detail_lines.push(format!("  └ {}", preview_text(reason, 72)));
     }
-    summarize_tool_entry(
-        format!("• Awaiting approval for {}", call.tool_name),
-        detail_lines,
+    TranscriptEntry::shell_summary_entry(
+        format!("Awaiting approval for {}", call.tool_name),
+        &detail_lines,
     )
 }
 
-fn running_tool_entry(call: &crate::backend::SessionToolCall) -> String {
-    summarize_tool_entry(
-        format!("• Running {}", call.tool_name),
-        tool_argument_detail_lines(call),
+fn running_tool_entry(call: &crate::backend::SessionToolCall) -> TranscriptEntry {
+    TranscriptEntry::shell_summary_entry(
+        format!("Running {}", call.tool_name),
+        &tool_argument_detail_lines(call),
     )
 }
 
@@ -284,23 +294,26 @@ fn completed_tool_entry(
     call: &crate::backend::SessionToolCall,
     output_preview: &str,
     structured_output_preview: Option<&str>,
-) -> String {
+) -> TranscriptEntry {
     let mut detail_lines = tool_argument_detail_lines(call);
     detail_lines.extend(tool_output_detail_lines_from_preview(
         &call.tool_name,
         output_preview,
         structured_output_preview,
     ));
-    summarize_tool_entry(format!("• Finished {}", call.tool_name), detail_lines)
+    TranscriptEntry::shell_summary_entry(format!("Finished {}", call.tool_name), &detail_lines)
 }
 
-fn failed_tool_entry(call: &crate::backend::SessionToolCall, error: &str) -> String {
+fn failed_tool_entry(call: &crate::backend::SessionToolCall, error: &str) -> TranscriptEntry {
     let mut detail_lines = tool_argument_detail_lines(call);
     detail_lines.push(format!("  └ {}", preview_text(error, 72)));
-    summarize_tool_entry(format!("✗ {} failed", call.tool_name), detail_lines)
+    TranscriptEntry::error_summary_entry(format!("{} failed", call.tool_name), &detail_lines)
 }
 
-fn cancelled_tool_entry(call: &crate::backend::SessionToolCall, reason: Option<&str>) -> String {
+fn cancelled_tool_entry(
+    call: &crate::backend::SessionToolCall,
+    reason: Option<&str>,
+) -> TranscriptEntry {
     let mut detail_lines = tool_argument_detail_lines(call);
     detail_lines.push(format!(
         "  └ {}",
@@ -308,7 +321,7 @@ fn cancelled_tool_entry(call: &crate::backend::SessionToolCall, reason: Option<&
             .map(|value| preview_text(value, 72))
             .unwrap_or_else(|| "cancelled".to_string())
     ));
-    summarize_tool_entry(format!("✗ Cancelled {}", call.tool_name), detail_lines)
+    TranscriptEntry::error_summary_entry(format!("Cancelled {}", call.tool_name), &detail_lines)
 }
 
 fn tool_argument_detail_lines(call: &crate::backend::SessionToolCall) -> Vec<String> {
@@ -342,7 +355,7 @@ fn plan_items_from_output(
 fn replace_tool_line(
     state: &mut super::state::TuiState,
     index: Option<usize>,
-    replacement: String,
+    replacement: TranscriptEntry,
 ) {
     if let Some(index) = index {
         if state.replace_transcript(index, replacement.clone()) {
@@ -358,7 +371,7 @@ fn replace_tool_line(
 fn replace_or_push_tool_line(
     state: &mut super::state::TuiState,
     index: Option<usize>,
-    replacement: String,
+    replacement: TranscriptEntry,
 ) -> usize {
     if let Some(index) = index {
         if state.replace_transcript(index, replacement.clone()) {
