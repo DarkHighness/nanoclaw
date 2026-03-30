@@ -283,6 +283,11 @@ fn pending_control_band_surfaces_selected_prompt_and_editing_state() {
             .iter()
             .any(|line| line_text_for(line).contains("selected · latest draft"))
     );
+    assert!(
+        text.lines
+            .iter()
+            .any(|line| line_text_for(line) == "› steer")
+    );
     let prompt_row = text
         .lines
         .iter()

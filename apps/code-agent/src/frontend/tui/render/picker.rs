@@ -261,16 +261,7 @@ pub(super) fn build_pending_control_text(state: &TuiState) -> Text<'static> {
             )));
         }
         if let Some(selected) = state.pending_controls.get(selected_index) {
-            lines.push(Line::from(vec![
-                Span::styled("selected", Style::default().fg(HEADER)),
-                Span::styled(" · ", Style::default().fg(SUBTLE)),
-                Span::styled(
-                    pending_control_focus_label(selected_index, state.pending_controls.len()),
-                    Style::default().fg(ACCENT),
-                ),
-            ]));
-            lines.push(build_pending_control_row(selected, true));
-            lines.push(build_pending_control_detail_row(
+            lines.extend(build_selected_pending_control_block(
                 selected,
                 selected_index,
                 state.pending_controls.len(),
@@ -341,11 +332,58 @@ fn build_pending_control_row(
     if let Some(reason) = control.reason.as_deref() {
         spans.push(Span::styled(" · ", Style::default().fg(SUBTLE)));
         spans.push(Span::styled(
-            preview_text(reason, 24),
+            preview_text(
+                &format_pending_control_reason(Some(reason)).unwrap_or_else(|| reason.to_string()),
+                24,
+            ),
             Style::default().fg(MUTED),
         ));
     }
     Line::from(spans)
+}
+
+fn build_selected_pending_control_block(
+    control: &crate::backend::PendingControlSummary,
+    selected_index: usize,
+    total: usize,
+) -> Vec<Line<'static>> {
+    let kind_label = match control.kind {
+        crate::backend::PendingControlKind::Prompt => "prompt",
+        crate::backend::PendingControlKind::Steer => "steer",
+    };
+    let accent = match control.kind {
+        crate::backend::PendingControlKind::Prompt => USER,
+        crate::backend::PendingControlKind::Steer => ASSISTANT,
+    };
+    vec![
+        Line::from(vec![
+            Span::styled("selected", Style::default().fg(HEADER)),
+            Span::styled(" · ", Style::default().fg(SUBTLE)),
+            Span::styled(
+                pending_control_focus_label(selected_index, total),
+                Style::default().fg(ACCENT),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "›",
+                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" "),
+            Span::styled(
+                kind_label,
+                Style::default().fg(accent).add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("  ", Style::default().fg(SUBTLE)),
+            Span::styled(
+                preview_text(&control.preview, 84),
+                Style::default().fg(HEADER),
+            ),
+        ]),
+        build_pending_control_detail_row(control, selected_index, total),
+    ]
 }
 
 fn build_pending_control_detail_row(
