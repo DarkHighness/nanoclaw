@@ -7,8 +7,8 @@ use agent::{
     BashTool, CodeDefinitionsTool, CodeDocumentSymbolsTool, CodeIntelBackend, CodeReferencesTool,
     CodeSymbolSearchTool, EditTool, GlobTool, GrepTool, ListTool, ManagedCodeIntelBackend,
     ManagedCodeIntelOptions, ManagedPolicyProcessExecutor, PatchTool, ReadTool, SandboxPolicy,
-    TaskTool, TodoListState, TodoReadTool, TodoWriteTool, ToolRegistry,
-    WorkspaceTextCodeIntelBackend, WriteTool,
+    TaskTool, TodoListState, TodoReadTool, TodoWriteTool, ToolRegistry, WebFetchTool,
+    WebSearchBackendsTool, WebSearchTool, WorkspaceTextCodeIntelBackend, WriteTool,
 };
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -127,6 +127,12 @@ fn build_builtin_tools(
     tools.register(GlobTool::new());
     tools.register(GrepTool::new());
     tools.register(ListTool::new());
+    // Public web search/fetch is a first-class operator surface. Keep it
+    // available by default so hosts do not silently diverge from Codex-like
+    // workflows that expect live browsing without extra rebuild flags.
+    tools.register(WebFetchTool::new());
+    tools.register(WebSearchTool::new());
+    tools.register(WebSearchBackendsTool::new());
     if host_process_surfaces_allowed {
         tools.register(BashTool::with_process_executor_and_policy(
             process_executor.clone(),
@@ -294,6 +300,29 @@ mod tests {
                 .startup_warnings
                 .iter()
                 .any(|warning| warning.contains("disabled managed code-intel helpers"))
+        );
+    }
+
+    #[test]
+    fn runtime_tooling_keeps_web_tools_available_by_default() {
+        let options = load_options();
+        let workspace = tempdir().unwrap();
+        let tooling = build_runtime_tooling(
+            &options,
+            workspace.path(),
+            &SandboxPolicy::permissive(),
+            &SandboxBackendStatus::Unavailable {
+                reason: "not needed".to_string(),
+            },
+        );
+
+        let tool_names = tooling.tools.names();
+        assert!(tool_names.iter().any(|name| name.as_str() == "web_fetch"));
+        assert!(tool_names.iter().any(|name| name.as_str() == "web_search"));
+        assert!(
+            tool_names
+                .iter()
+                .any(|name| name.as_str() == "web_search_backends")
         );
     }
 }

@@ -6,7 +6,7 @@ version = "0.1.0"
 
 [dependencies]
 agent-env = { path = "../../crates/env" }
-agent = { path = "../../crates/core", features = ["agentic-tools", "code-intel"] }
+agent = { path = "../../crates/core", features = ["agentic-tools", "code-intel", "web-tools"] }
 nanoclaw-config = { path = "../../crates/config" }
 store = { path = "../../crates/store" }
 anyhow = "1.0.100"
