@@ -1,10 +1,11 @@
 use super::super::state::{TuiState, preview_text};
 use super::statusline::status_color;
-use super::theme::{ASSISTANT, ERROR, MUTED, SUBTLE, TEXT, USER, WARN};
+use super::theme::{ASSISTANT, ERROR, HEADER, MUTED, SUBTLE, TEXT, USER, WARN};
 use super::transcript::TranscriptEntryKind;
 use super::transcript_markdown::{render_shell_code_block, render_transcript_body_line};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
+use std::time::Instant;
 
 pub(super) fn should_collapse_shell_details(
     kind: TranscriptEntryKind,
@@ -204,22 +205,7 @@ fn transcript_marker_style(marker: &str, accent: Color, kind: TranscriptEntryKin
 
 pub(super) fn live_progress_lines(state: &TuiState) -> Vec<Line<'static>> {
     if state.turn_running {
-        if state.active_tool_label.is_some() {
-            if state.session.queued_commands == 0 {
-                return Vec::new();
-            }
-            return vec![Line::from(vec![
-                Span::styled("+", Style::default().fg(WARN).add_modifier(Modifier::BOLD)),
-                Span::raw(" "),
-                Span::styled(
-                    format!(
-                        "{} queued while the current tool runs",
-                        state.session.queued_commands
-                    ),
-                    Style::default().fg(MUTED),
-                ),
-            ])];
-        }
+        let frame_time = Instant::now();
         let elapsed_secs = state
             .turn_started_at
             .map(|started| started.elapsed().as_secs())
@@ -233,15 +219,27 @@ pub(super) fn live_progress_lines(state: &TuiState) -> Vec<Line<'static>> {
                     .add_modifier(Modifier::BOLD),
             ),
             Span::raw(" "),
-            Span::styled(
-                preview_text(&status, 56),
-                Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
-            ),
         ];
+        let mut progress_label = preview_text(&status, 56);
+        if let Some(tool_label) = state.active_tool_label.as_deref() {
+            progress_label.push_str(" · ");
+            progress_label.push_str(tool_label);
+        }
+        spans.extend(animated_progress_text_spans(
+            &progress_label,
+            animation_frame_ms(state.turn_started_at.unwrap_or(frame_time), frame_time),
+        ));
         if state.session.queued_commands > 0 {
             spans.push(Span::styled(" · ", Style::default().fg(SUBTLE)));
             spans.push(Span::styled(
-                format!("{} queued", state.session.queued_commands),
+                if state.active_tool_label.is_some() {
+                    format!(
+                        "{} queued behind current tool",
+                        state.session.queued_commands
+                    )
+                } else {
+                    format!("{} queued", state.session.queued_commands)
+                },
                 Style::default().fg(MUTED),
             ));
         }
@@ -260,6 +258,44 @@ pub(super) fn live_progress_lines(state: &TuiState) -> Vec<Line<'static>> {
             ),
         ])]
     }
+}
+
+pub(super) fn animated_progress_text_spans(text: &str, frame_ms: u128) -> Vec<Span<'static>> {
+    let chars = text.chars().collect::<Vec<_>>();
+    if chars.is_empty() {
+        return vec![Span::raw("")];
+    }
+
+    let glow_width = 7usize;
+    let head = ((frame_ms / 75) as usize) % (chars.len() + glow_width);
+    let head = head as isize - glow_width as isize;
+
+    chars
+        .into_iter()
+        .enumerate()
+        .map(|(index, ch)| {
+            if ch.is_whitespace() {
+                return Span::styled(ch.to_string(), Style::default().fg(SUBTLE));
+            }
+
+            let delta = index as isize - head;
+            let (color, modifier) = match delta {
+                0 => (HEADER, Modifier::BOLD),
+                1 => (USER, Modifier::BOLD),
+                2 | 3 => (TEXT, Modifier::BOLD),
+                4 | 5 => (ASSISTANT, Modifier::empty()),
+                _ => (MUTED, Modifier::empty()),
+            };
+            Span::styled(
+                ch.to_string(),
+                Style::default().fg(color).add_modifier(modifier),
+            )
+        })
+        .collect()
+}
+
+fn animation_frame_ms(started_at: Instant, now: Instant) -> u128 {
+    now.duration_since(started_at).as_millis()
 }
 
 fn live_progress_summary(state: &TuiState) -> String {

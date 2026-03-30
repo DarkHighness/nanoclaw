@@ -1,6 +1,7 @@
 use super::chrome::build_side_rail_lines;
 use super::statusline::format_footer_context;
 use super::transcript::build_transcript_lines;
+use super::transcript_shell::animated_progress_text_spans;
 use super::view::{
     build_collection_text, build_command_palette_text, build_key_value_text,
     build_statusline_picker_text, should_render_view_title,
@@ -214,7 +215,7 @@ fn welcome_lines_keep_the_start_screen_sparse() {
     assert!(
         lines
             .iter()
-            .any(|line| { line_text_for(line).contains("_   _    _    _   _  ___") })
+            .any(|line| { line_text_for(line).contains("NN   NN   AAA   NN   NN   OOO") })
     );
     assert!(
         lines
@@ -226,6 +227,18 @@ fn welcome_lines_keep_the_start_screen_sparse() {
             .iter()
             .any(|line| { line_text_for(line).contains("Type a prompt or /help.") })
     );
+}
+
+#[test]
+fn animated_progress_text_preserves_the_full_status_label() {
+    let spans = animated_progress_text_spans("Working · bash", 225);
+    let text = spans
+        .iter()
+        .map(|span| span.content.as_ref())
+        .collect::<String>();
+
+    assert_eq!(text, "Working · bash");
+    assert!(spans.len() > 4);
 }
 
 #[test]
@@ -322,11 +335,11 @@ fn transcript_renders_compact_live_progress_line() {
 
     let rendered = build_transcript_lines(&state);
 
-    assert!(rendered.iter().any(|line| {
-        line.spans
+    assert!(
+        rendered
             .iter()
-            .any(|span| span.content.as_ref().contains("Working (2)"))
-    }));
+            .any(|line| line_text_for(line).contains("Working (2)"))
+    );
     assert!(!rendered.iter().any(|line| {
         line.spans
             .iter()
@@ -356,6 +369,16 @@ fn transcript_hides_progress_line_while_tool_cell_is_active() {
         })
         .count();
     assert_eq!(running_count, 1);
+    assert!(
+        rendered
+            .iter()
+            .any(|line| line_text_for(line).contains("Working"))
+    );
+    assert!(
+        rendered
+            .iter()
+            .any(|line| line_text_for(line).contains("Working · bash"))
+    );
 }
 
 #[test]
