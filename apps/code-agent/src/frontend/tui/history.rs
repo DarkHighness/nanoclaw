@@ -1,4 +1,4 @@
-use super::state::{TranscriptEntry, preview_text};
+use super::state::{InspectorEntry, TranscriptEntry, preview_text};
 use crate::backend::{
     LiveTaskControlAction, LiveTaskControlOutcome, LiveTaskMessageAction, LiveTaskMessageOutcome,
     LiveTaskSpawnOutcome, LiveTaskSummary, LiveTaskWaitOutcome, LoadedAgentSession, LoadedSession,
@@ -90,16 +90,22 @@ pub(crate) fn format_live_task_summary_line(summary: &LiveTaskSummary) -> String
     )
 }
 
-pub(crate) fn format_live_task_spawn_outcome(outcome: &LiveTaskSpawnOutcome) -> Vec<String> {
-    vec![
-        format!("• Spawned task {}", outcome.task.task_id),
-        format!("  └ role {}", outcome.task.role),
-        format!("  └ status {}", outcome.task.status),
-        format!("  └ agent {}", outcome.task.agent_id),
-        format!("  └ session {}", outcome.task.session_ref),
-        format!("  └ agent session {}", outcome.task.agent_session_ref),
-        format!("  └ prompt {}", preview_text(&outcome.prompt, 96)),
-    ]
+pub(crate) fn format_live_task_spawn_outcome(
+    outcome: &LiveTaskSpawnOutcome,
+) -> Vec<InspectorEntry> {
+    vec![InspectorEntry::transcript(
+        TranscriptEntry::shell_summary_entry(
+            format!("Spawned task {}", outcome.task.task_id),
+            &[
+                format!("role {}", outcome.task.role),
+                format!("status {}", outcome.task.status),
+                format!("agent {}", outcome.task.agent_id),
+                format!("session {}", outcome.task.session_ref),
+                format!("agent session {}", outcome.task.agent_session_ref),
+                format!("prompt {}", preview_text(&outcome.prompt, 96)),
+            ],
+        ),
+    )]
 }
 
 pub(crate) fn format_session_search_line(result: &PersistedSessionSearchMatch) -> String {
@@ -132,47 +138,56 @@ pub(crate) fn format_session_search_line(result: &PersistedSessionSearchMatch) -
     )
 }
 
-pub(crate) fn format_session_inspector(session: &LoadedSession) -> Vec<String> {
+pub(crate) fn format_session_inspector(session: &LoadedSession) -> Vec<InspectorEntry> {
     let mut lines = vec![
-        "## Session".to_string(),
-        format!("session ref: {}", session.summary.session_id),
-        format!("event count: {}", session.summary.event_count),
-        format!(
-            "message count: {}",
-            session.summary.transcript_message_count
+        InspectorEntry::section("Session"),
+        InspectorEntry::field("session ref", session.summary.session_id.to_string()),
+        InspectorEntry::field("event count", session.summary.event_count.to_string()),
+        InspectorEntry::field(
+            "message count",
+            session.summary.transcript_message_count.to_string(),
         ),
-        format!("worker sessions: {}", session.summary.agent_session_count),
+        InspectorEntry::field(
+            "worker sessions",
+            session.summary.agent_session_count.to_string(),
+        ),
     ];
     if let Some(session_usage) = &session.token_usage.session {
-        lines.push("## Token Budget".to_string());
+        lines.push(InspectorEntry::section("Token Budget"));
         if let Some(window) = session_usage.ledger.context_window {
-            lines.push(format!(
-                "context: {} / {}",
-                window.used_tokens, window.max_tokens
+            lines.push(InspectorEntry::field(
+                "context",
+                format!("{} / {}", window.used_tokens, window.max_tokens),
             ));
         }
-        lines.push(format!(
-            "session tokens: in={} out={} cache={}",
-            session_usage.ledger.cumulative_usage.input_tokens,
-            session_usage.ledger.cumulative_usage.output_tokens,
-            session_usage.ledger.cumulative_usage.cache_read_tokens,
+        lines.push(InspectorEntry::field(
+            "session tokens",
+            format!(
+                "in={} out={} cache={}",
+                session_usage.ledger.cumulative_usage.input_tokens,
+                session_usage.ledger.cumulative_usage.output_tokens,
+                session_usage.ledger.cumulative_usage.cache_read_tokens,
+            ),
         ));
     }
     if !session.token_usage.aggregate_usage.is_zero() {
-        lines.push(format!(
-            "total tokens: in={} out={} prefill={} decode={} cache={}",
-            session.token_usage.aggregate_usage.input_tokens,
-            session.token_usage.aggregate_usage.output_tokens,
-            session.token_usage.aggregate_usage.prefill_tokens,
-            session.token_usage.aggregate_usage.decode_tokens,
-            session.token_usage.aggregate_usage.cache_read_tokens,
+        lines.push(InspectorEntry::field(
+            "total tokens",
+            format!(
+                "in={} out={} prefill={} decode={} cache={}",
+                session.token_usage.aggregate_usage.input_tokens,
+                session.token_usage.aggregate_usage.output_tokens,
+                session.token_usage.aggregate_usage.prefill_tokens,
+                session.token_usage.aggregate_usage.decode_tokens,
+                session.token_usage.aggregate_usage.cache_read_tokens,
+            ),
         ));
     }
     if !session.token_usage.subagents.is_empty() {
-        lines.push("## Subagents".to_string());
-        lines.push(format!(
-            "subagent count: {}",
-            session.token_usage.subagents.len()
+        lines.push(InspectorEntry::section("Subagents"));
+        lines.push(InspectorEntry::field(
+            "subagent count",
+            session.token_usage.subagents.len().to_string(),
         ));
         lines.extend(
             session
@@ -180,27 +195,30 @@ pub(crate) fn format_session_inspector(session: &LoadedSession) -> Vec<String> {
                 .subagents
                 .iter()
                 .take(4)
-                .map(format_token_usage_record_line),
+                .map(|record| InspectorEntry::transcript(format_token_usage_record_line(record))),
         );
     }
     if let Some(prompt) = &session.summary.last_user_prompt {
-        lines.push("## Prompt".to_string());
-        lines.push(format!("last prompt: {}", preview_text(prompt, 80)));
+        lines.push(InspectorEntry::section("Prompt"));
+        lines.push(InspectorEntry::field(
+            "last prompt",
+            preview_text(prompt, 80),
+        ));
     }
     if !session.agent_session_ids.is_empty() {
-        lines.push("## Runtime IDs".to_string());
-        lines.push(format!(
-            "runtime sessions: {}",
+        lines.push(InspectorEntry::section("Runtime IDs"));
+        lines.push(InspectorEntry::field(
+            "runtime sessions",
             session
                 .agent_session_ids
                 .iter()
                 .map(|agent_session_id: &AgentSessionId| preview_id(agent_session_id.as_str()))
                 .collect::<Vec<_>>()
-                .join(", ")
+                .join(", "),
         ));
     }
     if !session.events.is_empty() {
-        lines.push("## Recent Events".to_string());
+        lines.push(InspectorEntry::section("Recent Events"));
         lines.extend(
             session
                 .events
@@ -210,57 +228,69 @@ pub(crate) fn format_session_inspector(session: &LoadedSession) -> Vec<String> {
                 .collect::<Vec<_>>()
                 .into_iter()
                 .rev()
-                .map(format_session_event_line),
+                .map(|event| InspectorEntry::transcript(format_session_event_line(event))),
         );
     }
     lines
 }
 
-pub(crate) fn format_agent_session_inspector(session: &LoadedAgentSession) -> Vec<String> {
+pub(crate) fn format_agent_session_inspector(session: &LoadedAgentSession) -> Vec<InspectorEntry> {
     let mut lines = vec![
-        "## Agent Session".to_string(),
-        format!("agent session ref: {}", session.summary.agent_session_ref),
-        format!("session ref: {}", session.summary.session_ref),
-        format!("label: {}", session.summary.label),
-        format!("event count: {}", session.summary.event_count),
-        format!(
-            "message count: {}",
-            session.summary.transcript_message_count
+        InspectorEntry::section("Agent Session"),
+        InspectorEntry::field(
+            "agent session ref",
+            session.summary.agent_session_ref.clone(),
         ),
-        format!("resume: {}", session.summary.resume_support.label()),
+        InspectorEntry::field("session ref", session.summary.session_ref.clone()),
+        InspectorEntry::field("label", session.summary.label.clone()),
+        InspectorEntry::field("event count", session.summary.event_count.to_string()),
+        InspectorEntry::field(
+            "message count",
+            session.summary.transcript_message_count.to_string(),
+        ),
+        InspectorEntry::field("resume", session.summary.resume_support.label()),
     ];
     if let Some(token_usage) = &session.token_usage {
-        lines.push("## Token Budget".to_string());
+        lines.push(InspectorEntry::section("Token Budget"));
         if let Some(window) = token_usage.ledger.context_window {
-            lines.push(format!(
-                "context: {} / {}",
-                window.used_tokens, window.max_tokens
+            lines.push(InspectorEntry::field(
+                "context",
+                format!("{} / {}", window.used_tokens, window.max_tokens),
             ));
         }
-        lines.push(format!(
-            "agent tokens: in={} out={} cache={}",
-            token_usage.ledger.cumulative_usage.input_tokens,
-            token_usage.ledger.cumulative_usage.output_tokens,
-            token_usage.ledger.cumulative_usage.cache_read_tokens,
+        lines.push(InspectorEntry::field(
+            "agent tokens",
+            format!(
+                "in={} out={} cache={}",
+                token_usage.ledger.cumulative_usage.input_tokens,
+                token_usage.ledger.cumulative_usage.output_tokens,
+                token_usage.ledger.cumulative_usage.cache_read_tokens,
+            ),
         ));
     }
     if let Some(prompt) = &session.summary.last_user_prompt {
-        lines.push("## Prompt".to_string());
-        lines.push(format!("last prompt: {}", preview_text(prompt, 80)));
+        lines.push(InspectorEntry::section("Prompt"));
+        lines.push(InspectorEntry::field(
+            "last prompt",
+            preview_text(prompt, 80),
+        ));
     }
     if !session.subagents.is_empty() {
-        lines.push("## Spawned Subagents".to_string());
-        lines.push(format!("count: {}", session.subagents.len()));
+        lines.push(InspectorEntry::section("Spawned Subagents"));
+        lines.push(InspectorEntry::field(
+            "count",
+            session.subagents.len().to_string(),
+        ));
         lines.extend(
             session
                 .subagents
                 .iter()
                 .take(6)
-                .map(format_loaded_subagent_line),
+                .map(|subagent| InspectorEntry::transcript(format_loaded_subagent_line(subagent))),
         );
     }
     if !session.events.is_empty() {
-        lines.push("## Recent Events".to_string());
+        lines.push(InspectorEntry::section("Recent Events"));
         lines.extend(
             session
                 .events
@@ -270,93 +300,110 @@ pub(crate) fn format_agent_session_inspector(session: &LoadedAgentSession) -> Ve
                 .collect::<Vec<_>>()
                 .into_iter()
                 .rev()
-                .map(format_session_event_line),
+                .map(|event| InspectorEntry::transcript(format_session_event_line(event))),
         );
     }
     lines
 }
 
-pub(crate) fn format_task_inspector(task: &LoadedTask) -> Vec<String> {
+pub(crate) fn format_task_inspector(task: &LoadedTask) -> Vec<InspectorEntry> {
     let mut lines = vec![
-        "## Task".to_string(),
-        format!("task id: {}", task.summary.task_id),
-        format!("session ref: {}", task.summary.session_ref),
-        format!(
-            "parent agent session ref: {}",
-            task.summary.parent_agent_session_ref
+        InspectorEntry::section("Task"),
+        InspectorEntry::field("task id", task.summary.task_id.clone()),
+        InspectorEntry::field("session ref", task.summary.session_ref.clone()),
+        InspectorEntry::field(
+            "parent agent session ref",
+            task.summary.parent_agent_session_ref.clone(),
         ),
-        format!("role: {}", task.summary.role),
-        format!("status: {}", task.summary.status),
-        format!("summary: {}", task.summary.summary),
+        InspectorEntry::field("role", task.summary.role.clone()),
+        InspectorEntry::field("status", task.summary.status.to_string()),
+        InspectorEntry::field("summary", task.summary.summary.clone()),
     ];
     if let Some(child_session_ref) = &task.summary.child_session_ref {
-        lines.push("## Runtime".to_string());
-        lines.push(format!("child session ref: {child_session_ref}"));
+        lines.push(InspectorEntry::section("Runtime"));
+        lines.push(InspectorEntry::field(
+            "child session ref",
+            child_session_ref.clone(),
+        ));
         if let Some(child_agent_session_ref) = &task.summary.child_agent_session_ref {
-            lines.push(format!(
-                "child agent session ref: {}",
-                child_agent_session_ref
+            lines.push(InspectorEntry::field(
+                "child agent session ref",
+                child_agent_session_ref.clone(),
             ));
         }
     }
-    lines.push("## Prompt".to_string());
-    lines.push(format!("prompt: {}", preview_text(&task.spec.prompt, 96)));
+    lines.push(InspectorEntry::section("Prompt"));
+    lines.push(InspectorEntry::field(
+        "prompt",
+        preview_text(&task.spec.prompt, 96),
+    ));
     if let Some(steer) = &task.spec.steer {
-        lines.push(format!("steer: {}", preview_text(steer, 96)));
+        lines.push(InspectorEntry::field("steer", preview_text(steer, 96)));
     }
     if !task.spec.requested_write_set.is_empty() {
-        lines.push(format!(
-            "writes: {}",
-            preview_text(&task.spec.requested_write_set.join(", "), 96)
+        lines.push(InspectorEntry::field(
+            "writes",
+            preview_text(&task.spec.requested_write_set.join(", "), 96),
         ));
     }
     if !task.spec.dependency_ids.is_empty() {
-        lines.push(format!(
-            "deps: {}",
-            preview_text(&task.spec.dependency_ids.join(", "), 96)
+        lines.push(InspectorEntry::field(
+            "deps",
+            preview_text(&task.spec.dependency_ids.join(", "), 96),
         ));
     }
     if let Some(token_usage) = &task.token_usage {
-        lines.push("## Token Budget".to_string());
+        lines.push(InspectorEntry::section("Token Budget"));
         if let Some(window) = token_usage.ledger.context_window {
-            lines.push(format!(
-                "context: {} / {}",
-                window.used_tokens, window.max_tokens
+            lines.push(InspectorEntry::field(
+                "context",
+                format!("{} / {}", window.used_tokens, window.max_tokens),
             ));
         }
-        lines.push(format!(
-            "task tokens: in={} out={} cache={}",
-            token_usage.ledger.cumulative_usage.input_tokens,
-            token_usage.ledger.cumulative_usage.output_tokens,
-            token_usage.ledger.cumulative_usage.cache_read_tokens,
+        lines.push(InspectorEntry::field(
+            "task tokens",
+            format!(
+                "in={} out={} cache={}",
+                token_usage.ledger.cumulative_usage.input_tokens,
+                token_usage.ledger.cumulative_usage.output_tokens,
+                token_usage.ledger.cumulative_usage.cache_read_tokens,
+            ),
         ));
     }
     if let Some(result) = &task.result {
-        lines.push("## Result".to_string());
-        lines.push(format!("result: {}", preview_text(&result.summary, 96)));
+        lines.push(InspectorEntry::section("Result"));
+        lines.push(InspectorEntry::field(
+            "result",
+            preview_text(&result.summary, 96),
+        ));
         if !result.claimed_files.is_empty() {
-            lines.push(format!(
-                "claimed files: {}",
-                preview_text(&result.claimed_files.join(", "), 96)
+            lines.push(InspectorEntry::field(
+                "claimed files",
+                preview_text(&result.claimed_files.join(", "), 96),
             ));
         }
     }
     if let Some(error) = &task.error {
-        lines.push("## Error".to_string());
-        lines.push(preview_text(error, 96));
+        lines.push(InspectorEntry::section("Error"));
+        lines.push(InspectorEntry::Plain(preview_text(error, 96)));
     }
     if !task.artifacts.is_empty() {
-        lines.push("## Artifacts".to_string());
-        lines.extend(
-            task.artifacts
-                .iter()
-                .take(6)
-                .map(|artifact| preview_text(&format!("{} {}", artifact.kind, artifact.uri), 96)),
-        );
+        lines.push(InspectorEntry::section("Artifacts"));
+        lines.extend(task.artifacts.iter().take(6).map(|artifact| {
+            InspectorEntry::Plain(preview_text(
+                &format!("{} {}", artifact.kind, artifact.uri),
+                96,
+            ))
+        }));
     }
     if !task.messages.is_empty() {
-        lines.push("## Agent Messages".to_string());
-        lines.extend(task.messages.iter().take(6).map(format_task_message_line));
+        lines.push(InspectorEntry::section("Agent Messages"));
+        lines.extend(
+            task.messages
+                .iter()
+                .take(6)
+                .map(|message| InspectorEntry::transcript(format_task_message_line(message))),
+        );
     }
     lines
 }
@@ -369,16 +416,10 @@ pub(crate) fn format_visible_transcript_lines(transcript: &[Message]) -> Vec<Tra
     project_transcript_lines(transcript)
 }
 
-pub(crate) fn format_visible_transcript_preview_lines(transcript: &[Message]) -> Vec<String> {
-    let transcript = project_transcript_lines(transcript);
-    if transcript.is_empty() {
-        vec!["No transcript messages recorded for this session.".to_string()]
-    } else {
-        transcript
-            .iter()
-            .map(TranscriptEntry::serialized)
-            .collect::<Vec<_>>()
-    }
+pub(crate) fn format_visible_transcript_preview_lines(
+    transcript: &[Message],
+) -> Vec<TranscriptEntry> {
+    project_transcript_lines(transcript)
 }
 
 fn project_transcript_lines(transcript: &[Message]) -> Vec<TranscriptEntry> {
@@ -415,91 +456,107 @@ fn format_transcript_entry(raw: &str) -> String {
     project_transcript_entry(raw).serialized()
 }
 
-pub(crate) fn format_session_export_result(result: &SessionExportArtifact) -> Vec<String> {
+pub(crate) fn format_session_export_result(result: &SessionExportArtifact) -> Vec<InspectorEntry> {
     vec![
-        "## Export".to_string(),
-        format!(
-            "export: {}",
+        InspectorEntry::section("Export"),
+        InspectorEntry::field(
+            "export",
             match result.kind {
                 SessionExportKind::EventsJsonl => "events jsonl",
                 SessionExportKind::TranscriptText => "transcript text",
-            }
+            },
         ),
-        format!("session ref: {}", result.session_id),
-        format!("path: {}", result.output_path.display()),
-        format!("items: {}", result.item_count),
+        InspectorEntry::field("session ref", result.session_id.to_string()),
+        InspectorEntry::field("path", result.output_path.display().to_string()),
+        InspectorEntry::field("items", result.item_count.to_string()),
     ]
 }
 
-pub(crate) fn format_session_operation_outcome(outcome: &SessionOperationOutcome) -> Vec<String> {
+pub(crate) fn format_session_operation_outcome(
+    outcome: &SessionOperationOutcome,
+) -> Vec<InspectorEntry> {
     let headline = match outcome.action {
         SessionOperationAction::StartedFresh => "✔ Started new session",
         SessionOperationAction::AlreadyAttached => "• Agent session already attached",
         SessionOperationAction::Reattached => "✔ Reattached session",
     };
-    let mut lines = vec![
-        headline.to_string(),
-        format!("  └ session {}", outcome.session_ref),
-        format!("  └ agent session {}", outcome.active_agent_session_ref),
+    let mut details = vec![
+        format!("session {}", outcome.session_ref),
+        format!("agent session {}", outcome.active_agent_session_ref),
     ];
     if let Some(requested_agent_session_ref) = &outcome.requested_agent_session_ref {
-        lines.push(format!("  └ requested {}", requested_agent_session_ref));
+        details.push(format!("requested {}", requested_agent_session_ref));
     }
-    lines
+    vec![InspectorEntry::transcript(TranscriptEntry::from(
+        shell_summary(headline, details),
+    ))]
 }
 
-pub(crate) fn format_live_task_control_outcome(outcome: &LiveTaskControlOutcome) -> Vec<String> {
+pub(crate) fn format_live_task_control_outcome(
+    outcome: &LiveTaskControlOutcome,
+) -> Vec<InspectorEntry> {
     let headline = match outcome.action {
         LiveTaskControlAction::Cancelled => format!("✔ Cancelled task {}", outcome.task_id),
         LiveTaskControlAction::AlreadyTerminal => {
             format!("• Task {} was already terminal", outcome.task_id)
         }
     };
-    vec![
-        headline,
-        format!("  └ requested {}", outcome.requested_ref),
-        format!("  └ agent {}", outcome.agent_id),
-        format!("  └ status {}", outcome.status),
-    ]
+    vec![InspectorEntry::transcript(TranscriptEntry::from(
+        shell_summary(
+            headline,
+            [
+                format!("requested {}", outcome.requested_ref),
+                format!("agent {}", outcome.agent_id),
+                format!("status {}", outcome.status),
+            ],
+        ),
+    ))]
 }
 
-pub(crate) fn format_live_task_message_outcome(outcome: &LiveTaskMessageOutcome) -> Vec<String> {
+pub(crate) fn format_live_task_message_outcome(
+    outcome: &LiveTaskMessageOutcome,
+) -> Vec<InspectorEntry> {
     let headline = match outcome.action {
         LiveTaskMessageAction::Sent => format!("• Sent steer message to task {}", outcome.task_id),
         LiveTaskMessageAction::AlreadyTerminal => {
             format!("• Task {} was already terminal", outcome.task_id)
         }
     };
-    vec![
-        headline,
-        format!("  └ requested {}", outcome.requested_ref),
-        format!("  └ agent {}", outcome.agent_id),
-        format!("  └ status {}", outcome.status),
-        format!("  └ message {}", preview_text(&outcome.message, 96)),
-    ]
+    vec![InspectorEntry::transcript(TranscriptEntry::from(
+        shell_summary(
+            headline,
+            [
+                format!("requested {}", outcome.requested_ref),
+                format!("agent {}", outcome.agent_id),
+                format!("status {}", outcome.status),
+                format!("message {}", preview_text(&outcome.message, 96)),
+            ],
+        ),
+    ))]
 }
 
-pub(crate) fn format_live_task_wait_outcome(outcome: &LiveTaskWaitOutcome) -> Vec<String> {
+pub(crate) fn format_live_task_wait_outcome(outcome: &LiveTaskWaitOutcome) -> Vec<InspectorEntry> {
     let headline = match outcome.status {
         AgentStatus::Completed => format!("• Finished waiting for task {}", outcome.task_id),
         AgentStatus::Failed => format!("✗ Finished waiting for task {}", outcome.task_id),
         AgentStatus::Cancelled => format!("✗ Waiting cancelled for task {}", outcome.task_id),
         _ => format!("• Waiting finished for task {}", outcome.task_id),
     };
-    let mut lines = vec![
-        headline,
-        format!("  └ requested {}", outcome.requested_ref),
-        format!("  └ agent {}", outcome.agent_id),
-        format!("  └ status {}", outcome.status),
-        format!("  └ summary {}", preview_text(&outcome.summary, 96)),
+    let mut details = vec![
+        format!("requested {}", outcome.requested_ref),
+        format!("agent {}", outcome.agent_id),
+        format!("status {}", outcome.status),
+        format!("summary {}", preview_text(&outcome.summary, 96)),
     ];
     if !outcome.claimed_files.is_empty() {
-        lines.push(format!(
-            "  └ claimed files {}",
+        details.push(format!(
+            "claimed files {}",
             preview_text(&outcome.claimed_files.join(", "), 96)
         ));
     }
-    lines
+    vec![InspectorEntry::transcript(TranscriptEntry::from(
+        shell_summary(headline, details),
+    ))]
 }
 
 pub(crate) fn format_startup_diagnostics(snapshot: &StartupDiagnosticsSnapshot) -> Vec<String> {
@@ -1006,6 +1063,7 @@ mod tests {
         PersistedSessionSummary, ResumeSupport, SessionExportArtifact, SessionExportKind,
         SessionOperationAction, SessionOperationOutcome, SessionStartupSnapshot,
     };
+    use crate::frontend::tui::state::InspectorEntry;
     use agent::types::{
         AgentSessionId, AgentStatus, Message, SessionEventEnvelope, SessionEventKind, SessionId,
         ToolCall, ToolCallId, ToolOrigin, ToolResult,
@@ -1021,6 +1079,7 @@ mod tests {
             output_path: PathBuf::from("/workspace/out.txt"),
             item_count: 4,
         });
+        let lines = inspector_line_texts(&lines);
 
         assert!(lines.iter().any(|line| line == "export: transcript text"));
         assert!(lines.iter().any(|line| line == "path: /workspace/out.txt"));
@@ -1037,6 +1096,7 @@ mod tests {
             startup: SessionStartupSnapshot::default(),
             transcript: Vec::new(),
         });
+        let lines = inspector_line_texts(&lines);
 
         assert_eq!(lines[0], "✔ Reattached session");
         assert_eq!(lines[1], "  └ session session-1");
@@ -1116,6 +1176,7 @@ mod tests {
             summary: "Updated planner and wrote tests".to_string(),
             claimed_files: vec!["src/lib.rs".to_string()],
         });
+        let lines = inspector_line_texts(&lines);
 
         assert_eq!(lines[0], "• Finished waiting for task task_1");
         assert_eq!(lines[1], "  └ requested task_1");
@@ -1235,5 +1296,31 @@ mod tests {
         assert!(rendered.contains("  └ diff src/lib.rs"));
         assert!(rendered.contains("@@ -1,1 +1,1 @@"));
         assert!(rendered.contains("+new()"));
+    }
+
+    fn inspector_line_texts(lines: &[InspectorEntry]) -> Vec<String> {
+        lines
+            .iter()
+            .flat_map(|line| match line {
+                InspectorEntry::Raw(text)
+                | InspectorEntry::Section(text)
+                | InspectorEntry::Plain(text)
+                | InspectorEntry::Muted(text)
+                | InspectorEntry::Command(text) => vec![text.clone()],
+                InspectorEntry::Field { key, value } => vec![format!("{key}: {value}")],
+                InspectorEntry::Transcript(entry) => entry
+                    .serialized()
+                    .lines()
+                    .map(ToOwned::to_owned)
+                    .collect::<Vec<_>>(),
+                InspectorEntry::CollectionItem { primary, secondary } => vec![
+                    secondary
+                        .as_ref()
+                        .map(|secondary| format!("{primary}  {secondary}"))
+                        .unwrap_or_else(|| primary.clone()),
+                ],
+                InspectorEntry::Empty => vec![String::new()],
+            })
+            .collect()
     }
 }

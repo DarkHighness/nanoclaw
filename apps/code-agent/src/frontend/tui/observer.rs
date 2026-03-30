@@ -1,6 +1,6 @@
 use super::state::{PlanEntry, SharedUiState, TranscriptEntry, preview_text};
 use crate::backend::SessionEvent;
-use crate::tool_render::{prefixed_detail_lines, tool_output_detail_lines_from_preview};
+use crate::tool_render::{ToolDetail, tool_argument_details, tool_output_details_from_preview};
 use serde_json::Value;
 use std::collections::HashMap;
 
@@ -257,16 +257,16 @@ impl SharedRenderObserver {
 }
 
 fn requested_tool_entry(call: &crate::backend::SessionToolCall) -> TranscriptEntry {
-    TranscriptEntry::shell_summary_entry(
+    TranscriptEntry::shell_summary_tool_details(
         format!("Requested {}", call.tool_name),
-        &tool_argument_detail_lines(call),
+        tool_argument_detail_lines(call),
     )
 }
 
 fn denied_tool_entry(call: &crate::backend::SessionToolCall, reason: &str) -> TranscriptEntry {
     let mut detail_lines = tool_argument_detail_lines(call);
-    detail_lines.push(format!("  └ {}", preview_text(reason, 72)));
-    TranscriptEntry::error_summary_entry(format!("Denied {}", call.tool_name), &detail_lines)
+    detail_lines.push(ToolDetail::Meta(preview_text(reason, 72)));
+    TranscriptEntry::error_summary_tool_details(format!("Denied {}", call.tool_name), detail_lines)
 }
 
 fn waiting_tool_entry(
@@ -275,18 +275,18 @@ fn waiting_tool_entry(
 ) -> TranscriptEntry {
     let mut detail_lines = tool_argument_detail_lines(call);
     if let Some(reason) = reasons.first() {
-        detail_lines.push(format!("  └ {}", preview_text(reason, 72)));
+        detail_lines.push(ToolDetail::Meta(preview_text(reason, 72)));
     }
-    TranscriptEntry::shell_summary_entry(
+    TranscriptEntry::shell_summary_tool_details(
         format!("Awaiting approval for {}", call.tool_name),
-        &detail_lines,
+        detail_lines,
     )
 }
 
 fn running_tool_entry(call: &crate::backend::SessionToolCall) -> TranscriptEntry {
-    TranscriptEntry::shell_summary_entry(
+    TranscriptEntry::shell_summary_tool_details(
         format!("Running {}", call.tool_name),
-        &tool_argument_detail_lines(call),
+        tool_argument_detail_lines(call),
     )
 }
 
@@ -296,18 +296,21 @@ fn completed_tool_entry(
     structured_output_preview: Option<&str>,
 ) -> TranscriptEntry {
     let mut detail_lines = tool_argument_detail_lines(call);
-    detail_lines.extend(tool_output_detail_lines_from_preview(
+    detail_lines.extend(tool_output_details_from_preview(
         &call.tool_name,
         output_preview,
         structured_output_preview,
     ));
-    TranscriptEntry::shell_summary_entry(format!("Finished {}", call.tool_name), &detail_lines)
+    TranscriptEntry::shell_summary_tool_details(
+        format!("Finished {}", call.tool_name),
+        detail_lines,
+    )
 }
 
 fn failed_tool_entry(call: &crate::backend::SessionToolCall, error: &str) -> TranscriptEntry {
     let mut detail_lines = tool_argument_detail_lines(call);
-    detail_lines.push(format!("  └ {}", preview_text(error, 72)));
-    TranscriptEntry::error_summary_entry(format!("{} failed", call.tool_name), &detail_lines)
+    detail_lines.push(ToolDetail::Meta(preview_text(error, 72)));
+    TranscriptEntry::error_summary_tool_details(format!("{} failed", call.tool_name), detail_lines)
 }
 
 fn cancelled_tool_entry(
@@ -315,17 +318,19 @@ fn cancelled_tool_entry(
     reason: Option<&str>,
 ) -> TranscriptEntry {
     let mut detail_lines = tool_argument_detail_lines(call);
-    detail_lines.push(format!(
-        "  └ {}",
+    detail_lines.push(ToolDetail::Meta(
         reason
             .map(|value| preview_text(value, 72))
-            .unwrap_or_else(|| "cancelled".to_string())
+            .unwrap_or_else(|| "cancelled".to_string()),
     ));
-    TranscriptEntry::error_summary_entry(format!("Cancelled {}", call.tool_name), &detail_lines)
+    TranscriptEntry::error_summary_tool_details(
+        format!("Cancelled {}", call.tool_name),
+        detail_lines,
+    )
 }
 
-fn tool_argument_detail_lines(call: &crate::backend::SessionToolCall) -> Vec<String> {
-    prefixed_detail_lines(&call.arguments_preview)
+fn tool_argument_detail_lines(call: &crate::backend::SessionToolCall) -> Vec<ToolDetail> {
+    tool_argument_details(&call.arguments_preview)
 }
 
 fn plan_items_from_output(

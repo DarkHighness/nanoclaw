@@ -1,7 +1,7 @@
 use super::super::state::{TuiState, preview_text};
 use super::shared::clamp_scroll;
 use super::theme::{ACCENT, BORDER_ACTIVE, FOOTER_BG, HEADER, MUTED, SUBTLE, TEXT, USER};
-use super::view::build_inspector_text;
+use super::transcript::format_transcript_cell;
 use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span, Text};
@@ -174,7 +174,12 @@ pub(super) fn build_history_rollback_preview_text(state: &TuiState) -> Text<'sta
         ]),
         Line::raw(""),
     ];
-    lines.extend(build_inspector_text("Turn", &candidate.turn_preview_lines).lines);
+    for (index, entry) in candidate.turn_preview_lines.iter().enumerate() {
+        if index > 0 {
+            lines.push(Line::raw(""));
+        }
+        lines.extend(format_transcript_cell(entry));
+    }
     Text::from(lines)
 }
 

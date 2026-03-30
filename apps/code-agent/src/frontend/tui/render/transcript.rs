@@ -4,7 +4,7 @@ use super::transcript_shell::{
     animation_frame_ms, live_progress_lines, pending_control_embedded_lines,
     pending_control_picker_bridge_entry, pending_control_picker_embedded_lines,
     pending_control_timeline_entry, prefix_transcript_marker, render_collapsed_shell_summary,
-    render_shell_summary_body, should_collapse_shell_details,
+    render_shell_summary_entry, should_collapse_shell_details,
 };
 pub(super) use super::transcript_shell::{
     line_has_visible_content, line_to_plain_text, parse_prefixed_entry, transcript_body_style,
@@ -173,6 +173,10 @@ pub(super) fn format_transcript_entry(entry: &str) -> Vec<Line<'static>> {
     rendered
 }
 
+pub(super) fn format_transcript_cell(entry: &TranscriptEntry) -> Vec<Line<'static>> {
+    format_transcript_cell_with_mode(entry, true, None)
+}
+
 fn format_transcript_cell_with_mode(
     entry: &TranscriptEntry,
     show_tool_details: bool,
@@ -213,7 +217,7 @@ fn render_transcript_body(
     let summary = entry
         .shell_summary()
         .expect("non-markdown transcript entries should expose shell summary payloads");
-    render_shell_summary_body(&summary.serialized_body(), marker, kind, animation_frame)
+    render_shell_summary_entry(summary, marker, kind, animation_frame)
 }
 
 fn entry_kind_from_cell(entry: &TranscriptEntry) -> TranscriptEntryKind {

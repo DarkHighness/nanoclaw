@@ -1,10 +1,10 @@
-use super::super::state::{StatusLinePickerState, ThinkingEffortPickerState};
+use super::super::state::{InspectorEntry, StatusLinePickerState, ThinkingEffortPickerState};
 use super::theme::{ASSISTANT, BORDER_ACTIVE, ERROR, HEADER, MUTED, SUBTLE, TEXT, USER, WARN};
 use crate::statusline::{StatusLineConfig, status_line_fields};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 
-pub(super) fn build_inspector_text(title: &str, lines: &[String]) -> Text<'static> {
+pub(super) fn build_inspector_text(title: &str, lines: &[InspectorEntry]) -> Text<'static> {
     if is_command_palette_title(title) {
         build_command_palette_text(lines)
     } else if is_collection_inspector(title) {
@@ -14,91 +14,36 @@ pub(super) fn build_inspector_text(title: &str, lines: &[String]) -> Text<'stati
     }
 }
 
-pub(super) fn should_render_view_title(title: &str, lines: &[String]) -> bool {
-    let Some(first_non_empty) = lines.iter().find(|line| !line.trim().is_empty()) else {
+pub(super) fn should_render_view_title(title: &str, lines: &[InspectorEntry]) -> bool {
+    let Some(first_non_empty) = lines
+        .iter()
+        .find(|line| !inspector_entry_text(line).trim().is_empty())
+    else {
         return true;
     };
-    if let Some(section) = first_non_empty.strip_prefix("## ") {
+    if let InspectorEntry::Section(section) = first_non_empty {
+        return section != title;
+    }
+    if let InspectorEntry::Raw(raw) = first_non_empty
+        && let Some(section) = raw.strip_prefix("## ")
+    {
         return section != title;
     }
     !is_command_palette_title(title)
 }
 
-pub(super) fn build_key_value_text(lines: &[String]) -> Text<'static> {
+pub(super) fn build_key_value_text(lines: &[InspectorEntry]) -> Text<'static> {
     let mut rendered = Vec::new();
-    for line in lines {
-        if let Some(title) = line.strip_prefix("## ") {
-            if !rendered.is_empty() {
-                rendered.push(Line::raw(""));
-            }
-            rendered.push(Line::from(Span::styled(
-                title.to_string(),
-                Style::default().fg(HEADER).add_modifier(Modifier::BOLD),
-            )));
-            continue;
-        }
-        if is_shell_summary_line(line) {
-            rendered.extend(render_shell_summary_line(line));
-            continue;
-        }
-        if let Some((key, value)) = line.split_once(':') {
-            rendered.push(Line::from(vec![
-                Span::styled(
-                    format!("{key}:"),
-                    Style::default().fg(MUTED).add_modifier(Modifier::BOLD),
-                ),
-                Span::raw(" "),
-                Span::styled(
-                    value.trim().to_string(),
-                    value_style(key.trim(), value.trim()),
-                ),
-            ]));
-        } else if let Some((marker, accent, body)) = super::transcript::parse_prefixed_entry(line) {
-            let kind = super::transcript::transcript_entry_kind(marker, body);
-            rendered.push(Line::from(vec![
-                Span::styled(
-                    marker,
-                    Style::default().fg(accent).add_modifier(Modifier::BOLD),
-                ),
-                Span::raw(" "),
-                Span::styled(
-                    body.to_string(),
-                    super::transcript::transcript_body_style(marker, kind, body),
-                ),
-            ]));
-        } else if let Some(detail) = line.strip_prefix("  └ ") {
-            rendered.push(Line::from(vec![
-                Span::styled("  └ ", Style::default().fg(SUBTLE)),
-                Span::styled(detail.to_string(), Style::default().fg(MUTED)),
-            ]));
-        } else if let Some(detail) = line.strip_prefix("    ") {
-            rendered.push(Line::from(vec![
-                Span::raw("    "),
-                Span::styled(detail.to_string(), Style::default().fg(MUTED)),
-            ]));
-        } else if let Some(rest) = line.strip_prefix("  ") {
-            rendered.push(Line::from(vec![
-                Span::raw("  "),
-                Span::styled(rest.to_string(), Style::default().fg(TEXT)),
-            ]));
-        } else if line.starts_with('/') {
-            rendered.push(Line::from(Span::styled(
-                line.to_string(),
-                Style::default().fg(USER).add_modifier(Modifier::BOLD),
-            )));
-        } else {
-            rendered.push(Line::from(Span::styled(
-                line.to_string(),
-                plain_text_style(line),
-            )));
-        }
+    for entry in lines {
+        rendered.extend(render_key_value_entry(entry, rendered.is_empty()));
     }
     Text::from(rendered)
 }
 
-pub(super) fn build_command_palette_text(lines: &[String]) -> Text<'static> {
+pub(super) fn build_command_palette_text(lines: &[InspectorEntry]) -> Text<'static> {
     let mut rendered = Vec::new();
-    for line in lines {
+    for entry in lines {
+        let line = inspector_entry_text(entry);
         if let Some(section) = line.strip_prefix("## ") {
             if !rendered.is_empty() {
                 rendered.push(Line::raw(""));
@@ -135,6 +80,98 @@ pub(super) fn build_command_palette_text(lines: &[String]) -> Text<'static> {
         }
     }
     Text::from(rendered)
+}
+
+fn render_key_value_entry(entry: &InspectorEntry, is_first: bool) -> Vec<Line<'static>> {
+    match entry {
+        InspectorEntry::Section(title) => {
+            let mut lines = Vec::new();
+            if !is_first {
+                lines.push(Line::raw(""));
+            }
+            lines.push(Line::from(Span::styled(
+                title.clone(),
+                Style::default().fg(HEADER).add_modifier(Modifier::BOLD),
+            )));
+            lines
+        }
+        InspectorEntry::Field { key, value } => vec![Line::from(vec![
+            Span::styled(
+                format!("{key}:"),
+                Style::default().fg(MUTED).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" "),
+            Span::styled(value.clone(), value_style(key.trim(), value.trim())),
+        ])],
+        InspectorEntry::Transcript(entry) => super::transcript::format_transcript_cell(entry),
+        InspectorEntry::Command(line) => vec![Line::from(Span::styled(
+            line.clone(),
+            Style::default().fg(USER).add_modifier(Modifier::BOLD),
+        ))],
+        InspectorEntry::Muted(line) => vec![Line::from(Span::styled(
+            line.clone(),
+            Style::default().fg(SUBTLE),
+        ))],
+        InspectorEntry::Plain(line) => vec![Line::from(Span::styled(
+            line.clone(),
+            plain_text_style(line),
+        ))],
+        InspectorEntry::CollectionItem { primary, secondary } => {
+            vec![collection_line(
+                primary,
+                secondary.as_deref(),
+                BORDER_ACTIVE,
+            )]
+        }
+        InspectorEntry::Empty => vec![Line::raw("")],
+        InspectorEntry::Raw(line) => render_raw_key_value_entry(line, is_first),
+    }
+}
+
+fn render_raw_key_value_entry(line: &str, is_first: bool) -> Vec<Line<'static>> {
+    if let Some(title) = line.strip_prefix("## ") {
+        let mut lines = Vec::new();
+        if !is_first {
+            lines.push(Line::raw(""));
+        }
+        lines.push(Line::from(Span::styled(
+            title.to_string(),
+            Style::default().fg(HEADER).add_modifier(Modifier::BOLD),
+        )));
+        return lines;
+    }
+    if is_shell_summary_line(line) {
+        return render_shell_summary_line(line);
+    }
+    if let Some((key, value)) = line.split_once(':') {
+        return vec![Line::from(vec![
+            Span::styled(
+                format!("{key}:"),
+                Style::default().fg(MUTED).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" "),
+            Span::styled(
+                value.trim().to_string(),
+                value_style(key.trim(), value.trim()),
+            ),
+        ])];
+    }
+    if let Some(rest) = line.strip_prefix("  ") {
+        return vec![Line::from(vec![
+            Span::raw("  "),
+            Span::styled(rest.to_string(), Style::default().fg(TEXT)),
+        ])];
+    }
+    if line.starts_with('/') {
+        return vec![Line::from(Span::styled(
+            line.to_string(),
+            Style::default().fg(USER).add_modifier(Modifier::BOLD),
+        ))];
+    }
+    vec![Line::from(Span::styled(
+        line.to_string(),
+        plain_text_style(line),
+    ))]
 }
 
 pub(super) fn build_statusline_picker_text(
@@ -261,30 +298,56 @@ pub(super) fn build_thinking_effort_picker_text(
     Text::from(lines)
 }
 
-pub(super) fn build_collection_text(title: &str, lines: &[String]) -> Text<'static> {
+pub(super) fn build_collection_text(title: &str, lines: &[InspectorEntry]) -> Text<'static> {
     let accent = inspector_accent(title);
     let mut rendered = Vec::new();
-    for line in lines {
-        if let Some(section) = line.strip_prefix("## ") {
-            rendered.push(Line::from(Span::styled(
-                section.to_string(),
+    for entry in lines {
+        match entry {
+            InspectorEntry::Section(section) => rendered.push(Line::from(Span::styled(
+                section.clone(),
                 Style::default().fg(MUTED),
-            )));
-            continue;
-        }
-        if line.starts_with("No ") || line.starts_with("no ") {
-            rendered.push(Line::from(Span::styled(
-                line.to_string(),
+            ))),
+            InspectorEntry::Muted(line) => rendered.push(Line::from(Span::styled(
+                line.clone(),
                 Style::default().fg(SUBTLE),
-            )));
-            continue;
+            ))),
+            InspectorEntry::CollectionItem { primary, secondary } => {
+                rendered.push(collection_line(primary, secondary.as_deref(), accent));
+            }
+            InspectorEntry::Transcript(entry) => {
+                rendered.extend(render_collection_transcript_entry(entry, accent));
+            }
+            InspectorEntry::Raw(line) => {
+                if let Some(section) = line.strip_prefix("## ") {
+                    rendered.push(Line::from(Span::styled(
+                        section.to_string(),
+                        Style::default().fg(MUTED),
+                    )));
+                } else if line.starts_with("No ") || line.starts_with("no ") {
+                    rendered.push(Line::from(Span::styled(
+                        line.to_string(),
+                        Style::default().fg(SUBTLE),
+                    )));
+                } else if is_shell_summary_block(line) {
+                    rendered.extend(render_collection_summary_block(line, accent));
+                } else {
+                    let (primary, secondary) = split_list_entry(line);
+                    rendered.push(collection_line(primary, secondary, accent));
+                }
+            }
+            InspectorEntry::Plain(line) => rendered.push(Line::from(Span::styled(
+                line.clone(),
+                Style::default().fg(TEXT),
+            ))),
+            InspectorEntry::Command(line) => rendered.push(Line::from(Span::styled(
+                line.clone(),
+                Style::default().fg(USER).add_modifier(Modifier::BOLD),
+            ))),
+            InspectorEntry::Field { key, value } => {
+                rendered.push(collection_line(key, Some(value), accent));
+            }
+            InspectorEntry::Empty => rendered.push(Line::raw("")),
         }
-        if is_shell_summary_block(line) {
-            rendered.extend(render_collection_summary_block(line, accent));
-            continue;
-        }
-        let (primary, secondary) = split_list_entry(line);
-        rendered.push(collection_line(primary, secondary, accent));
     }
     Text::from(rendered)
 }
@@ -323,6 +386,42 @@ fn render_collection_summary_block(entry: &str, accent: Color) -> Vec<Line<'stat
             continue;
         }
         rendered.extend(render_shell_summary_line(raw_line));
+    }
+    rendered
+}
+
+fn render_collection_transcript_entry(
+    entry: &super::super::state::TranscriptEntry,
+    accent: Color,
+) -> Vec<Line<'static>> {
+    let mut rendered = Vec::new();
+    for (index, line) in super::transcript::format_transcript_cell(entry)
+        .into_iter()
+        .enumerate()
+    {
+        if index == 0 {
+            let text = super::transcript::line_to_plain_text(&line);
+            let body = text
+                .strip_prefix("• ")
+                .or_else(|| text.strip_prefix("✔ "))
+                .or_else(|| text.strip_prefix("✗ "))
+                .or_else(|| text.strip_prefix("⚠ "))
+                .unwrap_or(text.as_str())
+                .to_string();
+            rendered.push(Line::from(vec![
+                Span::styled(
+                    "›",
+                    Style::default().fg(accent).add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(" "),
+                Span::styled(
+                    body,
+                    Style::default().fg(accent).add_modifier(Modifier::BOLD),
+                ),
+            ]));
+        } else {
+            rendered.push(line);
+        }
     }
     rendered
 }
@@ -476,5 +575,22 @@ fn plain_text_style(line: &str) -> Style {
         Style::default().fg(SUBTLE)
     } else {
         Style::default().fg(TEXT)
+    }
+}
+
+fn inspector_entry_text(entry: &InspectorEntry) -> String {
+    match entry {
+        InspectorEntry::Raw(line)
+        | InspectorEntry::Section(line)
+        | InspectorEntry::Plain(line)
+        | InspectorEntry::Muted(line)
+        | InspectorEntry::Command(line) => line.clone(),
+        InspectorEntry::Field { key, value } => format!("{key}: {value}"),
+        InspectorEntry::Transcript(entry) => entry.serialized(),
+        InspectorEntry::CollectionItem { primary, secondary } => secondary
+            .as_ref()
+            .map(|secondary| format!("{primary}  {secondary}"))
+            .unwrap_or_else(|| primary.clone()),
+        InspectorEntry::Empty => String::new(),
     }
 }

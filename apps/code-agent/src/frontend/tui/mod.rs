@@ -30,7 +30,7 @@ use history::{
 use observer::SharedRenderObserver;
 use render::{main_pane_viewport_height, render};
 pub(crate) use state::SharedUiState;
-use state::TuiState;
+use state::{InspectorEntry, TuiState};
 
 use agent::RuntimeCommand;
 use agent::tools::{
@@ -2518,81 +2518,102 @@ fn pending_control_kind_label(kind: crate::backend::PendingControlKind) -> &'sta
     }
 }
 
-fn build_startup_inspector(session: &state::SessionSummary) -> Vec<String> {
+fn build_startup_inspector(session: &state::SessionSummary) -> Vec<InspectorEntry> {
     let mut lines = vec![
-        "## Ready".to_string(),
-        format!("workspace: {}", session.workspace_name),
-        format!("session ref: {}", session.active_session_ref),
-        format!("agent session: {}", session.root_agent_session_id),
-        format!("model: {} / {}", session.provider_label, session.model),
-        format!(
-            "root: {}",
-            state::preview_text(&session.workspace_root.display().to_string(), 56)
+        InspectorEntry::section("Ready"),
+        InspectorEntry::field("workspace", session.workspace_name.clone()),
+        InspectorEntry::field("session ref", session.active_session_ref.clone()),
+        InspectorEntry::field("agent session", session.root_agent_session_id.clone()),
+        InspectorEntry::field(
+            "model",
+            format!("{} / {}", session.provider_label, session.model),
         ),
-        "## Next".to_string(),
-        "/help [query]  browse commands".to_string(),
-        "/statusline  choose footer items".to_string(),
-        "/thinking [level]  pick or set model effort".to_string(),
-        "/details  toggle tool details".to_string(),
-        "/permissions [mode]  inspect or switch sandbox mode".to_string(),
-        "/queue  browse pending prompts and steers".to_string(),
-        "/sessions  browse history".to_string(),
-        "/agent_sessions  inspect or resume agents".to_string(),
-        "/spawn_task <role> <prompt>  launch child agent".to_string(),
-        "/new  start fresh without deleting history".to_string(),
-        "## Environment".to_string(),
-        format!(
-            "store: {} ({} sessions)",
-            session.store_label, session.stored_session_count
+        InspectorEntry::field(
+            "root",
+            state::preview_text(&session.workspace_root.display().to_string(), 56),
         ),
-        format!("permissions: {}", session.permission_mode.as_str()),
-        format!("sandbox: {}", session.sandbox_summary),
-        format!(
-            "tools: {} local / {} mcp",
-            session.startup_diagnostics.local_tool_count,
-            session.startup_diagnostics.mcp_tool_count
+        InspectorEntry::section("Next"),
+        InspectorEntry::collection("/help [query]", Some("browse commands")),
+        InspectorEntry::collection("/statusline", Some("choose footer items")),
+        InspectorEntry::collection("/thinking [level]", Some("pick or set model effort")),
+        InspectorEntry::collection("/details", Some("toggle tool details")),
+        InspectorEntry::collection(
+            "/permissions [mode]",
+            Some("inspect or switch sandbox mode"),
         ),
-        format!(
-            "plugins: {} enabled / {} total",
-            session.startup_diagnostics.enabled_plugin_count,
-            session.startup_diagnostics.total_plugin_count
+        InspectorEntry::collection("/queue", Some("browse pending prompts and steers")),
+        InspectorEntry::collection("/sessions", Some("browse history")),
+        InspectorEntry::collection("/agent_sessions", Some("inspect or resume agents")),
+        InspectorEntry::collection("/spawn_task <role> <prompt>", Some("launch child agent")),
+        InspectorEntry::collection("/new", Some("start fresh without deleting history")),
+        InspectorEntry::section("Environment"),
+        InspectorEntry::field(
+            "store",
+            format!(
+                "{} ({} sessions)",
+                session.store_label, session.stored_session_count
+            ),
         ),
-        "## Git".to_string(),
+        InspectorEntry::field("permissions", session.permission_mode.as_str()),
+        InspectorEntry::field("sandbox", session.sandbox_summary.clone()),
+        InspectorEntry::field(
+            "tools",
+            format!(
+                "{} local / {} mcp",
+                session.startup_diagnostics.local_tool_count,
+                session.startup_diagnostics.mcp_tool_count
+            ),
+        ),
+        InspectorEntry::field(
+            "plugins",
+            format!(
+                "{} enabled / {} total",
+                session.startup_diagnostics.enabled_plugin_count,
+                session.startup_diagnostics.total_plugin_count
+            ),
+        ),
+        InspectorEntry::section("Git"),
         if !session.host_process_surfaces_allowed {
-            "branch: disabled while host subprocesses are blocked".to_string()
+            InspectorEntry::field("branch", "disabled while host subprocesses are blocked")
         } else if session.git.available {
-            format!("branch: {}", session.git.branch)
+            InspectorEntry::field("branch", session.git.branch.clone())
         } else {
-            "branch: unavailable".to_string()
+            InspectorEntry::field("branch", "unavailable")
         },
         if !session.host_process_surfaces_allowed {
-            "dirty: unavailable while host subprocesses are blocked".to_string()
+            InspectorEntry::field("dirty", "unavailable while host subprocesses are blocked")
         } else {
-            format!(
-                "dirty: staged {}  modified {}  untracked {}",
-                session.git.staged, session.git.modified, session.git.untracked
+            InspectorEntry::field(
+                "dirty",
+                format!(
+                    "staged {}  modified {}  untracked {}",
+                    session.git.staged, session.git.modified, session.git.untracked
+                ),
             )
         },
-        "## Diagnostics".to_string(),
-        format!(
-            "mcp servers: {}",
-            session.startup_diagnostics.mcp_servers.len()
+        InspectorEntry::section("Diagnostics"),
+        InspectorEntry::field(
+            "mcp servers",
+            session.startup_diagnostics.mcp_servers.len().to_string(),
         ),
     ];
     if let Some(warning) = &session.store_warning {
-        lines.push(format!("warning: {}", state::preview_text(warning, 72)));
+        lines.push(InspectorEntry::Muted(format!(
+            "warning: {}",
+            state::preview_text(warning, 72)
+        )));
     }
     if !session.startup_diagnostics.warnings.is_empty() {
-        lines.push(format!(
+        lines.push(InspectorEntry::Muted(format!(
             "warning: {}",
             state::preview_text(&session.startup_diagnostics.warnings.join(" | "), 80)
-        ));
+        )));
     }
     if !session.startup_diagnostics.diagnostics.is_empty() {
-        lines.push(format!(
+        lines.push(InspectorEntry::Plain(format!(
             "diagnostic: {}",
             state::preview_text(&session.startup_diagnostics.diagnostics.join(" | "), 80)
-        ));
+        )));
     }
     lines
 }
@@ -2601,30 +2622,30 @@ fn build_permissions_inspector(
     snapshot: &SessionStartupSnapshot,
     turn_grants: &RequestPermissionProfile,
     session_grants: &RequestPermissionProfile,
-) -> Vec<String> {
+) -> Vec<InspectorEntry> {
     let mut lines = vec![
-        "## Permissions".to_string(),
-        format!("mode: {}", snapshot.permission_mode.as_str()),
-        format!("default sandbox: {}", snapshot.default_sandbox_summary),
-        format!("effective sandbox: {}", snapshot.sandbox_summary),
-        format!(
-            "host subprocesses: {}",
+        InspectorEntry::section("Permissions"),
+        InspectorEntry::field("mode", snapshot.permission_mode.as_str()),
+        InspectorEntry::field("default sandbox", snapshot.default_sandbox_summary.clone()),
+        InspectorEntry::field("effective sandbox", snapshot.sandbox_summary.clone()),
+        InspectorEntry::field(
+            "host subprocesses",
             if snapshot.host_process_surfaces_allowed {
                 "enabled"
             } else {
                 "blocked until danger-full-access or a real sandbox backend is available"
-            }
+            },
         ),
-        "## Modes".to_string(),
-        "/permissions default".to_string(),
-        "/permissions danger-full-access".to_string(),
-        "## Additional Grants".to_string(),
-        format!("turn: {}", permission_profile_summary(turn_grants)),
-        format!("session: {}", permission_profile_summary(session_grants)),
+        InspectorEntry::section("Modes"),
+        InspectorEntry::Command("/permissions default".to_string()),
+        InspectorEntry::Command("/permissions danger-full-access".to_string()),
+        InspectorEntry::section("Additional Grants"),
+        InspectorEntry::field("turn", permission_profile_summary(turn_grants)),
+        InspectorEntry::field("session", permission_profile_summary(session_grants)),
     ];
     if snapshot.permission_mode != SessionPermissionMode::Default {
-        lines.push(format!(
-            "note: returning to `/permissions default` keeps request_permissions grants, but reapplies the configured base sandbox."
+        lines.push(InspectorEntry::Muted(
+            "note: returning to `/permissions default` keeps request_permissions grants, but reapplies the configured base sandbox.".to_string(),
         ));
     }
     lines
@@ -2664,8 +2685,11 @@ fn permission_profile_summary(profile: &RequestPermissionProfile) -> String {
     }
 }
 
-fn build_command_error_view(input: &str, message: &str) -> Vec<String> {
-    let mut lines = message.lines().map(ToOwned::to_owned).collect::<Vec<_>>();
+fn build_command_error_view(input: &str, message: &str) -> Vec<InspectorEntry> {
+    let mut lines = message
+        .lines()
+        .map(|line| InspectorEntry::Plain(line.to_string()))
+        .collect::<Vec<_>>();
     let query = input
         .trim_start_matches('/')
         .split_whitespace()
@@ -2673,8 +2697,8 @@ fn build_command_error_view(input: &str, message: &str) -> Vec<String> {
         .filter(|query| !query.is_empty());
     let palette = command_palette_lines_for(query);
     if !palette.is_empty() {
-        lines.push(String::new());
-        lines.extend(palette);
+        lines.push(InspectorEntry::Empty);
+        lines.extend(palette.into_iter().map(InspectorEntry::from));
     }
     lines
 }
@@ -2684,7 +2708,7 @@ mod tests {
     use super::build_history_rollback_candidates;
     use super::build_startup_inspector;
     use super::commands::command_palette_lines;
-    use super::state::SessionSummary;
+    use super::state::{InspectorEntry, SessionSummary};
     use super::{PlainInputSubmitAction, merge_interrupt_steers, plain_input_submit_action};
     use crate::backend::SessionPermissionMode;
     use agent::types::{Message, MessageId};
@@ -2720,6 +2744,7 @@ mod tests {
             token_ledger: Default::default(),
             statusline: Default::default(),
         });
+        let lines = inspector_line_texts(&lines);
 
         assert!(
             lines
@@ -2751,6 +2776,26 @@ mod tests {
                 .iter()
                 .any(|line| line == "/details  toggle tool details")
         );
+    }
+
+    fn inspector_line_texts(lines: &[InspectorEntry]) -> Vec<String> {
+        lines
+            .iter()
+            .map(|line| match line {
+                InspectorEntry::Raw(text)
+                | InspectorEntry::Section(text)
+                | InspectorEntry::Plain(text)
+                | InspectorEntry::Muted(text)
+                | InspectorEntry::Command(text) => text.clone(),
+                InspectorEntry::Field { key, value } => format!("{key}: {value}"),
+                InspectorEntry::Transcript(entry) => entry.serialized(),
+                InspectorEntry::CollectionItem { primary, secondary } => secondary
+                    .as_ref()
+                    .map(|secondary| format!("{primary}  {secondary}"))
+                    .unwrap_or_else(|| primary.clone()),
+                InspectorEntry::Empty => String::new(),
+            })
+            .collect()
     }
 
     #[test]
@@ -2832,7 +2877,7 @@ mod tests {
         assert_eq!(candidates[0].removed_message_count, 4);
         assert_eq!(
             candidates[0].turn_preview_lines,
-            vec!["› first".to_string(), "• answer one".to_string()]
+            vec!["› first".into(), "• answer one".into()]
         );
 
         assert_eq!(candidates[1].message_id, MessageId::from("msg-3"));
@@ -2840,7 +2885,7 @@ mod tests {
         assert_eq!(candidates[1].removed_message_count, 2);
         assert_eq!(
             candidates[1].turn_preview_lines,
-            vec!["› second".to_string(), "• answer two".to_string()]
+            vec!["› second".into(), "• answer two".into()]
         );
     }
 }

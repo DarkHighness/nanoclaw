@@ -27,8 +27,8 @@ use crate::frontend::tui::commands::{
     SlashCommandHint, SlashCommandSpec,
 };
 use crate::frontend::tui::state::{
-    HistoryRollbackCandidate, MainPaneMode, PlanEntry, StatusLinePickerState, TranscriptEntry,
-    TuiState,
+    HistoryRollbackCandidate, InspectorEntry, MainPaneMode, PlanEntry, StatusLinePickerState,
+    TranscriptEntry, TuiState,
 };
 use agent::tools::{UserInputAnswer, UserInputOption, UserInputQuestion};
 use agent::types::MessageId;
@@ -38,9 +38,9 @@ use std::collections::BTreeMap;
 #[test]
 fn key_value_text_renders_section_headers_without_treating_them_as_pairs() {
     let rendered = build_key_value_text(&[
-        "## Session".to_string(),
-        "session ref: abc123".to_string(),
-        "/sessions [query]".to_string(),
+        inspector_entry("## Session"),
+        inspector_entry("session ref: abc123"),
+        inspector_entry("/sessions [query]"),
     ]);
     let lines = rendered.lines;
     assert_eq!(lines[0].spans[0].content.as_ref(), "Session");
@@ -51,9 +51,9 @@ fn key_value_text_renders_section_headers_without_treating_them_as_pairs() {
 #[test]
 fn key_value_text_preserves_prefixed_summary_blocks() {
     let rendered = build_key_value_text(&[
-        "✔ Exported transcript text".to_string(),
-        "  └ session-1".to_string(),
-        "    Wrote 4 items to /workspace/out.txt".to_string(),
+        inspector_entry("✔ Exported transcript text"),
+        inspector_entry("  └ session-1"),
+        inspector_entry("    Wrote 4 items to /workspace/out.txt"),
     ]);
     let lines = rendered.lines;
     assert_eq!(lines[0].spans[0].content.as_ref(), "✔");
@@ -71,8 +71,8 @@ fn key_value_text_preserves_prefixed_summary_blocks() {
 #[test]
 fn key_value_text_reuses_transcript_rendering_for_shell_summary_lines() {
     let rendered = build_key_value_text(&[
-        "• Reattached session".to_string(),
-        "  └ session session-1".to_string(),
+        inspector_entry("• Reattached session"),
+        inspector_entry("  └ session session-1"),
     ]);
 
     assert_eq!(rendered.lines[0].spans[0].content.as_ref(), "•");
@@ -213,8 +213,8 @@ fn transcript_renders_resume_summary_above_history() {
         main_pane: MainPaneMode::Transcript,
         inspector_title: "Resume".to_string(),
         inspector: vec![
-            "✔ Reattached session".to_string(),
-            "  └ session session-1".to_string(),
+            inspector_entry("✔ Reattached session"),
+            inspector_entry("  └ session session-1"),
         ],
         ..TuiState::default()
     };
@@ -245,14 +245,20 @@ fn history_rollback_overlay_renders_selection_list_and_preview() {
         HistoryRollbackCandidate {
             message_id: MessageId::from("msg-1"),
             prompt: "first prompt".to_string(),
-            turn_preview_lines: vec!["› first prompt".to_string(), "• first answer".to_string()],
+            turn_preview_lines: vec![
+                transcript_entry("› first prompt"),
+                transcript_entry("• first answer"),
+            ],
             removed_turn_count: 2,
             removed_message_count: 4,
         },
         HistoryRollbackCandidate {
             message_id: MessageId::from("msg-2"),
             prompt: "second prompt".to_string(),
-            turn_preview_lines: vec!["› second prompt".to_string(), "• second answer".to_string()],
+            turn_preview_lines: vec![
+                transcript_entry("› second prompt"),
+                transcript_entry("• second answer"),
+            ],
             removed_turn_count: 1,
             removed_message_count: 2,
         },
@@ -615,9 +621,10 @@ fn collection_text_renders_shell_summary_blocks_for_history_rows() {
     let rendered = build_collection_text(
         "Sessions",
         &[
-            "## Sessions".to_string(),
-            "• sess_123  no prompt yet\n  └ 12 messages · 40 events · 2 agent sessions · resume attached"
-                .to_string(),
+            inspector_entry("## Sessions"),
+            inspector_entry(
+                "• sess_123  no prompt yet\n  └ 12 messages · 40 events · 2 agent sessions · resume attached",
+            ),
         ],
     );
 
@@ -638,8 +645,8 @@ fn collection_text_keeps_history_rows_compact() {
     let rendered = build_collection_text(
         "Sessions",
         &[
-            "• sess_123  no prompt yet\n  └ 12 messages · 40 events".to_string(),
-            "• sess_456  resume prompt\n  └ 4 messages · 9 events".to_string(),
+            inspector_entry("• sess_123  no prompt yet\n  └ 12 messages · 40 events"),
+            inspector_entry("• sess_456  resume prompt\n  └ 4 messages · 9 events"),
         ],
     );
 
@@ -675,9 +682,9 @@ fn statusline_picker_text_renders_checked_rows() {
 #[test]
 fn command_palette_text_matches_picker_style() {
     let rendered = build_command_palette_text(&[
-        "## Session".to_string(),
-        "/help [query]  browse commands".to_string(),
-        "/sessions [query]  browse persisted sessions".to_string(),
+        inspector_entry("## Session"),
+        inspector_entry("/help [query]  browse commands"),
+        inspector_entry("/sessions [query]  browse persisted sessions"),
     ]);
 
     assert_eq!(rendered.lines[0].spans[0].content.as_ref(), "Session");
@@ -1624,10 +1631,20 @@ fn composer_cursor_width_accounts_for_wide_characters() {
 fn view_title_is_suppressed_when_the_collection_already_has_one() {
     assert!(!should_render_view_title(
         "Sessions",
-        &["## Sessions".to_string(), "• sess_123  prompt".to_string()]
+        &[
+            inspector_entry("## Sessions"),
+            inspector_entry("• sess_123  prompt")
+        ]
     ));
     assert!(should_render_view_title(
         "Export",
-        &["## Session".to_string(), "path: out.txt".to_string()]
+        &[
+            inspector_entry("## Session"),
+            inspector_entry("path: out.txt")
+        ]
     ));
+}
+
+fn inspector_entry(line: &str) -> InspectorEntry {
+    line.into()
 }

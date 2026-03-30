@@ -1,11 +1,16 @@
-use super::super::state::{TranscriptEntry, TranscriptShellEntry, TuiState, preview_text};
+use super::super::state::{
+    TranscriptEntry, TranscriptShellBlockKind, TranscriptShellDetail, TranscriptShellEntry,
+    TuiState, preview_text,
+};
 use super::shared::{
     pending_control_focus_label, pending_control_kind_label, pending_control_reason_label,
 };
 use super::statusline::status_color;
 use super::theme::{ASSISTANT, ERROR, HEADER, MUTED, SUBTLE, TEXT, USER, WARN};
 use super::transcript::TranscriptEntryKind;
-use super::transcript_markdown::{render_shell_code_block, render_transcript_body_line};
+use super::transcript_markdown::render_shell_code_block;
+use super::transcript_markdown_blocks::code_span;
+use super::transcript_markdown_line::render_transcript_body_line;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use std::time::Instant;
@@ -31,10 +36,10 @@ pub(super) fn render_collapsed_shell_summary(
     let summary = entry
         .shell_summary()
         .expect("collapsed shell summaries require structured details");
-    let preview_body = collapsed_shell_preview_body(summary);
+    let preview_summary = summary.preview_with_detail_lines(COLLAPSED_SHELL_PREVIEW_DETAIL_LINES);
     let hidden_line_count = hidden_shell_detail_line_count(entry);
 
-    let mut rendered = render_shell_summary_body(&preview_body, marker, kind, animation_frame);
+    let mut rendered = render_shell_summary_entry(&preview_summary, marker, kind, animation_frame);
     if hidden_line_count > 0 {
         rendered.push(Line::from(vec![
             transcript_continuation_prefix(kind),
@@ -52,23 +57,10 @@ pub(super) fn render_collapsed_shell_summary(
     rendered
 }
 
-fn collapsed_shell_preview_body(summary: &TranscriptShellEntry) -> String {
-    TranscriptShellEntry {
-        headline: summary.headline.clone(),
-        detail_lines: summary
-            .detail_lines
-            .iter()
-            .take(COLLAPSED_SHELL_PREVIEW_DETAIL_LINES)
-            .cloned()
-            .collect(),
-    }
-    .serialized_body()
-}
-
 fn hidden_shell_detail_line_count(entry: &TranscriptEntry) -> usize {
     entry
         .shell_summary()
-        .map(|summary| summary.detail_lines.len())
+        .map(|summary| summary.serialized_lines().len().saturating_sub(1))
         .unwrap_or_default()
         .saturating_sub(COLLAPSED_SHELL_PREVIEW_DETAIL_LINES)
 }
@@ -135,6 +127,38 @@ pub(super) fn render_shell_summary_body(
         if !raw_line.trim().is_empty() {
             first_visible = false;
         }
+    }
+
+    if rendered.is_empty() {
+        rendered.push(Line::from(Span::raw("")));
+    }
+
+    rendered
+}
+
+pub(super) fn render_shell_summary_entry(
+    summary: &TranscriptShellEntry,
+    marker: &str,
+    kind: TranscriptEntryKind,
+    animation_frame: Option<u128>,
+) -> Vec<Line<'static>> {
+    let mut rendered = Vec::new();
+    if let Some(animated) =
+        render_animated_shell_status_line(&summary.headline, marker, kind, animation_frame)
+    {
+        rendered.push(animated);
+    } else if !summary.headline.trim().is_empty() {
+        rendered.push(render_transcript_body_line(
+            &summary.headline,
+            marker,
+            kind,
+            false,
+            true,
+        ));
+    }
+
+    for detail in &summary.detail_lines {
+        rendered.extend(render_shell_detail(detail, kind));
     }
 
     if rendered.is_empty() {
@@ -235,6 +259,126 @@ pub(super) fn transcript_body_style(marker: &str, kind: TranscriptEntryKind, lin
         style.add_modifier(Modifier::BOLD)
     } else {
         style
+    }
+}
+
+fn render_shell_detail(
+    detail: &TranscriptShellDetail,
+    kind: TranscriptEntryKind,
+) -> Vec<Line<'static>> {
+    match detail {
+        TranscriptShellDetail::Command(command) => vec![detail_line(
+            false,
+            vec![Span::styled(command.clone(), Style::default().fg(USER))],
+        )],
+        TranscriptShellDetail::Meta(text) => vec![detail_line(
+            false,
+            vec![Span::styled(text.clone(), shell_meta_style(text))],
+        )],
+        TranscriptShellDetail::TextBlock(lines) => render_shell_text_block(lines, kind),
+        TranscriptShellDetail::NamedBlock {
+            label,
+            kind: block_kind,
+            lines,
+        } => render_named_shell_block(label, *block_kind, lines),
+        TranscriptShellDetail::Raw { text, continuation } => vec![detail_line(
+            *continuation,
+            vec![Span::styled(text.clone(), Style::default().fg(MUTED))],
+        )],
+    }
+}
+
+fn render_shell_text_block(lines: &[String], kind: TranscriptEntryKind) -> Vec<Line<'static>> {
+    lines
+        .iter()
+        .enumerate()
+        .map(|(index, line)| {
+            if index == 0 {
+                detail_line(
+                    false,
+                    vec![Span::styled(line.clone(), Style::default().fg(MUTED))],
+                )
+            } else {
+                detail_line(
+                    true,
+                    vec![Span::styled(line.clone(), shell_block_line_style(kind))],
+                )
+            }
+        })
+        .collect()
+}
+
+fn render_named_shell_block(
+    label: &str,
+    block_kind: TranscriptShellBlockKind,
+    lines: &[String],
+) -> Vec<Line<'static>> {
+    let mut rendered = vec![detail_line(
+        false,
+        vec![Span::styled(
+            label.to_string(),
+            shell_block_label_style(block_kind),
+        )],
+    )];
+
+    rendered.extend(lines.iter().map(|line| match block_kind {
+        TranscriptShellBlockKind::Diff => detail_line(true, vec![code_span(line)]),
+        TranscriptShellBlockKind::Stderr => detail_line(
+            true,
+            vec![Span::styled(line.clone(), Style::default().fg(ERROR))],
+        ),
+        TranscriptShellBlockKind::Stdout => detail_line(
+            true,
+            vec![Span::styled(line.clone(), Style::default().fg(TEXT))],
+        ),
+    }));
+
+    rendered
+}
+
+fn detail_line(continuation: bool, mut spans: Vec<Span<'static>>) -> Line<'static> {
+    let prefix = if continuation { "    " } else { "  └ " };
+    spans.insert(
+        0,
+        Span::styled(prefix.to_string(), Style::default().fg(SUBTLE)),
+    );
+    Line::from(spans)
+}
+
+fn shell_meta_style(text: &str) -> Style {
+    if let Some(exit_code) = text
+        .strip_prefix("exit ")
+        .and_then(|value| value.parse::<i64>().ok())
+    {
+        if exit_code == 0 {
+            return Style::default().fg(ASSISTANT);
+        }
+        return Style::default().fg(ERROR);
+    }
+    if text == "timed out" {
+        return Style::default().fg(WARN);
+    }
+    Style::default().fg(MUTED)
+}
+
+fn shell_block_label_style(kind: TranscriptShellBlockKind) -> Style {
+    match kind {
+        TranscriptShellBlockKind::Stdout => {
+            Style::default().fg(ASSISTANT).add_modifier(Modifier::BOLD)
+        }
+        TranscriptShellBlockKind::Stderr => Style::default().fg(ERROR).add_modifier(Modifier::BOLD),
+        TranscriptShellBlockKind::Diff => Style::default().fg(USER).add_modifier(Modifier::BOLD),
+    }
+}
+
+fn shell_block_line_style(kind: TranscriptEntryKind) -> Style {
+    match kind {
+        TranscriptEntryKind::SuccessSummary => Style::default().fg(TEXT),
+        TranscriptEntryKind::ErrorSummary
+        | TranscriptEntryKind::WarningSummary
+        | TranscriptEntryKind::ShellSummary
+        | TranscriptEntryKind::AssistantMessage
+        | TranscriptEntryKind::UserPrompt => Style::default().fg(MUTED),
     }
 }
 

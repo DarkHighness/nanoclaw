@@ -2,6 +2,7 @@ use crate::backend::{
     PendingControlKind, PendingControlSummary, SessionPermissionMode, StartupDiagnosticsSnapshot,
 };
 use crate::statusline::{StatusLineConfig, StatusLineField, status_line_fields};
+use crate::tool_render::{ToolDetail, ToolDetailBlockKind};
 use agent::types::MessageId;
 use agent::types::TokenLedgerSnapshot;
 use std::path::{Path, PathBuf};
@@ -83,7 +84,7 @@ pub(crate) struct PendingControlEditorState {
 pub(crate) struct HistoryRollbackCandidate {
     pub(crate) message_id: MessageId,
     pub(crate) prompt: String,
-    pub(crate) turn_preview_lines: Vec<String>,
+    pub(crate) turn_preview_lines: Vec<TranscriptEntry>,
     pub(crate) removed_turn_count: usize,
     pub(crate) removed_message_count: usize,
 }
@@ -100,45 +101,98 @@ pub(crate) enum HistoryRollbackState {
     Selecting(HistoryRollbackOverlayState),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct TranscriptDetailLine {
-    pub(crate) text: String,
-    pub(crate) continuation: bool,
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TranscriptShellBlockKind {
+    Stdout,
+    Stderr,
+    Diff,
 }
 
-impl TranscriptDetailLine {
+impl From<ToolDetailBlockKind> for TranscriptShellBlockKind {
+    fn from(value: ToolDetailBlockKind) -> Self {
+        match value {
+            ToolDetailBlockKind::Stdout => Self::Stdout,
+            ToolDetailBlockKind::Stderr => Self::Stderr,
+            ToolDetailBlockKind::Diff => Self::Diff,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum TranscriptShellDetail {
+    Command(String),
+    Meta(String),
+    TextBlock(Vec<String>),
+    NamedBlock {
+        label: String,
+        kind: TranscriptShellBlockKind,
+        lines: Vec<String>,
+    },
+    Raw {
+        text: String,
+        continuation: bool,
+    },
+}
+
+impl TranscriptShellDetail {
     pub(crate) fn from_prefixed(raw: &str) -> Option<Self> {
         if let Some(detail) = raw.strip_prefix("  └ ") {
-            return Some(Self::tree(detail.to_string()));
+            return Some(Self::Raw {
+                text: detail.to_string(),
+                continuation: false,
+            });
         }
         if let Some(detail) = raw.strip_prefix("    ") {
-            return Some(Self::continuation(detail.to_string()));
+            return Some(Self::Raw {
+                text: detail.to_string(),
+                continuation: true,
+            });
         }
         if raw.trim().is_empty() {
             return None;
         }
-        Some(Self::tree(raw.to_string()))
-    }
-
-    fn tree(text: impl Into<String>) -> Self {
-        Self {
-            text: text.into(),
+        Some(Self::Raw {
+            text: raw.to_string(),
             continuation: false,
-        }
+        })
     }
 
-    fn continuation(text: impl Into<String>) -> Self {
-        Self {
-            text: text.into(),
-            continuation: true,
+    pub(crate) fn serialized_lines(&self) -> Vec<String> {
+        match self {
+            Self::Command(command) | Self::Meta(command) => vec![format!("  └ {command}")],
+            Self::TextBlock(lines) => serialize_detail_block(lines),
+            Self::NamedBlock { label, lines, .. } => {
+                let mut rendered = vec![format!("  └ {label}")];
+                rendered.extend(
+                    lines
+                        .iter()
+                        .filter(|line| !line.trim().is_empty())
+                        .map(|line| format!("    {line}")),
+                );
+                rendered
+            }
+            Self::Raw { text, continuation } => {
+                if *continuation {
+                    vec![format!("    {text}")]
+                } else {
+                    vec![format!("  └ {text}")]
+                }
+            }
         }
     }
+}
 
-    pub(crate) fn serialized(&self) -> String {
-        if self.continuation {
-            format!("    {}", self.text)
-        } else {
-            format!("  └ {}", self.text)
+impl From<ToolDetail> for TranscriptShellDetail {
+    fn from(value: ToolDetail) -> Self {
+        match value {
+            ToolDetail::Command(command) => Self::Command(command),
+            ToolDetail::Meta(text) => Self::Meta(text),
+            ToolDetail::TextBlock(lines) => Self::TextBlock(lines),
+            ToolDetail::NamedBlock { label, kind, lines } => Self::NamedBlock {
+                label,
+                kind: kind.into(),
+                lines,
+            },
         }
     }
 }
@@ -146,13 +200,13 @@ impl TranscriptDetailLine {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct TranscriptShellEntry {
     pub(crate) headline: String,
-    pub(crate) detail_lines: Vec<TranscriptDetailLine>,
+    pub(crate) detail_lines: Vec<TranscriptShellDetail>,
 }
 
 impl TranscriptShellEntry {
     pub(crate) fn new(
         headline: impl Into<String>,
-        detail_lines: Vec<TranscriptDetailLine>,
+        detail_lines: Vec<TranscriptShellDetail>,
     ) -> Self {
         Self {
             headline: headline.into(),
@@ -168,7 +222,20 @@ impl TranscriptShellEntry {
             headline,
             detail_lines
                 .iter()
-                .filter_map(|line| TranscriptDetailLine::from_prefixed(line))
+                .filter_map(|line| TranscriptShellDetail::from_prefixed(line))
+                .collect(),
+        )
+    }
+
+    pub(crate) fn from_tool_details(
+        headline: impl Into<String>,
+        detail_lines: Vec<ToolDetail>,
+    ) -> Self {
+        Self::new(
+            headline,
+            detail_lines
+                .into_iter()
+                .map(TranscriptShellDetail::from)
                 .collect(),
         )
     }
@@ -176,25 +243,159 @@ impl TranscriptShellEntry {
     fn from_body(body: &str) -> Self {
         let mut lines = body.lines();
         let headline = lines.next().unwrap_or_default().to_string();
+        let remaining = lines.collect::<Vec<_>>();
         let mut detail_lines = Vec::new();
+        let mut index = 0;
 
-        for raw_line in lines {
-            if let Some(detail_line) = TranscriptDetailLine::from_prefixed(raw_line) {
-                detail_lines.push(detail_line);
+        while let Some(raw_line) = remaining.get(index).copied() {
+            let Some(detail) = raw_line.strip_prefix("  └ ") else {
+                if let Some(detail_line) = TranscriptShellDetail::from_prefixed(raw_line) {
+                    detail_lines.push(detail_line);
+                }
+                index += 1;
+                continue;
+            };
+
+            let mut block_lines = Vec::new();
+            let mut next = index + 1;
+            while let Some(continuation) = remaining.get(next).copied() {
+                let Some(continuation) = continuation.strip_prefix("    ") else {
+                    break;
+                };
+                block_lines.push(continuation.to_string());
+                next += 1;
             }
+
+            detail_lines.push(classify_shell_detail(detail, block_lines));
+            index = next;
         }
 
         Self::new(headline, detail_lines)
     }
 
-    pub(crate) fn serialized_body(&self) -> String {
+    pub(crate) fn serialized_lines(&self) -> Vec<String> {
         let mut lines = vec![self.headline.clone()];
         lines.extend(
             self.detail_lines
                 .iter()
-                .map(TranscriptDetailLine::serialized),
+                .flat_map(TranscriptShellDetail::serialized_lines),
         );
-        lines.join("\n")
+        lines
+    }
+
+    pub(crate) fn preview_with_detail_lines(&self, max_lines: usize) -> Self {
+        let mut remaining = max_lines;
+        let mut detail_lines = Vec::new();
+        for detail in &self.detail_lines {
+            let visible_lines = detail.serialized_lines();
+            if visible_lines.is_empty() {
+                continue;
+            }
+            if remaining == 0 {
+                break;
+            }
+            if visible_lines.len() <= remaining {
+                detail_lines.push(detail.clone());
+                remaining -= visible_lines.len();
+                continue;
+            }
+
+            detail_lines.push(match detail {
+                TranscriptShellDetail::TextBlock(lines) => TranscriptShellDetail::TextBlock(
+                    lines.iter().take(remaining).cloned().collect(),
+                ),
+                TranscriptShellDetail::NamedBlock { label, kind, lines } => {
+                    TranscriptShellDetail::NamedBlock {
+                        label: label.clone(),
+                        kind: *kind,
+                        lines: lines
+                            .iter()
+                            .take(remaining.saturating_sub(1))
+                            .cloned()
+                            .collect(),
+                    }
+                }
+                TranscriptShellDetail::Command(command) => {
+                    TranscriptShellDetail::Command(command.clone())
+                }
+                TranscriptShellDetail::Meta(text) => TranscriptShellDetail::Meta(text.clone()),
+                TranscriptShellDetail::Raw { text, continuation } => TranscriptShellDetail::Raw {
+                    text: text.clone(),
+                    continuation: *continuation,
+                },
+            });
+            break;
+        }
+
+        Self::new(self.headline.clone(), detail_lines)
+    }
+
+    pub(crate) fn serialized_body(&self) -> String {
+        self.serialized_lines().join("\n")
+    }
+}
+
+fn classify_shell_detail(text: &str, block_lines: Vec<String>) -> TranscriptShellDetail {
+    if text.starts_with("$ ") && block_lines.is_empty() {
+        return TranscriptShellDetail::Command(text.to_string());
+    }
+    if block_lines.is_empty() && is_shell_meta_line(text) {
+        return TranscriptShellDetail::Meta(text.to_string());
+    }
+    if let Some(kind) = named_block_kind(text) {
+        return TranscriptShellDetail::NamedBlock {
+            label: text.to_string(),
+            kind,
+            lines: block_lines,
+        };
+    }
+    if block_lines.is_empty() {
+        TranscriptShellDetail::Raw {
+            text: text.to_string(),
+            continuation: false,
+        }
+    } else {
+        let mut lines = Vec::with_capacity(block_lines.len() + 1);
+        lines.push(text.to_string());
+        lines.extend(block_lines);
+        TranscriptShellDetail::TextBlock(lines)
+    }
+}
+
+fn serialize_detail_block(lines: &[String]) -> Vec<String> {
+    let mut rendered = Vec::new();
+    for (index, line) in lines
+        .iter()
+        .filter(|line| !line.trim().is_empty())
+        .enumerate()
+    {
+        if index == 0 {
+            rendered.push(format!("  └ {line}"));
+        } else {
+            rendered.push(format!("    {line}"));
+        }
+    }
+    rendered
+}
+
+fn is_shell_meta_line(text: &str) -> bool {
+    text.starts_with("exit ")
+        || text == "timed out"
+        || text.starts_with("snapshot ")
+        || text.starts_with("reason ")
+        || text.starts_with("origin ")
+        || text == "cancelled"
+}
+
+fn named_block_kind(label: &str) -> Option<TranscriptShellBlockKind> {
+    if label == "stdout" {
+        Some(TranscriptShellBlockKind::Stdout)
+    } else if label == "stderr" {
+        Some(TranscriptShellBlockKind::Stderr)
+    } else if label.starts_with("diff ") || label == "diff" {
+        Some(TranscriptShellBlockKind::Diff)
+    } else {
+        None
     }
 }
 
@@ -224,6 +425,26 @@ impl TranscriptEntry {
         detail_lines: &[String],
     ) -> Self {
         Self::ErrorSummary(TranscriptShellEntry::from_prefixed_detail_lines(
+            headline,
+            detail_lines,
+        ))
+    }
+
+    pub(crate) fn shell_summary_tool_details(
+        headline: impl Into<String>,
+        detail_lines: Vec<ToolDetail>,
+    ) -> Self {
+        Self::ShellSummary(TranscriptShellEntry::from_tool_details(
+            headline,
+            detail_lines,
+        ))
+    }
+
+    pub(crate) fn error_summary_tool_details(
+        headline: impl Into<String>,
+        detail_lines: Vec<ToolDetail>,
+    ) -> Self {
+        Self::ErrorSummary(TranscriptShellEntry::from_tool_details(
             headline,
             detail_lines,
         ))
@@ -324,6 +545,64 @@ impl From<String> for TranscriptEntry {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum InspectorEntry {
+    Raw(String),
+    Section(String),
+    Field {
+        key: String,
+        value: String,
+    },
+    Transcript(TranscriptEntry),
+    CollectionItem {
+        primary: String,
+        secondary: Option<String>,
+    },
+    Plain(String),
+    Muted(String),
+    Command(String),
+    Empty,
+}
+
+impl InspectorEntry {
+    pub(crate) fn section(title: impl Into<String>) -> Self {
+        Self::Section(title.into())
+    }
+
+    pub(crate) fn field(key: impl Into<String>, value: impl Into<String>) -> Self {
+        Self::Field {
+            key: key.into(),
+            value: value.into(),
+        }
+    }
+
+    pub(crate) fn transcript(entry: impl Into<TranscriptEntry>) -> Self {
+        Self::Transcript(entry.into())
+    }
+
+    pub(crate) fn collection(
+        primary: impl Into<String>,
+        secondary: Option<impl Into<String>>,
+    ) -> Self {
+        Self::CollectionItem {
+            primary: primary.into(),
+            secondary: secondary.map(Into::into),
+        }
+    }
+}
+
+impl From<String> for InspectorEntry {
+    fn from(value: String) -> Self {
+        Self::Raw(value)
+    }
+}
+
+impl From<&str> for InspectorEntry {
+    fn from(value: &str) -> Self {
+        Self::Raw(value.to_string())
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub(crate) struct TuiState {
     pub(crate) session: SessionSummary,
@@ -335,7 +614,7 @@ pub(crate) struct TuiState {
     pub(crate) transcript_scroll: u16,
     pub(crate) follow_transcript: bool,
     pub(crate) inspector_title: String,
-    pub(crate) inspector: Vec<String>,
+    pub(crate) inspector: Vec<InspectorEntry>,
     pub(crate) inspector_scroll: u16,
     pub(crate) activity: Vec<String>,
     pub(crate) activity_scroll: u16,
@@ -353,10 +632,14 @@ pub(crate) struct TuiState {
 }
 
 impl TuiState {
-    pub(crate) fn show_main_view(&mut self, title: impl Into<String>, lines: Vec<String>) {
+    pub(crate) fn show_main_view<I, T>(&mut self, title: impl Into<String>, lines: I)
+    where
+        I: IntoIterator<Item = T>,
+        T: Into<InspectorEntry>,
+    {
         self.main_pane = MainPaneMode::View;
         self.inspector_title = title.into();
-        self.inspector = lines;
+        self.inspector = lines.into_iter().map(Into::into).collect();
         self.inspector_scroll = 0;
         self.pending_control_picker = None;
         self.statusline_picker = None;
@@ -946,14 +1229,14 @@ mod tests {
             HistoryRollbackCandidate {
                 message_id: MessageId::from("msg-1"),
                 prompt: "first".to_string(),
-                turn_preview_lines: vec!["› first".to_string()],
+                turn_preview_lines: vec!["› first".into()],
                 removed_turn_count: 2,
                 removed_message_count: 4,
             },
             HistoryRollbackCandidate {
                 message_id: MessageId::from("msg-2"),
                 prompt: "second".to_string(),
-                turn_preview_lines: vec!["› second".to_string()],
+                turn_preview_lines: vec!["› second".into()],
                 removed_turn_count: 1,
                 removed_message_count: 2,
             },
