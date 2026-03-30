@@ -578,24 +578,19 @@ fn build_transcript_lines(state: &TuiState) -> Vec<Line<'static>> {
 }
 
 fn build_welcome_lines(state: &TuiState, viewport_height: u16) -> Vec<Line<'static>> {
-    let compact = viewport_height < 18;
+    let compact = viewport_height < 16;
     let mut core = build_welcome_logo_lines(compact);
     core.push(Line::raw(""));
     core.push(Line::from(Span::styled(
         format!("{} · {}", state.session.workspace_name, state.session.model),
         Style::default().fg(MUTED),
     )));
-    core.push(Line::raw(""));
     core.push(Line::from(Span::styled(
-        "Ask for a change, a fix, or a summary.",
-        Style::default().fg(TEXT),
-    )));
-    core.push(Line::from(Span::styled(
-        "Type a prompt to begin. Use /help when needed.",
+        "Type a prompt or /help.",
         Style::default().fg(SUBTLE),
     )));
 
-    let top_padding = usize::from(viewport_height.saturating_sub(core.len() as u16) / 3);
+    let top_padding = usize::from(viewport_height.saturating_sub(core.len() as u16) / 2);
     let mut lines = vec![Line::raw(""); top_padding];
     lines.extend(core);
     lines
@@ -603,52 +598,27 @@ fn build_welcome_lines(state: &TuiState, viewport_height: u16) -> Vec<Line<'stat
 
 fn build_welcome_logo_lines(compact: bool) -> Vec<Line<'static>> {
     if compact {
-        return vec![
-            Line::from(Span::styled(
-                "NANO CLAW".to_string(),
-                Style::default().fg(HEADER).add_modifier(Modifier::BOLD),
-            )),
-            Line::from(Span::styled(
-                " NANO CLAW".to_string(),
-                Style::default().fg(SUBTLE).add_modifier(Modifier::DIM),
-            )),
-            Line::from(Span::styled(
-                "code-agent".to_string(),
-                Style::default().fg(MUTED),
-            )),
-        ];
+        return vec![Line::from(Span::styled(
+            "NANOCLAW".to_string(),
+            Style::default().fg(HEADER).add_modifier(Modifier::BOLD),
+        ))];
     }
 
-    let mut lines = Vec::new();
-    for line in [
-        " _   _    _    _   _  ___     ____ _        _ __        __",
-        "| \\ | |  / \\  | \\ | |/ _ \\   / ___| |      / \\\\ \\      / /",
-        "|  \\| | / _ \\ |  \\| | | | | | |   | |     / _ \\\\ \\ /\\ / / ",
-        "| |\\  |/ ___ \\| |\\  | |_| | | |___| |___ / ___ \\\\ V  V /  ",
-        "|_| \\_/_/   \\_\\_| \\_|\\___/   \\____|_____/_/   \\_\\\\_/\\_/   ",
-    ] {
-        lines.push(Line::from(Span::styled(
+    [
+        "N   N  AAA  N   N  OOO   CCCC L      AAA  W   W",
+        "NN  N A   A NN  N O   O C    L     A   A W   W",
+        "N N N AAAAA N N N O   O C    L     AAAAA W W W",
+        "N  NN A   A N  NN O   O C    L     A   A WW WW",
+        "N   N A   A N   N  OOO   CCCC LLLLL A   A W   W",
+    ]
+    .into_iter()
+    .map(|line| {
+        Line::from(Span::styled(
             line.to_string(),
             Style::default().fg(HEADER).add_modifier(Modifier::BOLD),
-        )));
-        lines.push(Line::from(Span::styled(
-            format!(" {line}"),
-            Style::default().fg(SUBTLE).add_modifier(Modifier::DIM),
-        )));
-    }
-    lines.push(Line::from(Span::styled(
-        "NANO CLAW".to_string(),
-        Style::default().fg(MUTED).add_modifier(Modifier::BOLD),
-    )));
-    lines.push(Line::from(Span::styled(
-        " NANO CLAW".to_string(),
-        Style::default().fg(SUBTLE).add_modifier(Modifier::DIM),
-    )));
-    lines.push(Line::from(Span::styled(
-        "code-agent".to_string(),
-        Style::default().fg(MUTED),
-    )));
-    lines
+        ))
+    })
+    .collect()
 }
 
 fn should_render_transcript_context(title: &str) -> bool {
@@ -2404,26 +2374,21 @@ mod tests {
         let lines = build_welcome_lines(&state, 20);
 
         assert!(lines.iter().any(|line| {
-            line.spans
-                .iter()
-                .any(|span| span.content.as_ref().contains("NANO CLAW"))
-        }));
-        assert!(lines.iter().any(|line| {
-            line.spans
-                .iter()
-                .any(|span| span.content.as_ref().contains(" NANO CLAW"))
-        }));
-        assert!(lines.iter().any(|line| {
             line.spans.iter().any(|span| {
                 span.content
                     .as_ref()
-                    .contains("Ask for a change, a fix, or a summary.")
+                    .contains("N   N  AAA  N   N  OOO   CCCC")
             })
         }));
         assert!(lines.iter().any(|line| {
             line.spans
                 .iter()
-                .any(|span| span.content.as_ref().contains("Type a prompt to begin."))
+                .any(|span| span.content.as_ref().contains("nanoclaw · gpt-5.4"))
+        }));
+        assert!(lines.iter().any(|line| {
+            line.spans
+                .iter()
+                .any(|span| span.content.as_ref().contains("Type a prompt or /help."))
         }));
     }
 
