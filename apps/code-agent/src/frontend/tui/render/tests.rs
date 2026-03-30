@@ -1251,7 +1251,7 @@ fn approval_preview_lines_collapse_long_argument_blocks() {
         "five".to_string(),
     ]);
 
-    assert_eq!(lines, vec!["one", "two", "...", "five"]);
+    assert_eq!(lines, vec!["one", "two", "three", "… +2 lines"]);
 }
 
 #[test]

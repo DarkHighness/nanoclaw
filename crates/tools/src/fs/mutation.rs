@@ -192,22 +192,21 @@ pub fn compute_diff_preview(
 
     let old_start = if removed.is_empty() { 0 } else { prefix + 1 };
     let new_start = if added.is_empty() { 0 } else { prefix + 1 };
-    let mut preview_lines = vec![format!(
-        "--- {path}\n+++ {path}\n@@ -{old_start},{} +{new_start},{} @@",
-        removed.len(),
-        added.len()
-    )];
-    for line in removed.iter().take(DIFF_PREVIEW_LINE_LIMIT) {
-        preview_lines.push(format!("-{line}"));
-    }
-    for line in added.iter().take(DIFF_PREVIEW_LINE_LIMIT) {
-        preview_lines.push(format!("+{line}"));
-    }
-    if removed.len() > DIFF_PREVIEW_LINE_LIMIT || added.len() > DIFF_PREVIEW_LINE_LIMIT {
-        preview_lines.push(format!(
-            "[diff preview truncated to {DIFF_PREVIEW_LINE_LIMIT} removed/added lines]"
-        ));
-    }
+    let mut preview_lines = vec![
+        format!("--- {path}"),
+        format!("+++ {path}"),
+        format!(
+            "@@ -{old_start},{} +{new_start},{} @@",
+            removed.len(),
+            added.len()
+        ),
+    ];
+    let body_lines = removed
+        .iter()
+        .map(|line| format!("-{line}"))
+        .chain(added.iter().map(|line| format!("+{line}")))
+        .collect::<Vec<_>>();
+    preview_lines.extend(collapse_diff_preview_body(&body_lines));
 
     Some(json!({
         "path": path,
@@ -215,6 +214,24 @@ pub fn compute_diff_preview(
         "after_lines": after_lines.len(),
         "preview": preview_lines.join("\n"),
     }))
+}
+
+fn collapse_diff_preview_body(lines: &[String]) -> Vec<String> {
+    if lines.len() <= DIFF_PREVIEW_LINE_LIMIT {
+        return lines.to_vec();
+    }
+
+    // Diff previews should preserve the end of the hunk so operators can see
+    // both the change entry point and how the edit settles before opening the
+    // full file or patch.
+    let tail = (DIFF_PREVIEW_LINE_LIMIT - 1) / 2;
+    let head = DIFF_PREVIEW_LINE_LIMIT - tail - 1;
+    let hidden = lines.len().saturating_sub(head + tail);
+
+    let mut preview = lines.iter().take(head).cloned().collect::<Vec<_>>();
+    preview.push(format!("… +{hidden} lines"));
+    preview.extend(lines.iter().skip(lines.len().saturating_sub(tail)).cloned());
+    preview
 }
 
 pub fn apply_text_edits(
@@ -540,7 +557,7 @@ fn error_outcome(
 mod tests {
     use super::{
         TextEditOperation, WriteExistingBehavior, WriteMissingBehavior, WriteRequest, apply_delete,
-        apply_text_edits, apply_write,
+        apply_text_edits, apply_write, compute_diff_preview,
     };
 
     #[test]
@@ -591,5 +608,29 @@ mod tests {
         let outcome = apply_delete(None, "sample.txt", None, true);
         assert!(!outcome.is_error);
         assert!(outcome.next_content.is_none());
+    }
+
+    #[test]
+    fn diff_preview_keeps_tail_context_when_truncated() {
+        let before = (1..=10)
+            .map(|value| format!("before-{value}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let after = (1..=10)
+            .map(|value| format!("after-{value}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let preview = compute_diff_preview("sample.txt", Some(&before), Some(&after))
+            .expect("diff preview should exist");
+        let rendered = preview
+            .get("preview")
+            .and_then(serde_json::Value::as_str)
+            .expect("preview text");
+
+        assert!(rendered.contains("--- sample.txt"));
+        assert!(rendered.contains("-before-1"));
+        assert!(rendered.contains("… +9 lines"));
+        assert!(rendered.contains("+after-10"));
     }
 }

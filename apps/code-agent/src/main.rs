@@ -2,6 +2,7 @@ mod backend;
 mod config;
 mod frontend;
 mod options;
+mod preview;
 mod provider;
 mod statusline;
 

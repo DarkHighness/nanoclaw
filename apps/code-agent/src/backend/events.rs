@@ -1,3 +1,4 @@
+use crate::preview::{PreviewCollapse, collapse_preview_text};
 use agent::runtime::{Result as RuntimeResult, RuntimeObserver, RuntimeProgressEvent};
 use agent::types::{TokenLedgerSnapshot, TokenUsagePhase, ToolLifecycleEventKind};
 use serde_json::Value;
@@ -211,7 +212,12 @@ fn tool_arguments_preview(call: &agent::types::ToolCall) -> Vec<String> {
         && let Some(command) = call.arguments.get("command").and_then(Value::as_str)
         && !command.trim().is_empty()
     {
-        return truncate_preview(&format!("$ {}", command.trim()), 4, 96);
+        return collapse_preview_text(
+            &format!("$ {}", command.trim()),
+            4,
+            96,
+            PreviewCollapse::Head,
+        );
     }
 
     if call.tool_name.as_str() == "update_plan" {
@@ -232,7 +238,12 @@ fn tool_arguments_preview(call: &agent::types::ToolCall) -> Vec<String> {
             .map(str::trim)
             .filter(|value| !value.is_empty())
         {
-            lines.extend(truncate_preview(explanation, 2, 96));
+            lines.extend(collapse_preview_text(
+                explanation,
+                2,
+                96,
+                PreviewCollapse::Head,
+            ));
         }
         return lines;
     }
@@ -241,53 +252,11 @@ fn tool_arguments_preview(call: &agent::types::ToolCall) -> Vec<String> {
         if let Some(value) = call.arguments.get(key).and_then(Value::as_str)
             && !value.trim().is_empty()
         {
-            return truncate_preview(value.trim(), 4, 96);
+            return collapse_preview_text(value.trim(), 4, 96, PreviewCollapse::Head);
         }
     }
 
-    truncate_preview(&call.arguments.to_string(), 4, 96)
-}
-
-fn truncate_preview(value: &str, max_lines: usize, max_columns: usize) -> Vec<String> {
-    let raw_lines = value.lines().collect::<Vec<_>>();
-    if raw_lines.is_empty() {
-        return vec!["<empty>".to_string()];
-    }
-
-    let clip_line = |line: &str| {
-        if line.chars().count() > max_columns {
-            format!(
-                "{}...",
-                line.chars()
-                    .take(max_columns.saturating_sub(3))
-                    .collect::<String>()
-            )
-        } else {
-            line.to_string()
-        }
-    };
-
-    let mut lines = Vec::new();
-    if raw_lines.len() <= max_lines.max(1) {
-        lines.extend(raw_lines.into_iter().map(clip_line));
-        return lines;
-    }
-
-    let head = max_lines.max(2) / 2;
-    let tail = max_lines.max(2) - head;
-    lines.extend(raw_lines.iter().take(head).copied().map(clip_line));
-    lines.push("...".to_string());
-    lines.extend(
-        raw_lines
-            .iter()
-            .skip(raw_lines.len().saturating_sub(tail))
-            .copied()
-            .map(clip_line),
-    );
-    if lines.is_empty() {
-        lines.push("<empty>".to_string());
-    }
-    lines
+    collapse_preview_text(&call.arguments.to_string(), 4, 96, PreviewCollapse::Head)
 }
 
 #[cfg(test)]

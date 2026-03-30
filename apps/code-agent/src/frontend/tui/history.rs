@@ -7,6 +7,7 @@ use crate::backend::{
     PersistedTaskSummary, SessionExportArtifact, SessionExportKind, SessionOperationAction,
     SessionOperationOutcome, StartupDiagnosticsSnapshot, message_to_text, preview_id,
 };
+use crate::preview::{PreviewCollapse, collapse_preview_text};
 use agent::types::{
     AgentEnvelopeKind, AgentSessionId, AgentStatus, HookEvent, Message, SessionEventEnvelope,
     SessionEventKind,
@@ -775,54 +776,17 @@ fn format_agent_envelope_kind(kind: &AgentEnvelopeKind) -> String {
     }
 }
 
-fn collapse_middle_lines(value: &str, max_lines: usize, max_columns: usize) -> Vec<String> {
-    let raw_lines = value.lines().collect::<Vec<_>>();
-    if raw_lines.is_empty() {
-        return vec!["<empty>".to_string()];
-    }
-
-    let clip_line = |line: &str| {
-        if line.chars().count() > max_columns {
-            format!(
-                "{}...",
-                line.chars()
-                    .take(max_columns.saturating_sub(3))
-                    .collect::<String>()
-            )
-        } else {
-            line.to_string()
-        }
-    };
-
-    if raw_lines.len() <= max_lines.max(1) {
-        return raw_lines.into_iter().map(clip_line).collect();
-    }
-
-    let head = max_lines.max(2) / 2;
-    let tail = max_lines.max(2) - head;
-    let mut lines = raw_lines
-        .iter()
-        .take(head)
-        .copied()
-        .map(clip_line)
-        .collect::<Vec<_>>();
-    lines.push("...".to_string());
-    lines.extend(
-        raw_lines
-            .iter()
-            .skip(raw_lines.len().saturating_sub(tail))
-            .copied()
-            .map(clip_line),
-    );
-    lines
-}
-
 fn tool_argument_preview_lines(tool_name: &str, arguments: &Value) -> Vec<String> {
     if tool_name == "bash"
         && let Some(command) = arguments.get("command").and_then(Value::as_str)
         && !command.trim().is_empty()
     {
-        return collapse_middle_lines(&format!("$ {}", command.trim()), 4, 96);
+        return collapse_preview_text(
+            &format!("$ {}", command.trim()),
+            4,
+            96,
+            PreviewCollapse::Head,
+        );
     }
 
     if tool_name == "update_plan" {
@@ -841,7 +805,12 @@ fn tool_argument_preview_lines(tool_name: &str, arguments: &Value) -> Vec<String
             .map(str::trim)
             .filter(|value| !value.is_empty())
         {
-            lines.extend(collapse_middle_lines(explanation, 2, 96));
+            lines.extend(collapse_preview_text(
+                explanation,
+                2,
+                96,
+                PreviewCollapse::Head,
+            ));
         }
         return lines;
     }
@@ -850,11 +819,11 @@ fn tool_argument_preview_lines(tool_name: &str, arguments: &Value) -> Vec<String
         if let Some(value) = arguments.get(key).and_then(Value::as_str)
             && !value.trim().is_empty()
         {
-            return collapse_middle_lines(value.trim(), 4, 96);
+            return collapse_preview_text(value.trim(), 4, 96, PreviewCollapse::Head);
         }
     }
 
-    collapse_middle_lines(&arguments.to_string(), 4, 96)
+    collapse_preview_text(&arguments.to_string(), 4, 96, PreviewCollapse::Head)
 }
 
 fn bash_output_block(output: &agent::types::ToolResult) -> (Vec<String>, Vec<String>) {
@@ -900,12 +869,12 @@ fn bash_output_block(output: &agent::types::ToolResult) -> (Vec<String>, Vec<Str
         };
 
         if !rendered.trim().is_empty() {
-            output_lines = collapse_middle_lines(&rendered, 12, 120);
+            output_lines = collapse_preview_text(&rendered, 12, 120, PreviewCollapse::HeadTail);
         }
     } else {
         let text = output.text_content();
         if !text.trim().is_empty() {
-            output_lines = collapse_middle_lines(&text, 12, 120);
+            output_lines = collapse_preview_text(&text, 12, 120, PreviewCollapse::HeadTail);
         }
     }
 
@@ -946,7 +915,12 @@ fn file_mutation_output_block(
         if let Some(file_diffs) = structured.get("file_diffs").and_then(Value::as_array) {
             for diff in file_diffs {
                 if let Some(preview) = diff.get("preview").and_then(Value::as_str) {
-                    diff_blocks.push(collapse_middle_lines(preview, 16, 120));
+                    diff_blocks.push(collapse_preview_text(
+                        preview,
+                        16,
+                        120,
+                        PreviewCollapse::HeadTail,
+                    ));
                 }
             }
         }

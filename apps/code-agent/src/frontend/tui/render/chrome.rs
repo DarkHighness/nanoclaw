@@ -7,6 +7,7 @@ use super::theme::{
     ACCENT, ASSISTANT, BOTTOM_PANE_BG, ERROR, FOOTER_BG, HEADER, MUTED, SUBTLE, TEXT, USER, WARN,
 };
 use super::transcript_markdown::code_span;
+use crate::preview::{PreviewCollapse, collapse_preview_lines};
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
@@ -239,14 +240,7 @@ fn approval_context_line(approval: &ApprovalPrompt) -> Option<Line<'static>> {
 }
 
 pub(super) fn approval_preview_lines(lines: &[String]) -> Vec<String> {
-    if lines.len() <= 4 {
-        return lines.to_vec();
-    }
-
-    let mut preview = lines.iter().take(2).cloned().collect::<Vec<_>>();
-    preview.push("...".to_string());
-    preview.extend(lines.iter().skip(lines.len().saturating_sub(1)).cloned());
-    preview
+    collapse_preview_lines(lines, 4, PreviewCollapse::Head)
 }
 
 pub(super) fn build_composer_line(state: &TuiState) -> Line<'static> {

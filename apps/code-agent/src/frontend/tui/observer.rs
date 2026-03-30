@@ -1,5 +1,6 @@
 use super::state::{PlanEntry, SharedUiState, preview_text};
 use crate::backend::SessionEvent;
+use crate::preview::{PreviewCollapse, collapse_preview_text};
 use serde_json::Value;
 use std::collections::HashMap;
 
@@ -341,7 +342,12 @@ fn tool_output_detail_lines(
     }
 
     if output_preview.lines().count() > 1 || output_preview.chars().count() > 96 {
-        return code_block_lines(&collapse_middle_lines(output_preview, 8, 120));
+        return code_block_lines(&collapse_preview_text(
+            output_preview,
+            8,
+            120,
+            PreviewCollapse::HeadTail,
+        ));
     }
 
     vec![format!("  └ {}", preview_text(output_preview, 96))]
@@ -391,10 +397,11 @@ fn bash_output_detail_lines(output_preview: &str, structured: Option<&Value>) ->
     };
 
     if !rendered_output.is_empty() && rendered_output != "<empty>" {
-        detail_lines.extend(code_block_lines(&collapse_middle_lines(
+        detail_lines.extend(code_block_lines(&collapse_preview_text(
             &rendered_output,
             12,
             120,
+            PreviewCollapse::HeadTail,
         )));
     }
 
@@ -454,7 +461,7 @@ fn file_mutation_output_detail_lines(
             let max_lines = if index == 0 { 16 } else { 12 };
             detail_lines.extend(fenced_block_lines(
                 "diff",
-                &collapse_middle_lines(preview, max_lines, 120),
+                &collapse_preview_text(preview, max_lines, 120, PreviewCollapse::HeadTail),
             ));
         }
     }
@@ -490,48 +497,6 @@ fn fenced_block_lines(language: &str, lines: &[String]) -> Vec<String> {
     block.extend(lines.iter().cloned());
     block.push("```".to_string());
     block
-}
-
-fn collapse_middle_lines(value: &str, max_lines: usize, max_columns: usize) -> Vec<String> {
-    let raw_lines = value.lines().collect::<Vec<_>>();
-    if raw_lines.is_empty() {
-        return vec!["<empty>".to_string()];
-    }
-
-    let clip_line = |line: &str| {
-        if line.chars().count() > max_columns {
-            format!(
-                "{}...",
-                line.chars()
-                    .take(max_columns.saturating_sub(3))
-                    .collect::<String>()
-            )
-        } else {
-            line.to_string()
-        }
-    };
-
-    if raw_lines.len() <= max_lines.max(1) {
-        return raw_lines.into_iter().map(clip_line).collect();
-    }
-
-    let head = max_lines.max(2) / 2;
-    let tail = max_lines.max(2) - head;
-    let mut lines = raw_lines
-        .iter()
-        .take(head)
-        .copied()
-        .map(clip_line)
-        .collect::<Vec<_>>();
-    lines.push("...".to_string());
-    lines.extend(
-        raw_lines
-            .iter()
-            .skip(raw_lines.len().saturating_sub(tail))
-            .copied()
-            .map(clip_line),
-    );
-    lines
 }
 
 fn plan_items_from_output(
