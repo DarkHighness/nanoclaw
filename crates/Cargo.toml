@@ -61,6 +61,7 @@ ratatui = "0.29.0"
 rayon = "1.11.0"
 regex = "1.12.2"
 reqwest = { version = "0.12.24", default-features = false, features = ["brotli", "charset", "deflate", "gzip", "json", "rustls-tls", "stream"] }
+rquickjs = "0.11.0"
 scraper = "0.24.0"
 quick-xml = "0.38.3"
 rmcp = { version = "1.2.0", default-features = false, features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest", "elicitation"] }

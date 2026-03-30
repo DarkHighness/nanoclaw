@@ -5,10 +5,10 @@ use agent::runtime::{
 use agent::tools::{SandboxBackendStatus, SubagentExecutor};
 use agent::{
     BashTool, CodeDefinitionsTool, CodeDocumentSymbolsTool, CodeIntelBackend, CodeReferencesTool,
-    CodeSymbolSearchTool, EditTool, GlobTool, GrepTool, ListTool, ManagedCodeIntelBackend,
-    ManagedCodeIntelOptions, ManagedPolicyProcessExecutor, PatchTool, ReadTool, SandboxPolicy,
-    TaskTool, TodoListState, TodoReadTool, TodoWriteTool, ToolRegistry, WebFetchTool,
-    WebSearchBackendsTool, WebSearchTool, WorkspaceTextCodeIntelBackend, WriteTool,
+    CodeSymbolSearchTool, EditTool, GlobTool, GrepTool, JsReplTool, ListTool,
+    ManagedCodeIntelBackend, ManagedCodeIntelOptions, ManagedPolicyProcessExecutor, PatchTool,
+    ReadTool, SandboxPolicy, TaskTool, TodoListState, TodoReadTool, TodoWriteTool, ToolRegistry,
+    WebFetchTool, WebSearchBackendsTool, WebSearchTool, WorkspaceTextCodeIntelBackend, WriteTool,
 };
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -127,6 +127,7 @@ fn build_builtin_tools(
     tools.register(GlobTool::new());
     tools.register(GrepTool::new());
     tools.register(ListTool::new());
+    tools.register(JsReplTool::new());
     // Public web search/fetch is a first-class operator surface. Keep it
     // available by default so hosts do not silently diverge from Codex-like
     // workflows that expect live browsing without extra rebuild flags.

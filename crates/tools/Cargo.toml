@@ -22,6 +22,7 @@ ignore.workspace = true
 notify.workspace = true
 regex.workspace = true
 reqwest = { workspace = true, optional = true }
+rquickjs.workspace = true
 scraper = { workspace = true, optional = true }
 quick-xml = { workspace = true, optional = true }
 schemars.workspace = true

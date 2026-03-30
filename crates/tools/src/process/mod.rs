@@ -1,6 +1,8 @@
 mod bash;
+mod js_repl;
 
 pub use bash::*;
+pub use js_repl::*;
 // Process-oriented tools such as `bash` still live in `tools`, but the
 // sandbox model and platform backends now belong to the dedicated `sandbox`
 // crate. Re-export them here as a compatibility facade for existing call sites
