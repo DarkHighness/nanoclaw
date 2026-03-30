@@ -7,7 +7,7 @@ It intentionally keeps the host layer thin:
 
 - core coding tools: `read`, `write`, `edit`, `patch`, `glob`, `grep`, `list`, `bash`
 - optional code-intel tools: `code_symbol_search`, `code_document_symbols`, `code_definitions`, `code_references`
-- agentic tools: `update_plan`, `task`
+- agentic tools: `update_plan`, `request_user_input`, `task`
 - append-only runtime loop from `runtime`
 - runtime steering and queued command support
 - loop detection as the primary guard against tool-call churn, without a fixed global iteration cap
@@ -33,8 +33,8 @@ cargo run --manifest-path apps/Cargo.toml -p code-agent
 
 This opens a compact `ratatui` screen with a single wide main surface for
 transcript and read-heavy command views, a Codex-style prompt line, a minimal
-context footer, an inline approval band in the bottom pane, and a more neutral
-dark palette tuned for prompt and slash-command workflows.
+context footer, inline approval and user-input bands in the bottom pane, and a
+more neutral dark palette tuned for prompt and slash-command workflows.
 
 The bottom status line is configurable through `.nanoclaw/apps/code-agent.toml`.
 By default it surfaces the current status, full model name plus reasoning

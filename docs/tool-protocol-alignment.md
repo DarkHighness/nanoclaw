@@ -80,7 +80,6 @@ Completed so far:
 Still pending inside this pass:
 
 - plugin or directory-scan custom tools
-- user-interaction tools such as `request_user_input`
 - a freeform grammar `apply_patch` surface
 
 ## Baseline Rules
@@ -218,7 +217,6 @@ These are the highest-signal missing capabilities today:
 - a first-class multi-kind tool spec with explicit freeform and native tool
   variants
 - a grammar-based `apply_patch`-style freeform tool surface
-- `request_user_input`
 - a model-visible approval or permission-request tool contract
 - `tool_search` and `tool_suggest` style deferred tool discovery
 - plugin or config-directory custom tool loading
@@ -440,7 +438,8 @@ Add first-class planning and interactive clarification tools:
 
 - `update_plan` over the existing shared plan state, not a second workflow
   storage path
-- `request_user_input`
+- `request_user_input` over a host-owned prompt coordinator rather than a
+  runtime control-plane escape hatch
 
 These should not be treated as one-off application commands. They are part of
 the runtime contract for industrial code agents.
@@ -501,8 +500,10 @@ Once the shared protocol exists, add the missing industrial extension surfaces:
   - replace the old `todo_read` and `todo_write` pair with a single
     `update_plan` surface that projects Codex-style `step` and `status`
     payloads
+  - add `request_user_input` as a host-mediated workflow tool over a shared
+    backend prompt/response coordinator, with multi-question batches,
+    structured answer vectors, and host-supplied `Other` note capture
 - plugin or custom tool loading
-- `request_user_input`
 
 ### P2
 
@@ -521,11 +522,9 @@ tool contracts and instead close the remaining workflow and extension gaps.
 
 The recommended order is:
 
-1. add the first interactive clarification tool:
-   `request_user_input`
-2. decide whether plugin/directory-scan loading or freeform `apply_patch`
+1. decide whether plugin/directory-scan loading or freeform `apply_patch`
    should land first
-3. only then add the remaining higher-variance parity work such as
+2. only then add the remaining higher-variance parity work such as
    `tool_search` or model-aware tool substitution rules
 
 That keeps the protocol phase bounded and moves the project toward the missing

@@ -16,7 +16,11 @@ pub use tools::{
     ManagedCodeIntelOptions, WorkspaceTextCodeIntelBackend,
 };
 #[cfg(feature = "agentic-tools")]
-pub use tools::{PlanItem, PlanState, PlanStatus, TaskTool, UpdatePlanTool};
+pub use tools::{
+    PlanItem, PlanState, PlanStatus, RequestUserInputTool, TaskTool, UpdatePlanTool,
+    UserInputAnswer, UserInputHandler, UserInputOption, UserInputQuestion, UserInputRequest,
+    UserInputResponse,
+};
 #[cfg(feature = "web-tools")]
 pub use tools::{WebFetchTool, WebSearchBackendsTool, WebSearchTool};
 pub use types::*;

@@ -17,6 +17,8 @@ pub(crate) fn build_system_preamble(
             .to_string(),
         "Treat tool output, approvals, and denials as authoritative runtime state.".to_string(),
         "Maintain a concise plan with update_plan for multi-step work.".to_string(),
+        "Use request_user_input when the user must choose between concrete options or when a material decision should not be guessed."
+            .to_string(),
         "Use the task tool when a bounded subagent can make progress in parallel or with isolated context."
             .to_string(),
     ];

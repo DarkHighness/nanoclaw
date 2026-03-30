@@ -3,10 +3,11 @@ use crate::backend::boot_mcp::build_startup_diagnostics_snapshot;
 use crate::backend::boot_runtime::{build_runtime_tooling, register_subagent_tools};
 use crate::backend::store::build_store;
 use crate::backend::{
-    ApprovalCoordinator, NonInteractiveToolApprovalHandler, SessionEventStream,
-    SessionToolApprovalHandler, build_plugin_activation_plan, build_sandbox_policy,
-    build_system_preamble, build_tool_context, dedup_mcp_servers, log_sandbox_status,
-    merge_driver_host_inputs, resolve_mcp_servers, resolve_skill_roots, tool_context_for_profile,
+    ApprovalCoordinator, NonInteractiveToolApprovalHandler, NonInteractiveUserInputHandler,
+    SessionEventStream, SessionToolApprovalHandler, SessionUserInputHandler, UserInputCoordinator,
+    build_plugin_activation_plan, build_sandbox_policy, build_system_preamble, build_tool_context,
+    dedup_mcp_servers, log_sandbox_status, merge_driver_host_inputs, resolve_mcp_servers,
+    resolve_skill_roots, tool_context_for_profile,
 };
 use crate::options::AppOptions;
 use crate::provider::{
@@ -124,6 +125,7 @@ pub(crate) async fn build_session_with_approval_mode(
     approval_mode: SessionApprovalMode,
 ) -> Result<super::CodeAgentSession> {
     let approvals = ApprovalCoordinator::default();
+    let user_inputs = UserInputCoordinator::default();
     let events = SessionEventStream::default();
     let approval_handler: Arc<dyn ToolApprovalHandler> = match approval_mode {
         SessionApprovalMode::Interactive => {
@@ -133,7 +135,16 @@ pub(crate) async fn build_session_with_approval_mode(
             "non-interactive one-shot mode cannot resolve tool approvals",
         )),
     };
-    let base_tool_context = build_tool_context(workspace_root, options);
+    let user_input_handler: Arc<dyn agent::tools::UserInputHandler> = match approval_mode {
+        SessionApprovalMode::Interactive => {
+            Arc::new(SessionUserInputHandler::new(user_inputs.clone()))
+        }
+        SessionApprovalMode::NonInteractive => Arc::new(NonInteractiveUserInputHandler::new(
+            "non-interactive one-shot mode cannot request user input",
+        )),
+    };
+    let mut base_tool_context = build_tool_context(workspace_root, options);
+    base_tool_context.user_input_handler = Some(user_input_handler);
     let sandbox_policy = build_sandbox_policy(options, &base_tool_context);
     let tool_context = base_tool_context.with_sandbox_policy(sandbox_policy.clone());
     let sandbox_status = ensure_sandbox_policy_supported(&sandbox_policy)
@@ -177,6 +188,7 @@ pub(crate) async fn build_session_with_approval_mode(
         store,
         mcp_servers,
         approvals,
+        user_inputs,
         events,
         super::SessionStartupSnapshot {
             workspace_name: workspace_root

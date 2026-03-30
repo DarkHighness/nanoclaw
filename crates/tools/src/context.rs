@@ -1,4 +1,5 @@
 use crate::Result;
+use crate::UserInputHandler;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -31,6 +32,7 @@ pub struct ToolExecutionContext {
     pub tool_name: Option<ToolName>,
     pub tool_call_id: Option<CallId>,
     pub write_guard: Option<Arc<dyn ToolWriteGuard>>,
+    pub user_input_handler: Option<Arc<dyn UserInputHandler>>,
 }
 
 impl fmt::Debug for ToolExecutionContext {

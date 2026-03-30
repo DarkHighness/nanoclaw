@@ -1,4 +1,9 @@
-use super::chrome::{build_composer_line, build_side_rail_lines};
+use super::chrome::{
+    approval_preview_lines, build_approval_text, build_composer_line, build_side_rail_lines,
+    build_user_input_text,
+};
+use super::picker::build_command_hint_text;
+use super::should_render_side_rail;
 use super::statusline::format_footer_context;
 use super::transcript::TranscriptEntryKind;
 use super::transcript::build_transcript_lines;
@@ -10,17 +15,17 @@ use super::view::{
     build_statusline_picker_text, should_render_view_title,
 };
 use super::welcome::build_welcome_lines;
-use super::{
-    approval_preview_lines, build_approval_text, build_command_hint_text, should_render_side_rail,
-};
 use crate::backend::{PendingControlKind, PendingControlSummary};
+use crate::frontend::tui::UserInputView;
 use crate::frontend::tui::approval::ApprovalPrompt;
 use crate::frontend::tui::commands::{
     SlashCommandArgumentHint, SlashCommandArgumentSpec, SlashCommandArgumentValue,
     SlashCommandHint, SlashCommandSpec,
 };
 use crate::frontend::tui::state::{MainPaneMode, PlanEntry, StatusLinePickerState, TuiState};
+use agent::tools::{UserInputAnswer, UserInputOption, UserInputQuestion};
 use ratatui::layout::Rect;
+use std::collections::BTreeMap;
 
 #[test]
 fn key_value_text_renders_section_headers_without_treating_them_as_pairs() {
@@ -381,6 +386,131 @@ fn composer_line_surfaces_pending_picker_shortcuts() {
     assert!(text.contains("enter edit"));
     assert!(text.contains("del withdraw"));
     assert!(text.contains("esc close"));
+}
+
+#[test]
+fn user_input_band_renders_progress_and_other_shortcut() {
+    let prompt = crate::backend::UserInputPrompt {
+        prompt_id: "prompt_1".to_string(),
+        questions: vec![
+            UserInputQuestion {
+                id: "scope_choice".to_string(),
+                header: "Scope".to_string(),
+                question: "Which scope should I target?".to_string(),
+                options: vec![
+                    UserInputOption {
+                        label: "Runtime".to_string(),
+                        description: "Touches substrate code.".to_string(),
+                    },
+                    UserInputOption {
+                        label: "Host".to_string(),
+                        description: "Touches app code.".to_string(),
+                    },
+                ],
+            },
+            UserInputQuestion {
+                id: "risk_choice".to_string(),
+                header: "Risk".to_string(),
+                question: "Should I keep the change narrow?".to_string(),
+                options: vec![
+                    UserInputOption {
+                        label: "Yes".to_string(),
+                        description: "Avoid broader cleanup.".to_string(),
+                    },
+                    UserInputOption {
+                        label: "No".to_string(),
+                        description: "Broader cleanup is acceptable.".to_string(),
+                    },
+                ],
+            },
+        ],
+    };
+    let flow = crate::frontend::tui::ActiveUserInputState {
+        prompt_id: prompt.prompt_id.clone(),
+        current_question: 1,
+        answers: BTreeMap::from([(
+            "scope_choice".to_string(),
+            UserInputAnswer {
+                answers: vec!["Runtime".to_string()],
+            },
+        )]),
+        collecting_other_note: false,
+    };
+    let text = build_user_input_text(&UserInputView {
+        prompt: &prompt,
+        flow: Some(&flow),
+        input: "",
+    });
+
+    assert!(
+        text.lines
+            .iter()
+            .any(|line| line_text_for(line).contains("Question 2/2"))
+    );
+    assert!(
+        text.lines
+            .iter()
+            .any(|line| line_text_for(line).contains("1 answered"))
+    );
+    assert!(
+        text.lines
+            .iter()
+            .any(|line| line_text_for(line).contains("0 Other"))
+    );
+    assert!(
+        text.lines
+            .iter()
+            .any(|line| line_text_for(line).contains("1-9 choose"))
+    );
+}
+
+#[test]
+fn user_input_band_renders_other_note_mode() {
+    let prompt = crate::backend::UserInputPrompt {
+        prompt_id: "prompt_1".to_string(),
+        questions: vec![UserInputQuestion {
+            id: "scope_choice".to_string(),
+            header: "Scope".to_string(),
+            question: "Which scope should I target?".to_string(),
+            options: vec![
+                UserInputOption {
+                    label: "Runtime".to_string(),
+                    description: "Touches substrate code.".to_string(),
+                },
+                UserInputOption {
+                    label: "Host".to_string(),
+                    description: "Touches app code.".to_string(),
+                },
+            ],
+        }],
+    };
+    let flow = crate::frontend::tui::ActiveUserInputState {
+        prompt_id: prompt.prompt_id.clone(),
+        current_question: 0,
+        answers: BTreeMap::new(),
+        collecting_other_note: true,
+    };
+    let text = build_user_input_text(&UserInputView {
+        prompt: &prompt,
+        flow: Some(&flow),
+        input: "Something else",
+    });
+
+    assert!(
+        text.lines
+            .iter()
+            .any(|line| line_text_for(line).contains("Type the alternate answer"))
+    );
+    assert!(
+        text.lines
+            .iter()
+            .any(|line| line_text_for(line).contains("Something else"))
+    );
+    assert!(
+        text.lines
+            .iter()
+            .any(|line| line_text_for(line).contains("esc back to options"))
+    );
 }
 
 #[test]

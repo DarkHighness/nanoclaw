@@ -7,8 +7,9 @@ use crate::backend::task_history::{self, LoadedTask, PersistedTaskSummary};
 use crate::backend::{
     ApprovalCoordinator, ApprovalDecision, ApprovalPrompt, LoadedMcpPrompt, LoadedMcpResource,
     McpPromptSummary, McpResourceSummary, McpServerSummary, ResumeSupport, SessionEvent,
-    SessionEventObserver, SessionEventStream, StartupDiagnosticsSnapshot, list_mcp_prompts,
-    list_mcp_resources, list_mcp_servers, load_mcp_prompt, load_mcp_resource,
+    SessionEventObserver, SessionEventStream, StartupDiagnosticsSnapshot, UserInputCoordinator,
+    UserInputPrompt, list_mcp_prompts, list_mcp_resources, list_mcp_servers, load_mcp_prompt,
+    load_mcp_resource,
 };
 use crate::provider::{MutableAgentBackend, ReasoningEffortUpdate};
 use crate::statusline::StatusLineConfig;
@@ -16,7 +17,7 @@ use agent::mcp::ConnectedMcpServer;
 use agent::runtime::{
     Result as RuntimeResult, RunTurnOutcome, RuntimeCommandId, RuntimeControlPlane,
 };
-use agent::tools::{SubagentExecutor, SubagentParentContext};
+use agent::tools::{SubagentExecutor, SubagentParentContext, UserInputResponse};
 use agent::types::{
     AgentSessionId, AgentTaskSpec, AgentWaitMode, AgentWaitRequest, Message, SessionId,
     new_opaque_id,
@@ -164,6 +165,7 @@ pub(crate) struct CodeAgentSession {
     store: Arc<dyn SessionStore>,
     mcp_servers: Arc<Vec<ConnectedMcpServer>>,
     approvals: ApprovalCoordinator,
+    user_inputs: UserInputCoordinator,
     events: SessionEventStream,
     workspace_root: PathBuf,
     startup: Arc<RwLock<SessionStartupSnapshot>>,
@@ -178,6 +180,7 @@ impl CodeAgentSession {
         store: Arc<dyn SessionStore>,
         mcp_servers: Vec<ConnectedMcpServer>,
         approvals: ApprovalCoordinator,
+        user_inputs: UserInputCoordinator,
         events: SessionEventStream,
         startup: SessionStartupSnapshot,
         skills: Vec<Skill>,
@@ -192,6 +195,7 @@ impl CodeAgentSession {
             store,
             mcp_servers: Arc::new(mcp_servers),
             approvals,
+            user_inputs,
             events,
             workspace_root,
             startup: Arc::new(RwLock::new(startup)),
@@ -241,6 +245,7 @@ impl CodeAgentSession {
     }
 
     pub(crate) async fn end_session(&self, reason: Option<String>) -> RuntimeResult<()> {
+        self.user_inputs.cancel("session ended");
         let mut runtime = self.runtime.lock().await;
         runtime.end_session(reason).await
     }
@@ -439,6 +444,18 @@ impl CodeAgentSession {
 
     pub(crate) fn resolve_approval(&self, decision: ApprovalDecision) -> bool {
         self.approvals.resolve(decision)
+    }
+
+    pub(crate) fn user_input_prompt(&self) -> Option<UserInputPrompt> {
+        self.user_inputs.snapshot()
+    }
+
+    pub(crate) fn resolve_user_input(&self, response: UserInputResponse) -> bool {
+        self.user_inputs.resolve(response)
+    }
+
+    pub(crate) fn cancel_user_input(&self, reason: impl Into<String>) -> bool {
+        self.user_inputs.cancel(reason)
     }
 
     pub(crate) fn drain_events(&self) -> Vec<SessionEvent> {
@@ -977,7 +994,9 @@ mod tests {
         CodeAgentSession, PendingControlKind, SessionOperation, SessionOperationAction,
         SessionStartupSnapshot,
     };
-    use crate::backend::{ApprovalCoordinator, SessionEventStream, StartupDiagnosticsSnapshot};
+    use crate::backend::{
+        ApprovalCoordinator, SessionEventStream, StartupDiagnosticsSnapshot, UserInputCoordinator,
+    };
     use crate::statusline::StatusLineConfig;
     use agent::runtime::{HookRunner, ModelBackend, Result as RuntimeResult};
     use agent::tools::{
@@ -1293,6 +1312,7 @@ mod tests {
             store.clone(),
             Vec::new(),
             ApprovalCoordinator::default(),
+            UserInputCoordinator::default(),
             SessionEventStream::default(),
             startup,
             Vec::<Skill>::new(),
@@ -1346,6 +1366,7 @@ mod tests {
             store,
             Vec::new(),
             ApprovalCoordinator::default(),
+            UserInputCoordinator::default(),
             SessionEventStream::default(),
             startup,
             Vec::<Skill>::new(),
@@ -1394,6 +1415,7 @@ mod tests {
             store,
             Vec::new(),
             ApprovalCoordinator::default(),
+            UserInputCoordinator::default(),
             SessionEventStream::default(),
             startup,
             Vec::<Skill>::new(),
@@ -1440,6 +1462,7 @@ mod tests {
             store.clone(),
             Vec::new(),
             ApprovalCoordinator::default(),
+            UserInputCoordinator::default(),
             SessionEventStream::default(),
             startup,
             Vec::<Skill>::new(),
@@ -1508,6 +1531,7 @@ mod tests {
             store,
             Vec::new(),
             ApprovalCoordinator::default(),
+            UserInputCoordinator::default(),
             SessionEventStream::default(),
             startup_snapshot(dir.path()),
             Vec::<Skill>::new(),
@@ -1544,6 +1568,7 @@ mod tests {
             store,
             Vec::new(),
             ApprovalCoordinator::default(),
+            UserInputCoordinator::default(),
             SessionEventStream::default(),
             startup,
             Vec::<Skill>::new(),
@@ -1603,6 +1628,7 @@ mod tests {
             store,
             Vec::new(),
             ApprovalCoordinator::default(),
+            UserInputCoordinator::default(),
             SessionEventStream::default(),
             startup_snapshot(dir.path()),
             Vec::<Skill>::new(),
@@ -1642,6 +1668,7 @@ mod tests {
             store,
             Vec::new(),
             ApprovalCoordinator::default(),
+            UserInputCoordinator::default(),
             SessionEventStream::default(),
             startup_snapshot(dir.path()),
             Vec::<Skill>::new(),
@@ -1702,6 +1729,7 @@ mod tests {
             store,
             Vec::new(),
             ApprovalCoordinator::default(),
+            UserInputCoordinator::default(),
             SessionEventStream::default(),
             startup_snapshot(dir.path()),
             Vec::<Skill>::new(),

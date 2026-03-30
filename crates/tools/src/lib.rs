@@ -18,6 +18,7 @@ pub mod mcp_adapter;
 pub mod process;
 pub mod registry;
 pub mod schema;
+pub mod user_input;
 #[cfg(feature = "web-tools")]
 pub mod web;
 
@@ -34,5 +35,6 @@ pub use mcp_adapter::*;
 pub use process::*;
 pub use registry::*;
 pub use schema::*;
+pub use user_input::*;
 #[cfg(feature = "web-tools")]
 pub use web::*;

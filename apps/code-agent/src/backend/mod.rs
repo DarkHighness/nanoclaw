@@ -12,6 +12,7 @@ mod session_history;
 mod session_resume;
 mod store;
 mod task_history;
+mod user_input;
 
 pub(crate) use approval::{
     ApprovalCoordinator, ApprovalDecision, ApprovalPrompt, NonInteractiveToolApprovalHandler,
@@ -51,3 +52,6 @@ pub(crate) use session_history::{
     SessionExportKind, message_to_text, preview_id,
 };
 pub(crate) use task_history::{LoadedTask, LoadedTaskMessage, PersistedTaskSummary};
+pub(crate) use user_input::{
+    NonInteractiveUserInputHandler, SessionUserInputHandler, UserInputCoordinator, UserInputPrompt,
+};

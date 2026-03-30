@@ -12,15 +12,16 @@ mod transcript_shell;
 mod view;
 mod welcome;
 
+use super::UserInputView;
 use super::approval::ApprovalPrompt;
 use super::commands::slash_command_hint;
 use super::state::TuiState;
 use chrome::{
-    approval_band_height, approval_preview_lines, build_approval_text, render_approval_band,
-    render_composer, should_render_side_rail, side_rail_width,
+    approval_band_height, render_approval_band, render_composer, render_user_input_band,
+    should_render_side_rail, side_rail_width, user_input_band_height,
 };
 use picker::{
-    build_command_hint_text, command_hint_height, pending_control_height, render_command_hint_band,
+    command_hint_height, pending_control_height, render_command_hint_band,
     render_pending_control_band,
 };
 use ratatui::layout::{Constraint, Direction, Layout, Position, Rect};
@@ -35,24 +36,29 @@ pub(crate) fn render(
     frame: &mut ratatui::Frame<'_>,
     state: &TuiState,
     approval: Option<&ApprovalPrompt>,
+    user_input: Option<&UserInputView<'_>>,
 ) {
     let area = frame.area();
     frame.render_widget(Block::default().style(Style::default().bg(BG)), area);
 
-    let approval_height = approval.map(approval_band_height);
-    let pending_height = approval
-        .is_none()
-        .then(|| pending_control_height(state))
-        .flatten();
-    let command_hint = approval
-        .is_none()
-        .then(|| slash_command_hint(&state.input, state.command_completion_index))
-        .flatten();
+    let prompt_height = approval
+        .map(approval_band_height)
+        .or_else(|| user_input.map(user_input_band_height));
+    let pending_height = if approval.is_none() && user_input.is_none() {
+        pending_control_height(state)
+    } else {
+        None
+    };
+    let command_hint = if approval.is_none() && user_input.is_none() {
+        slash_command_hint(&state.input, state.command_completion_index)
+    } else {
+        None
+    };
     let command_hint_height = command_hint.as_ref().map(command_hint_height);
     let vertical = Layout::default()
         .direction(Direction::Vertical)
         .constraints(bottom_layout_constraints(
-            approval_height,
+            prompt_height,
             pending_height,
             command_hint_height,
         ))
@@ -60,7 +66,7 @@ pub(crate) fn render(
     let mut next_index = 0;
     let main_area = vertical[next_index];
     next_index += 1;
-    let approval_area = approval_height.map(|_| {
+    let prompt_area = prompt_height.map(|_| {
         let area = vertical[next_index];
         next_index += 1;
         area
@@ -92,7 +98,9 @@ pub(crate) fn render(
         render_main_pane(frame, main_area, state);
     }
     if let Some(approval) = approval {
-        render_approval_band(frame, approval_area.expect("approval area"), approval);
+        render_approval_band(frame, prompt_area.expect("approval area"), approval);
+    } else if let Some(user_input) = user_input {
+        render_user_input_band(frame, prompt_area.expect("user input area"), user_input);
     }
     if pending_height.is_some() {
         render_pending_control_band(frame, pending_area.expect("pending area"), state);
@@ -104,7 +112,7 @@ pub(crate) fn render(
             command_hint,
         );
     }
-    render_composer(frame, composer_area, state);
+    render_composer(frame, composer_area, state, user_input);
     render_status_line(frame, status_area, state);
 
     let composer_inner = composer_inner_area(composer_area);
@@ -122,21 +130,26 @@ pub(crate) fn main_pane_viewport_height(
     area: Rect,
     state: &TuiState,
     approval: Option<&ApprovalPrompt>,
+    user_input: Option<&UserInputView<'_>>,
 ) -> u16 {
-    let approval_height = approval.map(approval_band_height);
-    let pending_height = approval
-        .is_none()
-        .then(|| pending_control_height(state))
-        .flatten();
-    let command_hint = approval
-        .is_none()
-        .then(|| slash_command_hint(&state.input, state.command_completion_index))
-        .flatten();
+    let prompt_height = approval
+        .map(approval_band_height)
+        .or_else(|| user_input.map(user_input_band_height));
+    let pending_height = if approval.is_none() && user_input.is_none() {
+        pending_control_height(state)
+    } else {
+        None
+    };
+    let command_hint = if approval.is_none() && user_input.is_none() {
+        slash_command_hint(&state.input, state.command_completion_index)
+    } else {
+        None
+    };
     let command_hint_height = command_hint.as_ref().map(command_hint_height);
     let vertical = Layout::default()
         .direction(Direction::Vertical)
         .constraints(bottom_layout_constraints(
-            approval_height,
+            prompt_height,
             pending_height,
             command_hint_height,
         ))

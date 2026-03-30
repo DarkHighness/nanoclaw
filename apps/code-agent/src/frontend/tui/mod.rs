@@ -8,7 +8,7 @@ mod state;
 use crate::backend::{
     CodeAgentSession, LiveTaskControlAction, LiveTaskMessageAction, LiveTaskWaitOutcome,
     SessionOperation, SessionOperationAction, SessionOperationOutcome, SessionStartupSnapshot,
-    preview_id,
+    UserInputPrompt, preview_id,
 };
 use crate::statusline::status_line_fields;
 use approval::approval_decision_for_key;
@@ -32,6 +32,7 @@ pub(crate) use state::SharedUiState;
 use state::TuiState;
 
 use agent::RuntimeCommand;
+use agent::tools::{UserInputAnswer, UserInputResponse};
 use anyhow::Result;
 use crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
@@ -44,6 +45,7 @@ use crossterm::terminal::{
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::Rect;
+use std::collections::BTreeMap;
 use std::io::{self, Stdout};
 use std::time::Instant;
 use tokio::task::{JoinHandle, spawn_local};
@@ -54,6 +56,7 @@ pub struct CodeAgentTui {
     initial_prompt: Option<String>,
     ui_state: SharedUiState,
     event_renderer: SharedRenderObserver,
+    active_user_input: Option<ActiveUserInputState>,
     turn_task: Option<JoinHandle<Result<()>>>,
     operator_task: Option<JoinHandle<Result<OperatorTaskOutcome>>>,
 }
@@ -69,6 +72,29 @@ enum PlainInputSubmitAction {
     SteerActiveTurn,
 }
 
+#[derive(Clone, Debug, Default)]
+struct ActiveUserInputState {
+    prompt_id: String,
+    current_question: usize,
+    answers: BTreeMap<String, UserInputAnswer>,
+    collecting_other_note: bool,
+}
+
+impl ActiveUserInputState {
+    fn new(prompt_id: String) -> Self {
+        Self {
+            prompt_id,
+            ..Self::default()
+        }
+    }
+}
+
+struct UserInputView<'a> {
+    prompt: &'a UserInputPrompt,
+    flow: Option<&'a ActiveUserInputState>,
+    input: &'a str,
+}
+
 impl CodeAgentTui {
     pub fn new(
         session: CodeAgentSession,
@@ -80,6 +106,7 @@ impl CodeAgentTui {
             initial_prompt,
             event_renderer: SharedRenderObserver::new(ui_state.clone()),
             ui_state,
+            active_user_input: None,
             turn_task: None,
             operator_task: None,
         }
@@ -126,16 +153,31 @@ impl CodeAgentTui {
             self.apply_backend_events();
             self.maybe_finish_operator_task().await?;
             self.sync_runtime_control_state();
+            let user_input_prompt = self.session.user_input_prompt();
+            self.sync_user_input_prompt(user_input_prompt.as_ref());
 
             let snapshot = self.ui_state.snapshot();
             let approval = self.session.approval_prompt();
+            let user_input_view = user_input_prompt.as_ref().map(|prompt| UserInputView {
+                prompt,
+                flow: self.active_user_input.as_ref(),
+                input: snapshot.input.as_str(),
+            });
             let terminal_size = terminal.size()?;
             let viewport_height = main_pane_viewport_height(
                 Rect::new(0, 0, terminal_size.width, terminal_size.height),
                 &snapshot,
                 approval.as_ref(),
+                user_input_view.as_ref(),
             );
-            terminal.draw(|frame| render(frame, &snapshot, approval.as_ref()))?;
+            terminal.draw(|frame| {
+                render(
+                    frame,
+                    &snapshot,
+                    approval.as_ref(),
+                    user_input_view.as_ref(),
+                )
+            })?;
 
             if !event::poll(Duration::ZERO)? {
                 sleep(Duration::from_millis(16)).await;
@@ -147,6 +189,9 @@ impl CodeAgentTui {
                         continue;
                     }
                     if self.handle_approval_key(key) {
+                        continue;
+                    }
+                    if self.handle_user_input_key(key) {
                         continue;
                     }
                     if self.handle_pending_control_picker_key(key) {
@@ -388,6 +433,133 @@ impl CodeAgentTui {
             return true;
         }
         true
+    }
+
+    fn handle_user_input_key(&mut self, key: KeyEvent) -> bool {
+        if key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('c')) {
+            return false;
+        }
+        let Some(prompt) = self.session.user_input_prompt() else {
+            return false;
+        };
+        self.sync_user_input_prompt(Some(&prompt));
+        let Some(flow) = self.active_user_input.as_mut() else {
+            return true;
+        };
+        let Some(question) = prompt.questions.get(flow.current_question) else {
+            return true;
+        };
+
+        if flow.collecting_other_note {
+            match key.code {
+                KeyCode::Enter => {
+                    let note = self.ui_state.take_input();
+                    let note = note.trim();
+                    if note.is_empty() {
+                        self.ui_state.mutate(|state| {
+                            state.status =
+                                format!("Other note for {} cannot be empty", question.header);
+                            state.push_activity(format!(
+                                "rejected empty other note for {}",
+                                question.id
+                            ));
+                        });
+                        return true;
+                    }
+                    flow.answers.insert(
+                        question.id.clone(),
+                        UserInputAnswer {
+                            answers: vec!["Other".to_string(), format!("user_note: {note}")],
+                        },
+                    );
+                    flow.collecting_other_note = false;
+                    self.advance_user_input_flow(&prompt);
+                    true
+                }
+                KeyCode::Esc => {
+                    flow.collecting_other_note = false;
+                    self.ui_state.mutate(|state| {
+                        state.input.clear();
+                        state.reset_command_completion();
+                        state.status = format!("Returned to {} options", question.header);
+                        state.push_activity(format!("returned to {} options", question.id));
+                    });
+                    true
+                }
+                KeyCode::Backspace => {
+                    self.ui_state.mutate(|state| {
+                        state.input.pop();
+                        state.reset_command_completion();
+                    });
+                    true
+                }
+                KeyCode::Char(ch) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    self.ui_state.mutate(|state| {
+                        state.input.push(ch);
+                        state.reset_command_completion();
+                    });
+                    true
+                }
+                _ => true,
+            }
+        } else {
+            match key.code {
+                KeyCode::Esc => {
+                    if self
+                        .session
+                        .cancel_user_input("operator cancelled user input request")
+                    {
+                        self.active_user_input = None;
+                        self.ui_state.mutate(|state| {
+                            state.input.clear();
+                            state.reset_command_completion();
+                            state.status = "Cancelled user input request".to_string();
+                            state.push_activity("cancelled user input request");
+                        });
+                    }
+                    true
+                }
+                KeyCode::Char(ch) if ch.is_ascii_digit() => {
+                    let Some(digit) = ch.to_digit(10) else {
+                        return true;
+                    };
+                    if digit == 0 {
+                        flow.collecting_other_note = true;
+                        self.ui_state.mutate(|state| {
+                            state.input.clear();
+                            state.reset_command_completion();
+                            state.status =
+                                format!("Provide an alternate answer for {}", question.header);
+                            state.push_activity(format!(
+                                "collecting other note for {}",
+                                question.id
+                            ));
+                        });
+                        return true;
+                    }
+                    let option_index = digit as usize - 1;
+                    if let Some(option) = question.options.get(option_index) {
+                        flow.answers.insert(
+                            question.id.clone(),
+                            UserInputAnswer {
+                                answers: vec![option.label.clone()],
+                            },
+                        );
+                        self.advance_user_input_flow(&prompt);
+                    } else {
+                        self.ui_state.mutate(|state| {
+                            state.status = format!("{} has no option {}", question.header, digit);
+                            state.push_activity(format!(
+                                "invalid selection {} for {}",
+                                digit, question.id
+                            ));
+                        });
+                    }
+                    true
+                }
+                _ => true,
+            }
+        }
     }
 
     fn handle_statusline_picker_key(&mut self, key: KeyEvent) -> bool {
@@ -691,6 +863,68 @@ impl CodeAgentTui {
             self.start_runtime_queue_drain();
         }
         Ok(())
+    }
+
+    fn sync_user_input_prompt(&mut self, prompt: Option<&UserInputPrompt>) {
+        match prompt {
+            Some(prompt)
+                if self
+                    .active_user_input
+                    .as_ref()
+                    .is_some_and(|flow| flow.prompt_id == prompt.prompt_id) => {}
+            Some(prompt) => {
+                self.active_user_input = Some(ActiveUserInputState::new(prompt.prompt_id.clone()));
+                let status = format!(
+                    "Awaiting user input · {} question(s)",
+                    prompt.questions.len()
+                );
+                self.ui_state.mutate(|state| {
+                    state.input.clear();
+                    state.reset_command_completion();
+                    state.status = status;
+                    state.push_activity("opened user input prompt");
+                });
+            }
+            None if self.active_user_input.take().is_some() => {
+                self.ui_state.mutate(|state| {
+                    state.input.clear();
+                    state.reset_command_completion();
+                });
+            }
+            None => {}
+        }
+    }
+
+    fn advance_user_input_flow(&mut self, prompt: &UserInputPrompt) {
+        let Some(flow) = self.active_user_input.as_mut() else {
+            return;
+        };
+        let next_question = flow.current_question + 1;
+        if next_question >= prompt.questions.len() {
+            let response = UserInputResponse {
+                answers: flow.answers.clone(),
+            };
+            if self.session.resolve_user_input(response) {
+                self.active_user_input = None;
+                self.ui_state.mutate(|state| {
+                    state.input.clear();
+                    state.reset_command_completion();
+                    state.status = "Submitted user input answers".to_string();
+                    state.push_activity("submitted user input answers");
+                });
+            }
+            return;
+        }
+
+        flow.current_question = next_question;
+        flow.collecting_other_note = false;
+        let next_header = prompt.questions[next_question].header.clone();
+        self.ui_state.mutate(|state| {
+            state.input.clear();
+            state.reset_command_completion();
+            state.status = format!("Next user input question · {next_header}");
+            state.push_activity(format!("advanced to user input question {next_header}"));
+        });
     }
 
     async fn maybe_finish_operator_task(&mut self) -> Result<()> {

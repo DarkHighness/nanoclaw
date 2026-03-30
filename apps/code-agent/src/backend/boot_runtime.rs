@@ -7,8 +7,9 @@ use agent::{
     BashTool, CodeDefinitionsTool, CodeDocumentSymbolsTool, CodeIntelBackend, CodeReferencesTool,
     CodeSymbolSearchTool, EditTool, GlobTool, GrepTool, JsReplTool, ListTool,
     ManagedCodeIntelBackend, ManagedCodeIntelOptions, ManagedPolicyProcessExecutor, PatchTool,
-    PlanState, ReadTool, SandboxPolicy, TaskTool, ToolRegistry, UpdatePlanTool, WebFetchTool,
-    WebSearchBackendsTool, WebSearchTool, WorkspaceTextCodeIntelBackend, WriteTool,
+    PlanState, ReadTool, RequestUserInputTool, SandboxPolicy, TaskTool, ToolRegistry,
+    UpdatePlanTool, WebFetchTool, WebSearchBackendsTool, WebSearchTool,
+    WorkspaceTextCodeIntelBackend, WriteTool,
 };
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -161,6 +162,7 @@ fn build_builtin_tools(
     ));
     tools.register(CodeReferencesTool::with_backend(code_intel_backend));
     tools.register(UpdatePlanTool::new(plan_state));
+    tools.register(RequestUserInputTool::new());
     (tools, startup_warnings)
 }
 

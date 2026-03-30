@@ -1,3 +1,4 @@
+use super::super::UserInputView;
 use super::super::approval::ApprovalPrompt;
 use super::super::state::{MainPaneMode, PlanEntry, TuiState, preview_text};
 use super::shared::{pending_control_focus_label, pending_control_kind_label};
@@ -11,11 +12,20 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Paragraph, Wrap};
 
-pub(super) fn render_composer(frame: &mut ratatui::Frame<'_>, area: Rect, state: &TuiState) {
+pub(super) fn render_composer(
+    frame: &mut ratatui::Frame<'_>,
+    area: Rect,
+    state: &TuiState,
+    user_input: Option<&UserInputView<'_>>,
+) {
     frame.render_widget(Block::default().style(Style::default().bg(FOOTER_BG)), area);
     let inner = bottom_band_inner_area(area);
     frame.render_widget(
-        Paragraph::new(build_composer_line(state)).style(Style::default().fg(TEXT).bg(FOOTER_BG)),
+        Paragraph::new(match user_input {
+            Some(view) => build_user_input_composer_line(view),
+            None => build_composer_line(state),
+        })
+        .style(Style::default().fg(TEXT).bg(FOOTER_BG)),
         inner,
     );
 }
@@ -32,6 +42,24 @@ pub(super) fn render_approval_band(
     let inner = bottom_band_inner_area(area);
     frame.render_widget(
         Paragraph::new(build_approval_text(approval))
+            .wrap(Wrap { trim: false })
+            .style(Style::default().fg(TEXT).bg(BOTTOM_PANE_BG)),
+        inner,
+    );
+}
+
+pub(super) fn render_user_input_band(
+    frame: &mut ratatui::Frame<'_>,
+    area: Rect,
+    user_input: &UserInputView<'_>,
+) {
+    frame.render_widget(
+        Block::default().style(Style::default().bg(BOTTOM_PANE_BG)),
+        area,
+    );
+    let inner = bottom_band_inner_area(area);
+    frame.render_widget(
+        Paragraph::new(build_user_input_text(user_input))
             .wrap(Wrap { trim: false })
             .style(Style::default().fg(TEXT).bg(BOTTOM_PANE_BG)),
         inner,
@@ -84,6 +112,10 @@ pub(super) fn build_approval_text(approval: &ApprovalPrompt) -> Text<'static> {
 
 pub(super) fn approval_band_height(approval: &ApprovalPrompt) -> u16 {
     build_approval_text(approval).lines.len().clamp(5, 10) as u16
+}
+
+pub(super) fn user_input_band_height(user_input: &UserInputView<'_>) -> u16 {
+    build_user_input_text(user_input).lines.len().clamp(6, 12) as u16
 }
 
 pub(super) fn should_render_side_rail(state: &TuiState, area: Rect) -> bool {
@@ -295,6 +327,160 @@ pub(super) fn build_composer_line(state: &TuiState) -> Line<'static> {
         spans.push(Span::styled("esc cancel", Style::default().fg(MUTED)));
     }
 
+    Line::from(spans)
+}
+
+pub(super) fn build_user_input_text(user_input: &UserInputView<'_>) -> Text<'static> {
+    let mut lines = Vec::new();
+    let current_index = user_input
+        .flow
+        .map(|flow| flow.current_question)
+        .unwrap_or(0)
+        .min(user_input.prompt.questions.len().saturating_sub(1));
+    let question = &user_input.prompt.questions[current_index];
+    let answered = user_input
+        .flow
+        .map(|flow| flow.answers.len())
+        .unwrap_or(0)
+        .min(user_input.prompt.questions.len());
+    let collecting_other_note = user_input
+        .flow
+        .is_some_and(|flow| flow.collecting_other_note);
+
+    lines.push(Line::from(vec![
+        Span::styled(
+            "user input",
+            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" · ", Style::default().fg(SUBTLE)),
+        Span::styled(
+            format!(
+                "Question {}/{}",
+                current_index + 1,
+                user_input.prompt.questions.len()
+            ),
+            Style::default().fg(HEADER).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" · ", Style::default().fg(SUBTLE)),
+        Span::styled(question.header.clone(), Style::default().fg(TEXT)),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled(format!("{answered} answered"), Style::default().fg(MUTED)),
+        Span::styled(" · ", Style::default().fg(SUBTLE)),
+        Span::styled(question.id.clone(), Style::default().fg(SUBTLE)),
+    ]));
+    lines.push(Line::from(vec![Span::styled(
+        question.question.clone(),
+        Style::default().fg(TEXT),
+    )]));
+
+    if collecting_other_note {
+        lines.push(approval_section_label("other"));
+        lines.push(Line::from(vec![
+            Span::styled("  ", Style::default().fg(SUBTLE)),
+            Span::styled(
+                "Type the alternate answer and press Enter.",
+                Style::default().fg(MUTED),
+            ),
+        ]));
+        if !user_input.input.trim().is_empty() {
+            lines.push(Line::from(vec![
+                Span::styled("  ", Style::default().fg(SUBTLE)),
+                code_span(user_input.input.trim()),
+            ]));
+        }
+        lines.push(Line::from(vec![
+            Span::styled("enter", Style::default().fg(ACCENT)),
+            Span::styled(" submit", Style::default().fg(MUTED)),
+            Span::styled(" · ", Style::default().fg(SUBTLE)),
+            Span::styled("esc", Style::default().fg(HEADER)),
+            Span::styled(" back to options", Style::default().fg(MUTED)),
+        ]));
+    } else {
+        lines.push(approval_section_label("options"));
+        for (index, option) in question.options.iter().enumerate() {
+            lines.push(Line::from(vec![
+                Span::styled("  ", Style::default().fg(SUBTLE)),
+                Span::styled(
+                    format!("{}", index + 1),
+                    Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(" ", Style::default().fg(SUBTLE)),
+                Span::styled(option.label.clone(), Style::default().fg(TEXT)),
+                Span::styled(" · ", Style::default().fg(SUBTLE)),
+                Span::styled(option.description.clone(), Style::default().fg(MUTED)),
+            ]));
+        }
+        lines.push(Line::from(vec![
+            Span::styled("  ", Style::default().fg(SUBTLE)),
+            Span::styled(
+                "0",
+                Style::default().fg(HEADER).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" ", Style::default().fg(SUBTLE)),
+            Span::styled("Other", Style::default().fg(TEXT)),
+            Span::styled(" · ", Style::default().fg(SUBTLE)),
+            Span::styled(
+                "Provide a different answer with a note.",
+                Style::default().fg(MUTED),
+            ),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled("1-9", Style::default().fg(ACCENT)),
+            Span::styled(" choose", Style::default().fg(MUTED)),
+            Span::styled(" · ", Style::default().fg(SUBTLE)),
+            Span::styled("0", Style::default().fg(HEADER)),
+            Span::styled(" other", Style::default().fg(MUTED)),
+            Span::styled(" · ", Style::default().fg(SUBTLE)),
+            Span::styled("esc", Style::default().fg(ERROR)),
+            Span::styled(" cancel", Style::default().fg(MUTED)),
+        ]));
+    }
+
+    Text::from(lines)
+}
+
+fn build_user_input_composer_line(user_input: &UserInputView<'_>) -> Line<'static> {
+    let mut spans = vec![
+        Span::styled(
+            "›",
+            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(" "),
+    ];
+    let collecting_other_note = user_input
+        .flow
+        .is_some_and(|flow| flow.collecting_other_note);
+    if collecting_other_note {
+        spans.push(Span::styled("other note", Style::default().fg(MUTED)));
+        spans.push(Span::styled(" · ", Style::default().fg(SUBTLE)));
+        if user_input.input.is_empty() {
+            spans.push(Span::styled(
+                "type an alternate answer",
+                Style::default().fg(SUBTLE),
+            ));
+        } else {
+            spans.push(Span::styled(
+                user_input.input.to_string(),
+                Style::default().fg(TEXT),
+            ));
+        }
+        spans.push(Span::styled(" · ", Style::default().fg(SUBTLE)));
+        spans.push(Span::styled("enter submit", Style::default().fg(MUTED)));
+        spans.push(Span::styled(" · ", Style::default().fg(SUBTLE)));
+        spans.push(Span::styled("esc options", Style::default().fg(MUTED)));
+    } else {
+        spans.push(Span::styled(
+            "choose an option in the prompt above",
+            Style::default().fg(MUTED),
+        ));
+        spans.push(Span::styled(" · ", Style::default().fg(SUBTLE)));
+        spans.push(Span::styled("1-9 select", Style::default().fg(MUTED)));
+        spans.push(Span::styled(" · ", Style::default().fg(SUBTLE)));
+        spans.push(Span::styled("0 other", Style::default().fg(MUTED)));
+        spans.push(Span::styled(" · ", Style::default().fg(SUBTLE)));
+        spans.push(Span::styled("esc cancel", Style::default().fg(MUTED)));
+    }
     Line::from(spans)
 }
 
