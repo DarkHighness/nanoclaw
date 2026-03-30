@@ -328,7 +328,7 @@ fn render_shell_summary_line(line: &str) -> Vec<Line<'static>> {
     if super::transcript::parse_prefixed_entry(line).is_some() {
         super::transcript::format_transcript_entry(line)
     } else {
-        vec![super::transcript::render_transcript_body_line(
+        vec![super::transcript_markdown::render_transcript_body_line(
             line,
             "•",
             super::transcript::TranscriptEntryKind::ShellSummary,

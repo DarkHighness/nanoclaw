@@ -3,7 +3,7 @@ use super::super::state::{MainPaneMode, TodoEntry, TuiState, preview_text};
 use super::theme::{
     ACCENT, ASSISTANT, BOTTOM_PANE_BG, ERROR, FOOTER_BG, HEADER, MUTED, SUBTLE, TEXT, USER, WARN,
 };
-use super::transcript::code_span;
+use super::transcript_markdown::code_span;
 use ratatui::layout::{Margin, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
