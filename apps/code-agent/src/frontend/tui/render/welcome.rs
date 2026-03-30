@@ -3,15 +3,26 @@ use crate::frontend::tui::state::TuiState;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
-const FULL_WORDMARK: &str = "N A N O   C L A W";
-const COMPACT_WORDMARK: &str = "NANO CLAW";
+const FULL_LOGO_LINES: [&str; 6] = [
+    "▄▄     ▄▄▄    ▄▄       ▄▄     ▄▄▄    ▄▄▄▄     ▄   ▄▄▄▄   ▄▄▄         ▄▄     ▄▄▄",
+    "██▄   ██▀   ▄█▀▀█▄     ██▄   ██▀   ▄█▀▀████▄  ▀██████▀  ▀██▀       ▄█▀▀█▄  █▀██  ██  ██▀▀",
+    "███▄  ██    ██  ██     ███▄  ██    ██    ██     ██       ██        ██  ██    ██  ██  ██",
+    "██ ▀█▄██    ██▀▀██     ██ ▀█▄██    ██    ██     ██       ██        ██▀▀██    ██  ██  ██",
+    "██   ▀██  ▄ ██  ██     ██   ▀██    ██    ██     ██       ██      ▄ ██  ██    ██▄ ██▄ ██",
+    "▀██▀    ██  ▀██▀  ▀█▄█ ▀██▀    ██     ▀████▀      ▀█████  ████████ ▀██▀  ▀█▄█  ▀████▀███▀",
+];
+const COMPACT_LOGO_LINES: [&str; 3] = [
+    "███  ██ ▄████▄ ███  ██ ▄████▄ ▄█████ ██     ▄████▄ ██     ██",
+    "██ ▀▄██ ██▄▄██ ██ ▀▄██ ██  ██ ██     ██     ██▄▄██ ██ ▄█▄ ██",
+    "██   ██ ██  ██ ██   ██ ▀████▀ ▀█████ ██████ ██  ██  ▀██▀██▀",
+];
 
 pub(super) fn build_welcome_lines(
     state: &TuiState,
     viewport_width: u16,
     viewport_height: u16,
 ) -> Vec<Line<'static>> {
-    let compact = viewport_height < 20 || viewport_width < 72;
+    let compact = viewport_height < 20 || viewport_width < 110;
     let mut core = build_welcome_logo_lines(compact);
     core.push(Line::raw(""));
     core.push(build_meta_summary_line(state));
@@ -30,15 +41,18 @@ pub(super) fn build_welcome_lines(
 }
 
 fn build_welcome_logo_lines(compact: bool) -> Vec<Line<'static>> {
-    let wordmark = if compact {
-        COMPACT_WORDMARK
-    } else {
-        FULL_WORDMARK
-    };
+    if compact {
+        return COMPACT_LOGO_LINES
+            .into_iter()
+            .map(logo_line)
+            .collect::<Vec<_>>();
+    }
 
-    // Keep the brand mark strictly single-line so the logo reads as one
-    // deliberate title instead of stacked decorative echoes.
-    vec![wordmark_line(wordmark), underline_line(wordmark)]
+    // Preserve the operator-supplied brand mark as-is on wide terminals.
+    FULL_LOGO_LINES
+        .into_iter()
+        .map(logo_line)
+        .collect::<Vec<_>>()
 }
 
 fn build_meta_summary_line(state: &TuiState) -> Line<'static> {
@@ -63,17 +77,9 @@ fn model_label(state: &TuiState) -> String {
     }
 }
 
-fn wordmark_line(text: &str) -> Line<'static> {
+fn logo_line(text: &str) -> Line<'static> {
     Line::from(vec![Span::styled(
         text.to_string(),
         Style::default().fg(HEADER).add_modifier(Modifier::BOLD),
     )])
-}
-
-fn underline_line(wordmark: &str) -> Line<'static> {
-    let width = wordmark.chars().count().saturating_sub(2);
-    Line::from(vec![
-        Span::raw(" "),
-        Span::styled("─".repeat(width), Style::default().fg(ACCENT)),
-    ])
 }

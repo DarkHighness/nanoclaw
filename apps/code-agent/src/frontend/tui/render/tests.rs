@@ -215,18 +215,14 @@ fn welcome_lines_keep_the_start_screen_sparse() {
     state.session.model = "gpt-5.4".to_string();
     state.session.model_reasoning_effort = Some("high".to_string());
 
-    let lines = build_welcome_lines(&state, 100, 28);
+    let lines = build_welcome_lines(&state, 140, 28);
 
-    let logo_count = lines
-        .iter()
-        .filter(|line| line_text_for(line).contains("N A N O   C L A W"))
-        .count();
-    assert_eq!(logo_count, 1);
-    assert!(
-        lines
-            .iter()
-            .any(|line| line_text_for(line).contains("──────"))
-    );
+    assert!(lines.iter().any(|line| {
+        line_text_for(line).contains("▄▄     ▄▄▄    ▄▄       ▄▄     ▄▄▄")
+    }));
+    assert!(lines.iter().any(|line| {
+        line_text_for(line).contains("▀██▀    ██  ▀██▀  ▀█▄█")
+    }));
     assert!(lines.iter().any(|line| {
         line_text_for(line).contains("workspace nanoclaw  ·  model gpt-5.4 · high")
     }));
@@ -235,6 +231,22 @@ fn welcome_lines_keep_the_start_screen_sparse() {
             .iter()
             .any(|line| { line_text_for(line).contains("Type a prompt or /help.") })
     );
+}
+
+#[test]
+fn welcome_lines_switch_to_the_compact_logo_on_narrow_viewports() {
+    let mut state = TuiState::default();
+    state.session.workspace_name = "nanoclaw".to_string();
+    state.session.model = "gpt-5.4".to_string();
+
+    let lines = build_welcome_lines(&state, 80, 28);
+
+    assert!(lines.iter().any(|line| {
+        line_text_for(line).contains("███  ██ ▄████▄ ███  ██ ▄████▄")
+    }));
+    assert!(lines.iter().any(|line| {
+        line_text_for(line).contains("██   ██ ██  ██ ██   ██ ▀████▀")
+    }));
 }
 
 #[test]
