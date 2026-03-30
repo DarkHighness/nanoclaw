@@ -210,18 +210,24 @@ fn welcome_lines_keep_the_start_screen_sparse() {
     let mut state = TuiState::default();
     state.session.workspace_name = "nanoclaw".to_string();
     state.session.model = "gpt-5.4".to_string();
+    state.session.model_reasoning_effort = Some("high".to_string());
 
     let lines = build_welcome_lines(&state, 20);
 
     assert!(
         lines
             .iter()
-            .any(|line| { line_text_for(line).contains("NN   NN   AAA   NN   NN   OOO") })
+            .any(|line| { line_text_for(line).contains(" _   _    _    _   _   ___") })
     );
     assert!(
         lines
             .iter()
-            .any(|line| { line_text_for(line).contains("nanoclaw · gpt-5.4") })
+            .any(|line| { line_text_for(line).contains("workspace  nanoclaw") })
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|line| { line_text_for(line).contains("model  gpt-5.4 · high") })
     );
     assert!(
         lines

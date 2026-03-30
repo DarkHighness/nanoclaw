@@ -1,4 +1,4 @@
-use super::theme::{ACCENT, HEADER, MUTED, SUBTLE};
+use super::theme::{ACCENT, HEADER, MUTED, SUBTLE, TEXT};
 use crate::frontend::tui::state::TuiState;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -7,20 +7,21 @@ pub(super) fn build_welcome_lines(state: &TuiState, viewport_height: u16) -> Vec
     let compact = viewport_height < 18;
     let mut core = build_welcome_logo_lines(compact);
     core.push(Line::raw(""));
+    if !compact {
+        core.push(Line::raw(""));
+    }
+    core.push(meta_line("workspace", &state.session.workspace_name, MUTED));
+    core.push(meta_line("model", &model_label(state), ACCENT));
+    core.push(Line::raw(""));
     core.push(Line::from(vec![
-        Span::styled(
-            state.session.workspace_name.clone(),
-            Style::default().fg(MUTED),
-        ),
-        Span::styled(" · ", Style::default().fg(SUBTLE)),
-        Span::styled(state.session.model.clone(), Style::default().fg(ACCENT)),
+        Span::styled("Type a prompt", Style::default().fg(TEXT)),
+        Span::styled(" or ", Style::default().fg(SUBTLE)),
+        Span::styled("/help", Style::default().fg(ACCENT)),
+        Span::styled(".", Style::default().fg(SUBTLE)),
     ]));
-    core.push(Line::from(Span::styled(
-        "Type a prompt or /help.",
-        Style::default().fg(SUBTLE),
-    )));
 
-    let top_padding = usize::from(viewport_height.saturating_sub(core.len() as u16) / 2);
+    let top_padding = usize::from(viewport_height.saturating_sub(core.len() as u16) / 2)
+        .saturating_sub((!compact) as usize);
     let mut lines = vec![Line::raw(""); top_padding];
     lines.extend(core);
     lines
@@ -28,38 +29,55 @@ pub(super) fn build_welcome_lines(state: &TuiState, viewport_height: u16) -> Vec
 
 fn build_welcome_logo_lines(compact: bool) -> Vec<Line<'static>> {
     if compact {
-        return vec![Line::from(Span::styled(
-            "NANOCLAW".to_string(),
-            Style::default().fg(HEADER).add_modifier(Modifier::BOLD),
-        ))];
+        return vec![Line::from(vec![
+            Span::styled(
+                "NANO".to_string(),
+                Style::default().fg(HEADER).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                "CLAW".to_string(),
+                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+            ),
+        ])];
     }
 
     vec![
         wordmark_line(
-            "NN   NN   AAA   NN   NN   OOO   ",
-            " CCCC  L       AAA   WW     WW",
+            " _   _    _    _   _   ___ ",
+            "  ____ _        ___        __",
         ),
         wordmark_line(
-            "NNN  NN  AAAAA  NNN  NN  OO OO ",
-            "CC     L      AAAAA  WW     WW",
+            "| \\ | |  / \\  | \\ | | / _ \\",
+            " / ___| |      / \\\\ \\      / /",
         ),
         wordmark_line(
-            "NN N NN  AA AA  NN N NN OO   OO",
-            "CC     L      AA AA  WW  W  WW",
+            "|  \\| | / _ \\ |  \\| || | | |",
+            "| |   | |     / _ \\\\ \\ /\\ / / ",
         ),
         wordmark_line(
-            "NN  NNN  AAAAA  NN  NNN OO   OO",
-            "CC     L      AAAAA  WW WWW WW",
+            "| |\\  |/ ___ \\| |\\  || |_| |",
+            "| |___| |___ / ___ \\\\ V  V /  ",
         ),
         wordmark_line(
-            "NN   NN  AA AA  NN   NN  OO OO ",
-            "CC     L      AA AA   WWW WWW ",
-        ),
-        wordmark_line(
-            "NN   NN  AA AA  NN   NN   OOO  ",
-            " CCCC  LLLLL  AA AA    WW WW  ",
+            "|_| \\_/_/   \\_\\_| \\_| \\___/ ",
+            "\\____|_____/_/   \\_\\\\_/\\_/   ",
         ),
     ]
+}
+
+fn meta_line(label: &str, value: &str, value_color: ratatui::style::Color) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(label.to_string(), Style::default().fg(SUBTLE)),
+        Span::styled("  ", Style::default().fg(SUBTLE)),
+        Span::styled(value.to_string(), Style::default().fg(value_color)),
+    ])
+}
+
+fn model_label(state: &TuiState) -> String {
+    match state.session.model_reasoning_effort.as_deref() {
+        Some(effort) => format!("{} · {}", state.session.model, effort),
+        None => state.session.model.clone(),
+    }
 }
 
 fn wordmark_line(left: &'static str, right: &'static str) -> Line<'static> {
