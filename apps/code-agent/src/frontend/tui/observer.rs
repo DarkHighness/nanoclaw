@@ -52,13 +52,13 @@ impl SharedRenderObserver {
             }
             SessionEvent::AssistantTextDelta { delta } => {
                 if let Some(index) = self.active_assistant_line {
-                    state.transcript[index].push_str(&delta);
+                    if !state.append_transcript_text(index, &delta) {
+                        state.push_transcript(format!("• {delta}"));
+                        self.active_assistant_line = Some(state.transcript.len() - 1);
+                    }
                 } else {
                     state.push_transcript(format!("• {delta}"));
                     self.active_assistant_line = Some(state.transcript.len() - 1);
-                }
-                if state.follow_transcript {
-                    state.transcript_scroll = u16::MAX;
                 }
                 state.status = "Working".to_string();
             }
@@ -345,11 +345,7 @@ fn replace_tool_line(
     replacement: String,
 ) {
     if let Some(index) = index {
-        if let Some(line) = state.transcript.get_mut(index) {
-            *line = replacement;
-            if state.follow_transcript {
-                state.transcript_scroll = u16::MAX;
-            }
+        if state.replace_transcript(index, replacement.clone()) {
             return;
         }
     }
@@ -365,11 +361,7 @@ fn replace_or_push_tool_line(
     replacement: String,
 ) -> usize {
     if let Some(index) = index {
-        if let Some(line) = state.transcript.get_mut(index) {
-            *line = replacement;
-            if state.follow_transcript {
-                state.transcript_scroll = u16::MAX;
-            }
+        if state.replace_transcript(index, replacement.clone()) {
             return index;
         }
     }
@@ -445,13 +437,14 @@ mod tests {
         });
 
         let snapshot = ui_state.snapshot();
-        assert!(snapshot.transcript.iter().all(|line| !line.contains('>')));
         assert!(
             snapshot
                 .transcript
                 .iter()
-                .any(|line| line == "• Finished bash\n  └ $ ls\n  └ exit 0\n  └ listed files")
+                .all(|line| !transcript_text(line).contains('>'))
         );
+        assert!(snapshot.transcript.iter().any(|line| transcript_text(line)
+            == "• Finished bash\n  └ $ ls\n  └ exit 0\n  └ listed files"));
     }
 
     #[test]
@@ -485,7 +478,7 @@ mod tests {
         let snapshot = ui_state.snapshot();
         assert_eq!(snapshot.transcript.len(), 1);
         assert_eq!(
-            snapshot.transcript[0],
+            transcript_text(&snapshot.transcript[0]),
             "• Finished bash\n  └ $ ls\n  └ exit 0\n  └ listed files"
         );
     }
@@ -561,7 +554,7 @@ mod tests {
         let snapshot = ui_state.snapshot();
         assert_eq!(snapshot.transcript.len(), 1);
         assert_eq!(
-            snapshot.transcript[0],
+            transcript_text(&snapshot.transcript[0]),
             "• Finished bash\n  └ $ cargo test\n  └ exit 0\n  └ ok"
         );
     }
@@ -596,7 +589,7 @@ mod tests {
             ),
         });
 
-        let transcript = &ui_state.snapshot().transcript[0];
+        let transcript = transcript_text(&ui_state.snapshot().transcript[0]);
         assert!(transcript.contains("  └ exit 1"));
         assert!(transcript.contains("  └ stderr"));
         assert!(transcript.contains("… +"));
@@ -640,8 +633,12 @@ mod tests {
         });
 
         let snapshot = ui_state.snapshot();
-        assert!(snapshot.transcript[0].contains("  └ diff src/lib.rs"));
-        assert!(snapshot.transcript[0].contains("@@ -1,1 +1,1 @@"));
-        assert!(snapshot.transcript[0].contains("+new()"));
+        assert!(transcript_text(&snapshot.transcript[0]).contains("  └ diff src/lib.rs"));
+        assert!(transcript_text(&snapshot.transcript[0]).contains("@@ -1,1 +1,1 @@"));
+        assert!(transcript_text(&snapshot.transcript[0]).contains("+new()"));
+    }
+
+    fn transcript_text(entry: &crate::frontend::tui::state::TranscriptEntry) -> String {
+        entry.serialized()
     }
 }

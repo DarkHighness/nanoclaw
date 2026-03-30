@@ -100,6 +100,181 @@ pub(crate) enum HistoryRollbackState {
     Selecting(HistoryRollbackOverlayState),
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct TranscriptDetailLine {
+    pub(crate) text: String,
+    pub(crate) continuation: bool,
+}
+
+impl TranscriptDetailLine {
+    fn tree(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            continuation: false,
+        }
+    }
+
+    fn continuation(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            continuation: true,
+        }
+    }
+
+    pub(crate) fn serialized(&self) -> String {
+        if self.continuation {
+            format!("    {}", self.text)
+        } else {
+            format!("  └ {}", self.text)
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct TranscriptShellEntry {
+    pub(crate) headline: String,
+    pub(crate) detail_lines: Vec<TranscriptDetailLine>,
+}
+
+impl TranscriptShellEntry {
+    fn from_body(body: &str) -> Self {
+        let mut lines = body.lines();
+        let headline = lines.next().unwrap_or_default().to_string();
+        let mut detail_lines = Vec::new();
+
+        for raw_line in lines {
+            if let Some(detail) = raw_line.strip_prefix("  └ ") {
+                detail_lines.push(TranscriptDetailLine::tree(detail.to_string()));
+            } else if let Some(detail) = raw_line.strip_prefix("    ") {
+                detail_lines.push(TranscriptDetailLine::continuation(detail.to_string()));
+            } else if !raw_line.trim().is_empty() {
+                detail_lines.push(TranscriptDetailLine::tree(raw_line.to_string()));
+            }
+        }
+
+        Self {
+            headline,
+            detail_lines,
+        }
+    }
+
+    pub(crate) fn serialized_body(&self) -> String {
+        let mut lines = vec![self.headline.clone()];
+        lines.extend(
+            self.detail_lines
+                .iter()
+                .map(TranscriptDetailLine::serialized),
+        );
+        lines.join("\n")
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum TranscriptEntry {
+    UserPrompt(String),
+    AssistantMessage(String),
+    ShellSummary(TranscriptShellEntry),
+    SuccessSummary(TranscriptShellEntry),
+    ErrorSummary(TranscriptShellEntry),
+    WarningSummary(TranscriptShellEntry),
+}
+
+impl TranscriptEntry {
+    pub(crate) fn append_text(&mut self, delta: &str) -> bool {
+        match self {
+            Self::UserPrompt(text) | Self::AssistantMessage(text) => {
+                text.push_str(delta);
+                true
+            }
+            Self::ShellSummary(_)
+            | Self::SuccessSummary(_)
+            | Self::ErrorSummary(_)
+            | Self::WarningSummary(_) => false,
+        }
+    }
+
+    pub(crate) fn serialized(&self) -> String {
+        match self {
+            Self::UserPrompt(text) => format!("› {text}"),
+            Self::AssistantMessage(text) => format!("• {text}"),
+            Self::ShellSummary(summary) => format!("• {}", summary.serialized_body()),
+            Self::SuccessSummary(summary) => format!("✔ {}", summary.serialized_body()),
+            Self::ErrorSummary(summary) => format!("✗ {}", summary.serialized_body()),
+            Self::WarningSummary(summary) => format!("⚠ {}", summary.serialized_body()),
+        }
+    }
+
+    pub(crate) fn marker(&self) -> &'static str {
+        match self {
+            Self::UserPrompt(_) => "›",
+            Self::AssistantMessage(_) | Self::ShellSummary(_) => "•",
+            Self::SuccessSummary(_) => "✔",
+            Self::ErrorSummary(_) => "✗",
+            Self::WarningSummary(_) => "⚠",
+        }
+    }
+
+    pub(crate) fn body(&self) -> &str {
+        match self {
+            Self::UserPrompt(text) | Self::AssistantMessage(text) => text,
+            Self::ShellSummary(summary)
+            | Self::SuccessSummary(summary)
+            | Self::ErrorSummary(summary)
+            | Self::WarningSummary(summary) => summary.headline.as_str(),
+        }
+    }
+
+    pub(crate) fn shell_summary(&self) -> Option<&TranscriptShellEntry> {
+        match self {
+            Self::ShellSummary(summary)
+            | Self::SuccessSummary(summary)
+            | Self::ErrorSummary(summary)
+            | Self::WarningSummary(summary) => Some(summary),
+            Self::UserPrompt(_) | Self::AssistantMessage(_) => None,
+        }
+    }
+
+    pub(crate) fn is_shell_summary(&self) -> bool {
+        self.shell_summary().is_some()
+    }
+}
+
+impl std::fmt::Display for TranscriptEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.serialized())
+    }
+}
+
+impl From<&str> for TranscriptEntry {
+    fn from(value: &str) -> Self {
+        Self::from(value.to_string())
+    }
+}
+
+impl From<String> for TranscriptEntry {
+    fn from(value: String) -> Self {
+        if let Some(body) = value.strip_prefix("› ") {
+            return Self::UserPrompt(body.to_string());
+        }
+        if let Some(body) = value.strip_prefix("✔ ") {
+            return Self::SuccessSummary(TranscriptShellEntry::from_body(body));
+        }
+        if let Some(body) = value.strip_prefix("✗ ") {
+            return Self::ErrorSummary(TranscriptShellEntry::from_body(body));
+        }
+        if let Some(body) = value.strip_prefix("⚠ ") {
+            return Self::WarningSummary(TranscriptShellEntry::from_body(body));
+        }
+        if let Some(body) = value.strip_prefix("• ") {
+            if body.lines().any(|line| line.starts_with("  └ ")) {
+                return Self::ShellSummary(TranscriptShellEntry::from_body(body));
+            }
+            return Self::AssistantMessage(body.to_string());
+        }
+        Self::AssistantMessage(value)
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub(crate) struct TuiState {
     pub(crate) session: SessionSummary,
@@ -107,7 +282,7 @@ pub(crate) struct TuiState {
     pub(crate) show_tool_details: bool,
     pub(crate) input: String,
     pub(crate) command_completion_index: usize,
-    pub(crate) transcript: Vec<String>,
+    pub(crate) transcript: Vec<TranscriptEntry>,
     pub(crate) transcript_scroll: u16,
     pub(crate) follow_transcript: bool,
     pub(crate) inspector_title: String,
@@ -412,8 +587,36 @@ impl TuiState {
         }
     }
 
-    pub(crate) fn push_transcript(&mut self, line: impl Into<String>) {
-        self.transcript.push(line.into());
+    pub(crate) fn push_transcript(&mut self, entry: impl Into<TranscriptEntry>) {
+        self.transcript.push(entry.into());
+        self.mark_transcript_follow();
+    }
+
+    pub(crate) fn replace_transcript(
+        &mut self,
+        index: usize,
+        entry: impl Into<TranscriptEntry>,
+    ) -> bool {
+        let Some(slot) = self.transcript.get_mut(index) else {
+            return false;
+        };
+        *slot = entry.into();
+        self.mark_transcript_follow();
+        true
+    }
+
+    pub(crate) fn append_transcript_text(&mut self, index: usize, delta: &str) -> bool {
+        let Some(entry) = self.transcript.get_mut(index) else {
+            return false;
+        };
+        let appended = entry.append_text(delta);
+        if appended {
+            self.mark_transcript_follow();
+        }
+        appended
+    }
+
+    fn mark_transcript_follow(&mut self) {
         if self.follow_transcript {
             self.transcript_scroll = u16::MAX;
         }

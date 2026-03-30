@@ -1024,7 +1024,10 @@ impl CodeAgentTui {
             .await
         {
             Ok(outcome) => {
-                let transcript = format_visible_transcript_lines(&outcome.transcript);
+                let transcript = format_visible_transcript_lines(&outcome.transcript)
+                    .into_iter()
+                    .map(Into::into)
+                    .collect();
                 let preview = state::preview_text(&candidate.prompt, 48);
                 self.ui_state.mutate(move |state| {
                     state.clear_history_rollback();
@@ -2026,7 +2029,10 @@ impl CodeAgentTui {
                 }
                 let loaded = self.session.load_agent_session(&agent_session_ref).await?;
                 let inspector = format_agent_session_inspector(&loaded);
-                let transcript = format_visible_transcript_lines(&loaded.transcript);
+                let transcript = format_visible_transcript_lines(&loaded.transcript)
+                    .into_iter()
+                    .map(Into::into)
+                    .collect();
                 let agent_session_ref_preview = preview_id(&loaded.summary.agent_session_ref);
                 let transcript_count = loaded.summary.transcript_message_count;
                 self.ui_state.mutate(move |state| {
@@ -2147,7 +2153,10 @@ impl CodeAgentTui {
                 }
                 let loaded = self.session.load_session(&session_ref).await?;
                 let inspector = format_session_inspector(&loaded);
-                let transcript = format_session_transcript_lines(&loaded);
+                let transcript = format_session_transcript_lines(&loaded)
+                    .into_iter()
+                    .map(Into::into)
+                    .collect();
                 let session_ref_preview = preview_id(loaded.summary.session_id.as_str());
                 let transcript_count = loaded.summary.transcript_message_count;
                 self.ui_state.mutate(move |state| {
@@ -2177,7 +2186,10 @@ impl CodeAgentTui {
                 }
                 let loaded = self.session.load_task(&task_ref).await?;
                 let inspector = format_task_inspector(&loaded);
-                let transcript = format_visible_transcript_lines(&loaded.child_transcript);
+                let transcript = format_visible_transcript_lines(&loaded.child_transcript)
+                    .into_iter()
+                    .map(Into::into)
+                    .collect();
                 let task_id = loaded.summary.task_id.clone();
                 let transcript_count = loaded.child_transcript.len();
                 self.ui_state.mutate(move |state| {
@@ -2335,7 +2347,10 @@ impl CodeAgentTui {
         startup.session.queued_commands = 0;
         startup.show_transcript_pane();
         startup.follow_transcript = true;
-        startup.transcript = format_visible_transcript_lines(&outcome.transcript);
+        startup.transcript = format_visible_transcript_lines(&outcome.transcript)
+            .into_iter()
+            .map(Into::into)
+            .collect();
         startup.transcript_scroll = u16::MAX;
 
         match outcome.action {

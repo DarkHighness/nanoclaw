@@ -27,7 +27,8 @@ use crate::frontend::tui::commands::{
     SlashCommandHint, SlashCommandSpec,
 };
 use crate::frontend::tui::state::{
-    HistoryRollbackCandidate, MainPaneMode, PlanEntry, StatusLinePickerState, TuiState,
+    HistoryRollbackCandidate, MainPaneMode, PlanEntry, StatusLinePickerState, TranscriptEntry,
+    TuiState,
 };
 use agent::tools::{UserInputAnswer, UserInputOption, UserInputQuestion};
 use agent::types::MessageId;
@@ -92,7 +93,7 @@ fn transcript_entries_render_with_codex_like_prefixes() {
         main_pane: MainPaneMode::Transcript,
         ..TuiState::default()
     };
-    state.transcript = vec!["• hello world".to_string()];
+    state.transcript = vec![transcript_entry("• hello world")];
 
     let lines = build_transcript_lines(&state);
 
@@ -107,9 +108,9 @@ fn transcript_inserts_turn_dividers_between_user_turns() {
         ..TuiState::default()
     };
     state.transcript = vec![
-        "› first".to_string(),
-        "• reply".to_string(),
-        "› second".to_string(),
+        transcript_entry("› first"),
+        transcript_entry("• reply"),
+        transcript_entry("› second"),
     ];
 
     let rendered = build_transcript_lines_for_width(&state, 24);
@@ -130,9 +131,9 @@ fn transcript_separates_assistant_and_tool_entries_with_breathing_room() {
         ..TuiState::default()
     };
     state.transcript = vec![
-        "• assistant reply".to_string(),
-        "• Running bash\n  └ $ cargo test".to_string(),
-        "› next prompt".to_string(),
+        transcript_entry("• assistant reply"),
+        transcript_entry("• Running bash\n  └ $ cargo test"),
+        transcript_entry("› next prompt"),
     ];
 
     let rendered = build_transcript_lines(&state);
@@ -153,7 +154,9 @@ fn transcript_collapses_tool_details_by_default() {
         main_pane: MainPaneMode::Transcript,
         ..TuiState::default()
     };
-    state.transcript = vec!["• Finished bash\n  └ $ cargo test\n  └ exit 0\n    ok".to_string()];
+    state.transcript = vec![transcript_entry(
+        "• Finished bash\n  └ $ cargo test\n  └ exit 0\n    ok",
+    )];
 
     let rendered = build_transcript_lines(&state);
 
@@ -186,7 +189,9 @@ fn transcript_expands_tool_details_when_enabled() {
         show_tool_details: true,
         ..TuiState::default()
     };
-    state.transcript = vec!["• Finished bash\n  └ $ cargo test\n  └ exit 0\n    ok".to_string()];
+    state.transcript = vec![transcript_entry(
+        "• Finished bash\n  └ $ cargo test\n  └ exit 0\n    ok",
+    )];
 
     let rendered = build_transcript_lines(&state);
 
@@ -213,7 +218,7 @@ fn transcript_renders_resume_summary_above_history() {
         ],
         ..TuiState::default()
     };
-    state.transcript = vec!["• done".to_string()];
+    state.transcript = vec![transcript_entry("• done")];
 
     let rendered = build_transcript_lines(&state);
 
@@ -743,7 +748,7 @@ fn transcript_hides_progress_line_while_tool_cell_is_active() {
         turn_running: true,
         status: "Working".to_string(),
         active_tool_label: Some("bash".to_string()),
-        transcript: vec!["• Running bash\n  └ $ cargo test".to_string()],
+        transcript: vec![transcript_entry("• Running bash\n  └ $ cargo test")],
         ..TuiState::default()
     };
 
@@ -773,7 +778,7 @@ fn transcript_merges_pending_controls_into_the_active_tool_timeline_cell() {
         turn_running: true,
         status: "Working".to_string(),
         active_tool_label: Some("bash".to_string()),
-        transcript: vec!["• Running bash\n  └ $ cargo test".to_string()],
+        transcript: vec![transcript_entry("• Running bash\n  └ $ cargo test")],
         ..TuiState::default()
     };
     state.pending_controls = vec![
@@ -827,7 +832,7 @@ fn transcript_bridges_pending_picker_into_the_active_tool_timeline() {
         turn_running: true,
         status: "Working".to_string(),
         active_tool_label: Some("bash".to_string()),
-        transcript: vec!["• Running bash\n  └ $ cargo test".to_string()],
+        transcript: vec![transcript_entry("• Running bash\n  └ $ cargo test")],
         ..TuiState::default()
     };
     state.pending_controls = vec![
@@ -1088,21 +1093,18 @@ fn transcript_renders_markdown_blocks_without_fence_noise() {
         main_pane: MainPaneMode::Transcript,
         ..TuiState::default()
     };
-    state.transcript = vec![
-        concat!(
-            "• # Plan\n",
-            "- inspect output\n",
-            "1. rerun tests\n",
-            "> keep the diff readable\n",
-            "Use `rg` for search\n",
-            "```diff\n",
-            "+ added line\n",
-            "- removed line\n",
-            "@@ hunk\n",
-            "```"
-        )
-        .to_string(),
-    ];
+    state.transcript = vec![transcript_entry(concat!(
+        "• # Plan\n",
+        "- inspect output\n",
+        "1. rerun tests\n",
+        "> keep the diff readable\n",
+        "Use `rg` for search\n",
+        "```diff\n",
+        "+ added line\n",
+        "- removed line\n",
+        "@@ hunk\n",
+        "```"
+    ))];
 
     let rendered = build_transcript_lines(&state);
     assert_eq!(rendered[0].spans[0].content.as_ref(), "•");
@@ -1160,7 +1162,7 @@ fn transcript_keeps_fenced_block_label_as_first_visible_line() {
         main_pane: MainPaneMode::Transcript,
         ..TuiState::default()
     };
-    state.transcript = vec!["• ```rust\nfn main() {}\n```".to_string()];
+    state.transcript = vec![transcript_entry("• ```rust\nfn main() {}\n```")];
 
     let rendered = build_transcript_lines(&state);
 
@@ -1181,6 +1183,10 @@ fn line_text_for(line: &ratatui::text::Line<'_>) -> String {
         .iter()
         .map(|span| span.content.as_ref())
         .collect::<String>()
+}
+
+fn transcript_entry(line: &str) -> TranscriptEntry {
+    line.into()
 }
 
 fn text_lines(text: &ratatui::text::Text<'_>) -> Vec<String> {

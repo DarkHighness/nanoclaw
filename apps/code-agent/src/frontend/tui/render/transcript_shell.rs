@@ -1,4 +1,4 @@
-use super::super::state::{TuiState, preview_text};
+use super::super::state::{TranscriptEntry, TranscriptShellEntry, TuiState, preview_text};
 use super::shared::{
     pending_control_focus_label, pending_control_kind_label, pending_control_reason_label,
 };
@@ -13,26 +13,26 @@ use std::time::Instant;
 const COLLAPSED_SHELL_PREVIEW_DETAIL_LINES: usize = 2;
 
 pub(super) fn should_collapse_shell_details(
-    kind: TranscriptEntryKind,
-    body: &str,
+    entry: &TranscriptEntry,
     show_tool_details: bool,
 ) -> bool {
     // Keep the default transcript on a single readable timeline. Operators can
     // opt back into the full tool payload stream via `/details`.
-    !show_tool_details
-        && kind == TranscriptEntryKind::ShellSummary
-        && hidden_shell_detail_line_count(body) > 0
+    !show_tool_details && entry.is_shell_summary() && hidden_shell_detail_line_count(entry) > 0
 }
 
 pub(super) fn render_collapsed_shell_summary(
+    entry: &TranscriptEntry,
     marker: &str,
     accent: Color,
-    body: &str,
     kind: TranscriptEntryKind,
     animation_frame: Option<u128>,
 ) -> Vec<Line<'static>> {
-    let preview_body = collapsed_shell_preview_body(body);
-    let hidden_line_count = hidden_shell_detail_line_count(body);
+    let summary = entry
+        .shell_summary()
+        .expect("collapsed shell summaries require structured details");
+    let preview_body = collapsed_shell_preview_body(summary);
+    let hidden_line_count = hidden_shell_detail_line_count(entry);
 
     let mut rendered = render_shell_summary_body(&preview_body, marker, kind, animation_frame);
     if hidden_line_count > 0 {
@@ -52,23 +52,24 @@ pub(super) fn render_collapsed_shell_summary(
     rendered
 }
 
-fn collapsed_shell_preview_body(body: &str) -> String {
-    let mut lines = body.lines();
-    let mut preview_lines = vec![lines.next().unwrap_or_default().to_string()];
-    preview_lines.extend(
-        lines
-            .filter(|line| !line.trim().is_empty())
+fn collapsed_shell_preview_body(summary: &TranscriptShellEntry) -> String {
+    TranscriptShellEntry {
+        headline: summary.headline.clone(),
+        detail_lines: summary
+            .detail_lines
+            .iter()
             .take(COLLAPSED_SHELL_PREVIEW_DETAIL_LINES)
-            .map(str::to_string),
-    );
-    preview_lines.join("\n")
+            .cloned()
+            .collect(),
+    }
+    .serialized_body()
 }
 
-fn hidden_shell_detail_line_count(body: &str) -> usize {
-    body.lines()
-        .skip(1)
-        .filter(|line| !line.trim().is_empty())
-        .count()
+fn hidden_shell_detail_line_count(entry: &TranscriptEntry) -> usize {
+    entry
+        .shell_summary()
+        .map(|summary| summary.detail_lines.len())
+        .unwrap_or_default()
         .saturating_sub(COLLAPSED_SHELL_PREVIEW_DETAIL_LINES)
 }
 
@@ -618,7 +619,7 @@ fn progress_marker(state: &TuiState) -> &'static str {
     }
 }
 
-fn summary_color(line: &str) -> Color {
+pub(super) fn summary_color(line: &str) -> Color {
     let lower = line.to_ascii_lowercase();
     if lower.contains("failed")
         || lower.contains("error")
