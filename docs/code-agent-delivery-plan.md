@@ -252,6 +252,15 @@ Shipped in the twenty-fifth implementation slice:
 - repository delivery docs now describe `code-agent` as the sole shipped app
 - active workspace cleanup no longer depends on keeping a legacy shell in-tree
 
+Shipped in the twenty-sixth implementation slice:
+
+- collection-heavy history views now suppress duplicated pane titles and keep
+  session-search / agent-session metadata on tighter two-line shells
+- approval prompts were restructured around `Approve <tool>?`, explicit target
+  context, command/argument block, and concise approval reasons
+- the bottom status line now carries live runtime status, detail-toggle state,
+  queue depth, and session context instead of acting as a thin context-only row
+
 Still pending in the next slices:
 
 - frontend-neutral contracts for richer live subagent/session operator workflows

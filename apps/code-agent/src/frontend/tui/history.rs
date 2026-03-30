@@ -44,16 +44,14 @@ pub(crate) fn format_agent_session_summary_line(summary: &PersistedAgentSessionS
             preview_id(&summary.agent_session_ref),
             summary.label
         ),
-        [
-            format!(
-                "session {} · {} messages · {} events · resume {}",
-                preview_id(&summary.session_ref),
-                summary.transcript_message_count,
-                summary.event_count,
-                summary.resume_support.label()
-            ),
-            format!("prompt {prompt}"),
-        ],
+        [format!(
+            "session {} · {} messages · {} events · resume {} · prompt {}",
+            preview_id(&summary.session_ref),
+            summary.transcript_message_count,
+            summary.event_count,
+            summary.resume_support.label(),
+            prompt
+        )],
     )
 }
 
@@ -110,24 +108,24 @@ pub(crate) fn format_session_search_line(result: &PersistedSessionSearchMatch) -
         .unwrap_or_else(|| "no prompt yet".to_string());
     shell_summary(
         format!("• {}  {}", preview_id(&result.summary.session_ref), prompt),
-        [
-            format!(
-                "{} messages · {} events · {} agent sessions · resume {}",
-                result.summary.transcript_message_count,
-                result.summary.event_count,
-                result.summary.worker_session_count,
-                result.summary.resume_support.label()
-            ),
-            format!("matched {} event(s)", result.matched_event_count),
-            (!result.preview_matches.is_empty())
-                .then(|| {
+        [format!(
+            "{} messages · {} events · {} agent sessions · resume {} · matched {} event(s){}",
+            result.summary.transcript_message_count,
+            result.summary.event_count,
+            result.summary.worker_session_count,
+            result.summary.resume_support.label(),
+            result.matched_event_count,
+            result
+                .preview_matches
+                .is_empty()
+                .then_some(String::new())
+                .unwrap_or_else(|| {
                     format!(
-                        "preview {}",
-                        preview_text(&result.preview_matches.join(" | "), 80)
+                        " · preview {}",
+                        preview_text(&result.preview_matches.join(" | "), 72)
                     )
                 })
-                .unwrap_or_default(),
-        ],
+        )],
     )
 }
 
@@ -1213,12 +1211,14 @@ fn format_session_event_line(event: &SessionEventEnvelope) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        format_live_task_wait_outcome, format_session_event_line, format_session_export_result,
-        format_session_operation_outcome, format_session_summary_line,
+        format_agent_session_summary_line, format_live_task_wait_outcome,
+        format_session_event_line, format_session_export_result, format_session_operation_outcome,
+        format_session_search_line, format_session_summary_line,
     };
     use crate::backend::{
-        LiveTaskWaitOutcome, PersistedSessionSummary, ResumeSupport, SessionExportArtifact,
-        SessionExportKind, SessionOperationAction, SessionOperationOutcome, SessionStartupSnapshot,
+        LiveTaskWaitOutcome, PersistedAgentSessionSummary, PersistedSessionSearchMatch,
+        PersistedSessionSummary, ResumeSupport, SessionExportArtifact, SessionExportKind,
+        SessionOperationAction, SessionOperationOutcome, SessionStartupSnapshot,
     };
     use agent::types::{
         AgentSessionId, AgentStatus, Message, SessionEventEnvelope, SessionEventKind, SessionId,
@@ -1274,6 +1274,49 @@ mod tests {
         assert_eq!(
             line,
             "• session_  Refine the approval preview\n  └ 12 messages · 40 events · 2 agent sessions · resume attached"
+        );
+    }
+
+    #[test]
+    fn agent_session_summary_is_kept_to_two_lines() {
+        let line = format_agent_session_summary_line(&PersistedAgentSessionSummary {
+            agent_session_ref: "agent_session_123456".to_string(),
+            session_ref: "session_123456".to_string(),
+            label: "planner".to_string(),
+            event_count: 14,
+            transcript_message_count: 6,
+            first_timestamp_ms: 1,
+            last_timestamp_ms: 2,
+            last_user_prompt: Some("Investigate flaky tests".to_string()),
+            resume_support: ResumeSupport::AttachedToActiveRuntime,
+        });
+
+        assert_eq!(
+            line,
+            "• agent_se  planner\n  └ session session_ · 6 messages · 14 events · resume attached · prompt Investigate flaky tests"
+        );
+    }
+
+    #[test]
+    fn session_search_summary_stays_compact() {
+        let line = format_session_search_line(&PersistedSessionSearchMatch {
+            summary: PersistedSessionSummary {
+                session_ref: "session_12345678".to_string(),
+                first_timestamp_ms: 1,
+                last_timestamp_ms: 2,
+                event_count: 40,
+                worker_session_count: 2,
+                transcript_message_count: 12,
+                last_user_prompt: Some("Refine the approval preview".to_string()),
+                resume_support: ResumeSupport::AttachedToActiveRuntime,
+            },
+            matched_event_count: 3,
+            preview_matches: vec!["bash approval".to_string(), "cargo test".to_string()],
+        });
+
+        assert_eq!(
+            line,
+            "• session_  Refine the approval preview\n  └ 12 messages · 40 events · 2 agent sessions · resume attached · matched 3 event(s) · preview bash approval | cargo test"
         );
     }
 

@@ -192,11 +192,14 @@ fn render_main_view(frame: &mut ratatui::Frame<'_>, area: Rect, state: &TuiState
         state.inspector.len().saturating_add(2).max(1),
         inner.height,
     );
-    let mut lines = vec![Line::from(Span::styled(
-        title.to_string(),
-        Style::default().fg(MUTED),
-    ))];
-    lines.push(Line::raw(""));
+    let mut lines = Vec::new();
+    if should_render_view_title(title, &state.inspector) {
+        lines.push(Line::from(Span::styled(
+            title.to_string(),
+            Style::default().fg(MUTED),
+        )));
+        lines.push(Line::raw(""));
+    }
     lines.extend(build_inspector_text(title, &state.inspector).lines);
     let view = Paragraph::new(Text::from(lines))
         .scroll((scroll, 0))
@@ -288,29 +291,10 @@ fn composer_inner_area(area: Rect) -> Rect {
 
 fn build_approval_text(approval: &ApprovalPrompt) -> Text<'static> {
     let mut lines = vec![Line::from(Span::styled(
-        "Approval required".to_string(),
+        format!("Approve {}?", approval.tool_name),
         Style::default().fg(HEADER).add_modifier(Modifier::BOLD),
     ))];
-    lines.push(approval_meta_line(
-        "tool",
-        &approval.tool_name,
-        Style::default().fg(TEXT),
-    ));
-    lines.push(approval_meta_line(
-        "origin",
-        &approval.origin,
-        Style::default().fg(MUTED),
-    ));
-    if let Some(mode) = approval.mode.as_deref() {
-        lines.push(approval_meta_line("mode", mode, Style::default().fg(MUTED)));
-    }
-    if let Some(working_directory) = approval.working_directory.as_deref() {
-        lines.push(approval_meta_line(
-            "cwd",
-            &preview_text(working_directory, 96),
-            Style::default().fg(TEXT),
-        ));
-    }
+    lines.push(approval_context_line(approval));
     lines.push(approval_section_label(&approval.content_label));
     for line in approval_preview_lines(&approval.content_preview) {
         lines.push(Line::from(vec![
@@ -319,17 +303,10 @@ fn build_approval_text(approval: &ApprovalPrompt) -> Text<'static> {
         ]));
     }
     if !approval.reasons.is_empty() {
-        let mut reasons = approval.reasons.iter().take(2);
-        if let Some(first) = reasons.next() {
-            lines.push(approval_meta_line(
-                "reason",
-                &preview_text(first, 96),
-                Style::default().fg(MUTED),
-            ));
-        }
-        lines.extend(reasons.map(|reason| {
+        lines.push(approval_section_label("why"));
+        lines.extend(approval.reasons.iter().take(2).map(|reason| {
             Line::from(vec![
-                Span::styled("        ", Style::default().fg(SUBTLE)),
+                Span::styled("  • ", Style::default().fg(SUBTLE)),
                 Span::styled(preview_text(reason, 96), Style::default().fg(MUTED)),
             ])
         }));
@@ -348,17 +325,7 @@ fn build_approval_text(approval: &ApprovalPrompt) -> Text<'static> {
 }
 
 fn approval_band_height(approval: &ApprovalPrompt) -> u16 {
-    build_approval_text(approval).lines.len().clamp(4, 9) as u16
-}
-
-fn approval_meta_line(label: &str, value: &str, value_style: Style) -> Line<'static> {
-    Line::from(vec![
-        Span::styled(
-            format!("{label:<7}"),
-            Style::default().fg(SUBTLE).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(value.to_string(), value_style),
-    ])
+    build_approval_text(approval).lines.len().clamp(5, 10) as u16
 }
 
 fn approval_section_label(label: &str) -> Line<'static> {
@@ -366,6 +333,25 @@ fn approval_section_label(label: &str) -> Line<'static> {
         label.to_string(),
         Style::default().fg(MUTED).add_modifier(Modifier::BOLD),
     )])
+}
+
+fn approval_context_line(approval: &ApprovalPrompt) -> Line<'static> {
+    let mut spans = vec![Span::styled(
+        approval.origin.clone(),
+        Style::default().fg(MUTED),
+    )];
+    if let Some(working_directory) = approval.working_directory.as_deref() {
+        spans.push(Span::styled(" · ", Style::default().fg(SUBTLE)));
+        spans.push(Span::styled(
+            preview_text(working_directory, 56),
+            Style::default().fg(TEXT),
+        ));
+    }
+    if let Some(mode) = approval.mode.as_deref() {
+        spans.push(Span::styled(" · ", Style::default().fg(SUBTLE)));
+        spans.push(Span::styled(mode.to_string(), Style::default().fg(MUTED)));
+    }
+    Line::from(spans)
 }
 
 fn build_command_hint_text(command_hint: &SlashCommandHint) -> Text<'static> {
@@ -1634,15 +1620,60 @@ fn progress_marker(state: &TuiState) -> &'static str {
 }
 
 fn format_footer_context(state: &TuiState) -> Line<'static> {
-    let mut spans = vec![Span::styled(
-        state.session.workspace_name.clone(),
-        Style::default().fg(TEXT),
-    )];
-    spans.push(Span::styled(" · ", Style::default().fg(SUBTLE)));
-    spans.push(Span::styled(
-        state.session.model.clone(),
-        Style::default().fg(MUTED),
-    ));
+    let status = if state.status.is_empty() {
+        "Ready"
+    } else {
+        state.status.as_str()
+    };
+    let mut spans = vec![
+        Span::styled(
+            if state.turn_running { "●" } else { "•" },
+            Style::default()
+                .fg(status_color(status))
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(" "),
+        Span::styled(
+            preview_text(status, 28),
+            Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" · ", Style::default().fg(SUBTLE)),
+        Span::styled(
+            state.session.workspace_name.clone(),
+            Style::default().fg(TEXT),
+        ),
+        Span::styled(" · ", Style::default().fg(SUBTLE)),
+        Span::styled(state.session.model.clone(), Style::default().fg(MUTED)),
+        Span::styled(" · ", Style::default().fg(SUBTLE)),
+        Span::styled(
+            if state.show_tool_details {
+                "details on"
+            } else {
+                "details off"
+            },
+            Style::default().fg(MUTED),
+        ),
+    ];
+
+    if state.session.queued_commands > 0 {
+        spans.push(Span::styled(" · ", Style::default().fg(SUBTLE)));
+        spans.push(Span::styled(
+            format!("{} queued", state.session.queued_commands),
+            Style::default().fg(WARN),
+        ));
+    }
+
+    if state.turn_running {
+        let elapsed_secs = state
+            .turn_started_at
+            .map(|started| started.elapsed().as_secs())
+            .unwrap_or(0);
+        spans.push(Span::styled(" · ", Style::default().fg(SUBTLE)));
+        spans.push(Span::styled(
+            format!("{elapsed_secs}s"),
+            Style::default().fg(MUTED),
+        ));
+    }
 
     if state.session.git.available {
         spans.push(Span::styled(" · ", Style::default().fg(SUBTLE)));
@@ -1808,12 +1839,9 @@ fn build_collection_text(title: &str, lines: &[String]) -> Text<'static> {
     let mut rendered = Vec::new();
     for line in lines {
         if let Some(section) = line.strip_prefix("## ") {
-            if !rendered.is_empty() {
-                rendered.push(Line::raw(""));
-            }
             rendered.push(Line::from(Span::styled(
                 section.to_string(),
-                Style::default().fg(HEADER).add_modifier(Modifier::BOLD),
+                Style::default().fg(MUTED),
             )));
             continue;
         }
@@ -1889,6 +1917,16 @@ fn is_shell_summary_block(entry: &str) -> bool {
 
 fn is_command_palette_title(title: &str) -> bool {
     title.starts_with("Command Palette")
+}
+
+fn should_render_view_title(title: &str, lines: &[String]) -> bool {
+    let Some(first_non_empty) = lines.iter().find(|line| !line.trim().is_empty()) else {
+        return true;
+    };
+    if let Some(section) = first_non_empty.strip_prefix("## ") {
+        return section != title;
+    }
+    !is_command_palette_title(title)
 }
 
 fn inspector_accent(title: &str) -> Color {
@@ -2023,7 +2061,7 @@ mod tests {
         approval_preview_lines, build_approval_text, build_collection_text,
         build_command_hint_text, build_command_palette_text, build_key_value_text,
         build_side_rail_lines, build_transcript_lines, build_welcome_lines, format_footer_context,
-        should_render_side_rail,
+        should_render_side_rail, should_render_view_title,
     };
     use crate::frontend::tui::approval::ApprovalPrompt;
     use crate::frontend::tui::commands::{
@@ -2508,13 +2546,15 @@ mod tests {
             reasons: vec!["sandbox policy requires approval".to_string()],
         });
 
-        assert_eq!(text.lines[0].spans[0].content.as_ref(), "Approval required");
-        assert_eq!(text.lines[1].spans[0].content.as_ref(), "tool   ");
-        assert_eq!(text.lines[1].spans[1].content.as_ref(), "bash");
-        assert_eq!(text.lines[2].spans[0].content.as_ref(), "origin ");
-        assert_eq!(text.lines[3].spans[0].content.as_ref(), "mode   ");
-        assert_eq!(text.lines[4].spans[0].content.as_ref(), "cwd    ");
-        assert_eq!(text.lines[5].spans[0].content.as_ref(), "command");
+        assert_eq!(text.lines[0].spans[0].content.as_ref(), "Approve bash?");
+        assert!(
+            text.lines[1]
+                .spans
+                .iter()
+                .any(|span| { span.content.as_ref().contains("/workspace/apps/code-agent") })
+        );
+        assert_eq!(text.lines[2].spans[0].content.as_ref(), "command");
+        assert_eq!(text.lines[4].spans[0].content.as_ref(), "why");
         assert!(text.lines.iter().any(|line| {
             line.spans
                 .iter()
@@ -2730,18 +2770,31 @@ mod tests {
     #[test]
     fn footer_context_prefers_workspace_and_session_ref() {
         let mut state = TuiState::default();
+        state.status = "Ready".to_string();
         state.session.workspace_name = "nanoclaw".to_string();
         state.session.model = "gpt-5.4".to_string();
         state.session.active_session_ref = "session_123456".to_string();
 
         let footer = format_footer_context(&state);
 
-        assert_eq!(footer.spans[0].content.as_ref(), "nanoclaw");
+        assert_eq!(footer.spans[0].content.as_ref(), "•");
         assert!(
             footer
                 .spans
                 .iter()
-                .any(|span| { span.content.as_ref().contains("gpt-5.4") })
+                .any(|span| { span.content.as_ref().contains("Ready") })
+        );
+        assert!(
+            footer
+                .spans
+                .iter()
+                .any(|span| { span.content.as_ref().contains("nanoclaw") })
+        );
+        assert!(
+            footer
+                .spans
+                .iter()
+                .any(|span| { span.content.as_ref().contains("details off") })
         );
         assert!(
             footer
@@ -2749,5 +2802,17 @@ mod tests {
                 .iter()
                 .any(|span| { span.content.as_ref().contains("session_") })
         );
+    }
+
+    #[test]
+    fn view_title_is_suppressed_when_the_collection_already_has_one() {
+        assert!(!should_render_view_title(
+            "Sessions",
+            &["## Sessions".to_string(), "• sess_123  prompt".to_string()]
+        ));
+        assert!(should_render_view_title(
+            "Export",
+            &["## Session".to_string(), "path: out.txt".to_string()]
+        ));
     }
 }

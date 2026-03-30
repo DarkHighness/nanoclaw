@@ -222,6 +222,11 @@ main timeline stays readable. `/details` toggles the full tool payload stream
 back on when an operator needs to inspect command previews, structured output,
 or diff blocks inline.
 
+Collection-heavy views such as session, agent-session, task, and search lists
+now stay tighter as well: duplicated pane titles are suppressed, list headers
+render once, and the session-search / agent-session summaries stay on a compact
+two-line shell layout instead of spreading metadata across extra blank rows.
+
 Transcript rendering is now closer to Codex's own TUI implementation: user
 turns use `›`, assistant and runtime summaries use `•`, approvals resolve into
 `✔` or `✗` history lines, and live runtime progress stays inline in the
@@ -235,7 +240,9 @@ mutation tools such as `write`, `edit`, and `patch` now surface structured diff
 previews instead of only terse completion summaries.
 
 Approval prompts now render as compact bottom-pane questions with inline
-command previews instead of large modal panels.
+command previews instead of large modal panels. The bottom status line also now
+carries the current runtime status, detail-toggle state, queue depth, and
+session context in one structured row instead of a thin context-only footer.
 
 Interactive approval and live runtime updates now also route through
 backend-owned contracts, so the TUI renders session events and approval prompts
