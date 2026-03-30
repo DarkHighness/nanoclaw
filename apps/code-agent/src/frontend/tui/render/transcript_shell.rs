@@ -289,56 +289,32 @@ pub(super) fn live_progress_lines(state: &TuiState) -> Vec<Line<'static>> {
 }
 
 pub(super) fn pending_control_timeline_entry(state: &TuiState) -> Option<String> {
-    if state.pending_controls.is_empty() || state.pending_control_picker.is_some() {
-        return None;
-    }
-
-    let total = state.pending_controls.len();
-    let mut lines = vec![format!("• Queued follow-ups · {total}")];
-    if total > 2 {
-        lines.push(format!("  └ {} older pending", total - 2));
-    }
-
-    let recent_controls = state
-        .pending_controls
-        .iter()
-        .rev()
-        .take(2)
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .collect::<Vec<_>>();
-    let visible_total = recent_controls.len();
-
-    lines.extend(
-        recent_controls
-            .into_iter()
-            .enumerate()
-            .map(|(index, control)| {
-                let relative_label = if total == 1 {
-                    "next"
-                } else if visible_total == 2 && index == 0 {
-                    "older"
-                } else {
-                    "latest"
-                };
-                let kind_label = match control.kind {
-                    crate::backend::PendingControlKind::Prompt => "queued prompt",
-                    crate::backend::PendingControlKind::Steer => "pending steer",
-                };
-                let mut detail = format!(
-                    "  └ {relative_label} {kind_label} · {}",
-                    preview_text(&control.preview, 72)
-                );
-                if let Some(reason) = pending_control_reason_label(control.reason.as_deref()) {
-                    detail.push_str(" · ");
-                    detail.push_str(&preview_text(&reason, 28));
-                }
-                detail
-            }),
-    );
-
+    let follow_ups = pending_control_timeline_lines(state)?;
+    let mut lines = vec![format!(
+        "• Queued follow-ups · {}",
+        state.pending_controls.len()
+    )];
+    lines.extend(follow_ups);
     Some(lines.join("\n"))
+}
+
+pub(super) fn pending_control_embedded_lines(state: &TuiState) -> Option<Vec<Line<'static>>> {
+    let follow_ups = pending_control_timeline_lines(state)?;
+    let mut lines = vec![Line::from(vec![
+        Span::styled("    ", Style::default().fg(SUBTLE)),
+        Span::styled(
+            format!("Queued follow-ups · {}", state.pending_controls.len()),
+            Style::default().fg(WARN),
+        ),
+    ])];
+    lines.extend(follow_ups.into_iter().map(|line| {
+        let detail = line.replacen("  └ ", "", 1);
+        Line::from(vec![
+            Span::styled("    ", Style::default().fg(SUBTLE)),
+            Span::styled(detail, Style::default().fg(MUTED)),
+        ])
+    }));
+    Some(lines)
 }
 
 pub(super) fn animated_progress_text_spans(text: &str, frame_ms: u128) -> Vec<Span<'static>> {
@@ -470,4 +446,57 @@ fn shell_status_phrase(line: &str) -> Option<(&str, &str, Color)> {
         return Some((phrase, &line[phrase.len()..], ERROR));
     }
     None
+}
+
+fn pending_control_timeline_lines(state: &TuiState) -> Option<Vec<String>> {
+    if state.pending_controls.is_empty() || state.pending_control_picker.is_some() {
+        return None;
+    }
+
+    let total = state.pending_controls.len();
+    let mut lines = Vec::new();
+    if total > 2 {
+        lines.push(format!("  └ {} older pending", total - 2));
+    }
+
+    let recent_controls = state
+        .pending_controls
+        .iter()
+        .rev()
+        .take(2)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect::<Vec<_>>();
+    let visible_total = recent_controls.len();
+
+    lines.extend(
+        recent_controls
+            .into_iter()
+            .enumerate()
+            .map(|(index, control)| {
+                let relative_label = if total == 1 {
+                    "next"
+                } else if visible_total == 2 && index == 0 {
+                    "older"
+                } else {
+                    "latest"
+                };
+                let kind_label = match control.kind {
+                    crate::backend::PendingControlKind::Prompt => "queued prompt",
+                    crate::backend::PendingControlKind::Steer => "pending steer",
+                };
+                let mut detail = format!(
+                    "  └ {relative_label} {kind_label} · {}",
+                    preview_text(&control.preview, 72)
+                );
+                if let Some(reason) = pending_control_reason_label(control.reason.as_deref()) {
+                    detail.push_str(" · ");
+                    detail.push_str(&preview_text(&reason, 28));
+                }
+                detail
+            }),
+    );
+
+    Some(lines)
 }

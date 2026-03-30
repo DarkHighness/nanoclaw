@@ -1,9 +1,9 @@
 use super::super::state::TuiState;
 use super::transcript_markdown::render_markdown_body;
 use super::transcript_shell::{
-    animation_frame_ms, live_progress_lines, pending_control_timeline_entry,
-    prefix_transcript_marker, render_collapsed_shell_summary, render_shell_summary_body,
-    should_collapse_shell_details,
+    animation_frame_ms, live_progress_lines, pending_control_embedded_lines,
+    pending_control_timeline_entry, prefix_transcript_marker, render_collapsed_shell_summary,
+    render_shell_summary_body, should_collapse_shell_details,
 };
 pub(super) use super::transcript_shell::{
     line_has_visible_content, line_to_plain_text, parse_prefixed_entry, transcript_body_style,
@@ -47,6 +47,7 @@ pub(super) fn render_transcript(frame: &mut ratatui::Frame<'_>, area: Rect, stat
 pub(super) fn build_transcript_lines(state: &TuiState) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     let frame_time = Instant::now();
+    let mut pending_controls_embedded = false;
     let tool_timeline_animation = state
         .turn_running
         .then(|| animation_frame_ms(state.turn_started_at.unwrap_or(frame_time), frame_time));
@@ -63,24 +64,34 @@ pub(super) fn build_transcript_lines(state: &TuiState) -> Vec<Line<'static>> {
 
     if !state.transcript.is_empty() {
         for (index, entry) in state.transcript.iter().enumerate() {
+            let active_tool_entry = state.turn_running
+                && index + 1 == state.transcript.len()
+                && transcript_entry_kind_for_entry(entry)
+                    == Some(TranscriptEntryKind::ShellSummary);
+            let entry = entry.clone();
             if index > 0 {
                 lines.push(Line::raw(""));
-                if transcript_entry_kind_for_entry(entry) == Some(TranscriptEntryKind::UserPrompt) {
+                if transcript_entry_kind_for_entry(&entry) == Some(TranscriptEntryKind::UserPrompt)
+                {
                     lines.push(turn_divider());
                     lines.push(Line::raw(""));
                 }
             }
             lines.extend(format_transcript_entry_with_mode(
-                entry,
+                &entry,
                 state.show_tool_details,
                 (state.turn_running && index + 1 == state.transcript.len())
                     .then_some(tool_timeline_animation)
                     .flatten(),
             ));
+            if active_tool_entry && let Some(embedded) = pending_control_embedded_lines(state) {
+                pending_controls_embedded = true;
+                lines.extend(embedded);
+            }
         }
     }
 
-    if let Some(entry) = pending_control_timeline_entry(state) {
+    if !pending_controls_embedded && let Some(entry) = pending_control_timeline_entry(state) {
         if !lines.is_empty() {
             lines.push(Line::raw(""));
         }
