@@ -189,11 +189,11 @@ pub(crate) fn record_completion(
     target: impl Into<String>,
 ) {
     observer.record(HookAuditEvent {
-        hook_name: registration.name.clone(),
+        hook_name: registration.name.to_string(),
         plugin_id: registration
             .execution
             .as_ref()
-            .and_then(|execution| execution.plugin_id.clone()),
+            .and_then(|execution| execution.plugin_id.clone().map(|id| id.to_string())),
         handler_kind,
         action,
         target: target.into(),
@@ -210,11 +210,11 @@ pub(crate) fn record_failure(
     error: &RuntimeError,
 ) {
     observer.record(HookAuditEvent {
-        hook_name: registration.name.clone(),
+        hook_name: registration.name.to_string(),
         plugin_id: registration
             .execution
             .as_ref()
-            .and_then(|execution| execution.plugin_id.clone()),
+            .and_then(|execution| execution.plugin_id.clone().map(|id| id.to_string())),
         handler_kind,
         action,
         target: target.into(),
@@ -322,11 +322,11 @@ fn record_allowed(
     target: String,
 ) {
     observer.record(HookAuditEvent {
-        hook_name: registration.name.clone(),
+        hook_name: registration.name.to_string(),
         plugin_id: registration
             .execution
             .as_ref()
-            .and_then(|execution| execution.plugin_id.clone()),
+            .and_then(|execution| execution.plugin_id.clone().map(|id| id.to_string())),
         handler_kind,
         action,
         target,
@@ -343,11 +343,11 @@ fn record_denied(
     error: &RuntimeError,
 ) {
     observer.record(HookAuditEvent {
-        hook_name: registration.name.clone(),
+        hook_name: registration.name.to_string(),
         plugin_id: registration
             .execution
             .as_ref()
-            .and_then(|execution| execution.plugin_id.clone()),
+            .and_then(|execution| execution.plugin_id.clone().map(|id| id.to_string())),
         handler_kind,
         action,
         target,

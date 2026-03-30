@@ -1,6 +1,7 @@
 use agent::AgentWorkspaceLayout;
 use agent::mcp::McpServerConfig;
 use agent::plugins::{PluginEntryConfig, PluginSlotsConfig};
+use agent::types::PluginId;
 use agent_env::{EnvMap, vars};
 use anyhow::{Result, anyhow, bail, ensure};
 use serde::de::DeserializeOwned;
@@ -192,9 +193,9 @@ pub struct PluginsConfig {
     pub enabled: bool,
     pub roots: Vec<String>,
     pub include_builtin: bool,
-    pub allow: Vec<String>,
-    pub deny: Vec<String>,
-    pub entries: BTreeMap<String, PluginEntryConfig>,
+    pub allow: Vec<PluginId>,
+    pub deny: Vec<PluginId>,
+    pub entries: BTreeMap<PluginId, PluginEntryConfig>,
     pub slots: PluginSlotsConfig,
 }
 
@@ -332,7 +333,7 @@ impl NanoclawCoreConfig {
             config.plugins.roots = split_env_paths(value);
         }
         if let Some(value) = env_map.get_non_empty_var(vars::NANOCLAW_CORE_PLUGIN_MEMORY_SLOT) {
-            config.plugins.slots.memory = Some(value);
+            config.plugins.slots.memory = parse_optional_plugin_slot(value);
         }
         for (key, value) in env_map.iter() {
             if key.starts_with(CORE_HOOK_ENV_PREFIX) {
@@ -840,6 +841,15 @@ fn split_env_paths(value: &str) -> Vec<String> {
         .into_iter()
         .map(|path| path.to_string_lossy().to_string())
         .collect()
+}
+
+fn parse_optional_plugin_slot(value: String) -> Option<PluginId> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("none") {
+        None
+    } else {
+        Some(trimmed.into())
+    }
 }
 
 fn dedup_paths(values: &mut Vec<String>) {

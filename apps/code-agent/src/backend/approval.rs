@@ -312,7 +312,7 @@ mod tests {
         assert_eq!(tool_origin_label(&ToolOrigin::Local), "local");
         assert_eq!(
             tool_origin_label(&ToolOrigin::Mcp {
-                server_name: "docs".to_string(),
+                server_name: "docs".into(),
             }),
             "mcp:docs"
         );

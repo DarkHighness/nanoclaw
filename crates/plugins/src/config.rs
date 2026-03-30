@@ -2,12 +2,12 @@ use crate::manifest::PluginNetworkAccess;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use toml::map::Map;
-use types::{HookHostApiGrant, HookMutationPermission};
+use types::{HookHostApiGrant, HookMutationPermission, PluginId};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct PluginSlotsConfig {
     #[serde(default)]
-    pub memory: Option<String>,
+    pub memory: Option<PluginId>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -41,11 +41,11 @@ pub struct PluginResolverConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
     #[serde(default)]
-    pub allow: Vec<String>,
+    pub allow: Vec<PluginId>,
     #[serde(default)]
-    pub deny: Vec<String>,
+    pub deny: Vec<PluginId>,
     #[serde(default)]
-    pub entries: BTreeMap<String, PluginEntryConfig>,
+    pub entries: BTreeMap<PluginId, PluginEntryConfig>,
     #[serde(default)]
     pub slots: PluginSlotsConfig,
 }

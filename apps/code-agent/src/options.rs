@@ -1,6 +1,7 @@
 use crate::config::CodeAgentConfig;
 use crate::provider::ensure_api_key_available;
 use crate::statusline::StatusLineConfig;
+use agent::types::PluginId;
 use agent_env::EnvMap;
 use anyhow::{Context, Result, bail};
 use nanoclaw_config::{CoreConfig, PluginsConfig, ResolvedAgentProfile, ResolvedInternalProfile};
@@ -65,7 +66,8 @@ impl AppOptions {
                     plugins.roots.push(next_arg(&mut args, "--plugin-root")?);
                 }
                 "--memory-plugin" => {
-                    plugins.slots.memory = Some(next_arg(&mut args, "--memory-plugin")?);
+                    plugins.slots.memory =
+                        parse_optional_memory_plugin(next_arg(&mut args, "--memory-plugin")?);
                 }
                 "--sandbox-fail-if-unavailable" => {
                     sandbox_fail_if_unavailable =
@@ -116,6 +118,15 @@ impl AppOptions {
             statusline: workspace_config.statusline,
             one_shot_prompt,
         })
+    }
+}
+
+fn parse_optional_memory_plugin(value: String) -> Option<PluginId> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("none") {
+        None
+    } else {
+        Some(trimmed.into())
     }
 }
 

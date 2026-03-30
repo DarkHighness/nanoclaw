@@ -526,7 +526,7 @@ mod tests {
         let retained = filter_runtime_hooks(
             vec![
                 HookRegistration {
-                    name: "command-hook".to_string(),
+                    name: "command-hook".into(),
                     event: HookEvent::SessionStart,
                     matcher: None,
                     handler: HookHandler::Command(CommandHookHandler {
@@ -537,7 +537,7 @@ mod tests {
                     execution: None,
                 },
                 HookRegistration {
-                    name: "http-hook".to_string(),
+                    name: "http-hook".into(),
                     event: HookEvent::SessionStart,
                     matcher: None,
                     handler: HookHandler::Http(HttpHookHandler {
@@ -562,7 +562,7 @@ mod tests {
         let retained = filter_boot_mcp_servers(
             vec![
                 McpServerConfig {
-                    name: "stdio".to_string(),
+                    name: "stdio".into(),
                     transport: McpTransportConfig::Stdio {
                         command: "stdio-server".to_string(),
                         args: Vec::new(),
@@ -571,7 +571,7 @@ mod tests {
                     },
                 },
                 McpServerConfig {
-                    name: "http".to_string(),
+                    name: "http".into(),
                     transport: McpTransportConfig::StreamableHttp {
                         url: "https://example.test/mcp".to_string(),
                         headers: BTreeMap::new(),

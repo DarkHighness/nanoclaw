@@ -27,7 +27,7 @@ mod tests {
     #[test]
     fn matches_tool_name_by_default_field() {
         let registration = HookRegistration {
-            name: "tool".to_string(),
+            name: "tool".into(),
             event: HookEvent::PreToolUse,
             matcher: Some(HookMatcher {
                 pattern: "^read$".to_string(),

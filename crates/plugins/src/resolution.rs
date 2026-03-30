@@ -9,8 +9,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path, PathBuf};
 use toml::map::Map;
 use types::{
-    HookEffectPolicy, HookExecutionPolicy, HookHostApiGrant, HookMutationPermission,
-    HookNetworkPolicy, HookRegistration,
+    HookEffectPolicy, HookExecutionPolicy, HookHostApiGrant, HookMutationPermission, HookName,
+    HookNetworkPolicy, HookRegistration, McpServerName, PluginDriverId, PluginId,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
@@ -25,7 +25,7 @@ pub struct PluginResolvedPermissions {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct PluginExecutableActivation {
-    pub plugin_id: String,
+    pub plugin_id: PluginId,
     pub root_dir: PathBuf,
     pub runtime: PluginRuntimeSpec,
     pub config: Map<String, toml::Value>,
@@ -35,7 +35,7 @@ pub struct PluginExecutableActivation {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PluginCustomToolActivation {
-    pub plugin_id: String,
+    pub plugin_id: PluginId,
     pub root_dir: PathBuf,
     pub manifest_path: PathBuf,
     pub tool_roots: Vec<PathBuf>,
@@ -47,14 +47,14 @@ pub struct PluginContributionSummary {
     pub instruction_count: usize,
     pub skill_roots: Vec<PathBuf>,
     pub custom_tool_root_count: usize,
-    pub hook_names: Vec<String>,
-    pub mcp_servers: Vec<String>,
-    pub runtime_driver: Option<String>,
+    pub hook_names: Vec<HookName>,
+    pub mcp_servers: Vec<McpServerName>,
+    pub runtime_driver: Option<PluginDriverId>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PluginState {
-    pub plugin_id: String,
+    pub plugin_id: PluginId,
     pub enabled: bool,
     pub reason: String,
     pub requested_permissions: PluginPermissionRequest,
@@ -64,7 +64,7 @@ pub struct PluginState {
 
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct PluginSlotSelection {
-    pub memory: Option<String>,
+    pub memory: Option<PluginId>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -161,8 +161,8 @@ pub fn build_activation_plan(
 fn resolve_plugin_state(
     plugin: &DiscoveredPlugin,
     resolver: &PluginResolverConfig,
-    allow_set: &BTreeSet<String>,
-    deny_set: &BTreeSet<String>,
+    allow_set: &BTreeSet<PluginId>,
+    deny_set: &BTreeSet<PluginId>,
 ) -> PluginState {
     let plugin_id = plugin.manifest.id.clone();
     if !resolver.enabled {
@@ -204,7 +204,7 @@ fn resolve_plugin_state(
     }
 }
 
-fn disabled_state(plugin_id: String, reason: &str, plugin: &DiscoveredPlugin) -> PluginState {
+fn disabled_state(plugin_id: PluginId, reason: &str, plugin: &DiscoveredPlugin) -> PluginState {
     PluginState {
         plugin_id,
         enabled: false,
@@ -304,13 +304,13 @@ fn decorate_hook_registration(
 }
 
 pub fn build_hook_execution_policy(
-    plugin_id: &str,
+    plugin_id: &PluginId,
     plugin_root: &Path,
     capabilities: &PluginCapabilitySet,
     granted_permissions: &PluginResolvedPermissions,
 ) -> HookExecutionPolicy {
     HookExecutionPolicy {
-        plugin_id: Some(plugin_id.to_string()),
+        plugin_id: Some(plugin_id.clone()),
         plugin_root: Some(plugin_root.to_path_buf()),
         read_roots: granted_permissions.read_roots.clone(),
         write_roots: granted_permissions.write_roots.clone(),
@@ -407,7 +407,7 @@ fn resolve_plugin_permissions(
 fn ensure_supported_permission_modes(
     requested: &PluginPermissionRequest,
     granted: &PluginPermissionGrant,
-    plugin_id: &str,
+    plugin_id: &PluginId,
     manifest_path: &Path,
 ) -> Result<(), PluginDiagnostic> {
     if matches!(
@@ -438,7 +438,7 @@ fn ensure_supported_permission_modes(
 fn ensure_requested_contains_all(
     requested: &PluginPermissionRequest,
     granted: &PluginPermissionGrant,
-    plugin_id: &str,
+    plugin_id: &PluginId,
     manifest_path: &Path,
 ) -> Result<(), PluginDiagnostic> {
     ensure_requested_paths(
@@ -496,7 +496,7 @@ fn ensure_requested_paths(
     requested: &[String],
     granted: &[String],
     label: &str,
-    plugin_id: &str,
+    plugin_id: &PluginId,
     manifest_path: &Path,
 ) -> Result<(), PluginDiagnostic> {
     let requested = requested.iter().cloned().collect::<BTreeSet<_>>();
@@ -515,14 +515,14 @@ fn ensure_requested_paths(
 
 fn permission_diagnostic(
     code: &'static str,
-    plugin_id: &str,
+    plugin_id: &PluginId,
     manifest_path: &Path,
     message: impl Into<String>,
 ) -> PluginDiagnostic {
     PluginDiagnostic::error(
         code,
         message.into(),
-        Some(plugin_id.to_string()),
+        Some(plugin_id.clone()),
         Some(manifest_path.to_path_buf()),
     )
 }
@@ -530,7 +530,7 @@ fn permission_diagnostic(
 fn resolve_workspace_paths(
     workspace_root: &Path,
     values: &[String],
-    plugin_id: &str,
+    plugin_id: &PluginId,
     manifest_path: &Path,
 ) -> Result<Vec<PathBuf>, PluginDiagnostic> {
     values
@@ -542,7 +542,7 @@ fn resolve_workspace_paths(
                     format!(
                         "plugin `{plugin_id}` has invalid permission path `{value}`: {message}"
                     ),
-                    Some(plugin_id.to_string()),
+                    Some(plugin_id.clone()),
                     Some(manifest_path.to_path_buf()),
                 )
             })
@@ -619,19 +619,15 @@ fn merge_toml_table(base: &mut Map<String, toml::Value>, overlay: Map<String, to
 
 fn resolve_memory_slot(
     plan: &mut PluginActivationPlan,
-    plugins_by_id: &BTreeMap<String, DiscoveredPlugin>,
+    plugins_by_id: &BTreeMap<PluginId, DiscoveredPlugin>,
     resolver: &PluginResolverConfig,
-    allow_set: &BTreeSet<String>,
-    deny_set: &BTreeSet<String>,
+    allow_set: &BTreeSet<PluginId>,
+    deny_set: &BTreeSet<PluginId>,
     workspace_root: &Path,
 ) {
     let Some(selected) = resolver.slots.memory.clone() else {
         return;
     };
-    if selected == "none" {
-        plan.slots.memory = None;
-        return;
-    }
     if !resolver.enabled {
         plan.diagnostics.push(PluginDiagnostic::error(
             "memory_slot_plugins_disabled",

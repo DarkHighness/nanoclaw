@@ -598,7 +598,7 @@ mod tests {
 
     fn base_registration(module: &std::path::Path, entrypoint: &str) -> HookRegistration {
         HookRegistration {
-            name: "wasm".to_string(),
+            name: "wasm".into(),
             event: HookEvent::UserPromptSubmit,
             matcher: None,
             handler: HookHandler::Wasm(WasmHookHandler {
@@ -607,7 +607,7 @@ mod tests {
             }),
             timeout_ms: Some(50),
             execution: Some(HookExecutionPolicy {
-                plugin_id: Some("team-policy".to_string()),
+                plugin_id: Some("team-policy".into()),
                 plugin_root: Some(module.parent().unwrap().to_path_buf()),
                 exec_roots: vec![module.parent().unwrap().to_path_buf()],
                 ..HookExecutionPolicy::default()
@@ -645,7 +645,7 @@ mod tests {
         );
         let mut registration = base_registration(&module, "on_user_prompt");
         registration.execution = Some(HookExecutionPolicy {
-            plugin_id: Some("team-policy".to_string()),
+            plugin_id: Some("team-policy".into()),
             plugin_root: Some(dir.path().to_path_buf()),
             exec_roots: vec![dir.path().to_path_buf()],
             host_api_grants: vec![
@@ -709,7 +709,7 @@ mod tests {
         );
         let mut registration = base_registration(&module, "on_user_prompt");
         registration.execution = Some(HookExecutionPolicy {
-            plugin_id: Some("team-policy".to_string()),
+            plugin_id: Some("team-policy".into()),
             plugin_root: Some(dir.path().to_path_buf()),
             exec_roots: vec![dir.path().to_path_buf()],
             host_api_grants: vec![HookHostApiGrant::ReadFile],
@@ -801,7 +801,7 @@ mod tests {
 
         let mut registration = base_registration(&module_path, "on_user_prompt");
         registration.execution = Some(HookExecutionPolicy {
-            plugin_id: Some("team-policy".to_string()),
+            plugin_id: Some("team-policy".into()),
             plugin_root: Some(dir.path().to_path_buf()),
             exec_roots: vec![dir.path().to_path_buf()],
             host_api_grants: vec![HookHostApiGrant::EmitHookEffect],
@@ -899,7 +899,7 @@ mod tests {
         );
         let mut registration = base_registration(&module, "on_user_prompt");
         registration.execution = Some(HookExecutionPolicy {
-            plugin_id: Some("team-policy".to_string()),
+            plugin_id: Some("team-policy".into()),
             plugin_root: Some(dir.path().to_path_buf()),
             exec_roots: vec![dir.path().to_path_buf()],
             host_api_grants: vec![HookHostApiGrant::EmitHookEffect],

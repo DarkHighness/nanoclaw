@@ -70,7 +70,7 @@ pub(crate) fn build_startup_diagnostics_snapshot(
     let mcp_tool_count = tool_specs.len().saturating_sub(local_tool_count);
 
     let mut plugin_details = Vec::new();
-    if let Some(memory_slot) = plugin_plan.slots.memory.as_deref() {
+    if let Some(memory_slot) = plugin_plan.slots.memory.as_ref() {
         plugin_details.push(format!("memory slot: {memory_slot}"));
     }
     for plugin in plugin_plan
@@ -120,7 +120,7 @@ pub(crate) fn list_mcp_servers(servers: &[ConnectedMcpServer]) -> Vec<McpServerS
     servers
         .iter()
         .map(|server| McpServerSummary {
-            server_name: server.server_name.clone(),
+            server_name: server.server_name.to_string(),
             tool_count: server.catalog.tools.len(),
             prompt_count: server.catalog.prompts.len(),
             resource_count: server.catalog.resources.len(),
@@ -137,7 +137,7 @@ pub(crate) fn list_mcp_prompts(servers: &[ConnectedMcpServer]) -> Vec<McpPromptS
                 .prompts
                 .iter()
                 .map(|prompt| McpPromptSummary {
-                    server_name: server.server_name.clone(),
+                    server_name: server.server_name.to_string(),
                     prompt_name: prompt.name.clone(),
                     description: prompt.description.clone(),
                     argument_names: prompt_argument_names(&prompt.arguments),
@@ -155,7 +155,7 @@ pub(crate) fn list_mcp_resources(servers: &[ConnectedMcpServer]) -> Vec<McpResou
                 .resources
                 .iter()
                 .map(|resource| McpResourceSummary {
-                    server_name: server.server_name.clone(),
+                    server_name: server.server_name.to_string(),
                     uri: resource.uri.clone(),
                     mime_type: resource.mime_type.clone(),
                     description: resource.description.clone(),
@@ -215,7 +215,7 @@ fn find_server<'a>(
 ) -> Result<&'a ConnectedMcpServer> {
     servers
         .iter()
-        .find(|server| server.server_name == server_name)
+        .find(|server| server.server_name.as_str() == server_name)
         .ok_or_else(|| anyhow!("unknown MCP server: {server_name}"))
 }
 
@@ -342,7 +342,7 @@ fn describe_plugin_contributions(plugin: &agent::plugins::PluginState) -> String
             preview_list(&contributions.mcp_servers, 2)
         ));
     }
-    if let Some(driver) = contributions.runtime_driver.as_deref() {
+    if let Some(driver) = contributions.runtime_driver.as_ref() {
         parts.push(format!("runtime={driver}"));
     }
     if parts.is_empty() {
@@ -385,11 +385,18 @@ fn describe_plugin_permissions(
     parts.join(", ")
 }
 
-fn preview_list(items: &[String], max_items: usize) -> String {
+fn preview_list<T>(items: &[T], max_items: usize) -> String
+where
+    T: std::fmt::Display,
+{
     if items.is_empty() {
         return "none".to_string();
     }
-    let mut preview = items.iter().take(max_items).cloned().collect::<Vec<_>>();
+    let mut preview = items
+        .iter()
+        .take(max_items)
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
     if items.len() > max_items {
         preview.push(format!("+{}", items.len() - max_items));
     }
@@ -502,10 +509,10 @@ mod tests {
                     output_schema: None,
                     defer_loading: false,
                     origin: ToolOrigin::Mcp {
-                        server_name: "fs".to_string(),
+                        server_name: "fs".into(),
                     },
                     source: ToolSource::McpTool {
-                        server_name: "fs".to_string(),
+                        server_name: "fs".into(),
                     },
                     aliases: Vec::new(),
                     supports_parallel_tool_calls: false,

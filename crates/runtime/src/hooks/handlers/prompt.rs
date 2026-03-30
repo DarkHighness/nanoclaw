@@ -43,7 +43,7 @@ mod tests {
         let error = FailClosedPromptHookEvaluator
             .evaluate(
                 &HookRegistration {
-                    name: "prompt-gate".to_string(),
+                    name: "prompt-gate".into(),
                     event: HookEvent::UserPromptSubmit,
                     matcher: None,
                     handler: HookHandler::Prompt(PromptHookHandler {

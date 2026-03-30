@@ -1,4 +1,4 @@
-use crate::{CallId, MessagePart, ToolCallId};
+use crate::{CallId, McpServerName, MessagePart, PluginId, ToolCallId};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -79,7 +79,7 @@ impl fmt::Display for ToolName {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ToolOrigin {
     Local,
-    Mcp { server_name: String },
+    Mcp { server_name: McpServerName },
     Provider { provider: String },
 }
 
@@ -90,13 +90,13 @@ pub enum ToolSource {
     Builtin,
     Dynamic,
     Plugin {
-        plugin: String,
+        plugin: PluginId,
     },
     McpTool {
-        server_name: String,
+        server_name: McpServerName,
     },
     McpResource {
-        server_name: String,
+        server_name: McpServerName,
     },
     ProviderBuiltin {
         provider: String,

@@ -169,7 +169,7 @@ mod tests {
         let error = runner
             .run(
                 &[HookRegistration {
-                    name: "prompt-hook".to_string(),
+                    name: "prompt-hook".into(),
                     event: HookEvent::UserPromptSubmit,
                     matcher: None,
                     handler: HookHandler::Prompt(PromptHookHandler {
@@ -198,7 +198,7 @@ mod tests {
         let error = runner
             .run(
                 &[HookRegistration {
-                    name: "agent-hook".to_string(),
+                    name: "agent-hook".into(),
                     event: HookEvent::SubagentStart,
                     matcher: None,
                     handler: HookHandler::Agent(AgentHookHandler {

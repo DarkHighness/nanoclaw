@@ -2,7 +2,9 @@ use serde::de::{self, Deserializer};
 use serde::ser::{SerializeMap, Serializer};
 use serde::{Deserialize, Serialize};
 use toml::map::Map;
-use types::{HookEvent, HookHandlerKind, HookHostApiGrant, HookMutationPermission};
+use types::{
+    HookEvent, HookHandlerKind, HookHostApiGrant, HookMutationPermission, PluginDriverId, PluginId,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -31,7 +33,7 @@ pub struct PluginComponents {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PluginRuntimeSpec {
-    pub driver: String,
+    pub driver: PluginDriverId,
     #[serde(default)]
     pub module: Option<String>,
     #[serde(default)]
@@ -151,7 +153,7 @@ pub struct PluginPermissionRequest {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PluginManifest {
-    pub id: String,
+    pub id: PluginId,
     #[serde(default)]
     pub version: Option<String>,
     #[serde(default)]

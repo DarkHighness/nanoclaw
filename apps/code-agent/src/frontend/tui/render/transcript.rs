@@ -35,7 +35,7 @@ pub(super) fn render_transcript(frame: &mut ratatui::Frame<'_>, area: Rect, stat
         return;
     }
 
-    let lines = build_transcript_lines(state);
+    let lines = build_transcript_lines_for_width(state, inner.width);
     let scroll = shared::clamp_scroll(state.transcript_scroll, lines.len(), inner.height);
     let transcript = Paragraph::new(Text::from(lines))
         .scroll((scroll, 0))
@@ -46,6 +46,13 @@ pub(super) fn render_transcript(frame: &mut ratatui::Frame<'_>, area: Rect, stat
 }
 
 pub(super) fn build_transcript_lines(state: &TuiState) -> Vec<Line<'static>> {
+    build_transcript_lines_for_width(state, 80)
+}
+
+pub(super) fn build_transcript_lines_for_width(
+    state: &TuiState,
+    transcript_width: u16,
+) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     let frame_time = Instant::now();
     let mut pending_controls_embedded = false;
@@ -74,7 +81,7 @@ pub(super) fn build_transcript_lines(state: &TuiState) -> Vec<Line<'static>> {
                 lines.push(Line::raw(""));
                 if transcript_entry_kind_for_entry(&entry) == Some(TranscriptEntryKind::UserPrompt)
                 {
-                    lines.push(turn_divider());
+                    lines.push(turn_divider(transcript_width));
                     lines.push(Line::raw(""));
                 }
             }
@@ -134,8 +141,11 @@ fn should_render_transcript_context(title: &str) -> bool {
     matches!(title, "Resume" | "Session" | "Task" | "Agent Session")
 }
 
-fn turn_divider() -> Line<'static> {
-    Line::from(Span::styled("┈".repeat(12), Style::default().fg(SUBTLE)))
+fn turn_divider(width: u16) -> Line<'static> {
+    // Keep user-turn boundaries locked to the live viewport width so the break
+    // reads as a full transcript section boundary instead of a floating marker.
+    let width = usize::from(width.max(1));
+    Line::from(Span::styled("─".repeat(width), Style::default().fg(SUBTLE)))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

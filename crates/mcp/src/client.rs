@@ -20,8 +20,8 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 use tracing::{debug, info};
 use types::{
-    Message, MessagePart, MessageRole, ToolApprovalProfile, ToolCallId, ToolKind, ToolOrigin,
-    ToolOutputMode, ToolResult, ToolSource, ToolSpec, new_opaque_id,
+    McpServerName, Message, MessagePart, MessageRole, ToolApprovalProfile, ToolCallId, ToolKind,
+    ToolOrigin, ToolOutputMode, ToolResult, ToolSource, ToolSpec, new_opaque_id,
 };
 
 const MCP_CONNECT_CONCURRENCY_LIMIT: usize = 8;
@@ -143,7 +143,7 @@ where
 }
 
 pub struct RmcpClient {
-    server_name: String,
+    server_name: McpServerName,
     peer: rmcp::Peer<rmcp::RoleClient>,
     // The running RMCP service is retained only to keep the transport task
     // alive for the peer. Nothing in the current substrate mutates it after
@@ -324,7 +324,7 @@ impl McpClient for MockMcpClient {
 }
 
 async fn connect_stdio_transport(
-    server_name: &str,
+    server_name: &McpServerName,
     command: &str,
     args: &[String],
     env: &BTreeMap<String, String>,
@@ -343,7 +343,7 @@ async fn connect_stdio_transport(
             stderr: ProcessStdio::Inherit,
             kill_on_drop: true,
             origin: ExecutionOrigin::McpStdioServer {
-                server_name: server_name.to_string(),
+                server_name: server_name.clone(),
             },
             runtime_scope: Default::default(),
             sandbox_policy: options.sandbox_policy.clone(),
@@ -381,7 +381,7 @@ fn http_headers(headers: &BTreeMap<String, String>) -> Result<HashMap<HeaderName
         .collect()
 }
 
-fn tool_spec_from_rmcp(server_name: &str, tool: Tool) -> Result<ToolSpec> {
+fn tool_spec_from_rmcp(server_name: &McpServerName, tool: Tool) -> Result<ToolSpec> {
     let approval = tool
         .annotations
         .map(|annotations| {
@@ -408,10 +408,10 @@ fn tool_spec_from_rmcp(server_name: &str, tool: Tool) -> Result<ToolSpec> {
             .map(|schema| Value::Object((*schema).clone())),
         defer_loading: false,
         origin: ToolOrigin::Mcp {
-            server_name: server_name.to_string(),
+            server_name: server_name.clone(),
         },
         source: ToolSource::McpTool {
-            server_name: server_name.to_string(),
+            server_name: server_name.clone(),
         },
         aliases: Vec::new(),
         supports_parallel_tool_calls: false,

@@ -22,8 +22,8 @@ use tools::{
     SandboxPolicy, ToolError, ToolExecutionContext, ToolRegistry,
 };
 use types::{
-    CallId, MessagePart, ToolApprovalProfile, ToolAttachment, ToolCallId, ToolContinuation,
-    ToolOutputMode, ToolResult, ToolSource, ToolSpec,
+    CallId, MessagePart, PluginId, ToolApprovalProfile, ToolAttachment, ToolCallId,
+    ToolContinuation, ToolOutputMode, ToolResult, ToolSource, ToolSpec,
 };
 
 const DEFAULT_TIMEOUT_MS: u64 = 30_000;
@@ -42,7 +42,7 @@ enum CustomToolLoadRequest {
         scan_root: PathBuf,
     },
     Plugin {
-        plugin_id: String,
+        plugin_id: PluginId,
         plugin_root: PathBuf,
         manifest_path: PathBuf,
         scan_root: PathBuf,
@@ -52,7 +52,7 @@ enum CustomToolLoadRequest {
 
 #[derive(Clone)]
 struct PluginToolRuntime {
-    plugin_id: String,
+    plugin_id: PluginId,
     plugin_root: PathBuf,
     granted_permissions: PluginResolvedPermissions,
 }
@@ -509,7 +509,10 @@ async fn execute_custom_tool(
         ctx.workspace_root.display().to_string(),
     );
     if let Some(plugin) = &runtime.plugin {
-        env.insert("NANOCLAW_PLUGIN_ID".to_string(), plugin.plugin_id.clone());
+        env.insert(
+            "NANOCLAW_PLUGIN_ID".to_string(),
+            plugin.plugin_id.to_string(),
+        );
         env.insert(
             "NANOCLAW_PLUGIN_ROOT".to_string(),
             plugin.plugin_root.display().to_string(),
@@ -605,7 +608,7 @@ async fn execute_custom_tool(
     if let Some(plugin) = &runtime.plugin {
         metadata.insert(
             "plugin_id".to_string(),
-            Value::String(plugin.plugin_id.clone()),
+            Value::String(plugin.plugin_id.to_string()),
         );
     }
     metadata.insert(
@@ -1143,7 +1146,7 @@ mutates_state = false
         let registry = ToolRegistry::new();
         let outcome = register_plugin_custom_tools(
             &[PluginCustomToolActivation {
-                plugin_id: "team_tools".to_string(),
+                plugin_id: "team_tools".into(),
                 root_dir: plugin_root.clone(),
                 manifest_path: plugin_root.join(".nanoclaw-plugin/plugin.toml"),
                 tool_roots: vec![plugin_root.join("tools")],
@@ -1166,7 +1169,7 @@ mutates_state = false
             .expect("plugin tool should register");
         assert!(matches!(
             tool.spec().source,
-            types::ToolSource::Plugin { ref plugin } if plugin == "team_tools"
+            types::ToolSource::Plugin { ref plugin } if plugin.as_str() == "team_tools"
         ));
         let result = tool
             .execute(

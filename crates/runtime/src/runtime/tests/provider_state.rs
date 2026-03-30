@@ -352,7 +352,7 @@ async fn message_id_patch_resets_provider_continuation_and_replays_full_visible_
             ..Default::default()
         })
         .hooks(vec![HookRegistration {
-            name: "message-id-patch".to_string(),
+            name: "message-id-patch".into(),
             event: types::HookEvent::UserPromptSubmit,
             matcher: None,
             handler: types::HookHandler::Prompt(types::PromptHookHandler {
@@ -436,7 +436,7 @@ async fn last_of_role_patch_targets_last_visible_assistant_message() {
             ..Default::default()
         })
         .hooks(vec![HookRegistration {
-            name: "last-of-role-patch".to_string(),
+            name: "last-of-role-patch".into(),
             event: types::HookEvent::UserPromptSubmit,
             matcher: None,
             handler: types::HookHandler::Prompt(types::PromptHookHandler {

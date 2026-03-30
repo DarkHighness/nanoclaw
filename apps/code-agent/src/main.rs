@@ -343,7 +343,7 @@ mod tests {
     fn driver_outcome_extends_code_agent_runtime_inputs() {
         let merged = merge_driver_host_inputs(
             vec![HookRegistration {
-                name: "existing-hook".to_string(),
+                name: "existing-hook".into(),
                 event: HookEvent::Stop,
                 matcher: None,
                 handler: HookHandler::Http(HttpHookHandler {
@@ -355,7 +355,7 @@ mod tests {
                 execution: None,
             }],
             vec![McpServerConfig {
-                name: "existing-mcp".to_string(),
+                name: "existing-mcp".into(),
                 transport: McpTransportConfig::Stdio {
                     command: "stdio-server".to_string(),
                     args: Vec::new(),
@@ -367,7 +367,7 @@ mod tests {
             &DriverActivationOutcome {
                 warnings: Vec::new(),
                 hooks: vec![HookRegistration {
-                    name: "driver-hook".to_string(),
+                    name: "driver-hook".into(),
                     event: HookEvent::SessionStart,
                     matcher: None,
                     handler: HookHandler::Http(HttpHookHandler {
@@ -379,7 +379,7 @@ mod tests {
                     execution: None,
                 }],
                 mcp_servers: vec![McpServerConfig {
-                    name: "driver-mcp".to_string(),
+                    name: "driver-mcp".into(),
                     transport: McpTransportConfig::StreamableHttp {
                         url: "https://example.test/mcp".to_string(),
                         headers: BTreeMap::new(),
@@ -526,7 +526,7 @@ mod tests {
     fn empty_driver_outcome_keeps_code_agent_runtime_inputs_stable() {
         let merged = merge_driver_host_inputs(
             vec![HookRegistration {
-                name: "existing-hook".to_string(),
+                name: "existing-hook".into(),
                 event: HookEvent::Stop,
                 matcher: None,
                 handler: HookHandler::Http(HttpHookHandler {
@@ -538,7 +538,7 @@ mod tests {
                 execution: None,
             }],
             vec![McpServerConfig {
-                name: "existing-mcp".to_string(),
+                name: "existing-mcp".into(),
                 transport: McpTransportConfig::Stdio {
                     command: "stdio-server".to_string(),
                     args: Vec::new(),
@@ -597,7 +597,7 @@ mod tests {
         let resolved = dedup_mcp_servers(resolve_mcp_servers(
             &[
                 McpServerConfig {
-                    name: "dup".to_string(),
+                    name: "dup".into(),
                     transport: McpTransportConfig::Stdio {
                         command: "first".to_string(),
                         args: Vec::new(),
@@ -606,7 +606,7 @@ mod tests {
                     },
                 },
                 McpServerConfig {
-                    name: "dup".to_string(),
+                    name: "dup".into(),
                     transport: McpTransportConfig::Stdio {
                         command: "second".to_string(),
                         args: Vec::new(),

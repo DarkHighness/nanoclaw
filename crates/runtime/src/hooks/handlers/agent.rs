@@ -42,7 +42,7 @@ mod tests {
         let error = FailClosedAgentHookEvaluator
             .evaluate(
                 &HookRegistration {
-                    name: "agent-review".to_string(),
+                    name: "agent-review".into(),
                     event: HookEvent::SubagentStart,
                     matcher: None,
                     handler: HookHandler::Agent(AgentHookHandler {

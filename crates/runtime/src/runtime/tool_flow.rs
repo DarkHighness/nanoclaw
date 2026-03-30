@@ -28,7 +28,7 @@ impl AgentRuntime {
         let tool_spec = tool.spec();
         let mut fields = BTreeMap::from([("tool_name".to_string(), tool_name.to_string())]);
         if let types::ToolOrigin::Mcp { server_name } = &call.origin {
-            fields.insert("mcp_server_name".to_string(), server_name.clone());
+            fields.insert("mcp_server_name".to_string(), server_name.to_string());
         }
 
         let pre_hooks = self

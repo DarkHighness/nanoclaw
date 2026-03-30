@@ -7,6 +7,7 @@ use super::should_render_side_rail;
 use super::statusline::format_footer_context;
 use super::transcript::TranscriptEntryKind;
 use super::transcript::build_transcript_lines;
+use super::transcript::build_transcript_lines_for_width;
 use super::transcript_shell::{
     animated_progress_text_spans, live_progress_lines, render_shell_summary_body,
 };
@@ -105,13 +106,15 @@ fn transcript_inserts_turn_dividers_between_user_turns() {
         "› second".to_string(),
     ];
 
-    let rendered = build_transcript_lines(&state);
+    let rendered = build_transcript_lines_for_width(&state, 24);
+    let divider = rendered
+        .iter()
+        .find(|line| line_text_for(line).contains('─'))
+        .expect("expected turn divider");
 
-    assert!(rendered.iter().any(|line| {
-        line.spans
-            .first()
-            .is_some_and(|span| span.content.contains("┈"))
-    }));
+    let divider_text = line_text_for(divider);
+    assert_eq!(divider_text.chars().count(), 24);
+    assert!(divider_text.chars().all(|ch| ch == '─'));
 }
 
 #[test]
@@ -136,11 +139,6 @@ fn transcript_separates_assistant_and_tool_entries_with_breathing_room() {
             .iter()
             .any(|line| line_text_for(line).contains("hidden line"))
     );
-    assert!(rendered.iter().any(|line| {
-        line.spans
-            .first()
-            .is_some_and(|span| span.content.contains("┈"))
-    }));
 }
 
 #[test]

@@ -187,7 +187,7 @@ mod tests {
         let result = executor
             .execute(
                 &HookRegistration {
-                    name: "http".to_string(),
+                    name: "http".into(),
                     event: HookEvent::Notification,
                     matcher: None,
                     handler: HookHandler::Http(HttpHookHandler {
@@ -197,7 +197,7 @@ mod tests {
                     }),
                     timeout_ms: None,
                     execution: Some(HookExecutionPolicy {
-                        plugin_id: Some("plugin".to_string()),
+                        plugin_id: Some("plugin".into()),
                         network: HookNetworkPolicy::AllowDomains {
                             domains: vec!["127.0.0.1".to_string(), "localhost".to_string()],
                         },
@@ -233,7 +233,7 @@ mod tests {
         let error = executor
             .execute(
                 &HookRegistration {
-                    name: "http".to_string(),
+                    name: "http".into(),
                     event: HookEvent::Notification,
                     matcher: None,
                     handler: HookHandler::Http(HttpHookHandler {
@@ -243,7 +243,7 @@ mod tests {
                     }),
                     timeout_ms: None,
                     execution: Some(HookExecutionPolicy {
-                        plugin_id: Some("plugin".to_string()),
+                        plugin_id: Some("plugin".into()),
                         network: HookNetworkPolicy::AllowDomains {
                             domains: vec!["api.example.com".to_string()],
                         },

@@ -117,7 +117,7 @@ impl PluginDriverRegistry {
     ) -> Result<DriverActivationOutcome> {
         let mut outcome = DriverActivationOutcome::default();
         for activation in activations {
-            let Some(factory) = self.factories.get(&activation.runtime.driver) else {
+            let Some(factory) = self.factories.get(activation.runtime.driver.as_str()) else {
                 match unknown_driver_policy {
                     UnknownDriverPolicy::Error => bail!(
                         "plugin `{}` references unknown driver `{}`",
@@ -168,7 +168,7 @@ mod tests {
         let outcome = DriverActivationOutcome {
             warnings: Vec::new(),
             hooks: vec![HookRegistration {
-                name: "driver-hook".to_string(),
+                name: "driver-hook".into(),
                 event: HookEvent::SessionStart,
                 matcher: None,
                 handler: HookHandler::Http(HttpHookHandler {
@@ -180,7 +180,7 @@ mod tests {
                 execution: None,
             }],
             mcp_servers: vec![McpServerConfig {
-                name: "driver-mcp".to_string(),
+                name: "driver-mcp".into(),
                 transport: McpTransportConfig::StreamableHttp {
                     url: "https://example.test/mcp".to_string(),
                     headers: BTreeMap::new(),
@@ -190,7 +190,7 @@ mod tests {
             diagnostics: Vec::new(),
         };
         let mut hooks = vec![HookRegistration {
-            name: "existing-hook".to_string(),
+            name: "existing-hook".into(),
             event: HookEvent::Stop,
             matcher: None,
             handler: HookHandler::Http(HttpHookHandler {
@@ -202,7 +202,7 @@ mod tests {
             execution: None,
         }];
         let mut mcp_servers = vec![McpServerConfig {
-            name: "existing-mcp".to_string(),
+            name: "existing-mcp".into(),
             transport: McpTransportConfig::Stdio {
                 command: "stdio-server".to_string(),
                 args: Vec::new(),

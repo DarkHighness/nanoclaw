@@ -1,7 +1,7 @@
 use rmcp::model::ClientCapabilities;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use types::{Message, MessagePart, ToolSpec};
+use types::{McpServerName, Message, MessagePart, ToolSpec};
 
 pub type RmcpProtocolError = rmcp::ErrorData;
 
@@ -37,7 +37,7 @@ pub struct McpResource {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct McpCatalog {
-    pub server_name: String,
+    pub server_name: McpServerName,
     pub tools: Vec<ToolSpec>,
     pub prompts: Vec<McpPrompt>,
     pub resources: Vec<McpResource>,
@@ -45,7 +45,7 @@ pub struct McpCatalog {
 
 #[derive(Clone)]
 pub struct ConnectedMcpServer {
-    pub server_name: String,
+    pub server_name: McpServerName,
     pub client: Arc<dyn crate::McpClient>,
     pub catalog: McpCatalog,
 }

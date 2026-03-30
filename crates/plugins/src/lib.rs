@@ -86,7 +86,7 @@ cwd = "."
         let discovered = discover_plugins(&[dir.path().to_path_buf()]).unwrap();
         assert_eq!(discovered.plugins.len(), 1);
         let plugin = &discovered.plugins[0];
-        assert_eq!(plugin.manifest.id, "demo");
+        assert_eq!(plugin.manifest.id, "demo".into());
         assert_eq!(plugin.skill_roots, vec![plugin_root.join("skills")]);
         assert_eq!(plugin.tool_roots, vec![plugin_root.join("tools")]);
         assert_eq!(plugin.hooks.len(), 1);
@@ -122,7 +122,7 @@ cwd = "."
             PluginKind::Bundle,
             true,
             Some(PluginRuntimeSpec {
-                driver: "builtin.wasm-hook-validator".to_string(),
+                driver: "builtin.wasm-hook-validator".into(),
                 module: Some("wasm/plugin.wasm".to_string()),
                 abi: Some("nanoclaw.plugin.v1".to_string()),
             }),
@@ -155,7 +155,7 @@ cwd = "."
         };
         let mut resolver = PluginResolverConfig::default();
         resolver.entries.insert(
-            "team-policy".to_string(),
+            "team-policy".into(),
             PluginEntryConfig {
                 enabled: Some(true),
                 permissions: PluginPermissionGrant {
@@ -189,7 +189,7 @@ cwd = "."
         assert_eq!(plan.runtime_activations.len(), 1);
         assert_eq!(
             plan.runtime_activations[0].runtime.driver,
-            "builtin.wasm-hook-validator"
+            "builtin.wasm-hook-validator".into()
         );
         assert_eq!(
             plan.runtime_activations[0]
@@ -232,7 +232,7 @@ cwd = "."
         };
         let mut resolver = PluginResolverConfig::default();
         resolver.entries.insert(
-            "team-tools".to_string(),
+            "team-tools".into(),
             PluginEntryConfig {
                 enabled: Some(true),
                 permissions: PluginPermissionGrant {
@@ -247,7 +247,10 @@ cwd = "."
 
         let plan = build_activation_plan(discovery, &resolver, dir.path());
         assert_eq!(plan.custom_tool_activations.len(), 1);
-        assert_eq!(plan.custom_tool_activations[0].plugin_id, "team-tools");
+        assert_eq!(
+            plan.custom_tool_activations[0].plugin_id,
+            "team-tools".into()
+        );
         assert_eq!(
             plan.custom_tool_activations[0].tool_roots,
             vec![dir.path().join("team-tools/tools")]
@@ -273,7 +276,7 @@ cwd = "."
             PluginKind::Bundle,
             true,
             Some(PluginRuntimeSpec {
-                driver: "builtin.wasm-hook-validator".to_string(),
+                driver: "builtin.wasm-hook-validator".into(),
                 module: Some("wasm/plugin.wasm".to_string()),
                 abi: None,
             }),
@@ -288,7 +291,7 @@ cwd = "."
         };
         let mut resolver = PluginResolverConfig::default();
         resolver.entries.insert(
-            "team-policy".to_string(),
+            "team-policy".into(),
             PluginEntryConfig {
                 enabled: Some(true),
                 permissions: PluginPermissionGrant {
@@ -309,7 +312,7 @@ cwd = "."
         assert!(
             plan.plugin_states
                 .iter()
-                .any(|state| state.plugin_id == "team-policy" && !state.enabled)
+                .any(|state| state.plugin_id == "team-policy".into() && !state.enabled)
         );
     }
 
@@ -335,7 +338,7 @@ message_mutation = "allow"
         let dir = tempdir().unwrap();
         let mut plugin = sample_plugin(dir.path(), "team-policy", PluginKind::Bundle, true, None);
         plugin.hooks = vec![types::HookRegistration {
-            name: "wasm-gate".to_string(),
+            name: "wasm-gate".into(),
             event: HookEvent::UserPromptSubmit,
             matcher: None,
             handler: HookHandler::Wasm(WasmHookHandler {
@@ -351,7 +354,7 @@ message_mutation = "allow"
         };
         let mut resolver = PluginResolverConfig::default();
         resolver.entries.insert(
-            "team-policy".to_string(),
+            "team-policy".into(),
             PluginEntryConfig {
                 enabled: Some(true),
                 permissions: PluginPermissionGrant::default(),
@@ -377,7 +380,7 @@ message_mutation = "allow"
         let mut plugin = sample_plugin(dir.path(), "team-policy", PluginKind::Bundle, true, None);
         plugin.manifest.capabilities.tool_policies = vec![PluginToolPolicyCapability::Gate];
         plugin.hooks = vec![types::HookRegistration {
-            name: "wasm-gate".to_string(),
+            name: "wasm-gate".into(),
             event: HookEvent::UserPromptSubmit,
             matcher: None,
             handler: HookHandler::Wasm(WasmHookHandler {
@@ -393,7 +396,7 @@ message_mutation = "allow"
         };
         let mut resolver = PluginResolverConfig::default();
         resolver.entries.insert(
-            "team-policy".to_string(),
+            "team-policy".into(),
             PluginEntryConfig {
                 enabled: Some(true),
                 permissions: PluginPermissionGrant::default(),
@@ -422,7 +425,7 @@ message_mutation = "allow"
             PluginKind::Bundle,
             true,
             Some(PluginRuntimeSpec {
-                driver: "builtin.wasm-hook-validator".to_string(),
+                driver: "builtin.wasm-hook-validator".into(),
                 module: Some("wasm/plugin.wasm".to_string()),
                 abi: None,
             }),
@@ -434,7 +437,7 @@ message_mutation = "allow"
         };
         let mut resolver = PluginResolverConfig::default();
         resolver.entries.insert(
-            "team-policy".to_string(),
+            "team-policy".into(),
             PluginEntryConfig {
                 enabled: Some(true),
                 permissions: PluginPermissionGrant::default(),
@@ -452,7 +455,7 @@ message_mutation = "allow"
         assert!(
             plan.plugin_states
                 .iter()
-                .any(|state| state.plugin_id == "team-policy" && !state.enabled)
+                .any(|state| state.plugin_id == "team-policy".into() && !state.enabled)
         );
     }
 
@@ -465,7 +468,7 @@ message_mutation = "allow"
             PluginKind::Bundle,
             true,
             Some(PluginRuntimeSpec {
-                driver: "builtin.wasm-hook-validator".to_string(),
+                driver: "builtin.wasm-hook-validator".into(),
                 module: Some("wasm/plugin.wasm".to_string()),
                 abi: None,
             }),
@@ -477,7 +480,7 @@ message_mutation = "allow"
         };
         let mut resolver = PluginResolverConfig::default();
         resolver.entries.insert(
-            "team-policy".to_string(),
+            "team-policy".into(),
             PluginEntryConfig {
                 enabled: Some(true),
                 permissions: PluginPermissionGrant {
@@ -498,7 +501,7 @@ message_mutation = "allow"
         assert!(
             plan.plugin_states
                 .iter()
-                .any(|state| state.plugin_id == "team-policy" && !state.enabled)
+                .any(|state| state.plugin_id == "team-policy".into() && !state.enabled)
         );
     }
 
@@ -511,7 +514,7 @@ message_mutation = "allow"
     ) -> DiscoveredPlugin {
         DiscoveredPlugin {
             manifest: PluginManifest {
-                id: id.to_string(),
+                id: id.into(),
                 version: None,
                 name: None,
                 description: None,

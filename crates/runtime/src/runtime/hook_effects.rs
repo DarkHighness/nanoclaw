@@ -80,7 +80,7 @@ impl AgentRuntime {
                 Some(turn_id.clone()),
                 None,
                 SessionEventKind::HookInvoked {
-                    hook_name: invocation.registration.name.clone(),
+                    hook_name: invocation.registration.name.to_string(),
                     event: invocation.registration.event,
                 },
             )
@@ -99,7 +99,7 @@ impl AgentRuntime {
                 Some(turn_id.clone()),
                 None,
                 SessionEventKind::HookCompleted {
-                    hook_name: invocation.registration.name.clone(),
+                    hook_name: invocation.registration.name.to_string(),
                     event: invocation.registration.event,
                     output,
                 },

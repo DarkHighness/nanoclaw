@@ -1,10 +1,11 @@
 use memory::MemoryBackend;
 use std::sync::Arc;
 use std::time::Duration;
+use types::PluginId;
 
 pub(super) fn maybe_spawn_memory_background_sync(
     backend: Arc<dyn MemoryBackend>,
-    plugin_id: &str,
+    plugin_id: &PluginId,
     enabled: bool,
     run_on_start: bool,
     interval_ms: u64,

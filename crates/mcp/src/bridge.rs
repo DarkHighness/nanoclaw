@@ -4,8 +4,8 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 use tools::{DynamicTool, DynamicToolHandler, McpToolAdapter, Result as ToolsResult, ToolError};
 use types::{
-    CallId, MessagePart, ToolApprovalProfile, ToolCallId, ToolContinuation, ToolOrigin,
-    ToolOutputMode, ToolResult, ToolSource, ToolSpec,
+    CallId, McpServerName, MessagePart, ToolApprovalProfile, ToolCallId, ToolContinuation,
+    ToolOrigin, ToolOutputMode, ToolResult, ToolSource, ToolSpec,
 };
 
 const DEFAULT_MCP_RESOURCE_MAX_CHARS: usize = 32 * 1024;
@@ -14,14 +14,14 @@ const MAX_MCP_RESOURCE_MAX_CHARS: usize = 256 * 1024;
 #[derive(Clone, Debug, Deserialize)]
 struct ListMcpResourcesInput {
     #[serde(default)]
-    server_name: Option<String>,
+    server_name: Option<McpServerName>,
     #[serde(default)]
     uri_prefix: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
 struct McpResourceRecord {
-    server_name: String,
+    server_name: McpServerName,
     uri: String,
     name: String,
     title: Option<String>,
@@ -31,7 +31,7 @@ struct McpResourceRecord {
 
 #[derive(Clone, Debug, Serialize)]
 struct ListMcpResourcesOutput {
-    server_name: Option<String>,
+    server_name: Option<McpServerName>,
     uri_prefix: Option<String>,
     result_count: usize,
     resources: Vec<McpResourceRecord>,
@@ -39,7 +39,7 @@ struct ListMcpResourcesOutput {
 
 #[derive(Clone, Debug, Deserialize)]
 struct ReadMcpResourceInput {
-    server_name: String,
+    server_name: McpServerName,
     uri: String,
     #[serde(default)]
     start_index: Option<usize>,
@@ -51,7 +51,7 @@ struct ReadMcpResourceInput {
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum ReadMcpResourceOutput {
     TextWindow {
-        server_name: String,
+        server_name: McpServerName,
         uri: String,
         mime_type: Option<String>,
         document_id: String,
@@ -64,7 +64,7 @@ enum ReadMcpResourceOutput {
         preview_text: String,
     },
     ContentParts {
-        server_name: String,
+        server_name: McpServerName,
         uri: String,
         mime_type: Option<String>,
         part_count: usize,
@@ -130,10 +130,10 @@ fn build_list_mcp_resources_tool(servers: Vec<ConnectedMcpServer>) -> DynamicToo
         list_mcp_resources_input_schema(),
         ToolOutputMode::Text,
         ToolOrigin::Mcp {
-            server_name: "*".to_string(),
+            server_name: "*".into(),
         },
         ToolSource::McpResource {
-            server_name: "*".to_string(),
+            server_name: "*".into(),
         },
     )
     .with_output_schema(list_mcp_resources_output_schema())
@@ -153,10 +153,10 @@ fn build_read_mcp_resource_tool(servers: Vec<ConnectedMcpServer>) -> DynamicTool
         read_mcp_resource_input_schema(),
         ToolOutputMode::ContentParts,
         ToolOrigin::Mcp {
-            server_name: "*".to_string(),
+            server_name: "*".into(),
         },
         ToolSource::McpResource {
-            server_name: "*".to_string(),
+            server_name: "*".into(),
         },
     )
     .with_output_schema(read_mcp_resource_output_schema())
@@ -181,8 +181,8 @@ fn execute_list_mcp_resources(
         .filter(|server| {
             input
                 .server_name
-                .as_deref()
-                .is_none_or(|server_name| server.server_name == server_name)
+                .as_ref()
+                .is_none_or(|server_name| server.server_name == *server_name)
         })
         .flat_map(|server| {
             server.catalog.resources.iter().filter_map(|resource| {
@@ -519,7 +519,7 @@ mod tests {
     async fn resource_bridge_exposes_list_and_read_tools() {
         let client = Arc::new(MockMcpClient::new(
             McpCatalog {
-                server_name: "fixture".to_string(),
+                server_name: "fixture".into(),
                 tools: Vec::new(),
                 prompts: Vec::new(),
                 resources: vec![McpResource {
@@ -539,10 +539,10 @@ mod tests {
             Arc::new(|_, _| unreachable!("tool handler should not run in resource bridge test")),
         ));
         let server = ConnectedMcpServer {
-            server_name: "fixture".to_string(),
+            server_name: "fixture".into(),
             client,
             catalog: McpCatalog {
-                server_name: "fixture".to_string(),
+                server_name: "fixture".into(),
                 tools: Vec::new(),
                 prompts: Vec::new(),
                 resources: vec![McpResource {
@@ -604,10 +604,10 @@ mod tests {
     #[tokio::test]
     async fn resource_bridge_reads_non_text_resources_as_content_parts() {
         let server = ConnectedMcpServer {
-            server_name: "fixture".to_string(),
+            server_name: "fixture".into(),
             client: Arc::new(MockMcpClient::new(
                 McpCatalog {
-                    server_name: "fixture".to_string(),
+                    server_name: "fixture".into(),
                     tools: Vec::new(),
                     prompts: Vec::new(),
                     resources: vec![McpResource {
@@ -629,7 +629,7 @@ mod tests {
                 }),
             )),
             catalog: McpCatalog {
-                server_name: "fixture".to_string(),
+                server_name: "fixture".into(),
                 tools: Vec::new(),
                 prompts: Vec::new(),
                 resources: vec![McpResource {

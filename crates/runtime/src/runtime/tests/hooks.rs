@@ -47,7 +47,7 @@ async fn runtime_applies_hook_effects_without_mutating_base_instructions() {
         })
         .instructions(vec!["static base instruction".to_string()])
         .hooks(vec![HookRegistration {
-            name: "inject_context".to_string(),
+            name: "inject_context".into(),
             event: HookEvent::UserPromptSubmit,
             matcher: None,
             handler: HookHandler::Prompt(PromptHookHandler {

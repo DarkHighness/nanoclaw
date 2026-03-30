@@ -237,8 +237,11 @@ industrial baseline:
 - result metadata is still loosely typed and varies by tool family
 - directory-scanned custom tools now load from `.nanoclaw/tools`, and plugin
   manifests can now contribute model-visible custom tools through the same
-  command-backed contract, but plugin/runtime identifiers are still weakly
-  typed strings
+  command-backed contract
+- plugin ids, plugin driver ids, hook names, MCP server names, and the memory
+  slot selection are now typed protocol identifiers instead of loose strings,
+  but provider-facing origin labels and other display-only names remain plain
+  text
 - the agent tool family is useful but fragmented; naming and lifecycle are not
   yet normalized to one clear task/session/close/resume model
 - tool exposure is not yet model-aware in the OpenCode sense, where one model
@@ -528,14 +531,12 @@ gaps.
 
 The recommended order is:
 
-1. tighten remaining weak protocol identifiers such as `PluginId`,
-   driver ids, hook names, and MCP server names
-2. only then add the remaining higher-variance parity work such as
+1. add the remaining higher-variance parity work such as
    freeform `apply_patch`, `tool_search`, or model-aware tool substitution
    rules
 
-That keeps the protocol phase bounded and avoids mixing control-plane type
-cleanup with broader tool-surface expansion.
+That keeps the protocol phase bounded and moves the project from control-plane
+cleanup into the still-missing tool-surface parity work.
 
 ## Archive Trigger
 

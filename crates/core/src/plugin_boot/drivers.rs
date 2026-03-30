@@ -275,7 +275,7 @@ impl PluginDriverFactory for WasmHookRuntimeDriverFactory {
         outcome
             .hooks
             .extend(config.hooks.into_iter().map(|hook| HookRegistration {
-                name: hook.name,
+                name: hook.name.into(),
                 event: hook.event,
                 matcher: hook.matcher,
                 handler: HookHandler::Wasm(WasmHookHandler {
@@ -519,10 +519,10 @@ mod tests {
 
     fn memory_embed_activation(config: &str) -> PluginExecutableActivation {
         PluginExecutableActivation {
-            plugin_id: "memory-embed".to_string(),
+            plugin_id: "memory-embed".into(),
             root_dir: std::env::temp_dir(),
             runtime: PluginRuntimeSpec {
-                driver: "builtin.memory-embed".to_string(),
+                driver: "builtin.memory-embed".into(),
                 module: None,
                 abi: None,
             },

@@ -1,5 +1,6 @@
 use crate::{
-    AgentSessionId, Message, MessageId, MessagePart, MessageRole, SessionId, ToolName, TurnId,
+    AgentSessionId, HookName, Message, MessageId, MessagePart, MessageRole, PluginId, SessionId,
+    ToolName, TurnId,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -214,7 +215,7 @@ impl Default for HookNetworkPolicy {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct HookExecutionPolicy {
     #[serde(default)]
-    pub plugin_id: Option<String>,
+    pub plugin_id: Option<PluginId>,
     #[serde(default)]
     pub plugin_root: Option<PathBuf>,
     #[serde(default)]
@@ -242,7 +243,7 @@ impl HookExecutionPolicy {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HookRegistration {
-    pub name: String,
+    pub name: HookName,
     pub event: HookEvent,
     pub matcher: Option<HookMatcher>,
     pub handler: HookHandler,

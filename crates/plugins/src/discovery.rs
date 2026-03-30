@@ -4,7 +4,7 @@ use mcp::McpServerConfig;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
-use types::{HookHandler, HookRegistration};
+use types::{HookHandler, HookRegistration, PluginId};
 
 const MANIFEST_RELATIVE_PATH: &str = ".nanoclaw-plugin/plugin.toml";
 
@@ -30,7 +30,7 @@ pub struct PluginDiagnostic {
     pub level: PluginDiagnosticLevel,
     pub code: &'static str,
     pub message: String,
-    pub plugin_id: Option<String>,
+    pub plugin_id: Option<PluginId>,
     pub path: Option<PathBuf>,
 }
 
@@ -39,7 +39,7 @@ impl PluginDiagnostic {
     pub fn warning(
         code: &'static str,
         message: impl Into<String>,
-        plugin_id: Option<String>,
+        plugin_id: Option<PluginId>,
         path: Option<PathBuf>,
     ) -> Self {
         Self {
@@ -55,7 +55,7 @@ impl PluginDiagnostic {
     pub fn error(
         code: &'static str,
         message: impl Into<String>,
-        plugin_id: Option<String>,
+        plugin_id: Option<PluginId>,
         path: Option<PathBuf>,
     ) -> Self {
         Self {
@@ -153,7 +153,7 @@ pub fn discover_plugins(roots: &[PathBuf]) -> Result<PluginDiscovery> {
 fn load_plugin(plugin_root: &Path, manifest_path: &Path) -> Result<DiscoveredPlugin> {
     let raw = fs::read_to_string(manifest_path)?;
     let manifest: PluginManifest = toml::from_str(&raw)?;
-    if manifest.id.trim().is_empty() {
+    if manifest.id.as_str().trim().is_empty() {
         return Err(PluginError::invalid_manifest(
             manifest_path.to_path_buf(),
             "plugin id cannot be empty",
@@ -259,7 +259,7 @@ fn resolve_safe_relative_path(root: &Path, value: &str) -> Result<PathBuf> {
     Ok(root.join(path))
 }
 
-pub fn plugins_by_id(plugins: Vec<DiscoveredPlugin>) -> BTreeMap<String, DiscoveredPlugin> {
+pub fn plugins_by_id(plugins: Vec<DiscoveredPlugin>) -> BTreeMap<PluginId, DiscoveredPlugin> {
     plugins
         .into_iter()
         .map(|plugin| (plugin.manifest.id.clone(), plugin))

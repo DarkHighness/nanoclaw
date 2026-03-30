@@ -1,9 +1,10 @@
 use anyhow::{Result, anyhow};
+use types::PluginId;
 
 pub(super) fn materialize_api_key_envs(
     table: &mut toml::map::Map<String, toml::Value>,
     env_map: &agent_env::EnvMap,
-    plugin_id: &str,
+    plugin_id: &PluginId,
 ) -> Result<()> {
     if let Some(api_key_env) = table
         .remove("api_key_env")

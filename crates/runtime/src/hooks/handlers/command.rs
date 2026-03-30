@@ -300,7 +300,7 @@ mod tests {
         let output = executor
             .execute(
                 &HookRegistration {
-                    name: "hook".to_string(),
+                    name: "hook".into(),
                     event: HookEvent::Notification,
                     matcher: None,
                     handler: HookHandler::Command(types::CommandHookHandler {
@@ -380,7 +380,7 @@ mod tests {
         let error = executor
             .execute(
                 &HookRegistration {
-                    name: "hook".to_string(),
+                    name: "hook".into(),
                     event: HookEvent::Notification,
                     matcher: None,
                     handler: HookHandler::Command(types::CommandHookHandler {
@@ -438,7 +438,7 @@ mod tests {
         executor
             .execute(
                 &HookRegistration {
-                    name: "hook".to_string(),
+                    name: "hook".into(),
                     event: HookEvent::Notification,
                     matcher: None,
                     handler: HookHandler::Command(types::CommandHookHandler {
@@ -447,7 +447,7 @@ mod tests {
                     }),
                     timeout_ms: None,
                     execution: Some(HookExecutionPolicy {
-                        plugin_id: Some("plugin".to_string()),
+                        plugin_id: Some("plugin".into()),
                         exec_roots: vec![dir.path().to_path_buf()],
                         ..HookExecutionPolicy::default()
                     }),

@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use types::McpServerName;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "transport", rename_all = "snake_case")]
@@ -21,6 +22,6 @@ pub enum McpTransportConfig {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct McpServerConfig {
-    pub name: String,
+    pub name: McpServerName,
     pub transport: McpTransportConfig,
 }

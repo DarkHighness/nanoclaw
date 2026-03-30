@@ -22,15 +22,16 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use store::SessionStore;
 use tools::ToolRegistry;
+use types::PluginId;
 
 #[derive(Clone, Debug)]
 pub struct PluginBootResolverConfig {
     pub enabled: bool,
     pub roots: Vec<PathBuf>,
     pub include_builtin: bool,
-    pub allow: Vec<String>,
-    pub deny: Vec<String>,
-    pub entries: BTreeMap<String, PluginEntryConfig>,
+    pub allow: Vec<PluginId>,
+    pub deny: Vec<PluginId>,
+    pub entries: BTreeMap<PluginId, PluginEntryConfig>,
     pub slots: PluginSlotsConfig,
 }
 
@@ -109,7 +110,7 @@ mod tests {
     use std::collections::BTreeMap;
     use tempfile::tempdir;
     use tools::ToolRegistry;
-    use types::{HookEvent, HookHandler, HookHandlerKind};
+    use types::{HookEvent, HookHandler, HookHandlerKind, PluginId};
 
     #[test]
     fn build_plan_includes_builtin_roots_when_enabled() {
@@ -131,7 +132,7 @@ enabled_by_default = true
             include_builtin: true,
             allow: Vec::new(),
             deny: Vec::new(),
-            entries: BTreeMap::<String, PluginEntryConfig>::new(),
+            entries: BTreeMap::<PluginId, PluginEntryConfig>::new(),
             slots: PluginSlotsConfig::default(),
         };
 
@@ -139,7 +140,7 @@ enabled_by_default = true
         assert!(
             plan.plugin_states
                 .iter()
-                .any(|state| state.plugin_id == "demo" && state.enabled)
+                .any(|state| state.plugin_id == "demo".into() && state.enabled)
         );
     }
 
@@ -148,10 +149,10 @@ enabled_by_default = true
         let dir = tempdir().unwrap();
         std::fs::write(dir.path().join(".env"), "").unwrap();
         let requests = vec![PluginExecutableActivation {
-            plugin_id: "demo".to_string(),
+            plugin_id: "demo".into(),
             root_dir: dir.path().to_path_buf(),
             runtime: PluginRuntimeSpec {
-                driver: "builtin.unknown".to_string(),
+                driver: "builtin.unknown".into(),
                 module: None,
                 abi: None,
             },
@@ -181,10 +182,10 @@ enabled_by_default = true
         std::fs::create_dir_all(&exec_root).unwrap();
         let module_path = exec_root.join("policy.wasm");
         let requests = vec![PluginExecutableActivation {
-            plugin_id: "demo".to_string(),
+            plugin_id: "demo".into(),
             root_dir: dir.path().to_path_buf(),
             runtime: PluginRuntimeSpec {
-                driver: "builtin.wasm-hook-validator".to_string(),
+                driver: "builtin.wasm-hook-validator".into(),
                 module: Some(module_path.to_string_lossy().to_string()),
                 abi: Some("nanoclaw.plugin.v1".to_string()),
             },
@@ -221,10 +222,10 @@ enabled_by_default = true
         let dir = tempdir().unwrap();
         std::fs::write(dir.path().join(".env"), "").unwrap();
         let requests = vec![PluginExecutableActivation {
-            plugin_id: "demo".to_string(),
+            plugin_id: "demo".into(),
             root_dir: dir.path().to_path_buf(),
             runtime: PluginRuntimeSpec {
-                driver: "builtin.wasm-hook-validator".to_string(),
+                driver: "builtin.wasm-hook-validator".into(),
                 module: Some(
                     dir.path()
                         .join("wasm/policy.wasm")
@@ -291,10 +292,10 @@ args = ["driver-mcp"]
         .cloned()
         .unwrap();
         let requests = vec![PluginExecutableActivation {
-            plugin_id: "demo".to_string(),
+            plugin_id: "demo".into(),
             root_dir: dir.path().to_path_buf(),
             runtime: PluginRuntimeSpec {
-                driver: "builtin.wasm-hook-runtime".to_string(),
+                driver: "builtin.wasm-hook-runtime".into(),
                 module: Some(module_path.to_string_lossy().to_string()),
                 abi: Some("nanoclaw.plugin.v1".to_string()),
             },
@@ -322,7 +323,7 @@ args = ["driver-mcp"]
         .unwrap();
 
         assert_eq!(outcome.hooks.len(), 1);
-        assert_eq!(outcome.hooks[0].name, "policy-start");
+        assert_eq!(outcome.hooks[0].name, "policy-start".into());
         assert_eq!(outcome.hooks[0].event, HookEvent::SessionStart);
         match &outcome.hooks[0].handler {
             HookHandler::Wasm(handler) => {
@@ -336,7 +337,7 @@ args = ["driver-mcp"]
             outcome.hooks[0]
                 .execution
                 .as_ref()
-                .and_then(|execution| execution.plugin_id.as_deref()),
+                .and_then(|execution| execution.plugin_id.as_ref().map(|id| id.as_str())),
             Some("demo")
         );
         assert_eq!(

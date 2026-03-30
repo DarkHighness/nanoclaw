@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use tokio::process::Command;
-use types::{AgentSessionId, CallId, SessionId, TurnId};
+use types::{AgentSessionId, CallId, McpServerName, SessionId, TurnId};
 
 const DEFAULT_PROTECTED_DIRS: &[&str] = &[".git", ".nanoclaw", ".codex"];
 
@@ -210,7 +210,7 @@ pub fn assert_filesystem_access(
 pub enum ExecutionOrigin {
     BashTool,
     HookCommand,
-    McpStdioServer { server_name: String },
+    McpStdioServer { server_name: McpServerName },
     HostUtility { name: String },
 }
 

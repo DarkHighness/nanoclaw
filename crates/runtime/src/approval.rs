@@ -3,7 +3,7 @@ use async_trait::async_trait;
 use reqwest::Url;
 use serde_json::Value;
 use std::collections::BTreeSet;
-use types::{ToolCall, ToolName, ToolSpec};
+use types::{McpServerName, ToolCall, ToolName, ToolSpec};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ToolApprovalRequest {
@@ -64,7 +64,7 @@ pub enum ToolApprovalRuleEffect {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ToolOriginMatcher {
     Local,
-    McpServer { server_name: String },
+    McpServer { server_name: McpServerName },
     Provider { provider: String },
 }
 
