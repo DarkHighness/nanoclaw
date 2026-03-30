@@ -221,7 +221,7 @@ pub(super) fn approval_preview_lines(lines: &[String]) -> Vec<String> {
     preview
 }
 
-fn build_composer_line(state: &TuiState) -> Line<'static> {
+pub(super) fn build_composer_line(state: &TuiState) -> Line<'static> {
     let mut spans = vec![
         Span::styled(
             "›",
@@ -264,6 +264,13 @@ fn build_composer_line(state: &TuiState) -> Line<'static> {
         }
     } else {
         spans.push(Span::styled(state.input.clone(), Style::default().fg(TEXT)));
+    }
+
+    if state.editing_pending_control.is_some() {
+        spans.push(Span::styled(" · ", Style::default().fg(SUBTLE)));
+        spans.push(Span::styled("enter/tab save", Style::default().fg(MUTED)));
+        spans.push(Span::styled(" · ", Style::default().fg(SUBTLE)));
+        spans.push(Span::styled("esc cancel", Style::default().fg(MUTED)));
     }
 
     Line::from(spans)

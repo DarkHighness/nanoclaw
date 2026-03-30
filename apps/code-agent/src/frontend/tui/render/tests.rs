@@ -1,4 +1,4 @@
-use super::chrome::build_side_rail_lines;
+use super::chrome::{build_composer_line, build_side_rail_lines};
 use super::statusline::format_footer_context;
 use super::transcript::TranscriptEntryKind;
 use super::transcript::build_transcript_lines;
@@ -323,6 +323,23 @@ fn pending_control_band_surfaces_selected_prompt_and_editing_state() {
             .iter()
             .any(|line| line_text_for(line).contains("editing queued steer"))
     );
+}
+
+#[test]
+fn composer_line_surfaces_pending_edit_shortcuts() {
+    let mut state = TuiState::default();
+    state.input = "keep the diff small".to_string();
+    state.editing_pending_control = Some(crate::frontend::tui::state::PendingControlEditorState {
+        id: "cmd_2".to_string(),
+        kind: PendingControlKind::Steer,
+    });
+
+    let line = build_composer_line(&state);
+    let text = line_text_for(&line);
+
+    assert!(text.contains("edit queued steer"));
+    assert!(text.contains("enter/tab save"));
+    assert!(text.contains("esc cancel"));
 }
 
 #[test]
