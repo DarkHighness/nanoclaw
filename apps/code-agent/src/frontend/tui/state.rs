@@ -1,4 +1,4 @@
-use crate::backend::StartupDiagnosticsSnapshot;
+use crate::backend::{PendingControlKind, PendingControlSummary, StartupDiagnosticsSnapshot};
 use crate::statusline::{StatusLineConfig, StatusLineField, status_line_fields};
 use agent::types::TokenLedgerSnapshot;
 use std::path::{Path, PathBuf};
@@ -64,6 +64,17 @@ pub(crate) struct ThinkingEffortPickerState {
 }
 
 #[derive(Clone, Debug, Default)]
+pub(crate) struct PendingControlPickerState {
+    pub(crate) selected: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PendingControlEditorState {
+    pub(crate) id: String,
+    pub(crate) kind: PendingControlKind,
+}
+
+#[derive(Clone, Debug, Default)]
 pub(crate) struct TuiState {
     pub(crate) session: SessionSummary,
     pub(crate) main_pane: MainPaneMode,
@@ -83,6 +94,9 @@ pub(crate) struct TuiState {
     pub(crate) turn_started_at: Option<Instant>,
     pub(crate) active_tool_label: Option<String>,
     pub(crate) todo_items: Vec<TodoEntry>,
+    pub(crate) pending_controls: Vec<PendingControlSummary>,
+    pub(crate) pending_control_picker: Option<PendingControlPickerState>,
+    pub(crate) editing_pending_control: Option<PendingControlEditorState>,
     pub(crate) statusline_picker: Option<StatusLinePickerState>,
     pub(crate) thinking_effort_picker: Option<ThinkingEffortPickerState>,
 }
@@ -93,12 +107,14 @@ impl TuiState {
         self.inspector_title = title.into();
         self.inspector = lines;
         self.inspector_scroll = 0;
+        self.pending_control_picker = None;
         self.statusline_picker = None;
         self.thinking_effort_picker = None;
     }
 
     pub(crate) fn show_transcript_pane(&mut self) {
         self.main_pane = MainPaneMode::Transcript;
+        self.pending_control_picker = None;
         self.statusline_picker = None;
         self.thinking_effort_picker = None;
     }
@@ -108,6 +124,7 @@ impl TuiState {
         self.inspector_title = "Status Line".to_string();
         self.inspector.clear();
         self.inspector_scroll = 0;
+        self.pending_control_picker = None;
         self.thinking_effort_picker = None;
         self.statusline_picker
             .get_or_insert_with(StatusLinePickerState::default)
@@ -119,6 +136,7 @@ impl TuiState {
         self.inspector_title = "Thinking Effort".to_string();
         self.inspector.clear();
         self.inspector_scroll = 0;
+        self.pending_control_picker = None;
         self.statusline_picker = None;
         let selected = self
             .session
@@ -139,6 +157,86 @@ impl TuiState {
     pub(crate) fn close_thinking_effort_picker(&mut self) {
         self.thinking_effort_picker = None;
         self.show_transcript_pane();
+    }
+
+    pub(crate) fn open_pending_control_picker(&mut self, select_latest: bool) -> bool {
+        if self.pending_controls.is_empty() {
+            return false;
+        }
+        self.main_pane = MainPaneMode::Transcript;
+        let selected = if select_latest {
+            self.pending_controls.len().saturating_sub(1)
+        } else {
+            self.pending_control_picker
+                .as_ref()
+                .map(|picker| picker.selected)
+                .unwrap_or_else(|| self.pending_controls.len().saturating_sub(1))
+                .min(self.pending_controls.len().saturating_sub(1))
+        };
+        self.pending_control_picker = Some(PendingControlPickerState { selected });
+        self.statusline_picker = None;
+        self.thinking_effort_picker = None;
+        true
+    }
+
+    pub(crate) fn close_pending_control_picker(&mut self) {
+        self.pending_control_picker = None;
+    }
+
+    pub(crate) fn move_pending_control_picker(&mut self, backwards: bool) -> bool {
+        let Some(picker) = self.pending_control_picker.as_mut() else {
+            return false;
+        };
+        let total = self.pending_controls.len();
+        if total == 0 {
+            return false;
+        }
+        picker.selected = if backwards {
+            picker.selected.checked_sub(1).unwrap_or(total - 1)
+        } else {
+            (picker.selected + 1) % total
+        };
+        true
+    }
+
+    pub(crate) fn selected_pending_control(&self) -> Option<PendingControlSummary> {
+        let picker = self.pending_control_picker.as_ref()?;
+        self.pending_controls.get(picker.selected).cloned()
+    }
+
+    pub(crate) fn begin_pending_control_edit(&mut self) -> Option<PendingControlSummary> {
+        let selected = self.selected_pending_control()?;
+        self.input = selected.preview.clone();
+        self.editing_pending_control = Some(PendingControlEditorState {
+            id: selected.id.clone(),
+            kind: selected.kind,
+        });
+        self.pending_control_picker = None;
+        Some(selected)
+    }
+
+    pub(crate) fn clear_pending_control_edit(&mut self) {
+        self.editing_pending_control = None;
+    }
+
+    pub(crate) fn sync_pending_controls(&mut self, controls: Vec<PendingControlSummary>) {
+        self.pending_controls = controls;
+        if let Some(picker) = self.pending_control_picker.as_mut() {
+            picker.selected = picker
+                .selected
+                .min(self.pending_controls.len().saturating_sub(1));
+            if self.pending_controls.is_empty() {
+                self.pending_control_picker = None;
+            }
+        }
+        if let Some(editor) = self.editing_pending_control.as_ref()
+            && !self
+                .pending_controls
+                .iter()
+                .any(|control| control.id == editor.id)
+        {
+            self.editing_pending_control = None;
+        }
     }
 
     pub(crate) fn move_statusline_picker(&mut self, backwards: bool) -> bool {

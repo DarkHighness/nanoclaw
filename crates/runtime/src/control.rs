@@ -1,11 +1,8 @@
-use tokio::sync::mpsc;
 use types::new_opaque_id;
 
+use std::collections::VecDeque;
 use std::fmt;
-use std::sync::{
-    Arc,
-    atomic::{AtomicUsize, Ordering},
-};
+use std::sync::{Arc, Mutex};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RuntimeCommand {
@@ -18,14 +15,15 @@ pub enum RuntimeCommand {
     },
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct RuntimeCommandId(String);
 
 impl RuntimeCommandId {
     fn new() -> Self {
         // Queue ids are operator-facing correlation handles for queued prompts
         // and steer commands. Keeping them distinct from session/tool ids avoids
-        // accidentally reusing substrate-wide ids for a purely local queue.
+        // accidentally reusing substrate-wide ids for a purely local control
+        // plane.
         Self(new_opaque_id())
     }
 }
@@ -36,206 +34,207 @@ impl fmt::Display for RuntimeCommandId {
     }
 }
 
+impl From<String> for RuntimeCommandId {
+    fn from(value: String) -> Self {
+        Self(value)
+    }
+}
+
+impl From<&str> for RuntimeCommandId {
+    fn from(value: &str) -> Self {
+        Self(value.to_string())
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RuntimeCommandLane {
+    Idle,
+    SafePoint,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QueuedRuntimeCommand {
     pub id: RuntimeCommandId,
     pub command: RuntimeCommand,
+    pub lane: RuntimeCommandLane,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RuntimeSteerMessage {
-    pub message: String,
-    pub reason: Option<String>,
+#[derive(Clone, Default)]
+pub struct RuntimeControlPlane {
+    inner: Arc<Mutex<VecDeque<QueuedRuntimeCommand>>>,
 }
 
-#[derive(Clone)]
-pub struct RuntimeSteerMailbox {
-    sender: mpsc::UnboundedSender<RuntimeSteerMessage>,
-}
-
-impl RuntimeSteerMailbox {
+impl RuntimeControlPlane {
     #[must_use]
-    pub fn new(sender: mpsc::UnboundedSender<RuntimeSteerMessage>) -> Self {
-        Self { sender }
+    pub fn new() -> Self {
+        Self::default()
     }
 
-    pub fn send(
-        &self,
-        message: impl Into<String>,
-        reason: Option<String>,
-    ) -> Result<(), mpsc::error::SendError<RuntimeSteerMessage>> {
-        self.sender.send(RuntimeSteerMessage {
-            message: message.into(),
-            reason,
-        })
-    }
-}
-
-pub type RuntimeSteerMailboxReceiver = mpsc::UnboundedReceiver<RuntimeSteerMessage>;
-
-#[must_use]
-pub fn runtime_steer_mailbox_channel() -> (RuntimeSteerMailbox, RuntimeSteerMailboxReceiver) {
-    let (sender, receiver) = mpsc::unbounded_channel();
-    (RuntimeSteerMailbox::new(sender), receiver)
-}
-
-const RUNTIME_COMMAND_QUEUE_CAPACITY: usize = 64;
-
-#[derive(Clone)]
-pub struct RuntimeCommandQueue {
-    sender: mpsc::Sender<QueuedRuntimeCommand>,
-    len: Arc<AtomicUsize>,
-}
-
-impl RuntimeCommandQueue {
-    #[must_use]
-    pub fn new(sender: mpsc::Sender<QueuedRuntimeCommand>, len: Arc<AtomicUsize>) -> Self {
-        Self { sender, len }
-    }
-
-    pub async fn push(&self, command: RuntimeCommand) -> QueuedRuntimeCommand {
+    fn push(&self, command: RuntimeCommand, lane: RuntimeCommandLane) -> QueuedRuntimeCommand {
         let queued = QueuedRuntimeCommand {
             id: RuntimeCommandId::new(),
             command,
+            lane,
         };
-        // Queue coordination is message-passing, not shared mutable state. A
-        // bounded channel prevents unbounded growth when the operator keeps
-        // enqueueing prompts faster than the runtime can consume them.
-        self.sender
-            .send(queued.clone())
-            .await
-            .expect("runtime command queue receiver dropped");
-        self.len.fetch_add(1, Ordering::Relaxed);
+        // The control plane keeps pending prompt/steer items in one mutable
+        // queue because operators can inspect, edit, and withdraw entries
+        // before the runtime consumes them. A plain channel would hide queued
+        // state from those mutations.
+        self.inner.lock().unwrap().push_back(queued.clone());
         queued
     }
 
-    pub async fn push_prompt(&self, prompt: impl Into<String>) -> QueuedRuntimeCommand {
-        self.push(RuntimeCommand::Prompt {
-            prompt: prompt.into(),
-        })
-        .await
+    pub fn push_prompt(&self, prompt: impl Into<String>) -> QueuedRuntimeCommand {
+        self.push(
+            RuntimeCommand::Prompt {
+                prompt: prompt.into(),
+            },
+            RuntimeCommandLane::Idle,
+        )
     }
 
-    pub async fn push_steer(
+    pub fn push_steer(
         &self,
         message: impl Into<String>,
         reason: Option<String>,
     ) -> QueuedRuntimeCommand {
-        self.push(RuntimeCommand::Steer {
-            message: message.into(),
-            reason,
-        })
-        .await
+        self.push(
+            RuntimeCommand::Steer {
+                message: message.into(),
+                reason,
+            },
+            RuntimeCommandLane::SafePoint,
+        )
     }
 
     #[must_use]
     pub fn len(&self) -> usize {
-        self.len.load(Ordering::Relaxed)
+        self.inner.lock().unwrap().len()
     }
 
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
-}
 
-pub struct RuntimeCommandQueueReceiver {
-    receiver: mpsc::Receiver<QueuedRuntimeCommand>,
-    len: Arc<AtomicUsize>,
-}
-
-impl RuntimeCommandQueueReceiver {
     #[must_use]
-    pub fn new(receiver: mpsc::Receiver<QueuedRuntimeCommand>, len: Arc<AtomicUsize>) -> Self {
-        Self { receiver, len }
+    pub fn snapshot(&self) -> Vec<QueuedRuntimeCommand> {
+        self.inner.lock().unwrap().iter().cloned().collect()
     }
 
-    pub fn pop_next(&mut self) -> Option<QueuedRuntimeCommand> {
-        let next = self.receiver.try_recv().ok();
-        if next.is_some() {
-            self.len.fetch_sub(1, Ordering::Relaxed);
-        }
-        next
+    pub fn remove(&self, id: &RuntimeCommandId) -> Option<QueuedRuntimeCommand> {
+        let mut inner = self.inner.lock().unwrap();
+        let index = inner.iter().position(|queued| &queued.id == id)?;
+        inner.remove(index)
     }
 
-    pub fn clear(&mut self) -> usize {
-        let mut cleared = 0usize;
-        while self.pop_next().is_some() {
-            cleared = cleared.saturating_add(1);
+    pub fn update(
+        &self,
+        id: &RuntimeCommandId,
+        new_command: RuntimeCommand,
+    ) -> Option<QueuedRuntimeCommand> {
+        let mut inner = self.inner.lock().unwrap();
+        let queued = inner.iter_mut().find(|queued| &queued.id == id)?;
+        if !matches_runtime_command_kind(&queued.command, &new_command) {
+            return None;
         }
+        queued.command = new_command;
+        Some(queued.clone())
+    }
+
+    pub fn clear(&self) -> usize {
+        let mut inner = self.inner.lock().unwrap();
+        let cleared = inner.len();
+        inner.clear();
         cleared
     }
-}
 
-#[must_use]
-pub fn runtime_command_queue_channel() -> (RuntimeCommandQueue, RuntimeCommandQueueReceiver) {
-    let (sender, receiver) = mpsc::channel(RUNTIME_COMMAND_QUEUE_CAPACITY);
-    let len = Arc::new(AtomicUsize::new(0));
-    (
-        RuntimeCommandQueue::new(sender, len.clone()),
-        RuntimeCommandQueueReceiver::new(receiver, len),
-    )
-}
-
-impl Default for RuntimeCommandQueue {
-    fn default() -> Self {
-        let (queue, _) = runtime_command_queue_channel();
-        queue
+    pub fn pop_next(&self) -> Option<QueuedRuntimeCommand> {
+        self.inner.lock().unwrap().pop_front()
     }
+
+    pub fn pop_next_safe_point(&self) -> Option<QueuedRuntimeCommand> {
+        let mut inner = self.inner.lock().unwrap();
+        let index = inner
+            .iter()
+            .position(|queued| queued.lane == RuntimeCommandLane::SafePoint)?;
+        inner.remove(index)
+    }
+}
+
+fn matches_runtime_command_kind(left: &RuntimeCommand, right: &RuntimeCommand) -> bool {
+    matches!(
+        (left, right),
+        (RuntimeCommand::Prompt { .. }, RuntimeCommand::Prompt { .. })
+            | (RuntimeCommand::Steer { .. }, RuntimeCommand::Steer { .. })
+    )
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{RuntimeCommand, runtime_command_queue_channel, runtime_steer_mailbox_channel};
+    use super::{RuntimeCommand, RuntimeCommandLane, RuntimeControlPlane};
 
-    #[tokio::test]
-    async fn queue_preserves_fifo_order() {
-        let (queue, mut receiver) = runtime_command_queue_channel();
-        let first = queue.push_prompt("one").await;
-        let second = queue
-            .push_steer("use concise output", Some("manual".to_string()))
-            .await;
+    #[test]
+    fn queue_preserves_fifo_order() {
+        let queue = RuntimeControlPlane::new();
+        let first = queue.push_prompt("one");
+        let second = queue.push_prompt("two");
 
         assert_eq!(queue.len(), 2);
-
-        let popped_first = receiver.pop_next().unwrap();
-        let popped_second = receiver.pop_next().unwrap();
-        assert_eq!(popped_first.id, first.id);
-        assert_eq!(popped_second.id, second.id);
-        assert!(matches!(
-            popped_second.command,
-            RuntimeCommand::Steer { message, reason }
-                if message == "use concise output" && reason.as_deref() == Some("manual")
-        ));
+        assert_eq!(queue.pop_next().unwrap().id, first.id);
+        assert_eq!(queue.pop_next().unwrap().id, second.id);
         assert!(queue.is_empty());
     }
 
-    #[tokio::test]
-    async fn clear_drains_pending_commands() {
-        let (queue, mut receiver) = runtime_command_queue_channel();
-        queue.push_prompt("one").await;
-        queue
-            .push_steer("use concise output", Some("manual".to_string()))
-            .await;
+    #[test]
+    fn safe_point_pop_skips_idle_prompts() {
+        let queue = RuntimeControlPlane::new();
+        let prompt = queue.push_prompt("one");
+        let steer = queue.push_steer("use concise output", Some("manual".to_string()));
 
-        assert_eq!(receiver.clear(), 2);
-        assert!(receiver.pop_next().is_none());
-        assert!(queue.is_empty());
+        let popped = queue.pop_next_safe_point().unwrap();
+        assert_eq!(popped.id, steer.id);
+        assert_eq!(queue.snapshot(), vec![prompt]);
     }
 
-    #[tokio::test]
-    async fn steer_mailbox_preserves_message_order() {
-        let (mailbox, mut receiver) = runtime_steer_mailbox_channel();
-        mailbox
-            .send("focus on tests", Some("inline_enter".to_string()))
+    #[test]
+    fn update_and_remove_mutate_operator_visible_queue() {
+        let queue = RuntimeControlPlane::new();
+        let prompt = queue.push_prompt("draft");
+        let steer = queue.push_steer("focus", Some("manual".to_string()));
+
+        let updated = queue
+            .update(
+                &prompt.id,
+                RuntimeCommand::Prompt {
+                    prompt: "edited".to_string(),
+                },
+            )
             .unwrap();
-        mailbox.send("prefer terse answers", None).unwrap();
+        assert_eq!(
+            updated,
+            super::QueuedRuntimeCommand {
+                id: prompt.id.clone(),
+                command: RuntimeCommand::Prompt {
+                    prompt: "edited".to_string()
+                },
+                lane: RuntimeCommandLane::Idle,
+            }
+        );
 
-        let first = receiver.recv().await.unwrap();
-        let second = receiver.recv().await.unwrap();
-        assert_eq!(first.message, "focus on tests");
-        assert_eq!(first.reason.as_deref(), Some("inline_enter"));
-        assert_eq!(second.message, "prefer terse answers");
-        assert_eq!(second.reason, None);
+        let removed = queue.remove(&steer.id).unwrap();
+        assert_eq!(removed.id, steer.id);
+        assert_eq!(queue.len(), 1);
+    }
+
+    #[test]
+    fn clear_drains_pending_commands() {
+        let queue = RuntimeControlPlane::new();
+        queue.push_prompt("one");
+        queue.push_steer("use concise output", Some("manual".to_string()));
+
+        assert_eq!(queue.clear(), 2);
+        assert!(queue.pop_next().is_none());
+        assert!(queue.is_empty());
     }
 }

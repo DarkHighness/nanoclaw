@@ -1,7 +1,7 @@
 pub use mcp::{McpCatalog, McpClient, McpServerConfig, McpTransportConfig};
 pub use runtime::{AgentRuntime, HookRunner, ModelBackend};
 #[cfg(feature = "agentic-tools")]
-pub use runtime::{RuntimeCommand, RuntimeCommandQueue, RuntimeSubagentExecutor};
+pub use runtime::{RuntimeCommand, RuntimeControlPlane, RuntimeSubagentExecutor};
 pub use skills::{Skill, SkillCatalog, load_skill_from_dir, load_skill_roots};
 pub use store::{FileSessionStore, InMemorySessionStore, SessionStore};
 pub use tools::{

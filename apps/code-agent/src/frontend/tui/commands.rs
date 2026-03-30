@@ -134,6 +134,12 @@ const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
     },
     SlashCommandSpec {
         section: "Session",
+        name: "queue",
+        usage: "queue",
+        summary: "browse pending prompts and steers",
+    },
+    SlashCommandSpec {
+        section: "Session",
         name: "exit",
         usage: "exit",
         summary: "leave tui",
@@ -300,6 +306,7 @@ pub(crate) enum SlashCommand {
     Steer {
         message: Option<String>,
     },
+    Queue,
     Compact {
         notes: Option<String>,
     },
@@ -404,6 +411,7 @@ enum SlashSubcommand {
         )]
         message: Vec<String>,
     },
+    Queue,
     Compact {
         #[arg(
             value_name = "NOTES",
@@ -673,6 +681,7 @@ impl From<SlashSubcommand> for SlashCommand {
             SlashSubcommand::Steer { message } => Self::Steer {
                 message: join_optional_tail(message),
             },
+            SlashSubcommand::Queue => Self::Queue,
             SlashSubcommand::Compact { notes } => Self::Compact {
                 notes: join_optional_tail(notes),
             },
@@ -1013,6 +1022,11 @@ mod tests {
             parse_slash_command("/statusline"),
             SlashCommand::StatusLine
         ));
+    }
+
+    #[test]
+    fn parses_queue_command() {
+        assert!(matches!(parse_slash_command("/queue"), SlashCommand::Queue));
     }
 
     #[test]

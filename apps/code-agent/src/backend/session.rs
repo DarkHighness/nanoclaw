@@ -14,7 +14,7 @@ use crate::provider::{MutableAgentBackend, ReasoningEffortUpdate};
 use crate::statusline::StatusLineConfig;
 use agent::mcp::ConnectedMcpServer;
 use agent::runtime::{
-    Result as RuntimeResult, RunTurnOutcome, RuntimeCommandQueue, RuntimeSteerMailbox,
+    Result as RuntimeResult, RunTurnOutcome, RuntimeCommandId, RuntimeControlPlane,
 };
 use agent::tools::{SubagentExecutor, SubagentParentContext};
 use agent::types::{
@@ -139,13 +139,26 @@ pub(crate) struct ModelReasoningEffortOutcome {
     pub(crate) supported: Vec<String>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PendingControlKind {
+    Prompt,
+    Steer,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PendingControlSummary {
+    pub(crate) id: String,
+    pub(crate) kind: PendingControlKind,
+    pub(crate) preview: String,
+    pub(crate) reason: Option<String>,
+}
+
 /// The backend session owns runtime state so frontends can speak to a stable
 /// host contract instead of sharing `AgentRuntime` directly.
 #[derive(Clone)]
 pub(crate) struct CodeAgentSession {
     runtime: Arc<AsyncMutex<AgentRuntime>>,
-    command_queue: RuntimeCommandQueue,
-    steer_mailbox: RuntimeSteerMailbox,
+    control_plane: RuntimeControlPlane,
     model_backend: Option<MutableAgentBackend>,
     subagent_executor: Arc<dyn SubagentExecutor>,
     store: Arc<dyn SessionStore>,
@@ -170,12 +183,10 @@ impl CodeAgentSession {
         skills: Vec<Skill>,
     ) -> Self {
         let workspace_root = startup.workspace_root.clone();
-        let command_queue = runtime.command_queue();
-        let steer_mailbox = runtime.steer_mailbox();
+        let control_plane = runtime.control_plane();
         Self {
             runtime: Arc::new(AsyncMutex::new(runtime)),
-            command_queue,
-            steer_mailbox,
+            control_plane,
             model_backend,
             subagent_executor,
             store,
@@ -246,12 +257,97 @@ impl CodeAgentSession {
     }
 
     pub(crate) async fn queue_prompt_command(&self, prompt: impl Into<String>) -> Result<String> {
-        let queued = self.command_queue.push_prompt(prompt).await;
+        let queued = self.control_plane.push_prompt(prompt);
         Ok(queued.id.to_string())
     }
 
     pub(crate) fn queued_command_count(&self) -> usize {
-        self.command_queue.len()
+        self.control_plane.len()
+    }
+
+    pub(crate) fn pending_controls(&self) -> Vec<PendingControlSummary> {
+        self.control_plane
+            .snapshot()
+            .into_iter()
+            .map(|queued| match queued.command {
+                RuntimeCommand::Prompt { prompt } => PendingControlSummary {
+                    id: queued.id.to_string(),
+                    kind: PendingControlKind::Prompt,
+                    preview: prompt,
+                    reason: None,
+                },
+                RuntimeCommand::Steer { message, reason } => PendingControlSummary {
+                    id: queued.id.to_string(),
+                    kind: PendingControlKind::Steer,
+                    preview: message,
+                    reason,
+                },
+            })
+            .collect()
+    }
+
+    pub(crate) fn update_pending_control(
+        &self,
+        control_ref: &str,
+        content: &str,
+    ) -> Result<PendingControlSummary> {
+        let controls = self.pending_controls();
+        let current = resolve_pending_control_reference(&controls, control_ref)?;
+        let updated = self
+            .control_plane
+            .update(
+                &RuntimeCommandId::from(current.id.clone()),
+                match current.kind {
+                    PendingControlKind::Prompt => RuntimeCommand::Prompt {
+                        prompt: content.to_string(),
+                    },
+                    PendingControlKind::Steer => RuntimeCommand::Steer {
+                        message: content.to_string(),
+                        reason: current.reason.clone(),
+                    },
+                },
+            )
+            .ok_or_else(|| anyhow::anyhow!("pending control update failed for {control_ref}"))?;
+        Ok(match updated.command {
+            RuntimeCommand::Prompt { prompt } => PendingControlSummary {
+                id: updated.id.to_string(),
+                kind: PendingControlKind::Prompt,
+                preview: prompt,
+                reason: None,
+            },
+            RuntimeCommand::Steer { message, reason } => PendingControlSummary {
+                id: updated.id.to_string(),
+                kind: PendingControlKind::Steer,
+                preview: message,
+                reason,
+            },
+        })
+    }
+
+    pub(crate) fn remove_pending_control(
+        &self,
+        control_ref: &str,
+    ) -> Result<PendingControlSummary> {
+        let controls = self.pending_controls();
+        let current = resolve_pending_control_reference(&controls, control_ref)?;
+        let removed = self
+            .control_plane
+            .remove(&RuntimeCommandId::from(current.id.clone()))
+            .ok_or_else(|| anyhow::anyhow!("pending control removal failed for {control_ref}"))?;
+        Ok(match removed.command {
+            RuntimeCommand::Prompt { prompt } => PendingControlSummary {
+                id: removed.id.to_string(),
+                kind: PendingControlKind::Prompt,
+                preview: prompt,
+                reason: None,
+            },
+            RuntimeCommand::Steer { message, reason } => PendingControlSummary {
+                id: removed.id.to_string(),
+                kind: PendingControlKind::Steer,
+                preview: message,
+                reason,
+            },
+        })
     }
 
     pub(crate) async fn clear_queued_commands(&self) -> usize {
@@ -279,13 +375,11 @@ impl CodeAgentSession {
         &self,
         message: impl Into<String>,
         reason: Option<String>,
-    ) -> Result<()> {
+    ) -> Result<String> {
         // Active-turn steer must bypass the host prompt queue so the runtime can
         // merge it only at its own safe points between model/tool phases.
-        self.steer_mailbox
-            .send(message, reason)
-            .map_err(|error| anyhow::anyhow!("runtime steer mailbox closed: {error}"))?;
-        Ok(())
+        let queued = self.control_plane.push_steer(message, reason);
+        Ok(queued.id.to_string())
     }
 
     pub(crate) async fn run_one_shot_prompt(&self, prompt: &str) -> Result<RunTurnOutcome> {
@@ -792,6 +886,33 @@ fn live_task_summaries(handles: &[agent::types::AgentHandle]) -> Vec<LiveTaskSum
     summaries
 }
 
+fn resolve_pending_control_reference<'a>(
+    controls: &'a [PendingControlSummary],
+    control_ref: &str,
+) -> Result<&'a PendingControlSummary> {
+    if let Some(control) = controls.iter().find(|control| control.id == control_ref) {
+        return Ok(control);
+    }
+
+    let matches = controls
+        .iter()
+        .filter(|control| control.id.starts_with(control_ref))
+        .collect::<Vec<_>>();
+    match matches.as_slice() {
+        [] => Err(anyhow::anyhow!("unknown pending control: {control_ref}")),
+        [control] => Ok(control),
+        _ => Err(anyhow::anyhow!(
+            "ambiguous pending control prefix {control_ref}: {}",
+            matches
+                .iter()
+                .take(6)
+                .map(|control| preview_id(&control.id))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )),
+    }
+}
+
 fn resolve_live_task_reference<'a>(
     handles: &'a [agent::types::AgentHandle],
     task_or_agent_ref: &str,
@@ -853,7 +974,8 @@ fn resolve_live_task_reference<'a>(
 #[cfg(test)]
 mod tests {
     use super::{
-        CodeAgentSession, SessionOperation, SessionOperationAction, SessionStartupSnapshot,
+        CodeAgentSession, PendingControlKind, SessionOperation, SessionOperationAction,
+        SessionStartupSnapshot,
     };
     use crate::backend::{ApprovalCoordinator, SessionEventStream, StartupDiagnosticsSnapshot};
     use crate::statusline::StatusLineConfig;
@@ -1248,6 +1370,50 @@ mod tests {
             requests[1].messages.last().unwrap().text_content(),
             "second"
         );
+    }
+
+    #[tokio::test]
+    async fn pending_controls_can_be_updated_and_removed() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(InMemorySessionStore::new());
+        let runtime = AgentRuntimeBuilder::new(Arc::new(NeverBackend), store.clone())
+            .hook_runner(Arc::new(HookRunner::default()))
+            .tool_context(ToolExecutionContext {
+                workspace_root: dir.path().to_path_buf(),
+                workspace_only: true,
+                ..Default::default()
+            })
+            .build();
+        let mut startup = startup_snapshot(dir.path());
+        startup.active_session_ref = runtime.session_id().to_string();
+        startup.root_agent_session_id = runtime.agent_session_id().to_string();
+        let session = CodeAgentSession::new(
+            runtime,
+            None,
+            Arc::new(NoopSubagentExecutor),
+            store,
+            Vec::new(),
+            ApprovalCoordinator::default(),
+            SessionEventStream::default(),
+            startup,
+            Vec::<Skill>::new(),
+        );
+
+        let prompt_id = session.queue_prompt_command("draft").await.unwrap();
+        let steer_id = session
+            .schedule_runtime_steer("focus on tests", Some("manual".to_string()))
+            .unwrap();
+
+        let updated_prompt = session
+            .update_pending_control(&prompt_id, "edited draft")
+            .unwrap();
+        assert_eq!(updated_prompt.kind, PendingControlKind::Prompt);
+        assert_eq!(updated_prompt.preview, "edited draft");
+
+        let removed_steer = session.remove_pending_control(&steer_id).unwrap();
+        assert_eq!(removed_steer.kind, PendingControlKind::Steer);
+        assert_eq!(removed_steer.preview, "focus on tests");
+        assert_eq!(session.pending_controls().len(), 1);
     }
 
     #[tokio::test]

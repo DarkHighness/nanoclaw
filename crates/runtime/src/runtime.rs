@@ -8,11 +8,9 @@ mod turn_start;
 
 use crate::{
     CompactionConfig, ConversationCompactor, HookInvocationBatch, HookRunner, LoopDetectionConfig,
-    ModelBackend, NoopRuntimeObserver, Result, RuntimeCommand, RuntimeCommandQueue,
-    RuntimeCommandQueueReceiver, RuntimeObserver, RuntimeProgressEvent, RuntimeSession,
-    RuntimeSteerMailbox, RuntimeSteerMailboxReceiver, ToolApprovalHandler, ToolApprovalPolicy,
-    ToolLoopDetector, append_transcript_message, runtime_command_queue_channel,
-    runtime_steer_mailbox_channel,
+    ModelBackend, NoopRuntimeObserver, Result, RuntimeCommand, RuntimeControlPlane,
+    RuntimeObserver, RuntimeProgressEvent, RuntimeSession, ToolApprovalHandler, ToolApprovalPolicy,
+    ToolLoopDetector, append_transcript_message,
 };
 use skills::SkillCatalog;
 use std::sync::Arc;
@@ -36,10 +34,7 @@ pub struct AgentRuntime {
     hook_registrations: Vec<HookRegistration>,
     pending_additional_context: Vec<String>,
     pending_injected_instructions: Vec<String>,
-    command_queue: RuntimeCommandQueue,
-    command_queue_rx: RuntimeCommandQueueReceiver,
-    steer_mailbox: RuntimeSteerMailbox,
-    steer_mailbox_rx: RuntimeSteerMailboxReceiver,
+    control_plane: RuntimeControlPlane,
     session: RuntimeSession,
 }
 
@@ -67,8 +62,6 @@ impl AgentRuntime {
         _skill_catalog: SkillCatalog,
         session: RuntimeSession,
     ) -> Self {
-        let (command_queue, command_queue_rx) = runtime_command_queue_channel();
-        let (steer_mailbox, steer_mailbox_rx) = runtime_steer_mailbox_channel();
         Self {
             backend,
             hook_runner,
@@ -84,10 +77,7 @@ impl AgentRuntime {
             hook_registrations,
             pending_additional_context: Vec::new(),
             pending_injected_instructions: Vec::new(),
-            command_queue,
-            command_queue_rx,
-            steer_mailbox,
-            steer_mailbox_rx,
+            control_plane: RuntimeControlPlane::new(),
             session,
         }
     }
@@ -122,13 +112,8 @@ impl AgentRuntime {
     }
 
     #[must_use]
-    pub fn steer_mailbox(&self) -> RuntimeSteerMailbox {
-        self.steer_mailbox.clone()
-    }
-
-    #[must_use]
-    pub fn command_queue(&self) -> RuntimeCommandQueue {
-        self.command_queue.clone()
+    pub fn control_plane(&self) -> RuntimeControlPlane {
+        self.control_plane.clone()
     }
 
     #[must_use]
@@ -158,7 +143,6 @@ impl AgentRuntime {
         self.session = RuntimeSession::new(types::SessionId::new(), types::AgentSessionId::new());
         self.clear_pending_request_effects();
         self.clear_pending_runtime_commands();
-        self.clear_pending_runtime_steers();
         self.tool_loop_detector.reset();
 
         let hooks = self.hook_registrations.clone();
@@ -190,7 +174,6 @@ impl AgentRuntime {
         self.session = session;
         self.clear_pending_request_effects();
         self.clear_pending_runtime_commands();
-        self.clear_pending_runtime_steers();
         self.tool_loop_detector.reset();
 
         let hooks = self.hook_registrations.clone();
@@ -391,11 +374,12 @@ impl AgentRuntime {
         observer: &mut dyn RuntimeObserver,
     ) -> Result<bool> {
         let mut applied_any = false;
-        while let Ok(steer) = self.steer_mailbox_rx.try_recv() {
+        while let Some(steer) = self.control_plane.pop_next_safe_point() {
             // Root-turn steer is mailbox-driven so the runtime can merge it only
             // at explicit safe points between model/tool phases.
-            self.steer_with_observer(steer.message, steer.reason, observer)
-                .await?;
+            if let RuntimeCommand::Steer { message, reason } = steer.command {
+                self.steer_with_observer(message, reason, observer).await?;
+            }
             applied_any = true;
         }
         Ok(applied_any)
@@ -416,7 +400,7 @@ impl AgentRuntime {
         // active driver task can drain them before yielding back to the host.
         // The host may trigger this method at an idle edge, but it never owns
         // dequeue order or command consumption itself.
-        while let Some(queued) = self.command_queue_rx.pop_next() {
+        while let Some(queued) = self.control_plane.pop_next() {
             applied_any = true;
             match queued.command {
                 RuntimeCommand::Prompt { prompt } => {
@@ -431,18 +415,14 @@ impl AgentRuntime {
     }
 
     fn clear_pending_runtime_commands(&mut self) {
-        let _ = self.command_queue_rx.clear();
+        let _ = self.control_plane.clear();
     }
 
     pub fn clear_pending_runtime_commands_for_host(&mut self) -> usize {
         // Session-switch operations still originate in the host, but the queue
         // itself remains runtime-owned. This narrow escape hatch only supports
         // explicit destructive lifecycle boundaries such as /new or /resume.
-        self.command_queue_rx.clear()
-    }
-
-    fn clear_pending_runtime_steers(&mut self) {
-        while self.steer_mailbox_rx.try_recv().is_ok() {}
+        self.control_plane.clear()
     }
 
     async fn run_hooks(

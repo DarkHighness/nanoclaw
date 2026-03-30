@@ -1,7 +1,7 @@
 use super::support::{RecordingBackend, RecordingObserver};
 use crate::{
-    AgentRuntimeBuilder, HookRunner, ModelBackend, Result, RuntimeCommand, RuntimeProgressEvent,
-    RuntimeSteerMailbox,
+    AgentRuntimeBuilder, HookRunner, ModelBackend, Result, RuntimeCommand, RuntimeControlPlane,
+    RuntimeProgressEvent,
 };
 use async_trait::async_trait;
 use futures::{StreamExt, stream, stream::BoxStream};
@@ -102,15 +102,15 @@ impl ModelBackend for ToolTurnRecordingBackend {
 }
 
 struct SteeringObserver {
-    mailbox: RuntimeSteerMailbox,
+    control_plane: RuntimeControlPlane,
     sent: bool,
     events: Vec<RuntimeProgressEvent>,
 }
 
 impl SteeringObserver {
-    fn new(mailbox: RuntimeSteerMailbox) -> Self {
+    fn new(control_plane: RuntimeControlPlane) -> Self {
         Self {
-            mailbox,
+            control_plane,
             sent: false,
             events: Vec::new(),
         }
@@ -126,9 +126,8 @@ impl crate::RuntimeObserver for SteeringObserver {
                     if matches!(event.event, ToolLifecycleEventKind::Completed { .. })
             )
         {
-            self.mailbox
-                .send("prefer terse answers", Some("tool_safe_point".to_string()))
-                .unwrap();
+            self.control_plane
+                .push_steer("prefer terse answers", Some("tool_safe_point".to_string()));
             self.sent = true;
         }
         self.events.push(event);
@@ -342,7 +341,7 @@ async fn runtime_apply_control_drains_runtime_prompt_queue_before_returning_idle
         })
         .build();
 
-    runtime.command_queue().push_prompt("second").await;
+    runtime.control_plane().push_prompt("second");
 
     let outcome = runtime
         .apply_control(RuntimeCommand::Prompt {
@@ -353,7 +352,7 @@ async fn runtime_apply_control_drains_runtime_prompt_queue_before_returning_idle
         .unwrap();
 
     assert_eq!(outcome.assistant_text, "ok");
-    assert!(runtime.command_queue().is_empty());
+    assert!(runtime.control_plane().is_empty());
     let requests = backend.requests();
     assert_eq!(requests.len(), 2);
     assert_eq!(requests[0].messages.last().unwrap().text_content(), "first");
@@ -452,7 +451,7 @@ async fn runtime_mailbox_steer_merges_at_safe_point_before_followup_request() {
             ..Default::default()
         })
         .build();
-    let mut observer = SteeringObserver::new(runtime.steer_mailbox());
+    let mut observer = SteeringObserver::new(runtime.control_plane());
 
     let outcome = runtime
         .run_user_prompt_with_observer("please use tool", &mut observer)

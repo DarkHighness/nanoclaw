@@ -125,7 +125,7 @@ impl CodeAgentTui {
             self.maybe_finish_turn().await?;
             self.apply_backend_events();
             self.maybe_finish_operator_task().await?;
-            self.sync_queue_depth();
+            self.sync_runtime_control_state();
 
             let snapshot = self.ui_state.snapshot();
             let approval = self.session.approval_prompt();
@@ -149,6 +149,9 @@ impl CodeAgentTui {
                     if self.handle_approval_key(key) {
                         continue;
                     }
+                    if self.handle_pending_control_picker_key(key) {
+                        continue;
+                    }
                     if self.handle_statusline_picker_key(key) {
                         continue;
                     }
@@ -156,8 +159,30 @@ impl CodeAgentTui {
                         continue;
                     }
                     match key.code {
+                        KeyCode::Up if key.modifiers.contains(KeyModifiers::ALT) => {
+                            self.ui_state.mutate(|state| {
+                                let opened = state.open_pending_control_picker(true);
+                                if opened {
+                                    state.status = "Opened pending controls".to_string();
+                                }
+                            });
+                            continue;
+                        }
+                        KeyCode::Down if key.modifiers.contains(KeyModifiers::ALT) => {
+                            self.ui_state.mutate(|state| {
+                                if state.pending_control_picker.is_some() {
+                                    let _ = state.move_pending_control_picker(false);
+                                } else {
+                                    let _ = state.open_pending_control_picker(true);
+                                }
+                            });
+                            continue;
+                        }
                         KeyCode::Tab => {
                             let snapshot = self.ui_state.snapshot();
+                            if self.try_apply_pending_control_edit(&snapshot.input).await {
+                                continue;
+                            }
                             if let Some(action) = plain_input_submit_action(
                                 &snapshot.input,
                                 snapshot.turn_running,
@@ -223,6 +248,9 @@ impl CodeAgentTui {
                         }
                         KeyCode::Enter => {
                             let snapshot = self.ui_state.snapshot();
+                            if self.try_apply_pending_control_edit(&snapshot.input).await {
+                                continue;
+                            }
                             if snapshot.input.starts_with('/') {
                                 if let Some(action) = resolve_slash_enter_action(
                                     &snapshot.input,
@@ -267,6 +295,18 @@ impl CodeAgentTui {
                                 }
                             } else {
                                 self.start_turn(input).await;
+                            }
+                        }
+                        KeyCode::Esc => {
+                            let snapshot = self.ui_state.snapshot();
+                            if snapshot.editing_pending_control.is_some() {
+                                self.ui_state.mutate(|state| {
+                                    state.clear_pending_control_edit();
+                                    state.input.clear();
+                                    state.status = "Cancelled pending control edit".to_string();
+                                    state.push_activity("cancelled pending control edit");
+                                });
+                                continue;
                             }
                         }
                         KeyCode::Backspace => {
@@ -419,6 +459,119 @@ impl CodeAgentTui {
         }
     }
 
+    fn handle_pending_control_picker_key(&mut self, key: KeyEvent) -> bool {
+        let snapshot = self.ui_state.snapshot();
+        if snapshot.pending_control_picker.is_none() || !snapshot.input.is_empty() {
+            return false;
+        }
+
+        match key.code {
+            KeyCode::Up => {
+                self.ui_state.mutate(|state| {
+                    let _ = state.move_pending_control_picker(true);
+                });
+                true
+            }
+            KeyCode::Down => {
+                self.ui_state.mutate(|state| {
+                    let _ = state.move_pending_control_picker(false);
+                });
+                true
+            }
+            KeyCode::Home => {
+                self.ui_state.mutate(|state| {
+                    if let Some(picker) = state.pending_control_picker.as_mut() {
+                        picker.selected = 0;
+                    }
+                });
+                true
+            }
+            KeyCode::End => {
+                self.ui_state.mutate(|state| {
+                    if let Some(picker) = state.pending_control_picker.as_mut() {
+                        picker.selected = state.pending_controls.len().saturating_sub(1);
+                    }
+                });
+                true
+            }
+            KeyCode::Delete | KeyCode::Backspace | KeyCode::Char('x')
+                if key.modifiers.contains(KeyModifiers::CONTROL)
+                    || matches!(key.code, KeyCode::Delete | KeyCode::Backspace) =>
+            {
+                if let Some(selected) = snapshot.selected_pending_control() {
+                    match self.session.remove_pending_control(&selected.id) {
+                        Ok(removed) => {
+                            let removed_id = removed.id.clone();
+                            self.sync_runtime_control_state();
+                            self.ui_state.mutate(|state| {
+                                if state
+                                    .editing_pending_control
+                                    .as_ref()
+                                    .is_some_and(|editing| editing.id == removed_id)
+                                {
+                                    state.clear_pending_control_edit();
+                                    state.input.clear();
+                                }
+                                if state.pending_controls.is_empty() {
+                                    state.close_pending_control_picker();
+                                }
+                                state.status = format!(
+                                    "Withdrew queued {} {}",
+                                    pending_control_kind_label(removed.kind),
+                                    preview_id(&removed.id)
+                                );
+                                state.push_activity(format!(
+                                    "withdrew queued {} {}",
+                                    pending_control_kind_label(removed.kind),
+                                    preview_id(&removed.id)
+                                ));
+                            });
+                        }
+                        Err(error) => {
+                            let message = error.to_string();
+                            self.ui_state.mutate(|state| {
+                                state.status =
+                                    format!("Failed to withdraw pending control: {message}");
+                                state.push_activity(format!(
+                                    "failed to withdraw pending control: {}",
+                                    state::preview_text(&message, 56)
+                                ));
+                            });
+                        }
+                    }
+                }
+                true
+            }
+            KeyCode::Enter => {
+                if let Some(selected) = snapshot.selected_pending_control() {
+                    self.ui_state.mutate(|state| {
+                        state.begin_pending_control_edit();
+                        state.status = format!(
+                            "Editing queued {} {}",
+                            pending_control_kind_label(selected.kind),
+                            preview_id(&selected.id)
+                        );
+                        state.push_activity(format!(
+                            "editing queued {} {}",
+                            pending_control_kind_label(selected.kind),
+                            preview_id(&selected.id)
+                        ));
+                    });
+                }
+                true
+            }
+            KeyCode::Esc => {
+                self.ui_state.mutate(|state| {
+                    state.close_pending_control_picker();
+                    state.status = "Closed pending controls".to_string();
+                    state.push_activity("closed pending controls");
+                });
+                true
+            }
+            _ => false,
+        }
+    }
+
     fn handle_thinking_effort_picker_key(&mut self, key: KeyEvent) -> bool {
         let snapshot = self.ui_state.snapshot();
         if snapshot.thinking_effort_picker.is_none() || !snapshot.input.is_empty() {
@@ -533,7 +686,7 @@ impl CodeAgentTui {
                 }
             }
         }
-        self.sync_queue_depth();
+        self.sync_runtime_control_state();
         if self.turn_task.is_none() && self.session.queued_command_count() > 0 {
             self.start_runtime_queue_drain();
         }
@@ -603,6 +756,50 @@ impl CodeAgentTui {
         }
     }
 
+    async fn try_apply_pending_control_edit(&mut self, input: &str) -> bool {
+        let Some(editing) = self.ui_state.snapshot().editing_pending_control.clone() else {
+            return false;
+        };
+        let content = input.trim();
+        if content.is_empty() {
+            self.ui_state.mutate(|state| {
+                state.status = "Pending control edits cannot be empty".to_string();
+                state.push_activity("rejected empty pending control edit");
+            });
+            return true;
+        }
+        match self.session.update_pending_control(&editing.id, content) {
+            Ok(updated) => {
+                self.sync_runtime_control_state();
+                self.ui_state.mutate(|state| {
+                    state.clear_pending_control_edit();
+                    state.input.clear();
+                    state.status = format!(
+                        "Updated queued {} {}",
+                        pending_control_kind_label(updated.kind),
+                        preview_id(&updated.id)
+                    );
+                    state.push_activity(format!(
+                        "updated queued {} {}",
+                        pending_control_kind_label(updated.kind),
+                        preview_id(&updated.id)
+                    ));
+                });
+            }
+            Err(error) => {
+                let message = error.to_string();
+                self.ui_state.mutate(|state| {
+                    state.status = format!("Failed to update pending control: {message}");
+                    state.push_activity(format!(
+                        "failed to update pending control: {}",
+                        state::preview_text(&message, 56)
+                    ));
+                });
+            }
+        }
+        true
+    }
+
     async fn start_turn(&mut self, prompt: String) {
         if self.turn_task.is_some() {
             self.queue_prompt_behind_active_turn(prompt).await;
@@ -615,9 +812,11 @@ impl CodeAgentTui {
     async fn queue_prompt_behind_active_turn(&mut self, prompt: String) {
         match self.session.queue_prompt_command(prompt.clone()).await {
             Ok(queued_id) => {
-                let depth = self.session.queued_command_count();
+                let pending = self.session.pending_controls();
+                let depth = pending.len();
                 self.ui_state.mutate(|state| {
                     state.session.queued_commands = depth;
+                    state.sync_pending_controls(pending);
                     state.status = "Queued prompt behind the active turn".to_string();
                     state.push_activity(format!(
                         "queued prompt {}: {}",
@@ -646,10 +845,18 @@ impl CodeAgentTui {
     ) {
         let preview = state::preview_text(&message, 40);
         match self.session.schedule_runtime_steer(message, reason) {
-            Ok(()) => self.ui_state.mutate(|state| {
-                state.status = "Scheduled steer for the active turn".to_string();
-                state.push_activity(format!("scheduled active-turn steer: {preview}"));
-            }),
+            Ok(queued_id) => {
+                let pending = self.session.pending_controls();
+                self.ui_state.mutate(|state| {
+                    state.session.queued_commands = pending.len();
+                    state.sync_pending_controls(pending);
+                    state.status = "Scheduled steer for the active turn".to_string();
+                    state.push_activity(format!(
+                        "scheduled active-turn steer {}: {preview}",
+                        queued_id
+                    ));
+                })
+            }
             Err(error) => {
                 let message = error.to_string();
                 self.ui_state.mutate(|state| {
@@ -961,6 +1168,26 @@ impl CodeAgentTui {
                     reason: Some("manual_command".to_string()),
                 })
                 .await;
+                Ok(false)
+            }
+            SlashCommand::Queue => {
+                let pending = self.session.pending_controls();
+                let opened = !pending.is_empty();
+                self.ui_state.mutate(|state| {
+                    state.sync_pending_controls(pending);
+                    if opened {
+                        let _ = state.open_pending_control_picker(true);
+                    }
+                });
+                self.ui_state.mutate(|state| {
+                    if opened {
+                        state.status = "Opened pending controls".to_string();
+                        state.push_activity("opened pending controls");
+                    } else {
+                        state.status = "No pending prompts or steers".to_string();
+                        state.push_activity("no pending controls");
+                    }
+                });
                 Ok(false)
             }
             SlashCommand::New => {
@@ -1529,10 +1756,12 @@ impl CodeAgentTui {
         self.ui_state.replace(startup);
     }
 
-    fn sync_queue_depth(&self) {
-        let depth = self.session.queued_command_count();
-        self.ui_state
-            .mutate(|state| state.session.queued_commands = depth);
+    fn sync_runtime_control_state(&self) {
+        let pending = self.session.pending_controls();
+        self.ui_state.mutate(|state| {
+            state.session.queued_commands = pending.len();
+            state.sync_pending_controls(pending);
+        });
     }
 
     fn apply_backend_events(&mut self) {
@@ -1578,6 +1807,13 @@ fn queued_command_preview(command: &RuntimeCommand) -> String {
     }
 }
 
+fn pending_control_kind_label(kind: crate::backend::PendingControlKind) -> &'static str {
+    match kind {
+        crate::backend::PendingControlKind::Prompt => "prompt",
+        crate::backend::PendingControlKind::Steer => "steer",
+    }
+}
+
 fn build_startup_inspector(session: &state::SessionSummary) -> Vec<String> {
     let mut lines = vec![
         "## Ready".to_string(),
@@ -1594,6 +1830,7 @@ fn build_startup_inspector(session: &state::SessionSummary) -> Vec<String> {
         "/statusline  choose footer items".to_string(),
         "/thinking [level]  pick or set model effort".to_string(),
         "/details  toggle tool details".to_string(),
+        "/queue  browse pending prompts and steers".to_string(),
         "/sessions  browse history".to_string(),
         "/agent_sessions  inspect or resume agents".to_string(),
         "/spawn_task <role> <prompt>  launch child agent".to_string(),
