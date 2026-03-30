@@ -1,5 +1,6 @@
 use super::super::approval::ApprovalPrompt;
 use super::super::state::{MainPaneMode, TodoEntry, TuiState, preview_text};
+use super::shared::{pending_control_focus_label, pending_control_kind_label};
 use super::shell::bottom_band_inner_area;
 use super::theme::{
     ACCENT, ASSISTANT, BOTTOM_PANE_BG, ERROR, FOOTER_BG, HEADER, MUTED, SUBTLE, TEXT, USER, WARN,
@@ -236,7 +237,23 @@ pub(super) fn build_composer_line(state: &TuiState) -> Line<'static> {
     }
     if state.input.is_empty() {
         if state.pending_control_picker.is_some() {
-            spans.push(Span::styled("pending queue", Style::default().fg(MUTED)));
+            if let (Some(selected), Some(picker)) = (
+                state.selected_pending_control(),
+                state.pending_control_picker.as_ref(),
+            ) {
+                spans.push(Span::styled("selected ", Style::default().fg(MUTED)));
+                spans.push(Span::styled(
+                    pending_control_kind_label(selected.kind),
+                    Style::default().fg(HEADER),
+                ));
+                spans.push(Span::styled(" · ", Style::default().fg(SUBTLE)));
+                spans.push(Span::styled(
+                    pending_control_focus_label(picker.selected, state.pending_controls.len()),
+                    Style::default().fg(ACCENT),
+                ));
+            } else {
+                spans.push(Span::styled("pending queue", Style::default().fg(MUTED)));
+            }
             spans.push(Span::styled(" · ", Style::default().fg(SUBTLE)));
             spans.push(Span::styled("enter edit", Style::default().fg(MUTED)));
             spans.push(Span::styled(" · ", Style::default().fg(SUBTLE)));

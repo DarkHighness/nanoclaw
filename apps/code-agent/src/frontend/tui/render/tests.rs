@@ -352,18 +352,27 @@ fn composer_line_surfaces_pending_edit_shortcuts() {
 #[test]
 fn composer_line_surfaces_pending_picker_shortcuts() {
     let mut state = TuiState::default();
-    state.pending_controls = vec![PendingControlSummary {
-        id: "cmd_1".to_string(),
-        kind: PendingControlKind::Prompt,
-        preview: "write a regression test".to_string(),
-        reason: None,
-    }];
+    state.pending_controls = vec![
+        PendingControlSummary {
+            id: "cmd_1".to_string(),
+            kind: PendingControlKind::Prompt,
+            preview: "write a regression test".to_string(),
+            reason: None,
+        },
+        PendingControlSummary {
+            id: "cmd_2".to_string(),
+            kind: PendingControlKind::Steer,
+            preview: "keep the diff small".to_string(),
+            reason: Some("inline_enter".to_string()),
+        },
+    ];
     let _ = state.open_pending_control_picker(true);
 
     let line = build_composer_line(&state);
     let text = line_text_for(&line);
 
-    assert!(text.contains("pending queue"));
+    assert!(text.contains("selected steer"));
+    assert!(text.contains("latest draft"));
     assert!(text.contains("enter edit"));
     assert!(text.contains("del withdraw"));
     assert!(text.contains("esc close"));

@@ -1,3 +1,4 @@
+use crate::backend::PendingControlKind;
 use unicode_width::UnicodeWidthStr;
 
 pub(super) fn composer_cursor_width(input: &str) -> u16 {
@@ -23,4 +24,21 @@ pub(super) fn pending_control_reason_label(reason: Option<&str>) -> Option<Strin
         "manual_command" => "from /steer".to_string(),
         _ => reason.replace('_', " "),
     })
+}
+
+pub(super) fn pending_control_kind_label(kind: PendingControlKind) -> &'static str {
+    match kind {
+        PendingControlKind::Prompt => "prompt",
+        PendingControlKind::Steer => "steer",
+    }
+}
+
+pub(super) fn pending_control_focus_label(selected_index: usize, total: usize) -> String {
+    match (selected_index, total) {
+        (_, 0) => "empty queue".to_string(),
+        (_, 1) => "only item".to_string(),
+        (0, _) => "next to run".to_string(),
+        (index, count) if index + 1 == count => "latest draft".to_string(),
+        (index, count) => format!("item {} of {}", index + 1, count),
+    }
 }

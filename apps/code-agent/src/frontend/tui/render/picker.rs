@@ -1,7 +1,10 @@
 use super::super::state::{
     PendingControlEditorState, PendingControlPickerState, TuiState, preview_text,
 };
-use super::shared::pending_control_reason_label as format_pending_control_reason;
+use super::shared::{
+    pending_control_focus_label, pending_control_kind_label,
+    pending_control_reason_label as format_pending_control_reason,
+};
 use super::shell::bottom_band_inner_area;
 use super::theme::{ACCENT, ASSISTANT, BOTTOM_PANE_BG, HEADER, MUTED, SUBTLE, TEXT, USER, WARN};
 use crate::frontend::tui::commands::{SlashCommandHint, SlashCommandSpec};
@@ -277,10 +280,7 @@ fn build_pending_control_row(
     selected: bool,
 ) -> Line<'static> {
     let marker = if selected { "›" } else { " " };
-    let kind_label = match control.kind {
-        crate::backend::PendingControlKind::Prompt => "prompt",
-        crate::backend::PendingControlKind::Steer => "steer",
-    };
+    let kind_label = pending_control_kind_label(control.kind);
     let accent = match control.kind {
         crate::backend::PendingControlKind::Prompt => USER,
         crate::backend::PendingControlKind::Steer => ASSISTANT,
@@ -329,10 +329,7 @@ fn build_pending_control_row(
 fn build_pending_control_context_row(
     control: &crate::backend::PendingControlSummary,
 ) -> Line<'static> {
-    let kind_label = match control.kind {
-        crate::backend::PendingControlKind::Prompt => "prompt",
-        crate::backend::PendingControlKind::Steer => "steer",
-    };
+    let kind_label = pending_control_kind_label(control.kind);
     Line::from(vec![
         Span::styled("  ", Style::default().fg(SUBTLE)),
         Span::styled(kind_label, Style::default().fg(MUTED)),
@@ -349,10 +346,7 @@ fn build_selected_pending_control_block(
     selected_index: usize,
     total: usize,
 ) -> Vec<Line<'static>> {
-    let kind_label = match control.kind {
-        crate::backend::PendingControlKind::Prompt => "prompt",
-        crate::backend::PendingControlKind::Steer => "steer",
-    };
+    let kind_label = pending_control_kind_label(control.kind);
     let accent = match control.kind {
         crate::backend::PendingControlKind::Prompt => USER,
         crate::backend::PendingControlKind::Steer => ASSISTANT,
@@ -408,16 +402,6 @@ fn pending_kind_label(editing: &PendingControlEditorState) -> &'static str {
     match editing.kind {
         crate::backend::PendingControlKind::Prompt => "queued prompt",
         crate::backend::PendingControlKind::Steer => "queued steer",
-    }
-}
-
-fn pending_control_focus_label(selected_index: usize, total: usize) -> String {
-    match (selected_index, total) {
-        (_, 0) => "empty queue".to_string(),
-        (_, 1) => "only item".to_string(),
-        (0, _) => "next to run".to_string(),
-        (index, count) if index + 1 == count => "latest draft".to_string(),
-        (index, count) => format!("item {} of {}", index + 1, count),
     }
 }
 
