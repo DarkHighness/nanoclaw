@@ -33,7 +33,10 @@ use state::TuiState;
 
 use agent::{RuntimeCommand, RuntimeCommandQueue};
 use anyhow::Result;
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::{
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
+    KeyModifiers, MouseEventKind,
+};
 use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
@@ -81,7 +84,7 @@ impl CodeAgentTui {
 
         enable_raw_mode()?;
         let mut stdout = io::stdout();
-        execute!(stdout, EnterAlternateScreen)?;
+        execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
         let backend = CrosstermBackend::new(stdout);
         let mut terminal = Terminal::new(backend)?;
 
@@ -99,7 +102,11 @@ impl CodeAgentTui {
             .await;
 
         disable_raw_mode()?;
-        execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+        execute!(
+            terminal.backend_mut(),
+            LeaveAlternateScreen,
+            DisableMouseCapture
+        )?;
         terminal.show_cursor()?;
         result
     }
@@ -121,108 +128,120 @@ impl CodeAgentTui {
                 sleep(Duration::from_millis(16)).await;
                 continue;
             }
-            if let Event::Key(key) = event::read()? {
-                if key.kind != KeyEventKind::Press {
-                    continue;
-                }
-                if self.handle_approval_key(key) {
-                    continue;
-                }
-                if self.handle_statusline_picker_key(key) {
-                    continue;
-                }
-                match key.code {
-                    KeyCode::Tab => {
-                        if self.apply_command_completion(false) {
-                            continue;
+            match event::read()? {
+                Event::Key(key) => {
+                    if key.kind != KeyEventKind::Press {
+                        continue;
+                    }
+                    if self.handle_approval_key(key) {
+                        continue;
+                    }
+                    if self.handle_statusline_picker_key(key) {
+                        continue;
+                    }
+                    match key.code {
+                        KeyCode::Tab => {
+                            if self.apply_command_completion(false) {
+                                continue;
+                            }
                         }
-                    }
-                    KeyCode::BackTab => {
-                        if self.apply_command_completion(true) {
-                            continue;
+                        KeyCode::BackTab => {
+                            if self.apply_command_completion(true) {
+                                continue;
+                            }
                         }
-                    }
-                    KeyCode::Up => {
-                        if self.move_command_selection(true) {
-                            continue;
+                        KeyCode::Up => {
+                            if self.move_command_selection(true) {
+                                continue;
+                            }
+                            self.ui_state.mutate(|state| state.scroll_focused(-1));
                         }
-                        self.ui_state.mutate(|state| state.scroll_focused(-1));
-                    }
-                    KeyCode::Down => {
-                        if self.move_command_selection(false) {
-                            continue;
+                        KeyCode::Down => {
+                            if self.move_command_selection(false) {
+                                continue;
+                            }
+                            self.ui_state.mutate(|state| state.scroll_focused(1));
                         }
-                        self.ui_state.mutate(|state| state.scroll_focused(1));
-                    }
-                    KeyCode::PageUp => {
-                        self.ui_state.mutate(|state| state.scroll_focused(-8));
-                    }
-                    KeyCode::PageDown => {
-                        self.ui_state.mutate(|state| state.scroll_focused(8));
-                    }
-                    KeyCode::Home => {
-                        self.ui_state.mutate(|state| state.scroll_focused_home());
-                    }
-                    KeyCode::End => {
-                        self.ui_state.mutate(|state| state.scroll_focused_end());
-                    }
-                    KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                        return Ok(());
-                    }
-                    KeyCode::Enter => {
-                        let snapshot = self.ui_state.snapshot();
-                        if snapshot.input.starts_with('/') {
-                            if let Some(action) = resolve_slash_enter_action(
-                                &snapshot.input,
-                                snapshot.command_completion_index,
-                            ) {
-                                match action {
-                                    SlashCommandEnterAction::Complete { input, index } => {
-                                        self.ui_state.mutate(|state| {
-                                            state.input = input;
-                                            state.command_completion_index = index;
-                                        });
-                                        continue;
-                                    }
-                                    SlashCommandEnterAction::Execute(input) => {
-                                        self.ui_state.mutate(|state| {
-                                            state.input.clear();
-                                            state.reset_command_completion();
-                                        });
-                                        if self.apply_command(&input).await? {
-                                            return Ok(());
+                        KeyCode::PageUp => {
+                            self.ui_state.mutate(|state| state.scroll_focused(-8));
+                        }
+                        KeyCode::PageDown => {
+                            self.ui_state.mutate(|state| state.scroll_focused(8));
+                        }
+                        KeyCode::Home => {
+                            self.ui_state.mutate(|state| state.scroll_focused_home());
+                        }
+                        KeyCode::End => {
+                            self.ui_state.mutate(|state| state.scroll_focused_end());
+                        }
+                        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            return Ok(());
+                        }
+                        KeyCode::Enter => {
+                            let snapshot = self.ui_state.snapshot();
+                            if snapshot.input.starts_with('/') {
+                                if let Some(action) = resolve_slash_enter_action(
+                                    &snapshot.input,
+                                    snapshot.command_completion_index,
+                                ) {
+                                    match action {
+                                        SlashCommandEnterAction::Complete { input, index } => {
+                                            self.ui_state.mutate(|state| {
+                                                state.input = input;
+                                                state.command_completion_index = index;
+                                            });
+                                            continue;
                                         }
-                                        continue;
+                                        SlashCommandEnterAction::Execute(input) => {
+                                            self.ui_state.mutate(|state| {
+                                                state.input.clear();
+                                                state.reset_command_completion();
+                                            });
+                                            if self.apply_command(&input).await? {
+                                                return Ok(());
+                                            }
+                                            continue;
+                                        }
                                     }
                                 }
                             }
-                        }
-                        let input = self.ui_state.take_input();
-                        if input.trim().is_empty() {
-                            continue;
-                        }
-                        if input.starts_with('/') {
-                            if self.apply_command(&input).await? {
-                                return Ok(());
+                            let input = self.ui_state.take_input();
+                            if input.trim().is_empty() {
+                                continue;
                             }
-                        } else {
-                            self.start_turn(input).await;
+                            if input.starts_with('/') {
+                                if self.apply_command(&input).await? {
+                                    return Ok(());
+                                }
+                            } else {
+                                self.start_turn(input).await;
+                            }
                         }
+                        KeyCode::Backspace => {
+                            self.ui_state.mutate(|state| {
+                                state.input.pop();
+                                state.reset_command_completion();
+                            });
+                        }
+                        KeyCode::Char(ch) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            self.ui_state.mutate(|state| {
+                                state.input.push(ch);
+                                state.reset_command_completion();
+                            });
+                        }
+                        _ => {}
                     }
-                    KeyCode::Backspace => {
-                        self.ui_state.mutate(|state| {
-                            state.input.pop();
-                            state.reset_command_completion();
-                        });
+                }
+                Event::Mouse(mouse) => match mouse.kind {
+                    MouseEventKind::ScrollUp => {
+                        self.ui_state.mutate(|state| state.scroll_focused(-3));
                     }
-                    KeyCode::Char(ch) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                        self.ui_state.mutate(|state| {
-                            state.input.push(ch);
-                            state.reset_command_completion();
-                        });
+                    MouseEventKind::ScrollDown => {
+                        self.ui_state.mutate(|state| state.scroll_focused(3));
                     }
                     _ => {}
-                }
+                },
+                _ => {}
             }
         }
     }
@@ -486,6 +505,8 @@ impl CodeAgentTui {
         let preview = queued_command_preview(&command);
         self.ui_state.mutate(|state| {
             state.show_transcript_pane();
+            state.follow_transcript = true;
+            state.transcript_scroll = u16::MAX;
             state.turn_running = true;
             state.turn_started_at = Some(Instant::now());
             state.active_tool_label = None;
@@ -953,6 +974,7 @@ impl CodeAgentTui {
                 let transcript_count = loaded.summary.transcript_message_count;
                 self.ui_state.mutate(move |state| {
                     state.show_transcript_pane();
+                    state.follow_transcript = false;
                     state.inspector_title = "Agent Session".to_string();
                     state.inspector_scroll = 0;
                     state.inspector = inspector;
@@ -1073,6 +1095,7 @@ impl CodeAgentTui {
                 let transcript_count = loaded.summary.transcript_message_count;
                 self.ui_state.mutate(move |state| {
                     state.show_transcript_pane();
+                    state.follow_transcript = false;
                     state.inspector_title = "Session".to_string();
                     state.inspector_scroll = 0;
                     state.inspector = inspector;
@@ -1102,6 +1125,7 @@ impl CodeAgentTui {
                 let transcript_count = loaded.child_transcript.len();
                 self.ui_state.mutate(move |state| {
                     state.show_transcript_pane();
+                    state.follow_transcript = false;
                     state.inspector_title = "Task".to_string();
                     state.inspector_scroll = 0;
                     state.inspector = inspector;
@@ -1198,6 +1222,7 @@ impl CodeAgentTui {
                 statusline: snapshot.statusline.clone(),
             },
             status: "Ready for your next instruction".to_string(),
+            follow_transcript: true,
             ..TuiState::default()
         };
         state.push_activity("session ready");
@@ -1218,8 +1243,9 @@ impl CodeAgentTui {
         startup.session.statusline = statusline;
         startup.session.queued_commands = 0;
         startup.show_transcript_pane();
+        startup.follow_transcript = true;
         startup.transcript = format_visible_transcript_lines(&outcome.transcript);
-        startup.transcript_scroll = 0;
+        startup.transcript_scroll = u16::MAX;
 
         match outcome.action {
             SessionOperationAction::StartedFresh => {

@@ -176,11 +176,16 @@ fn format_model_label(state: &TuiState) -> String {
 
 fn format_context_window_label(state: &TuiState) -> String {
     match state.session.token_ledger.context_window {
-        Some(window) => format!(
-            "ctx {}/{}",
-            compact_usize(window.used_tokens),
-            compact_usize(window.max_tokens)
-        ),
+        Some(window) if window.max_tokens > 0 => {
+            let usage = window.used_tokens.saturating_mul(100) / window.max_tokens;
+            format!(
+                "ctx {} / {} tok ({}%)",
+                compact_usize(window.used_tokens),
+                compact_usize(window.max_tokens),
+                usage
+            )
+        }
+        Some(window) => format!("ctx {} / 0 tok (--)", compact_usize(window.used_tokens)),
         None => "ctx --".to_string(),
     }
 }
@@ -203,17 +208,16 @@ fn compact_usize(value: usize) -> String {
 fn compact_u64(value: u64) -> String {
     match value {
         0..=999 => value.to_string(),
-        1_000..=999_999 => format!("{:.1}k", value as f64 / 1_000.0)
-            .trim_end_matches(".0k")
-            .to_string()
-            .replace(".k", "k"),
-        1_000_000..=999_999_999 => format!("{:.1}m", value as f64 / 1_000_000.0)
-            .trim_end_matches(".0m")
-            .to_string()
-            .replace(".m", "m"),
-        _ => format!("{:.1}b", value as f64 / 1_000_000_000.0)
-            .trim_end_matches(".0b")
-            .to_string()
-            .replace(".b", "b"),
+        1_000..=999_999 => compact_with_suffix(value, 1_000, "k"),
+        1_000_000..=999_999_999 => compact_with_suffix(value, 1_000_000, "m"),
+        _ => compact_with_suffix(value, 1_000_000_000, "b"),
+    }
+}
+
+fn compact_with_suffix(value: u64, divisor: u64, suffix: &str) -> String {
+    if value % divisor == 0 {
+        format!("{}{}", value / divisor, suffix)
+    } else {
+        format!("{:.1}{suffix}", value as f64 / divisor as f64).replace(".0", "")
     }
 }

@@ -21,6 +21,7 @@ use ratatui::widgets::Block;
 use shell::{bottom_layout_constraints, composer_inner_area, render_main_pane, render_side_rail};
 use statusline::render_status_line;
 use theme::*;
+use unicode_width::UnicodeWidthStr;
 
 pub(crate) fn render(
     frame: &mut ratatui::Frame<'_>,
@@ -91,9 +92,13 @@ pub(crate) fn render(
         composer_inner
             .x
             .saturating_add(prefix_width)
-            .saturating_add(state.input.chars().count() as u16),
+            .saturating_add(composer_cursor_width(&state.input)),
         composer_inner.y,
     ));
+}
+
+fn composer_cursor_width(input: &str) -> u16 {
+    UnicodeWidthStr::width(input).min(u16::MAX as usize) as u16
 }
 
 fn clamp_scroll(requested: u16, content_lines: usize, viewport_height: u16) -> u16 {
@@ -950,6 +955,31 @@ mod tests {
                 .iter()
                 .any(|span| { span.content.as_ref().contains("session_") })
         );
+    }
+
+    #[test]
+    fn footer_context_window_includes_units_and_percent() {
+        let mut state = TuiState::default();
+        state.session.token_ledger.context_window = Some(agent::types::ContextWindowUsage {
+            used_tokens: 30_000,
+            max_tokens: 400_000,
+        });
+
+        let footer = format_footer_context(&state);
+
+        assert!(
+            footer
+                .spans
+                .iter()
+                .any(|span| span.content.as_ref().contains("ctx 30k / 400k tok (7%)"))
+        );
+    }
+
+    #[test]
+    fn composer_cursor_width_accounts_for_wide_characters() {
+        assert_eq!(super::composer_cursor_width("hello"), 5);
+        assert_eq!(super::composer_cursor_width("你好"), 4);
+        assert_eq!(super::composer_cursor_width("A你B"), 4);
     }
 
     #[test]

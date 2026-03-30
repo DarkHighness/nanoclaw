@@ -66,6 +66,7 @@ pub(crate) struct TuiState {
     pub(crate) command_completion_index: usize,
     pub(crate) transcript: Vec<String>,
     pub(crate) transcript_scroll: u16,
+    pub(crate) follow_transcript: bool,
     pub(crate) inspector_title: String,
     pub(crate) inspector: Vec<String>,
     pub(crate) inspector_scroll: u16,
@@ -148,7 +149,9 @@ impl TuiState {
 
     pub(crate) fn push_transcript(&mut self, line: impl Into<String>) {
         self.transcript.push(line.into());
-        self.transcript_scroll = u16::MAX;
+        if self.follow_transcript {
+            self.transcript_scroll = u16::MAX;
+        }
     }
 
     pub(crate) fn reset_command_completion(&mut self) {
@@ -157,21 +160,32 @@ impl TuiState {
 
     pub(crate) fn scroll_focused(&mut self, delta: i16) {
         match self.main_pane {
-            MainPaneMode::Transcript => bump_scroll(&mut self.transcript_scroll, delta),
+            MainPaneMode::Transcript => {
+                // Manual transcript scrolling detaches the viewport from live
+                // follow mode until the operator explicitly jumps back to end.
+                self.follow_transcript = false;
+                bump_scroll(&mut self.transcript_scroll, delta);
+            }
             MainPaneMode::View => bump_scroll(&mut self.inspector_scroll, delta),
         }
     }
 
     pub(crate) fn scroll_focused_home(&mut self) {
         match self.main_pane {
-            MainPaneMode::Transcript => self.transcript_scroll = 0,
+            MainPaneMode::Transcript => {
+                self.follow_transcript = false;
+                self.transcript_scroll = 0;
+            }
             MainPaneMode::View => self.inspector_scroll = 0,
         }
     }
 
     pub(crate) fn scroll_focused_end(&mut self) {
         match self.main_pane {
-            MainPaneMode::Transcript => self.transcript_scroll = u16::MAX,
+            MainPaneMode::Transcript => {
+                self.follow_transcript = true;
+                self.transcript_scroll = u16::MAX;
+            }
             MainPaneMode::View => self.inspector_scroll = u16::MAX,
         }
     }
@@ -309,7 +323,7 @@ fn git_repo_name(workspace_root: &Path) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::git_snapshot;
+    use super::{MainPaneMode, TuiState, git_snapshot};
     use tempfile::tempdir;
 
     #[test]
@@ -320,5 +334,46 @@ mod tests {
         assert!(!snapshot.available);
         assert!(snapshot.repo_name.is_empty());
         assert!(snapshot.branch.is_empty());
+    }
+
+    #[test]
+    fn transcript_push_keeps_manual_scroll_position_until_follow_is_restored() {
+        let mut state = TuiState {
+            main_pane: MainPaneMode::Transcript,
+            follow_transcript: true,
+            ..TuiState::default()
+        };
+
+        state.push_transcript("first");
+        assert_eq!(state.transcript_scroll, u16::MAX);
+
+        state.scroll_focused(-2);
+        assert!(!state.follow_transcript);
+
+        state.push_transcript("second");
+        assert_eq!(state.transcript_scroll, u16::MAX.saturating_sub(2));
+
+        state.scroll_focused_end();
+        assert!(state.follow_transcript);
+
+        state.push_transcript("third");
+        assert_eq!(state.transcript_scroll, u16::MAX);
+    }
+
+    #[test]
+    fn transcript_home_disables_follow_until_end_is_requested() {
+        let mut state = TuiState {
+            main_pane: MainPaneMode::Transcript,
+            follow_transcript: true,
+            ..TuiState::default()
+        };
+
+        state.scroll_focused_home();
+        assert_eq!(state.transcript_scroll, 0);
+        assert!(!state.follow_transcript);
+
+        state.scroll_focused_end();
+        assert_eq!(state.transcript_scroll, u16::MAX);
+        assert!(state.follow_transcript);
     }
 }

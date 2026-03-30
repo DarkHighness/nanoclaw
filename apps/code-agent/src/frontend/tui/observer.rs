@@ -54,7 +54,9 @@ impl SharedRenderObserver {
                     state.push_transcript(format!("• {delta}"));
                     self.active_assistant_line = Some(state.transcript.len() - 1);
                 }
-                state.transcript_scroll = u16::MAX;
+                if state.follow_transcript {
+                    state.transcript_scroll = u16::MAX;
+                }
                 state.status = "Working".to_string();
             }
             SessionEvent::CompactionCompleted {
@@ -563,7 +565,9 @@ fn replace_tool_line(
     if let Some(index) = index {
         if let Some(line) = state.transcript.get_mut(index) {
             *line = replacement;
-            state.transcript_scroll = u16::MAX;
+            if state.follow_transcript {
+                state.transcript_scroll = u16::MAX;
+            }
             return;
         }
     }
@@ -581,7 +585,9 @@ fn replace_or_push_tool_line(
     if let Some(index) = index {
         if let Some(line) = state.transcript.get_mut(index) {
             *line = replacement;
-            state.transcript_scroll = u16::MAX;
+            if state.follow_transcript {
+                state.transcript_scroll = u16::MAX;
+            }
             return index;
         }
     }
