@@ -267,20 +267,10 @@ pub(super) fn build_pending_control_text(state: &TuiState) -> Text<'static> {
                 state.pending_controls.len(),
             ));
         }
-        lines.push(Line::from(vec![
-            Span::styled("↑↓", Style::default().fg(MUTED)),
-            Span::styled(" move", Style::default().fg(MUTED)),
-            Span::styled(" · ", Style::default().fg(SUBTLE)),
-            Span::styled("enter edit", Style::default().fg(MUTED)),
-            Span::styled(" · ", Style::default().fg(SUBTLE)),
-            Span::styled("del withdraw", Style::default().fg(MUTED)),
-            Span::styled(" · ", Style::default().fg(SUBTLE)),
-            Span::styled("esc close", Style::default().fg(MUTED)),
-        ]));
     } else if let Some(selected) = selected.or_else(|| state.pending_controls.last().cloned()) {
         lines.push(build_pending_control_row(&selected, true));
         lines.push(Line::from(Span::styled(
-            "alt+up open queue · enter/tab save edits",
+            "alt+up open queue",
             Style::default().fg(SUBTLE),
         )));
     }

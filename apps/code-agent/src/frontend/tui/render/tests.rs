@@ -314,6 +314,11 @@ fn pending_control_band_surfaces_selected_prompt_and_editing_state() {
             .iter()
             .any(|line| line_text_for(line).contains("from Enter while running"))
     );
+    assert!(
+        text.lines
+            .iter()
+            .all(|line| !line_text_for(line).contains("enter edit"))
+    );
 
     let selected = state.begin_pending_control_edit().unwrap();
     assert_eq!(selected.id, "cmd_2");
@@ -340,6 +345,26 @@ fn composer_line_surfaces_pending_edit_shortcuts() {
     assert!(text.contains("edit queued steer"));
     assert!(text.contains("enter/tab save"));
     assert!(text.contains("esc cancel"));
+}
+
+#[test]
+fn composer_line_surfaces_pending_picker_shortcuts() {
+    let mut state = TuiState::default();
+    state.pending_controls = vec![PendingControlSummary {
+        id: "cmd_1".to_string(),
+        kind: PendingControlKind::Prompt,
+        preview: "write a regression test".to_string(),
+        reason: None,
+    }];
+    let _ = state.open_pending_control_picker(true);
+
+    let line = build_composer_line(&state);
+    let text = line_text_for(&line);
+
+    assert!(text.contains("pending queue"));
+    assert!(text.contains("enter edit"));
+    assert!(text.contains("del withdraw"));
+    assert!(text.contains("esc close"));
 }
 
 #[test]

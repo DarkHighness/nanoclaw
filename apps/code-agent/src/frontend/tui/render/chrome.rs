@@ -240,10 +240,20 @@ pub(super) fn build_composer_line(state: &TuiState) -> Line<'static> {
         spans.push(Span::styled(" · ", Style::default().fg(SUBTLE)));
     }
     if state.input.is_empty() {
-        spans.push(Span::styled(
-            "Type a prompt or /help",
-            Style::default().fg(SUBTLE),
-        ));
+        if state.pending_control_picker.is_some() {
+            spans.push(Span::styled("pending queue", Style::default().fg(MUTED)));
+            spans.push(Span::styled(" · ", Style::default().fg(SUBTLE)));
+            spans.push(Span::styled("enter edit", Style::default().fg(MUTED)));
+            spans.push(Span::styled(" · ", Style::default().fg(SUBTLE)));
+            spans.push(Span::styled("del withdraw", Style::default().fg(MUTED)));
+            spans.push(Span::styled(" · ", Style::default().fg(SUBTLE)));
+            spans.push(Span::styled("esc close", Style::default().fg(MUTED)));
+        } else {
+            spans.push(Span::styled(
+                "Type a prompt or /help",
+                Style::default().fg(SUBTLE),
+            ));
+        }
         return Line::from(spans);
     }
 
