@@ -13,7 +13,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Margin, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
+use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
 use std::io::{self, Stdout};
 
 const BG: Color = Color::Rgb(15, 17, 20);
@@ -27,7 +27,6 @@ const USER: Color = Color::Rgb(221, 188, 128);
 const HEADER: Color = Color::Rgb(244, 244, 239);
 const WARN: Color = Color::Rgb(223, 179, 88);
 const ERROR: Color = Color::Rgb(227, 125, 118);
-const BORDER_ACTIVE: Color = Color::Rgb(165, 168, 160);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum StartupPromptSelection {
@@ -190,12 +189,7 @@ fn render_prompt(
     frame.render_widget(Block::default().style(Style::default().bg(BG)), area);
     frame.render_widget(Clear, layout.popup);
     frame.render_widget(
-        Block::default()
-            .title(" Startup Safety Check ")
-            .title_style(Style::default().fg(HEADER).add_modifier(Modifier::BOLD))
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(BORDER_ACTIVE))
-            .style(Style::default().bg(FOOTER_BG)),
+        Block::default().style(Style::default().bg(FOOTER_BG)),
         layout.popup,
     );
 
@@ -237,7 +231,7 @@ fn render_prompt(
         ACCENT,
     );
     frame.render_widget(
-        Paragraph::new(build_footer_text(state))
+        Paragraph::new(build_footer_text())
             .wrap(Wrap { trim: false })
             .style(Style::default().fg(MUTED).bg(FOOTER_BG)),
         layout.footer,
@@ -251,26 +245,25 @@ fn render_action_button(
     selected: bool,
     accent: Color,
 ) {
-    let border_style = if selected {
-        Style::default().fg(accent).add_modifier(Modifier::BOLD)
+    let (background, foreground) = if selected {
+        (accent, BG)
     } else {
-        Style::default().fg(SUBTLE)
-    };
-    let text_style = if selected {
-        Style::default().fg(HEADER).add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(TEXT)
+        (FOOTER_BG, MUTED)
     };
     frame.render_widget(
-        Paragraph::new(label)
+        Paragraph::new(format!(" {label} "))
             .alignment(Alignment::Center)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(border_style)
-                    .style(Style::default().bg(BOTTOM_PANE_BG)),
-            )
-            .style(text_style.bg(BOTTOM_PANE_BG)),
+            .block(Block::default().style(Style::default().bg(background)))
+            .style(
+                Style::default()
+                    .fg(foreground)
+                    .bg(background)
+                    .add_modifier(if selected {
+                        Modifier::BOLD
+                    } else {
+                        Modifier::empty()
+                    }),
+            ),
         area,
     );
 }
@@ -279,17 +272,28 @@ fn build_summary_text() -> Text<'static> {
     Text::from(vec![
         Line::from(vec![
             Span::styled(
-                "warning",
-                Style::default().fg(WARN).add_modifier(Modifier::BOLD),
+                "startup safety check",
+                Style::default().fg(MUTED).add_modifier(Modifier::BOLD),
             ),
             Span::styled(" · ", Style::default().fg(SUBTLE)),
             Span::styled(
-                "sandbox backend unavailable for the configured runtime policy",
+                "sandbox enforcement unavailable",
                 Style::default().fg(HEADER).add_modifier(Modifier::BOLD),
             ),
         ]),
+        Line::from(vec![
+            Span::styled(
+                "HIGH RISK",
+                Style::default().fg(ERROR).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" · ", Style::default().fg(SUBTLE)),
+            Span::styled(
+                "continuing will disable sandbox enforcement for this run.",
+                Style::default().fg(ERROR).add_modifier(Modifier::BOLD),
+            ),
+        ]),
         Line::from(vec![Span::styled(
-            "The current host can start the session, but it cannot enforce the requested sandbox backend.",
+            "Shell access, command hooks, stdio MCP servers, and managed code-intel helpers stay degraded.",
             Style::default().fg(MUTED),
         )]),
     ])
@@ -301,12 +305,10 @@ fn build_notice_text(notice: &SandboxFallbackNotice) -> Text<'static> {
     lines.push(Line::raw(""));
     lines.extend(build_detail_section("reason", &notice.reason, ACCENT));
     lines.push(Line::raw(""));
-    lines.extend(build_detail_section("risk", &notice.risk_summary, WARN));
-    lines.push(Line::raw(""));
-    lines.push(build_section_label("setup", ACCENT));
+    lines.push(build_section_label("fix on host", WARN));
     lines.extend(notice.setup_steps.iter().enumerate().map(|(index, step)| {
         Line::from(vec![
-            Span::styled("  └ ", Style::default().fg(SUBTLE)),
+            Span::styled("  ", Style::default().fg(SUBTLE)),
             Span::styled(
                 format!("{}. ", index + 1),
                 Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
@@ -331,20 +333,11 @@ fn build_prompt_text() -> Text<'static> {
     ])])
 }
 
-fn build_footer_text(state: &StartupPromptState) -> Text<'static> {
-    let (selection, color) = match state.selection {
-        StartupPromptSelection::Abort => ("abort startup", ERROR),
-        StartupPromptSelection::Continue => ("continue without sandbox", ACCENT),
-    };
+fn build_footer_text() -> Text<'static> {
     Text::from(vec![Line::from(vec![
-        Span::styled("selected", Style::default().fg(MUTED)),
+        Span::styled("default deny", Style::default().fg(ERROR)),
         Span::styled(" · ", Style::default().fg(SUBTLE)),
-        Span::styled(
-            selection,
-            Style::default().fg(color).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(" · ", Style::default().fg(SUBTLE)),
-        Span::styled("←/→ or Tab", Style::default().fg(ACCENT)),
+        Span::styled("Tab", Style::default().fg(ACCENT)),
         Span::styled(" switch", Style::default().fg(MUTED)),
         Span::styled(" · ", Style::default().fg(SUBTLE)),
         Span::styled("Enter", Style::default().fg(HEADER)),
@@ -360,7 +353,7 @@ fn build_footer_text(state: &StartupPromptState) -> Text<'static> {
 
 fn build_section_label(label: &'static str, color: Color) -> Line<'static> {
     Line::from(vec![Span::styled(
-        format!("• {label}"),
+        label,
         Style::default().fg(color).add_modifier(Modifier::BOLD),
     )])
 }
@@ -369,41 +362,41 @@ fn build_detail_section(label: &'static str, value: &str, color: Color) -> Vec<L
     vec![
         build_section_label(label, color),
         Line::from(vec![
-            Span::styled("  └ ", Style::default().fg(SUBTLE)),
+            Span::styled("  ", Style::default().fg(SUBTLE)),
             Span::styled(value.to_string(), Style::default().fg(TEXT)),
         ]),
     ]
 }
 
 fn startup_prompt_layout(area: Rect) -> StartupPromptLayout {
-    let popup = centered_rect(area, 80, 74);
+    let popup = centered_rect(area, 74, 68);
     let inner = popup.inner(Margin {
         vertical: 1,
-        horizontal: 1,
+        horizontal: 2,
     });
     let sections = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(2),
+            Constraint::Length(3),
             Constraint::Min(10),
-            Constraint::Length(4),
+            Constraint::Length(2),
             Constraint::Length(1),
         ])
         .split(inner);
     let action_inner = sections[2].inner(Margin {
         vertical: 0,
-        horizontal: 1,
+        horizontal: 0,
     });
     let action_sections = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Length(3)])
+        .constraints([Constraint::Length(1), Constraint::Length(1)])
         .split(action_inner);
     let buttons = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Percentage(48),
+            Constraint::Percentage(38),
             Constraint::Percentage(4),
-            Constraint::Percentage(48),
+            Constraint::Percentage(58),
         ])
         .split(action_sections[1]);
     StartupPromptLayout {
@@ -448,13 +441,14 @@ fn rect_contains(rect: Rect, column: u16, row: u16) -> bool {
 mod tests {
     use super::{
         StartupPromptSelection, StartupPromptState, build_footer_text, build_notice_text,
-        startup_prompt_layout,
+        build_summary_text, startup_prompt_layout,
     };
     use crate::backend::SandboxFallbackNotice;
     use crossterm::event::{
         KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
     };
     use ratatui::layout::Rect;
+    use ratatui::text::Text;
 
     #[test]
     fn startup_prompt_defaults_to_abort() {
@@ -542,46 +536,55 @@ mod tests {
             })
             .collect::<Vec<_>>();
 
-        assert!(lines.iter().any(|line| line == "• policy"));
-        assert!(lines.iter().any(|line| line.contains("└ workspace-write")));
-        assert!(lines.iter().any(|line| line == "• reason"));
+        assert!(lines.iter().any(|line| line == "policy"));
+        assert!(lines.iter().any(|line| line.contains("  workspace-write")));
+        assert!(lines.iter().any(|line| line == "reason"));
         assert!(lines.iter().any(|line| line.contains("uid map denied")));
-        assert!(lines.iter().any(|line| line == "• risk"));
-        assert!(lines.iter().any(|line| line.contains("sandbox disabled")));
-        assert!(lines.iter().any(|line| line == "• setup"));
+        assert!(lines.iter().any(|line| line == "fix on host"));
         assert!(
             lines
                 .iter()
-                .any(|line| line.contains("└ 1. Install bubblewrap"))
+                .any(|line| line.contains("  1. Install bubblewrap"))
         );
         assert!(
             lines
                 .iter()
-                .any(|line| line.contains("└ 2. Enable user namespaces"))
+                .any(|line| line.contains("  2. Enable user namespaces"))
         );
     }
 
     #[test]
-    fn startup_prompt_footer_tracks_the_selected_action() {
-        let mut state = StartupPromptState::default();
-        let default_line = footer_line(&state);
-        assert!(default_line.contains("abort startup"));
+    fn startup_prompt_summary_marks_the_risk_as_severe() {
+        let lines = flatten_text(build_summary_text());
+        assert!(lines.iter().any(|line| line.contains("HIGH RISK")));
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("disable sandbox enforcement"))
+        );
+    }
 
-        state.selection = StartupPromptSelection::Continue;
-        let continue_line = footer_line(&state);
-        assert!(continue_line.contains("continue without sandbox"));
-        assert!(continue_line.contains("Enter confirm"));
+    #[test]
+    fn startup_prompt_footer_stays_short_and_operator_facing() {
+        let line = flatten_text(build_footer_text()).join(" ");
+        assert!(line.contains("default deny"));
+        assert!(line.contains("Tab switch"));
+        assert!(line.contains("Enter confirm"));
     }
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
     }
 
-    fn footer_line(state: &StartupPromptState) -> String {
-        build_footer_text(state)
-            .lines
+    fn flatten_text(text: Text<'static>) -> Vec<String> {
+        text.lines
             .iter()
-            .flat_map(|line| line.spans.iter().map(|span| span.content.as_ref()))
-            .collect::<String>()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
     }
 }
