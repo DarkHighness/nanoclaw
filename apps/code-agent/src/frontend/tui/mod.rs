@@ -63,6 +63,13 @@ enum OperatorTaskOutcome {
     WaitLiveTask(LiveTaskWaitOutcome),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PlainInputSubmitAction {
+    StartPrompt,
+    QueuePrompt,
+    QueueSteer,
+}
+
 impl CodeAgentTui {
     pub fn new(
         session: CodeAgentSession,
@@ -148,6 +155,16 @@ impl CodeAgentTui {
                     }
                     match key.code {
                         KeyCode::Tab => {
+                            let snapshot = self.ui_state.snapshot();
+                            if let Some(action) = plain_input_submit_action(
+                                &snapshot.input,
+                                snapshot.turn_running,
+                                KeyCode::Tab,
+                            ) {
+                                let input = self.ui_state.take_input();
+                                self.apply_plain_input_submit(action, input).await;
+                                continue;
+                            }
                             if self.apply_command_completion(false) {
                                 continue;
                             }
@@ -227,6 +244,14 @@ impl CodeAgentTui {
                                 }
                             }
                             let input = self.ui_state.take_input();
+                            if let Some(action) = plain_input_submit_action(
+                                &input,
+                                snapshot.turn_running,
+                                KeyCode::Enter,
+                            ) {
+                                self.apply_plain_input_submit(action, input).await;
+                                continue;
+                            }
                             if input.trim().is_empty() {
                                 continue;
                             }
@@ -503,23 +528,57 @@ impl CodeAgentTui {
         Ok(())
     }
 
+    async fn apply_plain_input_submit(&mut self, action: PlainInputSubmitAction, input: String) {
+        match action {
+            PlainInputSubmitAction::StartPrompt => self.start_turn(input).await,
+            PlainInputSubmitAction::QueuePrompt => {
+                self.queue_prompt_behind_active_turn(input).await;
+            }
+            PlainInputSubmitAction::QueueSteer => {
+                self.queue_steer_behind_active_turn(input, Some("inline_enter".to_string()))
+                    .await;
+            }
+        }
+    }
+
     async fn start_turn(&mut self, prompt: String) {
         if self.turn_task.is_some() {
-            let queued = self.command_queue.push_prompt(prompt.clone()).await;
-            let depth = self.command_queue.len().await;
-            self.ui_state.mutate(|state| {
-                state.session.queued_commands = depth;
-                state.status = "Queued prompt behind the active turn".to_string();
-                state.push_activity(format!(
-                    "queued prompt {}: {}",
-                    queued.id,
-                    state::preview_text(&prompt, 40)
-                ));
-            });
+            self.queue_prompt_behind_active_turn(prompt).await;
             return;
         }
 
         self.start_command(RuntimeCommand::Prompt { prompt }).await;
+    }
+
+    async fn queue_prompt_behind_active_turn(&mut self, prompt: String) {
+        let queued = self.command_queue.push_prompt(prompt.clone()).await;
+        let depth = self.command_queue.len().await;
+        self.ui_state.mutate(|state| {
+            state.session.queued_commands = depth;
+            state.status = "Queued prompt behind the active turn".to_string();
+            state.push_activity(format!(
+                "queued prompt {}: {}",
+                queued.id,
+                state::preview_text(&prompt, 40)
+            ));
+        });
+    }
+
+    async fn queue_steer_behind_active_turn(&mut self, message: String, reason: Option<String>) {
+        // The root runtime still executes one turn at a time under a single
+        // host-owned handle. Queueing keeps the operator shortcut honest until
+        // the runtime grows an actual concurrent steer mailbox for root turns.
+        let queued = self.command_queue.push_steer(message.clone(), reason).await;
+        let depth = self.command_queue.len().await;
+        self.ui_state.mutate(|state| {
+            state.session.queued_commands = depth;
+            state.status = "Queued steer behind the active turn".to_string();
+            state.push_activity(format!(
+                "queued steer {}: {}",
+                queued.id,
+                state::preview_text(&message, 40)
+            ));
+        });
     }
 
     async fn start_command(&mut self, command: RuntimeCommand) {
@@ -730,20 +789,11 @@ impl CodeAgentTui {
                     return Ok(false);
                 };
                 if self.turn_task.is_some() {
-                    let queued = self
-                        .command_queue
-                        .push_steer(message.clone(), Some("queued_command".to_string()))
-                        .await;
-                    let depth = self.command_queue.len().await;
-                    self.ui_state.mutate(|state| {
-                        state.session.queued_commands = depth;
-                        state.status = "Queued steer behind the active turn".to_string();
-                        state.push_activity(format!(
-                            "queued steer {}: {}",
-                            queued.id,
-                            state::preview_text(&message, 40)
-                        ));
-                    });
+                    self.queue_steer_behind_active_turn(
+                        message,
+                        Some("queued_command".to_string()),
+                    )
+                    .await;
                     return Ok(false);
                 }
                 self.start_command(RuntimeCommand::Steer {
@@ -1338,6 +1388,22 @@ impl CodeAgentTui {
     }
 }
 
+fn plain_input_submit_action(
+    input: &str,
+    turn_running: bool,
+    key: KeyCode,
+) -> Option<PlainInputSubmitAction> {
+    if input.trim().is_empty() || input.starts_with('/') {
+        return None;
+    }
+    match (turn_running, key) {
+        (true, KeyCode::Enter) => Some(PlainInputSubmitAction::QueueSteer),
+        (true, KeyCode::Tab) => Some(PlainInputSubmitAction::QueuePrompt),
+        (false, KeyCode::Enter) => Some(PlainInputSubmitAction::StartPrompt),
+        _ => None,
+    }
+}
+
 fn queued_command_preview(command: &RuntimeCommand) -> String {
     match command {
         RuntimeCommand::Prompt { prompt } => {
@@ -1444,6 +1510,8 @@ mod tests {
     use super::build_startup_inspector;
     use super::commands::command_palette_lines;
     use super::state::SessionSummary;
+    use super::{PlainInputSubmitAction, plain_input_submit_action};
+    use crossterm::event::KeyCode;
     use std::path::PathBuf;
 
     #[test]
@@ -1507,6 +1575,38 @@ mod tests {
             lines.iter().any(|line| {
                 line.starts_with("/spawn_task <role> <prompt>  launch child agent")
             })
+        );
+    }
+
+    #[test]
+    fn running_enter_queues_steer() {
+        assert_eq!(
+            plain_input_submit_action("tighten the plan", true, KeyCode::Enter),
+            Some(PlainInputSubmitAction::QueueSteer)
+        );
+    }
+
+    #[test]
+    fn running_tab_queues_prompt() {
+        assert_eq!(
+            plain_input_submit_action("write a regression test", true, KeyCode::Tab),
+            Some(PlainInputSubmitAction::QueuePrompt)
+        );
+    }
+
+    #[test]
+    fn idle_enter_starts_prompt() {
+        assert_eq!(
+            plain_input_submit_action("write a regression test", false, KeyCode::Enter),
+            Some(PlainInputSubmitAction::StartPrompt)
+        );
+    }
+
+    #[test]
+    fn slash_input_keeps_command_flow() {
+        assert_eq!(
+            plain_input_submit_action("/help", true, KeyCode::Enter),
+            None
         );
     }
 }
