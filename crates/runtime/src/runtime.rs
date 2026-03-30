@@ -112,6 +112,11 @@ impl AgentRuntime {
     }
 
     #[must_use]
+    pub fn tool_registry_handle(&self) -> ToolRegistry {
+        self.tool_registry.clone()
+    }
+
+    #[must_use]
     pub fn control_plane(&self) -> RuntimeControlPlane {
         self.control_plane.clone()
     }

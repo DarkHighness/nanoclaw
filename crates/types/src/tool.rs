@@ -5,9 +5,10 @@ use serde_json::Value;
 use std::borrow::Borrow;
 use std::fmt;
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolOutputMode {
+    #[default]
     Text,
     ContentParts,
 }
@@ -102,7 +103,7 @@ pub enum ToolSource {
     },
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default, JsonSchema)]
 pub struct ToolAvailability {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub feature_flags: Vec<String>,
@@ -114,7 +115,113 @@ pub struct ToolAvailability {
     pub hidden_from_model: bool,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct DynamicToolSpec {
+    pub name: ToolName,
+    pub description: String,
+    pub input_schema: Value,
+    #[serde(default)]
+    pub output_mode: ToolOutputMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_schema: Option<Value>,
+    #[serde(default)]
+    pub defer_loading: bool,
+    #[serde(default)]
+    pub aliases: Vec<ToolName>,
+    #[serde(default)]
+    pub supports_parallel_tool_calls: bool,
+    #[serde(default)]
+    pub availability: ToolAvailability,
+    #[serde(default)]
+    pub approval: ToolApprovalProfile,
+}
+
+impl DynamicToolSpec {
+    #[must_use]
+    pub fn function(
+        name: impl Into<ToolName>,
+        description: impl Into<String>,
+        input_schema: Value,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            description: description.into(),
+            input_schema,
+            output_mode: ToolOutputMode::Text,
+            output_schema: None,
+            defer_loading: false,
+            aliases: Vec::new(),
+            supports_parallel_tool_calls: false,
+            availability: ToolAvailability::default(),
+            approval: ToolApprovalProfile::default(),
+        }
+    }
+
+    #[must_use]
+    pub fn with_output_mode(mut self, output_mode: ToolOutputMode) -> Self {
+        self.output_mode = output_mode;
+        self
+    }
+
+    #[must_use]
+    pub fn with_output_schema(mut self, output_schema: Value) -> Self {
+        self.output_schema = Some(output_schema);
+        self
+    }
+
+    #[must_use]
+    pub fn with_defer_loading(mut self, defer_loading: bool) -> Self {
+        self.defer_loading = defer_loading;
+        self
+    }
+
+    #[must_use]
+    pub fn with_aliases(mut self, aliases: Vec<ToolName>) -> Self {
+        self.aliases = aliases;
+        self
+    }
+
+    #[must_use]
+    pub fn with_parallel_support(mut self, supports_parallel_tool_calls: bool) -> Self {
+        self.supports_parallel_tool_calls = supports_parallel_tool_calls;
+        self
+    }
+
+    #[must_use]
+    pub fn with_availability(mut self, availability: ToolAvailability) -> Self {
+        self.availability = availability;
+        self
+    }
+
+    #[must_use]
+    pub fn with_approval(mut self, approval: ToolApprovalProfile) -> Self {
+        self.approval = approval;
+        self
+    }
+
+    #[must_use]
+    pub fn into_tool_spec(self) -> ToolSpec {
+        let mut tool = ToolSpec::function(
+            self.name,
+            self.description,
+            self.input_schema,
+            self.output_mode,
+            ToolOrigin::Local,
+            ToolSource::Dynamic,
+        )
+        .with_aliases(self.aliases)
+        .with_parallel_support(self.supports_parallel_tool_calls)
+        .with_availability(self.availability)
+        .with_approval(self.approval)
+        .with_defer_loading(self.defer_loading);
+        if let Some(output_schema) = self.output_schema {
+            tool = tool.with_output_schema(output_schema);
+        }
+        tool
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ToolApprovalProfile {
     #[serde(default)]
     pub read_only: bool,
@@ -193,6 +300,8 @@ pub struct ToolSpec {
     pub output_mode: ToolOutputMode,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_schema: Option<Value>,
+    #[serde(default)]
+    pub defer_loading: bool,
     pub origin: ToolOrigin,
     #[serde(default)]
     pub source: ToolSource,
@@ -223,6 +332,7 @@ impl ToolSpec {
             input_schema: Some(input_schema),
             output_mode,
             output_schema: None,
+            defer_loading: false,
             origin,
             source,
             aliases: Vec::new(),
@@ -235,6 +345,12 @@ impl ToolSpec {
     #[must_use]
     pub fn with_output_schema(mut self, output_schema: Value) -> Self {
         self.output_schema = Some(output_schema);
+        self
+    }
+
+    #[must_use]
+    pub fn with_defer_loading(mut self, defer_loading: bool) -> Self {
+        self.defer_loading = defer_loading;
         self
     }
 

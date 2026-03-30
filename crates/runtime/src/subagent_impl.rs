@@ -150,7 +150,11 @@ impl RuntimeSubagentExecutor {
                 .filter(|name| !DEFAULT_EXCLUDED_CHILD_TOOLS.contains(&name.as_str()))
                 .collect::<Vec<_>>()
         } else {
-            requested.to_vec()
+            requested
+                .iter()
+                .filter(|name| !DEFAULT_EXCLUDED_CHILD_TOOLS.contains(&name.as_str()))
+                .cloned()
+                .collect::<Vec<_>>()
         };
         let filtered = self.tool_registry.filtered_by_names(&allowed_names);
         let resolved_names = filtered.names();

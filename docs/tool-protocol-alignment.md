@@ -2,7 +2,7 @@
 
 Date: 2026-03-30
 
-Status: Active (`P0` partially implemented)
+Status: Active (`P0` complete, `P1` started)
 
 This note is the live entry point for the current tool-surface alignment pass
 against OpenAI Codex and OpenCode. It converts the earlier review into a
@@ -61,6 +61,9 @@ Completed so far:
 - `ToolSpec` now carries typed `kind`, `source`, aliases, parallel-call support,
   typed availability, and typed approval metadata
 - provider and MCP mapping layers preserve the richer `ToolSpec` contract
+- runtime `ToolRegistry` now exposes a shared-state dynamic registration path
+- `DynamicToolSpec` now exists as a first-class protocol type for runtime-added
+  local tools
 - `ToolResult` now includes first-class `attachments` and `continuation`
 - representative continuation emitters are live for:
   - `read` via file-window cursors
@@ -71,7 +74,6 @@ Completed so far:
 
 Still pending inside this pass:
 
-- dynamic tool registration
 - MCP resource tools
 - plugin or directory-scan custom tools
 - planning and user-interaction tools such as `update_plan` and
@@ -486,15 +488,15 @@ new bundle of tools:
   - preserve current tool behavior while upgrading the shared contract
   - adapt representative continuation emitters in `read`, `bash`, and
     `web_fetch`
+  - land the first runtime dynamic registration path on top of the richer
+    protocol
 - still open:
-  - teach `crates/tools/src/registry.rs` to register richer dynamic specs
   - add golden tests for local, MCP, and dynamic tool spec serialization
 
 ### P1
 
 Once the shared protocol exists, add the missing industrial extension surfaces:
 
-- dynamic tool registration
 - MCP resource tools
 - plugin or custom tool loading
 - `update_plan`
@@ -516,11 +518,10 @@ expanding local tool contracts and instead close the biggest capability gaps.
 
 The recommended order is:
 
-1. add runtime dynamic tool registration on top of the richer `ToolSpec`
-2. expose MCP resources as dedicated resource tools
-3. add the first planning and interaction tools:
+1. expose MCP resources as dedicated resource tools
+2. add the first planning and interaction tools:
    `update_plan` and `request_user_input`
-4. only then decide whether freeform `apply_patch` or plugin/directory-scan
+3. only then decide whether freeform `apply_patch` or plugin/directory-scan
    loading should land first
 
 That keeps the protocol phase bounded and moves the project toward the missing

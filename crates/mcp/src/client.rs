@@ -406,6 +406,7 @@ fn tool_spec_from_rmcp(server_name: &str, tool: Tool) -> Result<ToolSpec> {
         output_schema: tool
             .output_schema
             .map(|schema| Value::Object((*schema).clone())),
+        defer_loading: false,
         origin: ToolOrigin::Mcp {
             server_name: server_name.to_string(),
         },

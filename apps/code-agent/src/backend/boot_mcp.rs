@@ -479,6 +479,7 @@ mod tests {
                     input_schema: Some(serde_json::json!({})),
                     output_mode: ToolOutputMode::Text,
                     output_schema: None,
+                    defer_loading: false,
                     origin: ToolOrigin::Local,
                     source: ToolSource::Builtin,
                     aliases: Vec::new(),
@@ -493,6 +494,7 @@ mod tests {
                     input_schema: Some(serde_json::json!({})),
                     output_mode: ToolOutputMode::Text,
                     output_schema: None,
+                    defer_loading: false,
                     origin: ToolOrigin::Mcp {
                         server_name: "fs".to_string(),
                     },

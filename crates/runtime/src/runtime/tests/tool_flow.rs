@@ -7,8 +7,8 @@ use std::sync::Arc;
 use store::{InMemorySessionStore, SessionStore};
 use tools::{ReadTool, ToolExecutionContext, ToolRegistry};
 use types::{
-    ModelEvent, ModelRequest, SessionEventKind, ToolCall, ToolCallId, ToolLifecycleEventEnvelope,
-    ToolLifecycleEventKind, ToolOrigin,
+    DynamicToolSpec, ModelEvent, ModelRequest, SessionEventKind, ToolCall, ToolCallId,
+    ToolLifecycleEventEnvelope, ToolLifecycleEventKind, ToolOrigin, ToolSource,
 };
 
 #[tokio::test]
@@ -33,6 +33,46 @@ async fn runtime_handles_tool_loop() {
 
     let outcome = runtime.run_user_prompt("please use tool").await.unwrap();
     assert_eq!(outcome.assistant_text, "done");
+}
+
+#[tokio::test]
+async fn runtime_sees_dynamic_tools_registered_after_build() {
+    let store = Arc::new(InMemorySessionStore::new());
+    let runtime: AgentRuntime = AgentRuntimeBuilder::new(Arc::new(MockBackend), store)
+        .hook_runner(Arc::new(HookRunner::default()))
+        .build();
+
+    assert!(runtime.tool_specs().is_empty());
+
+    runtime
+        .tool_registry_handle()
+        .register_dynamic(
+            DynamicToolSpec::function(
+                "dynamic_echo",
+                "echoes one query field",
+                serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "query": { "type": "string" }
+                    }
+                }),
+            ),
+            Arc::new(|call_id, arguments, _ctx| {
+                Box::pin(async move {
+                    Ok(types::ToolResult::text(
+                        call_id,
+                        "dynamic_echo",
+                        arguments["query"].as_str().unwrap_or("missing"),
+                    ))
+                })
+            }),
+        )
+        .unwrap();
+
+    let specs = runtime.tool_specs();
+    assert_eq!(specs.len(), 1);
+    assert_eq!(specs[0].name.as_str(), "dynamic_echo");
+    assert_eq!(specs[0].source, ToolSource::Dynamic);
 }
 
 #[tokio::test]
