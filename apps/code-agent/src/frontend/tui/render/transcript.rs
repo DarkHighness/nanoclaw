@@ -1,8 +1,9 @@
 use super::super::state::TuiState;
 use super::transcript_markdown::render_markdown_body;
 use super::transcript_shell::{
-    animation_frame_ms, live_progress_lines, prefix_transcript_marker,
-    render_collapsed_shell_summary, render_shell_summary_body, should_collapse_shell_details,
+    animation_frame_ms, live_progress_lines, pending_control_timeline_entry,
+    prefix_transcript_marker, render_collapsed_shell_summary, render_shell_summary_body,
+    should_collapse_shell_details,
 };
 pub(super) use super::transcript_shell::{
     line_has_visible_content, line_to_plain_text, parse_prefixed_entry, transcript_body_style,
@@ -77,6 +78,13 @@ pub(super) fn build_transcript_lines(state: &TuiState) -> Vec<Line<'static>> {
                     .flatten(),
             ));
         }
+    }
+
+    if let Some(entry) = pending_control_timeline_entry(state) {
+        if !lines.is_empty() {
+            lines.push(Line::raw(""));
+        }
+        lines.extend(format_transcript_entry(&entry));
     }
 
     let progress_lines = live_progress_lines(state);

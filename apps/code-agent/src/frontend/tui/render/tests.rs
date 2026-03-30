@@ -2,9 +2,7 @@ use super::chrome::build_side_rail_lines;
 use super::statusline::format_footer_context;
 use super::transcript::TranscriptEntryKind;
 use super::transcript::build_transcript_lines;
-use super::transcript_shell::{
-    animated_progress_text_spans, live_progress_lines, render_shell_summary_body,
-};
+use super::transcript_shell::{animated_progress_text_spans, render_shell_summary_body};
 use super::view::{
     build_collection_text, build_command_palette_text, build_key_value_text,
     build_statusline_picker_text, should_render_view_title,
@@ -476,7 +474,7 @@ fn transcript_hides_progress_line_while_tool_cell_is_active() {
 }
 
 #[test]
-fn live_progress_surfaces_latest_pending_controls() {
+fn transcript_surfaces_pending_control_timeline_summary() {
     let mut state = TuiState {
         main_pane: MainPaneMode::Transcript,
         turn_running: true,
@@ -498,12 +496,12 @@ fn live_progress_surfaces_latest_pending_controls() {
         },
     ];
 
-    let rendered = live_progress_lines(&state);
+    let rendered = build_transcript_lines(&state);
 
     assert!(
         rendered
             .iter()
-            .any(|line| line_text_for(line).contains("Working"))
+            .any(|line| line_text_for(line).contains("Pending controls"))
     );
     assert!(
         rendered
@@ -530,10 +528,15 @@ fn live_progress_surfaces_latest_pending_controls() {
             .iter()
             .any(|line| line_text_for(line).contains("from Enter while running"))
     );
+    assert!(
+        rendered
+            .iter()
+            .any(|line| line_text_for(line).contains("Working"))
+    );
 }
 
 #[test]
-fn live_progress_collapses_older_pending_controls_into_a_summary_line() {
+fn transcript_collapses_older_pending_controls_into_a_summary_line() {
     let mut state = TuiState {
         main_pane: MainPaneMode::Transcript,
         turn_running: true,
@@ -561,12 +564,12 @@ fn live_progress_collapses_older_pending_controls_into_a_summary_line() {
         },
     ];
 
-    let rendered = live_progress_lines(&state);
+    let rendered = build_transcript_lines(&state);
 
     assert!(
         rendered
             .iter()
-            .any(|line| line_text_for(line).contains("… 1 older pending"))
+            .any(|line| line_text_for(line).contains("1 older pending"))
     );
     assert!(
         rendered
