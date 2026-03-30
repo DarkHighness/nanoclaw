@@ -447,7 +447,16 @@ fn build_command_hint_text(command_hint: &SlashCommandHint) -> Text<'static> {
         "tab complete"
     };
     let enter_hint = if command_hint.exact {
-        "enter run"
+        if command_hint
+            .arguments
+            .as_ref()
+            .and_then(|arguments| arguments.next)
+            .is_some_and(|argument| argument.required)
+        {
+            "keep typing"
+        } else {
+            "enter run"
+        }
     } else if command_hint.matches.len() == 1 && !command_hint.selected.requires_arguments() {
         "enter run"
     } else {
@@ -2702,7 +2711,7 @@ mod tests {
                 .any(|span| span.content.as_ref().contains("<prompt>"))
         );
         assert_eq!(rendered.lines[3].spans[3].content.as_ref(), "keep typing");
-        assert_eq!(rendered.lines[3].spans[7].content.as_ref(), "enter run");
+        assert_eq!(rendered.lines[3].spans[7].content.as_ref(), "keep typing");
     }
 
     #[test]

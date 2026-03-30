@@ -13,7 +13,7 @@ use crate::backend::{
 use approval::approval_decision_for_key;
 use commands::{
     SlashCommand, SlashCommandEnterAction, command_palette_lines_for, cycle_slash_command,
-    parse_slash_command, resolve_slash_enter_action,
+    move_slash_command_selection, parse_slash_command, resolve_slash_enter_action,
 };
 use history::{
     format_agent_session_inspector, format_agent_session_summary_line,
@@ -139,13 +139,13 @@ impl CodeAgentTui {
                         }
                     }
                     KeyCode::Up => {
-                        if self.apply_command_completion(true) {
+                        if self.move_command_selection(true) {
                             continue;
                         }
                         self.ui_state.mutate(|state| state.scroll_focused(-1));
                     }
                     KeyCode::Down => {
-                        if self.apply_command_completion(false) {
+                        if self.move_command_selection(false) {
                             continue;
                         }
                         self.ui_state.mutate(|state| state.scroll_focused(1));
@@ -236,6 +236,20 @@ impl CodeAgentTui {
             state.input = input;
             state.command_completion_index = index;
         });
+        true
+    }
+
+    fn move_command_selection(&mut self, backwards: bool) -> bool {
+        let snapshot = self.ui_state.snapshot();
+        let Some(index) = move_slash_command_selection(
+            &snapshot.input,
+            snapshot.command_completion_index,
+            backwards,
+        ) else {
+            return false;
+        };
+        self.ui_state
+            .mutate(|state| state.command_completion_index = index);
         true
     }
 

@@ -544,12 +544,44 @@ pub(crate) fn cycle_slash_command(
     Some((format!("/{} ", matches[next].name), next))
 }
 
+pub(crate) fn move_slash_command_selection(
+    input: &str,
+    selected_index: usize,
+    backwards: bool,
+) -> Option<usize> {
+    let (command_token, tail) = split_slash_input(input)?;
+    if tail.is_some() {
+        return None;
+    }
+    let matches = matching_specs(command_token);
+    if matches.is_empty() {
+        return None;
+    }
+    let current = selected_index.min(matches.len().saturating_sub(1));
+    Some(if backwards {
+        current.checked_sub(1).unwrap_or(matches.len() - 1)
+    } else {
+        (current + 1) % matches.len()
+    })
+}
+
 pub(crate) fn resolve_slash_enter_action(
     input: &str,
     selected_index: usize,
 ) -> Option<SlashCommandEnterAction> {
     let hint = slash_command_hint(input, selected_index)?;
     if hint.exact {
+        if hint
+            .arguments
+            .as_ref()
+            .and_then(|arguments| arguments.next)
+            .is_some_and(|argument| argument.required)
+        {
+            return Some(SlashCommandEnterAction::Complete {
+                input: format!("/{} ", hint.selected.name),
+                index: hint.selected_match_index,
+            });
+        }
         return None;
     }
     if hint.matches.len() == 1 && !hint.selected.requires_arguments() {
@@ -667,11 +699,15 @@ fn split_slash_input(input: &str) -> Option<(&str, Option<&str>)> {
 
 fn matching_specs(prefix: &str) -> Vec<SlashCommandSpec> {
     let prefix = prefix.trim().to_ascii_lowercase();
-    SLASH_COMMAND_SPECS
+    let mut matches = SLASH_COMMAND_SPECS
         .iter()
         .copied()
         .filter(|spec| prefix.is_empty() || spec.name.starts_with(&prefix))
-        .collect()
+        .collect::<Vec<_>>();
+    if let Some(exact_index) = matches.iter().position(|spec| spec.name == prefix) {
+        matches.swap(0, exact_index);
+    }
+    matches
 }
 
 fn palette_matching_specs(prefix: &str) -> Vec<SlashCommandSpec> {
@@ -693,15 +729,11 @@ fn selected_spec(
     selected_index: usize,
     matches: &[SlashCommandSpec],
 ) -> Option<SlashCommandSpec> {
-    if let Some(exact) = SLASH_COMMAND_SPECS
-        .iter()
-        .copied()
-        .find(|spec| spec.name == command_token)
-    {
-        return Some(exact);
-    }
     if tail.is_some() {
-        return None;
+        return SLASH_COMMAND_SPECS
+            .iter()
+            .copied()
+            .find(|spec| spec.name == command_token);
     }
     matches
         .get(selected_index.min(matches.len().saturating_sub(1)))
@@ -753,8 +785,8 @@ fn build_argument_hint(
 mod tests {
     use super::{
         SlashCommand, SlashCommandArgumentSpec, SlashCommandEnterAction, command_palette_lines,
-        command_palette_lines_for, cycle_slash_command, parse_slash_command,
-        resolve_slash_enter_action, slash_command_hint,
+        command_palette_lines_for, cycle_slash_command, move_slash_command_selection,
+        parse_slash_command, resolve_slash_enter_action, slash_command_hint,
     };
 
     #[test]
@@ -999,6 +1031,13 @@ mod tests {
     }
 
     #[test]
+    fn move_slash_command_selection_keeps_partial_input_in_picker() {
+        let next = move_slash_command_selection("/sess", 0, false).expect("selection");
+
+        assert_eq!(next, 1);
+    }
+
+    #[test]
     fn slash_command_hint_surfaces_next_required_argument() {
         let hint = slash_command_hint("/session ", 0).expect("hint");
 
@@ -1011,7 +1050,7 @@ mod tests {
             })
         );
         assert!(arguments.provided.is_empty());
-        assert_eq!(hint.selected_match_index, 1);
+        assert_eq!(hint.selected_match_index, 0);
     }
 
     #[test]
@@ -1061,6 +1100,27 @@ mod tests {
         assert_eq!(
             action,
             SlashCommandEnterAction::Execute("/help".to_string())
+        );
+    }
+
+    #[test]
+    fn exact_required_command_is_prioritized_in_hint() {
+        let hint = slash_command_hint("/session", 0).expect("hint");
+
+        assert_eq!(hint.selected.name, "session");
+        assert!(hint.exact);
+    }
+
+    #[test]
+    fn slash_enter_action_accepts_required_argument_command_before_running() {
+        let action = resolve_slash_enter_action("/session", 0).expect("action");
+
+        assert_eq!(
+            action,
+            SlashCommandEnterAction::Complete {
+                input: "/session ".to_string(),
+                index: 0,
+            }
         );
     }
 }
