@@ -217,15 +217,15 @@ fn welcome_lines_keep_the_start_screen_sparse() {
 
     let lines = build_welcome_lines(&state, 100, 28);
 
+    let logo_count = lines
+        .iter()
+        .filter(|line| line_text_for(line).contains("N A N O   C L A W"))
+        .count();
+    assert_eq!(logo_count, 1);
     assert!(
         lines
             .iter()
-            .any(|line| { line_text_for(line).contains("N A N O C L A W") })
-    );
-    assert!(
-        lines
-            .iter()
-            .any(|line| { line_text_for(line).contains(" N A N O C L A W") })
+            .any(|line| line_text_for(line).contains("──────"))
     );
     assert!(lines.iter().any(|line| {
         line_text_for(line).contains("workspace nanoclaw  ·  model gpt-5.4 · high")

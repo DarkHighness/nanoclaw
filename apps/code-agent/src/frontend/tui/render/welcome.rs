@@ -1,11 +1,10 @@
 use super::theme::{ACCENT, HEADER, MUTED, SUBTLE, TEXT};
 use crate::frontend::tui::state::TuiState;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
-const WORDMARK_SHADOW: Color = Color::Rgb(92, 97, 102);
-const FULL_WORDMARK: &str = "N A N O C L A W";
-const COMPACT_WORDMARK: &str = "NANOCLAW";
+const FULL_WORDMARK: &str = "N A N O   C L A W";
+const COMPACT_WORDMARK: &str = "NANO CLAW";
 
 pub(super) fn build_welcome_lines(
     state: &TuiState,
@@ -37,14 +36,9 @@ fn build_welcome_logo_lines(compact: bool) -> Vec<Line<'static>> {
         FULL_WORDMARK
     };
 
-    // Keep the brand mark typographic and quiet. In a terminal, spacing,
-    // shadow, and one stabilizing rule read more deliberate than oversized
-    // ASCII glyphs or framed cards.
-    vec![
-        wordmark_line(wordmark, 0, HEADER, true),
-        wordmark_line(wordmark, 1, WORDMARK_SHADOW, false),
-        underline_line(wordmark),
-    ]
+    // Keep the brand mark strictly single-line so the logo reads as one
+    // deliberate title instead of stacked decorative echoes.
+    vec![wordmark_line(wordmark), underline_line(wordmark)]
 }
 
 fn build_meta_summary_line(state: &TuiState) -> Line<'static> {
@@ -69,21 +63,17 @@ fn model_label(state: &TuiState) -> String {
     }
 }
 
-fn wordmark_line(text: &str, horizontal_offset: usize, color: Color, bold: bool) -> Line<'static> {
-    let mut style = Style::default().fg(color);
-    if bold {
-        style = style.add_modifier(Modifier::BOLD);
-    }
-    Line::from(vec![
-        Span::raw(" ".repeat(horizontal_offset)),
-        Span::styled(text.to_string(), style),
-    ])
+fn wordmark_line(text: &str) -> Line<'static> {
+    Line::from(vec![Span::styled(
+        text.to_string(),
+        Style::default().fg(HEADER).add_modifier(Modifier::BOLD),
+    )])
 }
 
 fn underline_line(wordmark: &str) -> Line<'static> {
-    let width = wordmark.chars().count().saturating_sub(4);
+    let width = wordmark.chars().count().saturating_sub(2);
     Line::from(vec![
-        Span::raw("  "),
+        Span::raw(" "),
         Span::styled("─".repeat(width), Style::default().fg(ACCENT)),
     ])
 }
