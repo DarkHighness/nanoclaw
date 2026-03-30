@@ -6,8 +6,17 @@ use ratatui::text::{Line, Span};
 const PLATE_FACE: Color = Color::Rgb(30, 34, 39);
 const PLATE_HIGHLIGHT: Color = Color::Rgb(37, 42, 48);
 const PLATE_SHADOW: Color = Color::Rgb(11, 13, 16);
+const WORDMARK_SHADOW: Color = Color::Rgb(86, 92, 98);
 const PLATE_WIDTH: usize = 60;
 const PLATE_SIDE_SHADOW_WIDTH: usize = 2;
+
+const WORDMARK_ROWS: [&str; 5] = [
+    " _   _    _    _   _  ___   ____ _        _ __        __ ",
+    "| \\ | |  / \\  | \\ | |/ _ \\ / ___| |      / \\\\ \\      / / ",
+    "|  \\| | / _ \\ |  \\| | | | | |   | |     / _ \\\\ \\ /\\ / /  ",
+    "| |\\  |/ ___ \\| |\\  | |_| | |___| |___ / ___ \\\\ V  V /   ",
+    "|_| \\_/_/   \\_\\_| \\_|\\___/ \\____|_____/_/   \\_\\\\_/\\_/    ",
+];
 
 pub(super) fn build_welcome_lines(
     state: &TuiState,
@@ -37,27 +46,21 @@ fn build_welcome_logo_lines(compact: bool) -> Vec<Line<'static>> {
         return vec![
             plate_blank_line(PLATE_HIGHLIGHT),
             compact_logo_line(),
+            compact_logo_shadow_line(),
             plate_blank_line(PLATE_FACE),
             plate_shadow_line(),
         ];
     }
 
-    // The welcome mark renders on a raised plate with a right/bottom shadow so
-    // the brand reads like a single terminal wordmark instead of loose glyphs.
-    let rows = [
-        ("N    N   AAA   N    N   OOO ", " CCCC  L      AAA   W   W"),
-        ("NN   N  A   A  NN   N  O   O", " C     L     A   A  W   W"),
-        ("N N  N  AAAAA  N N  N  O   O", " C     L     AAAAA  W W W"),
-        ("N  N N  A   A  N  N N  O   O", " C     L     A   A  WW WW"),
-        ("N   NN  A   A  N   NN   OOO ", " CCCC  LLLLL A   A  W   W"),
-    ];
-
-    let mut lines = Vec::with_capacity(rows.len() + 3);
+    // Render the full word on a raised plate with a bevel row and an offset
+    // shadow row so the logo reads like one embossed mark instead of split
+    // halves with decorative echoes.
+    let mut lines = Vec::with_capacity(WORDMARK_ROWS.len() * 2 + 3);
     lines.push(plate_blank_line(PLATE_HIGHLIGHT));
-    for (left, right) in rows {
-        lines.push(wordmark_plate_line(left, right));
+    for row in WORDMARK_ROWS {
+        lines.push(wordmark_face_line(row));
+        lines.push(wordmark_relief_line(row));
     }
-    lines.push(plate_blank_line(PLATE_FACE));
     lines.push(plate_shadow_line());
     lines
 }
@@ -88,13 +91,30 @@ fn compact_logo_line() -> Line<'static> {
     let content = "NANOCLAW";
     let side_padding = PLATE_WIDTH.saturating_sub(content.len()) / 2;
     let right_padding = PLATE_WIDTH.saturating_sub(content.len() + side_padding);
-    let mut spans = plate_padding(side_padding, PLATE_FACE);
+    let mut spans = plate_padding(side_padding, PLATE_HIGHLIGHT);
     spans.push(Span::styled(
         content.to_string(),
         Style::default()
             .fg(HEADER)
-            .bg(PLATE_FACE)
+            .bg(PLATE_HIGHLIGHT)
             .add_modifier(Modifier::BOLD),
+    ));
+    spans.extend(plate_padding(right_padding, PLATE_HIGHLIGHT));
+    spans.push(Span::styled(
+        " ".repeat(PLATE_SIDE_SHADOW_WIDTH),
+        Style::default().bg(PLATE_SHADOW),
+    ));
+    Line::from(spans)
+}
+
+fn compact_logo_shadow_line() -> Line<'static> {
+    let content = "NANOCLAW";
+    let side_padding = PLATE_WIDTH.saturating_sub(content.len() + 1) / 2;
+    let right_padding = PLATE_WIDTH.saturating_sub(content.len() + side_padding + 1);
+    let mut spans = plate_padding(side_padding + 1, PLATE_FACE);
+    spans.push(Span::styled(
+        content.to_string(),
+        Style::default().fg(WORDMARK_SHADOW).bg(PLATE_FACE),
     ));
     spans.extend(plate_padding(right_padding, PLATE_FACE));
     spans.push(Span::styled(
@@ -104,29 +124,32 @@ fn compact_logo_line() -> Line<'static> {
     Line::from(spans)
 }
 
-fn wordmark_plate_line(left: &'static str, right: &'static str) -> Line<'static> {
-    let separator = "  ";
-    let content_width = left.len() + separator.len() + right.len();
-    let side_padding = PLATE_WIDTH.saturating_sub(content_width) / 2;
-    let right_padding = PLATE_WIDTH.saturating_sub(content_width + side_padding);
-    let mut spans = plate_padding(side_padding, PLATE_FACE);
+fn wordmark_face_line(row: &'static str) -> Line<'static> {
+    let side_padding = PLATE_WIDTH.saturating_sub(row.len()) / 2;
+    let right_padding = PLATE_WIDTH.saturating_sub(row.len() + side_padding);
+    let mut spans = plate_padding(side_padding, PLATE_HIGHLIGHT);
     spans.push(Span::styled(
-        left.to_string(),
+        row.to_string(),
         Style::default()
             .fg(HEADER)
-            .bg(PLATE_FACE)
+            .bg(PLATE_HIGHLIGHT)
             .add_modifier(Modifier::BOLD),
     ));
+    spans.extend(plate_padding(right_padding, PLATE_HIGHLIGHT));
     spans.push(Span::styled(
-        separator.to_string(),
-        Style::default().bg(PLATE_FACE),
+        " ".repeat(PLATE_SIDE_SHADOW_WIDTH),
+        Style::default().bg(PLATE_SHADOW),
     ));
+    Line::from(spans)
+}
+
+fn wordmark_relief_line(row: &'static str) -> Line<'static> {
+    let side_padding = PLATE_WIDTH.saturating_sub(row.len() + 1) / 2;
+    let right_padding = PLATE_WIDTH.saturating_sub(row.len() + side_padding + 1);
+    let mut spans = plate_padding(side_padding + 1, PLATE_FACE);
     spans.push(Span::styled(
-        right.to_string(),
-        Style::default()
-            .fg(ACCENT)
-            .bg(PLATE_FACE)
-            .add_modifier(Modifier::BOLD),
+        row.to_string(),
+        Style::default().fg(WORDMARK_SHADOW).bg(PLATE_FACE),
     ));
     spans.extend(plate_padding(right_padding, PLATE_FACE));
     spans.push(Span::styled(
