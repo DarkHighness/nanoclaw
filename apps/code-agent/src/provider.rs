@@ -361,6 +361,10 @@ fn nested_object<'a>(object: &'a mut Map<String, Value>, key: &str) -> &'a mut M
 }
 
 fn supported_reasoning_efforts(provider: &ProviderKind, model: &str) -> &'static [&'static str] {
+    // The TUI cycles only through the levels we can describe consistently
+    // across providers today. Model-specific extremes (for example OpenAI's
+    // newer `xhigh` or provider-only budget knobs) can still be added later
+    // once the host grows a richer picker than a single cycle shortcut.
     match provider {
         ProviderKind::OpenAi if model.starts_with("gpt-5-pro") => OPENAI_HIGH_ONLY_REASONING_LEVELS,
         ProviderKind::OpenAi if model.starts_with("gpt-5.1") || model.starts_with("gpt-5.2") => {
