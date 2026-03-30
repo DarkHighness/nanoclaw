@@ -215,28 +215,21 @@ fn welcome_lines_keep_the_start_screen_sparse() {
     state.session.model = "gpt-5.4".to_string();
     state.session.model_reasoning_effort = Some("high".to_string());
 
-    let lines = build_welcome_lines(&state, 28);
+    let lines = build_welcome_lines(&state, 100, 28);
 
     assert!(
         lines
             .iter()
-            .any(|line| { line_text_for(line).contains(" _   _    _    _   _   ___") })
+            .any(|line| { line_text_for(line).contains("N    N   AAA   N    N   OOO") })
     );
     assert!(
         lines
             .iter()
-            .any(|line| { line_text_for(line).contains("   _   _    _    _   _   ___") })
+            .any(|line| { line_text_for(line).contains("CCCC  L      AAA   W   W") })
     );
-    assert!(
-        lines
-            .iter()
-            .any(|line| { line_text_for(line).contains("workspace  nanoclaw") })
-    );
-    assert!(
-        lines
-            .iter()
-            .any(|line| { line_text_for(line).contains("model  gpt-5.4 · high") })
-    );
+    assert!(lines.iter().any(|line| {
+        line_text_for(line).contains("workspace nanoclaw  ·  model gpt-5.4 · high")
+    }));
     assert!(
         lines
             .iter()

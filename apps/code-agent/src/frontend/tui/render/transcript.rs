@@ -26,7 +26,7 @@ pub(super) fn render_transcript(frame: &mut ratatui::Frame<'_>, area: Rect, stat
         horizontal: 2,
     });
     if state.transcript.is_empty() && !state.turn_running && state.session.queued_commands == 0 {
-        let lines = build_welcome_lines(state, inner.height);
+        let lines = build_welcome_lines(state, inner.width, inner.height);
         let empty = Paragraph::new(Text::from(lines))
             .alignment(Alignment::Center)
             .wrap(Wrap { trim: false })
