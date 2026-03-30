@@ -6,6 +6,8 @@ mod statusline;
 mod theme;
 mod transcript;
 mod transcript_markdown;
+mod transcript_markdown_blocks;
+mod transcript_markdown_line;
 mod transcript_shell;
 mod view;
 mod welcome;
