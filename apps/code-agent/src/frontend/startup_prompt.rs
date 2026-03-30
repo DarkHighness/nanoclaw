@@ -379,7 +379,7 @@ fn startup_prompt_layout(area: Rect) -> StartupPromptLayout {
         .constraints([
             Constraint::Length(3),
             Constraint::Min(10),
-            Constraint::Length(2),
+            Constraint::Length(3),
             Constraint::Length(1),
         ])
         .split(inner);
@@ -389,7 +389,10 @@ fn startup_prompt_layout(area: Rect) -> StartupPromptLayout {
     });
     let action_sections = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Length(1)])
+        // Keep the buttons on a two-row hit target so mouse interactions are
+        // forgiving inside the prompt footer instead of requiring a single
+        // exact terminal row.
+        .constraints([Constraint::Length(1), Constraint::Length(2)])
         .split(action_inner);
     let buttons = Layout::default()
         .direction(Direction::Horizontal)
