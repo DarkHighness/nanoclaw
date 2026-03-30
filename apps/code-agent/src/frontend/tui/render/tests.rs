@@ -11,6 +11,7 @@ use super::welcome::build_welcome_lines;
 use super::{
     approval_preview_lines, build_approval_text, build_command_hint_text, should_render_side_rail,
 };
+use crate::backend::{PendingControlKind, PendingControlSummary};
 use crate::frontend::tui::approval::ApprovalPrompt;
 use crate::frontend::tui::commands::{
     SlashCommandArgumentHint, SlashCommandArgumentSpec, SlashCommandArgumentValue,
@@ -238,6 +239,53 @@ fn welcome_lines_keep_the_start_screen_sparse() {
         lines
             .iter()
             .any(|line| { line_text_for(line).contains("Type a prompt or /help.") })
+    );
+}
+
+#[test]
+fn pending_control_band_surfaces_selected_prompt_and_editing_state() {
+    let mut state = TuiState::default();
+    state.pending_controls = vec![
+        PendingControlSummary {
+            id: "cmd_1".to_string(),
+            kind: PendingControlKind::Prompt,
+            preview: "write a regression test".to_string(),
+            reason: None,
+        },
+        PendingControlSummary {
+            id: "cmd_2".to_string(),
+            kind: PendingControlKind::Steer,
+            preview: "keep the diff small".to_string(),
+            reason: Some("inline_enter".to_string()),
+        },
+    ];
+    let _ = state.open_pending_control_picker(true);
+
+    let text = super::picker::build_pending_control_text(&state);
+
+    assert!(
+        text.lines
+            .iter()
+            .any(|line| line_text_for(line).contains("pending"))
+    );
+    assert!(
+        text.lines
+            .iter()
+            .any(|line| line_text_for(line).contains("write a regression test"))
+    );
+    assert!(
+        text.lines
+            .iter()
+            .any(|line| line_text_for(line).contains("keep the diff small"))
+    );
+
+    let selected = state.begin_pending_control_edit().unwrap();
+    assert_eq!(selected.id, "cmd_2");
+    let text = super::picker::build_pending_control_text(&state);
+    assert!(
+        text.lines
+            .iter()
+            .any(|line| line_text_for(line).contains("editing queued steer"))
     );
 }
 

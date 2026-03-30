@@ -229,6 +229,16 @@ fn build_composer_line(state: &TuiState) -> Line<'static> {
         ),
         Span::raw(" "),
     ];
+    if let Some(editing) = state.editing_pending_control.as_ref() {
+        spans.push(Span::styled(
+            match editing.kind {
+                crate::backend::PendingControlKind::Prompt => "edit queued prompt",
+                crate::backend::PendingControlKind::Steer => "edit queued steer",
+            },
+            Style::default().fg(MUTED),
+        ));
+        spans.push(Span::styled(" · ", Style::default().fg(SUBTLE)));
+    }
     if state.input.is_empty() {
         spans.push(Span::styled(
             "Type a prompt or /help",

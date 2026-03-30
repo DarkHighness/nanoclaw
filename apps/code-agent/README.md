@@ -170,6 +170,7 @@ not have useful extensions, including `Dockerfile*`, `Containerfile*`, `go.mod`,
 - `/thinking [level]`
 - `/help`
 - `/details`
+- `/queue`
 - `/agent_sessions [session-ref]`
 - `/agent_session <agent-session-ref>`
 - `/live_tasks`
@@ -195,6 +196,9 @@ not have useful extensions, including `Dockerfile*`, `Containerfile*`, `go.mod`,
 - `Ctrl+T` cycles the active model reasoning effort through the levels exposed by the active model.
 - While a turn is running, `Enter` schedules a safe-point steer note and `Tab`
   enqueues a follow-up prompt into the runtime-owned control queue.
+- `Alt+Up` opens the pending-control picker from the bottom pane.
+- In the pending-control picker: `Enter` edits the selected item, `Delete`
+  withdraws it, and `Esc` closes the picker.
 - `/resources`
 - `/prompt <server> <name>`
 - `/resource <server> <uri>`

@@ -19,7 +19,10 @@ use chrome::{
     approval_band_height, approval_preview_lines, build_approval_text, render_approval_band,
     render_composer, should_render_side_rail, side_rail_width,
 };
-use picker::{build_command_hint_text, command_hint_height, render_command_hint_band};
+use picker::{
+    build_command_hint_text, command_hint_height, pending_control_height, render_command_hint_band,
+    render_pending_control_band,
+};
 use ratatui::layout::{Constraint, Direction, Layout, Position, Rect};
 use ratatui::style::Style;
 use ratatui::widgets::Block;
@@ -37,6 +40,10 @@ pub(crate) fn render(
     frame.render_widget(Block::default().style(Style::default().bg(BG)), area);
 
     let approval_height = approval.map(approval_band_height);
+    let pending_height = approval
+        .is_none()
+        .then(|| pending_control_height(state))
+        .flatten();
     let command_hint = approval
         .is_none()
         .then(|| slash_command_hint(&state.input, state.command_completion_index))
@@ -46,6 +53,7 @@ pub(crate) fn render(
         .direction(Direction::Vertical)
         .constraints(bottom_layout_constraints(
             approval_height,
+            pending_height,
             command_hint_height,
         ))
         .split(area);
@@ -53,6 +61,11 @@ pub(crate) fn render(
     let main_area = vertical[next_index];
     next_index += 1;
     let approval_area = approval_height.map(|_| {
+        let area = vertical[next_index];
+        next_index += 1;
+        area
+    });
+    let pending_area = pending_height.map(|_| {
         let area = vertical[next_index];
         next_index += 1;
         area
@@ -81,6 +94,9 @@ pub(crate) fn render(
     if let Some(approval) = approval {
         render_approval_band(frame, approval_area.expect("approval area"), approval);
     }
+    if pending_height.is_some() {
+        render_pending_control_band(frame, pending_area.expect("pending area"), state);
+    }
     if let Some(command_hint) = command_hint.as_ref() {
         render_command_hint_band(
             frame,
@@ -108,6 +124,10 @@ pub(crate) fn main_pane_viewport_height(
     approval: Option<&ApprovalPrompt>,
 ) -> u16 {
     let approval_height = approval.map(approval_band_height);
+    let pending_height = approval
+        .is_none()
+        .then(|| pending_control_height(state))
+        .flatten();
     let command_hint = approval
         .is_none()
         .then(|| slash_command_hint(&state.input, state.command_completion_index))
@@ -117,6 +137,7 @@ pub(crate) fn main_pane_viewport_height(
         .direction(Direction::Vertical)
         .constraints(bottom_layout_constraints(
             approval_height,
+            pending_height,
             command_hint_height,
         ))
         .split(area);

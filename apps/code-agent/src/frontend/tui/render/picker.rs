@@ -1,4 +1,7 @@
-use super::theme::{ACCENT, BOTTOM_PANE_BG, HEADER, MUTED, SUBTLE, TEXT};
+use super::super::state::{
+    PendingControlEditorState, PendingControlPickerState, TuiState, preview_text,
+};
+use super::theme::{ACCENT, ASSISTANT, BOTTOM_PANE_BG, HEADER, MUTED, SUBTLE, TEXT, USER, WARN};
 use crate::frontend::tui::commands::{SlashCommandHint, SlashCommandSpec};
 use ratatui::layout::Margin;
 use ratatui::style::{Modifier, Style};
@@ -174,6 +177,187 @@ pub(super) fn command_hint_height(command_hint: &SlashCommandHint) -> u16 {
         .lines
         .len()
         .clamp(2, 9) as u16
+}
+
+pub(super) fn render_pending_control_band(
+    frame: &mut ratatui::Frame<'_>,
+    area: ratatui::layout::Rect,
+    state: &TuiState,
+) {
+    frame.render_widget(
+        Block::default().style(Style::default().bg(BOTTOM_PANE_BG)),
+        area,
+    );
+    let inner = area.inner(Margin {
+        vertical: 0,
+        horizontal: 2,
+    });
+    frame.render_widget(
+        Paragraph::new(build_pending_control_text(state))
+            .wrap(Wrap { trim: false })
+            .style(Style::default().fg(TEXT).bg(BOTTOM_PANE_BG)),
+        inner,
+    );
+}
+
+pub(super) fn pending_control_height(state: &TuiState) -> Option<u16> {
+    if state.pending_controls.is_empty() {
+        return None;
+    }
+    Some(build_pending_control_text(state).lines.len().clamp(2, 8) as u16)
+}
+
+pub(super) fn build_pending_control_text(state: &TuiState) -> Text<'static> {
+    let editing = state.editing_pending_control.as_ref();
+    let selected = state.selected_pending_control();
+    let pending_count = state.pending_controls.len();
+    let mut lines = vec![Line::from(vec![
+        Span::styled("pending", Style::default().fg(HEADER)),
+        Span::styled(" · ", Style::default().fg(SUBTLE)),
+        Span::styled(
+            format!(
+                "{pending_count} item{}",
+                if pending_count == 1 { "" } else { "s" }
+            ),
+            Style::default().fg(WARN),
+        ),
+        if editing.is_some() {
+            Span::styled(" · ", Style::default().fg(SUBTLE))
+        } else {
+            Span::raw("")
+        },
+        if let Some(editing) = editing {
+            Span::styled(
+                format!("editing {}", pending_kind_label(editing)),
+                Style::default().fg(ACCENT),
+            )
+        } else {
+            Span::raw("")
+        },
+    ])];
+
+    let picker = state.pending_control_picker.as_ref();
+    if let Some(picker) = picker {
+        let window = visible_pending_control_window(&state.pending_controls, picker, 4);
+        if window.start > 0 {
+            lines.push(Line::from(Span::styled(
+                format!("… {} earlier", window.start),
+                Style::default().fg(SUBTLE),
+            )));
+        }
+        for (index, control) in window.items.iter().enumerate() {
+            let actual_index = window.start + index;
+            let is_selected = actual_index == picker.selected;
+            lines.push(build_pending_control_row(control, is_selected));
+        }
+        if window.end < state.pending_controls.len() {
+            lines.push(Line::from(Span::styled(
+                format!("… {} more", state.pending_controls.len() - window.end),
+                Style::default().fg(SUBTLE),
+            )));
+        }
+        lines.push(Line::from(vec![
+            Span::styled("↑↓", Style::default().fg(MUTED)),
+            Span::styled(" move", Style::default().fg(MUTED)),
+            Span::styled(" · ", Style::default().fg(SUBTLE)),
+            Span::styled("enter edit", Style::default().fg(MUTED)),
+            Span::styled(" · ", Style::default().fg(SUBTLE)),
+            Span::styled("del withdraw", Style::default().fg(MUTED)),
+            Span::styled(" · ", Style::default().fg(SUBTLE)),
+            Span::styled("esc close", Style::default().fg(MUTED)),
+        ]));
+    } else if let Some(selected) = selected.or_else(|| state.pending_controls.last().cloned()) {
+        lines.push(build_pending_control_row(&selected, true));
+        lines.push(Line::from(Span::styled(
+            "alt+up open queue · enter/tab save edits",
+            Style::default().fg(SUBTLE),
+        )));
+    }
+
+    Text::from(lines)
+}
+
+fn build_pending_control_row(
+    control: &crate::backend::PendingControlSummary,
+    selected: bool,
+) -> Line<'static> {
+    let marker = if selected { "›" } else { " " };
+    let kind_label = match control.kind {
+        crate::backend::PendingControlKind::Prompt => "prompt",
+        crate::backend::PendingControlKind::Steer => "steer",
+    };
+    let accent = match control.kind {
+        crate::backend::PendingControlKind::Prompt => USER,
+        crate::backend::PendingControlKind::Steer => ASSISTANT,
+    };
+    let mut spans = vec![
+        Span::styled(
+            marker,
+            Style::default()
+                .fg(if selected { ACCENT } else { SUBTLE })
+                .add_modifier(if selected {
+                    Modifier::BOLD
+                } else {
+                    Modifier::empty()
+                }),
+        ),
+        Span::raw(" "),
+        Span::styled(
+            format!("{kind_label:<6}"),
+            Style::default()
+                .fg(if selected { accent } else { MUTED })
+                .add_modifier(if selected {
+                    Modifier::BOLD
+                } else {
+                    Modifier::empty()
+                }),
+        ),
+        Span::styled(" ", Style::default().fg(SUBTLE)),
+        Span::styled(
+            preview_text(&control.preview, 72),
+            Style::default().fg(if selected { HEADER } else { TEXT }),
+        ),
+    ];
+    if let Some(reason) = control.reason.as_deref() {
+        spans.push(Span::styled(" · ", Style::default().fg(SUBTLE)));
+        spans.push(Span::styled(
+            preview_text(reason, 24),
+            Style::default().fg(MUTED),
+        ));
+    }
+    Line::from(spans)
+}
+
+fn pending_kind_label(editing: &PendingControlEditorState) -> &'static str {
+    match editing.kind {
+        crate::backend::PendingControlKind::Prompt => "queued prompt",
+        crate::backend::PendingControlKind::Steer => "queued steer",
+    }
+}
+
+struct VisiblePendingControlWindow<'a> {
+    start: usize,
+    end: usize,
+    items: &'a [crate::backend::PendingControlSummary],
+}
+
+fn visible_pending_control_window<'a>(
+    controls: &'a [crate::backend::PendingControlSummary],
+    picker: &PendingControlPickerState,
+    max_items: usize,
+) -> VisiblePendingControlWindow<'a> {
+    let total = controls.len();
+    let window = total.min(max_items.max(1));
+    let mut start = picker.selected.saturating_add(1).saturating_sub(window);
+    let end = (start + window).min(total);
+    if end - start < window {
+        start = end.saturating_sub(window);
+    }
+    VisiblePendingControlWindow {
+        start,
+        end,
+        items: &controls[start..end],
+    }
 }
 
 struct VisibleCommandMatchWindow<'a> {
