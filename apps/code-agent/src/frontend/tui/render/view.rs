@@ -51,8 +51,8 @@ pub(super) fn build_key_value_text(lines: &[String]) -> Text<'static> {
                     value_style(key.trim(), value.trim()),
                 ),
             ]));
-        } else if let Some((marker, accent, body)) = super::parse_prefixed_entry(line) {
-            let kind = super::transcript_entry_kind(marker, body);
+        } else if let Some((marker, accent, body)) = super::transcript::parse_prefixed_entry(line) {
+            let kind = super::transcript::transcript_entry_kind(marker, body);
             rendered.push(Line::from(vec![
                 Span::styled(
                     marker,
@@ -61,7 +61,7 @@ pub(super) fn build_key_value_text(lines: &[String]) -> Text<'static> {
                 Span::raw(" "),
                 Span::styled(
                     body.to_string(),
-                    super::transcript_body_style(marker, kind, body),
+                    super::transcript::transcript_body_style(marker, kind, body),
                 ),
             ]));
         } else if let Some(detail) = line.strip_prefix("  └ ") {
@@ -167,7 +167,7 @@ fn render_collection_summary_block(entry: &str, accent: Color) -> Vec<Line<'stat
     let mut rendered = Vec::new();
     for (index, raw_line) in entry.lines().enumerate() {
         if index == 0
-            && let Some((_, _, body)) = super::parse_prefixed_entry(raw_line)
+            && let Some((_, _, body)) = super::transcript::parse_prefixed_entry(raw_line)
         {
             rendered.push(Line::from(vec![
                 Span::styled(
@@ -253,7 +253,7 @@ fn is_shell_summary_block(entry: &str) -> bool {
 }
 
 fn is_shell_summary_line(line: &str) -> bool {
-    super::parse_prefixed_entry(line).is_some()
+    super::transcript::parse_prefixed_entry(line).is_some()
         || line.starts_with("  └ ")
         || line.starts_with("    ")
         || line.starts_with("- ")
@@ -261,13 +261,13 @@ fn is_shell_summary_line(line: &str) -> bool {
 }
 
 fn render_shell_summary_line(line: &str) -> Vec<Line<'static>> {
-    if super::parse_prefixed_entry(line).is_some() {
-        super::format_transcript_entry(line)
+    if super::transcript::parse_prefixed_entry(line).is_some() {
+        super::transcript::format_transcript_entry(line)
     } else {
-        vec![super::render_transcript_body_line(
+        vec![super::transcript::render_transcript_body_line(
             line,
             "•",
-            super::TranscriptEntryKind::ShellSummary,
+            super::transcript::TranscriptEntryKind::ShellSummary,
             false,
             false,
         )]
