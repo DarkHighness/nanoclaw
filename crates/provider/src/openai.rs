@@ -593,10 +593,10 @@ mod tests {
     #[test]
     fn openai_responses_body_explicitly_opts_out_of_default_strict_tools() {
         let mut request = base_request();
-        request.tools.push(ToolSpec {
-            name: "agent_cancel".into(),
-            description: "Cancel a child agent".to_string(),
-            input_schema: json!({
+        request.tools.push(ToolSpec::function(
+            "agent_cancel",
+            "Cancel a child agent",
+            json!({
                 "properties": {
                     "agent_id": {"type": "string"},
                     "metadata": {
@@ -607,11 +607,10 @@ mod tests {
                 },
                 "required": ["agent_id"]
             }),
-            output_mode: ToolOutputMode::Text,
-            output_schema: None,
-            origin: ToolOrigin::Local,
-            annotations: Default::default(),
-        });
+            ToolOutputMode::Text,
+            ToolOrigin::Local,
+            types::ToolSource::Builtin,
+        ));
 
         let body =
             build_openai_responses_body("gpt-5.4".to_string(), request, &RequestOptions::default())

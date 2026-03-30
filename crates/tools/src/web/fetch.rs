@@ -1,4 +1,4 @@
-use crate::annotations::mcp_tool_annotations;
+use crate::annotations::{builtin_tool_spec, tool_approval_profile};
 use crate::registry::Tool;
 use crate::web::common::{
     DEFAULT_HTTP_TIMEOUT_MS, RedirectValidationScope, WebDocumentBlockRecord, WebDocumentLink,
@@ -17,7 +17,7 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
 use std::time::{SystemTime, UNIX_EPOCH};
-use types::{MessagePart, ToolCallId, ToolOrigin, ToolOutputMode, ToolResult, ToolSpec};
+use types::{MessagePart, ToolCallId, ToolOutputMode, ToolResult, ToolSpec};
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 pub struct WebFetchToolInput {
@@ -94,19 +94,17 @@ impl WebFetchTool {
 #[async_trait]
 impl Tool for WebFetchTool {
     fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            name: "web_fetch".into(),
-            description: "Fetch a web page over HTTP(S), extract readable text, and return a paged text window plus metadata for continuation.".to_string(),
-            input_schema: serde_json::to_value(schema_for!(WebFetchToolInput))
-                .expect("web_fetch schema"),
-            output_mode: ToolOutputMode::Text,
-            output_schema: Some(
-                serde_json::to_value(schema_for!(WebFetchToolOutput))
-                    .expect("web_fetch output schema"),
-            ),
-            origin: ToolOrigin::Local,
-            annotations: mcp_tool_annotations("Fetch Web Page", true, false, false, true),
-        }
+        builtin_tool_spec(
+            "web_fetch",
+            "Fetch a web page over HTTP(S), extract readable text, and return a paged text window plus metadata for continuation.",
+            serde_json::to_value(schema_for!(WebFetchToolInput)).expect("web_fetch schema"),
+            ToolOutputMode::Text,
+            tool_approval_profile(true, false, false, true).with_network(true),
+        )
+        .with_output_schema(
+            serde_json::to_value(schema_for!(WebFetchToolOutput))
+                .expect("web_fetch output schema"),
+        )
     }
 
     async fn execute(

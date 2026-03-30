@@ -99,7 +99,7 @@ async fn runtime_continues_after_tool_approval_denied() {
         requests[0]
             .reasons
             .iter()
-            .any(|reason: &String| reason.contains("destructive"))
+            .any(|reason: &String| reason.contains("mutates workspace"))
     );
 
     let events = store.events(&runtime.session_id()).await.unwrap();

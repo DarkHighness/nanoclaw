@@ -254,8 +254,8 @@ mod tests {
         ToolOriginMatcher,
     };
     use serde_json::json;
-    use std::collections::{BTreeMap, BTreeSet};
-    use types::{ToolCall, ToolCallId, ToolName, ToolOrigin, ToolOutputMode, ToolSpec};
+    use std::collections::BTreeSet;
+    use types::{ToolCall, ToolCallId, ToolName, ToolOrigin, ToolOutputMode, ToolSource, ToolSpec};
 
     fn request(arguments: serde_json::Value) -> ToolApprovalRequest {
         ToolApprovalRequest {
@@ -267,13 +267,14 @@ mod tests {
                 origin: ToolOrigin::Local,
             },
             spec: ToolSpec {
-                name: "bash".into(),
-                description: "Run commands".to_string(),
-                input_schema: json!({"type":"object"}),
-                output_mode: ToolOutputMode::Text,
-                output_schema: None,
-                origin: ToolOrigin::Local,
-                annotations: BTreeMap::new(),
+                ..ToolSpec::function(
+                    "bash",
+                    "Run commands",
+                    json!({"type":"object"}),
+                    ToolOutputMode::Text,
+                    ToolOrigin::Local,
+                    ToolSource::Builtin,
+                )
             },
             reasons: Vec::new(),
         }

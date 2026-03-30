@@ -1,4 +1,4 @@
-use crate::annotations::mcp_tool_annotations;
+use crate::annotations::{builtin_tool_spec, tool_approval_profile};
 use crate::registry::Tool;
 use crate::{Result, ToolExecutionContext};
 use async_trait::async_trait;
@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fmt;
 use std::sync::{Arc, Mutex};
-use types::{MessagePart, ToolCallId, ToolOrigin, ToolOutputMode, ToolResult, ToolSpec};
+use types::{MessagePart, ToolCallId, ToolOutputMode, ToolResult, ToolSpec};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -144,19 +144,16 @@ impl TodoReadTool {
 #[async_trait]
 impl Tool for TodoReadTool {
     fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            name: "todo_read".into(),
-            description: "Read the shared todo list for the current agent session.".to_string(),
-            input_schema: serde_json::to_value(schema_for!(TodoReadInput))
-                .expect("todo_read schema"),
-            output_mode: ToolOutputMode::Text,
-            output_schema: Some(
-                serde_json::to_value(schema_for!(TodoReadToolOutput))
-                    .expect("todo_read output schema"),
-            ),
-            origin: ToolOrigin::Local,
-            annotations: mcp_tool_annotations("Read Todos", true, false, true, false),
-        }
+        builtin_tool_spec(
+            "todo_read",
+            "Read the shared todo list for the current agent session.",
+            serde_json::to_value(schema_for!(TodoReadInput)).expect("todo_read schema"),
+            ToolOutputMode::Text,
+            tool_approval_profile(true, false, true, false),
+        )
+        .with_output_schema(
+            serde_json::to_value(schema_for!(TodoReadToolOutput)).expect("todo_read output schema"),
+        )
     }
 
     async fn execute(
@@ -224,20 +221,18 @@ impl TodoWriteTool {
 #[async_trait]
 impl Tool for TodoWriteTool {
     fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            name: "todo_write".into(),
-            description: "Replace or merge the shared todo list. Supports expected_revision guards so callers can detect stale todo snapshots."
-                .to_string(),
-            input_schema: serde_json::to_value(schema_for!(TodoWriteInput))
+        builtin_tool_spec(
+            "todo_write",
+            "Replace or merge the shared todo list. Supports expected_revision guards so callers can detect stale todo snapshots.",
+            serde_json::to_value(schema_for!(TodoWriteInput))
                 .expect("todo_write schema"),
-            output_mode: ToolOutputMode::Text,
-            output_schema: Some(
-                serde_json::to_value(schema_for!(TodoWriteToolOutput))
-                    .expect("todo_write output schema"),
-            ),
-            origin: ToolOrigin::Local,
-            annotations: mcp_tool_annotations("Write Todos", false, true, true, false),
-        }
+            ToolOutputMode::Text,
+            tool_approval_profile(false, true, true, false),
+        )
+        .with_output_schema(
+            serde_json::to_value(schema_for!(TodoWriteToolOutput))
+                .expect("todo_write output schema"),
+        )
     }
 
     async fn execute(

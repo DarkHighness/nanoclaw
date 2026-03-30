@@ -20,8 +20,8 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 use tracing::{debug, info};
 use types::{
-    Message, MessagePart, MessageRole, ToolCallId, ToolOrigin, ToolOutputMode, ToolResult,
-    ToolSpec, new_opaque_id,
+    Message, MessagePart, MessageRole, ToolApprovalProfile, ToolCallId, ToolKind, ToolOrigin,
+    ToolOutputMode, ToolResult, ToolSource, ToolSpec, new_opaque_id,
 };
 
 const MCP_CONNECT_CONCURRENCY_LIMIT: usize = 8;
@@ -382,24 +382,17 @@ fn http_headers(headers: &BTreeMap<String, String>) -> Result<HashMap<HeaderName
 }
 
 fn tool_spec_from_rmcp(server_name: &str, tool: Tool) -> Result<ToolSpec> {
-    let mut annotations = BTreeMap::new();
-    if let Some(title) = tool.title {
-        annotations.insert("title".to_string(), Value::String(title));
-    }
-    if let Some(meta) = tool.meta {
-        annotations.insert("meta".to_string(), serde_json::to_value(meta)?);
-    }
-    if let Some(tool_annotations) = tool.annotations {
-        if let Value::Object(values) = serde_json::to_value(tool_annotations)? {
-            annotations.extend(values);
-        }
-    }
-    if let Some(execution) = tool.execution {
-        annotations.insert(
-            "mcp_execution".to_string(),
-            serde_json::to_value(execution)?,
-        );
-    }
+    let approval = tool
+        .annotations
+        .map(|annotations| {
+            ToolApprovalProfile::new(
+                annotations.read_only_hint.unwrap_or(false),
+                annotations.destructive_hint.unwrap_or(false),
+                annotations.idempotent_hint,
+                annotations.open_world_hint.unwrap_or(false),
+            )
+        })
+        .unwrap_or_default();
 
     Ok(ToolSpec {
         name: tool.name.to_string().into(),
@@ -407,7 +400,8 @@ fn tool_spec_from_rmcp(server_name: &str, tool: Tool) -> Result<ToolSpec> {
             .description
             .map(|value| value.to_string())
             .unwrap_or_default(),
-        input_schema: Value::Object((*tool.input_schema).clone()),
+        kind: ToolKind::Function,
+        input_schema: Some(Value::Object((*tool.input_schema).clone())),
         output_mode: ToolOutputMode::ContentParts,
         output_schema: tool
             .output_schema
@@ -415,7 +409,13 @@ fn tool_spec_from_rmcp(server_name: &str, tool: Tool) -> Result<ToolSpec> {
         origin: ToolOrigin::Mcp {
             server_name: server_name.to_string(),
         },
-        annotations,
+        source: ToolSource::McpTool {
+            server_name: server_name.to_string(),
+        },
+        aliases: Vec::new(),
+        supports_parallel_tool_calls: false,
+        availability: Default::default(),
+        approval,
     })
 }
 

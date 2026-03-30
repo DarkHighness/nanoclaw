@@ -1,4 +1,4 @@
-use crate::annotations::mcp_tool_annotations;
+use crate::annotations::{builtin_tool_spec, tool_approval_profile};
 use crate::registry::Tool;
 use crate::{Result, ToolError, ToolExecutionContext};
 use async_trait::async_trait;
@@ -14,9 +14,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::task::spawn_blocking;
-use types::{
-    MessagePart, ToolCallId, ToolOrigin, ToolOutputMode, ToolResult, ToolSpec, new_opaque_id,
-};
+use types::{MessagePart, ToolCallId, ToolOutputMode, ToolResult, ToolSpec, new_opaque_id};
 
 const DEFAULT_TIMEOUT_MS: u64 = 1_000;
 const MAX_TIMEOUT_MS: u64 = 30_000;
@@ -232,26 +230,17 @@ impl JsReplTool {
 #[async_trait]
 impl Tool for JsReplTool {
     fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            name: "js_repl".into(),
-            description: "Evaluate JavaScript in a controlled in-memory REPL. Optional sessions preserve state by replaying prior successful snippets; the runtime does not expose filesystem, shell, or network APIs."
-                .to_string(),
-            input_schema: serde_json::to_value(schema_for!(JsReplToolInput))
-                .expect("js_repl schema"),
-            output_mode: ToolOutputMode::Text,
-            output_schema: Some(
-                serde_json::to_value(schema_for!(JsReplToolOutput))
-                    .expect("js_repl output schema"),
-            ),
-            origin: ToolOrigin::Local,
-            annotations: mcp_tool_annotations(
-                "Run Controlled JavaScript",
-                true,
-                false,
-                false,
-                false,
-            ),
-        }
+        builtin_tool_spec(
+            "js_repl",
+            "Evaluate JavaScript in a controlled in-memory REPL. Optional sessions preserve state by replaying prior successful snippets; the runtime does not expose filesystem, shell, or network APIs.",
+            serde_json::to_value(schema_for!(JsReplToolInput)).expect("js_repl schema"),
+            ToolOutputMode::Text,
+            tool_approval_profile(true, false, false, false),
+        )
+        .with_output_schema(
+            serde_json::to_value(schema_for!(JsReplToolOutput))
+                .expect("js_repl output schema"),
+        )
     }
 
     async fn execute(

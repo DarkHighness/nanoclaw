@@ -1,5 +1,5 @@
 use crate::ToolExecutionContext;
-use crate::annotations::mcp_tool_annotations;
+use crate::annotations::{builtin_tool_spec, tool_approval_profile};
 use crate::file_activity::FileActivityObserver;
 use crate::fs::{
     TextEditOperation, WriteExistingBehavior, WriteMissingBehavior, WriteRequest, apply_delete,
@@ -15,7 +15,7 @@ use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use types::{MessagePart, ToolCallId, ToolOrigin, ToolOutputMode, ToolResult, ToolSpec};
+use types::{MessagePart, ToolCallId, ToolOutputMode, ToolResult, ToolSpec};
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(tag = "command", rename_all = "snake_case")]
@@ -127,17 +127,16 @@ impl PatchOperation {
 #[async_trait]
 impl Tool for PatchTool {
     fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            name: "patch".into(),
-            description: "Apply a staged multi-file patch made of write, edit, delete, and move operations. Operations are validated against staged content first so a failed operation does not partially apply earlier changes.".to_string(),
-            input_schema: serde_json::to_value(schema_for!(PatchToolInput)).expect("patch schema"),
-            output_mode: ToolOutputMode::Text,
-            output_schema: Some(
-                serde_json::to_value(schema_for!(PatchToolOutput)).expect("patch output schema"),
-            ),
-            origin: ToolOrigin::Local,
-            annotations: mcp_tool_annotations("Apply Patch", false, true, true, false),
-        }
+        builtin_tool_spec(
+            "patch",
+            "Apply a staged multi-file patch made of write, edit, delete, and move operations. Operations are validated against staged content first so a failed operation does not partially apply earlier changes.",
+            serde_json::to_value(schema_for!(PatchToolInput)).expect("patch schema"),
+            ToolOutputMode::Text,
+            tool_approval_profile(false, true, true, false),
+        )
+        .with_output_schema(
+            serde_json::to_value(schema_for!(PatchToolOutput)).expect("patch output schema"),
+        )
     }
 
     async fn execute(

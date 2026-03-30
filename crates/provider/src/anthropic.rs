@@ -294,10 +294,14 @@ fn build_anthropic_messages_body(
                     .tools
                     .iter()
                     .map(|tool| {
+                        let input_schema = tool
+                            .input_schema
+                            .as_ref()
+                            .expect("function tools must define an input schema");
                         json!({
                             "name": tool.name,
                             "description": tool.description,
-                            "input_schema": coerce_object_schema(&tool.input_schema),
+                            "input_schema": coerce_object_schema(input_schema),
                         })
                     })
                     .collect(),
@@ -575,7 +579,7 @@ mod tests {
     use serde_json::{Value, json};
     use types::{
         AgentSessionId, Message, ModelEvent, ModelRequest, SessionId, TokenUsage, ToolName,
-        ToolOrigin, ToolOutputMode, ToolSpec, TurnId,
+        ToolOrigin, ToolOutputMode, ToolSource, ToolSpec, TurnId,
     };
     use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -587,15 +591,14 @@ mod tests {
             turn_id: TurnId::new(),
             instructions: vec!["You are a coding agent.".to_string()],
             messages: vec![Message::user("inspect the repo")],
-            tools: vec![ToolSpec {
-                name: "read".into(),
-                description: "Read a file".to_string(),
-                input_schema: json!({"properties":{"path":{"type":"string"}}}),
-                output_mode: ToolOutputMode::Text,
-                output_schema: None,
-                origin: ToolOrigin::Local,
-                annotations: Default::default(),
-            }],
+            tools: vec![ToolSpec::function(
+                "read",
+                "Read a file",
+                json!({"properties":{"path":{"type":"string"}}}),
+                ToolOutputMode::Text,
+                ToolOrigin::Local,
+                ToolSource::Builtin,
+            )],
             additional_context: Vec::new(),
             continuation: None,
             metadata: json!({}),

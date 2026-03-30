@@ -1,6 +1,6 @@
 # Documentation Index
 
-Date: 2026-03-28
+Date: 2026-03-30
 
 Status: Active
 
@@ -69,3 +69,6 @@ Intentionally still documented as not yet implemented:
 - `docs/session-model-design.md`
   - canonical `Session` / `AgentSession` model and rename target for the
     repository-wide `Run*` migration
+- `docs/tool-protocol-alignment.md`
+  - active Codex/OpenCode/nanoclaw tool-surface alignment note and target
+    protocol draft

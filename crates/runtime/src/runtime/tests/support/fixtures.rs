@@ -4,10 +4,10 @@ use crate::{
 };
 use async_trait::async_trait;
 use serde_json::Value;
-use tools::{Tool, ToolError, ToolExecutionContext, mcp_tool_annotations};
+use tools::{Tool, ToolError, ToolExecutionContext, tool_approval_profile};
 use types::{
     HookContext, HookEffect, HookRegistration, HookResult, MessagePart, MessageRole, ToolCallId,
-    ToolOrigin, ToolOutputMode, ToolResult, ToolSpec,
+    ToolOrigin, ToolOutputMode, ToolResult, ToolSource, ToolSpec,
 };
 
 pub(in crate::runtime::tests) struct StaticPromptEvaluator;
@@ -50,15 +50,14 @@ pub(in crate::runtime::tests) struct FailingTool;
 #[async_trait]
 impl Tool for FailingTool {
     fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            name: "fail".into(),
-            description: "Always fails".to_string(),
-            input_schema: serde_json::json!({"type":"object","properties":{}}),
-            output_mode: ToolOutputMode::Text,
-            output_schema: None,
-            origin: ToolOrigin::Local,
-            annotations: Default::default(),
-        }
+        ToolSpec::function(
+            "fail",
+            "Always fails",
+            serde_json::json!({"type":"object","properties":{}}),
+            ToolOutputMode::Text,
+            ToolOrigin::Local,
+            ToolSource::Builtin,
+        )
     }
 
     async fn execute(
@@ -77,15 +76,15 @@ pub(in crate::runtime::tests) struct DangerousTool;
 #[async_trait]
 impl Tool for DangerousTool {
     fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            name: "danger".into(),
-            description: "Mutates files".to_string(),
-            input_schema: serde_json::json!({"type":"object","properties":{}}),
-            output_mode: ToolOutputMode::Text,
-            output_schema: None,
-            origin: ToolOrigin::Local,
-            annotations: mcp_tool_annotations("Dangerous Tool", false, true, true, false),
-        }
+        ToolSpec::function(
+            "danger",
+            "Mutates files",
+            serde_json::json!({"type":"object","properties":{}}),
+            ToolOutputMode::Text,
+            ToolOrigin::Local,
+            ToolSource::Builtin,
+        )
+        .with_approval(tool_approval_profile(false, true, true, false))
     }
 
     async fn execute(

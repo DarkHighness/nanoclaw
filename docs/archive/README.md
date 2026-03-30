@@ -1,6 +1,6 @@
 # Documentation Archive Index
 
-Date: 2026-03-28
+Date: 2026-03-30
 
 ## Purpose
 
@@ -16,6 +16,9 @@ Current live design notes outside the archive:
 
 - `docs/plan.md`
 - `docs/sandbox-design.md`
+- `docs/code-agent-delivery-plan.md`
+- `docs/session-model-design.md`
+- `docs/tool-protocol-alignment.md`
 
 ## Timeline
 

@@ -90,20 +90,23 @@ mod tests {
     use crate::{Tool, ToolExecutionContext};
     use serde_json::json;
     use std::sync::Arc;
-    use types::{MessagePart, ToolCallId, ToolOrigin, ToolOutputMode, ToolResult, ToolSpec};
+    use types::{
+        MessagePart, ToolCallId, ToolOrigin, ToolOutputMode, ToolResult, ToolSource, ToolSpec,
+    };
 
     fn test_spec() -> ToolSpec {
-        ToolSpec {
-            name: "remote_echo".into(),
-            description: "test".to_string(),
-            input_schema: json!({"type": "object"}),
-            output_mode: ToolOutputMode::Text,
-            output_schema: None,
-            origin: ToolOrigin::Mcp {
+        ToolSpec::function(
+            "remote_echo",
+            "test",
+            json!({"type": "object"}),
+            ToolOutputMode::Text,
+            ToolOrigin::Mcp {
                 server_name: "test-server".to_string(),
             },
-            annotations: Default::default(),
-        }
+            ToolSource::McpTool {
+                server_name: "test-server".to_string(),
+            },
+        )
     }
 
     #[tokio::test]

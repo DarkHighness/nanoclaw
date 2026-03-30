@@ -1,6 +1,6 @@
 use crate::Result;
 use crate::ToolExecutionContext;
-use crate::annotations::mcp_tool_annotations;
+use crate::annotations::{builtin_tool_spec, tool_approval_profile};
 use crate::file_activity::FileActivityObserver;
 use crate::fs::{
     TextEditOperation, apply_text_edits, commit_text_file, compute_diff_preview,
@@ -12,7 +12,7 @@ use schemars::{JsonSchema, schema_for};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
-use types::{MessagePart, ToolCallId, ToolOrigin, ToolOutputMode, ToolResult, ToolSpec};
+use types::{MessagePart, ToolCallId, ToolOutputMode, ToolResult, ToolSpec};
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 pub struct EditToolInput {
@@ -66,17 +66,16 @@ enum EditToolOutput {
 #[async_trait]
 impl Tool for EditTool {
     fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            name: "edit".into(),
-            description: "Modify an existing UTF-8 file using one precise text edit operation. Use expected_snapshot or expected_selection_hash to guard against stale reads.".to_string(),
-            input_schema: serde_json::to_value(schema_for!(EditToolInput)).expect("edit schema"),
-            output_mode: ToolOutputMode::Text,
-            output_schema: Some(
-                serde_json::to_value(schema_for!(EditToolOutput)).expect("edit output schema"),
-            ),
-            origin: ToolOrigin::Local,
-            annotations: mcp_tool_annotations("Edit File", false, true, true, false),
-        }
+        builtin_tool_spec(
+            "edit",
+            "Modify an existing UTF-8 file using one precise text edit operation. Use expected_snapshot or expected_selection_hash to guard against stale reads.",
+            serde_json::to_value(schema_for!(EditToolInput)).expect("edit schema"),
+            ToolOutputMode::Text,
+            tool_approval_profile(false, true, true, false),
+        )
+        .with_output_schema(
+            serde_json::to_value(schema_for!(EditToolOutput)).expect("edit output schema"),
+        )
     }
 
     async fn execute(

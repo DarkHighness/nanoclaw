@@ -1,4 +1,4 @@
-use crate::annotations::mcp_tool_annotations;
+use crate::annotations::{builtin_tool_spec, tool_approval_profile};
 use crate::registry::Tool;
 use crate::web::common::{
     DEFAULT_HTTP_TIMEOUT_MS, RedirectValidationScope, WebToolPolicy, clamped_search_limit,
@@ -17,7 +17,7 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use time::OffsetDateTime;
 use time::format_description::well_known::{Rfc2822, Rfc3339};
-use types::{MessagePart, ToolCallId, ToolOrigin, ToolOutputMode, ToolResult, ToolSpec};
+use types::{MessagePart, ToolCallId, ToolOutputMode, ToolResult, ToolSpec};
 
 mod engines;
 
@@ -430,19 +430,17 @@ impl WebSearchBackendsTool {
 #[async_trait]
 impl Tool for WebSearchTool {
     fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            name: "web_search".into(),
-            description: "Search the public web and return result titles, URLs, and snippets. Supports optional backend selection plus per-call domain filtering before follow-up web_fetch calls.".to_string(),
-            input_schema: serde_json::to_value(schema_for!(WebSearchToolInput))
-                .expect("web_search schema"),
-            output_mode: ToolOutputMode::Text,
-            output_schema: Some(
-                serde_json::to_value(schema_for!(WebSearchToolOutput))
-                    .expect("web_search output schema"),
-            ),
-            origin: ToolOrigin::Local,
-            annotations: mcp_tool_annotations("Search Web", true, false, false, true),
-        }
+        builtin_tool_spec(
+            "web_search",
+            "Search the public web and return result titles, URLs, and snippets. Supports optional backend selection plus per-call domain filtering before follow-up web_fetch calls.",
+            serde_json::to_value(schema_for!(WebSearchToolInput)).expect("web_search schema"),
+            ToolOutputMode::Text,
+            tool_approval_profile(true, false, false, true).with_network(true),
+        )
+        .with_output_schema(
+            serde_json::to_value(schema_for!(WebSearchToolOutput))
+                .expect("web_search output schema"),
+        )
     }
 
     async fn execute(
@@ -708,19 +706,18 @@ impl Tool for WebSearchTool {
 #[async_trait]
 impl Tool for WebSearchBackendsTool {
     fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            name: "web_search_backends".into(),
-            description: "Inspect known web_search backends, configured availability, capability coverage, and default selection order.".to_string(),
-            input_schema: serde_json::to_value(schema_for!(WebSearchBackendsToolInput))
+        builtin_tool_spec(
+            "web_search_backends",
+            "Inspect known web_search backends, configured availability, capability coverage, and default selection order.",
+            serde_json::to_value(schema_for!(WebSearchBackendsToolInput))
                 .expect("web_search_backends schema"),
-            output_mode: ToolOutputMode::Text,
-            output_schema: Some(
-                serde_json::to_value(schema_for!(WebSearchBackendsToolOutput))
-                    .expect("web_search_backends output schema"),
-            ),
-            origin: ToolOrigin::Local,
-            annotations: mcp_tool_annotations("List Search Backends", true, false, true, false),
-        }
+            ToolOutputMode::Text,
+            tool_approval_profile(true, false, true, false),
+        )
+        .with_output_schema(
+            serde_json::to_value(schema_for!(WebSearchBackendsToolOutput))
+                .expect("web_search_backends output schema"),
+        )
     }
 
     async fn execute(

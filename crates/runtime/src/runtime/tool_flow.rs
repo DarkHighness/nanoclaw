@@ -406,24 +406,20 @@ fn severity_label(severity: LoopSignalSeverity) -> &'static str {
 
 fn approval_reasons_for_tool(spec: &ToolSpec) -> Vec<String> {
     let mut reasons = Vec::new();
-    if tool_annotation_bool(spec, "destructiveHint").unwrap_or(true) {
-        reasons.push("tool is marked destructive".to_string());
+    if spec.approval.mutates_state {
+        reasons.push("tool mutates workspace or persistent state".to_string());
     }
-    if tool_annotation_bool(spec, "openWorldHint").unwrap_or(true) {
+    if spec.approval.needs_network {
+        reasons.push("tool performs network access".to_string());
+    }
+    if spec.approval.open_world {
         reasons.push("tool reaches outside the workspace or touches external systems".to_string());
     }
+    if spec.approval.needs_host_escape {
+        reasons.push("tool requires host escape or unsandboxed execution".to_string());
+    }
+    if let Some(message) = &spec.approval.approval_message {
+        reasons.push(message.clone());
+    }
     reasons
-}
-
-fn tool_annotation_bool(spec: &ToolSpec, key: &str) -> Option<bool> {
-    spec.annotations
-        .get(key)
-        .and_then(serde_json::Value::as_bool)
-        .or_else(|| {
-            spec.annotations
-                .get("mcp_annotations")
-                .and_then(serde_json::Value::as_object)
-                .and_then(|value| value.get(key))
-                .and_then(serde_json::Value::as_bool)
-        })
 }

@@ -1,5 +1,5 @@
 use crate::ToolExecutionContext;
-use crate::annotations::mcp_tool_annotations;
+use crate::annotations::{builtin_tool_spec, tool_approval_profile};
 use crate::file_activity::FileActivityObserver;
 use crate::fs::{
     TextBuffer, format_numbered_lines, resolve_tool_path_against_workspace_root, stable_text_hash,
@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
 use tokio::fs;
-use types::{MessagePart, ToolCallId, ToolOrigin, ToolOutputMode, ToolResult, ToolSpec};
+use types::{MessagePart, ToolCallId, ToolOutputMode, ToolResult, ToolSpec};
 
 const DEFAULT_READ_PAGE_MAX_BYTES: usize = 50 * 1024;
 const MAX_ADAPTIVE_READ_MAX_BYTES: usize = 512 * 1024;
@@ -108,17 +108,16 @@ enum ReadToolOutput {
 #[async_trait]
 impl Tool for ReadTool {
     fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            name: "read".into(),
-            description: "Read a file or image. Text files are returned as a line-numbered view with range paging (`start_line`/`end_line` or `line_count`) or anchor-based spans (`anchor_text`), plus snapshot ids for follow-up edits.".to_string(),
-            input_schema: serde_json::to_value(schema_for!(ReadToolInput)).expect("read schema"),
-            output_mode: ToolOutputMode::ContentParts,
-            output_schema: Some(
-                serde_json::to_value(schema_for!(ReadToolOutput)).expect("read output schema"),
-            ),
-            origin: ToolOrigin::Local,
-            annotations: mcp_tool_annotations("Read File", true, false, true, false),
-        }
+        builtin_tool_spec(
+            "read",
+            "Read a file or image. Text files are returned as a line-numbered view with range paging (`start_line`/`end_line` or `line_count`) or anchor-based spans (`anchor_text`), plus snapshot ids for follow-up edits.",
+            serde_json::to_value(schema_for!(ReadToolInput)).expect("read schema"),
+            ToolOutputMode::ContentParts,
+            tool_approval_profile(true, false, true, false),
+        )
+        .with_output_schema(
+            serde_json::to_value(schema_for!(ReadToolOutput)).expect("read output schema"),
+        )
     }
 
     async fn execute(

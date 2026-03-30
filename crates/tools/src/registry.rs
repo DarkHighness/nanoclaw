@@ -74,7 +74,9 @@ mod tests {
     use crate::{Result, ToolExecutionContext};
     use async_trait::async_trait;
     use serde_json::{Value, json};
-    use types::{ToolCallId, ToolName, ToolOrigin, ToolOutputMode, ToolResult, ToolSpec};
+    use types::{
+        ToolCallId, ToolName, ToolOrigin, ToolOutputMode, ToolResult, ToolSource, ToolSpec,
+    };
 
     #[derive(Clone)]
     struct NamedTool(&'static str);
@@ -82,15 +84,14 @@ mod tests {
     #[async_trait]
     impl Tool for NamedTool {
         fn spec(&self) -> ToolSpec {
-            ToolSpec {
-                name: ToolName::from(self.0),
-                description: format!("tool {}", self.0),
-                input_schema: json!({"type":"object","properties":{}}),
-                output_mode: ToolOutputMode::Text,
-                output_schema: None,
-                origin: ToolOrigin::Local,
-                annotations: Default::default(),
-            }
+            ToolSpec::function(
+                ToolName::from(self.0),
+                format!("tool {}", self.0),
+                json!({"type":"object","properties":{}}),
+                ToolOutputMode::Text,
+                ToolOrigin::Local,
+                ToolSource::Builtin,
+            )
         }
 
         async fn execute(

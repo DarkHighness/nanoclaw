@@ -140,7 +140,12 @@ pub fn estimate_prompt_tokens(
     chars += tools
         .iter()
         .map(|tool| {
-            tool.name.as_str().len() + tool.description.len() + tool.input_schema.to_string().len()
+            let schema_chars = tool
+                .input_schema
+                .as_ref()
+                .map(ToString::to_string)
+                .map_or(0, |schema| schema.len());
+            tool.name.as_str().len() + tool.description.len() + schema_chars
         })
         .sum::<usize>();
     chars.div_ceil(4)

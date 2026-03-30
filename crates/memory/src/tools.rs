@@ -8,9 +8,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::sync::Arc;
 use tools::ToolExecutionContext;
-use tools::annotations::mcp_tool_annotations;
+use tools::annotations::{builtin_tool_spec, tool_approval_profile};
 use tools::registry::Tool;
-use types::{ToolCallId, ToolOrigin, ToolOutputMode, ToolResult, ToolSpec};
+use types::{ToolCallId, ToolOutputMode, ToolResult, ToolSpec};
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 pub struct MemorySearchToolInput {
@@ -173,18 +173,13 @@ impl MemoryForgetTool {
 #[async_trait]
 impl Tool for MemorySearchTool {
     fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            name: "memory_search".into(),
-            description:
-                "Search layered memory Markdown files with scope, tag, and runtime-aware retrieval."
-                    .to_string(),
-            input_schema: serde_json::to_value(schema_for!(MemorySearchToolInput))
-                .expect("memory_search schema"),
-            output_mode: ToolOutputMode::Text,
-            output_schema: None,
-            origin: ToolOrigin::Local,
-            annotations: mcp_tool_annotations("Memory Search", true, false, true, false),
-        }
+        builtin_tool_spec(
+            "memory_search",
+            "Search layered memory Markdown files with scope, tag, and runtime-aware retrieval.",
+            serde_json::to_value(schema_for!(MemorySearchToolInput)).expect("memory_search schema"),
+            ToolOutputMode::Text,
+            tool_approval_profile(true, false, true, false),
+        )
     }
 
     async fn execute(
@@ -247,16 +242,13 @@ impl Tool for MemorySearchTool {
 #[async_trait]
 impl Tool for MemoryGetTool {
     fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            name: "memory_get".into(),
-            description: "Read a specific memory file from the configured memory corpus, optionally starting at a line offset.".to_string(),
-            input_schema: serde_json::to_value(schema_for!(MemoryGetToolInput))
-                .expect("memory_get schema"),
-            output_mode: ToolOutputMode::Text,
-            output_schema: None,
-            origin: ToolOrigin::Local,
-            annotations: mcp_tool_annotations("Memory Get", true, false, true, false),
-        }
+        builtin_tool_spec(
+            "memory_get",
+            "Read a specific memory file from the configured memory corpus, optionally starting at a line offset.",
+            serde_json::to_value(schema_for!(MemoryGetToolInput)).expect("memory_get schema"),
+            ToolOutputMode::Text,
+            tool_approval_profile(true, false, true, false),
+        )
     }
 
     async fn execute(
@@ -314,18 +306,13 @@ impl Tool for MemoryGetTool {
 #[async_trait]
 impl Tool for MemoryListTool {
     fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            name: "memory_list".into(),
-            description:
-                "List the current memory inventory with scope, status, and runtime metadata."
-                    .to_string(),
-            input_schema: serde_json::to_value(schema_for!(MemoryListToolInput))
-                .expect("memory_list schema"),
-            output_mode: ToolOutputMode::Text,
-            output_schema: None,
-            origin: ToolOrigin::Local,
-            annotations: mcp_tool_annotations("Memory List", true, false, true, false),
-        }
+        builtin_tool_spec(
+            "memory_list",
+            "List the current memory inventory with scope, status, and runtime metadata.",
+            serde_json::to_value(schema_for!(MemoryListToolInput)).expect("memory_list schema"),
+            ToolOutputMode::Text,
+            tool_approval_profile(true, false, true, false),
+        )
     }
 
     async fn execute(
@@ -379,16 +366,13 @@ impl Tool for MemoryListTool {
 #[async_trait]
 impl Tool for MemoryRecordTool {
     fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            name: "memory_record".into(),
-            description: "Append working or coordination memory as Markdown source of truth under .nanoclaw/memory.".to_string(),
-            input_schema: serde_json::to_value(schema_for!(MemoryRecordToolInput))
-                .expect("memory_record schema"),
-            output_mode: ToolOutputMode::Text,
-            output_schema: None,
-            origin: ToolOrigin::Local,
-            annotations: mcp_tool_annotations("Memory Record", true, false, true, false),
-        }
+        builtin_tool_spec(
+            "memory_record",
+            "Append working or coordination memory as Markdown source of truth under .nanoclaw/memory.",
+            serde_json::to_value(schema_for!(MemoryRecordToolInput)).expect("memory_record schema"),
+            ToolOutputMode::Text,
+            tool_approval_profile(true, false, true, false),
+        )
     }
 
     async fn execute(
@@ -423,18 +407,14 @@ impl Tool for MemoryRecordTool {
 #[async_trait]
 impl Tool for MemoryPromoteTool {
     fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            name: "memory_promote".into(),
-            description:
-                "Promote verified working or episodic memory into procedural or semantic memory."
-                    .to_string(),
-            input_schema: serde_json::to_value(schema_for!(MemoryPromoteToolInput))
+        builtin_tool_spec(
+            "memory_promote",
+            "Promote verified working or episodic memory into procedural or semantic memory.",
+            serde_json::to_value(schema_for!(MemoryPromoteToolInput))
                 .expect("memory_promote schema"),
-            output_mode: ToolOutputMode::Text,
-            output_schema: None,
-            origin: ToolOrigin::Local,
-            annotations: mcp_tool_annotations("Memory Promote", true, false, true, false),
-        }
+            ToolOutputMode::Text,
+            tool_approval_profile(true, false, true, false),
+        )
     }
 
     async fn execute(
@@ -464,16 +444,13 @@ impl Tool for MemoryPromoteTool {
 #[async_trait]
 impl Tool for MemoryForgetTool {
     fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            name: "memory_forget".into(),
-            description: "Mark memory as stale, superseded, or archived without deleting the Markdown source.".to_string(),
-            input_schema: serde_json::to_value(schema_for!(MemoryForgetToolInput))
-                .expect("memory_forget schema"),
-            output_mode: ToolOutputMode::Text,
-            output_schema: None,
-            origin: ToolOrigin::Local,
-            annotations: mcp_tool_annotations("Memory Forget", true, false, true, false),
-        }
+        builtin_tool_spec(
+            "memory_forget",
+            "Mark memory as stale, superseded, or archived without deleting the Markdown source.",
+            serde_json::to_value(schema_for!(MemoryForgetToolInput)).expect("memory_forget schema"),
+            ToolOutputMode::Text,
+            tool_approval_profile(true, false, true, false),
+        )
     }
 
     async fn execute(

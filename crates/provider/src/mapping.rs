@@ -1,6 +1,6 @@
 use crate::{ProviderError, Result};
 use serde_json::{Map, Value};
-use types::{MessagePart, ReasoningContent, ToolResult, ToolSpec};
+use types::{MessagePart, ReasoningContent, ToolKind, ToolResult, ToolSpec};
 
 #[must_use]
 pub fn coerce_object_schema(schema: &Value) -> Value {
@@ -166,11 +166,19 @@ pub fn tool_result_roundtrip_text(result: &ToolResult) -> String {
 
 #[must_use]
 pub fn tool_schema(spec: &ToolSpec) -> Value {
+    debug_assert!(
+        matches!(spec.kind, ToolKind::Function),
+        "provider adapters currently only expose function tools"
+    );
+    let input_schema = spec
+        .input_schema
+        .as_ref()
+        .expect("function tools must define an input schema");
     serde_json::json!({
         "type": "function",
         "name": spec.name,
         "description": spec.description,
-        "parameters": coerce_object_schema(&spec.input_schema),
+        "parameters": coerce_object_schema(input_schema),
     })
 }
 
@@ -178,8 +186,7 @@ pub fn tool_schema(spec: &ToolSpec) -> Value {
 mod tests {
     use super::{coerce_object_schema, tool_result_roundtrip_text, tool_schema};
     use serde_json::json;
-    use std::collections::BTreeMap;
-    use types::{MessagePart, ToolOrigin, ToolOutputMode, ToolResult, ToolSpec};
+    use types::{MessagePart, ToolOrigin, ToolOutputMode, ToolResult, ToolSource, ToolSpec};
 
     #[test]
     fn coerce_object_schema_adds_missing_type_for_property_schemas() {
@@ -198,19 +205,18 @@ mod tests {
 
     #[test]
     fn tool_schema_uses_coerced_schema() {
-        let spec = ToolSpec {
-            name: "read".into(),
-            description: "Read a file".to_string(),
-            input_schema: json!({
+        let spec = ToolSpec::function(
+            "read",
+            "Read a file",
+            json!({
                 "properties": {
                     "path": { "type": "string" }
                 }
             }),
-            output_mode: ToolOutputMode::Text,
-            output_schema: None,
-            origin: ToolOrigin::Local,
-            annotations: BTreeMap::new(),
-        };
+            ToolOutputMode::Text,
+            ToolOrigin::Local,
+            ToolSource::Builtin,
+        );
 
         let definition = tool_schema(&spec);
 

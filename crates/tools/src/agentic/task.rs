@@ -1,5 +1,5 @@
 use crate::ToolExecutionContext;
-use crate::annotations::mcp_tool_annotations;
+use crate::annotations::{builtin_tool_spec, tool_approval_profile};
 use crate::registry::Tool;
 use crate::{Result, ToolError};
 use async_trait::async_trait;
@@ -11,7 +11,7 @@ use std::sync::Arc;
 use types::{
     AgentHandle, AgentId, AgentResultEnvelope, AgentSessionId, AgentStatus, AgentTaskSpec,
     AgentWaitMode, AgentWaitRequest, AgentWaitResponse, CallId, MessagePart, SessionId, ToolCallId,
-    ToolName, ToolOrigin, ToolOutputMode, ToolResult, ToolSpec, TurnId,
+    ToolName, ToolOutputMode, ToolResult, ToolSpec, TurnId,
 };
 
 #[derive(Clone, Debug, Default)]
@@ -168,19 +168,16 @@ define_executor_tool!(AgentCancelTool);
 #[async_trait]
 impl Tool for TaskTool {
     fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            name: "task".into(),
-            description:
-                "Spawn one child agent, wait for completion, and return its structured result."
-                    .to_string(),
-            input_schema: serde_json::to_value(schema_for!(TaskToolInput)).expect("task schema"),
-            output_mode: ToolOutputMode::Text,
-            output_schema: Some(
-                serde_json::to_value(schema_for!(TaskToolOutput)).expect("task output schema"),
-            ),
-            origin: ToolOrigin::Local,
-            annotations: mcp_tool_annotations("Run Child Agent", false, false, false, false),
-        }
+        builtin_tool_spec(
+            "task",
+            "Spawn one child agent, wait for completion, and return its structured result.",
+            serde_json::to_value(schema_for!(TaskToolInput)).expect("task schema"),
+            ToolOutputMode::Text,
+            tool_approval_profile(false, false, false, false),
+        )
+        .with_output_schema(
+            serde_json::to_value(schema_for!(TaskToolOutput)).expect("task output schema"),
+        )
     }
 
     async fn execute(
@@ -226,21 +223,18 @@ impl Tool for TaskTool {
 #[async_trait]
 impl Tool for TaskBatchTool {
     fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            name: "task_batch".into(),
-            description:
-                "Spawn multiple child agents with dependency-aware scheduling, wait for completion, and return structured results."
-                    .to_string(),
-            input_schema: serde_json::to_value(schema_for!(TaskBatchToolInput))
+        builtin_tool_spec(
+            "task_batch",
+            "Spawn multiple child agents with dependency-aware scheduling, wait for completion, and return structured results.",
+            serde_json::to_value(schema_for!(TaskBatchToolInput))
                 .expect("task_batch schema"),
-            output_mode: ToolOutputMode::Text,
-            output_schema: Some(
-                serde_json::to_value(schema_for!(TaskBatchToolOutput))
-                    .expect("task_batch output schema"),
-            ),
-            origin: ToolOrigin::Local,
-            annotations: mcp_tool_annotations("Run Child Agent Batch", false, false, false, false),
-        }
+            ToolOutputMode::Text,
+            tool_approval_profile(false, false, false, false),
+        )
+        .with_output_schema(
+            serde_json::to_value(schema_for!(TaskBatchToolOutput))
+                .expect("task_batch output schema"),
+        )
     }
 
     async fn execute(
@@ -285,21 +279,18 @@ impl Tool for TaskBatchTool {
 #[async_trait]
 impl Tool for AgentSpawnTool {
     fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            name: "agent_spawn".into(),
-            description:
-                "Spawn one or more child agents without waiting, honoring in-batch dependencies before they start."
-                    .to_string(),
-            input_schema: serde_json::to_value(schema_for!(AgentSpawnToolInput))
+        builtin_tool_spec(
+            "agent_spawn",
+            "Spawn one or more child agents without waiting, honoring in-batch dependencies before they start.",
+            serde_json::to_value(schema_for!(AgentSpawnToolInput))
                 .expect("agent_spawn schema"),
-            output_mode: ToolOutputMode::Text,
-            output_schema: Some(
-                serde_json::to_value(schema_for!(Vec<AgentHandle>))
-                    .expect("agent_spawn output schema"),
-            ),
-            origin: ToolOrigin::Local,
-            annotations: mcp_tool_annotations("Spawn Child Agents", false, false, false, false),
-        }
+            ToolOutputMode::Text,
+            tool_approval_profile(false, false, false, false),
+        )
+        .with_output_schema(
+            serde_json::to_value(schema_for!(Vec<AgentHandle>))
+                .expect("agent_spawn output schema"),
+        )
     }
 
     async fn execute(
@@ -335,24 +326,16 @@ impl Tool for AgentSpawnTool {
 #[async_trait]
 impl Tool for AgentSendTool {
     fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            name: "agent_send".into(),
-            description: "Send a message or steering payload to a child agent.".to_string(),
-            input_schema: serde_json::to_value(schema_for!(AgentSendToolInput))
-                .expect("agent_send schema"),
-            output_mode: ToolOutputMode::Text,
-            output_schema: Some(
-                serde_json::to_value(schema_for!(AgentHandle)).expect("agent_send output schema"),
-            ),
-            origin: ToolOrigin::Local,
-            annotations: mcp_tool_annotations(
-                "Send Child Agent Message",
-                false,
-                false,
-                false,
-                false,
-            ),
-        }
+        builtin_tool_spec(
+            "agent_send",
+            "Send a message or steering payload to a child agent.",
+            serde_json::to_value(schema_for!(AgentSendToolInput)).expect("agent_send schema"),
+            ToolOutputMode::Text,
+            tool_approval_profile(false, false, false, false),
+        )
+        .with_output_schema(
+            serde_json::to_value(schema_for!(AgentHandle)).expect("agent_send output schema"),
+        )
     }
 
     async fn execute(
@@ -378,19 +361,16 @@ impl Tool for AgentSendTool {
 #[async_trait]
 impl Tool for AgentWaitTool {
     fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            name: "agent_wait".into(),
-            description: "Wait for one or more child agents to reach a terminal state.".to_string(),
-            input_schema: serde_json::to_value(schema_for!(AgentWaitRequest))
-                .expect("agent_wait schema"),
-            output_mode: ToolOutputMode::Text,
-            output_schema: Some(
-                serde_json::to_value(schema_for!(AgentWaitResponse))
-                    .expect("agent_wait output schema"),
-            ),
-            origin: ToolOrigin::Local,
-            annotations: mcp_tool_annotations("Wait For Child Agents", false, false, false, false),
-        }
+        builtin_tool_spec(
+            "agent_wait",
+            "Wait for one or more child agents to reach a terminal state.",
+            serde_json::to_value(schema_for!(AgentWaitRequest)).expect("agent_wait schema"),
+            ToolOutputMode::Text,
+            tool_approval_profile(false, false, false, false),
+        )
+        .with_output_schema(
+            serde_json::to_value(schema_for!(AgentWaitResponse)).expect("agent_wait output schema"),
+        )
     }
 
     async fn execute(
@@ -416,22 +396,20 @@ impl Tool for AgentWaitTool {
 #[async_trait]
 impl Tool for AgentListTool {
     fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            name: "agent_list".into(),
-            description: "List current child agents and their session metadata.".to_string(),
-            input_schema: serde_json::json!({
+        builtin_tool_spec(
+            "agent_list",
+            "List current child agents and their session metadata.",
+            serde_json::json!({
                 "type": "object",
                 "properties": {},
                 "additionalProperties": false
             }),
-            output_mode: ToolOutputMode::Text,
-            output_schema: Some(
-                serde_json::to_value(schema_for!(Vec<AgentHandle>))
-                    .expect("agent_list output schema"),
-            ),
-            origin: ToolOrigin::Local,
-            annotations: mcp_tool_annotations("List Child Agents", true, false, false, false),
-        }
+            ToolOutputMode::Text,
+            tool_approval_profile(true, false, false, false),
+        )
+        .with_output_schema(
+            serde_json::to_value(schema_for!(Vec<AgentHandle>)).expect("agent_list output schema"),
+        )
     }
 
     async fn execute(
@@ -457,18 +435,16 @@ impl Tool for AgentListTool {
 #[async_trait]
 impl Tool for AgentCancelTool {
     fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            name: "agent_cancel".into(),
-            description: "Cancel a running child agent.".to_string(),
-            input_schema: serde_json::to_value(schema_for!(AgentCancelToolInput))
-                .expect("agent_cancel schema"),
-            output_mode: ToolOutputMode::Text,
-            output_schema: Some(
-                serde_json::to_value(schema_for!(AgentHandle)).expect("agent_cancel output schema"),
-            ),
-            origin: ToolOrigin::Local,
-            annotations: mcp_tool_annotations("Cancel Child Agent", false, false, false, false),
-        }
+        builtin_tool_spec(
+            "agent_cancel",
+            "Cancel a running child agent.",
+            serde_json::to_value(schema_for!(AgentCancelToolInput)).expect("agent_cancel schema"),
+            ToolOutputMode::Text,
+            tool_approval_profile(false, false, false, false),
+        )
+        .with_output_schema(
+            serde_json::to_value(schema_for!(AgentHandle)).expect("agent_cancel output schema"),
+        )
     }
 
     async fn execute(

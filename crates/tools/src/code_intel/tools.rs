@@ -1,5 +1,5 @@
 use crate::ToolExecutionContext;
-use crate::annotations::mcp_tool_annotations;
+use crate::annotations::{builtin_tool_spec, tool_approval_profile};
 use crate::code_intel::{
     CodeIntelBackend, CodeNavigationTarget, CodeReference, CodeSymbol,
     WorkspaceTextCodeIntelBackend,
@@ -12,7 +12,7 @@ use schemars::{JsonSchema, schema_for};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::sync::Arc;
-use types::{MessagePart, ToolCallId, ToolOrigin, ToolOutputMode, ToolResult, ToolSpec};
+use types::{MessagePart, ToolCallId, ToolOutputMode, ToolResult, ToolSpec};
 
 const DEFAULT_RESULT_LIMIT: usize = 32;
 const MAX_RESULT_LIMIT: usize = 200;
@@ -190,19 +190,18 @@ impl CodeReferencesTool {
 #[async_trait]
 impl Tool for CodeSymbolSearchTool {
     fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            name: "code_symbol_search".into(),
-            description: "Search for symbol declarations across the workspace. Returns symbol kind, path, line/column, and declaration signature.".to_string(),
-            input_schema: serde_json::to_value(schema_for!(CodeSymbolSearchInput))
+        builtin_tool_spec(
+            "code_symbol_search",
+            "Search for symbol declarations across the workspace. Returns symbol kind, path, line/column, and declaration signature.",
+            serde_json::to_value(schema_for!(CodeSymbolSearchInput))
                 .expect("code_symbol_search schema"),
-            output_mode: ToolOutputMode::Text,
-            output_schema: Some(
-                serde_json::to_value(schema_for!(CodeSymbolSearchToolOutput))
-                    .expect("code_symbol_search output schema"),
-            ),
-            origin: ToolOrigin::Local,
-            annotations: mcp_tool_annotations("Code Symbol Search", true, false, true, false),
-        }
+            ToolOutputMode::Text,
+            tool_approval_profile(true, false, true, false),
+        )
+        .with_output_schema(
+            serde_json::to_value(schema_for!(CodeSymbolSearchToolOutput))
+                .expect("code_symbol_search output schema"),
+        )
     }
 
     async fn execute(
@@ -262,19 +261,18 @@ impl Tool for CodeSymbolSearchTool {
 #[async_trait]
 impl Tool for CodeDocumentSymbolsTool {
     fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            name: "code_document_symbols".into(),
-            description: "List symbol declarations in one source file. Returns symbol kind, line/column, and declaration signature.".to_string(),
-            input_schema: serde_json::to_value(schema_for!(CodeDocumentSymbolsInput))
+        builtin_tool_spec(
+            "code_document_symbols",
+            "List symbol declarations in one source file. Returns symbol kind, line/column, and declaration signature.",
+            serde_json::to_value(schema_for!(CodeDocumentSymbolsInput))
                 .expect("code_document_symbols schema"),
-            output_mode: ToolOutputMode::Text,
-            output_schema: Some(
-                serde_json::to_value(schema_for!(CodeDocumentSymbolsToolOutput))
-                    .expect("code_document_symbols output schema"),
-            ),
-            origin: ToolOrigin::Local,
-            annotations: mcp_tool_annotations("Code Document Symbols", true, false, true, false),
-        }
+            ToolOutputMode::Text,
+            tool_approval_profile(true, false, true, false),
+        )
+        .with_output_schema(
+            serde_json::to_value(schema_for!(CodeDocumentSymbolsToolOutput))
+                .expect("code_document_symbols output schema"),
+        )
     }
 
     async fn execute(
@@ -339,19 +337,18 @@ impl Tool for CodeDocumentSymbolsTool {
 #[async_trait]
 impl Tool for CodeDefinitionsTool {
     fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            name: "code_definitions".into(),
-            description: "Resolve declaration locations either from a symbol name or from a file position (`path` + `line` + optional `column`) for semantic backends such as LSP.".to_string(),
-            input_schema: serde_json::to_value(schema_for!(CodeDefinitionsInput))
+        builtin_tool_spec(
+            "code_definitions",
+            "Resolve declaration locations either from a symbol name or from a file position (`path` + `line` + optional `column`) for semantic backends such as LSP.",
+            serde_json::to_value(schema_for!(CodeDefinitionsInput))
                 .expect("code_definitions schema"),
-            output_mode: ToolOutputMode::Text,
-            output_schema: Some(
-                serde_json::to_value(schema_for!(CodeDefinitionsToolOutput))
-                    .expect("code_definitions output schema"),
-            ),
-            origin: ToolOrigin::Local,
-            annotations: mcp_tool_annotations("Code Definitions", true, false, true, false),
-        }
+            ToolOutputMode::Text,
+            tool_approval_profile(true, false, true, false),
+        )
+        .with_output_schema(
+            serde_json::to_value(schema_for!(CodeDefinitionsToolOutput))
+                .expect("code_definitions output schema"),
+        )
     }
 
     async fn execute(
@@ -408,19 +405,18 @@ impl Tool for CodeDefinitionsTool {
 #[async_trait]
 impl Tool for CodeReferencesTool {
     fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            name: "code_references".into(),
-            description: "Find symbol references either from a symbol name or from a file position (`path` + `line` + optional `column`). Semantic backends use the position form for true LSP references.".to_string(),
-            input_schema: serde_json::to_value(schema_for!(CodeReferencesInput))
+        builtin_tool_spec(
+            "code_references",
+            "Find symbol references either from a symbol name or from a file position (`path` + `line` + optional `column`). Semantic backends use the position form for true LSP references.",
+            serde_json::to_value(schema_for!(CodeReferencesInput))
                 .expect("code_references schema"),
-            output_mode: ToolOutputMode::Text,
-            output_schema: Some(
-                serde_json::to_value(schema_for!(CodeReferencesToolOutput))
-                    .expect("code_references output schema"),
-            ),
-            origin: ToolOrigin::Local,
-            annotations: mcp_tool_annotations("Code References", true, false, true, false),
-        }
+            ToolOutputMode::Text,
+            tool_approval_profile(true, false, true, false),
+        )
+        .with_output_schema(
+            serde_json::to_value(schema_for!(CodeReferencesToolOutput))
+                .expect("code_references output schema"),
+        )
     }
 
     async fn execute(

@@ -1,4 +1,4 @@
-use crate::annotations::mcp_tool_annotations;
+use crate::annotations::{builtin_tool_spec, tool_approval_profile};
 use crate::fs::resolve_tool_path_against_workspace_root;
 use crate::registry::Tool;
 use crate::{Result, ToolExecutionContext};
@@ -12,7 +12,7 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use tokio::fs;
-use types::{MessagePart, ToolCallId, ToolOrigin, ToolOutputMode, ToolResult, ToolSpec};
+use types::{MessagePart, ToolCallId, ToolOutputMode, ToolResult, ToolSpec};
 
 const DEFAULT_GREP_LIMIT: usize = 100;
 const DEFAULT_GREP_MAX_BYTES: usize = 50 * 1024;
@@ -99,17 +99,16 @@ impl GrepTool {
 #[async_trait]
 impl Tool for GrepTool {
     fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            name: "grep".into(),
-            description: "Search file contents for a pattern. Returns matching lines with file paths and line numbers.".to_string(),
-            input_schema: serde_json::to_value(schema_for!(GrepToolInput)).expect("grep schema"),
-            output_mode: ToolOutputMode::Text,
-            output_schema: Some(
-                serde_json::to_value(schema_for!(GrepToolOutput)).expect("grep output schema"),
-            ),
-            origin: ToolOrigin::Local,
-            annotations: mcp_tool_annotations("Search File Contents", true, false, true, false),
-        }
+        builtin_tool_spec(
+            "grep",
+            "Search file contents for a pattern. Returns matching lines with file paths and line numbers.",
+            serde_json::to_value(schema_for!(GrepToolInput)).expect("grep schema"),
+            ToolOutputMode::Text,
+            tool_approval_profile(true, false, true, false),
+        )
+        .with_output_schema(
+            serde_json::to_value(schema_for!(GrepToolOutput)).expect("grep output schema"),
+        )
     }
 
     async fn execute(

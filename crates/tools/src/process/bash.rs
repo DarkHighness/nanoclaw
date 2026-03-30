@@ -1,6 +1,6 @@
 mod session_registry;
 
-use crate::annotations::mcp_tool_annotations;
+use crate::annotations::{builtin_tool_spec, tool_approval_profile};
 use crate::fs::resolve_tool_path_against_workspace_root;
 use crate::process::{
     ExecRequest, ExecutionOrigin, HostProcessExecutor, ProcessExecutor, ProcessStdio, RuntimeScope,
@@ -24,9 +24,7 @@ use tokio::sync::{Notify, oneshot};
 use tokio::task::JoinHandle;
 use tokio::time::{sleep, timeout};
 use tracing::{debug, warn};
-use types::{
-    MessagePart, ToolCallId, ToolOrigin, ToolOutputMode, ToolResult, ToolSpec, new_opaque_id,
-};
+use types::{MessagePart, ToolCallId, ToolOutputMode, ToolResult, ToolSpec, new_opaque_id};
 
 use self::session_registry::{get_session, insert_session};
 
@@ -404,17 +402,16 @@ impl BashTool {
 #[async_trait]
 impl Tool for BashTool {
     fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            name: "bash".into(),
-            description: "Run shell commands in the workspace. Supports synchronous run, long-running background sessions with poll/continue, and cancellation.".to_string(),
-            input_schema: serde_json::to_value(schema_for!(BashToolInput)).expect("bash schema"),
-            output_mode: ToolOutputMode::Text,
-            output_schema: Some(
-                serde_json::to_value(schema_for!(BashToolOutput)).expect("bash output schema"),
-            ),
-            origin: ToolOrigin::Local,
-            annotations: mcp_tool_annotations("Run Shell Command", false, true, false, true),
-        }
+        builtin_tool_spec(
+            "bash",
+            "Run shell commands in the workspace. Supports synchronous run, long-running background sessions with poll/continue, and cancellation.",
+            serde_json::to_value(schema_for!(BashToolInput)).expect("bash schema"),
+            ToolOutputMode::Text,
+            tool_approval_profile(false, true, false, true),
+        )
+        .with_output_schema(
+            serde_json::to_value(schema_for!(BashToolOutput)).expect("bash output schema"),
+        )
     }
 
     async fn execute(

@@ -1,4 +1,4 @@
-use crate::annotations::mcp_tool_annotations;
+use crate::annotations::{builtin_tool_spec, tool_approval_profile};
 use crate::fs::resolve_tool_path_against_workspace_root;
 use crate::registry::Tool;
 use crate::{Result, ToolExecutionContext};
@@ -9,7 +9,7 @@ use schemars::{JsonSchema, schema_for};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
-use types::{MessagePart, ToolCallId, ToolOrigin, ToolOutputMode, ToolResult, ToolSpec};
+use types::{MessagePart, ToolCallId, ToolOutputMode, ToolResult, ToolSpec};
 
 const DEFAULT_GLOB_LIMIT: usize = 200;
 
@@ -51,19 +51,16 @@ struct GlobToolOutput {
 #[async_trait]
 impl Tool for GlobTool {
     fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            name: "glob".into(),
-            description:
-                "Find files under a directory using a glob pattern such as **/*.rs or src/**/*.ts."
-                    .to_string(),
-            input_schema: serde_json::to_value(schema_for!(GlobToolInput)).expect("glob schema"),
-            output_mode: ToolOutputMode::Text,
-            output_schema: Some(
-                serde_json::to_value(schema_for!(GlobToolOutput)).expect("glob output schema"),
-            ),
-            origin: ToolOrigin::Local,
-            annotations: mcp_tool_annotations("Find Files", true, false, true, false),
-        }
+        builtin_tool_spec(
+            "glob",
+            "Find files under a directory using a glob pattern such as **/*.rs or src/**/*.ts.",
+            serde_json::to_value(schema_for!(GlobToolInput)).expect("glob schema"),
+            ToolOutputMode::Text,
+            tool_approval_profile(true, false, true, false),
+        )
+        .with_output_schema(
+            serde_json::to_value(schema_for!(GlobToolOutput)).expect("glob output schema"),
+        )
     }
 
     async fn execute(

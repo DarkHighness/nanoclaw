@@ -3,7 +3,6 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::borrow::Borrow;
-use std::collections::BTreeMap;
 use std::fmt;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -11,6 +10,15 @@ use std::fmt;
 pub enum ToolOutputMode {
     Text,
     ContentParts,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolKind {
+    #[default]
+    Function,
+    Freeform,
+    Native,
 }
 
 /// Tool names are shared protocol identifiers across registry lookup,
@@ -74,17 +82,185 @@ pub enum ToolOrigin {
     Provider { provider: String },
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ToolSource {
+    #[default]
+    Builtin,
+    Dynamic,
+    Plugin {
+        plugin: String,
+    },
+    McpTool {
+        server_name: String,
+    },
+    McpResource {
+        server_name: String,
+    },
+    ProviderBuiltin {
+        provider: String,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ToolAvailability {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub feature_flags: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub provider_allowlist: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub role_allowlist: Vec<String>,
+    #[serde(default)]
+    pub hidden_from_model: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolApprovalProfile {
+    #[serde(default)]
+    pub read_only: bool,
+    #[serde(default)]
+    pub mutates_state: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idempotent: Option<bool>,
+    #[serde(default)]
+    pub open_world: bool,
+    #[serde(default)]
+    pub needs_network: bool,
+    #[serde(default)]
+    pub needs_host_escape: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval_message: Option<String>,
+}
+
+impl Default for ToolApprovalProfile {
+    fn default() -> Self {
+        Self {
+            read_only: false,
+            mutates_state: true,
+            idempotent: None,
+            open_world: true,
+            needs_network: false,
+            needs_host_escape: false,
+            approval_message: None,
+        }
+    }
+}
+
+impl ToolApprovalProfile {
+    #[must_use]
+    pub fn new(
+        read_only: bool,
+        mutates_state: bool,
+        idempotent: Option<bool>,
+        open_world: bool,
+    ) -> Self {
+        Self {
+            read_only,
+            mutates_state,
+            idempotent,
+            open_world,
+            ..Self::default()
+        }
+    }
+
+    #[must_use]
+    pub fn with_network(mut self, needs_network: bool) -> Self {
+        self.needs_network = needs_network;
+        self
+    }
+
+    #[must_use]
+    pub fn with_host_escape(mut self, needs_host_escape: bool) -> Self {
+        self.needs_host_escape = needs_host_escape;
+        self
+    }
+
+    #[must_use]
+    pub fn with_approval_message(mut self, approval_message: impl Into<String>) -> Self {
+        self.approval_message = Some(approval_message.into());
+        self
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ToolSpec {
     pub name: ToolName,
     pub description: String,
-    pub input_schema: Value,
+    #[serde(default)]
+    pub kind: ToolKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_schema: Option<Value>,
     pub output_mode: ToolOutputMode,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_schema: Option<Value>,
     pub origin: ToolOrigin,
     #[serde(default)]
-    pub annotations: BTreeMap<String, Value>,
+    pub source: ToolSource,
+    #[serde(default)]
+    pub aliases: Vec<ToolName>,
+    #[serde(default)]
+    pub supports_parallel_tool_calls: bool,
+    #[serde(default)]
+    pub availability: ToolAvailability,
+    #[serde(default)]
+    pub approval: ToolApprovalProfile,
+}
+
+impl ToolSpec {
+    #[must_use]
+    pub fn function(
+        name: impl Into<ToolName>,
+        description: impl Into<String>,
+        input_schema: Value,
+        output_mode: ToolOutputMode,
+        origin: ToolOrigin,
+        source: ToolSource,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            description: description.into(),
+            kind: ToolKind::Function,
+            input_schema: Some(input_schema),
+            output_mode,
+            output_schema: None,
+            origin,
+            source,
+            aliases: Vec::new(),
+            supports_parallel_tool_calls: false,
+            availability: ToolAvailability::default(),
+            approval: ToolApprovalProfile::default(),
+        }
+    }
+
+    #[must_use]
+    pub fn with_output_schema(mut self, output_schema: Value) -> Self {
+        self.output_schema = Some(output_schema);
+        self
+    }
+
+    #[must_use]
+    pub fn with_approval(mut self, approval: ToolApprovalProfile) -> Self {
+        self.approval = approval;
+        self
+    }
+
+    #[must_use]
+    pub fn with_parallel_support(mut self, supports_parallel_tool_calls: bool) -> Self {
+        self.supports_parallel_tool_calls = supports_parallel_tool_calls;
+        self
+    }
+
+    #[must_use]
+    pub fn with_aliases(mut self, aliases: Vec<ToolName>) -> Self {
+        self.aliases = aliases;
+        self
+    }
+
+    #[must_use]
+    pub fn with_availability(mut self, availability: ToolAvailability) -> Self {
+        self.availability = availability;
+        self
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

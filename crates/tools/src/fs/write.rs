@@ -1,4 +1,4 @@
-use crate::annotations::mcp_tool_annotations;
+use crate::annotations::{builtin_tool_spec, tool_approval_profile};
 use crate::file_activity::FileActivityObserver;
 use crate::fs::{
     WriteExistingBehavior, WriteMissingBehavior, WriteRequest, apply_write, commit_text_file,
@@ -11,7 +11,7 @@ use schemars::{JsonSchema, schema_for};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
-use types::{MessagePart, ToolCallId, ToolOrigin, ToolOutputMode, ToolResult, ToolSpec};
+use types::{MessagePart, ToolCallId, ToolOutputMode, ToolResult, ToolSpec};
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 pub struct WriteToolInput {
@@ -69,17 +69,16 @@ enum WriteToolOutput {
 #[async_trait]
 impl Tool for WriteTool {
     fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            name: "write".into(),
-            description: "Create or fully replace a UTF-8 text file. Supports overwrite/create policies plus optional expected_snapshot guards when replacing an existing file.".to_string(),
-            input_schema: serde_json::to_value(schema_for!(WriteToolInput)).expect("write schema"),
-            output_mode: ToolOutputMode::Text,
-            output_schema: Some(
-                serde_json::to_value(schema_for!(WriteToolOutput)).expect("write output schema"),
-            ),
-            origin: ToolOrigin::Local,
-            annotations: mcp_tool_annotations("Write File", false, true, true, false),
-        }
+        builtin_tool_spec(
+            "write",
+            "Create or fully replace a UTF-8 text file. Supports overwrite/create policies plus optional expected_snapshot guards when replacing an existing file.",
+            serde_json::to_value(schema_for!(WriteToolInput)).expect("write schema"),
+            ToolOutputMode::Text,
+            tool_approval_profile(false, true, true, false),
+        )
+        .with_output_schema(
+            serde_json::to_value(schema_for!(WriteToolOutput)).expect("write output schema"),
+        )
     }
 
     async fn execute(
