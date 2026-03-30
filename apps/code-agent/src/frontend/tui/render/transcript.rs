@@ -84,7 +84,14 @@ pub(super) fn build_transcript_lines(state: &TuiState) -> Vec<Line<'static>> {
         if !lines.is_empty() {
             lines.push(Line::raw(""));
         }
-        lines.extend(format_transcript_entry(&entry));
+        lines.extend(format_transcript_entry_with_mode(
+            &entry,
+            true,
+            state
+                .turn_running
+                .then_some(tool_timeline_animation)
+                .flatten(),
+        ));
     }
 
     let progress_lines = live_progress_lines(state);

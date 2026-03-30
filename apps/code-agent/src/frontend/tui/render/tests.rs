@@ -334,7 +334,12 @@ fn animated_progress_text_preserves_the_full_status_label() {
 
 #[test]
 fn shell_summary_highlights_requested_running_and_finished_status_phrases() {
-    for headline in ["Requested bash", "Running bash", "Finished bash"] {
+    for headline in [
+        "Requested bash",
+        "Queued follow-ups · 2",
+        "Running bash",
+        "Finished bash",
+    ] {
         let rendered =
             render_shell_summary_body(headline, "•", TranscriptEntryKind::ShellSummary, Some(225));
         assert_eq!(line_text_for(&rendered[0]), headline);
@@ -506,7 +511,7 @@ fn transcript_surfaces_pending_control_timeline_summary() {
     assert!(
         rendered
             .iter()
-            .any(|line| line_text_for(line).contains("Pending controls"))
+            .any(|line| line_text_for(line).contains("Queued follow-ups · 2"))
     );
     assert!(
         rendered

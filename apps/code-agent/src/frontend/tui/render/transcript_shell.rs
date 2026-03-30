@@ -294,7 +294,7 @@ pub(super) fn pending_control_timeline_entry(state: &TuiState) -> Option<String>
     }
 
     let total = state.pending_controls.len();
-    let mut lines = vec!["• Pending controls".to_string()];
+    let mut lines = vec![format!("• Queued follow-ups · {total}")];
     if total > 2 {
         lines.push(format!("  └ {} older pending", total - 2));
     }
@@ -431,6 +431,7 @@ fn summary_color(line: &str) -> Color {
     } else if lower.contains("waiting")
         || lower.contains("blocked")
         || lower.contains("running")
+        || lower.contains("queued")
         || lower.contains("applying")
     {
         WARN
@@ -446,6 +447,10 @@ fn shell_status_phrase(line: &str) -> Option<(&str, &str, Color)> {
     }
     if line.starts_with("Requested ") {
         let phrase = "Requested";
+        return Some((phrase, &line[phrase.len()..], WARN));
+    }
+    if line.starts_with("Queued ") {
+        let phrase = "Queued";
         return Some((phrase, &line[phrase.len()..], WARN));
     }
     if line.starts_with("Running ") {
