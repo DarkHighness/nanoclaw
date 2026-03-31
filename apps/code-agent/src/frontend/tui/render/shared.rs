@@ -1,8 +1,23 @@
 use crate::backend::PendingControlKind;
+use std::cmp::min;
 use unicode_width::UnicodeWidthStr;
 
 pub(super) fn composer_cursor_width(input: &str) -> u16 {
     UnicodeWidthStr::width(input).min(u16::MAX as usize) as u16
+}
+
+pub(super) fn composer_cursor_metrics(input: &str, cursor: usize) -> (u16, u16) {
+    let cursor = min(cursor, input.len());
+    let prefix = &input[..cursor];
+    let line = prefix.split('\n').count().saturating_sub(1);
+    let column = prefix
+        .rsplit_once('\n')
+        .map(|(_, tail)| tail)
+        .unwrap_or(prefix);
+    (
+        line.min(u16::MAX as usize) as u16,
+        composer_cursor_width(column),
+    )
 }
 
 pub(super) fn clamp_scroll(requested: u16, content_lines: usize, viewport_height: u16) -> u16 {

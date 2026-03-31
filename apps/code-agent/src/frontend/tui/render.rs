@@ -19,7 +19,8 @@ use super::commands::slash_command_hint;
 use super::state::TuiState;
 use crate::backend::PermissionRequestPrompt;
 use chrome::{
-    approval_band_height, permission_request_band_height, render_approval_band, render_composer,
+    approval_band_height, composer_cursor_position, composer_height,
+    permission_request_band_height, render_approval_band, render_composer,
     render_permission_request_band, render_user_input_band, should_render_side_rail,
     side_rail_width, user_input_band_height,
 };
@@ -28,11 +29,10 @@ use picker::{
     command_hint_height, pending_control_height, render_command_hint_band,
     render_pending_control_band,
 };
-use ratatui::layout::{Constraint, Direction, Layout, Position, Rect};
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::widgets::Block;
-use shared::composer_cursor_width;
-use shell::{bottom_layout_constraints, composer_inner_area, render_main_pane, render_side_rail};
+use shell::{bottom_layout_constraints, render_main_pane, render_side_rail};
 use statusline::render_status_line;
 use theme::palette;
 
@@ -66,12 +66,14 @@ pub(crate) fn render(
         None
     };
     let command_hint_height = command_hint.as_ref().map(command_hint_height);
+    let composer_height = composer_height(state, user_input);
     let vertical = Layout::default()
         .direction(Direction::Vertical)
         .constraints(bottom_layout_constraints(
             prompt_height,
             pending_height,
             command_hint_height,
+            composer_height,
         ))
         .split(area);
     let mut next_index = 0;
@@ -136,15 +138,7 @@ pub(crate) fn render(
     }
 
     if state.history_rollback_overlay().is_none() {
-        let composer_inner = composer_inner_area(composer_area);
-        let prefix_width = 2_u16;
-        frame.set_cursor_position(Position::new(
-            composer_inner
-                .x
-                .saturating_add(prefix_width)
-                .saturating_add(composer_cursor_width(state.input_prefix())),
-            composer_inner.y,
-        ));
+        frame.set_cursor_position(composer_cursor_position(composer_area, state, user_input));
     }
 }
 
@@ -172,12 +166,14 @@ pub(crate) fn main_pane_viewport_height(
         None
     };
     let command_hint_height = command_hint.as_ref().map(command_hint_height);
+    let composer_height = composer_height(state, user_input);
     let vertical = Layout::default()
         .direction(Direction::Vertical)
         .constraints(bottom_layout_constraints(
             prompt_height,
             pending_height,
             command_hint_height,
+            composer_height,
         ))
         .split(area);
     vertical

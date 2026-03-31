@@ -299,6 +299,9 @@ impl CodeAgentTui {
                             if self.move_command_selection(true) {
                                 continue;
                             }
+                            if self.move_input_cursor_vertical(true) {
+                                continue;
+                            }
                             if self.move_input_cursor_boundary(true) {
                                 continue;
                             }
@@ -309,6 +312,9 @@ impl CodeAgentTui {
                                 continue;
                             }
                             if self.move_command_selection(false) {
+                                continue;
+                            }
+                            if self.move_input_cursor_vertical(false) {
                                 continue;
                             }
                             if self.move_input_cursor_boundary(false) {
@@ -656,6 +662,14 @@ impl CodeAgentTui {
         moved
     }
 
+    fn move_input_cursor_vertical(&mut self, backwards: bool) -> bool {
+        let mut moved = false;
+        self.ui_state.mutate(|state| {
+            moved = state.move_input_cursor_vertical(backwards);
+        });
+        moved
+    }
+
     fn move_input_cursor_home(&mut self) -> bool {
         let mut moved = false;
         self.ui_state
@@ -818,7 +832,8 @@ impl CodeAgentTui {
                 KeyCode::Up => {
                     self.ui_state.mutate(|state| {
                         if !state.browse_input_history(true) {
-                            let _ = state.move_input_cursor_home();
+                            let _ = state.move_input_cursor_vertical(true)
+                                || state.move_input_cursor_home();
                         }
                     });
                     true
@@ -826,7 +841,8 @@ impl CodeAgentTui {
                 KeyCode::Down => {
                     self.ui_state.mutate(|state| {
                         if !state.browse_input_history(false) {
-                            let _ = state.move_input_cursor_end();
+                            let _ = state.move_input_cursor_vertical(false)
+                                || state.move_input_cursor_end();
                         }
                     });
                     true

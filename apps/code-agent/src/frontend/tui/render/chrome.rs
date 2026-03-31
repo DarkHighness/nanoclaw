@@ -1,17 +1,21 @@
 use super::super::UserInputView;
 use super::super::approval::ApprovalPrompt;
 use super::super::state::{MainPaneMode, PlanEntry, TuiState, preview_text};
-use super::shared::{pending_control_focus_label, pending_control_kind_label};
+use super::shared::{
+    composer_cursor_metrics, pending_control_focus_label, pending_control_kind_label,
+};
 use super::shell::bottom_band_inner_area;
 use super::theme::palette;
 use super::transcript_markdown::code_span;
 use crate::backend::PermissionRequestPrompt;
 use crate::preview::{PreviewCollapse, collapse_preview_lines};
 use agent::tools::RequestPermissionProfile;
-use ratatui::layout::Rect;
+use ratatui::layout::{Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Paragraph, Wrap};
+
+const MAX_COMPOSER_HEIGHT: u16 = 6;
 
 pub(super) fn render_composer(
     frame: &mut ratatui::Frame<'_>,
@@ -24,14 +28,40 @@ pub(super) fn render_composer(
         area,
     );
     let inner = bottom_band_inner_area(area);
+    let scroll = composer_scroll(state, user_input, inner.height);
     frame.render_widget(
-        Paragraph::new(match user_input {
-            Some(view) => build_user_input_composer_line(view),
-            None => build_composer_line(state),
-        })
-        .style(Style::default().fg(palette().text).bg(palette().footer_bg)),
+        Paragraph::new(build_composer_text(state, user_input))
+            .scroll((scroll, 0))
+            .style(Style::default().fg(palette().text).bg(palette().footer_bg)),
         inner,
     );
+}
+
+pub(super) fn composer_height(state: &TuiState, user_input: Option<&UserInputView<'_>>) -> u16 {
+    composer_text_line_count(state, user_input).min(MAX_COMPOSER_HEIGHT)
+}
+
+pub(super) fn composer_cursor_position(
+    area: Rect,
+    state: &TuiState,
+    user_input: Option<&UserInputView<'_>>,
+) -> Position {
+    let inner = bottom_band_inner_area(area);
+    let scroll = composer_scroll(state, user_input, inner.height);
+    let (line, column) = composer_cursor_metrics(&state.input, state.input_cursor);
+    let lead_width = if line == 0 {
+        first_input_line_lead_width(state, user_input)
+    } else {
+        0
+    };
+    Position::new(
+        inner
+            .x
+            .saturating_add(2)
+            .saturating_add(lead_width)
+            .saturating_add(column),
+        inner.y.saturating_add(line.saturating_sub(scroll)),
+    )
 }
 
 pub(super) fn render_approval_band(
@@ -467,6 +497,20 @@ pub(super) fn build_composer_line(state: &TuiState) -> Line<'static> {
     Line::from(spans)
 }
 
+pub(super) fn build_composer_text(
+    state: &TuiState,
+    user_input: Option<&UserInputView<'_>>,
+) -> Text<'static> {
+    if composer_uses_multiline_layout(state, user_input) {
+        build_multiline_composer_text(state, user_input)
+    } else {
+        Text::from(match user_input {
+            Some(view) => build_user_input_composer_line(view),
+            None => build_composer_line(state),
+        })
+    }
+}
+
 pub(super) fn build_user_input_text(user_input: &UserInputView<'_>) -> Text<'static> {
     let mut lines = Vec::new();
     let current_index = user_input
@@ -750,6 +794,135 @@ fn build_user_input_composer_line(user_input: &UserInputView<'_>) -> Line<'stati
         ));
     }
     Line::from(spans)
+}
+
+fn composer_uses_multiline_layout(
+    state: &TuiState,
+    user_input: Option<&UserInputView<'_>>,
+) -> bool {
+    state.input.contains('\n')
+        && user_input.is_none_or(|view| {
+            view.flow
+                .is_none_or(|flow| flow.collecting_other_note || !state.input.is_empty())
+        })
+}
+
+fn composer_text_line_count(state: &TuiState, user_input: Option<&UserInputView<'_>>) -> u16 {
+    build_composer_text(state, user_input)
+        .lines
+        .len()
+        .max(1)
+        .min(u16::MAX as usize) as u16
+}
+
+fn composer_scroll(state: &TuiState, user_input: Option<&UserInputView<'_>>, height: u16) -> u16 {
+    if !composer_uses_multiline_layout(state, user_input) {
+        return 0;
+    }
+    let (cursor_line, _) = composer_cursor_metrics(&state.input, state.input_cursor);
+    let total_lines = composer_text_line_count(state, user_input);
+    let viewport_height = height.max(1);
+    let max_scroll = total_lines.saturating_sub(viewport_height);
+    cursor_line
+        .saturating_sub(viewport_height.saturating_sub(1))
+        .min(max_scroll)
+}
+
+fn build_multiline_composer_text(
+    state: &TuiState,
+    user_input: Option<&UserInputView<'_>>,
+) -> Text<'static> {
+    let mut lines =
+        build_multiline_input_lines(&state.input, first_input_line_lead(state, user_input));
+    if let Some(hint_line) = multiline_hint_line(state, user_input) {
+        lines.push(hint_line);
+    }
+    Text::from(lines)
+}
+
+fn build_multiline_input_lines(input: &str, lead: Option<String>) -> Vec<Line<'static>> {
+    input
+        .split('\n')
+        .enumerate()
+        .map(|(index, segment)| {
+            let mut spans = vec![
+                Span::styled(
+                    if index == 0 { "›" } else { " " },
+                    Style::default()
+                        .fg(palette().accent)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(" "),
+            ];
+            if index == 0
+                && let Some(lead) = lead.as_ref()
+            {
+                spans.push(Span::styled(
+                    lead.clone(),
+                    Style::default().fg(palette().muted),
+                ));
+            }
+            spans.push(Span::styled(
+                segment.to_string(),
+                Style::default().fg(palette().text),
+            ));
+            Line::from(spans)
+        })
+        .collect()
+}
+
+fn first_input_line_lead(
+    state: &TuiState,
+    user_input: Option<&UserInputView<'_>>,
+) -> Option<String> {
+    if user_input
+        .and_then(|view| view.flow)
+        .is_some_and(|flow| flow.collecting_other_note)
+    {
+        return Some("other note · ".to_string());
+    }
+
+    state.editing_pending_control.as_ref().map(|editing| {
+        format!(
+            "{} · ",
+            match editing.kind {
+                crate::backend::PendingControlKind::Prompt => "edit queued prompt",
+                crate::backend::PendingControlKind::Steer => "edit queued steer",
+            }
+        )
+    })
+}
+
+fn first_input_line_lead_width(state: &TuiState, user_input: Option<&UserInputView<'_>>) -> u16 {
+    first_input_line_lead(state, user_input)
+        .map(|lead| super::shared::composer_cursor_width(&lead))
+        .unwrap_or(0)
+}
+
+fn multiline_hint_line(
+    state: &TuiState,
+    user_input: Option<&UserInputView<'_>>,
+) -> Option<Line<'static>> {
+    if user_input
+        .and_then(|view| view.flow)
+        .is_some_and(|flow| flow.collecting_other_note)
+    {
+        return Some(Line::from(vec![
+            Span::styled("  ", Style::default().fg(palette().subtle)),
+            Span::styled("enter submit", Style::default().fg(palette().muted)),
+            Span::styled(" · ", Style::default().fg(palette().subtle)),
+            Span::styled("esc options", Style::default().fg(palette().muted)),
+        ]));
+    }
+
+    state.editing_pending_control.as_ref().map(|_| {
+        Line::from(vec![
+            Span::styled("  ", Style::default().fg(palette().subtle)),
+            Span::styled("enter/tab save", Style::default().fg(palette().muted)),
+            Span::styled(" · ", Style::default().fg(palette().subtle)),
+            Span::styled("esc cancel", Style::default().fg(palette().muted)),
+        ])
+    })
 }
 
 fn lsp_side_rail_available(state: &TuiState) -> bool {

@@ -41,14 +41,11 @@ pub(super) fn bottom_band_inner_area(area: Rect) -> Rect {
     })
 }
 
-pub(super) fn composer_inner_area(area: Rect) -> Rect {
-    bottom_band_inner_area(area)
-}
-
 pub(super) fn bottom_layout_constraints(
     approval_height: Option<u16>,
     pending_height: Option<u16>,
     command_hint_height: Option<u16>,
+    composer_height: u16,
 ) -> Vec<Constraint> {
     let mut constraints = vec![Constraint::Min(10)];
     if let Some(height) = approval_height {
@@ -60,7 +57,7 @@ pub(super) fn bottom_layout_constraints(
     if let Some(height) = command_hint_height {
         constraints.push(Constraint::Length(height));
     }
-    constraints.push(Constraint::Length(1));
+    constraints.push(Constraint::Length(composer_height.max(1)));
     constraints.push(Constraint::Length(1));
     constraints
 }

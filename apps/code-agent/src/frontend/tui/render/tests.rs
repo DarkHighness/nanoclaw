@@ -1,6 +1,6 @@
 use super::chrome::{
-    approval_preview_lines, build_approval_text, build_composer_line, build_side_rail_lines,
-    build_user_input_text,
+    approval_preview_lines, build_approval_text, build_composer_line, build_composer_text,
+    build_side_rail_lines, build_user_input_text, composer_height,
 };
 use super::history_rollback_overlay::{
     build_history_rollback_list_text, build_history_rollback_preview_text,
@@ -462,6 +462,24 @@ fn composer_line_surfaces_pending_picker_shortcuts() {
     assert!(text.contains("enter edit"));
     assert!(text.contains("del withdraw"));
     assert!(text.contains("esc close"));
+}
+
+#[test]
+fn multiline_composer_text_keeps_followup_lines_and_shortcuts_visible() {
+    let mut state = TuiState::default();
+    state.input = "first line\nsecond line".to_string();
+    state.editing_pending_control = Some(crate::frontend::tui::state::PendingControlEditorState {
+        id: "cmd_2".to_string(),
+        kind: PendingControlKind::Steer,
+    });
+
+    let text = build_composer_text(&state, None);
+    let lines = text_lines(&text);
+
+    assert_eq!(lines[0], "› edit queued steer · first line");
+    assert_eq!(lines[1], "  second line");
+    assert!(lines[2].contains("enter/tab save"));
+    assert_eq!(composer_height(&state, None), 3);
 }
 
 #[test]

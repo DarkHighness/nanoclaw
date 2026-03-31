@@ -257,18 +257,20 @@ not have useful extensions, including `Dockerfile*`, `Containerfile*`, `go.mod`,
   that user prompt into the composer for editing.
 - The composer now keeps a workspace-persistent text history plus an in-memory
   session-local draft history. `Up` / `Down` recall prompt history only when the
-  cursor is already at a buffer boundary; otherwise those keys move the cursor
-  to the start or end of the current draft. `Left`, `Right`, `Home`, and `End`
-  now edit inside the prompt instead of always acting on pane scroll state.
+  cursor is already at a buffer boundary; otherwise those keys move vertically
+  through multiline drafts and only fall back to the start or end of the draft
+  when there is no adjacent line. `Left`, `Right`, `Home`, and `End` now edit
+  inside the prompt instead of always acting on pane scroll state.
 - `Ctrl+K` kills the draft tail from the cursor to end-of-line into a local kill
-  buffer, and `Ctrl+Y` yanks it back. The kill buffer retains pending large-paste
-  payloads, so yanking after a clear or submit restores the full text.
+  buffer, and `Ctrl+Y` yanks it back. The kill buffer retains draft attachments
+  such as large-paste payloads, so yanking after a clear or submit restores the
+  full text.
 - `Ctrl+C` now clears the current draft into session-local composer history when
   the prompt line is non-empty, so `Up` can restore it. On an empty prompt line,
   `Ctrl+C` still exits the TUI.
 - Very large pasted payloads are now collapsed into `[Paste #N]` placeholders in
-  the composer. The full payload stays in session-local draft state, expands on
-  submit, and is restored when recalling a stashed draft.
+  the composer. The full payload stays in session-local draft attachment state,
+  expands on submit, and is restored when recalling a stashed draft.
 - `Alt+Up` opens the pending-control picker from the bottom pane.
 - In the pending-control picker: `Enter` edits the selected item, `Delete`
   withdraws it, and `Esc` closes the picker.
