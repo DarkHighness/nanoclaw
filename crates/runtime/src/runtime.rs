@@ -16,7 +16,7 @@ use skills::SkillCatalog;
 use std::sync::Arc;
 use store::SessionStore;
 use tools::{ToolExecutionContext, ToolRegistry};
-use tracing::info;
+use tracing::{info, warn};
 use types::{HookContext, HookRegistration, Message, SessionEventKind, TurnId};
 
 pub struct AgentRuntime {
@@ -39,6 +39,7 @@ pub struct AgentRuntime {
     permission_grants: PermissionGrantStore,
 }
 
+#[derive(Debug)]
 pub struct RunTurnOutcome {
     pub turn_id: TurnId,
     pub assistant_text: String,
@@ -410,10 +411,44 @@ impl AgentRuntime {
             prompt_chars = prompt.chars().count(),
             "starting user turn"
         );
-        self.prepare_user_turn(&turn_id, &hooks, &instructions, &prompt, observer)
-            .await?;
-        self.run_turn_loop(&turn_id, &hooks, &instructions, observer)
+        if let Err(error) = self
+            .prepare_user_turn(&turn_id, &hooks, &instructions, &prompt, observer)
             .await
+        {
+            if let Err(record_error) = self
+                .append_turn_failure_event(&turn_id, "prepare_user_turn", error.to_string())
+                .await
+            {
+                warn!(
+                    session_id = %self.session.session_id,
+                    turn_id = %turn_id,
+                    error = %record_error,
+                    "failed to persist prepare_user_turn failure event"
+                );
+            }
+            return Err(error);
+        }
+
+        match self
+            .run_turn_loop(&turn_id, &hooks, &instructions, observer)
+            .await
+        {
+            Ok(outcome) => Ok(outcome),
+            Err(error) => {
+                if let Err(record_error) = self
+                    .append_turn_failure_event(&turn_id, "run_turn_loop", error.to_string())
+                    .await
+                {
+                    warn!(
+                        session_id = %self.session.session_id,
+                        turn_id = %turn_id,
+                        error = %record_error,
+                        "failed to persist run_turn_loop failure event"
+                    );
+                }
+                Err(error)
+            }
+        }
     }
 
     pub(super) async fn drain_runtime_steers(

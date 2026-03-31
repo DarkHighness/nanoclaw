@@ -9,6 +9,7 @@ mod experiment;
 mod hook;
 mod id;
 mod message;
+mod signal;
 mod tool;
 mod usage;
 
@@ -18,5 +19,6 @@ pub use experiment::*;
 pub use hook::*;
 pub use id::*;
 pub use message::*;
+pub use signal::*;
 pub use tool::*;
 pub use usage::*;

@@ -7,11 +7,15 @@ use std::collections::{BTreeMap, HashSet};
 use thiserror::Error;
 use types::{
     AgentSessionId, CandidateId, ExperimentEventEnvelope, ExperimentEventKind, ExperimentId,
-    ExperimentTarget, HookEffect, Message, PromotionDecisionKind, SessionEventEnvelope,
-    SessionEventKind, SessionId, TokenLedgerSnapshot, TokenUsage,
+    ExperimentTarget, HookEffect, Message, PromotionDecisionKind, SelfImproveSignalKind,
+    SelfImproveSignalRecord, SessionEventEnvelope, SessionEventKind, SessionId, SignalSeverity,
+    SignalSource, TokenLedgerSnapshot, TokenUsage, TurnId,
 };
 
 const TOKEN_USAGE_CHILD_FETCH_CONCURRENCY_LIMIT: usize = 8;
+const RETRY_CHURN_WARNING_THRESHOLD: usize = 3;
+const HIGH_TOTAL_TOKEN_WARNING_THRESHOLD: u64 = 20_000;
+const HIGH_TURN_LATENCY_WARNING_THRESHOLD_MS: u128 = 20_000;
 
 #[derive(Debug, Error)]
 pub enum SessionStoreError {
@@ -341,6 +345,422 @@ pub fn sort_experiment_summaries(experiments: &mut [ExperimentSummary]) {
 }
 
 #[must_use]
+pub fn derive_self_improve_signals(
+    events: &[SessionEventEnvelope],
+) -> Vec<SelfImproveSignalRecord> {
+    #[derive(Clone, Debug)]
+    struct PendingRetrySignal {
+        session_id: SessionId,
+        agent_session_id: AgentSessionId,
+        turn_id: TurnId,
+        first_timestamp_ms: u128,
+        event_ids: Vec<types::EventId>,
+    }
+
+    #[derive(Clone, Debug)]
+    struct PendingTurnWindow {
+        session_id: SessionId,
+        agent_session_id: AgentSessionId,
+        start_timestamp_ms: u128,
+        start_event_id: types::EventId,
+    }
+
+    let mut signals = Vec::new();
+    let mut model_request_counts = BTreeMap::<TurnId, PendingRetrySignal>::new();
+    let mut high_token_turns = HashSet::<TurnId>::new();
+    let mut turn_windows = BTreeMap::<TurnId, PendingTurnWindow>::new();
+
+    for event in events {
+        match &event.event {
+            SessionEventKind::UserPromptSubmit { .. } => {
+                let Some(turn_id) = event.turn_id.clone() else {
+                    continue;
+                };
+                turn_windows.insert(
+                    turn_id,
+                    PendingTurnWindow {
+                        session_id: event.session_id.clone(),
+                        agent_session_id: event.agent_session_id.clone(),
+                        start_timestamp_ms: event.timestamp_ms,
+                        start_event_id: event.id.clone(),
+                    },
+                );
+            }
+            SessionEventKind::TurnFailed { stage, error } => {
+                signals.push(SelfImproveSignalRecord {
+                    signal_id: types::SignalId::new(),
+                    session_id: event.session_id.clone(),
+                    agent_session_id: event.agent_session_id.clone(),
+                    turn_id: event.turn_id.clone(),
+                    tool_call_id: event.tool_call_id.clone(),
+                    timestamp_ms: event.timestamp_ms,
+                    source: SignalSource::Turn,
+                    kind: SelfImproveSignalKind::TurnFailed,
+                    severity: SignalSeverity::Error,
+                    summary: format!("turn failed during `{stage}`"),
+                    event_ids: vec![event.id.clone()],
+                    tool_name: None,
+                    task_id: None,
+                    details: Some(error.clone()),
+                    metadata: Some(serde_json::json!({ "stage": stage })),
+                });
+            }
+            SessionEventKind::ModelRequestStarted { .. } => {
+                let Some(turn_id) = event.turn_id.clone() else {
+                    continue;
+                };
+                let entry = model_request_counts
+                    .entry(turn_id.clone())
+                    .or_insert_with(|| PendingRetrySignal {
+                        session_id: event.session_id.clone(),
+                        agent_session_id: event.agent_session_id.clone(),
+                        turn_id,
+                        first_timestamp_ms: event.timestamp_ms,
+                        event_ids: Vec::new(),
+                    });
+                entry.event_ids.push(event.id.clone());
+            }
+            SessionEventKind::ToolCallFailed { call, error } => {
+                signals.push(SelfImproveSignalRecord {
+                    signal_id: types::SignalId::new(),
+                    session_id: event.session_id.clone(),
+                    agent_session_id: event.agent_session_id.clone(),
+                    turn_id: event.turn_id.clone(),
+                    tool_call_id: event.tool_call_id.clone(),
+                    timestamp_ms: event.timestamp_ms,
+                    source: SignalSource::Tool,
+                    kind: SelfImproveSignalKind::ToolCallFailure,
+                    severity: SignalSeverity::Error,
+                    summary: format!("tool `{}` failed", call.tool_name),
+                    event_ids: vec![event.id.clone()],
+                    tool_name: Some(call.tool_name.clone()),
+                    task_id: None,
+                    details: Some(error.clone()),
+                    metadata: None,
+                });
+            }
+            SessionEventKind::ToolApprovalResolved {
+                call,
+                approved,
+                reason,
+            } if !approved => {
+                signals.push(SelfImproveSignalRecord {
+                    signal_id: types::SignalId::new(),
+                    session_id: event.session_id.clone(),
+                    agent_session_id: event.agent_session_id.clone(),
+                    turn_id: event.turn_id.clone(),
+                    tool_call_id: event.tool_call_id.clone(),
+                    timestamp_ms: event.timestamp_ms,
+                    source: SignalSource::Approval,
+                    kind: SelfImproveSignalKind::ToolApprovalDenied,
+                    severity: SignalSeverity::Warning,
+                    summary: format!("tool `{}` approval denied", call.tool_name),
+                    event_ids: vec![event.id.clone()],
+                    tool_name: Some(call.tool_name.clone()),
+                    task_id: None,
+                    details: reason.clone(),
+                    metadata: None,
+                });
+            }
+            SessionEventKind::StopFailure { reason } => {
+                signals.push(SelfImproveSignalRecord {
+                    signal_id: types::SignalId::new(),
+                    session_id: event.session_id.clone(),
+                    agent_session_id: event.agent_session_id.clone(),
+                    turn_id: event.turn_id.clone(),
+                    tool_call_id: event.tool_call_id.clone(),
+                    timestamp_ms: event.timestamp_ms,
+                    source: SignalSource::Turn,
+                    kind: SelfImproveSignalKind::TurnStopFailure,
+                    severity: SignalSeverity::Error,
+                    summary: "turn stop failed".to_string(),
+                    event_ids: vec![event.id.clone()],
+                    tool_name: None,
+                    task_id: None,
+                    details: reason.clone(),
+                    metadata: None,
+                });
+                let Some(turn_id) = event.turn_id.clone() else {
+                    continue;
+                };
+                let Some(window) = turn_windows.remove(&turn_id) else {
+                    continue;
+                };
+                let elapsed_ms = event.timestamp_ms.saturating_sub(window.start_timestamp_ms);
+                if elapsed_ms < HIGH_TURN_LATENCY_WARNING_THRESHOLD_MS {
+                    continue;
+                }
+                signals.push(SelfImproveSignalRecord {
+                    signal_id: types::SignalId::new(),
+                    session_id: window.session_id,
+                    agent_session_id: window.agent_session_id,
+                    turn_id: Some(turn_id),
+                    tool_call_id: event.tool_call_id.clone(),
+                    timestamp_ms: event.timestamp_ms,
+                    source: SignalSource::Turn,
+                    kind: SelfImproveSignalKind::HighTurnLatency,
+                    severity: SignalSeverity::Warning,
+                    summary: format!(
+                        "turn exceeded {HIGH_TURN_LATENCY_WARNING_THRESHOLD_MS} ms latency"
+                    ),
+                    event_ids: vec![window.start_event_id, event.id.clone()],
+                    tool_name: None,
+                    task_id: None,
+                    details: None,
+                    metadata: Some(serde_json::json!({ "elapsed_ms": elapsed_ms })),
+                });
+            }
+            SessionEventKind::HookCompleted {
+                hook_name, output, ..
+            } if output
+                .effects
+                .iter()
+                .any(|effect| matches!(effect, HookEffect::Stop { .. })) =>
+            {
+                let stop_reason = output.effects.iter().find_map(|effect| match effect {
+                    HookEffect::Stop { reason } => Some(reason.clone()),
+                    _ => None,
+                });
+                signals.push(SelfImproveSignalRecord {
+                    signal_id: types::SignalId::new(),
+                    session_id: event.session_id.clone(),
+                    agent_session_id: event.agent_session_id.clone(),
+                    turn_id: event.turn_id.clone(),
+                    tool_call_id: event.tool_call_id.clone(),
+                    timestamp_ms: event.timestamp_ms,
+                    source: SignalSource::Hook,
+                    kind: SelfImproveSignalKind::HookStop,
+                    severity: SignalSeverity::Warning,
+                    summary: format!("hook `{hook_name}` requested stop"),
+                    event_ids: vec![event.id.clone()],
+                    tool_name: None,
+                    task_id: None,
+                    details: stop_reason,
+                    metadata: Some(serde_json::json!({ "hook_name": hook_name })),
+                });
+            }
+            SessionEventKind::HistoryRollbackApplied {
+                anchor_message_id,
+                removed_message_count,
+            } => {
+                signals.push(SelfImproveSignalRecord {
+                    signal_id: types::SignalId::new(),
+                    session_id: event.session_id.clone(),
+                    agent_session_id: event.agent_session_id.clone(),
+                    turn_id: event.turn_id.clone(),
+                    tool_call_id: event.tool_call_id.clone(),
+                    timestamp_ms: event.timestamp_ms,
+                    source: SignalSource::History,
+                    kind: SelfImproveSignalKind::HistoryRollback,
+                    severity: SignalSeverity::Warning,
+                    summary: format!(
+                        "manual history rollback removed {removed_message_count} messages"
+                    ),
+                    event_ids: vec![event.id.clone()],
+                    tool_name: None,
+                    task_id: None,
+                    details: Some(format!("anchor message {anchor_message_id}")),
+                    metadata: Some(serde_json::json!({
+                        "anchor_message_id": anchor_message_id,
+                        "removed_message_count": removed_message_count,
+                    })),
+                });
+            }
+            SessionEventKind::SubagentStop {
+                handle,
+                result,
+                error,
+            } => {
+                let (kind, severity, details) = if let Some(error) = error.clone() {
+                    (
+                        SelfImproveSignalKind::SubagentFailure,
+                        SignalSeverity::Error,
+                        Some(error),
+                    )
+                } else if result
+                    .as_ref()
+                    .is_some_and(|result| matches!(result.status, types::AgentStatus::Failed))
+                {
+                    (
+                        SelfImproveSignalKind::SubagentFailure,
+                        SignalSeverity::Error,
+                        result.as_ref().map(|result| result.summary.clone()),
+                    )
+                } else if result
+                    .as_ref()
+                    .is_some_and(|result| matches!(result.status, types::AgentStatus::Cancelled))
+                {
+                    (
+                        SelfImproveSignalKind::SubagentCancelled,
+                        SignalSeverity::Warning,
+                        result.as_ref().map(|result| result.summary.clone()),
+                    )
+                } else {
+                    continue;
+                };
+                signals.push(SelfImproveSignalRecord {
+                    signal_id: types::SignalId::new(),
+                    session_id: event.session_id.clone(),
+                    agent_session_id: event.agent_session_id.clone(),
+                    turn_id: event.turn_id.clone(),
+                    tool_call_id: event.tool_call_id.clone(),
+                    timestamp_ms: event.timestamp_ms,
+                    source: SignalSource::Subagent,
+                    kind,
+                    severity,
+                    summary: format!("subagent task `{}` ended abnormally", handle.task_id),
+                    event_ids: vec![event.id.clone()],
+                    tool_name: None,
+                    task_id: Some(handle.task_id.clone()),
+                    details,
+                    metadata: Some(serde_json::json!({
+                        "agent_id": handle.agent_id,
+                        "status": handle.status,
+                        "role": handle.role,
+                    })),
+                });
+            }
+            SessionEventKind::Notification { source, message } if source == "loop_detector" => {
+                let is_critical = message.contains("[critical]");
+                signals.push(SelfImproveSignalRecord {
+                    signal_id: types::SignalId::new(),
+                    session_id: event.session_id.clone(),
+                    agent_session_id: event.agent_session_id.clone(),
+                    turn_id: event.turn_id.clone(),
+                    tool_call_id: event.tool_call_id.clone(),
+                    timestamp_ms: event.timestamp_ms,
+                    source: SignalSource::Runtime,
+                    kind: if is_critical {
+                        SelfImproveSignalKind::LoopDetectorCritical
+                    } else {
+                        SelfImproveSignalKind::LoopDetectorWarning
+                    },
+                    severity: if is_critical {
+                        SignalSeverity::Critical
+                    } else {
+                        SignalSeverity::Warning
+                    },
+                    summary: if is_critical {
+                        "loop detector blocked repeated behavior".to_string()
+                    } else {
+                        "loop detector raised a warning".to_string()
+                    },
+                    event_ids: vec![event.id.clone()],
+                    tool_name: None,
+                    task_id: None,
+                    details: Some(message.clone()),
+                    metadata: Some(serde_json::json!({ "source": source })),
+                });
+            }
+            SessionEventKind::Stop { .. } => {
+                let Some(turn_id) = event.turn_id.clone() else {
+                    continue;
+                };
+                let Some(window) = turn_windows.remove(&turn_id) else {
+                    continue;
+                };
+                let elapsed_ms = event.timestamp_ms.saturating_sub(window.start_timestamp_ms);
+                if elapsed_ms < HIGH_TURN_LATENCY_WARNING_THRESHOLD_MS {
+                    continue;
+                }
+                signals.push(SelfImproveSignalRecord {
+                    signal_id: types::SignalId::new(),
+                    session_id: window.session_id,
+                    agent_session_id: window.agent_session_id,
+                    turn_id: Some(turn_id),
+                    tool_call_id: event.tool_call_id.clone(),
+                    timestamp_ms: event.timestamp_ms,
+                    source: SignalSource::Turn,
+                    kind: SelfImproveSignalKind::HighTurnLatency,
+                    severity: SignalSeverity::Warning,
+                    summary: format!(
+                        "turn exceeded {HIGH_TURN_LATENCY_WARNING_THRESHOLD_MS} ms latency"
+                    ),
+                    event_ids: vec![window.start_event_id, event.id.clone()],
+                    tool_name: None,
+                    task_id: None,
+                    details: None,
+                    metadata: Some(serde_json::json!({ "elapsed_ms": elapsed_ms })),
+                });
+            }
+            SessionEventKind::TokenUsageUpdated { phase, ledger }
+                if matches!(phase, types::TokenUsagePhase::ResponseCompleted) =>
+            {
+                let Some(turn_id) = event.turn_id.clone() else {
+                    continue;
+                };
+                if high_token_turns.contains(&turn_id) {
+                    continue;
+                }
+                let total_tokens = total_tokens(&ledger.cumulative_usage);
+                if total_tokens < HIGH_TOTAL_TOKEN_WARNING_THRESHOLD {
+                    continue;
+                }
+                high_token_turns.insert(turn_id.clone());
+                signals.push(SelfImproveSignalRecord {
+                    signal_id: types::SignalId::new(),
+                    session_id: event.session_id.clone(),
+                    agent_session_id: event.agent_session_id.clone(),
+                    turn_id: Some(turn_id),
+                    tool_call_id: event.tool_call_id.clone(),
+                    timestamp_ms: event.timestamp_ms,
+                    source: SignalSource::Usage,
+                    kind: SelfImproveSignalKind::HighTokenUsage,
+                    severity: SignalSeverity::Warning,
+                    summary: format!(
+                        "turn exceeded {HIGH_TOTAL_TOKEN_WARNING_THRESHOLD} cumulative tokens"
+                    ),
+                    event_ids: vec![event.id.clone()],
+                    tool_name: None,
+                    task_id: None,
+                    details: None,
+                    metadata: Some(serde_json::json!({
+                        "total_tokens": total_tokens,
+                        "input_tokens": ledger.cumulative_usage.input_tokens,
+                        "output_tokens": ledger.cumulative_usage.output_tokens,
+                    })),
+                });
+            }
+            _ => {}
+        }
+    }
+
+    for pending in model_request_counts.into_values() {
+        if pending.event_ids.len() < RETRY_CHURN_WARNING_THRESHOLD {
+            continue;
+        }
+        signals.push(SelfImproveSignalRecord {
+            signal_id: types::SignalId::new(),
+            session_id: pending.session_id,
+            agent_session_id: pending.agent_session_id,
+            turn_id: Some(pending.turn_id),
+            tool_call_id: None,
+            timestamp_ms: pending.first_timestamp_ms,
+            source: SignalSource::Turn,
+            kind: SelfImproveSignalKind::RetryChurn,
+            severity: SignalSeverity::Warning,
+            summary: format!("turn required {} model requests", pending.event_ids.len()),
+            event_ids: pending.event_ids,
+            tool_name: None,
+            task_id: None,
+            details: None,
+            metadata: None,
+        });
+    }
+
+    signals.sort_by(|left, right| {
+        left.timestamp_ms
+            .cmp(&right.timestamp_ms)
+            .then_with(|| left.summary.cmp(&right.summary))
+    });
+    signals
+}
+
+fn total_tokens(usage: &TokenUsage) -> u64 {
+    usage.input_tokens.saturating_add(usage.output_tokens)
+}
+
+#[must_use]
 pub fn search_session_events(
     summary: &SessionSummary,
     events: &[SessionEventEnvelope],
@@ -425,6 +845,17 @@ pub(crate) fn searchable_event_strings(event: &SessionEventEnvelope) -> Vec<Stri
             if let Some(reason) = reason {
                 values.push(reason.clone());
             }
+        }
+        SessionEventKind::TurnFailed { stage, error } => {
+            values.push(stage.clone());
+            values.push(error.clone());
+        }
+        SessionEventKind::HistoryRollbackApplied {
+            anchor_message_id,
+            removed_message_count,
+        } => {
+            values.push(anchor_message_id.to_string());
+            values.push(format!("history rollback {removed_message_count}"));
         }
         SessionEventKind::InstructionsLoaded { count } => {
             values.push(format!("instructions {count}"));
@@ -1281,6 +1712,12 @@ fn collect_memory_export_sections(events: &[SessionEventEnvelope]) -> MemoryExpo
                     push_unique(&mut sections.failures, preview_text(reason, 120));
                 }
             }
+            SessionEventKind::TurnFailed { stage, error } => {
+                push_unique(
+                    &mut sections.failures,
+                    format!("{stage}: {}", preview_text(error, 120)),
+                );
+            }
             SessionEventKind::Stop { reason } | SessionEventKind::SessionEnd { reason } => {
                 if let Some(reason) = reason {
                     push_unique(&mut sections.follow_up, preview_text(reason, 120));
@@ -1358,6 +1795,12 @@ pub trait SessionStore: EventSink {
         &self,
         experiment_id: &ExperimentId,
     ) -> Result<Vec<ExperimentEventEnvelope>>;
+    async fn self_improve_signals(
+        &self,
+        session_id: &SessionId,
+    ) -> Result<Vec<SelfImproveSignalRecord>> {
+        Ok(derive_self_improve_signals(&self.events(session_id).await?))
+    }
     async fn token_usage(&self, session_id: &SessionId) -> Result<SessionTokenUsageReport> {
         let root_events = self.events(session_id).await?;
         let session = session_token_usage_snapshot(&root_events).map(|ledger| TokenUsageRecord {
@@ -1421,4 +1864,208 @@ pub trait SessionStore: EventSink {
         &self,
         request: SessionMemoryExportRequest,
     ) -> Result<SessionMemoryExportBundle>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::derive_self_improve_signals;
+    use types::{
+        AgentHandle, AgentId, AgentResultEnvelope, AgentStatus, AgentTaskSpec, MessageId,
+        SessionEventEnvelope, SessionEventKind, SessionId, TokenLedgerSnapshot, TokenUsage,
+        TokenUsagePhase, ToolCall, ToolCallId, ToolName, ToolOrigin,
+    };
+
+    fn event(turn_id: Option<&str>, event: SessionEventKind) -> SessionEventEnvelope {
+        SessionEventEnvelope::new(
+            SessionId::from("session-signals"),
+            "agent-session-signals".into(),
+            turn_id.map(Into::into),
+            None,
+            event,
+        )
+    }
+
+    #[test]
+    fn derives_core_runtime_failure_signals() {
+        let signals = derive_self_improve_signals(&[
+            event(
+                Some("turn-1"),
+                SessionEventKind::TurnFailed {
+                    stage: "run_turn_loop".to_string(),
+                    error: "backend boom".to_string(),
+                },
+            ),
+            event(
+                Some("turn-1"),
+                SessionEventKind::ToolApprovalResolved {
+                    call: sample_tool_call("read"),
+                    approved: false,
+                    reason: Some("sandbox denied".to_string()),
+                },
+            ),
+            event(
+                Some("turn-1"),
+                SessionEventKind::ToolCallFailed {
+                    call: sample_tool_call("bash"),
+                    error: "command exited with status 1".to_string(),
+                },
+            ),
+            event(
+                Some("turn-1"),
+                SessionEventKind::StopFailure {
+                    reason: Some("hook blocked".to_string()),
+                },
+            ),
+        ]);
+
+        assert_eq!(signals.len(), 4);
+        assert!(
+            signals
+                .iter()
+                .any(|signal| matches!(signal.kind, types::SelfImproveSignalKind::TurnFailed))
+        );
+        assert!(signals.iter().any(|signal| matches!(
+            signal.kind,
+            types::SelfImproveSignalKind::ToolApprovalDenied
+        )));
+        assert!(
+            signals
+                .iter()
+                .any(|signal| matches!(signal.kind, types::SelfImproveSignalKind::ToolCallFailure))
+        );
+        assert!(
+            signals
+                .iter()
+                .any(|signal| matches!(signal.kind, types::SelfImproveSignalKind::TurnStopFailure))
+        );
+    }
+
+    #[test]
+    fn derives_retry_token_and_history_signals() {
+        let signals = derive_self_improve_signals(&[
+            event(
+                Some("turn-2"),
+                SessionEventKind::ModelRequestStarted {
+                    request: sample_request(),
+                },
+            ),
+            event(
+                Some("turn-2"),
+                SessionEventKind::ModelRequestStarted {
+                    request: sample_request(),
+                },
+            ),
+            event(
+                Some("turn-2"),
+                SessionEventKind::ModelRequestStarted {
+                    request: sample_request(),
+                },
+            ),
+            event(
+                Some("turn-2"),
+                SessionEventKind::TokenUsageUpdated {
+                    phase: TokenUsagePhase::ResponseCompleted,
+                    ledger: TokenLedgerSnapshot {
+                        last_usage: Some(TokenUsage::from_input_output(12000, 9000, 0)),
+                        cumulative_usage: TokenUsage::from_input_output(12000, 9000, 0),
+                        ..TokenLedgerSnapshot::default()
+                    },
+                },
+            ),
+            event(
+                Some("turn-2"),
+                SessionEventKind::HistoryRollbackApplied {
+                    anchor_message_id: MessageId::from("message-1"),
+                    removed_message_count: 4,
+                },
+            ),
+        ]);
+
+        assert!(
+            signals
+                .iter()
+                .any(|signal| matches!(signal.kind, types::SelfImproveSignalKind::RetryChurn))
+        );
+        assert!(
+            signals
+                .iter()
+                .any(|signal| matches!(signal.kind, types::SelfImproveSignalKind::HighTokenUsage))
+        );
+        assert!(
+            signals
+                .iter()
+                .any(|signal| matches!(signal.kind, types::SelfImproveSignalKind::HistoryRollback))
+        );
+    }
+
+    #[test]
+    fn derives_subagent_failure_signals() {
+        let handle = AgentHandle {
+            agent_id: AgentId::from("agent-child"),
+            parent_agent_id: None,
+            session_id: SessionId::from("session-child"),
+            agent_session_id: "agent-session-child".into(),
+            task_id: "task-1".to_string(),
+            role: "reviewer".to_string(),
+            status: AgentStatus::Failed,
+        };
+        let task = AgentTaskSpec {
+            task_id: "task-1".to_string(),
+            role: "reviewer".to_string(),
+            prompt: "inspect".to_string(),
+            steer: None,
+            allowed_tools: Vec::new(),
+            requested_write_set: Vec::new(),
+            dependency_ids: Vec::new(),
+            timeout_seconds: None,
+        };
+        let signals = derive_self_improve_signals(&[event(
+            Some("turn-3"),
+            SessionEventKind::SubagentStop {
+                handle,
+                result: Some(AgentResultEnvelope {
+                    agent_id: AgentId::from("agent-child"),
+                    task_id: task.task_id.clone(),
+                    status: AgentStatus::Failed,
+                    summary: "task failed".to_string(),
+                    text: "task failed".to_string(),
+                    artifacts: Vec::new(),
+                    claimed_files: Vec::new(),
+                    structured_payload: None,
+                }),
+                error: None,
+            },
+        )]);
+
+        assert_eq!(signals.len(), 1);
+        assert!(matches!(
+            signals[0].kind,
+            types::SelfImproveSignalKind::SubagentFailure
+        ));
+        assert_eq!(signals[0].task_id.as_deref(), Some("task-1"));
+    }
+
+    fn sample_tool_call(tool_name: &str) -> ToolCall {
+        ToolCall {
+            id: ToolCallId::from(format!("tool-call-{tool_name}")),
+            call_id: format!("call-{tool_name}").into(),
+            tool_name: ToolName::from(tool_name),
+            arguments: serde_json::json!({}),
+            origin: ToolOrigin::Local,
+        }
+    }
+
+    fn sample_request() -> types::ModelRequest {
+        types::ModelRequest {
+            session_id: SessionId::from("session-signals"),
+            agent_session_id: "agent-session-signals".into(),
+            turn_id: "turn-2".into(),
+            instructions: Vec::new(),
+            messages: Vec::new(),
+            tools: Vec::new(),
+            additional_context: Vec::new(),
+            continuation: None,
+            metadata: serde_json::Value::Null,
+        }
+    }
 }

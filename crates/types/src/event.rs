@@ -317,6 +317,10 @@ pub enum SessionEventKind {
     TranscriptMessageRemoved {
         message_id: MessageId,
     },
+    HistoryRollbackApplied {
+        anchor_message_id: MessageId,
+        removed_message_count: usize,
+    },
     ToolApprovalRequested {
         call: ToolCall,
         reasons: Vec<String>,
@@ -363,6 +367,10 @@ pub enum SessionEventKind {
         result: Option<AgentResultEnvelope>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<String>,
+    },
+    TurnFailed {
+        stage: String,
+        error: String,
     },
     Stop {
         reason: Option<String>,

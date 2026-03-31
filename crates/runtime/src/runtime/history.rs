@@ -134,6 +134,17 @@ impl AgentRuntime {
             )
             .await?;
         }
+        // Manual history rollback is an operator correction signal in its own
+        // right, separate from the per-message tombstones needed for replay.
+        self.append_event(
+            Some(turn_id.clone()),
+            None,
+            types::SessionEventKind::HistoryRollbackApplied {
+                anchor_message_id: message_id.clone(),
+                removed_message_count: removed_message_ids.len(),
+            },
+        )
+        .await?;
         // Provider-native continuation chains assume append-only growth. Once
         // visible history is truncated, the next request must replay from the
         // surviving transcript boundary instead of the old upstream response id.

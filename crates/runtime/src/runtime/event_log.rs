@@ -63,4 +63,21 @@ impl AgentRuntime {
         }
         Ok(())
     }
+
+    pub(super) async fn append_turn_failure_event(
+        &self,
+        turn_id: &TurnId,
+        stage: impl Into<String>,
+        error: impl Into<String>,
+    ) -> Result<()> {
+        self.append_event(
+            Some(turn_id.clone()),
+            None,
+            SessionEventKind::TurnFailed {
+                stage: stage.into(),
+                error: error.into(),
+            },
+        )
+        .await
+    }
 }

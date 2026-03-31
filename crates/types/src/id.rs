@@ -126,6 +126,7 @@ define_id!(AgentSessionId);
 define_id!(ExperimentId);
 define_id!(CandidateId);
 define_id!(BaselineId);
+define_id!(SignalId);
 define_id!(TurnId);
 define_id!(ToolCallId);
 define_id!(CallId);
