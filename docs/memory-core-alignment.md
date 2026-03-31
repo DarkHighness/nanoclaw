@@ -102,6 +102,7 @@ Normal turns may still inject memory recall, but not through base instructions.
 The runtime now treats query-time recall as a separate synthetic message that is
 prepended before the operator's original user message:
 
+- current-session working memory is consulted first when available
 - recall is best-effort and timeout-bounded
 - recall is inserted as its own transcript message
 - the operator prompt remains a separate message with unchanged bytes
@@ -117,3 +118,21 @@ augmentor shapes natural-language questions into concise content-term queries
 before searching. That keeps prompts like "Should I use a canary deploy before
 restart?" recallable without requiring the memory files to literally contain
 every conversational filler token.
+
+## Compaction Snapshots
+
+Claude-style memory continuity is not only about durable recall. It also relies
+on a compacted session keeping a usable working-memory handoff for the next
+turns and for later resume.
+
+`nanoclaw` now persists that handoff as working memory:
+
+- when conversation compaction completes, the host writes the latest compact
+  summary into `.nanoclaw/memory/working/agent-sessions/<agent-session>.md`
+- the record is tagged as a continuation snapshot for the current runtime
+  session
+- later query-time recall checks this working scope before consulting durable
+  procedural and semantic memories
+
+That keeps post-compaction continuity in the memory system itself instead of
+depending only on one synthetic transcript summary message.

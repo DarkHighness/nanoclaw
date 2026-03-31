@@ -44,6 +44,7 @@ use tracing::{info, warn};
 struct RuntimeBuildResult {
     runtime: AgentRuntime,
     model_backend: MutableAgentBackend,
+    memory_backend: Option<Arc<dyn agent::memory::MemoryBackend>>,
     subagent_executor: Arc<dyn SubagentExecutor>,
     store: Arc<dyn store::SessionStore>,
     skill_catalog: SkillCatalog,
@@ -202,6 +203,7 @@ pub(crate) async fn build_session_with_approval_mode(
     let RuntimeBuildResult {
         runtime,
         model_backend,
+        memory_backend,
         subagent_executor,
         store,
         skill_catalog,
@@ -273,6 +275,7 @@ pub(crate) async fn build_session_with_approval_mode(
         skill_catalog,
         plugin_instructions,
         skills,
+        memory_backend,
     ))
 }
 
@@ -506,6 +509,7 @@ async fn build_runtime(
     Ok(RuntimeBuildResult {
         runtime,
         model_backend,
+        memory_backend,
         subagent_executor,
         store,
         skills,

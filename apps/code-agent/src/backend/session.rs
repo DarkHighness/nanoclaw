@@ -14,6 +14,7 @@ use crate::backend::{
 use crate::provider::{MutableAgentBackend, ReasoningEffortUpdate};
 use crate::statusline::StatusLineConfig;
 use agent::mcp::ConnectedMcpServer;
+use agent::memory::{MemoryBackend, MemoryRecordRequest, MemoryScope, MemoryType};
 use agent::runtime::{
     PermissionGrantSnapshot, PermissionGrantStore, Result as RuntimeResult,
     RollbackVisibleHistoryOutcome, RunTurnOutcome, RuntimeCommandId, RuntimeControlPlane,
@@ -34,6 +35,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 use store::SessionStore;
 use tokio::sync::Mutex as AsyncMutex;
+use tracing::warn;
 
 #[derive(Clone)]
 struct SessionPreambleConfig {
@@ -198,6 +200,13 @@ pub(crate) struct HistoryRollbackOutcome {
     pub(crate) removed_message_count: usize,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct CompactionWorkingSnapshot {
+    session_id: SessionId,
+    agent_session_id: AgentSessionId,
+    summary: String,
+}
+
 /// The backend session owns runtime state so frontends can speak to a stable
 /// host contract instead of sharing `AgentRuntime` directly.
 #[derive(Clone)]
@@ -219,6 +228,7 @@ pub(crate) struct CodeAgentSession {
     session_tool_context: Arc<RwLock<ToolExecutionContext>>,
     default_sandbox_policy: SandboxPolicy,
     preamble: SessionPreambleConfig,
+    memory_backend: Option<Arc<dyn MemoryBackend>>,
 }
 
 impl CodeAgentSession {
@@ -240,6 +250,7 @@ impl CodeAgentSession {
         skill_catalog: agent::SkillCatalog,
         plugin_instructions: Vec<String>,
         skills: Vec<Skill>,
+        memory_backend: Option<Arc<dyn MemoryBackend>>,
     ) -> Self {
         let workspace_root = startup.workspace_root.clone();
         let control_plane = runtime.control_plane();
@@ -265,6 +276,7 @@ impl CodeAgentSession {
                 skill_catalog,
                 plugin_instructions,
             },
+            memory_backend,
         }
     }
 
@@ -335,7 +347,10 @@ impl CodeAgentSession {
             .apply_control_with_observer(command, &mut observer)
             .await
             .map_err(anyhow::Error::from)?;
+        let snapshot = self.latest_compaction_working_snapshot(&runtime, &observer);
         self.sync_runtime_session_refs(&runtime);
+        drop(runtime);
+        self.persist_compaction_working_snapshot(snapshot).await;
         Ok(())
     }
 
@@ -450,7 +465,10 @@ impl CodeAgentSession {
             .drain_queued_controls_with_observer(&mut observer)
             .await
             .map_err(anyhow::Error::from)?;
+        let snapshot = self.latest_compaction_working_snapshot(&runtime, &observer);
         self.sync_runtime_session_refs(&runtime);
+        drop(runtime);
+        self.persist_compaction_working_snapshot(snapshot).await;
         Ok(drained)
     }
 
@@ -479,11 +497,15 @@ impl CodeAgentSession {
 
     pub(crate) async fn run_one_shot_prompt(&self, prompt: &str) -> Result<RunTurnOutcome> {
         let mut runtime = self.runtime.lock().await;
+        let mut observer = SessionEventObserver::new(self.events.clone());
         let outcome = runtime
-            .run_user_prompt(prompt)
+            .run_user_prompt_with_observer(prompt, &mut observer)
             .await
             .map_err(anyhow::Error::from)?;
+        let snapshot = self.latest_compaction_working_snapshot(&runtime, &observer);
         self.sync_runtime_session_refs(&runtime);
+        drop(runtime);
+        self.persist_compaction_working_snapshot(snapshot).await;
         Ok(outcome)
     }
 
@@ -512,7 +534,10 @@ impl CodeAgentSession {
         let compacted = runtime
             .compact_now_with_observer(notes, &mut observer)
             .await?;
+        let snapshot = self.latest_compaction_working_snapshot(&runtime, &observer);
         self.sync_runtime_session_refs(&runtime);
+        drop(runtime);
+        self.persist_compaction_working_snapshot(snapshot).await;
         Ok(compacted)
     }
 
@@ -632,6 +657,60 @@ impl CodeAgentSession {
 
     pub(crate) fn drain_events(&self) -> Vec<SessionEvent> {
         self.events.drain()
+    }
+
+    fn latest_compaction_working_snapshot(
+        &self,
+        runtime: &AgentRuntime,
+        observer: &SessionEventObserver,
+    ) -> Option<CompactionWorkingSnapshot> {
+        observer
+            .latest_compaction_summary()
+            .map(|summary| CompactionWorkingSnapshot {
+                session_id: runtime.session_id(),
+                agent_session_id: runtime.agent_session_id(),
+                summary,
+            })
+    }
+
+    async fn persist_compaction_working_snapshot(
+        &self,
+        snapshot: Option<CompactionWorkingSnapshot>,
+    ) {
+        let Some(memory_backend) = self.memory_backend.as_ref() else {
+            return;
+        };
+        let Some(snapshot) = snapshot else {
+            return;
+        };
+        let summary = snapshot.summary.trim();
+        if summary.is_empty() {
+            return;
+        }
+
+        // Persist the latest compaction handoff as working memory so later
+        // recall can recover session continuity without mutating base prompts.
+        if let Err(error) = memory_backend
+            .record(MemoryRecordRequest {
+                scope: MemoryScope::Working,
+                title: "Session continuation snapshot".to_string(),
+                content: summary.to_string(),
+                memory_type: Some(MemoryType::Project),
+                description: Some(
+                    "Latest session continuation snapshot produced by conversation compaction."
+                        .to_string(),
+                ),
+                layer: None,
+                tags: vec!["compaction".to_string(), "continuation".to_string()],
+                session_id: Some(snapshot.session_id),
+                agent_session_id: Some(snapshot.agent_session_id),
+                agent_name: None,
+                task_id: None,
+            })
+            .await
+        {
+            warn!(error = %error, "failed to persist working memory snapshot after compaction");
+        }
     }
 
     pub(crate) async fn list_sessions(
@@ -1182,7 +1261,11 @@ mod tests {
         StartupDiagnosticsSnapshot, UserInputCoordinator,
     };
     use crate::statusline::StatusLineConfig;
-    use agent::runtime::{HookRunner, ModelBackend, PermissionGrantStore, Result as RuntimeResult};
+    use agent::memory::{MemoryBackend, MemoryCoreBackend};
+    use agent::runtime::{
+        CompactionConfig, CompactionRequest, CompactionResult, ConversationCompactor, HookRunner,
+        ModelBackend, PermissionGrantStore, Result as RuntimeResult,
+    };
     use agent::tools::{
         Result as ToolResult, SubagentExecutor, SubagentInputDelivery, SubagentLaunchSpec,
         SubagentParentContext, ToolError, ToolExecutionContext,
@@ -1212,6 +1295,8 @@ mod tests {
 
     struct StreamingTextBackend;
 
+    struct StaticCompactor;
+
     #[async_trait]
     impl ModelBackend for StreamingTextBackend {
         async fn stream_turn(
@@ -1226,6 +1311,15 @@ mod tests {
                 reasoning: Vec::new(),
             })])
             .boxed())
+        }
+    }
+
+    #[async_trait]
+    impl ConversationCompactor for StaticCompactor {
+        async fn compact(&self, request: CompactionRequest) -> RuntimeResult<CompactionResult> {
+            Ok(CompactionResult {
+                summary: format!("summary for {} messages", request.messages.len()),
+            })
         }
     }
 
@@ -1494,6 +1588,16 @@ mod tests {
         store: Arc<dyn SessionStore>,
         startup: SessionStartupSnapshot,
     ) -> CodeAgentSession {
+        build_session_with_memory(runtime, subagent_executor, store, startup, None)
+    }
+
+    fn build_session_with_memory(
+        runtime: agent::AgentRuntime,
+        subagent_executor: Arc<dyn SubagentExecutor>,
+        store: Arc<dyn SessionStore>,
+        startup: SessionStartupSnapshot,
+        memory_backend: Option<Arc<dyn MemoryBackend>>,
+    ) -> CodeAgentSession {
         let default_sandbox_policy = runtime.base_sandbox_policy();
         let session_tool_context = Arc::new(RwLock::new(ToolExecutionContext {
             workspace_root: startup.workspace_root.clone(),
@@ -1520,6 +1624,7 @@ mod tests {
             SkillCatalog::default(),
             Vec::new(),
             Vec::<Skill>::new(),
+            memory_backend,
         )
     }
 
@@ -1919,6 +2024,67 @@ mod tests {
         let refreshed = requests[1].instructions.join("\n\n");
         assert!(refreshed.contains("# Workspace Memory Primer"));
         assert!(refreshed.contains("refresh on resume"));
+    }
+
+    #[tokio::test]
+    async fn manual_compaction_persists_working_memory_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(InMemorySessionStore::new());
+        let runtime = AgentRuntimeBuilder::new(Arc::new(StreamingTextBackend), store.clone())
+            .hook_runner(Arc::new(HookRunner::default()))
+            .tool_context(ToolExecutionContext {
+                workspace_root: dir.path().to_path_buf(),
+                workspace_only: true,
+                model_context_window_tokens: Some(128_000),
+                ..Default::default()
+            })
+            .conversation_compactor(Arc::new(StaticCompactor))
+            .compaction_config(CompactionConfig {
+                enabled: true,
+                context_window_tokens: 64,
+                trigger_tokens: 1,
+                preserve_recent_messages: 0,
+            })
+            .build();
+        let mut startup = startup_snapshot(dir.path());
+        startup.active_session_ref = runtime.session_id().to_string();
+        startup.root_agent_session_id = runtime.agent_session_id().to_string();
+        let memory_backend: Arc<dyn MemoryBackend> = Arc::new(MemoryCoreBackend::new(
+            dir.path().to_path_buf(),
+            Default::default(),
+        ));
+        let session = build_session_with_memory(
+            runtime,
+            Arc::new(NoopSubagentExecutor),
+            store,
+            startup,
+            Some(memory_backend),
+        );
+
+        session
+            .apply_control(RuntimeCommand::Prompt {
+                message: Message::user("first turn"),
+            })
+            .await
+            .unwrap();
+        session
+            .apply_control(RuntimeCommand::Steer {
+                message: "retain latest steer".to_string(),
+                reason: Some("test".to_string()),
+            })
+            .await
+            .unwrap();
+
+        assert!(session.compact_now(None).await.unwrap());
+
+        let working_path = dir.path().join(format!(
+            ".nanoclaw/memory/working/agent-sessions/{}.md",
+            session.startup_snapshot().root_agent_session_id
+        ));
+        let snapshot = std::fs::read_to_string(working_path).unwrap();
+        assert!(snapshot.contains("Session continuation snapshot"));
+        assert!(snapshot.contains("summary for 2 messages"));
+        assert!(snapshot.contains("session_id:"));
     }
 
     #[tokio::test]

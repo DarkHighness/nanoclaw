@@ -69,7 +69,8 @@ impl ConversationCompactor for ModelConversationCompactor {
         let mut instructions = vec![
             "Summarize the conversation so an agent can continue from the summary alone.".to_string(),
             "Preserve the user's goals, important facts, file paths, edits made, tool outcomes, constraints, open questions, and pending next steps.".to_string(),
-            "Be concise but specific. Use short section headers. Do not mention that this is a summary.".to_string(),
+            "Format the result as compact Markdown with short section headers. When relevant, include Current State, Important Files, Constraints and Decisions, Errors and Corrections, and Next Steps.".to_string(),
+            "Be concise but specific. Do not mention that this is a summary.".to_string(),
         ];
         if let Some(extra) = request.instructions {
             instructions.push(extra);

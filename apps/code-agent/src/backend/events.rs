@@ -95,11 +95,22 @@ impl SessionEventStream {
 
 pub(crate) struct SessionEventObserver {
     stream: SessionEventStream,
+    captured: Vec<SessionEvent>,
 }
 
 impl SessionEventObserver {
     pub(crate) fn new(stream: SessionEventStream) -> Self {
-        Self { stream }
+        Self {
+            stream,
+            captured: Vec::new(),
+        }
+    }
+
+    pub(crate) fn latest_compaction_summary(&self) -> Option<String> {
+        self.captured.iter().rev().find_map(|event| match event {
+            SessionEvent::CompactionCompleted { summary, .. } => Some(summary.clone()),
+            _ => None,
+        })
     }
 }
 
@@ -188,7 +199,8 @@ impl RuntimeObserver for SessionEventObserver {
                 SessionEvent::TurnCompleted { assistant_text }
             }
         };
-        self.stream.push(session_event);
+        self.stream.push(session_event.clone());
+        self.captured.push(session_event);
         Ok(())
     }
 }

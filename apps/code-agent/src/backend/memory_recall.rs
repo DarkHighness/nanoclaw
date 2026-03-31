@@ -15,6 +15,7 @@ const WORKSPACE_MEMORY_RECALL_METADATA_KEY: &str = "workspace_memory_recall";
 const RECALL_TIMEOUT_MS: u64 = 200;
 const RECALL_LIMIT: usize = 3;
 const RECALL_CANDIDATE_LIMIT: usize = 6;
+const RECALL_WORKING_CANDIDATE_LIMIT: usize = 3;
 const RECALL_MAX_SNIPPET_CHARS: usize = 220;
 const RECALL_MAX_BLOCK_CHARS: usize = 1_400;
 const RECALL_QUERY_TERM_LIMIT: usize = 5;
@@ -86,7 +87,7 @@ impl UserMessageAugmentor for WorkspaceMemoryRecallAugmentor {
             return Ok(AugmentedUserMessage::unchanged(message));
         }
 
-        let Some((backend_name, hits)) = self.search_recall_hits(&query).await else {
+        let Some((backend_name, hits)) = self.search_recall_hits(context, &query).await else {
             return Ok(AugmentedUserMessage::unchanged(message));
         };
         let Some(block) = format_recall_block(&hits) else {
@@ -106,8 +107,56 @@ impl UserMessageAugmentor for WorkspaceMemoryRecallAugmentor {
 }
 
 impl WorkspaceMemoryRecallAugmentor {
-    async fn search_recall_hits(&self, query: &str) -> Option<(String, Vec<MemorySearchHit>)> {
+    async fn search_recall_hits(
+        &self,
+        context: &UserMessageAugmentationContext,
+        query: &str,
+    ) -> Option<(String, Vec<MemorySearchHit>)> {
         let started_at = std::time::Instant::now();
+        let mut backend_name = None;
+        let mut collected = Vec::new();
+
+        // Query the active session's working memory first so post-compaction
+        // continuation beats older durable notes when both match.
+        if let Some((name, working_hits)) = self
+            .search_hits(
+                query,
+                vec![MemoryScope::Working],
+                Some(context.session_id.clone()),
+                RECALL_WORKING_CANDIDATE_LIMIT,
+                started_at,
+            )
+            .await
+        {
+            backend_name = Some(name);
+            merge_recall_hits(&mut collected, working_hits);
+        }
+        if collected.len() < RECALL_LIMIT {
+            if let Some((name, durable_hits)) = self
+                .search_hits(
+                    query,
+                    vec![MemoryScope::Procedural, MemoryScope::Semantic],
+                    None,
+                    RECALL_CANDIDATE_LIMIT,
+                    started_at,
+                )
+                .await
+            {
+                backend_name.get_or_insert(name);
+                merge_recall_hits(&mut collected, durable_hits);
+            }
+        }
+        (!collected.is_empty()).then(|| (backend_name.unwrap_or_default(), collected))
+    }
+
+    async fn search_hits(
+        &self,
+        query: &str,
+        scopes: Vec<MemoryScope>,
+        session_id: Option<agent::types::SessionId>,
+        candidate_limit: usize,
+        started_at: std::time::Instant,
+    ) -> Option<(String, Vec<MemorySearchHit>)> {
         for search_query in build_search_queries(query) {
             let remaining =
                 Duration::from_millis(self.timeout_ms).saturating_sub(started_at.elapsed());
@@ -118,12 +167,12 @@ impl WorkspaceMemoryRecallAugmentor {
 
             let search = MemorySearchRequest {
                 query: search_query,
-                limit: Some(RECALL_CANDIDATE_LIMIT),
+                limit: Some(candidate_limit),
                 path_prefix: None,
-                scopes: Some(vec![MemoryScope::Procedural, MemoryScope::Semantic]),
+                scopes: Some(scopes.clone()),
                 types: None,
                 tags: None,
-                session_id: None,
+                session_id: session_id.clone(),
                 agent_session_id: None,
                 agent_name: None,
                 task_id: None,
@@ -147,6 +196,22 @@ impl WorkspaceMemoryRecallAugmentor {
             }
         }
         None
+    }
+}
+
+fn merge_recall_hits(existing: &mut Vec<MemorySearchHit>, incoming: Vec<MemorySearchHit>) {
+    let mut seen_paths = existing
+        .iter()
+        .map(|hit| hit.path.clone())
+        .collect::<BTreeSet<_>>();
+    for hit in incoming {
+        if !seen_paths.insert(hit.path.clone()) {
+            continue;
+        }
+        existing.push(hit);
+        if existing.len() == RECALL_LIMIT {
+            break;
+        }
     }
 }
 
@@ -352,7 +417,7 @@ mod tests {
     use super::{
         WORKSPACE_MEMORY_RECALL_METADATA_KEY, WorkspaceMemoryRecallAugmentor, build_search_queries,
     };
-    use agent::memory::MemoryCoreBackend;
+    use agent::memory::{MemoryBackend, MemoryCoreBackend, MemoryRecordRequest, MemoryScope};
     use agent::runtime::{UserMessageAugmentationContext, UserMessageAugmentor};
     use agent::types::{AgentSessionId, Message, MessageRole, SessionId};
     use std::sync::Arc;
@@ -438,5 +503,53 @@ mod tests {
 
         assert!(augmented.prefix_messages.is_empty());
         assert_eq!(augmented.message.text_content(), "deploy?");
+    }
+
+    #[tokio::test]
+    async fn augmentor_prioritizes_current_session_working_memory() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("MEMORY.md"),
+            "Durable note: deploy checklists should mention restarts.",
+        )
+        .unwrap();
+        let backend = Arc::new(MemoryCoreBackend::new(
+            dir.path().to_path_buf(),
+            Default::default(),
+        ));
+        backend
+            .record(MemoryRecordRequest {
+                scope: MemoryScope::Working,
+                title: "Session continuation snapshot".to_string(),
+                content: "Current state: canary deploy before restart because production rollback is sensitive.".to_string(),
+                memory_type: None,
+                description: Some(
+                    "Latest continuation snapshot for the active session.".to_string(),
+                ),
+                layer: None,
+                tags: vec!["compaction".to_string()],
+                session_id: Some(SessionId::from("session-test")),
+                agent_session_id: Some(AgentSessionId::from("agent-session-test")),
+                agent_name: None,
+                task_id: None,
+            })
+            .await
+            .unwrap();
+        let augmentor = WorkspaceMemoryRecallAugmentor::new(backend);
+
+        let augmented = augmentor
+            .augment_user_message(
+                &context(),
+                Message::user("Should I do a canary deploy before restart?"),
+            )
+            .await
+            .unwrap();
+
+        let recall = augmented.prefix_messages[0].text_content();
+        let working_path = ".nanoclaw/memory/working/agent-sessions/agent-session-test.md";
+        let working_index = recall.find(working_path).unwrap();
+        if let Some(durable_index) = recall.find("MEMORY.md") {
+            assert!(working_index < durable_index);
+        }
     }
 }
