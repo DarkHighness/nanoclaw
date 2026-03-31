@@ -1,5 +1,6 @@
 use crate::ToolExecutionContext;
 use crate::annotations::{builtin_tool_spec, tool_approval_profile};
+use crate::fs::load_tool_image;
 use crate::registry::Tool;
 use crate::{Result, ToolError};
 use async_trait::async_trait;
@@ -10,9 +11,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::Duration;
 use types::{
-    AgentHandle, AgentId, AgentResultEnvelope, AgentSessionId, AgentStatus, AgentTaskSpec,
-    AgentWaitMode, AgentWaitRequest, AgentWaitResponse, CallId, Message, MessagePart, MessageRole,
-    SessionId, ToolCallId, ToolName, ToolOutputMode, ToolResult, ToolSpec, TurnId,
+    AgentHandle, AgentId, AgentInputDelivery, AgentResultEnvelope, AgentSessionId, AgentStatus,
+    AgentTaskSpec, AgentWaitMode, AgentWaitRequest, AgentWaitResponse, CallId, Message,
+    MessagePart, MessageRole, SessionId, ToolCallId, ToolName, ToolOutputMode, ToolResult,
+    ToolSpec, TurnId,
 };
 
 const SPAWN_AGENT_TOOL_NAME: &str = "spawn_agent";
@@ -155,11 +157,7 @@ pub struct SubagentLaunchSpec {
     pub reasoning_effort: Option<String>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SubagentInputDelivery {
-    Queue,
-    Interrupt,
-}
+pub type SubagentInputDelivery = AgentInputDelivery;
 
 impl SubagentLaunchSpec {
     #[must_use]
@@ -379,7 +377,7 @@ impl Tool for AgentSpawnTool {
         ctx: &ToolExecutionContext,
     ) -> Result<ToolResult> {
         let input: AgentSpawnToolInput = serde_json::from_value(arguments)?;
-        let launch = normalize_spawn_input(input, &call_id)?;
+        let launch = normalize_spawn_input(input, &call_id, ctx).await?;
         let mut handles = self
             .executor
             .spawn(SubagentParentContext::from(ctx), vec![launch])
@@ -419,7 +417,7 @@ impl Tool for AgentSendTool {
         ctx: &ToolExecutionContext,
     ) -> Result<ToolResult> {
         let input: AgentSendToolInput = serde_json::from_value(arguments)?;
-        let (target, message, delivery) = normalize_send_input(input)?;
+        let (target, message, delivery) = normalize_send_input(input, ctx).await?;
         let handle = self
             .executor
             .send(SubagentParentContext::from(ctx), target, message, delivery)
@@ -427,7 +425,7 @@ impl Tool for AgentSendTool {
         build_tool_result(
             call_id,
             SEND_INPUT_TOOL_NAME,
-            render_handle_line(&handle),
+            render_send_input_line(&handle, delivery),
             handle,
         )
     }
@@ -617,9 +615,10 @@ fn normalize_task_input(input: AgentTaskInput, ordinal: usize) -> Result<AgentTa
     })
 }
 
-fn normalize_spawn_input(
+async fn normalize_spawn_input(
     input: AgentSpawnToolInput,
     call_id: &ToolCallId,
+    ctx: &ToolExecutionContext,
 ) -> Result<SubagentLaunchSpec> {
     let role = normalize_optional_non_empty(input.agent_type)
         .unwrap_or_else(|| "general-purpose".to_string());
@@ -627,7 +626,9 @@ fn normalize_spawn_input(
         input.message,
         &input.items,
         "spawn_agent requires a message or at least one input item",
-    )?;
+        ctx,
+    )
+    .await?;
     Ok(SubagentLaunchSpec {
         task: AgentTaskSpec {
             task_id: format!("spawn_{}", call_id),
@@ -646,15 +647,18 @@ fn normalize_spawn_input(
     })
 }
 
-fn normalize_send_input(
+async fn normalize_send_input(
     input: AgentSendToolInput,
+    ctx: &ToolExecutionContext,
 ) -> Result<(AgentId, Message, SubagentInputDelivery)> {
     let target = input.target;
     let normalized = normalize_agent_input(
         input.message,
         &input.items,
         "send_input requires a message or at least one input item",
-    )?;
+        ctx,
+    )
+    .await?;
     Ok((
         target,
         normalized.message,
@@ -671,10 +675,11 @@ struct NormalizedAgentInput {
     message: Message,
 }
 
-fn normalize_agent_input(
+async fn normalize_agent_input(
     message: Option<String>,
     items: &[AgentInputItem],
     empty_error: &str,
+    ctx: &ToolExecutionContext,
 ) -> Result<NormalizedAgentInput> {
     let normalized_message = normalize_optional_non_empty(message);
     let mut preview_parts = Vec::new();
@@ -690,9 +695,7 @@ fn normalize_agent_input(
         if let Some(line) = render_agent_input_item_summary(item) {
             preview_items.push(line);
         }
-        if let Some(part) = normalize_agent_input_item_part(item)? {
-            message_parts.push(part);
-        }
+        message_parts.extend(normalize_agent_input_item_parts(item, ctx).await?);
     }
 
     if !preview_items.is_empty() {
@@ -714,7 +717,10 @@ fn normalize_optional_non_empty(value: Option<String>) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
-fn normalize_agent_input_item_part(item: &AgentInputItem) -> Result<Option<MessagePart>> {
+async fn normalize_agent_input_item_parts(
+    item: &AgentInputItem,
+    ctx: &ToolExecutionContext,
+) -> Result<Vec<MessagePart>> {
     let item_type = normalized_agent_input_item_type(item);
     let text = trim_optional_field(item.text.as_deref());
     let path = trim_optional_field(item.path.as_deref());
@@ -725,13 +731,25 @@ fn normalize_agent_input_item_part(item: &AgentInputItem) -> Result<Option<Messa
         let text = text.ok_or_else(|| {
             ToolError::invalid("agent input items with type=text require a non-empty text field")
         })?;
-        return Ok(Some(MessagePart::text(text)));
+        return Ok(vec![MessagePart::text(text)]);
     }
 
     if path.is_none() && name.is_none() && image_url.is_none() && text.is_none() {
         return Err(ToolError::invalid(format!(
             "agent input item `{item_type}` must include at least one of text, path, name, or image_url"
         )));
+    }
+
+    if item_type == "local_image" {
+        let path = path.ok_or_else(|| {
+            ToolError::invalid("agent input items with type=local_image require a non-empty path")
+        })?;
+        let image = load_tool_image(path, ctx).await?;
+        let mut parts = vec![image.message_part()];
+        if let Some(caption) = compose_item_caption(name, text) {
+            parts.push(MessagePart::text(caption));
+        }
+        return Ok(parts);
     }
 
     if let Some(uri) = path.clone().or(image_url.clone()) {
@@ -752,18 +770,13 @@ fn normalize_agent_input_item_part(item: &AgentInputItem) -> Result<Option<Messa
         if let Some(text) = text.clone() {
             metadata.insert("text".to_string(), Value::String(text.to_string()));
         }
-        let text = match (name, text) {
-            (Some(name), Some(text)) => Some(format!("{name}\n{text}")),
-            (Some(name), None) => Some(name.to_string()),
-            (None, Some(text)) => Some(text.to_string()),
-            (None, None) => None,
-        };
-        return Ok(Some(MessagePart::Resource {
+        let text = compose_item_caption(name, text);
+        return Ok(vec![MessagePart::Resource {
             uri: uri.to_string(),
             mime_type: None,
             text,
             metadata: (!metadata.is_empty()).then_some(Value::Object(metadata)),
-        }));
+        }]);
     }
 
     let mut value = serde_json::Map::new();
@@ -774,9 +787,18 @@ fn normalize_agent_input_item_part(item: &AgentInputItem) -> Result<Option<Messa
     if let Some(text) = text {
         value.insert("text".to_string(), Value::String(text.to_string()));
     }
-    Ok(Some(MessagePart::Json {
+    Ok(vec![MessagePart::Json {
         value: Value::Object(value),
-    }))
+    }])
+}
+
+fn compose_item_caption(name: Option<&str>, text: Option<&str>) -> Option<String> {
+    match (name, text) {
+        (Some(name), Some(text)) => Some(format!("{name}\n{text}")),
+        (Some(name), None) => Some(name.to_string()),
+        (None, Some(text)) => Some(text.to_string()),
+        (None, None) => None,
+    }
 }
 
 fn render_agent_input_item_summary(item: &AgentInputItem) -> Option<String> {
@@ -1051,6 +1073,18 @@ fn render_handle_line(handle: &AgentHandle) -> String {
     )
 }
 
+fn render_send_input_line(handle: &AgentHandle, delivery: SubagentInputDelivery) -> String {
+    format!(
+        "{} delivery={} status={} task={} session={} agent_session={}",
+        handle.agent_id,
+        delivery,
+        handle.status,
+        handle.task_id,
+        handle.session_id,
+        handle.agent_session_id
+    )
+}
+
 fn render_result_line(result: &AgentResultEnvelope) -> String {
     format!(
         "result {} status={} summary={}",
@@ -1093,12 +1127,22 @@ mod tests {
     use async_trait::async_trait;
     use serde_json::json;
     use std::collections::{BTreeMap, BTreeSet};
+    use std::path::Path;
     use std::sync::{Arc, Mutex};
     use tokio::sync::Notify;
     use types::{
         AgentHandle, AgentId, AgentResultEnvelope, AgentSessionId, AgentStatus, AgentWaitMode,
-        AgentWaitRequest, AgentWaitResponse, Message, MessageRole, SessionId, ToolCallId, ToolName,
+        AgentWaitRequest, AgentWaitResponse, Message, MessagePart, MessageRole, SessionId,
+        ToolCallId, ToolName,
     };
+
+    fn workspace_context(root: &Path) -> ToolExecutionContext {
+        ToolExecutionContext {
+            workspace_root: root.to_path_buf(),
+            workspace_only: true,
+            ..Default::default()
+        }
+    }
 
     #[derive(Default)]
     struct FakeExecutor {
@@ -1588,6 +1632,38 @@ mod tests {
         assert_eq!(
             launch.initial_input.text_content(),
             "Review the current patch.\nFocus on regressions.\nconnector"
+        );
+    }
+
+    #[tokio::test]
+    async fn spawn_agent_local_image_items_become_image_parts() {
+        let executor = Arc::new(FakeExecutor::default());
+        let tool = AgentSpawnTool::new(executor.clone());
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("sample.png"), b"\x89PNG\r\n\x1a\npayload").unwrap();
+
+        tool.execute(
+            ToolCallId::new(),
+            json!({
+                "agent_type": "reviewer",
+                "items": [
+                    {"type": "local_image", "path": "sample.png", "text": "latest failure screenshot"}
+                ]
+            }),
+            &workspace_context(dir.path()),
+        )
+        .await
+        .unwrap();
+
+        let state = executor.state.lock().unwrap();
+        let launch = &state.spawned_launches[0];
+        assert!(matches!(
+            launch.initial_input.parts.first(),
+            Some(MessagePart::Image { mime_type, .. }) if mime_type == "image/png"
+        ));
+        assert_eq!(
+            launch.initial_input.text_content(),
+            "latest failure screenshot"
         );
     }
 

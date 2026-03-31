@@ -205,7 +205,10 @@ now accepts the Codex-style launch fields `fork_context`, `model`, and
 `reasoning_effort`, and the runtime honors them with real execution semantics.
 `spawn_agent` and `send_input` now forward `message + items` as structured
 user messages all the way into the child runtime instead of flattening them
-into steering text.
+into steering text. `send_input interrupt=true` now has real restart semantics
+instead of degrading to a queued follow-up, and `local_image` input items now
+flow through the same first-class image message parts that provider adapters
+already use for multimodal prompts.
 - state:
   `update_plan`, `request_user_input`, `request_permissions`
 - discovery:

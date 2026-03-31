@@ -49,6 +49,24 @@ impl fmt::Display for AgentStatus {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentInputDelivery {
+    #[default]
+    Queue,
+    Interrupt,
+}
+
+impl fmt::Display for AgentInputDelivery {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let value = match self {
+            Self::Queue => "queue",
+            Self::Interrupt => "interrupt",
+        };
+        f.write_str(value)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct AgentHandle {
     pub agent_id: AgentId,
@@ -106,17 +124,42 @@ pub struct AgentResultEnvelope {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum AgentEnvelopeKind {
-    SpawnRequested { task: AgentTaskSpec },
-    Started { task: AgentTaskSpec },
-    StatusChanged { status: AgentStatus },
-    Input { message: Message },
-    Artifact { artifact: AgentArtifact },
-    ClaimRequested { files: Vec<String> },
-    ClaimGranted { files: Vec<String> },
-    ClaimRejected { files: Vec<String>, owner: AgentId },
-    Result { result: AgentResultEnvelope },
-    Failed { error: String },
-    Cancelled { reason: Option<String> },
+    SpawnRequested {
+        task: AgentTaskSpec,
+    },
+    Started {
+        task: AgentTaskSpec,
+    },
+    StatusChanged {
+        status: AgentStatus,
+    },
+    Input {
+        message: Message,
+        #[serde(default)]
+        delivery: AgentInputDelivery,
+    },
+    Artifact {
+        artifact: AgentArtifact,
+    },
+    ClaimRequested {
+        files: Vec<String>,
+    },
+    ClaimGranted {
+        files: Vec<String>,
+    },
+    ClaimRejected {
+        files: Vec<String>,
+        owner: AgentId,
+    },
+    Result {
+        result: AgentResultEnvelope,
+    },
+    Failed {
+        error: String,
+    },
+    Cancelled {
+        reason: Option<String>,
+    },
     Heartbeat,
 }
 

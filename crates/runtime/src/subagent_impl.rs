@@ -340,8 +340,15 @@ impl RuntimeSubagentExecutor {
             .mailbox(&handle.agent_id)?
             .send_input(message.clone())
             .map_err(|error| RuntimeError::invalid_state(error.to_string()))?;
-        self.append_agent_envelope(parent, handle, AgentEnvelopeKind::Input { message })
-            .await?;
+        self.append_agent_envelope(
+            parent,
+            handle,
+            AgentEnvelopeKind::Input {
+                message,
+                delivery: SubagentInputDelivery::Queue,
+            },
+        )
+        .await?;
         Ok(handle.clone())
     }
 
@@ -376,6 +383,7 @@ impl RuntimeSubagentExecutor {
             &restarted,
             AgentEnvelopeKind::Input {
                 message: message.clone(),
+                delivery: SubagentInputDelivery::Interrupt,
             },
         )
         .await?;
@@ -2658,10 +2666,11 @@ mod tests {
             &event.event,
             SessionEventKind::AgentEnvelope {
                 envelope: types::AgentEnvelope {
-                    kind: AgentEnvelopeKind::Input { message },
+                    kind: AgentEnvelopeKind::Input { message, delivery },
                     ..
                 },
-            } if message.text_content() == "focus latest diff"
+            } if *delivery == types::AgentInputDelivery::Interrupt
+                && message.text_content() == "focus latest diff"
         )));
         let child_events = store.events(&handles[0].session_id).await.unwrap();
         assert!(child_events.iter().any(|event| matches!(

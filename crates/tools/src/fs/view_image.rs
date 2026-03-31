@@ -9,6 +9,7 @@ use base64::Engine;
 use schemars::{JsonSchema, schema_for};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::fs;
 use types::{MessagePart, ToolAttachment, ToolCallId, ToolOutputMode, ToolResult, ToolSpec};
@@ -16,6 +17,46 @@ use types::{MessagePart, ToolAttachment, ToolCallId, ToolOutputMode, ToolResult,
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 pub struct ViewImageToolInput {
     pub path: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct LoadedToolImage {
+    pub(crate) requested_path: String,
+    pub(crate) resolved_path: PathBuf,
+    pub(crate) mime_type: String,
+    pub(crate) byte_length: usize,
+    pub(crate) data_base64: String,
+}
+
+impl LoadedToolImage {
+    pub(crate) fn message_part(&self) -> MessagePart {
+        MessagePart::Image {
+            mime_type: self.mime_type.clone(),
+            data_base64: self.data_base64.clone(),
+        }
+    }
+}
+
+pub(crate) async fn load_tool_image(
+    requested_path: &str,
+    ctx: &ToolExecutionContext,
+) -> Result<LoadedToolImage> {
+    let resolved_path = resolve_tool_path_against_workspace_root(
+        requested_path,
+        ctx.effective_root(),
+        ctx.container_workdir.as_deref(),
+    )?;
+    ctx.assert_path_read_allowed(&resolved_path)?;
+    let bytes = fs::read(&resolved_path).await?;
+    let mime_type = sniff_image_mime(&bytes, &resolved_path)
+        .ok_or_else(|| ToolError::invalid("view_image: file is not a supported image"))?;
+    Ok(LoadedToolImage {
+        requested_path: requested_path.to_string(),
+        resolved_path,
+        mime_type: mime_type.to_string(),
+        byte_length: bytes.len(),
+        data_base64: base64::engine::general_purpose::STANDARD.encode(bytes),
+    })
 }
 
 #[derive(Clone, Debug, Serialize, JsonSchema)]
@@ -71,62 +112,51 @@ impl Tool for ViewImageTool {
     ) -> Result<ToolResult> {
         let external_call_id = types::CallId::from(&call_id);
         let input: ViewImageToolInput = serde_json::from_value(arguments)?;
-        let resolved = resolve_tool_path_against_workspace_root(
-            &input.path,
-            ctx.effective_root(),
-            ctx.container_workdir.as_deref(),
-        )?;
-        ctx.assert_path_read_allowed(&resolved)?;
-        let bytes = fs::read(&resolved).await?;
-        let mime = sniff_image_mime(&bytes, &resolved)
-            .ok_or_else(|| ToolError::invalid("view_image: file is not a supported image"))?;
+        let image = load_tool_image(&input.path, ctx).await?;
         if let Some(observer) = &self.activity_observer {
-            observer.did_open(resolved.clone());
+            observer.did_open(image.resolved_path.clone());
         }
 
-        let byte_length = bytes.len();
         Ok(ToolResult {
             id: call_id,
             call_id: external_call_id,
             tool_name: "view_image".into(),
             parts: vec![
-                MessagePart::text(format!("Viewed image file [{mime}]")),
-                MessagePart::Image {
-                    mime_type: mime.to_string(),
-                    data_base64: base64::engine::general_purpose::STANDARD.encode(bytes),
-                },
+                MessagePart::text(format!("Viewed image file [{}]", image.mime_type)),
+                image.message_part(),
             ],
             attachments: vec![ToolAttachment {
                 kind: "image".to_string(),
-                name: resolved
+                name: image
+                    .resolved_path
                     .file_name()
                     .and_then(|value| value.to_str())
                     .map(str::to_string),
-                mime_type: Some(mime.to_string()),
-                uri: Some(resolved.display().to_string()),
+                mime_type: Some(image.mime_type.clone()),
+                uri: Some(image.resolved_path.display().to_string()),
                 metadata: Some(serde_json::json!({
-                    "requested_path": input.path,
-                    "resolved_path": resolved,
-                    "byte_length": byte_length,
+                    "requested_path": image.requested_path,
+                    "resolved_path": image.resolved_path,
+                    "byte_length": image.byte_length,
                 })),
             }],
             structured_content: Some(
                 serde_json::to_value(ViewImageToolOutput {
                     requested_path: input.path.clone(),
-                    resolved_path: resolved.display().to_string(),
-                    mime_type: mime.to_string(),
-                    byte_length,
+                    resolved_path: image.resolved_path.display().to_string(),
+                    mime_type: image.mime_type.clone(),
+                    byte_length: image.byte_length,
                 })
                 .expect("view_image output"),
             ),
             continuation: None,
-            metadata: Some(serde_json::json!({ "path": resolved })),
+            metadata: Some(serde_json::json!({ "path": image.resolved_path })),
             is_error: false,
         })
     }
 }
 
-fn sniff_image_mime(bytes: &[u8], path: &std::path::Path) -> Option<&'static str> {
+pub(crate) fn sniff_image_mime(bytes: &[u8], path: &std::path::Path) -> Option<&'static str> {
     if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
         return Some("image/png");
     }

@@ -433,6 +433,7 @@ mod tests {
                         child_agent_session_id.clone(),
                         AgentEnvelopeKind::Input {
                             message: Message::user("checked ownership"),
+                            delivery: types::AgentInputDelivery::Queue,
                         },
                     ),
                 },

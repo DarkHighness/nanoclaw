@@ -253,7 +253,7 @@ fn project_loaded_task(
                 if envelope_belongs_to_task(&summary, envelope) =>
             {
                 match &envelope.kind {
-                    AgentEnvelopeKind::Input { message } => {
+                    AgentEnvelopeKind::Input { message, .. } => {
                         messages.push(LoadedTaskMessage {
                             message: message.clone(),
                         });
@@ -478,6 +478,7 @@ mod tests {
                         child_agent_session_id.clone(),
                         AgentEnvelopeKind::Input {
                             message: Message::user("running"),
+                            delivery: agent::types::AgentInputDelivery::Queue,
                         },
                     ),
                 },

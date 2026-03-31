@@ -867,13 +867,21 @@ fn format_agent_envelope_kind(kind: &AgentEnvelopeKind) -> TranscriptEntry {
             AgentStatus::Queued => info_summary_entry("Agent is queued", []),
             AgentStatus::Running => info_summary_entry("Agent is running", []),
         },
-        AgentEnvelopeKind::Input { message } => info_summary_entry(
-            "Agent received input",
-            [format!(
-                "content {}",
-                preview_text(&message_to_text(message), 72)
-            )],
-        ),
+        AgentEnvelopeKind::Input { message, delivery } => {
+            let headline = match delivery {
+                agent::types::AgentInputDelivery::Queue => "Agent queued follow-up input",
+                agent::types::AgentInputDelivery::Interrupt => {
+                    "Agent interrupt restarted with new input"
+                }
+            };
+            info_summary_entry(
+                headline,
+                [format!(
+                    "content {}",
+                    preview_text(&message_to_text(message), 72)
+                )],
+            )
+        }
         AgentEnvelopeKind::Artifact { artifact } => info_summary_entry(
             format!("Emitted {} artifact", artifact.kind),
             [format!("uri {}", preview_text(&artifact.uri, 72))],
@@ -1338,6 +1346,33 @@ mod tests {
         assert_eq!(
             format_session_event_line(&event).serialized(),
             "› Explain the failing test"
+        );
+    }
+
+    #[test]
+    fn interrupt_input_event_mentions_restart_semantics() {
+        let event = SessionEventEnvelope::new(
+            SessionId::from("session-1"),
+            AgentSessionId::from("agent-session-1"),
+            None,
+            None,
+            SessionEventKind::AgentEnvelope {
+                envelope: agent::types::AgentEnvelope::new(
+                    "agent-1".into(),
+                    None,
+                    "session-1".into(),
+                    "agent-session-1".into(),
+                    agent::types::AgentEnvelopeKind::Input {
+                        message: Message::user("focus the latest diff"),
+                        delivery: agent::types::AgentInputDelivery::Interrupt,
+                    },
+                ),
+            },
+        );
+
+        assert_eq!(
+            format_session_event_line(&event).serialized(),
+            "• Agent interrupt restarted with new input\n  └ content user> focus the latest diff"
         );
     }
 

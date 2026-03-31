@@ -11,6 +11,8 @@ It intentionally keeps the host layer thin:
 - agentic tools: `update_plan`, `request_user_input`, `request_permissions`, `task`, `spawn_agent`, `send_input`, `wait_agent`, `resume_agent`, `list_agents`, `close_agent`
   - `spawn_agent` accepts Codex-style launch overrides such as `fork_context`, `model`, and `reasoning_effort`
   - `spawn_agent` and `send_input` now forward `message + items` as structured user messages instead of flattening them into steering prose
+  - `send_input interrupt=true` now performs a real child restart instead of queuing behind the active turn, and the TUI/history surfaces distinguish queued follow-ups from interrupt-driven restarts
+  - `local_image` input items now become first-class image parts, so multimodal child prompts reuse the provider-native image path instead of a text-only resource fallback
 - append-only runtime loop from `runtime`
 - runtime steering and queued command support
 - loop detection as the primary guard against tool-call churn, without a fixed global iteration cap

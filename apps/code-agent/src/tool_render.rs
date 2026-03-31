@@ -177,9 +177,9 @@ pub(crate) fn tool_arguments_preview_lines(tool_name: &str, arguments: &Value) -
             .and_then(Value::as_bool)
             .unwrap_or(false);
         let mut lines = vec![if interrupt {
-            format!("interrupt {target}")
+            format!("interrupt+restart {target}")
         } else {
-            format!("message {target}")
+            format!("queue input {target}")
         }];
         if let Some(message) = arguments
             .get("message")
@@ -188,15 +188,8 @@ pub(crate) fn tool_arguments_preview_lines(tool_name: &str, arguments: &Value) -
             .filter(|value| !value.is_empty())
         {
             lines.extend(collapse_preview_text(message, 3, 96, PreviewCollapse::Head));
-            return lines;
         }
-        let item_count = arguments
-            .get("items")
-            .and_then(Value::as_array)
-            .map_or(0, Vec::len);
-        if item_count > 0 {
-            lines.push(format!("{item_count} input item(s)"));
-        }
+        lines.extend(preview_input_item_argument_lines(arguments.get("items"), 2));
         return lines;
     }
 
@@ -239,15 +232,8 @@ pub(crate) fn tool_arguments_preview_lines(tool_name: &str, arguments: &Value) -
             .filter(|value| !value.is_empty())
         {
             lines.extend(collapse_preview_text(message, 3, 96, PreviewCollapse::Head));
-            return lines;
         }
-        let item_count = arguments
-            .get("items")
-            .and_then(Value::as_array)
-            .map_or(0, Vec::len);
-        if item_count > 0 {
-            lines.push(format!("{item_count} input item(s)"));
-        }
+        lines.extend(preview_input_item_argument_lines(arguments.get("items"), 2));
         return lines;
     }
 
@@ -282,6 +268,71 @@ pub(crate) fn tool_arguments_preview_lines(tool_name: &str, arguments: &Value) -
     }
 
     collapse_preview_text(&arguments.to_string(), 4, 96, PreviewCollapse::Head)
+}
+
+fn preview_input_item_argument_lines(items: Option<&Value>, max_items: usize) -> Vec<String> {
+    let Some(items) = items.and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    if items.is_empty() {
+        return Vec::new();
+    }
+
+    let mut lines = items
+        .iter()
+        .take(max_items)
+        .filter_map(render_input_item_argument_summary)
+        .collect::<Vec<_>>();
+    let remaining = items.len().saturating_sub(max_items);
+    if remaining > 0 {
+        lines.push(format!("+{remaining} more item(s)"));
+    }
+    lines
+}
+
+fn render_input_item_argument_summary(item: &Value) -> Option<String> {
+    let item_type = item
+        .get("type")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("item");
+    if item_type == "text" {
+        return item
+            .get("text")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| truncate_inline(value, 72));
+    }
+
+    let mut fields = Vec::new();
+    for key in ["name", "path", "image_url", "text"] {
+        if let Some(value) = item.get(key).and_then(Value::as_str).map(str::trim)
+            && !value.is_empty()
+        {
+            let value = if key == "text" {
+                value.replace('\n', " ")
+            } else {
+                value.to_string()
+            };
+            fields.push(format!("{key}={}", truncate_inline(&value, 64)));
+        }
+    }
+    if fields.is_empty() {
+        None
+    } else {
+        Some(format!("[{item_type}] {}", fields.join(" ")))
+    }
+}
+
+fn truncate_inline(value: &str, max_chars: usize) -> String {
+    let mut chars = value.chars();
+    let mut truncated = chars.by_ref().take(max_chars).collect::<String>();
+    if chars.next().is_some() {
+        truncated.push_str("...");
+    }
+    truncated
 }
 
 pub(crate) fn tool_output_detail_lines_from_preview(
@@ -630,8 +681,27 @@ mod tests {
             &json!({"target": "agent_123", "message": "focus the failing test"}),
         );
 
-        assert_eq!(rendered[0], "message agent_123");
+        assert_eq!(rendered[0], "queue input agent_123");
         assert!(rendered[1].contains("focus the failing test"));
+    }
+
+    #[test]
+    fn send_input_interrupt_arguments_surface_restart_and_item_context() {
+        let rendered = tool_arguments_preview_lines(
+            "send_input",
+            &json!({
+                "target": "agent_123",
+                "interrupt": true,
+                "items": [
+                    {"type": "local_image", "path": "/tmp/failure.png", "text": "latest failure screenshot"},
+                    {"type": "text", "text": "focus the diff hunk"}
+                ]
+            }),
+        );
+
+        assert_eq!(rendered[0], "interrupt+restart agent_123");
+        assert!(rendered[1].contains("[local_image] path=/tmp/failure.png"));
+        assert!(rendered[2].contains("focus the diff hunk"));
     }
 
     #[test]
@@ -652,6 +722,24 @@ mod tests {
             "spawn reviewer forked model=gpt-5.4 effort=high"
         );
         assert!(rendered[1].contains("Inspect the patch."));
+    }
+
+    #[test]
+    fn spawn_agent_arguments_surface_item_summaries_when_present() {
+        let rendered = tool_arguments_preview_lines(
+            "spawn_agent",
+            &json!({
+                "agent_type": "reviewer",
+                "items": [
+                    {"type": "local_image", "path": "artifacts/failure.png"},
+                    {"type": "mention", "path": "app://workspace/snapshot", "name": "workspace"}
+                ]
+            }),
+        );
+
+        assert_eq!(rendered[0], "spawn reviewer");
+        assert!(rendered[1].contains("[local_image] path=artifacts/failure.png"));
+        assert!(rendered[2].contains("[mention] name=workspace path=app://workspace/snapshot"));
     }
 
     #[test]
