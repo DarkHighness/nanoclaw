@@ -27,14 +27,15 @@ use crate::frontend::tui::commands::{
     SlashCommandHint, SlashCommandSpec,
 };
 use crate::frontend::tui::state::{
-    ComposerDraftAttachmentKind, ComposerDraftAttachmentState, ComposerDraftState,
-    HistoryRollbackCandidate, InspectorEntry, MainPaneMode, PlanEntry, StatusLinePickerState,
-    ThemePickerState, TranscriptEntry, TranscriptShellDetail, TranscriptToolStatus, TuiState,
+    ComposerContextHint, ComposerDraftAttachmentKind, ComposerDraftAttachmentState,
+    ComposerDraftState, HistoryRollbackCandidate, InspectorEntry, MainPaneMode, PlanEntry,
+    StatusLinePickerState, ThemePickerState, TranscriptEntry, TranscriptShellDetail,
+    TranscriptToolStatus, TuiState,
 };
 use crate::theme::ThemeSummary;
 use crate::tool_render::ToolDetail;
 use agent::tools::{UserInputAnswer, UserInputOption, UserInputQuestion};
-use agent::types::{MessageId, MessagePart};
+use agent::types::{AgentStatus, MessageId, MessagePart};
 use ratatui::layout::Rect;
 use std::collections::BTreeMap;
 
@@ -505,6 +506,44 @@ fn composer_line_surfaces_pending_picker_shortcuts() {
     assert!(text.contains("enter edit"));
     assert!(text.contains("del withdraw"));
     assert!(text.contains("esc close"));
+}
+
+#[test]
+fn composer_line_surfaces_live_task_hint_while_turn_running() {
+    let mut state = TuiState::default();
+    state.turn_running = true;
+    state.composer_context_hint = Some(ComposerContextHint::LiveTaskFinished {
+        task_id: "task_123456".to_string(),
+        status: AgentStatus::Completed,
+    });
+
+    let line = build_composer_line(&state);
+    let text = line_text_for(&line);
+
+    assert!(text.contains("task task_"));
+    assert!(text.contains("completed"));
+    assert!(text.contains("enter steer"));
+    assert!(text.contains("tab queue"));
+    assert!(text.contains("/task inspect"));
+}
+
+#[test]
+fn composer_line_surfaces_live_task_hint_while_idle() {
+    let mut state = TuiState::default();
+    state.composer_context_hint = Some(ComposerContextHint::LiveTaskFinished {
+        task_id: "task_123456".to_string(),
+        status: AgentStatus::Failed,
+    });
+
+    let line = build_composer_line(&state);
+    let text = line_text_for(&line);
+
+    assert!(text.contains("task task_"));
+    assert!(text.contains("failed"));
+    assert!(text.contains("type follow-up"));
+    assert!(text.contains("/task inspect"));
+    assert!(!text.contains("enter steer"));
+    assert!(!text.contains("tab queue"));
 }
 
 #[test]

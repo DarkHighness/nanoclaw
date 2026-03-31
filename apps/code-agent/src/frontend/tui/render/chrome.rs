@@ -1,6 +1,6 @@
 use super::super::UserInputView;
 use super::super::approval::ApprovalPrompt;
-use super::super::state::{MainPaneMode, PlanEntry, TuiState, preview_text};
+use super::super::state::{ComposerContextHint, MainPaneMode, PlanEntry, TuiState, preview_text};
 use super::shared::{
     composer_cursor_metrics, pending_control_focus_label, pending_control_kind_label,
 };
@@ -8,6 +8,7 @@ use super::shell::bottom_band_inner_area;
 use super::theme::palette;
 use super::transcript_markdown::code_span;
 use crate::backend::PermissionRequestPrompt;
+use crate::backend::preview_id;
 use crate::preview::{PreviewCollapse, collapse_preview_lines};
 use agent::tools::RequestPermissionProfile;
 use ratatui::layout::{Position, Rect};
@@ -450,6 +451,8 @@ pub(super) fn build_composer_line(state: &TuiState) -> Line<'static> {
                 "esc close",
                 Style::default().fg(palette().muted),
             ));
+        } else if let Some(hint) = state.composer_context_hint.as_ref() {
+            spans.extend(composer_context_hint_spans(state, hint));
         } else {
             spans.push(Span::styled(
                 "Type a prompt or /help",
@@ -1001,6 +1004,46 @@ fn multiline_hint_line(
             Span::styled("esc cancel", Style::default().fg(palette().muted)),
         ])
     })
+}
+
+fn composer_context_hint_spans(state: &TuiState, hint: &ComposerContextHint) -> Vec<Span<'static>> {
+    match hint {
+        ComposerContextHint::LiveTaskFinished { task_id, status } => {
+            let status_label = status.to_string();
+            let status_style = match status {
+                agent::types::AgentStatus::Completed => Style::default().fg(palette().assistant),
+                agent::types::AgentStatus::Failed => Style::default().fg(palette().error),
+                agent::types::AgentStatus::Cancelled => Style::default().fg(palette().warn),
+                _ => Style::default().fg(palette().header),
+            };
+            let mut spans = vec![
+                Span::styled("task ", Style::default().fg(palette().muted)),
+                Span::styled(preview_id(task_id), Style::default().fg(palette().header)),
+                Span::styled(" ", Style::default().fg(palette().subtle)),
+                Span::styled(status_label, status_style),
+                Span::styled(" · ", Style::default().fg(palette().subtle)),
+            ];
+            if state.turn_running {
+                spans.push(Span::styled("enter", Style::default().fg(palette().accent)));
+                spans.push(Span::styled(" steer", Style::default().fg(palette().muted)));
+                spans.push(Span::styled(" · ", Style::default().fg(palette().subtle)));
+                spans.push(Span::styled("tab", Style::default().fg(palette().header)));
+                spans.push(Span::styled(" queue", Style::default().fg(palette().muted)));
+            } else {
+                spans.push(Span::styled(
+                    "type follow-up",
+                    Style::default().fg(palette().muted),
+                ));
+            }
+            spans.push(Span::styled(" · ", Style::default().fg(palette().subtle)));
+            spans.push(Span::styled("/task", Style::default().fg(palette().accent)));
+            spans.push(Span::styled(
+                " inspect",
+                Style::default().fg(palette().muted),
+            ));
+            spans
+        }
+    }
 }
 
 fn lsp_side_rail_available(state: &TuiState) -> bool {

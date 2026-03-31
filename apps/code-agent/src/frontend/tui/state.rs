@@ -7,7 +7,9 @@ use crate::theme::ThemeSummary;
 use crate::tool_render::{
     ToolDetail, ToolDetailBlockKind, preview_tool_details, serialize_tool_details,
 };
-use agent::types::{Message, MessageId, MessagePart, MessageRole, TokenLedgerSnapshot};
+use agent::types::{
+    AgentStatus, Message, MessageId, MessagePart, MessageRole, TokenLedgerSnapshot,
+};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, RwLock};
@@ -78,6 +80,14 @@ pub(crate) struct ThinkingEffortPickerState {
 pub(crate) struct ThemePickerState {
     pub(crate) selected: usize,
     pub(crate) original_theme: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum ComposerContextHint {
+    LiveTaskFinished {
+        task_id: String,
+        status: AgentStatus,
+    },
 }
 
 #[derive(Clone, Debug, Default)]
@@ -880,6 +890,13 @@ impl TranscriptEntry {
         Self::SuccessSummary(TranscriptShellEntry::new(headline, detail_lines))
     }
 
+    pub(crate) fn warning_summary_details(
+        headline: impl Into<String>,
+        detail_lines: Vec<TranscriptShellDetail>,
+    ) -> Self {
+        Self::WarningSummary(TranscriptShellEntry::new(headline, detail_lines))
+    }
+
     pub(crate) fn error_summary_details(
         headline: impl Into<String>,
         detail_lines: Vec<TranscriptShellDetail>,
@@ -1080,6 +1097,7 @@ pub(crate) struct TuiState {
     pub(crate) local_input_history: Vec<ComposerDraftState>,
     pub(crate) input_history_navigation: Option<ComposerHistoryNavigationState>,
     pub(crate) command_completion_index: usize,
+    pub(crate) composer_context_hint: Option<ComposerContextHint>,
     pub(crate) transcript: Vec<TranscriptEntry>,
     pub(crate) transcript_scroll: u16,
     pub(crate) follow_transcript: bool,
@@ -1588,6 +1606,21 @@ impl TuiState {
 
     pub(crate) fn clear_input(&mut self) {
         self.replace_input_draft(ComposerDraftState::default());
+    }
+
+    pub(crate) fn set_live_task_finished_hint(
+        &mut self,
+        task_id: impl Into<String>,
+        status: AgentStatus,
+    ) {
+        self.composer_context_hint = Some(ComposerContextHint::LiveTaskFinished {
+            task_id: task_id.into(),
+            status,
+        });
+    }
+
+    pub(crate) fn clear_composer_context_hint(&mut self) {
+        self.composer_context_hint = None;
     }
 
     pub(crate) fn restore_input_draft(&mut self, draft: ComposerDraftState) {

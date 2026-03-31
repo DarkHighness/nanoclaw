@@ -38,7 +38,7 @@ use render::{main_pane_viewport_height, render};
 pub(crate) use state::SharedUiState;
 use state::{
     ComposerDraftAttachmentKind, ComposerDraftAttachmentState, ComposerSubmission, InspectorEntry,
-    TuiState,
+    TranscriptEntry, TranscriptShellDetail, TuiState,
 };
 
 use agent::RuntimeCommand;
@@ -47,7 +47,7 @@ use agent::tools::{
     ToolExecutionContext, UserInputAnswer, UserInputResponse, load_tool_image,
     resolve_tool_path_against_workspace_root,
 };
-use agent::types::{Message, MessagePart, MessageRole, message_operator_text};
+use agent::types::{AgentStatus, Message, MessagePart, MessageRole, message_operator_text};
 use anyhow::{Context, Result, anyhow};
 use base64::Engine;
 use crossterm::event::{
@@ -869,6 +869,7 @@ impl CodeAgentTui {
         let workspace_root = self.session.workspace_root().to_path_buf();
         let mut persisted = None;
         self.ui_state.mutate(|state| {
+            state.clear_composer_context_hint();
             let _ = state.record_local_input_draft(submission.local_history_draft.clone());
             if state.record_input_history(&submission.persisted_history_text) {
                 persisted = Some(state.input_history().to_vec());
@@ -2005,6 +2006,15 @@ impl CodeAgentTui {
                 Ok(Ok(OperatorTaskOutcome::WaitLiveTask(outcome))) => {
                     let inspector = format_live_task_wait_outcome(&outcome);
                     self.ui_state.mutate(move |state| {
+                        // Background child completion is easy to miss if it only
+                        // flashes through the status line, so persist it into
+                        // the transcript and promote the next-step cue into the
+                        // composer when the operator is idle.
+                        state.push_transcript(live_task_wait_notice_entry(&outcome));
+                        state.set_live_task_finished_hint(
+                            outcome.task_id.clone(),
+                            outcome.status.clone(),
+                        );
                         state.show_main_view("Live Task Wait", inspector);
                         state.status = format!(
                             "Live task {} finished with status {}",
@@ -2907,6 +2917,7 @@ impl CodeAgentTui {
     fn start_wait_task(&mut self, task_or_agent_ref: String) {
         let wait_ref = task_or_agent_ref.clone();
         self.ui_state.mutate(|state| {
+            state.clear_composer_context_hint();
             state.status = format!("Waiting for live task {}", preview_id(&wait_ref));
             state.push_activity(format!("waiting for live task {}", preview_id(&wait_ref)));
         });
@@ -3911,6 +3922,44 @@ fn build_mcp_resource_inspector(loaded: &LoadedMcpResource) -> Vec<InspectorEntr
         InspectorEntry::field("uri", loaded.uri.clone()),
         InspectorEntry::field("mime", loaded.mime_summary.clone()),
     ]
+}
+
+fn live_task_wait_notice_entry(outcome: &LiveTaskWaitOutcome) -> TranscriptEntry {
+    let headline = format!("Background task {} finished", outcome.task_id);
+    let details = live_task_wait_notice_details(outcome);
+    match outcome.status {
+        AgentStatus::Completed => TranscriptEntry::success_summary_details(headline, details),
+        AgentStatus::Failed => TranscriptEntry::error_summary_details(headline, details),
+        AgentStatus::Cancelled => TranscriptEntry::warning_summary_details(headline, details),
+        _ => TranscriptEntry::shell_summary_details(headline, details),
+    }
+}
+
+fn live_task_wait_notice_details(outcome: &LiveTaskWaitOutcome) -> Vec<TranscriptShellDetail> {
+    let mut details = vec![
+        TranscriptShellDetail::Raw {
+            text: format!("status {}", outcome.status),
+            continuation: false,
+        },
+        TranscriptShellDetail::Raw {
+            text: format!("summary {}", state::preview_text(&outcome.summary, 96)),
+            continuation: false,
+        },
+        TranscriptShellDetail::Raw {
+            text: "next enter steer / tab queue / /task inspect".to_string(),
+            continuation: false,
+        },
+    ];
+    if !outcome.claimed_files.is_empty() {
+        details.push(TranscriptShellDetail::Raw {
+            text: format!(
+                "claimed files {}",
+                state::preview_text(&outcome.claimed_files.join(", "), 96)
+            ),
+            continuation: false,
+        });
+    }
+    details
 }
 
 #[cfg(test)]

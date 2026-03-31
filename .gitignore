@@ -5,3 +5,4 @@ target
 .env.local
 **/.env
 **/.env.local
+**/.nanoclaw
