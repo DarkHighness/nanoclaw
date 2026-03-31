@@ -643,11 +643,11 @@ mod tests {
     fn projects_agent_session_visible_transcript_for_compacted_history() {
         let session_id = SessionId::from("session-root");
         let agent_session_id = AgentSessionId::from("agent-root");
-        let older_prompt = Message::user("older prompt").with_message_id("msg-1".into());
-        let older_answer = Message::assistant("older answer").with_message_id("msg-2".into());
-        let kept_prompt = Message::user("kept prompt").with_message_id("msg-3".into());
-        let summary = Message::system("compaction summary").with_message_id("msg-4".into());
-        let follow_up = Message::assistant("after compaction").with_message_id("msg-5".into());
+        let older_prompt = Message::user("older prompt").with_message_id("msg-1");
+        let older_answer = Message::assistant("older answer").with_message_id("msg-2");
+        let kept_prompt = Message::user("kept prompt").with_message_id("msg-3");
+        let summary = Message::system("compaction summary").with_message_id("msg-4");
+        let follow_up = Message::assistant("after compaction").with_message_id("msg-5");
         let events = vec![
             SessionEventEnvelope::new(
                 session_id.clone(),
@@ -741,15 +741,13 @@ mod tests {
         let session_id = SessionId::from("session-root");
         let first_agent_session_id = AgentSessionId::from("agent-root-1");
         let second_agent_session_id = AgentSessionId::from("agent-root-2");
-        let older_prompt = Message::user("older prompt").with_message_id("msg-1".into());
-        let older_answer = Message::assistant("older answer").with_message_id("msg-2".into());
-        let kept_prompt = Message::user("kept prompt").with_message_id("msg-3".into());
-        let summary = Message::system("compaction summary").with_message_id("msg-4".into());
-        let first_follow_up =
-            Message::assistant("after compaction").with_message_id("msg-5".into());
-        let second_prompt = Message::user("fresh session prompt").with_message_id("msg-6".into());
-        let second_answer =
-            Message::assistant("fresh session answer").with_message_id("msg-7".into());
+        let older_prompt = Message::user("older prompt").with_message_id("msg-1");
+        let older_answer = Message::assistant("older answer").with_message_id("msg-2");
+        let kept_prompt = Message::user("kept prompt").with_message_id("msg-3");
+        let summary = Message::system("compaction summary").with_message_id("msg-4");
+        let first_follow_up = Message::assistant("after compaction").with_message_id("msg-5");
+        let second_prompt = Message::user("fresh session prompt").with_message_id("msg-6");
+        let second_answer = Message::assistant("fresh session answer").with_message_id("msg-7");
         let events = vec![
             SessionEventEnvelope::new(
                 session_id.clone(),

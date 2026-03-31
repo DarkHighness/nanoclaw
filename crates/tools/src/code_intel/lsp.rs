@@ -2,8 +2,8 @@ mod protocol;
 mod support;
 
 use crate::code_intel::{
-    CodeIntelBackend, CodeNavigationTarget, CodeReference, CodeSymbol,
-    WorkspaceTextCodeIntelBackend,
+    CodeCallHierarchyDirection, CodeCallHierarchyEntry, CodeHover, CodeIntelBackend,
+    CodeNavigationTarget, CodeReference, CodeSymbol, WorkspaceTextCodeIntelBackend,
 };
 use crate::file_activity::FileActivityObserver;
 use crate::process::{
@@ -16,9 +16,9 @@ use notify::{
 };
 use protocol::{
     DiagnosticEntry, configuration_response, file_uri_from_path, file_uri_to_path,
-    identifier_at_position, parse_diagnostic_entry, parse_document_symbols,
-    parse_locations_as_references, parse_locations_as_symbols, parse_workspace_symbols,
-    read_lsp_message, zero_based_position,
+    identifier_at_position, parse_call_hierarchy_calls, parse_diagnostic_entry,
+    parse_document_symbols, parse_hover, parse_locations_as_references, parse_locations_as_symbols,
+    parse_workspace_symbols, read_lsp_message, zero_based_position,
 };
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
@@ -174,6 +174,50 @@ impl CodeIntelBackend for ManagedCodeIntelBackend {
         }
         self.fallback
             .references(target, include_declaration, limit, ctx)
+            .await
+    }
+
+    async fn hover(
+        &self,
+        target: &CodeNavigationTarget,
+        ctx: &ToolExecutionContext,
+    ) -> Result<Option<CodeHover>> {
+        let semantic = self.runtime.hover(target).await?;
+        if semantic.is_some() {
+            return Ok(semantic);
+        }
+        self.fallback.hover(target, ctx).await
+    }
+
+    async fn implementations(
+        &self,
+        target: &CodeNavigationTarget,
+        limit: usize,
+        ctx: &ToolExecutionContext,
+    ) -> Result<Vec<CodeSymbol>> {
+        let semantic = self.runtime.implementations(target, limit).await?;
+        if !semantic.is_empty() {
+            return Ok(semantic);
+        }
+        self.fallback.implementations(target, limit, ctx).await
+    }
+
+    async fn call_hierarchy(
+        &self,
+        target: &CodeNavigationTarget,
+        direction: CodeCallHierarchyDirection,
+        limit: usize,
+        ctx: &ToolExecutionContext,
+    ) -> Result<Vec<CodeCallHierarchyEntry>> {
+        let semantic = self
+            .runtime
+            .call_hierarchy(target, direction, limit)
+            .await?;
+        if !semantic.is_empty() {
+            return Ok(semantic);
+        }
+        self.fallback
+            .call_hierarchy(target, direction, limit, ctx)
             .await
     }
 }
@@ -483,6 +527,146 @@ impl ManagedLspRuntime {
             parse_locations_as_references(&response, &self.workspace_root, &symbol_name).await;
         references.truncate(limit);
         Ok(references)
+    }
+
+    async fn hover(self: &Arc<Self>, target: &CodeNavigationTarget) -> Result<Option<CodeHover>> {
+        let Some(position) = self.resolve_position_target(target).await? else {
+            return Ok(None);
+        };
+        let Some(session) = self.ensure_session_for_path(&position.path).await? else {
+            return Ok(None);
+        };
+        self.ensure_document_synced(&position.path).await?;
+        let response = session
+            .request(
+                "textDocument/hover",
+                json!({
+                    "textDocument": { "uri": file_uri_from_path(&position.path) },
+                    "position": zero_based_position(position.line, position.column),
+                }),
+            )
+            .await?;
+        Ok(parse_hover(
+            &response,
+            &self.workspace_root,
+            position.path.as_path(),
+        ))
+    }
+
+    async fn implementations(
+        self: &Arc<Self>,
+        target: &CodeNavigationTarget,
+        limit: usize,
+    ) -> Result<Vec<CodeSymbol>> {
+        let Some(position) = self.resolve_position_target(target).await? else {
+            return Ok(Vec::new());
+        };
+        let Some(session) = self.ensure_session_for_path(&position.path).await? else {
+            return Ok(Vec::new());
+        };
+        self.ensure_document_synced(&position.path).await?;
+        let symbol_name = symbol_name_for_target(target).unwrap_or_else(|| "symbol".into());
+        let response = session
+            .request(
+                "textDocument/implementation",
+                json!({
+                    "textDocument": { "uri": file_uri_from_path(&position.path) },
+                    "position": zero_based_position(position.line, position.column),
+                }),
+            )
+            .await?;
+        let mut symbols = parse_locations_as_symbols(
+            &response,
+            &self.workspace_root,
+            &symbol_name,
+            crate::code_intel::CodeSymbolKind::Unknown,
+        );
+        symbols.truncate(limit);
+        Ok(symbols)
+    }
+
+    async fn call_hierarchy(
+        self: &Arc<Self>,
+        target: &CodeNavigationTarget,
+        direction: CodeCallHierarchyDirection,
+        limit: usize,
+    ) -> Result<Vec<CodeCallHierarchyEntry>> {
+        let Some(position) = self.resolve_position_target(target).await? else {
+            return Ok(Vec::new());
+        };
+        let Some(session) = self.ensure_session_for_path(&position.path).await? else {
+            return Ok(Vec::new());
+        };
+        self.ensure_document_synced(&position.path).await?;
+        let prepared = session
+            .request(
+                "textDocument/prepareCallHierarchy",
+                json!({
+                    "textDocument": { "uri": file_uri_from_path(&position.path) },
+                    "position": zero_based_position(position.line, position.column),
+                }),
+            )
+            .await?;
+        let prepared_items = match &prepared {
+            Value::Array(items) => items.clone(),
+            Value::Object(_) => vec![prepared.clone()],
+            _ => Vec::new(),
+        };
+        let method = match direction {
+            CodeCallHierarchyDirection::Incoming => "callHierarchy/incomingCalls",
+            CodeCallHierarchyDirection::Outgoing => "callHierarchy/outgoingCalls",
+        };
+        let mut calls = Vec::new();
+        for item in prepared_items {
+            let response = session.request(method, json!({ "item": item })).await?;
+            calls.extend(parse_call_hierarchy_calls(
+                &response,
+                &self.workspace_root,
+                direction,
+            ));
+            if calls.len() >= limit {
+                break;
+            }
+        }
+        calls.truncate(limit);
+        Ok(calls)
+    }
+
+    async fn resolve_position_target(
+        self: &Arc<Self>,
+        target: &CodeNavigationTarget,
+    ) -> Result<Option<ResolvedPositionTarget>> {
+        match target {
+            CodeNavigationTarget::Position {
+                path,
+                display_path,
+                line,
+                column,
+            } => Ok(Some(ResolvedPositionTarget {
+                path: path.clone(),
+                display_path: display_path.clone(),
+                line: *line,
+                column: *column,
+            })),
+            CodeNavigationTarget::Symbol(symbol) => {
+                let query = symbol.trim();
+                if query.is_empty() {
+                    return Ok(None);
+                }
+                let mut matches = self.workspace_symbols(query, 8).await?;
+                matches
+                    .retain(|entry| entry.name == query || entry.name.eq_ignore_ascii_case(query));
+                let Some(entry) = matches.into_iter().next() else {
+                    return Ok(None);
+                };
+                Ok(Some(ResolvedPositionTarget {
+                    path: self.workspace_root.join(&entry.location.path),
+                    display_path: entry.location.path,
+                    line: entry.location.line,
+                    column: entry.location.column,
+                }))
+            }
+        }
     }
 
     fn ready_sessions(&self) -> Vec<Arc<LspSession>> {
@@ -846,6 +1030,14 @@ enum FileSyncEvent {
 #[derive(Default)]
 struct SessionSlot {
     state: AsyncMutex<Option<Arc<LspSession>>>,
+}
+
+struct ResolvedPositionTarget {
+    path: PathBuf,
+    #[allow(dead_code)]
+    display_path: String,
+    line: usize,
+    column: usize,
 }
 
 struct LspSession {

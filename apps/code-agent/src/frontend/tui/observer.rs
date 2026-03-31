@@ -1,10 +1,13 @@
 use super::state::{
-    PlanEntry, SharedUiState, ToastTone, TranscriptEntry, TranscriptShellDetail,
-    TranscriptToolStatus, preview_text,
+    SharedUiState, ToastTone, TranscriptEntry, TranscriptShellDetail, TranscriptToolStatus,
+    preview_text,
+};
+use super::tool_state::{
+    execution_state_from_tool_output, execution_update_entry_from_tool_output,
+    plan_items_from_tool_output, plan_update_entry_from_tool_output,
 };
 use crate::backend::SessionEvent;
 use crate::tool_render::{ToolDetail, tool_argument_details, tool_output_details_from_preview};
-use serde_json::Value;
 use std::collections::HashMap;
 
 pub(crate) struct SharedRenderObserver {
@@ -216,10 +219,17 @@ impl SharedRenderObserver {
             } => {
                 state.status = format!("Completed {}", call.tool_name);
                 state.active_tool_label = None;
-                if let Some(plan_items) =
-                    plan_items_from_output(&call.tool_name, structured_output_preview.as_deref())
-                {
+                if let Some(plan_items) = plan_items_from_tool_output(
+                    &call.tool_name,
+                    structured_output_preview.as_deref(),
+                ) {
                     state.plan_items = plan_items;
+                }
+                if let Some(execution) = execution_state_from_tool_output(
+                    &call.tool_name,
+                    structured_output_preview.as_deref(),
+                ) {
+                    state.execution = execution;
                 }
                 replace_tool_line(
                     state,
@@ -391,9 +401,14 @@ fn completed_tool_entry(
     structured_output_preview: Option<&str>,
 ) -> TranscriptEntry {
     if let Some(plan_entry) =
-        plan_update_entry_from_output(&call.tool_name, structured_output_preview)
+        plan_update_entry_from_tool_output(&call.tool_name, structured_output_preview)
     {
         return plan_entry;
+    }
+    if let Some(execution_entry) =
+        execution_update_entry_from_tool_output(&call.tool_name, structured_output_preview)
+    {
+        return execution_entry;
     }
 
     let mut detail_lines = tool_argument_detail_lines(call);
@@ -438,52 +453,6 @@ fn cancelled_tool_entry(
 
 fn tool_argument_detail_lines(call: &crate::backend::SessionToolCall) -> Vec<ToolDetail> {
     tool_argument_details(&call.arguments_preview)
-}
-
-fn plan_items_from_output(
-    tool_name: &str,
-    structured_output_preview: Option<&str>,
-) -> Option<Vec<PlanEntry>> {
-    plan_payload_from_output(tool_name, structured_output_preview).map(|(_, items)| items)
-}
-
-fn plan_update_entry_from_output(
-    tool_name: &str,
-    structured_output_preview: Option<&str>,
-) -> Option<TranscriptEntry> {
-    let (explanation, items) = plan_payload_from_output(tool_name, structured_output_preview)?;
-    Some(TranscriptEntry::plan_update(explanation, items))
-}
-
-fn plan_payload_from_output(
-    tool_name: &str,
-    structured_output_preview: Option<&str>,
-) -> Option<(Option<String>, Vec<PlanEntry>)> {
-    if tool_name != "update_plan" {
-        return None;
-    }
-    let value = serde_json::from_str::<Value>(structured_output_preview?).ok()?;
-    let items = value.get("items")?.as_array()?;
-    let explanation = value
-        .get("explanation")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string);
-    Some((
-        explanation,
-        items
-            .iter()
-            .filter_map(|item| {
-                let step = item.get("step")?.as_str()?.to_string();
-                Some(PlanEntry {
-                    id: step.clone(),
-                    content: step,
-                    status: item.get("status")?.as_str()?.to_string(),
-                })
-            })
-            .collect(),
-    ))
 }
 
 fn replace_tool_line(
@@ -741,6 +710,58 @@ mod tests {
         assert_eq!(snapshot.plan_items.len(), 2);
         assert_eq!(snapshot.plan_items[1].content, "Refine TUI");
         assert_eq!(snapshot.plan_items[1].status, "in_progress");
+    }
+
+    #[test]
+    fn update_execution_results_update_side_rail_snapshot() {
+        let ui_state = SharedUiState::new();
+        let call = SessionToolCall {
+            tool_name: "update_execution".to_string(),
+            call_id: "call_exec".to_string(),
+            origin: "local".to_string(),
+            arguments_preview: vec!["set execution snapshot".to_string()],
+        };
+        let mut observer = SharedRenderObserver::new(ui_state.clone());
+
+        observer.apply_event(SessionEvent::ToolLifecycleCompleted {
+            call,
+            output_preview: "updated execution".to_string(),
+            structured_output_preview: Some(
+                json!({
+                    "kind": "success",
+                    "action": "set",
+                    "scope": {"label": "root session"},
+                    "state": {
+                        "status": "verifying",
+                        "summary": "Run focused regression checks",
+                        "next_action": "Inspect failures",
+                        "verification": "cargo test -p code-agent"
+                    }
+                })
+                .to_string(),
+            ),
+        });
+
+        let snapshot = ui_state.snapshot();
+        assert_eq!(snapshot.transcript.len(), 1);
+        assert_eq!(
+            transcript_text(&snapshot.transcript[0]),
+            "• Updated Execution\n  └ [~] Run focused regression checks\n  └ scope root session\n  └ next Inspect failures\n  └ verify cargo test -p code-agent"
+        );
+        assert_eq!(
+            snapshot
+                .execution
+                .as_ref()
+                .map(|entry| entry.status.as_str()),
+            Some("verifying")
+        );
+        assert_eq!(
+            snapshot
+                .execution
+                .as_ref()
+                .map(|entry| entry.scope_label.as_str()),
+            Some("root session")
+        );
     }
 
     #[test]

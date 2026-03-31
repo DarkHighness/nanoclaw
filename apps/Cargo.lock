@@ -6741,6 +6741,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "skills",
  "thiserror",
  "time",
  "tokio",

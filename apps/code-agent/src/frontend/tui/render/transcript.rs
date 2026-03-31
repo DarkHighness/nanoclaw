@@ -4,8 +4,9 @@ use super::transcript_shell::{
     animation_frame_ms, live_progress_lines, pending_control_embedded_lines,
     pending_control_picker_bridge_entry, pending_control_picker_embedded_lines,
     pending_control_timeline_entry, prefix_transcript_marker, render_collapsed_shell_summary,
-    render_collapsed_tool_entry, render_plan_entry, render_shell_summary_entry, render_tool_entry,
-    should_collapse_shell_details, should_collapse_tool_details,
+    render_collapsed_tool_entry, render_execution_entry, render_plan_entry,
+    render_shell_summary_entry, render_tool_entry, should_collapse_shell_details,
+    should_collapse_tool_details,
 };
 pub(super) use super::transcript_shell::{
     line_has_visible_content, line_to_plain_text, transcript_body_style,
@@ -157,6 +158,7 @@ pub(super) enum TranscriptEntryKind {
     UserPrompt,
     AssistantMessage,
     PlanUpdate,
+    ExecutionUpdate,
     ShellSummary,
     SuccessSummary,
     ErrorSummary,
@@ -206,6 +208,9 @@ fn render_transcript_body(
     if let Some(plan) = entry.plan_entry() {
         return render_plan_entry(plan, marker, kind);
     }
+    if let Some(execution) = entry.execution_entry() {
+        return render_execution_entry(execution, marker, kind);
+    }
 
     let summary = entry
         .shell_summary()
@@ -220,6 +225,7 @@ fn entry_accent(entry: &TranscriptEntry, kind: TranscriptEntryKind) -> ratatui::
                 super::transcript_shell::summary_color(&tool.headline)
             }
             TranscriptEntryKind::PlanUpdate => palette().muted,
+            TranscriptEntryKind::ExecutionUpdate => palette().accent,
             TranscriptEntryKind::SuccessSummary => palette().assistant,
             TranscriptEntryKind::ErrorSummary => palette().error,
             TranscriptEntryKind::WarningSummary => palette().warn,
@@ -232,6 +238,7 @@ fn entry_accent(entry: &TranscriptEntry, kind: TranscriptEntryKind) -> ratatui::
         TranscriptEntryKind::AssistantMessage => palette().muted,
         TranscriptEntryKind::UserPrompt => palette().user,
         TranscriptEntryKind::PlanUpdate => palette().muted,
+        TranscriptEntryKind::ExecutionUpdate => palette().accent,
         TranscriptEntryKind::ShellSummary => super::transcript_shell::summary_color(entry.body()),
         TranscriptEntryKind::SuccessSummary => palette().assistant,
         TranscriptEntryKind::ErrorSummary => palette().error,
@@ -244,6 +251,7 @@ fn entry_kind_from_cell(entry: &TranscriptEntry) -> TranscriptEntryKind {
         TranscriptEntry::UserPrompt(_) => TranscriptEntryKind::UserPrompt,
         TranscriptEntry::AssistantMessage(_) => TranscriptEntryKind::AssistantMessage,
         TranscriptEntry::Plan(_) => TranscriptEntryKind::PlanUpdate,
+        TranscriptEntry::Execution(_) => TranscriptEntryKind::ExecutionUpdate,
         TranscriptEntry::Tool(tool) => entry_kind_from_tool(tool),
         TranscriptEntry::ShellSummary(_) => TranscriptEntryKind::ShellSummary,
         TranscriptEntry::SuccessSummary(_) => TranscriptEntryKind::SuccessSummary,

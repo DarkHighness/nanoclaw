@@ -28,9 +28,9 @@ use crate::frontend::tui::commands::{
 };
 use crate::frontend::tui::state::{
     ComposerContextHint, ComposerDraftAttachmentKind, ComposerDraftAttachmentState,
-    ComposerDraftState, HistoryRollbackCandidate, InspectorEntry, MainPaneMode, PlanEntry,
-    StatusLinePickerState, ThemePickerState, ToastTone, TranscriptEntry, TranscriptShellDetail,
-    TranscriptToolStatus, TuiState,
+    ComposerDraftState, ExecutionEntry, HistoryRollbackCandidate, InspectorEntry, MainPaneMode,
+    PlanEntry, StatusLinePickerState, ThemePickerState, ToastTone, TranscriptEntry,
+    TranscriptShellDetail, TranscriptToolStatus, TuiState,
 };
 use crate::theme::ThemeSummary;
 use crate::tool_render::ToolDetail;
@@ -1570,6 +1570,43 @@ fn transcript_renders_plan_updates_as_dedicated_cells() {
     );
 }
 
+#[test]
+fn transcript_renders_execution_updates_as_dedicated_cells() {
+    let mut state = TuiState {
+        main_pane: MainPaneMode::Transcript,
+        ..TuiState::default()
+    };
+    state.transcript = vec![TranscriptEntry::execution_update(
+        "Updated Execution",
+        Some(ExecutionEntry {
+            scope_label: "root session".to_string(),
+            status: "blocked".to_string(),
+            summary: "Waiting for the new LSP protocol parser".to_string(),
+            next_action: Some("Patch protocol tests".to_string()),
+            verification: None,
+            blocker: Some("protocol parser still missing hover support".to_string()),
+        }),
+    )];
+
+    let rendered = build_transcript_lines(&state);
+    assert!(
+        rendered
+            .iter()
+            .any(|line| { line_text_for(line).contains("Updated Execution") })
+    );
+    assert!(rendered.iter().any(|line| {
+        line_text_for(line).contains("blocked · Waiting for the new LSP protocol parser")
+    }));
+    assert!(
+        rendered
+            .iter()
+            .any(|line| { line_text_for(line).contains("scope root session") })
+    );
+    assert!(rendered.iter().any(|line| {
+        line_text_for(line).contains("blocker protocol parser still missing hover support")
+    }));
+}
+
 fn text_lines(text: &ratatui::text::Text<'_>) -> Vec<String> {
     text.lines.iter().map(line_text_for).collect()
 }
@@ -1622,6 +1659,40 @@ fn side_rail_surfaces_plan_and_lsp_summary() {
         line.spans
             .iter()
             .any(|span| span.content.as_ref().contains("Refine transcript"))
+    }));
+}
+
+#[test]
+fn side_rail_surfaces_execution_snapshot() {
+    let mut state = TuiState::default();
+    state.main_pane = MainPaneMode::Transcript;
+    state.execution = Some(ExecutionEntry {
+        scope_label: "root session".to_string(),
+        status: "verifying".to_string(),
+        summary: "Run targeted code-intel regression tests".to_string(),
+        next_action: Some("Inspect hover snapshots".to_string()),
+        verification: Some("cargo test -p tools code_intel".to_string()),
+        blocker: None,
+    });
+
+    let lines = build_side_rail_lines(&state);
+
+    assert!(lines.iter().any(|line| {
+        line.spans
+            .iter()
+            .any(|span| span.content.as_ref().contains("Execution"))
+    }));
+    assert!(lines.iter().any(|line| {
+        line.spans
+            .iter()
+            .any(|span| span.content.as_ref().contains("verifying"))
+    }));
+    assert!(lines.iter().any(|line| {
+        line.spans.iter().any(|span| {
+            span.content
+                .as_ref()
+                .contains("Run targeted code-intel regression tests")
+        })
     }));
 }
 

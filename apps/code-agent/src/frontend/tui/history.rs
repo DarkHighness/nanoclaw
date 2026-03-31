@@ -1,6 +1,8 @@
 use super::state::{
-    InspectorEntry, PlanEntry, TranscriptEntry, TranscriptShellDetail, TranscriptToolStatus,
-    preview_text,
+    InspectorEntry, TranscriptEntry, TranscriptShellDetail, TranscriptToolStatus, preview_text,
+};
+use super::tool_state::{
+    execution_update_entry_from_tool_output, plan_update_entry_from_tool_output,
 };
 use crate::backend::{
     LiveTaskControlAction, LiveTaskControlOutcome, LiveTaskMessageAction, LiveTaskMessageOutcome,
@@ -19,33 +21,13 @@ use agent::types::{
 };
 use store::TokenUsageRecord;
 
-fn completed_plan_entry(
+fn completed_tool_entry(
     tool_name: &str,
     structured: Option<&serde_json::Value>,
 ) -> Option<TranscriptEntry> {
-    if tool_name != "update_plan" {
-        return None;
-    }
-    let value = structured?;
-    let items = value.get("items")?.as_array()?;
-    let explanation = value
-        .get("explanation")
-        .and_then(serde_json::Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string);
-    let items = items
-        .iter()
-        .filter_map(|item| {
-            let step = item.get("step")?.as_str()?.to_string();
-            Some(PlanEntry {
-                id: step.clone(),
-                content: step,
-                status: item.get("status")?.as_str()?.to_string(),
-            })
-        })
-        .collect::<Vec<_>>();
-    Some(TranscriptEntry::plan_update(explanation, items))
+    let structured = structured.and_then(|value| serde_json::to_string(value).ok());
+    plan_update_entry_from_tool_output(tool_name, structured.as_deref())
+        .or_else(|| execution_update_entry_from_tool_output(tool_name, structured.as_deref()))
 }
 
 pub(crate) fn format_session_summary_line(summary: &PersistedSessionSummary) -> TranscriptEntry {
@@ -1098,7 +1080,7 @@ fn format_session_event_line(event: &SessionEventEnvelope) -> TranscriptEntry {
         }
         SessionEventKind::ToolCallCompleted { call, output } => {
             if let Some(plan_entry) =
-                completed_plan_entry(call.tool_name.as_str(), output.structured_content.as_ref())
+                completed_tool_entry(call.tool_name.as_str(), output.structured_content.as_ref())
             {
                 return plan_entry;
             }

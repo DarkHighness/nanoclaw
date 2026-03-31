@@ -1,6 +1,7 @@
 use super::super::state::{
-    TranscriptEntry, TranscriptPlanEntry, TranscriptShellBlockKind, TranscriptShellDetail,
-    TranscriptShellEntry, TranscriptToolEntry, TranscriptToolStatus, TuiState, preview_text,
+    TranscriptEntry, TranscriptExecutionEntry, TranscriptPlanEntry, TranscriptShellBlockKind,
+    TranscriptShellDetail, TranscriptShellEntry, TranscriptToolEntry, TranscriptToolStatus,
+    TuiState, preview_text,
 };
 use super::shared::{
     pending_control_focus_label, pending_control_kind_label, pending_control_reason_label,
@@ -302,6 +303,84 @@ pub(super) fn render_plan_entry(
     rendered
 }
 
+pub(super) fn render_execution_entry(
+    entry: &TranscriptExecutionEntry,
+    _marker: &str,
+    kind: TranscriptEntryKind,
+) -> Vec<Line<'static>> {
+    let mut rendered = vec![Line::from(Span::styled(
+        entry.headline.clone(),
+        Style::default()
+            .fg(palette().text)
+            .add_modifier(Modifier::BOLD),
+    ))];
+
+    let Some(state) = &entry.state else {
+        rendered.push(Line::from(vec![
+            transcript_continuation_prefix(kind),
+            Span::styled(
+                "(cleared)".to_string(),
+                Style::default()
+                    .fg(palette().subtle)
+                    .add_modifier(Modifier::ITALIC),
+            ),
+        ]));
+        return rendered;
+    };
+
+    let (status_color, status_label) = match state.status.as_str() {
+        "blocked" => (palette().error, "blocked"),
+        "verifying" => (palette().accent, "verifying"),
+        "completed" => (palette().assistant, "completed"),
+        _ => (palette().header, "active"),
+    };
+    rendered.push(Line::from(vec![
+        transcript_continuation_prefix(kind),
+        Span::styled(
+            format!("{status_label} · "),
+            Style::default()
+                .fg(status_color)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(state.summary.clone(), Style::default().fg(palette().text)),
+    ]));
+    if !state.scope_label.is_empty() {
+        rendered.push(Line::from(vec![
+            transcript_continuation_prefix(kind),
+            Span::styled(
+                format!("scope {0}", state.scope_label),
+                Style::default().fg(palette().subtle),
+            ),
+        ]));
+    }
+    if let Some(next_action) = state.next_action.as_deref() {
+        rendered.push(Line::from(vec![
+            transcript_continuation_prefix(kind),
+            Span::styled("next ", Style::default().fg(palette().muted)),
+            Span::styled(next_action.to_string(), Style::default().fg(palette().text)),
+        ]));
+    }
+    if let Some(verification) = state.verification.as_deref() {
+        rendered.push(Line::from(vec![
+            transcript_continuation_prefix(kind),
+            Span::styled("verify ", Style::default().fg(palette().muted)),
+            Span::styled(
+                verification.to_string(),
+                Style::default().fg(palette().text),
+            ),
+        ]));
+    }
+    if let Some(blocker) = state.blocker.as_deref() {
+        rendered.push(Line::from(vec![
+            transcript_continuation_prefix(kind),
+            Span::styled("blocker ", Style::default().fg(palette().error)),
+            Span::styled(blocker.to_string(), Style::default().fg(palette().text)),
+        ]));
+    }
+
+    rendered
+}
+
 fn render_animated_shell_status_line(
     raw_line: &str,
     marker: &str,
@@ -388,6 +467,7 @@ pub(super) fn transcript_body_style(marker: &str, kind: TranscriptEntryKind, lin
             Style::default().fg(palette().text)
         }
         TranscriptEntryKind::PlanUpdate => Style::default().fg(palette().text),
+        TranscriptEntryKind::ExecutionUpdate => Style::default().fg(palette().text),
         TranscriptEntryKind::ShellSummary => Style::default().fg(summary_color(line)),
         TranscriptEntryKind::SuccessSummary => Style::default().fg(palette().assistant),
         TranscriptEntryKind::ErrorSummary => Style::default().fg(palette().error),
@@ -563,6 +643,7 @@ fn shell_block_line_style(kind: TranscriptEntryKind) -> Style {
     match kind {
         TranscriptEntryKind::SuccessSummary => Style::default().fg(palette().text),
         TranscriptEntryKind::PlanUpdate => Style::default().fg(palette().text),
+        TranscriptEntryKind::ExecutionUpdate => Style::default().fg(palette().text),
         TranscriptEntryKind::ErrorSummary
         | TranscriptEntryKind::WarningSummary
         | TranscriptEntryKind::ShellSummary

@@ -66,6 +66,16 @@ pub(crate) struct PlanEntry {
     pub(crate) status: String,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ExecutionEntry {
+    pub(crate) scope_label: String,
+    pub(crate) status: String,
+    pub(crate) summary: String,
+    pub(crate) next_action: Option<String>,
+    pub(crate) verification: Option<String>,
+    pub(crate) blocker: Option<String>,
+}
+
 #[derive(Clone, Debug, Default)]
 pub(crate) struct StatusLinePickerState {
     pub(crate) selected: usize,
@@ -859,11 +869,65 @@ impl TranscriptPlanEntry {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct TranscriptExecutionEntry {
+    pub(crate) headline: String,
+    pub(crate) state: Option<ExecutionEntry>,
+}
+
+impl TranscriptExecutionEntry {
+    pub(crate) fn new(headline: impl Into<String>, state: Option<ExecutionEntry>) -> Self {
+        Self {
+            headline: headline.into(),
+            state,
+        }
+    }
+
+    pub(crate) fn serialized_lines(&self) -> Vec<String> {
+        let mut lines = vec![self.headline.clone()];
+        let Some(state) = &self.state else {
+            lines.push("  └ (cleared)".to_string());
+            return lines;
+        };
+        lines.push(format!(
+            "  └ [{}] {}",
+            execution_status_marker(&state.status),
+            state.summary
+        ));
+        if !state.scope_label.is_empty() {
+            lines.push(format!("  └ scope {}", state.scope_label));
+        }
+        if let Some(next_action) = state.next_action.as_deref() {
+            lines.push(format!("  └ next {next_action}"));
+        }
+        if let Some(verification) = state.verification.as_deref() {
+            lines.push(format!("  └ verify {verification}"));
+        }
+        if let Some(blocker) = state.blocker.as_deref() {
+            lines.push(format!("  └ blocker {blocker}"));
+        }
+        lines
+    }
+
+    pub(crate) fn serialized_body(&self) -> String {
+        self.serialized_lines().join("\n")
+    }
+}
+
 fn plan_status_marker(status: &str) -> &'static str {
     match status {
         "completed" => "x",
         "in_progress" => "~",
         _ => " ",
+    }
+}
+
+fn execution_status_marker(status: &str) -> &'static str {
+    match status {
+        "completed" => "x",
+        "blocked" => "!",
+        "verifying" => "~",
+        _ => ">",
     }
 }
 
@@ -873,6 +937,7 @@ pub(crate) enum TranscriptEntry {
     AssistantMessage(String),
     Tool(TranscriptToolEntry),
     Plan(TranscriptPlanEntry),
+    Execution(TranscriptExecutionEntry),
     ShellSummary(TranscriptShellEntry),
     SuccessSummary(TranscriptShellEntry),
     ErrorSummary(TranscriptShellEntry),
@@ -890,6 +955,13 @@ impl TranscriptEntry {
 
     pub(crate) fn plan_update(explanation: Option<String>, items: Vec<PlanEntry>) -> Self {
         Self::Plan(TranscriptPlanEntry::new(explanation, items))
+    }
+
+    pub(crate) fn execution_update(
+        headline: impl Into<String>,
+        state: Option<ExecutionEntry>,
+    ) -> Self {
+        Self::Execution(TranscriptExecutionEntry::new(headline, state))
     }
 
     pub(crate) fn shell_summary_details(
@@ -928,6 +1000,7 @@ impl TranscriptEntry {
             }
             Self::Tool(_)
             | Self::Plan(_)
+            | Self::Execution(_)
             | Self::ShellSummary(_)
             | Self::SuccessSummary(_)
             | Self::ErrorSummary(_)
@@ -941,6 +1014,7 @@ impl TranscriptEntry {
             Self::AssistantMessage(text) => format!("• {text}"),
             Self::Tool(entry) => format!("{} {}", entry.marker(), entry.serialized_body()),
             Self::Plan(entry) => format!("• {}", entry.serialized_body()),
+            Self::Execution(entry) => format!("• {}", entry.serialized_body()),
             Self::ShellSummary(summary) => format!("• {}", summary.serialized_body()),
             Self::SuccessSummary(summary) => format!("✔ {}", summary.serialized_body()),
             Self::ErrorSummary(summary) => format!("✗ {}", summary.serialized_body()),
@@ -954,6 +1028,7 @@ impl TranscriptEntry {
             Self::AssistantMessage(_) | Self::ShellSummary(_) => "•",
             Self::Tool(entry) => entry.marker(),
             Self::Plan(_) => "•",
+            Self::Execution(_) => "•",
             Self::SuccessSummary(_) => "✔",
             Self::ErrorSummary(_) => "✗",
             Self::WarningSummary(_) => "⚠",
@@ -965,6 +1040,7 @@ impl TranscriptEntry {
             Self::UserPrompt(text) | Self::AssistantMessage(text) => text,
             Self::Tool(entry) => entry.headline.as_str(),
             Self::Plan(entry) => entry.headline.as_str(),
+            Self::Execution(entry) => entry.headline.as_str(),
             Self::ShellSummary(summary)
             | Self::SuccessSummary(summary)
             | Self::ErrorSummary(summary)
@@ -978,7 +1054,11 @@ impl TranscriptEntry {
             | Self::SuccessSummary(summary)
             | Self::ErrorSummary(summary)
             | Self::WarningSummary(summary) => Some(summary),
-            Self::UserPrompt(_) | Self::AssistantMessage(_) | Self::Tool(_) | Self::Plan(_) => None,
+            Self::UserPrompt(_)
+            | Self::AssistantMessage(_)
+            | Self::Tool(_)
+            | Self::Plan(_)
+            | Self::Execution(_) => None,
         }
     }
 
@@ -992,6 +1072,7 @@ impl TranscriptEntry {
             Self::UserPrompt(_)
             | Self::AssistantMessage(_)
             | Self::Plan(_)
+            | Self::Execution(_)
             | Self::ShellSummary(_)
             | Self::SuccessSummary(_)
             | Self::ErrorSummary(_)
@@ -1005,6 +1086,21 @@ impl TranscriptEntry {
             Self::UserPrompt(_)
             | Self::AssistantMessage(_)
             | Self::Tool(_)
+            | Self::Execution(_)
+            | Self::ShellSummary(_)
+            | Self::SuccessSummary(_)
+            | Self::ErrorSummary(_)
+            | Self::WarningSummary(_) => None,
+        }
+    }
+
+    pub(crate) fn execution_entry(&self) -> Option<&TranscriptExecutionEntry> {
+        match self {
+            Self::Execution(entry) => Some(entry),
+            Self::UserPrompt(_)
+            | Self::AssistantMessage(_)
+            | Self::Tool(_)
+            | Self::Plan(_)
             | Self::ShellSummary(_)
             | Self::SuccessSummary(_)
             | Self::ErrorSummary(_)
@@ -1128,6 +1224,7 @@ pub(crate) struct TuiState {
     pub(crate) turn_started_at: Option<Instant>,
     pub(crate) active_tool_label: Option<String>,
     pub(crate) plan_items: Vec<PlanEntry>,
+    pub(crate) execution: Option<ExecutionEntry>,
     pub(crate) pending_controls: Vec<PendingControlSummary>,
     pub(crate) pending_control_picker: Option<PendingControlPickerState>,
     pub(crate) editing_pending_control: Option<PendingControlEditorState>,

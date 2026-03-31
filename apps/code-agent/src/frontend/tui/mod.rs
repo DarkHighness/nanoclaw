@@ -49,7 +49,7 @@ use agent::tools::{
     ToolExecutionContext, UserInputAnswer, UserInputResponse, load_tool_image,
     resolve_tool_path_against_workspace_root,
 };
-use agent::types::{AgentStatus, Message, MessagePart, MessageRole, message_operator_text};
+use agent::types::{AgentStatus, Message, MessagePart, message_operator_text};
 use anyhow::{Context, Result, anyhow};
 use base64::Engine;
 use crossterm::event::{
@@ -3094,6 +3094,7 @@ impl CodeAgentTui {
                 let loaded = self.session.load_agent_session(&agent_session_ref).await?;
                 let inspector = format_agent_session_inspector(&loaded);
                 let transcript = format_visible_transcript_lines(&loaded.transcript);
+                let restored = restore_tool_panels(&loaded.events);
                 let agent_session_ref_preview = preview_id(&loaded.summary.agent_session_ref);
                 let transcript_count = loaded.summary.transcript_message_count;
                 self.ui_state.mutate(move |state| {
@@ -3104,6 +3105,8 @@ impl CodeAgentTui {
                     state.inspector = inspector;
                     state.transcript = transcript;
                     state.transcript_scroll = 0;
+                    state.plan_items = restored.plan_items;
+                    state.execution = restored.execution;
                     state.status = format!(
                         "Loaded agent session {} with {} transcript messages",
                         agent_session_ref_preview, transcript_count
@@ -3223,6 +3226,7 @@ impl CodeAgentTui {
                 let loaded = self.session.load_session(&session_ref).await?;
                 let inspector = format_session_inspector(&loaded);
                 let transcript = format_session_transcript_lines(&loaded);
+                let restored = restore_tool_panels(&loaded.events);
                 let session_ref_preview = preview_id(loaded.summary.session_id.as_str());
                 let transcript_count = loaded.summary.transcript_message_count;
                 self.ui_state.mutate(move |state| {
@@ -3233,6 +3237,8 @@ impl CodeAgentTui {
                     state.inspector = inspector;
                     state.transcript = transcript;
                     state.transcript_scroll = 0;
+                    state.plan_items = restored.plan_items;
+                    state.execution = restored.execution;
                     state.status = format!(
                         "Loaded session {} with {} transcript messages",
                         session_ref_preview, transcript_count
@@ -3263,6 +3269,8 @@ impl CodeAgentTui {
                     state.inspector = inspector;
                     state.transcript = transcript;
                     state.transcript_scroll = 0;
+                    state.plan_items.clear();
+                    state.execution = None;
                     state.status = format!(
                         "Loaded task {} with {} child transcript messages",
                         task_id, transcript_count

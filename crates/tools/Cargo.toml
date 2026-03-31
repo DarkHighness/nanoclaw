@@ -13,6 +13,7 @@ web-tools = ["dep:reqwest", "dep:scraper", "dep:quick-xml", "dep:time"]
 [dependencies]
 agent-env.workspace = true
 sandbox.workspace = true
+skills = { path = "../skills" }
 types = { path = "../types" }
 async-trait.workspace = true
 base64.workspace = true

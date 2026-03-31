@@ -1,7 +1,7 @@
 use crate::{Result, ToolExecutionContext};
 use async_trait::async_trait;
 use schemars::JsonSchema;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::fmt::{Display, Formatter};
 use std::path::{Path, PathBuf};
 
@@ -67,6 +67,40 @@ pub struct CodeReference {
     pub location: CodeLocation,
     pub line_text: String,
     pub is_definition: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, JsonSchema)]
+pub struct CodeHover {
+    pub contents: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub location: Option<CodeLocation>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CodeCallHierarchyDirection {
+    Incoming,
+    Outgoing,
+}
+
+impl CodeCallHierarchyDirection {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Incoming => "incoming",
+            Self::Outgoing => "outgoing",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, JsonSchema)]
+pub struct CodeCallHierarchyEntry {
+    pub name: String,
+    pub kind: CodeSymbolKind,
+    pub location: CodeLocation,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    pub call_site_count: usize,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -136,4 +170,31 @@ pub trait CodeIntelBackend: Send + Sync {
         limit: usize,
         ctx: &ToolExecutionContext,
     ) -> Result<Vec<CodeReference>>;
+
+    async fn hover(
+        &self,
+        _target: &CodeNavigationTarget,
+        _ctx: &ToolExecutionContext,
+    ) -> Result<Option<CodeHover>> {
+        Ok(None)
+    }
+
+    async fn implementations(
+        &self,
+        _target: &CodeNavigationTarget,
+        _limit: usize,
+        _ctx: &ToolExecutionContext,
+    ) -> Result<Vec<CodeSymbol>> {
+        Ok(Vec::new())
+    }
+
+    async fn call_hierarchy(
+        &self,
+        _target: &CodeNavigationTarget,
+        _direction: CodeCallHierarchyDirection,
+        _limit: usize,
+        _ctx: &ToolExecutionContext,
+    ) -> Result<Vec<CodeCallHierarchyEntry>> {
+        Ok(Vec::new())
+    }
 }

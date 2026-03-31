@@ -4,13 +4,15 @@ use agent::runtime::{
 };
 use agent::tools::{SandboxBackendStatus, SubagentExecutor};
 use agent::{
-    ApplyPatchTool, CodeDefinitionsTool, CodeDocumentSymbolsTool, CodeIntelBackend,
-    CodeReferencesTool, CodeSymbolSearchTool, EditTool, ExecCommandTool, GlobTool, GrepTool,
+    ApplyPatchTool, CodeCallHierarchyTool, CodeDefinitionsTool, CodeDocumentSymbolsTool,
+    CodeHoverTool, CodeImplementationsTool, CodeIntelBackend, CodeReferencesTool,
+    CodeSymbolSearchTool, EditTool, ExecCommandTool, ExecutionState, GlobTool, GrepTool,
     JsReplTool, ListTool, ManagedCodeIntelBackend, ManagedCodeIntelOptions,
     ManagedPolicyProcessExecutor, PatchTool, PlanState, ReadTool, RequestPermissionsTool,
-    RequestUserInputTool, SandboxPolicy, TaskTool, ToolRegistry, ToolSearchTool, ToolSuggestTool,
-    UpdatePlanTool, ViewImageTool, WebFetchTool, WebSearchBackendsTool, WebSearchTool,
-    WorkspaceTextCodeIntelBackend, WriteStdinTool, WriteTool,
+    RequestUserInputTool, SandboxPolicy, SkillCatalog, SkillTool, TaskTool, ToolRegistry,
+    ToolSearchTool, ToolSuggestTool, UpdateExecutionTool, UpdatePlanTool, ViewImageTool,
+    WebFetchTool, WebSearchBackendsTool, WebSearchTool, WorkspaceTextCodeIntelBackend,
+    WriteStdinTool, WriteTool,
 };
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -31,6 +33,7 @@ pub(crate) fn build_runtime_tooling(
     workspace_root: &Path,
     sandbox_policy: &SandboxPolicy,
     sandbox_status: &SandboxBackendStatus,
+    skill_catalog: SkillCatalog,
 ) -> RuntimeTooling {
     let process_executor = Arc::new(ManagedPolicyProcessExecutor::new());
     let host_process_surfaces_allowed =
@@ -62,6 +65,7 @@ pub(crate) fn build_runtime_tooling(
         sandbox_policy,
         sandbox_status,
         &process_executor,
+        skill_catalog,
     );
 
     RuntimeTooling {
@@ -99,6 +103,7 @@ fn build_builtin_tools(
     sandbox_policy: &SandboxPolicy,
     sandbox_status: &SandboxBackendStatus,
     process_executor: &Arc<ManagedPolicyProcessExecutor>,
+    skill_catalog: SkillCatalog,
 ) -> (ToolRegistry, Vec<String>) {
     let host_process_surfaces_allowed =
         host_process_surfaces_allowed(sandbox_policy, sandbox_status);
@@ -116,6 +121,7 @@ fn build_builtin_tools(
         .map(|backend| backend as Arc<dyn CodeIntelBackend>)
         .unwrap_or_else(|| Arc::new(WorkspaceTextCodeIntelBackend::new()));
     let plan_state = PlanState::default();
+    let execution_state = ExecutionState::default();
     let mut tools = ToolRegistry::new();
     let discovery_registry = tools.clone();
 
@@ -163,10 +169,17 @@ fn build_builtin_tools(
     tools.register(CodeDefinitionsTool::with_backend(
         code_intel_backend.clone(),
     ));
-    tools.register(CodeReferencesTool::with_backend(code_intel_backend));
+    tools.register(CodeReferencesTool::with_backend(code_intel_backend.clone()));
+    tools.register(CodeHoverTool::with_backend(code_intel_backend.clone()));
+    tools.register(CodeImplementationsTool::with_backend(
+        code_intel_backend.clone(),
+    ));
+    tools.register(CodeCallHierarchyTool::with_backend(code_intel_backend));
     tools.register(ToolSearchTool::new(discovery_registry.clone()));
     tools.register(ToolSuggestTool::new(discovery_registry));
     tools.register(UpdatePlanTool::new(plan_state));
+    tools.register(UpdateExecutionTool::new(execution_state));
+    tools.register(SkillTool::new(skill_catalog));
     tools.register(RequestUserInputTool::new());
     tools.register(RequestPermissionsTool::new());
     (tools, startup_warnings)
@@ -221,6 +234,7 @@ pub(crate) fn host_process_surfaces_allowed(
 mod tests {
     use super::{build_runtime_tooling, host_process_surfaces_allowed, register_subagent_tools};
     use crate::options::AppOptions;
+    use agent::SkillCatalog;
     use agent::tools::{
         NetworkPolicy, SandboxBackendKind, SandboxBackendStatus, SandboxPolicy, SubagentExecutor,
         SubagentInputDelivery, SubagentLaunchSpec, SubagentParentContext,
@@ -296,6 +310,7 @@ mod tests {
             &SandboxBackendStatus::Unavailable {
                 reason: "bwrap missing".to_string(),
             },
+            SkillCatalog::default(),
         );
 
         assert!(
@@ -325,6 +340,7 @@ mod tests {
             &SandboxBackendStatus::Unavailable {
                 reason: "not needed".to_string(),
             },
+            SkillCatalog::default(),
         );
 
         let tool_names = tooling.tools.names();
@@ -361,6 +377,7 @@ mod tests {
             &SandboxBackendStatus::Unavailable {
                 reason: "not needed".to_string(),
             },
+            SkillCatalog::default(),
         );
         register_subagent_tools(&mut tooling.tools, Arc::new(NoopSubagentExecutor));
 

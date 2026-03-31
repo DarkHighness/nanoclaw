@@ -1,6 +1,8 @@
 use super::super::UserInputView;
 use super::super::approval::ApprovalPrompt;
-use super::super::state::{ComposerContextHint, MainPaneMode, PlanEntry, TuiState, preview_text};
+use super::super::state::{
+    ComposerContextHint, ExecutionEntry, MainPaneMode, PlanEntry, TuiState, preview_text,
+};
 use super::shared::{
     composer_cursor_metrics, pending_control_focus_label, pending_control_kind_label,
 };
@@ -201,7 +203,9 @@ pub(super) fn user_input_band_height(user_input: &UserInputView<'_>) -> u16 {
 pub(super) fn should_render_side_rail(state: &TuiState, area: Rect) -> bool {
     state.main_pane == MainPaneMode::Transcript
         && area.width >= 128
-        && (lsp_side_rail_available(state) || !state.plan_items.is_empty())
+        && (lsp_side_rail_available(state)
+            || !state.plan_items.is_empty()
+            || state.execution.is_some())
 }
 
 pub(super) fn side_rail_width(total_width: u16) -> u16 {
@@ -275,6 +279,40 @@ pub(super) fn build_side_rail_lines(state: &TuiState) -> Vec<Line<'static>> {
                 "+{} more",
                 plan_items.len() - visible.len()
             )));
+        }
+        lines.push(Line::raw(""));
+    }
+
+    if let Some(execution) = state.execution.as_ref() {
+        lines.push(section_title_line("Execution", palette().accent));
+        lines.push(status_line(
+            execution.status.as_str(),
+            execution_status_color(execution),
+        ));
+        lines.push(rail_summary_line(preview_text(&execution.summary, 40)));
+        if !execution.scope_label.is_empty() {
+            lines.push(rail_summary_line(format!(
+                "scope {}",
+                preview_text(&execution.scope_label, 32)
+            )));
+        }
+        if let Some(next_action) = execution.next_action.as_deref() {
+            lines.push(bullet_line(
+                &format!("next {}", preview_text(next_action, 36)),
+                palette().accent,
+            ));
+        }
+        if let Some(verification) = execution.verification.as_deref() {
+            lines.push(bullet_line(
+                &format!("verify {}", preview_text(verification, 36)),
+                palette().assistant,
+            ));
+        }
+        if let Some(blocker) = execution.blocker.as_deref() {
+            lines.push(bullet_line(
+                &format!("blocker {}", preview_text(blocker, 36)),
+                palette().error,
+            ));
         }
     }
 
@@ -1050,9 +1088,24 @@ fn lsp_side_rail_available(state: &TuiState) -> bool {
     state.session.tool_names.iter().any(|tool| {
         matches!(
             tool.as_str(),
-            "code_symbol_search" | "code_document_symbols" | "code_definitions" | "code_references"
+            "code_symbol_search"
+                | "code_document_symbols"
+                | "code_definitions"
+                | "code_references"
+                | "code_hover"
+                | "code_implementations"
+                | "code_call_hierarchy"
         )
     })
+}
+
+fn execution_status_color(entry: &ExecutionEntry) -> Color {
+    match entry.status.as_str() {
+        "blocked" => palette().error,
+        "verifying" => palette().accent,
+        "completed" => palette().assistant,
+        _ => palette().header,
+    }
 }
 
 fn section_title_line(title: &str, accent: Color) -> Line<'static> {

@@ -1,4 +1,7 @@
-use crate::code_intel::{CodeLocation, CodeReference, CodeSymbol, CodeSymbolKind};
+use crate::code_intel::{
+    CodeCallHierarchyDirection, CodeCallHierarchyEntry, CodeHover, CodeLocation, CodeReference,
+    CodeSymbol, CodeSymbolKind,
+};
 use serde_json::{Value, json};
 use std::io;
 use std::path::{Path, PathBuf};
@@ -213,6 +216,61 @@ pub(crate) async fn parse_locations_as_references(
     references
 }
 
+pub(crate) fn parse_hover(
+    value: &Value,
+    workspace_root: &Path,
+    document_path: &Path,
+) -> Option<CodeHover> {
+    let contents = compact_hover_text(parse_hover_contents(value.get("contents")?)?);
+    if contents.is_empty() {
+        return None;
+    }
+    let location = value.get("range").and_then(|range| {
+        parse_uri_and_range(&file_uri_from_path(document_path), range, workspace_root)
+    });
+    Some(CodeHover { contents, location })
+}
+
+pub(crate) fn parse_call_hierarchy_calls(
+    value: &Value,
+    workspace_root: &Path,
+    direction: CodeCallHierarchyDirection,
+) -> Vec<CodeCallHierarchyEntry> {
+    let item_field = match direction {
+        CodeCallHierarchyDirection::Incoming => "from",
+        CodeCallHierarchyDirection::Outgoing => "to",
+    };
+    value
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| {
+            let item = entry.get(item_field)?;
+            let name = item.get("name")?.as_str()?.to_string();
+            let location = parse_location_like(item, workspace_root)?;
+            let kind = parse_symbol_kind(item.get("kind"));
+            let detail = item
+                .get("detail")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string);
+            let call_site_count = entry
+                .get("fromRanges")
+                .and_then(Value::as_array)
+                .map_or(0, std::vec::Vec::len)
+                .max(1);
+            Some(CodeCallHierarchyEntry {
+                name,
+                kind,
+                location,
+                detail,
+                call_site_count,
+            })
+        })
+        .collect()
+}
+
 fn collect_locations(value: &Value, workspace_root: &Path) -> Vec<CodeLocation> {
     match value {
         Value::Array(entries) => entries
@@ -224,6 +282,59 @@ fn collect_locations(value: &Value, workspace_root: &Path) -> Vec<CodeLocation> 
             .collect(),
         _ => Vec::new(),
     }
+}
+
+fn parse_hover_contents(value: &Value) -> Option<String> {
+    match value {
+        Value::String(value) => Some(value.trim().to_string()),
+        Value::Array(entries) => {
+            let chunks = entries
+                .iter()
+                .filter_map(parse_marked_string)
+                .filter(|value| !value.is_empty())
+                .collect::<Vec<_>>();
+            (!chunks.is_empty()).then(|| chunks.join("\n\n"))
+        }
+        Value::Object(_) => parse_marked_string(value),
+        _ => None,
+    }
+}
+
+fn parse_marked_string(value: &Value) -> Option<String> {
+    match value {
+        Value::String(value) => Some(value.trim().to_string()),
+        Value::Object(map) => {
+            let value_text = map.get("value")?.as_str()?.trim();
+            if value_text.is_empty() {
+                return None;
+            }
+            let language = map
+                .get("language")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty());
+            Some(if let Some(language) = language {
+                format!("```{language}\n{value_text}\n```")
+            } else {
+                value_text.to_string()
+            })
+        }
+        _ => None,
+    }
+}
+
+fn compact_hover_text(value: String) -> String {
+    const MAX_HOVER_CHARS: usize = 4_000;
+    let trimmed = value.trim();
+    if trimmed.chars().count() <= MAX_HOVER_CHARS {
+        return trimmed.to_string();
+    }
+    let mut shortened = trimmed
+        .chars()
+        .take(MAX_HOVER_CHARS.saturating_sub(3))
+        .collect::<String>();
+    shortened.push_str("...");
+    shortened
 }
 
 pub(crate) fn parse_location_like(value: &Value, workspace_root: &Path) -> Option<CodeLocation> {

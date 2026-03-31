@@ -336,8 +336,13 @@ async fn build_runtime(
     // Runtime tooling assembly is still host boot work, but it lives behind a
     // dedicated helper so later frontends inherit the same process-local tool,
     // hook, and LSP wiring without reopening this orchestration block.
-    let runtime_tooling =
-        build_runtime_tooling(options, workspace_root, &sandbox_policy, &sandbox_status);
+    let runtime_tooling = build_runtime_tooling(
+        options,
+        workspace_root,
+        &sandbox_policy,
+        &sandbox_status,
+        skill_catalog.clone(),
+    );
     let loop_detection_config = runtime_tooling.loop_detection_config;
     let process_executor = runtime_tooling.process_executor.clone();
     let host_process_surfaces_allowed = runtime_tooling.host_process_surfaces_allowed;

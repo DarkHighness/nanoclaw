@@ -23,6 +23,21 @@ impl SkillCatalog {
     }
 
     #[must_use]
+    pub fn resolve(&self, query: &str) -> Option<&Skill> {
+        let normalized = query.trim();
+        if normalized.is_empty() {
+            return None;
+        }
+        self.skills.iter().find(|skill| {
+            skill.name == normalized
+                || skill
+                    .aliases
+                    .iter()
+                    .any(|alias| alias.as_str() == normalized)
+        })
+    }
+
+    #[must_use]
     pub fn prompt_manifest(&self) -> Option<String> {
         if self.skills.is_empty() {
             return None;
@@ -30,7 +45,7 @@ impl SkillCatalog {
 
         let mut lines = vec![
             "Available workspace skills are listed below.".to_string(),
-            "Do not rely on heuristic skill activation. If a skill is relevant, inspect its SKILL.md with the read tool and then follow it explicitly.".to_string(),
+            "Do not rely on heuristic skill activation. If a skill is relevant, inspect it with the skill tool first, then read any referenced skill files you actually need.".to_string(),
             "Loaded skills:".to_string(),
         ];
         lines.extend(self.skills.iter().map(format_skill_manifest_line));
