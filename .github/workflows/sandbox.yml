@@ -22,6 +22,9 @@ jobs:
   linux-sandbox-integration:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: "sccache"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -33,6 +36,9 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Install sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
 
       - name: Cache Rust artifacts
         uses: Swatinem/rust-cache@v2
@@ -47,3 +53,7 @@ jobs:
 
       - name: Run Linux sandbox integration tests
         run: cargo test --manifest-path crates/Cargo.toml -p tools --test sandbox_integration -- --nocapture
+
+      - name: Show sccache stats
+        if: always()
+        run: sccache --show-stats
