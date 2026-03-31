@@ -119,4 +119,107 @@ mod tests {
         let error = reconstruct_runtime_session(&events, &agent_session_id).unwrap_err();
         assert!(error.to_string().contains(HISTORY_ONLY_RESUME_REASON));
     }
+
+    #[test]
+    fn resume_backfills_request_round_prefix_for_older_checkpoints() {
+        let session_id = SessionId::from("session_demo");
+        let agent_session_id = AgentSessionId::from("agent_demo");
+        let older_prompt =
+            Message::user("older prompt").with_message_id(MessageId::from("msg_older_user"));
+        let older_answer = Message::assistant("older answer")
+            .with_message_id(MessageId::from("msg_older_assistant"));
+        let steer =
+            Message::system("prefer terse answers").with_message_id(MessageId::from("msg_steer"));
+        let recall = Message::user("recalled workspace memory")
+            .with_message_id(MessageId::from("msg_recall"));
+        let prompt =
+            Message::user("real user prompt").with_message_id(MessageId::from("msg_prompt"));
+        let reply = Message::assistant("latest assistant reply")
+            .with_message_id(MessageId::from("msg_reply"));
+        let summary = Message::system("summary").with_message_id(MessageId::from("msg_summary"));
+        let events = vec![
+            SessionEventEnvelope::new(
+                session_id.clone(),
+                agent_session_id.clone(),
+                None,
+                None,
+                SessionEventKind::TranscriptMessage {
+                    message: older_prompt,
+                },
+            ),
+            SessionEventEnvelope::new(
+                session_id.clone(),
+                agent_session_id.clone(),
+                None,
+                None,
+                SessionEventKind::TranscriptMessage {
+                    message: older_answer,
+                },
+            ),
+            SessionEventEnvelope::new(
+                session_id.clone(),
+                agent_session_id.clone(),
+                None,
+                None,
+                SessionEventKind::TranscriptMessage {
+                    message: steer.clone(),
+                },
+            ),
+            SessionEventEnvelope::new(
+                session_id.clone(),
+                agent_session_id.clone(),
+                None,
+                None,
+                SessionEventKind::TranscriptMessage {
+                    message: recall.clone(),
+                },
+            ),
+            SessionEventEnvelope::new(
+                session_id.clone(),
+                agent_session_id.clone(),
+                None,
+                None,
+                SessionEventKind::TranscriptMessage {
+                    message: prompt.clone(),
+                },
+            ),
+            SessionEventEnvelope::new(
+                session_id.clone(),
+                agent_session_id.clone(),
+                None,
+                None,
+                SessionEventKind::TranscriptMessage {
+                    message: reply.clone(),
+                },
+            ),
+            SessionEventEnvelope::new(
+                session_id.clone(),
+                agent_session_id.clone(),
+                None,
+                None,
+                SessionEventKind::TranscriptMessage {
+                    message: summary.clone(),
+                },
+            ),
+            SessionEventEnvelope::new(
+                session_id,
+                agent_session_id.clone(),
+                None,
+                None,
+                SessionEventKind::CompactionCompleted {
+                    reason: "manual".to_string(),
+                    source_message_count: 3,
+                    retained_message_count: 1,
+                    summary_chars: 7,
+                    summary_message_id: Some(summary.message_id.clone()),
+                    retained_tail_message_ids: vec![reply.message_id.clone()],
+                },
+            ),
+        ];
+
+        let reconstructed = reconstruct_runtime_session(&events, &agent_session_id).unwrap();
+        assert_eq!(reconstructed.compaction_summary_index, Some(6));
+        assert_eq!(reconstructed.retained_tail_indices, vec![2, 3, 4, 5]);
+        assert_eq!(reconstructed.post_summary_start, 7);
+    }
 }

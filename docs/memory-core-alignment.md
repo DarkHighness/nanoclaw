@@ -277,6 +277,19 @@ window around the summary boundary:
 That keeps the post-compact transcript closer to Claude's "complete recent
 trajectory" shape instead of preserving an arbitrary suffix of message slots.
 
+Resume and transcript restore now apply the same invariant when they rebuild a
+compacted runtime session:
+
+- modern checkpoints already carry the exact retained tail message ids, so
+  resume reproduces the same visible order as the live runtime
+- older checkpoints that kept only the tail end of a request round are now
+  upgraded during reconstruction by backfilling the missing request-side
+  `system/user` prefix ahead of the first retained message
+
+That keeps resumed sessions closer to the live post-compact context shape
+instead of reviving a mid-round suffix that the current runtime would no longer
+preserve.
+
 ## Side Questions (`/btw`)
 
 Claude Code exposes side questions as a separate lightweight query path rather
