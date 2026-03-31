@@ -21,13 +21,48 @@ Depends On:
 - 把路线拆成可以直接开工的工程任务
 
 默认目标不是一步到位实现完整自进化系统，而是先交付一个
-`offline meta-agent MVP`：
+`offline self-improving code-agent MVP`：
 
 - 有实验账本
-- 有 evaluator substrate
-- 有 prompt / skill / policy 自优化闭环
+- 有 evaluator / verifier substrate
+- 有 baseline compare 与 relative promotion gate
+- 有 worktree-scoped code candidate runner
 - 有 host 侧操作入口
 - 全流程可回滚、可审计、可测试
+
+## 1.1 方案纠偏
+
+当前实现已经证明一件事：
+
+- 只扩 candidate generator，并不会自然得到 `self-improving code agent`
+
+如果目标真的是 code agent 的自改进，必须把主线收敛到下面这条闭环：
+
+```text
+pin baseline
+  -> run baseline on coding benchmark
+  -> derive failure taxonomy
+  -> generate candidate
+  -> run candidate in isolated worktree
+  -> compare candidate vs baseline
+  -> verify regressions / counterexamples
+  -> promote or reject
+  -> rollback if needed
+```
+
+因此后续实施优先级要调整为：
+
+1. baseline compare
+2. isolated worktree candidate runner
+3. coding benchmark + verifier
+4. automatic critic derivation
+5. iterative improve controller
+
+下列能力仍有价值，但都应放到第二优先级：
+
+- richer generator taxonomy
+- workflow IR
+- island / group evolution
 
 ## 2. 第一阶段交付边界
 
@@ -35,8 +70,10 @@ Depends On:
 
 - `Experiment Archive`
 - `Evaluator / Verifier Substrate`
-- `PromptVariant / SkillVariant / PolicyVariant` 候选模型
-- `offline replay + benchmark` 闭环
+- `baseline evaluation + relative improvement gate`
+- `worktree-scoped code candidate runner`
+- `offline coding benchmark + verifier` 闭环
+- `PromptVariant / SkillVariant / PolicyVariant` 只作为低风险启动对象
 - host 操作入口：
   - `/improve`
   - `/experiments`
@@ -53,7 +90,8 @@ Depends On:
 
 原因：
 
-- 当前仓库最缺的是评测与治理面，不是再加一层搜索算法
+- 当前仓库最缺的是 baseline compare、隔离执行、verifier 和治理面，
+  不是再加一层 generator 花样
 
 ## 3. 依赖关系图
 
@@ -65,22 +103,25 @@ Wave 0
         ├── W2 Evals Crate Core
         └── W3 Meta Crate Core
                 │
-                ├── W4 Benchmark Pack
-                ├── W5 Promotion / Rollback MVP
-                └── W6 Host Commands + Views
+                ├── W4 Baseline Compare + Promotion Gate
+                ├── W5 Coding Benchmark Pack
+                ├── W6 Worktree Candidate Runner
+                └── W7 Host Commands + Views
                         │
-                        └── W7 End-to-End Offline Improve Run
+                        └── W8 End-to-End Offline Improve Run
                                 │
-                                ├── W8 Workflow IR Skeleton
-                                ├── W9 Active Verifier
-                                └── W10 Worktree Candidate Runner
+                                ├── W9 Automatic Critic Derivation
+                                ├── W10 Iterative Improve Controller
+                                ├── W11 Workflow IR Skeleton
+                                └── W12 Group / Island Evolution
 ```
 
 说明：
 
 - `W0` 必须串行，因为会改 workspace manifest
 - `W1/W2/W3` 可并行，前提是先把 crate 目录和 manifest 种好
-- `W4/W5/W6` 可并行，但最终接线必须单独做一轮 integration
+- `W4/W5/W6/W7` 中，`W6` 是 self-improving code agent 的关键路径，不能长期后置
+- generator 丰富度可以并行探索，但不能阻塞 baseline compare 与 worktree runner
 
 ## 4. 全局 Definition of Done
 
@@ -303,6 +344,7 @@ cargo test --manifest-path crates/Cargo.toml -p evals
 - `PromptVariant`
 - `SkillVariant`
 - `PolicyVariant`
+- `CodePatchVariant`
 
 建议核心流程对象：
 
@@ -327,7 +369,7 @@ cargo test --manifest-path crates/Cargo.toml -p evals
 
 交付物：
 
-- 给定 baseline 与失败样本，能产出候选并比较
+- 给定 baseline，系统能明确回答“candidate 是否优于 baseline”
 
 验证：
 
@@ -341,11 +383,40 @@ cargo test --manifest-path crates/Cargo.toml -p meta
 
 ## 7. Wave 2：MVP 业务闭环
 
-## W4：Benchmark Pack
+## W4：Baseline Compare + Promotion Gate
 
 目标：
 
-- 给 MVP 提供稳定、可回归的任务集
+- 把 `/improve` 从“候选筛选”收紧成“相对 baseline 的改进判定”
+
+写入范围：
+
+- `crates/meta/src/benchmark.rs`
+- `crates/meta/src/improve.rs`
+- `crates/meta/src/promotion.rs`
+- `crates/meta/src/experiment.rs`
+- `crates/types/src/experiment.rs`
+- `crates/store/src/traits.rs`
+
+执行步骤：
+
+1. 记录 baseline evaluation。
+2. 在 improve / benchmark 中显式跑 baseline。
+3. 引入 relative gate：
+   - minimum score
+   - minimum score gain over baseline
+4. 在 archive 和 TUI 中可见 baseline score 与 delta。
+
+完成标准：
+
+- promotion decision 不再只看 candidate 自身分数
+- operator 能看到 candidate 是否真实优于 baseline
+
+## W5：Coding Benchmark Pack
+
+目标：
+
+- 给 code-agent MVP 提供稳定、可回归的 coding task 集
 
 写入范围：
 
@@ -356,14 +427,14 @@ cargo test --manifest-path crates/Cargo.toml -p meta
 
 第一批 benchmark 类型建议：
 
-- `prompt_quality`
-  - 评估 prompt/profile 调整后的输出稳定性
-- `skill_selection`
-  - 评估 skill 组合是否改善任务完成率
-- `readonly_research`
-  - 评估只读研究任务的答案质量
 - `patch_review`
   - 评估代码审查任务的发现质量
+- `small_patch_fix`
+  - 评估小规模代码修复任务的通过率
+- `tool_use_reliability`
+  - 评估 code-agent 在真实工具链中的稳定性
+- `regression_guard`
+  - 评估 candidate 是否破坏既有行为
 
 执行步骤：
 
@@ -389,52 +460,31 @@ cargo test --manifest-path crates/Cargo.toml -p evals benchmarks
 
 - 至少有 10-20 个稳定 case 可用于 regression
 
-## W5：Promotion / Rollback MVP
+## W6：Worktree Candidate Runner
 
 目标：
 
-- 让候选不是“跑完就丢”，而是能晋级或回滚
+- 让 code candidate 真正跑在隔离环境里，而不是只在配置层比较
 
 写入范围：
 
-- `crates/meta/src/promotion.rs`
-- `crates/meta/src/rollback.rs`
-- `crates/store/*`
-- 可能新增：
-  - `apps/code-agent/src/backend/meta.rs`
+- `crates/meta/src/worktree_runner.rs`
+- `crates/meta/src/git_gate.rs`
+- `apps/code-agent/src/backend/*`
 
 执行步骤：
 
-1. 定义 promotion policy：
-   - hard gate
-   - soft score
-2. 定义 candidate 状态：
-   - draft
-   - evaluated
-   - promoted
-   - rejected
-   - rolled_back
-3. 实现 rollback pointer。
-4. 加一条安全规则：
-   - 任何自动推广都不能放宽 sandbox / approval。
-
-交付物：
-
-- promotion decision 可持久化
-- rollback 可恢复 baseline
-
-验证：
-
-- unit tests 覆盖：
-  - gate pass
-  - gate reject
-  - rollback success
+1. 为每个 code candidate 准备独立 worktree。
+2. 在 worktree 内执行 patch / test / verifier。
+3. 回收 artifact、diff、stdout/stderr、test result。
+4. 保证失败时不污染主工作区。
 
 完成标准：
 
-- promotion 与 rollback 都不依赖手工改 store 文件
+- 每个 code candidate 都可独立运行和销毁
+- improve run 能区分“配置候选”与“代码候选”
 
-## W6：Host Commands + Views
+## W7：Host Commands + Views
 
 目标：
 
@@ -483,22 +533,22 @@ cargo test --manifest-path apps/Cargo.toml -p code-agent commands
 
 - 不需要直接操作 store 文件就能跑通一次实验
 
-## 8. Wave 3：MVP 集成与验收
-
-## W7：End-to-End Offline Improve Run
+## W8：End-to-End Offline Improve Run
 
 目标：
 
-- 打通一次完整闭环
+- 打通一次完整闭环，并明确这是 code-agent 的改进闭环，而不是通用配置试验器
 
 闭环定义：
 
 ```text
-select benchmark suite
-  -> pin baseline
-  -> generate Prompt/Skill/Policy candidates
-  -> run evaluator matrix
-  -> compare
+pin baseline
+  -> run baseline on benchmark
+  -> derive critic / failure taxonomy
+  -> generate candidate
+  -> run candidate in isolated worktree
+  -> compare candidate vs baseline
+  -> verify regressions
   -> record experiment
   -> promote or reject
   -> rollback if needed
@@ -506,29 +556,47 @@ select benchmark suite
 
 建议集成顺序：
 
-1. 先只支持 `PromptVariant`
-2. 再打开 `SkillVariant`
-3. 最后加 `PolicyVariant`
-
-验收脚本：
-
-1. 创建一个固定 benchmark suite。
-2. 人工制造一个 baseline 缺陷。
-3. 跑 `/improve`。
-4. 确认有候选生成。
-5. 确认 evaluator matrix 完整。
-6. 确认 promotion / reject 生效。
-7. 如 promotion，执行 rollback 验证。
+1. 先用 `PromptVariant / PolicyVariant` 验证 archive 和 gate 契约。
+2. 尽快接 `CodePatchVariant`，不要长期停留在配置层。
+3. 当 code candidate loop 稳定后，再考虑 workflow optimization。
 
 完成标准：
 
 - 在本仓库内能稳定重放同一 improve run
+- promotion 语义明确是“优于 baseline”，不是“单独过阈值”
 
-## 9. MVP 之后的执行包
+## W9：Automatic Critic Derivation
 
-以下内容在 MVP 收口后再开：
+目标：
 
-## W8：Workflow IR Skeleton
+- 不再手写 critic report，而是从 benchmark/verifier failure 中自动抽取
+
+写入范围：
+
+- `crates/meta/src/critic.rs`
+- `crates/meta/src/candidate.rs`
+- `crates/evals/src/verifiers/*.rs`
+
+完成标准：
+
+- improve run 可以从 evaluator / verifier 结果自动生成 failure taxonomy
+
+## W10：Iterative Improve Controller
+
+目标：
+
+- 让 improve 不只是一次性 run，而是预算受控的多轮尝试
+
+写入范围：
+
+- `crates/meta/src/controller.rs`
+- `crates/meta/src/budget.rs`
+
+完成标准：
+
+- 支持 stop condition、budget、early stop、best-so-far tracking
+
+## W11：Workflow IR Skeleton
 
 目标：
 
@@ -555,44 +623,7 @@ select benchmark suite
 - plan-execute-verify
 - orchestrator-worker
 
-## W9：Active Verifier
-
-目标：
-
-- 从 pass/fail evaluator 升级到能主动找反例的 verifier
-
-写入范围：
-
-- `crates/evals/src/verifiers/*.rs`
-- `crates/meta/src/replan.rs`
-
-第一批 verifier：
-
-- `CounterexampleVerifier`
-- `BehaviorDiffVerifier`
-- `ReplanTriggerVerifier`
-
-完成标准：
-
-- verifier 可在候选之间挖掘行为差异并触发 replan
-
-## W10：Worktree Candidate Runner
-
-目标：
-
-- 让代码级候选在隔离环境中运行
-
-写入范围：
-
-- 新增：
-  - `crates/meta/src/worktree_runner.rs`
-  - `crates/meta/src/git_gate.rs`
-
-完成标准：
-
-- 每个 code candidate 都能在独立 worktree 中评测
-
-## W11：Group / Island Evolution
+## W12：Group / Island Evolution
 
 目标：
 
@@ -653,6 +684,7 @@ select benchmark suite
   - `W9`
   - `W10`
   - `W11`
+  - `W12`
 
 ## 11. 风险清单与止损点
 
@@ -660,7 +692,12 @@ select benchmark suite
 
 止损：
 
-- MVP 严格限制在 Prompt / Skill / Policy
+- MVP 先收紧在：
+  - baseline compare
+  - coding benchmark
+  - worktree candidate runner
+  - relative promotion gate
+- generator 与 workflow 扩展都不能挤占这条关键路径
 
 ### 风险 2：把 session store 直接做成 experiment store
 
@@ -680,7 +717,7 @@ select benchmark suite
 止损：
 
 - promotion 默认 reject
-- 没有 regression suite 不允许自动 promote
+- 没有 regression suite 与 baseline compare，不允许自动 promote
 
 ## 12. 建议的首个实现切片
 
@@ -691,15 +728,22 @@ select benchmark suite
 3. `W2`
 4. `W3` 的最小版本：
    - 只支持 `PromptVariant`
-5. `W4` 的最小版本：
-   - 只做 10 个 repo-local case
-6. `W7` 的 CLI/backend 闭环，先不接完整 TUI
+5. `W4`
+   - baseline evaluation
+   - relative promotion gate
+6. `W5`
+   - 只做 10 个 repo-local coding case
+7. `W6`
+   - 只支持最小 worktree candidate runner
+8. `W7`
+   - 先接 CLI/backend 闭环，TUI 保持最小
 
-这样可以最短路径验证三件关键事：
+这样可以最短路径验证四件关键事：
 
 - experiment archive 是否合理
-- evaluator substrate 是否足够强
-- Meta Agent MVP 是否真的能改进结果
+- baseline compare 是否真实工作
+- worktree candidate loop 是否安全可控
+- Meta Agent 是否真的在 code task 上改进结果
 
 ## 13. 简短结论
 
@@ -712,13 +756,14 @@ select benchmark suite
 -> `experiment schema`
 -> `evals`
 -> `meta core`
--> `benchmark pack`
--> `promotion/rollback`
+-> `baseline compare`
+-> `coding benchmark`
+-> `worktree runner`
 -> `host commands`
 -> `end-to-end offline improve run`
 
 只有这条 MVP 线稳定后，才值得继续做 workflow IR、active verifier、
-worktree 自修改与 group evolution。
+hybrid nodes 与 group evolution。
 
 ## 14. Wave 0 / Wave 1 逐文件 Checklist
 
@@ -822,7 +867,7 @@ worktree 自修改与 group evolution。
 ### 14.4 W3 逐文件 Checklist
 
 - `crates/meta/src/candidate.rs`
-  - 定义 `PromptVariant` / `SkillVariant` / `PolicyVariant`
+  - 定义 `PromptVariant` / `SkillVariant` / `PolicyVariant` / `CodePatchVariant`
 - `crates/meta/src/experiment.rs`
   - 定义 `ExperimentRunner`
   - 连接 `store` 与 `evals`
@@ -834,6 +879,60 @@ worktree 自修改与 group evolution。
   - 定义 rollback model
 - `crates/meta/src/lib.rs`
   - 对外导出最小可用 API
+
+### 14.5 W4 逐文件 Checklist
+
+- `crates/meta/src/benchmark.rs`
+  - 记录 baseline evaluation
+  - 产出 candidate vs baseline delta
+- `crates/meta/src/improve.rs`
+  - 强制 baseline 与 candidate 跑同一评测集
+- `crates/meta/src/promotion.rs`
+  - 新增 relative gate
+  - 新增 minimum score gain over baseline
+- `crates/meta/src/experiment.rs`
+  - 写入 baseline score、candidate score、delta、decision
+- `crates/types/src/experiment.rs`
+  - 扩展 baseline evaluation / compare 结果结构
+- `crates/store/src/traits.rs`
+  - 暴露 baseline compare 相关查询接口
+
+### 14.6 W5 逐文件 Checklist
+
+- `crates/evals/src/benchmarks/mod.rs`
+  - 定义 `BenchmarkManifest` / `BenchmarkSuite`
+- `crates/evals/src/benchmarks/*.rs`
+  - 实现 repo-local coding cases
+- `crates/evals/src/verifiers/*.rs`
+  - 定义 regression / behavior diff verifier
+- `crates/evals/fixtures/meta-agent/*`
+  - 增加 benchmark fixture
+- `crates/test-support/src/meta_agent/*`
+  - 视需要增加 benchmark 测试支撑
+
+### 14.7 W6 逐文件 Checklist
+
+- `crates/meta/src/worktree_runner.rs`
+  - 创建、执行、回收独立 worktree
+- `crates/meta/src/git_gate.rs`
+  - 校验 write set / protected path
+- `crates/meta/src/candidate.rs`
+  - 为 `CodePatchVariant` 增加 patch / artifact schema
+- `apps/code-agent/src/backend/*`
+  - 接 worktree runner 的 host-side orchestration
+
+### 14.8 W7 逐文件 Checklist
+
+- `apps/code-agent/src/backend/session.rs`
+  - 暴露 `/benchmark` 与 `/improve` 的 backend 入口
+- `apps/code-agent/src/backend/session_history.rs`
+  - 暴露 experiment compare 视图
+- `apps/code-agent/src/frontend/tui/commands.rs`
+  - 解析 `/benchmark`、`/improve`、`/experiment`
+- `apps/code-agent/src/frontend/tui/history.rs`
+  - 展示 baseline、candidate、delta、decision
+- `apps/code-agent/src/frontend/tui/mod.rs`
+  - 路由 meta-agent operator flow
 
 ## 15. 建议提交切片
 
@@ -847,13 +946,20 @@ worktree 自修改与 group evolution。
    - 只改 `store`
 4. `feat(evals): add evaluator core and base evaluators`
    - 只改 `evals`
-5. `feat(meta): add candidate, comparator, and promotion core`
-   - 只改 `meta`
-6. `feat(code-agent): add offline improve operator surface`
+5. `feat(meta): add baseline compare and relative promotion core`
+   - 优先建立 candidate vs baseline 语义
+6. `feat(evals): add repo-local coding benchmark pack`
+   - 先保证 benchmark 稳定
+7. `feat(meta): add isolated worktree candidate runner`
+   - 让 `CodePatchVariant` 真正进入闭环
+8. `feat(code-agent): add offline benchmark/improve operator surface`
    - 最后改 host app
+9. `feat(meta): derive critic from benchmark failures`
+   - 在闭环稳定后再接自动诊断
 
 这样切的好处是：
 
 - 每个 commit 的职责单一
 - 每个 commit 都有清晰测试边界
 - 若 `meta` 设计调整，不会污染 `types/store/evals` 的基础层
+- code-agent 关键路径会先收敛在 baseline compare、benchmark、worktree runner
