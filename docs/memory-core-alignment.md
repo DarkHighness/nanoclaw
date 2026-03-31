@@ -358,6 +358,19 @@ Session search is now aligned to the same operator-visible boundary:
 That keeps summary metadata aligned with the operator-facing transcript surface
 instead of mixing visible content with raw replay-only counts.
 
+Search ordering now also follows a more Claude-like metadata-first shape:
+
+- last-user-prompt hits sort ahead of transcript-only hits
+- session-id hits sort ahead of transcript-only hits
+- structural metadata hits sort ahead of visible transcript-body hits when both
+  are present
+- preview snippets follow the same priority, with prompt and metadata cues
+  emitted before transcript excerpts
+
+That keeps session search closer to an operator selector with concise cues,
+instead of ranking sessions mainly by how many times the query string happened
+to appear in transcript text.
+
 ## Side Questions (`/btw`)
 
 Claude Code exposes side questions as a separate lightweight query path rather

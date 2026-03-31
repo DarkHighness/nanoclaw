@@ -56,6 +56,15 @@ pub struct SessionSearchResult {
     pub preview_matches: Vec<String>,
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct RankedSessionSearchResult {
+    pub(crate) result: SessionSearchResult,
+    prompt_match: bool,
+    session_id_match: bool,
+    metadata_match_count: usize,
+    transcript_match_count: usize,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum TokenUsageScope {
@@ -237,41 +246,66 @@ pub fn search_session_events(
     events: &[SessionEventEnvelope],
     query: &str,
 ) -> Option<SessionSearchResult> {
+    search_session_events_ranked(summary, events, query).map(|result| result.result)
+}
+
+#[must_use]
+pub(crate) fn search_session_events_ranked(
+    summary: &SessionSummary,
+    events: &[SessionEventEnvelope],
+    query: &str,
+) -> Option<RankedSessionSearchResult> {
     let query = query.trim();
     if query.is_empty() {
-        return Some(SessionSearchResult {
-            summary: summary.clone(),
-            matched_event_count: 0,
-            preview_matches: Vec::new(),
+        return Some(RankedSessionSearchResult {
+            result: SessionSearchResult {
+                summary: summary.clone(),
+                matched_event_count: 0,
+                preview_matches: Vec::new(),
+            },
+            prompt_match: false,
+            session_id_match: false,
+            metadata_match_count: 0,
+            transcript_match_count: 0,
         });
     }
 
     let query_lower = query.to_lowercase();
-    let mut matches = Vec::new();
-    let mut matched_event_count = 0;
-
-    if summary
+    let session_id_match = summary
         .session_id
         .as_str()
         .to_lowercase()
-        .contains(&query_lower)
-    {
-        matches.push(format!("session id: {}", summary.session_id));
+        .contains(&query_lower);
+    let prompt_match = summary
+        .last_user_prompt
+        .as_ref()
+        .is_some_and(|prompt| prompt.to_lowercase().contains(&query_lower));
+    let mut preview_matches = Vec::new();
+    if session_id_match {
+        preview_matches.push(format!("session id: {}", summary.session_id));
     }
-    if let Some(prompt) = &summary.last_user_prompt {
-        if prompt.to_lowercase().contains(&query_lower) {
-            matches.push(format!("prompt: {}", preview_text(prompt, 80)));
-        }
+    if prompt_match {
+        preview_matches.push(format!(
+            "prompt: {}",
+            preview_text(summary.last_user_prompt.as_deref().unwrap_or_default(), 80)
+        ));
     }
+    let mut metadata_preview_matches = Vec::new();
+    let mut transcript_preview_matches = Vec::new();
+    let mut metadata_match_count = 0;
+    let mut transcript_match_count = 0;
 
     for message in visible_transcript(events) {
         let text = message_search_text(&message);
         if !text.to_lowercase().contains(&query_lower) {
             continue;
         }
-        matched_event_count += 1;
-        if matches.len() < 3 {
-            matches.push(preview_text(&message_preview_text(&message), 80));
+        transcript_match_count += 1;
+        if transcript_preview_matches.len() < 3 {
+            push_unique_preview(
+                &mut transcript_preview_matches,
+                preview_text(&message_preview_text(&message), 80),
+            );
         }
     }
 
@@ -283,33 +317,95 @@ pub fn search_session_events(
         if event_matches.is_empty() {
             continue;
         }
-        matched_event_count += 1;
+        metadata_match_count += 1;
         let preview_candidates = previewable_event_strings(event);
-        let candidates = if preview_candidates.is_empty() {
+        let matching_preview_candidates = preview_candidates
+            .iter()
+            .filter(|candidate| candidate.to_lowercase().contains(&query_lower))
+            .cloned()
+            .collect::<Vec<_>>();
+        let candidates = if !matching_preview_candidates.is_empty() {
+            matching_preview_candidates
+        } else if preview_candidates.is_empty() {
             event_matches
         } else {
             preview_candidates
         };
         for candidate in candidates {
-            if matches.len() == 3 {
+            if metadata_preview_matches.len() == 3 {
                 break;
             }
-            matches.push(preview_text(&candidate, 80));
+            push_unique_preview(&mut metadata_preview_matches, preview_text(&candidate, 80));
         }
-        if matches.len() == 3 {
+        if metadata_preview_matches.len() == 3 {
             break;
         }
     }
 
-    if matches.is_empty() {
+    let matched_event_count = metadata_match_count + transcript_match_count;
+    preview_matches.extend(metadata_preview_matches);
+    preview_matches.extend(transcript_preview_matches);
+    preview_matches.truncate(3);
+
+    if preview_matches.is_empty() {
         None
     } else {
-        Some(SessionSearchResult {
-            summary: summary.clone(),
-            matched_event_count,
-            preview_matches: matches,
+        Some(RankedSessionSearchResult {
+            result: SessionSearchResult {
+                summary: summary.clone(),
+                matched_event_count,
+                preview_matches,
+            },
+            prompt_match,
+            session_id_match,
+            metadata_match_count,
+            transcript_match_count,
         })
     }
+}
+
+fn push_unique_preview(previews: &mut Vec<String>, candidate: String) {
+    if !previews.iter().any(|preview| preview == &candidate) {
+        previews.push(candidate);
+    }
+}
+
+pub(crate) fn sort_ranked_session_search_results(results: &mut [RankedSessionSearchResult]) {
+    // Claude-style session search behaves like an operator selector: prompt and
+    // structural metadata cues outrank raw transcript frequency so high-signal
+    // sessions stay near the top even when another transcript repeats the term.
+    results.sort_by(|left, right| {
+        right
+            .prompt_match
+            .cmp(&left.prompt_match)
+            .then_with(|| right.session_id_match.cmp(&left.session_id_match))
+            .then_with(|| right.metadata_match_count.cmp(&left.metadata_match_count))
+            .then_with(|| {
+                right
+                    .transcript_match_count
+                    .cmp(&left.transcript_match_count)
+            })
+            .then_with(|| {
+                right
+                    .result
+                    .matched_event_count
+                    .cmp(&left.result.matched_event_count)
+            })
+            .then_with(|| {
+                right
+                    .result
+                    .summary
+                    .last_timestamp_ms
+                    .cmp(&left.result.summary.last_timestamp_ms)
+            })
+            .then_with(|| {
+                left.result
+                    .summary
+                    .session_id
+                    .as_str()
+                    .cmp(right.result.summary.session_id.as_str())
+            })
+    });
 }
 
 fn previewable_event_strings(event: &SessionEventEnvelope) -> Vec<String> {
@@ -1574,6 +1670,58 @@ mod tests {
                 .preview_matches
                 .iter()
                 .any(|line| line.contains("after compaction"))
+        );
+    }
+
+    #[test]
+    fn search_session_events_prefers_metadata_previews_before_transcript_hits() {
+        let summary = SessionSummary {
+            session_id: SessionId::from("session-1"),
+            first_timestamp_ms: 1,
+            last_timestamp_ms: 3,
+            event_count: 2,
+            agent_session_count: 1,
+            transcript_message_count: 1,
+            last_user_prompt: Some("release planner".to_string()),
+        };
+        let events = vec![
+            SessionEventEnvelope::new(
+                summary.session_id.clone(),
+                AgentSessionId::from("agent-root"),
+                None,
+                None,
+                SessionEventKind::HookInvoked {
+                    hook_name: "release-hook".to_string(),
+                    event: HookEvent::Notification,
+                },
+            ),
+            SessionEventEnvelope::new(
+                summary.session_id.clone(),
+                AgentSessionId::from("agent-root"),
+                None,
+                None,
+                SessionEventKind::TranscriptMessage {
+                    message: Message::assistant("release transcript excerpt"),
+                },
+            ),
+        ];
+
+        let result = search_session_events(&summary, &events, "release").unwrap();
+        assert_eq!(result.preview_matches.len(), 3);
+        assert!(
+            result.preview_matches[0].contains("prompt: release planner"),
+            "expected prompt preview first, got {:?}",
+            result.preview_matches
+        );
+        assert!(
+            result.preview_matches[1].contains("release-hook"),
+            "expected metadata preview before transcript, got {:?}",
+            result.preview_matches
+        );
+        assert!(
+            result.preview_matches[2].contains("release transcript excerpt"),
+            "expected transcript preview last, got {:?}",
+            result.preview_matches
         );
     }
 

@@ -5,8 +5,8 @@ use crate::replay::replay_transcript;
 use crate::{
     EventSink, Result, SessionMemoryExportBundle, SessionMemoryExportRequest, SessionSearchResult,
     SessionStore, SessionStoreError, SessionSummary, apply_memory_export_request,
-    build_memory_export_record, group_events_for_memory_export, search_session_events,
-    sort_memory_export_records,
+    build_memory_export_record, group_events_for_memory_export, search_session_events_ranked,
+    sort_memory_export_records, sort_ranked_session_search_results,
 };
 use async_trait::async_trait;
 use futures::{StreamExt, stream};
@@ -247,7 +247,7 @@ impl SessionStore for FileSessionStore {
             let query = query.clone();
             async move {
                 let events = store.events(&summary.session_id).await?;
-                Ok::<_, SessionStoreError>(search_session_events(&summary, &events, &query))
+                Ok::<_, SessionStoreError>(search_session_events_ranked(&summary, &events, &query))
             }
         }))
         .buffer_unordered(SEARCH_REPLAY_CONCURRENCY_LIMIT)
@@ -258,24 +258,8 @@ impl SessionStore for FileSessionStore {
         .into_iter()
         .flatten()
         .collect::<Vec<_>>();
-        sessions.sort_by(|left, right| {
-            right
-                .matched_event_count
-                .cmp(&left.matched_event_count)
-                .then_with(|| {
-                    right
-                        .summary
-                        .last_timestamp_ms
-                        .cmp(&left.summary.last_timestamp_ms)
-                })
-                .then_with(|| {
-                    left.summary
-                        .session_id
-                        .as_str()
-                        .cmp(right.summary.session_id.as_str())
-                })
-        });
-        Ok(sessions)
+        sort_ranked_session_search_results(&mut sessions);
+        Ok(sessions.into_iter().map(|ranked| ranked.result).collect())
     }
 
     async fn events(&self, session_id: &SessionId) -> Result<Vec<SessionEventEnvelope>> {
@@ -444,7 +428,6 @@ mod tests {
     };
     use crate::{EventSink, SessionMemoryExportRequest, SessionStore};
     use nanoclaw_test_support::run_current_thread_test;
-    use serde_json::json;
     use std::time::Duration;
     use types::{
         AgentArtifact, AgentEnvelope, AgentEnvelopeKind, AgentHandle, AgentId, AgentResultEnvelope,
@@ -643,6 +626,77 @@ mod tests {
                     .preview_matches
                     .iter()
                     .any(|line| line.contains("deploy checklist"))
+            );
+        }
+    );
+
+    bounded_async_test!(
+        async fn search_prefers_prompt_matches_over_transcript_only_hits() {
+            let dir = tempfile::tempdir().unwrap();
+            let store = FileSessionStore::open(dir.path()).await.unwrap();
+            let prompt_session_id = SessionId::new();
+            let transcript_session_id = SessionId::new();
+            let agent_session_id = AgentSessionId::new();
+
+            store
+                .append_batch(vec![
+                    SessionEventEnvelope::new(
+                        prompt_session_id.clone(),
+                        agent_session_id.clone(),
+                        None,
+                        None,
+                        SessionEventKind::UserPromptSubmit {
+                            prompt: "release planner".to_string(),
+                        },
+                    ),
+                    SessionEventEnvelope::new(
+                        prompt_session_id.clone(),
+                        agent_session_id.clone(),
+                        None,
+                        None,
+                        SessionEventKind::TranscriptMessage {
+                            message: Message::assistant("status green"),
+                        },
+                    ),
+                    SessionEventEnvelope::new(
+                        transcript_session_id.clone(),
+                        agent_session_id.clone(),
+                        None,
+                        None,
+                        SessionEventKind::UserPromptSubmit {
+                            prompt: "status update".to_string(),
+                        },
+                    ),
+                    SessionEventEnvelope::new(
+                        transcript_session_id.clone(),
+                        agent_session_id.clone(),
+                        None,
+                        None,
+                        SessionEventKind::TranscriptMessage {
+                            message: Message::assistant("release notes drafted"),
+                        },
+                    ),
+                    SessionEventEnvelope::new(
+                        transcript_session_id,
+                        agent_session_id,
+                        None,
+                        None,
+                        SessionEventKind::TranscriptMessage {
+                            message: Message::assistant("release checklist ready"),
+                        },
+                    ),
+                ])
+                .await
+                .unwrap();
+
+            let matches = store.search_sessions("release").await.unwrap();
+            assert_eq!(matches.len(), 2);
+            assert_eq!(matches[0].summary.session_id, prompt_session_id);
+            assert!(
+                matches[0]
+                    .preview_matches
+                    .first()
+                    .is_some_and(|line| line.contains("prompt: release planner"))
             );
         }
     );
