@@ -4,7 +4,7 @@ use super::transcript_shell::{
     animation_frame_ms, live_progress_lines, pending_control_embedded_lines,
     pending_control_picker_bridge_entry, pending_control_picker_embedded_lines,
     pending_control_timeline_entry, prefix_transcript_marker, render_collapsed_shell_summary,
-    render_collapsed_tool_entry, render_shell_summary_entry, render_tool_entry,
+    render_collapsed_tool_entry, render_plan_entry, render_shell_summary_entry, render_tool_entry,
     should_collapse_shell_details, should_collapse_tool_details,
 };
 pub(super) use super::transcript_shell::{
@@ -150,6 +150,7 @@ fn turn_divider(width: u16) -> Line<'static> {
 pub(super) enum TranscriptEntryKind {
     UserPrompt,
     AssistantMessage,
+    PlanUpdate,
     ShellSummary,
     SuccessSummary,
     ErrorSummary,
@@ -196,6 +197,9 @@ fn render_transcript_body(
     if let Some(tool) = entry.tool_entry() {
         return render_tool_entry(tool, marker, kind, animation_frame);
     }
+    if let Some(plan) = entry.plan_entry() {
+        return render_plan_entry(plan, marker, kind);
+    }
 
     let summary = entry
         .shell_summary()
@@ -209,6 +213,7 @@ fn entry_accent(entry: &TranscriptEntry, kind: TranscriptEntryKind) -> ratatui::
             TranscriptEntryKind::ShellSummary => {
                 super::transcript_shell::summary_color(&tool.headline)
             }
+            TranscriptEntryKind::PlanUpdate => MUTED,
             TranscriptEntryKind::SuccessSummary => ASSISTANT,
             TranscriptEntryKind::ErrorSummary => ERROR,
             TranscriptEntryKind::WarningSummary => WARN,
@@ -220,6 +225,7 @@ fn entry_accent(entry: &TranscriptEntry, kind: TranscriptEntryKind) -> ratatui::
     match kind {
         TranscriptEntryKind::AssistantMessage => MUTED,
         TranscriptEntryKind::UserPrompt => USER,
+        TranscriptEntryKind::PlanUpdate => MUTED,
         TranscriptEntryKind::ShellSummary => super::transcript_shell::summary_color(entry.body()),
         TranscriptEntryKind::SuccessSummary => ASSISTANT,
         TranscriptEntryKind::ErrorSummary => ERROR,
@@ -231,6 +237,7 @@ fn entry_kind_from_cell(entry: &TranscriptEntry) -> TranscriptEntryKind {
     match entry {
         TranscriptEntry::UserPrompt(_) => TranscriptEntryKind::UserPrompt,
         TranscriptEntry::AssistantMessage(_) => TranscriptEntryKind::AssistantMessage,
+        TranscriptEntry::Plan(_) => TranscriptEntryKind::PlanUpdate,
         TranscriptEntry::Tool(tool) => entry_kind_from_tool(tool),
         TranscriptEntry::ShellSummary(_) => TranscriptEntryKind::ShellSummary,
         TranscriptEntry::SuccessSummary(_) => TranscriptEntryKind::SuccessSummary,

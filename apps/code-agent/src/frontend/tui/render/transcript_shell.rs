@@ -1,12 +1,12 @@
 use super::super::state::{
-    TranscriptEntry, TranscriptShellBlockKind, TranscriptShellDetail, TranscriptShellEntry,
-    TranscriptToolEntry, TranscriptToolStatus, TuiState, preview_text,
+    TranscriptEntry, TranscriptPlanEntry, TranscriptShellBlockKind, TranscriptShellDetail,
+    TranscriptShellEntry, TranscriptToolEntry, TranscriptToolStatus, TuiState, preview_text,
 };
 use super::shared::{
     pending_control_focus_label, pending_control_kind_label, pending_control_reason_label,
 };
 use super::statusline::status_color;
-use super::theme::{ASSISTANT, ERROR, HEADER, MUTED, SUBTLE, TEXT, USER, WARN};
+use super::theme::{ACCENT, ASSISTANT, ERROR, HEADER, MUTED, SUBTLE, TEXT, USER, WARN};
 use super::transcript::TranscriptEntryKind;
 use super::transcript_markdown::render_shell_code_block;
 use super::transcript_markdown_blocks::code_span;
@@ -229,6 +229,63 @@ pub(super) fn render_tool_entry(
     rendered
 }
 
+pub(super) fn render_plan_entry(
+    entry: &TranscriptPlanEntry,
+    _marker: &str,
+    kind: TranscriptEntryKind,
+) -> Vec<Line<'static>> {
+    let mut rendered = vec![Line::from(Span::styled(
+        entry.headline.clone(),
+        Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
+    ))];
+
+    if let Some(explanation) = entry.explanation.as_deref() {
+        rendered.push(Line::from(vec![
+            transcript_continuation_prefix(kind),
+            Span::styled(
+                explanation.to_string(),
+                Style::default().fg(SUBTLE).add_modifier(Modifier::ITALIC),
+            ),
+        ]));
+    }
+
+    if entry.items.is_empty() {
+        rendered.push(Line::from(vec![
+            transcript_continuation_prefix(kind),
+            Span::styled(
+                "(no steps provided)".to_string(),
+                Style::default().fg(SUBTLE).add_modifier(Modifier::ITALIC),
+            ),
+        ]));
+        return rendered;
+    }
+
+    for item in &entry.items {
+        let (marker, status_style, content_style) = match item.status.as_str() {
+            "completed" => (
+                "✔ ",
+                Style::default().fg(ASSISTANT).add_modifier(Modifier::DIM),
+                Style::default()
+                    .fg(SUBTLE)
+                    .add_modifier(Modifier::CROSSED_OUT | Modifier::DIM),
+            ),
+            "in_progress" => (
+                "□ ",
+                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+                Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
+            ),
+            _ => ("□ ", Style::default().fg(SUBTLE), Style::default().fg(TEXT)),
+        };
+        rendered.push(Line::from(vec![
+            transcript_continuation_prefix(kind),
+            Span::styled(marker.to_string(), status_style),
+            Span::styled(item.content.clone(), content_style),
+        ]));
+    }
+
+    rendered
+}
+
 fn render_animated_shell_status_line(
     raw_line: &str,
     marker: &str,
@@ -312,6 +369,7 @@ pub(super) fn transcript_body_style(marker: &str, kind: TranscriptEntryKind, lin
         TranscriptEntryKind::UserPrompt | TranscriptEntryKind::AssistantMessage => {
             Style::default().fg(TEXT)
         }
+        TranscriptEntryKind::PlanUpdate => Style::default().fg(TEXT),
         TranscriptEntryKind::ShellSummary => Style::default().fg(summary_color(line)),
         TranscriptEntryKind::SuccessSummary => Style::default().fg(ASSISTANT),
         TranscriptEntryKind::ErrorSummary => Style::default().fg(ERROR),
@@ -464,6 +522,7 @@ fn shell_block_label_style(kind: TranscriptShellBlockKind) -> Style {
 fn shell_block_line_style(kind: TranscriptEntryKind) -> Style {
     match kind {
         TranscriptEntryKind::SuccessSummary => Style::default().fg(TEXT),
+        TranscriptEntryKind::PlanUpdate => Style::default().fg(TEXT),
         TranscriptEntryKind::ErrorSummary
         | TranscriptEntryKind::WarningSummary
         | TranscriptEntryKind::ShellSummary

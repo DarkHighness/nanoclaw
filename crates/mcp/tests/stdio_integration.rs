@@ -32,7 +32,7 @@ async fn stdio_server_supports_catalog_tool_prompt_and_resource_round_trips() {
     let fixture_cwd = tempdir().unwrap();
     let expected_cwd = fixture_cwd.path().canonicalize().unwrap();
     let config = McpServerConfig {
-        name: "fixture".to_string(),
+        name: "fixture".into(),
         transport: McpTransportConfig::Stdio {
             command: env!("CARGO_BIN_EXE_test_stdio_server").to_string(),
             args: Vec::new(),
@@ -62,7 +62,7 @@ async fn stdio_server_supports_catalog_tool_prompt_and_resource_round_trips() {
 
     assert_eq!(servers.len(), 1);
     let server = &servers[0];
-    assert_eq!(server.server_name, "fixture");
+    assert_eq!(server.server_name.as_str(), "fixture");
 
     assert_eq!(server.catalog.tools.len(), 1);
     let tool = &server.catalog.tools[0];
@@ -70,7 +70,7 @@ async fn stdio_server_supports_catalog_tool_prompt_and_resource_round_trips() {
     assert_eq!(
         tool.origin,
         ToolOrigin::Mcp {
-            server_name: "fixture".to_string()
+            server_name: "fixture".into()
         }
     );
     assert!(tool.approval.read_only);
@@ -89,6 +89,11 @@ async fn stdio_server_supports_catalog_tool_prompt_and_resource_round_trips() {
     let resource_listing = &server.catalog.resources[0];
     assert_eq!(resource_listing.uri, "fixture://guide");
     assert_eq!(resource_listing.mime_type.as_deref(), Some("text/markdown"));
+    assert_eq!(server.catalog.resource_templates.len(), 1);
+    assert_eq!(
+        server.catalog.resource_templates[0].uri_template,
+        "fixture://guide/{section}"
+    );
 
     let tool_result = timeout(
         Duration::from_secs(10),
@@ -159,7 +164,7 @@ async fn stdio_server_supports_catalog_tool_prompt_and_resource_round_trips() {
     assert_eq!(
         logged[0].origin,
         tools::ExecutionOrigin::McpStdioServer {
-            server_name: "fixture".to_string()
+            server_name: "fixture".into()
         }
     );
     assert_eq!(logged[0].program, env!("CARGO_BIN_EXE_test_stdio_server"));

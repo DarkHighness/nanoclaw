@@ -8,8 +8,8 @@ use agent::{
     CodeReferencesTool, CodeSymbolSearchTool, EditTool, GlobTool, GrepTool, JsReplTool, ListTool,
     ManagedCodeIntelBackend, ManagedCodeIntelOptions, ManagedPolicyProcessExecutor, PatchTool,
     PlanState, ReadTool, RequestPermissionsTool, RequestUserInputTool, SandboxPolicy, TaskTool,
-    ToolRegistry, UpdatePlanTool, WebFetchTool, WebSearchBackendsTool, WebSearchTool,
-    WorkspaceTextCodeIntelBackend, WriteTool,
+    ToolRegistry, UpdatePlanTool, ViewImageTool, WebFetchTool, WebSearchBackendsTool,
+    WebSearchTool, WorkspaceTextCodeIntelBackend, WriteTool,
 };
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -116,6 +116,7 @@ fn build_builtin_tools(
 
     if let Some(observer) = managed_code_intel {
         tools.register(ReadTool::with_file_activity_observer(observer.clone()));
+        tools.register(ViewImageTool::with_file_activity_observer(observer.clone()));
         tools.register(WriteTool::with_file_activity_observer(observer.clone()));
         tools.register(EditTool::with_file_activity_observer(observer.clone()));
         tools.register(ApplyPatchTool::with_file_activity_observer(
@@ -124,6 +125,7 @@ fn build_builtin_tools(
         tools.register(PatchTool::with_file_activity_observer(observer));
     } else {
         tools.register(ReadTool::new());
+        tools.register(ViewImageTool::new());
         tools.register(WriteTool::new());
         tools.register(EditTool::new());
         tools.register(ApplyPatchTool::new());
@@ -310,6 +312,7 @@ mod tests {
         );
 
         let tool_names = tooling.tools.names();
+        assert!(tool_names.iter().any(|name| name.as_str() == "view_image"));
         assert!(tool_names.iter().any(|name| name.as_str() == "web_fetch"));
         assert!(tool_names.iter().any(|name| name.as_str() == "web_search"));
         assert!(

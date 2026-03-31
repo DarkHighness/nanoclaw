@@ -444,10 +444,61 @@ impl TranscriptToolEntry {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct TranscriptPlanEntry {
+    pub(crate) headline: String,
+    pub(crate) explanation: Option<String>,
+    pub(crate) items: Vec<PlanEntry>,
+}
+
+impl TranscriptPlanEntry {
+    pub(crate) fn new(explanation: Option<String>, items: Vec<PlanEntry>) -> Self {
+        Self {
+            headline: "Updated Plan".to_string(),
+            explanation: explanation
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty()),
+            items,
+        }
+    }
+
+    pub(crate) fn serialized_lines(&self) -> Vec<String> {
+        let mut lines = vec![self.headline.clone()];
+        if let Some(explanation) = &self.explanation {
+            lines.push(format!("  └ {explanation}"));
+        }
+        if self.items.is_empty() {
+            lines.push("  └ (no steps provided)".to_string());
+        } else {
+            lines.extend(self.items.iter().map(|item| {
+                format!(
+                    "  └ [{}] {}",
+                    plan_status_marker(item.status.as_str()),
+                    item.content
+                )
+            }));
+        }
+        lines
+    }
+
+    pub(crate) fn serialized_body(&self) -> String {
+        self.serialized_lines().join("\n")
+    }
+}
+
+fn plan_status_marker(status: &str) -> &'static str {
+    match status {
+        "completed" => "x",
+        "in_progress" => "~",
+        _ => " ",
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum TranscriptEntry {
     UserPrompt(String),
     AssistantMessage(String),
     Tool(TranscriptToolEntry),
+    Plan(TranscriptPlanEntry),
     ShellSummary(TranscriptShellEntry),
     SuccessSummary(TranscriptShellEntry),
     ErrorSummary(TranscriptShellEntry),
@@ -461,6 +512,10 @@ impl TranscriptEntry {
         detail_lines: Vec<ToolDetail>,
     ) -> Self {
         Self::Tool(TranscriptToolEntry::new(status, tool_name, detail_lines))
+    }
+
+    pub(crate) fn plan_update(explanation: Option<String>, items: Vec<PlanEntry>) -> Self {
+        Self::Plan(TranscriptPlanEntry::new(explanation, items))
     }
 
     pub(crate) fn shell_summary_details(
@@ -491,6 +546,7 @@ impl TranscriptEntry {
                 true
             }
             Self::Tool(_)
+            | Self::Plan(_)
             | Self::ShellSummary(_)
             | Self::SuccessSummary(_)
             | Self::ErrorSummary(_)
@@ -503,6 +559,7 @@ impl TranscriptEntry {
             Self::UserPrompt(text) => format!("› {text}"),
             Self::AssistantMessage(text) => format!("• {text}"),
             Self::Tool(entry) => format!("{} {}", entry.marker(), entry.serialized_body()),
+            Self::Plan(entry) => format!("• {}", entry.serialized_body()),
             Self::ShellSummary(summary) => format!("• {}", summary.serialized_body()),
             Self::SuccessSummary(summary) => format!("✔ {}", summary.serialized_body()),
             Self::ErrorSummary(summary) => format!("✗ {}", summary.serialized_body()),
@@ -515,6 +572,7 @@ impl TranscriptEntry {
             Self::UserPrompt(_) => "›",
             Self::AssistantMessage(_) | Self::ShellSummary(_) => "•",
             Self::Tool(entry) => entry.marker(),
+            Self::Plan(_) => "•",
             Self::SuccessSummary(_) => "✔",
             Self::ErrorSummary(_) => "✗",
             Self::WarningSummary(_) => "⚠",
@@ -525,6 +583,7 @@ impl TranscriptEntry {
         match self {
             Self::UserPrompt(text) | Self::AssistantMessage(text) => text,
             Self::Tool(entry) => entry.headline.as_str(),
+            Self::Plan(entry) => entry.headline.as_str(),
             Self::ShellSummary(summary)
             | Self::SuccessSummary(summary)
             | Self::ErrorSummary(summary)
@@ -538,7 +597,7 @@ impl TranscriptEntry {
             | Self::SuccessSummary(summary)
             | Self::ErrorSummary(summary)
             | Self::WarningSummary(summary) => Some(summary),
-            Self::UserPrompt(_) | Self::AssistantMessage(_) | Self::Tool(_) => None,
+            Self::UserPrompt(_) | Self::AssistantMessage(_) | Self::Tool(_) | Self::Plan(_) => None,
         }
     }
 
@@ -551,6 +610,20 @@ impl TranscriptEntry {
             Self::Tool(entry) => Some(entry),
             Self::UserPrompt(_)
             | Self::AssistantMessage(_)
+            | Self::Plan(_)
+            | Self::ShellSummary(_)
+            | Self::SuccessSummary(_)
+            | Self::ErrorSummary(_)
+            | Self::WarningSummary(_) => None,
+        }
+    }
+
+    pub(crate) fn plan_entry(&self) -> Option<&TranscriptPlanEntry> {
+        match self {
+            Self::Plan(entry) => Some(entry),
+            Self::UserPrompt(_)
+            | Self::AssistantMessage(_)
+            | Self::Tool(_)
             | Self::ShellSummary(_)
             | Self::SuccessSummary(_)
             | Self::ErrorSummary(_)

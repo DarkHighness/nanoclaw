@@ -1,6 +1,6 @@
 use crate::{
     ConnectedMcpServer, McpCatalog, McpError, McpPrompt, McpPromptArgument, McpResource,
-    McpServerConfig, McpTransportConfig, Result,
+    McpResourceTemplate, McpServerConfig, McpTransportConfig, Result,
 };
 use async_trait::async_trait;
 use futures::{StreamExt, TryStreamExt, stream};
@@ -213,12 +213,21 @@ impl McpClient for RmcpClient {
             .into_iter()
             .map(mcp_resource_from_listing)
             .collect();
+        let resource_templates = self
+            .peer
+            .list_all_resource_templates()
+            .await
+            .map_err(|error| McpError::protocol(error.to_string()))?
+            .into_iter()
+            .map(mcp_resource_template_from_listing)
+            .collect();
 
         Ok(McpCatalog {
             server_name: self.server_name.clone(),
             tools,
             prompts,
             resources,
+            resource_templates,
         })
     }
 
@@ -517,6 +526,18 @@ fn mcp_resource_from_listing(resource: rmcp::model::Resource) -> McpResource {
         description: resource.description.clone().unwrap_or_default(),
         mime_type: resource.mime_type.clone(),
         parts: Vec::new(),
+    }
+}
+
+fn mcp_resource_template_from_listing(
+    template: rmcp::model::ResourceTemplate,
+) -> McpResourceTemplate {
+    McpResourceTemplate {
+        uri_template: template.uri_template.clone(),
+        name: template.name.clone(),
+        title: template.title.clone(),
+        description: template.description.clone().unwrap_or_default(),
+        mime_type: template.mime_type.clone(),
     }
 }
 

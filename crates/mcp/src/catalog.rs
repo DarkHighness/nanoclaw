@@ -35,12 +35,23 @@ pub struct McpResource {
     pub parts: Vec<MessagePart>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct McpResourceTemplate {
+    pub uri_template: String,
+    pub name: String,
+    pub title: Option<String>,
+    pub description: String,
+    pub mime_type: Option<String>,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct McpCatalog {
     pub server_name: McpServerName,
     pub tools: Vec<ToolSpec>,
     pub prompts: Vec<McpPrompt>,
     pub resources: Vec<McpResource>,
+    #[serde(default)]
+    pub resource_templates: Vec<McpResourceTemplate>,
 }
 
 #[derive(Clone)]

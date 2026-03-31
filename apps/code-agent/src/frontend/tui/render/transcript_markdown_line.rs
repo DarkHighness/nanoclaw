@@ -232,6 +232,7 @@ fn markdown_token_index(text: &str) -> Option<usize> {
 fn markdown_body_style(kind: TranscriptEntryKind, base: Style) -> Style {
     match kind {
         TranscriptEntryKind::AssistantMessage | TranscriptEntryKind::UserPrompt => base.fg(TEXT),
+        TranscriptEntryKind::PlanUpdate => base.fg(TEXT),
         TranscriptEntryKind::ShellSummary => base.fg(MUTED),
         TranscriptEntryKind::SuccessSummary => base.fg(ASSISTANT),
         TranscriptEntryKind::ErrorSummary => base.fg(ERROR),

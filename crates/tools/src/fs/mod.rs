@@ -8,6 +8,7 @@ mod patch;
 mod path_policy;
 mod read;
 mod text_buffer;
+mod view_image;
 mod write;
 
 pub use apply_patch::*;
@@ -20,4 +21,5 @@ pub use patch::*;
 pub use path_policy::*;
 pub use read::*;
 pub use text_buffer::*;
+pub use view_image::*;
 pub use write::*;

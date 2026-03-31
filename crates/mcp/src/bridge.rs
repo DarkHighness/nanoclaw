@@ -1,4 +1,4 @@
-use crate::{ConnectedMcpServer, McpClient, McpResource, Result};
+use crate::{ConnectedMcpServer, McpClient, McpResource, McpResourceTemplate, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -29,12 +29,38 @@ struct McpResourceRecord {
     mime_type: Option<String>,
 }
 
+#[derive(Clone, Debug, Deserialize)]
+struct ListMcpResourceTemplatesInput {
+    #[serde(default)]
+    server_name: Option<McpServerName>,
+    #[serde(default)]
+    uri_template_prefix: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct McpResourceTemplateRecord {
+    server_name: McpServerName,
+    uri_template: String,
+    name: String,
+    title: Option<String>,
+    description: String,
+    mime_type: Option<String>,
+}
+
 #[derive(Clone, Debug, Serialize)]
 struct ListMcpResourcesOutput {
     server_name: Option<McpServerName>,
     uri_prefix: Option<String>,
     result_count: usize,
     resources: Vec<McpResourceRecord>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct ListMcpResourceTemplatesOutput {
+    server_name: Option<McpServerName>,
+    uri_template_prefix: Option<String>,
+    result_count: usize,
+    resource_templates: Vec<McpResourceTemplateRecord>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -110,15 +136,16 @@ pub fn catalog_resource_tools_as_registry_entries(
     // surface remains stable as servers connect, disconnect, or refresh their
     // catalog. The server and resource identity then travel as normal tool
     // arguments and result metadata instead of exploding into per-server tools.
-    let has_resources = servers
-        .iter()
-        .any(|server| !server.catalog.resources.is_empty());
-    if !has_resources {
+    let has_resource_surfaces = servers.iter().any(|server| {
+        !server.catalog.resources.is_empty() || !server.catalog.resource_templates.is_empty()
+    });
+    if !has_resource_surfaces {
         return Vec::new();
     }
 
     vec![
         build_list_mcp_resources_tool(servers.clone()),
+        build_list_mcp_resource_templates_tool(servers.clone()),
         build_read_mcp_resource_tool(servers),
     ]
 }
@@ -165,6 +192,29 @@ fn build_read_mcp_resource_tool(servers: Vec<ConnectedMcpServer>) -> DynamicTool
     let handler: DynamicToolHandler = Arc::new(move |call_id, arguments, _ctx| {
         let servers = servers.clone();
         Box::pin(async move { execute_read_mcp_resource(call_id, arguments, &servers).await })
+    });
+    DynamicTool::from_tool_spec(spec, handler)
+}
+
+fn build_list_mcp_resource_templates_tool(servers: Vec<ConnectedMcpServer>) -> DynamicTool {
+    let spec = ToolSpec::function(
+        "list_mcp_resource_templates",
+        "List MCP resource templates exposed by connected servers. Supports optional filtering by server name and URI template prefix.",
+        list_mcp_resource_templates_input_schema(),
+        ToolOutputMode::Text,
+        ToolOrigin::Mcp {
+            server_name: "*".into(),
+        },
+        ToolSource::McpResource {
+            server_name: "*".into(),
+        },
+    )
+    .with_output_schema(list_mcp_resource_templates_output_schema())
+    .with_parallel_support(true)
+    .with_approval(ToolApprovalProfile::new(true, false, Some(true), false));
+    let handler: DynamicToolHandler = Arc::new(move |call_id, arguments, _ctx| {
+        let servers = servers.clone();
+        Box::pin(async move { execute_list_mcp_resource_templates(call_id, arguments, &servers) })
     });
     DynamicTool::from_tool_spec(spec, handler)
 }
@@ -232,6 +282,75 @@ fn execute_list_mcp_resources(
             "server_name": input.server_name,
             "uri_prefix": input.uri_prefix,
             "result_count": resources.len(),
+        })),
+        is_error: false,
+    })
+}
+
+fn execute_list_mcp_resource_templates(
+    call_id: ToolCallId,
+    arguments: Value,
+    servers: &[ConnectedMcpServer],
+) -> ToolsResult<ToolResult> {
+    let external_call_id = CallId::from(&call_id);
+    let input: ListMcpResourceTemplatesInput = serde_json::from_value(arguments)?;
+    let resource_templates = servers
+        .iter()
+        .filter(|server| {
+            input
+                .server_name
+                .as_ref()
+                .is_none_or(|server_name| server.server_name == *server_name)
+        })
+        .flat_map(|server| {
+            server
+                .catalog
+                .resource_templates
+                .iter()
+                .filter_map(|template| {
+                    if let Some(prefix) = input.uri_template_prefix.as_deref()
+                        && !template.uri_template.starts_with(prefix)
+                    {
+                        return None;
+                    }
+                    Some(McpResourceTemplateRecord::from_template(
+                        server.server_name.clone(),
+                        template,
+                    ))
+                })
+        })
+        .collect::<Vec<_>>();
+    let text = if resource_templates.is_empty() {
+        "No MCP resource templates matched the current filters.".to_string()
+    } else {
+        resource_templates
+            .iter()
+            .map(format_resource_template_record)
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let structured_output = ListMcpResourceTemplatesOutput {
+        server_name: input.server_name.clone(),
+        uri_template_prefix: input.uri_template_prefix.clone(),
+        result_count: resource_templates.len(),
+        resource_templates: resource_templates.clone(),
+    };
+
+    Ok(ToolResult {
+        id: call_id,
+        call_id: external_call_id,
+        tool_name: "list_mcp_resource_templates".into(),
+        parts: vec![MessagePart::text(text)],
+        attachments: Vec::new(),
+        structured_content: Some(
+            serde_json::to_value(structured_output)
+                .expect("list_mcp_resource_templates structured output"),
+        ),
+        continuation: None,
+        metadata: Some(json!({
+            "server_name": input.server_name,
+            "uri_template_prefix": input.uri_template_prefix,
+            "result_count": resource_templates.len(),
         })),
         is_error: false,
     })
@@ -403,6 +522,48 @@ fn list_mcp_resources_output_schema() -> Value {
     })
 }
 
+fn list_mcp_resource_templates_input_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "server_name": { "type": "string" },
+            "uri_template_prefix": { "type": "string" }
+        }
+    })
+}
+
+fn list_mcp_resource_templates_output_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "server_name": { "type": "string" },
+            "uri_template_prefix": { "type": "string" },
+            "result_count": { "type": "integer" },
+            "resource_templates": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "server_name": { "type": "string" },
+                        "uri_template": { "type": "string" },
+                        "name": { "type": "string" },
+                        "title": { "type": "string" },
+                        "description": { "type": "string" },
+                        "mime_type": { "type": "string" }
+                    },
+                    "required": [
+                        "server_name",
+                        "uri_template",
+                        "name",
+                        "description"
+                    ]
+                }
+            }
+        },
+        "required": ["result_count", "resource_templates"]
+    })
+}
+
 fn read_mcp_resource_input_schema() -> Value {
     json!({
         "type": "object",
@@ -477,6 +638,33 @@ fn format_resource_record(record: &McpResourceRecord) -> String {
     )
 }
 
+impl McpResourceTemplateRecord {
+    fn from_template(server_name: McpServerName, template: &McpResourceTemplate) -> Self {
+        Self {
+            server_name,
+            uri_template: template.uri_template.clone(),
+            name: template.name.clone(),
+            title: template.title.clone(),
+            description: template.description.clone(),
+            mime_type: template.mime_type.clone(),
+        }
+    }
+}
+
+fn format_resource_template_record(record: &McpResourceTemplateRecord) -> String {
+    format!(
+        "{} {} {}{}",
+        record.server_name,
+        record.uri_template,
+        record.mime_type.as_deref().unwrap_or("unknown"),
+        record
+            .title
+            .as_deref()
+            .map(|title| format!(" {title}"))
+            .unwrap_or_default(),
+    )
+}
+
 fn extract_text_resource(resource: &McpResource) -> Option<String> {
     let parts = resource
         .parts
@@ -509,7 +697,7 @@ fn truncate_text(value: &str, limit: usize) -> (String, bool) {
 #[cfg(test)]
 mod tests {
     use super::catalog_resource_tools_as_registry_entries;
-    use crate::{ConnectedMcpServer, McpCatalog, McpResource, MockMcpClient};
+    use crate::{ConnectedMcpServer, McpCatalog, McpResource, McpResourceTemplate, MockMcpClient};
     use serde_json::json;
     use std::sync::Arc;
     use tools::{Tool, ToolExecutionContext};
@@ -535,6 +723,13 @@ mod tests {
                         metadata: None,
                     }],
                 }],
+                resource_templates: vec![McpResourceTemplate {
+                    uri_template: "fixture://guide/{section}".to_string(),
+                    name: "guide-template".to_string(),
+                    title: Some("Guide Template".to_string()),
+                    description: "templated fixture guide".to_string(),
+                    mime_type: Some("text/markdown".to_string()),
+                }],
             },
             Arc::new(|_, _| unreachable!("tool handler should not run in resource bridge test")),
         ));
@@ -558,13 +753,21 @@ mod tests {
                         metadata: None,
                     }],
                 }],
+                resource_templates: vec![McpResourceTemplate {
+                    uri_template: "fixture://guide/{section}".to_string(),
+                    name: "guide-template".to_string(),
+                    title: Some("Guide Template".to_string()),
+                    description: "templated fixture guide".to_string(),
+                    mime_type: Some("text/markdown".to_string()),
+                }],
             },
         };
 
         let tools = catalog_resource_tools_as_registry_entries(vec![server]);
-        assert_eq!(tools.len(), 2);
+        assert_eq!(tools.len(), 3);
         assert_eq!(tools[0].spec().name.as_str(), "list_mcp_resources");
-        assert_eq!(tools[1].spec().name.as_str(), "read_mcp_resource");
+        assert_eq!(tools[1].spec().name.as_str(), "list_mcp_resource_templates");
+        assert_eq!(tools[2].spec().name.as_str(), "read_mcp_resource");
 
         let list = tools[0]
             .execute(
@@ -576,7 +779,20 @@ mod tests {
             .unwrap();
         assert_eq!(list.structured_content.unwrap()["result_count"], json!(1));
 
-        let read = tools[1]
+        let templates = tools[1]
+            .execute(
+                ToolCallId::from("template-call"),
+                json!({}),
+                &ToolExecutionContext::default(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            templates.structured_content.unwrap()["result_count"],
+            json!(1)
+        );
+
+        let read = tools[2]
             .execute(
                 ToolCallId::from("read-call"),
                 json!({
@@ -623,6 +839,7 @@ mod tests {
                             uri: Some("fixture://binary".to_string()),
                         }],
                     }],
+                    resource_templates: Vec::new(),
                 },
                 Arc::new(|_, _| {
                     unreachable!("tool handler should not run in resource bridge test")
@@ -645,11 +862,12 @@ mod tests {
                         uri: Some("fixture://binary".to_string()),
                     }],
                 }],
+                resource_templates: Vec::new(),
             },
         };
 
         let tools = catalog_resource_tools_as_registry_entries(vec![server]);
-        let read = tools[1]
+        let read = tools[2]
             .execute(
                 ToolCallId::from("read-call"),
                 json!({

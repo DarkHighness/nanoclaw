@@ -1224,6 +1224,56 @@ fn finished_tool_transcript_entry() -> TranscriptEntry {
     )
 }
 
+#[test]
+fn transcript_renders_plan_updates_as_dedicated_cells() {
+    let mut state = TuiState {
+        main_pane: MainPaneMode::Transcript,
+        ..TuiState::default()
+    };
+    state.transcript = vec![TranscriptEntry::plan_update(
+        Some("Keep the transcript focused on the next slice.".to_string()),
+        vec![
+            PlanEntry {
+                id: "p1".to_string(),
+                content: "Inspect the current plan renderer".to_string(),
+                status: "completed".to_string(),
+            },
+            PlanEntry {
+                id: "p2".to_string(),
+                content: "Promote update_plan into a dedicated cell".to_string(),
+                status: "in_progress".to_string(),
+            },
+            PlanEntry {
+                id: "p3".to_string(),
+                content: "Verify snapshots and tests".to_string(),
+                status: "pending".to_string(),
+            },
+        ],
+    )];
+
+    let rendered = build_transcript_lines(&state);
+    assert_eq!(rendered[0].spans[0].content.as_ref(), "•");
+    assert_eq!(rendered[0].spans[2].content.as_ref(), "Updated Plan");
+    assert!(rendered.iter().any(|line| {
+        line_text_for(line).contains("Keep the transcript focused on the next slice.")
+    }));
+    assert!(
+        rendered
+            .iter()
+            .any(|line| line_text_for(line).contains("Inspect the current plan renderer"))
+    );
+    assert!(
+        rendered
+            .iter()
+            .any(|line| line_text_for(line).contains("Promote update_plan into a dedicated cell"))
+    );
+    assert!(
+        rendered
+            .iter()
+            .any(|line| line_text_for(line).contains("Verify snapshots and tests"))
+    );
+}
+
 fn text_lines(text: &ratatui::text::Text<'_>) -> Vec<String> {
     text.lines.iter().map(line_text_for).collect()
 }

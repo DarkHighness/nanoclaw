@@ -3,10 +3,11 @@ use rmcp::{
     ErrorData as McpError, RoleServer, ServerHandler, ServiceExt,
     model::{
         AnnotateAble, CallToolRequestParams, CallToolResult, Content, GetPromptRequestParams,
-        GetPromptResult, ListPromptsResult, ListResourcesResult, ListToolsResult, Meta,
-        PaginatedRequestParams, Prompt, PromptArgument, PromptMessage, PromptMessageRole,
-        RawResource, ReadResourceRequestParams, ReadResourceResult, ResourceContents,
-        ServerCapabilities, ServerInfo, Tool, ToolAnnotations,
+        GetPromptResult, ListPromptsResult, ListResourceTemplatesResult, ListResourcesResult,
+        ListToolsResult, Meta, PaginatedRequestParams, Prompt, PromptArgument, PromptMessage,
+        PromptMessageRole, RawResource, RawResourceTemplate, ReadResourceRequestParams,
+        ReadResourceResult, ResourceContents, ServerCapabilities, ServerInfo, Tool,
+        ToolAnnotations,
     },
     service::RequestContext,
     transport::stdio,
@@ -131,6 +132,21 @@ impl ServerHandler for FixtureServer {
             RawResource::new("fixture://guide", "guide")
                 .with_title("Fixture Guide")
                 .with_description("fixture markdown resource")
+                .with_mime_type("text/markdown")
+                .no_annotation(),
+        ])))
+    }
+
+    fn list_resource_templates(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> impl Future<Output = std::result::Result<ListResourceTemplatesResult, McpError>> + Send + '_
+    {
+        std::future::ready(Ok(ListResourceTemplatesResult::with_all_items(vec![
+            RawResourceTemplate::new("fixture://guide/{section}", "guide-template")
+                .with_title("Fixture Guide Template")
+                .with_description("fixture markdown template")
                 .with_mime_type("text/markdown")
                 .no_annotation(),
         ])))

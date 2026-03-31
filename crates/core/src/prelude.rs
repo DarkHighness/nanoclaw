@@ -7,7 +7,7 @@ pub use store::{FileSessionStore, InMemorySessionStore, SessionStore};
 pub use tools::{
     ApplyPatchTool, BashTool, EditTool, GlobTool, GrepTool, HostProcessExecutor, JsReplTool,
     ListTool, ManagedPolicyProcessExecutor, PatchTool, ReadTool, SandboxPolicy, Tool,
-    ToolExecutionContext, ToolRegistry, WriteTool,
+    ToolExecutionContext, ToolRegistry, ViewImageTool, WriteTool,
 };
 #[cfg(feature = "code-intel")]
 pub use tools::{

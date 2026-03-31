@@ -311,6 +311,12 @@ fn completed_tool_entry(
     output_preview: &str,
     structured_output_preview: Option<&str>,
 ) -> TranscriptEntry {
+    if let Some(plan_entry) =
+        plan_update_entry_from_output(&call.tool_name, structured_output_preview)
+    {
+        return plan_entry;
+    }
+
     let mut detail_lines = tool_argument_detail_lines(call);
     detail_lines.extend(tool_output_details_from_preview(
         &call.tool_name,
@@ -359,12 +365,34 @@ fn plan_items_from_output(
     tool_name: &str,
     structured_output_preview: Option<&str>,
 ) -> Option<Vec<PlanEntry>> {
+    plan_payload_from_output(tool_name, structured_output_preview).map(|(_, items)| items)
+}
+
+fn plan_update_entry_from_output(
+    tool_name: &str,
+    structured_output_preview: Option<&str>,
+) -> Option<TranscriptEntry> {
+    let (explanation, items) = plan_payload_from_output(tool_name, structured_output_preview)?;
+    Some(TranscriptEntry::plan_update(explanation, items))
+}
+
+fn plan_payload_from_output(
+    tool_name: &str,
+    structured_output_preview: Option<&str>,
+) -> Option<(Option<String>, Vec<PlanEntry>)> {
     if tool_name != "update_plan" {
         return None;
     }
     let value = serde_json::from_str::<Value>(structured_output_preview?).ok()?;
     let items = value.get("items")?.as_array()?;
-    Some(
+    let explanation = value
+        .get("explanation")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    Some((
+        explanation,
         items
             .iter()
             .filter_map(|item| {
@@ -376,7 +404,7 @@ fn plan_items_from_output(
                 })
             })
             .collect(),
-    )
+    ))
 }
 
 fn replace_tool_line(
@@ -550,6 +578,11 @@ mod tests {
         });
 
         let snapshot = ui_state.snapshot();
+        assert_eq!(snapshot.transcript.len(), 1);
+        assert_eq!(
+            transcript_text(&snapshot.transcript[0]),
+            "• Updated Plan\n  └ [x] Inspect repo\n  └ [~] Refine TUI"
+        );
         assert_eq!(snapshot.plan_items.len(), 2);
         assert_eq!(snapshot.plan_items[1].content, "Refine TUI");
         assert_eq!(snapshot.plan_items[1].status, "in_progress");
