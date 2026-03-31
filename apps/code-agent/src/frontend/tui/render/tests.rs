@@ -1421,6 +1421,35 @@ fn transcript_keeps_fenced_block_label_as_first_visible_line() {
     );
 }
 
+#[test]
+fn transcript_preserves_span_level_syntax_highlighting_for_fenced_code() {
+    let mut state = TuiState {
+        main_pane: MainPaneMode::Transcript,
+        ..TuiState::default()
+    };
+    state.transcript = vec![transcript_entry(concat!(
+        "• ```rust\n",
+        "fn main() {\n",
+        "    println!(\"hi\");\n",
+        "}\n",
+        "```"
+    ))];
+
+    let rendered = build_transcript_lines(&state);
+    let code_line = rendered
+        .iter()
+        .find(|line| line_text_for(line).contains("fn main() {"))
+        .expect("expected fenced rust code line");
+
+    assert!(
+        code_line
+            .spans
+            .iter()
+            .any(|span| { !span.content.as_ref().trim().is_empty() && span.style.fg.is_some() }),
+        "expected fenced code spans to keep explicit syntax colors"
+    );
+}
+
 fn line_text_for(line: &ratatui::text::Line<'_>) -> String {
     line.spans
         .iter()
