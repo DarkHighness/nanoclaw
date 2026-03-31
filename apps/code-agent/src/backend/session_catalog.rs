@@ -1,8 +1,10 @@
 use crate::backend::session_resume::{HISTORY_ONLY_RESUME_REASON, can_resume_agent_session};
-use agent::types::{AgentSessionId, SessionEventEnvelope, SessionEventKind};
+use agent::types::{
+    AgentSessionId, ExperimentTarget, PromotionDecisionKind, SessionEventEnvelope, SessionEventKind,
+};
 use anyhow::{Result, anyhow};
 use std::collections::BTreeMap;
-use store::{SessionSearchResult, SessionSummary};
+use store::{ExperimentSummary, SessionSearchResult, SessionSummary};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum ResumeSupport {
@@ -38,6 +40,22 @@ pub(crate) struct PersistedSessionSearchMatch {
     pub(crate) summary: PersistedSessionSummary,
     pub(crate) matched_event_count: usize,
     pub(crate) preview_matches: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PersistedExperimentSummary {
+    pub(crate) experiment_ref: String,
+    pub(crate) first_timestamp_ms: u128,
+    pub(crate) last_timestamp_ms: u128,
+    pub(crate) event_count: usize,
+    pub(crate) target: Option<ExperimentTarget>,
+    pub(crate) goal: Option<String>,
+    pub(crate) source_session_ref: Option<String>,
+    pub(crate) source_agent_session_ref: Option<String>,
+    pub(crate) baseline_count: usize,
+    pub(crate) candidate_count: usize,
+    pub(crate) promoted_candidate_ref: Option<String>,
+    pub(crate) last_decision: Option<PromotionDecisionKind>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -87,6 +105,31 @@ pub(crate) fn persisted_session_search_match(
         summary: persisted_session_summary(&result.summary, active_session_ref),
         matched_event_count: result.matched_event_count,
         preview_matches: result.preview_matches.clone(),
+    }
+}
+
+pub(crate) fn persisted_experiment_summary(
+    summary: &ExperimentSummary,
+) -> PersistedExperimentSummary {
+    PersistedExperimentSummary {
+        experiment_ref: summary.experiment_id.to_string(),
+        first_timestamp_ms: summary.first_timestamp_ms,
+        last_timestamp_ms: summary.last_timestamp_ms,
+        event_count: summary.event_count,
+        target: summary.target,
+        goal: summary.goal.clone(),
+        source_session_ref: summary.source_session_id.as_ref().map(ToString::to_string),
+        source_agent_session_ref: summary
+            .source_agent_session_id
+            .as_ref()
+            .map(ToString::to_string),
+        baseline_count: summary.baseline_count,
+        candidate_count: summary.candidate_count,
+        promoted_candidate_ref: summary
+            .promoted_candidate_id
+            .as_ref()
+            .map(ToString::to_string),
+        last_decision: summary.last_decision,
     }
 }
 

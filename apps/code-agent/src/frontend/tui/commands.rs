@@ -225,6 +225,18 @@ const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
         summary: "inspect persisted task",
     },
     SlashCommandSpec {
+        section: "Meta Agent",
+        name: "experiments",
+        usage: "experiments",
+        summary: "browse persisted experiments",
+    },
+    SlashCommandSpec {
+        section: "Meta Agent",
+        name: "experiment",
+        usage: "experiment <experiment-ref>",
+        summary: "inspect persisted experiment",
+    },
+    SlashCommandSpec {
         section: "Catalog",
         name: "tools",
         usage: "tools",
@@ -349,6 +361,10 @@ pub(crate) enum SlashCommand {
     },
     Task {
         task_ref: String,
+    },
+    Experiments,
+    Experiment {
+        experiment_ref: String,
     },
     Sessions {
         query: Option<String>,
@@ -480,6 +496,10 @@ enum SlashSubcommand {
     },
     Task {
         task_ref: String,
+    },
+    Experiments,
+    Experiment {
+        experiment_ref: String,
     },
     Sessions {
         #[arg(
@@ -753,6 +773,8 @@ impl From<SlashSubcommand> for SlashCommand {
             },
             SlashSubcommand::Tasks { session_ref } => Self::Tasks { session_ref },
             SlashSubcommand::Task { task_ref } => Self::Task { task_ref },
+            SlashSubcommand::Experiments => Self::Experiments,
+            SlashSubcommand::Experiment { experiment_ref } => Self::Experiment { experiment_ref },
             SlashSubcommand::Sessions { query } => Self::Sessions {
                 query: join_optional_tail(query),
             },
@@ -946,6 +968,24 @@ mod tests {
         match parse_slash_command("/task review-task") {
             SlashCommand::Task { task_ref } => {
                 assert_eq!(task_ref, "review-task");
+            }
+            _ => panic!("unexpected command"),
+        }
+    }
+
+    #[test]
+    fn parses_experiment_listing() {
+        assert!(matches!(
+            parse_slash_command("/experiments"),
+            SlashCommand::Experiments
+        ));
+    }
+
+    #[test]
+    fn parses_experiment_lookup() {
+        match parse_slash_command("/experiment exp123") {
+            SlashCommand::Experiment { experiment_ref } => {
+                assert_eq!(experiment_ref, "exp123");
             }
             _ => panic!("unexpected command"),
         }

@@ -1,17 +1,19 @@
 use super::state::{InspectorEntry, TranscriptEntry, TranscriptShellDetail, preview_text};
 use crate::backend::{
     LiveTaskControlAction, LiveTaskControlOutcome, LiveTaskMessageAction, LiveTaskMessageOutcome,
-    LiveTaskSpawnOutcome, LiveTaskSummary, LiveTaskWaitOutcome, LoadedAgentSession, LoadedSession,
-    LoadedSubagentSession, LoadedTask, McpPromptSummary, McpResourceSummary, McpServerSummary,
-    PersistedAgentSessionSummary, PersistedSessionSearchMatch, PersistedSessionSummary,
-    PersistedTaskSummary, SessionExportArtifact, SessionExportKind, SessionOperationAction,
-    SessionOperationOutcome, StartupDiagnosticsSnapshot, message_to_text, preview_id,
+    LiveTaskSpawnOutcome, LiveTaskSummary, LiveTaskWaitOutcome, LoadedAgentSession,
+    LoadedExperiment, LoadedSession, LoadedSubagentSession, LoadedTask, McpPromptSummary,
+    McpResourceSummary, McpServerSummary, PersistedAgentSessionSummary, PersistedExperimentSummary,
+    PersistedSessionSearchMatch, PersistedSessionSummary, PersistedTaskSummary,
+    SessionExportArtifact, SessionExportKind, SessionOperationAction, SessionOperationOutcome,
+    StartupDiagnosticsSnapshot, message_to_text, preview_id,
 };
 use crate::tool_render::{
     ToolDetail, tool_argument_details, tool_arguments_preview_lines, tool_output_details,
 };
 use agent::types::{
-    AgentEnvelopeKind, AgentSessionId, AgentStatus, HookEvent, Message, SessionEventEnvelope,
+    AgentEnvelopeKind, AgentSessionId, AgentStatus, ExperimentEventEnvelope, ExperimentEventKind,
+    ExperimentTarget, HookEvent, Message, PromotionDecisionKind, SessionEventEnvelope,
     SessionEventKind,
 };
 use store::TokenUsageRecord;
@@ -137,6 +139,36 @@ pub(crate) fn format_session_search_line(result: &PersistedSessionSearchMatch) -
     )
 }
 
+pub(crate) fn format_experiment_summary_line(
+    summary: &PersistedExperimentSummary,
+) -> TranscriptEntry {
+    let goal = summary
+        .goal
+        .as_deref()
+        .map(|value| preview_text(value, 40))
+        .unwrap_or_else(|| "no goal recorded".to_string());
+    let mut details = vec![format!(
+        "{} candidates · {} baselines · {} events",
+        summary.candidate_count, summary.baseline_count, summary.event_count
+    )];
+    if let Some(target) = summary.target {
+        details.push(format!("target {}", experiment_target_label(target)));
+    }
+    if let Some(decision) = summary.last_decision {
+        details.push(format!(
+            "last decision {}",
+            promotion_decision_label(decision)
+        ));
+    }
+    if let Some(candidate) = &summary.promoted_candidate_ref {
+        details.push(format!("promoted {}", preview_id(candidate)));
+    }
+    info_summary_entry(
+        format!("{}  {}", preview_id(&summary.experiment_ref), goal),
+        details,
+    )
+}
+
 pub(crate) fn format_session_inspector(session: &LoadedSession) -> Vec<InspectorEntry> {
     let mut lines = vec![
         InspectorEntry::section("Session"),
@@ -228,6 +260,81 @@ pub(crate) fn format_session_inspector(session: &LoadedSession) -> Vec<Inspector
                 .into_iter()
                 .rev()
                 .map(|event| InspectorEntry::transcript(format_session_event_line(event))),
+        );
+    }
+    lines
+}
+
+pub(crate) fn format_experiment_inspector(experiment: &LoadedExperiment) -> Vec<InspectorEntry> {
+    let mut lines = vec![
+        InspectorEntry::section("Experiment"),
+        InspectorEntry::field(
+            "experiment ref",
+            experiment.summary.experiment_id.to_string(),
+        ),
+        InspectorEntry::field("event count", experiment.summary.event_count.to_string()),
+        InspectorEntry::field(
+            "candidate count",
+            experiment.summary.candidate_count.to_string(),
+        ),
+        InspectorEntry::field(
+            "baseline count",
+            experiment.summary.baseline_count.to_string(),
+        ),
+    ];
+    if let Some(target) = experiment.summary.target {
+        lines.push(InspectorEntry::field(
+            "target",
+            experiment_target_label(target),
+        ));
+    }
+    if let Some(goal) = &experiment.summary.goal {
+        lines.push(InspectorEntry::section("Goal"));
+        lines.push(InspectorEntry::field("goal", preview_text(goal, 96)));
+    }
+    if experiment.summary.source_session_id.is_some()
+        || experiment.summary.source_agent_session_id.is_some()
+    {
+        lines.push(InspectorEntry::section("Source"));
+        if let Some(session_id) = &experiment.summary.source_session_id {
+            lines.push(InspectorEntry::field("session ref", session_id.to_string()));
+        }
+        if let Some(agent_session_id) = &experiment.summary.source_agent_session_id {
+            lines.push(InspectorEntry::field(
+                "agent session ref",
+                agent_session_id.to_string(),
+            ));
+        }
+    }
+    if experiment.summary.promoted_candidate_id.is_some()
+        || experiment.summary.last_decision.is_some()
+    {
+        lines.push(InspectorEntry::section("Decision"));
+        if let Some(candidate_id) = &experiment.summary.promoted_candidate_id {
+            lines.push(InspectorEntry::field(
+                "promoted candidate",
+                candidate_id.to_string(),
+            ));
+        }
+        if let Some(decision) = experiment.summary.last_decision {
+            lines.push(InspectorEntry::field(
+                "last decision",
+                promotion_decision_label(decision),
+            ));
+        }
+    }
+    if !experiment.events.is_empty() {
+        lines.push(InspectorEntry::section("Recent Events"));
+        lines.extend(
+            experiment
+                .events
+                .iter()
+                .rev()
+                .take(8)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .map(|event| InspectorEntry::transcript(format_experiment_event_line(event))),
         );
     }
     lines
@@ -497,6 +604,99 @@ fn error_summary_entry(
     details: impl IntoIterator<Item = String>,
 ) -> TranscriptEntry {
     summary_entry(SummaryTone::Error, headline, details)
+}
+
+fn experiment_target_label(target: ExperimentTarget) -> &'static str {
+    match target {
+        ExperimentTarget::Prompt => "prompt",
+        ExperimentTarget::Skill => "skill",
+        ExperimentTarget::Policy => "policy",
+        ExperimentTarget::Workflow => "workflow",
+        ExperimentTarget::CodePatch => "code_patch",
+    }
+}
+
+fn promotion_decision_label(kind: PromotionDecisionKind) -> &'static str {
+    match kind {
+        PromotionDecisionKind::Promoted => "promoted",
+        PromotionDecisionKind::Rejected => "rejected",
+        PromotionDecisionKind::RolledBack => "rolled_back",
+    }
+}
+
+fn format_experiment_event_line(event: &ExperimentEventEnvelope) -> TranscriptEntry {
+    match &event.event {
+        ExperimentEventKind::Started { spec } => info_summary_entry(
+            format!(
+                "Started {} experiment",
+                experiment_target_label(spec.target)
+            ),
+            [
+                format!("goal {}", preview_text(&spec.goal, 96)),
+                spec.source_session_id
+                    .as_ref()
+                    .map(|session_id| format!("source session {}", preview_id(session_id.as_str())))
+                    .unwrap_or_default(),
+            ],
+        ),
+        ExperimentEventKind::BaselinePinned { baseline } => info_summary_entry(
+            format!("Pinned baseline {}", baseline.label),
+            [
+                format!("baseline {}", baseline.baseline_id),
+                format!("target {}", experiment_target_label(baseline.target)),
+            ],
+        ),
+        ExperimentEventKind::CandidateGenerated { candidate } => info_summary_entry(
+            format!("Generated candidate {}", candidate.label),
+            [
+                format!("candidate {}", candidate.candidate_id),
+                format!("baseline {}", candidate.baseline_id),
+            ],
+        ),
+        ExperimentEventKind::CandidateEvaluated { evaluation } => summary_entry(
+            if evaluation.passed {
+                SummaryTone::Success
+            } else {
+                SummaryTone::Error
+            },
+            format!("Evaluated candidate {}", evaluation.candidate_id),
+            [
+                format!(
+                    "passed {} · score {}",
+                    evaluation.passed,
+                    format_optional_score(evaluation.score)
+                ),
+                preview_text(&evaluation.summary, 96),
+            ],
+        ),
+        ExperimentEventKind::CandidatePromoted {
+            candidate_id,
+            decision,
+        } => success_summary_entry(
+            format!("Promoted candidate {}", candidate_id),
+            [preview_text(&decision.reason, 96)],
+        ),
+        ExperimentEventKind::CandidateRejected {
+            candidate_id,
+            decision,
+        } => error_summary_entry(
+            format!("Rejected candidate {}", candidate_id),
+            [preview_text(&decision.reason, 96)],
+        ),
+        ExperimentEventKind::CandidateRolledBack {
+            candidate_id,
+            decision,
+        } => info_summary_entry(
+            format!("Rolled back candidate {}", candidate_id),
+            [preview_text(&decision.reason, 96)],
+        ),
+    }
+}
+
+fn format_optional_score(score: Option<f64>) -> String {
+    score
+        .map(|value| format!("{value:.3}"))
+        .unwrap_or_else(|| "n/a".to_string())
 }
 
 pub(crate) fn format_session_export_result(result: &SessionExportArtifact) -> Vec<InspectorEntry> {
@@ -1154,22 +1354,26 @@ fn format_session_event_line(event: &SessionEventEnvelope) -> TranscriptEntry {
 #[cfg(test)]
 mod tests {
     use super::{
-        format_agent_session_summary_line, format_live_task_wait_outcome,
-        format_session_event_line, format_session_export_result, format_session_operation_outcome,
-        format_session_search_line, format_session_summary_line,
+        format_agent_session_summary_line, format_experiment_inspector,
+        format_experiment_summary_line, format_live_task_wait_outcome, format_session_event_line,
+        format_session_export_result, format_session_operation_outcome, format_session_search_line,
+        format_session_summary_line,
     };
     use crate::backend::{
-        LiveTaskWaitOutcome, PersistedAgentSessionSummary, PersistedSessionSearchMatch,
-        PersistedSessionSummary, ResumeSupport, SessionExportArtifact, SessionExportKind,
-        SessionOperationAction, SessionOperationOutcome, SessionStartupSnapshot,
+        LiveTaskWaitOutcome, LoadedExperiment, PersistedAgentSessionSummary,
+        PersistedExperimentSummary, PersistedSessionSearchMatch, PersistedSessionSummary,
+        ResumeSupport, SessionExportArtifact, SessionExportKind, SessionOperationAction,
+        SessionOperationOutcome, SessionStartupSnapshot,
     };
     use crate::frontend::tui::state::InspectorEntry;
     use agent::types::{
-        AgentSessionId, AgentStatus, Message, SessionEventEnvelope, SessionEventKind, SessionId,
-        ToolCall, ToolCallId, ToolOrigin, ToolResult,
+        AgentSessionId, AgentStatus, ExperimentEventEnvelope, ExperimentEventKind, ExperimentId,
+        ExperimentTarget, Message, PromotionDecision, PromotionDecisionKind, SessionEventEnvelope,
+        SessionEventKind, SessionId, ToolCall, ToolCallId, ToolOrigin, ToolResult,
     };
     use serde_json::json;
     use std::path::PathBuf;
+    use store::ExperimentSummary;
 
     #[test]
     fn export_result_includes_kind_path_and_item_count() {
@@ -1263,6 +1467,87 @@ mod tests {
         assert_eq!(
             line.serialized(),
             "• session_  Refine the approval preview\n  └ 12 messages · 40 events · 2 agent sessions · resume attached · matched 3 event(s) · preview bash approval | cargo test"
+        );
+    }
+
+    #[test]
+    fn experiment_summary_stays_compact() {
+        let line = format_experiment_summary_line(&PersistedExperimentSummary {
+            experiment_ref: "experiment_12345678".to_string(),
+            first_timestamp_ms: 1,
+            last_timestamp_ms: 2,
+            event_count: 7,
+            target: Some(ExperimentTarget::Prompt),
+            goal: Some("Reduce planner retry churn".to_string()),
+            source_session_ref: Some("session_123".to_string()),
+            source_agent_session_ref: None,
+            baseline_count: 1,
+            candidate_count: 2,
+            promoted_candidate_ref: Some("candidate_123456".to_string()),
+            last_decision: Some(PromotionDecisionKind::Promoted),
+        });
+
+        let rendered = line.serialized();
+        assert!(rendered.contains("Reduce planner retry churn"));
+        assert!(rendered.contains("2 candidates · 1 baselines · 7 events"));
+        assert!(rendered.contains("target prompt"));
+        assert!(rendered.contains("last decision promoted"));
+    }
+
+    #[test]
+    fn experiment_inspector_lists_goal_and_recent_events() {
+        let lines = format_experiment_inspector(&LoadedExperiment {
+            summary: ExperimentSummary {
+                experiment_id: ExperimentId::from("experiment-1"),
+                first_timestamp_ms: 1,
+                last_timestamp_ms: 2,
+                event_count: 2,
+                target: Some(ExperimentTarget::Workflow),
+                goal: Some("Stabilize verifier path".to_string()),
+                source_session_id: Some(SessionId::from("session-1")),
+                source_agent_session_id: Some(AgentSessionId::from("agent-1")),
+                baseline_count: 1,
+                candidate_count: 1,
+                promoted_candidate_id: None,
+                last_decision: Some(PromotionDecisionKind::Rejected),
+            },
+            events: vec![
+                ExperimentEventEnvelope::new(
+                    ExperimentId::from("experiment-1"),
+                    ExperimentEventKind::Started {
+                        spec: agent::types::ExperimentSpec {
+                            target: ExperimentTarget::Workflow,
+                            goal: "Stabilize verifier path".to_string(),
+                            source_session_id: Some(SessionId::from("session-1")),
+                            source_agent_session_id: Some(AgentSessionId::from("agent-1")),
+                            metadata: json!({}),
+                        },
+                    },
+                ),
+                ExperimentEventEnvelope::new(
+                    ExperimentId::from("experiment-1"),
+                    ExperimentEventKind::CandidateRejected {
+                        candidate_id: "candidate-1".into(),
+                        decision: PromotionDecision {
+                            kind: PromotionDecisionKind::Rejected,
+                            reason: "verifier coverage regressed".to_string(),
+                        },
+                    },
+                ),
+            ],
+        });
+        let lines = inspector_line_texts(&lines);
+
+        assert!(lines.iter().any(|line| line == "target: workflow"));
+        assert!(
+            lines
+                .iter()
+                .any(|line| line == "goal: Stabilize verifier path")
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("Rejected candidate candidate-1"))
         );
     }
 

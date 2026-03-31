@@ -642,6 +642,16 @@ impl CodeAgentSession {
             .collect())
     }
 
+    pub(crate) async fn list_experiments(
+        &self,
+    ) -> Result<Vec<crate::backend::PersistedExperimentSummary>> {
+        let experiments = session_history::list_experiments(&self.store).await?;
+        Ok(experiments
+            .iter()
+            .map(session_catalog::persisted_experiment_summary)
+            .collect())
+    }
+
     pub(crate) async fn list_agent_sessions(
         &self,
         session_ref: Option<&str>,
@@ -809,6 +819,13 @@ impl CodeAgentSession {
 
     pub(crate) async fn load_session(&self, session_ref: &str) -> Result<LoadedSession> {
         session_history::load_session(&self.store, session_ref).await
+    }
+
+    pub(crate) async fn load_experiment(
+        &self,
+        experiment_ref: &str,
+    ) -> Result<crate::backend::LoadedExperiment> {
+        session_history::load_experiment(&self.store, experiment_ref).await
     }
 
     pub(crate) async fn load_agent_session(

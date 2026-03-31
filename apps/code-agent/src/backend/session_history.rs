@@ -1,15 +1,15 @@
 use super::session_catalog::PersistedAgentSessionSummary;
 use agent::types::{
-    AgentHandle, AgentSessionId, AgentStatus, AgentTaskSpec, Message, MessagePart, MessageRole,
-    SessionEventEnvelope, SessionEventKind, SessionId,
+    AgentHandle, AgentSessionId, AgentStatus, AgentTaskSpec, ExperimentEventEnvelope, ExperimentId,
+    Message, MessagePart, MessageRole, SessionEventEnvelope, SessionEventKind, SessionId,
 };
 use anyhow::{Result, anyhow};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use store::{
-    SessionSearchResult, SessionStore, SessionSummary, SessionTokenUsageReport, TokenUsageRecord,
-    replay_transcript,
+    ExperimentSummary, SessionSearchResult, SessionStore, SessionSummary, SessionTokenUsageReport,
+    TokenUsageRecord, replay_transcript,
 };
 
 #[derive(Clone, Debug)]
@@ -39,6 +39,12 @@ pub(crate) struct LoadedSubagentSession {
     pub(crate) token_usage: Option<TokenUsageRecord>,
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct LoadedExperiment {
+    pub(crate) summary: ExperimentSummary,
+    pub(crate) events: Vec<ExperimentEventEnvelope>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SessionExportKind {
     EventsJsonl,
@@ -62,6 +68,12 @@ pub(crate) async fn search_sessions(
     query: &str,
 ) -> Result<Vec<SessionSearchResult>> {
     Ok(store.search_sessions(query).await?)
+}
+
+pub(crate) async fn list_experiments(
+    store: &Arc<dyn SessionStore>,
+) -> Result<Vec<ExperimentSummary>> {
+    Ok(store.list_experiments().await?)
 }
 
 pub(crate) async fn load_session(
@@ -92,6 +104,15 @@ pub(crate) async fn load_agent_session(
     let (events, token_usage) =
         tokio::try_join!(store.events(&session_id), store.token_usage(&session_id),)?;
     Ok(project_loaded_agent_session(summary, &events, &token_usage))
+}
+
+pub(crate) async fn load_experiment(
+    store: &Arc<dyn SessionStore>,
+    experiment_ref: &str,
+) -> Result<LoadedExperiment> {
+    let (experiment_id, summary) = resolve_experiment(store, experiment_ref).await?;
+    let events = store.experiment_events(&experiment_id).await?;
+    Ok(LoadedExperiment { summary, events })
 }
 
 pub(crate) async fn export_session_events(
@@ -151,6 +172,19 @@ async fn resolve_session(
     Ok((session_id, summary))
 }
 
+async fn resolve_experiment(
+    store: &Arc<dyn SessionStore>,
+    experiment_ref: &str,
+) -> Result<(ExperimentId, ExperimentSummary)> {
+    let experiments = list_experiments(store).await?;
+    let experiment_id = resolve_experiment_reference(&experiments, experiment_ref)?;
+    let summary = experiments
+        .into_iter()
+        .find(|summary| summary.experiment_id == experiment_id)
+        .ok_or_else(|| anyhow!("experiment missing from store listing: {}", experiment_id))?;
+    Ok((experiment_id, summary))
+}
+
 fn write_output_path(workspace_root: &Path, value: &str) -> PathBuf {
     let path = PathBuf::from(value);
     if path.is_absolute() {
@@ -197,6 +231,36 @@ pub(crate) fn resolve_session_reference(
                 .iter()
                 .take(6)
                 .map(|session| preview_id(session.session_id.as_str()))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )),
+    }
+}
+
+pub(crate) fn resolve_experiment_reference(
+    experiments: &[ExperimentSummary],
+    experiment_ref: &str,
+) -> Result<ExperimentId> {
+    if let Some(experiment) = experiments
+        .iter()
+        .find(|summary| summary.experiment_id.as_str() == experiment_ref)
+    {
+        return Ok(experiment.experiment_id.clone());
+    }
+
+    let matches = experiments
+        .iter()
+        .filter(|summary| summary.experiment_id.as_str().starts_with(experiment_ref))
+        .collect::<Vec<_>>();
+    match matches.as_slice() {
+        [] => Err(anyhow!("unknown experiment id or prefix: {experiment_ref}")),
+        [experiment] => Ok(experiment.experiment_id.clone()),
+        _ => Err(anyhow!(
+            "ambiguous experiment prefix {experiment_ref}: {}",
+            matches
+                .iter()
+                .take(6)
+                .map(|experiment| preview_id(experiment.experiment_id.as_str()))
                 .collect::<Vec<_>>()
                 .join(", ")
         )),
@@ -417,15 +481,15 @@ fn collect_loaded_subagents(
 mod tests {
     use super::{
         encode_session_events_jsonl, project_loaded_agent_session, render_transcript_text,
-        resolve_session_reference,
+        resolve_experiment_reference, resolve_session_reference,
     };
     use agent::types::{
-        AgentHandle, AgentResultEnvelope, AgentSessionId, AgentStatus, AgentTaskSpec, Message,
-        MessagePart, MessageRole, SessionEventEnvelope, SessionEventKind, SessionId,
-        TokenLedgerSnapshot,
+        AgentHandle, AgentResultEnvelope, AgentSessionId, AgentStatus, AgentTaskSpec, ExperimentId,
+        Message, MessagePart, MessageRole, PromotionDecisionKind, SessionEventEnvelope,
+        SessionEventKind, SessionId, TokenLedgerSnapshot,
     };
     use store::{
-        SessionSummary, SessionTokenUsageReport, TokenUsageRecord,
+        ExperimentSummary, SessionSummary, SessionTokenUsageReport, TokenUsageRecord,
         TokenUsageScope as StoreTokenUsageScope,
     };
 
@@ -482,6 +546,81 @@ mod tests {
         ];
 
         assert!(resolve_session_reference(&sessions, "abc").is_err());
+    }
+
+    #[test]
+    fn resolves_unique_experiment_prefix() {
+        let experiments = vec![
+            ExperimentSummary {
+                experiment_id: ExperimentId::from("exp12345"),
+                first_timestamp_ms: 1,
+                last_timestamp_ms: 2,
+                event_count: 3,
+                target: None,
+                goal: Some("first".to_string()),
+                source_session_id: None,
+                source_agent_session_id: None,
+                baseline_count: 1,
+                candidate_count: 1,
+                promoted_candidate_id: None,
+                last_decision: Some(PromotionDecisionKind::Rejected),
+            },
+            ExperimentSummary {
+                experiment_id: ExperimentId::from("def67890"),
+                first_timestamp_ms: 4,
+                last_timestamp_ms: 5,
+                event_count: 6,
+                target: None,
+                goal: Some("second".to_string()),
+                source_session_id: None,
+                source_agent_session_id: None,
+                baseline_count: 1,
+                candidate_count: 1,
+                promoted_candidate_id: None,
+                last_decision: Some(PromotionDecisionKind::Promoted),
+            },
+        ];
+
+        assert_eq!(
+            resolve_experiment_reference(&experiments, "exp").unwrap(),
+            ExperimentId::from("exp12345")
+        );
+    }
+
+    #[test]
+    fn rejects_ambiguous_experiment_prefix() {
+        let experiments = vec![
+            ExperimentSummary {
+                experiment_id: ExperimentId::from("exp12345"),
+                first_timestamp_ms: 1,
+                last_timestamp_ms: 2,
+                event_count: 3,
+                target: None,
+                goal: None,
+                source_session_id: None,
+                source_agent_session_id: None,
+                baseline_count: 1,
+                candidate_count: 1,
+                promoted_candidate_id: None,
+                last_decision: None,
+            },
+            ExperimentSummary {
+                experiment_id: ExperimentId::from("exp67890"),
+                first_timestamp_ms: 4,
+                last_timestamp_ms: 5,
+                event_count: 6,
+                target: None,
+                goal: None,
+                source_session_id: None,
+                source_agent_session_id: None,
+                baseline_count: 1,
+                candidate_count: 1,
+                promoted_candidate_id: None,
+                last_decision: None,
+            },
+        ];
+
+        assert!(resolve_experiment_reference(&experiments, "exp").is_err());
     }
 
     #[test]

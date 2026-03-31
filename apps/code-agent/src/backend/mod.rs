@@ -49,12 +49,12 @@ pub(crate) use session::{
     SessionOperationAction, SessionOperationOutcome, SessionPermissionMode, SessionStartupSnapshot,
 };
 pub(crate) use session_catalog::{
-    PersistedAgentSessionSummary, PersistedSessionSearchMatch, PersistedSessionSummary,
-    ResumeSupport,
+    PersistedAgentSessionSummary, PersistedExperimentSummary, PersistedSessionSearchMatch,
+    PersistedSessionSummary, ResumeSupport,
 };
 pub(crate) use session_history::{
-    LoadedAgentSession, LoadedSession, LoadedSubagentSession, SessionExportArtifact,
-    SessionExportKind, message_to_text, preview_id,
+    LoadedAgentSession, LoadedExperiment, LoadedSession, LoadedSubagentSession,
+    SessionExportArtifact, SessionExportKind, message_to_text, preview_id,
 };
 pub(crate) use task_history::{LoadedTask, LoadedTaskMessage, PersistedTaskSummary};
 pub(crate) use user_input::{
