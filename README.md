@@ -1,6 +1,7 @@
 # nanoclaw
 
 ![main](public/main.png)
+![example](public/example.png)
 
 `nanoclaw` is a Rust repository with two Cargo workspaces:
 
