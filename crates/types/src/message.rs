@@ -18,6 +18,13 @@ pub enum MessagePart {
     Text {
         text: String,
     },
+    InlineText {
+        text: String,
+    },
+    Paste {
+        label: String,
+        text: String,
+    },
     Image {
         mime_type: String,
         data_base64: String,
@@ -68,6 +75,19 @@ impl MessagePart {
     #[must_use]
     pub fn text(text: impl Into<String>) -> Self {
         Self::Text { text: text.into() }
+    }
+
+    #[must_use]
+    pub fn inline_text(text: impl Into<String>) -> Self {
+        Self::InlineText { text: text.into() }
+    }
+
+    #[must_use]
+    pub fn paste(label: impl Into<String>, text: impl Into<String>) -> Self {
+        Self::Paste {
+            label: label.into(),
+            text: text.into(),
+        }
     }
 
     #[must_use]
@@ -174,7 +194,8 @@ pub fn reference_operator_text(
 #[must_use]
 pub fn message_part_display_text(part: &MessagePart) -> Option<String> {
     match part {
-        MessagePart::Text { text } => Some(text.clone()),
+        MessagePart::Text { text } | MessagePart::InlineText { text } => Some(text.clone()),
+        MessagePart::Paste { text, .. } => Some(text.clone()),
         MessagePart::Reasoning { reasoning } => {
             let text = reasoning.display_text();
             (!text.is_empty()).then_some(text)
@@ -218,7 +239,8 @@ pub fn message_part_display_text(part: &MessagePart) -> Option<String> {
 #[must_use]
 pub fn message_part_operator_text(part: &MessagePart) -> String {
     match part {
-        MessagePart::Text { text } => text.clone(),
+        MessagePart::Text { text } | MessagePart::InlineText { text } => text.clone(),
+        MessagePart::Paste { text, .. } => text.clone(),
         MessagePart::Reasoning { reasoning } => {
             let text = reasoning.display_text();
             if text.is_empty() {
@@ -265,14 +287,46 @@ pub fn message_part_operator_text(part: &MessagePart) -> String {
     }
 }
 
+fn message_part_is_inline(part: &MessagePart) -> bool {
+    matches!(
+        part,
+        MessagePart::InlineText { .. } | MessagePart::Paste { .. }
+    )
+}
+
+fn join_rendered_message_text(parts: impl IntoIterator<Item = (String, bool)>) -> String {
+    let mut rendered = String::new();
+    let mut previous_inline = false;
+    let mut has_previous = false;
+
+    for (text, inline) in parts {
+        if !has_previous {
+            rendered.push_str(&text);
+            previous_inline = inline;
+            has_previous = true;
+            continue;
+        }
+
+        if previous_inline && inline {
+            rendered.push_str(&text);
+        } else {
+            rendered.push('\n');
+            rendered.push_str(&text);
+        }
+        previous_inline = inline;
+    }
+
+    rendered
+}
+
 #[must_use]
 pub fn message_operator_text(message: &Message) -> String {
-    message
-        .parts
-        .iter()
-        .map(message_part_operator_text)
-        .collect::<Vec<_>>()
-        .join("\n")
+    join_rendered_message_text(message.parts.iter().map(|part| {
+        (
+            message_part_operator_text(part),
+            message_part_is_inline(part),
+        )
+    }))
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -393,11 +447,9 @@ impl Message {
 
     #[must_use]
     pub fn text_content(&self) -> String {
-        self.parts
-            .iter()
-            .filter_map(message_part_display_text)
-            .collect::<Vec<_>>()
-            .join("\n")
+        join_rendered_message_text(self.parts.iter().filter_map(|part| {
+            message_part_display_text(part).map(|text| (text, message_part_is_inline(part)))
+        }))
     }
 }
 
@@ -421,6 +473,21 @@ mod tests {
         );
 
         assert_eq!(message.text_content(), "hello\nworld");
+    }
+
+    #[test]
+    fn text_content_keeps_inline_paste_fragments_on_one_line() {
+        let message = Message::new(
+            MessageRole::User,
+            vec![
+                MessagePart::inline_text("prefix "),
+                MessagePart::paste("[Paste #1]", "pasted body"),
+                MessagePart::inline_text(" suffix"),
+            ],
+        );
+
+        assert_eq!(message.text_content(), "prefix pasted body suffix");
+        assert_eq!(message_operator_text(&message), "prefix pasted body suffix");
     }
 
     #[test]

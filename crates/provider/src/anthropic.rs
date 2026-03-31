@@ -339,7 +339,10 @@ fn anthropic_message(role: &str, parts: Vec<MessagePart>) -> Result<Value> {
     let mut content = Vec::new();
     for part in parts {
         match part {
-            MessagePart::Text { text } => content.push(json!({"type":"text","text": text})),
+            MessagePart::Text { text } | MessagePart::InlineText { text } => {
+                content.push(json!({"type":"text","text": text}))
+            }
+            MessagePart::Paste { text, .. } => content.push(json!({"type":"text","text": text})),
             MessagePart::Image {
                 mime_type,
                 data_base64,

@@ -233,7 +233,10 @@ fn serialize_openai_input_items(
 
 fn openai_user_message_block(part: &MessagePart) -> Option<Value> {
     match part {
-        MessagePart::Text { text } => Some(json!({ "type": "input_text", "text": text })),
+        MessagePart::Text { text } | MessagePart::InlineText { text } => {
+            Some(json!({ "type": "input_text", "text": text }))
+        }
+        MessagePart::Paste { text, .. } => Some(json!({ "type": "input_text", "text": text })),
         MessagePart::Image {
             mime_type,
             data_base64,
@@ -324,7 +327,10 @@ fn is_remote_file_url(uri: &str) -> bool {
 
 fn openai_assistant_message_block(part: &MessagePart) -> Option<Value> {
     match part {
-        MessagePart::Text { text } => Some(json!({ "type": "output_text", "text": text })),
+        MessagePart::Text { text } | MessagePart::InlineText { text } => {
+            Some(json!({ "type": "output_text", "text": text }))
+        }
+        MessagePart::Paste { text, .. } => Some(json!({ "type": "output_text", "text": text })),
         MessagePart::Resource {
             uri,
             text,

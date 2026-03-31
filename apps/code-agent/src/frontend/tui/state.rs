@@ -7,7 +7,7 @@ use crate::theme::ThemeSummary;
 use crate::tool_render::{
     ToolDetail, ToolDetailBlockKind, preview_tool_details, serialize_tool_details,
 };
-use agent::types::{Message, MessageId, TokenLedgerSnapshot};
+use agent::types::{Message, MessageId, MessagePart, MessageRole, TokenLedgerSnapshot};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, RwLock};
@@ -1597,31 +1597,59 @@ impl TuiState {
     }
 
     fn current_submission(&self) -> ComposerSubmission {
-        let local_history_draft = self.submitted_draft();
-        let persisted_history_text = local_history_draft.text.clone();
+        let local_history_draft = self.current_input_draft();
+        let message = self.submission_message();
+        let persisted_history_text = message.text_content();
         ComposerSubmission {
-            message: Message::user(persisted_history_text.clone()),
+            message,
             persisted_history_text,
             local_history_draft,
         }
     }
 
-    fn submitted_draft(&self) -> ComposerDraftState {
-        let mut text = self.input.clone();
-        // Composer-only draft attachments still collapse into prompt text at
-        // submission time. The runtime prompt path now carries `Message`, but
-        // the host has not promoted draft attachments into first-class parts
-        // yet, so placeholders must resolve before the turn is queued.
-        for attachment in &self.draft_attachments {
-            let ComposerDraftAttachmentKind::LargePaste { payload } = &attachment.kind;
-            text = text.replace(&attachment.placeholder, payload);
+    fn submission_message(&self) -> Message {
+        let mut parts = Vec::new();
+        let mut remaining = self.input.as_str();
+
+        while !remaining.is_empty() {
+            let next_attachment = self
+                .draft_attachments
+                .iter()
+                .filter_map(|attachment| {
+                    remaining
+                        .find(&attachment.placeholder)
+                        .map(|index| (index, attachment))
+                })
+                .min_by_key(|(index, _)| *index);
+            let Some((index, attachment)) = next_attachment else {
+                parts.push(MessagePart::inline_text(remaining));
+                break;
+            };
+
+            if index > 0 {
+                parts.push(MessagePart::inline_text(&remaining[..index]));
+            }
+
+            match &attachment.kind {
+                ComposerDraftAttachmentKind::LargePaste { payload } => {
+                    parts.push(MessagePart::paste(
+                        attachment.placeholder.clone(),
+                        payload.clone(),
+                    ));
+                }
+            }
+
+            remaining = &remaining[index + attachment.placeholder.len()..];
         }
-        ComposerDraftState {
-            cursor: text.len(),
-            text,
-            draft_attachments: Vec::new(),
+
+        if parts.is_empty() {
+            return Message::user("");
         }
-        .normalized()
+
+        // Inline draft fragments keep the original placeholder spacing while the
+        // typed paste part preserves the out-of-band payload for future replay
+        // and richer attachment-aware prompt submission.
+        Message::new(MessageRole::User, parts)
     }
 }
 
@@ -1861,7 +1889,7 @@ mod tests {
         git_snapshot, page_scroll_amount,
     };
     use crate::theme::ThemeSummary;
-    use agent::types::MessageId;
+    use agent::types::{MessageId, MessagePart};
     use tempfile::tempdir;
 
     #[test]
@@ -2210,6 +2238,37 @@ mod tests {
         let snapshot = ui_state.snapshot();
         assert!(snapshot.draft_attachments.is_empty());
         assert!(snapshot.input.is_empty());
+    }
+
+    #[test]
+    fn take_submission_keeps_large_paste_as_typed_part_and_preserves_local_draft() {
+        let mut state = TuiState::default();
+        state.push_input_str("prefix ");
+        let _ = state.push_large_paste("pasted body");
+        state.push_input_str(" suffix");
+
+        let submission = state.take_submission();
+
+        assert_eq!(
+            submission.persisted_history_text,
+            "prefix pasted body suffix"
+        );
+        assert_eq!(
+            submission.local_history_draft,
+            ComposerDraftState {
+                text: "prefix [Paste #1] suffix".to_string(),
+                cursor: "prefix [Paste #1] suffix".len(),
+                draft_attachments: vec![large_paste_attachment("pasted body")],
+            }
+        );
+        assert_eq!(
+            submission.message.parts,
+            vec![
+                MessagePart::inline_text("prefix "),
+                MessagePart::paste("[Paste #1]", "pasted body"),
+                MessagePart::inline_text(" suffix"),
+            ]
+        );
     }
 
     #[test]

@@ -270,7 +270,8 @@ not have useful extensions, including `Dockerfile*`, `Containerfile*`, `go.mod`,
   `Ctrl+C` still exits the TUI.
 - Very large pasted payloads are now collapsed into `[Paste #N]` placeholders in
   the composer. The full payload stays in session-local draft attachment state,
-  expands on submit, and is restored when recalling a stashed draft.
+  is submitted as a typed message part while persistent history stays plain
+  text, and is restored when recalling a stashed draft.
 - `Alt+Up` opens the pending-control picker from the bottom pane.
 - In the pending-control picker: `Enter` edits the selected item, `Delete`
   withdraws it, and `Esc` closes the picker.

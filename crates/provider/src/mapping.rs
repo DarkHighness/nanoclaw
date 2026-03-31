@@ -346,7 +346,8 @@ pub fn message_parts_text(parts: &[MessagePart]) -> String {
 #[must_use]
 pub fn message_part_text(part: &MessagePart) -> Option<String> {
     match part {
-        MessagePart::Text { text } => Some(text.clone()),
+        MessagePart::Text { text } | MessagePart::InlineText { text } => Some(text.clone()),
+        MessagePart::Paste { text, .. } => Some(text.clone()),
         MessagePart::Reasoning { reasoning } => Some(
             reasoning
                 .content
