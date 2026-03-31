@@ -1,9 +1,13 @@
-use agent::memory::{MemoryBackend, MemoryScope, MemorySearchHit, MemorySearchRequest};
+use agent::memory::{
+    MemoryBackend, MemoryDocument, MemoryGetRequest, MemoryListEntry, MemoryListRequest,
+    MemoryScope, MemorySearchHit, MemorySearchRequest,
+};
 use agent::runtime::{AugmentedUserMessage, UserMessageAugmentationContext, UserMessageAugmentor};
 use agent::types::{Message, MessagePart, MessageRole};
 use async_trait::async_trait;
 use serde_json::json;
 use std::collections::BTreeSet;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::timeout;
@@ -21,6 +25,10 @@ const RECALL_MAX_SNIPPET_CHARS: usize = 220;
 const RECALL_MAX_BLOCK_CHARS: usize = 1_400;
 const RECALL_QUERY_TERM_LIMIT: usize = 5;
 const RECALL_QUERY_FALLBACK_TERM_LIMIT: usize = 3;
+const RECALL_DURABLE_LIST_LIMIT: usize = 128;
+const RECALL_DURABLE_SELECTION_LIMIT: usize = 5;
+const RECALL_DURABLE_LINE_LIMIT: usize = 40;
+const RECALL_DURABLE_SELECTOR_BACKEND: &str = "memory-header-select";
 
 #[derive(Clone)]
 pub(crate) struct WorkspaceMemoryRecallAugmentor {
@@ -152,7 +160,10 @@ impl WorkspaceMemoryRecallAugmentor {
             }
         }
         if collected.len() < RECALL_LIMIT {
-            if let Some((name, durable_hits)) = self
+            if let Some((name, durable_hits)) = self.select_durable_hits(query, started_at).await {
+                backend_name.get_or_insert(name);
+                merge_recall_hits(&mut collected, durable_hits);
+            } else if let Some((name, durable_hits)) = self
                 .search_hits(
                     query,
                     None,
@@ -168,6 +179,108 @@ impl WorkspaceMemoryRecallAugmentor {
             }
         }
         (!collected.is_empty()).then(|| (backend_name.unwrap_or_default(), collected))
+    }
+
+    async fn select_durable_hits(
+        &self,
+        query: &str,
+        started_at: std::time::Instant,
+    ) -> Option<(String, Vec<MemorySearchHit>)> {
+        let query_terms = durable_selector_terms(query);
+        if query_terms.len() < 2 {
+            return None;
+        }
+
+        let remaining = Duration::from_millis(self.timeout_ms).saturating_sub(started_at.elapsed());
+        if remaining.is_zero() {
+            debug!("workspace memory recall timed out before durable selection completed");
+            return None;
+        }
+
+        let response = match timeout(
+            remaining,
+            self.backend.list(MemoryListRequest {
+                limit: Some(RECALL_DURABLE_LIST_LIMIT),
+                path_prefix: None,
+                scopes: Some(vec![MemoryScope::Procedural, MemoryScope::Semantic]),
+                types: None,
+                tags: None,
+                session_id: None,
+                agent_session_id: None,
+                agent_name: None,
+                task_id: None,
+                include_stale: Some(false),
+            }),
+        )
+        .await
+        {
+            Ok(Ok(response)) => response,
+            Ok(Err(error)) => {
+                warn!(error = %error, "workspace durable memory listing failed");
+                return None;
+            }
+            Err(_) => {
+                debug!("workspace memory recall timed out during durable listing");
+                return None;
+            }
+        };
+
+        let selected = select_relevant_durable_memories(&response.entries, &query_terms);
+        if selected.is_empty() {
+            return None;
+        }
+
+        let mut hits = Vec::new();
+        for candidate in selected {
+            let remaining =
+                Duration::from_millis(self.timeout_ms).saturating_sub(started_at.elapsed());
+            if remaining.is_zero() {
+                debug!("workspace memory recall timed out during durable reads");
+                break;
+            }
+            let document = match timeout(
+                remaining,
+                self.backend.get(MemoryGetRequest {
+                    path: candidate.entry.path.clone(),
+                    start_line: Some(1),
+                    line_count: Some(RECALL_DURABLE_LINE_LIMIT),
+                }),
+            )
+            .await
+            {
+                Ok(Ok(document)) => document,
+                Ok(Err(error)) => {
+                    warn!(
+                        error = %error,
+                        path = %candidate.entry.path,
+                        "workspace durable memory read failed"
+                    );
+                    continue;
+                }
+                Err(_) => {
+                    debug!("workspace memory recall timed out during durable read");
+                    break;
+                }
+            };
+            let Some(snippet) = recall_snippet_from_document(&document, &query_terms) else {
+                continue;
+            };
+            hits.push(MemorySearchHit {
+                hit_id: format!("selected:{}", document.snapshot_id),
+                path: document.path.clone(),
+                start_line: document.resolved_start_line,
+                end_line: document.resolved_end_line,
+                score: candidate.score as f64,
+                snippet,
+                document_metadata: document.metadata.clone(),
+                metadata: Default::default(),
+            });
+            if hits.len() == RECALL_LIMIT {
+                break;
+            }
+        }
+
+        (!hits.is_empty()).then(|| (RECALL_DURABLE_SELECTOR_BACKEND.to_string(), hits))
     }
 
     async fn search_hits(
@@ -219,6 +332,12 @@ impl WorkspaceMemoryRecallAugmentor {
         }
         None
     }
+}
+
+#[derive(Clone)]
+struct DurableMemoryCandidate<'a> {
+    entry: &'a MemoryListEntry,
+    score: usize,
 }
 
 fn merge_recall_hits(existing: &mut Vec<MemorySearchHit>, incoming: Vec<MemorySearchHit>) {
@@ -421,6 +540,200 @@ fn format_recall_block(hits: &[MemorySearchHit]) -> Option<String> {
     Some(lines.join("\n"))
 }
 
+fn durable_selector_terms(query: &str) -> Vec<String> {
+    let raw_terms = tokenize_query(query);
+    if raw_terms.len() < 2 {
+        return Vec::new();
+    }
+    let keyword_terms = raw_terms
+        .iter()
+        .filter(|term| !is_query_stop_word(term))
+        .cloned()
+        .collect::<Vec<_>>();
+    if keyword_terms.len() >= 2 {
+        keyword_terms
+    } else {
+        raw_terms
+    }
+}
+
+fn select_relevant_durable_memories<'a>(
+    entries: &'a [MemoryListEntry],
+    query_terms: &[String],
+) -> Vec<DurableMemoryCandidate<'a>> {
+    let mut scored = entries
+        .iter()
+        .filter(|entry| !is_recall_primer_entrypoint(entry))
+        .filter_map(|entry| {
+            durable_memory_candidate_score(entry, query_terms)
+                .map(|score| DurableMemoryCandidate { entry, score })
+        })
+        .collect::<Vec<_>>();
+    scored.sort_by(|left, right| {
+        right
+            .score
+            .cmp(&left.score)
+            .then_with(|| left.entry.path.cmp(&right.entry.path))
+    });
+    scored.truncate(RECALL_DURABLE_SELECTION_LIMIT);
+    scored
+}
+
+fn durable_memory_candidate_score(
+    entry: &MemoryListEntry,
+    query_terms: &[String],
+) -> Option<usize> {
+    let title = entry.title.to_ascii_lowercase();
+    let description = entry
+        .metadata
+        .description
+        .as_deref()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let path = entry.path.to_ascii_lowercase();
+    let tags = entry
+        .metadata
+        .tags
+        .iter()
+        .map(|tag| tag.to_ascii_lowercase())
+        .collect::<Vec<_>>();
+    let type_term = entry
+        .metadata
+        .memory_type
+        .map(|memory_type| memory_type.as_str().to_string());
+
+    let title_tokens = tokenize_query(&title);
+    let description_tokens = tokenize_query(&description);
+    let path_tokens = tokenize_query(&path);
+    let tag_tokens = tags
+        .iter()
+        .flat_map(|tag| tokenize_query(tag))
+        .collect::<Vec<_>>();
+
+    let unique_overlap = query_terms
+        .iter()
+        .filter(|term| {
+            title_tokens.contains(term)
+                || description_tokens.contains(term)
+                || path_tokens.contains(term)
+                || tag_tokens.contains(term)
+                || type_term
+                    .as_deref()
+                    .is_some_and(|value| value == term.as_str())
+        })
+        .count();
+    let phrase_match = query_term_phrases(query_terms).into_iter().any(|phrase| {
+        title.contains(&phrase)
+            || description.contains(&phrase)
+            || path.contains(&phrase)
+            || tags.iter().any(|tag| tag.contains(&phrase))
+    });
+    if unique_overlap < 2 && !phrase_match {
+        return None;
+    }
+
+    let score = unique_overlap * 100
+        + count_overlap(query_terms, &title_tokens) * 40
+        + count_overlap(query_terms, &description_tokens) * 24
+        + count_overlap(query_terms, &tag_tokens) * 18
+        + count_overlap(query_terms, &path_tokens) * 12
+        + usize::from(phrase_match) * 30
+        + usize::from(
+            type_term
+                .as_deref()
+                .is_some_and(|value| query_terms.iter().any(|term| term == value)),
+        ) * 8;
+    Some(score)
+}
+
+fn query_term_phrases(query_terms: &[String]) -> Vec<String> {
+    let mut phrases = Vec::new();
+    for window in query_terms.windows(2) {
+        phrases.push(window.join(" "));
+    }
+    if query_terms.len() >= 3 {
+        phrases.push(
+            query_terms
+                .iter()
+                .take(3)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(" "),
+        );
+    }
+    phrases
+}
+
+fn count_overlap(query_terms: &[String], field_terms: &[String]) -> usize {
+    query_terms
+        .iter()
+        .filter(|term| field_terms.contains(term))
+        .count()
+}
+
+fn is_recall_primer_entrypoint(entry: &MemoryListEntry) -> bool {
+    if entry.metadata.layer == "auto-memory-index" {
+        return true;
+    }
+    matches!(
+        Path::new(&entry.path)
+            .file_name()
+            .and_then(|name| name.to_str()),
+        Some("AGENTS.md" | "MEMORY.md")
+    )
+}
+
+fn recall_snippet_from_document(
+    document: &MemoryDocument,
+    query_terms: &[String],
+) -> Option<String> {
+    let mut matching = Vec::new();
+    let mut fallback = Vec::new();
+
+    for line in document.text.lines() {
+        let stripped = strip_numbered_line(line);
+        if stripped.is_empty()
+            || stripped.starts_with("# ")
+            || (stripped.starts_with('_') && stripped.ends_with('_'))
+        {
+            continue;
+        }
+
+        let overlap = count_overlap(query_terms, &tokenize_query(stripped));
+        if overlap > 0 {
+            matching.push((overlap, stripped.to_string()));
+        } else {
+            fallback.push(stripped.to_string());
+        }
+    }
+
+    matching.sort_by(|left, right| right.0.cmp(&left.0).then_with(|| left.1.cmp(&right.1)));
+    let mut lines = matching
+        .into_iter()
+        .map(|(_, line)| line)
+        .take(2)
+        .collect::<Vec<_>>();
+    if lines.is_empty() {
+        lines.extend(fallback.into_iter().take(2));
+    }
+    if lines.is_empty() {
+        return None;
+    }
+    Some(normalize_snippet(&lines.join(" ")))
+}
+
+fn strip_numbered_line(line: &str) -> &str {
+    let trimmed = line.trim();
+    let Some((prefix, rest)) = trimmed.split_once(':') else {
+        return trimmed;
+    };
+    if prefix.chars().all(|ch| ch.is_ascii_digit()) {
+        rest.trim()
+    } else {
+        trimmed
+    }
+}
+
 fn normalize_snippet(snippet: &str) -> String {
     let collapsed = snippet.split_whitespace().collect::<Vec<_>>().join(" ");
     truncate_chars(collapsed.trim(), RECALL_MAX_SNIPPET_CHARS)
@@ -444,6 +757,7 @@ mod tests {
     };
     use agent::runtime::{UserMessageAugmentationContext, UserMessageAugmentor};
     use agent::types::{AgentSessionId, Message, MessageRole, SessionId};
+    use std::path::Path;
     use std::sync::Arc;
 
     fn context() -> UserMessageAugmentationContext {
@@ -451,6 +765,36 @@ mod tests {
             session_id: SessionId::from("session-test"),
             agent_session_id: AgentSessionId::from("agent-session-test"),
         }
+    }
+
+    fn write_managed_durable_memory(
+        workspace_root: &Path,
+        scope: MemoryScope,
+        file_name: &str,
+        title: &str,
+        description: &str,
+        tags: &[&str],
+        body: &str,
+    ) -> String {
+        let scope_dir = match scope {
+            MemoryScope::Procedural => ".nanoclaw/memory/procedural",
+            MemoryScope::Semantic => ".nanoclaw/memory/semantic",
+            other => panic!("unsupported durable scope for test fixture: {other:?}"),
+        };
+        let relative_path = format!("{scope_dir}/{file_name}");
+        let absolute_path = workspace_root.join(&relative_path);
+        std::fs::create_dir_all(absolute_path.parent().unwrap()).unwrap();
+        let tags_block = tags
+            .iter()
+            .map(|tag| format!("  - {tag}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let content = format!(
+            "---\nscope: {scope}\ntype: project\ndescription: {description}\ntags:\n{tags_block}\n---\n# {title}\n{body}\n",
+            scope = scope.as_str(),
+        );
+        std::fs::write(&absolute_path, content).unwrap();
+        relative_path
     }
 
     #[tokio::test]
@@ -576,5 +920,73 @@ mod tests {
         if let Some(durable_index) = recall.find("MEMORY.md") {
             assert!(working_index < durable_index);
         }
+    }
+
+    #[tokio::test]
+    async fn durable_recall_prefers_topic_files_over_primer_entrypoints() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("MEMORY.md"),
+            "General deploy reminders live here, but detailed runbooks live under managed memory.",
+        )
+        .unwrap();
+        let stored_path = write_managed_durable_memory(
+            dir.path(),
+            MemoryScope::Procedural,
+            "canary-restart-runbook.md",
+            "Canary restart runbook",
+            "Canary deploy before restart for risky rollout windows.",
+            &["deploy", "restart"],
+            "Use a canary deploy before restart when production risk is elevated.",
+        );
+        let backend = Arc::new(MemoryCoreBackend::new(
+            dir.path().to_path_buf(),
+            Default::default(),
+        ));
+        let augmentor = WorkspaceMemoryRecallAugmentor::new(backend);
+
+        let augmented = augmentor
+            .augment_user_message(
+                &context(),
+                Message::user("Should I use a canary deploy before restart?"),
+            )
+            .await
+            .unwrap();
+
+        let recall = augmented.prefix_messages[0].text_content();
+        assert!(recall.contains(&stored_path));
+        assert!(!recall.contains("- MEMORY.md ["));
+        assert!(!recall.contains("- AGENTS.md ["));
+    }
+
+    #[tokio::test]
+    async fn durable_recall_falls_back_to_body_search_when_headers_do_not_match() {
+        let dir = tempfile::tempdir().unwrap();
+        let stored_path = write_managed_durable_memory(
+            dir.path(),
+            MemoryScope::Semantic,
+            "deployment-notes.md",
+            "Deployment notes",
+            "Rollout guidance.",
+            &["ops"],
+            "Use zebra restart sequencing to avoid duplicate worker claims.",
+        );
+        let backend = Arc::new(MemoryCoreBackend::new(
+            dir.path().to_path_buf(),
+            Default::default(),
+        ));
+        let augmentor = WorkspaceMemoryRecallAugmentor::new(backend);
+
+        let augmented = augmentor
+            .augment_user_message(
+                &context(),
+                Message::user("When should I use zebra restart sequencing?"),
+            )
+            .await
+            .unwrap();
+
+        let recall = augmented.prefix_messages[0].text_content();
+        assert!(recall.contains(&stored_path));
+        assert!(recall.contains("zebra restart sequencing"));
     }
 }

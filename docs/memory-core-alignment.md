@@ -119,6 +119,19 @@ before searching. That keeps prompts like "Should I use a canary deploy before
 restart?" recallable without requiring the memory files to literally contain
 every conversational filler token.
 
+Durable recall now uses a more Claude-like two-stage path:
+
+- working memory remains search-first so the active session note can win on the
+  current task state
+- procedural and semantic memory first go through a header-level selector that
+  ranks candidate files using title, description, type, tags, and path labels
+- only the selected durable files are read back for short snippets
+- primer-style entrypoints such as `AGENTS.md`, `MEMORY.md`, and the generated
+  auto-memory index are excluded from this durable selector because they are
+  already part of the stable startup context
+- if header selection finds nothing useful, the augmentor falls back to body
+  search so content-only memories do not become unreachable
+
 ## Compaction Snapshots
 
 Claude-style memory continuity is not only about durable recall. It also relies
