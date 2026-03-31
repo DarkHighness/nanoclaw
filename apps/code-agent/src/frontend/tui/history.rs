@@ -1,21 +1,22 @@
 use super::state::{InspectorEntry, TranscriptEntry, TranscriptShellDetail, preview_text};
 use crate::backend::{
-    BenchmarkExecutionOutcome, ImproveExecutionOutcome, LiveTaskControlAction,
-    LiveTaskControlOutcome, LiveTaskMessageAction, LiveTaskMessageOutcome, LiveTaskSpawnOutcome,
-    LiveTaskSummary, LiveTaskWaitOutcome, LoadedAgentSession, LoadedExperiment, LoadedSession,
-    LoadedSubagentSession, LoadedTask, McpPromptSummary, McpResourceSummary, McpServerSummary,
-    PersistedAgentSessionSummary, PersistedExperimentSummary, PersistedSessionSearchMatch,
-    PersistedSessionSummary, PersistedTaskSummary, SessionExportArtifact, SessionExportKind,
-    SessionOperationAction, SessionOperationOutcome, StartupDiagnosticsSnapshot, message_to_text,
-    preview_id,
+    ArtifactProposalExecutionOutcome, BenchmarkExecutionOutcome, ImproveExecutionOutcome,
+    LiveTaskControlAction, LiveTaskControlOutcome, LiveTaskMessageAction, LiveTaskMessageOutcome,
+    LiveTaskSpawnOutcome, LiveTaskSummary, LiveTaskWaitOutcome, LoadedAgentSession, LoadedArtifact,
+    LoadedExperiment, LoadedSession, LoadedSubagentSession, LoadedTask, McpPromptSummary,
+    McpResourceSummary, McpServerSummary, PersistedAgentSessionSummary, PersistedArtifactSummary,
+    PersistedExperimentSummary, PersistedSessionSearchMatch, PersistedSessionSummary,
+    PersistedTaskSummary, SessionExportArtifact, SessionExportKind, SessionOperationAction,
+    SessionOperationOutcome, StartupDiagnosticsSnapshot, message_to_text, preview_id,
 };
 use crate::tool_render::{
     ToolDetail, tool_argument_details, tool_arguments_preview_lines, tool_output_details,
 };
 use agent::types::{
-    AgentEnvelopeKind, AgentSessionId, AgentStatus, ExperimentEventEnvelope, ExperimentEventKind,
-    ExperimentTarget, HookEvent, Message, PromotionDecisionKind, SessionEventEnvelope,
-    SessionEventKind,
+    AgentEnvelopeKind, AgentSessionId, AgentStatus, ArtifactKind, ArtifactLedgerEventEnvelope,
+    ArtifactLedgerEventKind, ArtifactPromotionDecisionKind, ExperimentEventEnvelope,
+    ExperimentEventKind, ExperimentTarget, HookEvent, Message, PromotionDecisionKind,
+    SessionEventEnvelope, SessionEventKind,
 };
 use store::TokenUsageRecord;
 
@@ -166,6 +167,38 @@ pub(crate) fn format_experiment_summary_line(
     }
     info_summary_entry(
         format!("{}  {}", preview_id(&summary.experiment_ref), goal),
+        details,
+    )
+}
+
+pub(crate) fn format_artifact_summary_line(summary: &PersistedArtifactSummary) -> TranscriptEntry {
+    let title = summary
+        .latest_version_ref
+        .as_deref()
+        .map(preview_id)
+        .unwrap_or_else(|| "no versions yet".to_string());
+    let mut details = vec![format!(
+        "{} versions · {} signals · {} tasks · {} cases · {} events",
+        summary.version_count,
+        summary.source_signal_count,
+        summary.source_task_count,
+        summary.source_case_count,
+        summary.event_count
+    )];
+    if let Some(kind) = summary.kind {
+        details.push(format!("kind {}", artifact_kind_label(kind)));
+    }
+    if let Some(decision) = summary.last_decision {
+        details.push(format!(
+            "last decision {}",
+            artifact_decision_label(decision)
+        ));
+    }
+    if let Some(version_ref) = &summary.promoted_version_ref {
+        details.push(format!("promoted {}", preview_id(version_ref)));
+    }
+    info_summary_entry(
+        format!("{}  {}", preview_id(&summary.artifact_ref), title),
         details,
     )
 }
@@ -336,6 +369,69 @@ pub(crate) fn format_experiment_inspector(experiment: &LoadedExperiment) -> Vec<
                 .into_iter()
                 .rev()
                 .map(|event| InspectorEntry::transcript(format_experiment_event_line(event))),
+        );
+    }
+    lines
+}
+
+pub(crate) fn format_artifact_inspector(artifact: &LoadedArtifact) -> Vec<InspectorEntry> {
+    let mut lines = vec![
+        InspectorEntry::section("Artifact"),
+        InspectorEntry::field("artifact ref", artifact.summary.artifact_id.to_string()),
+        InspectorEntry::field("event count", artifact.summary.event_count.to_string()),
+        InspectorEntry::field("version count", artifact.summary.version_count.to_string()),
+        InspectorEntry::field(
+            "source signals",
+            artifact.summary.source_signal_count.to_string(),
+        ),
+        InspectorEntry::field(
+            "source tasks",
+            artifact.summary.source_task_count.to_string(),
+        ),
+        InspectorEntry::field(
+            "source cases",
+            artifact.summary.source_case_count.to_string(),
+        ),
+    ];
+    if let Some(kind) = artifact.summary.kind {
+        lines.push(InspectorEntry::field("kind", artifact_kind_label(kind)));
+    }
+    if artifact.summary.latest_version_id.is_some()
+        || artifact.summary.promoted_version_id.is_some()
+    {
+        lines.push(InspectorEntry::section("Versions"));
+        if let Some(version_id) = &artifact.summary.latest_version_id {
+            lines.push(InspectorEntry::field(
+                "latest version",
+                version_id.to_string(),
+            ));
+        }
+        if let Some(version_id) = &artifact.summary.promoted_version_id {
+            lines.push(InspectorEntry::field(
+                "promoted version",
+                version_id.to_string(),
+            ));
+        }
+    }
+    if let Some(decision) = artifact.summary.last_decision {
+        lines.push(InspectorEntry::section("Decision"));
+        lines.push(InspectorEntry::field(
+            "last decision",
+            artifact_decision_label(decision),
+        ));
+    }
+    if !artifact.events.is_empty() {
+        lines.push(InspectorEntry::section("Recent Events"));
+        lines.extend(
+            artifact
+                .events
+                .iter()
+                .rev()
+                .take(8)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .map(|event| InspectorEntry::transcript(format_artifact_event_line(event))),
         );
     }
     lines
@@ -625,6 +721,25 @@ fn promotion_decision_label(kind: PromotionDecisionKind) -> &'static str {
     }
 }
 
+fn artifact_kind_label(kind: ArtifactKind) -> &'static str {
+    match kind {
+        ArtifactKind::Prompt => "prompt",
+        ArtifactKind::Skill => "skill",
+        ArtifactKind::Workflow => "workflow",
+        ArtifactKind::Hook => "hook",
+        ArtifactKind::Verifier => "verifier",
+        ArtifactKind::RuntimePatch => "runtime_patch",
+    }
+}
+
+fn artifact_decision_label(kind: ArtifactPromotionDecisionKind) -> &'static str {
+    match kind {
+        ArtifactPromotionDecisionKind::Promoted => "promoted",
+        ArtifactPromotionDecisionKind::Rejected => "rejected",
+        ArtifactPromotionDecisionKind::RolledBack => "rolled_back",
+    }
+}
+
 fn format_experiment_event_line(event: &ExperimentEventEnvelope) -> TranscriptEntry {
     match &event.event {
         ExperimentEventKind::Started { spec } => info_summary_entry(
@@ -689,6 +804,54 @@ fn format_experiment_event_line(event: &ExperimentEventEnvelope) -> TranscriptEn
             decision,
         } => info_summary_entry(
             format!("Rolled back candidate {}", candidate_id),
+            [preview_text(&decision.reason, 96)],
+        ),
+    }
+}
+
+fn format_artifact_event_line(event: &ArtifactLedgerEventEnvelope) -> TranscriptEntry {
+    match &event.event {
+        ArtifactLedgerEventKind::VersionProposed { version } => info_summary_entry(
+            format!(
+                "Proposed {} version {}",
+                artifact_kind_label(version.kind),
+                version.label
+            ),
+            [
+                format!("version {}", version.version_id),
+                version
+                    .parent_version_id
+                    .as_ref()
+                    .map(|version_id| format!("parent {}", version_id))
+                    .unwrap_or_default(),
+            ],
+        ),
+        ArtifactLedgerEventKind::VersionEvaluated {
+            version_id,
+            evaluation,
+        } => info_summary_entry(
+            format!("Evaluated version {}", version_id),
+            [preview_text(&evaluation.summary, 96)],
+        ),
+        ArtifactLedgerEventKind::VersionPromoted {
+            version_id,
+            decision,
+        } => success_summary_entry(
+            format!("Promoted version {}", version_id),
+            [preview_text(&decision.reason, 96)],
+        ),
+        ArtifactLedgerEventKind::VersionRejected {
+            version_id,
+            decision,
+        } => error_summary_entry(
+            format!("Rejected version {}", version_id),
+            [preview_text(&decision.reason, 96)],
+        ),
+        ArtifactLedgerEventKind::VersionRolledBack {
+            version_id,
+            decision,
+        } => info_summary_entry(
+            format!("Rolled back version {}", version_id),
             [preview_text(&decision.reason, 96)],
         ),
     }
@@ -790,6 +953,58 @@ pub(crate) fn format_improve_result(result: &ImproveExecutionOutcome) -> Vec<Ins
                     format!("score {}", format_optional_score(outcome.evaluation.score)),
                     preview_text(&outcome.decision.reason, 96),
                 ],
+            ))
+        }));
+    }
+    lines
+}
+
+pub(crate) fn format_proposal_result(
+    result: &ArtifactProposalExecutionOutcome,
+) -> Vec<InspectorEntry> {
+    let mut lines = vec![
+        InspectorEntry::section("Proposal"),
+        InspectorEntry::field("plan", result.plan_path.display().to_string()),
+        InspectorEntry::field("artifact ref", result.result.artifact_id.to_string()),
+        InspectorEntry::field("version ref", result.result.version.version_id.to_string()),
+        InspectorEntry::field(
+            "proposal",
+            if result.result.proposal.ready {
+                "pending promotion"
+            } else {
+                "rejected"
+            },
+        ),
+        InspectorEntry::field("reason", preview_text(&result.result.proposal.reason, 96)),
+        InspectorEntry::field(
+            "verification",
+            preview_text(&result.result.verification.summary, 96),
+        ),
+    ];
+    if !result.result.run.trace.changed_paths.is_empty() {
+        lines.push(InspectorEntry::section("Changed Paths"));
+        lines.extend(
+            result
+                .result
+                .run
+                .trace
+                .changed_paths
+                .iter()
+                .take(8)
+                .map(|path| InspectorEntry::field("path", path.display().to_string())),
+        );
+    }
+    if !result.result.verification.findings.is_empty() {
+        lines.push(InspectorEntry::section("Verifier Findings"));
+        lines.extend(result.result.verification.findings.iter().map(|finding| {
+            let tone = match finding.severity {
+                meta::VerificationFindingSeverity::Blocking => SummaryTone::Error,
+                meta::VerificationFindingSeverity::Warning => SummaryTone::Info,
+            };
+            InspectorEntry::transcript(summary_entry(
+                tone,
+                format!("{} {}", finding.code, finding.summary),
+                Vec::<String>::new(),
             ))
         }));
     }
@@ -1282,6 +1497,16 @@ fn format_session_event_line(event: &SessionEventEnvelope) -> TranscriptEntry {
             "Removed transcript message",
             [format!("message {}", preview_id(message_id.as_str()))],
         ),
+        SessionEventKind::HistoryRollbackApplied {
+            anchor_message_id,
+            removed_message_count,
+        } => info_summary_entry(
+            "Applied history rollback",
+            [
+                format!("anchor {}", preview_id(anchor_message_id.as_str())),
+                format!("removed messages {}", removed_message_count),
+            ],
+        ),
         SessionEventKind::ToolApprovalRequested { call, reasons } => {
             let preview_lines =
                 tool_arguments_preview_lines(call.tool_name.as_str(), &call.arguments);
@@ -1417,6 +1642,10 @@ fn format_session_event_line(event: &SessionEventEnvelope) -> TranscriptEntry {
                 ],
             )
         }
+        SessionEventKind::TurnFailed { stage, error } => error_summary_entry(
+            format!("Turn failed in {stage}"),
+            [format!("error {}", preview_text(error, 72))],
+        ),
         SessionEventKind::Stop { reason } => info_summary_entry(
             "Stopped session",
             [format_reason_detail(reason.as_deref()).unwrap_or_default()],

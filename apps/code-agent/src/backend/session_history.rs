@@ -1,15 +1,16 @@
 use super::session_catalog::PersistedAgentSessionSummary;
 use agent::types::{
-    AgentHandle, AgentSessionId, AgentStatus, AgentTaskSpec, ExperimentEventEnvelope, ExperimentId,
-    Message, MessagePart, MessageRole, SessionEventEnvelope, SessionEventKind, SessionId,
+    AgentHandle, AgentSessionId, AgentStatus, AgentTaskSpec, ArtifactId,
+    ArtifactLedgerEventEnvelope, ExperimentEventEnvelope, ExperimentId, Message, MessagePart,
+    MessageRole, SessionEventEnvelope, SessionEventKind, SessionId,
 };
 use anyhow::{Result, anyhow};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use store::{
-    ExperimentSummary, SessionSearchResult, SessionStore, SessionSummary, SessionTokenUsageReport,
-    TokenUsageRecord, replay_transcript,
+    ArtifactSummary, ExperimentSummary, SessionSearchResult, SessionStore, SessionSummary,
+    SessionTokenUsageReport, TokenUsageRecord, replay_transcript,
 };
 
 #[derive(Clone, Debug)]
@@ -45,6 +46,12 @@ pub(crate) struct LoadedExperiment {
     pub(crate) events: Vec<ExperimentEventEnvelope>,
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct LoadedArtifact {
+    pub(crate) summary: ArtifactSummary,
+    pub(crate) events: Vec<ArtifactLedgerEventEnvelope>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SessionExportKind {
     EventsJsonl,
@@ -74,6 +81,10 @@ pub(crate) async fn list_experiments(
     store: &Arc<dyn SessionStore>,
 ) -> Result<Vec<ExperimentSummary>> {
     Ok(store.list_experiments().await?)
+}
+
+pub(crate) async fn list_artifacts(store: &Arc<dyn SessionStore>) -> Result<Vec<ArtifactSummary>> {
+    Ok(store.list_artifacts().await?)
 }
 
 pub(crate) async fn load_session(
@@ -113,6 +124,15 @@ pub(crate) async fn load_experiment(
     let (experiment_id, summary) = resolve_experiment(store, experiment_ref).await?;
     let events = store.experiment_events(&experiment_id).await?;
     Ok(LoadedExperiment { summary, events })
+}
+
+pub(crate) async fn load_artifact(
+    store: &Arc<dyn SessionStore>,
+    artifact_ref: &str,
+) -> Result<LoadedArtifact> {
+    let (artifact_id, summary) = resolve_artifact(store, artifact_ref).await?;
+    let events = store.artifact_events(&artifact_id).await?;
+    Ok(LoadedArtifact { summary, events })
 }
 
 pub(crate) async fn export_session_events(
@@ -185,6 +205,19 @@ async fn resolve_experiment(
     Ok((experiment_id, summary))
 }
 
+async fn resolve_artifact(
+    store: &Arc<dyn SessionStore>,
+    artifact_ref: &str,
+) -> Result<(ArtifactId, ArtifactSummary)> {
+    let artifacts = list_artifacts(store).await?;
+    let artifact_id = resolve_artifact_reference(&artifacts, artifact_ref)?;
+    let summary = artifacts
+        .into_iter()
+        .find(|summary| summary.artifact_id == artifact_id)
+        .ok_or_else(|| anyhow!("artifact missing from store listing: {}", artifact_id))?;
+    Ok((artifact_id, summary))
+}
+
 fn write_output_path(workspace_root: &Path, value: &str) -> PathBuf {
     let path = PathBuf::from(value);
     if path.is_absolute() {
@@ -231,6 +264,34 @@ pub(crate) fn resolve_session_reference(
                 .iter()
                 .take(6)
                 .map(|session| preview_id(session.session_id.as_str()))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )),
+    }
+}
+
+pub(crate) fn resolve_artifact_reference(
+    artifacts: &[ArtifactSummary],
+    artifact_ref: &str,
+) -> Result<ArtifactId> {
+    if let Some(artifact) = artifacts
+        .iter()
+        .find(|summary| summary.artifact_id.as_str() == artifact_ref)
+    {
+        return Ok(artifact.artifact_id.clone());
+    }
+
+    let matches = artifacts
+        .iter()
+        .filter(|summary| summary.artifact_id.as_str().starts_with(artifact_ref))
+        .collect::<Vec<_>>();
+    match matches.as_slice() {
+        [] => Err(anyhow!("unknown artifact id or prefix: {artifact_ref}")),
+        [artifact] => Ok(artifact.artifact_id.clone()),
+        many => Err(anyhow!(
+            "ambiguous artifact prefix {artifact_ref}: {}",
+            many.iter()
+                .map(|artifact| preview_id(artifact.artifact_id.as_str()))
                 .collect::<Vec<_>>()
                 .join(", ")
         )),

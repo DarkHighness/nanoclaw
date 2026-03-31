@@ -249,6 +249,24 @@ const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
         summary: "inspect persisted experiment",
     },
     SlashCommandSpec {
+        section: "Meta Agent",
+        name: "artifacts",
+        usage: "artifacts",
+        summary: "browse persisted artifacts",
+    },
+    SlashCommandSpec {
+        section: "Meta Agent",
+        name: "artifact",
+        usage: "artifact <artifact-ref>",
+        summary: "inspect persisted artifact",
+    },
+    SlashCommandSpec {
+        section: "Meta Agent",
+        name: "propose",
+        usage: "propose <path>",
+        summary: "run artifact proposal plan",
+    },
+    SlashCommandSpec {
         section: "Catalog",
         name: "tools",
         usage: "tools",
@@ -383,6 +401,13 @@ pub(crate) enum SlashCommand {
     Experiments,
     Experiment {
         experiment_ref: String,
+    },
+    Artifacts,
+    Artifact {
+        artifact_ref: String,
+    },
+    Propose {
+        path: String,
     },
     Sessions {
         query: Option<String>,
@@ -526,6 +551,14 @@ enum SlashSubcommand {
     Experiments,
     Experiment {
         experiment_ref: String,
+    },
+    Artifacts,
+    Artifact {
+        artifact_ref: String,
+    },
+    Propose {
+        #[arg(value_name = "PATH", required = true, trailing_var_arg = true)]
+        path: Vec<String>,
     },
     Sessions {
         #[arg(
@@ -807,6 +840,11 @@ impl From<SlashSubcommand> for SlashCommand {
             },
             SlashSubcommand::Experiments => Self::Experiments,
             SlashSubcommand::Experiment { experiment_ref } => Self::Experiment { experiment_ref },
+            SlashSubcommand::Artifacts => Self::Artifacts,
+            SlashSubcommand::Artifact { artifact_ref } => Self::Artifact { artifact_ref },
+            SlashSubcommand::Propose { path } => Self::Propose {
+                path: join_required_tail(path),
+            },
             SlashSubcommand::Sessions { query } => Self::Sessions {
                 query: join_optional_tail(query),
             },
@@ -1024,6 +1062,24 @@ mod tests {
     }
 
     #[test]
+    fn parses_artifact_listing() {
+        assert!(matches!(
+            parse_slash_command("/artifacts"),
+            SlashCommand::Artifacts
+        ));
+    }
+
+    #[test]
+    fn parses_artifact_lookup() {
+        match parse_slash_command("/artifact artifact123") {
+            SlashCommand::Artifact { artifact_ref } => {
+                assert_eq!(artifact_ref, "artifact123");
+            }
+            _ => panic!("unexpected command"),
+        }
+    }
+
+    #[test]
     fn parses_benchmark_plan_path_tail() {
         match parse_slash_command("/benchmark plans/meta agent benchmark.json") {
             SlashCommand::Benchmark { path } => {
@@ -1038,6 +1094,16 @@ mod tests {
         match parse_slash_command("/improve plans/meta agent improve.json") {
             SlashCommand::Improve { path } => {
                 assert_eq!(path, "plans/meta agent improve.json");
+            }
+            _ => panic!("unexpected command"),
+        }
+    }
+
+    #[test]
+    fn parses_proposal_plan_path_tail() {
+        match parse_slash_command("/propose plans/self improve proposal.json") {
+            SlashCommand::Propose { path } => {
+                assert_eq!(path, "plans/self improve proposal.json");
             }
             _ => panic!("unexpected command"),
         }

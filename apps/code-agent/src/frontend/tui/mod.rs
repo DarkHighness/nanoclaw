@@ -18,16 +18,16 @@ use commands::{
     move_slash_command_selection, parse_slash_command, resolve_slash_enter_action,
 };
 use history::{
-    format_agent_session_inspector, format_agent_session_summary_line, format_benchmark_result,
-    format_experiment_inspector, format_experiment_summary_line, format_improve_result,
-    format_live_task_control_outcome, format_live_task_message_outcome,
-    format_live_task_spawn_outcome, format_live_task_summary_line, format_live_task_wait_outcome,
-    format_mcp_prompt_summary_line, format_mcp_resource_summary_line,
-    format_mcp_server_summary_line, format_session_export_result, format_session_inspector,
-    format_session_operation_outcome, format_session_search_line, format_session_summary_line,
-    format_session_transcript_lines, format_startup_diagnostics, format_task_inspector,
-    format_task_summary_line, format_visible_transcript_lines,
-    format_visible_transcript_preview_lines,
+    format_agent_session_inspector, format_agent_session_summary_line, format_artifact_inspector,
+    format_artifact_summary_line, format_benchmark_result, format_experiment_inspector,
+    format_experiment_summary_line, format_improve_result, format_live_task_control_outcome,
+    format_live_task_message_outcome, format_live_task_spawn_outcome,
+    format_live_task_summary_line, format_live_task_wait_outcome, format_mcp_prompt_summary_line,
+    format_mcp_resource_summary_line, format_mcp_server_summary_line, format_proposal_result,
+    format_session_export_result, format_session_inspector, format_session_operation_outcome,
+    format_session_search_line, format_session_summary_line, format_session_transcript_lines,
+    format_startup_diagnostics, format_task_inspector, format_task_summary_line,
+    format_visible_transcript_lines, format_visible_transcript_preview_lines,
 };
 use observer::SharedRenderObserver;
 use render::{main_pane_viewport_height, render};
@@ -1979,8 +1979,11 @@ impl CodeAgentTui {
             | SlashCommand::Task { .. }
             | SlashCommand::Benchmark { .. }
             | SlashCommand::Improve { .. }
+            | SlashCommand::Propose { .. }
             | SlashCommand::Experiments
             | SlashCommand::Experiment { .. }
+            | SlashCommand::Artifacts
+            | SlashCommand::Artifact { .. }
             | SlashCommand::Sessions { .. }
             | SlashCommand::Session { .. }
             | SlashCommand::Resume { .. }
@@ -2145,6 +2148,21 @@ impl CodeAgentTui {
                 });
                 Ok(false)
             }
+            SlashCommand::Propose { path } => {
+                let outcome = self.session.run_proposal(&path).await?;
+                let inspector = format_proposal_result(&outcome);
+                let artifact_ref_preview = preview_id(outcome.result.artifact_id.as_str());
+                let plan_path = outcome.plan_path.display().to_string();
+                self.ui_state.mutate(move |state| {
+                    state.show_main_view("Proposal", inspector);
+                    state.status = format!(
+                        "Ran proposal plan {} -> artifact {}",
+                        plan_path, artifact_ref_preview
+                    );
+                    state.push_activity(format!("ran proposal {}", artifact_ref_preview));
+                });
+                Ok(false)
+            }
             SlashCommand::Experiments => {
                 let experiments = self.session.list_experiments().await?;
                 self.ui_state.mutate(move |state| {
@@ -2189,6 +2207,51 @@ impl CodeAgentTui {
                         experiment_ref_preview, event_count
                     );
                     state.push_activity(format!("loaded experiment {}", experiment_ref_preview));
+                });
+                Ok(false)
+            }
+            SlashCommand::Artifacts => {
+                let artifacts = self.session.list_artifacts().await?;
+                self.ui_state.mutate(move |state| {
+                    let lines = if artifacts.is_empty() {
+                        vec![
+                            InspectorEntry::section("Artifacts"),
+                            InspectorEntry::Muted(
+                                "no persisted artifacts recorded yet".to_string(),
+                            ),
+                        ]
+                    } else {
+                        std::iter::once(InspectorEntry::section("Artifacts"))
+                            .chain(artifacts.iter().take(12).map(|artifact| {
+                                InspectorEntry::transcript(format_artifact_summary_line(artifact))
+                            }))
+                            .collect()
+                    };
+                    state.show_main_view("Artifacts", lines);
+                    state.status = if artifacts.is_empty() {
+                        "No artifacts available yet".to_string()
+                    } else {
+                        format!(
+                            "Listed {} artifacts. Use /artifact <artifact-ref> to open one.",
+                            artifacts.len()
+                        )
+                    };
+                    state.push_activity("listed persisted artifacts");
+                });
+                Ok(false)
+            }
+            SlashCommand::Artifact { artifact_ref } => {
+                let loaded = self.session.load_artifact(&artifact_ref).await?;
+                let inspector = format_artifact_inspector(&loaded);
+                let artifact_ref_preview = preview_id(loaded.summary.artifact_id.as_str());
+                let event_count = loaded.summary.event_count;
+                self.ui_state.mutate(move |state| {
+                    state.show_main_view("Artifact", inspector);
+                    state.status = format!(
+                        "Loaded artifact {} with {} events",
+                        artifact_ref_preview, event_count
+                    );
+                    state.push_activity(format!("loaded artifact {}", artifact_ref_preview));
                 });
                 Ok(false)
             }
@@ -2659,7 +2722,10 @@ fn build_startup_inspector(session: &state::SessionSummary) -> Vec<InspectorEntr
         InspectorEntry::collection("/sessions", Some("browse history")),
         InspectorEntry::collection("/benchmark <path>", Some("run offline benchmark plan")),
         InspectorEntry::collection("/improve <path>", Some("run offline improve tournament")),
+        InspectorEntry::collection("/propose <path>", Some("run artifact proposal plan")),
         InspectorEntry::collection("/experiments", Some("browse meta-agent archive")),
+        InspectorEntry::collection("/artifacts", Some("browse artifact ledger")),
+        InspectorEntry::collection("/artifact <artifact-ref>", Some("inspect artifact")),
         InspectorEntry::collection("/agent_sessions", Some("inspect or resume agents")),
         InspectorEntry::collection("/spawn_task <role> <prompt>", Some("launch child agent")),
         InspectorEntry::collection("/new", Some("start fresh without deleting history")),

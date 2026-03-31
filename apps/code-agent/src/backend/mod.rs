@@ -43,18 +43,18 @@ pub(crate) use permission_request::{
     SessionPermissionRequestHandler,
 };
 pub(crate) use session::{
-    BenchmarkExecutionOutcome, CodeAgentSession, ImproveExecutionOutcome, LiveTaskControlAction,
-    LiveTaskControlOutcome, LiveTaskMessageAction, LiveTaskMessageOutcome, LiveTaskSpawnOutcome,
-    LiveTaskSummary, LiveTaskWaitOutcome, ModelReasoningEffortOutcome, PendingControlKind,
-    PendingControlSummary, SessionOperation, SessionOperationAction, SessionOperationOutcome,
-    SessionPermissionMode, SessionStartupSnapshot,
+    ArtifactProposalExecutionOutcome, BenchmarkExecutionOutcome, CodeAgentSession,
+    ImproveExecutionOutcome, LiveTaskControlAction, LiveTaskControlOutcome, LiveTaskMessageAction,
+    LiveTaskMessageOutcome, LiveTaskSpawnOutcome, LiveTaskSummary, LiveTaskWaitOutcome,
+    ModelReasoningEffortOutcome, PendingControlKind, PendingControlSummary, SessionOperation,
+    SessionOperationAction, SessionOperationOutcome, SessionPermissionMode, SessionStartupSnapshot,
 };
 pub(crate) use session_catalog::{
-    PersistedAgentSessionSummary, PersistedExperimentSummary, PersistedSessionSearchMatch,
-    PersistedSessionSummary, ResumeSupport,
+    PersistedAgentSessionSummary, PersistedArtifactSummary, PersistedExperimentSummary,
+    PersistedSessionSearchMatch, PersistedSessionSummary, ResumeSupport,
 };
 pub(crate) use session_history::{
-    LoadedAgentSession, LoadedExperiment, LoadedSession, LoadedSubagentSession,
+    LoadedAgentSession, LoadedArtifact, LoadedExperiment, LoadedSession, LoadedSubagentSession,
     SessionExportArtifact, SessionExportKind, message_to_text, preview_id,
 };
 pub(crate) use task_history::{LoadedTask, LoadedTaskMessage, PersistedTaskSummary};

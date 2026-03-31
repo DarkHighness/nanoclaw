@@ -1,10 +1,11 @@
 use crate::backend::session_resume::{HISTORY_ONLY_RESUME_REASON, can_resume_agent_session};
 use agent::types::{
-    AgentSessionId, ExperimentTarget, PromotionDecisionKind, SessionEventEnvelope, SessionEventKind,
+    AgentSessionId, ArtifactKind, ArtifactPromotionDecisionKind, ExperimentTarget,
+    PromotionDecisionKind, SessionEventEnvelope, SessionEventKind,
 };
 use anyhow::{Result, anyhow};
 use std::collections::BTreeMap;
-use store::{ExperimentSummary, SessionSearchResult, SessionSummary};
+use store::{ArtifactSummary, ExperimentSummary, SessionSearchResult, SessionSummary};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum ResumeSupport {
@@ -56,6 +57,22 @@ pub(crate) struct PersistedExperimentSummary {
     pub(crate) candidate_count: usize,
     pub(crate) promoted_candidate_ref: Option<String>,
     pub(crate) last_decision: Option<PromotionDecisionKind>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PersistedArtifactSummary {
+    pub(crate) artifact_ref: String,
+    pub(crate) first_timestamp_ms: u128,
+    pub(crate) last_timestamp_ms: u128,
+    pub(crate) event_count: usize,
+    pub(crate) kind: Option<ArtifactKind>,
+    pub(crate) version_count: usize,
+    pub(crate) source_signal_count: usize,
+    pub(crate) source_task_count: usize,
+    pub(crate) source_case_count: usize,
+    pub(crate) latest_version_ref: Option<String>,
+    pub(crate) promoted_version_ref: Option<String>,
+    pub(crate) last_decision: Option<ArtifactPromotionDecisionKind>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -127,6 +144,26 @@ pub(crate) fn persisted_experiment_summary(
         candidate_count: summary.candidate_count,
         promoted_candidate_ref: summary
             .promoted_candidate_id
+            .as_ref()
+            .map(ToString::to_string),
+        last_decision: summary.last_decision,
+    }
+}
+
+pub(crate) fn persisted_artifact_summary(summary: &ArtifactSummary) -> PersistedArtifactSummary {
+    PersistedArtifactSummary {
+        artifact_ref: summary.artifact_id.to_string(),
+        first_timestamp_ms: summary.first_timestamp_ms,
+        last_timestamp_ms: summary.last_timestamp_ms,
+        event_count: summary.event_count,
+        kind: summary.kind,
+        version_count: summary.version_count,
+        source_signal_count: summary.source_signal_count,
+        source_task_count: summary.source_task_count,
+        source_case_count: summary.source_case_count,
+        latest_version_ref: summary.latest_version_id.as_ref().map(ToString::to_string),
+        promoted_version_ref: summary
+            .promoted_version_id
             .as_ref()
             .map(ToString::to_string),
         last_decision: summary.last_decision,

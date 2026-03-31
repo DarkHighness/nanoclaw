@@ -1,6 +1,6 @@
 use crate::backend::session_catalog;
 use crate::backend::session_history::{
-    self, LoadedAgentSession, LoadedSession, SessionExportArtifact, preview_id,
+    self, LoadedAgentSession, LoadedArtifact, LoadedSession, SessionExportArtifact, preview_id,
 };
 use crate::backend::session_resume;
 use crate::backend::task_history::{self, LoadedTask, PersistedTaskSummary};
@@ -24,11 +24,12 @@ use agent::tools::{
     request_permission_profile_from_granted, sandbox_backend_status,
 };
 use agent::types::{
-    AgentSessionId, AgentTaskSpec, AgentWaitMode, AgentWaitRequest, Message, SessionId,
-    new_opaque_id,
+    AgentSessionId, AgentTaskSpec, AgentWaitMode, AgentWaitRequest, ArtifactId, ArtifactVersion,
+    Message, SessionId, new_opaque_id,
 };
 use agent::{AgentRuntime, RuntimeCommand, Skill, ToolExecutionContext};
 use anyhow::Result;
+use serde::Deserialize;
 use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
@@ -201,6 +202,27 @@ pub(crate) struct BenchmarkExecutionOutcome {
 pub(crate) struct ImproveExecutionOutcome {
     pub(crate) plan_path: PathBuf,
     pub(crate) result: meta::ImproveRunOutcome,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ArtifactProposalExecutionOutcome {
+    pub(crate) plan_path: PathBuf,
+    pub(crate) result: meta::ArtifactProposalOutcome,
+}
+
+#[derive(Debug, Deserialize)]
+struct ArtifactProposalFile {
+    artifact_id: ArtifactId,
+    version: ArtifactVersion,
+    baseline_ref: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    corpus_session_ref: Option<String>,
+    #[serde(default)]
+    verifier: meta::NanoclawVerifierConfig,
+    #[serde(default)]
+    mutations: Vec<meta::WorktreeMutation>,
+    #[serde(default)]
+    commands: Vec<meta::WorktreeCommandSpec>,
 }
 
 /// The backend session owns runtime state so frontends can speak to a stable
@@ -664,6 +686,16 @@ impl CodeAgentSession {
             .collect())
     }
 
+    pub(crate) async fn list_artifacts(
+        &self,
+    ) -> Result<Vec<crate::backend::PersistedArtifactSummary>> {
+        let artifacts = session_history::list_artifacts(&self.store).await?;
+        Ok(artifacts
+            .iter()
+            .map(session_catalog::persisted_artifact_summary)
+            .collect())
+    }
+
     pub(crate) async fn list_agent_sessions(
         &self,
         session_ref: Option<&str>,
@@ -840,6 +872,10 @@ impl CodeAgentSession {
         session_history::load_experiment(&self.store, experiment_ref).await
     }
 
+    pub(crate) async fn load_artifact(&self, artifact_ref: &str) -> Result<LoadedArtifact> {
+        session_history::load_artifact(&self.store, artifact_ref).await
+    }
+
     pub(crate) async fn run_benchmark(
         &self,
         relative_or_absolute: &str,
@@ -862,6 +898,34 @@ impl CodeAgentSession {
         let runner = meta::OfflineImproveRunner::new(self.store.clone());
         let result = runner.run(plan).await?;
         Ok(ImproveExecutionOutcome { plan_path, result })
+    }
+
+    pub(crate) async fn run_proposal(
+        &self,
+        relative_or_absolute: &str,
+    ) -> Result<ArtifactProposalExecutionOutcome> {
+        let plan_path = resolve_operator_path(self.workspace_root(), relative_or_absolute);
+        let encoded = tokio::fs::read_to_string(&plan_path).await?;
+        let plan = serde_json::from_str::<ArtifactProposalFile>(&encoded)?;
+        let corpus = if let Some(session_ref) = plan.corpus_session_ref.as_deref() {
+            meta::session_self_regression_corpus(&*self.store, &SessionId::from(session_ref))
+                .await?
+        } else {
+            meta::all_self_regression_corpus(&*self.store).await?
+        };
+        let runner = meta::ArtifactProposalRunner::new(self.store.clone(), plan.verifier);
+        let result = runner
+            .run(meta::ArtifactProposalPlan {
+                repo_root: self.workspace_root().to_path_buf(),
+                artifact_id: plan.artifact_id,
+                version: plan.version,
+                baseline_ref: plan.baseline_ref,
+                corpus,
+                mutations: plan.mutations,
+                commands: plan.commands,
+            })
+            .await?;
+        Ok(ArtifactProposalExecutionOutcome { plan_path, result })
     }
 
     pub(crate) async fn load_agent_session(
