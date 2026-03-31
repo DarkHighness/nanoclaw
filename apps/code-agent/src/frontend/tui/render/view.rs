@@ -243,7 +243,7 @@ pub(super) fn build_thinking_effort_picker_text(
             Span::styled(current.to_string(), Style::default().fg(palette().user)),
         ]),
         Line::from(Span::styled(
-            "enter apply · ↑↓ move · esc close",
+            "enter save · ↑↓ preview · home/end jump · esc restore",
             Style::default().fg(palette().subtle),
         )),
         Line::raw(""),
@@ -316,7 +316,7 @@ pub(super) fn build_theme_picker_text(
             Span::styled(current.to_string(), Style::default().fg(palette().user)),
         ]),
         Line::from(Span::styled(
-            "enter apply · ↑↓ move · esc close",
+            "enter save · ↑↓ preview · home/end jump · esc restore",
             Style::default().fg(palette().subtle),
         )),
         Line::raw(""),
@@ -373,6 +373,10 @@ pub(super) fn build_theme_picker_text(
     lines.push(Line::raw(""));
     lines.push(Line::from(Span::styled(
         "Themes come from builtin assets plus any user-supplied theme catalog file.",
+        Style::default().fg(palette().subtle),
+    )));
+    lines.push(Line::from(Span::styled(
+        "Moving the picker previews immediately; Enter saves and Esc restores.",
         Style::default().fg(palette().subtle),
     )));
     Text::from(lines)

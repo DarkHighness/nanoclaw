@@ -12,6 +12,7 @@ use crate::backend::{
     SessionOperationOutcome, SessionPermissionMode, SessionStartupSnapshot, UserInputPrompt,
     preview_id,
 };
+use crate::config::persist_tui_theme_selection;
 use crate::statusline::status_line_fields;
 use crate::theme::{ThemeCatalog, active_theme_id, install_theme_catalog, set_active_theme};
 use approval::approval_decision_for_key;
@@ -1007,12 +1008,14 @@ impl CodeAgentTui {
                 self.ui_state.mutate(|state| {
                     let _ = state.move_theme_picker(true);
                 });
+                self.preview_selected_theme();
                 true
             }
             KeyCode::Down => {
                 self.ui_state.mutate(|state| {
                     let _ = state.move_theme_picker(false);
                 });
+                self.preview_selected_theme();
                 true
             }
             KeyCode::Home => {
@@ -1021,6 +1024,7 @@ impl CodeAgentTui {
                         picker.selected = 0;
                     }
                 });
+                self.preview_selected_theme();
                 true
             }
             KeyCode::End => {
@@ -1029,20 +1033,24 @@ impl CodeAgentTui {
                         picker.selected = state.themes.len().saturating_sub(1);
                     }
                 });
+                self.preview_selected_theme();
                 true
             }
             KeyCode::Enter => {
                 if let Some(theme_id) = snapshot.selected_theme() {
-                    self.apply_tui_theme(&theme_id);
+                    self.apply_tui_theme(&theme_id, true, snapshot.original_theme());
                 }
                 self.ui_state.mutate(|state| state.close_theme_picker());
                 true
             }
             KeyCode::Esc => {
+                if let Some(theme_id) = snapshot.original_theme() {
+                    self.apply_tui_theme(&theme_id, false, None);
+                }
                 self.ui_state.mutate(|state| {
                     state.close_theme_picker();
-                    state.status = "Closed theme picker".to_string();
-                    state.push_activity("closed theme picker");
+                    state.status = "Closed theme picker and restored the saved theme".to_string();
+                    state.push_activity("closed theme picker and restored preview");
                 });
                 true
             }
@@ -1684,17 +1692,61 @@ impl CodeAgentTui {
         });
     }
 
-    fn apply_tui_theme(&mut self, theme_id: &str) {
+    fn preview_selected_theme(&mut self) {
+        let snapshot = self.ui_state.snapshot();
+        if let Some(theme_id) = snapshot.selected_theme() {
+            self.apply_tui_theme(&theme_id, false, None);
+        }
+    }
+
+    fn apply_tui_theme(
+        &mut self,
+        theme_id: &str,
+        persist: bool,
+        previous_override: Option<String>,
+    ) {
         match set_active_theme(theme_id) {
             Ok(()) => {
                 let current = theme_id.to_string();
+                let mut previous = None;
                 self.ui_state.mutate(|state| {
-                    let previous = state.theme.clone();
+                    previous = Some(state.theme.clone());
                     state.theme = current.clone();
                     state.themes = crate::theme::theme_summaries();
-                    state.status = format!("Theme switched to {current}");
-                    state.push_activity(format!("theme {previous} -> {current}"));
+                    if !persist {
+                        state.status = format!("Previewing theme {current}");
+                    }
                 });
+                if !persist {
+                    return;
+                }
+
+                match persist_tui_theme_selection(self.session.workspace_root(), &current) {
+                    Ok(()) => {
+                        let previous = previous_override
+                            .or(previous)
+                            .unwrap_or_else(|| current.clone());
+                        self.ui_state.mutate(|state| {
+                            state.status = format!("Theme saved as {current}");
+                            if previous == current {
+                                state.push_activity(format!("theme persisted: {current}"));
+                            } else {
+                                state.push_activity(format!("theme {previous} -> {current}"));
+                            }
+                        });
+                    }
+                    Err(error) => {
+                        let message = summarize_nonfatal_error("persist tui theme", &error);
+                        self.ui_state.mutate(|state| {
+                            state.status =
+                                format!("Theme {current} active, but failed to save: {message}");
+                            state.push_activity(format!(
+                                "theme persistence failed: {}",
+                                state::preview_text(&message, 56)
+                            ));
+                        });
+                    }
+                }
             }
             Err(error) => {
                 let message = summarize_nonfatal_error("set tui theme", &error);
@@ -1754,10 +1806,11 @@ impl CodeAgentTui {
             }
             SlashCommand::Theme { name } => {
                 match name.as_deref() {
-                    Some(theme_id) => self.apply_tui_theme(theme_id),
+                    Some(theme_id) => self.apply_tui_theme(theme_id, true, None),
                     None => self.ui_state.mutate(|state| {
                         state.open_theme_picker();
-                        state.status = "Opened theme picker".to_string();
+                        state.status =
+                            "Opened theme picker; move to preview, Enter to save".to_string();
                         state.push_activity("opened theme picker");
                     }),
                 }

@@ -855,6 +855,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "toml",
+ "toml_edit 0.22.27",
  "tracing",
  "tracing-appender",
  "tracing-subscriber",

@@ -702,7 +702,10 @@ fn theme_picker_text_renders_available_themes() {
                 summary: "deep blue with brighter cyan accents".to_string(),
             },
         ],
-        &ThemePickerState { selected: 1 },
+        &ThemePickerState {
+            selected: 1,
+            original_theme: "fjord".to_string(),
+        },
     );
 
     assert_eq!(rendered.lines[0].spans[0].content.as_ref(), "theme");
@@ -717,6 +720,18 @@ fn theme_picker_text_renders_available_themes() {
             .lines
             .iter()
             .any(|line| line_text_for(line).contains("[ ] graphite"))
+    );
+    assert!(
+        rendered
+            .lines
+            .iter()
+            .any(|line| line_text_for(line).contains("enter save"))
+    );
+    assert!(
+        rendered
+            .lines
+            .iter()
+            .any(|line| line_text_for(line).contains("esc restore"))
     );
 }
 

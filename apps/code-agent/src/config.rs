@@ -7,12 +7,14 @@
 use crate::statusline::StatusLineConfig;
 use crate::theme::{ThemeCatalog, load_theme_catalog};
 use agent_env::{EnvMap, EnvVar};
-use anyhow::Result;
+use anyhow::{Context, Result};
 use nanoclaw_config::{CoreConfig, load_optional_app_config};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
+use toml_edit::{DocumentMut, Item, Table, value};
 
 const CODE_AGENT_APP_NAME: &str = "code-agent";
+const CODE_AGENT_APP_CONFIG_PATH: &str = ".nanoclaw/apps/code-agent.toml";
 const CODE_AGENT_LSP_ENABLED: EnvVar = EnvVar::new(
     "CODE_AGENT_LSP_ENABLED",
     "Whether code-agent should enable managed LSP-backed code-intel with lexical fallback.",
@@ -103,6 +105,42 @@ impl CodeAgentConfig {
     }
 }
 
+pub(crate) fn persist_tui_theme_selection(workspace_root: &Path, theme_id: &str) -> Result<()> {
+    let path = workspace_root.join(CODE_AGENT_APP_CONFIG_PATH);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create config directory {}", parent.display()))?;
+    }
+
+    let raw = if path.exists() {
+        std::fs::read_to_string(&path)
+            .with_context(|| format!("failed to read {}", path.display()))?
+    } else {
+        String::new()
+    };
+    // Update only the targeted key so existing comments and formatting survive.
+    let mut document = if raw.trim().is_empty() {
+        DocumentMut::new()
+    } else {
+        raw.parse::<DocumentMut>()
+            .with_context(|| format!("failed to parse {}", path.display()))?
+    };
+    let root = document.as_table_mut();
+    let tui_item = root.entry("tui").or_insert(Item::Table(Table::new()));
+    if !tui_item.is_table() {
+        *tui_item = Item::Table(Table::new());
+    }
+    tui_item
+        .as_table_mut()
+        .expect("tui config must be a TOML table")["theme"] = value(theme_id);
+
+    let mut serialized = document.to_string();
+    if !serialized.ends_with('\n') {
+        serialized.push('\n');
+    }
+    std::fs::write(&path, serialized).with_context(|| format!("failed to write {}", path.display()))
+}
+
 fn resolve_path(base_dir: &Path, value: &str) -> PathBuf {
     let path = PathBuf::from(value);
     if path.is_absolute() {
@@ -114,7 +152,7 @@ fn resolve_path(base_dir: &Path, value: &str) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use super::CodeAgentConfig;
+    use super::{CODE_AGENT_APP_CONFIG_PATH, CodeAgentConfig};
     use agent_env::EnvMap;
     use std::sync::{Mutex, OnceLock};
     use tempfile::tempdir;
@@ -230,5 +268,67 @@ mod tests {
                 .iter()
                 .any(|theme| theme.id == "graphite")
         );
+    }
+
+    #[test]
+    fn persists_tui_theme_selection_into_new_app_config() {
+        let dir = tempdir().unwrap();
+
+        super::persist_tui_theme_selection(dir.path(), "paper").unwrap();
+
+        let raw = std::fs::read_to_string(dir.path().join(CODE_AGENT_APP_CONFIG_PATH)).unwrap();
+        assert!(raw.contains("theme = \"paper\""));
+    }
+
+    #[test]
+    fn persists_tui_theme_selection_without_clobbering_other_tui_settings() {
+        let dir = tempdir().unwrap();
+        let app_dir = dir.path().join(".nanoclaw/apps");
+        std::fs::create_dir_all(&app_dir).unwrap();
+        std::fs::write(
+            app_dir.join("code-agent.toml"),
+            r#"
+                [tui]
+                theme_file = ".nanoclaw/apps/code-agent-themes.toml"
+
+                [tui.statusline]
+                model = false
+            "#,
+        )
+        .unwrap();
+
+        super::persist_tui_theme_selection(dir.path(), "glacier").unwrap();
+
+        let raw = std::fs::read_to_string(app_dir.join("code-agent.toml")).unwrap();
+        let parsed: toml::Value = toml::from_str(&raw).unwrap();
+        assert_eq!(parsed["tui"]["theme"].as_str(), Some("glacier"));
+        assert_eq!(
+            parsed["tui"]["theme_file"].as_str(),
+            Some(".nanoclaw/apps/code-agent-themes.toml")
+        );
+        assert_eq!(parsed["tui"]["statusline"]["model"].as_bool(), Some(false));
+    }
+
+    #[test]
+    fn persists_tui_theme_selection_without_dropping_comments() {
+        let dir = tempdir().unwrap();
+        let app_dir = dir.path().join(".nanoclaw/apps");
+        std::fs::create_dir_all(&app_dir).unwrap();
+        std::fs::write(
+            app_dir.join("code-agent.toml"),
+            r#"# keep the app comment
+[tui]
+# keep the theme source note
+theme_file = ".nanoclaw/apps/code-agent-themes.toml"
+"#,
+        )
+        .unwrap();
+
+        super::persist_tui_theme_selection(dir.path(), "graphite").unwrap();
+
+        let raw = std::fs::read_to_string(app_dir.join("code-agent.toml")).unwrap();
+        assert!(raw.contains("# keep the app comment"));
+        assert!(raw.contains("# keep the theme source note"));
+        assert!(raw.contains("theme = \"graphite\""));
     }
 }

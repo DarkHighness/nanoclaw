@@ -76,6 +76,7 @@ pub(crate) struct ThinkingEffortPickerState {
 #[derive(Clone, Debug, Default)]
 pub(crate) struct ThemePickerState {
     pub(crate) selected: usize,
+    pub(crate) original_theme: String,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -856,7 +857,10 @@ impl TuiState {
             .iter()
             .position(|candidate| candidate.id == self.theme)
             .unwrap_or(0);
-        self.theme_picker = Some(ThemePickerState { selected });
+        self.theme_picker = Some(ThemePickerState {
+            selected,
+            original_theme: self.theme.clone(),
+        });
     }
 
     pub(crate) fn close_statusline_picker(&mut self) {
@@ -1111,6 +1115,12 @@ impl TuiState {
         self.themes
             .get(picker.selected)
             .map(|theme| theme.id.clone())
+    }
+
+    pub(crate) fn original_theme(&self) -> Option<String> {
+        self.theme_picker
+            .as_ref()
+            .map(|picker| picker.original_theme.clone())
     }
 
     pub(crate) fn push_activity(&mut self, line: impl Into<String>) {
@@ -1560,6 +1570,7 @@ mod tests {
         ComposerDraftState, HistoryRollbackCandidate, MainPaneMode, TuiState, git_snapshot,
         page_scroll_amount,
     };
+    use crate::theme::ThemeSummary;
     use agent::types::MessageId;
     use tempfile::tempdir;
 
@@ -1708,6 +1719,31 @@ mod tests {
         assert_eq!(state.input_cursor(), "current draft".len());
 
         assert!(!state.browse_input_history(false));
+    }
+
+    #[test]
+    fn open_theme_picker_tracks_original_theme_for_restore() {
+        let mut state = TuiState {
+            theme: "fjord".to_string(),
+            themes: vec![
+                ThemeSummary {
+                    id: "graphite".to_string(),
+                    summary: "dark slate".to_string(),
+                },
+                ThemeSummary {
+                    id: "fjord".to_string(),
+                    summary: "deep blue".to_string(),
+                },
+            ],
+            ..TuiState::default()
+        };
+
+        state.open_theme_picker();
+
+        let picker = state.theme_picker.as_ref().unwrap();
+        assert_eq!(picker.selected, 1);
+        assert_eq!(picker.original_theme, "fjord");
+        assert_eq!(state.original_theme().as_deref(), Some("fjord"));
     }
 
     #[test]
