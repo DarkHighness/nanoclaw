@@ -704,7 +704,7 @@ impl CodeAgentSession {
                     "Latest session continuation snapshot produced by conversation compaction."
                         .to_string(),
                 ),
-                layer: None,
+                layer: Some("session".to_string()),
                 tags: vec!["compaction".to_string(), "continuation".to_string()],
                 session_id: Some(snapshot.session_id),
                 agent_session_id: Some(snapshot.agent_session_id),
@@ -2084,8 +2084,8 @@ mod tests {
         assert!(session.compact_now(None).await.unwrap());
 
         let working_path = dir.path().join(format!(
-            ".nanoclaw/memory/working/agent-sessions/{}.md",
-            session.startup_snapshot().root_agent_session_id
+            ".nanoclaw/memory/working/sessions/{}.md",
+            session.startup_snapshot().active_session_ref
         ));
         let snapshot = std::fs::read_to_string(working_path).unwrap();
         assert!(snapshot.contains("Session continuation snapshot"));
@@ -2138,7 +2138,7 @@ mod tests {
 
         let snapshot = std::fs::read_to_string(
             dir.path()
-                .join(".nanoclaw/memory/working/agent-sessions/agent-session-1.md"),
+                .join(".nanoclaw/memory/working/sessions/session-1.md"),
         )
         .unwrap();
         assert!(snapshot.contains("second snapshot"));

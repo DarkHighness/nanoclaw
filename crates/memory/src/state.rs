@@ -15,6 +15,7 @@ pub const MEMORY_EPISODIC_AGENT_SESSIONS_RELATIVE: &str =
 pub const MEMORY_EPISODIC_SUBAGENTS_RELATIVE: &str = ".nanoclaw/memory/episodic/subagents";
 pub const MEMORY_EPISODIC_TASKS_RELATIVE: &str = ".nanoclaw/memory/episodic/tasks";
 pub const MEMORY_WORKING_RELATIVE: &str = ".nanoclaw/memory/working";
+pub const MEMORY_WORKING_SESSIONS_RELATIVE: &str = ".nanoclaw/memory/working/sessions";
 pub const MEMORY_WORKING_AGENT_SESSIONS_RELATIVE: &str = ".nanoclaw/memory/working/agent-sessions";
 pub const MEMORY_WORKING_TASKS_RELATIVE: &str = ".nanoclaw/memory/working/tasks";
 pub const MEMORY_COORDINATION_RELATIVE: &str = ".nanoclaw/memory/coordination";

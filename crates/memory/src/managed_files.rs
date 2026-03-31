@@ -3,7 +3,7 @@ use crate::corpus::{parse_memory_text, stable_hash};
 use crate::state::{
     MEMORY_COORDINATION_CLAIMS_RELATIVE, MEMORY_COORDINATION_HANDOFFS_RELATIVE,
     MEMORY_COORDINATION_PLANS_RELATIVE, MEMORY_WORKING_AGENT_SESSIONS_RELATIVE,
-    MEMORY_WORKING_TASKS_RELATIVE,
+    MEMORY_WORKING_SESSIONS_RELATIVE, MEMORY_WORKING_TASKS_RELATIVE,
 };
 use crate::{
     MemoryDocumentMetadata, MemoryError, MemoryMutationResponse, MemoryRecordMode,
@@ -45,7 +45,7 @@ pub(crate) async fn record_memory(
         .agent_session_id
         .clone()
         .or_else(|| default_agent_session_id.cloned());
-    let target = resolve_record_target(&request, agent_session_id.as_ref())?;
+    let target = resolve_record_target(&request, session_id.as_ref(), agent_session_id.as_ref())?;
     let resolved = layout.resolve_managed_memory_path(Path::new(&target.relative_path))?;
     // `memory_record` mutates one managed file per scope target. Lock the
     // target path before reading so concurrent agents cannot both observe the
@@ -277,10 +277,30 @@ pub(crate) fn current_timestamp_ms() -> u64 {
 
 fn resolve_record_target(
     request: &MemoryRecordRequest,
+    session_id: Option<&SessionId>,
     agent_session_id: Option<&AgentSessionId>,
 ) -> Result<RecordTarget> {
     match request.scope {
         MemoryScope::Working => {
+            let collection = request
+                .layer
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or("agent-session");
+            if matches!(collection, "session" | "sessions" | "session-continuation") {
+                let session_id = session_id.ok_or_else(|| {
+                    MemoryError::invalid("working session memory record requires `session_id`")
+                })?;
+                return Ok(RecordTarget {
+                    relative_path: format!(
+                        "{MEMORY_WORKING_SESSIONS_RELATIVE}/{}.md",
+                        session_id.as_str()
+                    ),
+                    layer: "working-session".to_string(),
+                    document_title: format!("Session {}", session_id.as_str()),
+                });
+            }
             if let Some(task_id) = request.task_id.as_deref().map(str::trim)
                 && !task_id.is_empty()
             {
@@ -292,6 +312,11 @@ fn resolve_record_target(
                     layer: "working-task".to_string(),
                     document_title: format!("Task {task_id}"),
                 });
+            }
+            if collection != "agent-session" {
+                return Err(MemoryError::invalid(
+                    "working memory layer must be one of `session`, `agent-session`, or empty unless `task_id` is present",
+                ));
             }
 
             let agent_session_id = agent_session_id.ok_or_else(|| {
@@ -470,8 +495,9 @@ fn stable_memory_slug(value: &str, prefix: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        MEMORY_WORKING_TASKS_RELATIVE, MemoryRecordMode, MemoryRecordRequest, MemoryScope, Path,
-        managed_memory_file_lock, record_memory, stable_memory_slug,
+        MEMORY_WORKING_SESSIONS_RELATIVE, MEMORY_WORKING_TASKS_RELATIVE, MemoryRecordMode,
+        MemoryRecordRequest, MemoryScope, Path, managed_memory_file_lock, record_memory,
+        stable_memory_slug,
     };
     use crate::MemoryStateLayout;
     use tempfile::tempdir;
@@ -612,7 +638,7 @@ mod tests {
                 mode: MemoryRecordMode::Replace,
                 memory_type: None,
                 description: None,
-                layer: None,
+                layer: Some("session".to_string()),
                 tags: Vec::new(),
                 session_id: Some("session-1".into()),
                 agent_session_id: Some(agent_session_id.clone()),
@@ -633,7 +659,7 @@ mod tests {
                 mode: MemoryRecordMode::Replace,
                 memory_type: None,
                 description: None,
-                layer: None,
+                layer: Some("session".to_string()),
                 tags: Vec::new(),
                 session_id: Some("session-1".into()),
                 agent_session_id: Some(agent_session_id.clone()),
@@ -648,8 +674,7 @@ mod tests {
 
         let recorded = fs::read_to_string(dir.path().join(format!(
             "{}/{}.md",
-            super::MEMORY_WORKING_AGENT_SESSIONS_RELATIVE,
-            agent_session_id
+            MEMORY_WORKING_SESSIONS_RELATIVE, "session-1"
         )))
         .await
         .unwrap();

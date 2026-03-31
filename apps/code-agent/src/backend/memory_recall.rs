@@ -16,6 +16,7 @@ const RECALL_TIMEOUT_MS: u64 = 200;
 const RECALL_LIMIT: usize = 3;
 const RECALL_CANDIDATE_LIMIT: usize = 6;
 const RECALL_WORKING_CANDIDATE_LIMIT: usize = 3;
+const RECALL_WORKING_SESSION_PATH_PREFIX: &str = ".nanoclaw/memory/working/sessions/";
 const RECALL_MAX_SNIPPET_CHARS: usize = 220;
 const RECALL_MAX_BLOCK_CHARS: usize = 1_400;
 const RECALL_QUERY_TERM_LIMIT: usize = 5;
@@ -116,14 +117,15 @@ impl WorkspaceMemoryRecallAugmentor {
         let mut backend_name = None;
         let mut collected = Vec::new();
 
-        // Query the active session's working memory first so post-compaction
-        // continuation beats older durable notes when both match.
+        // Query the stable per-session continuation snapshot first so the
+        // newest compacted handoff wins even after agent-session rotation.
         if let Some((name, working_hits)) = self
             .search_hits(
                 query,
+                Some(RECALL_WORKING_SESSION_PATH_PREFIX.to_string()),
                 vec![MemoryScope::Working],
                 Some(context.session_id.clone()),
-                RECALL_WORKING_CANDIDATE_LIMIT,
+                1,
                 started_at,
             )
             .await
@@ -131,10 +133,29 @@ impl WorkspaceMemoryRecallAugmentor {
             backend_name = Some(name);
             merge_recall_hits(&mut collected, working_hits);
         }
+        if collected.is_empty() {
+            // Fall back to broader working-memory search for pre-migration
+            // agent-session files or future non-session scratchpad records.
+            if let Some((name, working_hits)) = self
+                .search_hits(
+                    query,
+                    None,
+                    vec![MemoryScope::Working],
+                    Some(context.session_id.clone()),
+                    RECALL_WORKING_CANDIDATE_LIMIT,
+                    started_at,
+                )
+                .await
+            {
+                backend_name = Some(name);
+                merge_recall_hits(&mut collected, working_hits);
+            }
+        }
         if collected.len() < RECALL_LIMIT {
             if let Some((name, durable_hits)) = self
                 .search_hits(
                     query,
+                    None,
                     vec![MemoryScope::Procedural, MemoryScope::Semantic],
                     None,
                     RECALL_CANDIDATE_LIMIT,
@@ -152,6 +173,7 @@ impl WorkspaceMemoryRecallAugmentor {
     async fn search_hits(
         &self,
         query: &str,
+        path_prefix: Option<String>,
         scopes: Vec<MemoryScope>,
         session_id: Option<agent::types::SessionId>,
         candidate_limit: usize,
@@ -168,7 +190,7 @@ impl WorkspaceMemoryRecallAugmentor {
             let search = MemorySearchRequest {
                 query: search_query,
                 limit: Some(candidate_limit),
-                path_prefix: None,
+                path_prefix: path_prefix.clone(),
                 scopes: Some(scopes.clone()),
                 types: None,
                 tags: None,
@@ -529,7 +551,7 @@ mod tests {
                 description: Some(
                     "Latest continuation snapshot for the active session.".to_string(),
                 ),
-                layer: None,
+                layer: Some("session".to_string()),
                 tags: vec!["compaction".to_string()],
                 session_id: Some(SessionId::from("session-test")),
                 agent_session_id: Some(AgentSessionId::from("agent-session-test")),
@@ -549,7 +571,7 @@ mod tests {
             .unwrap();
 
         let recall = augmented.prefix_messages[0].text_content();
-        let working_path = ".nanoclaw/memory/working/agent-sessions/agent-session-test.md";
+        let working_path = ".nanoclaw/memory/working/sessions/session-test.md";
         let working_index = recall.find(working_path).unwrap();
         if let Some(durable_index) = recall.find("MEMORY.md") {
             assert!(working_index < durable_index);

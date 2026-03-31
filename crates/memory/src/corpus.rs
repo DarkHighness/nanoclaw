@@ -672,6 +672,14 @@ fn infer_metadata_from_path(path: &str) -> MemoryDocumentMetadata {
                 ..MemoryDocumentMetadata::default()
             };
         }
+        if path.starts_with(".nanoclaw/memory/working/sessions/") {
+            return MemoryDocumentMetadata {
+                scope: MemoryScope::Working,
+                layer: "working-session".to_string(),
+                session_id: Some(SessionId::from(stem)),
+                ..MemoryDocumentMetadata::default()
+            };
+        }
         if path.starts_with(".nanoclaw/memory/working/tasks/") {
             return MemoryDocumentMetadata {
                 scope: MemoryScope::Working,
@@ -1070,6 +1078,16 @@ mod tests {
         )
         .await
         .unwrap();
+        fs::create_dir_all(dir.path().join(".nanoclaw/memory/working/sessions"))
+            .await
+            .unwrap();
+        fs::write(
+            dir.path()
+                .join(".nanoclaw/memory/working/sessions/session_1.md"),
+            "# Session Scratch\nlatest state",
+        )
+        .await
+        .unwrap();
         fs::create_dir_all(dir.path().join("memory")).await.unwrap();
         fs::write(
             dir.path().join("memory/howto.md"),
@@ -1118,6 +1136,12 @@ mod tests {
                 .metadata
                 .scope,
             MemoryScope::Working
+        );
+        assert_eq!(
+            by_path[".nanoclaw/memory/working/sessions/session_1.md"]
+                .metadata
+                .layer,
+            "working-session"
         );
         assert_eq!(
             by_path["memory/howto.md"].metadata.tags,
