@@ -1,6 +1,7 @@
 use crate::config::CodeAgentConfig;
 use crate::provider::ensure_api_key_available;
 use crate::statusline::StatusLineConfig;
+use crate::theme::ThemeCatalog;
 use agent::types::PluginId;
 use agent_env::EnvMap;
 use anyhow::{Context, Result, bail};
@@ -26,6 +27,7 @@ pub(crate) struct AppOptions {
     pub(crate) lsp_auto_install: bool,
     pub(crate) lsp_install_root: Option<PathBuf>,
     pub(crate) statusline: StatusLineConfig,
+    pub(crate) theme_catalog: ThemeCatalog,
     pub(crate) one_shot_prompt: Option<String>,
 }
 
@@ -116,6 +118,7 @@ impl AppOptions {
             lsp_auto_install,
             lsp_install_root,
             statusline: workspace_config.statusline,
+            theme_catalog: workspace_config.theme_catalog,
             one_shot_prompt,
         })
     }

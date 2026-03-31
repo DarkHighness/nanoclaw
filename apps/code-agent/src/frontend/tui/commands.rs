@@ -112,6 +112,12 @@ const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
     },
     SlashCommandSpec {
         section: "Session",
+        name: "theme",
+        usage: "theme [name]",
+        summary: "pick or set the tui theme",
+    },
+    SlashCommandSpec {
+        section: "Session",
         name: "new",
         usage: "new",
         summary: "fresh top-level session",
@@ -294,6 +300,9 @@ pub(crate) enum SlashCommand {
     Thinking {
         effort: Option<String>,
     },
+    Theme {
+        name: Option<String>,
+    },
     Help {
         query: Option<String>,
     },
@@ -391,6 +400,9 @@ enum SlashSubcommand {
     Statusline,
     Thinking {
         effort: Option<String>,
+    },
+    Theme {
+        name: Option<String>,
     },
     Help {
         #[arg(
@@ -699,6 +711,7 @@ impl From<SlashSubcommand> for SlashCommand {
             SlashSubcommand::Details => Self::Details,
             SlashSubcommand::Statusline => Self::StatusLine,
             SlashSubcommand::Thinking { effort } => Self::Thinking { effort },
+            SlashSubcommand::Theme { name } => Self::Theme { name },
             SlashSubcommand::Help { query } => Self::Help {
                 query: join_optional_tail(query),
             },
@@ -1099,6 +1112,20 @@ mod tests {
     }
 
     #[test]
+    fn parses_theme_command() {
+        assert_eq!(
+            parse_slash_command("/theme fjord"),
+            SlashCommand::Theme {
+                name: Some("fjord".to_string())
+            }
+        );
+        assert_eq!(
+            parse_slash_command("/theme"),
+            SlashCommand::Theme { name: None }
+        );
+    }
+
+    #[test]
     fn command_palette_includes_help_and_clear_alias() {
         let lines = inspector_line_texts(&command_palette_lines());
 
@@ -1122,6 +1149,11 @@ mod tests {
             lines
                 .iter()
                 .any(|line| line == "/thinking [level]  pick or set thinking effort")
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line == "/theme [name]  pick or set the tui theme")
         );
         assert!(lines.iter().any(|line| line == "/clear  alias of /new"));
         assert!(

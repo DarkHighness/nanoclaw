@@ -1,4 +1,4 @@
-use super::theme::{ACCENT, HEADER, MUTED, SUBTLE, TEXT};
+use super::theme::palette;
 use crate::frontend::tui::state::TuiState;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -28,10 +28,10 @@ pub(super) fn build_welcome_lines(
     core.push(build_meta_summary_line(state));
     core.push(Line::raw(""));
     core.push(Line::from(vec![
-        Span::styled("Type a prompt", Style::default().fg(TEXT)),
-        Span::styled(" or ", Style::default().fg(SUBTLE)),
-        Span::styled("/help", Style::default().fg(ACCENT)),
-        Span::styled(".", Style::default().fg(SUBTLE)),
+        Span::styled("Type a prompt", Style::default().fg(palette().text)),
+        Span::styled(" or ", Style::default().fg(palette().subtle)),
+        Span::styled("/help", Style::default().fg(palette().accent)),
+        Span::styled(".", Style::default().fg(palette().subtle)),
     ]));
 
     let top_padding = usize::from(viewport_height.saturating_sub(core.len() as u16) / 2);
@@ -57,16 +57,16 @@ fn build_welcome_logo_lines(compact: bool) -> Vec<Line<'static>> {
 
 fn build_meta_summary_line(state: &TuiState) -> Line<'static> {
     Line::from(vec![
-        Span::styled("workspace", Style::default().fg(SUBTLE)),
-        Span::styled(" ", Style::default().fg(SUBTLE)),
+        Span::styled("workspace", Style::default().fg(palette().subtle)),
+        Span::styled(" ", Style::default().fg(palette().subtle)),
         Span::styled(
             state.session.workspace_name.clone(),
-            Style::default().fg(MUTED),
+            Style::default().fg(palette().muted),
         ),
-        Span::styled("  ·  ", Style::default().fg(SUBTLE)),
-        Span::styled("model", Style::default().fg(SUBTLE)),
-        Span::styled(" ", Style::default().fg(SUBTLE)),
-        Span::styled(model_label(state), Style::default().fg(ACCENT)),
+        Span::styled("  ·  ", Style::default().fg(palette().subtle)),
+        Span::styled("model", Style::default().fg(palette().subtle)),
+        Span::styled(" ", Style::default().fg(palette().subtle)),
+        Span::styled(model_label(state), Style::default().fg(palette().accent)),
     ])
 }
 
@@ -80,6 +80,8 @@ fn model_label(state: &TuiState) -> String {
 fn logo_line(text: &str) -> Line<'static> {
     Line::from(vec![Span::styled(
         text.to_string(),
-        Style::default().fg(HEADER).add_modifier(Modifier::BOLD),
+        Style::default()
+            .fg(palette().header)
+            .add_modifier(Modifier::BOLD),
     )])
 }

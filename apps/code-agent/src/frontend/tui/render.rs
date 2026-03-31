@@ -34,7 +34,7 @@ use ratatui::widgets::Block;
 use shared::composer_cursor_width;
 use shell::{bottom_layout_constraints, composer_inner_area, render_main_pane, render_side_rail};
 use statusline::render_status_line;
-use theme::*;
+use theme::palette;
 
 pub(crate) fn render(
     frame: &mut ratatui::Frame<'_>,
@@ -44,7 +44,10 @@ pub(crate) fn render(
     user_input: Option<&UserInputView<'_>>,
 ) {
     let area = frame.area();
-    frame.render_widget(Block::default().style(Style::default().bg(BG)), area);
+    frame.render_widget(
+        Block::default().style(Style::default().bg(palette().bg)),
+        area,
+    );
 
     let prompt_height = approval
         .map(approval_band_height)

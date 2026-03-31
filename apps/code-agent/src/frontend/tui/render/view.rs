@@ -1,6 +1,9 @@
-use super::super::state::{InspectorEntry, StatusLinePickerState, ThinkingEffortPickerState};
-use super::theme::{ASSISTANT, BORDER_ACTIVE, ERROR, HEADER, MUTED, SUBTLE, TEXT, USER, WARN};
+use super::super::state::{
+    InspectorEntry, StatusLinePickerState, ThemePickerState, ThinkingEffortPickerState,
+};
+use super::theme::palette;
 use crate::statusline::{StatusLineConfig, status_line_fields};
+use crate::theme::ThemeSummary;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 
@@ -45,7 +48,7 @@ pub(super) fn build_command_palette_text(lines: &[InspectorEntry]) -> Text<'stat
                 }
                 rendered.push(Line::from(Span::styled(
                     section.clone(),
-                    Style::default().fg(MUTED),
+                    Style::default().fg(palette().muted),
                 )));
             }
             InspectorEntry::CollectionItem { primary, secondary } => {
@@ -56,11 +59,11 @@ pub(super) fn build_command_palette_text(lines: &[InspectorEntry]) -> Text<'stat
             }
             InspectorEntry::Muted(line) => rendered.push(Line::from(Span::styled(
                 line.clone(),
-                Style::default().fg(SUBTLE),
+                Style::default().fg(palette().subtle),
             ))),
             InspectorEntry::Plain(line) => rendered.push(Line::from(Span::styled(
                 line.clone(),
-                Style::default().fg(TEXT),
+                Style::default().fg(palette().text),
             ))),
             InspectorEntry::Field { key, value } => {
                 rendered.push(command_palette_line(key, Some(value)));
@@ -76,20 +79,27 @@ pub(super) fn build_command_palette_text(lines: &[InspectorEntry]) -> Text<'stat
 
 fn command_palette_line(command: &str, summary: Option<&str>) -> Line<'static> {
     let mut spans = vec![
-        Span::styled("›", Style::default().fg(USER).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            "›",
+            Style::default()
+                .fg(palette().user)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::raw(" "),
         Span::styled(
             command.to_string(),
-            Style::default().fg(HEADER).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(palette().header)
+                .add_modifier(Modifier::BOLD),
         ),
     ];
     if let Some(summary) = summary
         && !summary.trim().is_empty()
     {
-        spans.push(Span::styled("  ", Style::default().fg(SUBTLE)));
+        spans.push(Span::styled("  ", Style::default().fg(palette().subtle)));
         spans.push(Span::styled(
             summary.to_string(),
-            Style::default().fg(MUTED),
+            Style::default().fg(palette().muted),
         ));
     }
     Line::from(spans)
@@ -104,14 +114,18 @@ fn render_key_value_entry(entry: &InspectorEntry, is_first: bool) -> Vec<Line<'s
             }
             lines.push(Line::from(Span::styled(
                 title.clone(),
-                Style::default().fg(HEADER).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(palette().header)
+                    .add_modifier(Modifier::BOLD),
             )));
             lines
         }
         InspectorEntry::Field { key, value } => vec![Line::from(vec![
             Span::styled(
                 format!("{key}:"),
-                Style::default().fg(MUTED).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(palette().muted)
+                    .add_modifier(Modifier::BOLD),
             ),
             Span::raw(" "),
             Span::styled(value.clone(), value_style(key.trim(), value.trim())),
@@ -119,11 +133,13 @@ fn render_key_value_entry(entry: &InspectorEntry, is_first: bool) -> Vec<Line<'s
         InspectorEntry::Transcript(entry) => super::transcript::format_transcript_cell(entry),
         InspectorEntry::Command(line) => vec![Line::from(Span::styled(
             line.clone(),
-            Style::default().fg(USER).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(palette().user)
+                .add_modifier(Modifier::BOLD),
         ))],
         InspectorEntry::Muted(line) => vec![Line::from(Span::styled(
             line.clone(),
-            Style::default().fg(SUBTLE),
+            Style::default().fg(palette().subtle),
         ))],
         InspectorEntry::Plain(line) => vec![Line::from(Span::styled(
             line.clone(),
@@ -133,7 +149,7 @@ fn render_key_value_entry(entry: &InspectorEntry, is_first: bool) -> Vec<Line<'s
             vec![collection_line(
                 primary,
                 secondary.as_deref(),
-                BORDER_ACTIVE,
+                palette().border_active,
             )]
         }
         InspectorEntry::Empty => vec![Line::raw("")],
@@ -150,16 +166,16 @@ pub(super) fn build_statusline_picker_text(
         .count();
     let mut lines = vec![
         Line::from(vec![
-            Span::styled("status line", Style::default().fg(HEADER)),
-            Span::styled(" · ", Style::default().fg(SUBTLE)),
+            Span::styled("status line", Style::default().fg(palette().header)),
+            Span::styled(" · ", Style::default().fg(palette().subtle)),
             Span::styled(
                 format!("{enabled_count}/{} visible", status_line_fields().len()),
-                Style::default().fg(USER),
+                Style::default().fg(palette().user),
             ),
         ]),
         Line::from(Span::styled(
             "space toggle · enter close · esc close",
-            Style::default().fg(SUBTLE),
+            Style::default().fg(palette().subtle),
         )),
         Line::raw(""),
     ];
@@ -172,32 +188,44 @@ pub(super) fn build_statusline_picker_text(
         lines.push(Line::from(vec![
             Span::styled(
                 marker,
-                Style::default().fg(if selected { USER } else { SUBTLE }),
+                Style::default().fg(if selected {
+                    palette().user
+                } else {
+                    palette().subtle
+                }),
             ),
             Span::raw(" "),
             Span::styled(
                 checkbox,
-                Style::default().fg(if enabled { ASSISTANT } else { SUBTLE }),
+                Style::default().fg(if enabled {
+                    palette().assistant
+                } else {
+                    palette().subtle
+                }),
             ),
             Span::raw(" "),
             Span::styled(
                 format!("{:<8}", spec.label),
                 Style::default()
-                    .fg(if selected { HEADER } else { TEXT })
+                    .fg(if selected {
+                        palette().header
+                    } else {
+                        palette().text
+                    })
                     .add_modifier(if selected {
                         Modifier::BOLD
                     } else {
                         Modifier::empty()
                     }),
             ),
-            Span::styled(spec.summary, Style::default().fg(MUTED)),
+            Span::styled(spec.summary, Style::default().fg(palette().muted)),
         ]));
     }
 
     lines.push(Line::raw(""));
     lines.push(Line::from(Span::styled(
         "Changes apply immediately for this TUI session.",
-        Style::default().fg(SUBTLE),
+        Style::default().fg(palette().subtle),
     )));
     Text::from(lines)
 }
@@ -210,13 +238,13 @@ pub(super) fn build_thinking_effort_picker_text(
     let current = current.unwrap_or("default");
     let mut lines = vec![
         Line::from(vec![
-            Span::styled("thinking effort", Style::default().fg(HEADER)),
-            Span::styled(" · ", Style::default().fg(SUBTLE)),
-            Span::styled(current.to_string(), Style::default().fg(USER)),
+            Span::styled("thinking effort", Style::default().fg(palette().header)),
+            Span::styled(" · ", Style::default().fg(palette().subtle)),
+            Span::styled(current.to_string(), Style::default().fg(palette().user)),
         ]),
         Line::from(Span::styled(
             "enter apply · ↑↓ move · esc close",
-            Style::default().fg(SUBTLE),
+            Style::default().fg(palette().subtle),
         )),
         Line::raw(""),
     ];
@@ -224,7 +252,7 @@ pub(super) fn build_thinking_effort_picker_text(
     if supported.is_empty() {
         lines.push(Line::from(Span::styled(
             "No configurable thinking effort levels are available for this model.",
-            Style::default().fg(SUBTLE),
+            Style::default().fg(palette().subtle),
         )));
         return Text::from(lines);
     }
@@ -235,18 +263,30 @@ pub(super) fn build_thinking_effort_picker_text(
         lines.push(Line::from(vec![
             Span::styled(
                 if selected { "›" } else { " " },
-                Style::default().fg(if selected { USER } else { SUBTLE }),
+                Style::default().fg(if selected {
+                    palette().user
+                } else {
+                    palette().subtle
+                }),
             ),
             Span::raw(" "),
             Span::styled(
                 if active { "[x]" } else { "[ ]" },
-                Style::default().fg(if active { ASSISTANT } else { SUBTLE }),
+                Style::default().fg(if active {
+                    palette().assistant
+                } else {
+                    palette().subtle
+                }),
             ),
             Span::raw(" "),
             Span::styled(
                 level.clone(),
                 Style::default()
-                    .fg(if selected { HEADER } else { TEXT })
+                    .fg(if selected {
+                        palette().header
+                    } else {
+                        palette().text
+                    })
                     .add_modifier(if selected {
                         Modifier::BOLD
                     } else {
@@ -259,7 +299,81 @@ pub(super) fn build_thinking_effort_picker_text(
     lines.push(Line::raw(""));
     lines.push(Line::from(Span::styled(
         "Changes apply to the next model request in this TUI session.",
-        Style::default().fg(SUBTLE),
+        Style::default().fg(palette().subtle),
+    )));
+    Text::from(lines)
+}
+
+pub(super) fn build_theme_picker_text(
+    current: &str,
+    themes: &[ThemeSummary],
+    picker: &ThemePickerState,
+) -> Text<'static> {
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled("theme", Style::default().fg(palette().header)),
+            Span::styled(" · ", Style::default().fg(palette().subtle)),
+            Span::styled(current.to_string(), Style::default().fg(palette().user)),
+        ]),
+        Line::from(Span::styled(
+            "enter apply · ↑↓ move · esc close",
+            Style::default().fg(palette().subtle),
+        )),
+        Line::raw(""),
+    ];
+
+    if themes.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "No TUI themes are available in the loaded theme catalog.",
+            Style::default().fg(palette().subtle),
+        )));
+        return Text::from(lines);
+    }
+
+    for (index, theme) in themes.iter().enumerate() {
+        let selected = picker.selected == index;
+        let active = theme.id == current;
+        lines.push(Line::from(vec![
+            Span::styled(
+                if selected { "›" } else { " " },
+                Style::default().fg(if selected {
+                    palette().user
+                } else {
+                    palette().subtle
+                }),
+            ),
+            Span::raw(" "),
+            Span::styled(
+                if active { "[x]" } else { "[ ]" },
+                Style::default().fg(if active {
+                    palette().assistant
+                } else {
+                    palette().subtle
+                }),
+            ),
+            Span::raw(" "),
+            Span::styled(
+                format!("{:<12}", theme.id),
+                Style::default()
+                    .fg(if selected {
+                        palette().header
+                    } else {
+                        palette().text
+                    })
+                    .add_modifier(if selected {
+                        Modifier::BOLD
+                    } else {
+                        Modifier::empty()
+                    }),
+            ),
+            Span::styled(theme.summary.clone(), Style::default().fg(palette().muted)),
+        ]));
+    }
+
+    lines.push(Line::raw(""));
+    lines.push(Line::from(Span::styled(
+        "Themes come from builtin assets plus any user-supplied theme catalog file.",
+        Style::default().fg(palette().subtle),
     )));
     Text::from(lines)
 }
@@ -271,11 +385,11 @@ pub(super) fn build_collection_text(title: &str, lines: &[InspectorEntry]) -> Te
         match entry {
             InspectorEntry::Section(section) => rendered.push(Line::from(Span::styled(
                 section.clone(),
-                Style::default().fg(MUTED),
+                Style::default().fg(palette().muted),
             ))),
             InspectorEntry::Muted(line) => rendered.push(Line::from(Span::styled(
                 line.clone(),
-                Style::default().fg(SUBTLE),
+                Style::default().fg(palette().subtle),
             ))),
             InspectorEntry::CollectionItem { primary, secondary } => {
                 rendered.push(collection_line(primary, secondary.as_deref(), accent));
@@ -285,11 +399,13 @@ pub(super) fn build_collection_text(title: &str, lines: &[InspectorEntry]) -> Te
             }
             InspectorEntry::Plain(line) => rendered.push(Line::from(Span::styled(
                 line.clone(),
-                Style::default().fg(TEXT),
+                Style::default().fg(palette().text),
             ))),
             InspectorEntry::Command(line) => rendered.push(Line::from(Span::styled(
                 line.clone(),
-                Style::default().fg(USER).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(palette().user)
+                    .add_modifier(Modifier::BOLD),
             ))),
             InspectorEntry::Field { key, value } => {
                 rendered.push(collection_line(key, Some(value), accent));
@@ -333,13 +449,13 @@ fn render_collection_transcript_entry(
             let text = super::transcript::line_to_plain_text(&line);
             if let Some(detail) = text.strip_prefix("  └ ") {
                 rendered.push(Line::from(vec![
-                    Span::styled("  ", Style::default().fg(SUBTLE)),
-                    Span::styled(detail.to_string(), Style::default().fg(MUTED)),
+                    Span::styled("  ", Style::default().fg(palette().subtle)),
+                    Span::styled(detail.to_string(), Style::default().fg(palette().muted)),
                 ]));
             } else if let Some(detail) = text.strip_prefix("    ") {
                 rendered.push(Line::from(vec![
-                    Span::styled("  ", Style::default().fg(SUBTLE)),
-                    Span::styled(detail.to_string(), Style::default().fg(SUBTLE)),
+                    Span::styled("  ", Style::default().fg(palette().subtle)),
+                    Span::styled(detail.to_string(), Style::default().fg(palette().subtle)),
                 ]));
             } else {
                 rendered.push(line);
@@ -351,7 +467,7 @@ fn render_collection_transcript_entry(
 
 fn collection_line(primary: &str, secondary: Option<&str>, accent: Color) -> Line<'static> {
     let mut spans = vec![
-        Span::styled("-", Style::default().fg(MUTED)),
+        Span::styled("-", Style::default().fg(palette().muted)),
         Span::raw(" "),
         Span::styled(
             primary.to_string(),
@@ -364,7 +480,7 @@ fn collection_line(primary: &str, secondary: Option<&str>, accent: Color) -> Lin
         spans.push(Span::raw("  "));
         spans.push(Span::styled(
             secondary.trim().to_string(),
-            Style::default().fg(MUTED),
+            Style::default().fg(palette().muted),
         ));
     }
     Line::from(spans)
@@ -392,23 +508,23 @@ fn is_command_palette_title(title: &str) -> bool {
 
 fn inspector_accent(title: &str) -> Color {
     match title {
-        "Live Tasks" => USER,
-        "Sessions" | "Session Search" | "Agent Sessions" | "Tasks" => ASSISTANT,
-        "Command Palette" => HEADER,
-        _ => BORDER_ACTIVE,
+        "Live Tasks" => palette().user,
+        "Sessions" | "Session Search" | "Agent Sessions" | "Tasks" => palette().assistant,
+        "Command Palette" => palette().header,
+        _ => palette().border_active,
     }
 }
 
 fn value_style(key: &str, value: &str) -> Style {
     if key.contains("warning") {
-        Style::default().fg(WARN)
+        Style::default().fg(palette().warn)
     } else if key.contains("status") {
         if value.contains("completed") || value.contains("ready") {
-            Style::default().fg(ASSISTANT)
+            Style::default().fg(palette().assistant)
         } else if value.contains("cancel") || value.contains("failed") {
-            Style::default().fg(ERROR)
+            Style::default().fg(palette().error)
         } else {
-            Style::default().fg(WARN)
+            Style::default().fg(palette().warn)
         }
     } else if key.contains("action") {
         if value.contains("sent")
@@ -416,26 +532,26 @@ fn value_style(key: &str, value: &str) -> Style {
             || value.contains("reattached")
             || value.contains("started")
         {
-            Style::default().fg(ASSISTANT)
+            Style::default().fg(palette().assistant)
         } else {
-            Style::default().fg(WARN)
+            Style::default().fg(palette().warn)
         }
     } else if key.contains("sandbox") {
-        Style::default().fg(USER)
+        Style::default().fg(palette().user)
     } else if key.contains("dirty") {
         if value.contains("modified 0")
             && value.contains("untracked 0")
             && value.contains("staged 0")
         {
-            Style::default().fg(ASSISTANT)
+            Style::default().fg(palette().assistant)
         } else {
-            Style::default().fg(WARN)
+            Style::default().fg(palette().warn)
         }
     } else if key.contains("queue") {
         if value.starts_with('0') {
-            Style::default().fg(ASSISTANT)
+            Style::default().fg(palette().assistant)
         } else {
-            Style::default().fg(WARN)
+            Style::default().fg(palette().warn)
         }
     } else if key.contains("active ref")
         || key.contains("runtime id")
@@ -443,25 +559,25 @@ fn value_style(key: &str, value: &str) -> Style {
         || key.contains("agent id")
         || key.contains("task id")
     {
-        Style::default().fg(USER)
+        Style::default().fg(palette().user)
     } else if key.contains("summary") {
-        Style::default().fg(HEADER)
+        Style::default().fg(palette().header)
     } else {
-        Style::default().fg(TEXT)
+        Style::default().fg(palette().text)
     }
 }
 
 fn plain_text_style(line: &str) -> Style {
     if line.starts_with("Use /") {
-        Style::default().fg(MUTED)
+        Style::default().fg(palette().muted)
     } else if line.starts_with("warning:") {
-        Style::default().fg(WARN)
+        Style::default().fg(palette().warn)
     } else if line.starts_with("diagnostic:") {
-        Style::default().fg(USER)
+        Style::default().fg(palette().user)
     } else if line.starts_with("No ") || line.starts_with("no ") {
-        Style::default().fg(SUBTLE)
+        Style::default().fg(palette().subtle)
     } else {
-        Style::default().fg(TEXT)
+        Style::default().fg(palette().text)
     }
 }
 

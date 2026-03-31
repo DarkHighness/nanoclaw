@@ -5,6 +5,7 @@
 //! config surface.
 
 use crate::statusline::StatusLineConfig;
+use crate::theme::{ThemeCatalog, load_theme_catalog};
 use agent_env::{EnvMap, EnvVar};
 use anyhow::Result;
 use nanoclaw_config::{CoreConfig, load_optional_app_config};
@@ -32,6 +33,7 @@ pub(crate) struct CodeAgentConfig {
     pub lsp_auto_install: bool,
     pub lsp_install_root: Option<PathBuf>,
     pub statusline: StatusLineConfig,
+    pub theme_catalog: ThemeCatalog,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -45,6 +47,8 @@ struct CodeAgentAppConfig {
 #[serde(default)]
 struct CodeAgentTuiConfig {
     statusline: StatusLineConfig,
+    theme: Option<String>,
+    theme_file: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -90,6 +94,11 @@ impl CodeAgentConfig {
                 .as_deref()
                 .map(|value| resolve_path(workspace_root, value)),
             statusline: app.tui.statusline,
+            theme_catalog: load_theme_catalog(
+                workspace_root,
+                app.tui.theme_file.as_deref(),
+                app.tui.theme.as_deref(),
+            )?,
         })
     }
 }
@@ -161,5 +170,58 @@ mod tests {
         assert!(!config.statusline.branch);
         assert!(!config.statusline.clock);
         assert!(config.statusline.session);
+    }
+
+    #[tokio::test]
+    async fn loads_theme_catalog_from_configured_theme_file() {
+        let _guard = env_test_lock().lock().unwrap();
+        let dir = tempdir().unwrap();
+        let app_dir = dir.path().join(".nanoclaw/apps");
+        std::fs::create_dir_all(&app_dir).unwrap();
+        std::fs::write(
+            app_dir.join("code-agent.toml"),
+            r#"
+                [tui]
+                theme = "paper"
+                theme_file = ".nanoclaw/apps/code-agent-themes.toml"
+            "#,
+        )
+        .unwrap();
+        std::fs::write(
+            app_dir.join("code-agent-themes.toml"),
+            r##"
+                active = "paper"
+
+                [themes.paper]
+                summary = "light paper"
+                bg = "#faf6ef"
+                main_bg = "#f5f0e7"
+                footer_bg = "#efe8de"
+                bottom_pane_bg = "#e7dfd2"
+                border_active = "#8b8175"
+                text = "#2b241d"
+                muted = "#6f665d"
+                subtle = "#9d9388"
+                accent = "#2f7c82"
+                user = "#9a6a2f"
+                assistant = "#3c7c56"
+                error = "#b4554f"
+                warn = "#b37a21"
+                header = "#17120d"
+            "##,
+        )
+        .unwrap();
+
+        let env_map = EnvMap::from_workspace_dir(dir.path()).unwrap();
+        let config = CodeAgentConfig::load_from_dir(dir.path(), &env_map).unwrap();
+
+        assert_eq!(config.theme_catalog.active_theme, "paper");
+        assert!(
+            config
+                .theme_catalog
+                .themes
+                .iter()
+                .any(|theme| theme.id == "paper")
+        );
     }
 }

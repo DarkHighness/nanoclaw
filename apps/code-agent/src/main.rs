@@ -5,6 +5,7 @@ mod options;
 mod preview;
 mod provider;
 mod statusline;
+mod theme;
 mod tool_render;
 
 use crate::backend::{
@@ -117,9 +118,14 @@ async fn async_main(workspace_root: PathBuf, options: AppOptions) -> Result<()> 
     let ui_state = SharedUiState::new();
     let session = build_session(&options, &workspace_root).await?;
 
-    CodeAgentTui::new(session, options.one_shot_prompt.clone(), ui_state)
-        .run()
-        .await
+    CodeAgentTui::new(
+        session,
+        options.one_shot_prompt.clone(),
+        ui_state,
+        options.theme_catalog.clone(),
+    )
+    .run()
+    .await
 }
 
 fn launch_headless_one_shot(

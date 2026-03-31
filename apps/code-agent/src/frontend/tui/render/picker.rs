@@ -6,7 +6,7 @@ use super::shared::{
     pending_control_reason_label as format_pending_control_reason,
 };
 use super::shell::bottom_band_inner_area;
-use super::theme::{ACCENT, ASSISTANT, BOTTOM_PANE_BG, HEADER, MUTED, SUBTLE, TEXT, USER, WARN};
+use super::theme::palette;
 use crate::frontend::tui::commands::{SlashCommandHint, SlashCommandSpec};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span, Text};
@@ -18,25 +18,29 @@ pub(super) fn render_command_hint_band(
     command_hint: &SlashCommandHint,
 ) {
     frame.render_widget(
-        Block::default().style(Style::default().bg(BOTTOM_PANE_BG)),
+        Block::default().style(Style::default().bg(palette().bottom_pane_bg)),
         area,
     );
     let inner = bottom_band_inner_area(area);
     frame.render_widget(
         Paragraph::new(build_command_hint_text(command_hint))
             .wrap(Wrap { trim: false })
-            .style(Style::default().fg(TEXT).bg(BOTTOM_PANE_BG)),
+            .style(
+                Style::default()
+                    .fg(palette().text)
+                    .bg(palette().bottom_pane_bg),
+            ),
         inner,
     );
 }
 
 pub(super) fn build_command_hint_text(command_hint: &SlashCommandHint) -> Text<'static> {
     let mut lines = vec![Line::from(vec![
-        Span::styled("commands", Style::default().fg(HEADER)),
-        Span::styled(" · ", Style::default().fg(SUBTLE)),
+        Span::styled("commands", Style::default().fg(palette().header)),
+        Span::styled(" · ", Style::default().fg(palette().subtle)),
         Span::styled(
             format!("{} matches", command_hint.matches.len()),
-            Style::default().fg(ACCENT),
+            Style::default().fg(palette().accent),
         ),
     ])];
 
@@ -44,7 +48,7 @@ pub(super) fn build_command_hint_text(command_hint: &SlashCommandHint) -> Text<'
     if window.start > 0 {
         lines.push(Line::from(Span::styled(
             format!("… {} earlier", window.start),
-            Style::default().fg(SUBTLE),
+            Style::default().fg(palette().subtle),
         )));
     }
 
@@ -53,35 +57,42 @@ pub(super) fn build_command_hint_text(command_hint: &SlashCommandHint) -> Text<'
             lines.push(Line::from(vec![
                 Span::styled(
                     "›",
-                    Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(palette().accent)
+                        .add_modifier(Modifier::BOLD),
                 ),
                 Span::raw(" "),
                 Span::styled(
                     format!("/{}", spec.usage),
-                    Style::default().fg(HEADER).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(palette().header)
+                        .add_modifier(Modifier::BOLD),
                 ),
-                Span::styled("  ", Style::default().fg(SUBTLE)),
-                Span::styled(spec.summary, Style::default().fg(TEXT)),
+                Span::styled("  ", Style::default().fg(palette().subtle)),
+                Span::styled(spec.summary, Style::default().fg(palette().text)),
             ]));
             if !spec.aliases().is_empty() {
                 lines.push(Line::from(vec![
-                    Span::styled("  aliases ", Style::default().fg(SUBTLE)),
+                    Span::styled("  aliases ", Style::default().fg(palette().subtle)),
                     Span::styled(
                         spec.aliases()
                             .iter()
                             .map(|alias| format!("/{alias}"))
                             .collect::<Vec<_>>()
                             .join(" "),
-                        Style::default().fg(MUTED),
+                        Style::default().fg(palette().muted),
                     ),
                 ]));
             }
         } else {
             lines.push(Line::from(vec![
-                Span::styled("  ", Style::default().fg(SUBTLE)),
-                Span::styled(format!("/{}", spec.usage), Style::default().fg(MUTED)),
-                Span::styled("  ", Style::default().fg(SUBTLE)),
-                Span::styled(spec.section, Style::default().fg(SUBTLE)),
+                Span::styled("  ", Style::default().fg(palette().subtle)),
+                Span::styled(
+                    format!("/{}", spec.usage),
+                    Style::default().fg(palette().muted),
+                ),
+                Span::styled("  ", Style::default().fg(palette().subtle)),
+                Span::styled(spec.section, Style::default().fg(palette().subtle)),
             ]));
         }
     }
@@ -90,29 +101,38 @@ pub(super) fn build_command_hint_text(command_hint: &SlashCommandHint) -> Text<'
         let mut spans = Vec::new();
         if arguments.provided.is_empty() {
             if let Some(next) = arguments.next {
-                spans.push(Span::styled("  next ", Style::default().fg(SUBTLE)));
-                spans.push(Span::styled(next.placeholder, Style::default().fg(MUTED)));
+                spans.push(Span::styled(
+                    "  next ",
+                    Style::default().fg(palette().subtle),
+                ));
+                spans.push(Span::styled(
+                    next.placeholder,
+                    Style::default().fg(palette().muted),
+                ));
             }
         } else {
-            spans.push(Span::styled("  ", Style::default().fg(SUBTLE)));
+            spans.push(Span::styled("  ", Style::default().fg(palette().subtle)));
             for (index, argument) in arguments.provided.iter().enumerate() {
                 if index > 0 {
-                    spans.push(Span::styled(" · ", Style::default().fg(SUBTLE)));
+                    spans.push(Span::styled(" · ", Style::default().fg(palette().subtle)));
                 }
                 spans.push(Span::styled(
                     argument.placeholder,
-                    Style::default().fg(SUBTLE),
+                    Style::default().fg(palette().subtle),
                 ));
                 spans.push(Span::raw(" "));
                 spans.push(Span::styled(
                     argument.value.clone(),
-                    Style::default().fg(TEXT),
+                    Style::default().fg(palette().text),
                 ));
             }
             if let Some(next) = arguments.next {
-                spans.push(Span::styled(" · ", Style::default().fg(SUBTLE)));
-                spans.push(Span::styled("next ", Style::default().fg(SUBTLE)));
-                spans.push(Span::styled(next.placeholder, Style::default().fg(MUTED)));
+                spans.push(Span::styled(" · ", Style::default().fg(palette().subtle)));
+                spans.push(Span::styled("next ", Style::default().fg(palette().subtle)));
+                spans.push(Span::styled(
+                    next.placeholder,
+                    Style::default().fg(palette().muted),
+                ));
             }
         }
         if !spans.is_empty() {
@@ -123,7 +143,7 @@ pub(super) fn build_command_hint_text(command_hint: &SlashCommandHint) -> Text<'
     if window.end < command_hint.matches.len() {
         lines.push(Line::from(Span::styled(
             format!("… {} more", command_hint.matches.len() - window.end),
-            Style::default().fg(SUBTLE),
+            Style::default().fg(palette().subtle),
         )));
     }
 
@@ -160,14 +180,14 @@ pub(super) fn build_command_hint_text(command_hint: &SlashCommandHint) -> Text<'
         "enter accept"
     };
     lines.push(Line::from(vec![
-        Span::styled("↑↓", Style::default().fg(MUTED)),
-        Span::styled(" move", Style::default().fg(MUTED)),
-        Span::styled(" · ", Style::default().fg(SUBTLE)),
-        Span::styled(tab_hint, Style::default().fg(MUTED)),
-        Span::styled(" · ", Style::default().fg(SUBTLE)),
-        Span::styled("shift+tab previous", Style::default().fg(MUTED)),
-        Span::styled(" · ", Style::default().fg(SUBTLE)),
-        Span::styled(enter_hint, Style::default().fg(MUTED)),
+        Span::styled("↑↓", Style::default().fg(palette().muted)),
+        Span::styled(" move", Style::default().fg(palette().muted)),
+        Span::styled(" · ", Style::default().fg(palette().subtle)),
+        Span::styled(tab_hint, Style::default().fg(palette().muted)),
+        Span::styled(" · ", Style::default().fg(palette().subtle)),
+        Span::styled("shift+tab previous", Style::default().fg(palette().muted)),
+        Span::styled(" · ", Style::default().fg(palette().subtle)),
+        Span::styled(enter_hint, Style::default().fg(palette().muted)),
     ]));
 
     Text::from(lines)
@@ -186,14 +206,18 @@ pub(super) fn render_pending_control_band(
     state: &TuiState,
 ) {
     frame.render_widget(
-        Block::default().style(Style::default().bg(BOTTOM_PANE_BG)),
+        Block::default().style(Style::default().bg(palette().bottom_pane_bg)),
         area,
     );
     let inner = bottom_band_inner_area(area);
     frame.render_widget(
         Paragraph::new(build_pending_control_text(state))
             .wrap(Wrap { trim: false })
-            .style(Style::default().fg(TEXT).bg(BOTTOM_PANE_BG)),
+            .style(
+                Style::default()
+                    .fg(palette().text)
+                    .bg(palette().bottom_pane_bg),
+            ),
         inner,
     );
 }
@@ -210,24 +234,24 @@ pub(super) fn build_pending_control_text(state: &TuiState) -> Text<'static> {
     let selected = state.selected_pending_control();
     let pending_count = state.pending_controls.len();
     let mut lines = vec![Line::from(vec![
-        Span::styled("pending", Style::default().fg(HEADER)),
-        Span::styled(" · ", Style::default().fg(SUBTLE)),
+        Span::styled("pending", Style::default().fg(palette().header)),
+        Span::styled(" · ", Style::default().fg(palette().subtle)),
         Span::styled(
             format!(
                 "{pending_count} item{}",
                 if pending_count == 1 { "" } else { "s" }
             ),
-            Style::default().fg(WARN),
+            Style::default().fg(palette().warn),
         ),
         if editing.is_some() {
-            Span::styled(" · ", Style::default().fg(SUBTLE))
+            Span::styled(" · ", Style::default().fg(palette().subtle))
         } else {
             Span::raw("")
         },
         if let Some(editing) = editing {
             Span::styled(
                 format!("editing {}", pending_kind_label(editing)),
-                Style::default().fg(ACCENT),
+                Style::default().fg(palette().accent),
             )
         } else {
             Span::raw("")
@@ -240,7 +264,7 @@ pub(super) fn build_pending_control_text(state: &TuiState) -> Text<'static> {
         if window.start > 0 {
             lines.push(Line::from(Span::styled(
                 format!("… {} older", window.start),
-                Style::default().fg(SUBTLE),
+                Style::default().fg(palette().subtle),
             )));
         }
         let selected_index = picker.selected;
@@ -254,7 +278,7 @@ pub(super) fn build_pending_control_text(state: &TuiState) -> Text<'static> {
         if window.end < state.pending_controls.len() {
             lines.push(Line::from(Span::styled(
                 format!("… {} newer", state.pending_controls.len() - window.end),
-                Style::default().fg(SUBTLE),
+                Style::default().fg(palette().subtle),
             )));
         }
         if let Some(selected) = state.pending_controls.get(selected_index) {
@@ -268,7 +292,7 @@ pub(super) fn build_pending_control_text(state: &TuiState) -> Text<'static> {
         lines.push(build_pending_control_row(&selected, true));
         lines.push(Line::from(Span::styled(
             "alt+up open queue",
-            Style::default().fg(SUBTLE),
+            Style::default().fg(palette().subtle),
         )));
     }
 
@@ -282,14 +306,18 @@ fn build_pending_control_row(
     let marker = if selected { "›" } else { " " };
     let kind_label = pending_control_kind_label(control.kind);
     let accent = match control.kind {
-        crate::backend::PendingControlKind::Prompt => USER,
-        crate::backend::PendingControlKind::Steer => ASSISTANT,
+        crate::backend::PendingControlKind::Prompt => palette().user,
+        crate::backend::PendingControlKind::Steer => palette().assistant,
     };
     let mut spans = vec![
         Span::styled(
             marker,
             Style::default()
-                .fg(if selected { ACCENT } else { SUBTLE })
+                .fg(if selected {
+                    palette().accent
+                } else {
+                    palette().subtle
+                })
                 .add_modifier(if selected {
                     Modifier::BOLD
                 } else {
@@ -300,27 +328,31 @@ fn build_pending_control_row(
         Span::styled(
             format!("{kind_label:<6}"),
             Style::default()
-                .fg(if selected { accent } else { MUTED })
+                .fg(if selected { accent } else { palette().muted })
                 .add_modifier(if selected {
                     Modifier::BOLD
                 } else {
                     Modifier::empty()
                 }),
         ),
-        Span::styled(" ", Style::default().fg(SUBTLE)),
+        Span::styled(" ", Style::default().fg(palette().subtle)),
         Span::styled(
             preview_text(&control.preview, 72),
-            Style::default().fg(if selected { HEADER } else { TEXT }),
+            Style::default().fg(if selected {
+                palette().header
+            } else {
+                palette().text
+            }),
         ),
     ];
     if let Some(reason) = control.reason.as_deref() {
-        spans.push(Span::styled(" · ", Style::default().fg(SUBTLE)));
+        spans.push(Span::styled(" · ", Style::default().fg(palette().subtle)));
         spans.push(Span::styled(
             preview_text(
                 &format_pending_control_reason(Some(reason)).unwrap_or_else(|| reason.to_string()),
                 24,
             ),
-            Style::default().fg(MUTED),
+            Style::default().fg(palette().muted),
         ));
     }
     Line::from(spans)
@@ -331,12 +363,12 @@ fn build_pending_control_context_row(
 ) -> Line<'static> {
     let kind_label = pending_control_kind_label(control.kind);
     Line::from(vec![
-        Span::styled("  ", Style::default().fg(SUBTLE)),
-        Span::styled(kind_label, Style::default().fg(MUTED)),
-        Span::styled(" ", Style::default().fg(SUBTLE)),
+        Span::styled("  ", Style::default().fg(palette().subtle)),
+        Span::styled(kind_label, Style::default().fg(palette().muted)),
+        Span::styled(" ", Style::default().fg(palette().subtle)),
         Span::styled(
             preview_text(&control.preview, 56),
-            Style::default().fg(TEXT),
+            Style::default().fg(palette().text),
         ),
     ])
 }
@@ -348,31 +380,33 @@ fn build_selected_pending_control_block(
 ) -> Vec<Line<'static>> {
     let kind_label = pending_control_kind_label(control.kind);
     let accent = match control.kind {
-        crate::backend::PendingControlKind::Prompt => USER,
-        crate::backend::PendingControlKind::Steer => ASSISTANT,
+        crate::backend::PendingControlKind::Prompt => palette().user,
+        crate::backend::PendingControlKind::Steer => palette().assistant,
     };
     vec![
         Line::from(vec![
             Span::styled(
                 "›",
-                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(palette().accent)
+                    .add_modifier(Modifier::BOLD),
             ),
             Span::raw(" "),
             Span::styled(
                 kind_label,
                 Style::default().fg(accent).add_modifier(Modifier::BOLD),
             ),
-            Span::styled(" · ", Style::default().fg(SUBTLE)),
+            Span::styled(" · ", Style::default().fg(palette().subtle)),
             Span::styled(
                 pending_control_focus_label(selected_index, total),
-                Style::default().fg(ACCENT),
+                Style::default().fg(palette().accent),
             ),
         ]),
         Line::from(vec![
-            Span::styled("  ", Style::default().fg(SUBTLE)),
+            Span::styled("  ", Style::default().fg(palette().subtle)),
             Span::styled(
                 preview_text(&control.preview, 84),
-                Style::default().fg(HEADER),
+                Style::default().fg(palette().header),
             ),
         ]),
         build_pending_control_detail_row(control, selected_index, total),
@@ -385,15 +419,15 @@ fn build_pending_control_detail_row(
     total: usize,
 ) -> Line<'static> {
     let mut spans = vec![
-        Span::styled("  ", Style::default().fg(SUBTLE)),
+        Span::styled("  ", Style::default().fg(palette().subtle)),
         Span::styled(
             pending_control_queue_position_label(selected_index, total),
-            Style::default().fg(SUBTLE),
+            Style::default().fg(palette().subtle),
         ),
     ];
     if let Some(reason) = format_pending_control_reason(control.reason.as_deref()) {
-        spans.push(Span::styled(" · ", Style::default().fg(SUBTLE)));
-        spans.push(Span::styled(reason, Style::default().fg(MUTED)));
+        spans.push(Span::styled(" · ", Style::default().fg(palette().subtle)));
+        spans.push(Span::styled(reason, Style::default().fg(palette().muted)));
     }
     Line::from(spans)
 }

@@ -3,6 +3,7 @@ use crate::backend::{
     PendingControlKind, PendingControlSummary, SessionPermissionMode, StartupDiagnosticsSnapshot,
 };
 use crate::statusline::{StatusLineConfig, StatusLineField, status_line_fields};
+use crate::theme::ThemeSummary;
 use crate::tool_render::{
     ToolDetail, ToolDetailBlockKind, preview_tool_details, serialize_tool_details,
 };
@@ -69,6 +70,11 @@ pub(crate) struct StatusLinePickerState {
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct ThinkingEffortPickerState {
+    pub(crate) selected: usize,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ThemePickerState {
     pub(crate) selected: usize,
 }
 
@@ -723,6 +729,8 @@ impl InspectorEntry {
 #[derive(Clone, Debug, Default)]
 pub(crate) struct TuiState {
     pub(crate) session: SessionSummary,
+    pub(crate) theme: String,
+    pub(crate) themes: Vec<ThemeSummary>,
     pub(crate) main_pane: MainPaneMode,
     pub(crate) show_tool_details: bool,
     pub(crate) input: String,
@@ -747,6 +755,7 @@ pub(crate) struct TuiState {
     pub(crate) editing_pending_control: Option<PendingControlEditorState>,
     pub(crate) statusline_picker: Option<StatusLinePickerState>,
     pub(crate) thinking_effort_picker: Option<ThinkingEffortPickerState>,
+    pub(crate) theme_picker: Option<ThemePickerState>,
     pub(crate) history_rollback: Option<HistoryRollbackState>,
 }
 
@@ -762,6 +771,7 @@ impl TuiState {
         self.pending_control_picker = None;
         self.statusline_picker = None;
         self.thinking_effort_picker = None;
+        self.theme_picker = None;
         self.history_rollback = None;
     }
 
@@ -770,6 +780,7 @@ impl TuiState {
         self.pending_control_picker = None;
         self.statusline_picker = None;
         self.thinking_effort_picker = None;
+        self.theme_picker = None;
         self.history_rollback = None;
     }
 
@@ -780,6 +791,7 @@ impl TuiState {
         self.inspector_scroll = 0;
         self.pending_control_picker = None;
         self.thinking_effort_picker = None;
+        self.theme_picker = None;
         self.history_rollback = None;
         self.statusline_picker
             .get_or_insert_with(StatusLinePickerState::default)
@@ -793,6 +805,7 @@ impl TuiState {
         self.inspector_scroll = 0;
         self.pending_control_picker = None;
         self.statusline_picker = None;
+        self.theme_picker = None;
         self.history_rollback = None;
         let selected = self
             .session
@@ -805,6 +818,24 @@ impl TuiState {
         self.thinking_effort_picker = Some(ThinkingEffortPickerState { selected });
     }
 
+    pub(crate) fn open_theme_picker(&mut self) {
+        self.main_pane = MainPaneMode::View;
+        self.inspector_title = "Theme".to_string();
+        self.inspector.clear();
+        self.inspector_scroll = 0;
+        self.pending_control_picker = None;
+        self.statusline_picker = None;
+        self.thinking_effort_picker = None;
+        self.theme_picker = None;
+        self.history_rollback = None;
+        let selected = self
+            .themes
+            .iter()
+            .position(|candidate| candidate.id == self.theme)
+            .unwrap_or(0);
+        self.theme_picker = Some(ThemePickerState { selected });
+    }
+
     pub(crate) fn close_statusline_picker(&mut self) {
         self.statusline_picker = None;
         self.show_transcript_pane();
@@ -812,6 +843,11 @@ impl TuiState {
 
     pub(crate) fn close_thinking_effort_picker(&mut self) {
         self.thinking_effort_picker = None;
+        self.show_transcript_pane();
+    }
+
+    pub(crate) fn close_theme_picker(&mut self) {
+        self.theme_picker = None;
         self.show_transcript_pane();
     }
 
@@ -832,6 +868,7 @@ impl TuiState {
         self.pending_control_picker = Some(PendingControlPickerState { selected });
         self.statusline_picker = None;
         self.thinking_effort_picker = None;
+        self.theme_picker = None;
         self.history_rollback = None;
         true
     }
@@ -881,6 +918,7 @@ impl TuiState {
         self.pending_control_picker = None;
         self.statusline_picker = None;
         self.thinking_effort_picker = None;
+        self.theme_picker = None;
         self.history_rollback = Some(HistoryRollbackState::Primed);
     }
 
@@ -895,6 +933,7 @@ impl TuiState {
         self.pending_control_picker = None;
         self.statusline_picker = None;
         self.thinking_effort_picker = None;
+        self.theme_picker = None;
         self.history_rollback = Some(HistoryRollbackState::Selecting(
             HistoryRollbackOverlayState {
                 selected: candidates.len().saturating_sub(1),
@@ -1026,6 +1065,29 @@ impl TuiState {
             .supported_model_reasoning_efforts
             .get(picker.selected)
             .cloned()
+    }
+
+    pub(crate) fn move_theme_picker(&mut self, backwards: bool) -> bool {
+        let Some(picker) = self.theme_picker.as_mut() else {
+            return false;
+        };
+        let total = self.themes.len();
+        if total == 0 {
+            return false;
+        }
+        picker.selected = if backwards {
+            picker.selected.checked_sub(1).unwrap_or(total - 1)
+        } else {
+            (picker.selected + 1) % total
+        };
+        true
+    }
+
+    pub(crate) fn selected_theme(&self) -> Option<String> {
+        let picker = self.theme_picker.as_ref()?;
+        self.themes
+            .get(picker.selected)
+            .map(|theme| theme.id.clone())
     }
 
     pub(crate) fn push_activity(&mut self, line: impl Into<String>) {

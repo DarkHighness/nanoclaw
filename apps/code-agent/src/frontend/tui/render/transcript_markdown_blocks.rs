@@ -1,4 +1,4 @@
-use super::theme::{ASSISTANT, ERROR, MUTED, NanoclawMarkdownStyleSheet, SUBTLE, TEXT, USER};
+use super::theme::{NanoclawMarkdownStyleSheet, palette};
 use super::transcript::{
     TranscriptEntryKind, line_has_visible_content, line_to_plain_text,
     transcript_continuation_prefix,
@@ -38,13 +38,13 @@ pub(super) fn render_shell_code_block(
 pub(super) fn code_span(line: &str) -> Span<'static> {
     let trimmed = line.trim_start();
     let style = if trimmed.starts_with('+') && !trimmed.starts_with("+++") {
-        Style::default().fg(ASSISTANT)
+        Style::default().fg(palette().assistant)
     } else if trimmed.starts_with('-') && !trimmed.starts_with("---") {
-        Style::default().fg(ERROR)
+        Style::default().fg(palette().error)
     } else if trimmed.starts_with("@@") {
-        Style::default().fg(USER)
+        Style::default().fg(palette().user)
     } else {
-        Style::default().fg(TEXT)
+        Style::default().fg(palette().text)
     };
     Span::styled(line.to_string(), style)
 }
@@ -88,11 +88,13 @@ fn code_block_label_line(
     is_first_visible: bool,
 ) -> Line<'static> {
     let mut spans = vec![
-        Span::styled("···", Style::default().fg(SUBTLE)),
+        Span::styled("···", Style::default().fg(palette().subtle)),
         Span::raw(" "),
         Span::styled(
             language.to_string(),
-            Style::default().fg(MUTED).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(palette().muted)
+                .add_modifier(Modifier::BOLD),
         ),
     ];
     if !is_first_visible {
@@ -133,12 +135,12 @@ fn normalize_markdown_line(mut line: Line<'static>) -> Line<'static> {
         return line;
     }
 
-    if line.style.fg == Some(MUTED) && (plain.starts_with("> ") || plain == ">") {
+    if line.style.fg == Some(palette().muted) && (plain.starts_with("> ") || plain == ">") {
         let prefix_len = usize::from(plain.starts_with("> ")) + 1;
         strip_line_prefix_chars(&mut line, prefix_len);
         line.spans.insert(
             0,
-            Span::styled("│ ".to_string(), Style::default().fg(SUBTLE)),
+            Span::styled("│ ".to_string(), Style::default().fg(palette().subtle)),
         );
     }
 

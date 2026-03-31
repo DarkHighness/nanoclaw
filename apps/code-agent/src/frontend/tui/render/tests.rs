@@ -16,7 +16,7 @@ use super::transcript_shell::{
 };
 use super::view::{
     build_collection_text, build_command_palette_text, build_key_value_text,
-    build_statusline_picker_text, should_render_view_title,
+    build_statusline_picker_text, build_theme_picker_text, should_render_view_title,
 };
 use super::welcome::build_welcome_lines;
 use crate::backend::{PendingControlKind, PendingControlSummary};
@@ -28,8 +28,9 @@ use crate::frontend::tui::commands::{
 };
 use crate::frontend::tui::state::{
     HistoryRollbackCandidate, InspectorEntry, MainPaneMode, PlanEntry, StatusLinePickerState,
-    TranscriptEntry, TranscriptShellDetail, TranscriptToolStatus, TuiState,
+    ThemePickerState, TranscriptEntry, TranscriptShellDetail, TranscriptToolStatus, TuiState,
 };
+use crate::theme::ThemeSummary;
 use crate::tool_render::ToolDetail;
 use agent::tools::{UserInputAnswer, UserInputOption, UserInputQuestion};
 use agent::types::MessageId;
@@ -684,6 +685,38 @@ fn statusline_picker_text_renders_checked_rows() {
             .lines
             .iter()
             .any(|line| line_text_for(line).contains("[ ] session"))
+    );
+}
+
+#[test]
+fn theme_picker_text_renders_available_themes() {
+    let rendered = build_theme_picker_text(
+        "fjord",
+        &[
+            ThemeSummary {
+                id: "graphite".to_string(),
+                summary: "cool dark slate".to_string(),
+            },
+            ThemeSummary {
+                id: "fjord".to_string(),
+                summary: "deep blue with brighter cyan accents".to_string(),
+            },
+        ],
+        &ThemePickerState { selected: 1 },
+    );
+
+    assert_eq!(rendered.lines[0].spans[0].content.as_ref(), "theme");
+    assert!(
+        rendered
+            .lines
+            .iter()
+            .any(|line| line_text_for(line).contains("› [x] fjord"))
+    );
+    assert!(
+        rendered
+            .lines
+            .iter()
+            .any(|line| line_text_for(line).contains("[ ] graphite"))
     );
 }
 

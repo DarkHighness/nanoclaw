@@ -6,7 +6,7 @@ use super::shared::{
     pending_control_focus_label, pending_control_kind_label, pending_control_reason_label,
 };
 use super::statusline::status_color;
-use super::theme::{ACCENT, ASSISTANT, ERROR, HEADER, MUTED, SUBTLE, TEXT, USER, WARN};
+use super::theme::palette;
 use super::transcript::TranscriptEntryKind;
 use super::transcript_markdown::render_shell_code_block;
 use super::transcript_markdown_blocks::code_span;
@@ -57,7 +57,7 @@ pub(super) fn render_collapsed_tool_entry(
                     hidden_line_count,
                     if hidden_line_count == 1 { "" } else { "s" }
                 ),
-                Style::default().fg(SUBTLE),
+                Style::default().fg(palette().subtle),
             ),
         ]));
     }
@@ -88,7 +88,7 @@ pub(super) fn render_collapsed_shell_summary(
                     hidden_line_count,
                     if hidden_line_count == 1 { "" } else { "s" }
                 ),
-                Style::default().fg(SUBTLE),
+                Style::default().fg(palette().subtle),
             ),
         ]));
     }
@@ -236,7 +236,9 @@ pub(super) fn render_plan_entry(
 ) -> Vec<Line<'static>> {
     let mut rendered = vec![Line::from(Span::styled(
         entry.headline.clone(),
-        Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
+        Style::default()
+            .fg(palette().text)
+            .add_modifier(Modifier::BOLD),
     ))];
 
     if let Some(explanation) = entry.explanation.as_deref() {
@@ -244,7 +246,9 @@ pub(super) fn render_plan_entry(
             transcript_continuation_prefix(kind),
             Span::styled(
                 explanation.to_string(),
-                Style::default().fg(SUBTLE).add_modifier(Modifier::ITALIC),
+                Style::default()
+                    .fg(palette().subtle)
+                    .add_modifier(Modifier::ITALIC),
             ),
         ]));
     }
@@ -254,7 +258,9 @@ pub(super) fn render_plan_entry(
             transcript_continuation_prefix(kind),
             Span::styled(
                 "(no steps provided)".to_string(),
-                Style::default().fg(SUBTLE).add_modifier(Modifier::ITALIC),
+                Style::default()
+                    .fg(palette().subtle)
+                    .add_modifier(Modifier::ITALIC),
             ),
         ]));
         return rendered;
@@ -264,17 +270,27 @@ pub(super) fn render_plan_entry(
         let (marker, status_style, content_style) = match item.status.as_str() {
             "completed" => (
                 "✔ ",
-                Style::default().fg(ASSISTANT).add_modifier(Modifier::DIM),
                 Style::default()
-                    .fg(SUBTLE)
+                    .fg(palette().assistant)
+                    .add_modifier(Modifier::DIM),
+                Style::default()
+                    .fg(palette().subtle)
                     .add_modifier(Modifier::CROSSED_OUT | Modifier::DIM),
             ),
             "in_progress" => (
                 "□ ",
-                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-                Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(palette().accent)
+                    .add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(palette().text)
+                    .add_modifier(Modifier::BOLD),
             ),
-            _ => ("□ ", Style::default().fg(SUBTLE), Style::default().fg(TEXT)),
+            _ => (
+                "□ ",
+                Style::default().fg(palette().subtle),
+                Style::default().fg(palette().text),
+            ),
         };
         rendered.push(Line::from(vec![
             transcript_continuation_prefix(kind),
@@ -359,7 +375,9 @@ pub(super) fn transcript_continuation_prefix(kind: TranscriptEntryKind) -> Span<
         TranscriptEntryKind::ShellSummary
         | TranscriptEntryKind::SuccessSummary
         | TranscriptEntryKind::ErrorSummary
-        | TranscriptEntryKind::WarningSummary => Span::styled("    ", Style::default().fg(SUBTLE)),
+        | TranscriptEntryKind::WarningSummary => {
+            Span::styled("    ", Style::default().fg(palette().subtle))
+        }
         _ => Span::raw("  "),
     }
 }
@@ -367,13 +385,13 @@ pub(super) fn transcript_continuation_prefix(kind: TranscriptEntryKind) -> Span<
 pub(super) fn transcript_body_style(marker: &str, kind: TranscriptEntryKind, line: &str) -> Style {
     let style = match kind {
         TranscriptEntryKind::UserPrompt | TranscriptEntryKind::AssistantMessage => {
-            Style::default().fg(TEXT)
+            Style::default().fg(palette().text)
         }
-        TranscriptEntryKind::PlanUpdate => Style::default().fg(TEXT),
+        TranscriptEntryKind::PlanUpdate => Style::default().fg(palette().text),
         TranscriptEntryKind::ShellSummary => Style::default().fg(summary_color(line)),
-        TranscriptEntryKind::SuccessSummary => Style::default().fg(ASSISTANT),
-        TranscriptEntryKind::ErrorSummary => Style::default().fg(ERROR),
-        TranscriptEntryKind::WarningSummary => Style::default().fg(WARN),
+        TranscriptEntryKind::SuccessSummary => Style::default().fg(palette().assistant),
+        TranscriptEntryKind::ErrorSummary => Style::default().fg(palette().error),
+        TranscriptEntryKind::WarningSummary => Style::default().fg(palette().warn),
     };
 
     if marker == "›" {
@@ -390,7 +408,10 @@ fn render_shell_detail(
     match detail {
         TranscriptShellDetail::Command(command) => vec![detail_line(
             false,
-            vec![Span::styled(command.clone(), Style::default().fg(USER))],
+            vec![Span::styled(
+                command.clone(),
+                Style::default().fg(palette().user),
+            )],
         )],
         TranscriptShellDetail::Meta(text) => vec![detail_line(
             false,
@@ -404,7 +425,10 @@ fn render_shell_detail(
         } => render_named_shell_block(label, *block_kind, lines),
         TranscriptShellDetail::Raw { text, continuation } => vec![detail_line(
             *continuation,
-            vec![Span::styled(text.clone(), Style::default().fg(MUTED))],
+            vec![Span::styled(
+                text.clone(),
+                Style::default().fg(palette().muted),
+            )],
         )],
     }
 }
@@ -413,7 +437,10 @@ fn render_tool_detail(detail: &ToolDetail, kind: TranscriptEntryKind) -> Vec<Lin
     match detail {
         ToolDetail::Command(command) => vec![detail_line(
             false,
-            vec![Span::styled(command.clone(), Style::default().fg(USER))],
+            vec![Span::styled(
+                command.clone(),
+                Style::default().fg(palette().user),
+            )],
         )],
         ToolDetail::Meta(text) => vec![detail_line(
             false,
@@ -436,7 +463,10 @@ fn render_shell_text_block(lines: &[String], kind: TranscriptEntryKind) -> Vec<L
             if index == 0 {
                 detail_line(
                     false,
-                    vec![Span::styled(line.clone(), Style::default().fg(MUTED))],
+                    vec![Span::styled(
+                        line.clone(),
+                        Style::default().fg(palette().muted),
+                    )],
                 )
             } else {
                 detail_line(
@@ -465,11 +495,17 @@ fn render_named_shell_block(
         TranscriptShellBlockKind::Diff => detail_line(true, vec![code_span(line)]),
         TranscriptShellBlockKind::Stderr => detail_line(
             true,
-            vec![Span::styled(line.clone(), Style::default().fg(ERROR))],
+            vec![Span::styled(
+                line.clone(),
+                Style::default().fg(palette().error),
+            )],
         ),
         TranscriptShellBlockKind::Stdout => detail_line(
             true,
-            vec![Span::styled(line.clone(), Style::default().fg(TEXT))],
+            vec![Span::styled(
+                line.clone(),
+                Style::default().fg(palette().text),
+            )],
         ),
     }));
 
@@ -488,7 +524,7 @@ fn detail_line(continuation: bool, mut spans: Vec<Span<'static>>) -> Line<'stati
     let prefix = if continuation { "    " } else { "  └ " };
     spans.insert(
         0,
-        Span::styled(prefix.to_string(), Style::default().fg(SUBTLE)),
+        Span::styled(prefix.to_string(), Style::default().fg(palette().subtle)),
     );
     Line::from(spans)
 }
@@ -499,42 +535,46 @@ fn shell_meta_style(text: &str) -> Style {
         .and_then(|value| value.parse::<i64>().ok())
     {
         if exit_code == 0 {
-            return Style::default().fg(ASSISTANT);
+            return Style::default().fg(palette().assistant);
         }
-        return Style::default().fg(ERROR);
+        return Style::default().fg(palette().error);
     }
     if text == "timed out" {
-        return Style::default().fg(WARN);
+        return Style::default().fg(palette().warn);
     }
-    Style::default().fg(MUTED)
+    Style::default().fg(palette().muted)
 }
 
 fn shell_block_label_style(kind: TranscriptShellBlockKind) -> Style {
     match kind {
-        TranscriptShellBlockKind::Stdout => {
-            Style::default().fg(ASSISTANT).add_modifier(Modifier::BOLD)
-        }
-        TranscriptShellBlockKind::Stderr => Style::default().fg(ERROR).add_modifier(Modifier::BOLD),
-        TranscriptShellBlockKind::Diff => Style::default().fg(USER).add_modifier(Modifier::BOLD),
+        TranscriptShellBlockKind::Stdout => Style::default()
+            .fg(palette().assistant)
+            .add_modifier(Modifier::BOLD),
+        TranscriptShellBlockKind::Stderr => Style::default()
+            .fg(palette().error)
+            .add_modifier(Modifier::BOLD),
+        TranscriptShellBlockKind::Diff => Style::default()
+            .fg(palette().user)
+            .add_modifier(Modifier::BOLD),
     }
 }
 
 fn shell_block_line_style(kind: TranscriptEntryKind) -> Style {
     match kind {
-        TranscriptEntryKind::SuccessSummary => Style::default().fg(TEXT),
-        TranscriptEntryKind::PlanUpdate => Style::default().fg(TEXT),
+        TranscriptEntryKind::SuccessSummary => Style::default().fg(palette().text),
+        TranscriptEntryKind::PlanUpdate => Style::default().fg(palette().text),
         TranscriptEntryKind::ErrorSummary
         | TranscriptEntryKind::WarningSummary
         | TranscriptEntryKind::ShellSummary
         | TranscriptEntryKind::AssistantMessage
-        | TranscriptEntryKind::UserPrompt => Style::default().fg(MUTED),
+        | TranscriptEntryKind::UserPrompt => Style::default().fg(palette().muted),
     }
 }
 
 fn transcript_marker_style(marker: &str, accent: Color, kind: TranscriptEntryKind) -> Style {
     let color = match kind {
-        TranscriptEntryKind::AssistantMessage => MUTED,
-        TranscriptEntryKind::UserPrompt => USER,
+        TranscriptEntryKind::AssistantMessage => palette().muted,
+        TranscriptEntryKind::UserPrompt => palette().user,
         _ => accent,
     };
     let style = Style::default().fg(color);
@@ -572,7 +612,7 @@ pub(super) fn live_progress_lines(state: &TuiState) -> Vec<Line<'static>> {
             animation_frame_ms(state.turn_started_at.unwrap_or(frame_time), frame_time),
         ));
         if state.session.queued_commands > 0 && state.pending_control_picker.is_none() {
-            spans.push(Span::styled(" · ", Style::default().fg(SUBTLE)));
+            spans.push(Span::styled(" · ", Style::default().fg(palette().subtle)));
             spans.push(Span::styled(
                 if state.active_tool_label.is_some() {
                     format!(
@@ -582,21 +622,26 @@ pub(super) fn live_progress_lines(state: &TuiState) -> Vec<Line<'static>> {
                 } else {
                     format!("{} queued", state.session.queued_commands)
                 },
-                Style::default().fg(MUTED),
+                Style::default().fg(palette().muted),
             ));
         }
         spans.push(Span::styled(
             format!(" ({}s · esc to interrupt)", elapsed_secs),
-            Style::default().fg(MUTED),
+            Style::default().fg(palette().muted),
         ));
         vec![Line::from(spans)]
     } else if state.pending_control_picker.is_none() {
         vec![Line::from(vec![
-            Span::styled("+", Style::default().fg(WARN).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "+",
+                Style::default()
+                    .fg(palette().warn)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::raw(" "),
             Span::styled(
                 format!("{} queued command(s)", state.session.queued_commands),
-                Style::default().fg(MUTED),
+                Style::default().fg(palette().muted),
             ),
         ])]
     } else {
@@ -648,10 +693,10 @@ pub(super) fn pending_control_embedded_lines(
     if timeline.older_hidden_count > 0 {
         lines.push(Line::from(vec![
             transcript_continuation_prefix(TranscriptEntryKind::ShellSummary),
-            Span::styled("  └ ", Style::default().fg(SUBTLE)),
+            Span::styled("  └ ", Style::default().fg(palette().subtle)),
             Span::styled(
                 format!("{} older pending", timeline.older_hidden_count),
-                Style::default().fg(MUTED),
+                Style::default().fg(palette().muted),
             ),
         ]));
     }
@@ -705,12 +750,12 @@ fn render_pending_control_embedded_detail(item: &PendingControlTimelineItem) -> 
     let (kind_label, kind_color) = pending_control_timeline_kind_label(item.kind, item.editing);
     let mut spans = vec![
         transcript_continuation_prefix(TranscriptEntryKind::ShellSummary),
-        Span::styled("  └ ", Style::default().fg(SUBTLE)),
+        Span::styled("  └ ", Style::default().fg(palette().subtle)),
     ];
     if !item.editing {
         spans.push(Span::styled(
             format!("{} ", item.relative_label),
-            Style::default().fg(MUTED),
+            Style::default().fg(palette().muted),
         ));
     }
     spans.extend([
@@ -718,12 +763,15 @@ fn render_pending_control_embedded_detail(item: &PendingControlTimelineItem) -> 
             kind_label,
             Style::default().fg(kind_color).add_modifier(Modifier::BOLD),
         ),
-        Span::styled(" · ", Style::default().fg(SUBTLE)),
-        Span::styled(item.preview.clone(), Style::default().fg(TEXT)),
+        Span::styled(" · ", Style::default().fg(palette().subtle)),
+        Span::styled(item.preview.clone(), Style::default().fg(palette().text)),
     ]);
     if let Some(reason) = item.reason.as_deref() {
-        spans.push(Span::styled(" · ", Style::default().fg(SUBTLE)));
-        spans.push(Span::styled(reason.to_string(), Style::default().fg(MUTED)));
+        spans.push(Span::styled(" · ", Style::default().fg(palette().subtle)));
+        spans.push(Span::styled(
+            reason.to_string(),
+            Style::default().fg(palette().muted),
+        ));
     }
     Line::from(spans)
 }
@@ -750,10 +798,16 @@ fn pending_control_timeline_kind_label(
     editing: bool,
 ) -> (&'static str, Color) {
     match (kind, editing) {
-        (crate::backend::PendingControlKind::Prompt, true) => ("editing queued prompt", USER),
-        (crate::backend::PendingControlKind::Steer, true) => ("editing queued steer", ASSISTANT),
-        (crate::backend::PendingControlKind::Prompt, false) => ("queued prompt", USER),
-        (crate::backend::PendingControlKind::Steer, false) => ("pending steer", ASSISTANT),
+        (crate::backend::PendingControlKind::Prompt, true) => {
+            ("editing queued prompt", palette().user)
+        }
+        (crate::backend::PendingControlKind::Steer, true) => {
+            ("editing queued steer", palette().assistant)
+        }
+        (crate::backend::PendingControlKind::Prompt, false) => ("queued prompt", palette().user),
+        (crate::backend::PendingControlKind::Steer, false) => {
+            ("pending steer", palette().assistant)
+        }
     }
 }
 
@@ -840,11 +894,27 @@ fn pending_control_picker_bridge_label(state: &TuiState) -> Option<String> {
 }
 
 pub(super) fn animated_progress_text_spans(text: &str, frame_ms: u128) -> Vec<Span<'static>> {
-    animated_emphasis_text_spans(text, frame_ms, HEADER, USER, TEXT, ASSISTANT, MUTED)
+    animated_emphasis_text_spans(
+        text,
+        frame_ms,
+        palette().header,
+        palette().user,
+        palette().text,
+        palette().assistant,
+        palette().muted,
+    )
 }
 
 fn animated_status_phrase_spans(text: &str, frame_ms: u128, accent: Color) -> Vec<Span<'static>> {
-    animated_emphasis_text_spans(text, frame_ms, HEADER, accent, TEXT, accent, MUTED)
+    animated_emphasis_text_spans(
+        text,
+        frame_ms,
+        palette().header,
+        accent,
+        palette().text,
+        accent,
+        palette().muted,
+    )
 }
 
 fn animated_emphasis_text_spans(
@@ -870,7 +940,7 @@ fn animated_emphasis_text_spans(
         .enumerate()
         .map(|(index, ch)| {
             if ch.is_whitespace() {
-                return Span::styled(ch.to_string(), Style::default().fg(SUBTLE));
+                return Span::styled(ch.to_string(), Style::default().fg(palette().subtle));
             }
 
             let delta = index as isize - head;
@@ -918,23 +988,23 @@ pub(super) fn summary_color(line: &str) -> Color {
         || lower.contains("denied")
         || lower.contains("cancelled")
     {
-        ERROR
+        palette().error
     } else if lower.contains("approved")
         || lower.contains("complete")
         || lower.contains("loaded")
         || lower.contains("ready")
         || lower.contains("called")
     {
-        ASSISTANT
+        palette().assistant
     } else if lower.contains("waiting")
         || lower.contains("blocked")
         || lower.contains("running")
         || lower.contains("queued")
         || lower.contains("applying")
     {
-        WARN
+        palette().warn
     } else {
-        TEXT
+        palette().text
     }
 }
 
@@ -943,22 +1013,32 @@ fn tool_status_phrase(entry: &TranscriptToolEntry) -> Option<(&'static str, Stri
         TranscriptToolStatus::WaitingApproval => Some((
             "Awaiting approval",
             format!(" for {}", entry.tool_name),
-            WARN,
+            palette().warn,
         )),
         TranscriptToolStatus::Requested => {
-            Some(("Requested", format!(" {}", entry.tool_name), WARN))
+            Some(("Requested", format!(" {}", entry.tool_name), palette().warn))
         }
-        TranscriptToolStatus::Running => Some(("Running", format!(" {}", entry.tool_name), USER)),
-        TranscriptToolStatus::Finished => {
-            Some(("Finished", format!(" {}", entry.tool_name), ASSISTANT))
+        TranscriptToolStatus::Running => {
+            Some(("Running", format!(" {}", entry.tool_name), palette().user))
         }
-        TranscriptToolStatus::Approved => {
-            Some(("Approved", format!(" {}", entry.tool_name), ASSISTANT))
+        TranscriptToolStatus::Finished => Some((
+            "Finished",
+            format!(" {}", entry.tool_name),
+            palette().assistant,
+        )),
+        TranscriptToolStatus::Approved => Some((
+            "Approved",
+            format!(" {}", entry.tool_name),
+            palette().assistant,
+        )),
+        TranscriptToolStatus::Denied => {
+            Some(("Denied", format!(" {}", entry.tool_name), palette().error))
         }
-        TranscriptToolStatus::Denied => Some(("Denied", format!(" {}", entry.tool_name), ERROR)),
-        TranscriptToolStatus::Cancelled => {
-            Some(("Cancelled", format!(" {}", entry.tool_name), ERROR))
-        }
+        TranscriptToolStatus::Cancelled => Some((
+            "Cancelled",
+            format!(" {}", entry.tool_name),
+            palette().error,
+        )),
         TranscriptToolStatus::Failed => None,
     }
 }
@@ -966,31 +1046,31 @@ fn tool_status_phrase(entry: &TranscriptToolEntry) -> Option<(&'static str, Stri
 fn shell_status_phrase(line: &str) -> Option<(&str, &str, Color)> {
     if line.starts_with("Awaiting approval for ") {
         let phrase = "Awaiting approval";
-        return Some((phrase, &line[phrase.len()..], WARN));
+        return Some((phrase, &line[phrase.len()..], palette().warn));
     }
     if line.starts_with("Requested ") {
         let phrase = "Requested";
-        return Some((phrase, &line[phrase.len()..], WARN));
+        return Some((phrase, &line[phrase.len()..], palette().warn));
     }
     if line.starts_with("Queued ") {
         let phrase = "Queued";
-        return Some((phrase, &line[phrase.len()..], WARN));
+        return Some((phrase, &line[phrase.len()..], palette().warn));
     }
     if line.starts_with("Running ") {
         let phrase = "Running";
-        return Some((phrase, &line[phrase.len()..], USER));
+        return Some((phrase, &line[phrase.len()..], palette().user));
     }
     if line.starts_with("Finished ") {
         let phrase = "Finished";
-        return Some((phrase, &line[phrase.len()..], ASSISTANT));
+        return Some((phrase, &line[phrase.len()..], palette().assistant));
     }
     if line.starts_with("Approved ") {
         let phrase = "Approved";
-        return Some((phrase, &line[phrase.len()..], ASSISTANT));
+        return Some((phrase, &line[phrase.len()..], palette().assistant));
     }
     if line.starts_with("Denied ") {
         let phrase = "Denied";
-        return Some((phrase, &line[phrase.len()..], ERROR));
+        return Some((phrase, &line[phrase.len()..], palette().error));
     }
     None
 }

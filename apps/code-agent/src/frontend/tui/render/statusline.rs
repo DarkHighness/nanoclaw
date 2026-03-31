@@ -1,5 +1,5 @@
 use super::super::state::{TuiState, preview_text};
-use super::theme::{ACCENT, ASSISTANT, ERROR, FOOTER_BG, MUTED, SUBTLE, TEXT, USER, WARN};
+use super::theme::palette;
 use crate::backend::preview_id;
 use chrono::Local;
 use ratatui::layout::Margin;
@@ -12,13 +12,16 @@ pub(super) fn render_status_line(
     area: ratatui::layout::Rect,
     state: &TuiState,
 ) {
-    frame.render_widget(Block::default().style(Style::default().bg(FOOTER_BG)), area);
+    frame.render_widget(
+        Block::default().style(Style::default().bg(palette().footer_bg)),
+        area,
+    );
     let inner = area.inner(Margin {
         vertical: 0,
         horizontal: 1,
     });
     let status = Paragraph::new(format_footer_context(state))
-        .style(Style::default().fg(TEXT).bg(FOOTER_BG))
+        .style(Style::default().fg(palette().text).bg(palette().footer_bg))
         .wrap(Wrap { trim: true });
     frame.render_widget(status, inner);
 }
@@ -42,22 +45,27 @@ pub(super) fn format_footer_context(state: &TuiState) -> Line<'static> {
         spans.push(Span::raw(" "));
         spans.push(Span::styled(
             preview_text(status, 32),
-            Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(palette().text)
+                .add_modifier(Modifier::BOLD),
         ));
     }
 
     push_status_item(
         &mut spans,
-        config
-            .model
-            .then(|| (format_model_label(state), Style::default().fg(ACCENT))),
+        config.model.then(|| {
+            (
+                format_model_label(state),
+                Style::default().fg(palette().accent),
+            )
+        }),
     );
     push_status_item(
         &mut spans,
         config.cwd.then(|| {
             (
                 state.session.workspace_name.clone(),
-                Style::default().fg(TEXT),
+                Style::default().fg(palette().text),
             )
         }),
     );
@@ -67,14 +75,18 @@ pub(super) fn format_footer_context(state: &TuiState) -> Line<'static> {
             .then(|| {
                 (
                     state.session.git.repo_name.clone(),
-                    Style::default().fg(USER),
+                    Style::default().fg(palette().user),
                 )
             }),
     );
     push_status_item(
         &mut spans,
-        (config.branch && state.session.git.available)
-            .then(|| (state.session.git.branch.clone(), Style::default().fg(MUTED))),
+        (config.branch && state.session.git.available).then(|| {
+            (
+                state.session.git.branch.clone(),
+                Style::default().fg(palette().muted),
+            )
+        }),
     );
     push_status_item(
         &mut spans,
@@ -93,7 +105,7 @@ pub(super) fn format_footer_context(state: &TuiState) -> Line<'static> {
                     "in {}",
                     compact_u64(state.session.token_ledger.cumulative_usage.input_tokens)
                 ),
-                Style::default().fg(MUTED),
+                Style::default().fg(palette().muted),
             )
         }),
     );
@@ -105,7 +117,7 @@ pub(super) fn format_footer_context(state: &TuiState) -> Line<'static> {
                     "out {}",
                     compact_u64(state.session.token_ledger.cumulative_usage.output_tokens)
                 ),
-                Style::default().fg(MUTED),
+                Style::default().fg(palette().muted),
             )
         }),
     );
@@ -115,9 +127,9 @@ pub(super) fn format_footer_context(state: &TuiState) -> Line<'static> {
             (
                 format!("queue {}", state.session.queued_commands),
                 if state.session.queued_commands == 0 {
-                    Style::default().fg(MUTED)
+                    Style::default().fg(palette().muted)
                 } else {
-                    Style::default().fg(WARN)
+                    Style::default().fg(palette().warn)
                 },
             )
         }),
@@ -127,7 +139,7 @@ pub(super) fn format_footer_context(state: &TuiState) -> Line<'static> {
         config.session.then(|| {
             (
                 preview_id(&state.session.active_session_ref),
-                Style::default().fg(MUTED),
+                Style::default().fg(palette().muted),
             )
         }),
     );
@@ -136,7 +148,7 @@ pub(super) fn format_footer_context(state: &TuiState) -> Line<'static> {
         config.clock.then(|| {
             (
                 Local::now().format("%H:%M").to_string(),
-                Style::default().fg(MUTED),
+                Style::default().fg(palette().muted),
             )
         }),
     );
@@ -147,13 +159,13 @@ pub(super) fn format_footer_context(state: &TuiState) -> Line<'static> {
 pub(super) fn status_color(status: &str) -> Color {
     let lower = status.to_ascii_lowercase();
     if lower.contains("error") || lower.contains("failed") || lower.contains("denied") {
-        ERROR
+        palette().error
     } else if lower.contains("approval") || lower.contains("running") || lower.contains("waiting") {
-        WARN
+        palette().warn
     } else if lower.contains("ready") || lower.contains("complete") || lower.contains("approved") {
-        ASSISTANT
+        palette().assistant
     } else {
-        USER
+        palette().user
     }
 }
 
@@ -162,7 +174,7 @@ fn push_status_item(spans: &mut Vec<Span<'static>>, item: Option<(String, Style)
         return;
     };
     if !spans.is_empty() {
-        spans.push(Span::styled(" · ", Style::default().fg(SUBTLE)));
+        spans.push(Span::styled(" · ", Style::default().fg(palette().subtle)));
     }
     spans.push(Span::styled(label, style));
 }
@@ -192,13 +204,17 @@ fn format_context_window_label(state: &TuiState) -> String {
 
 fn context_window_color(state: &TuiState) -> Color {
     let Some(window) = state.session.token_ledger.context_window else {
-        return SUBTLE;
+        return palette().subtle;
     };
     if window.max_tokens == 0 {
-        return SUBTLE;
+        return palette().subtle;
     }
     let usage = window.used_tokens.saturating_mul(100) / window.max_tokens;
-    if usage >= 85 { WARN } else { ASSISTANT }
+    if usage >= 85 {
+        palette().warn
+    } else {
+        palette().assistant
+    }
 }
 
 fn compact_usize(value: usize) -> String {

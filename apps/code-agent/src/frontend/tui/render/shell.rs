@@ -1,11 +1,11 @@
 use super::super::state::{MainPaneMode, TuiState};
 use super::chrome::build_side_rail_lines;
 use super::shared::clamp_scroll;
-use super::theme::{MAIN_BG, MUTED, TEXT};
+use super::theme::palette;
 use super::transcript::render_transcript;
 use super::view::{
-    build_inspector_text, build_statusline_picker_text, build_thinking_effort_picker_text,
-    should_render_view_title,
+    build_inspector_text, build_statusline_picker_text, build_theme_picker_text,
+    build_thinking_effort_picker_text, should_render_view_title,
 };
 use ratatui::layout::{Constraint, Margin, Rect};
 use ratatui::style::Style;
@@ -20,14 +20,17 @@ pub(super) fn render_main_pane(frame: &mut ratatui::Frame<'_>, area: Rect, state
 }
 
 pub(super) fn render_side_rail(frame: &mut ratatui::Frame<'_>, area: Rect, state: &TuiState) {
-    frame.render_widget(Block::default().style(Style::default().bg(MAIN_BG)), area);
+    frame.render_widget(
+        Block::default().style(Style::default().bg(palette().main_bg)),
+        area,
+    );
     let inner = area.inner(Margin {
         vertical: 0,
         horizontal: 1,
     });
     let rail = Paragraph::new(Text::from(build_side_rail_lines(state)))
         .wrap(Wrap { trim: false })
-        .style(Style::default().fg(TEXT).bg(MAIN_BG));
+        .style(Style::default().fg(palette().text).bg(palette().main_bg));
     frame.render_widget(rail, inner);
 }
 
@@ -63,7 +66,10 @@ pub(super) fn bottom_layout_constraints(
 }
 
 fn render_main_view(frame: &mut ratatui::Frame<'_>, area: Rect, state: &TuiState) {
-    frame.render_widget(Block::default().style(Style::default().bg(MAIN_BG)), area);
+    frame.render_widget(
+        Block::default().style(Style::default().bg(palette().main_bg)),
+        area,
+    );
     let inner = area.inner(Margin {
         vertical: 0,
         horizontal: 2,
@@ -81,12 +87,14 @@ fn render_main_view(frame: &mut ratatui::Frame<'_>, area: Rect, state: &TuiState
             &state.session.supported_model_reasoning_efforts,
             picker,
         )
+    } else if let Some(picker) = state.theme_picker.as_ref() {
+        build_theme_picker_text(&state.theme, &state.themes, picker)
     } else {
         let mut lines = Vec::new();
         if should_render_view_title(title, &state.inspector) {
             lines.push(Line::from(Span::styled(
                 title.to_string(),
-                Style::default().fg(MUTED),
+                Style::default().fg(palette().muted),
             )));
             lines.push(Line::raw(""));
         }
@@ -101,6 +109,6 @@ fn render_main_view(frame: &mut ratatui::Frame<'_>, area: Rect, state: &TuiState
     let view = Paragraph::new(text)
         .scroll((scroll, 0))
         .wrap(Wrap { trim: false })
-        .style(Style::default().fg(TEXT).bg(MAIN_BG));
+        .style(Style::default().fg(palette().text).bg(palette().main_bg));
     frame.render_widget(view, inner);
 }

@@ -1,4 +1,4 @@
-use super::theme::{ASSISTANT, ERROR, HEADER, MUTED, SUBTLE, TEXT, USER, WARN};
+use super::theme::palette;
 use super::transcript::{
     TranscriptEntryKind, transcript_body_style, transcript_continuation_prefix,
 };
@@ -18,14 +18,14 @@ pub(super) fn render_transcript_body_line(
     }
     if let Some(detail) = raw_line.strip_prefix("  └ ") {
         return Line::from(vec![
-            Span::styled("  └ ", Style::default().fg(SUBTLE)),
-            Span::styled(detail.to_string(), Style::default().fg(MUTED)),
+            Span::styled("  └ ", Style::default().fg(palette().subtle)),
+            Span::styled(detail.to_string(), Style::default().fg(palette().muted)),
         ]);
     }
     if let Some(detail) = raw_line.strip_prefix("    ") {
         return Line::from(vec![
             Span::raw("    "),
-            Span::styled(detail.to_string(), Style::default().fg(MUTED)),
+            Span::styled(detail.to_string(), Style::default().fg(palette().muted)),
         ]);
     }
     if in_code {
@@ -45,17 +45,20 @@ pub(super) fn render_transcript_body_line(
         return line_with_indent(
             kind,
             is_first_visible,
-            vec![Span::styled("┈".repeat(18), Style::default().fg(SUBTLE))],
+            vec![Span::styled(
+                "┈".repeat(18),
+                Style::default().fg(palette().subtle),
+            )],
         );
     }
     if let Some(rest) = markdown_quote(raw_line) {
         let mut spans = vec![
-            Span::styled("│", Style::default().fg(SUBTLE)),
+            Span::styled("│", Style::default().fg(palette().subtle)),
             Span::raw(" "),
         ];
         spans.extend(markdown_inline_spans(
             rest,
-            markdown_body_style(kind, Style::default().fg(MUTED)),
+            markdown_body_style(kind, Style::default().fg(palette().muted)),
         ));
         return line_with_indent(kind, is_first_visible, spans);
     }
@@ -64,7 +67,7 @@ pub(super) fn render_transcript_body_line(
         .or_else(|| raw_line.strip_prefix("* "))
     {
         let mut spans = vec![
-            Span::styled("-", Style::default().fg(MUTED)),
+            Span::styled("-", Style::default().fg(palette().muted)),
             Span::raw(" "),
         ];
         spans.extend(markdown_inline_spans(
@@ -75,7 +78,7 @@ pub(super) fn render_transcript_body_line(
     }
     if let Some((ordinal, rest)) = markdown_ordered_item(raw_line) {
         let mut spans = vec![
-            Span::styled(format!("{ordinal}."), Style::default().fg(MUTED)),
+            Span::styled(format!("{ordinal}."), Style::default().fg(palette().muted)),
             Span::raw(" "),
         ];
         spans.extend(markdown_inline_spans(
@@ -113,8 +116,14 @@ fn markdown_heading(raw_line: &str) -> Option<(usize, &str)> {
 }
 
 fn markdown_heading_style(level: usize) -> Style {
-    let style = Style::default().fg(HEADER).add_modifier(Modifier::BOLD);
-    if level <= 2 { style } else { style.fg(TEXT) }
+    let style = Style::default()
+        .fg(palette().header)
+        .add_modifier(Modifier::BOLD);
+    if level <= 2 {
+        style
+    } else {
+        style.fg(palette().text)
+    }
 }
 
 fn is_markdown_rule(raw_line: &str) -> bool {
@@ -145,7 +154,10 @@ fn markdown_inline_spans(text: &str, base_style: Style) -> Vec<Span<'static>> {
         {
             let code = &rest[..end];
             if !code.is_empty() {
-                spans.push(Span::styled(code.to_string(), Style::default().fg(USER)));
+                spans.push(Span::styled(
+                    code.to_string(),
+                    Style::default().fg(palette().user),
+                ));
             }
             remaining = &rest[end + 1..];
             continue;
@@ -194,7 +206,7 @@ fn markdown_inline_spans(text: &str, base_style: Style) -> Vec<Span<'static>> {
             if !url.is_empty() {
                 spans.push(Span::styled(
                     format!(" ({url})"),
-                    Style::default().fg(SUBTLE),
+                    Style::default().fg(palette().subtle),
                 ));
             }
             remaining = &rest[label_end + 2 + url_end + 1..];
@@ -231,11 +243,13 @@ fn markdown_token_index(text: &str) -> Option<usize> {
 
 fn markdown_body_style(kind: TranscriptEntryKind, base: Style) -> Style {
     match kind {
-        TranscriptEntryKind::AssistantMessage | TranscriptEntryKind::UserPrompt => base.fg(TEXT),
-        TranscriptEntryKind::PlanUpdate => base.fg(TEXT),
-        TranscriptEntryKind::ShellSummary => base.fg(MUTED),
-        TranscriptEntryKind::SuccessSummary => base.fg(ASSISTANT),
-        TranscriptEntryKind::ErrorSummary => base.fg(ERROR),
-        TranscriptEntryKind::WarningSummary => base.fg(WARN),
+        TranscriptEntryKind::AssistantMessage | TranscriptEntryKind::UserPrompt => {
+            base.fg(palette().text)
+        }
+        TranscriptEntryKind::PlanUpdate => base.fg(palette().text),
+        TranscriptEntryKind::ShellSummary => base.fg(palette().muted),
+        TranscriptEntryKind::SuccessSummary => base.fg(palette().assistant),
+        TranscriptEntryKind::ErrorSummary => base.fg(palette().error),
+        TranscriptEntryKind::WarningSummary => base.fg(palette().warn),
     }
 }

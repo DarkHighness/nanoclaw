@@ -13,7 +13,7 @@ pub(super) use super::transcript_shell::{
 };
 use super::view::build_inspector_text;
 use super::welcome::build_welcome_lines;
-use super::{shared, theme::*};
+use super::{shared, theme::palette};
 use ratatui::layout::{Alignment, Margin, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span, Text};
@@ -21,7 +21,10 @@ use ratatui::widgets::{Block, Paragraph, Wrap};
 use std::time::Instant;
 
 pub(super) fn render_transcript(frame: &mut ratatui::Frame<'_>, area: Rect, state: &TuiState) {
-    frame.render_widget(Block::default().style(Style::default().bg(MAIN_BG)), area);
+    frame.render_widget(
+        Block::default().style(Style::default().bg(palette().main_bg)),
+        area,
+    );
     let inner = area.inner(Margin {
         vertical: 0,
         horizontal: 2,
@@ -31,7 +34,7 @@ pub(super) fn render_transcript(frame: &mut ratatui::Frame<'_>, area: Rect, stat
         let empty = Paragraph::new(Text::from(lines))
             .alignment(Alignment::Center)
             .wrap(Wrap { trim: false })
-            .style(Style::default().fg(TEXT).bg(MAIN_BG));
+            .style(Style::default().fg(palette().text).bg(palette().main_bg));
         frame.render_widget(empty, inner);
         return;
     }
@@ -42,7 +45,7 @@ pub(super) fn render_transcript(frame: &mut ratatui::Frame<'_>, area: Rect, stat
         .scroll((scroll, 0))
         .alignment(Alignment::Left)
         .wrap(Wrap { trim: false })
-        .style(Style::default().fg(TEXT).bg(MAIN_BG));
+        .style(Style::default().fg(palette().text).bg(palette().main_bg));
     frame.render_widget(transcript, inner);
 }
 
@@ -64,7 +67,7 @@ pub(super) fn build_transcript_lines_for_width(
     if should_render_transcript_context(&state.inspector_title) && !state.inspector.is_empty() {
         lines.push(Line::from(Span::styled(
             state.inspector_title.clone(),
-            Style::default().fg(MUTED),
+            Style::default().fg(palette().muted),
         )));
         lines.push(Line::raw(""));
         lines.extend(build_inspector_text(&state.inspector_title, &state.inspector).lines);
@@ -143,7 +146,10 @@ fn turn_divider(width: u16) -> Line<'static> {
     // Keep user-turn boundaries locked to the live viewport width so the break
     // reads as a full transcript section boundary instead of a floating marker.
     let width = usize::from(width.max(1));
-    Line::from(Span::styled("─".repeat(width), Style::default().fg(SUBTLE)))
+    Line::from(Span::styled(
+        "─".repeat(width),
+        Style::default().fg(palette().subtle),
+    ))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -213,23 +219,23 @@ fn entry_accent(entry: &TranscriptEntry, kind: TranscriptEntryKind) -> ratatui::
             TranscriptEntryKind::ShellSummary => {
                 super::transcript_shell::summary_color(&tool.headline)
             }
-            TranscriptEntryKind::PlanUpdate => MUTED,
-            TranscriptEntryKind::SuccessSummary => ASSISTANT,
-            TranscriptEntryKind::ErrorSummary => ERROR,
-            TranscriptEntryKind::WarningSummary => WARN,
-            TranscriptEntryKind::AssistantMessage => MUTED,
-            TranscriptEntryKind::UserPrompt => USER,
+            TranscriptEntryKind::PlanUpdate => palette().muted,
+            TranscriptEntryKind::SuccessSummary => palette().assistant,
+            TranscriptEntryKind::ErrorSummary => palette().error,
+            TranscriptEntryKind::WarningSummary => palette().warn,
+            TranscriptEntryKind::AssistantMessage => palette().muted,
+            TranscriptEntryKind::UserPrompt => palette().user,
         };
     }
 
     match kind {
-        TranscriptEntryKind::AssistantMessage => MUTED,
-        TranscriptEntryKind::UserPrompt => USER,
-        TranscriptEntryKind::PlanUpdate => MUTED,
+        TranscriptEntryKind::AssistantMessage => palette().muted,
+        TranscriptEntryKind::UserPrompt => palette().user,
+        TranscriptEntryKind::PlanUpdate => palette().muted,
         TranscriptEntryKind::ShellSummary => super::transcript_shell::summary_color(entry.body()),
-        TranscriptEntryKind::SuccessSummary => ASSISTANT,
-        TranscriptEntryKind::ErrorSummary => ERROR,
-        TranscriptEntryKind::WarningSummary => WARN,
+        TranscriptEntryKind::SuccessSummary => palette().assistant,
+        TranscriptEntryKind::ErrorSummary => palette().error,
+        TranscriptEntryKind::WarningSummary => palette().warn,
     }
 }
 

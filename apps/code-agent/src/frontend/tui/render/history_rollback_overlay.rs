@@ -1,6 +1,6 @@
 use super::super::state::{TuiState, preview_text};
 use super::shared::clamp_scroll;
-use super::theme::{ACCENT, BORDER_ACTIVE, FOOTER_BG, HEADER, MUTED, SUBTLE, TEXT, USER};
+use super::theme::palette;
 use super::transcript::format_transcript_cell;
 use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
 use ratatui::style::{Modifier, Style};
@@ -20,10 +20,14 @@ pub(super) fn render_history_rollback_overlay(
     frame.render_widget(
         Block::default()
             .title(" History Rollback ")
-            .title_style(Style::default().fg(HEADER).add_modifier(Modifier::BOLD))
+            .title_style(
+                Style::default()
+                    .fg(palette().header)
+                    .add_modifier(Modifier::BOLD),
+            )
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(BORDER_ACTIVE))
-            .style(Style::default().bg(FOOTER_BG)),
+            .border_style(Style::default().fg(palette().border_active))
+            .style(Style::default().bg(palette().footer_bg)),
         popup,
     );
 
@@ -47,7 +51,7 @@ pub(super) fn render_history_rollback_overlay(
     frame.render_widget(
         Paragraph::new(build_history_rollback_summary_text(state))
             .wrap(Wrap { trim: false })
-            .style(Style::default().fg(TEXT).bg(FOOTER_BG)),
+            .style(Style::default().fg(palette().text).bg(palette().footer_bg)),
         sections[0],
     );
 
@@ -65,21 +69,21 @@ pub(super) fn render_history_rollback_overlay(
         Paragraph::new(list)
             .scroll((scroll, 0))
             .wrap(Wrap { trim: false })
-            .style(Style::default().fg(TEXT).bg(FOOTER_BG)),
+            .style(Style::default().fg(palette().text).bg(palette().footer_bg)),
         body[0],
     );
 
     frame.render_widget(
         Paragraph::new(build_history_rollback_preview_text(state))
             .wrap(Wrap { trim: false })
-            .style(Style::default().fg(TEXT).bg(FOOTER_BG)),
+            .style(Style::default().fg(palette().text).bg(palette().footer_bg)),
         body[1],
     );
 
     frame.render_widget(
         Paragraph::new(build_history_rollback_help_text())
             .wrap(Wrap { trim: false })
-            .style(Style::default().fg(MUTED).bg(FOOTER_BG)),
+            .style(Style::default().fg(palette().muted).bg(palette().footer_bg)),
         sections[2],
     );
 }
@@ -92,23 +96,25 @@ pub(super) fn build_history_rollback_summary_text(state: &TuiState) -> Text<'sta
         return Text::from(Vec::<Line<'static>>::new());
     };
     Text::from(vec![Line::from(vec![
-        Span::styled("selected", Style::default().fg(MUTED)),
-        Span::styled(" · ", Style::default().fg(SUBTLE)),
+        Span::styled("selected", Style::default().fg(palette().muted)),
+        Span::styled(" · ", Style::default().fg(palette().subtle)),
         Span::styled(
             format!(
                 "turn {} of {}",
                 overlay.selected + 1,
                 overlay.candidates.len()
             ),
-            Style::default().fg(USER).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(palette().user)
+                .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(" · ", Style::default().fg(SUBTLE)),
+        Span::styled(" · ", Style::default().fg(palette().subtle)),
         Span::styled(
             format!(
                 "drops {} turn(s) / {} message(s)",
                 candidate.removed_turn_count, candidate.removed_message_count
             ),
-            Style::default().fg(ACCENT),
+            Style::default().fg(palette().accent),
         ),
     ])])
 }
@@ -123,13 +129,21 @@ pub(super) fn build_history_rollback_list_text(state: &TuiState) -> Text<'static
         lines.push(Line::from(vec![
             Span::styled(
                 if selected { "›" } else { " " },
-                Style::default().fg(if selected { USER } else { SUBTLE }),
+                Style::default().fg(if selected {
+                    palette().user
+                } else {
+                    palette().subtle
+                }),
             ),
             Span::raw(" "),
             Span::styled(
                 preview_text(&candidate.prompt, 40),
                 Style::default()
-                    .fg(if selected { HEADER } else { TEXT })
+                    .fg(if selected {
+                        palette().header
+                    } else {
+                        palette().text
+                    })
                     .add_modifier(if selected {
                         Modifier::BOLD
                     } else {
@@ -145,7 +159,7 @@ pub(super) fn build_history_rollback_list_text(state: &TuiState) -> Text<'static
                     index + 1,
                     candidate.removed_turn_count
                 ),
-                Style::default().fg(MUTED),
+                Style::default().fg(palette().muted),
             ),
         ]));
         if index + 1 < overlay.candidates.len() {
@@ -165,11 +179,11 @@ pub(super) fn build_history_rollback_preview_text(state: &TuiState) -> Text<'sta
 
     let mut lines = vec![
         Line::from(vec![
-            Span::styled("Turn Preview", Style::default().fg(HEADER)),
-            Span::styled(" · ", Style::default().fg(SUBTLE)),
+            Span::styled("Turn Preview", Style::default().fg(palette().header)),
+            Span::styled(" · ", Style::default().fg(palette().subtle)),
             Span::styled(
                 preview_text(&candidate.prompt, 56),
-                Style::default().fg(TEXT),
+                Style::default().fg(palette().text),
             ),
         ]),
         Line::raw(""),
@@ -185,14 +199,14 @@ pub(super) fn build_history_rollback_preview_text(state: &TuiState) -> Text<'sta
 
 fn build_history_rollback_help_text() -> Text<'static> {
     Text::from(vec![Line::from(vec![
-        Span::styled("esc", Style::default().fg(ACCENT)),
-        Span::styled("/← older", Style::default().fg(MUTED)),
-        Span::styled(" · ", Style::default().fg(SUBTLE)),
-        Span::styled("→ newer", Style::default().fg(MUTED)),
-        Span::styled(" · ", Style::default().fg(SUBTLE)),
-        Span::styled("enter rollback", Style::default().fg(MUTED)),
-        Span::styled(" · ", Style::default().fg(SUBTLE)),
-        Span::styled("q cancel", Style::default().fg(MUTED)),
+        Span::styled("esc", Style::default().fg(palette().accent)),
+        Span::styled("/← older", Style::default().fg(palette().muted)),
+        Span::styled(" · ", Style::default().fg(palette().subtle)),
+        Span::styled("→ newer", Style::default().fg(palette().muted)),
+        Span::styled(" · ", Style::default().fg(palette().subtle)),
+        Span::styled("enter rollback", Style::default().fg(palette().muted)),
+        Span::styled(" · ", Style::default().fg(palette().subtle)),
+        Span::styled("q cancel", Style::default().fg(palette().muted)),
     ])])
 }
 

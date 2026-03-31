@@ -13,6 +13,7 @@ use crate::backend::{
     preview_id,
 };
 use crate::statusline::status_line_fields;
+use crate::theme::{ThemeCatalog, active_theme_id, install_theme_catalog, set_active_theme};
 use approval::approval_decision_for_key;
 use commands::{
     SlashCommand, SlashCommandEnterAction, command_palette_lines_for, cycle_slash_command,
@@ -110,7 +111,9 @@ impl CodeAgentTui {
         session: CodeAgentSession,
         initial_prompt: Option<String>,
         ui_state: SharedUiState,
+        theme_catalog: ThemeCatalog,
     ) -> Self {
+        install_theme_catalog(theme_catalog);
         Self {
             session,
             initial_prompt,
@@ -216,6 +219,9 @@ impl CodeAgentTui {
                         continue;
                     }
                     if self.handle_thinking_effort_picker_key(key) {
+                        continue;
+                    }
+                    if self.handle_theme_picker_key(key) {
                         continue;
                     }
                     if self.handle_history_rollback_key(key).await? {
@@ -901,6 +907,60 @@ impl CodeAgentTui {
         }
     }
 
+    fn handle_theme_picker_key(&mut self, key: KeyEvent) -> bool {
+        let snapshot = self.ui_state.snapshot();
+        if snapshot.theme_picker.is_none() || !snapshot.input.is_empty() {
+            return false;
+        }
+
+        match key.code {
+            KeyCode::Up => {
+                self.ui_state.mutate(|state| {
+                    let _ = state.move_theme_picker(true);
+                });
+                true
+            }
+            KeyCode::Down => {
+                self.ui_state.mutate(|state| {
+                    let _ = state.move_theme_picker(false);
+                });
+                true
+            }
+            KeyCode::Home => {
+                self.ui_state.mutate(|state| {
+                    if let Some(picker) = state.theme_picker.as_mut() {
+                        picker.selected = 0;
+                    }
+                });
+                true
+            }
+            KeyCode::End => {
+                self.ui_state.mutate(|state| {
+                    if let Some(picker) = state.theme_picker.as_mut() {
+                        picker.selected = state.themes.len().saturating_sub(1);
+                    }
+                });
+                true
+            }
+            KeyCode::Enter => {
+                if let Some(theme_id) = snapshot.selected_theme() {
+                    self.apply_tui_theme(&theme_id);
+                }
+                self.ui_state.mutate(|state| state.close_theme_picker());
+                true
+            }
+            KeyCode::Esc => {
+                self.ui_state.mutate(|state| {
+                    state.close_theme_picker();
+                    state.status = "Closed theme picker".to_string();
+                    state.push_activity("closed theme picker");
+                });
+                true
+            }
+            _ => false,
+        }
+    }
+
     async fn handle_history_rollback_key(&mut self, key: KeyEvent) -> Result<bool> {
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
             return Ok(false);
@@ -1535,6 +1595,31 @@ impl CodeAgentTui {
         });
     }
 
+    fn apply_tui_theme(&mut self, theme_id: &str) {
+        match set_active_theme(theme_id) {
+            Ok(()) => {
+                let current = theme_id.to_string();
+                self.ui_state.mutate(|state| {
+                    let previous = state.theme.clone();
+                    state.theme = current.clone();
+                    state.themes = crate::theme::theme_summaries();
+                    state.status = format!("Theme switched to {current}");
+                    state.push_activity(format!("theme {previous} -> {current}"));
+                });
+            }
+            Err(error) => {
+                let message = summarize_nonfatal_error("set tui theme", &error);
+                self.ui_state.mutate(|state| {
+                    state.status = format!("Theme unavailable: {message}");
+                    state.push_activity(format!(
+                        "theme rejected: {}",
+                        state::preview_text(&message, 56)
+                    ));
+                });
+            }
+        }
+    }
+
     async fn apply_command(&mut self, input: &str) -> Result<bool> {
         match parse_slash_command(input) {
             SlashCommand::Quit => Ok(true),
@@ -1574,6 +1659,17 @@ impl CodeAgentTui {
                         state.open_thinking_effort_picker();
                         state.status = "Opened thinking effort picker".to_string();
                         state.push_activity("opened thinking effort picker");
+                    }),
+                }
+                Ok(false)
+            }
+            SlashCommand::Theme { name } => {
+                match name.as_deref() {
+                    Some(theme_id) => self.apply_tui_theme(theme_id),
+                    None => self.ui_state.mutate(|state| {
+                        state.open_theme_picker();
+                        state.status = "Opened theme picker".to_string();
+                        state.push_activity("opened theme picker");
                     }),
                 }
                 Ok(false)
@@ -2344,6 +2440,8 @@ impl CodeAgentTui {
                 token_ledger: Default::default(),
                 statusline: snapshot.statusline.clone(),
             },
+            theme: active_theme_id(),
+            themes: crate::theme::theme_summaries(),
             status: "Ready for your next instruction".to_string(),
             follow_transcript: true,
             ..TuiState::default()
@@ -2589,6 +2687,7 @@ fn build_startup_inspector(session: &state::SessionSummary) -> Vec<InspectorEntr
         InspectorEntry::collection("/help [query]", Some("browse commands")),
         InspectorEntry::collection("/statusline", Some("choose footer items")),
         InspectorEntry::collection("/thinking [level]", Some("pick or set model effort")),
+        InspectorEntry::collection("/theme [name]", Some("pick or set tui theme")),
         InspectorEntry::collection("/details", Some("toggle tool details")),
         InspectorEntry::collection(
             "/permissions [mode]",
@@ -2841,6 +2940,11 @@ mod tests {
             lines
                 .iter()
                 .any(|line| line == "/thinking [level]  pick or set model effort")
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line == "/theme [name]  pick or set tui theme")
         );
         assert!(
             lines
