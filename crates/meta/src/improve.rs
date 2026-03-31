@@ -66,7 +66,10 @@ impl<S: SessionStore + ?Sized> OfflineImproveRunner<S> {
         }
     }
 
-    pub async fn run(&self, plan: OfflineImprovePlan) -> crate::Result<ImproveRunOutcome> {
+    pub async fn run(
+        &self,
+        plan: OfflineImprovePlan,
+    ) -> std::result::Result<ImproveRunOutcome, MetaError> {
         if plan.candidates.is_empty() {
             return Err(MetaError::InvalidPlan(
                 "improve plan must define at least one candidate".to_string(),
