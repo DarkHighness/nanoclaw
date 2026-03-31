@@ -1,8 +1,11 @@
-use crate::backend::session_resume::{HISTORY_ONLY_RESUME_REASON, can_resume_agent_session};
+use crate::backend::session_resume::{
+    HISTORY_ONLY_RESUME_REASON, can_resume_agent_session, reconstruct_runtime_session,
+    visible_transcript,
+};
 use agent::types::{AgentSessionId, SessionEventEnvelope, SessionEventKind};
 use anyhow::{Result, anyhow};
 use std::collections::BTreeMap;
-use store::{SessionSearchResult, SessionSummary};
+use store::{SessionSearchResult, SessionSummary, replay_transcript};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum ResumeSupport {
@@ -101,7 +104,6 @@ pub(crate) fn persisted_agent_session_summaries(
         first_timestamp_ms: u128,
         last_timestamp_ms: u128,
         event_count: usize,
-        transcript_message_count: usize,
         last_user_prompt: Option<String>,
     }
 
@@ -119,16 +121,12 @@ pub(crate) fn persisted_agent_session_summaries(
                 first_timestamp_ms: event.timestamp_ms,
                 last_timestamp_ms: event.timestamp_ms,
                 event_count: 0,
-                transcript_message_count: 0,
                 last_user_prompt: None,
             });
         entry.first_timestamp_ms = entry.first_timestamp_ms.min(event.timestamp_ms);
         entry.last_timestamp_ms = entry.last_timestamp_ms.max(event.timestamp_ms);
         entry.event_count += 1;
         match &event.event {
-            SessionEventKind::TranscriptMessage { .. } => {
-                entry.transcript_message_count += 1;
-            }
             SessionEventKind::UserPromptSubmit { prompt } => {
                 entry.last_user_prompt = Some(prompt.clone());
             }
@@ -152,7 +150,10 @@ pub(crate) fn persisted_agent_session_summaries(
             first_timestamp_ms: entry.first_timestamp_ms,
             last_timestamp_ms: entry.last_timestamp_ms,
             event_count: entry.event_count,
-            transcript_message_count: entry.transcript_message_count,
+            transcript_message_count: visible_agent_session_transcript_message_count(
+                events,
+                &agent_session_id,
+            ),
             last_user_prompt: entry.last_user_prompt,
             resume_support: agent_session_resume_support_for(
                 events,
@@ -168,6 +169,20 @@ pub(crate) fn persisted_agent_session_summaries(
             .then_with(|| left.agent_session_ref.cmp(&right.agent_session_ref))
     });
     summaries
+}
+
+fn visible_agent_session_transcript_message_count(
+    events: &[SessionEventEnvelope],
+    agent_session_id: &AgentSessionId,
+) -> usize {
+    let scoped_events = events
+        .iter()
+        .filter(|event| &event.agent_session_id == agent_session_id)
+        .cloned()
+        .collect::<Vec<_>>();
+    reconstruct_runtime_session(&scoped_events, agent_session_id)
+        .map(|session| visible_transcript(&session).len())
+        .unwrap_or_else(|_| replay_transcript(&scoped_events).len())
 }
 
 pub(crate) fn resolve_agent_session_resume_status(

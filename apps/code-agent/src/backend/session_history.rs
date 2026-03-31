@@ -724,6 +724,7 @@ mod tests {
 
         let loaded = project_loaded_agent_session(summary, &events, &token_usage);
 
+        assert_eq!(loaded.summary.transcript_message_count, 3);
         assert_eq!(
             loaded
                 .transcript
@@ -835,6 +836,7 @@ mod tests {
             &[first_agent_session_id, second_agent_session_id],
         );
 
+        assert_eq!(transcript.len(), 5);
         assert_eq!(
             transcript
                 .iter()
