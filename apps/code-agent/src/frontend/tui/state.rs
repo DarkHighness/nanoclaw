@@ -214,19 +214,6 @@ impl TranscriptShellEntry {
         }
     }
 
-    pub(crate) fn from_prefixed_detail_lines(
-        headline: impl Into<String>,
-        detail_lines: &[String],
-    ) -> Self {
-        Self::new(
-            headline,
-            detail_lines
-                .iter()
-                .filter_map(|line| TranscriptShellDetail::from_prefixed(line))
-                .collect(),
-        )
-    }
-
     pub(crate) fn from_tool_details(
         headline: impl Into<String>,
         detail_lines: Vec<ToolDetail>,
@@ -410,24 +397,25 @@ pub(crate) enum TranscriptEntry {
 }
 
 impl TranscriptEntry {
-    pub(crate) fn shell_summary_entry(
+    pub(crate) fn shell_summary_details(
         headline: impl Into<String>,
-        detail_lines: &[String],
+        detail_lines: Vec<TranscriptShellDetail>,
     ) -> Self {
-        Self::ShellSummary(TranscriptShellEntry::from_prefixed_detail_lines(
-            headline,
-            detail_lines,
-        ))
+        Self::ShellSummary(TranscriptShellEntry::new(headline, detail_lines))
     }
 
-    pub(crate) fn error_summary_entry(
+    pub(crate) fn success_summary_details(
         headline: impl Into<String>,
-        detail_lines: &[String],
+        detail_lines: Vec<TranscriptShellDetail>,
     ) -> Self {
-        Self::ErrorSummary(TranscriptShellEntry::from_prefixed_detail_lines(
-            headline,
-            detail_lines,
-        ))
+        Self::SuccessSummary(TranscriptShellEntry::new(headline, detail_lines))
+    }
+
+    pub(crate) fn error_summary_details(
+        headline: impl Into<String>,
+        detail_lines: Vec<TranscriptShellDetail>,
+    ) -> Self {
+        Self::ErrorSummary(TranscriptShellEntry::new(headline, detail_lines))
     }
 
     pub(crate) fn shell_summary_tool_details(
@@ -547,7 +535,6 @@ impl From<String> for TranscriptEntry {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum InspectorEntry {
-    Raw(String),
     Section(String),
     Field {
         key: String,
@@ -591,18 +578,6 @@ impl InspectorEntry {
     }
 }
 
-impl From<String> for InspectorEntry {
-    fn from(value: String) -> Self {
-        Self::Raw(value)
-    }
-}
-
-impl From<&str> for InspectorEntry {
-    fn from(value: &str) -> Self {
-        Self::Raw(value.to_string())
-    }
-}
-
 #[derive(Clone, Debug, Default)]
 pub(crate) struct TuiState {
     pub(crate) session: SessionSummary,
@@ -632,14 +607,13 @@ pub(crate) struct TuiState {
 }
 
 impl TuiState {
-    pub(crate) fn show_main_view<I, T>(&mut self, title: impl Into<String>, lines: I)
+    pub(crate) fn show_main_view<I>(&mut self, title: impl Into<String>, lines: I)
     where
-        I: IntoIterator<Item = T>,
-        T: Into<InspectorEntry>,
+        I: IntoIterator<Item = InspectorEntry>,
     {
         self.main_pane = MainPaneMode::View;
         self.inspector_title = title.into();
-        self.inspector = lines.into_iter().map(Into::into).collect();
+        self.inspector = lines.into_iter().collect();
         self.inspector_scroll = 0;
         self.pending_control_picker = None;
         self.statusline_picker = None;

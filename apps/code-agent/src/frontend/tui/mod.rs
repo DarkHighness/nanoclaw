@@ -7,8 +7,9 @@ mod state;
 
 use crate::backend::{
     CodeAgentSession, LiveTaskControlAction, LiveTaskMessageAction, LiveTaskWaitOutcome,
-    SessionOperation, SessionOperationAction, SessionOperationOutcome, SessionPermissionMode,
-    SessionStartupSnapshot, UserInputPrompt, preview_id,
+    LoadedMcpPrompt, LoadedMcpResource, SessionOperation, SessionOperationAction,
+    SessionOperationOutcome, SessionPermissionMode, SessionStartupSnapshot, UserInputPrompt,
+    preview_id,
 };
 use crate::statusline::status_line_fields;
 use approval::approval_decision_for_key;
@@ -1103,9 +1104,9 @@ impl CodeAgentTui {
                         state.active_tool_label = None;
                         state.session.git = git.clone();
                         state.status = format!("Error: {message}");
-                        state.push_transcript(state::TranscriptEntry::error_summary_entry(
+                        state.push_transcript(state::TranscriptEntry::error_summary_details(
                             message.clone(),
-                            &[],
+                            Vec::new(),
                         ));
                         state.push_activity(format!(
                             "turn failed: {}",
@@ -1438,9 +1439,9 @@ impl CodeAgentTui {
                 state.turn_running = false;
                 state.turn_started_at = None;
                 state.active_tool_label = None;
-                state.push_transcript(state::TranscriptEntry::error_summary_entry(
+                state.push_transcript(state::TranscriptEntry::error_summary_details(
                     "Interrupted current turn",
-                    &[],
+                    Vec::new(),
                 ));
                 state.push_activity(format!(
                     "interrupted current turn and resubmitted {steer_count} steer(s): {preview}"
@@ -1454,9 +1455,9 @@ impl CodeAgentTui {
                 state.active_tool_label = None;
                 state.status =
                     "Interrupted current turn. What should nanoclaw do next?".to_string();
-                state.push_transcript(state::TranscriptEntry::error_summary_entry(
+                state.push_transcript(state::TranscriptEntry::error_summary_details(
                     "Interrupted current turn",
-                    &[],
+                    Vec::new(),
                 ));
                 state.push_activity("interrupted current turn");
             });
@@ -1695,8 +1696,9 @@ impl CodeAgentTui {
                     .load_mcp_prompt(&server_name, &prompt_name)
                     .await?;
                 self.ui_state.mutate(move |state| {
+                    let inspector = build_mcp_prompt_inspector(&loaded);
                     state.input = loaded.input_text;
-                    state.show_main_view("Prompt", loaded.inspector_lines);
+                    state.show_main_view("Prompt", inspector);
                     state.status =
                         format!("Loaded MCP prompt {server_name}/{prompt_name} into input");
                     state.push_activity(format!("loaded mcp prompt {server_name}/{prompt_name}"));
@@ -1706,8 +1708,9 @@ impl CodeAgentTui {
             SlashCommand::Resource { server_name, uri } => {
                 let loaded = self.session.load_mcp_resource(&server_name, &uri).await?;
                 self.ui_state.mutate(move |state| {
+                    let inspector = build_mcp_resource_inspector(&loaded);
                     state.input = loaded.input_text;
-                    state.show_main_view("Resource", loaded.inspector_lines);
+                    state.show_main_view("Resource", inspector);
                     state.status = format!("Loaded MCP resource {server_name}:{uri} into input");
                     state.push_activity(format!("loaded mcp resource {server_name}:{uri}"));
                 });
@@ -2732,6 +2735,24 @@ fn build_command_error_view(input: &str, message: &str) -> Vec<InspectorEntry> {
     lines
 }
 
+fn build_mcp_prompt_inspector(loaded: &LoadedMcpPrompt) -> Vec<InspectorEntry> {
+    vec![
+        InspectorEntry::section("MCP Prompt"),
+        InspectorEntry::field("server", loaded.server_name.clone()),
+        InspectorEntry::field("prompt", loaded.prompt_name.clone()),
+        InspectorEntry::field("arguments", loaded.arguments_summary.clone()),
+    ]
+}
+
+fn build_mcp_resource_inspector(loaded: &LoadedMcpResource) -> Vec<InspectorEntry> {
+    vec![
+        InspectorEntry::section("MCP Resource"),
+        InspectorEntry::field("server", loaded.server_name.clone()),
+        InspectorEntry::field("uri", loaded.uri.clone()),
+        InspectorEntry::field("mime", loaded.mime_summary.clone()),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::build_history_rollback_candidates;
@@ -2812,8 +2833,7 @@ mod tests {
             .iter()
             .map(|line| match line {
                 InspectorEntry::Section(text) => format!("## {text}"),
-                InspectorEntry::Raw(text)
-                | InspectorEntry::Plain(text)
+                InspectorEntry::Plain(text)
                 | InspectorEntry::Muted(text)
                 | InspectorEntry::Command(text) => text.clone(),
                 InspectorEntry::Field { key, value } => format!("{key}: {value}"),

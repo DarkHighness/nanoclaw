@@ -1,4 +1,6 @@
-use super::state::{PlanEntry, SharedUiState, TranscriptEntry, preview_text};
+use super::state::{
+    PlanEntry, SharedUiState, TranscriptEntry, TranscriptShellDetail, preview_text,
+};
 use crate::backend::SessionEvent;
 use crate::tool_render::{ToolDetail, tool_argument_details, tool_output_details_from_preview};
 use serde_json::Value;
@@ -22,16 +24,19 @@ impl SharedRenderObserver {
     pub(crate) fn apply_event(&mut self, event: SessionEvent) {
         self.ui_state.mutate(|state| match event {
             SessionEvent::SteerApplied { message, reason } => {
-                state.push_transcript(TranscriptEntry::shell_summary_entry(
+                state.push_transcript(TranscriptEntry::shell_summary_details(
                     "Applied steer",
-                    &[format!(
-                        "  └ {}{}",
-                        message,
-                        reason
-                            .as_deref()
-                            .map(|value| format!(" ({value})"))
-                            .unwrap_or_default()
-                    )],
+                    vec![TranscriptShellDetail::Raw {
+                        text: format!(
+                            "{}{}",
+                            message,
+                            reason
+                                .as_deref()
+                                .map(|value| format!(" ({value})"))
+                                .unwrap_or_default()
+                        ),
+                        continuation: false,
+                    }],
                 ));
                 state.status = "Applied steer".to_string();
                 state.push_activity(format!(
@@ -69,11 +74,14 @@ impl SharedRenderObserver {
                 retained_message_count,
                 ..
             } => {
-                state.push_transcript(TranscriptEntry::shell_summary_entry(
+                state.push_transcript(TranscriptEntry::shell_summary_details(
                     "Compacted history",
-                    &[format!(
-                        "  └ kept {retained_message_count} of {source_message_count} messages"
-                    )],
+                    vec![TranscriptShellDetail::Raw {
+                        text: format!(
+                            "kept {retained_message_count} of {source_message_count} messages"
+                        ),
+                        continuation: false,
+                    }],
                 ));
                 state.status = format!(
                     "Compacted {source_message_count} messages, kept {retained_message_count}"

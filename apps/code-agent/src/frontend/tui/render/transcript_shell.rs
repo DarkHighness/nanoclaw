@@ -65,22 +65,6 @@ fn hidden_shell_detail_line_count(entry: &TranscriptEntry) -> usize {
         .saturating_sub(COLLAPSED_SHELL_PREVIEW_DETAIL_LINES)
 }
 
-pub(super) fn transcript_entry_kind(marker: &str, body: &str) -> TranscriptEntryKind {
-    match marker {
-        "›" => TranscriptEntryKind::UserPrompt,
-        "✔" => TranscriptEntryKind::SuccessSummary,
-        "✗" => TranscriptEntryKind::ErrorSummary,
-        "⚠" => TranscriptEntryKind::WarningSummary,
-        _ if body
-            .lines()
-            .any(|line| line.starts_with("  └ ") || line.starts_with("    ")) =>
-        {
-            TranscriptEntryKind::ShellSummary
-        }
-        _ => TranscriptEntryKind::AssistantMessage,
-    }
-}
-
 pub(super) fn render_shell_summary_body(
     body: &str,
     marker: &str,
@@ -225,22 +209,6 @@ pub(super) fn transcript_continuation_prefix(kind: TranscriptEntryKind) -> Span<
         | TranscriptEntryKind::ErrorSummary
         | TranscriptEntryKind::WarningSummary => Span::styled("    ", Style::default().fg(SUBTLE)),
         _ => Span::raw("  "),
-    }
-}
-
-pub(super) fn parse_prefixed_entry(entry: &str) -> Option<(&'static str, Color, &str)> {
-    if let Some(body) = entry.strip_prefix("› ") {
-        Some(("›", USER, body))
-    } else if let Some(body) = entry.strip_prefix("• ") {
-        Some(("•", summary_color(body), body))
-    } else if let Some(body) = entry.strip_prefix("✔ ") {
-        Some(("✔", ASSISTANT, body))
-    } else if let Some(body) = entry.strip_prefix("✗ ") {
-        Some(("✗", ERROR, body))
-    } else if let Some(body) = entry.strip_prefix("⚠ ") {
-        Some(("⚠", WARN, body))
-    } else {
-        None
     }
 }
 
@@ -459,23 +427,21 @@ pub(super) fn pending_control_timeline_entry(state: &TuiState) -> Option<Transcr
     let timeline = pending_control_timeline(state)?;
     let mut detail_lines = Vec::new();
     if timeline.older_hidden_count > 0 {
-        detail_lines.push(format!("  └ {} older pending", timeline.older_hidden_count));
+        detail_lines.push(TranscriptShellDetail::Raw {
+            text: format!("{} older pending", timeline.older_hidden_count),
+            continuation: false,
+        });
     }
-    detail_lines.extend(
-        timeline
-            .recent
-            .iter()
-            .map(pending_control_timeline_detail_text),
-    );
-    Some(TranscriptEntry::shell_summary_entry(
+    detail_lines.extend(timeline.recent.iter().map(pending_control_timeline_detail));
+    Some(TranscriptEntry::shell_summary_details(
         format!("Queued follow-ups · {}", state.pending_controls.len()),
-        &detail_lines,
+        detail_lines,
     ))
 }
 
 pub(super) fn pending_control_picker_bridge_entry(state: &TuiState) -> Option<TranscriptEntry> {
     pending_control_picker_bridge_label(state)
-        .map(|label| TranscriptEntry::shell_summary_entry(label, &[]))
+        .map(|label| TranscriptEntry::shell_summary_details(label, Vec::new()))
 }
 
 pub(super) fn pending_control_embedded_lines(
@@ -581,21 +547,21 @@ fn render_pending_control_embedded_detail(item: &PendingControlTimelineItem) -> 
     Line::from(spans)
 }
 
-fn pending_control_timeline_detail_text(item: &PendingControlTimelineItem) -> String {
+fn pending_control_timeline_detail(item: &PendingControlTimelineItem) -> TranscriptShellDetail {
     let (kind_label, _) = pending_control_timeline_kind_label(item.kind, item.editing);
-    let mut detail = if item.editing {
-        format!("  └ {} · {}", kind_label, item.preview)
+    let mut text = if item.editing {
+        format!("{} · {}", kind_label, item.preview)
     } else {
-        format!(
-            "  └ {} {} · {}",
-            item.relative_label, kind_label, item.preview
-        )
+        format!("{} {} · {}", item.relative_label, kind_label, item.preview)
     };
     if let Some(reason) = item.reason.as_deref() {
-        detail.push_str(" · ");
-        detail.push_str(reason);
+        text.push_str(" · ");
+        text.push_str(reason);
     }
-    detail
+    TranscriptShellDetail::Raw {
+        text,
+        continuation: false,
+    }
 }
 
 fn pending_control_timeline_kind_label(

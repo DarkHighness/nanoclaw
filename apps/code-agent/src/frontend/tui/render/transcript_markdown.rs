@@ -3,7 +3,6 @@ use super::transcript_markdown_blocks::{apply_markdown_prefixes, render_markdown
 use ratatui::text::{Line, Span};
 
 pub(super) use super::transcript_markdown_blocks::{code_span, render_shell_code_block};
-pub(super) use super::transcript_markdown_line::render_transcript_body_line;
 
 pub(super) fn render_markdown_body(body: &str, kind: TranscriptEntryKind) -> Vec<Line<'static>> {
     let mut rendered = Vec::new();

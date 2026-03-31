@@ -1148,8 +1148,7 @@ mod tests {
         lines
             .iter()
             .map(|line| match line {
-                InspectorEntry::Raw(text)
-                | InspectorEntry::Section(text)
+                InspectorEntry::Section(text)
                 | InspectorEntry::Plain(text)
                 | InspectorEntry::Muted(text)
                 | InspectorEntry::Command(text) => {

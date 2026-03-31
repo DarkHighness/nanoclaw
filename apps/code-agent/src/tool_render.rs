@@ -63,21 +63,6 @@ pub(crate) fn summarize_tool_entry(
     lines.join("\n")
 }
 
-pub(crate) fn prefixed_detail_lines(lines: &[String]) -> Vec<String> {
-    let mut rendered = Vec::new();
-    for (index, line) in lines.iter().enumerate() {
-        if line.trim().is_empty() {
-            continue;
-        }
-        if index == 0 {
-            rendered.push(format!("  └ {line}"));
-        } else {
-            rendered.push(format!("    {line}"));
-        }
-    }
-    rendered
-}
-
 pub(crate) fn tool_arguments_preview_lines(tool_name: &str, arguments: &Value) -> Vec<String> {
     if tool_name == "bash"
         && let Some(command) = arguments.get("command").and_then(Value::as_str)

@@ -24,11 +24,6 @@ pub(super) fn should_render_view_title(title: &str, lines: &[InspectorEntry]) ->
     if let InspectorEntry::Section(section) = first_non_empty {
         return section != title;
     }
-    if let InspectorEntry::Raw(raw) = first_non_empty
-        && let Some(section) = raw.strip_prefix("## ")
-    {
-        return section != title;
-    }
     !is_command_palette_title(title)
 }
 
@@ -63,29 +58,6 @@ pub(super) fn build_command_palette_text(lines: &[InspectorEntry]) -> Text<'stat
                 line.clone(),
                 Style::default().fg(SUBTLE),
             ))),
-            InspectorEntry::Raw(line) => {
-                if let Some(section) = line.strip_prefix("## ") {
-                    if !rendered.is_empty() {
-                        rendered.push(Line::raw(""));
-                    }
-                    rendered.push(Line::from(Span::styled(
-                        section.to_string(),
-                        Style::default().fg(MUTED),
-                    )));
-                } else if line.starts_with("No ") {
-                    rendered.push(Line::from(Span::styled(
-                        line.to_string(),
-                        Style::default().fg(SUBTLE),
-                    )));
-                } else if let Some((command, summary)) = line.split_once("  ") {
-                    rendered.push(command_palette_line(command, Some(summary)));
-                } else {
-                    rendered.push(Line::from(Span::styled(
-                        line.to_string(),
-                        Style::default().fg(TEXT),
-                    )));
-                }
-            }
             InspectorEntry::Plain(line) => rendered.push(Line::from(Span::styled(
                 line.clone(),
                 Style::default().fg(TEXT),
@@ -165,54 +137,7 @@ fn render_key_value_entry(entry: &InspectorEntry, is_first: bool) -> Vec<Line<'s
             )]
         }
         InspectorEntry::Empty => vec![Line::raw("")],
-        InspectorEntry::Raw(line) => render_raw_key_value_entry(line, is_first),
     }
-}
-
-fn render_raw_key_value_entry(line: &str, is_first: bool) -> Vec<Line<'static>> {
-    if let Some(title) = line.strip_prefix("## ") {
-        let mut lines = Vec::new();
-        if !is_first {
-            lines.push(Line::raw(""));
-        }
-        lines.push(Line::from(Span::styled(
-            title.to_string(),
-            Style::default().fg(HEADER).add_modifier(Modifier::BOLD),
-        )));
-        return lines;
-    }
-    if is_shell_summary_line(line) {
-        return render_shell_summary_line(line);
-    }
-    if let Some((key, value)) = line.split_once(':') {
-        return vec![Line::from(vec![
-            Span::styled(
-                format!("{key}:"),
-                Style::default().fg(MUTED).add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(" "),
-            Span::styled(
-                value.trim().to_string(),
-                value_style(key.trim(), value.trim()),
-            ),
-        ])];
-    }
-    if let Some(rest) = line.strip_prefix("  ") {
-        return vec![Line::from(vec![
-            Span::raw("  "),
-            Span::styled(rest.to_string(), Style::default().fg(TEXT)),
-        ])];
-    }
-    if line.starts_with('/') {
-        return vec![Line::from(Span::styled(
-            line.to_string(),
-            Style::default().fg(USER).add_modifier(Modifier::BOLD),
-        ))];
-    }
-    vec![Line::from(Span::styled(
-        line.to_string(),
-        plain_text_style(line),
-    ))]
 }
 
 pub(super) fn build_statusline_picker_text(
@@ -358,24 +283,6 @@ pub(super) fn build_collection_text(title: &str, lines: &[InspectorEntry]) -> Te
             InspectorEntry::Transcript(entry) => {
                 rendered.extend(render_collection_transcript_entry(entry, accent));
             }
-            InspectorEntry::Raw(line) => {
-                if let Some(section) = line.strip_prefix("## ") {
-                    rendered.push(Line::from(Span::styled(
-                        section.to_string(),
-                        Style::default().fg(MUTED),
-                    )));
-                } else if line.starts_with("No ") || line.starts_with("no ") {
-                    rendered.push(Line::from(Span::styled(
-                        line.to_string(),
-                        Style::default().fg(SUBTLE),
-                    )));
-                } else if is_shell_summary_block(line) {
-                    rendered.extend(render_collection_summary_block(line, accent));
-                } else {
-                    let (primary, secondary) = split_list_entry(line);
-                    rendered.push(collection_line(primary, secondary, accent));
-                }
-            }
             InspectorEntry::Plain(line) => rendered.push(Line::from(Span::styled(
                 line.clone(),
                 Style::default().fg(TEXT),
@@ -391,44 +298,6 @@ pub(super) fn build_collection_text(title: &str, lines: &[InspectorEntry]) -> Te
         }
     }
     Text::from(rendered)
-}
-
-fn render_collection_summary_block(entry: &str, accent: Color) -> Vec<Line<'static>> {
-    let mut rendered = Vec::new();
-    for (index, raw_line) in entry.lines().enumerate() {
-        if index == 0
-            && let Some((_, _, body)) = super::transcript::parse_prefixed_entry(raw_line)
-        {
-            rendered.push(Line::from(vec![
-                Span::styled(
-                    "›",
-                    Style::default().fg(accent).add_modifier(Modifier::BOLD),
-                ),
-                Span::raw(" "),
-                Span::styled(
-                    body.to_string(),
-                    Style::default().fg(accent).add_modifier(Modifier::BOLD),
-                ),
-            ]));
-            continue;
-        }
-        if let Some(detail) = raw_line.strip_prefix("  └ ") {
-            rendered.push(Line::from(vec![
-                Span::styled("  ", Style::default().fg(SUBTLE)),
-                Span::styled(detail.to_string(), Style::default().fg(MUTED)),
-            ]));
-            continue;
-        }
-        if let Some(detail) = raw_line.strip_prefix("    ") {
-            rendered.push(Line::from(vec![
-                Span::styled("  ", Style::default().fg(SUBTLE)),
-                Span::styled(detail.to_string(), Style::default().fg(SUBTLE)),
-            ]));
-            continue;
-        }
-        rendered.extend(render_shell_summary_line(raw_line));
-    }
-    rendered
 }
 
 fn render_collection_transcript_entry(
@@ -461,7 +330,20 @@ fn render_collection_transcript_entry(
                 ),
             ]));
         } else {
-            rendered.push(line);
+            let text = super::transcript::line_to_plain_text(&line);
+            if let Some(detail) = text.strip_prefix("  └ ") {
+                rendered.push(Line::from(vec![
+                    Span::styled("  ", Style::default().fg(SUBTLE)),
+                    Span::styled(detail.to_string(), Style::default().fg(MUTED)),
+                ]));
+            } else if let Some(detail) = text.strip_prefix("    ") {
+                rendered.push(Line::from(vec![
+                    Span::styled("  ", Style::default().fg(SUBTLE)),
+                    Span::styled(detail.to_string(), Style::default().fg(SUBTLE)),
+                ]));
+            } else {
+                rendered.push(line);
+            }
         }
     }
     rendered
@@ -488,14 +370,6 @@ fn collection_line(primary: &str, secondary: Option<&str>, accent: Color) -> Lin
     Line::from(spans)
 }
 
-fn split_list_entry(line: &str) -> (&str, Option<&str>) {
-    if let Some((primary, secondary)) = line.split_once("  ") {
-        (primary.trim(), Some(secondary))
-    } else {
-        (line.trim(), None)
-    }
-}
-
 fn is_collection_inspector(title: &str) -> bool {
     matches!(
         title,
@@ -510,34 +384,6 @@ fn is_collection_inspector(title: &str) -> bool {
             | "Sessions"
             | "Session Search"
     )
-}
-
-fn is_shell_summary_block(entry: &str) -> bool {
-    entry
-        .lines()
-        .all(|line| line.trim().is_empty() || is_shell_summary_line(line))
-}
-
-fn is_shell_summary_line(line: &str) -> bool {
-    super::transcript::parse_prefixed_entry(line).is_some()
-        || line.starts_with("  └ ")
-        || line.starts_with("    ")
-        || line.starts_with("- ")
-        || line.starts_with("* ")
-}
-
-fn render_shell_summary_line(line: &str) -> Vec<Line<'static>> {
-    if super::transcript::parse_prefixed_entry(line).is_some() {
-        super::transcript::format_transcript_entry(line)
-    } else {
-        vec![super::transcript_markdown::render_transcript_body_line(
-            line,
-            "•",
-            super::transcript::TranscriptEntryKind::ShellSummary,
-            false,
-            false,
-        )]
-    }
 }
 
 fn is_command_palette_title(title: &str) -> bool {
@@ -621,8 +467,7 @@ fn plain_text_style(line: &str) -> Style {
 
 fn inspector_entry_text(entry: &InspectorEntry) -> String {
     match entry {
-        InspectorEntry::Raw(line)
-        | InspectorEntry::Section(line)
+        InspectorEntry::Section(line)
         | InspectorEntry::Plain(line)
         | InspectorEntry::Muted(line)
         | InspectorEntry::Command(line) => line.clone(),

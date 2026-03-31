@@ -1,4 +1,4 @@
-use super::state::{InspectorEntry, TranscriptEntry, preview_text};
+use super::state::{InspectorEntry, TranscriptEntry, TranscriptShellDetail, preview_text};
 use crate::backend::{
     LiveTaskControlAction, LiveTaskControlOutcome, LiveTaskMessageAction, LiveTaskMessageOutcome,
     LiveTaskSpawnOutcome, LiveTaskSummary, LiveTaskWaitOutcome, LoadedAgentSession, LoadedSession,
@@ -8,8 +8,7 @@ use crate::backend::{
     SessionOperationOutcome, StartupDiagnosticsSnapshot, message_to_text, preview_id,
 };
 use crate::tool_render::{
-    prefixed_detail_lines, summarize_tool_entry, tool_arguments_preview_lines,
-    tool_output_detail_lines,
+    ToolDetail, tool_argument_details, tool_arguments_preview_lines, tool_output_details,
 };
 use agent::types::{
     AgentEnvelopeKind, AgentSessionId, AgentStatus, HookEvent, Message, SessionEventEnvelope,
@@ -17,14 +16,14 @@ use agent::types::{
 };
 use store::TokenUsageRecord;
 
-pub(crate) fn format_session_summary_line(summary: &PersistedSessionSummary) -> String {
+pub(crate) fn format_session_summary_line(summary: &PersistedSessionSummary) -> TranscriptEntry {
     let prompt = summary
         .last_user_prompt
         .as_deref()
         .map(|value| preview_text(value, 36))
         .unwrap_or_else(|| "no prompt yet".to_string());
-    shell_summary(
-        format!("• {}  {}", preview_id(&summary.session_ref), prompt),
+    info_summary_entry(
+        format!("{}  {}", preview_id(&summary.session_ref), prompt),
         [format!(
             "{} messages · {} events · {} agent sessions · resume {}",
             summary.transcript_message_count,
@@ -35,15 +34,17 @@ pub(crate) fn format_session_summary_line(summary: &PersistedSessionSummary) -> 
     )
 }
 
-pub(crate) fn format_agent_session_summary_line(summary: &PersistedAgentSessionSummary) -> String {
+pub(crate) fn format_agent_session_summary_line(
+    summary: &PersistedAgentSessionSummary,
+) -> TranscriptEntry {
     let prompt = summary
         .last_user_prompt
         .as_deref()
         .map(|value| preview_text(value, 36))
         .unwrap_or_else(|| "no prompt yet".to_string());
-    shell_summary(
+    info_summary_entry(
         format!(
-            "• {}  {}",
+            "{}  {}",
             preview_id(&summary.agent_session_ref),
             summary.label
         ),
@@ -58,9 +59,9 @@ pub(crate) fn format_agent_session_summary_line(summary: &PersistedAgentSessionS
     )
 }
 
-pub(crate) fn format_task_summary_line(summary: &PersistedTaskSummary) -> String {
-    shell_summary(
-        format!("• {}  {}", summary.task_id, summary.status),
+pub(crate) fn format_task_summary_line(summary: &PersistedTaskSummary) -> TranscriptEntry {
+    info_summary_entry(
+        format!("{}  {}", summary.task_id, summary.status),
         [
             format!(
                 "role {} · session {}",
@@ -72,9 +73,9 @@ pub(crate) fn format_task_summary_line(summary: &PersistedTaskSummary) -> String
     )
 }
 
-pub(crate) fn format_live_task_summary_line(summary: &LiveTaskSummary) -> String {
-    shell_summary(
-        format!("• {}  {}", summary.task_id, summary.status),
+pub(crate) fn format_live_task_summary_line(summary: &LiveTaskSummary) -> TranscriptEntry {
+    info_summary_entry(
+        format!("{}  {}", summary.task_id, summary.status),
         [
             format!(
                 "role {} · agent {}",
@@ -93,30 +94,28 @@ pub(crate) fn format_live_task_summary_line(summary: &LiveTaskSummary) -> String
 pub(crate) fn format_live_task_spawn_outcome(
     outcome: &LiveTaskSpawnOutcome,
 ) -> Vec<InspectorEntry> {
-    vec![InspectorEntry::transcript(
-        TranscriptEntry::shell_summary_entry(
-            format!("Spawned task {}", outcome.task.task_id),
-            &[
-                format!("role {}", outcome.task.role),
-                format!("status {}", outcome.task.status),
-                format!("agent {}", outcome.task.agent_id),
-                format!("session {}", outcome.task.session_ref),
-                format!("agent session {}", outcome.task.agent_session_ref),
-                format!("prompt {}", preview_text(&outcome.prompt, 96)),
-            ],
-        ),
-    )]
+    vec![InspectorEntry::transcript(info_summary_entry(
+        format!("Spawned task {}", outcome.task.task_id),
+        [
+            format!("role {}", outcome.task.role),
+            format!("status {}", outcome.task.status),
+            format!("agent {}", outcome.task.agent_id),
+            format!("session {}", outcome.task.session_ref),
+            format!("agent session {}", outcome.task.agent_session_ref),
+            format!("prompt {}", preview_text(&outcome.prompt, 96)),
+        ],
+    ))]
 }
 
-pub(crate) fn format_session_search_line(result: &PersistedSessionSearchMatch) -> String {
+pub(crate) fn format_session_search_line(result: &PersistedSessionSearchMatch) -> TranscriptEntry {
     let prompt = result
         .summary
         .last_user_prompt
         .as_deref()
         .map(|value| preview_text(value, 36))
         .unwrap_or_else(|| "no prompt yet".to_string());
-    shell_summary(
-        format!("• {}  {}", preview_id(&result.summary.session_ref), prompt),
+    info_summary_entry(
+        format!("{}  {}", preview_id(&result.summary.session_ref), prompt),
         [format!(
             "{} messages · {} events · {} agent sessions · resume {} · matched {} event(s){}",
             result.summary.transcript_message_count,
@@ -446,14 +445,58 @@ fn project_transcript_entry(raw: &str) -> TranscriptEntry {
     } else if let Some(body) = raw.strip_prefix("tool> ") {
         TranscriptEntry::AssistantMessage(body.to_string())
     } else if let Some(body) = raw.strip_prefix("error> ") {
-        TranscriptEntry::error_summary_entry(body.to_string(), &[])
+        error_summary_entry(body.to_string(), std::iter::empty::<String>())
     } else {
         TranscriptEntry::AssistantMessage(raw.to_string())
     }
 }
 
-fn format_transcript_entry(raw: &str) -> String {
-    project_transcript_entry(raw).serialized()
+#[derive(Clone, Copy)]
+enum SummaryTone {
+    Info,
+    Success,
+    Error,
+}
+
+fn summary_entry(
+    tone: SummaryTone,
+    headline: impl Into<String>,
+    details: impl IntoIterator<Item = String>,
+) -> TranscriptEntry {
+    let detail_lines = details
+        .into_iter()
+        .filter(|detail| !detail.is_empty())
+        .map(|text| TranscriptShellDetail::Raw {
+            text,
+            continuation: false,
+        })
+        .collect();
+    match tone {
+        SummaryTone::Info => TranscriptEntry::shell_summary_details(headline, detail_lines),
+        SummaryTone::Success => TranscriptEntry::success_summary_details(headline, detail_lines),
+        SummaryTone::Error => TranscriptEntry::error_summary_details(headline, detail_lines),
+    }
+}
+
+fn info_summary_entry(
+    headline: impl Into<String>,
+    details: impl IntoIterator<Item = String>,
+) -> TranscriptEntry {
+    summary_entry(SummaryTone::Info, headline, details)
+}
+
+fn success_summary_entry(
+    headline: impl Into<String>,
+    details: impl IntoIterator<Item = String>,
+) -> TranscriptEntry {
+    summary_entry(SummaryTone::Success, headline, details)
+}
+
+fn error_summary_entry(
+    headline: impl Into<String>,
+    details: impl IntoIterator<Item = String>,
+) -> TranscriptEntry {
+    summary_entry(SummaryTone::Error, headline, details)
 }
 
 pub(crate) fn format_session_export_result(result: &SessionExportArtifact) -> Vec<InspectorEntry> {
@@ -476,9 +519,9 @@ pub(crate) fn format_session_operation_outcome(
     outcome: &SessionOperationOutcome,
 ) -> Vec<InspectorEntry> {
     let headline = match outcome.action {
-        SessionOperationAction::StartedFresh => "✔ Started new session",
-        SessionOperationAction::AlreadyAttached => "• Agent session already attached",
-        SessionOperationAction::Reattached => "✔ Reattached session",
+        SessionOperationAction::StartedFresh => "Started new session",
+        SessionOperationAction::AlreadyAttached => "Agent session already attached",
+        SessionOperationAction::Reattached => "Reattached session",
     };
     let mut details = vec![
         format!("session {}", outcome.session_ref),
@@ -487,22 +530,25 @@ pub(crate) fn format_session_operation_outcome(
     if let Some(requested_agent_session_ref) = &outcome.requested_agent_session_ref {
         details.push(format!("requested {}", requested_agent_session_ref));
     }
-    vec![InspectorEntry::transcript(TranscriptEntry::from(
-        shell_summary(headline, details),
-    ))]
+    vec![InspectorEntry::transcript(match outcome.action {
+        SessionOperationAction::StartedFresh | SessionOperationAction::Reattached => {
+            success_summary_entry(headline, details)
+        }
+        SessionOperationAction::AlreadyAttached => info_summary_entry(headline, details),
+    })]
 }
 
 pub(crate) fn format_live_task_control_outcome(
     outcome: &LiveTaskControlOutcome,
 ) -> Vec<InspectorEntry> {
     let headline = match outcome.action {
-        LiveTaskControlAction::Cancelled => format!("✔ Cancelled task {}", outcome.task_id),
+        LiveTaskControlAction::Cancelled => format!("Cancelled task {}", outcome.task_id),
         LiveTaskControlAction::AlreadyTerminal => {
-            format!("• Task {} was already terminal", outcome.task_id)
+            format!("Task {} was already terminal", outcome.task_id)
         }
     };
-    vec![InspectorEntry::transcript(TranscriptEntry::from(
-        shell_summary(
+    vec![InspectorEntry::transcript(match outcome.action {
+        LiveTaskControlAction::Cancelled => success_summary_entry(
             headline,
             [
                 format!("requested {}", outcome.requested_ref),
@@ -510,37 +556,55 @@ pub(crate) fn format_live_task_control_outcome(
                 format!("status {}", outcome.status),
             ],
         ),
-    ))]
+        LiveTaskControlAction::AlreadyTerminal => info_summary_entry(
+            headline,
+            [
+                format!("requested {}", outcome.requested_ref),
+                format!("agent {}", outcome.agent_id),
+                format!("status {}", outcome.status),
+            ],
+        ),
+    })]
 }
 
 pub(crate) fn format_live_task_message_outcome(
     outcome: &LiveTaskMessageOutcome,
 ) -> Vec<InspectorEntry> {
     let headline = match outcome.action {
-        LiveTaskMessageAction::Sent => format!("• Sent steer message to task {}", outcome.task_id),
+        LiveTaskMessageAction::Sent => format!("Sent steer message to task {}", outcome.task_id),
         LiveTaskMessageAction::AlreadyTerminal => {
-            format!("• Task {} was already terminal", outcome.task_id)
+            format!("Task {} was already terminal", outcome.task_id)
         }
     };
-    vec![InspectorEntry::transcript(TranscriptEntry::from(
-        shell_summary(
-            headline,
-            [
-                format!("requested {}", outcome.requested_ref),
-                format!("agent {}", outcome.agent_id),
-                format!("status {}", outcome.status),
-                format!("message {}", preview_text(&outcome.message, 96)),
-            ],
-        ),
+    vec![InspectorEntry::transcript(info_summary_entry(
+        headline,
+        [
+            format!("requested {}", outcome.requested_ref),
+            format!("agent {}", outcome.agent_id),
+            format!("status {}", outcome.status),
+            format!("message {}", preview_text(&outcome.message, 96)),
+        ],
     ))]
 }
 
 pub(crate) fn format_live_task_wait_outcome(outcome: &LiveTaskWaitOutcome) -> Vec<InspectorEntry> {
-    let headline = match outcome.status {
-        AgentStatus::Completed => format!("• Finished waiting for task {}", outcome.task_id),
-        AgentStatus::Failed => format!("✗ Finished waiting for task {}", outcome.task_id),
-        AgentStatus::Cancelled => format!("✗ Waiting cancelled for task {}", outcome.task_id),
-        _ => format!("• Waiting finished for task {}", outcome.task_id),
+    let (tone, headline) = match outcome.status {
+        AgentStatus::Completed => (
+            SummaryTone::Info,
+            format!("Finished waiting for task {}", outcome.task_id),
+        ),
+        AgentStatus::Failed => (
+            SummaryTone::Error,
+            format!("Finished waiting for task {}", outcome.task_id),
+        ),
+        AgentStatus::Cancelled => (
+            SummaryTone::Error,
+            format!("Waiting cancelled for task {}", outcome.task_id),
+        ),
+        _ => (
+            SummaryTone::Info,
+            format!("Waiting finished for task {}", outcome.task_id),
+        ),
     };
     let mut details = vec![
         format!("requested {}", outcome.requested_ref),
@@ -554,8 +618,8 @@ pub(crate) fn format_live_task_wait_outcome(outcome: &LiveTaskWaitOutcome) -> Ve
             preview_text(&outcome.claimed_files.join(", "), 96)
         ));
     }
-    vec![InspectorEntry::transcript(TranscriptEntry::from(
-        shell_summary(headline, details),
+    vec![InspectorEntry::transcript(summary_entry(
+        tone, headline, details,
     ))]
 }
 
@@ -653,23 +717,23 @@ pub(crate) fn format_mcp_resource_summary_line(summary: &McpResourceSummary) -> 
     )
 }
 
-fn format_token_usage_record_line(record: &TokenUsageRecord) -> String {
+fn format_token_usage_record_line(record: &TokenUsageRecord) -> TranscriptEntry {
     let name = record
         .agent_name
         .as_deref()
         .or(record.task_id.as_deref())
         .map(|value| preview_text(value, 20))
         .unwrap_or_else(|| preview_id(record.session_id.as_str()));
-    format!(
+    TranscriptEntry::AssistantMessage(format!(
         "{} in={} out={} cache={}",
         name,
         record.ledger.cumulative_usage.input_tokens,
         record.ledger.cumulative_usage.output_tokens,
         record.ledger.cumulative_usage.cache_read_tokens,
-    )
+    ))
 }
 
-fn format_loaded_subagent_line(subagent: &LoadedSubagentSession) -> String {
+fn format_loaded_subagent_line(subagent: &LoadedSubagentSession) -> TranscriptEntry {
     let token_summary = subagent
         .token_usage
         .as_ref()
@@ -682,30 +746,22 @@ fn format_loaded_subagent_line(subagent: &LoadedSubagentSession) -> String {
             )
         })
         .unwrap_or_default();
-    format!(
+    TranscriptEntry::AssistantMessage(format!(
         "{} role={} status={} {}{}",
         preview_id(subagent.handle.agent_session_id.as_str()),
         subagent.task.role,
         subagent.status,
         preview_text(&subagent.summary, 28),
         token_summary
-    )
+    ))
 }
 
-fn format_task_message_line(message: &crate::backend::LoadedTaskMessage) -> String {
-    format!(
+fn format_task_message_line(message: &crate::backend::LoadedTaskMessage) -> TranscriptEntry {
+    TranscriptEntry::AssistantMessage(format!(
         "{} {}",
         message.channel,
         preview_text(&message.payload.to_string(), 72)
-    )
-}
-
-fn shell_summary(headline: impl Into<String>, details: impl IntoIterator<Item = String>) -> String {
-    let mut lines = vec![headline.into()];
-    for detail in details.into_iter().filter(|detail| !detail.is_empty()) {
-        lines.push(format!("  └ {detail}"));
-    }
-    lines.join("\n")
+    ))
 }
 
 fn format_reason_detail(reason: Option<&str>) -> Option<String> {
@@ -746,66 +802,73 @@ fn format_tool_origin(origin: &agent::types::ToolOrigin) -> String {
     }
 }
 
-fn task_status_headline(task_id: &str, status: &AgentStatus) -> String {
+fn task_status_summary(task_id: &str, status: &AgentStatus) -> (SummaryTone, String) {
     match status {
-        AgentStatus::Completed => format!("✔ Task {task_id} completed"),
-        AgentStatus::Failed => format!("✗ Task {task_id} failed"),
-        AgentStatus::Cancelled => format!("✗ Task {task_id} cancelled"),
-        AgentStatus::WaitingApproval => format!("• Task {task_id} is awaiting approval"),
-        AgentStatus::WaitingMessage => format!("• Task {task_id} is waiting for a message"),
-        AgentStatus::Queued => format!("• Task {task_id} is queued"),
-        AgentStatus::Running => format!("• Task {task_id} is running"),
+        AgentStatus::Completed => (SummaryTone::Success, format!("Task {task_id} completed")),
+        AgentStatus::Failed => (SummaryTone::Error, format!("Task {task_id} failed")),
+        AgentStatus::Cancelled => (SummaryTone::Error, format!("Task {task_id} cancelled")),
+        AgentStatus::WaitingApproval => (
+            SummaryTone::Info,
+            format!("Task {task_id} is awaiting approval"),
+        ),
+        AgentStatus::WaitingMessage => (
+            SummaryTone::Info,
+            format!("Task {task_id} is waiting for a message"),
+        ),
+        AgentStatus::Queued => (SummaryTone::Info, format!("Task {task_id} is queued")),
+        AgentStatus::Running => (SummaryTone::Info, format!("Task {task_id} is running")),
     }
 }
 
-fn format_agent_envelope_kind(kind: &AgentEnvelopeKind) -> String {
+fn format_agent_envelope_kind(kind: &AgentEnvelopeKind) -> TranscriptEntry {
     match kind {
-        AgentEnvelopeKind::SpawnRequested { task } => shell_summary(
-            format!("• Requested {} task {}", task.role, task.task_id),
+        AgentEnvelopeKind::SpawnRequested { task } => info_summary_entry(
+            format!("Requested {} task {}", task.role, task.task_id),
             [format!("prompt {}", preview_text(&task.prompt, 72))],
         ),
-        AgentEnvelopeKind::Started { task } => shell_summary(
-            format!("• Started {} task {}", task.role, task.task_id),
+        AgentEnvelopeKind::Started { task } => info_summary_entry(
+            format!("Started {} task {}", task.role, task.task_id),
             [format!("prompt {}", preview_text(&task.prompt, 72))],
         ),
         AgentEnvelopeKind::StatusChanged { status } => match status {
-            AgentStatus::Completed => "✔ Agent completed".to_string(),
-            AgentStatus::Failed => "✗ Agent failed".to_string(),
-            AgentStatus::Cancelled => "✗ Agent cancelled".to_string(),
-            AgentStatus::WaitingApproval => "• Agent is awaiting approval".to_string(),
-            AgentStatus::WaitingMessage => "• Agent is waiting for a message".to_string(),
-            AgentStatus::Queued => "• Agent is queued".to_string(),
-            AgentStatus::Running => "• Agent is running".to_string(),
+            AgentStatus::Completed => success_summary_entry("Agent completed", []),
+            AgentStatus::Failed => error_summary_entry("Agent failed", []),
+            AgentStatus::Cancelled => error_summary_entry("Agent cancelled", []),
+            AgentStatus::WaitingApproval => info_summary_entry("Agent is awaiting approval", []),
+            AgentStatus::WaitingMessage => info_summary_entry("Agent is waiting for a message", []),
+            AgentStatus::Queued => info_summary_entry("Agent is queued", []),
+            AgentStatus::Running => info_summary_entry("Agent is running", []),
         },
-        AgentEnvelopeKind::Message { channel, payload } => shell_summary(
-            format!("• Agent message on {channel}"),
+        AgentEnvelopeKind::Message { channel, payload } => info_summary_entry(
+            format!("Agent message on {channel}"),
             [format!(
                 "payload {}",
                 preview_text(&payload.to_string(), 72)
             )],
         ),
-        AgentEnvelopeKind::Artifact { artifact } => shell_summary(
-            format!("• Emitted {} artifact", artifact.kind),
+        AgentEnvelopeKind::Artifact { artifact } => info_summary_entry(
+            format!("Emitted {} artifact", artifact.kind),
             [format!("uri {}", preview_text(&artifact.uri, 72))],
         ),
-        AgentEnvelopeKind::ClaimRequested { files } => shell_summary(
-            "• Requested file claim",
+        AgentEnvelopeKind::ClaimRequested { files } => info_summary_entry(
+            "Requested file claim",
             [format!("files {}", preview_text(&files.join(", "), 72))],
         ),
-        AgentEnvelopeKind::ClaimGranted { files } => shell_summary(
-            "✔ Claimed files",
+        AgentEnvelopeKind::ClaimGranted { files } => success_summary_entry(
+            "Claimed files",
             [format!("files {}", preview_text(&files.join(", "), 72))],
         ),
-        AgentEnvelopeKind::ClaimRejected { files, owner } => shell_summary(
-            "✗ File claim rejected",
+        AgentEnvelopeKind::ClaimRejected { files, owner } => error_summary_entry(
+            "File claim rejected",
             [
                 format!("files {}", preview_text(&files.join(", "), 72)),
                 format!("owner {}", preview_id(owner.as_str())),
             ],
         ),
         AgentEnvelopeKind::Result { result } => {
-            let headline = task_status_headline(&result.task_id, &result.status);
-            shell_summary(
+            let (tone, headline) = task_status_summary(&result.task_id, &result.status);
+            summary_entry(
+                tone,
                 headline,
                 [
                     format!("summary {}", preview_text(&result.summary, 72)),
@@ -820,41 +883,41 @@ fn format_agent_envelope_kind(kind: &AgentEnvelopeKind) -> String {
                 ],
             )
         }
-        AgentEnvelopeKind::Failed { error } => shell_summary(
-            "✗ Agent failed",
+        AgentEnvelopeKind::Failed { error } => error_summary_entry(
+            "Agent failed",
             [format!("error {}", preview_text(error, 72))],
         ),
-        AgentEnvelopeKind::Cancelled { reason } => shell_summary(
-            "✗ Agent cancelled",
+        AgentEnvelopeKind::Cancelled { reason } => error_summary_entry(
+            "Agent cancelled",
             [format_reason_detail(reason.as_deref())
                 .unwrap_or_else(|| "no reason recorded".to_string())],
         ),
-        AgentEnvelopeKind::Heartbeat => "• Agent heartbeat".to_string(),
+        AgentEnvelopeKind::Heartbeat => info_summary_entry("Agent heartbeat", []),
     }
 }
 
-fn format_session_event_line(event: &SessionEventEnvelope) -> String {
+fn format_session_event_line(event: &SessionEventEnvelope) -> TranscriptEntry {
     match &event.event {
-        SessionEventKind::SessionStart { reason } => shell_summary(
-            "• Started session",
+        SessionEventKind::SessionStart { reason } => info_summary_entry(
+            "Started session",
             [format_reason_detail(reason.as_deref()).unwrap_or_default()],
         ),
-        SessionEventKind::InstructionsLoaded { count } => shell_summary(
-            "• Loaded instructions",
+        SessionEventKind::InstructionsLoaded { count } => info_summary_entry(
+            "Loaded instructions",
             [format!("{count} instruction block(s)")],
         ),
-        SessionEventKind::SteerApplied { message, reason } => shell_summary(
-            "• Applied steer",
+        SessionEventKind::SteerApplied { message, reason } => info_summary_entry(
+            "Applied steer",
             [
                 format!("message {}", preview_text(message, 72)),
                 format_reason_detail(reason.as_deref()).unwrap_or_default(),
             ],
         ),
         SessionEventKind::UserPromptSubmit { prompt } => {
-            format!("› {}", preview_text(prompt, 96))
+            TranscriptEntry::UserPrompt(preview_text(prompt, 96))
         }
-        SessionEventKind::ModelRequestStarted { request } => shell_summary(
-            "• Requested model response",
+        SessionEventKind::ModelRequestStarted { request } => info_summary_entry(
+            "Requested model response",
             [
                 format!("messages {}", request.messages.len()),
                 format!("tools {}", request.tools.len()),
@@ -866,8 +929,8 @@ fn format_session_event_line(event: &SessionEventEnvelope) -> String {
             retained_message_count,
             summary_chars,
             ..
-        } => shell_summary(
-            "• Compacted session context",
+        } => info_summary_entry(
+            "Compacted session context",
             [
                 format!("reason {}", preview_text(reason, 48)),
                 format!(
@@ -881,8 +944,8 @@ fn format_session_event_line(event: &SessionEventEnvelope) -> String {
             assistant_text,
             tool_calls,
             ..
-        } => shell_summary(
-            "• Finished model response",
+        } => info_summary_entry(
+            "Finished model response",
             [
                 (!assistant_text.trim().is_empty())
                     .then(|| format!("text {}", preview_text(assistant_text, 72)))
@@ -892,8 +955,8 @@ fn format_session_event_line(event: &SessionEventEnvelope) -> String {
                     .unwrap_or_default(),
             ],
         ),
-        SessionEventKind::TokenUsageUpdated { phase, ledger } => shell_summary(
-            "• Updated token usage",
+        SessionEventKind::TokenUsageUpdated { phase, ledger } => info_summary_entry(
+            "Updated token usage",
             [
                 format!("phase {:?}", phase),
                 format!(
@@ -911,44 +974,49 @@ fn format_session_event_line(event: &SessionEventEnvelope) -> String {
                 ),
             ],
         ),
-        SessionEventKind::HookInvoked { hook_name, event } => shell_summary(
-            format!("• Running hook {hook_name}"),
+        SessionEventKind::HookInvoked { hook_name, event } => info_summary_entry(
+            format!("Running hook {hook_name}"),
             [format!("event {}", format_hook_event_label(*event))],
         ),
         SessionEventKind::HookCompleted {
             hook_name, output, ..
-        } => shell_summary(
-            format!("• Finished hook {hook_name}"),
+        } => info_summary_entry(
+            format!("Finished hook {hook_name}"),
             [format!("effects {}", output.effects.len())],
         ),
         SessionEventKind::TranscriptMessage { message } => {
-            format_transcript_entry(&message_to_text(message))
+            project_transcript_entry(&message_to_text(message))
         }
         SessionEventKind::TranscriptMessagePatched {
             message_id,
             message,
-        } => shell_summary(
-            "• Updated transcript message",
+        } => info_summary_entry(
+            "Updated transcript message",
             [
                 format!("message {}", preview_id(message_id.as_str())),
                 format!("content {}", preview_text(&message_to_text(message), 72)),
             ],
         ),
-        SessionEventKind::TranscriptMessageRemoved { message_id } => shell_summary(
-            "• Removed transcript message",
+        SessionEventKind::TranscriptMessageRemoved { message_id } => info_summary_entry(
+            "Removed transcript message",
             [format!("message {}", preview_id(message_id.as_str()))],
         ),
         SessionEventKind::ToolApprovalRequested { call, reasons } => {
-            let mut detail_lines = vec![format!("  └ origin {}", format_tool_origin(&call.origin))];
-            detail_lines.extend(prefixed_detail_lines(&tool_arguments_preview_lines(
-                call.tool_name.as_str(),
-                &call.arguments,
-            )));
+            let preview_lines =
+                tool_arguments_preview_lines(call.tool_name.as_str(), &call.arguments);
+            let mut detail_lines = vec![ToolDetail::Meta(format!(
+                "origin {}",
+                format_tool_origin(&call.origin)
+            ))];
+            detail_lines.extend(tool_argument_details(&preview_lines));
             if let Some(reason) = reasons.first() {
-                detail_lines.push(format!("  └ reason {}", preview_text(reason, 72)));
+                detail_lines.push(ToolDetail::Meta(format!(
+                    "reason {}",
+                    preview_text(reason, 72)
+                )));
             }
-            summarize_tool_entry(
-                format!("• Awaiting approval for {}", call.tool_name),
+            TranscriptEntry::shell_summary_tool_details(
+                format!("Awaiting approval for {}", call.tool_name),
                 detail_lines,
             )
         }
@@ -956,47 +1024,60 @@ fn format_session_event_line(event: &SessionEventEnvelope) -> String {
             call,
             approved,
             reason,
-        } => shell_summary(
+        } => summary_entry(
             if *approved {
-                format!("✔ Approved {}", call.tool_name)
+                SummaryTone::Success
             } else {
-                format!("✗ Denied {}", call.tool_name)
+                SummaryTone::Error
+            },
+            if *approved {
+                format!("Approved {}", call.tool_name)
+            } else {
+                format!("Denied {}", call.tool_name)
             },
             [format_reason_detail(reason.as_deref()).unwrap_or_default()],
         ),
-        SessionEventKind::ToolCallStarted { call } => summarize_tool_entry(
-            format!("• Running {}", call.tool_name),
-            prefixed_detail_lines(&tool_arguments_preview_lines(
-                call.tool_name.as_str(),
-                &call.arguments,
-            )),
-        ),
+        SessionEventKind::ToolCallStarted { call } => {
+            let preview_lines =
+                tool_arguments_preview_lines(call.tool_name.as_str(), &call.arguments);
+            TranscriptEntry::shell_summary_tool_details(
+                format!("Running {}", call.tool_name),
+                tool_argument_details(&preview_lines),
+            )
+        }
         SessionEventKind::ToolCallCompleted { call, output } => {
-            let mut detail_lines = prefixed_detail_lines(&tool_arguments_preview_lines(
-                call.tool_name.as_str(),
-                &call.arguments,
-            ));
-            detail_lines.extend(tool_output_detail_lines(
+            let preview_lines =
+                tool_arguments_preview_lines(call.tool_name.as_str(), &call.arguments);
+            let mut detail_lines = tool_argument_details(&preview_lines);
+            detail_lines.extend(tool_output_details(
                 call.tool_name.as_str(),
                 &output.text_content(),
                 output.structured_content.as_ref(),
             ));
-            summarize_tool_entry(format!("• Finished {}", call.tool_name), detail_lines)
+            TranscriptEntry::shell_summary_tool_details(
+                format!("Finished {}", call.tool_name),
+                detail_lines,
+            )
         }
         SessionEventKind::ToolCallFailed { call, error } => {
-            let mut detail_lines = prefixed_detail_lines(&tool_arguments_preview_lines(
-                call.tool_name.as_str(),
-                &call.arguments,
-            ));
-            detail_lines.push(format!("  └ error {}", preview_text(error, 72)));
-            summarize_tool_entry(format!("✗ {} failed", call.tool_name), detail_lines)
+            let preview_lines =
+                tool_arguments_preview_lines(call.tool_name.as_str(), &call.arguments);
+            let mut detail_lines = tool_argument_details(&preview_lines);
+            detail_lines.push(ToolDetail::Meta(format!(
+                "error {}",
+                preview_text(error, 72)
+            )));
+            TranscriptEntry::error_summary_tool_details(
+                format!("{} failed", call.tool_name),
+                detail_lines,
+            )
         }
-        SessionEventKind::Notification { source, message } => shell_summary(
-            format!("• Notification from {source}"),
+        SessionEventKind::Notification { source, message } => info_summary_entry(
+            format!("Notification from {source}"),
             [format!("message {}", preview_text(message, 72))],
         ),
-        SessionEventKind::TaskCreated { task, .. } => shell_summary(
-            format!("• Spawned task {}", task.task_id),
+        SessionEventKind::TaskCreated { task, .. } => info_summary_entry(
+            format!("Spawned task {}", task.task_id),
             [
                 format!("role {}", task.role),
                 format!("claims {}", task.requested_write_set.len()),
@@ -1007,13 +1088,17 @@ fn format_session_event_line(event: &SessionEventEnvelope) -> String {
             task_id,
             agent_id,
             status,
-        } => shell_summary(
-            task_status_headline(task_id, status),
-            [format!("agent {}", preview_id(agent_id.as_str()))],
-        ),
-        SessionEventKind::SubagentStart { handle, .. } => shell_summary(
+        } => {
+            let (tone, headline) = task_status_summary(task_id, status);
+            summary_entry(
+                tone,
+                headline,
+                [format!("agent {}", preview_id(agent_id.as_str()))],
+            )
+        }
+        SessionEventKind::SubagentStart { handle, .. } => info_summary_entry(
             format!(
-                "• Started {} agent {}",
+                "Started {} agent {}",
                 handle.role,
                 preview_id(handle.agent_id.as_str())
             ),
@@ -1025,12 +1110,19 @@ fn format_session_event_line(event: &SessionEventEnvelope) -> String {
             result,
             error,
         } => {
-            let headline = if error.is_some() {
-                format!("✗ Stopped agent {}", preview_id(handle.agent_id.as_str()))
+            let (tone, headline) = if error.is_some() {
+                (
+                    SummaryTone::Error,
+                    format!("Stopped agent {}", preview_id(handle.agent_id.as_str())),
+                )
             } else {
-                format!("✔ Stopped agent {}", preview_id(handle.agent_id.as_str()))
+                (
+                    SummaryTone::Success,
+                    format!("Stopped agent {}", preview_id(handle.agent_id.as_str())),
+                )
             };
-            shell_summary(
+            summary_entry(
+                tone,
                 headline,
                 [
                     result
@@ -1044,16 +1136,16 @@ fn format_session_event_line(event: &SessionEventEnvelope) -> String {
                 ],
             )
         }
-        SessionEventKind::Stop { reason } => shell_summary(
-            "• Stopped session",
+        SessionEventKind::Stop { reason } => info_summary_entry(
+            "Stopped session",
             [format_reason_detail(reason.as_deref()).unwrap_or_default()],
         ),
-        SessionEventKind::StopFailure { reason } => shell_summary(
-            "✗ Failed to stop session",
+        SessionEventKind::StopFailure { reason } => error_summary_entry(
+            "Failed to stop session",
             [format_reason_detail(reason.as_deref()).unwrap_or_default()],
         ),
-        SessionEventKind::SessionEnd { reason } => shell_summary(
-            "• Ended session",
+        SessionEventKind::SessionEnd { reason } => info_summary_entry(
+            "Ended session",
             [format_reason_detail(reason.as_deref()).unwrap_or_default()],
         ),
     }
@@ -1126,7 +1218,7 @@ mod tests {
         });
 
         assert_eq!(
-            line,
+            line.serialized(),
             "• session_  Refine the approval preview\n  └ 12 messages · 40 events · 2 agent sessions · resume attached"
         );
     }
@@ -1146,7 +1238,7 @@ mod tests {
         });
 
         assert_eq!(
-            line,
+            line.serialized(),
             "• agent_se  planner\n  └ session session_ · 6 messages · 14 events · resume attached · prompt Investigate flaky tests"
         );
     }
@@ -1169,7 +1261,7 @@ mod tests {
         });
 
         assert_eq!(
-            line,
+            line.serialized(),
             "• session_  Refine the approval preview\n  └ 12 messages · 40 events · 2 agent sessions · resume attached · matched 3 event(s) · preview bash approval | cargo test"
         );
     }
@@ -1205,7 +1297,7 @@ mod tests {
         );
 
         assert_eq!(
-            format_session_event_line(&event),
+            format_session_event_line(&event).serialized(),
             "› Explain the failing test"
         );
     }
@@ -1231,7 +1323,7 @@ mod tests {
         );
 
         assert_eq!(
-            format_session_event_line(&event),
+            format_session_event_line(&event).serialized(),
             "• Awaiting approval for bash\n  └ origin local\n  └ $ cargo test\n  └ reason sandbox policy requires approval"
         );
     }
@@ -1255,7 +1347,7 @@ mod tests {
         );
 
         assert_eq!(
-            format_session_event_line(&event),
+            format_session_event_line(&event).serialized(),
             "• Finished bash\n  └ $ cargo test\n  └ tests passed"
         );
     }
@@ -1299,7 +1391,7 @@ mod tests {
             SessionEventKind::ToolCallCompleted { call, output },
         );
 
-        let rendered = format_session_event_line(&event);
+        let rendered = format_session_event_line(&event).serialized();
         assert!(rendered.contains("• Finished write"));
         assert!(rendered.contains("  └ diff src/lib.rs"));
         assert!(rendered.contains("@@ -1,1 +1,1 @@"));
@@ -1310,8 +1402,7 @@ mod tests {
         lines
             .iter()
             .flat_map(|line| match line {
-                InspectorEntry::Raw(text)
-                | InspectorEntry::Section(text)
+                InspectorEntry::Section(text)
                 | InspectorEntry::Plain(text)
                 | InspectorEntry::Muted(text)
                 | InspectorEntry::Command(text) => vec![text.clone()],

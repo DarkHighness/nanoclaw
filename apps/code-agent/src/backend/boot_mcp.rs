@@ -46,13 +46,17 @@ pub(crate) struct McpResourceSummary {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct LoadedMcpPrompt {
     pub(crate) input_text: String,
-    pub(crate) inspector_lines: Vec<String>,
+    pub(crate) server_name: String,
+    pub(crate) prompt_name: String,
+    pub(crate) arguments_summary: String,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct LoadedMcpResource {
     pub(crate) input_text: String,
-    pub(crate) inspector_lines: Vec<String>,
+    pub(crate) server_name: String,
+    pub(crate) uri: String,
+    pub(crate) mime_summary: String,
 }
 
 pub(crate) fn build_startup_diagnostics_snapshot(
@@ -173,15 +177,9 @@ pub(crate) async fn load_mcp_prompt(
     let prompt = server.client.get_prompt(prompt_name, Value::Null).await?;
     Ok(LoadedMcpPrompt {
         input_text: prompt_to_text(&prompt),
-        inspector_lines: vec![
-            "## MCP Prompt".to_string(),
-            format!("server: {server_name}"),
-            format!("prompt: {prompt_name}"),
-            format!(
-                "arguments: {}",
-                render_prompt_argument_names(&prompt.arguments)
-            ),
-        ],
+        server_name: server_name.to_string(),
+        prompt_name: prompt_name.to_string(),
+        arguments_summary: render_prompt_argument_names(&prompt.arguments),
     })
 }
 
@@ -194,18 +192,9 @@ pub(crate) async fn load_mcp_resource(
     let resource = server.client.read_resource(uri).await?;
     Ok(LoadedMcpResource {
         input_text: resource_to_text(&resource),
-        inspector_lines: vec![
-            "## MCP Resource".to_string(),
-            format!("server: {server_name}"),
-            format!("uri: {}", resource.uri),
-            format!(
-                "mime: {}",
-                resource
-                    .mime_type
-                    .clone()
-                    .unwrap_or_else(|| "unknown".to_string())
-            ),
-        ],
+        server_name: server_name.to_string(),
+        uri: resource.uri,
+        mime_summary: resource.mime_type.unwrap_or_else(|| "unknown".to_string()),
     })
 }
 

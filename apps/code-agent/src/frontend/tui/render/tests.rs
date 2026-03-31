@@ -28,7 +28,7 @@ use crate::frontend::tui::commands::{
 };
 use crate::frontend::tui::state::{
     HistoryRollbackCandidate, InspectorEntry, MainPaneMode, PlanEntry, StatusLinePickerState,
-    TranscriptEntry, TuiState,
+    TranscriptEntry, TranscriptShellDetail, TuiState,
 };
 use agent::tools::{UserInputAnswer, UserInputOption, UserInputQuestion};
 use agent::types::MessageId;
@@ -38,9 +38,9 @@ use std::collections::BTreeMap;
 #[test]
 fn key_value_text_renders_section_headers_without_treating_them_as_pairs() {
     let rendered = build_key_value_text(&[
-        inspector_entry("## Session"),
-        inspector_entry("session ref: abc123"),
-        inspector_entry("/sessions [query]"),
+        section_entry("Session"),
+        field_entry("session ref", "abc123"),
+        command_entry("/sessions [query]"),
     ]);
     let lines = rendered.lines;
     assert_eq!(lines[0].spans[0].content.as_ref(), "Session");
@@ -50,11 +50,13 @@ fn key_value_text_renders_section_headers_without_treating_them_as_pairs() {
 
 #[test]
 fn key_value_text_preserves_prefixed_summary_blocks() {
-    let rendered = build_key_value_text(&[
-        inspector_entry("✔ Exported transcript text"),
-        inspector_entry("  └ session-1"),
-        inspector_entry("    Wrote 4 items to /workspace/out.txt"),
-    ]);
+    let rendered = build_key_value_text(&[success_summary_entry(
+        "Exported transcript text",
+        vec![
+            raw_detail("session-1"),
+            continuation_detail("Wrote 4 items to /workspace/out.txt"),
+        ],
+    )]);
     let lines = rendered.lines;
     assert_eq!(lines[0].spans[0].content.as_ref(), "✔");
     assert_eq!(
@@ -70,10 +72,10 @@ fn key_value_text_preserves_prefixed_summary_blocks() {
 
 #[test]
 fn key_value_text_reuses_transcript_rendering_for_shell_summary_lines() {
-    let rendered = build_key_value_text(&[
-        inspector_entry("• Reattached session"),
-        inspector_entry("  └ session session-1"),
-    ]);
+    let rendered = build_key_value_text(&[shell_summary_entry(
+        "Reattached session",
+        vec![raw_detail("session session-1")],
+    )]);
 
     assert_eq!(rendered.lines[0].spans[0].content.as_ref(), "•");
     assert_eq!(
@@ -212,10 +214,10 @@ fn transcript_renders_resume_summary_above_history() {
     let mut state = TuiState {
         main_pane: MainPaneMode::Transcript,
         inspector_title: "Resume".to_string(),
-        inspector: vec![
-            inspector_entry("✔ Reattached session"),
-            inspector_entry("  └ session session-1"),
-        ],
+        inspector: vec![success_summary_entry(
+            "Reattached session",
+            vec![raw_detail("session session-1")],
+        )],
         ..TuiState::default()
     };
     state.transcript = vec![transcript_entry("• done")];
@@ -621,9 +623,12 @@ fn collection_text_renders_shell_summary_blocks_for_history_rows() {
     let rendered = build_collection_text(
         "Sessions",
         &[
-            inspector_entry("## Sessions"),
-            inspector_entry(
-                "• sess_123  no prompt yet\n  └ 12 messages · 40 events · 2 agent sessions · resume attached",
+            section_entry("Sessions"),
+            shell_summary_entry(
+                "sess_123  no prompt yet",
+                vec![raw_detail(
+                    "12 messages · 40 events · 2 agent sessions · resume attached",
+                )],
             ),
         ],
     );
@@ -645,8 +650,14 @@ fn collection_text_keeps_history_rows_compact() {
     let rendered = build_collection_text(
         "Sessions",
         &[
-            inspector_entry("• sess_123  no prompt yet\n  └ 12 messages · 40 events"),
-            inspector_entry("• sess_456  resume prompt\n  └ 4 messages · 9 events"),
+            shell_summary_entry(
+                "sess_123  no prompt yet",
+                vec![raw_detail("12 messages · 40 events")],
+            ),
+            shell_summary_entry(
+                "sess_456  resume prompt",
+                vec![raw_detail("4 messages · 9 events")],
+            ),
         ],
     );
 
@@ -682,9 +693,9 @@ fn statusline_picker_text_renders_checked_rows() {
 #[test]
 fn command_palette_text_matches_picker_style() {
     let rendered = build_command_palette_text(&[
-        inspector_entry("## Session"),
-        inspector_entry("/help [query]  browse commands"),
-        inspector_entry("/sessions [query]  browse persisted sessions"),
+        section_entry("Session"),
+        collection_entry("/help [query]", "browse commands"),
+        collection_entry("/sessions [query]", "browse persisted sessions"),
     ]);
 
     assert_eq!(rendered.lines[0].spans[0].content.as_ref(), "Session");
@@ -1632,19 +1643,50 @@ fn view_title_is_suppressed_when_the_collection_already_has_one() {
     assert!(!should_render_view_title(
         "Sessions",
         &[
-            inspector_entry("## Sessions"),
-            inspector_entry("• sess_123  prompt")
+            section_entry("Sessions"),
+            shell_summary_entry("sess_123  prompt", Vec::new())
         ]
     ));
     assert!(should_render_view_title(
         "Export",
-        &[
-            inspector_entry("## Session"),
-            inspector_entry("path: out.txt")
-        ]
+        &[section_entry("Session"), field_entry("path", "out.txt")]
     ));
 }
 
-fn inspector_entry(line: &str) -> InspectorEntry {
-    line.into()
+fn section_entry(title: &str) -> InspectorEntry {
+    InspectorEntry::section(title)
+}
+
+fn field_entry(key: &str, value: &str) -> InspectorEntry {
+    InspectorEntry::field(key, value)
+}
+
+fn command_entry(command: &str) -> InspectorEntry {
+    InspectorEntry::Command(command.to_string())
+}
+
+fn collection_entry(primary: &str, secondary: &str) -> InspectorEntry {
+    InspectorEntry::collection(primary, Some(secondary))
+}
+
+fn shell_summary_entry(headline: &str, details: Vec<TranscriptShellDetail>) -> InspectorEntry {
+    InspectorEntry::transcript(TranscriptEntry::shell_summary_details(headline, details))
+}
+
+fn success_summary_entry(headline: &str, details: Vec<TranscriptShellDetail>) -> InspectorEntry {
+    InspectorEntry::transcript(TranscriptEntry::success_summary_details(headline, details))
+}
+
+fn raw_detail(text: &str) -> TranscriptShellDetail {
+    TranscriptShellDetail::Raw {
+        text: text.to_string(),
+        continuation: false,
+    }
+}
+
+fn continuation_detail(text: &str) -> TranscriptShellDetail {
+    TranscriptShellDetail::Raw {
+        text: text.to_string(),
+        continuation: true,
+    }
 }

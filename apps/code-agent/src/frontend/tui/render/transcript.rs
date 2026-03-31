@@ -7,8 +7,8 @@ use super::transcript_shell::{
     render_shell_summary_entry, should_collapse_shell_details,
 };
 pub(super) use super::transcript_shell::{
-    line_has_visible_content, line_to_plain_text, parse_prefixed_entry, transcript_body_style,
-    transcript_continuation_prefix, transcript_entry_kind,
+    line_has_visible_content, line_to_plain_text, transcript_body_style,
+    transcript_continuation_prefix,
 };
 use super::view::build_inspector_text;
 use super::welcome::build_welcome_lines;
@@ -153,24 +153,6 @@ pub(super) enum TranscriptEntryKind {
     SuccessSummary,
     ErrorSummary,
     WarningSummary,
-}
-
-pub(super) fn format_transcript_entry(entry: &str) -> Vec<Line<'static>> {
-    let Some((marker, accent, body)) = parse_prefixed_entry(entry) else {
-        return vec![Line::from(Span::styled(
-            entry.to_string(),
-            Style::default().fg(TEXT),
-        ))];
-    };
-
-    let kind = transcript_entry_kind(marker, body);
-    let parsed = TranscriptEntry::from(entry.to_string());
-    if should_collapse_shell_details(&parsed, true) {
-        return render_collapsed_shell_summary(&parsed, marker, accent, kind, None);
-    }
-    let mut rendered = render_transcript_body(&parsed, marker, kind, None);
-    prefix_transcript_marker(&mut rendered, marker, accent, kind);
-    rendered
 }
 
 pub(super) fn format_transcript_cell(entry: &TranscriptEntry) -> Vec<Line<'static>> {
