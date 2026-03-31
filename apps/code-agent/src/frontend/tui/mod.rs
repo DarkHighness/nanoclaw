@@ -1,6 +1,7 @@
 mod approval;
 mod commands;
 mod history;
+mod input_history;
 mod observer;
 mod render;
 mod state;
@@ -264,12 +265,18 @@ impl CodeAgentTui {
                             }
                         }
                         KeyCode::Up => {
+                            if self.navigate_input_history(true) {
+                                continue;
+                            }
                             if self.move_command_selection(true) {
                                 continue;
                             }
                             self.ui_state.mutate(|state| state.scroll_focused(-1));
                         }
                         KeyCode::Down => {
+                            if self.navigate_input_history(false) {
+                                continue;
+                            }
                             if self.move_command_selection(false) {
                                 continue;
                             }
@@ -321,15 +328,15 @@ impl CodeAgentTui {
                                     match action {
                                         SlashCommandEnterAction::Complete { input, index } => {
                                             self.ui_state.mutate(|state| {
-                                                state.input = input;
+                                                state.replace_input(input);
                                                 state.command_completion_index = index;
                                             });
                                             continue;
                                         }
                                         SlashCommandEnterAction::Execute(input) => {
+                                            self.record_submitted_input(&input);
                                             self.ui_state.mutate(|state| {
-                                                state.input.clear();
-                                                state.reset_command_completion();
+                                                state.clear_input();
                                             });
                                             if self.apply_command(&input).await? {
                                                 return Ok(());
@@ -352,6 +359,7 @@ impl CodeAgentTui {
                                 continue;
                             }
                             if input.starts_with('/') {
+                                self.record_submitted_input(&input);
                                 if self.apply_command(&input).await? {
                                     return Ok(());
                                 }
@@ -364,7 +372,7 @@ impl CodeAgentTui {
                             if snapshot.editing_pending_control.is_some() {
                                 self.ui_state.mutate(|state| {
                                     state.clear_pending_control_edit();
-                                    state.input.clear();
+                                    state.clear_input();
                                     state.status = "Cancelled pending control edit".to_string();
                                     state.push_activity("cancelled pending control edit");
                                 });
@@ -383,14 +391,12 @@ impl CodeAgentTui {
                         }
                         KeyCode::Backspace => {
                             self.ui_state.mutate(|state| {
-                                state.input.pop();
-                                state.reset_command_completion();
+                                state.pop_input_char();
                             });
                         }
                         KeyCode::Char(ch) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
                             self.ui_state.mutate(|state| {
-                                state.input.push(ch);
-                                state.reset_command_completion();
+                                state.push_input_char(ch);
                             });
                         }
                         _ => {}
@@ -411,10 +417,31 @@ impl CodeAgentTui {
             return false;
         };
         self.ui_state.mutate(|state| {
-            state.input = input;
+            state.replace_input(input);
             state.command_completion_index = index;
         });
         true
+    }
+
+    fn navigate_input_history(&mut self, backwards: bool) -> bool {
+        let mut navigated = false;
+        self.ui_state.mutate(|state| {
+            navigated = state.browse_input_history(backwards);
+        });
+        navigated
+    }
+
+    fn record_submitted_input(&mut self, input: &str) {
+        let workspace_root = self.session.workspace_root().to_path_buf();
+        let mut persisted = None;
+        self.ui_state.mutate(|state| {
+            if state.record_input_history(input) {
+                persisted = Some(state.input_history().to_vec());
+            }
+        });
+        if let Some(entries) = persisted {
+            input_history::persist_input_history(&workspace_root, &entries);
+        }
     }
 
     fn move_command_selection(&mut self, backwards: bool) -> bool {
@@ -542,24 +569,33 @@ impl CodeAgentTui {
                 KeyCode::Esc => {
                     flow.collecting_other_note = false;
                     self.ui_state.mutate(|state| {
-                        state.input.clear();
-                        state.reset_command_completion();
+                        state.clear_input();
                         state.status = format!("Returned to {} options", question.header);
                         state.push_activity(format!("returned to {} options", question.id));
                     });
                     true
                 }
+                KeyCode::Up => {
+                    self.ui_state.mutate(|state| {
+                        let _ = state.browse_input_history(true);
+                    });
+                    true
+                }
+                KeyCode::Down => {
+                    self.ui_state.mutate(|state| {
+                        let _ = state.browse_input_history(false);
+                    });
+                    true
+                }
                 KeyCode::Backspace => {
                     self.ui_state.mutate(|state| {
-                        state.input.pop();
-                        state.reset_command_completion();
+                        state.pop_input_char();
                     });
                     true
                 }
                 KeyCode::Char(ch) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
                     self.ui_state.mutate(|state| {
-                        state.input.push(ch);
-                        state.reset_command_completion();
+                        state.push_input_char(ch);
                     });
                     true
                 }
@@ -574,8 +610,7 @@ impl CodeAgentTui {
                     {
                         self.active_user_input = None;
                         self.ui_state.mutate(|state| {
-                            state.input.clear();
-                            state.reset_command_completion();
+                            state.clear_input();
                             state.status = "Cancelled user input request".to_string();
                             state.push_activity("cancelled user input request");
                         });
@@ -589,8 +624,7 @@ impl CodeAgentTui {
                     if digit == 0 {
                         flow.collecting_other_note = true;
                         self.ui_state.mutate(|state| {
-                            state.input.clear();
-                            state.reset_command_completion();
+                            state.clear_input();
                             state.status =
                                 format!("Provide an alternate answer for {}", question.header);
                             state.push_activity(format!(
@@ -745,7 +779,7 @@ impl CodeAgentTui {
                                     .is_some_and(|editing| editing.id == removed_id)
                                 {
                                     state.clear_pending_control_edit();
-                                    state.input.clear();
+                                    state.clear_input();
                                 }
                                 if state.pending_controls.is_empty() {
                                     state.close_pending_control_picker();
@@ -1021,7 +1055,7 @@ impl CodeAgentTui {
                     state.transcript = transcript;
                     state.follow_transcript = true;
                     state.transcript_scroll = u16::MAX;
-                    state.input = candidate.prompt.clone();
+                    state.replace_input(candidate.prompt.clone());
                     state.status = if candidate.prompt.trim().is_empty() {
                         format!(
                             "Rolled back {} message(s). Selected turn had no text to restore",
@@ -1134,16 +1168,14 @@ impl CodeAgentTui {
                     prompt.questions.len()
                 );
                 self.ui_state.mutate(|state| {
-                    state.input.clear();
-                    state.reset_command_completion();
+                    state.clear_input();
                     state.status = status;
                     state.push_activity("opened user input prompt");
                 });
             }
             None if self.active_user_input.take().is_some() => {
                 self.ui_state.mutate(|state| {
-                    state.input.clear();
-                    state.reset_command_completion();
+                    state.clear_input();
                 });
             }
             None => {}
@@ -1162,8 +1194,7 @@ impl CodeAgentTui {
             if self.session.resolve_user_input(response) {
                 self.active_user_input = None;
                 self.ui_state.mutate(|state| {
-                    state.input.clear();
-                    state.reset_command_completion();
+                    state.clear_input();
                     state.status = "Submitted user input answers".to_string();
                     state.push_activity("submitted user input answers");
                 });
@@ -1175,8 +1206,7 @@ impl CodeAgentTui {
         flow.collecting_other_note = false;
         let next_header = prompt.questions[next_question].header.clone();
         self.ui_state.mutate(|state| {
-            state.input.clear();
-            state.reset_command_completion();
+            state.clear_input();
             state.status = format!("Next user input question · {next_header}");
             state.push_activity(format!("advanced to user input question {next_header}"));
         });
@@ -1236,6 +1266,7 @@ impl CodeAgentTui {
     }
 
     async fn apply_plain_input_submit(&mut self, action: PlainInputSubmitAction, input: String) {
+        self.record_submitted_input(&input);
         match action {
             PlainInputSubmitAction::StartPrompt => self.start_turn(input).await,
             PlainInputSubmitAction::QueuePrompt => {
@@ -1265,7 +1296,7 @@ impl CodeAgentTui {
                 self.sync_runtime_control_state();
                 self.ui_state.mutate(|state| {
                     state.clear_pending_control_edit();
-                    state.input.clear();
+                    state.clear_input();
                     state.status = format!(
                         "Updated queued {} {}",
                         pending_control_kind_label(updated.kind),
@@ -1684,7 +1715,7 @@ impl CodeAgentTui {
                     .await?;
                 self.ui_state.mutate(move |state| {
                     let inspector = build_mcp_prompt_inspector(&loaded);
-                    state.input = loaded.input_text;
+                    state.replace_input(loaded.input_text);
                     state.show_main_view("Prompt", inspector);
                     state.status =
                         format!("Loaded MCP prompt {server_name}/{prompt_name} into input");
@@ -1696,7 +1727,7 @@ impl CodeAgentTui {
                 let loaded = self.session.load_mcp_resource(&server_name, &uri).await?;
                 self.ui_state.mutate(move |state| {
                     let inspector = build_mcp_resource_inspector(&loaded);
-                    state.input = loaded.input_text;
+                    state.replace_input(loaded.input_text);
                     state.show_main_view("Resource", inspector);
                     state.status = format!("Loaded MCP resource {server_name}:{uri} into input");
                     state.push_activity(format!("loaded mcp resource {server_name}:{uri}"));
@@ -2286,6 +2317,7 @@ impl CodeAgentTui {
 
     fn startup_state_from_snapshot(&self, snapshot: &SessionStartupSnapshot) -> TuiState {
         let workspace_root = snapshot.workspace_root.clone();
+        let input_history = input_history::load_input_history(&workspace_root);
         let mut state = TuiState {
             session: state::SessionSummary {
                 workspace_name: snapshot.workspace_name.clone(),
@@ -2316,6 +2348,7 @@ impl CodeAgentTui {
             follow_transcript: true,
             ..TuiState::default()
         };
+        state.set_input_history(input_history);
         state.push_activity("session ready");
         state
     }

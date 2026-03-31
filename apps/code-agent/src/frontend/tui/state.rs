@@ -1,3 +1,4 @@
+use super::input_history;
 use crate::backend::{
     PendingControlKind, PendingControlSummary, SessionPermissionMode, StartupDiagnosticsSnapshot,
 };
@@ -80,6 +81,12 @@ pub(crate) struct PendingControlPickerState {
 pub(crate) struct PendingControlEditorState {
     pub(crate) id: String,
     pub(crate) kind: PendingControlKind,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ComposerHistoryNavigationState {
+    pub(crate) index: usize,
+    pub(crate) draft: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -719,6 +726,8 @@ pub(crate) struct TuiState {
     pub(crate) main_pane: MainPaneMode,
     pub(crate) show_tool_details: bool,
     pub(crate) input: String,
+    pub(crate) input_history: Vec<String>,
+    pub(crate) input_history_navigation: Option<ComposerHistoryNavigationState>,
     pub(crate) command_completion_index: usize,
     pub(crate) transcript: Vec<TranscriptEntry>,
     pub(crate) transcript_scroll: u16,
@@ -854,7 +863,7 @@ impl TuiState {
 
     pub(crate) fn begin_pending_control_edit(&mut self) -> Option<PendingControlSummary> {
         let selected = self.selected_pending_control()?;
-        self.input = selected.preview.clone();
+        self.replace_input(selected.preview.clone());
         self.editing_pending_control = Some(PendingControlEditorState {
             id: selected.id.clone(),
             kind: selected.kind,
@@ -1063,6 +1072,80 @@ impl TuiState {
         }
     }
 
+    pub(crate) fn set_input_history(&mut self, entries: Vec<String>) {
+        self.input_history = entries;
+        self.input_history_navigation = None;
+    }
+
+    pub(crate) fn input_history(&self) -> &[String] {
+        &self.input_history
+    }
+
+    pub(crate) fn record_input_history(&mut self, input: &str) -> bool {
+        self.input_history_navigation = None;
+        input_history::record_input_history(&mut self.input_history, input)
+    }
+
+    pub(crate) fn replace_input(&mut self, input: impl Into<String>) {
+        self.input = input.into();
+        self.input_history_navigation = None;
+        self.reset_command_completion();
+    }
+
+    pub(crate) fn clear_input(&mut self) {
+        self.input.clear();
+        self.input_history_navigation = None;
+        self.reset_command_completion();
+    }
+
+    pub(crate) fn push_input_char(&mut self, ch: char) {
+        self.input.push(ch);
+        self.input_history_navigation = None;
+        self.reset_command_completion();
+    }
+
+    pub(crate) fn pop_input_char(&mut self) {
+        self.input.pop();
+        self.input_history_navigation = None;
+        self.reset_command_completion();
+    }
+
+    pub(crate) fn browse_input_history(&mut self, backwards: bool) -> bool {
+        if self.input_history.is_empty() {
+            return false;
+        }
+
+        if backwards {
+            let (next_index, draft) = match self.input_history_navigation.as_ref() {
+                Some(navigation) => (navigation.index.saturating_sub(1), navigation.draft.clone()),
+                None => (self.input_history.len() - 1, self.input.clone()),
+            };
+            self.input = self.input_history[next_index].clone();
+            self.input_history_navigation = Some(ComposerHistoryNavigationState {
+                index: next_index,
+                draft,
+            });
+            self.reset_command_completion();
+            return true;
+        }
+
+        let Some(navigation) = self.input_history_navigation.clone() else {
+            return false;
+        };
+        if navigation.index + 1 < self.input_history.len() {
+            self.input = self.input_history[navigation.index + 1].clone();
+            self.input_history_navigation = Some(ComposerHistoryNavigationState {
+                index: navigation.index + 1,
+                draft: navigation.draft,
+            });
+        } else {
+            self.input = navigation.draft;
+            self.input_history_navigation = None;
+        }
+        self.reset_command_completion();
+        true
+    }
+
     pub(crate) fn reset_command_completion(&mut self) {
         self.command_completion_index = 0;
     }
@@ -1150,6 +1233,7 @@ impl SharedUiState {
 
     pub(crate) fn take_input(&self) -> String {
         let mut state = self.0.write().unwrap();
+        state.input_history_navigation = None;
         state.command_completion_index = 0;
         std::mem::take(&mut state.input)
     }
@@ -1374,5 +1458,45 @@ mod tests {
                 .map(|candidate| candidate.prompt.as_str()),
             Some("second")
         );
+    }
+
+    #[test]
+    fn composer_input_history_recalls_entries_and_restores_draft() {
+        let mut state = TuiState {
+            input: "current draft".to_string(),
+            input_history: vec!["first prompt".to_string(), "second prompt".to_string()],
+            ..TuiState::default()
+        };
+
+        assert!(state.browse_input_history(true));
+        assert_eq!(state.input, "second prompt");
+
+        assert!(state.browse_input_history(true));
+        assert_eq!(state.input, "first prompt");
+
+        assert!(state.browse_input_history(false));
+        assert_eq!(state.input, "second prompt");
+
+        assert!(state.browse_input_history(false));
+        assert_eq!(state.input, "current draft");
+
+        assert!(!state.browse_input_history(false));
+    }
+
+    #[test]
+    fn editing_after_history_recall_resets_navigation_cursor() {
+        let mut state = TuiState {
+            input_history: vec!["prompt one".to_string(), "prompt two".to_string()],
+            ..TuiState::default()
+        };
+
+        assert!(state.browse_input_history(true));
+        assert_eq!(state.input, "prompt two");
+
+        state.push_input_char('!');
+        assert_eq!(state.input, "prompt two!");
+
+        assert!(state.browse_input_history(true));
+        assert_eq!(state.input, "prompt two");
     }
 }
