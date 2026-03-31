@@ -50,6 +50,15 @@ pub struct RollbackVisibleHistoryOutcome {
     pub removed_message_ids: Vec<types::MessageId>,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct VisibleHistoryRollbackRound {
+    pub rollback_message_id: types::MessageId,
+    pub prompt_message_id: types::MessageId,
+    pub messages: Vec<types::Message>,
+    pub removed_turn_count: usize,
+    pub removed_message_count: usize,
+}
+
 impl AgentRuntime {
     #[allow(clippy::too_many_arguments)]
     #[must_use]
@@ -106,6 +115,11 @@ impl AgentRuntime {
     #[must_use]
     pub fn visible_transcript_snapshot(&self) -> Vec<types::Message> {
         self.visible_transcript()
+    }
+
+    #[must_use]
+    pub fn visible_history_rollback_rounds_snapshot(&self) -> Vec<VisibleHistoryRollbackRound> {
+        self.visible_history_rollback_rounds()
     }
 
     #[must_use]

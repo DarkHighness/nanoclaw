@@ -51,6 +51,15 @@ impl AgentRuntime {
             .collect()
     }
 
+    pub(crate) fn visible_history_rollback_rounds(
+        &self,
+    ) -> Vec<crate::VisibleHistoryRollbackRound> {
+        build_visible_history_rollback_rounds(
+            &self.visible_transcript(),
+            self.session.compaction_summary_index.is_some(),
+        )
+    }
+
     pub(crate) fn visible_transcript_index_for_message_id(
         &self,
         message_id: &MessageId,
@@ -523,11 +532,91 @@ fn message_has_text_content(message: &Message) -> bool {
         && !message.text_content().trim().is_empty()
 }
 
+fn build_visible_history_rollback_rounds(
+    visible_messages: &[Message],
+    has_compaction_summary: bool,
+) -> Vec<crate::VisibleHistoryRollbackRound> {
+    let round_starts =
+        visible_history_rollback_round_starts(visible_messages, has_compaction_summary);
+    let provisional = round_starts
+        .iter()
+        .enumerate()
+        .filter_map(|(round_index, round_start)| {
+            let round_end = round_starts
+                .get(round_index + 1)
+                .copied()
+                .unwrap_or(visible_messages.len());
+            let round_messages = visible_messages.get(*round_start..round_end)?;
+            let prompt_offset = primary_prompt_offset(round_messages)?;
+            Some((
+                *round_start,
+                round_messages[0].message_id.clone(),
+                round_messages[prompt_offset].message_id.clone(),
+                round_messages.to_vec(),
+            ))
+        })
+        .collect::<Vec<_>>();
+    let total_rounds = provisional.len();
+
+    provisional
+        .into_iter()
+        .enumerate()
+        .map(
+            |(round_index, (round_start, rollback_message_id, prompt_message_id, messages))| {
+                crate::VisibleHistoryRollbackRound {
+                    rollback_message_id,
+                    prompt_message_id,
+                    messages,
+                    removed_turn_count: total_rounds.saturating_sub(round_index),
+                    removed_message_count: visible_messages.len().saturating_sub(round_start),
+                }
+            },
+        )
+        .collect()
+}
+
+fn visible_history_rollback_round_starts(
+    visible_messages: &[Message],
+    has_compaction_summary: bool,
+) -> Vec<usize> {
+    visible_messages
+        .iter()
+        .enumerate()
+        .filter_map(|(index, message)| {
+            if !matches!(message.role, MessageRole::User | MessageRole::System) {
+                return None;
+            }
+            if index == 0 {
+                return (!has_compaction_summary).then_some(index);
+            }
+            if index == 1 && has_compaction_summary {
+                return Some(index);
+            }
+            matches!(
+                visible_messages.get(index - 1).map(|message| &message.role),
+                Some(MessageRole::Assistant | MessageRole::Tool)
+            )
+            .then_some(index)
+        })
+        .collect()
+}
+
+fn primary_prompt_offset(round_messages: &[Message]) -> Option<usize> {
+    let request_side_end = round_messages
+        .iter()
+        .position(|message| matches!(message.role, MessageRole::Assistant | MessageRole::Tool))
+        .unwrap_or(round_messages.len());
+    (0..request_side_end)
+        .rev()
+        .find(|offset| round_messages[*offset].role == MessageRole::User)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        RETAINED_TAIL_MIN_TEXT_MESSAGES, RETAINED_TAIL_MIN_TOKENS, count_text_messages,
-        estimate_messages_tokens, select_compaction_split_index, starts_request_round,
+        RETAINED_TAIL_MIN_TEXT_MESSAGES, RETAINED_TAIL_MIN_TOKENS,
+        build_visible_history_rollback_rounds, count_text_messages, estimate_messages_tokens,
+        select_compaction_split_index, starts_request_round,
     };
     use serde_json::json;
     use types::{Message, MessagePart, ToolCall, ToolOrigin, ToolResult};
@@ -623,6 +712,48 @@ mod tests {
         assert!(starts_request_round(&visible_messages, 2));
         assert!(!starts_request_round(&visible_messages, 3));
         assert!(!starts_request_round(&visible_messages, 4));
+    }
+
+    #[test]
+    fn rollback_rounds_use_request_side_head_but_restore_latest_user_prompt() {
+        let visible_messages = vec![
+            Message::system("prefer terse answers"),
+            Message::user("recalled workspace memory"),
+            Message::user("real user prompt"),
+            Message::assistant("latest assistant reply"),
+        ];
+
+        let rounds = build_visible_history_rollback_rounds(&visible_messages, false);
+
+        assert_eq!(rounds.len(), 1);
+        assert_eq!(
+            rounds[0].rollback_message_id,
+            visible_messages[0].message_id
+        );
+        assert_eq!(rounds[0].prompt_message_id, visible_messages[2].message_id);
+        assert_eq!(rounds[0].removed_turn_count, 1);
+        assert_eq!(rounds[0].removed_message_count, 4);
+    }
+
+    #[test]
+    fn rollback_rounds_skip_compaction_summary_but_keep_current_request_cluster() {
+        let visible_messages = vec![
+            Message::system("compaction summary"),
+            Message::system("prefer terse answers"),
+            Message::user("recalled workspace memory"),
+            Message::user("real user prompt"),
+            Message::assistant("latest assistant reply"),
+        ];
+
+        let rounds = build_visible_history_rollback_rounds(&visible_messages, true);
+
+        assert_eq!(rounds.len(), 1);
+        assert_eq!(
+            rounds[0].rollback_message_id,
+            visible_messages[1].message_id
+        );
+        assert_eq!(rounds[0].prompt_message_id, visible_messages[3].message_id);
+        assert_eq!(rounds[0].removed_message_count, 4);
     }
 
     #[test]

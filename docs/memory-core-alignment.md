@@ -302,6 +302,19 @@ Interrupt-driven restarts now reuse the same request-side cluster shape:
 That keeps restarts aligned with Claude's "replace the active round" behavior
 instead of leaving behind half of the interrupted request context.
 
+Manual history rollback now consumes runtime-projected request rounds instead
+of rebuilding turns from raw visible messages in the TUI:
+
+- the rollback anchor can start at a request-side `system` message when that
+  system prefix framed the user prompt that should be restored
+- the restored composer draft still comes from the latest user prompt inside
+  that request-side cluster
+- compacted summaries are excluded from rollback anchors by the runtime
+  projection instead of by frontend heuristics
+
+That keeps operator-driven rewinds aligned with the same round boundaries used
+by compaction, resume, and interrupt restarts.
+
 ## Side Questions (`/btw`)
 
 Claude Code exposes side questions as a separate lightweight query path rather

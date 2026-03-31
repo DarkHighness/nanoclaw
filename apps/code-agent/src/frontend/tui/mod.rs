@@ -6,12 +6,13 @@ mod observer;
 mod paste_burst;
 mod render;
 mod state;
+mod tool_state;
 
 use crate::backend::{
-    CodeAgentSession, LiveTaskAttentionAction, LiveTaskControlAction, LiveTaskMessageAction,
-    LiveTaskWaitOutcome, LoadedMcpPrompt, LoadedMcpResource, SessionEvent, SessionOperation,
-    SessionOperationAction, SessionOperationOutcome, SessionPermissionMode, SessionStartupSnapshot,
-    SideQuestionOutcome, UserInputPrompt, preview_id,
+    CodeAgentSession, HistoryRollbackRound, LiveTaskAttentionAction, LiveTaskControlAction,
+    LiveTaskMessageAction, LiveTaskWaitOutcome, LoadedMcpPrompt, LoadedMcpResource, SessionEvent,
+    SessionOperation, SessionOperationAction, SessionOperationOutcome, SessionPermissionMode,
+    SessionStartupSnapshot, SideQuestionOutcome, UserInputPrompt, preview_id,
 };
 use crate::config::persist_tui_theme_selection;
 use crate::statusline::status_line_fields;
@@ -40,6 +41,7 @@ use state::{
     ComposerDraftAttachmentKind, ComposerDraftAttachmentState, ComposerSubmission, InspectorEntry,
     ToastTone, TranscriptEntry, TranscriptShellDetail, TuiState,
 };
+use tool_state::restore_tool_panels;
 
 use agent::RuntimeCommand;
 use agent::tools::{
@@ -1795,8 +1797,8 @@ impl CodeAgentTui {
     }
 
     async fn history_rollback_candidates(&self) -> Vec<state::HistoryRollbackCandidate> {
-        let transcript = self.session.active_visible_transcript().await;
-        build_history_rollback_candidates(&transcript)
+        let rounds = self.session.history_rollback_rounds().await;
+        build_history_rollback_candidates(&rounds)
     }
 
     fn refresh_history_rollback_selection_status(&self) {
@@ -3528,36 +3530,21 @@ fn merge_interrupt_steers(steers: Vec<String>) -> Option<String> {
 }
 
 fn build_history_rollback_candidates(
-    transcript: &[agent::types::Message],
+    rounds: &[HistoryRollbackRound],
 ) -> Vec<state::HistoryRollbackCandidate> {
-    let user_indices = transcript
+    rounds
         .iter()
-        .enumerate()
-        .filter_map(|(index, message)| (message.role == MessageRole::User).then_some(index))
-        .collect::<Vec<_>>();
-    let total_turns = user_indices.len();
-
-    user_indices
-        .iter()
-        .enumerate()
-        .filter_map(|(turn_index, start_index)| {
-            let start_index = *start_index;
-            let message = transcript.get(start_index)?;
-            let end_index = user_indices
-                .get(turn_index + 1)
-                .copied()
-                .unwrap_or(transcript.len());
-            let turn_slice = transcript.get(start_index..end_index)?;
-            let prompt = agent::types::message_operator_text(message);
-            let draft = state::composer_draft_from_message(message);
-            Some(state::HistoryRollbackCandidate {
-                message_id: message.message_id.clone(),
+        .map(|round| {
+            let prompt = agent::types::message_operator_text(&round.prompt_message);
+            let draft = state::composer_draft_from_message(&round.prompt_message);
+            state::HistoryRollbackCandidate {
+                message_id: round.rollback_message_id.clone(),
                 prompt,
                 draft,
-                turn_preview_lines: format_visible_transcript_preview_lines(turn_slice),
-                removed_turn_count: total_turns.saturating_sub(turn_index),
-                removed_message_count: transcript.len().saturating_sub(start_index),
-            })
+                turn_preview_lines: format_visible_transcript_preview_lines(&round.round_messages),
+                removed_turn_count: round.removed_turn_count,
+                removed_message_count: round.removed_message_count,
+            }
         })
         .collect()
 }
@@ -4140,8 +4127,7 @@ mod tests {
         external_editor_attachment_status_suffix, live_task_wait_toast_message,
         looks_like_local_image_path, merge_interrupt_steers, plain_input_submit_action,
     };
-    use crate::backend::LiveTaskWaitOutcome;
-    use crate::backend::SessionPermissionMode;
+    use crate::backend::{HistoryRollbackRound, LiveTaskWaitOutcome, SessionPermissionMode};
     use agent::types::{AgentStatus, Message, MessageId, MessagePart, MessageRole};
     use crossterm::event::KeyCode;
     use std::path::{Path, PathBuf};
@@ -4390,14 +4376,30 @@ mod tests {
 
     #[test]
     fn history_rollback_candidates_track_turn_slice_and_removed_counts() {
-        let transcript = vec![
-            Message::user("first").with_message_id(MessageId::from("msg-1")),
-            Message::assistant("answer one").with_message_id(MessageId::from("msg-2")),
-            Message::user("second").with_message_id(MessageId::from("msg-3")),
-            Message::assistant("answer two").with_message_id(MessageId::from("msg-4")),
+        let first_prompt = Message::user("first").with_message_id(MessageId::from("msg-1"));
+        let first_answer =
+            Message::assistant("answer one").with_message_id(MessageId::from("msg-2"));
+        let second_prompt = Message::user("second").with_message_id(MessageId::from("msg-3"));
+        let second_answer =
+            Message::assistant("answer two").with_message_id(MessageId::from("msg-4"));
+        let rounds = vec![
+            HistoryRollbackRound {
+                rollback_message_id: first_prompt.message_id.clone(),
+                prompt_message: first_prompt.clone(),
+                round_messages: vec![first_prompt.clone(), first_answer.clone()],
+                removed_turn_count: 2,
+                removed_message_count: 4,
+            },
+            HistoryRollbackRound {
+                rollback_message_id: second_prompt.message_id.clone(),
+                prompt_message: second_prompt.clone(),
+                round_messages: vec![second_prompt.clone(), second_answer.clone()],
+                removed_turn_count: 1,
+                removed_message_count: 2,
+            },
         ];
 
-        let candidates = build_history_rollback_candidates(&transcript);
+        let candidates = build_history_rollback_candidates(&rounds);
 
         assert_eq!(candidates.len(), 2);
         assert_eq!(candidates[0].message_id, MessageId::from("msg-1"));
@@ -4418,19 +4420,58 @@ mod tests {
     }
 
     #[test]
-    fn history_rollback_candidates_keep_operator_visible_attachment_summaries() {
-        let transcript = vec![
-            Message::new(
-                MessageRole::User,
-                vec![MessagePart::ImageUrl {
-                    url: "https://example.com/diagram.png".to_string(),
-                    mime_type: Some("image/png".to_string()),
-                }],
-            )
-            .with_message_id(MessageId::from("msg-1")),
-        ];
+    fn history_rollback_candidates_restore_latest_user_prompt_from_request_round_snapshot() {
+        let steer =
+            Message::system("prefer terse answers").with_message_id(MessageId::from("msg-1"));
+        let recall =
+            Message::user("recalled workspace memory").with_message_id(MessageId::from("msg-2"));
+        let prompt = Message::user("real user prompt").with_message_id(MessageId::from("msg-3"));
+        let reply =
+            Message::assistant("latest assistant reply").with_message_id(MessageId::from("msg-4"));
+        let rounds = vec![HistoryRollbackRound {
+            rollback_message_id: steer.message_id.clone(),
+            prompt_message: prompt.clone(),
+            round_messages: vec![steer, recall, prompt.clone(), reply],
+            removed_turn_count: 1,
+            removed_message_count: 4,
+        }];
 
-        let candidates = build_history_rollback_candidates(&transcript);
+        let candidates = build_history_rollback_candidates(&rounds);
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].message_id, MessageId::from("msg-1"));
+        assert_eq!(candidates[0].prompt, "real user prompt");
+        assert_eq!(candidates[0].draft.text, "real user prompt");
+        assert_eq!(
+            candidates[0].turn_preview_lines,
+            vec![
+                "• prefer terse answers".into(),
+                "› recalled workspace memory".into(),
+                "› real user prompt".into(),
+                "• latest assistant reply".into(),
+            ]
+        );
+    }
+
+    #[test]
+    fn history_rollback_candidates_keep_operator_visible_attachment_summaries() {
+        let prompt = Message::new(
+            MessageRole::User,
+            vec![MessagePart::ImageUrl {
+                url: "https://example.com/diagram.png".to_string(),
+                mime_type: Some("image/png".to_string()),
+            }],
+        )
+        .with_message_id(MessageId::from("msg-1"));
+        let rounds = vec![HistoryRollbackRound {
+            rollback_message_id: prompt.message_id.clone(),
+            prompt_message: prompt.clone(),
+            round_messages: vec![prompt],
+            removed_turn_count: 1,
+            removed_message_count: 1,
+        }];
+
+        let candidates = build_history_rollback_candidates(&rounds);
 
         assert_eq!(candidates.len(), 1);
         assert_eq!(
@@ -4448,27 +4489,32 @@ mod tests {
 
     #[test]
     fn history_rollback_candidates_restore_text_and_inline_attachments_into_draft() {
-        let transcript = vec![
-            Message::new(
-                MessageRole::User,
-                vec![
-                    MessagePart::ImageUrl {
-                        url: "https://example.com/diagram.png".to_string(),
-                        mime_type: Some("image/png".to_string()),
-                    },
-                    MessagePart::File {
-                        file_name: Some("run.pdf".to_string()),
-                        mime_type: Some("application/pdf".to_string()),
-                        data_base64: Some("cGRm".to_string()),
-                        uri: Some("reports/run.pdf".to_string()),
-                    },
-                    MessagePart::inline_text(" summarize the artifact"),
-                ],
-            )
-            .with_message_id(MessageId::from("msg-1")),
-        ];
+        let prompt = Message::new(
+            MessageRole::User,
+            vec![
+                MessagePart::ImageUrl {
+                    url: "https://example.com/diagram.png".to_string(),
+                    mime_type: Some("image/png".to_string()),
+                },
+                MessagePart::File {
+                    file_name: Some("run.pdf".to_string()),
+                    mime_type: Some("application/pdf".to_string()),
+                    data_base64: Some("cGRm".to_string()),
+                    uri: Some("reports/run.pdf".to_string()),
+                },
+                MessagePart::inline_text(" summarize the artifact"),
+            ],
+        )
+        .with_message_id(MessageId::from("msg-1"));
+        let rounds = vec![HistoryRollbackRound {
+            rollback_message_id: prompt.message_id.clone(),
+            prompt_message: prompt.clone(),
+            round_messages: vec![prompt],
+            removed_turn_count: 1,
+            removed_message_count: 1,
+        }];
 
-        let candidates = build_history_rollback_candidates(&transcript);
+        let candidates = build_history_rollback_candidates(&rounds);
 
         assert_eq!(candidates.len(), 1);
         assert_eq!(
@@ -4491,19 +4537,24 @@ mod tests {
 
     #[test]
     fn history_rollback_candidates_restore_large_paste_placeholders_into_draft() {
-        let transcript = vec![
-            Message::new(
-                MessageRole::User,
-                vec![
-                    MessagePart::inline_text("before "),
-                    MessagePart::paste("[Paste #1]", "pasted body"),
-                    MessagePart::inline_text(" after"),
-                ],
-            )
-            .with_message_id(MessageId::from("msg-1")),
-        ];
+        let prompt = Message::new(
+            MessageRole::User,
+            vec![
+                MessagePart::inline_text("before "),
+                MessagePart::paste("[Paste #1]", "pasted body"),
+                MessagePart::inline_text(" after"),
+            ],
+        )
+        .with_message_id(MessageId::from("msg-1"));
+        let rounds = vec![HistoryRollbackRound {
+            rollback_message_id: prompt.message_id.clone(),
+            prompt_message: prompt.clone(),
+            round_messages: vec![prompt],
+            removed_turn_count: 1,
+            removed_message_count: 1,
+        }];
 
-        let candidates = build_history_rollback_candidates(&transcript);
+        let candidates = build_history_rollback_candidates(&rounds);
 
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].prompt, "before pasted body after");

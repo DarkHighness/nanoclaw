@@ -29,6 +29,7 @@ use agent::memory::{
 use agent::runtime::{
     ModelBackend, PermissionGrantSnapshot, PermissionGrantStore, Result as RuntimeResult,
     RollbackVisibleHistoryOutcome, RunTurnOutcome, RuntimeCommandId, RuntimeControlPlane,
+    VisibleHistoryRollbackRound,
 };
 use agent::tools::{
     GrantedPermissionResponse, RequestPermissionProfile, SandboxPolicy, SubagentExecutor,
@@ -239,6 +240,32 @@ pub(crate) struct PendingControlSummary {
 pub(crate) struct HistoryRollbackOutcome {
     pub(crate) transcript: Vec<Message>,
     pub(crate) removed_message_count: usize,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct HistoryRollbackRound {
+    pub(crate) rollback_message_id: MessageId,
+    pub(crate) prompt_message: Message,
+    pub(crate) round_messages: Vec<Message>,
+    pub(crate) removed_turn_count: usize,
+    pub(crate) removed_message_count: usize,
+}
+
+fn history_rollback_round_from_snapshot(
+    snapshot: VisibleHistoryRollbackRound,
+) -> Option<HistoryRollbackRound> {
+    let prompt_message = snapshot
+        .messages
+        .iter()
+        .find(|message| message.message_id == snapshot.prompt_message_id)
+        .cloned()?;
+    Some(HistoryRollbackRound {
+        rollback_message_id: snapshot.rollback_message_id,
+        prompt_message,
+        round_messages: snapshot.messages,
+        removed_turn_count: snapshot.removed_turn_count,
+        removed_message_count: snapshot.removed_message_count,
+    })
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -636,6 +663,16 @@ impl CodeAgentSession {
             transcript,
             removed_message_count: removed_message_ids.len(),
         })
+    }
+
+    pub(crate) async fn history_rollback_rounds(&self) -> Vec<HistoryRollbackRound> {
+        self.runtime
+            .lock()
+            .await
+            .visible_history_rollback_rounds_snapshot()
+            .into_iter()
+            .filter_map(history_rollback_round_from_snapshot)
+            .collect()
     }
 
     pub(crate) async fn compact_now(&self, notes: Option<String>) -> RuntimeResult<bool> {
