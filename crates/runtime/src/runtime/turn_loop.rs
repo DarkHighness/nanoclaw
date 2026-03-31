@@ -170,6 +170,10 @@ impl AgentRuntime {
                     },
                 )
                 .await?;
+                observer.on_event(RuntimeProgressEvent::Notification {
+                    source: "provider_state".to_string(),
+                    message: error.to_string(),
+                })?;
                 request = self.build_model_request(turn_id, instructions, true);
                 self.append_event(
                     Some(turn_id.clone()),

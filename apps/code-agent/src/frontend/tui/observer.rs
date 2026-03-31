@@ -1,6 +1,6 @@
 use super::state::{
-    PlanEntry, SharedUiState, TranscriptEntry, TranscriptShellDetail, TranscriptToolStatus,
-    preview_text,
+    PlanEntry, SharedUiState, ToastTone, TranscriptEntry, TranscriptShellDetail,
+    TranscriptToolStatus, preview_text,
 };
 use crate::backend::SessionEvent;
 use crate::tool_render::{ToolDetail, tool_argument_details, tool_output_details_from_preview};
@@ -113,6 +113,16 @@ impl SharedRenderObserver {
                         ledger.cumulative_usage.cache_read_tokens,
                     ));
                 }
+            }
+            SessionEvent::Notification { source, message } => {
+                let tone = notification_toast_tone(&source, &message);
+                state.push_transcript(notification_entry(&source, &message, tone));
+                state.show_toast(tone, format!("{source}: {}", preview_text(&message, 88)));
+                state.push_activity(format!(
+                    "notification {}: {}",
+                    source,
+                    preview_text(&message, 48)
+                ));
             }
             SessionEvent::ModelResponseCompleted {
                 tool_call_count, ..
@@ -277,6 +287,45 @@ fn requested_tool_entry(call: &crate::backend::SessionToolCall) -> TranscriptEnt
         call.tool_name.clone(),
         tool_argument_detail_lines(call),
     )
+}
+
+fn notification_entry(source: &str, message: &str, tone: ToastTone) -> TranscriptEntry {
+    let detail_lines = vec![TranscriptShellDetail::Raw {
+        text: message.to_string(),
+        continuation: false,
+    }];
+    match tone {
+        ToastTone::Success => TranscriptEntry::success_summary_details(
+            format!("Notification from {source}"),
+            detail_lines,
+        ),
+        ToastTone::Warning => TranscriptEntry::warning_summary_details(
+            format!("Notification from {source}"),
+            detail_lines,
+        ),
+        ToastTone::Error => TranscriptEntry::error_summary_details(
+            format!("Notification from {source}"),
+            detail_lines,
+        ),
+        ToastTone::Info => TranscriptEntry::shell_summary_details(
+            format!("Notification from {source}"),
+            detail_lines,
+        ),
+    }
+}
+
+fn notification_toast_tone(source: &str, message: &str) -> ToastTone {
+    if source == "loop_detector" {
+        if message.contains("[critical]") || message.contains("blocked") {
+            ToastTone::Error
+        } else {
+            ToastTone::Warning
+        }
+    } else if source == "provider_state" {
+        ToastTone::Warning
+    } else {
+        ToastTone::Info
+    }
 }
 
 fn denied_tool_entry(call: &crate::backend::SessionToolCall, reason: &str) -> TranscriptEntry {
@@ -479,6 +528,34 @@ mod tests {
                 .contains(
                     "context 64000 / 400000 tokens, input 20000 output 1200 prefill 17000 decode 1200 cache 3000"
                 )
+        );
+    }
+
+    #[test]
+    fn notifications_surface_transcript_activity_and_toast() {
+        let ui_state = SharedUiState::new();
+        let mut observer = SharedRenderObserver::new(ui_state.clone());
+
+        observer.apply_event(SessionEvent::Notification {
+            source: "loop_detector".to_string(),
+            message: "loop_detector [warning] repeated tool calls".to_string(),
+        });
+
+        let snapshot = ui_state.snapshot();
+        assert_eq!(
+            transcript_text(&snapshot.transcript[0]),
+            "⚠ Notification from loop_detector\n  └ loop_detector [warning] repeated tool calls"
+        );
+        assert_eq!(
+            snapshot.toast.as_ref().map(|toast| toast.message.as_str()),
+            Some("loop_detector: loop_detector [warning] repeated tool calls")
+        );
+        assert!(
+            snapshot
+                .activity
+                .last()
+                .expect("notification activity should be recorded")
+                .contains("notification loop_detector")
         );
     }
 

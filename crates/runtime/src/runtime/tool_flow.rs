@@ -246,6 +246,10 @@ impl AgentRuntime {
                 },
             )
             .await?;
+            observer.on_event(RuntimeProgressEvent::Notification {
+                source: "loop_detector".to_string(),
+                message: message.clone(),
+            })?;
             if matches!(signal.severity, LoopSignalSeverity::Critical) {
                 // Critical loop signals are fed back as tool failures so the model can
                 // recover in-band instead of the runtime hard-aborting the whole turn.

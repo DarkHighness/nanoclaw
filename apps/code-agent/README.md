@@ -350,6 +350,10 @@ reminds you that `Enter` steers and `Tab` queues a follow-up; when idle, it
 points you at the completed task result instead of silently collapsing back to
 the generic idle prompt.
 
+Runtime notification events now flow through the same live path too, so
+loop-detector warnings and provider-state degradation notices can raise toasts
+instead of remaining history-only diagnostics.
+
 `/thinking` opens a picker when invoked without an explicit level. Hosts can
 also declare model-specific effort support in the core model config:
 
