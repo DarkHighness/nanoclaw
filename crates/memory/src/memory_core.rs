@@ -20,7 +20,7 @@ use store::SessionStore;
 use tools::format_numbered_lines;
 
 const INDEX_BACKEND_ID: &str = "memory-core";
-const INDEX_SCHEMA_VERSION: u32 = 1;
+const INDEX_SCHEMA_VERSION: u32 = 2;
 
 pub struct MemoryCoreBackend {
     workspace_root: PathBuf,
@@ -341,6 +341,7 @@ fn lexical_index_chunks(chunks: &[crate::MemoryCorpusChunk]) -> Vec<LexicalIndex
             start_line: chunk.start_line,
             end_line: chunk.end_line,
             text: chunk.text.clone(),
+            indexed_text: format!("path: {}\n{}", chunk.path, chunk.indexed_text),
         })
         .collect()
 }
@@ -354,8 +355,9 @@ fn document_snapshots(corpus: &crate::MemoryCorpus) -> BTreeMap<String, String> 
 }
 
 fn render_snippet(text: &str, max_chars: usize) -> String {
+    let text = strip_frontmatter_for_snippet(text);
     if text.chars().count() <= max_chars {
-        return text.to_string();
+        return text;
     }
     let mut value = text
         .chars()
@@ -363,6 +365,28 @@ fn render_snippet(text: &str, max_chars: usize) -> String {
         .collect::<String>();
     value.push_str("...");
     value
+}
+
+fn strip_frontmatter_for_snippet(text: &str) -> String {
+    let trimmed = text.trim();
+    if !trimmed.starts_with("---\n") {
+        return trimmed.to_string();
+    }
+    let mut lines = trimmed.lines();
+    if lines.next() != Some("---") {
+        return trimmed.to_string();
+    }
+    for line in lines.by_ref() {
+        if line.trim() == "---" {
+            let body = lines.collect::<Vec<_>>().join("\n").trim().to_string();
+            return if body.is_empty() {
+                trimmed.to_string()
+            } else {
+                body
+            };
+        }
+    }
+    trimmed.to_string()
 }
 
 fn summary_memory_lexical_score(path: &str, score: f64) -> f64 {
@@ -464,6 +488,7 @@ mod tests {
                     limit: Some(3),
                     path_prefix: None,
                     scopes: None,
+                    types: None,
                     tags: None,
                     session_id: None,
                     agent_session_id: None,
@@ -522,6 +547,7 @@ mod tests {
                     limit: Some(3),
                     path_prefix: Some("memory/".to_string()),
                     scopes: None,
+                    types: None,
                     tags: None,
                     session_id: None,
                     agent_session_id: None,
@@ -533,6 +559,43 @@ mod tests {
                 .unwrap();
             assert_eq!(response.hits.len(), 1);
             assert_eq!(response.hits[0].path, "memory/today.md");
+        }
+    );
+
+    bounded_async_test!(
+        async fn search_matches_descriptions_without_polluting_snippets() {
+            let dir = tempdir().unwrap();
+            fs::create_dir_all(dir.path().join("memory")).await.unwrap();
+            fs::write(
+                dir.path().join("memory/rollout.md"),
+                "---\ndescription: canary deploy before restart\ntype: project\n---\n# Rollout Memory\n\nuse phased restarts for production",
+            )
+            .await
+            .unwrap();
+
+            let backend =
+                MemoryCoreBackend::new(dir.path().to_path_buf(), MemoryCoreConfig::default());
+            let response = backend
+                .search(MemorySearchRequest {
+                    query: "canary".to_string(),
+                    limit: Some(3),
+                    path_prefix: Some("memory/".to_string()),
+                    scopes: None,
+                    types: None,
+                    tags: None,
+                    session_id: None,
+                    agent_session_id: None,
+                    agent_name: None,
+                    task_id: None,
+                    include_stale: None,
+                })
+                .await
+                .unwrap();
+
+            assert_eq!(response.hits.len(), 1);
+            assert_eq!(response.hits[0].path, "memory/rollout.md");
+            assert!(response.hits[0].snippet.contains("use phased restarts"));
+            assert!(!response.hits[0].snippet.contains("description:"));
         }
     );
 
@@ -555,6 +618,7 @@ mod tests {
                     limit: Some(3),
                     path_prefix: None,
                     scopes: None,
+                    types: None,
                     tags: None,
                     session_id: None,
                     agent_session_id: None,
@@ -597,6 +661,7 @@ mod tests {
                     limit: Some(3),
                     path_prefix: None,
                     scopes: None,
+                    types: None,
                     tags: None,
                     session_id: None,
                     agent_session_id: None,
@@ -626,6 +691,7 @@ mod tests {
                     limit: Some(3),
                     path_prefix: None,
                     scopes: None,
+                    types: None,
                     tags: None,
                     session_id: None,
                     agent_session_id: None,
@@ -646,6 +712,7 @@ mod tests {
                     limit: Some(3),
                     path_prefix: None,
                     scopes: None,
+                    types: None,
                     tags: None,
                     session_id: None,
                     agent_session_id: None,
@@ -717,6 +784,7 @@ mod tests {
                     limit: Some(2),
                     path_prefix: Some("memory/".to_string()),
                     scopes: None,
+                    types: None,
                     tags: None,
                     session_id: None,
                     agent_session_id: None,
@@ -767,6 +835,7 @@ mod tests {
                     limit: Some(2),
                     path_prefix: None,
                     scopes: Some(vec![MemoryScope::Working]),
+                    types: None,
                     tags: Some(vec!["debug".to_string()]),
                     session_id: None,
                     agent_session_id: Some("agent_session_1".into()),
@@ -812,6 +881,7 @@ mod tests {
                     limit: Some(2),
                     path_prefix: Some(".nanoclaw/memory/".to_string()),
                     scopes: Some(vec![MemoryScope::Semantic]),
+                    types: None,
                     tags: None,
                     session_id: None,
                     agent_session_id: None,
@@ -841,6 +911,8 @@ mod tests {
                     scope: MemoryScope::Working,
                     title: "Observed fix".to_string(),
                     content: "Use a canary deploy before restart.".to_string(),
+                    memory_type: None,
+                    description: None,
                     layer: None,
                     tags: vec!["deploy".to_string()],
                     session_id: Some("session_1".into()),
@@ -857,6 +929,8 @@ mod tests {
                     target_scope: MemoryScope::Semantic,
                     title: "Canary Deploy Rule".to_string(),
                     content: "Always do a canary deploy before restart.".to_string(),
+                    memory_type: None,
+                    description: None,
                     layer: None,
                     tags: vec!["deploy".to_string(), "verified".to_string()],
                 })
@@ -879,6 +953,7 @@ mod tests {
                     limit: Some(5),
                     path_prefix: Some(".nanoclaw/memory/semantic/".to_string()),
                     scopes: Some(vec![MemoryScope::Semantic]),
+                    types: None,
                     tags: Some(vec!["verified".to_string()]),
                     session_id: None,
                     agent_session_id: None,
@@ -904,6 +979,7 @@ mod tests {
                     limit: Some(10),
                     path_prefix: Some(".nanoclaw/memory/semantic/".to_string()),
                     scopes: Some(vec![MemoryScope::Semantic]),
+                    types: None,
                     tags: None,
                     session_id: None,
                     agent_session_id: None,
@@ -950,6 +1026,7 @@ mod tests {
                     limit: Some(10),
                     path_prefix: Some(".nanoclaw/memory/semantic/".to_string()),
                     scopes: Some(vec![MemoryScope::Semantic]),
+                    types: None,
                     tags: None,
                     session_id: None,
                     agent_session_id: None,
@@ -967,6 +1044,7 @@ mod tests {
                     limit: Some(10),
                     path_prefix: Some(".nanoclaw/memory/semantic/".to_string()),
                     scopes: Some(vec![MemoryScope::Semantic]),
+                    types: None,
                     tags: None,
                     session_id: None,
                     agent_session_id: None,

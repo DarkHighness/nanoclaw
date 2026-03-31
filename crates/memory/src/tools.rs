@@ -1,6 +1,6 @@
 use crate::{
     MemoryBackend, MemoryForgetRequest, MemoryGetRequest, MemoryListRequest, MemoryPromoteRequest,
-    MemoryRecordRequest, MemoryScope, MemorySearchRequest, MemoryStatus,
+    MemoryRecordRequest, MemoryScope, MemorySearchRequest, MemoryStatus, MemoryType,
 };
 use async_trait::async_trait;
 use schemars::{JsonSchema, schema_for};
@@ -21,6 +21,8 @@ pub struct MemorySearchToolInput {
     pub path_prefix: Option<String>,
     #[serde(default)]
     pub scopes: Option<Vec<MemoryScope>>,
+    #[serde(default)]
+    pub types: Option<Vec<MemoryType>>,
     #[serde(default)]
     pub tags: Option<Vec<String>>,
     #[serde(default)]
@@ -53,6 +55,8 @@ pub struct MemoryListToolInput {
     #[serde(default)]
     pub scopes: Option<Vec<MemoryScope>>,
     #[serde(default)]
+    pub types: Option<Vec<MemoryType>>,
+    #[serde(default)]
     pub tags: Option<Vec<String>>,
     #[serde(default)]
     pub session_id: Option<String>,
@@ -71,6 +75,10 @@ pub struct MemoryRecordToolInput {
     pub scope: MemoryScope,
     pub title: String,
     pub content: String,
+    #[serde(default)]
+    pub memory_type: Option<MemoryType>,
+    #[serde(default)]
+    pub description: Option<String>,
     #[serde(default)]
     pub layer: Option<String>,
     #[serde(default)]
@@ -92,6 +100,10 @@ pub struct MemoryPromoteToolInput {
     pub title: String,
     #[serde(default)]
     pub content: String,
+    #[serde(default)]
+    pub memory_type: Option<MemoryType>,
+    #[serde(default)]
+    pub description: Option<String>,
     #[serde(default)]
     pub layer: Option<String>,
     #[serde(default)]
@@ -175,7 +187,7 @@ impl Tool for MemorySearchTool {
     fn spec(&self) -> ToolSpec {
         builtin_tool_spec(
             "memory_search",
-            "Search layered memory Markdown files with scope, tag, and runtime-aware retrieval.",
+            "Search layered memory Markdown files with scope, type, tag, and runtime-aware retrieval.",
             serde_json::to_value(schema_for!(MemorySearchToolInput)).expect("memory_search schema"),
             ToolOutputMode::Text,
             tool_approval_profile(true, false, true, false),
@@ -197,6 +209,7 @@ impl Tool for MemorySearchTool {
                 limit: input.limit,
                 path_prefix: input.path_prefix,
                 scopes: input.scopes,
+                types: input.types,
                 tags: normalize_list(input.tags),
                 session_id: normalize_id(input.session_id).or_else(|| ctx.session_id.clone()),
                 agent_session_id: normalize_session_id(input.agent_session_id)
@@ -215,15 +228,17 @@ impl Tool for MemorySearchTool {
         )];
         for (index, hit) in response.hits.iter().enumerate() {
             lines.push(format!(
-                "{}. {}:{}-{} score={:.3} scope={} status={}",
+                "{}. {}:{}-{} score={:.3} scope={} type={} status={}",
                 index + 1,
                 hit.path,
                 hit.start_line,
                 hit.end_line,
                 hit.score,
                 hit.document_metadata.scope.as_str(),
+                display_memory_type(hit.document_metadata.memory_type),
                 hit.document_metadata.status.as_str()
             ));
+            maybe_push_description_line(&mut lines, hit.document_metadata.description.as_deref());
             lines.push(hit.snippet.clone());
         }
         let structured_output = json!({
@@ -274,10 +289,11 @@ impl Tool for MemoryGetTool {
             document.text.clone()
         };
         let output = format!(
-            "[memory_get path={} title={} scope={} lines={}-{} / {} snapshot={}]\n{}",
+            "[memory_get path={} title={} scope={} type={} lines={}-{} / {} snapshot={}]\n{}",
             document.path,
             document.title,
             document.metadata.scope.as_str(),
+            display_memory_type(document.metadata.memory_type),
             document.resolved_start_line,
             document.resolved_end_line,
             document.total_lines,
@@ -308,7 +324,7 @@ impl Tool for MemoryListTool {
     fn spec(&self) -> ToolSpec {
         builtin_tool_spec(
             "memory_list",
-            "List the current memory inventory with scope, status, and runtime metadata.",
+            "List the current memory inventory with scope, type, status, description hooks, and runtime metadata.",
             serde_json::to_value(schema_for!(MemoryListToolInput)).expect("memory_list schema"),
             ToolOutputMode::Text,
             tool_approval_profile(true, false, true, false),
@@ -329,6 +345,7 @@ impl Tool for MemoryListTool {
                 limit: input.limit,
                 path_prefix: input.path_prefix,
                 scopes: input.scopes,
+                types: input.types,
                 tags: normalize_list(input.tags),
                 session_id: normalize_id(input.session_id).or_else(|| ctx.session_id.clone()),
                 agent_session_id: normalize_session_id(input.agent_session_id)
@@ -343,13 +360,15 @@ impl Tool for MemoryListTool {
         let mut lines = vec![format!("[memory_list entries={}]", response.entries.len())];
         for (index, entry) in response.entries.iter().enumerate() {
             lines.push(format!(
-                "{}. {} scope={} status={} title={}",
+                "{}. {} scope={} type={} status={} title={}",
                 index + 1,
                 entry.path,
                 entry.metadata.scope.as_str(),
+                display_memory_type(entry.metadata.memory_type),
                 entry.metadata.status.as_str(),
                 entry.title
             ));
+            maybe_push_description_line(&mut lines, entry.metadata.description.as_deref());
         }
         let structured_output = json!({
             "entries": response.entries,
@@ -368,7 +387,7 @@ impl Tool for MemoryRecordTool {
     fn spec(&self) -> ToolSpec {
         builtin_tool_spec(
             "memory_record",
-            "Append working or coordination memory as Markdown source of truth under .nanoclaw/memory.",
+            "Append working or coordination memory under .nanoclaw/memory, optionally tagging it with Claude-style type and description metadata.",
             serde_json::to_value(schema_for!(MemoryRecordToolInput)).expect("memory_record schema"),
             ToolOutputMode::Text,
             tool_approval_profile(true, false, true, false),
@@ -389,6 +408,8 @@ impl Tool for MemoryRecordTool {
                 scope: input.scope,
                 title: input.title,
                 content: input.content,
+                memory_type: input.memory_type,
+                description: normalize_string(input.description),
                 layer: input.layer,
                 tags: input.tags,
                 session_id: normalize_id(input.session_id).or_else(|| ctx.session_id.clone()),
@@ -409,7 +430,7 @@ impl Tool for MemoryPromoteTool {
     fn spec(&self) -> ToolSpec {
         builtin_tool_spec(
             "memory_promote",
-            "Promote verified working or episodic memory into procedural or semantic memory.",
+            "Promote verified working or episodic memory into procedural or semantic memory, preserving or overriding type and description metadata.",
             serde_json::to_value(schema_for!(MemoryPromoteToolInput))
                 .expect("memory_promote schema"),
             ToolOutputMode::Text,
@@ -432,6 +453,8 @@ impl Tool for MemoryPromoteTool {
                 target_scope: input.target_scope,
                 title: input.title,
                 content: input.content,
+                memory_type: input.memory_type,
+                description: normalize_string(input.description),
                 layer: input.layer,
                 tags: input.tags,
             })
@@ -480,11 +503,12 @@ fn mutation_result(
     response: crate::MemoryMutationResponse,
 ) -> tools::Result<ToolResult> {
     let text = format!(
-        "[{} action={} path={} scope={} status={} snapshot={}]",
+        "[{} action={} path={} scope={} type={} status={} snapshot={}]",
         tool_name,
         response.action,
         response.path,
         response.metadata.scope.as_str(),
+        display_memory_type(response.metadata.memory_type),
         response.metadata.status.as_str(),
         response.snapshot_id
     );
@@ -529,6 +553,16 @@ fn normalize_list(value: Option<Vec<String>>) -> Option<Vec<String>> {
         normalized.dedup();
         (!normalized.is_empty()).then_some(normalized)
     })
+}
+
+fn display_memory_type(memory_type: Option<MemoryType>) -> &'static str {
+    memory_type.map(MemoryType::as_str).unwrap_or("-")
+}
+
+fn maybe_push_description_line(lines: &mut Vec<String>, description: Option<&str>) {
+    if let Some(description) = description.map(str::trim).filter(|value| !value.is_empty()) {
+        lines.push(format!("description: {description}"));
+    }
 }
 
 fn inherited_agent_name(ctx: &ToolExecutionContext) -> Option<String> {

@@ -13,6 +13,8 @@ This slice intentionally aligns capability shape, not storage location:
 
 - project instructions should be discoverable as long-lived procedural memory
 - managed auto memory should expose one concise index file plus topic files
+- durable memories should carry typed hooks (`type` + `description`) that are
+  usable at recall time, not just stored as passive metadata
 - the local default backend should stay offline-first and Markdown-grounded
 
 `nanoclaw` keeps mutable memory state under `.nanoclaw/memory/` instead of
@@ -28,7 +30,8 @@ Claude-style concept -> `nanoclaw` implementation
   - indexed as `procedural` memory with instruction-oriented layers
 - auto memory index
   - `.nanoclaw/memory/MEMORY.md`
-  - generated from managed memory so the backend has one compact entry point
+  - generated from managed memory as a concise hook index
+  - capped to 200 lines / 25 KB so it stays primer-sized
 - auto memory topic files
   - `.nanoclaw/memory/procedural/**/*.md`
   - `.nanoclaw/memory/semantic/**/*.md`
@@ -43,6 +46,8 @@ The generated `.nanoclaw/memory/MEMORY.md` is derived state.
 It is intentionally concise:
 
 - durable procedural and semantic notes are listed explicitly
+- each durable entry is rendered as a Claude-style hook line:
+  `- [Title](path) — one-line description`
 - transient episodic, working, and coordination memory is summarized instead of
   being expanded in full
 
@@ -55,3 +60,12 @@ The generated auto-memory index is searchable, but `memory-core` treats it like
 other summary files and slightly downranks it relative to the specific topic
 file it points at. The index exists to help navigation and lightweight recall,
 not to replace the source note.
+
+Recall now also indexes durable memory labels:
+
+- explicit Markdown titles when present
+- durable `description` hooks from frontmatter
+- durable `type` taxonomy (`user`, `feedback`, `project`, `reference`)
+
+That mirrors the part of Claude's recall flow that first narrows memory files
+using concise labels before reading full note bodies.

@@ -61,6 +61,8 @@ pub(crate) async fn record_memory(
         .map(|document| document.metadata.clone())
         .unwrap_or_default();
     metadata.scope = request.scope;
+    metadata.memory_type = request.memory_type.or(metadata.memory_type);
+    metadata.description = normalize_optional(request.description).or(metadata.description);
     metadata.layer = target.layer.clone();
     metadata.session_id = session_id;
     metadata.agent_session_id = agent_session_id;
@@ -176,9 +178,19 @@ pub(crate) fn render_memory_markdown(
     let mut out = vec![
         "---".to_string(),
         format!("scope: {}", metadata.scope.as_str()),
+        metadata
+            .memory_type
+            .map(|memory_type| format!("type: {}", memory_type.as_str()))
+            .unwrap_or_default(),
+        metadata
+            .description
+            .as_ref()
+            .map(|description| format!("description: {description}"))
+            .unwrap_or_default(),
         format!("layer: {}", metadata.layer),
         format!("status: {}", metadata.status.as_str()),
     ];
+    out.retain(|line| !line.is_empty());
     if let Some(session_id) = &metadata.session_id {
         out.push(format!("session_id: {session_id}"));
     }
@@ -481,6 +493,8 @@ mod tests {
                         scope: MemoryScope::Working,
                         title: "First note".to_string(),
                         content: "alpha".to_string(),
+                        memory_type: None,
+                        description: None,
                         layer: None,
                         tags: Vec::new(),
                         session_id: None,
@@ -503,6 +517,8 @@ mod tests {
                         scope: MemoryScope::Working,
                         title: "Second note".to_string(),
                         content: "beta".to_string(),
+                        memory_type: None,
+                        description: None,
                         layer: None,
                         tags: Vec::new(),
                         session_id: None,
@@ -537,6 +553,8 @@ mod tests {
                 scope: MemoryScope::Working,
                 title: "任务记录".to_string(),
                 content: "保留这段内容".to_string(),
+                memory_type: None,
+                description: None,
                 layer: None,
                 tags: Vec::new(),
                 session_id: None,

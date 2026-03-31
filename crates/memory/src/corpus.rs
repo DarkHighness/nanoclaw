@@ -1,6 +1,6 @@
 use crate::{
     MemoryChunkingConfig, MemoryCorpusConfig, MemoryDocumentMetadata, MemoryError, MemoryScope,
-    MemoryStatus, Result,
+    MemoryStatus, MemoryType, Result,
 };
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use ignore::WalkBuilder;
@@ -35,12 +35,16 @@ pub struct MemoryCorpusChunk {
     pub start_line: usize,
     pub end_line: usize,
     pub text: String,
+    pub indexed_text: String,
     pub metadata: MemoryDocumentMetadata,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
 struct MemoryFrontmatter {
     scope: Option<MemoryScope>,
+    #[serde(rename = "type")]
+    memory_type: Option<MemoryType>,
+    description: Option<String>,
     layer: Option<String>,
     session_id: Option<SessionId>,
     agent_session_id: Option<AgentSessionId>,
@@ -166,6 +170,7 @@ pub fn chunk_corpus(
                 snapshot_id: document.snapshot_id.clone(),
                 start_line: start + 1,
                 end_line: end,
+                indexed_text: build_indexed_chunk_text(document, &text),
                 text,
                 metadata: document.metadata.clone(),
             });
@@ -197,6 +202,30 @@ pub fn chunk_corpus(
     }
 
     chunks
+}
+
+fn build_indexed_chunk_text(document: &MemoryCorpusDocument, body_text: &str) -> String {
+    let mut lines = Vec::new();
+    if let Some(title) = document
+        .lines
+        .iter()
+        .find_map(|line| line.strip_prefix('#').map(str::trim))
+        .filter(|title| !title.is_empty())
+    {
+        lines.push(format!("title: {title}"));
+    }
+    if let Some(description) = document.metadata.description.as_deref() {
+        lines.push(format!("description: {}", description.trim()));
+    }
+    if let Some(memory_type) = document.metadata.memory_type {
+        lines.push(format!("type: {}", memory_type.as_str()));
+    }
+    // Claude-style recall first looks at memory labels and hooks before reading
+    // full note bodies. Keeping those labels in every chunk's indexed text lets
+    // lexical/vector retrieval surface the right file even when the body uses
+    // different wording from the future query.
+    lines.push(body_text.trim().to_string());
+    lines.join("\n")
 }
 
 pub async fn load_memory_corpus(
@@ -709,6 +738,12 @@ fn merge_metadata(
         if let Some(scope) = frontmatter.scope {
             inferred.scope = scope;
         }
+        if let Some(memory_type) = frontmatter.memory_type {
+            inferred.memory_type = Some(memory_type);
+        }
+        if let Some(description) = normalize_optional_string(frontmatter.description) {
+            inferred.description = Some(description);
+        }
         if let Some(layer) = frontmatter.layer {
             let layer = layer.trim();
             if !layer.is_empty() {
@@ -950,7 +985,7 @@ mod tests {
         load_memory_corpus_inner, memory_corpus_test_load_lock, reset_corpus_discovery_run_count,
         reset_corpus_disk_read_count,
     };
-    use crate::{MemoryChunkingConfig, MemoryCorpusConfig, MemoryScope};
+    use crate::{MemoryChunkingConfig, MemoryCorpusConfig, MemoryScope, MemoryType};
     use std::time::Duration;
     use tempfile::tempdir;
     use tokio::{fs, time::sleep};
@@ -1038,7 +1073,7 @@ mod tests {
         fs::create_dir_all(dir.path().join("memory")).await.unwrap();
         fs::write(
             dir.path().join("memory/howto.md"),
-            "---\nscope: procedural\ntags:\n  - deploy\n---\n# Deploy\nrunbook",
+            "---\nscope: procedural\ntype: feedback\ndescription: Deploy with canary first\ntags:\n  - deploy\n---\n# Deploy\nrunbook",
         )
         .await
         .unwrap();
@@ -1065,6 +1100,14 @@ mod tests {
         assert_eq!(
             by_path["memory/howto.md"].metadata.scope,
             MemoryScope::Procedural
+        );
+        assert_eq!(
+            by_path["memory/howto.md"].metadata.memory_type,
+            Some(MemoryType::Feedback)
+        );
+        assert_eq!(
+            by_path["memory/howto.md"].metadata.description.as_deref(),
+            Some("Deploy with canary first")
         );
         assert_eq!(
             by_path["memory/2026-03-28.md"].metadata.scope,

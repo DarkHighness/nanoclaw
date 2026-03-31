@@ -32,6 +32,29 @@ impl MemoryScope {
 }
 
 #[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
+)]
+#[serde(rename_all = "kebab-case")]
+pub enum MemoryType {
+    User,
+    Feedback,
+    Project,
+    Reference,
+}
+
+impl MemoryType {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::User => "user",
+            Self::Feedback => "feedback",
+            Self::Project => "project",
+            Self::Reference => "reference",
+        }
+    }
+}
+
+#[derive(
     Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
 )]
 #[serde(rename_all = "kebab-case")]
@@ -59,6 +82,10 @@ impl MemoryStatus {
 pub struct MemoryDocumentMetadata {
     #[serde(default)]
     pub scope: MemoryScope,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_type: Option<MemoryType>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
     #[serde(default)]
     pub layer: String,
     #[serde(default)]
@@ -89,6 +116,8 @@ pub struct MemorySearchRequest {
     pub path_prefix: Option<String>,
     #[serde(default)]
     pub scopes: Option<Vec<MemoryScope>>,
+    #[serde(default)]
+    pub types: Option<Vec<MemoryType>>,
     #[serde(default)]
     pub tags: Option<Vec<String>>,
     #[serde(default)]
@@ -159,6 +188,8 @@ pub struct MemoryListRequest {
     #[serde(default)]
     pub scopes: Option<Vec<MemoryScope>>,
     #[serde(default)]
+    pub types: Option<Vec<MemoryType>>,
+    #[serde(default)]
     pub tags: Option<Vec<String>>,
     #[serde(default)]
     pub session_id: Option<SessionId>,
@@ -194,6 +225,10 @@ pub struct MemoryRecordRequest {
     pub title: String,
     pub content: String,
     #[serde(default)]
+    pub memory_type: Option<MemoryType>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
     pub layer: Option<String>,
     #[serde(default)]
     pub tags: Vec<String>,
@@ -213,6 +248,10 @@ pub struct MemoryPromoteRequest {
     pub target_scope: MemoryScope,
     pub title: String,
     pub content: String,
+    #[serde(default)]
+    pub memory_type: Option<MemoryType>,
+    #[serde(default)]
+    pub description: Option<String>,
     #[serde(default)]
     pub layer: Option<String>,
     #[serde(default)]

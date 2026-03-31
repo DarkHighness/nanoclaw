@@ -1,5 +1,6 @@
 use crate::{
     MemoryDocumentMetadata, MemoryListRequest, MemoryScope, MemorySearchRequest, MemoryStatus,
+    MemoryType,
 };
 use time::{Date, Month, OffsetDateTime};
 use types::{AgentSessionId, SessionId};
@@ -42,6 +43,7 @@ pub(crate) fn matches_search_filters(
         metadata,
         request.path_prefix.as_deref(),
         request.scopes.as_deref(),
+        request.types.as_deref(),
         request.tags.as_deref(),
         request.session_id.as_ref(),
         request.agent_session_id.as_ref(),
@@ -61,6 +63,7 @@ pub(crate) fn matches_list_filters(
         metadata,
         request.path_prefix.as_deref(),
         request.scopes.as_deref(),
+        request.types.as_deref(),
         request.tags.as_deref(),
         request.session_id.as_ref(),
         request.agent_session_id.as_ref(),
@@ -83,6 +86,7 @@ fn matches_filters(
     metadata: &MemoryDocumentMetadata,
     path_prefix: Option<&str>,
     scopes: Option<&[MemoryScope]>,
+    types: Option<&[MemoryType]>,
     tags: Option<&[String]>,
     session_id: Option<&SessionId>,
     agent_session_id: Option<&AgentSessionId>,
@@ -101,6 +105,16 @@ fn matches_filters(
     if let Some(scopes) = scopes
         && !scopes.is_empty()
         && !scopes.contains(&metadata.scope)
+    {
+        return false;
+    }
+
+    if let Some(types) = types
+        && !types.is_empty()
+        && !metadata
+            .memory_type
+            .as_ref()
+            .is_some_and(|memory_type| types.contains(memory_type))
     {
         return false;
     }
@@ -335,6 +349,7 @@ mod tests {
     };
     use crate::{
         MemoryDocumentMetadata, MemoryListRequest, MemoryScope, MemorySearchRequest, MemoryStatus,
+        MemoryType,
     };
     use time::{Date, Month, PrimitiveDateTime, Time};
     use types::{AgentSessionId, SessionId};
@@ -355,6 +370,8 @@ mod tests {
     fn search_filters_by_scope_and_runtime_ids() {
         let metadata = MemoryDocumentMetadata {
             scope: MemoryScope::Working,
+            memory_type: Some(MemoryType::Feedback),
+            description: Some("Deploy debugging guidance.".to_string()),
             layer: "working-agent-session".to_string(),
             session_id: Some(SessionId::from("run_1")),
             agent_session_id: Some(AgentSessionId::from("session_1")),
@@ -371,6 +388,7 @@ mod tests {
             limit: None,
             path_prefix: Some(".nanoclaw/memory/working".to_string()),
             scopes: Some(vec![MemoryScope::Working]),
+            types: Some(vec![MemoryType::Feedback]),
             tags: Some(vec!["deploy".to_string()]),
             session_id: Some(SessionId::from("run_1")),
             agent_session_id: Some(AgentSessionId::from("session_1")),
@@ -444,6 +462,7 @@ mod tests {
             limit: None,
             path_prefix: None,
             scopes: None,
+            types: None,
             tags: None,
             session_id: None,
             agent_session_id: Some(AgentSessionId::from("session_1")),
@@ -488,6 +507,7 @@ mod tests {
             limit: None,
             path_prefix: None,
             scopes: None,
+            types: None,
             tags: None,
             session_id: None,
             agent_session_id: None,

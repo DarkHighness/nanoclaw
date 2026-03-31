@@ -27,10 +27,10 @@ use std::sync::{Arc, RwLock};
 use store::SessionStore;
 use wide::f32x8;
 
-const INDEX_SCHEMA_VERSION: u32 = 2;
+const INDEX_SCHEMA_VERSION: u32 = 3;
 const INDEX_BACKEND_ID: &str = "memory-embed";
 const LEXICAL_INDEX_BACKEND_ID: &str = "memory-embed-lexical";
-const LEXICAL_INDEX_SCHEMA_VERSION: u32 = 1;
+const LEXICAL_INDEX_SCHEMA_VERSION: u32 = 2;
 const MEMORY_EMBED_LEXICAL_SQLITE_INDEX_RELATIVE: &str =
     ".nanoclaw/memory/indexes/memory-embed-lexical.sqlite";
 
@@ -328,7 +328,7 @@ impl MemoryEmbedBackend {
                         .get(&chunk.path)
                         .map(String::as_str)
                         .unwrap_or("Memory"),
-                    &chunk.text,
+                    &chunk.indexed_text,
                 );
                 reusable.get(&signature).map(|entry| {
                     (
@@ -339,7 +339,7 @@ impl MemoryEmbedBackend {
                             snapshot_id: chunk.snapshot_id.clone(),
                             start_line: chunk.start_line,
                             end_line: chunk.end_line,
-                            text: chunk.text.clone(),
+                            text: chunk.indexed_text.clone(),
                             embedding: entry.embedding.clone(),
                         },
                     )
@@ -372,7 +372,7 @@ impl MemoryEmbedBackend {
                     .get(&chunk.path)
                     .map(String::as_str)
                     .unwrap_or("Memory"),
-                &chunk.text,
+                &chunk.indexed_text,
             );
             let signature = embedding_input_signature(
                 model,
@@ -380,7 +380,7 @@ impl MemoryEmbedBackend {
                     .get(&chunk.path)
                     .map(String::as_str)
                     .unwrap_or("Memory"),
-                &chunk.text,
+                &chunk.indexed_text,
             );
             payload_chunks
                 .entry(signature.clone())
@@ -415,7 +415,7 @@ impl MemoryEmbedBackend {
                         snapshot_id: chunk.snapshot_id.clone(),
                         start_line: chunk.start_line,
                         end_line: chunk.end_line,
-                        text: chunk.text.clone(),
+                        text: chunk.indexed_text.clone(),
                         embedding: embedding.clone(),
                     });
                 }
@@ -1177,6 +1177,7 @@ fn lexical_index_chunks(chunks: &[crate::MemoryCorpusChunk]) -> Vec<LexicalIndex
             start_line: chunk.start_line,
             end_line: chunk.end_line,
             text: chunk.text.clone(),
+            indexed_text: format!("path: {}\n{}", chunk.path, chunk.indexed_text),
         })
         .collect()
 }
@@ -1521,8 +1522,9 @@ fn cosine_similarity(left: &[f32], right: &[f32]) -> f64 {
 }
 
 fn render_embed_snippet(text: &str, max_chars: usize) -> String {
+    let text = strip_frontmatter_for_snippet(text);
     if text.chars().count() <= max_chars {
-        return text.to_string();
+        return text;
     }
     format!(
         "{}...",
@@ -1530,6 +1532,28 @@ fn render_embed_snippet(text: &str, max_chars: usize) -> String {
             .take(max_chars.saturating_sub(3))
             .collect::<String>()
     )
+}
+
+fn strip_frontmatter_for_snippet(text: &str) -> String {
+    let trimmed = text.trim();
+    if !trimmed.starts_with("---\n") {
+        return trimmed.to_string();
+    }
+    let mut lines = trimmed.lines();
+    if lines.next() != Some("---") {
+        return trimmed.to_string();
+    }
+    for line in lines.by_ref() {
+        if line.trim() == "---" {
+            let body = lines.collect::<Vec<_>>().join("\n").trim().to_string();
+            return if body.is_empty() {
+                trimmed.to_string()
+            } else {
+                body
+            };
+        }
+    }
+    trimmed.to_string()
 }
 
 #[cfg(test)]
@@ -1657,6 +1681,7 @@ mod tests {
                     limit: Some(2),
                     path_prefix: None,
                     scopes: None,
+                    types: None,
                     tags: None,
                     session_id: None,
                     agent_session_id: None,
@@ -1702,6 +1727,36 @@ mod tests {
             backend.sync().await.unwrap();
             let second_calls = client.calls.lock().unwrap().clone();
             assert_eq!(second_calls.len(), 1);
+        }
+    );
+
+    bounded_async_test!(
+        async fn sync_includes_memory_labels_in_embedding_payloads() {
+            let dir = tempdir().unwrap();
+            fs::create_dir_all(dir.path().join("memory")).await.unwrap();
+            fs::write(
+                dir.path().join("memory/rollout.md"),
+                "---\ndescription: canary deploy before restart\ntype: project\n---\n# Rollout Memory\n\nuse phased restarts for production",
+            )
+            .await
+            .unwrap();
+            let client = Arc::new(MockEmbeddingClient::default());
+
+            let backend = MemoryEmbedBackend::new(
+                dir.path().to_path_buf(),
+                MemoryEmbedConfig::default(),
+                client.clone(),
+            )
+            .unwrap();
+            backend.sync().await.unwrap();
+
+            let calls = client.calls.lock().unwrap().clone();
+            assert_eq!(calls.len(), 1);
+            assert_eq!(calls[0].len(), 1);
+            assert!(calls[0][0].contains("title: Rollout Memory"));
+            assert!(calls[0][0].contains("description: canary deploy before restart"));
+            assert!(calls[0][0].contains("type: project"));
+            assert!(calls[0][0].contains("use phased restarts for production"));
         }
     );
 
@@ -1760,6 +1815,7 @@ mod tests {
                     limit: Some(2),
                     path_prefix: None,
                     scopes: None,
+                    types: None,
                     tags: None,
                     session_id: None,
                     agent_session_id: None,
@@ -1872,6 +1928,43 @@ mod tests {
     );
 
     bounded_async_test!(
+        async fn sync_reembeds_when_only_memory_description_changes() {
+            let dir = tempdir().unwrap();
+            fs::create_dir_all(dir.path().join("memory")).await.unwrap();
+            fs::write(
+                dir.path().join("memory/rollout.md"),
+                "---\ndescription: canary deploy before restart\ntype: project\n---\n# Rollout Memory\n\nuse phased restarts for production",
+            )
+            .await
+            .unwrap();
+            let client = Arc::new(MockEmbeddingClient::default());
+            let config = MemoryEmbedConfig::default();
+
+            let backend =
+                MemoryEmbedBackend::new(dir.path().to_path_buf(), config.clone(), client.clone())
+                    .unwrap();
+            backend.sync().await.unwrap();
+            assert_eq!(client.calls.lock().unwrap().len(), 1);
+
+            fs::write(
+                dir.path().join("memory/rollout.md"),
+                "---\ndescription: blue-green deploy before restart\ntype: project\n---\n# Rollout Memory\n\nuse phased restarts for production",
+            )
+            .await
+            .unwrap();
+
+            let restarted =
+                MemoryEmbedBackend::new(dir.path().to_path_buf(), config, client.clone()).unwrap();
+            restarted.sync().await.unwrap();
+
+            let calls = client.calls.lock().unwrap().clone();
+            assert_eq!(calls.len(), 2);
+            assert_eq!(calls[1].len(), 1);
+            assert!(calls[1][0].contains("description: blue-green deploy before restart"));
+        }
+    );
+
+    bounded_async_test!(
         async fn sync_deduplicates_identical_embedding_payloads() {
             let dir = tempdir().unwrap();
             fs::create_dir_all(dir.path().join("memory")).await.unwrap();
@@ -1928,6 +2021,7 @@ mod tests {
                     limit: Some(2),
                     path_prefix: Some("memory/".to_string()),
                     scopes: None,
+                    types: None,
                     tags: None,
                     session_id: None,
                     agent_session_id: None,
@@ -2064,6 +2158,7 @@ mod tests {
                     limit: Some(2),
                     path_prefix: None,
                     scopes: None,
+                    types: None,
                     tags: None,
                     session_id: None,
                     agent_session_id: None,
@@ -2160,6 +2255,7 @@ mod tests {
                     start_line: 1,
                     end_line: 4,
                     text: "duplicate rollout canary".to_string(),
+                    indexed_text: "duplicate rollout canary".to_string(),
                     metadata: crate::MemoryDocumentMetadata::default(),
                 },
                 title: "Memory".to_string(),
@@ -2188,6 +2284,7 @@ mod tests {
                     start_line: 3,
                     end_line: 6,
                     text: "duplicate rollout canary".to_string(),
+                    indexed_text: "duplicate rollout canary".to_string(),
                     metadata: crate::MemoryDocumentMetadata::default(),
                 },
                 title: "Memory".to_string(),
@@ -2216,6 +2313,7 @@ mod tests {
                     start_line: 1,
                     end_line: 4,
                     text: "fallback recovery procedure".to_string(),
+                    indexed_text: "fallback recovery procedure".to_string(),
                     metadata: crate::MemoryDocumentMetadata::default(),
                 },
                 title: "Other".to_string(),

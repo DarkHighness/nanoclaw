@@ -48,6 +48,10 @@ pub(crate) async fn promote_memory(
     };
     let metadata = MemoryDocumentMetadata {
         scope: request.target_scope,
+        memory_type: request.memory_type.or(source.metadata.memory_type),
+        description: request
+            .description
+            .or_else(|| source.metadata.description.clone()),
         layer,
         session_id: None,
         agent_session_id: None,

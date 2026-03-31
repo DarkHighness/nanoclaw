@@ -1,7 +1,9 @@
 use crate::corpus::parse_memory_text;
 use crate::managed_files::{current_timestamp_ms, render_memory_markdown};
 use crate::state::MEMORY_AUTO_INDEX_RELATIVE;
-use crate::{MemoryDocumentMetadata, MemoryScope, MemoryStateLayout, MemoryStatus, Result};
+use crate::{
+    MemoryDocumentMetadata, MemoryScope, MemoryStateLayout, MemoryStatus, MemoryType, Result,
+};
 use ignore::WalkBuilder;
 use std::path::{Path, PathBuf};
 use tokio::fs;
@@ -12,6 +14,10 @@ struct AutoMemoryIndexEntry {
     title: String,
     metadata: MemoryDocumentMetadata,
 }
+
+const MAX_AUTO_INDEX_LINES: usize = 200;
+const MAX_AUTO_INDEX_BYTES: usize = 25_000;
+const MAX_INDEX_HOOK_CHARS: usize = 120;
 
 pub(crate) async fn refresh_auto_memory_index(workspace_root: &Path) -> Result<()> {
     let layout = MemoryStateLayout::new(workspace_root);
@@ -34,6 +40,10 @@ pub(crate) async fn refresh_auto_memory_index(workspace_root: &Path) -> Result<(
             &rendered,
             &MemoryDocumentMetadata {
                 scope: MemoryScope::Semantic,
+                memory_type: None,
+                description: Some(
+                    "Index of durable auto memories and transient memory summaries.".to_string(),
+                ),
                 layer: "auto-memory-index".to_string(),
                 session_id: None,
                 agent_session_id: None,
@@ -112,29 +122,29 @@ fn render_auto_memory_index(entries: &[AutoMemoryIndexEntry]) -> String {
     let mut lines = vec![
         "# Managed Memory Index".to_string(),
         String::new(),
-        "This file is generated from `.nanoclaw/memory/` so the local backend has one concise entry point for durable auto memory.".to_string(),
+        "This file is generated from `.nanoclaw/memory/` and should stay as a concise map of durable memories.".to_string(),
         String::new(),
         "## Durable Memory".to_string(),
         String::new(),
     ];
 
-    let procedural = entries
-        .iter()
-        .filter(|entry| entry.metadata.scope == MemoryScope::Procedural)
-        .collect::<Vec<_>>();
-    let semantic = entries
+    let durable = entries
         .iter()
         .filter(|entry| {
-            entry.metadata.scope == MemoryScope::Semantic
-                && entry.metadata.layer != "auto-memory-index"
+            matches!(
+                entry.metadata.scope,
+                MemoryScope::Procedural | MemoryScope::Semantic
+            ) && entry.metadata.layer != "auto-memory-index"
         })
         .collect::<Vec<_>>();
 
-    lines.push(format!("- Procedural notes: {}", procedural.len()));
-    lines.push(format!("- Semantic notes: {}", semantic.len()));
-    lines.push(String::new());
-    push_detailed_scope_section(&mut lines, "Procedural Notes", &procedural);
-    push_detailed_scope_section(&mut lines, "Semantic Notes", &semantic);
+    if durable.is_empty() {
+        lines.push("- No durable memories yet.".to_string());
+    } else {
+        for entry in durable {
+            lines.push(render_durable_hook_line(entry));
+        }
+    }
 
     lines.push(String::new());
     lines.push("## Runtime Memory Summary".to_string());
@@ -149,33 +159,16 @@ fn render_auto_memory_index(entries: &[AutoMemoryIndexEntry]) -> String {
     );
     lines.push(String::new());
 
-    lines.join("\n")
+    finalize_index(lines)
 }
 
-fn push_detailed_scope_section(
-    lines: &mut Vec<String>,
-    title: &str,
-    entries: &[&AutoMemoryIndexEntry],
-) {
-    lines.push(format!("### {title}"));
-    lines.push(String::new());
-    if entries.is_empty() {
-        lines.push("- None yet.".to_string());
-        lines.push(String::new());
-        return;
-    }
-
-    for entry in entries {
-        lines.push(format!(
-            "- [{}]({}) (layer: {}, status: {}, updated: {})",
-            entry.title,
-            managed_memory_link(&entry.path),
-            entry.metadata.layer,
-            entry.metadata.status.as_str(),
-            format_timestamp_ms(entry.metadata.updated_at_ms),
-        ));
-    }
-    lines.push(String::new());
+fn render_durable_hook_line(entry: &AutoMemoryIndexEntry) -> String {
+    format!(
+        "- [{}]({}) — {}",
+        entry.title,
+        managed_memory_link(&entry.path),
+        truncate_hook(&entry_hook(entry), MAX_INDEX_HOOK_CHARS),
+    )
 }
 
 fn push_runtime_scope_summary(
@@ -192,16 +185,80 @@ fn push_runtime_scope_summary(
         .iter()
         .max_by_key(|entry| entry.metadata.updated_at_ms.unwrap_or_default())
     {
+        let kind = latest
+            .metadata
+            .memory_type
+            .map(MemoryType::as_str)
+            .unwrap_or("runtime");
         lines.push(format!(
-            "- {label}: {} notes, latest [{}]({}) updated {}",
+            "- {label}: {} notes, latest [{}]({}) — {} ({}, updated {})",
             scoped.len(),
             latest.title,
             managed_memory_link(&latest.path),
+            truncate_hook(&entry_hook(latest), MAX_INDEX_HOOK_CHARS),
+            kind,
             format_timestamp_ms(latest.metadata.updated_at_ms),
         ));
     } else {
         lines.push(format!("- {label}: 0 notes"));
     }
+}
+
+fn entry_hook(entry: &AutoMemoryIndexEntry) -> String {
+    if let Some(description) = entry.metadata.description.as_deref() {
+        return description.to_string();
+    }
+    match entry.metadata.memory_type {
+        Some(MemoryType::User) => "user profile and collaboration context".to_string(),
+        Some(MemoryType::Feedback) => {
+            "validated guidance about how to approach future work".to_string()
+        }
+        Some(MemoryType::Project) => {
+            "project context that is not derivable from the code".to_string()
+        }
+        Some(MemoryType::Reference) => "pointer to external context worth checking".to_string(),
+        None => match entry.metadata.scope {
+            MemoryScope::Procedural => "durable procedural guidance".to_string(),
+            MemoryScope::Semantic => "durable project memory".to_string(),
+            MemoryScope::Episodic => "runtime-derived episodic note".to_string(),
+            MemoryScope::Working => "active working note for the current task".to_string(),
+            MemoryScope::Coordination => "coordination state shared across agents".to_string(),
+        },
+    }
+}
+
+fn truncate_hook(hook: &str, max_chars: usize) -> String {
+    let trimmed = hook.trim();
+    if trimmed.chars().count() <= max_chars {
+        return trimmed.to_string();
+    }
+    let truncated = trimmed
+        .chars()
+        .take(max_chars.saturating_sub(1))
+        .collect::<String>();
+    format!("{truncated}…")
+}
+
+fn finalize_index(mut lines: Vec<String>) -> String {
+    let overflow_note = "> Additional entries were omitted to keep this index concise. Use `memory_list` for the full inventory.";
+    if lines.len() <= MAX_AUTO_INDEX_LINES && lines.join("\n").len() <= MAX_AUTO_INDEX_BYTES {
+        return lines.join("\n");
+    }
+
+    lines.truncate(MAX_AUTO_INDEX_LINES.saturating_sub(2));
+    while !lines.is_empty() {
+        let tentative = if lines.last().is_some_and(|line| line.is_empty()) {
+            format!("{}\n{}", lines.join("\n"), overflow_note)
+        } else {
+            format!("{}\n\n{}", lines.join("\n"), overflow_note)
+        };
+        if tentative.len() <= MAX_AUTO_INDEX_BYTES {
+            return tentative;
+        }
+        lines.pop();
+    }
+
+    overflow_note.to_string()
 }
 
 fn managed_memory_link(path: &str) -> &str {
@@ -252,7 +309,7 @@ mod tests {
     use super::refresh_auto_memory_index;
     use crate::managed_files::record_memory;
     use crate::promotion::promote_memory;
-    use crate::{MemoryPromoteRequest, MemoryRecordRequest, MemoryScope};
+    use crate::{MemoryPromoteRequest, MemoryRecordRequest, MemoryScope, MemoryType};
     use tempfile::tempdir;
     use tokio::fs;
 
@@ -265,6 +322,8 @@ mod tests {
                 scope: MemoryScope::Working,
                 title: "Scratch".to_string(),
                 content: "temporary finding".to_string(),
+                memory_type: None,
+                description: Some("Transient deploy debugging note.".to_string()),
                 layer: None,
                 tags: Vec::new(),
                 session_id: None,
@@ -285,6 +344,8 @@ mod tests {
                 target_scope: MemoryScope::Semantic,
                 title: "Deploy Memory".to_string(),
                 content: "Use a canary deploy before restart.".to_string(),
+                memory_type: Some(MemoryType::Project),
+                description: Some("Canary deploy requirement before restart.".to_string()),
                 layer: None,
                 tags: vec!["deploy".to_string()],
             },
@@ -299,7 +360,9 @@ mod tests {
             .unwrap();
         assert!(rendered.contains("layer: auto-memory-index"));
         assert!(rendered.contains("## Durable Memory"));
-        assert!(rendered.contains("[Deploy Memory](semantic/deploy-memory.md)"));
+        assert!(rendered.contains(
+            "- [Deploy Memory](semantic/deploy-memory.md) — Canary deploy requirement before restart."
+        ));
         assert!(rendered.contains("## Runtime Memory Summary"));
         assert!(rendered.contains("Working: 1 notes"));
     }

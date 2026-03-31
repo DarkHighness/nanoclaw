@@ -26,6 +26,9 @@ pub(crate) struct PersistedChunkEmbedding {
     pub(crate) snapshot_id: String,
     pub(crate) start_line: usize,
     pub(crate) end_line: usize,
+    // Store the exact text that produced the embedding so incremental sync can
+    // safely decide whether a stale vector is still reusable after metadata-only
+    // edits such as changing a memory description or type.
     pub(crate) text: String,
     pub(crate) embedding: Vec<f32>,
 }

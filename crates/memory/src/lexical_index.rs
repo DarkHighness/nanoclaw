@@ -19,6 +19,7 @@ pub(crate) struct LexicalIndexChunk {
     pub(crate) start_line: usize,
     pub(crate) end_line: usize,
     pub(crate) text: String,
+    pub(crate) indexed_text: String,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -281,6 +282,30 @@ fn replace_sqlite_index_blocking(
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
+    if path.exists() {
+        // Schema bumps are handled by full rebuilds. Removing the old artifact
+        // avoids depending on SQLite's limited CREATE TABLE IF NOT EXISTS path
+        // when the indexed columns themselves have changed.
+        std::fs::remove_file(path)?;
+        let wal_path = path.with_extension(format!(
+            "{}-wal",
+            path.extension()
+                .and_then(|value| value.to_str())
+                .unwrap_or_default()
+        ));
+        if wal_path.exists() {
+            let _ = std::fs::remove_file(wal_path);
+        }
+        let shm_path = path.with_extension(format!(
+            "{}-shm",
+            path.extension()
+                .and_then(|value| value.to_str())
+                .unwrap_or_default()
+        ));
+        if shm_path.exists() {
+            let _ = std::fs::remove_file(shm_path);
+        }
+    }
     let mut connection = open_sqlite(path)?;
     let transaction = connection.transaction().map_err(map_sqlite_error)?;
     transaction
@@ -340,15 +365,15 @@ fn insert_chunks(
     let mut chunk_statement = transaction
         .prepare(&format!(
             "INSERT INTO {CHUNKS_TABLE} \
-             (chunk_id, path, snapshot_id, start_line, end_line, text) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)"
+             (chunk_id, path, snapshot_id, start_line, end_line, text, indexed_text) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"
         ))
         .map_err(map_sqlite_error)?;
     let mut fts_statement = transaction
         .prepare(&format!(
             "INSERT INTO {FTS_TABLE} \
-             (text, chunk_id, path, snapshot_id, start_line, end_line) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)"
+             (indexed_text, text, chunk_id, path, snapshot_id, start_line, end_line) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"
         ))
         .map_err(map_sqlite_error)?;
     for chunk in chunks {
@@ -360,10 +385,12 @@ fn insert_chunks(
                 chunk.start_line as u32,
                 chunk.end_line as u32,
                 chunk.text,
+                chunk.indexed_text,
             ])
             .map_err(map_sqlite_error)?;
         fts_statement
             .execute(params![
+                chunk.indexed_text,
                 chunk.text,
                 chunk.chunk_id,
                 chunk.path,
@@ -424,8 +451,8 @@ fn search_sqlite_index_blocking(
     let sql = if path_prefix.is_some() {
         format!(
             "SELECT chunk_id, path, snapshot_id, start_line, end_line, text, \
-                    snippet({FTS_TABLE}, 0, '', '', '...', 32) AS snippet, \
-                    bm25({FTS_TABLE}) AS rank \
+                    snippet({FTS_TABLE}, 1, '', '', '...', 32) AS snippet, \
+                    bm25({FTS_TABLE}, 0.6, 1.0) AS rank \
                FROM {FTS_TABLE} \
               WHERE {FTS_TABLE} MATCH ?1 \
                 AND path LIKE ?2 ESCAPE '\\' \
@@ -435,8 +462,8 @@ fn search_sqlite_index_blocking(
     } else {
         format!(
             "SELECT chunk_id, path, snapshot_id, start_line, end_line, text, \
-                    snippet({FTS_TABLE}, 0, '', '', '...', 32) AS snippet, \
-                    bm25({FTS_TABLE}) AS rank \
+                    snippet({FTS_TABLE}, 1, '', '', '...', 32) AS snippet, \
+                    bm25({FTS_TABLE}, 0.6, 1.0) AS rank \
                FROM {FTS_TABLE} \
               WHERE {FTS_TABLE} MATCH ?1 \
               ORDER BY rank ASC \
@@ -499,16 +526,18 @@ fn open_sqlite(path: &Path) -> Result<Connection> {
                snapshot_id TEXT NOT NULL, \
                start_line INTEGER NOT NULL, \
                end_line INTEGER NOT NULL, \
-               text TEXT NOT NULL\
+               text TEXT NOT NULL, \
+               indexed_text TEXT NOT NULL\
              );\
              CREATE INDEX IF NOT EXISTS idx_memory_lexical_chunks_path \
                ON {CHUNKS_TABLE}(path);\
              CREATE VIRTUAL TABLE IF NOT EXISTS {FTS_TABLE} USING fts5(\
+               indexed_text, \
                text, \
-               chunk_id UNINDEXED, \
-               path UNINDEXED, \
-               snapshot_id UNINDEXED, \
-               start_line UNINDEXED, \
+                chunk_id UNINDEXED, \
+                path UNINDEXED, \
+                snapshot_id UNINDEXED, \
+                start_line UNINDEXED, \
                end_line UNINDEXED\
              );"
         ))
@@ -731,6 +760,7 @@ mod tests {
             start_line,
             end_line,
             text: text.to_string(),
+            indexed_text: text.to_string(),
         }
     }
 
