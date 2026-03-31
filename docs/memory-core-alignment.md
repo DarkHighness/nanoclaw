@@ -261,6 +261,21 @@ summary source" path without forcing every compaction to depend on a perfect
 background refresh, and it lets both auto-compaction and manual compaction
 reuse the same bounded-wait decision point.
 
+The runtime-side retained tail now also keeps a more Claude-like continuity
+window around the summary boundary:
+
+- the retained tail still honors the message-count floor configured by the
+  runtime profile
+- large transcripts expand that tail until it carries at least a modest token
+  and text-message floor
+- the split point is then rewound to the start of the surviving user-side turn
+  cluster so compaction does not keep only an assistant reply or only the tail
+  half of a synthetic recall + user prompt pair
+- tool call / tool result pairs remain indivisible across that boundary
+
+That keeps the post-compact transcript closer to Claude's "complete recent
+trajectory" shape instead of preserving an arbitrary suffix of message slots.
+
 ## Side Questions (`/btw`)
 
 Claude Code exposes side questions as a separate lightweight query path rather

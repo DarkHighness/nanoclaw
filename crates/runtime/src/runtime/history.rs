@@ -371,6 +371,10 @@ fn select_compaction_split_index(
     }
 
     split_at = expand_retained_tail_for_context_floor(visible_messages, split_at);
+    if split_at == visible_messages.len() {
+        return Some(split_at);
+    }
+    split_at = rewind_split_at_to_turn_cluster_start(visible_messages, split_at)?;
     adjust_split_at_for_tool_pairs(visible_messages, split_at)
 }
 
@@ -415,6 +419,41 @@ fn adjust_split_at_for_tool_pairs(
             return None;
         }
         split_at = previous_call_index;
+    }
+}
+
+fn rewind_split_at_to_turn_cluster_start(
+    visible_messages: &[Message],
+    mut split_at: usize,
+) -> Option<usize> {
+    // Post-compaction continuity is materially worse when the retained tail
+    // starts in the middle of an assistant trajectory. Rewind across
+    // assistant/tool messages until the tail starts at the user-side cluster
+    // that kicked off the surviving turn, including synthetic recall/user
+    // prefix messages that share the same turn.
+    loop {
+        match visible_messages.get(split_at)?.role {
+            MessageRole::Assistant | MessageRole::Tool => {
+                if split_at == 0 {
+                    return None;
+                }
+                split_at -= 1;
+            }
+            MessageRole::User => {
+                while split_at > 0
+                    && matches!(
+                        visible_messages
+                            .get(split_at - 1)
+                            .map(|message| &message.role),
+                        Some(MessageRole::User)
+                    )
+                {
+                    split_at -= 1;
+                }
+                return (split_at >= 2).then_some(split_at);
+            }
+            MessageRole::System => return (split_at >= 2).then_some(split_at),
+        }
     }
 }
 
@@ -496,7 +535,13 @@ mod tests {
     #[test]
     fn split_index_expands_retained_tail_for_large_contexts() {
         let visible_messages = (0..20)
-            .map(|index| Message::user(format!("message-{index} {}", "x".repeat(3000))))
+            .map(|index| {
+                if index % 2 == 0 {
+                    Message::user(format!("prompt-{index} {}", "x".repeat(3000)))
+                } else {
+                    Message::assistant(format!("reply-{index} {}", "y".repeat(3000)))
+                }
+            })
             .collect::<Vec<_>>();
 
         let split_at = select_compaction_split_index(&visible_messages, 1).expect("split index");
@@ -510,8 +555,9 @@ mod tests {
     #[test]
     fn split_index_moves_backward_to_preserve_tool_pairs() {
         let visible_messages = vec![
-            Message::user("context one"),
-            Message::assistant("context two"),
+            Message::user("older prompt"),
+            Message::assistant("older answer"),
+            Message::user("current prompt"),
             Message::assistant_parts(vec![MessagePart::ToolCall {
                 call: ToolCall {
                     id: "tool-call-1".into(),
@@ -522,10 +568,50 @@ mod tests {
                 },
             }]),
             Message::tool_result(ToolResult::text("tool-call-1".into(), "read_file", "ok")),
-            Message::user("follow up"),
+            Message::assistant("follow up"),
         ];
 
         let split_at = select_compaction_split_index(&visible_messages, 2).expect("split index");
+
+        assert_eq!(split_at, 2);
+    }
+
+    #[test]
+    fn split_index_rewinds_to_start_of_user_cluster() {
+        let visible_messages = vec![
+            Message::user("older prompt"),
+            Message::assistant("older answer"),
+            Message::user("recalled workspace memory"),
+            Message::user("real user prompt"),
+            Message::assistant("latest assistant reply"),
+        ];
+
+        let split_at = select_compaction_split_index(&visible_messages, 1).expect("split index");
+
+        assert_eq!(split_at, 2);
+    }
+
+    #[test]
+    fn split_index_keeps_full_tool_trajectory_turn() {
+        let visible_messages = vec![
+            Message::user("older prompt"),
+            Message::assistant("older answer"),
+            Message::user("recalled workspace memory"),
+            Message::user("real user prompt"),
+            Message::assistant_parts(vec![MessagePart::ToolCall {
+                call: ToolCall {
+                    id: "tool-call-2".into(),
+                    call_id: "call-2".into(),
+                    tool_name: "read_file".into(),
+                    arguments: json!({ "path": "Cargo.toml" }),
+                    origin: ToolOrigin::Local,
+                },
+            }]),
+            Message::tool_result(ToolResult::text("tool-call-2".into(), "read_file", "ok")),
+            Message::assistant("latest assistant reply"),
+        ];
+
+        let split_at = select_compaction_split_index(&visible_messages, 1).expect("split index");
 
         assert_eq!(split_at, 2);
     }
