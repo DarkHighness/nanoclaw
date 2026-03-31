@@ -1,5 +1,5 @@
 use crate::{ProviderError, Result};
-use serde_json::{Map, Value};
+use serde_json::{Map, Value, json};
 use types::{
     MessagePart, ReasoningContent, ToolKind, ToolResult, ToolSpec, reference_display_text,
 };
@@ -7,12 +7,97 @@ use types::{
 #[must_use]
 pub fn coerce_object_schema(schema: &Value) -> Value {
     let mut schema = schema.clone();
-    if schema.get("type").is_none() && schema.get("properties").is_some() {
-        if let Some(object) = schema.as_object_mut() {
-            object.insert("type".to_string(), Value::String("object".to_string()));
-        }
-    }
+    sanitize_tool_schema(&mut schema);
     schema
+}
+
+fn sanitize_tool_schema(value: &mut Value) {
+    match value {
+        Value::Bool(_) => {
+            // Provider tool surfaces do not accept JSON Schema boolean shorthand.
+            // Downgrading to a permissive string schema is safer than forwarding
+            // `true` / `false` and letting the backend reject the whole request.
+            *value = json!({ "type": "string" });
+        }
+        Value::Array(values) => {
+            for value in values {
+                sanitize_tool_schema(value);
+            }
+        }
+        Value::Object(map) => {
+            if let Some(properties) = map.get_mut("properties")
+                && let Some(properties) = properties.as_object_mut()
+            {
+                for value in properties.values_mut() {
+                    sanitize_tool_schema(value);
+                }
+            }
+            if let Some(items) = map.get_mut("items") {
+                sanitize_tool_schema(items);
+            }
+            for combiner in ["oneOf", "anyOf", "allOf", "prefixItems"] {
+                if let Some(value) = map.get_mut(combiner) {
+                    sanitize_tool_schema(value);
+                }
+            }
+            if let Some(additional_properties) = map.get_mut("additionalProperties")
+                && !matches!(additional_properties, Value::Bool(_))
+            {
+                sanitize_tool_schema(additional_properties);
+            }
+
+            let schema_type = infer_schema_type(map);
+            map.insert("type".to_string(), Value::String(schema_type.clone()));
+
+            if schema_type == "object" && !map.contains_key("properties") {
+                map.insert("properties".to_string(), Value::Object(Map::new()));
+            }
+            if schema_type == "array" && !map.contains_key("items") {
+                map.insert("items".to_string(), json!({ "type": "string" }));
+            }
+        }
+        _ => {}
+    }
+}
+
+fn infer_schema_type(map: &Map<String, Value>) -> String {
+    normalized_schema_type(map.get("type")).unwrap_or_else(|| {
+        if map.contains_key("properties")
+            || map.contains_key("required")
+            || map.contains_key("additionalProperties")
+        {
+            "object".to_string()
+        } else if map.contains_key("items") || map.contains_key("prefixItems") {
+            "array".to_string()
+        } else if map.contains_key("enum")
+            || map.contains_key("const")
+            || map.contains_key("format")
+        {
+            "string".to_string()
+        } else if map.contains_key("minimum")
+            || map.contains_key("maximum")
+            || map.contains_key("exclusiveMinimum")
+            || map.contains_key("exclusiveMaximum")
+            || map.contains_key("multipleOf")
+        {
+            "number".to_string()
+        } else {
+            "string".to_string()
+        }
+    })
+}
+
+fn normalized_schema_type(value: Option<&Value>) -> Option<String> {
+    const SUPPORTED: &[&str] = &["object", "array", "string", "number", "integer", "boolean"];
+
+    match value {
+        Some(Value::String(value)) if SUPPORTED.contains(&value.as_str()) => Some(value.clone()),
+        Some(Value::Array(values)) => values.iter().find_map(|candidate| match candidate {
+            Value::String(value) if SUPPORTED.contains(&value.as_str()) => Some(value.clone()),
+            _ => None,
+        }),
+        _ => None,
+    }
 }
 
 pub fn merge_top_level_object(
@@ -266,6 +351,82 @@ mod tests {
 
         assert_eq!(coerced["type"], json!("object"));
         assert_eq!(coerced["properties"]["path"]["type"], json!("string"));
+    }
+
+    #[test]
+    fn coerce_object_schema_sanitizes_nested_composition_and_array_defaults() {
+        let schema = json!({
+            "properties": {
+                "payload": {
+                    "type": ["object", "null"],
+                    "additionalProperties": true
+                },
+                "targets": {
+                    "type": "array"
+                },
+                "mode": {
+                    "oneOf": [
+                        true,
+                        {
+                            "enum": ["fast", "safe"]
+                        }
+                    ]
+                }
+            },
+            "required": ["payload"]
+        });
+
+        let coerced = coerce_object_schema(&schema);
+
+        assert_eq!(coerced["type"], json!("object"));
+        assert_eq!(coerced["properties"]["payload"]["type"], json!("object"));
+        assert_eq!(coerced["properties"]["payload"]["properties"], json!({}));
+        assert_eq!(coerced["properties"]["targets"]["type"], json!("array"));
+        assert_eq!(
+            coerced["properties"]["targets"]["items"]["type"],
+            json!("string")
+        );
+        assert_eq!(
+            coerced["properties"]["mode"]["oneOf"][0]["type"],
+            json!("string")
+        );
+        assert_eq!(
+            coerced["properties"]["mode"]["oneOf"][1]["type"],
+            json!("string")
+        );
+    }
+
+    #[test]
+    fn coerce_object_schema_preserves_object_additional_properties_schema() {
+        let schema = json!({
+            "type": "object",
+            "additionalProperties": {
+                "items": true
+            }
+        });
+
+        let coerced = coerce_object_schema(&schema);
+
+        assert_eq!(coerced["type"], json!("object"));
+        assert_eq!(coerced["properties"], json!({}));
+        assert_eq!(coerced["additionalProperties"]["type"], json!("array"));
+        assert_eq!(
+            coerced["additionalProperties"]["items"]["type"],
+            json!("string")
+        );
+    }
+
+    #[test]
+    fn coerce_object_schema_normalizes_nullable_object_roots() {
+        let schema = json!({
+            "type": ["null", "object"],
+            "required": ["command"]
+        });
+
+        let coerced = coerce_object_schema(&schema);
+
+        assert_eq!(coerced["type"], json!("object"));
+        assert_eq!(coerced["properties"], json!({}));
     }
 
     #[test]

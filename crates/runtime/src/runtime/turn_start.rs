@@ -4,6 +4,7 @@ use serde_json::json;
 use std::collections::BTreeMap;
 use types::{
     AgentCoreError, HookContext, HookEvent, HookRegistration, Message, SessionEventKind, TurnId,
+    message_operator_text,
 };
 
 impl AgentRuntime {
@@ -135,9 +136,44 @@ impl AgentRuntime {
 }
 
 fn preview_user_message(message: &Message) -> String {
-    let text = message.text_content();
-    if !text.trim().is_empty() {
-        return text.trim().to_string();
+    // Hook payloads should use the same operator-visible renderer as the TUI and
+    // session export. Falling back to `text_content()` here hides attachment-only
+    // turns and typed references, which makes audit trails drift across surfaces.
+    let text = message_operator_text(message);
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        "<structured user input>".to_string()
+    } else {
+        trimmed.to_string()
     }
-    serde_json::to_string(&message.parts).unwrap_or_else(|_| "<structured user input>".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::preview_user_message;
+    use types::{Message, MessagePart, MessageRole};
+
+    #[test]
+    fn preview_user_message_keeps_attachment_and_reference_markers() {
+        let message = Message::new(
+            MessageRole::User,
+            vec![
+                MessagePart::ImageUrl {
+                    url: "https://example.com/failure.png".to_string(),
+                    mime_type: Some("image/png".to_string()),
+                },
+                MessagePart::reference(
+                    "mention",
+                    Some("workspace".to_string()),
+                    Some("app://workspace/snapshot".to_string()),
+                    None,
+                ),
+            ],
+        );
+
+        assert_eq!(
+            preview_user_message(&message),
+            "[image_url:https://example.com/failure.png image/png]\n[reference:mention workspace app://workspace/snapshot]"
+        );
+    }
 }

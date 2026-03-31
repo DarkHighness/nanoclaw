@@ -40,10 +40,7 @@ use agent::tools::{
 };
 use agent::types::MessageRole;
 use anyhow::Result;
-use crossterm::event::{
-    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
-    KeyModifiers, MouseEventKind,
-};
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
@@ -129,7 +126,10 @@ impl CodeAgentTui {
 
         enable_raw_mode()?;
         let mut stdout = io::stdout();
-        execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+        // Keep terminal-native mouse selection available in the main transcript.
+        // The TUI only uses keyboard navigation here, so capturing mouse events
+        // would mostly disable copy/select without providing meaningful utility.
+        execute!(stdout, EnterAlternateScreen)?;
         let backend = CrosstermBackend::new(stdout);
         let mut terminal = Terminal::new(backend)?;
 
@@ -147,11 +147,7 @@ impl CodeAgentTui {
             .await;
 
         disable_raw_mode()?;
-        execute!(
-            terminal.backend_mut(),
-            LeaveAlternateScreen,
-            DisableMouseCapture
-        )?;
+        execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
         terminal.show_cursor()?;
         result
     }
@@ -400,15 +396,6 @@ impl CodeAgentTui {
                         _ => {}
                     }
                 }
-                Event::Mouse(mouse) => match mouse.kind {
-                    MouseEventKind::ScrollUp => {
-                        self.ui_state.mutate(|state| state.scroll_focused(-3));
-                    }
-                    MouseEventKind::ScrollDown => {
-                        self.ui_state.mutate(|state| state.scroll_focused(3));
-                    }
-                    _ => {}
-                },
                 _ => {}
             }
         }
@@ -2506,9 +2493,10 @@ fn build_history_rollback_candidates(
                 .copied()
                 .unwrap_or(transcript.len());
             let turn_slice = transcript.get(start_index..end_index)?;
+            let prompt = agent::types::message_operator_text(message);
             Some(state::HistoryRollbackCandidate {
                 message_id: message.message_id.clone(),
-                prompt: message.text_content(),
+                prompt,
                 turn_preview_lines: format_visible_transcript_preview_lines(turn_slice),
                 removed_turn_count: total_turns.saturating_sub(turn_index),
                 removed_message_count: transcript.len().saturating_sub(start_index),
@@ -2761,7 +2749,7 @@ mod tests {
     use super::state::{InspectorEntry, SessionSummary};
     use super::{PlainInputSubmitAction, merge_interrupt_steers, plain_input_submit_action};
     use crate::backend::SessionPermissionMode;
-    use agent::types::{Message, MessageId};
+    use agent::types::{Message, MessageId, MessagePart, MessageRole};
     use crossterm::event::KeyCode;
     use std::path::PathBuf;
 
@@ -2935,6 +2923,28 @@ mod tests {
         assert_eq!(
             candidates[1].turn_preview_lines,
             vec!["› second".into(), "• answer two".into()]
+        );
+    }
+
+    #[test]
+    fn history_rollback_candidates_keep_operator_visible_attachment_summaries() {
+        let transcript = vec![
+            Message::new(
+                MessageRole::User,
+                vec![MessagePart::ImageUrl {
+                    url: "https://example.com/diagram.png".to_string(),
+                    mime_type: Some("image/png".to_string()),
+                }],
+            )
+            .with_message_id(MessageId::from("msg-1")),
+        ];
+
+        let candidates = build_history_rollback_candidates(&transcript);
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(
+            candidates[0].prompt,
+            "[image_url:https://example.com/diagram.png image/png]"
         );
     }
 }

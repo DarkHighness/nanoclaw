@@ -324,7 +324,9 @@ TODO context is available on wide terminals, the shell adds only a narrow side
 rail for brief context. The palette is intentionally muted rather than
 blue-accented, transcript turns are separated visually, and read-heavy outputs
 such as `/help`, command catalogs, and history lists now open in the main
-pane.
+pane. The main transcript surface intentionally leaves terminal-native mouse
+selection enabled, so copy workflows still work with the operator's existing
+terminal emulator instead of requiring a host-specific clipboard command.
 
 Tool-heavy transcript entries now default to a collapsed shell summary so the
 main timeline stays readable. `/details` toggles the full tool payload stream
