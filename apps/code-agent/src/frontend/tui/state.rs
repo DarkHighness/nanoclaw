@@ -100,6 +100,13 @@ pub(crate) struct ComposerHistoryNavigationState {
 pub(crate) struct ComposerDraftState {
     pub(crate) text: String,
     pub(crate) cursor: usize,
+    pub(crate) pending_pastes: Vec<ComposerPendingPasteState>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ComposerPendingPasteState {
+    pub(crate) placeholder: String,
+    pub(crate) payload: String,
 }
 
 impl ComposerDraftState {
@@ -108,11 +115,14 @@ impl ComposerDraftState {
         Self {
             cursor: text.len(),
             text,
+            pending_pastes: Vec::new(),
         }
     }
 
     fn normalized(mut self) -> Self {
         self.cursor = normalize_input_cursor(&self.text, self.cursor);
+        self.pending_pastes
+            .retain(|pending| self.text.contains(&pending.placeholder));
         self
     }
 }
@@ -757,6 +767,7 @@ pub(crate) struct TuiState {
     pub(crate) show_tool_details: bool,
     pub(crate) input: String,
     pub(crate) input_cursor: usize,
+    pub(crate) pending_pastes: Vec<ComposerPendingPasteState>,
     pub(crate) input_history: Vec<String>,
     pub(crate) local_input_history: Vec<ComposerDraftState>,
     pub(crate) input_history_navigation: Option<ComposerHistoryNavigationState>,
@@ -1240,6 +1251,16 @@ impl TuiState {
         self.reset_command_completion();
     }
 
+    pub(crate) fn push_large_paste(&mut self, payload: &str) -> String {
+        let placeholder = format!("[Paste #{}]", self.next_pending_paste_index());
+        self.pending_pastes.push(ComposerPendingPasteState {
+            placeholder: placeholder.clone(),
+            payload: payload.to_string(),
+        });
+        self.push_input_str(&placeholder);
+        placeholder
+    }
+
     pub(crate) fn pop_input_char(&mut self) {
         let Some(previous_index) = previous_char_boundary(&self.input, self.input_cursor) else {
             return;
@@ -1383,6 +1404,7 @@ impl TuiState {
         let draft = draft.normalized();
         self.input = draft.text;
         self.input_cursor = draft.cursor;
+        self.pending_pastes = draft.pending_pastes;
         self.input_history_navigation = None;
         self.reset_command_completion();
     }
@@ -1391,7 +1413,9 @@ impl TuiState {
         ComposerDraftState {
             text: self.input.clone(),
             cursor: self.input_cursor,
+            pending_pastes: self.pending_pastes.clone(),
         }
+        .normalized()
     }
 
     fn history_entry_drafts(&self) -> Vec<ComposerDraftState> {
@@ -1418,6 +1442,33 @@ impl TuiState {
         entries.truncate(entries.len().saturating_sub(shared_suffix));
         entries.extend(self.local_input_history.iter().cloned());
         entries
+    }
+
+    fn next_pending_paste_index(&self) -> usize {
+        self.pending_pastes
+            .iter()
+            .filter_map(|pending| {
+                pending
+                    .placeholder
+                    .strip_prefix("[Paste #")
+                    .and_then(|rest| rest.strip_suffix(']'))
+                    .and_then(|value| value.parse::<usize>().ok())
+            })
+            .max()
+            .unwrap_or(0)
+            + 1
+    }
+
+    fn take_submission_input(&mut self) -> String {
+        self.input_history_navigation = None;
+        self.command_completion_index = 0;
+        self.input_cursor = 0;
+        let mut input = std::mem::take(&mut self.input);
+        for pending in &self.pending_pastes {
+            input = input.replace(&pending.placeholder, &pending.payload);
+        }
+        self.pending_pastes.clear();
+        input
     }
 }
 
@@ -1491,10 +1542,7 @@ impl SharedUiState {
 
     pub(crate) fn take_input(&self) -> String {
         let mut state = self.0.write().unwrap();
-        state.input_history_navigation = None;
-        state.command_completion_index = 0;
-        state.input_cursor = 0;
-        std::mem::take(&mut state.input)
+        state.take_submission_input()
     }
 }
 
@@ -1593,8 +1641,8 @@ fn git_repo_name(workspace_root: &Path) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        ComposerDraftState, HistoryRollbackCandidate, MainPaneMode, TuiState, git_snapshot,
-        page_scroll_amount,
+        ComposerDraftState, ComposerPendingPasteState, HistoryRollbackCandidate, MainPaneMode,
+        SharedUiState, TuiState, git_snapshot, page_scroll_amount,
     };
     use crate::theme::ThemeSummary;
     use agent::types::MessageId;
@@ -1812,6 +1860,7 @@ mod tests {
             local_input_history: vec![ComposerDraftState {
                 text: "recent".to_string(),
                 cursor: 2,
+                pending_pastes: Vec::new(),
             }],
             ..TuiState::default()
         };
@@ -1868,6 +1917,7 @@ mod tests {
             vec![ComposerDraftState {
                 text: "draft  \nline two".to_string(),
                 cursor: 7,
+                pending_pastes: Vec::new(),
             }]
         );
     }
@@ -1886,5 +1936,55 @@ mod tests {
         assert!(state.browse_input_history(true));
         assert_eq!(state.input, "draft  \nline two");
         assert_eq!(state.input_cursor(), 7);
+    }
+
+    #[test]
+    fn large_paste_creates_placeholder_and_tracks_payload() {
+        let mut state = TuiState::default();
+
+        let placeholder = state.push_large_paste("pasted body");
+
+        assert_eq!(placeholder, "[Paste #1]");
+        assert_eq!(state.input, "[Paste #1]");
+        assert_eq!(
+            state.pending_pastes,
+            vec![ComposerPendingPasteState {
+                placeholder: "[Paste #1]".to_string(),
+                payload: "pasted body".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn take_input_expands_pending_paste_placeholders() {
+        let ui_state = SharedUiState::new();
+        ui_state.mutate(|state| {
+            let _ = state.push_large_paste("pasted body");
+        });
+
+        assert_eq!(ui_state.take_input(), "pasted body");
+
+        let snapshot = ui_state.snapshot();
+        assert!(snapshot.pending_pastes.is_empty());
+        assert!(snapshot.input.is_empty());
+    }
+
+    #[test]
+    fn stashed_draft_recall_restores_pending_paste_payloads() {
+        let mut state = TuiState::default();
+        let _ = state.push_large_paste("pasted body");
+
+        assert!(state.stash_current_input_draft());
+        state.clear_input();
+
+        assert!(state.browse_input_history(true));
+        assert_eq!(state.input, "[Paste #1]");
+        assert_eq!(
+            state.pending_pastes,
+            vec![ComposerPendingPasteState {
+                placeholder: "[Paste #1]".to_string(),
+                payload: "pasted body".to_string(),
+            }]
+        );
     }
 }

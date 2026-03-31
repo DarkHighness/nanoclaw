@@ -263,6 +263,9 @@ not have useful extensions, including `Dockerfile*`, `Containerfile*`, `go.mod`,
 - `Ctrl+C` now clears the current draft into session-local composer history when
   the prompt line is non-empty, so `Up` can restore it. On an empty prompt line,
   `Ctrl+C` still exits the TUI.
+- Very large pasted payloads are now collapsed into `[Paste #N]` placeholders in
+  the composer. The full payload stays in session-local draft state, expands on
+  submit, and is restored when recalling a stashed draft.
 - `Alt+Up` opens the pending-control picker from the bottom pane.
 - In the pending-control picker: `Enter` edits the selected item, `Delete`
   withdraws it, and `Esc` closes the picker.

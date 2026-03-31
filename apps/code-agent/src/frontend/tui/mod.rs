@@ -85,6 +85,8 @@ enum PlainInputSubmitAction {
     SteerActiveTurn,
 }
 
+const LARGE_PASTE_CHAR_THRESHOLD: usize = 1000;
+
 #[derive(Clone, Debug, Default)]
 struct ActiveUserInputState {
     prompt_id: String,
@@ -543,7 +545,19 @@ impl CodeAgentTui {
         if text.is_empty() || !self.composer_accepts_text_input() {
             return;
         }
-        self.ui_state.mutate(|state| state.push_input_str(text));
+        let large_paste = text.chars().count() > LARGE_PASTE_CHAR_THRESHOLD;
+        self.ui_state.mutate(|state| {
+            if large_paste {
+                let placeholder = state.push_large_paste(text);
+                state.status = format!("Collapsed large paste into {placeholder}");
+                state.push_activity(format!(
+                    "collapsed pasted payload into {}",
+                    state::preview_text(&placeholder, 24)
+                ));
+            } else {
+                state.push_input_str(text);
+            }
+        });
     }
 
     fn stash_composer_draft_on_ctrl_c(&mut self) -> bool {
