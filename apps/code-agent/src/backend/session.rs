@@ -36,8 +36,9 @@ use agent::tools::{
     describe_sandbox_policy, request_permission_profile_from_granted, sandbox_backend_status,
 };
 use agent::types::{
-    AgentSessionId, AgentTaskSpec, AgentWaitMode, AgentWaitRequest, Message, MessageId, ModelEvent,
-    ModelRequest, SessionId, ToolSpec, TurnId, message_operator_text, new_opaque_id,
+    AgentSessionId, AgentStatus, AgentTaskSpec, AgentWaitMode, AgentWaitRequest, Message,
+    MessageId, ModelEvent, ModelRequest, SessionId, ToolSpec, TurnId, message_operator_text,
+    new_opaque_id,
 };
 use agent::{AgentRuntime, RuntimeCommand, Skill, ToolExecutionContext};
 use anyhow::Result;
@@ -197,6 +198,20 @@ pub(crate) struct LiveTaskWaitOutcome {
     pub(crate) status: agent::types::AgentStatus,
     pub(crate) summary: String,
     pub(crate) claimed_files: Vec<String>,
+    pub(crate) remaining_live_tasks: Vec<LiveTaskSummary>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LiveTaskAttentionAction {
+    QueuedPrompt,
+    ScheduledSteer,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct LiveTaskAttentionOutcome {
+    pub(crate) action: LiveTaskAttentionAction,
+    pub(crate) control_id: String,
+    pub(crate) preview: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1439,7 +1454,7 @@ impl CodeAgentSession {
         let response = self
             .subagent_executor
             .wait(
-                parent,
+                parent.clone(),
                 AgentWaitRequest {
                     agent_ids: vec![handle.agent_id.clone()],
                     mode: AgentWaitMode::All,
@@ -1457,6 +1472,16 @@ impl CodeAgentSession {
             .into_iter()
             .find(|candidate| candidate.agent_id.as_str() == completed.agent_id.as_str())
             .ok_or_else(|| anyhow::anyhow!("missing live task result for {}", completed.task_id))?;
+        let refreshed_handles = self
+            .subagent_executor
+            .list(parent)
+            .await
+            .map_err(anyhow::Error::from)?;
+        let remaining_live_tasks = live_task_summaries(&refreshed_handles)
+            .into_iter()
+            .filter(|task| task.agent_id != completed.agent_id.as_str())
+            .filter(|task| !task.status.is_terminal())
+            .collect();
         Ok(LiveTaskWaitOutcome {
             requested_ref: task_or_agent_ref.to_string(),
             agent_id: completed.agent_id.to_string(),
@@ -1464,6 +1489,35 @@ impl CodeAgentSession {
             status: completed.status,
             summary: result.summary,
             claimed_files: result.claimed_files,
+            remaining_live_tasks,
+        })
+    }
+
+    pub(crate) fn schedule_live_task_attention(
+        &self,
+        outcome: &LiveTaskWaitOutcome,
+        turn_running: bool,
+    ) -> Result<LiveTaskAttentionOutcome> {
+        let preview = render_live_task_attention_message(outcome);
+        if turn_running {
+            let control_id = self.schedule_runtime_steer(
+                preview.clone(),
+                Some(format!("live_task_wait_complete:{}", outcome.task_id)),
+            )?;
+            return Ok(LiveTaskAttentionOutcome {
+                action: LiveTaskAttentionAction::ScheduledSteer,
+                control_id,
+                preview,
+            });
+        }
+
+        let queued = self
+            .control_plane
+            .push_prompt(Message::user(preview.clone()));
+        Ok(LiveTaskAttentionOutcome {
+            action: LiveTaskAttentionAction::QueuedPrompt,
+            control_id: queued.id.to_string(),
+            preview,
         })
     }
 
@@ -1754,6 +1808,57 @@ fn live_task_summaries(handles: &[agent::types::AgentHandle]) -> Vec<LiveTaskSum
     summaries
 }
 
+fn render_live_task_attention_message(outcome: &LiveTaskWaitOutcome) -> String {
+    let mut lines = vec![format!(
+        "Background task {} finished with status {}.",
+        outcome.task_id, outcome.status
+    )];
+    if !outcome.summary.trim().is_empty() {
+        lines.push(format!("Task summary: {}", outcome.summary.trim()));
+    }
+    if !outcome.claimed_files.is_empty() {
+        lines.push(format!(
+            "Claimed files: {}.",
+            outcome.claimed_files.join(", ")
+        ));
+    }
+    if !outcome.remaining_live_tasks.is_empty() {
+        lines.push(format!(
+            "Still running background tasks: {}.",
+            outcome
+                .remaining_live_tasks
+                .iter()
+                .map(render_live_task_attention_task)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    lines.push(live_task_attention_instruction(outcome.status.clone()).to_string());
+    lines.join("\n")
+}
+
+fn render_live_task_attention_task(task: &LiveTaskSummary) -> String {
+    format!("{} ({}, {})", task.task_id, task.role, task.status)
+}
+
+fn live_task_attention_instruction(status: AgentStatus) -> &'static str {
+    match status {
+        AgentStatus::Completed => {
+            "Review the completed background task and integrate any useful findings."
+        }
+        AgentStatus::Failed => "Inspect the failed background task and decide whether to retry it.",
+        AgentStatus::Cancelled => {
+            "Inspect the cancelled background task and decide whether it should be restarted."
+        }
+        AgentStatus::Queued
+        | AgentStatus::Running
+        | AgentStatus::WaitingApproval
+        | AgentStatus::WaitingMessage => {
+            "Inspect the background task state before deciding on the next step."
+        }
+    }
+}
+
 fn resolve_pending_control_reference<'a>(
     controls: &'a [PendingControlSummary],
     control_ref: &str,
@@ -1892,9 +1997,10 @@ fn resolve_live_task_reference<'a>(
 #[cfg(test)]
 mod tests {
     use super::{
-        CodeAgentSession, CompactionWorkingSnapshot, PendingControlKind,
-        SessionMemoryRefreshContext, SessionOperation, SessionOperationAction,
-        SessionPermissionMode, SessionStartupSnapshot, SideQuestionContextSnapshot,
+        CodeAgentSession, CompactionWorkingSnapshot, LiveTaskAttentionAction, LiveTaskSummary,
+        LiveTaskWaitOutcome, PendingControlKind, SessionMemoryRefreshContext, SessionOperation,
+        SessionOperationAction, SessionPermissionMode, SessionStartupSnapshot,
+        SideQuestionContextSnapshot,
     };
     use crate::backend::{
         ApprovalCoordinator, PermissionRequestCoordinator, SessionEventStream,
@@ -3437,11 +3543,11 @@ mod tests {
         let session = build_session(
             runtime,
             Arc::new(RecordingSubagentExecutor::with_wait_response(
-                vec![sample_handle(
-                    "task-wait",
-                    "agent-wait",
-                    AgentStatus::Running,
-                )],
+                vec![
+                    sample_handle("task-wait", "agent-wait", AgentStatus::Running),
+                    sample_handle("task-followup", "agent-followup", AgentStatus::Running),
+                    sample_handle("task-done", "agent-done", AgentStatus::Completed),
+                ],
                 wait_response,
             )),
             store,
@@ -3454,5 +3560,140 @@ mod tests {
         assert_eq!(outcome.status, AgentStatus::Completed);
         assert_eq!(outcome.summary, "finished child task");
         assert_eq!(outcome.claimed_files, vec!["src/lib.rs".to_string()]);
+        assert_eq!(
+            outcome.remaining_live_tasks,
+            vec![LiveTaskSummary {
+                agent_id: "agent-followup".to_string(),
+                task_id: "task-followup".to_string(),
+                role: "worker".to_string(),
+                status: AgentStatus::Running,
+                session_ref: "session-1".to_string(),
+                agent_session_ref: "agent-session-task-followup".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn schedule_live_task_attention_queues_prompt_when_idle() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(InMemorySessionStore::new());
+        let runtime = AgentRuntimeBuilder::new(Arc::new(NeverBackend), store.clone())
+            .hook_runner(Arc::new(HookRunner::default()))
+            .tool_context(ToolExecutionContext {
+                workspace_root: dir.path().to_path_buf(),
+                workspace_only: true,
+                ..Default::default()
+            })
+            .build();
+        let session = build_session(
+            runtime,
+            Arc::new(NoopSubagentExecutor),
+            store,
+            startup_snapshot(dir.path()),
+        );
+        let outcome = LiveTaskWaitOutcome {
+            requested_ref: "task-wait".to_string(),
+            agent_id: "agent-wait".to_string(),
+            task_id: "task-wait".to_string(),
+            status: AgentStatus::Completed,
+            summary: "finished child task".to_string(),
+            claimed_files: vec!["src/lib.rs".to_string()],
+            remaining_live_tasks: vec![LiveTaskSummary {
+                agent_id: "agent-followup".to_string(),
+                task_id: "task-followup".to_string(),
+                role: "reviewer".to_string(),
+                status: AgentStatus::Running,
+                session_ref: "session-1".to_string(),
+                agent_session_ref: "agent-session-task-followup".to_string(),
+            }],
+        };
+
+        let scheduled = session
+            .schedule_live_task_attention(&outcome, false)
+            .unwrap();
+
+        assert_eq!(scheduled.action, LiveTaskAttentionAction::QueuedPrompt);
+        assert!(!scheduled.control_id.is_empty());
+        assert!(
+            scheduled
+                .preview
+                .contains("Background task task-wait finished with status completed.")
+        );
+        assert!(
+            scheduled
+                .preview
+                .contains("Task summary: finished child task")
+        );
+        assert!(scheduled.preview.contains("Claimed files: src/lib.rs."));
+        assert!(
+            scheduled
+                .preview
+                .contains("Still running background tasks: task-followup (reviewer, running).")
+        );
+        assert!(
+            scheduled.preview.contains(
+                "Review the completed background task and integrate any useful findings."
+            )
+        );
+
+        let pending = session.pending_controls();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].kind, PendingControlKind::Prompt);
+        assert_eq!(pending[0].preview, scheduled.preview);
+    }
+
+    #[test]
+    fn schedule_live_task_attention_schedules_steer_when_turn_running() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(InMemorySessionStore::new());
+        let runtime = AgentRuntimeBuilder::new(Arc::new(NeverBackend), store.clone())
+            .hook_runner(Arc::new(HookRunner::default()))
+            .tool_context(ToolExecutionContext {
+                workspace_root: dir.path().to_path_buf(),
+                workspace_only: true,
+                ..Default::default()
+            })
+            .build();
+        let session = build_session(
+            runtime,
+            Arc::new(NoopSubagentExecutor),
+            store,
+            startup_snapshot(dir.path()),
+        );
+        let outcome = LiveTaskWaitOutcome {
+            requested_ref: "task-wait".to_string(),
+            agent_id: "agent-wait".to_string(),
+            task_id: "task-wait".to_string(),
+            status: AgentStatus::Failed,
+            summary: "child task failed".to_string(),
+            claimed_files: Vec::new(),
+            remaining_live_tasks: Vec::new(),
+        };
+
+        let scheduled = session
+            .schedule_live_task_attention(&outcome, true)
+            .unwrap();
+
+        assert_eq!(scheduled.action, LiveTaskAttentionAction::ScheduledSteer);
+        assert!(!scheduled.control_id.is_empty());
+        assert!(
+            scheduled
+                .preview
+                .contains("Background task task-wait finished with status failed.")
+        );
+        assert!(
+            scheduled
+                .preview
+                .contains("Inspect the failed background task and decide whether to retry it.")
+        );
+
+        let pending = session.pending_controls();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].kind, PendingControlKind::Steer);
+        assert_eq!(
+            pending[0].reason.as_deref(),
+            Some("live_task_wait_complete:task-wait")
+        );
+        assert_eq!(pending[0].preview, scheduled.preview);
     }
 }

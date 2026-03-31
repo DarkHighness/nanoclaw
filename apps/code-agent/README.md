@@ -345,12 +345,14 @@ fresh active `AgentSessionId` bound to the original top-level `SessionId`.
 Older compacted histories that predate resume checkpoints still remain
 history-only.
 
-When a background `/wait_task` finishes, the TUI now records a transcript-side
-completion notice, raises a short-lived toast, and surfaces a composer hint for
-the next operator action. If the main turn is still running, the empty composer
-reminds you that `Enter` steers and `Tab` queues a follow-up; when idle, it
-points you at the completed task result instead of silently collapsing back to
-the generic idle prompt.
+When a background `/wait_task` finishes, the TUI still records a transcript-side
+completion notice, raises a short-lived toast, and surfaces an operator hint.
+The host now also promotes that completion into runtime-owned control so the
+model can react without waiting for a manual follow-up: if the main turn is
+still running, Code Agent schedules a safe-point steer; if the runtime is idle,
+it queues a synthetic user prompt and immediately drains it. Both the operator
+cue and the model-visible follow-up include any still-running background tasks
+so the assistant can remember which subagents remain in flight.
 
 Runtime notification events now flow through the same live path too, so
 loop-detector warnings and provider-state degradation notices can raise toasts
@@ -358,9 +360,9 @@ instead of remaining history-only diagnostics.
 
 The same event bus now exposes a minimal OpenCode-style TUI surface too:
 `tui.toast.show` raises transient notifications and `tui.prompt.append` can seed
-composer follow-ups. Code Agent uses that prompt-append path to drop a
-queue-ready background-task follow-up into an empty composer when a child task
-finishes while the main turn is still running.
+composer follow-ups for host- or plugin-driven operator cues. Model-visible
+background-task attention now routes through runtime steer/queue primitives
+instead of relying on a human to submit a seeded draft.
 
 `/thinking` opens a picker when invoked without an explicit level. Hosts can
 also declare model-specific effort support in the core model config:

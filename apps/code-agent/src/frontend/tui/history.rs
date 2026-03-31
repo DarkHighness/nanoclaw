@@ -650,6 +650,20 @@ pub(crate) fn format_live_task_wait_outcome(outcome: &LiveTaskWaitOutcome) -> Ve
             preview_text(&outcome.claimed_files.join(", "), 96)
         ));
     }
+    if !outcome.remaining_live_tasks.is_empty() {
+        details.push(format!(
+            "still running {}",
+            preview_text(
+                &outcome
+                    .remaining_live_tasks
+                    .iter()
+                    .map(|task| format!("{} ({}, {})", task.task_id, task.role, task.status))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                96
+            )
+        ));
+    }
     vec![InspectorEntry::transcript(summary_entry(
         tone, headline, details,
     ))]
@@ -1203,9 +1217,9 @@ mod tests {
         format_session_search_line, format_session_summary_line,
     };
     use crate::backend::{
-        LiveTaskWaitOutcome, PersistedAgentSessionSummary, PersistedSessionSearchMatch,
-        PersistedSessionSummary, ResumeSupport, SessionExportArtifact, SessionExportKind,
-        SessionOperationAction, SessionOperationOutcome, SessionStartupSnapshot,
+        LiveTaskSummary, LiveTaskWaitOutcome, PersistedAgentSessionSummary,
+        PersistedSessionSearchMatch, PersistedSessionSummary, ResumeSupport, SessionExportArtifact,
+        SessionExportKind, SessionOperationAction, SessionOperationOutcome, SessionStartupSnapshot,
     };
     use crate::frontend::tui::state::InspectorEntry;
     use agent::types::{
@@ -1322,6 +1336,14 @@ mod tests {
             status: AgentStatus::Completed,
             summary: "Updated planner and wrote tests".to_string(),
             claimed_files: vec!["src/lib.rs".to_string()],
+            remaining_live_tasks: vec![LiveTaskSummary {
+                agent_id: "agent_2".to_string(),
+                task_id: "task_2".to_string(),
+                role: "reviewer".to_string(),
+                status: AgentStatus::Running,
+                session_ref: "session_2".to_string(),
+                agent_session_ref: "agent-session-2".to_string(),
+            }],
         });
         let lines = inspector_line_texts(&lines);
 
@@ -1329,6 +1351,7 @@ mod tests {
         assert_eq!(lines[1], "  └ requested task_1");
         assert_eq!(lines[4], "  └ summary Updated planner and wrote tests");
         assert_eq!(lines[5], "  └ claimed files src/lib.rs");
+        assert_eq!(lines[6], "  └ still running task_2 (reviewer, running)");
     }
 
     #[test]

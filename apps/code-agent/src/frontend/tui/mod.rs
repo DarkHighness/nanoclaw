@@ -8,10 +8,10 @@ mod render;
 mod state;
 
 use crate::backend::{
-    CodeAgentSession, LiveTaskControlAction, LiveTaskMessageAction, LiveTaskWaitOutcome,
-    LoadedMcpPrompt, LoadedMcpResource, SessionEvent, SessionOperation, SessionOperationAction,
-    SessionOperationOutcome, SessionPermissionMode, SessionStartupSnapshot, SideQuestionOutcome,
-    UserInputPrompt, preview_id,
+    CodeAgentSession, LiveTaskAttentionAction, LiveTaskControlAction, LiveTaskMessageAction,
+    LiveTaskWaitOutcome, LoadedMcpPrompt, LoadedMcpResource, SessionEvent, SessionOperation,
+    SessionOperationAction, SessionOperationOutcome, SessionPermissionMode, SessionStartupSnapshot,
+    SideQuestionOutcome, UserInputPrompt, preview_id,
 };
 use crate::config::persist_tui_theme_selection;
 use crate::statusline::status_line_fields;
@@ -2013,26 +2013,30 @@ impl CodeAgentTui {
                     let turn_running = self.ui_state.snapshot().turn_running;
                     let toast_tone = live_task_wait_ui_toast_tone(&outcome);
                     let toast_message = live_task_wait_toast_message(&outcome, turn_running);
-                    let follow_up =
-                        live_task_wait_prompt_append(&outcome, turn_running).map(str::to_string);
+                    let attention = self
+                        .session
+                        .schedule_live_task_attention(&outcome, turn_running)?;
+                    let notice_outcome = outcome.clone();
+                    let live_task_id = outcome.task_id.clone();
+                    let live_task_status = outcome.status.clone();
                     self.ui_state.mutate(move |state| {
                         // Background child completion is easy to miss if it only
                         // flashes through the status line, so persist it into
-                        // the transcript and promote the next-step cue into the
-                        // composer when the operator is idle.
-                        state.push_transcript(live_task_wait_notice_entry(&outcome));
+                        // the transcript and keep the operator-facing hint visible
+                        // even when the model follow-up is handled automatically.
+                        state.push_transcript(live_task_wait_notice_entry(&notice_outcome));
                         state.set_live_task_finished_hint(
-                            outcome.task_id.clone(),
-                            outcome.status.clone(),
+                            live_task_id.clone(),
+                            live_task_status.clone(),
                         );
                         state.show_main_view("Live Task Wait", inspector);
                         state.status = format!(
                             "Live task {} finished with status {}",
-                            outcome.task_id, outcome.status
+                            live_task_id, live_task_status
                         );
                         state.push_activity(format!(
                             "wait completed for {} ({})",
-                            outcome.task_id, outcome.status
+                            live_task_id, live_task_status
                         ));
                     });
                     match toast_tone {
@@ -2049,12 +2053,22 @@ impl CodeAgentTui {
                             .event_renderer
                             .apply_event(SessionEvent::tui_error_toast(toast_message)),
                     }
-                    if let Some(follow_up) = follow_up {
-                        // Route background task nudges through the same prompt-append
-                        // path so future plugin or host producers can seed queueable
-                        // follow-ups without reaching into TUI state directly.
-                        self.event_renderer
-                            .apply_event(SessionEvent::tui_prompt_append(follow_up, true));
+                    self.ui_state.mutate(|state| {
+                        state.push_activity(match attention.action {
+                            LiveTaskAttentionAction::ScheduledSteer => {
+                                format!("scheduled live-task steer for {}", outcome.task_id)
+                            }
+                            LiveTaskAttentionAction::QueuedPrompt => {
+                                format!("queued live-task prompt for {}", outcome.task_id)
+                            }
+                        });
+                    });
+                    self.sync_runtime_control_state();
+                    if !turn_running
+                        && self.turn_task.is_none()
+                        && self.session.queued_command_count() > 0
+                    {
+                        self.start_runtime_queue_drain();
                     }
                 }
                 Ok(Ok(OperatorTaskOutcome::SideQuestion(outcome))) => {
@@ -4063,6 +4077,23 @@ fn live_task_wait_notice_details(outcome: &LiveTaskWaitOutcome) -> Vec<Transcrip
             continuation: false,
         });
     }
+    if !outcome.remaining_live_tasks.is_empty() {
+        details.push(TranscriptShellDetail::Raw {
+            text: format!(
+                "still running {}",
+                state::preview_text(
+                    &outcome
+                        .remaining_live_tasks
+                        .iter()
+                        .map(|task| format!("{} ({}, {})", task.task_id, task.role, task.status))
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                    96
+                )
+            ),
+            continuation: false,
+        });
+    }
     details
 }
 
@@ -4079,36 +4110,20 @@ fn live_task_wait_toast_message(outcome: &LiveTaskWaitOutcome, turn_running: boo
     let next_step = if turn_running {
         "enter steer / tab queue / /task inspect"
     } else {
-        "type follow-up / /task inspect"
+        "model follow-up queued / /task inspect"
     };
-    format!(
-        "task {} {} · {} · {}",
-        outcome.task_id,
-        outcome.status,
+    let mut parts = vec![
+        format!("task {} {}", outcome.task_id, outcome.status),
         state::preview_text(&outcome.summary, 64),
-        next_step
-    )
-}
-
-fn live_task_wait_prompt_append(
-    outcome: &LiveTaskWaitOutcome,
-    turn_running: bool,
-) -> Option<&'static str> {
-    if !turn_running {
-        return None;
+    ];
+    if !outcome.remaining_live_tasks.is_empty() {
+        parts.push(format!(
+            "{} still running",
+            outcome.remaining_live_tasks.len()
+        ));
     }
-    match outcome.status {
-        AgentStatus::Completed => {
-            Some("Review the completed background task and integrate any useful findings.")
-        }
-        AgentStatus::Failed => {
-            Some("Inspect the failed background task and decide whether to retry it.")
-        }
-        AgentStatus::Cancelled => {
-            Some("Inspect the cancelled background task and decide whether it should be restarted.")
-        }
-        _ => None,
-    }
+    parts.push(next_step.to_string());
+    parts.join(" · ")
 }
 
 #[cfg(test)]
@@ -4122,7 +4137,7 @@ mod tests {
     };
     use super::{
         PlainInputSubmitAction, attachment_preview_status_label,
-        external_editor_attachment_status_suffix, live_task_wait_prompt_append,
+        external_editor_attachment_status_suffix, live_task_wait_toast_message,
         looks_like_local_image_path, merge_interrupt_steers, plain_input_submit_action,
     };
     use crate::backend::LiveTaskWaitOutcome;
@@ -4289,7 +4304,7 @@ mod tests {
     }
 
     #[test]
-    fn live_task_wait_prompt_append_only_seeds_running_turns() {
+    fn live_task_wait_toast_mentions_remaining_running_tasks() {
         let outcome = LiveTaskWaitOutcome {
             requested_ref: "task_123".to_string(),
             task_id: "task_123".to_string(),
@@ -4297,13 +4312,24 @@ mod tests {
             summary: "done".to_string(),
             agent_id: "agent_123".to_string(),
             claimed_files: Vec::new(),
+            remaining_live_tasks: vec![crate::backend::LiveTaskSummary {
+                agent_id: "agent_456".to_string(),
+                task_id: "task_456".to_string(),
+                role: "reviewer".to_string(),
+                status: AgentStatus::Running,
+                session_ref: "session_456".to_string(),
+                agent_session_ref: "agent-session-456".to_string(),
+            }],
         };
 
         assert_eq!(
-            live_task_wait_prompt_append(&outcome, true),
-            Some("Review the completed background task and integrate any useful findings.")
+            live_task_wait_toast_message(&outcome, true),
+            "task task_123 completed · done · 1 still running · enter steer / tab queue / /task inspect"
         );
-        assert_eq!(live_task_wait_prompt_append(&outcome, false), None);
+        assert_eq!(
+            live_task_wait_toast_message(&outcome, false),
+            "task task_123 completed · done · 1 still running · model follow-up queued / /task inspect"
+        );
     }
 
     #[test]
