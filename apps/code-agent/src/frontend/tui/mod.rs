@@ -18,8 +18,8 @@ use commands::{
     move_slash_command_selection, parse_slash_command, resolve_slash_enter_action,
 };
 use history::{
-    format_agent_session_inspector, format_agent_session_summary_line, format_experiment_inspector,
-    format_experiment_summary_line, format_live_task_control_outcome,
+    format_agent_session_inspector, format_agent_session_summary_line, format_benchmark_result,
+    format_experiment_inspector, format_experiment_summary_line, format_live_task_control_outcome,
     format_live_task_message_outcome, format_live_task_spawn_outcome,
     format_live_task_summary_line, format_live_task_wait_outcome, format_mcp_prompt_summary_line,
     format_mcp_resource_summary_line, format_mcp_server_summary_line, format_session_export_result,
@@ -1976,6 +1976,7 @@ impl CodeAgentTui {
             | SlashCommand::AgentSession { .. }
             | SlashCommand::Tasks { .. }
             | SlashCommand::Task { .. }
+            | SlashCommand::Benchmark { .. }
             | SlashCommand::Experiments
             | SlashCommand::Experiment { .. }
             | SlashCommand::Sessions { .. }
@@ -2109,6 +2110,21 @@ impl CodeAgentTui {
                         )
                     };
                     state.push_activity("listed persisted tasks");
+                });
+                Ok(false)
+            }
+            SlashCommand::Benchmark { path } => {
+                let outcome = self.session.run_benchmark(&path).await?;
+                let inspector = format_benchmark_result(&outcome);
+                let experiment_ref_preview = preview_id(outcome.result.experiment_id.as_str());
+                let plan_path = outcome.plan_path.display().to_string();
+                self.ui_state.mutate(move |state| {
+                    state.show_main_view("Benchmark", inspector);
+                    state.status = format!(
+                        "Ran benchmark plan {} -> experiment {}",
+                        plan_path, experiment_ref_preview
+                    );
+                    state.push_activity(format!("ran benchmark {}", experiment_ref_preview));
                 });
                 Ok(false)
             }
@@ -2624,6 +2640,7 @@ fn build_startup_inspector(session: &state::SessionSummary) -> Vec<InspectorEntr
         ),
         InspectorEntry::collection("/queue", Some("browse pending prompts and steers")),
         InspectorEntry::collection("/sessions", Some("browse history")),
+        InspectorEntry::collection("/benchmark <path>", Some("run offline benchmark plan")),
         InspectorEntry::collection("/experiments", Some("browse meta-agent archive")),
         InspectorEntry::collection("/agent_sessions", Some("inspect or resume agents")),
         InspectorEntry::collection("/spawn_task <role> <prompt>", Some("launch child agent")),

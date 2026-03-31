@@ -1,12 +1,13 @@
 use super::state::{InspectorEntry, TranscriptEntry, TranscriptShellDetail, preview_text};
 use crate::backend::{
-    LiveTaskControlAction, LiveTaskControlOutcome, LiveTaskMessageAction, LiveTaskMessageOutcome,
-    LiveTaskSpawnOutcome, LiveTaskSummary, LiveTaskWaitOutcome, LoadedAgentSession,
-    LoadedExperiment, LoadedSession, LoadedSubagentSession, LoadedTask, McpPromptSummary,
-    McpResourceSummary, McpServerSummary, PersistedAgentSessionSummary, PersistedExperimentSummary,
-    PersistedSessionSearchMatch, PersistedSessionSummary, PersistedTaskSummary,
-    SessionExportArtifact, SessionExportKind, SessionOperationAction, SessionOperationOutcome,
-    StartupDiagnosticsSnapshot, message_to_text, preview_id,
+    BenchmarkExecutionOutcome, LiveTaskControlAction, LiveTaskControlOutcome,
+    LiveTaskMessageAction, LiveTaskMessageOutcome, LiveTaskSpawnOutcome, LiveTaskSummary,
+    LiveTaskWaitOutcome, LoadedAgentSession, LoadedExperiment, LoadedSession,
+    LoadedSubagentSession, LoadedTask, McpPromptSummary, McpResourceSummary, McpServerSummary,
+    PersistedAgentSessionSummary, PersistedExperimentSummary, PersistedSessionSearchMatch,
+    PersistedSessionSummary, PersistedTaskSummary, SessionExportArtifact, SessionExportKind,
+    SessionOperationAction, SessionOperationOutcome, StartupDiagnosticsSnapshot, message_to_text,
+    preview_id,
 };
 use crate::tool_render::{
     ToolDetail, tool_argument_details, tool_arguments_preview_lines, tool_output_details,
@@ -715,6 +716,43 @@ pub(crate) fn format_session_export_result(result: &SessionExportArtifact) -> Ve
     ]
 }
 
+pub(crate) fn format_benchmark_result(result: &BenchmarkExecutionOutcome) -> Vec<InspectorEntry> {
+    let mut lines = vec![
+        InspectorEntry::section("Benchmark"),
+        InspectorEntry::field("plan", result.plan_path.display().to_string()),
+        InspectorEntry::field("experiment ref", result.result.experiment_id.to_string()),
+        InspectorEntry::field(
+            "decision",
+            promotion_decision_label(result.result.decision.kind),
+        ),
+        InspectorEntry::field(
+            "summary",
+            preview_text(&result.result.evaluation.summary, 96),
+        ),
+    ];
+    if let Some(score) = result.result.evaluation.score {
+        lines.push(InspectorEntry::field("score", format!("{score:.3}")));
+    }
+    if !result.result.evaluation.evaluators.is_empty() {
+        lines.push(InspectorEntry::section("Evaluators"));
+        lines.extend(result.result.evaluation.evaluators.iter().map(|evaluator| {
+            InspectorEntry::transcript(summary_entry(
+                if evaluator.passed {
+                    SummaryTone::Success
+                } else {
+                    SummaryTone::Error
+                },
+                format!("{} {}", evaluator.evaluator_name, evaluator.passed),
+                [
+                    format!("score {}", format_optional_score(evaluator.score)),
+                    preview_text(&evaluator.summary, 96),
+                ],
+            ))
+        }));
+    }
+    lines
+}
+
 pub(crate) fn format_session_operation_outcome(
     outcome: &SessionOperationOutcome,
 ) -> Vec<InspectorEntry> {
@@ -1354,16 +1392,16 @@ fn format_session_event_line(event: &SessionEventEnvelope) -> TranscriptEntry {
 #[cfg(test)]
 mod tests {
     use super::{
-        format_agent_session_summary_line, format_experiment_inspector,
+        format_agent_session_summary_line, format_benchmark_result, format_experiment_inspector,
         format_experiment_summary_line, format_live_task_wait_outcome, format_session_event_line,
         format_session_export_result, format_session_operation_outcome, format_session_search_line,
         format_session_summary_line,
     };
     use crate::backend::{
-        LiveTaskWaitOutcome, LoadedExperiment, PersistedAgentSessionSummary,
-        PersistedExperimentSummary, PersistedSessionSearchMatch, PersistedSessionSummary,
-        ResumeSupport, SessionExportArtifact, SessionExportKind, SessionOperationAction,
-        SessionOperationOutcome, SessionStartupSnapshot,
+        BenchmarkExecutionOutcome, LiveTaskWaitOutcome, LoadedExperiment,
+        PersistedAgentSessionSummary, PersistedExperimentSummary, PersistedSessionSearchMatch,
+        PersistedSessionSummary, ResumeSupport, SessionExportArtifact, SessionExportKind,
+        SessionOperationAction, SessionOperationOutcome, SessionStartupSnapshot,
     };
     use crate::frontend::tui::state::InspectorEntry;
     use agent::types::{
@@ -1549,6 +1587,53 @@ mod tests {
                 .iter()
                 .any(|line| line.contains("Rejected candidate candidate-1"))
         );
+    }
+
+    #[test]
+    fn benchmark_result_lists_plan_decision_and_evaluators() {
+        let lines = format_benchmark_result(&BenchmarkExecutionOutcome {
+            plan_path: PathBuf::from("/workspace/plans/benchmark.json"),
+            result: meta::BenchmarkRunOutcome {
+                experiment_id: ExperimentId::from("experiment-1"),
+                evaluation: evals::EvaluationReport::from_evaluator_outcomes(
+                    "candidate-1".into(),
+                    vec![evals::EvaluatorOutcome {
+                        evaluator_name: "score_gate".to_string(),
+                        passed: true,
+                        score: Some(0.97),
+                        summary: "candidate config meets minimum".to_string(),
+                        details: None,
+                    }],
+                ),
+                decision: PromotionDecision {
+                    kind: PromotionDecisionKind::Promoted,
+                    reason: "passed promotion gate".to_string(),
+                },
+                summary: ExperimentSummary {
+                    experiment_id: ExperimentId::from("experiment-1"),
+                    first_timestamp_ms: 1,
+                    last_timestamp_ms: 2,
+                    event_count: 5,
+                    target: Some(ExperimentTarget::Policy),
+                    goal: Some("stabilize score".to_string()),
+                    source_session_id: None,
+                    source_agent_session_id: None,
+                    baseline_count: 1,
+                    candidate_count: 1,
+                    promoted_candidate_id: Some("candidate-1".into()),
+                    last_decision: Some(PromotionDecisionKind::Promoted),
+                },
+            },
+        });
+        let lines = inspector_line_texts(&lines);
+
+        assert!(lines.iter().any(|line| line == "decision: promoted"));
+        assert!(
+            lines
+                .iter()
+                .any(|line| line == "plan: /workspace/plans/benchmark.json")
+        );
+        assert!(lines.iter().any(|line| line.contains("score_gate true")));
     }
 
     #[test]

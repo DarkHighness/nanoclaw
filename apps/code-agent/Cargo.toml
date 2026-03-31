@@ -7,6 +7,7 @@ version = "0.1.0"
 [dependencies]
 agent-env = { path = "../../crates/env" }
 agent = { path = "../../crates/core", features = ["agentic-tools", "code-intel", "web-tools"] }
+meta = { path = "../../crates/meta" }
 nanoclaw-config = { path = "../../crates/config" }
 store = { path = "../../crates/store" }
 anyhow = "1.0.100"
@@ -29,4 +30,5 @@ tui-markdown = "0.3.7"
 unicode-width = "0.2.0"
 
 [dev-dependencies]
+evals = { path = "../../crates/evals" }
 tempfile = "3.23.0"

@@ -25,6 +25,13 @@ impl EvaluatorRegistry {
     where
         E: Evaluator + 'static,
     {
+        self.register_arc(Arc::new(evaluator))
+    }
+
+    pub fn register_arc(
+        &mut self,
+        evaluator: Arc<dyn Evaluator>,
+    ) -> Result<(), EvaluatorRegistryError> {
         if self
             .evaluators
             .iter()
@@ -34,7 +41,7 @@ impl EvaluatorRegistry {
                 evaluator.name().to_string(),
             ));
         }
-        self.evaluators.push(Arc::new(evaluator));
+        self.evaluators.push(evaluator);
         Ok(())
     }
 

@@ -226,6 +226,12 @@ const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
     },
     SlashCommandSpec {
         section: "Meta Agent",
+        name: "benchmark",
+        usage: "benchmark <path>",
+        summary: "run offline benchmark plan",
+    },
+    SlashCommandSpec {
+        section: "Meta Agent",
         name: "experiments",
         usage: "experiments",
         summary: "browse persisted experiments",
@@ -362,6 +368,9 @@ pub(crate) enum SlashCommand {
     Task {
         task_ref: String,
     },
+    Benchmark {
+        path: String,
+    },
     Experiments,
     Experiment {
         experiment_ref: String,
@@ -496,6 +505,10 @@ enum SlashSubcommand {
     },
     Task {
         task_ref: String,
+    },
+    Benchmark {
+        #[arg(value_name = "PATH", required = true, trailing_var_arg = true)]
+        path: Vec<String>,
     },
     Experiments,
     Experiment {
@@ -773,6 +786,9 @@ impl From<SlashSubcommand> for SlashCommand {
             },
             SlashSubcommand::Tasks { session_ref } => Self::Tasks { session_ref },
             SlashSubcommand::Task { task_ref } => Self::Task { task_ref },
+            SlashSubcommand::Benchmark { path } => Self::Benchmark {
+                path: join_required_tail(path),
+            },
             SlashSubcommand::Experiments => Self::Experiments,
             SlashSubcommand::Experiment { experiment_ref } => Self::Experiment { experiment_ref },
             SlashSubcommand::Sessions { query } => Self::Sessions {
@@ -986,6 +1002,16 @@ mod tests {
         match parse_slash_command("/experiment exp123") {
             SlashCommand::Experiment { experiment_ref } => {
                 assert_eq!(experiment_ref, "exp123");
+            }
+            _ => panic!("unexpected command"),
+        }
+    }
+
+    #[test]
+    fn parses_benchmark_plan_path_tail() {
+        match parse_slash_command("/benchmark plans/meta agent benchmark.json") {
+            SlashCommand::Benchmark { path } => {
+                assert_eq!(path, "plans/meta agent benchmark.json");
             }
             _ => panic!("unexpected command"),
         }

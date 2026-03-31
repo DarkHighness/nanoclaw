@@ -844,7 +844,9 @@ dependencies = [
  "chrono",
  "clap",
  "crossterm 0.29.0",
+ "evals",
  "futures",
+ "meta",
  "nanoclaw-config",
  "ratatui",
  "ratatui-core",
@@ -2199,6 +2201,17 @@ name = "ethnum"
 version = "1.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ca81e6b4777c89fd810c25a4be2b1bd93ea034fbe58e6a75216a34c6b82c539b"
+
+[[package]]
+name = "evals"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "types",
+]
 
 [[package]]
 name = "event-listener"
@@ -4159,6 +4172,19 @@ dependencies = [
  "tools",
  "types",
  "wide",
+]
+
+[[package]]
+name = "meta"
+version = "0.1.0"
+dependencies = [
+ "evals",
+ "serde",
+ "serde_json",
+ "store",
+ "thiserror 2.0.18",
+ "tokio",
+ "types",
 ]
 
 [[package]]
