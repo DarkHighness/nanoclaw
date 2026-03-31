@@ -2,9 +2,11 @@
 default-members = [
     "config",
     "core",
+    "evals",
     "env",
     "inference",
     "memory",
+    "meta",
     "mcp",
     "plugins",
     "provider",
@@ -18,9 +20,11 @@ default-members = [
 members = [
     "config",
     "core",
+    "evals",
     "env",
     "inference",
     "memory",
+    "meta",
     "mcp",
     "plugins",
     "provider",
