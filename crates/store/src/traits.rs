@@ -1870,9 +1870,10 @@ pub trait SessionStore: EventSink {
 mod tests {
     use super::derive_self_improve_signals;
     use types::{
-        AgentHandle, AgentId, AgentResultEnvelope, AgentStatus, AgentTaskSpec, MessageId,
-        SessionEventEnvelope, SessionEventKind, SessionId, TokenLedgerSnapshot, TokenUsage,
-        TokenUsagePhase, ToolCall, ToolCallId, ToolName, ToolOrigin,
+        AgentHandle, AgentId, AgentResultEnvelope, AgentStatus, AgentTaskSpec, HookEffect,
+        HookEvent, HookResult, MessageId, SessionEventEnvelope, SessionEventKind, SessionId,
+        TokenLedgerSnapshot, TokenUsage, TokenUsagePhase, ToolCall, ToolCallId, ToolName,
+        ToolOrigin,
     };
 
     fn event(turn_id: Option<&str>, event: SessionEventKind) -> SessionEventEnvelope {
@@ -1995,6 +1996,66 @@ mod tests {
             signals
                 .iter()
                 .any(|signal| matches!(signal.kind, types::SelfImproveSignalKind::HistoryRollback))
+        );
+    }
+
+    #[test]
+    fn derives_hook_latency_and_critical_loop_signals() {
+        let signals = derive_self_improve_signals(&[
+            event(
+                Some("turn-4"),
+                SessionEventKind::UserPromptSubmit {
+                    prompt: "hello".to_string(),
+                },
+            ),
+            event(
+                Some("turn-4"),
+                SessionEventKind::HookCompleted {
+                    hook_name: "stop-hook".to_string(),
+                    event: HookEvent::Stop,
+                    output: HookResult {
+                        effects: vec![HookEffect::Stop {
+                            reason: "policy stop".to_string(),
+                        }],
+                    },
+                },
+            ),
+            {
+                let mut event = event(
+                    Some("turn-4"),
+                    SessionEventKind::Notification {
+                        source: "loop_detector".to_string(),
+                        message: "loop_detector [critical] repeated tool call".to_string(),
+                    },
+                );
+                event.timestamp_ms = HIGH_TURN_LATENCY_WARNING_THRESHOLD_MS + 5;
+                event
+            },
+            {
+                let mut event = event(
+                    Some("turn-4"),
+                    SessionEventKind::Stop {
+                        reason: Some("assistant_complete".to_string()),
+                    },
+                );
+                event.timestamp_ms = HIGH_TURN_LATENCY_WARNING_THRESHOLD_MS + 10;
+                event
+            },
+        ]);
+
+        assert!(
+            signals
+                .iter()
+                .any(|signal| matches!(signal.kind, types::SelfImproveSignalKind::HookStop))
+        );
+        assert!(signals.iter().any(|signal| matches!(
+            signal.kind,
+            types::SelfImproveSignalKind::LoopDetectorCritical
+        )));
+        assert!(
+            signals
+                .iter()
+                .any(|signal| matches!(signal.kind, types::SelfImproveSignalKind::HighTurnLatency))
         );
     }
 
