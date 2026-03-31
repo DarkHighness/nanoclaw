@@ -213,7 +213,9 @@ a workspace path, while `file` accepts either a workspace path or an
 `http/https` URL. Both attach first-class file parts: OpenAI consumes them
 through `input_file`, while Anthropic promotes PDF attachments to native
 `document` blocks and keeps other file types on the existing readable fallback
-path.
+path. `mention`, `skill`, and generic `item` payloads now travel through a
+dedicated typed reference part instead of being hidden inside generic
+`Resource.metadata` or `Json` wrappers.
 - state:
   `update_plan`, `request_user_input`, `request_permissions`
 - discovery:

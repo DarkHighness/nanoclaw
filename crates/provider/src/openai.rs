@@ -855,6 +855,27 @@ mod tests {
     }
 
     #[test]
+    fn openai_responses_body_serializes_reference_parts_as_input_text() {
+        let mut request = base_request();
+        request.messages = vec![Message::new(
+            types::MessageRole::User,
+            vec![MessagePart::reference(
+                "mention",
+                Some("workspace".to_string()),
+                Some("app://workspace/snapshot".to_string()),
+                None,
+            )],
+        )];
+
+        let body =
+            build_openai_responses_body("gpt-5.4".to_string(), request, &RequestOptions::default())
+                .unwrap();
+
+        assert_eq!(body["input"][0]["content"][0]["type"], json!("input_text"));
+        assert_eq!(body["input"][0]["content"][0]["text"], json!("workspace"));
+    }
+
+    #[test]
     fn openai_responses_body_keeps_local_file_parts_as_inline_input_files() {
         let mut request = base_request();
         request.messages = vec![Message::new(

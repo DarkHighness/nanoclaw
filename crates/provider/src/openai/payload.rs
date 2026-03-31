@@ -6,7 +6,7 @@ use serde_json::{Map, Value, json};
 use std::collections::BTreeMap;
 use types::{
     Message, MessagePart, MessageRole, ModelRequest, ProviderContinuation, ReasoningContent,
-    ToolKind, ToolName, ToolSpec,
+    ToolKind, ToolName, ToolSpec, reference_display_text,
 };
 
 fn openai_instruction_text(request: &ModelRequest) -> Option<String> {
@@ -285,6 +285,19 @@ fn openai_user_message_block(part: &MessagePart) -> Option<Value> {
                     .unwrap_or_else(|| uri.clone())
             }),
         })),
+        MessagePart::Reference {
+            kind,
+            name,
+            uri,
+            text,
+        } => reference_display_text(kind, name.as_deref(), uri.as_deref(), text.as_deref()).map(
+            |text| {
+                json!({
+                    "type": "input_text",
+                    "text": text,
+                })
+            },
+        ),
         MessagePart::Json { value } => Some(json!({
             "type": "input_text",
             "text": stringify_json(value),
@@ -331,6 +344,19 @@ fn openai_assistant_message_block(part: &MessagePart) -> Option<Value> {
                     .unwrap_or_else(|| uri.clone())
             }),
         })),
+        MessagePart::Reference {
+            kind,
+            name,
+            uri,
+            text,
+        } => reference_display_text(kind, name.as_deref(), uri.as_deref(), text.as_deref()).map(
+            |text| {
+                json!({
+                    "type": "output_text",
+                    "text": text,
+                })
+            },
+        ),
         MessagePart::Json { value } => Some(json!({
             "type": "output_text",
             "text": stringify_json(value),

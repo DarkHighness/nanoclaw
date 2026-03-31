@@ -1,6 +1,8 @@
 use crate::{ProviderError, Result};
 use serde_json::{Map, Value};
-use types::{MessagePart, ReasoningContent, ToolKind, ToolResult, ToolSpec};
+use types::{
+    MessagePart, ReasoningContent, ToolKind, ToolResult, ToolSpec, reference_display_text,
+};
 
 #[must_use]
 pub fn coerce_object_schema(schema: &Value) -> Value {
@@ -93,6 +95,12 @@ pub fn message_part_text(part: &MessagePart) -> Option<String> {
         } => Some(uri.clone()),
         MessagePart::Json { value } => Some(stringify_json(value)),
         MessagePart::ProviderExtension { payload, .. } => Some(stringify_json(payload)),
+        MessagePart::Reference {
+            kind,
+            name,
+            uri,
+            text,
+        } => reference_display_text(kind, name.as_deref(), uri.as_deref(), text.as_deref()),
         MessagePart::File { uri: Some(uri), .. } => Some(uri.clone()),
         MessagePart::File {
             file_name: Some(file_name),
@@ -238,7 +246,7 @@ pub fn tool_schema(spec: &ToolSpec) -> Value {
 
 #[cfg(test)]
 mod tests {
-    use super::{coerce_object_schema, tool_result_roundtrip_text, tool_schema};
+    use super::{coerce_object_schema, message_part_text, tool_result_roundtrip_text, tool_schema};
     use serde_json::json;
     use types::{
         MessagePart, ToolAttachment, ToolContinuation, ToolFreeformFormat, ToolOrigin,
@@ -346,5 +354,17 @@ mod tests {
         assert_eq!(parsed["continuation"]["kind"], json!("file_window"));
         assert_eq!(parsed["continuation"]["next_start_line"], json!(41));
         assert_eq!(parsed["metadata"]["header"], json!("[list entries=1]"));
+    }
+
+    #[test]
+    fn message_part_text_renders_reference_parts_without_json_fallback() {
+        let part = MessagePart::reference(
+            "mention",
+            Some("workspace".to_string()),
+            Some("app://workspace/snapshot".to_string()),
+            None,
+        );
+
+        assert_eq!(message_part_text(&part).as_deref(), Some("workspace"));
     }
 }

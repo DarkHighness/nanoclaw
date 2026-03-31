@@ -818,44 +818,12 @@ async fn normalize_agent_input_item_parts(
         return Ok(parts);
     }
 
-    if let Some(uri) = path.clone().or(image_url.clone()) {
-        let mut metadata = serde_json::Map::new();
-        metadata.insert("type".to_string(), Value::String(item_type.to_string()));
-        if let Some(name) = name.clone() {
-            metadata.insert("name".to_string(), Value::String(name.to_string()));
-        }
-        if let Some(path) = path.clone() {
-            metadata.insert("path".to_string(), Value::String(path.to_string()));
-        }
-        if let Some(image_url) = image_url.clone() {
-            metadata.insert(
-                "image_url".to_string(),
-                Value::String(image_url.to_string()),
-            );
-        }
-        if let Some(text) = text.clone() {
-            metadata.insert("text".to_string(), Value::String(text.to_string()));
-        }
-        let text = compose_item_caption(name, text);
-        return Ok(vec![MessagePart::Resource {
-            uri: uri.to_string(),
-            mime_type: None,
-            text,
-            metadata: (!metadata.is_empty()).then_some(Value::Object(metadata)),
-        }]);
-    }
-
-    let mut value = serde_json::Map::new();
-    value.insert("type".to_string(), Value::String(item_type.to_string()));
-    if let Some(name) = name {
-        value.insert("name".to_string(), Value::String(name.to_string()));
-    }
-    if let Some(text) = text {
-        value.insert("text".to_string(), Value::String(text.to_string()));
-    }
-    Ok(vec![MessagePart::Json {
-        value: Value::Object(value),
-    }])
+    Ok(vec![MessagePart::reference(
+        item_type,
+        name.map(str::to_string),
+        path.or(image_url).map(str::to_string),
+        text.map(str::to_string),
+    )])
 }
 
 fn compose_item_caption(name: Option<&str>, text: Option<&str>) -> Option<String> {
@@ -1773,10 +1741,60 @@ mod tests {
         assert!(launch.task.prompt.contains("[mention]"));
         assert_eq!(launch.initial_input.role, MessageRole::User);
         assert_eq!(launch.initial_input.parts.len(), 3);
+        assert!(matches!(
+            launch.initial_input.parts.get(2),
+            Some(MessagePart::Reference {
+                kind,
+                name,
+                uri,
+                text,
+            }) if kind == "mention"
+                && name.as_deref() == Some("connector")
+                && uri.as_deref() == Some("app://tool-registry")
+                && text.is_none()
+        ));
         assert_eq!(
             launch.initial_input.text_content(),
             "Review the current patch.\nFocus on regressions.\nconnector"
         );
+    }
+
+    #[tokio::test]
+    async fn spawn_agent_plain_item_without_uri_becomes_reference_part() {
+        let executor = Arc::new(FakeExecutor::default());
+        let tool = AgentSpawnTool::new(executor.clone());
+
+        tool.execute(
+            ToolCallId::new(),
+            json!({
+                "agent_type": "reviewer",
+                "items": [
+                    {
+                        "type": "skill",
+                        "name": "openai-docs",
+                        "text": "Use the official docs only"
+                    }
+                ]
+            }),
+            &ToolExecutionContext::default(),
+        )
+        .await
+        .unwrap();
+
+        let state = executor.state.lock().unwrap();
+        let launch = &state.spawned_launches[0];
+        assert!(matches!(
+            launch.initial_input.parts.first(),
+            Some(MessagePart::Reference {
+                kind,
+                name,
+                uri,
+                text,
+            }) if kind == "skill"
+                && name.as_deref() == Some("openai-docs")
+                && uri.is_none()
+                && text.as_deref() == Some("Use the official docs only")
+        ));
     }
 
     #[tokio::test]

@@ -302,6 +302,24 @@ fn message_part_to_text(part: &MessagePart) -> String {
                 .map(|value: &str| format!(" {}", value.replace('\n', " ")))
                 .unwrap_or_default(),
         ),
+        MessagePart::Reference {
+            kind,
+            name,
+            uri,
+            text,
+        } => format!(
+            "[reference:{}{}{}{}]",
+            kind,
+            name.as_deref()
+                .map(|value| format!(" {value}"))
+                .unwrap_or_default(),
+            uri.as_deref()
+                .map(|value| format!(" {value}"))
+                .unwrap_or_default(),
+            text.as_deref()
+                .map(|value| format!(" {}", value.replace('\n', " ")))
+                .unwrap_or_default(),
+        ),
         MessagePart::Json { value } => format!("[json] {value}"),
         MessagePart::ProviderExtension { provider, kind, .. } => {
             format!("[provider_extension:{provider}:{kind}]")

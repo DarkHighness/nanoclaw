@@ -15,6 +15,7 @@ It intentionally keeps the host layer thin:
   - `local_image` and `image_url` input items now become first-class image parts, so multimodal child prompts reuse provider-native image transport instead of a text-only resource fallback
   - `local_file` now means a workspace file path, while `file` accepts either a workspace path or an `http/https` URL; both attach first-class file parts
   - OpenAI forwards file parts as `input_file`, while Anthropic upgrades PDFs to native `document` blocks and keeps other file types on a readable fallback path
+  - `mention`, `skill`, and generic `item` inputs now travel as typed reference parts instead of being flattened into ad hoc resource metadata or JSON
 - append-only runtime loop from `runtime`
 - runtime steering and queued command support
 - loop detection as the primary guard against tool-call churn, without a fixed global iteration cap

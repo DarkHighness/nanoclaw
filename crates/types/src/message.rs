@@ -33,6 +33,12 @@ pub enum MessagePart {
         data_base64: Option<String>,
         uri: Option<String>,
     },
+    Reference {
+        kind: String,
+        name: Option<String>,
+        uri: Option<String>,
+        text: Option<String>,
+    },
     ToolCall {
         call: ToolCall,
     },
@@ -69,6 +75,41 @@ impl MessagePart {
         Self::ImageUrl {
             url: url.into(),
             mime_type: None,
+        }
+    }
+
+    #[must_use]
+    pub fn reference(
+        kind: impl Into<String>,
+        name: Option<String>,
+        uri: Option<String>,
+        text: Option<String>,
+    ) -> Self {
+        Self::Reference {
+            kind: kind.into(),
+            name,
+            uri,
+            text,
+        }
+    }
+}
+
+#[must_use]
+pub fn reference_display_text(
+    kind: &str,
+    name: Option<&str>,
+    uri: Option<&str>,
+    text: Option<&str>,
+) -> Option<String> {
+    match (text, name, uri) {
+        (Some(text), Some(name), _) => Some(format!("{name}\n{text}")),
+        (Some(text), None, Some(uri)) => Some(format!("{uri}\n{text}")),
+        (Some(text), None, None) => Some(text.to_string()),
+        (None, Some(name), _) => Some(name.to_string()),
+        (None, None, Some(uri)) => Some(uri.to_string()),
+        (None, None, None) => {
+            let kind = kind.trim();
+            (!kind.is_empty()).then(|| format!("[{kind}]"))
         }
     }
 }
@@ -202,6 +243,12 @@ impl Message {
                 MessagePart::Resource {
                     text: Some(text), ..
                 } => Some(text.clone()),
+                MessagePart::Reference {
+                    kind,
+                    name,
+                    uri,
+                    text,
+                } => reference_display_text(kind, name.as_deref(), uri.as_deref(), text.as_deref()),
                 MessagePart::ToolResult { result } => Some(result.text_content()),
                 _ => None,
             })
@@ -228,5 +275,20 @@ mod tests {
         );
 
         assert_eq!(message.text_content(), "hello\nworld");
+    }
+
+    #[test]
+    fn text_content_includes_reference_display_text() {
+        let message = Message::new(
+            MessageRole::User,
+            vec![MessagePart::reference(
+                "mention",
+                Some("workspace".to_string()),
+                Some("app://workspace/snapshot".to_string()),
+                None,
+            )],
+        );
+
+        assert_eq!(message.text_content(), "workspace");
     }
 }
