@@ -204,6 +204,32 @@ memory without pushing note maintenance into base instructions or per-turn
 prompt-prefix churn, and it mirrors Claude's "background extraction with
 bounded stale recovery" shape more closely than a synchronous post-turn write.
 
+## Session-Memory Compaction
+
+Claude Code does not only refresh session memory in the background. When
+compaction chooses the session-memory continuity path, it first gives any
+in-flight extraction a bounded chance to finish and then uses the maintained
+session note as the continuity summary itself.
+
+`nanoclaw` now mirrors that shape in the compactor layer:
+
+- the root runtime compactor is now a wrapper around the existing model
+  compactor instead of a single hard-coded model-summary path
+- before compacting, the wrapper gives the current session-note refresh up to
+  15 seconds to finish, but stops waiting if the refresh is already older than
+  60 seconds
+- if the structured session note exists and its
+  `last_summarized_message_id` covers the source window being compacted, the
+  note body itself becomes the new compaction summary
+- if the note is missing, empty, stale relative to the current compact source,
+  or the operator supplied explicit `/compact` notes, the wrapper falls back to
+  the normal model compactor
+
+This keeps compaction continuity aligned with Claude's "session memory as the
+summary source" path without forcing every compaction to depend on a perfect
+background refresh, and it lets both auto-compaction and manual compaction
+reuse the same bounded-wait decision point.
+
 ## Side Questions (`/btw`)
 
 Claude Code exposes side questions as a separate lightweight query path rather

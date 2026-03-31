@@ -189,6 +189,7 @@ impl AgentRuntime {
         if visible_indices.len() < 2 {
             return Ok(false);
         }
+        let visible_messages = self.visible_transcript();
 
         let retain_count = self
             .compaction_config
@@ -254,6 +255,7 @@ impl AgentRuntime {
                 agent_session_id: self.session.agent_session_id.clone(),
                 turn_id: turn_id.clone(),
                 messages: source_messages.clone(),
+                visible_messages: visible_messages.clone(),
                 instructions: compaction_instructions,
             })
             .await?;

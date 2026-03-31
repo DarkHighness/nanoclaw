@@ -2,6 +2,10 @@ use crate::backend::session_catalog;
 use crate::backend::session_history::{
     self, LoadedAgentSession, LoadedSession, SessionExportArtifact, preview_id,
 };
+use crate::backend::session_memory_compaction::{
+    SESSION_MEMORY_STALE_THRESHOLD_MS, SharedSessionMemoryRefreshState,
+    session_memory_note_absolute_path,
+};
 use crate::backend::session_memory_note::{
     build_session_memory_update_prompt, default_session_memory_note, render_session_memory_note,
     strip_memory_frontmatter,
@@ -40,7 +44,7 @@ use futures::StreamExt;
 use nanoclaw_config::ResolvedAgentProfile;
 use serde_json::json;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, RwLock};
 use std::time::Instant;
 use store::SessionStore;
 use tokio::fs;
@@ -55,7 +59,6 @@ const SESSION_MEMORY_MIN_TOKENS_TO_INIT: usize = 10_000;
 const SESSION_MEMORY_MIN_TOKENS_BETWEEN_UPDATES: usize = 5_000;
 const SESSION_MEMORY_TOOL_CALLS_BETWEEN_UPDATES: usize = 3;
 const SESSION_MEMORY_UPDATE_TIMEOUT_MS: u64 = 15_000;
-const SESSION_MEMORY_UPDATE_STALE_MS: u64 = 60_000;
 const WORKSPACE_MEMORY_RECALL_METADATA_KEY: &str = "workspace_memory_recall";
 
 #[derive(Clone)]
@@ -229,18 +232,6 @@ struct CompactionWorkingSnapshot {
     summary: String,
 }
 
-#[derive(Clone, Debug, Default)]
-struct SessionMemoryRefreshState {
-    active_session_id: Option<SessionId>,
-    initialized: bool,
-    refresh_in_flight: bool,
-    refresh_started_at: Option<Instant>,
-    refresh_epoch: u64,
-    tokens_at_last_update: usize,
-    tool_calls_since_update: usize,
-    last_summarized_message_id: Option<MessageId>,
-}
-
 #[derive(Clone, Debug)]
 struct SessionMemoryRefreshContext {
     session_id: SessionId,
@@ -297,7 +288,7 @@ pub(crate) struct CodeAgentSession {
     preamble: SessionPreambleConfig,
     session_memory_model_backend: Option<Arc<dyn ModelBackend>>,
     memory_backend: Option<Arc<dyn MemoryBackend>>,
-    session_memory_refresh: Arc<Mutex<SessionMemoryRefreshState>>,
+    session_memory_refresh: SharedSessionMemoryRefreshState,
     side_question_context: Arc<RwLock<Option<SideQuestionContextSnapshot>>>,
 }
 
@@ -322,6 +313,7 @@ impl CodeAgentSession {
         plugin_instructions: Vec<String>,
         skills: Vec<Skill>,
         memory_backend: Option<Arc<dyn MemoryBackend>>,
+        session_memory_refresh: SharedSessionMemoryRefreshState,
     ) -> Self {
         let workspace_root = startup.workspace_root.clone();
         let side_question_context = Some(Self::side_question_context_from_runtime(
@@ -329,8 +321,7 @@ impl CodeAgentSession {
             None::<Message>,
         ));
         let control_plane = runtime.control_plane();
-        let mut session_memory_refresh = SessionMemoryRefreshState::default();
-        session_memory_refresh.active_session_id = Some(runtime.session_id());
+        session_memory_refresh.lock().unwrap().active_session_id = Some(runtime.session_id());
         Self {
             runtime: Arc::new(AsyncMutex::new(runtime)),
             control_plane,
@@ -355,7 +346,7 @@ impl CodeAgentSession {
             },
             session_memory_model_backend,
             memory_backend,
-            session_memory_refresh: Arc::new(Mutex::new(session_memory_refresh)),
+            session_memory_refresh,
             side_question_context: Arc::new(RwLock::new(side_question_context)),
         }
     }
@@ -937,7 +928,7 @@ impl CodeAgentSession {
                 .saturating_add(context.tool_call_count);
             if state.refresh_in_flight {
                 let refresh_is_stale = state.refresh_started_at.is_some_and(|started_at| {
-                    started_at.elapsed() >= Duration::from_millis(SESSION_MEMORY_UPDATE_STALE_MS)
+                    started_at.elapsed() >= Duration::from_millis(SESSION_MEMORY_STALE_THRESHOLD_MS)
                 });
                 if !refresh_is_stale {
                     return;
@@ -1048,7 +1039,7 @@ impl CodeAgentSession {
     }
 
     async fn load_session_memory_note_body(&self, session_id: &SessionId) -> Result<String> {
-        let path = self.session_memory_note_absolute_path(session_id);
+        let path = session_memory_note_absolute_path(self.workspace_root(), session_id);
         match fs::read_to_string(path).await {
             Ok(text) => Ok(strip_memory_frontmatter(&text).trim().to_string()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -1203,18 +1194,13 @@ impl CodeAgentSession {
         Ok(trimmed)
     }
 
-    fn session_memory_note_absolute_path(&self, session_id: &SessionId) -> PathBuf {
-        self.workspace_root.join(format!(
-            ".nanoclaw/memory/working/sessions/{}.md",
-            session_id.as_str()
-        ))
-    }
-
     async fn reset_session_memory_refresh_state(&self, context: &SideQuestionContextSnapshot) {
-        let note_exists =
-            fs::try_exists(self.session_memory_note_absolute_path(&context.session_id))
-                .await
-                .unwrap_or(false);
+        let note_exists = fs::try_exists(session_memory_note_absolute_path(
+            self.workspace_root(),
+            &context.session_id,
+        ))
+        .await
+        .unwrap_or(false);
         let mut state = self
             .session_memory_refresh
             .lock()
@@ -2387,6 +2373,9 @@ mod tests {
             Vec::new(),
             Vec::<Skill>::new(),
             memory_backend,
+            Arc::new(std::sync::Mutex::new(
+                crate::backend::session_memory_compaction::SessionMemoryRefreshState::default(),
+            )),
         )
     }
 

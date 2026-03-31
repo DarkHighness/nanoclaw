@@ -30,6 +30,7 @@ pub struct CompactionRequest {
     pub agent_session_id: AgentSessionId,
     pub turn_id: TurnId,
     pub messages: Vec<types::Message>,
+    pub visible_messages: Vec<types::Message>,
     pub instructions: Option<String>,
 }
 
@@ -226,6 +227,7 @@ mod tests {
                 agent_session_id: AgentSessionId::from("agent-session-1"),
                 turn_id: TurnId::new(),
                 messages: vec![Message::user("summarize the deploy fixes")],
+                visible_messages: vec![Message::user("summarize the deploy fixes")],
                 instructions: None,
             })
             .await

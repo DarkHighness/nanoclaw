@@ -2,6 +2,9 @@ use crate::backend::boot_inputs::DriverHostInputs;
 use crate::backend::boot_mcp::build_startup_diagnostics_snapshot;
 use crate::backend::boot_runtime::{build_runtime_tooling, register_subagent_tools};
 use crate::backend::memory_recall::WorkspaceMemoryRecallAugmentor;
+use crate::backend::session_memory_compaction::{
+    SessionMemoryConversationCompactor, SessionMemoryRefreshState, SharedSessionMemoryRefreshState,
+};
 use crate::backend::store::build_store;
 use crate::backend::{
     ApprovalCoordinator, NonInteractivePermissionRequestHandler, NonInteractiveToolApprovalHandler,
@@ -38,13 +41,14 @@ use agent_env::EnvMap;
 use anyhow::{Context, Result, bail};
 use nanoclaw_config::{CoreConfig, ResolvedAgentProfile};
 use std::path::Path;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 use tracing::{info, warn};
 
 struct RuntimeBuildResult {
     runtime: AgentRuntime,
     model_backend: MutableAgentBackend,
     memory_backend: Option<Arc<dyn agent::memory::MemoryBackend>>,
+    session_memory_refresh_state: SharedSessionMemoryRefreshState,
     subagent_executor: Arc<dyn SubagentExecutor>,
     store: Arc<dyn store::SessionStore>,
     skill_catalog: SkillCatalog,
@@ -204,6 +208,7 @@ pub(crate) async fn build_session_with_approval_mode(
         runtime,
         model_backend,
         memory_backend,
+        session_memory_refresh_state,
         subagent_executor,
         store,
         skill_catalog,
@@ -280,6 +285,7 @@ pub(crate) async fn build_session_with_approval_mode(
         plugin_instructions,
         skills,
         memory_backend,
+        session_memory_refresh_state,
     ))
 }
 
@@ -293,6 +299,7 @@ async fn build_runtime(
     sandbox_status: agent::tools::SandboxBackendStatus,
     permission_grants: PermissionGrantStore,
 ) -> Result<RuntimeBuildResult> {
+    let session_memory_refresh_state = Arc::new(Mutex::new(SessionMemoryRefreshState::default()));
     let model_backend = build_mutable_agent_backend(&options.primary_profile, &options.env_map)?;
     let backend: Arc<dyn ModelBackend> = Arc::new(model_backend.clone());
     let summary_backend = Arc::new(build_internal_backend(
@@ -318,7 +325,14 @@ async fn build_runtime(
     let runtime_hooks = plugin_plan.hooks.clone();
     let plugin_mcp_servers = plugin_plan.mcp_servers.clone();
     let plugin_instructions = plugin_plan.instructions.clone();
-    let compactor = Arc::new(ModelConversationCompactor::new(summary_backend));
+    let model_compactor: Arc<dyn ConversationCompactor> =
+        Arc::new(ModelConversationCompactor::new(summary_backend));
+    let compactor: Arc<dyn ConversationCompactor> =
+        Arc::new(SessionMemoryConversationCompactor::new(
+            workspace_root.to_path_buf(),
+            session_memory_refresh_state.clone(),
+            model_compactor,
+        ));
     // Runtime tooling assembly is still host boot work, but it lives behind a
     // dedicated helper so later frontends inherit the same process-local tool,
     // hook, and LSP wiring without reopening this orchestration block.
@@ -514,6 +528,7 @@ async fn build_runtime(
         runtime,
         model_backend,
         memory_backend,
+        session_memory_refresh_state,
         subagent_executor,
         store,
         skills,
