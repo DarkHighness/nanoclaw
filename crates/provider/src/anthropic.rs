@@ -817,6 +817,36 @@ mod tests {
         assert_eq!(body["messages"][0]["content"][1]["type"], json!("text"));
     }
 
+    #[test]
+    fn anthropic_body_serializes_remote_pdf_file_parts_as_url_documents() {
+        let mut request = base_request();
+        request.messages = vec![Message::new(
+            types::MessageRole::User,
+            vec![types::MessagePart::File {
+                file_name: Some("report.pdf".to_string()),
+                mime_type: Some("application/pdf".to_string()),
+                data_base64: None,
+                uri: Some("https://example.com/docs/report.pdf".to_string()),
+            }],
+        )];
+
+        let body = build_anthropic_messages_body(
+            "claude-sonnet-4-6".to_string(),
+            request,
+            &RequestOptions::default(),
+        )
+        .unwrap();
+
+        assert_eq!(body["messages"][0]["content"][0]["type"], json!("document"));
+        assert_eq!(
+            body["messages"][0]["content"][0]["source"],
+            json!({
+                "type": "url",
+                "url": "https://example.com/docs/report.pdf"
+            })
+        );
+    }
+
     #[tokio::test]
     async fn anthropic_stream_emits_text_and_tool_calls() {
         let server = MockServer::start().await;

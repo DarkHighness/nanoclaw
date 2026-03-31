@@ -763,6 +763,12 @@ async fn normalize_agent_input_item_parts(
         return Ok(parts);
     }
 
+    if item_type == "local_file" && path.is_some_and(is_remote_url) {
+        return Err(ToolError::invalid(
+            "agent input items with type=local_file require a workspace path; use type=file for remote URLs",
+        ));
+    }
+
     if is_local_file_item(item_type, path) {
         let path = path.ok_or_else(|| {
             ToolError::invalid(
@@ -780,6 +786,17 @@ async fn normalize_agent_input_item_parts(
             // fetch targets.
             uri: Some(file.requested_path.clone()),
         }];
+        if let Some(caption) = compose_item_caption(name, text) {
+            parts.push(MessagePart::text(caption));
+        }
+        return Ok(parts);
+    }
+
+    if is_remote_file_item(item_type, path) {
+        let path = path.ok_or_else(|| {
+            ToolError::invalid("agent input items with type=file require a non-empty path")
+        })?;
+        let mut parts = vec![remote_agent_input_file(path, name)];
         if let Some(caption) = compose_item_caption(name, text) {
             parts.push(MessagePart::text(caption));
         }
@@ -855,7 +872,11 @@ fn is_remote_image_item(item_type: &str, image_url: Option<&str>, path: Option<&
 }
 
 fn is_local_file_item(item_type: &str, path: Option<&str>) -> bool {
-    path.is_some() && matches!(item_type, "local_file" | "file")
+    path.is_some_and(|path| !is_remote_url(path)) && matches!(item_type, "local_file" | "file")
+}
+
+fn is_remote_file_item(item_type: &str, path: Option<&str>) -> bool {
+    item_type == "file" && path.is_some_and(is_remote_url)
 }
 
 async fn load_agent_input_file(
@@ -888,6 +909,40 @@ fn sniff_agent_input_file_mime(bytes: &[u8], path: &Path) -> Option<&'static str
         Some("pdf") => Some("application/pdf"),
         _ => None,
     }
+}
+
+fn remote_agent_input_file(path: &str, name: Option<&str>) -> MessagePart {
+    MessagePart::File {
+        file_name: name
+            .map(str::to_string)
+            .or_else(|| derive_file_name(path))
+            .filter(|value| !value.is_empty()),
+        mime_type: sniff_remote_agent_input_file_mime(path, name).map(str::to_string),
+        data_base64: None,
+        uri: Some(path.to_string()),
+    }
+}
+
+fn sniff_remote_agent_input_file_mime(path: &str, name: Option<&str>) -> Option<&'static str> {
+    if name.is_some_and(|value| value.to_ascii_lowercase().ends_with(".pdf"))
+        || path.to_ascii_lowercase().ends_with(".pdf")
+    {
+        return Some("application/pdf");
+    }
+    None
+}
+
+fn derive_file_name(path: &str) -> Option<String> {
+    let path = path.split('#').next().unwrap_or(path);
+    let path = path.split('?').next().unwrap_or(path);
+    path.rsplit('/').next().and_then(|value| {
+        let value = value.trim();
+        (!value.is_empty()).then(|| value.to_string())
+    })
+}
+
+fn is_remote_url(path: &str) -> bool {
+    path.starts_with("http://") || path.starts_with("https://")
 }
 
 fn render_agent_input_item_summary(item: &AgentInputItem) -> Option<String> {
@@ -1828,6 +1883,72 @@ mod tests {
             launch.initial_input.text_content(),
             "Summarize the findings"
         );
+    }
+
+    #[tokio::test]
+    async fn spawn_agent_remote_file_items_become_file_url_parts() {
+        let executor = Arc::new(FakeExecutor::default());
+        let tool = AgentSpawnTool::new(executor.clone());
+
+        tool.execute(
+            ToolCallId::new(),
+            json!({
+                "agent_type": "reviewer",
+                "items": [
+                    {
+                        "type": "file",
+                        "path": "https://example.com/reports/monthly.pdf",
+                        "text": "Summarize the findings"
+                    }
+                ]
+            }),
+            &ToolExecutionContext::default(),
+        )
+        .await
+        .unwrap();
+
+        let state = executor.state.lock().unwrap();
+        let launch = &state.spawned_launches[0];
+        assert!(matches!(
+            launch.initial_input.parts.first(),
+            Some(MessagePart::File {
+                file_name,
+                mime_type,
+                data_base64: None,
+                uri: Some(uri),
+            }) if file_name.as_deref() == Some("monthly.pdf")
+                && mime_type.as_deref() == Some("application/pdf")
+                && uri == "https://example.com/reports/monthly.pdf"
+        ));
+        assert_eq!(
+            launch.initial_input.text_content(),
+            "Summarize the findings"
+        );
+    }
+
+    #[tokio::test]
+    async fn spawn_agent_rejects_remote_urls_for_local_file_items() {
+        let executor = Arc::new(FakeExecutor::default());
+        let tool = AgentSpawnTool::new(executor);
+
+        let error = tool
+            .execute(
+                ToolCallId::new(),
+                json!({
+                    "agent_type": "reviewer",
+                    "items": [
+                        {
+                            "type": "local_file",
+                            "path": "https://example.com/reports/monthly.pdf"
+                        }
+                    ]
+                }),
+                &ToolExecutionContext::default(),
+            )
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("use type=file for remote URLs"));
     }
 
     #[tokio::test]
