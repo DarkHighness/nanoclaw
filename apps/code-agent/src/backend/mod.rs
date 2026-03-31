@@ -11,6 +11,7 @@ mod permission_request;
 mod session;
 mod session_catalog;
 mod session_history;
+mod session_memory_note;
 mod session_resume;
 mod store;
 mod task_history;

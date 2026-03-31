@@ -154,3 +154,15 @@ persisted working note has a more stable structure:
 - `Learnings`
 - `Key results`
 - `Worklog`
+
+The host now renders those snapshots into a fixed session-note skeleton instead
+of persisting free-form Markdown directly:
+
+- `.nanoclaw/memory/working/sessions/<session>.md` always keeps the full Claude
+  section list plus the per-section italic guidance lines
+- recognized compaction headings are mapped into their matching sections
+- if compaction returns free-form text instead, the host falls back to
+  `Current State` so continuity still survives
+- later snapshot updates still use replace semantics, but they now replace the
+  content inside one stable note shape rather than swapping between arbitrary
+  summary layouts

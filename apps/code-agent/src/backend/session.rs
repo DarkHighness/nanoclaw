@@ -2,6 +2,7 @@ use crate::backend::session_catalog;
 use crate::backend::session_history::{
     self, LoadedAgentSession, LoadedSession, SessionExportArtifact, preview_id,
 };
+use crate::backend::session_memory_note::render_session_memory_note;
 use crate::backend::session_resume;
 use crate::backend::task_history::{self, LoadedTask, PersistedTaskSummary};
 use crate::backend::{
@@ -690,14 +691,18 @@ impl CodeAgentSession {
         if summary.is_empty() {
             return;
         }
+        let note = render_session_memory_note(summary);
 
         // Persist the latest compaction handoff as working memory so later
         // recall can recover session continuity without mutating base prompts.
+        // The host renders a stable Claude-style note skeleton here so future
+        // updates replace section content instead of drifting into ad hoc
+        // compaction-specific Markdown shapes.
         if let Err(error) = memory_backend
             .record(MemoryRecordRequest {
                 scope: MemoryScope::Working,
                 title: "Session continuation snapshot".to_string(),
-                content: summary.to_string(),
+                content: note,
                 mode: MemoryRecordMode::Replace,
                 memory_type: Some(MemoryType::Project),
                 description: Some(
@@ -2089,6 +2094,8 @@ mod tests {
         ));
         let snapshot = std::fs::read_to_string(working_path).unwrap();
         assert!(snapshot.contains("Session continuation snapshot"));
+        assert!(snapshot.contains("# Session Title"));
+        assert!(snapshot.contains("# Current State"));
         assert!(snapshot.contains("summary for 2 messages"));
         assert!(snapshot.contains("session_id:"));
     }
@@ -2141,6 +2148,8 @@ mod tests {
                 .join(".nanoclaw/memory/working/sessions/session-1.md"),
         )
         .unwrap();
+        assert!(snapshot.contains("# Session Title"));
+        assert!(snapshot.contains("# Current State"));
         assert!(snapshot.contains("second snapshot"));
         assert!(!snapshot.contains("first snapshot"));
     }
