@@ -831,6 +831,30 @@ mod tests {
     }
 
     #[test]
+    fn openai_responses_body_serializes_remote_image_parts_as_input_images() {
+        let mut request = base_request();
+        request.messages = vec![Message::new(
+            types::MessageRole::User,
+            vec![
+                MessagePart::image_url("https://example.com/failure.png"),
+                MessagePart::text("Describe the failure"),
+            ],
+        )];
+
+        let body =
+            build_openai_responses_body("gpt-5.4".to_string(), request, &RequestOptions::default())
+                .unwrap();
+
+        assert_eq!(body["input"][0]["type"], json!("message"));
+        assert_eq!(body["input"][0]["content"][0]["type"], json!("input_image"));
+        assert_eq!(
+            body["input"][0]["content"][0]["image_url"],
+            json!("https://example.com/failure.png")
+        );
+        assert_eq!(body["input"][0]["content"][1]["type"], json!("input_text"));
+    }
+
+    #[test]
     fn previous_response_not_found_maps_to_continuation_loss() {
         let error = classify_openai_error(
             404,

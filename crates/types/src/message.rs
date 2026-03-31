@@ -22,6 +22,11 @@ pub enum MessagePart {
         mime_type: String,
         data_base64: String,
     },
+    ImageUrl {
+        url: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mime_type: Option<String>,
+    },
     File {
         file_name: Option<String>,
         mime_type: Option<String>,
@@ -57,6 +62,14 @@ impl MessagePart {
     #[must_use]
     pub fn text(text: impl Into<String>) -> Self {
         Self::Text { text: text.into() }
+    }
+
+    #[must_use]
+    pub fn image_url(url: impl Into<String>) -> Self {
+        Self::ImageUrl {
+            url: url.into(),
+            mime_type: None,
+        }
     }
 }
 

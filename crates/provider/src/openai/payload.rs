@@ -241,6 +241,10 @@ fn openai_user_message_block(part: &MessagePart) -> Option<Value> {
             "type": "input_image",
             "image_url": data_url(mime_type, data_base64),
         })),
+        MessagePart::ImageUrl { url, .. } => Some(json!({
+            "type": "input_image",
+            "image_url": url,
+        })),
         MessagePart::File {
             file_name,
             mime_type,

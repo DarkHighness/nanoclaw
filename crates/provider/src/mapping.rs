@@ -103,6 +103,7 @@ pub fn message_part_text(part: &MessagePart) -> Option<String> {
             uri: None,
             ..
         } => None,
+        MessagePart::ImageUrl { url, .. } => Some(url.clone()),
         MessagePart::ToolResult { result } => Some(tool_result_roundtrip_text(result)),
         MessagePart::ToolCall { call } => Some(stringify_json(&call.arguments)),
         MessagePart::Image { .. } => None,

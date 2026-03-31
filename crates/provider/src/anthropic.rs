@@ -351,6 +351,13 @@ fn anthropic_message(role: &str, parts: Vec<MessagePart>) -> Result<Value> {
                     "data": data_base64,
                 }
             })),
+            MessagePart::ImageUrl { url, .. } => content.push(json!({
+                "type": "image",
+                "source": {
+                    "type": "url",
+                    "url": url,
+                }
+            })),
             MessagePart::ToolCall { call } => content.push(json!({
                 "type": "tool_use",
                 "id": call.call_id,
@@ -677,6 +684,35 @@ mod tests {
             json!("tool_result")
         );
         assert_eq!(body["messages"][1]["content"][1]["type"], json!("text"));
+    }
+
+    #[test]
+    fn anthropic_body_serializes_remote_image_parts_as_url_sources() {
+        let mut request = base_request();
+        request.messages = vec![Message::new(
+            types::MessageRole::User,
+            vec![
+                types::MessagePart::image_url("https://example.com/failure.png"),
+                types::MessagePart::text("Describe the failure"),
+            ],
+        )];
+
+        let body = build_anthropic_messages_body(
+            "claude-sonnet-4-6".to_string(),
+            request,
+            &RequestOptions::default(),
+        )
+        .unwrap();
+
+        assert_eq!(body["messages"][0]["content"][0]["type"], json!("image"));
+        assert_eq!(
+            body["messages"][0]["content"][0]["source"],
+            json!({
+                "type": "url",
+                "url": "https://example.com/failure.png"
+            })
+        );
+        assert_eq!(body["messages"][0]["content"][1]["type"], json!("text"));
     }
 
     #[tokio::test]

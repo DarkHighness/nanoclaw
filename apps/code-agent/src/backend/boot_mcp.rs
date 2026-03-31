@@ -258,6 +258,14 @@ fn message_part_to_text(part: &MessagePart) -> String {
     match part {
         MessagePart::Text { text } => text.clone(),
         MessagePart::Image { mime_type, .. } => format!("[image:{mime_type}]"),
+        MessagePart::ImageUrl { url, mime_type } => format!(
+            "[image_url:{}{}]",
+            url,
+            mime_type
+                .as_deref()
+                .map(|value| format!(" {value}"))
+                .unwrap_or_default(),
+        ),
         MessagePart::File {
             file_name,
             mime_type,

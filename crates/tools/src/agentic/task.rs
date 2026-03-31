@@ -752,6 +752,21 @@ async fn normalize_agent_input_item_parts(
         return Ok(parts);
     }
 
+    if is_remote_image_item(item_type, image_url, path) {
+        let url = image_url.ok_or_else(|| {
+            ToolError::invalid(
+                "agent input items with type=image_url require a non-empty image_url",
+            )
+        })?;
+        // Remote images should stay first-class image parts so providers can use
+        // their native multimodal transport instead of degrading them into text.
+        let mut parts = vec![MessagePart::image_url(url)];
+        if let Some(caption) = compose_item_caption(name, text) {
+            parts.push(MessagePart::text(caption));
+        }
+        return Ok(parts);
+    }
+
     if let Some(uri) = path.clone().or(image_url.clone()) {
         let mut metadata = serde_json::Map::new();
         metadata.insert("type".to_string(), Value::String(item_type.to_string()));
@@ -799,6 +814,10 @@ fn compose_item_caption(name: Option<&str>, text: Option<&str>) -> Option<String
         (None, Some(text)) => Some(text.to_string()),
         (None, None) => None,
     }
+}
+
+fn is_remote_image_item(item_type: &str, image_url: Option<&str>, path: Option<&str>) -> bool {
+    image_url.is_some() && path.is_none() && matches!(item_type, "image_url" | "image" | "item")
 }
 
 fn render_agent_input_item_summary(item: &AgentInputItem) -> Option<String> {
@@ -1665,6 +1684,37 @@ mod tests {
             launch.initial_input.text_content(),
             "latest failure screenshot"
         );
+    }
+
+    #[tokio::test]
+    async fn spawn_agent_image_url_items_become_remote_image_parts() {
+        let executor = Arc::new(FakeExecutor::default());
+        let tool = AgentSpawnTool::new(executor.clone());
+
+        tool.execute(
+            ToolCallId::new(),
+            json!({
+                "agent_type": "reviewer",
+                "items": [
+                    {
+                        "type": "image_url",
+                        "image_url": "https://example.com/failure.png",
+                        "text": "latest CI screenshot"
+                    }
+                ]
+            }),
+            &ToolExecutionContext::default(),
+        )
+        .await
+        .unwrap();
+
+        let state = executor.state.lock().unwrap();
+        let launch = &state.spawned_launches[0];
+        assert!(matches!(
+            launch.initial_input.parts.first(),
+            Some(MessagePart::ImageUrl { url, .. }) if url == "https://example.com/failure.png"
+        ));
+        assert_eq!(launch.initial_input.text_content(), "latest CI screenshot");
     }
 
     #[tokio::test]
