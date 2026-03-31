@@ -11,6 +11,7 @@ pub mod experiment;
 pub mod improve;
 pub mod promotion;
 pub mod rollback;
+pub mod signals;
 
 pub use benchmark::*;
 pub use candidate::*;
@@ -19,3 +20,4 @@ pub use experiment::*;
 pub use improve::*;
 pub use promotion::*;
 pub use rollback::*;
+pub use signals::*;
