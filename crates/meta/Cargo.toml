@@ -5,3 +5,12 @@ license.workspace = true
 version.workspace = true
 
 [dependencies]
+evals = { path = "../evals" }
+store = { path = "../store" }
+types = { path = "../types" }
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+nanoclaw-test-support = { path = "../test-support" }
