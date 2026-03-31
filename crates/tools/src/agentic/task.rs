@@ -14,6 +14,12 @@ use types::{
     ToolName, ToolOutputMode, ToolResult, ToolSpec, TurnId,
 };
 
+const SPAWN_AGENT_TOOL_NAME: &str = "spawn_agent";
+const SEND_INPUT_TOOL_NAME: &str = "send_input";
+const WAIT_AGENT_TOOL_NAME: &str = "wait_agent";
+const LIST_AGENTS_TOOL_NAME: &str = "list_agents";
+const CLOSE_AGENT_TOOL_NAME: &str = "close_agent";
+
 #[derive(Clone, Debug, Default)]
 pub struct SubagentParentContext {
     pub session_id: Option<SessionId>,
@@ -280,16 +286,17 @@ impl Tool for TaskBatchTool {
 impl Tool for AgentSpawnTool {
     fn spec(&self) -> ToolSpec {
         builtin_tool_spec(
-            "agent_spawn",
+            SPAWN_AGENT_TOOL_NAME,
             "Spawn one or more child agents without waiting, honoring in-batch dependencies before they start.",
             serde_json::to_value(schema_for!(AgentSpawnToolInput))
-                .expect("agent_spawn schema"),
+                .expect("spawn_agent schema"),
             ToolOutputMode::Text,
             tool_approval_profile(false, false, false, false),
         )
+        .with_aliases(vec![ToolName::from("agent_spawn")])
         .with_output_schema(
             serde_json::to_value(schema_for!(Vec<AgentHandle>))
-                .expect("agent_spawn output schema"),
+                .expect("spawn_agent output schema"),
         )
     }
 
@@ -312,7 +319,7 @@ impl Tool for AgentSpawnTool {
             .await?;
         build_tool_result(
             call_id,
-            "agent_spawn",
+            SPAWN_AGENT_TOOL_NAME,
             handles
                 .iter()
                 .map(render_handle_line)
@@ -327,14 +334,15 @@ impl Tool for AgentSpawnTool {
 impl Tool for AgentSendTool {
     fn spec(&self) -> ToolSpec {
         builtin_tool_spec(
-            "agent_send",
+            SEND_INPUT_TOOL_NAME,
             "Send a message or steering payload to a child agent.",
-            serde_json::to_value(schema_for!(AgentSendToolInput)).expect("agent_send schema"),
+            serde_json::to_value(schema_for!(AgentSendToolInput)).expect("send_input schema"),
             ToolOutputMode::Text,
             tool_approval_profile(false, false, false, false),
         )
+        .with_aliases(vec![ToolName::from("agent_send")])
         .with_output_schema(
-            serde_json::to_value(schema_for!(AgentHandle)).expect("agent_send output schema"),
+            serde_json::to_value(schema_for!(AgentHandle)).expect("send_input output schema"),
         )
     }
 
@@ -354,7 +362,12 @@ impl Tool for AgentSendTool {
                 input.payload,
             )
             .await?;
-        build_tool_result(call_id, "agent_send", render_handle_line(&handle), handle)
+        build_tool_result(
+            call_id,
+            SEND_INPUT_TOOL_NAME,
+            render_handle_line(&handle),
+            handle,
+        )
     }
 }
 
@@ -362,14 +375,15 @@ impl Tool for AgentSendTool {
 impl Tool for AgentWaitTool {
     fn spec(&self) -> ToolSpec {
         builtin_tool_spec(
-            "agent_wait",
+            WAIT_AGENT_TOOL_NAME,
             "Wait for one or more child agents to reach a terminal state.",
-            serde_json::to_value(schema_for!(AgentWaitRequest)).expect("agent_wait schema"),
+            serde_json::to_value(schema_for!(AgentWaitRequest)).expect("wait_agent schema"),
             ToolOutputMode::Text,
             tool_approval_profile(false, false, false, false),
         )
+        .with_aliases(vec![ToolName::from("agent_wait")])
         .with_output_schema(
-            serde_json::to_value(schema_for!(AgentWaitResponse)).expect("agent_wait output schema"),
+            serde_json::to_value(schema_for!(AgentWaitResponse)).expect("wait_agent output schema"),
         )
     }
 
@@ -386,8 +400,8 @@ impl Tool for AgentWaitTool {
             .await?;
         build_tool_result(
             call_id,
-            "agent_wait",
-            render_wait_summary("agent_wait", &wait),
+            WAIT_AGENT_TOOL_NAME,
+            render_wait_summary(WAIT_AGENT_TOOL_NAME, &wait),
             wait,
         )
     }
@@ -397,7 +411,7 @@ impl Tool for AgentWaitTool {
 impl Tool for AgentListTool {
     fn spec(&self) -> ToolSpec {
         builtin_tool_spec(
-            "agent_list",
+            LIST_AGENTS_TOOL_NAME,
             "List current child agents and their session metadata.",
             serde_json::json!({
                 "type": "object",
@@ -407,8 +421,9 @@ impl Tool for AgentListTool {
             ToolOutputMode::Text,
             tool_approval_profile(true, false, false, false),
         )
+        .with_aliases(vec![ToolName::from("agent_list")])
         .with_output_schema(
-            serde_json::to_value(schema_for!(Vec<AgentHandle>)).expect("agent_list output schema"),
+            serde_json::to_value(schema_for!(Vec<AgentHandle>)).expect("list_agents output schema"),
         )
     }
 
@@ -421,7 +436,7 @@ impl Tool for AgentListTool {
         let handles = self.executor.list(SubagentParentContext::from(ctx)).await?;
         build_tool_result(
             call_id,
-            "agent_list",
+            LIST_AGENTS_TOOL_NAME,
             handles
                 .iter()
                 .map(render_handle_line)
@@ -436,14 +451,15 @@ impl Tool for AgentListTool {
 impl Tool for AgentCancelTool {
     fn spec(&self) -> ToolSpec {
         builtin_tool_spec(
-            "agent_cancel",
-            "Cancel a running child agent.",
-            serde_json::to_value(schema_for!(AgentCancelToolInput)).expect("agent_cancel schema"),
+            CLOSE_AGENT_TOOL_NAME,
+            "Close a child agent by cancelling it if it is still running.",
+            serde_json::to_value(schema_for!(AgentCancelToolInput)).expect("close_agent schema"),
             ToolOutputMode::Text,
             tool_approval_profile(false, false, false, false),
         )
+        .with_aliases(vec![ToolName::from("agent_cancel")])
         .with_output_schema(
-            serde_json::to_value(schema_for!(AgentHandle)).expect("agent_cancel output schema"),
+            serde_json::to_value(schema_for!(AgentHandle)).expect("close_agent output schema"),
         )
     }
 
@@ -462,7 +478,12 @@ impl Tool for AgentCancelTool {
                 input.reason,
             )
             .await?;
-        build_tool_result(call_id, "agent_cancel", render_handle_line(&handle), handle)
+        build_tool_result(
+            call_id,
+            CLOSE_AGENT_TOOL_NAME,
+            render_handle_line(&handle),
+            handle,
+        )
     }
 }
 
@@ -557,7 +578,7 @@ async fn wait_for_batch(
             .await?;
         if wave.completed.is_empty() {
             return Err(ToolError::invalid_state(
-                "agent_wait(any) returned no terminal agent",
+                "wait_agent(any) returned no terminal agent",
             ));
         }
         let saw_failure = wave
@@ -682,7 +703,7 @@ mod tests {
         AgentWaitTool, SubagentExecutor, SubagentParentContext, TaskBatchTool, TaskBatchToolInput,
         TaskTool, TaskToolInput,
     };
-    use crate::{Result, Tool, ToolExecutionContext};
+    use crate::{Result, Tool, ToolExecutionContext, ToolRegistry};
     use async_trait::async_trait;
     use serde_json::Value;
     use serde_json::json;
@@ -1041,6 +1062,29 @@ mod tests {
             .unwrap();
         assert_eq!(cancelled.structured_content.unwrap()["status"], "cancelled");
         assert_eq!(executor.state.lock().unwrap().sent.len(), 1);
+    }
+
+    #[test]
+    fn registry_resolves_legacy_agent_aliases_to_codex_style_names() {
+        let executor = Arc::new(FakeExecutor::default());
+        let mut registry = ToolRegistry::new();
+        registry.register(AgentSpawnTool::new(executor.clone()));
+        registry.register(AgentSendTool::new(executor.clone()));
+        registry.register(AgentWaitTool::new(executor.clone()));
+        registry.register(AgentListTool::new(executor.clone()));
+        registry.register(AgentCancelTool::new(executor));
+
+        assert_eq!(registry.specs()[0].name.as_str(), "close_agent");
+        assert!(registry.get("agent_spawn").is_some());
+        assert!(registry.get("agent_send").is_some());
+        assert!(registry.get("agent_wait").is_some());
+        assert!(registry.get("agent_list").is_some());
+        assert!(registry.get("agent_cancel").is_some());
+        assert!(registry.get("spawn_agent").is_some());
+        assert!(registry.get("send_input").is_some());
+        assert!(registry.get("wait_agent").is_some());
+        assert!(registry.get("list_agents").is_some());
+        assert!(registry.get("close_agent").is_some());
     }
 
     #[test]

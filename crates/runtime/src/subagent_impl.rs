@@ -27,6 +27,11 @@ use types::{
 const DEFAULT_EXCLUDED_CHILD_TOOLS: &[&str] = &[
     "task",
     "task_batch",
+    "spawn_agent",
+    "send_input",
+    "wait_agent",
+    "list_agents",
+    "close_agent",
     "agent_spawn",
     "agent_send",
     "agent_wait",
@@ -159,7 +164,7 @@ impl RuntimeSubagentExecutor {
         let resolved_names = filtered.names();
         if !requested.is_empty() && resolved_names.is_empty() {
             return Err(RuntimeError::invalid_state(
-                "agent_spawn: no allowed tools matched the parent registry",
+                "spawn_agent: no allowed tools matched the parent registry",
             ));
         }
         Ok((filtered, resolved_names))

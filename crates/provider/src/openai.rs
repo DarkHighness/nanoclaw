@@ -645,7 +645,7 @@ mod tests {
     fn openai_responses_body_explicitly_opts_out_of_default_strict_tools() {
         let mut request = base_request();
         request.tools.push(ToolSpec::function(
-            "agent_cancel",
+            "close_agent",
             "Cancel a child agent",
             json!({
                 "properties": {
