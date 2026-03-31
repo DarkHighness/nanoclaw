@@ -7,7 +7,7 @@ use super::history_rollback_overlay::{
 };
 use super::picker::build_command_hint_text;
 use super::should_render_side_rail;
-use super::statusline::format_footer_context;
+use super::statusline::{format_footer_context, format_toast_line, toast_height};
 use super::transcript::TranscriptEntryKind;
 use super::transcript::build_transcript_lines;
 use super::transcript::build_transcript_lines_for_width;
@@ -29,7 +29,7 @@ use crate::frontend::tui::commands::{
 use crate::frontend::tui::state::{
     ComposerContextHint, ComposerDraftAttachmentKind, ComposerDraftAttachmentState,
     ComposerDraftState, HistoryRollbackCandidate, InspectorEntry, MainPaneMode, PlanEntry,
-    StatusLinePickerState, ThemePickerState, TranscriptEntry, TranscriptShellDetail,
+    StatusLinePickerState, ThemePickerState, ToastTone, TranscriptEntry, TranscriptShellDetail,
     TranscriptToolStatus, TuiState,
 };
 use crate::theme::ThemeSummary;
@@ -1992,6 +1992,31 @@ fn footer_context_window_includes_units_and_percent() {
             .iter()
             .any(|span| span.content.as_ref().contains("ctx 30k / 400k tok (7%)"))
     );
+}
+
+#[test]
+fn toast_band_is_hidden_without_a_visible_toast() {
+    let state = TuiState::default();
+
+    assert_eq!(toast_height(&state), None);
+    assert!(line_text_for(&format_toast_line(&state)).is_empty());
+}
+
+#[test]
+fn toast_band_renders_tone_and_message_preview() {
+    let mut state = TuiState::default();
+    state.show_toast(
+        ToastTone::Warning,
+        "task task_123 failed · inspect with /task",
+    );
+
+    let line = format_toast_line(&state);
+    let text = line_text_for(&line);
+
+    assert_eq!(toast_height(&state), Some(1));
+    assert!(text.contains("notice"));
+    assert!(text.contains("task task_123 failed"));
+    assert!(text.contains("/task"));
 }
 
 #[test]

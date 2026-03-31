@@ -1,4 +1,4 @@
-use super::super::state::{TuiState, preview_text};
+use super::super::state::{ToastTone, TuiState, preview_text};
 use super::theme::palette;
 use crate::backend::preview_id;
 use chrono::Local;
@@ -24,6 +24,29 @@ pub(super) fn render_status_line(
         .style(Style::default().fg(palette().text).bg(palette().footer_bg))
         .wrap(Wrap { trim: true });
     frame.render_widget(status, inner);
+}
+
+pub(super) fn toast_height(state: &TuiState) -> Option<u16> {
+    state.toast.as_ref().map(|_| 1)
+}
+
+pub(super) fn render_toast_band(
+    frame: &mut ratatui::Frame<'_>,
+    area: ratatui::layout::Rect,
+    state: &TuiState,
+) {
+    frame.render_widget(
+        Block::default().style(Style::default().bg(palette().footer_bg)),
+        area,
+    );
+    let inner = area.inner(Margin {
+        vertical: 0,
+        horizontal: 1,
+    });
+    let toast = Paragraph::new(format_toast_line(state))
+        .style(Style::default().fg(palette().text).bg(palette().footer_bg))
+        .wrap(Wrap { trim: true });
+    frame.render_widget(toast, inner);
 }
 
 pub(super) fn format_footer_context(state: &TuiState) -> Line<'static> {
@@ -154,6 +177,31 @@ pub(super) fn format_footer_context(state: &TuiState) -> Line<'static> {
     );
 
     Line::from(spans)
+}
+
+pub(super) fn format_toast_line(state: &TuiState) -> Line<'static> {
+    let Some(toast) = state.toast.as_ref() else {
+        return Line::raw("");
+    };
+    let tone_color = match toast.tone {
+        ToastTone::Info => palette().accent,
+        ToastTone::Success => palette().assistant,
+        ToastTone::Warning => palette().warn,
+        ToastTone::Error => palette().error,
+    };
+    Line::from(vec![
+        Span::styled(
+            "●",
+            Style::default().fg(tone_color).add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(" "),
+        Span::styled("notice", Style::default().fg(tone_color)),
+        Span::styled(" · ", Style::default().fg(palette().subtle)),
+        Span::styled(
+            preview_text(&toast.message, 120),
+            Style::default().fg(palette().text),
+        ),
+    ])
 }
 
 pub(super) fn status_color(status: &str) -> Color {

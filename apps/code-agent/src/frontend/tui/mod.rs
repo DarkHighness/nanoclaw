@@ -38,7 +38,7 @@ use render::{main_pane_viewport_height, render};
 pub(crate) use state::SharedUiState;
 use state::{
     ComposerDraftAttachmentKind, ComposerDraftAttachmentState, ComposerSubmission, InspectorEntry,
-    TranscriptEntry, TranscriptShellDetail, TuiState,
+    ToastTone, TranscriptEntry, TranscriptShellDetail, TuiState,
 };
 
 use agent::RuntimeCommand;
@@ -198,6 +198,9 @@ impl CodeAgentTui {
             self.maybe_finish_turn().await?;
             self.apply_backend_events();
             self.maybe_finish_operator_task().await?;
+            self.ui_state.mutate(|state| {
+                let _ = state.expire_toast_if_due();
+            });
             self.sync_runtime_control_state();
             let permission_request_prompt = self.session.permission_request_prompt();
             let user_input_prompt = self.session.user_input_prompt();
@@ -870,6 +873,7 @@ impl CodeAgentTui {
         let mut persisted = None;
         self.ui_state.mutate(|state| {
             state.clear_composer_context_hint();
+            state.clear_toast();
             let _ = state.record_local_input_draft(submission.local_history_draft.clone());
             if state.record_input_history(&submission.persisted_history_text) {
                 persisted = Some(state.input_history().to_vec());
@@ -2011,6 +2015,10 @@ impl CodeAgentTui {
                         // the transcript and promote the next-step cue into the
                         // composer when the operator is idle.
                         state.push_transcript(live_task_wait_notice_entry(&outcome));
+                        state.show_toast(
+                            live_task_wait_toast_tone(&outcome),
+                            live_task_wait_toast_message(&outcome, state.turn_running),
+                        );
                         state.set_live_task_finished_hint(
                             outcome.task_id.clone(),
                             outcome.status.clone(),
@@ -2029,6 +2037,13 @@ impl CodeAgentTui {
                 Ok(Err(error)) => {
                     let message = summarize_nonfatal_error("operator task", &error);
                     self.ui_state.mutate(|state| {
+                        state.show_toast(
+                            ToastTone::Error,
+                            format!(
+                                "operator task failed: {}",
+                                state::preview_text(&message, 80)
+                            ),
+                        );
                         state.status = format!("Operator task failed: {message}");
                         state.show_main_view(
                             "Operator Error",
@@ -2045,6 +2060,10 @@ impl CodeAgentTui {
                 }
                 Err(error) => {
                     self.ui_state.mutate(|state| {
+                        state.show_toast(
+                            ToastTone::Error,
+                            format!("operator task join error: {error}"),
+                        );
                         state.status = format!("Operator task join error: {error}");
                         state.push_activity(format!("operator task join error: {error}"));
                     });
@@ -2918,6 +2937,7 @@ impl CodeAgentTui {
         let wait_ref = task_or_agent_ref.clone();
         self.ui_state.mutate(|state| {
             state.clear_composer_context_hint();
+            state.clear_toast();
             state.status = format!("Waiting for live task {}", preview_id(&wait_ref));
             state.push_activity(format!("waiting for live task {}", preview_id(&wait_ref)));
         });
@@ -3960,6 +3980,30 @@ fn live_task_wait_notice_details(outcome: &LiveTaskWaitOutcome) -> Vec<Transcrip
         });
     }
     details
+}
+
+fn live_task_wait_toast_tone(outcome: &LiveTaskWaitOutcome) -> ToastTone {
+    match outcome.status {
+        AgentStatus::Completed => ToastTone::Success,
+        AgentStatus::Failed => ToastTone::Error,
+        AgentStatus::Cancelled => ToastTone::Warning,
+        _ => ToastTone::Info,
+    }
+}
+
+fn live_task_wait_toast_message(outcome: &LiveTaskWaitOutcome, turn_running: bool) -> String {
+    let next_step = if turn_running {
+        "enter steer / tab queue / /task inspect"
+    } else {
+        "type follow-up / /task inspect"
+    };
+    format!(
+        "task {} {} · {} · {}",
+        outcome.task_id,
+        outcome.status,
+        state::preview_text(&outcome.summary, 64),
+        next_step
+    )
 }
 
 #[cfg(test)]

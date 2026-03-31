@@ -13,7 +13,7 @@ use agent::types::{
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, RwLock};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 #[derive(Clone, Debug, Default)]
@@ -88,6 +88,22 @@ pub(crate) enum ComposerContextHint {
         task_id: String,
         status: AgentStatus,
     },
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum ToastTone {
+    #[default]
+    Info,
+    Success,
+    Warning,
+    Error,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ToastState {
+    pub(crate) message: String,
+    pub(crate) tone: ToastTone,
+    pub(crate) expires_at: Instant,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -1098,6 +1114,7 @@ pub(crate) struct TuiState {
     pub(crate) input_history_navigation: Option<ComposerHistoryNavigationState>,
     pub(crate) command_completion_index: usize,
     pub(crate) composer_context_hint: Option<ComposerContextHint>,
+    pub(crate) toast: Option<ToastState>,
     pub(crate) transcript: Vec<TranscriptEntry>,
     pub(crate) transcript_scroll: u16,
     pub(crate) follow_transcript: bool,
@@ -1621,6 +1638,29 @@ impl TuiState {
 
     pub(crate) fn clear_composer_context_hint(&mut self) {
         self.composer_context_hint = None;
+    }
+
+    pub(crate) fn show_toast(&mut self, tone: ToastTone, message: impl Into<String>) {
+        self.toast = Some(ToastState {
+            message: message.into(),
+            tone,
+            expires_at: Instant::now() + Duration::from_secs(4),
+        });
+    }
+
+    pub(crate) fn clear_toast(&mut self) {
+        self.toast = None;
+    }
+
+    pub(crate) fn expire_toast_if_due(&mut self) -> bool {
+        let expired = self
+            .toast
+            .as_ref()
+            .is_some_and(|toast| Instant::now() >= toast.expires_at);
+        if expired {
+            self.toast = None;
+        }
+        expired
     }
 
     pub(crate) fn restore_input_draft(&mut self, draft: ComposerDraftState) {
@@ -2710,11 +2750,12 @@ mod tests {
     use super::{
         ComposerDraftAttachmentKind, ComposerDraftAttachmentState, ComposerDraftState,
         ComposerKillBufferState, ComposerRowAttachmentPreview, HistoryRollbackCandidate,
-        MainPaneMode, SharedUiState, TuiState, composer_draft_from_messages,
+        MainPaneMode, SharedUiState, ToastState, ToastTone, TuiState, composer_draft_from_messages,
         composer_draft_from_parts, draft_preview_text, git_snapshot, page_scroll_amount,
     };
     use crate::theme::ThemeSummary;
     use agent::types::{Message, MessageId, MessagePart, MessageRole};
+    use std::time::{Duration, Instant};
     use tempfile::tempdir;
 
     #[test]
@@ -2749,6 +2790,19 @@ mod tests {
 
         state.push_transcript("third");
         assert_eq!(state.transcript_scroll, u16::MAX);
+    }
+
+    #[test]
+    fn expired_toast_is_cleared_on_next_tick() {
+        let mut state = TuiState::default();
+        state.toast = Some(ToastState {
+            message: "background wait done".to_string(),
+            tone: ToastTone::Info,
+            expires_at: Instant::now() - Duration::from_secs(1),
+        });
+
+        assert!(state.expire_toast_if_due());
+        assert!(state.toast.is_none());
     }
 
     #[test]

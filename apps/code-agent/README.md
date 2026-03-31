@@ -344,10 +344,11 @@ Older compacted histories that predate resume checkpoints still remain
 history-only.
 
 When a background `/wait_task` finishes, the TUI now records a transcript-side
-completion notice and surfaces a composer hint for the next operator action. If
-the main turn is still running, the empty composer reminds you that `Enter`
-steers and `Tab` queues a follow-up; when idle, it points you at the completed
-task result instead of silently collapsing back to the generic idle prompt.
+completion notice, raises a short-lived toast, and surfaces a composer hint for
+the next operator action. If the main turn is still running, the empty composer
+reminds you that `Enter` steers and `Tab` queues a follow-up; when idle, it
+points you at the completed task result instead of silently collapsing back to
+the generic idle prompt.
 
 `/thinking` opens a picker when invoked without an explicit level. Hosts can
 also declare model-specific effort support in the core model config:

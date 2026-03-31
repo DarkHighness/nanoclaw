@@ -33,7 +33,7 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::widgets::Block;
 use shell::{bottom_layout_constraints, render_main_pane, render_side_rail};
-use statusline::render_status_line;
+use statusline::{render_status_line, render_toast_band, toast_height};
 use theme::palette;
 
 pub(crate) fn render(
@@ -66,6 +66,7 @@ pub(crate) fn render(
         None
     };
     let command_hint_height = command_hint.as_ref().map(command_hint_height);
+    let toast_height = toast_height(state);
     let composer_height = composer_height(state, user_input);
     let vertical = Layout::default()
         .direction(Direction::Vertical)
@@ -73,6 +74,7 @@ pub(crate) fn render(
             prompt_height,
             pending_height,
             command_hint_height,
+            toast_height,
             composer_height,
         ))
         .split(area);
@@ -90,6 +92,11 @@ pub(crate) fn render(
         area
     });
     let command_hint_area = command_hint_height.map(|_| {
+        let area = vertical[next_index];
+        next_index += 1;
+        area
+    });
+    let toast_area = toast_height.map(|_| {
         let area = vertical[next_index];
         next_index += 1;
         area
@@ -131,6 +138,9 @@ pub(crate) fn render(
             command_hint,
         );
     }
+    if toast_height.is_some() {
+        render_toast_band(frame, toast_area.expect("toast area"), state);
+    }
     render_composer(frame, composer_area, state, user_input);
     render_status_line(frame, status_area, state);
     if state.history_rollback_overlay().is_some() {
@@ -166,6 +176,7 @@ pub(crate) fn main_pane_viewport_height(
         None
     };
     let command_hint_height = command_hint.as_ref().map(command_hint_height);
+    let toast_height = toast_height(state);
     let composer_height = composer_height(state, user_input);
     let vertical = Layout::default()
         .direction(Direction::Vertical)
@@ -173,6 +184,7 @@ pub(crate) fn main_pane_viewport_height(
             prompt_height,
             pending_height,
             command_hint_height,
+            toast_height,
             composer_height,
         ))
         .split(area);

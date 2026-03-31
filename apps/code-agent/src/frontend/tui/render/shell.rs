@@ -45,6 +45,7 @@ pub(super) fn bottom_layout_constraints(
     approval_height: Option<u16>,
     pending_height: Option<u16>,
     command_hint_height: Option<u16>,
+    toast_height: Option<u16>,
     composer_height: u16,
 ) -> Vec<Constraint> {
     let mut constraints = vec![Constraint::Min(10)];
@@ -55,6 +56,9 @@ pub(super) fn bottom_layout_constraints(
         constraints.push(Constraint::Length(height));
     }
     if let Some(height) = command_hint_height {
+        constraints.push(Constraint::Length(height));
+    }
+    if let Some(height) = toast_height {
         constraints.push(Constraint::Length(height));
     }
     constraints.push(Constraint::Length(composer_height.max(1)));
