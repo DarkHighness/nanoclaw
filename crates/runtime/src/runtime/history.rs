@@ -369,25 +369,26 @@ fn select_compaction_split_index(
     if split_at < 2 {
         return None;
     }
-
-    split_at = expand_retained_tail_for_context_floor(visible_messages, split_at);
     if split_at == visible_messages.len() {
         return Some(split_at);
     }
-    split_at = rewind_split_at_to_turn_cluster_start(visible_messages, split_at)?;
-    adjust_split_at_for_tool_pairs(visible_messages, split_at)
+    split_at = align_split_at_to_request_round_boundary(visible_messages, split_at)?;
+    split_at = expand_retained_tail_for_context_floor(visible_messages, split_at)?;
+    split_at = adjust_split_at_for_tool_pairs(visible_messages, split_at)?;
+    align_split_at_to_request_round_boundary(visible_messages, split_at)
 }
 
 fn expand_retained_tail_for_context_floor(
     visible_messages: &[Message],
     mut split_at: usize,
-) -> usize {
+) -> Option<usize> {
     // Claude-style session-memory compaction preserves a non-trivial tail of
     // recent conversational context. Keep the current message-count floor, but
-    // for genuinely large transcripts expand the retained segment until it also
-    // carries enough recent text to ground the post-compact continuation.
+    // for genuinely large transcripts expand the retained segment by whole
+    // request rounds until it also carries enough recent text to ground the
+    // post-compact continuation.
     if estimate_messages_tokens(visible_messages) < RETAINED_TAIL_MIN_TOKENS {
-        return split_at;
+        return Some(split_at);
     }
 
     let mut retained_tokens = estimate_messages_tokens(&visible_messages[split_at..]);
@@ -396,12 +397,14 @@ fn expand_retained_tail_for_context_floor(
         && (retained_tokens < RETAINED_TAIL_MIN_TOKENS
             || retained_text_messages < RETAINED_TAIL_MIN_TEXT_MESSAGES)
     {
-        split_at -= 1;
-        retained_tokens += estimate_message_tokens(&visible_messages[split_at]);
+        let previous_round_start = previous_request_round_start(visible_messages, split_at)?;
+        retained_tokens +=
+            estimate_messages_tokens(&visible_messages[previous_round_start..split_at]);
         retained_text_messages +=
-            usize::from(message_has_text_content(&visible_messages[split_at]));
+            count_text_messages(&visible_messages[previous_round_start..split_at]);
+        split_at = previous_round_start;
     }
-    split_at
+    Some(split_at)
 }
 
 fn adjust_split_at_for_tool_pairs(
@@ -422,39 +425,36 @@ fn adjust_split_at_for_tool_pairs(
     }
 }
 
-fn rewind_split_at_to_turn_cluster_start(
+fn align_split_at_to_request_round_boundary(
     visible_messages: &[Message],
     mut split_at: usize,
 ) -> Option<usize> {
-    // Post-compaction continuity is materially worse when the retained tail
-    // starts in the middle of an assistant trajectory. Rewind across
-    // assistant/tool messages until the tail starts at the request-side
-    // cluster that kicked off the surviving turn. That cluster can include
-    // system steer/reminder messages plus synthetic recall/user prefix
-    // messages that all belong to the same model request.
-    loop {
-        match visible_messages.get(split_at)?.role {
-            MessageRole::Assistant | MessageRole::Tool => {
-                if split_at == 0 {
-                    return None;
-                }
-                split_at -= 1;
-            }
-            MessageRole::User | MessageRole::System => {
-                while split_at > 0
-                    && matches!(
-                        visible_messages
-                            .get(split_at - 1)
-                            .map(|message| &message.role),
-                        Some(MessageRole::User | MessageRole::System)
-                    )
-                {
-                    split_at -= 1;
-                }
-                return (split_at >= 2).then_some(split_at);
-            }
-        }
+    while split_at > 0 && !starts_request_round(visible_messages, split_at) {
+        split_at -= 1;
     }
+    (split_at >= 2).then_some(split_at)
+}
+
+fn previous_request_round_start(visible_messages: &[Message], split_at: usize) -> Option<usize> {
+    (2..split_at)
+        .rev()
+        .find(|index| starts_request_round(visible_messages, *index))
+}
+
+fn starts_request_round(visible_messages: &[Message], index: usize) -> bool {
+    let Some(message) = visible_messages.get(index) else {
+        return false;
+    };
+    if !matches!(message.role, MessageRole::User | MessageRole::System) {
+        return false;
+    }
+    if index == 0 {
+        return true;
+    }
+    matches!(
+        visible_messages.get(index - 1).map(|message| &message.role),
+        Some(MessageRole::Assistant | MessageRole::Tool)
+    )
 }
 
 fn missing_tool_call_ids(messages: &[Message]) -> BTreeSet<ToolCallId> {
@@ -527,7 +527,7 @@ fn message_has_text_content(message: &Message) -> bool {
 mod tests {
     use super::{
         RETAINED_TAIL_MIN_TEXT_MESSAGES, RETAINED_TAIL_MIN_TOKENS, count_text_messages,
-        estimate_messages_tokens, select_compaction_split_index,
+        estimate_messages_tokens, select_compaction_split_index, starts_request_round,
     };
     use serde_json::json;
     use types::{Message, MessagePart, ToolCall, ToolOrigin, ToolResult};
@@ -605,6 +605,24 @@ mod tests {
         let split_at = select_compaction_split_index(&visible_messages, 1).expect("split index");
 
         assert_eq!(split_at, 2);
+    }
+
+    #[test]
+    fn request_round_boundaries_start_only_at_request_side_cluster_heads() {
+        let visible_messages = vec![
+            Message::user("older prompt"),
+            Message::assistant("older answer"),
+            Message::system("prefer terse answers"),
+            Message::user("recalled workspace memory"),
+            Message::user("real user prompt"),
+            Message::assistant("latest assistant reply"),
+        ];
+
+        assert!(starts_request_round(&visible_messages, 0));
+        assert!(!starts_request_round(&visible_messages, 1));
+        assert!(starts_request_round(&visible_messages, 2));
+        assert!(!starts_request_round(&visible_messages, 3));
+        assert!(!starts_request_round(&visible_messages, 4));
     }
 
     #[test]
