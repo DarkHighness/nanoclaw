@@ -140,3 +140,17 @@ turns and for later resume.
 
 That keeps post-compaction continuity in the memory system itself instead of
 depending only on one synthetic transcript summary message.
+
+The compactor now also asks for Claude-style session-memory headings so the
+persisted working note has a more stable structure:
+
+- `Session Title`
+- `Current State`
+- `Task specification`
+- `Files and Functions`
+- `Workflow`
+- `Errors & Corrections`
+- `Codebase and System Documentation`
+- `Learnings`
+- `Key results`
+- `Worklog`

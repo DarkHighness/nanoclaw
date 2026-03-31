@@ -56,6 +56,19 @@ pub struct ModelConversationCompactor {
     backend: Arc<dyn ModelBackend>,
 }
 
+const SESSION_MEMORY_SECTION_HINTS: &[&str] = &[
+    "Session Title",
+    "Current State",
+    "Task specification",
+    "Files and Functions",
+    "Workflow",
+    "Errors & Corrections",
+    "Codebase and System Documentation",
+    "Learnings",
+    "Key results",
+    "Worklog",
+];
+
 impl ModelConversationCompactor {
     #[must_use]
     pub fn new(backend: Arc<dyn ModelBackend>) -> Self {
@@ -66,10 +79,17 @@ impl ModelConversationCompactor {
 #[async_trait]
 impl ConversationCompactor for ModelConversationCompactor {
     async fn compact(&self, request: CompactionRequest) -> Result<CompactionResult> {
+        // The compaction output is also persisted as session-scoped working
+        // memory, so keep the headings compatible with Claude-style session
+        // notes instead of emitting an ad hoc summary shape.
         let mut instructions = vec![
             "Summarize the conversation so an agent can continue from the summary alone.".to_string(),
             "Preserve the user's goals, important facts, file paths, edits made, tool outcomes, constraints, open questions, and pending next steps.".to_string(),
-            "Format the result as compact Markdown with short section headers. When relevant, include Current State, Important Files, Constraints and Decisions, Errors and Corrections, and Next Steps.".to_string(),
+            format!(
+                "Format the result as compact Markdown using these section headers when they have material content: {}.",
+                SESSION_MEMORY_SECTION_HINTS.join(", ")
+            ),
+            "Always include Current State. Keep Worklog terse when present, and prefer omitting empty sections instead of adding filler.".to_string(),
             "Be concise but specific. Do not mention that this is a summary.".to_string(),
         ];
         if let Some(extra) = request.instructions {
@@ -150,4 +170,82 @@ pub fn estimate_prompt_tokens(
         })
         .sum::<usize>();
     chars.div_ceil(4)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CompactionRequest, ConversationCompactor, ModelConversationCompactor};
+    use crate::{ModelBackend, Result};
+    use async_trait::async_trait;
+    use futures::{StreamExt, stream, stream::BoxStream};
+    use std::sync::{Arc, Mutex};
+    use types::{AgentSessionId, Message, ModelEvent, ModelRequest, SessionId, TurnId};
+
+    #[derive(Clone, Default)]
+    struct RecordingCompactionBackend {
+        requests: Arc<Mutex<Vec<ModelRequest>>>,
+    }
+
+    impl RecordingCompactionBackend {
+        fn requests(&self) -> Vec<ModelRequest> {
+            self.requests.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait]
+    impl ModelBackend for RecordingCompactionBackend {
+        async fn stream_turn(
+            &self,
+            request: ModelRequest,
+        ) -> Result<BoxStream<'static, Result<ModelEvent>>> {
+            self.requests.lock().unwrap().push(request);
+            Ok(stream::iter(vec![
+                Ok(ModelEvent::TextDelta {
+                    delta: "# Current State\n\nKeep the deploy guardrails.".to_string(),
+                }),
+                Ok(ModelEvent::ResponseComplete {
+                    stop_reason: Some("stop".to_string()),
+                    message_id: None,
+                    continuation: None,
+                    usage: None,
+                    reasoning: Vec::new(),
+                }),
+            ])
+            .boxed())
+        }
+    }
+
+    #[tokio::test]
+    async fn model_compactor_requests_claude_style_session_memory_sections() {
+        let backend = Arc::new(RecordingCompactionBackend::default());
+        let compactor = ModelConversationCompactor::new(backend.clone());
+
+        let result = compactor
+            .compact(CompactionRequest {
+                session_id: SessionId::from("session-1"),
+                agent_session_id: AgentSessionId::from("agent-session-1"),
+                turn_id: TurnId::new(),
+                messages: vec![Message::user("summarize the deploy fixes")],
+                instructions: None,
+            })
+            .await
+            .unwrap();
+
+        assert!(result.summary.contains("# Current State"));
+
+        let recorded = backend.requests();
+        assert_eq!(recorded.len(), 1);
+        let joined = recorded[0].instructions.join("\n");
+        assert!(joined.contains("Session Title"));
+        assert!(joined.contains("Current State"));
+        assert!(joined.contains("Task specification"));
+        assert!(joined.contains("Files and Functions"));
+        assert!(joined.contains("Workflow"));
+        assert!(joined.contains("Errors & Corrections"));
+        assert!(joined.contains("Codebase and System Documentation"));
+        assert!(joined.contains("Learnings"));
+        assert!(joined.contains("Key results"));
+        assert!(joined.contains("Worklog"));
+        assert!(joined.contains("Always include Current State"));
+    }
 }
