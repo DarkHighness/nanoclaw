@@ -679,7 +679,7 @@ impl CodeAgentTui {
                 return Ok(());
             }
         };
-        let seed = self.ui_state.snapshot().input;
+        let seed = self.ui_state.snapshot().external_editor_seed_text();
 
         disable_raw_mode()?;
         execute!(

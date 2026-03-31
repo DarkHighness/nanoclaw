@@ -265,10 +265,12 @@ not have useful extensions, including `Dockerfile*`, `Containerfile*`, `go.mod`,
   buffer, and `Ctrl+Y` yanks it back. The kill buffer retains draft attachments
   such as large-paste payloads, so yanking after a clear or submit restores the
   full text.
-- `Ctrl+O` opens `$VISUAL` or `$EDITOR` with the current composer text. Saving
-  and closing the editor reapplies the edited text, drops missing inline
-  placeholders, and rebinds surviving large-paste placeholders to stable
-  `[Paste #N]` labels.
+- `Ctrl+O` opens `$VISUAL` or `$EDITOR` with the current composer text. When
+  row attachments are present, the editor seed includes an `[Attachments]`
+  section ahead of `[Prompt]`, so removing or reordering those placeholder
+  lines detaches or reorders the pending image/file rows. Saving and closing
+  reapplies the edited prompt text, drops missing inline placeholders, and
+  rebinds surviving large-paste placeholders to stable `[Paste #N]` labels.
 - `Ctrl+C` now clears the current draft into session-local composer history when
   the prompt line is non-empty, so `Up` can restore it. On an empty prompt line,
   `Ctrl+C` still exits the TUI.

@@ -172,6 +172,22 @@ impl ComposerDraftAttachmentState {
         self.placeholder.is_none()
     }
 
+    fn external_editor_row_token(&self, index: usize) -> Option<String> {
+        match self.kind {
+            ComposerDraftAttachmentKind::LocalImage { .. }
+            | ComposerDraftAttachmentKind::RemoteImage { .. } => Some(format!("[Image #{index}]")),
+            ComposerDraftAttachmentKind::LocalFile { .. }
+            | ComposerDraftAttachmentKind::RemoteFile { .. } => Some(format!("[File #{index}]")),
+            ComposerDraftAttachmentKind::LargePaste { .. } => None,
+        }
+    }
+
+    fn external_editor_row_line(&self, index: usize) -> Option<String> {
+        let token = self.external_editor_row_token(index)?;
+        let detail = self.row_detail()?;
+        Some(format!("{token} {detail}"))
+    }
+
     fn prompt_parts(&self) -> Vec<MessagePart> {
         match &self.kind {
             ComposerDraftAttachmentKind::LargePaste { payload } => {
@@ -895,6 +911,33 @@ pub(crate) struct TuiState {
 }
 
 impl TuiState {
+    pub(crate) fn external_editor_seed_text(&self) -> String {
+        let row_lines = self
+            .draft_attachments
+            .iter()
+            .filter(|attachment| attachment.is_row_attachment())
+            .enumerate()
+            .filter_map(|(index, attachment)| attachment.external_editor_row_line(index + 1))
+            .collect::<Vec<_>>();
+        if row_lines.is_empty() {
+            return self.input.clone();
+        }
+
+        // Row attachments stay outside the normal composer text so the main TUI
+        // can render them as dedicated rows. The external editor needs a text
+        // representation though, so we project them into a small prelude that
+        // can be reordered or cleared before the actual prompt body.
+        let mut lines = Vec::with_capacity(row_lines.len() + 4);
+        lines.push("[Attachments]".to_string());
+        lines.extend(row_lines);
+        lines.push(String::new());
+        lines.push("[Prompt]".to_string());
+        if !self.input.is_empty() {
+            lines.push(self.input.clone());
+        }
+        lines.join("\n")
+    }
+
     pub(crate) fn show_main_view<I>(&mut self, title: impl Into<String>, lines: I)
     where
         I: IntoIterator<Item = InspectorEntry>,
@@ -1908,13 +1951,7 @@ impl TuiState {
     }
 
     pub(crate) fn apply_external_edit(&mut self, text: impl Into<String>) {
-        let mut text = text.into();
-        let row_attachments = self
-            .draft_attachments
-            .iter()
-            .filter(|attachment| attachment.is_row_attachment())
-            .cloned()
-            .collect::<Vec<_>>();
+        let (row_attachments, mut text) = self.parse_external_editor_text(text.into());
         let mut inline_attachments = self
             .draft_attachments
             .iter()
@@ -1959,6 +1996,56 @@ impl TuiState {
         self.selected_row_attachment = None;
         self.input_history_navigation = None;
         self.reset_command_completion();
+    }
+
+    fn parse_external_editor_text(
+        &self,
+        text: String,
+    ) -> (Vec<ComposerDraftAttachmentState>, String) {
+        let row_attachments = self
+            .draft_attachments
+            .iter()
+            .filter(|attachment| attachment.is_row_attachment())
+            .cloned()
+            .collect::<Vec<_>>();
+        if row_attachments.is_empty() {
+            return (row_attachments, text);
+        }
+
+        let lines = text.lines().map(str::to_string).collect::<Vec<_>>();
+        if lines.first().map(String::as_str) != Some("[Attachments]") {
+            return (row_attachments, text);
+        }
+        let Some(prompt_index) = lines.iter().position(|line| line == "[Prompt]") else {
+            return (row_attachments, text);
+        };
+
+        // Only the attachment prelude participates in row replay. The prompt
+        // body stays plain text so inline placeholders like `[Paste #N]` can be
+        // rebound separately without leaking row markers into the live draft.
+        let rebound_rows = lines[1..prompt_index]
+            .iter()
+            .filter_map(|line| {
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
+                    return None;
+                }
+                row_attachments
+                    .iter()
+                    .enumerate()
+                    .find_map(|(index, attachment)| {
+                        let token = attachment.external_editor_row_token(index + 1)?;
+                        trimmed.starts_with(&token).then(|| attachment.clone())
+                    })
+            })
+            .fold(Vec::new(), |mut rebound, attachment| {
+                if !rebound.iter().any(|existing| existing == &attachment) {
+                    rebound.push(attachment);
+                }
+                rebound
+            });
+        let prompt_text = lines[prompt_index + 1..].join("\n");
+        (rebound_rows, prompt_text)
     }
 
     fn row_attachment_count(&self) -> usize {
@@ -2911,6 +2998,51 @@ mod tests {
             state.draft_attachments,
             vec![local_file_attachment("reports/run.pdf")]
         );
+    }
+
+    #[test]
+    fn external_editor_seed_text_surfaces_attachment_section_before_prompt() {
+        let mut state = TuiState::default();
+        assert!(state.push_row_attachment(local_image_attachment("artifacts/failure.png")));
+        assert!(state.push_row_attachment(remote_file_attachment(
+            "https://example.com/reports/run.pdf"
+        )));
+        state.push_input_str("summarize the artifacts");
+
+        assert_eq!(
+            state.external_editor_seed_text(),
+            "[Attachments]\n[Image #1] artifacts/failure.png\n[File #2] https://example.com/reports/run.pdf\n\n[Prompt]\nsummarize the artifacts"
+        );
+    }
+
+    #[test]
+    fn apply_external_edit_reorders_and_drops_rows_from_attachment_section() {
+        let mut state = TuiState::default();
+        assert!(state.push_row_attachment(local_image_attachment("artifacts/failure.png")));
+        assert!(state.push_row_attachment(local_file_attachment("reports/run.pdf")));
+        state.push_input_str("summarize the artifacts");
+
+        state.apply_external_edit(
+            "[Attachments]\n[File #2] reports/run.pdf\n\n[Prompt]\nupdated prompt".to_string(),
+        );
+
+        assert_eq!(state.input, "updated prompt");
+        assert_eq!(
+            state.draft_attachments,
+            vec![local_file_attachment("reports/run.pdf")]
+        );
+    }
+
+    #[test]
+    fn apply_external_edit_can_clear_all_rows_from_attachment_section() {
+        let mut state = TuiState::default();
+        assert!(state.push_row_attachment(local_image_attachment("artifacts/failure.png")));
+        assert!(state.push_row_attachment(local_file_attachment("reports/run.pdf")));
+
+        state.apply_external_edit("[Attachments]\n\n[Prompt]\ntext only".to_string());
+
+        assert_eq!(state.input, "text only");
+        assert!(state.draft_attachments.is_empty());
     }
 
     #[test]
