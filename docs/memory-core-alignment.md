@@ -69,3 +69,18 @@ Recall now also indexes durable memory labels:
 
 That mirrors the part of Claude's recall flow that first narrows memory files
 using concise labels before reading full note bodies.
+
+## Startup Primer
+
+`code-agent` now consumes a lightweight startup primer from the workspace-local
+memory surface.
+
+It injects concise excerpts from:
+
+- `AGENTS.md`
+- `MEMORY.md`
+- `.nanoclaw/memory/MEMORY.md`
+
+The primer is intentionally static for one runtime session and trimmed to keep
+base instructions bounded. This aligns the current host with Claude's
+session-start behavior without introducing per-turn prompt recomputation yet.

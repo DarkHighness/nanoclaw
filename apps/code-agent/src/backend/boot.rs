@@ -129,6 +129,7 @@ impl SubagentProfileResolver for CodeAgentSubagentProfileResolver {
                 preserve_recent_messages: profile.compact_preserve_recent_messages,
             },
             instructions: build_system_preamble(
+                base_tool_context.workspace_root.as_path(),
                 &profile,
                 &self.skill_catalog,
                 &self.plugin_instructions,
@@ -427,6 +428,7 @@ async fn build_runtime(
         &mut startup_warnings,
     );
     let instructions = build_system_preamble(
+        workspace_root,
         &options.primary_profile,
         &skill_catalog,
         &plugin_instructions,
