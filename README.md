@@ -1,5 +1,7 @@
 # nanoclaw
 
+![main](public/main.png)
+
 `nanoclaw` is a Rust repository with two Cargo workspaces:
 
 - `crates/Cargo.toml`: the foundation workspace
