@@ -4,7 +4,6 @@ use agent::types::{
     AgentTaskSpec, Message, SessionEventEnvelope, SessionEventKind, SessionId,
 };
 use anyhow::{Result, anyhow};
-use serde_json::Value;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use store::{SessionStore, TokenUsageRecord};
@@ -25,8 +24,7 @@ pub(crate) struct PersistedTaskSummary {
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct LoadedTaskMessage {
-    pub(crate) channel: String,
-    pub(crate) payload: Value,
+    pub(crate) message: Message,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -255,10 +253,9 @@ fn project_loaded_task(
                 if envelope_belongs_to_task(&summary, envelope) =>
             {
                 match &envelope.kind {
-                    AgentEnvelopeKind::Message { channel, payload } => {
+                    AgentEnvelopeKind::Input { message } => {
                         messages.push(LoadedTaskMessage {
-                            channel: channel.clone(),
-                            payload: payload.clone(),
+                            message: message.clone(),
                         });
                     }
                     AgentEnvelopeKind::Artifact { artifact } => {
@@ -346,7 +343,6 @@ mod tests {
         AgentSessionId, AgentStatus, AgentTaskSpec, Message, SessionEventEnvelope,
         SessionEventKind, SessionId, TokenLedgerSnapshot,
     };
-    use serde_json::json;
     use store::{TokenUsageRecord, TokenUsageScope};
 
     #[test]
@@ -480,9 +476,8 @@ mod tests {
                         None,
                         child_session_id.clone(),
                         child_agent_session_id.clone(),
-                        AgentEnvelopeKind::Message {
-                            channel: "commentary".to_string(),
-                            payload: json!({"text": "running"}),
+                        AgentEnvelopeKind::Input {
+                            message: Message::user("running"),
                         },
                     ),
                 },

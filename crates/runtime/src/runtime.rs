@@ -302,6 +302,12 @@ impl AgentRuntime {
             .await
     }
 
+    pub async fn run_user_message(&mut self, message: Message) -> Result<RunTurnOutcome> {
+        let mut observer = NoopRuntimeObserver;
+        self.run_user_message_with_observer(message, &mut observer)
+            .await
+    }
+
     pub async fn compact_now(&mut self, instructions: Option<String>) -> Result<bool> {
         let mut observer = NoopRuntimeObserver;
         self.compact_now_with_observer(instructions, &mut observer)
@@ -399,7 +405,16 @@ impl AgentRuntime {
         prompt: impl Into<String>,
         observer: &mut dyn RuntimeObserver,
     ) -> Result<RunTurnOutcome> {
-        let prompt = prompt.into();
+        self.run_user_message_with_observer(Message::user(prompt.into()), observer)
+            .await
+    }
+
+    pub async fn run_user_message_with_observer(
+        &mut self,
+        message: Message,
+        observer: &mut dyn RuntimeObserver,
+    ) -> Result<RunTurnOutcome> {
+        let prompt = message.text_content();
         let turn_id = TurnId::new();
         let hooks = self.hook_registrations.clone();
         let instructions = self.base_instructions.clone();
@@ -410,7 +425,7 @@ impl AgentRuntime {
             prompt_chars = prompt.chars().count(),
             "starting user turn"
         );
-        self.prepare_user_turn(&turn_id, &hooks, &instructions, &prompt, observer)
+        self.prepare_user_turn(&turn_id, &hooks, &instructions, message, observer)
             .await?;
         self.run_turn_loop(&turn_id, &hooks, &instructions, observer)
             .await

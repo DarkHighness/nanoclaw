@@ -789,11 +789,7 @@ fn format_loaded_subagent_line(subagent: &LoadedSubagentSession) -> TranscriptEn
 }
 
 fn format_task_message_line(message: &crate::backend::LoadedTaskMessage) -> TranscriptEntry {
-    TranscriptEntry::AssistantMessage(format!(
-        "{} {}",
-        message.channel,
-        preview_text(&message.payload.to_string(), 72)
-    ))
+    TranscriptEntry::UserPrompt(preview_text(&message_to_text(&message.message), 72))
 }
 
 fn format_reason_detail(reason: Option<&str>) -> Option<String> {
@@ -871,11 +867,11 @@ fn format_agent_envelope_kind(kind: &AgentEnvelopeKind) -> TranscriptEntry {
             AgentStatus::Queued => info_summary_entry("Agent is queued", []),
             AgentStatus::Running => info_summary_entry("Agent is running", []),
         },
-        AgentEnvelopeKind::Message { channel, payload } => info_summary_entry(
-            format!("Agent message on {channel}"),
+        AgentEnvelopeKind::Input { message } => info_summary_entry(
+            "Agent received input",
             [format!(
-                "payload {}",
-                preview_text(&payload.to_string(), 72)
+                "content {}",
+                preview_text(&message_to_text(message), 72)
             )],
         ),
         AgentEnvelopeKind::Artifact { artifact } => info_summary_entry(

@@ -1,9 +1,9 @@
-use serde_json::Value;
 use tokio::sync::mpsc;
+use types::Message;
 
 #[derive(Clone, Debug)]
 pub enum AgentControlMessage {
-    Message { channel: String, payload: Value },
+    Input { message: Message },
     Cancel { reason: Option<String> },
 }
 
@@ -18,13 +18,11 @@ impl AgentMailbox {
         Self { tx }
     }
 
-    pub fn send(
+    pub fn send_input(
         &self,
-        channel: String,
-        payload: Value,
+        message: Message,
     ) -> Result<(), mpsc::error::SendError<AgentControlMessage>> {
-        self.tx
-            .send(AgentControlMessage::Message { channel, payload })
+        self.tx.send(AgentControlMessage::Input { message })
     }
 
     pub fn cancel(
@@ -46,19 +44,17 @@ pub fn agent_mailbox_channel() -> (AgentMailbox, AgentMailboxReceiver) {
 #[cfg(test)]
 mod tests {
     use super::{AgentControlMessage, agent_mailbox_channel};
+    use types::Message;
 
     #[tokio::test]
-    async fn mailbox_delivers_message_then_cancel() {
+    async fn mailbox_delivers_input_then_cancel() {
         let (mailbox, mut rx) = agent_mailbox_channel();
-        mailbox
-            .send("steer".to_string(), serde_json::json!({"text":"focus"}))
-            .unwrap();
+        mailbox.send_input(Message::user("focus")).unwrap();
         mailbox.cancel(Some("stop".to_string())).unwrap();
 
         match rx.recv().await.unwrap() {
-            AgentControlMessage::Message { channel, payload } => {
-                assert_eq!(channel, "steer");
-                assert_eq!(payload["text"], "focus");
+            AgentControlMessage::Input { message } => {
+                assert_eq!(message.text_content(), "focus");
             }
             other => panic!("unexpected message: {other:?}"),
         }

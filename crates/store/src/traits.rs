@@ -474,9 +474,9 @@ pub(crate) fn searchable_event_strings(event: &SessionEventEnvelope) -> Vec<Stri
             types::AgentEnvelopeKind::StatusChanged { status } => {
                 values.push(status.to_string());
             }
-            types::AgentEnvelopeKind::Message { channel, payload } => {
-                values.push(channel.clone());
-                values.push(payload.to_string());
+            types::AgentEnvelopeKind::Input { message } => {
+                values.push(message.text_content());
+                values.push(serde_json::to_string(message).unwrap_or_default());
             }
             types::AgentEnvelopeKind::Artifact { artifact } => {
                 values.push(artifact.kind.clone());

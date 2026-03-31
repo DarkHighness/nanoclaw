@@ -29,7 +29,6 @@ use agent::types::{
 };
 use agent::{AgentRuntime, RuntimeCommand, Skill, ToolExecutionContext};
 use anyhow::Result;
-use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 use store::SessionStore;
@@ -743,12 +742,7 @@ impl CodeAgentSession {
         let handle = resolve_live_task_reference(&handles, task_or_agent_ref)?.clone();
         let updated = self
             .subagent_executor
-            .send(
-                parent,
-                handle.agent_id.clone(),
-                "steer".to_string(),
-                json!({ "text": message }),
-            )
+            .send(parent, handle.agent_id.clone(), Message::user(message))
             .await
             .map_err(anyhow::Error::from)?;
         Ok(LiveTaskMessageOutcome {
@@ -1165,7 +1159,6 @@ mod tests {
     use agent::{AgentRuntimeBuilder, RuntimeCommand, Skill};
     use async_trait::async_trait;
     use futures::{StreamExt, stream, stream::BoxStream};
-    use serde_json::Value;
     use std::sync::{Arc, Mutex, RwLock};
     use store::{InMemorySessionStore, SessionStore};
 
@@ -1247,8 +1240,7 @@ mod tests {
             &self,
             _parent: SubagentParentContext,
             _agent_id: AgentId,
-            _channel: String,
-            _payload: Value,
+            _message: agent::types::Message,
         ) -> ToolResult<AgentHandle> {
             Err(ToolError::invalid_state(
                 "test executor does not support send",
@@ -1297,7 +1289,7 @@ mod tests {
         handles: Mutex<Vec<AgentHandle>>,
         spawned_tasks: Mutex<Vec<AgentTaskSpec>>,
         spawn_parents: Mutex<Vec<SubagentParentContext>>,
-        sent_messages: Mutex<Vec<(AgentId, String, Value)>>,
+        sent_messages: Mutex<Vec<(AgentId, agent::types::Message)>>,
         wait_response: Mutex<Option<AgentWaitResponse>>,
     }
 
@@ -1361,8 +1353,7 @@ mod tests {
             &self,
             _parent: SubagentParentContext,
             agent_id: AgentId,
-            channel: String,
-            payload: Value,
+            message: agent::types::Message,
         ) -> ToolResult<AgentHandle> {
             let handle = self
                 .handles
@@ -1372,10 +1363,7 @@ mod tests {
                 .find(|handle| handle.agent_id == agent_id)
                 .cloned()
                 .ok_or_else(|| ToolError::invalid_state("unknown agent"))?;
-            self.sent_messages
-                .lock()
-                .unwrap()
-                .push((agent_id, channel, payload));
+            self.sent_messages.lock().unwrap().push((agent_id, message));
             Ok(handle)
         }
 
@@ -1914,8 +1902,7 @@ mod tests {
         let sent_messages = executor.sent_messages.lock().unwrap();
         assert_eq!(sent_messages.len(), 1);
         assert_eq!(sent_messages[0].0, AgentId::from("agent-send"));
-        assert_eq!(sent_messages[0].1, "steer");
-        assert_eq!(sent_messages[0].2["text"], "focus on tests");
+        assert_eq!(sent_messages[0].1.text_content(), "focus on tests");
     }
 
     #[tokio::test]

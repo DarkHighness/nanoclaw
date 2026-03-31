@@ -11,8 +11,8 @@ use std::sync::Arc;
 use std::time::Duration;
 use types::{
     AgentHandle, AgentId, AgentResultEnvelope, AgentSessionId, AgentStatus, AgentTaskSpec,
-    AgentWaitMode, AgentWaitRequest, AgentWaitResponse, CallId, MessagePart, SessionId, ToolCallId,
-    ToolName, ToolOutputMode, ToolResult, ToolSpec, TurnId,
+    AgentWaitMode, AgentWaitRequest, AgentWaitResponse, CallId, Message, MessagePart, MessageRole,
+    SessionId, ToolCallId, ToolName, ToolOutputMode, ToolResult, ToolSpec, TurnId,
 };
 
 const SPAWN_AGENT_TOOL_NAME: &str = "spawn_agent";
@@ -146,9 +146,10 @@ pub struct AgentResumeToolInput {
     pub id: AgentId,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct SubagentLaunchSpec {
     pub task: AgentTaskSpec,
+    pub initial_input: Message,
     pub fork_context: bool,
     pub model: Option<String>,
     pub reasoning_effort: Option<String>,
@@ -157,8 +158,10 @@ pub struct SubagentLaunchSpec {
 impl SubagentLaunchSpec {
     #[must_use]
     pub fn from_task(task: AgentTaskSpec) -> Self {
+        let initial_input = Message::user(task.prompt.clone());
         Self {
             task,
+            initial_input,
             fork_context: false,
             model: None,
             reasoning_effort: None,
@@ -182,8 +185,7 @@ pub trait SubagentExecutor: Send + Sync {
         &self,
         parent: SubagentParentContext,
         agent_id: AgentId,
-        channel: String,
-        payload: Value,
+        message: Message,
     ) -> Result<AgentHandle>;
 
     async fn wait(
@@ -410,10 +412,10 @@ impl Tool for AgentSendTool {
         ctx: &ToolExecutionContext,
     ) -> Result<ToolResult> {
         let input: AgentSendToolInput = serde_json::from_value(arguments)?;
-        let (target, channel, payload) = normalize_send_input(input)?;
+        let (target, message) = normalize_send_input(input)?;
         let handle = self
             .executor
-            .send(SubagentParentContext::from(ctx), target, channel, payload)
+            .send(SubagentParentContext::from(ctx), target, message)
             .await?;
         build_tool_result(
             call_id,
@@ -614,7 +616,7 @@ fn normalize_spawn_input(
 ) -> Result<SubagentLaunchSpec> {
     let role = normalize_optional_non_empty(input.agent_type)
         .unwrap_or_else(|| "general-purpose".to_string());
-    let prompt = compose_agent_input_text(
+    let normalized = normalize_agent_input(
         input.message,
         &input.items,
         "spawn_agent requires a message or at least one input item",
@@ -623,20 +625,21 @@ fn normalize_spawn_input(
         task: AgentTaskSpec {
             task_id: format!("spawn_{}", call_id),
             role,
-            prompt,
+            prompt: normalized.preview_text,
             steer: None,
             allowed_tools: Vec::new(),
             requested_write_set: Vec::new(),
             dependency_ids: Vec::new(),
             timeout_seconds: None,
         },
+        initial_input: normalized.message,
         fork_context: input.fork_context,
         model: normalize_optional_non_empty(input.model),
         reasoning_effort: normalize_optional_non_empty(input.reasoning_effort),
     })
 }
 
-fn normalize_send_input(input: AgentSendToolInput) -> Result<(AgentId, String, Value)> {
+fn normalize_send_input(input: AgentSendToolInput) -> Result<(AgentId, Message)> {
     if input.interrupt {
         // The current mailbox applies steering at safe points after the active
         // child turn yields. Reject preemption requests until the runtime can
@@ -646,34 +649,54 @@ fn normalize_send_input(input: AgentSendToolInput) -> Result<(AgentId, String, V
         ));
     }
     let target = input.target;
-    let text = compose_agent_input_text(
+    let normalized = normalize_agent_input(
         input.message,
         &input.items,
         "send_input requires a message or at least one input item",
     )?;
-    Ok((target, "steer".to_string(), Value::String(text)))
+    Ok((target, normalized.message))
 }
 
-fn compose_agent_input_text(
+struct NormalizedAgentInput {
+    preview_text: String,
+    message: Message,
+}
+
+fn normalize_agent_input(
     message: Option<String>,
     items: &[AgentInputItem],
     empty_error: &str,
-) -> Result<String> {
-    let mut parts = Vec::new();
-    if let Some(message) = normalize_optional_non_empty(message) {
-        parts.push(message);
+) -> Result<NormalizedAgentInput> {
+    let normalized_message = normalize_optional_non_empty(message);
+    let mut preview_parts = Vec::new();
+    let mut message_parts = Vec::new();
+
+    if let Some(message) = normalized_message.as_ref() {
+        preview_parts.push(message.clone());
+        message_parts.push(MessagePart::text(message.clone()));
     }
-    let item_lines = items
-        .iter()
-        .filter_map(render_agent_input_item)
-        .collect::<Vec<_>>();
-    if !item_lines.is_empty() {
-        parts.push(item_lines.join("\n"));
+
+    let mut preview_items = Vec::new();
+    for item in items {
+        if let Some(line) = render_agent_input_item_summary(item) {
+            preview_items.push(line);
+        }
+        if let Some(part) = normalize_agent_input_item_part(item)? {
+            message_parts.push(part);
+        }
     }
-    if parts.is_empty() {
+
+    if !preview_items.is_empty() {
+        preview_parts.push(preview_items.join("\n"));
+    }
+
+    if message_parts.is_empty() {
         return Err(ToolError::invalid(empty_error));
     }
-    Ok(parts.join("\n\n"))
+    Ok(NormalizedAgentInput {
+        preview_text: preview_parts.join("\n\n"),
+        message: Message::new(MessageRole::User, message_parts),
+    })
 }
 
 fn normalize_optional_non_empty(value: Option<String>) -> Option<String> {
@@ -682,9 +705,99 @@ fn normalize_optional_non_empty(value: Option<String>) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
-fn render_agent_input_item(item: &AgentInputItem) -> Option<String> {
-    let item_type = item
-        .item_type
+fn normalize_agent_input_item_part(item: &AgentInputItem) -> Result<Option<MessagePart>> {
+    let item_type = normalized_agent_input_item_type(item);
+    let text = trim_optional_field(item.text.as_deref());
+    let path = trim_optional_field(item.path.as_deref());
+    let name = trim_optional_field(item.name.as_deref());
+    let image_url = trim_optional_field(item.image_url.as_deref());
+
+    if item_type == "text" {
+        let text = text.ok_or_else(|| {
+            ToolError::invalid("agent input items with type=text require a non-empty text field")
+        })?;
+        return Ok(Some(MessagePart::text(text)));
+    }
+
+    if path.is_none() && name.is_none() && image_url.is_none() && text.is_none() {
+        return Err(ToolError::invalid(format!(
+            "agent input item `{item_type}` must include at least one of text, path, name, or image_url"
+        )));
+    }
+
+    if let Some(uri) = path.clone().or(image_url.clone()) {
+        let mut metadata = serde_json::Map::new();
+        metadata.insert("type".to_string(), Value::String(item_type.to_string()));
+        if let Some(name) = name.clone() {
+            metadata.insert("name".to_string(), Value::String(name.to_string()));
+        }
+        if let Some(path) = path.clone() {
+            metadata.insert("path".to_string(), Value::String(path.to_string()));
+        }
+        if let Some(image_url) = image_url.clone() {
+            metadata.insert(
+                "image_url".to_string(),
+                Value::String(image_url.to_string()),
+            );
+        }
+        if let Some(text) = text.clone() {
+            metadata.insert("text".to_string(), Value::String(text.to_string()));
+        }
+        let text = match (name, text) {
+            (Some(name), Some(text)) => Some(format!("{name}\n{text}")),
+            (Some(name), None) => Some(name.to_string()),
+            (None, Some(text)) => Some(text.to_string()),
+            (None, None) => None,
+        };
+        return Ok(Some(MessagePart::Resource {
+            uri: uri.to_string(),
+            mime_type: None,
+            text,
+            metadata: (!metadata.is_empty()).then_some(Value::Object(metadata)),
+        }));
+    }
+
+    let mut value = serde_json::Map::new();
+    value.insert("type".to_string(), Value::String(item_type.to_string()));
+    if let Some(name) = name {
+        value.insert("name".to_string(), Value::String(name.to_string()));
+    }
+    if let Some(text) = text {
+        value.insert("text".to_string(), Value::String(text.to_string()));
+    }
+    Ok(Some(MessagePart::Json {
+        value: Value::Object(value),
+    }))
+}
+
+fn render_agent_input_item_summary(item: &AgentInputItem) -> Option<String> {
+    let item_type = normalized_agent_input_item_type(item);
+    if item_type == "text" {
+        return trim_optional_field(item.text.as_deref()).map(ToString::to_string);
+    }
+
+    let mut fields = Vec::new();
+    if let Some(name) = trim_optional_field(item.name.as_deref()) {
+        fields.push(format!("name={name}"));
+    }
+    if let Some(path) = trim_optional_field(item.path.as_deref()) {
+        fields.push(format!("path={path}"));
+    }
+    if let Some(url) = trim_optional_field(item.image_url.as_deref()) {
+        fields.push(format!("image_url={url}"));
+    }
+    if let Some(text) = trim_optional_field(item.text.as_deref()) {
+        fields.push(format!("text={}", text.replace('\n', " ")));
+    }
+    if fields.is_empty() {
+        None
+    } else {
+        Some(format!("[{item_type}] {}", fields.join(" ")))
+    }
+}
+
+fn normalized_agent_input_item_type(item: &AgentInputItem) -> &str {
+    item.item_type
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -698,54 +811,11 @@ fn render_agent_input_item(item: &AgentInputItem) -> Option<String> {
             } else {
                 "item"
             }
-        });
-    if item_type == "text" {
-        return item
-            .text
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(ToString::to_string);
-    }
+        })
+}
 
-    let mut fields = Vec::new();
-    if let Some(name) = item
-        .name
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        fields.push(format!("name={name}"));
-    }
-    if let Some(path) = item
-        .path
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        fields.push(format!("path={path}"));
-    }
-    if let Some(url) = item
-        .image_url
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        fields.push(format!("image_url={url}"));
-    }
-    if let Some(text) = item
-        .text
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        fields.push(format!("text={}", text.replace('\n', " ")));
-    }
-    if fields.is_empty() {
-        Some(format!("[{item_type}]"))
-    } else {
-        Some(format!("[{item_type}] {}", fields.join(" ")))
-    }
+fn trim_optional_field(value: Option<&str>) -> Option<&str> {
+    value.map(str::trim).filter(|value| !value.is_empty())
 }
 
 fn normalize_paths(paths: Vec<String>) -> Vec<String> {
@@ -1012,14 +1082,13 @@ mod tests {
     };
     use crate::{Result, Tool, ToolError, ToolExecutionContext, ToolRegistry};
     use async_trait::async_trait;
-    use serde_json::Value;
     use serde_json::json;
     use std::collections::{BTreeMap, BTreeSet};
     use std::sync::{Arc, Mutex};
     use tokio::sync::Notify;
     use types::{
         AgentHandle, AgentId, AgentResultEnvelope, AgentSessionId, AgentStatus, AgentWaitMode,
-        AgentWaitRequest, AgentWaitResponse, SessionId, ToolCallId, ToolName,
+        AgentWaitRequest, AgentWaitResponse, Message, MessageRole, SessionId, ToolCallId, ToolName,
     };
 
     #[derive(Default)]
@@ -1032,7 +1101,7 @@ mod tests {
         handles: BTreeMap<AgentId, AgentHandle>,
         results: BTreeMap<AgentId, AgentResultEnvelope>,
         wait_any_queue: Vec<AgentId>,
-        sent: Vec<(AgentId, String, serde_json::Value)>,
+        sent: Vec<(AgentId, Message)>,
         resumed: Vec<AgentId>,
         cancelled: Vec<AgentId>,
         spawned_launches: Vec<SubagentLaunchSpec>,
@@ -1093,11 +1162,10 @@ mod tests {
             &self,
             _parent: SubagentParentContext,
             agent_id: AgentId,
-            channel: String,
-            payload: Value,
+            message: Message,
         ) -> Result<AgentHandle> {
             let mut state = self.state.lock().unwrap();
-            state.sent.push((agent_id.clone(), channel, payload));
+            state.sent.push((agent_id.clone(), message));
             Ok(state.handles.get(&agent_id).cloned().unwrap())
         }
 
@@ -1203,8 +1271,7 @@ mod tests {
             &self,
             _parent: SubagentParentContext,
             _agent_id: AgentId,
-            _channel: String,
-            _payload: Value,
+            _message: Message,
         ) -> Result<AgentHandle> {
             unreachable!("blocking wait executor does not send messages")
         }
@@ -1503,6 +1570,12 @@ mod tests {
         assert!(launch.task.prompt.contains("Review the current patch."));
         assert!(launch.task.prompt.contains("Focus on regressions."));
         assert!(launch.task.prompt.contains("[mention]"));
+        assert_eq!(launch.initial_input.role, MessageRole::User);
+        assert_eq!(launch.initial_input.parts.len(), 3);
+        assert_eq!(
+            launch.initial_input.text_content(),
+            "Review the current patch.\nFocus on regressions.\nconnector"
+        );
     }
 
     #[tokio::test]

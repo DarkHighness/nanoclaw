@@ -10,6 +10,7 @@ It intentionally keeps the host layer thin:
 - optional code-intel tools: `code_symbol_search`, `code_document_symbols`, `code_definitions`, `code_references`
 - agentic tools: `update_plan`, `request_user_input`, `request_permissions`, `task`, `spawn_agent`, `send_input`, `wait_agent`, `resume_agent`, `list_agents`, `close_agent`
   - `spawn_agent` accepts Codex-style launch overrides such as `fork_context`, `model`, and `reasoning_effort`
+  - `spawn_agent` and `send_input` now forward `message + items` as structured user messages instead of flattening them into steering prose
 - append-only runtime loop from `runtime`
 - runtime steering and queued command support
 - loop detection as the primary guard against tool-call churn, without a fixed global iteration cap
@@ -265,10 +266,10 @@ artifacts. `/agent_session <agent-session-ref>` inspects a specific runtime
 window, including its transcript slice, token budget, and spawned subagent
 summaries. `/spawn_task <role> <prompt>` launches a new live child task from
 the active top-level session, `/live_tasks` lists currently attached child
-agents for that runtime, `/send_task <task-or-agent-ref> <message>` sends
-parent steering to a live child, `/wait_task <task-or-agent-ref>` waits for one
-child in the background, and `/cancel_task <task-or-agent-ref> [reason]` can
-stop one without leaving the current session. `/tasks [session-ref]` lists
+agents for that runtime, `/send_task <task-or-agent-ref> <message>` sends a
+follow-up user message to a live child, `/wait_task <task-or-agent-ref>` waits
+for one child in the background, and `/cancel_task <task-or-agent-ref> [reason]`
+can stop one without leaving the current session. `/tasks [session-ref]` lists
 persisted child tasks, and `/task <task-id>` opens their prompt/result/artifact
 view plus the child session transcript. `/resume <agent-session-ref>` resolves
 an

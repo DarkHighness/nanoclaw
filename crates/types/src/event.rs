@@ -103,13 +103,13 @@ pub struct AgentResultEnvelope {
     pub structured_payload: Option<Value>,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum AgentEnvelopeKind {
     SpawnRequested { task: AgentTaskSpec },
     Started { task: AgentTaskSpec },
     StatusChanged { status: AgentStatus },
-    Message { channel: String, payload: Value },
+    Input { message: Message },
     Artifact { artifact: AgentArtifact },
     ClaimRequested { files: Vec<String> },
     ClaimGranted { files: Vec<String> },
@@ -120,7 +120,7 @@ pub enum AgentEnvelopeKind {
     Heartbeat,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AgentEnvelope {
     pub envelope_id: EnvelopeId,
     pub agent_id: AgentId,

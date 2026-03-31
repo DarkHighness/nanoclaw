@@ -12,7 +12,7 @@ impl AgentRuntime {
         turn_id: &TurnId,
         hooks: &[HookRegistration],
         instructions: &[String],
-        prompt: &str,
+        message: Message,
         observer: &mut dyn RuntimeObserver,
     ) -> Result<()> {
         self.clear_pending_request_effects();
@@ -26,7 +26,7 @@ impl AgentRuntime {
             .apply_hook_effects(turn_id, async_context, None, None)
             .await?;
 
-        self.submit_user_prompt(turn_id, hooks, prompt, observer)
+        self.submit_user_message(turn_id, hooks, message, observer)
             .await
     }
 
@@ -80,13 +80,14 @@ impl AgentRuntime {
         .await
     }
 
-    async fn submit_user_prompt(
+    async fn submit_user_message(
         &mut self,
         turn_id: &TurnId,
         hooks: &[HookRegistration],
-        prompt: &str,
+        message: Message,
         observer: &mut dyn RuntimeObserver,
     ) -> Result<()> {
+        let prompt = preview_user_message(&message);
         let user_hooks = self
             .run_hooks(
                 hooks,
@@ -96,17 +97,12 @@ impl AgentRuntime {
                     agent_session_id: self.session.agent_session_id.clone(),
                     turn_id: Some(turn_id.clone()),
                     fields: BTreeMap::new(),
-                    payload: json!({ "prompt": prompt }),
+                    payload: json!({ "prompt": prompt, "message": message }),
                 },
             )
             .await?;
         let user_effects = self
-            .apply_hook_effects(
-                turn_id,
-                user_hooks,
-                Some(Message::user(prompt.to_string())),
-                None,
-            )
+            .apply_hook_effects(turn_id, user_hooks, Some(message), None)
             .await?;
         if let Some(reason) = user_effects.blocked_reason("user prompt blocked") {
             return Err(AgentCoreError::HookBlocked(reason).into());
@@ -129,13 +125,19 @@ impl AgentRuntime {
             Some(turn_id.clone()),
             None,
             SessionEventKind::UserPromptSubmit {
-                prompt: prompt.to_string(),
+                prompt: prompt.clone(),
             },
         )
         .await?;
-        observer.on_event(RuntimeProgressEvent::UserPromptAdded {
-            prompt: prompt.to_string(),
-        })?;
+        observer.on_event(RuntimeProgressEvent::UserPromptAdded { prompt })?;
         Ok(())
     }
+}
+
+fn preview_user_message(message: &Message) -> String {
+    let text = message.text_content();
+    if !text.trim().is_empty() {
+        return text.trim().to_string();
+    }
+    serde_json::to_string(&message.parts).unwrap_or_else(|_| "<structured user input>".to_string())
 }

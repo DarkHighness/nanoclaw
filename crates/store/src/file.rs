@@ -1088,9 +1088,8 @@ mod tests {
                         None,
                         child_session_id.clone(),
                         child_agent_session_id.clone(),
-                        AgentEnvelopeKind::Message {
-                            channel: "handoff".to_string(),
-                            payload: json!({"note": "checked ownership"}),
+                        AgentEnvelopeKind::Input {
+                            message: Message::user("checked ownership"),
                         },
                     ),
                 },
