@@ -538,6 +538,7 @@ mod tests {
             })),
             skill_catalog: agent::SkillCatalog::default(),
             plugin_instructions: vec!["Plugin instruction".to_string()],
+            active_artifact_overlays: vec!["Promoted artifact instruction".to_string()],
         };
 
         let profile = resolver
@@ -556,6 +557,12 @@ mod tests {
         assert_eq!(profile.profile_name, "roles.reviewer");
         assert!(!profile.supports_tool_calls);
         assert!(profile.instructions.join("\n").contains("Review only"));
+        assert!(
+            profile
+                .instructions
+                .join("\n")
+                .contains("Promoted artifact instruction")
+        );
         assert_eq!(
             profile.tool_context.model_context_window_tokens,
             Some(400_000)

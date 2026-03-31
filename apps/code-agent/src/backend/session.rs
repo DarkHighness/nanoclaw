@@ -1,3 +1,4 @@
+use crate::backend::active_artifacts::ActiveArtifactStartupEntry;
 use crate::backend::session_catalog;
 use crate::backend::session_history::{
     self, LoadedAgentSession, LoadedArtifact, LoadedSession, SessionExportArtifact, preview_id,
@@ -58,6 +59,7 @@ pub(crate) struct SessionStartupSnapshot {
     pub(crate) sandbox_summary: String,
     pub(crate) permission_mode: SessionPermissionMode,
     pub(crate) host_process_surfaces_allowed: bool,
+    pub(crate) active_artifacts: Vec<ActiveArtifactStartupEntry>,
     pub(crate) startup_diagnostics: StartupDiagnosticsSnapshot,
     pub(crate) statusline: StatusLineConfig,
 }
@@ -1642,6 +1644,7 @@ mod tests {
             sandbox_summary: "workspace-write".to_string(),
             permission_mode: SessionPermissionMode::Default,
             host_process_surfaces_allowed: true,
+            active_artifacts: Vec::new(),
             startup_diagnostics: StartupDiagnosticsSnapshot::default(),
             statusline: StatusLineConfig::default(),
         }

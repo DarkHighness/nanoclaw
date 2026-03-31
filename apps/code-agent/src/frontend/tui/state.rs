@@ -1,5 +1,6 @@
 use crate::backend::{
-    PendingControlKind, PendingControlSummary, SessionPermissionMode, StartupDiagnosticsSnapshot,
+    ActiveArtifactStartupEntry, PendingControlKind, PendingControlSummary, SessionPermissionMode,
+    StartupDiagnosticsSnapshot,
 };
 use crate::statusline::{StatusLineConfig, StatusLineField, status_line_fields};
 use crate::tool_render::{ToolDetail, ToolDetailBlockKind};
@@ -39,6 +40,7 @@ pub(crate) struct SessionSummary {
     pub(crate) sandbox_summary: String,
     pub(crate) permission_mode: SessionPermissionMode,
     pub(crate) host_process_surfaces_allowed: bool,
+    pub(crate) active_artifacts: Vec<ActiveArtifactStartupEntry>,
     pub(crate) startup_diagnostics: StartupDiagnosticsSnapshot,
     pub(crate) queued_commands: usize,
     pub(crate) token_ledger: TokenLedgerSnapshot,

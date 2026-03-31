@@ -2518,6 +2518,7 @@ impl CodeAgentTui {
                 sandbox_summary: snapshot.sandbox_summary.clone(),
                 permission_mode: snapshot.permission_mode,
                 host_process_surfaces_allowed: snapshot.host_process_surfaces_allowed,
+                active_artifacts: snapshot.active_artifacts.clone(),
                 startup_diagnostics: snapshot.startup_diagnostics.clone(),
                 queued_commands: 0,
                 token_ledger: Default::default(),
@@ -2555,6 +2556,7 @@ impl CodeAgentTui {
             state.session.sandbox_summary = snapshot.sandbox_summary.clone();
             state.session.permission_mode = snapshot.permission_mode;
             state.session.host_process_surfaces_allowed = snapshot.host_process_surfaces_allowed;
+            state.session.active_artifacts = snapshot.active_artifacts.clone();
             state.session.startup_diagnostics = snapshot.startup_diagnostics.clone();
             state.session.statusline = snapshot.statusline.clone();
         });
@@ -2801,6 +2803,10 @@ fn build_startup_inspector(session: &state::SessionSummary) -> Vec<InspectorEntr
         InspectorEntry::field("permissions", session.permission_mode.as_str()),
         InspectorEntry::field("sandbox", session.sandbox_summary.clone()),
         InspectorEntry::field(
+            "active artifacts",
+            session.active_artifacts.len().to_string(),
+        ),
+        InspectorEntry::field(
             "tools",
             format!(
                 "{} local / {} mcp",
@@ -2841,6 +2847,20 @@ fn build_startup_inspector(session: &state::SessionSummary) -> Vec<InspectorEntr
             session.startup_diagnostics.mcp_servers.len().to_string(),
         ),
     ];
+    if !session.active_artifacts.is_empty() {
+        lines.push(InspectorEntry::section("Active Artifacts"));
+        lines.extend(session.active_artifacts.iter().map(|artifact| {
+            InspectorEntry::collection(
+                format!(
+                    "{} {} -> {}",
+                    startup_artifact_kind_label(artifact.kind),
+                    preview_id(&artifact.artifact_ref),
+                    preview_id(&artifact.version_ref),
+                ),
+                Some(artifact.label.clone()),
+            )
+        }));
+    }
     if let Some(warning) = &session.store_warning {
         lines.push(InspectorEntry::Muted(format!(
             "warning: {}",
@@ -2860,6 +2880,17 @@ fn build_startup_inspector(session: &state::SessionSummary) -> Vec<InspectorEntr
         )));
     }
     lines
+}
+
+fn startup_artifact_kind_label(kind: agent::types::ArtifactKind) -> &'static str {
+    match kind {
+        agent::types::ArtifactKind::Prompt => "prompt",
+        agent::types::ArtifactKind::Skill => "skill",
+        agent::types::ArtifactKind::Workflow => "workflow",
+        agent::types::ArtifactKind::Hook => "hook",
+        agent::types::ArtifactKind::Verifier => "verifier",
+        agent::types::ArtifactKind::RuntimePatch => "runtime_patch",
+    }
 }
 
 fn build_permissions_inspector(
@@ -2972,8 +3003,8 @@ mod tests {
     use super::commands::command_palette_lines;
     use super::state::{InspectorEntry, SessionSummary};
     use super::{PlainInputSubmitAction, merge_interrupt_steers, plain_input_submit_action};
-    use crate::backend::SessionPermissionMode;
-    use agent::types::{Message, MessageId};
+    use crate::backend::{ActiveArtifactStartupEntry, SessionPermissionMode};
+    use agent::types::{ArtifactKind, Message, MessageId};
     use crossterm::event::KeyCode;
     use std::path::PathBuf;
 
@@ -3001,6 +3032,12 @@ mod tests {
             sandbox_summary: "enforced via seatbelt".to_string(),
             permission_mode: SessionPermissionMode::Default,
             host_process_surfaces_allowed: true,
+            active_artifacts: vec![ActiveArtifactStartupEntry {
+                artifact_ref: "artifact_prompt_123".to_string(),
+                version_ref: "version_prompt_456".to_string(),
+                kind: ArtifactKind::Prompt,
+                label: "review-rules".to_string(),
+            }],
             startup_diagnostics: Default::default(),
             queued_commands: 0,
             token_ledger: Default::default(),
@@ -3017,6 +3054,12 @@ mod tests {
             lines
                 .iter()
                 .any(|line| line == "sandbox: enforced via seatbelt")
+        );
+        assert!(lines.iter().any(|line| line == "active artifacts: 1"));
+        assert!(
+            lines
+                .iter()
+                .any(|line| line == "prompt artifact -> version_  review-rules")
         );
         assert!(
             lines

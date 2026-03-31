@@ -1,3 +1,4 @@
+mod active_artifacts;
 mod approval;
 mod boot;
 mod boot_inputs;
@@ -15,6 +16,7 @@ mod store;
 mod task_history;
 mod user_input;
 
+pub(crate) use active_artifacts::{ActiveArtifactStartupEntry, load_active_artifacts};
 pub(crate) use approval::{
     ApprovalCoordinator, ApprovalDecision, ApprovalPrompt, NonInteractiveToolApprovalHandler,
     SessionToolApprovalHandler,
@@ -31,7 +33,8 @@ pub(crate) use boot_mcp::{
     load_mcp_prompt, load_mcp_resource,
 };
 pub(crate) use boot_preamble::{
-    build_plugin_activation_plan, build_system_preamble, resolve_skill_roots,
+    build_active_artifact_overlays, build_plugin_activation_plan, build_system_preamble,
+    resolve_skill_roots,
 };
 pub(crate) use boot_sandbox::{
     SandboxFallbackNotice, build_sandbox_fallback_notice, build_sandbox_policy, build_tool_context,

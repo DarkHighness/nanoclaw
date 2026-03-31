@@ -6,9 +6,10 @@ use crate::backend::{
     ApprovalCoordinator, NonInteractivePermissionRequestHandler, NonInteractiveToolApprovalHandler,
     NonInteractiveUserInputHandler, PermissionRequestCoordinator, SessionEventStream,
     SessionPermissionRequestHandler, SessionToolApprovalHandler, SessionUserInputHandler,
-    UserInputCoordinator, build_plugin_activation_plan, build_sandbox_policy,
-    build_system_preamble, build_tool_context, dedup_mcp_servers, log_sandbox_status,
-    merge_driver_host_inputs, resolve_mcp_servers, resolve_skill_roots, tool_context_for_profile,
+    UserInputCoordinator, build_active_artifact_overlays, build_plugin_activation_plan,
+    build_sandbox_policy, build_system_preamble, build_tool_context, dedup_mcp_servers,
+    load_active_artifacts, log_sandbox_status, merge_driver_host_inputs, resolve_mcp_servers,
+    resolve_skill_roots, tool_context_for_profile,
 };
 use crate::options::AppOptions;
 use crate::provider::{
@@ -49,6 +50,7 @@ struct RuntimeBuildResult {
     store_label: String,
     store_warning: Option<String>,
     stored_session_count: usize,
+    active_artifacts: Vec<crate::backend::ActiveArtifactStartupEntry>,
     startup_diagnostics: crate::backend::StartupDiagnosticsSnapshot,
 }
 
@@ -65,6 +67,7 @@ pub(crate) struct CodeAgentSubagentProfileResolver {
     pub(crate) base_tool_context: Arc<RwLock<ToolExecutionContext>>,
     pub(crate) skill_catalog: SkillCatalog,
     pub(crate) plugin_instructions: Vec<String>,
+    pub(crate) active_artifact_overlays: Vec<String>,
 }
 
 impl SubagentProfileResolver for CodeAgentSubagentProfileResolver {
@@ -107,6 +110,7 @@ impl SubagentProfileResolver for CodeAgentSubagentProfileResolver {
                 &profile,
                 &self.skill_catalog,
                 &self.plugin_instructions,
+                &self.active_artifact_overlays,
             ),
             supports_tool_calls: profile.model.capabilities.tool_calls,
         })
@@ -181,6 +185,7 @@ pub(crate) async fn build_session_with_approval_mode(
         store_label,
         store_warning,
         stored_session_count,
+        active_artifacts,
         startup_diagnostics,
     } = build_runtime(
         options,
@@ -235,6 +240,7 @@ pub(crate) async fn build_session_with_approval_mode(
             sandbox_summary,
             permission_mode: super::SessionPermissionMode::Default,
             host_process_surfaces_allowed,
+            active_artifacts,
             startup_diagnostics,
             statusline: options.statusline.clone(),
         },
@@ -267,6 +273,9 @@ async fn build_runtime(
             0
         }
     };
+    let active_artifacts = load_active_artifacts(&store)
+        .await
+        .context("failed to load active artifacts")?;
     let plugin_plan = build_plugin_activation_plan(workspace_root, &options.plugins)
         .context("failed to build plugin activation plan")?;
     let skill_roots = resolve_skill_roots(&options.skill_roots, workspace_root, &plugin_plan);
@@ -287,6 +296,7 @@ async fn build_runtime(
     let process_executor = runtime_tooling.process_executor.clone();
     let host_process_surfaces_allowed = runtime_tooling.host_process_surfaces_allowed;
     let mut startup_warnings = runtime_tooling.startup_warnings.clone();
+    startup_warnings.extend(active_artifacts.warnings.clone());
     let hook_runner = runtime_tooling.hook_runner.clone();
     let mut tools = runtime_tooling.tools;
     let custom_tool_executor: Option<Arc<dyn agent::tools::ProcessExecutor>> =
@@ -401,10 +411,12 @@ async fn build_runtime(
         host_process_surfaces_allowed,
         &mut startup_warnings,
     );
+    let active_artifact_overlays = build_active_artifact_overlays(&active_artifacts.versions);
     let instructions = build_system_preamble(
         &options.primary_profile,
         &skill_catalog,
         &plugin_instructions,
+        &active_artifact_overlays,
     );
     let subagent_profile_resolver = Arc::new(CodeAgentSubagentProfileResolver {
         core: options.core.clone(),
@@ -412,6 +424,7 @@ async fn build_runtime(
         base_tool_context: session_tool_context,
         skill_catalog: skill_catalog.clone(),
         plugin_instructions: plugin_instructions.clone(),
+        active_artifact_overlays: active_artifact_overlays.clone(),
     });
     let subagent_executor: Arc<dyn SubagentExecutor> = Arc::new(RuntimeSubagentExecutor::new(
         hook_runner.clone(),
@@ -471,6 +484,7 @@ async fn build_runtime(
         store_label: store_handle.label,
         store_warning: store_handle.warning,
         stored_session_count,
+        active_artifacts: active_artifacts.startup_entries(),
         startup_diagnostics,
     })
 }
