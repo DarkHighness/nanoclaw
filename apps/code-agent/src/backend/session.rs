@@ -1,4 +1,4 @@
-use crate::backend::active_artifacts::ActiveArtifactStartupEntry;
+use crate::backend::active_artifacts::{ActiveArtifactStartupEntry, load_active_artifacts};
 use crate::backend::session_catalog;
 use crate::backend::session_history::{
     self, LoadedAgentSession, LoadedArtifact, LoadedSession, SessionExportArtifact, preview_id,
@@ -219,6 +219,7 @@ pub(crate) struct ArtifactDecisionExecutionOutcome {
     pub(crate) version_id: ArtifactVersionId,
     pub(crate) decision: ArtifactPromotionDecision,
     pub(crate) summary: store::ArtifactSummary,
+    pub(crate) next_session_active_artifacts: Vec<ActiveArtifactStartupEntry>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -968,11 +969,14 @@ impl CodeAgentSession {
             .summary(&loaded.summary.artifact_id)
             .await?
             .ok_or_else(|| anyhow::anyhow!("artifact summary missing after promotion"))?;
+        let next_session_active_artifacts =
+            load_active_artifacts(&self.store).await?.startup_entries();
         Ok(ArtifactDecisionExecutionOutcome {
             artifact_id: loaded.summary.artifact_id,
             version_id,
             decision,
             summary,
+            next_session_active_artifacts,
         })
     }
 
@@ -1012,11 +1016,14 @@ impl CodeAgentSession {
             .summary(&loaded.summary.artifact_id)
             .await?
             .ok_or_else(|| anyhow::anyhow!("artifact summary missing after rollback"))?;
+        let next_session_active_artifacts =
+            load_active_artifacts(&self.store).await?.startup_entries();
         Ok(ArtifactDecisionExecutionOutcome {
             artifact_id: loaded.summary.artifact_id,
             version_id,
             decision,
             summary,
+            next_session_active_artifacts,
         })
     }
 

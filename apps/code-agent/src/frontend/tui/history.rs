@@ -1044,6 +1044,54 @@ pub(crate) fn format_artifact_decision_result(
             version_id.to_string(),
         ));
     }
+    lines.push(InspectorEntry::section("Next Session"));
+    lines.push(InspectorEntry::field(
+        "activation",
+        "/new or restart to load the updated active artifacts",
+    ));
+    match result
+        .next_session_active_artifacts
+        .iter()
+        .find(|artifact| artifact.artifact_ref == result.artifact_id.as_str())
+    {
+        Some(active) => {
+            lines.push(InspectorEntry::field(
+                "this artifact",
+                format!(
+                    "{} {} ({})",
+                    artifact_kind_label(active.kind),
+                    active.version_ref,
+                    active.label
+                ),
+            ));
+        }
+        None => {
+            lines.push(InspectorEntry::field("this artifact", "inactive"));
+        }
+    }
+    if !result.next_session_active_artifacts.is_empty() {
+        lines.push(InspectorEntry::field(
+            "active artifact count",
+            result.next_session_active_artifacts.len().to_string(),
+        ));
+        lines.extend(
+            result
+                .next_session_active_artifacts
+                .iter()
+                .take(6)
+                .map(|artifact| {
+                    InspectorEntry::collection(
+                        format!(
+                            "{} {} -> {}",
+                            artifact_kind_label(artifact.kind),
+                            preview_id(&artifact.artifact_ref),
+                            preview_id(&artifact.version_ref),
+                        ),
+                        Some(artifact.label.clone()),
+                    )
+                }),
+        );
+    }
     lines
 }
 
@@ -1700,22 +1748,26 @@ fn format_session_event_line(event: &SessionEventEnvelope) -> TranscriptEntry {
 #[cfg(test)]
 mod tests {
     use super::{
-        format_agent_session_summary_line, format_benchmark_result, format_experiment_inspector,
-        format_experiment_summary_line, format_improve_result, format_live_task_wait_outcome,
-        format_session_event_line, format_session_export_result, format_session_operation_outcome,
-        format_session_search_line, format_session_summary_line,
+        format_agent_session_summary_line, format_artifact_decision_result,
+        format_benchmark_result, format_experiment_inspector, format_experiment_summary_line,
+        format_improve_result, format_live_task_wait_outcome, format_session_event_line,
+        format_session_export_result, format_session_operation_outcome, format_session_search_line,
+        format_session_summary_line,
     };
     use crate::backend::{
-        BenchmarkExecutionOutcome, ImproveExecutionOutcome, LiveTaskWaitOutcome, LoadedExperiment,
+        ActiveArtifactStartupEntry, ArtifactDecisionExecutionOutcome, BenchmarkExecutionOutcome,
+        ImproveExecutionOutcome, LiveTaskWaitOutcome, LoadedExperiment,
         PersistedAgentSessionSummary, PersistedExperimentSummary, PersistedSessionSearchMatch,
         PersistedSessionSummary, ResumeSupport, SessionExportArtifact, SessionExportKind,
         SessionOperationAction, SessionOperationOutcome, SessionStartupSnapshot,
     };
     use crate::frontend::tui::state::InspectorEntry;
     use agent::types::{
-        AgentSessionId, AgentStatus, ExperimentEventEnvelope, ExperimentEventKind, ExperimentId,
-        ExperimentTarget, Message, PromotionDecision, PromotionDecisionKind, SessionEventEnvelope,
-        SessionEventKind, SessionId, ToolCall, ToolCallId, ToolOrigin, ToolResult,
+        AgentSessionId, AgentStatus, ArtifactId, ArtifactKind, ArtifactPromotionDecision,
+        ArtifactPromotionDecisionKind, ArtifactVersionId, ExperimentEventEnvelope,
+        ExperimentEventKind, ExperimentId, ExperimentTarget, Message, PromotionDecision,
+        PromotionDecisionKind, SessionEventEnvelope, SessionEventKind, SessionId, ToolCall,
+        ToolCallId, ToolOrigin, ToolResult,
     };
     use serde_json::json;
     use std::path::PathBuf;
@@ -1790,6 +1842,58 @@ mod tests {
         assert_eq!(
             line.serialized(),
             "• agent_se  planner\n  └ session session_ · 6 messages · 14 events · resume attached · prompt Investigate flaky tests"
+        );
+    }
+
+    #[test]
+    fn artifact_decision_result_surfaces_next_session_activation() {
+        let lines = format_artifact_decision_result(&ArtifactDecisionExecutionOutcome {
+            artifact_id: ArtifactId::from("artifact-prompt"),
+            version_id: ArtifactVersionId::from("version-2"),
+            decision: ArtifactPromotionDecision {
+                kind: ArtifactPromotionDecisionKind::Promoted,
+                reason: "approved after verifier pass".to_string(),
+                rollback_version_id: Some(ArtifactVersionId::from("version-1")),
+            },
+            summary: store::ArtifactSummary {
+                artifact_id: ArtifactId::from("artifact-prompt"),
+                first_timestamp_ms: 1,
+                last_timestamp_ms: 2,
+                event_count: 3,
+                kind: Some(ArtifactKind::Prompt),
+                version_count: 2,
+                source_signal_count: 1,
+                source_task_count: 1,
+                source_case_count: 1,
+                latest_version_id: Some(ArtifactVersionId::from("version-2")),
+                active_version_id: Some(ArtifactVersionId::from("version-2")),
+                promoted_version_id: Some(ArtifactVersionId::from("version-2")),
+                last_decision: Some(ArtifactPromotionDecisionKind::Promoted),
+            },
+            next_session_active_artifacts: vec![ActiveArtifactStartupEntry {
+                artifact_ref: "artifact-prompt".to_string(),
+                version_ref: "version-2".to_string(),
+                kind: ArtifactKind::Prompt,
+                label: "review-rules".to_string(),
+            }],
+        });
+        let lines = inspector_line_texts(&lines);
+
+        assert!(
+            lines
+                .iter()
+                .any(|line| line
+                    == "activation: /new or restart to load the updated active artifacts")
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line == "this artifact: prompt version-2 (review-rules)")
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line == "prompt artifact -> version-  review-rules")
         );
     }
 
