@@ -249,4 +249,22 @@ mod tests {
             vec!["$ cargo test -p code-agent"]
         );
     }
+
+    #[test]
+    fn session_tool_call_formats_exec_commands_for_tui_previews() {
+        let call = ToolCall {
+            id: ToolCallId::from("tool-call-2"),
+            call_id: ToolCallId::from("tool-call-2").into(),
+            tool_name: "exec_command".into(),
+            arguments: json!({"cmd": "cargo test -p code-agent"}),
+            origin: ToolOrigin::Local,
+        };
+
+        let projected = session_tool_call(&call);
+
+        assert_eq!(
+            projected.arguments_preview,
+            vec!["$ cargo test -p code-agent"]
+        );
+    }
 }

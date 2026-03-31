@@ -101,16 +101,46 @@ pub(crate) fn summarize_tool_entry(
 }
 
 pub(crate) fn tool_arguments_preview_lines(tool_name: &str, arguments: &Value) -> Vec<String> {
-    if tool_name == "bash"
-        && let Some(command) = arguments.get("command").and_then(Value::as_str)
-        && !command.trim().is_empty()
-    {
-        return collapse_preview_text(
-            &format!("$ {}", command.trim()),
-            4,
+    if matches!(tool_name, "bash" | "exec_command") {
+        let command = if tool_name == "bash" {
+            arguments.get("command").and_then(Value::as_str)
+        } else {
+            arguments.get("cmd").and_then(Value::as_str)
+        };
+        if let Some(command) = command.map(str::trim).filter(|command| !command.is_empty()) {
+            return collapse_preview_text(&format!("$ {command}"), 4, 96, PreviewCollapse::Head);
+        }
+    }
+
+    if tool_name == "write_stdin" {
+        let session_id = arguments
+            .get("session_id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("<unknown>");
+        let close_stdin = arguments
+            .get("close_stdin")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let chars = arguments
+            .get("chars")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if close_stdin && chars.is_empty() {
+            return vec![format!("close stdin {session_id}")];
+        }
+        if chars.is_empty() {
+            return vec![format!("poll session {session_id}")];
+        }
+        let mut lines = vec![format!("session {session_id}")];
+        lines.extend(collapse_preview_text(
+            &format!("stdin {}", chars.escape_default()),
+            3,
             96,
             PreviewCollapse::Head,
-        );
+        ));
+        return lines;
     }
 
     if tool_name == "update_plan" {
@@ -139,7 +169,7 @@ pub(crate) fn tool_arguments_preview_lines(tool_name: &str, arguments: &Value) -
         return lines;
     }
 
-    for key in ["path", "uri", "query", "prompt", "message"] {
+    for key in ["path", "uri", "query", "prompt", "message", "cmd"] {
         if let Some(value) = arguments.get(key).and_then(Value::as_str)
             && !value.trim().is_empty()
         {
@@ -185,8 +215,8 @@ pub(crate) fn tool_output_details(
     output_preview: &str,
     structured: Option<&Value>,
 ) -> Vec<ToolDetail> {
-    if tool_name == "bash" {
-        return bash_output_details(output_preview, structured);
+    if matches!(tool_name, "bash" | "exec_command" | "write_stdin") {
+        return process_output_details(tool_name, output_preview, structured);
     }
 
     if let Some(detail_lines) = file_mutation_output_details(tool_name, output_preview, structured)
@@ -212,8 +242,49 @@ pub(crate) fn tool_argument_details(preview_lines: &[String]) -> Vec<ToolDetail>
     vec![ToolDetail::TextBlock(lines)]
 }
 
-fn bash_output_details(output_preview: &str, structured: Option<&Value>) -> Vec<ToolDetail> {
+fn process_output_details(
+    tool_name: &str,
+    output_preview: &str,
+    structured: Option<&Value>,
+) -> Vec<ToolDetail> {
     let mut detail_lines = Vec::new();
+
+    if tool_name != "bash" {
+        if let Some(session_id) = structured
+            .and_then(|value| value.get("session_id"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            detail_lines.push(ToolDetail::Meta(format!("session {session_id}")));
+        }
+
+        if tool_name == "write_stdin" {
+            if let Some(wrote_chars) = structured
+                .and_then(|value| value.get("wrote_chars"))
+                .and_then(Value::as_u64)
+                .filter(|wrote_chars| *wrote_chars > 0)
+            {
+                detail_lines.push(ToolDetail::Meta(format!("sent {wrote_chars} char(s)")));
+            }
+            if structured
+                .and_then(|value| value.get("closed_stdin"))
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            {
+                detail_lines.push(ToolDetail::Meta("closed stdin".to_string()));
+            }
+        }
+
+        if let Some(state) = structured
+            .and_then(|value| value.get("state"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty() && *value != "completed")
+        {
+            detail_lines.push(ToolDetail::Meta(state.to_string()));
+        }
+    }
 
     let exit_code = structured
         .and_then(|value| value.get("exit_code"))
@@ -228,6 +299,17 @@ fn bash_output_details(output_preview: &str, structured: Option<&Value>) -> Vec<
         .unwrap_or(false);
     if timed_out {
         detail_lines.push(ToolDetail::Meta("timed out".to_string()));
+    }
+    if let Some(error) = structured
+        .and_then(|value| value.get("error"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        detail_lines.push(ToolDetail::Meta(format!(
+            "error {}",
+            inline_preview_text(error, 96)
+        )));
     }
 
     let stdout = structured
@@ -271,7 +353,9 @@ fn bash_output_details(output_preview: &str, structured: Option<&Value>) -> Vec<
             });
         }
         (true, true) => {
-            detail_lines.extend(generic_output_details(output_preview));
+            if detail_lines.is_empty() {
+                detail_lines.extend(generic_output_details(output_preview));
+            }
         }
     }
 
@@ -427,6 +511,24 @@ mod tests {
     }
 
     #[test]
+    fn exec_command_arguments_render_as_command_preview() {
+        let rendered = tool_arguments_preview_lines("exec_command", &json!({"cmd": "cargo test"}));
+
+        assert_eq!(rendered, vec!["$ cargo test"]);
+    }
+
+    #[test]
+    fn write_stdin_arguments_render_as_session_and_input_preview() {
+        let rendered = tool_arguments_preview_lines(
+            "write_stdin",
+            &json!({"session_id": "exec_123", "chars": "hello\\n"}),
+        );
+
+        assert_eq!(rendered[0], "session exec_123");
+        assert!(rendered[1].contains("stdin hello\\\\n"));
+    }
+
+    #[test]
     fn bash_output_uses_tree_details_instead_of_fences() {
         let rendered = summarize_tool_entry(
             "• Finished bash",
@@ -466,5 +568,24 @@ mod tests {
 
         assert!(rendered.iter().any(|line| line == "  └ diff src/lib.rs"));
         assert!(rendered.iter().any(|line| line == "    +new()"));
+    }
+
+    #[test]
+    fn exec_command_output_shows_session_and_stdout_details() {
+        let rendered = tool_output_detail_lines(
+            "exec_command",
+            "ok",
+            Some(&json!({
+                "session_id": "exec_123",
+                "state": "completed",
+                "exit_code": 0,
+                "stdout": {"text": "ok"},
+                "stderr": {"text": ""}
+            })),
+        );
+
+        assert!(rendered.iter().any(|line| line == "  └ session exec_123"));
+        assert!(rendered.iter().any(|line| line == "  └ exit 0"));
+        assert!(rendered.iter().any(|line| line == "  └ ok"));
     }
 }

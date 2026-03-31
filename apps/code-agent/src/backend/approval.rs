@@ -150,19 +150,55 @@ fn tool_origin_label(origin: &ToolOrigin) -> String {
 }
 
 fn approval_content_preview(tool_name: &str, arguments: &Value) -> (String, Vec<String>) {
-    if tool_name == "bash"
-        && let Some(command) = arguments.get("command").and_then(Value::as_str)
-        && !command.trim().is_empty()
-    {
-        return (
-            "command".to_string(),
-            collapse_preview_text(
-                &format!("$ {}", command.trim()),
-                6,
-                96,
-                PreviewCollapse::Head,
-            ),
-        );
+    if matches!(tool_name, "bash" | "exec_command") {
+        let command = if tool_name == "bash" {
+            arguments.get("command").and_then(Value::as_str)
+        } else {
+            arguments.get("cmd").and_then(Value::as_str)
+        };
+        if let Some(command) = command.map(str::trim).filter(|command| !command.is_empty()) {
+            return (
+                "command".to_string(),
+                collapse_preview_text(&format!("$ {command}"), 6, 96, PreviewCollapse::Head),
+            );
+        }
+    }
+
+    if tool_name == "write_stdin" {
+        let session_id = arguments
+            .get("session_id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("<unknown>");
+        let close_stdin = arguments
+            .get("close_stdin")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let chars = arguments
+            .get("chars")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if close_stdin && chars.is_empty() {
+            return (
+                "stdin".to_string(),
+                vec![format!("close stdin {session_id}")],
+            );
+        }
+        if chars.is_empty() {
+            return (
+                "stdin".to_string(),
+                vec![format!("poll session {session_id}")],
+            );
+        }
+        let mut lines = vec![format!("session {session_id}")];
+        lines.extend(collapse_preview_text(
+            &format!("stdin {}", chars.escape_default()),
+            4,
+            96,
+            PreviewCollapse::Head,
+        ));
+        return ("stdin".to_string(), lines);
     }
 
     if tool_name == "update_plan" {
@@ -315,6 +351,39 @@ mod tests {
         assert_eq!(prompt.tool_name, "bash");
         assert_eq!(prompt.origin, "local");
         assert_eq!(prompt.mode.as_deref(), Some("run"));
+        assert_eq!(
+            prompt.working_directory.as_deref(),
+            Some("/workspace/apps/code-agent")
+        );
+        assert_eq!(prompt.content_label, "command");
+        assert_eq!(prompt.content_preview, vec!["$ cargo test -p code-agent"]);
+    }
+
+    #[test]
+    fn approval_prompt_extracts_exec_command_context() {
+        let prompt = ApprovalPrompt::from_request(&ToolApprovalRequest {
+            call: ToolCall {
+                id: ToolCallId::new(),
+                call_id: "call-2".into(),
+                tool_name: "exec_command".into(),
+                arguments: json!({
+                    "cmd": "cargo test -p code-agent",
+                    "workdir": "/workspace/apps/code-agent"
+                }),
+                origin: ToolOrigin::Local,
+            },
+            spec: ToolSpec::function(
+                "exec_command",
+                "run shell commands",
+                json!({"type":"object"}),
+                ToolOutputMode::Text,
+                ToolOrigin::Local,
+                ToolSource::Builtin,
+            ),
+            reasons: vec!["sandbox policy requires approval".to_string()],
+        });
+
+        assert_eq!(prompt.tool_name, "exec_command");
         assert_eq!(
             prompt.working_directory.as_deref(),
             Some("/workspace/apps/code-agent")

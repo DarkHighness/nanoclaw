@@ -5,11 +5,12 @@ use agent::runtime::{
 use agent::tools::{SandboxBackendStatus, SubagentExecutor};
 use agent::{
     ApplyPatchTool, BashTool, CodeDefinitionsTool, CodeDocumentSymbolsTool, CodeIntelBackend,
-    CodeReferencesTool, CodeSymbolSearchTool, EditTool, GlobTool, GrepTool, JsReplTool, ListTool,
-    ManagedCodeIntelBackend, ManagedCodeIntelOptions, ManagedPolicyProcessExecutor, PatchTool,
-    PlanState, ReadTool, RequestPermissionsTool, RequestUserInputTool, SandboxPolicy, TaskTool,
-    ToolRegistry, UpdatePlanTool, ViewImageTool, WebFetchTool, WebSearchBackendsTool,
-    WebSearchTool, WorkspaceTextCodeIntelBackend, WriteTool,
+    CodeReferencesTool, CodeSymbolSearchTool, EditTool, ExecCommandTool, GlobTool, GrepTool,
+    JsReplTool, ListTool, ManagedCodeIntelBackend, ManagedCodeIntelOptions,
+    ManagedPolicyProcessExecutor, PatchTool, PlanState, ReadTool, RequestPermissionsTool,
+    RequestUserInputTool, SandboxPolicy, TaskTool, ToolRegistry, UpdatePlanTool, ViewImageTool,
+    WebFetchTool, WebSearchBackendsTool, WebSearchTool, WorkspaceTextCodeIntelBackend,
+    WriteStdinTool, WriteTool,
 };
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -141,14 +142,19 @@ fn build_builtin_tools(
     tools.register(WebFetchTool::new());
     tools.register(WebSearchTool::new());
     tools.register(WebSearchBackendsTool::new());
-    // Keep `bash` on the normal tool surface so `/permissions danger-full-access`
-    // can widen the current session without rebuilding the registry. The tool
-    // itself now fails closed whenever the active sandbox mode would otherwise
-    // fall back to unsandboxed host execution.
+    // Keep `bash` on the normal tool surface during the migration toward
+    // Codex-style exec surfaces. New sessions should prefer
+    // `exec_command`/`write_stdin`, while `bash` remains available so existing
+    // prompts and persisted sessions do not break abruptly.
     tools.register(BashTool::with_process_executor_and_policy(
         process_executor.clone(),
         sandbox_policy.clone(),
     ));
+    tools.register(ExecCommandTool::with_process_executor_and_policy(
+        process_executor.clone(),
+        sandbox_policy.clone(),
+    ));
+    tools.register(WriteStdinTool::new());
     tools.register(CodeSymbolSearchTool::with_backend(
         code_intel_backend.clone(),
     ));
@@ -289,6 +295,13 @@ mod tests {
                 .into_iter()
                 .any(|name| name.as_str() == "bash")
         );
+        assert!(
+            tooling
+                .tools
+                .names()
+                .into_iter()
+                .any(|name| name.as_str() == "exec_command")
+        );
         assert!(!tooling.host_process_surfaces_allowed);
         assert!(
             tooling
@@ -313,6 +326,12 @@ mod tests {
 
         let tool_names = tooling.tools.names();
         assert!(tool_names.iter().any(|name| name.as_str() == "view_image"));
+        assert!(
+            tool_names
+                .iter()
+                .any(|name| name.as_str() == "exec_command")
+        );
+        assert!(tool_names.iter().any(|name| name.as_str() == "write_stdin"));
         assert!(tool_names.iter().any(|name| name.as_str() == "web_fetch"));
         assert!(tool_names.iter().any(|name| name.as_str() == "web_search"));
         assert!(

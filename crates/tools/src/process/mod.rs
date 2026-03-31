@@ -1,8 +1,10 @@
 mod bash;
 mod js_repl;
+mod unified_exec;
 
 pub use bash::*;
 pub use js_repl::*;
+pub use unified_exec::*;
 // Process-oriented tools such as `bash` still live in `tools`, but the
 // sandbox model and platform backends now belong to the dedicated `sandbox`
 // crate. Re-export them here as a compatibility facade for existing call sites
