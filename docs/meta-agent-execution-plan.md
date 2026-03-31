@@ -1,4 +1,4 @@
-# Meta Agent 可执行实施计划
+# Nanoclaw 自改进实现计划
 
 Date: 2026-03-31
 
@@ -8,958 +8,649 @@ Depends On:
 
 - `docs/meta-agent-evolution-plan.md`
 
-## 1. 本文档的作用
+## 1. 本文档的目标
 
-上一份文档回答的是：
+这份文档只回答一件事：
 
-- 为什么要做 Meta Agent
-- 参考了哪些工业项目与论文
-- 总体架构和阶段路线是什么
+- 如何让 `nanoclaw` 在运行过程中，持续改进 `nanoclaw` 自身
 
-这份文档只做一件事：
+这里的目标不是：
 
-- 把路线拆成可以直接开工的工程任务
+- 做一个通用的 `self-improving code agent` 平台
+- 做一个以外部 benchmark 为中心的训练系统
+- 做一个越来越复杂的 `/improve plan.json` 执行器
 
-默认目标不是一步到位实现完整自进化系统，而是先交付一个
-`offline self-improving code-agent MVP`：
+这里的目标是：
 
-- 有实验账本
-- 有 evaluator / verifier substrate
-- 有 baseline compare 与 relative promotion gate
-- 有 worktree-scoped code candidate runner
-- 有 host 侧操作入口
-- 全流程可回滚、可审计、可测试
+- `nanoclaw` 正常服务用户
+- 同时持续观察自己的失败、低效、回归和人工修正
+- 在隔离环境里对 `nanoclaw` 自己的 prompt / skill / workflow / code 产出候选
+- 用 `nanoclaw` 自己的 replay / regression / verifier 去判断是否值得推广
 
-## 1.1 方案纠偏
+所以这份计划的中心对象不是通用 `TaskSuite`，而是：
 
-当前实现已经证明一件事：
+- `NanoclawArtifact`
+- `SelfImproveSignal`
+- `SelfImproveTask`
+- `SelfImproveRun`
+- `NanoclawVerifierReport`
 
-- 只扩 candidate generator，并不会自然得到 `self-improving code agent`
+## 2. 核心设计原则
 
-如果目标真的是 code agent 的自改进，必须把主线收敛到下面这条闭环：
+### 2.1 前台运行与后台自改进必须分离
+
+正确模型应当是：
 
 ```text
-pin baseline
-  -> run baseline on coding benchmark
-  -> derive failure taxonomy
-  -> generate candidate
+foreground runtime
+  -> 继续服务用户
+
+background self-improver
+  -> 收集运行信号
+  -> 形成自改进任务
+  -> 在隔离环境里评估候选
+  -> 产出推广建议
+```
+
+不允许：
+
+- 在同一 turn 中热改当前正在执行的 runtime
+- 在主工作区直接写入并立刻切换到未验证版本
+
+### 2.2 优化对象必须是 `nanoclaw` 自身资产
+
+当前阶段只优化 `nanoclaw` 自己可控的资产层：
+
+- prompt / instructions
+- skills
+- routing / workflow policy
+- hook prompt / verifier recipe
+- runtime code
+
+不把目标泛化成任意第三方仓库的通用求解器。
+
+### 2.3 运行证据优先于外部 benchmark
+
+最重要的数据源应当来自 `nanoclaw` 自己：
+
+- 失败 turn
+- 人工纠正
+- 高成本 / 高延迟 turn
+- 错误工具调用
+- 错误 subagent 路由
+- hook / verifier 拦截结果
+- 历史修复 patch
+
+外部 benchmark 仍有价值，但它们是补充验证，不是系统中心。
+
+### 2.4 推广单位必须是版本化 artifact
+
+推广的不是“一次实验结果”，而是：
+
+- 一个 `NanoclawArtifactVersion`
+
+它至少要带上：
+
+- baseline version
+- candidate version
+- self-improvement task batch
+- verifier reports
+- rollback pointer
+
+### 2.5 verifier 是防自毁边界，不只是评分器
+
+对于 self-improving `nanoclaw`，verifier 的职责是：
+
+- 阻止系统把自己改坏
+- 阻止系统放宽 sandbox / approval / protected path
+- 阻止系统在 replay 上退化
+- 阻止系统引入工具行为回归
+
+## 3. 目标架构
+
+```text
+Nanoclaw Runtime Plane
+    ├── normal user turns
+    ├── subagent execution
+    ├── approvals / sandbox / hooks
+    └── transcripts / tool traces / event logs
+            │
+            ▼
+Observation Plane
+    ├── failure mining
+    ├── correction mining
+    ├── latency / cost anomaly mining
+    ├── verifier / hook denials
+    └── runtime export snapshots
+            │
+            ▼
+Self-Improvement Plane
+    ├── self-improve signal queue
+    ├── self-regression corpus builder
+    ├── candidate artifact generator
+    ├── isolated self-edit runner
+    └── nanoclaw-specific verifiers
+            │
+            ▼
+Promotion Plane
+    ├── versioned artifact ledger
+    ├── operator review surface
+    ├── staged rollout
+    └── rollback
+```
+
+最小正确闭环应当是：
+
+```text
+collect nanoclaw runtime signals
+  -> derive self-improvement tasks
+  -> pin current nanoclaw artifact version
+  -> generate candidate artifact version
   -> run candidate in isolated worktree
-  -> compare candidate vs baseline
-  -> verify regressions / counterexamples
-  -> promote or reject
-  -> rollback if needed
+  -> replay nanoclaw regressions and runtime-derived cases
+  -> run safety / policy / behavior verifiers
+  -> promote or reject candidate version
+  -> keep rollback pointer and lineage
 ```
 
-因此后续实施优先级要调整为：
+## 4. 当前仓库可直接复用的基础
 
-1. baseline compare
-2. isolated worktree candidate runner
-3. coding benchmark + verifier
-4. automatic critic derivation
-5. iterative improve controller
+下列现有模块是这条路线的现成基座：
 
-下列能力仍有价值，但都应放到第二优先级：
+- 运行与子代理：
+  - `crates/runtime/src/subagent_impl.rs`
+  - `crates/runtime/src/agent_session_manager.rs`
+  - `crates/runtime/src/write_lease.rs`
+- 事件与历史：
+  - `crates/runtime/src/runtime/event_log.rs`
+  - `apps/code-agent/src/backend/events.rs`
+  - `apps/code-agent/src/backend/session_history.rs`
+  - `apps/code-agent/src/backend/session_catalog.rs`
+- runtime export：
+  - `crates/memory/src/runtime_exports.rs`
+- hook 边界：
+  - `crates/runtime/src/hooks/handlers/agent.rs`
+  - 目前仍是 fail-closed stub，这是后续重要接入点
+- 实验与归档基础：
+  - `crates/meta/*`
+  - `crates/store/*`
 
-- richer generator taxonomy
-- workflow IR
-- island / group evolution
+这些能力说明，仓库已经具备：
 
-## 2. 第一阶段交付边界
+- 观测面
+- 子代理执行面
+- 持久化面
+- runtime 安全边界
 
-### 2.1 本阶段必须交付
+真正缺的是：
 
-- `Experiment Archive`
-- `Evaluator / Verifier Substrate`
-- `baseline evaluation + relative improvement gate`
-- `worktree-scoped code candidate runner`
-- `offline coding benchmark + verifier` 闭环
-- `PromptVariant / SkillVariant / PolicyVariant` 只作为低风险启动对象
-- host 操作入口：
-  - `/improve`
-  - `/experiments`
-  - `/promote`
-  - `/benchmark`
+- 面向 `nanoclaw self-improvement` 的信号提炼
+- 面向 `nanoclaw self-regression` 的语料和 verifier
+- 面向 `nanoclaw` 自身代码 / prompt / workflow 的版本化推广流程
 
-### 2.2 本阶段明确不做
+## 5. 不该再继续扩的方向
 
-- 自动修改 `nanoclaw` 核心代码
-- live traffic 自动推广
-- 全图 workflow search
-- active verifier 的复杂反例搜索
-- group / island evolution
+当前阶段应明确停止把时间花在以下方向上：
 
-原因：
+- 更复杂的 config candidate taxonomy
+- 更复杂的 `/improve plan` 格式
+- 脱离 `nanoclaw` 自身运行证据的通用 task gym
+- workflow search / island evolution 的前置实现
 
-- 当前仓库最缺的是 baseline compare、隔离执行、verifier 和治理面，
-  不是再加一层 generator 花样
+原因很简单：
 
-## 3. 依赖关系图
+- 这些东西会让系统越来越像实验平台
+- 但不会让 `nanoclaw` 更快进入“自改进自身”的闭环
 
-```text
-Wave 0
-  └── W0 Workspace Seeding
-        │
-        ├── W1 Experiment Schema + Store
-        ├── W2 Evals Crate Core
-        └── W3 Meta Crate Core
-                │
-                ├── W4 Baseline Compare + Promotion Gate
-                ├── W5 Coding Benchmark Pack
-                ├── W6 Worktree Candidate Runner
-                └── W7 Host Commands + Views
-                        │
-                        └── W8 End-to-End Offline Improve Run
-                                │
-                                ├── W9 Automatic Critic Derivation
-                                ├── W10 Iterative Improve Controller
-                                ├── W11 Workflow IR Skeleton
-                                └── W12 Group / Island Evolution
-```
+## 6. 分阶段实施路线
 
-说明：
-
-- `W0` 必须串行，因为会改 workspace manifest
-- `W1/W2/W3` 可并行，前提是先把 crate 目录和 manifest 种好
-- `W4/W5/W6/W7` 中，`W6` 是 self-improving code agent 的关键路径，不能长期后置
-- generator 丰富度可以并行探索，但不能阻塞 baseline compare 与 worktree runner
-
-## 4. 全局 Definition of Done
-
-任一工作包完成前，必须同时满足：
-
-1. 有明确写入边界，未修改无关文件。
-2. 有单元测试或集成测试覆盖核心路径。
-3. 有最小 operator 可见面：
-   - 事件可查
-   - 结果可看
-   - 错误可解释
-4. 有失败时的回滚路径。
-5. 不放宽现有 sandbox / approval 安全边界。
-
-## 5. Wave 0：工作区种子与接口冻结
-
-## W0.1 新 crate 与 workspace 挂载
+## W0：术语冻结与边界收紧
 
 目标：
 
-- 为后续并行开发先把写冲突最高的 shared manifest 改完
+- 把实现对象从通用 `experiment / candidate` 收紧到
+  `nanoclaw self-improvement`
 
-写入范围：
+必须明确的新术语：
 
-- `crates/Cargo.toml`
-- 可选：`crates/core/Cargo.toml`
-- 新目录：
-  - `crates/evals/`
-  - `crates/meta/`
+- `NanoclawArtifactKind`
+- `NanoclawArtifactVersion`
+- `SelfImproveSignal`
+- `SelfImproveTask`
+- `SelfImproveRun`
+- `VerifierFinding`
+- `PromotionProposal`
 
-执行步骤：
+建议写入范围：
 
-1. 在 `crates/Cargo.toml` 注册 `evals` 与 `meta`。
-2. 建立两个 crate 的最小 `Cargo.toml` 与 `src/lib.rs`。
-3. 先不写复杂逻辑，只暴露占位模块。
-4. 若 `core` 负责对外聚合，再决定是否 re-export。
-
-交付物：
-
-- workspace 能识别两个新 crate
-- `cargo check` 不因缺 crate 失败
-
-验证：
-
-```bash
-cargo check --manifest-path crates/Cargo.toml
-```
+- `docs/meta-agent-execution-plan.md`
+- 视需要：
+  - `crates/types/src/*`
+  - `docs/plan.md`
 
 完成标准：
 
-- 后续 `W1/W2/W3` 可以并行且不再争抢 workspace manifest
+- 后续实现不再以通用 `candidate plan runner` 为中心
 
-## 6. Wave 1：MVP 基础能力
-
-## W1：Experiment Schema + Store
+## W1：运行信号采集与归一化
 
 目标：
 
-- 把“实验”和“候选”变成一等持久化对象
+- 先把 `nanoclaw` 自己的可用自改进信号采出来
 
-写入范围：
+第一批信号源：
 
-- `crates/types/src/id.rs`
-- `crates/types/src/event.rs`
-- `crates/store/src/traits.rs`
-- `crates/store/src/file.rs`
-- `crates/store/src/file/index_sidecar.rs`
-- 可能新增：
-  - `crates/store/src/experiments.rs`
+- 失败或中断的 turn
+- tool 调用失败
+- approval / sandbox 拒绝
+- hook fail-closed
+- retry churn
+- 高 token / 高 latency
+- 被人工 rollback / 修正的结果
+- 任务等待或多 agent 协调异常
+
+建议写入范围：
+
+- `crates/runtime/src/runtime/event_log.rs`
+- `apps/code-agent/src/backend/events.rs`
+- `apps/code-agent/src/backend/session_history.rs`
+- `apps/code-agent/src/backend/task_history.rs`
+- `crates/memory/src/runtime_exports.rs`
 
 建议新增对象：
 
-- `ExperimentId`
-- `CandidateId`
-- `BaselineId`
-- `ExperimentSpec`
-- `CandidateSpec`
-- `EvaluationSummary`
-- `PromotionDecision`
-
-建议新增事件：
-
-- `ExperimentStarted`
-- `ExperimentBaselinePinned`
-- `CandidateGenerated`
-- `CandidateEvaluated`
-- `CandidatePromoted`
-- `CandidateRejected`
-- `CandidateRolledBack`
-
-执行步骤：
-
-1. 在 `types` 增加 id 与结构体。
-2. 在 `event.rs` 增加实验相关事件。
-3. 在 `store::traits` 增加最小 API：
-   - `append_experiment_event`
-   - `load_experiment`
-   - `list_experiments`
-4. 在 file store 中落盘：
-   - experiment summary
-   - candidate summary
-   - evaluation report
-5. 做 round-trip tests。
-6. 确保和已有 `SessionStore` 模型兼容，不复制 transcript。
-
-交付物：
-
-- 任何一次 improve run 都有独立 experiment 记录
-- experiment 与 session / agent-session 可关联
-
-验证：
-
-```bash
-cargo test --manifest-path crates/Cargo.toml -p store
-cargo test --manifest-path crates/Cargo.toml -p types
-```
+- `SelfImproveSignalRecord`
+- `SignalSeverity`
+- `SignalSource`
 
 完成标准：
 
-- 给定 `ExperimentId`，可以查到 baseline、候选、评测、推广决策
+- 能从真实运行历史中提炼出结构化 signal
+- signal 不依赖手写 experiment plan
 
-## W2：Evals Crate Core
-
-目标：
-
-- 提供统一 evaluator substrate
-
-写入范围：
-
-- `crates/evals/Cargo.toml`
-- `crates/evals/src/lib.rs`
-- `crates/evals/src/result.rs`
-- `crates/evals/src/evaluator.rs`
-- `crates/evals/src/registry.rs`
-- `crates/evals/src/context.rs`
-- `crates/evals/src/evaluators/*.rs`
-
-建议模块：
-
-- `result.rs`
-- `evaluator.rs`
-- `registry.rs`
-- `evaluators/command.rs`
-- `evaluators/test_suite.rs`
-- `evaluators/output_schema.rs`
-- `evaluators/diff_policy.rs`
-- `evaluators/safety.rs`
-- `evaluators/cost_latency.rs`
-
-核心接口建议：
-
-```rust
-pub struct EvalContext {
-    pub experiment_id: ExperimentId,
-    pub candidate_id: CandidateId,
-    pub workspace_root: PathBuf,
-}
-
-pub struct EvalResult {
-    pub evaluator_name: String,
-    pub passed: bool,
-    pub score: Option<f64>,
-    pub summary: String,
-    pub details: serde_json::Value,
-}
-
-#[async_trait]
-pub trait Evaluator {
-    async fn evaluate(&self, ctx: &EvalContext) -> anyhow::Result<EvalResult>;
-}
-```
-
-执行步骤：
-
-1. 先定义结果模型与 trait。
-2. 做 registry，支持串行与固定顺序执行。
-3. 先接 5 个基础 evaluator：
-   - command
-   - test suite
-   - schema
-   - diff policy
-   - safety
-4. 把 cost/latency evaluator 做成汇总器。
-5. 为每个 evaluator 写最小 fixture test。
-
-交付物：
-
-- evaluator 能独立运行，不依赖 host UI
-- 同一 candidate 能产出 evaluator matrix
-
-验证：
-
-```bash
-cargo test --manifest-path crates/Cargo.toml -p evals
-```
-
-完成标准：
-
-- evaluator matrix 可以被 `meta` crate 直接消费
-
-## W3：Meta Crate Core
+## W2：自改进任务提炼器
 
 目标：
 
-- 提供候选生成、比较、推广的最小控制面
+- 把原始 signal 转成“可执行的 nanoclaw 自改进任务”
 
-写入范围：
+第一批任务类型建议：
 
-- `crates/meta/Cargo.toml`
-- `crates/meta/src/lib.rs`
-- `crates/meta/src/candidate.rs`
-- `crates/meta/src/experiment.rs`
-- `crates/meta/src/critic.rs`
-- `crates/meta/src/comparator.rs`
-- `crates/meta/src/promotion.rs`
-- `crates/meta/src/rollback.rs`
+- `prompt_regression_fix`
+- `tool_selection_fix`
+- `subagent_routing_fix`
+- `hook_policy_fix`
+- `cost_latency_optimization`
+- `runtime_bugfix`
 
-建议最小候选类型：
+建议写入范围：
 
-- `PromptVariant`
-- `SkillVariant`
-- `PolicyVariant`
-- `CodePatchVariant`
-
-建议核心流程对象：
-
-- `ExperimentRunner`
-- `CandidateGenerator`
-- `CandidateComparator`
-- `PromotionGate`
-- `RollbackPlan`
-
-执行步骤：
-
-1. 定义 candidate schema。
-2. 定义 baseline pin 与 candidate pin。
-3. 实现 comparator：
-   - 必须通过哪些 evaluator
-   - 哪些 score 可以是 soft improvement
-4. 实现 promotion gate：
-   - 默认 reject
-   - 必须显式满足 gate 才 allow
-5. 实现 rollback model：
-   - promotion 后保留 baseline pointer
-
-交付物：
-
-- 给定 baseline，系统能明确回答“candidate 是否优于 baseline”
-
-验证：
-
-```bash
-cargo test --manifest-path crates/Cargo.toml -p meta
-```
-
-完成标准：
-
-- `meta` crate 能在无 TUI 条件下完成一次离线 experiment 判定
-
-## 7. Wave 2：MVP 业务闭环
-
-## W4：Baseline Compare + Promotion Gate
-
-目标：
-
-- 把 `/improve` 从“候选筛选”收紧成“相对 baseline 的改进判定”
-
-写入范围：
-
-- `crates/meta/src/benchmark.rs`
-- `crates/meta/src/improve.rs`
-- `crates/meta/src/promotion.rs`
-- `crates/meta/src/experiment.rs`
-- `crates/types/src/experiment.rs`
-- `crates/store/src/traits.rs`
-
-执行步骤：
-
-1. 记录 baseline evaluation。
-2. 在 improve / benchmark 中显式跑 baseline。
-3. 引入 relative gate：
-   - minimum score
-   - minimum score gain over baseline
-4. 在 archive 和 TUI 中可见 baseline score 与 delta。
-
-完成标准：
-
-- promotion decision 不再只看 candidate 自身分数
-- operator 能看到 candidate 是否真实优于 baseline
-
-## W5：Coding Benchmark Pack
-
-目标：
-
-- 给 code-agent MVP 提供稳定、可回归的 coding task 集
-
-写入范围：
-
-- `crates/evals/src/benchmarks/*.rs`
-- `crates/evals/fixtures/meta-agent/*`
+- `crates/meta/src/signals.rs`
+- `crates/meta/src/tasks.rs`
+- `crates/meta/src/miner.rs`
 - 可选：
-  - `crates/test-support/src/meta_agent/*`
-
-第一批 benchmark 类型建议：
-
-- `patch_review`
-  - 评估代码审查任务的发现质量
-- `small_patch_fix`
-  - 评估小规模代码修复任务的通过率
-- `tool_use_reliability`
-  - 评估 code-agent 在真实工具链中的稳定性
-- `regression_guard`
-  - 评估 candidate 是否破坏既有行为
-
-执行步骤：
-
-1. 先定义 benchmark manifest 格式。
-2. 把 benchmark case 与 evaluator matrix 解耦。
-3. 先做 repo-local 小任务集，不接外部大 benchmark。
-4. 预留后续导入：
-   - HumanEval
-   - MBPP
-   - SWE-Gym / SWE-Bench 风格
-
-交付物：
-
-- 一个 `BenchmarkSuite` 能驱动多 evaluator
-
-验证：
-
-```bash
-cargo test --manifest-path crates/Cargo.toml -p evals benchmarks
-```
+  - `crates/meta/src/failure_taxonomy.rs`
 
 完成标准：
 
-- 至少有 10-20 个稳定 case 可用于 regression
+- 给定一批 runtime signal，系统能生成 `SelfImproveTask` 列表
+- 每个任务都能指向：
+  - 原始 turn / session
+  - 相关文件
+  - 期望修复目标
 
-## W6：Worktree Candidate Runner
+## W3：Nanoclaw 自回归语料
 
 目标：
 
-- 让 code candidate 真正跑在隔离环境里，而不是只在配置层比较
+- 构造 `nanoclaw` 自己的 replay / regression / validation 语料
 
-写入范围：
+语料来源：
+
+- 历史失败 turn replay
+- 已修复 bug 的 before/after case
+- tool misuse case
+- prompt failure case
+- hook denial case
+- subagent coordination failure case
+
+建议写入范围：
+
+- `crates/meta/src/corpus.rs`
+- `crates/meta/src/replay.rs`
+- `crates/meta/src/regression_pack.rs`
+- `crates/store/src/*`
+- `crates/memory/src/runtime_exports.rs`
+
+完成标准：
+
+- 至少形成三类集合：
+  - `train`
+  - `validation`
+  - `holdout`
+- 这些集合都直接来源于 `nanoclaw` 自身运行历史
+
+## W4：Artifact 版本模型与演化账本
+
+目标：
+
+- 把“改进 nanoclaw 自己”建模成版本化资产推广
+
+第一批 artifact 种类建议：
+
+- `PromptArtifact`
+- `SkillArtifact`
+- `WorkflowArtifact`
+- `HookArtifact`
+- `VerifierArtifact`
+- `RuntimePatchArtifact`
+
+建议写入范围：
+
+- `crates/types/src/artifact.rs`
+- `crates/types/src/id.rs`
+- `crates/store/src/traits.rs`
+- `crates/store/src/file.rs`
+- `crates/store/src/memory.rs`
+- `crates/meta/src/archive.rs`
+
+完成标准：
+
+- 任意一个候选都能被记录为 `NanoclawArtifactVersion`
+- 任意一次推广都能回溯到 baseline、signal batch、verifier 结果和 rollback pointer
+
+## W5：隔离 self-edit runner
+
+目标：
+
+- 让 `nanoclaw` 修改 `nanoclaw` 的候选只能在隔离环境中运行
+
+最小 runner 行为：
+
+1. 从当前 baseline version 创建 worktree
+2. 在 worktree 内应用 prompt / skill / workflow / code 改动
+3. 执行 replay、tests、verifiers
+4. 回收 diff、stdout/stderr、tool traces、artifacts
+5. 清理 worktree
+
+建议写入范围：
 
 - `crates/meta/src/worktree_runner.rs`
 - `crates/meta/src/git_gate.rs`
-- `apps/code-agent/src/backend/*`
-
-执行步骤：
-
-1. 为每个 code candidate 准备独立 worktree。
-2. 在 worktree 内执行 patch / test / verifier。
-3. 回收 artifact、diff、stdout/stderr、test result。
-4. 保证失败时不污染主工作区。
+- `crates/meta/src/runner_trace.rs`
+- `apps/code-agent/src/backend/session.rs`
 
 完成标准：
 
-- 每个 code candidate 都可独立运行和销毁
-- improve run 能区分“配置候选”与“代码候选”
+- 失败候选不会污染主工作区
+- 每个候选都有完整 runner trace
 
-## W7：Host Commands + Views
+## W6：Nanoclaw 专用 verifier bundle
 
 目标：
 
-- 给 operator 一个最小可用的交互面
+- verifier 直接围绕 `nanoclaw` 自己的行为面构造
 
-写入范围：
+第一批 verifier：
 
-- `apps/code-agent/src/backend/mod.rs`
-- 新增：
-  - `apps/code-agent/src/backend/meta.rs`
-- `apps/code-agent/src/frontend/tui/commands.rs`
-- `apps/code-agent/src/frontend/tui/state.rs`
-- `apps/code-agent/src/frontend/tui/render/view.rs`
-- 视情况补：
-  - `history.rs`
-  - `render/transcript.rs`
+- `ReplayVerifier`
+  - 对历史 turn replay，比较 baseline 与 candidate
+- `ToolBehaviorDiffVerifier`
+  - 比较工具选择、参数、失败率
+- `SubagentRoutingVerifier`
+  - 比较子代理分工与任务结果
+- `HookPolicyVerifier`
+  - 确保 hook 决策未放宽安全边界
+- `SandboxApprovalInvariantVerifier`
+  - 确保 sandbox / approval 不退化
+- `RegressionPackVerifier`
+  - 跑已知自回归案例
 
-建议命令：
+建议写入范围：
 
-- `/benchmark [suite]`
-- `/improve [target]`
-- `/experiments`
-- `/experiment <id>`
-- `/promote <candidate-id>`
-- `/rollback <candidate-id>`
-
-执行步骤：
-
-1. 在 backend 暴露 meta-agent service。
-2. 在 slash command parser 加命令。
-3. 在主视图增加 experiment summary 渲染。
-4. 在历史视图中可跳转到 experiment detail。
-5. 为 parser 和渲染加测试。
-
-交付物：
-
-- operator 能从 TUI 发起 benchmark / improve / promote / rollback
-
-验证：
-
-```bash
-cargo test --manifest-path apps/Cargo.toml -p code-agent commands
-```
+- `crates/evals/src/verifiers/replay.rs`
+- `crates/evals/src/verifiers/tool_diff.rs`
+- `crates/evals/src/verifiers/routing.rs`
+- `crates/evals/src/verifiers/hook_policy.rs`
+- `crates/evals/src/verifiers/security_invariants.rs`
+- `crates/runtime/src/hooks/handlers/agent.rs`
 
 完成标准：
 
-- 不需要直接操作 store 文件就能跑通一次实验
+- verifier 报告能回答：
+  - `nanoclaw` 是否更稳
+  - `nanoclaw` 是否更便宜
+  - `nanoclaw` 是否更安全
+  - `nanoclaw` 是否引入行为回归
 
-## W8：End-to-End Offline Improve Run
-
-目标：
-
-- 打通一次完整闭环，并明确这是 code-agent 的改进闭环，而不是通用配置试验器
-
-闭环定义：
-
-```text
-pin baseline
-  -> run baseline on benchmark
-  -> derive critic / failure taxonomy
-  -> generate candidate
-  -> run candidate in isolated worktree
-  -> compare candidate vs baseline
-  -> verify regressions
-  -> record experiment
-  -> promote or reject
-  -> rollback if needed
-```
-
-建议集成顺序：
-
-1. 先用 `PromptVariant / PolicyVariant` 验证 archive 和 gate 契约。
-2. 尽快接 `CodePatchVariant`，不要长期停留在配置层。
-3. 当 code candidate loop 稳定后，再考虑 workflow optimization。
-
-完成标准：
-
-- 在本仓库内能稳定重放同一 improve run
-- promotion 语义明确是“优于 baseline”，不是“单独过阈值”
-
-## W9：Automatic Critic Derivation
+## W7：后台自改进控制器
 
 目标：
 
-- 不再手写 critic report，而是从 benchmark/verifier failure 中自动抽取
+- 把观察、提炼、候选运行、验证和推广建议串起来
 
-写入范围：
+控制器职责：
 
-- `crates/meta/src/critic.rs`
-- `crates/meta/src/candidate.rs`
-- `crates/evals/src/verifiers/*.rs`
+1. 周期性或事件驱动读取 signal queue
+2. 聚合成一个 `SelfImproveRun`
+3. 选择 baseline artifact version
+4. 生成候选版本
+5. 调用 isolated runner
+6. 聚合 verifier 报告
+7. 产出 `PromotionProposal`
 
-完成标准：
-
-- improve run 可以从 evaluator / verifier 结果自动生成 failure taxonomy
-
-## W10：Iterative Improve Controller
-
-目标：
-
-- 让 improve 不只是一次性 run，而是预算受控的多轮尝试
-
-写入范围：
+建议写入范围：
 
 - `crates/meta/src/controller.rs`
 - `crates/meta/src/budget.rs`
+- `crates/meta/src/run.rs`
+- `crates/meta/src/proposal.rs`
 
 完成标准：
 
-- 支持 stop condition、budget、early stop、best-so-far tracking
+- 可以后台异步运行，不影响前台正常服务
+- 默认只产出 proposal，不自动热切换
 
-## W11：Workflow IR Skeleton
-
-目标：
-
-- 让优化对象从配置升级到结构
-
-写入范围：
-
-- `crates/meta/src/workflow_ir.rs`
-- `crates/meta/src/workflow_exec.rs`
-- `crates/meta/src/workflow_templates.rs`
-
-第一批节点：
-
-- `PromptNode`
-- `SubagentNode`
-- `RouterNode`
-- `ParallelMapNode`
-- `EvaluatorNode`
-- `RetryNode`
-
-第一批模板：
-
-- review-revise
-- plan-execute-verify
-- orchestrator-worker
-
-## W12：Group / Island Evolution
+## W8：Operator Surface
 
 目标：
 
-- 实现 2026 文献强调的 group-level experience sharing
+- 给 operator 一个能理解 `nanoclaw 正在如何改自己` 的界面
 
-写入范围：
+建议命令：
 
-- `crates/meta/src/archive.rs`
-- `crates/meta/src/lineage.rs`
-- `crates/meta/src/island.rs`
-- `crates/meta/src/group_evolution.rs`
+- `/self-improve status`
+- `/self-improve runs`
+- `/self-improve run <id>`
+- `/self-improve propose`
+- `/self-improve promote <version>`
+- `/self-improve rollback <version>`
+
+建议写入范围：
+
+- `apps/code-agent/src/backend/session.rs`
+- `apps/code-agent/src/backend/session_history.rs`
+- `apps/code-agent/src/frontend/tui/commands.rs`
+- `apps/code-agent/src/frontend/tui/history.rs`
+- `apps/code-agent/src/frontend/tui/mod.rs`
 
 完成标准：
 
-- 支持 archive、多样性候选、跨 lineage 经验迁移
+- operator 可以看到：
+  - 哪些 signal 被采集
+  - 形成了哪些自改进任务
+  - 产出了哪些 artifact version
+  - 为什么 proposal 被拒绝或允许
 
-## 10. 并行实施建议
+## W9：安全推广与回滚
 
-为了避免写冲突，建议按下面分波：
+目标：
+
+- 让 self-improvement 真正可上线，但仍然可控
+
+推广原则：
+
+- 默认不热切换当前活跃 turn
+- 先从新 session / 新 run 生效
+- 先 shadow，再 limited rollout，再 default
+- 任意时刻可 rollback 到上一个稳定 version
+
+建议写入范围：
+
+- `crates/meta/src/promotion.rs`
+- `crates/meta/src/rollback.rs`
+- `crates/config/*`
+- `apps/code-agent/src/backend/*`
+
+完成标准：
+
+- promotion 是版本切换，不是直接覆盖
+- rollback 是正式主路径，不是手工补救
+
+## W10：RuntimePatchArtifact 主路径
+
+目标：
+
+- 最终让 `nanoclaw` 可以在受控条件下修改 `nanoclaw` 的 Rust 代码本体
+
+进入条件：
+
+- `W1-W9` 已稳定
+- replay / regression / security invariant verifier 足够强
+- operator surface 已能审查 proposal
+
+建议写入范围：
+
+- `crates/meta/src/candidate.rs`
+- `crates/meta/src/worktree_runner.rs`
+- `crates/evals/src/verifiers/*`
+- `crates/runtime/*`
+- `apps/code-agent/*`
+
+完成标准：
+
+- 能对 `nanoclaw` 本仓库产出 code patch candidate
+- 能在隔离环境里通过完整 verifier bundle
+- 能版本化推广并回滚
+
+## 7. 并行实施建议
 
 ### Wave A
 
 - 串行：
-  - `W0.1`
+  - `W0`
 
 ### Wave B
 
 - 并行：
   - `W1`
   - `W2`
-  - `W3`
+  - `W4`
 
-注意：
+说明：
 
-- `W1/W2/W3` 不应同时改 `crates/Cargo.toml`
-- `W3` 不应提前改 host UI
+- `W4` 的模型定义可以先和 `W1/W2` 并行推进
+- 但不能先做 promotion 逻辑
 
 ### Wave C
 
 - 并行：
-  - `W4`
+  - `W3`
   - `W5`
   - `W6`
 
-注意：
+说明：
 
-- `W6` 与 `W5` 的集成点放到最后一轮单独收口
+- `W5` 和 `W6` 在最后通过 `W3` 的 replay / regression corpus 收口
 
 ### Wave D
 
 - 串行：
   - `W7`
+  - `W8`
+  - `W9`
 
 ### Wave E
 
-- 视风险推进：
-  - `W8`
-  - `W9`
+- 最后推进：
   - `W10`
-  - `W11`
-  - `W12`
 
-## 11. 风险清单与止损点
+## 8. 风险与止损点
 
-### 风险 1：过早把 workflow search 和 code evolution 混到 MVP
+### 风险 1：把系统做成“通用训练平台”
 
 止损：
 
-- MVP 先收紧在：
-  - baseline compare
-  - coding benchmark
-  - worktree candidate runner
-  - relative promotion gate
-- generator 与 workflow 扩展都不能挤占这条关键路径
+- 每个新增模块都先问一句：
+  - 它是否直接服务 `nanoclaw` 改进 `nanoclaw`？
 
-### 风险 2：把 session store 直接做成 experiment store
+### 风险 2：把前台 runtime 和后台自改进混在一起
 
 止损：
 
-- 共享底层持久化能力
-- 但 experiment 模型单独成对象，不污染 transcript 主线
+- 自改进默认走后台控制器
+- 推广默认不影响当前活跃 turn
 
-### 风险 3：TUI 先行导致 backend contract 反复重写
-
-止损：
-
-- 先完成 `meta` crate 与 backend service，再接 TUI
-
-### 风险 4：evaluator 太弱，导致 promotion 虚高
+### 风险 3：过早进入 runtime code self-edit
 
 止损：
 
-- promotion 默认 reject
-- 没有 regression suite 与 baseline compare，不允许自动 promote
+- 先做 prompt / skill / workflow / hook / verifier 层
+- 等 replay / security invariants 成熟后再进 `RuntimePatchArtifact`
 
-## 12. 建议的首个实现切片
+### 风险 4：只有实验记录，没有真正可复用版本
 
-如果只做第一刀，我建议选下面这个切片：
+止损：
 
-1. `W0.1`
-2. `W1`
-3. `W2`
-4. `W3` 的最小版本：
-   - 只支持 `PromptVariant`
-5. `W4`
-   - baseline evaluation
-   - relative promotion gate
-6. `W5`
-   - 只做 10 个 repo-local coding case
-7. `W6`
-   - 只支持最小 worktree candidate runner
-8. `W7`
-   - 先接 CLI/backend 闭环，TUI 保持最小
+- archive 必须围绕 `artifact version` 建模
+- 不再把 experiment 记录当成最终产物
 
-这样可以最短路径验证四件关键事：
+### 风险 5：verifier 太弱，导致自毁
 
-- experiment archive 是否合理
-- baseline compare 是否真实工作
-- worktree candidate loop 是否安全可控
-- Meta Agent 是否真的在 code task 上改进结果
+止损：
 
-## 13. 简短结论
+- `sandbox / approval / protected path` 必须有 invariant verifier
+- hook evaluator 接入前必须 fail-closed
 
-可执行路线的关键不是把阶段写得更细，而是先把 shared contract 锁住，
-然后按低风险闭环推进。
+## 9. 第一刀应该做什么
 
-对 `nanoclaw`，最优先顺序应是：
+如果现在只做第一刀，我建议严格收缩为：
 
-`workspace seeding`
--> `experiment schema`
--> `evals`
--> `meta core`
--> `baseline compare`
--> `coding benchmark`
--> `worktree runner`
--> `host commands`
--> `end-to-end offline improve run`
+1. `W1` 运行信号采集
+2. `W2` 自改进任务提炼器
+3. `W3` 最小 nanoclaw 自回归语料
+4. `W4` artifact 版本模型
+5. `W5` 最小 isolated self-edit runner
+6. `W6` 第一批 nanoclaw 专用 verifier
 
-只有这条 MVP 线稳定后，才值得继续做 workflow IR、active verifier、
-hybrid nodes 与 group evolution。
+这第一刀的验证目标不是“能不能跑 improve plan”，而是：
 
-## 14. Wave 0 / Wave 1 逐文件 Checklist
+- 能不能从 `nanoclaw` 自己的运行中抽取有效信号
+- 能不能把这些信号变成针对 `nanoclaw` 自己的改进任务
+- 能不能把 `nanoclaw` 的候选版本关进隔离环境评估
+- 能不能可靠阻止坏版本被推广
 
-这一节只覆盖最先开工的切片，目标是把任务进一步压缩到“改哪些文件”。
+## 10. 简短结论
 
-### 14.1 W0.1 逐文件 Checklist
+如果目标真的是：
 
-- `crates/Cargo.toml`
-  - 把 `evals`、`meta` 加入 `members`
-  - 视需要加入 `default-members`
-  - 如果两个 crate 共享依赖，补到 `workspace.dependencies`
-- `crates/evals/Cargo.toml`
-  - 建 package 元数据
-  - 只引入最小依赖：
-    - `async-trait`
-    - `serde`
-    - `serde_json`
-    - `thiserror` 或 `anyhow`
-    - `tokio`
-    - `types`
-    - `store`
-- `crates/evals/src/lib.rs`
-  - 先导出空模块：
-    - `context`
-    - `evaluator`
-    - `registry`
-    - `result`
-- `crates/meta/Cargo.toml`
-  - 建 package 元数据
-  - 只引入最小依赖：
-    - `async-trait`
-    - `serde`
-    - `serde_json`
-    - `tokio`
-    - `types`
-    - `store`
-    - `evals`
-- `crates/meta/src/lib.rs`
-  - 先导出空模块：
-    - `candidate`
-    - `critic`
-    - `experiment`
-    - `promotion`
-    - `rollback`
-- `crates/core/Cargo.toml`
-  - 仅在确定要对外 re-export 时改
-  - 若当前阶段只在 app 内消费，可先不动
+- `nanoclaw` 在运行过程中 self-improving `nanoclaw` 本身
 
-### 14.2 W1 逐文件 Checklist
+那么工程主线就不该再写成：
 
-- `crates/types/src/id.rs`
-  - 新增：
-    - `ExperimentId`
-    - `CandidateId`
-    - `BaselineId`
-- `crates/types/src/event.rs`
-  - 新增 experiment/candidate 结构体
-  - 新增事件 kind
-  - 保持和现有 `SessionEventEnvelope` 风格一致
-- `crates/types/src/lib.rs`
-  - 导出新增 id 与 event 类型
-- `crates/store/src/traits.rs`
-  - 扩展 `SessionStore`
-  - 新增 experiment 查询 / 持久化 API
-  - 新增 experiment summary/result 类型
-- `crates/store/src/file.rs`
-  - 实现 file-backed experiment 存储
-  - 尽量沿用现有 sidecar/index 思路，不复制 transcript 文件设计
-- `crates/store/src/memory.rs`
-  - 同步实现 in-memory 版本，避免 test 环境与 file backend 分叉
-- `crates/store/src/lib.rs`
-  - 导出 experiment 相关模块
-- `crates/store/src/file/index_sidecar.rs`
-  - 如果 experiment 也需要索引，就在这里扩展 sidecar
-  - 若复杂度过高，可先让 experiment 走独立 index 文件
+`archive`
+-> `candidate generator`
+-> `single-run improve`
 
-### 14.3 W2 逐文件 Checklist
+而应当写成：
 
-- `crates/evals/src/context.rs`
-  - 定义 `EvalContext`
-- `crates/evals/src/result.rs`
-  - 定义 `EvalResult`
-  - 定义 `EvalMatrix`
-- `crates/evals/src/evaluator.rs`
-  - 定义 `Evaluator` trait
-- `crates/evals/src/registry.rs`
-  - 定义 evaluator registry 与执行顺序
-- `crates/evals/src/evaluators/command.rs`
-  - 命令退出码 evaluator
-- `crates/evals/src/evaluators/test_suite.rs`
-  - 测试套件 evaluator
-- `crates/evals/src/evaluators/output_schema.rs`
-  - 结构化输出 evaluator
-- `crates/evals/src/evaluators/diff_policy.rs`
-  - diff / protected path evaluator
-- `crates/evals/src/evaluators/safety.rs`
-  - sandbox / network / approval policy evaluator
-- `crates/evals/src/evaluators/cost_latency.rs`
-  - 成本与延迟汇总 evaluator
+`runtime observation`
+-> `signal mining`
+-> `self-regression corpus`
+-> `artifact versioning`
+-> `isolated self-edit`
+-> `nanoclaw-specific verification`
+-> `proposal / promotion / rollback`
 
-### 14.4 W3 逐文件 Checklist
-
-- `crates/meta/src/candidate.rs`
-  - 定义 `PromptVariant` / `SkillVariant` / `PolicyVariant` / `CodePatchVariant`
-- `crates/meta/src/experiment.rs`
-  - 定义 `ExperimentRunner`
-  - 连接 `store` 与 `evals`
-- `crates/meta/src/critic.rs`
-  - 输入失败样本，输出 failure taxonomy
-- `crates/meta/src/promotion.rs`
-  - 定义 promotion gate
-- `crates/meta/src/rollback.rs`
-  - 定义 rollback model
-- `crates/meta/src/lib.rs`
-  - 对外导出最小可用 API
-
-### 14.5 W4 逐文件 Checklist
-
-- `crates/meta/src/benchmark.rs`
-  - 记录 baseline evaluation
-  - 产出 candidate vs baseline delta
-- `crates/meta/src/improve.rs`
-  - 强制 baseline 与 candidate 跑同一评测集
-- `crates/meta/src/promotion.rs`
-  - 新增 relative gate
-  - 新增 minimum score gain over baseline
-- `crates/meta/src/experiment.rs`
-  - 写入 baseline score、candidate score、delta、decision
-- `crates/types/src/experiment.rs`
-  - 扩展 baseline evaluation / compare 结果结构
-- `crates/store/src/traits.rs`
-  - 暴露 baseline compare 相关查询接口
-
-### 14.6 W5 逐文件 Checklist
-
-- `crates/evals/src/benchmarks/mod.rs`
-  - 定义 `BenchmarkManifest` / `BenchmarkSuite`
-- `crates/evals/src/benchmarks/*.rs`
-  - 实现 repo-local coding cases
-- `crates/evals/src/verifiers/*.rs`
-  - 定义 regression / behavior diff verifier
-- `crates/evals/fixtures/meta-agent/*`
-  - 增加 benchmark fixture
-- `crates/test-support/src/meta_agent/*`
-  - 视需要增加 benchmark 测试支撑
-
-### 14.7 W6 逐文件 Checklist
-
-- `crates/meta/src/worktree_runner.rs`
-  - 创建、执行、回收独立 worktree
-- `crates/meta/src/git_gate.rs`
-  - 校验 write set / protected path
-- `crates/meta/src/candidate.rs`
-  - 为 `CodePatchVariant` 增加 patch / artifact schema
-- `apps/code-agent/src/backend/*`
-  - 接 worktree runner 的 host-side orchestration
-
-### 14.8 W7 逐文件 Checklist
-
-- `apps/code-agent/src/backend/session.rs`
-  - 暴露 `/benchmark` 与 `/improve` 的 backend 入口
-- `apps/code-agent/src/backend/session_history.rs`
-  - 暴露 experiment compare 视图
-- `apps/code-agent/src/frontend/tui/commands.rs`
-  - 解析 `/benchmark`、`/improve`、`/experiment`
-- `apps/code-agent/src/frontend/tui/history.rs`
-  - 展示 baseline、candidate、delta、decision
-- `apps/code-agent/src/frontend/tui/mod.rs`
-  - 路由 meta-agent operator flow
-
-## 15. 建议提交切片
-
-为了降低 review 与回滚成本，建议按下面顺序提交：
-
-1. `chore(workspace): seed evals and meta crates`
-   - 只改 workspace manifest 与新 crate 骨架
-2. `feat(types): add meta-agent experiment identifiers and event contracts`
-   - 只改 `types`
-3. `feat(store): persist experiment archive records`
-   - 只改 `store`
-4. `feat(evals): add evaluator core and base evaluators`
-   - 只改 `evals`
-5. `feat(meta): add baseline compare and relative promotion core`
-   - 优先建立 candidate vs baseline 语义
-6. `feat(evals): add repo-local coding benchmark pack`
-   - 先保证 benchmark 稳定
-7. `feat(meta): add isolated worktree candidate runner`
-   - 让 `CodePatchVariant` 真正进入闭环
-8. `feat(code-agent): add offline benchmark/improve operator surface`
-   - 最后改 host app
-9. `feat(meta): derive critic from benchmark failures`
-   - 在闭环稳定后再接自动诊断
-
-这样切的好处是：
-
-- 每个 commit 的职责单一
-- 每个 commit 都有清晰测试边界
-- 若 `meta` 设计调整，不会污染 `types/store/evals` 的基础层
-- code-agent 关键路径会先收敛在 baseline compare、benchmark、worktree runner
+前者会做出一个实验平台。  
+后者才有机会做出一个真正会持续改进自身的 `nanoclaw`。

@@ -73,8 +73,9 @@ Intentionally still documented as not yet implemented:
   - active Codex/OpenCode/nanoclaw tool-surface alignment note and target
     protocol draft
 - `docs/meta-agent-evolution-plan.md`
-  - active 2026 literature-informed plan for a self-improving Meta Agent
-    control plane on top of the current subagent/runtime substrate
+  - active 2026 literature-informed research plan for `nanoclaw`
+    self-hosted self-improvement on top of the current subagent/runtime substrate
 - `docs/meta-agent-execution-plan.md`
-  - executable engineering breakdown for the first offline Meta Agent MVP,
-    including work packages, write sets, validation, and integration waves
+  - active implementation plan for `nanoclaw` self-hosted self-improvement,
+    centered on runtime observation, signal mining, isolated self-edit, and
+    versioned artifact promotion

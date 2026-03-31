@@ -1,4 +1,4 @@
-# Meta Agent 自我改造与自我进化实现计划
+# Nanoclaw 自改进研究计划
 
 Date: 2026-03-31
 
@@ -10,56 +10,74 @@ Execution Companion:
 
 - `docs/meta-agent-execution-plan.md`
 
-## 1. 目标
+## 1. 目标重述
 
-本计划要解决的不是“再做一个多 Agent”，而是为 `nanoclaw` 构造一个
-可持续改进自身行为的 Meta Agent 控制面。
+这份文档要回答的不是：
 
-### 1.1 2026-03-31 纠偏结论
+- 如何做一个更通用的 `self-improving code agent`
 
-需要明确一点：
+而是：
 
-- `self-improving code agent` 不等于“能生成很多 candidate”
-- 也不等于“有 archive + evaluator + promotion gate”
+- 如何让 `nanoclaw` 在运行过程中，持续改进 `nanoclaw` 自身
 
-如果目标是一个真正可持续改进的 code agent，最低成功条件应当是：
+这里必须先纠正两个常见误解：
 
-1. 能固定一个 `baseline`
-2. 能在隔离 worktree / sandbox 中运行代码候选
-3. 能在稳定 benchmark + verifier 上比较 `candidate vs baseline`
-4. 只在确认相对提升且无关键回归时推广
-5. 能把失败自动转成 `critic / failure taxonomy`
-6. 能在预算、回滚、审批边界内重复迭代
+### 1.1 目标不是“通用 code agent 训练平台”
 
-因此，后续设计必须优先围绕这条闭环，而不是优先扩展 generator 的种类。
+你要的不是一个面向任意仓库的通用改进系统。  
+你要的是一个：
 
-当前路线里下列能力仍然有价值，但只能算配套层，不应成为主线：
+- self-hosted
+- runtime-coupled
+- self-referential
+- nanoclaw-specific
 
-- merge-patch candidate generator
-- mutation template expansion
-- richer prompt / policy variant taxonomy
-- 过早引入 workflow IR / island evolution
+的自改进系统。
 
-这里的“自我改造 / 自我进化”按风险从低到高分四层：
+也就是说，优化对象不是抽象 agent，而是：
 
-1. 自优化
-   - 调整 prompt、agent profile、skill 组合、模型路由、工具权限。
-2. 工作流进化
-   - 调整单 Agent / 多 Agent 的拓扑、分工、路由、反思回路、验证回路。
-3. 混合节点进化
-   - 把纯 LLM 节点替换成“LLM + 确定性代码 / verifier / tool node”的混合图。
-4. 代码级自修改
-   - 在隔离工作区内修改 `nanoclaw` 或项目代码，并通过评测后候选升级。
+- `nanoclaw` 的 prompt
+- `nanoclaw` 的 skills
+- `nanoclaw` 的 workflow / routing
+- `nanoclaw` 的 hook / verifier recipe
+- `nanoclaw` 的 runtime code
 
-本计划不包含：
+### 1.2 “运行过程中 self-improving” 不等于在线热改自己
 
-- 在线更新基础模型权重
-- 无约束修改 sandbox / approval / security 默认值
-- 直接在主工作区无审计地自写入和自推广
+工程上正确的理解应当是：
 
-## 2. 一手外部参考
+- `nanoclaw` 在前台继续正常服务用户
+- `nanoclaw` 在后台持续观察自身运行
+- `nanoclaw` 在隔离环境里评估自修改候选
+- `nanoclaw` 通过版本化推广逐步采用改进
 
-### 2.1 工业级项目
+而不是：
+
+- 在当前活跃 turn 内直接修改当前运行时并立刻切换
+
+因此，本计划的核心原则是：
+
+- **前台运行回路**
+- **后台自改进回路**
+
+必须分离。
+
+## 2. 外部一手参考
+
+### 2.1 工业级实现
+
+#### Claude Code
+
+- 官方文档：
+  - <https://code.claude.com/docs/en/sub-agents>
+  - <https://code.claude.com/docs/en/hooks>
+- 关键事实：
+  - sub-agent 具备独立权限、独立上下文和独立工具面
+  - hooks 可以把 verifier、tests、policy gate 接入 runtime 控制流
+  - `WorktreeCreate` 等 hook 说明隔离执行是正式能力，不是外围脚本
+- 设计启发：
+  - `nanoclaw` 的自改进候选必须走隔离执行面
+  - verifier 应进入 runtime 控制面，而不是只写日志
 
 #### OpenAI Codex
 
@@ -68,964 +86,414 @@ Execution Companion:
   - <https://developers.openai.com/codex/agent-approvals-security/>
   - <https://developers.openai.com/codex/hooks/>
 - 关键事实：
-  - subagent 默认只在显式请求时 spawn
-  - 子代理继承父级 sandbox / approval，并支持项目级自定义 agent 配置
-  - 支持批量 fan-out/fan-in
-  - hooks 被视为 agentic loop 的扩展点，但仍受安全边界约束
+  - subagent、sandbox、approval、hooks 都是显式控制面
+  - patch workflow、受控写入和安全边界优先级高于“递归自改”
 - 设计启发：
-  - Meta Agent 必须是显式控制面，不应默认递归自繁殖
-  - 自进化必须继承并收紧安全边界，不能绕过父级策略
-
-#### Anthropic Claude Code
-
-- 官方文档：
-  - <https://docs.anthropic.com/en/docs/claude-code/sub-agents>
-  - <https://docs.anthropic.com/en/docs/claude-code/hooks>
-- 关键事实：
-  - subagent 运行在独立 context window，可配置独立工具、权限、hooks、memory
-  - 支持 `worktree` 隔离、background 运行、persistent memory
-  - async hook 可在不阻塞主流程的情况下触发测试并把结果回灌后续 turn
-- 设计启发：
-  - 自我进化需要把“候选变体执行”和“主会话服务”严格隔离
-  - hooks 很适合接 verifier、测试、policy gate，但必须 fail-closed
-
-#### OpenCode
-
-- 官方文档：
-  - <https://opencode.ai/docs/agents/>
-- 关键事实：
-  - 区分 primary agent 与 subagent
-  - `permission.task` 可以约束哪些 subagent 能被调用
-  - `steps` 上限用于控制成本和防失控
-- 设计启发：
-  - Meta Agent 不只是生成候选，也要管理“谁能调用谁”
-  - 进化系统必须内置预算和步骤上限，而不是只靠 prompt 自觉
-
-#### LangGraph
-
-- 官方文档：
-  - <https://docs.langchain.com/oss/python/langgraph/workflows-agents>
-- 关键事实：
-  - 明确区分 workflow 与 agent
-  - 官方直接给出 orchestrator-worker、parallelization、routing、
-    evaluator-optimizer 等图式
-- 设计启发：
-  - 自进化对象不应只是 prompt 文本，而应是显式 workflow graph
-  - evaluator-optimizer 是 Meta Agent 的最小闭环，不需要先上复杂进化算法
+  - `nanoclaw` 的自改进不能绕开 approval / sandbox / protected path
+  - promotion 必须是审计友好的版本切换
 
 #### OpenHands
 
-- 官方文档 / 官方仓库：
-  - <https://docs.all-hands.dev/>
-  - <https://docs.all-hands.dev/openhands/usage/runtimes/remote>
-  - <https://github.com/All-Hands-AI/OpenHands>
+- 官方文档 / 仓库：
+  - <https://docs.openhands.dev/openhands/usage/developers/evaluation-harness>
+  - <https://docs.openhands.dev/openhands/usage/runtimes/remote>
   - <https://github.com/OpenHands/benchmarks>
 - 关键事实：
-  - 平台层同时提供 agent SDK、CLI、GUI、remote sandbox、benchmark infra
-  - benchmark harness 支持 SWE-Bench、GAIA、Commit0、安全评测等
-  - remote runtime 允许大规模并行评测
+  - benchmark harness、isolated workspace、远程并行评测是同一套工程体系
+  - evaluation harness 以 workflow 和 benchmark 为入口，而不是 ad-hoc 单次实验
 - 设计启发：
-  - 工业级 agent 不是只有“执行器”，还必须自带评测与隔离运行环境
-  - 自进化没有 benchmark harness，本质上就是不可控自改
+  - `nanoclaw` 的自改进必须有正式 verifier / replay substrate
+  - 没有隔离评测环境，自改进就不可控
 
-#### AutoGen AgentOptimizer
+### 2.2 与“自改进自身”直接相关的论文
 
-- 官方文档：
-  - <https://microsoft.github.io/autogen/0.2/docs/notebooks/agentchat_agentoptimizer/>
-  - <https://microsoft.github.io/autogen/0.2/blog/2023/12/23/AgentOptimizer/>
-- 关键事实：
-  - 把 agent 的 function / skill list 视为可训练对象
-  - 根据历史会话与满意度迭代添加、修订、删除函数
-  - 内置 rollback 与 early-stop
-- 设计启发：
-  - 第一阶段应先从“可回滚的能力表 / skill 表优化”开始
-  - 不必一开始就做代码级自修改
+#### A Self-Improving Coding Agent
 
-### 2.2 2026 年最新 ArXiv 文献
+- 论文：<https://arxiv.org/abs/2504.15228>
+- 核心结论：
+  - coding agent 可以通过自主编辑自身并在后续评测中提升表现。
+- 对应实现要求：
+  - `nanoclaw` 的自改进不能永远停留在配置层
+  - 必须允许受控的 self-edit path
 
-以下文献优先级高于 2024-2025 基础论文，因为它们直接回答了
-“2026 年最新的 Meta Agent 应该怎么做”。
+#### Automated Design of Agentic Systems (ADAS)
+
+- 论文：<https://arxiv.org/abs/2408.08435>
+- 核心结论：
+  - 把 agent 表示成代码对象后，meta-level agent 可以自动发现更好的 agent 设计。
+- 对应实现要求：
+  - `nanoclaw` 的 prompt / workflow / routing / hooks / code 都要具备代码化表示
+  - 版本化 artifact 是必要前提
 
 #### AgentFactory
 
-- 论文：<https://arxiv.org/html/2603.18000v1>
+- 论文：<https://arxiv.org/abs/2603.18000>
 - 核心结论：
-  - 比起保存 textual reflection，更有效的是把成功子任务保存成可执行
-    subagent code，并在后续任务里继续修改、复用、部署。
+  - 成功经验更应沉淀为可执行 subagent code，而不是文本反思。
 - 对应实现要求：
-  - `nanoclaw` 不应只存 reflection text，还应存 `executable skill/subagent`
-  - Meta Agent 应优先演化“可复用技能单元”，不是每次重写整条链路
+  - `nanoclaw` 的成功修复不该只写 archive，而应沉淀成 executable artifact
 
 #### Meta Context Engineering
 
-- 论文：<https://arxiv.org/html/2601.21557>
+- 论文：<https://arxiv.org/abs/2601.21557>
 - 核心结论：
-  - context engineering 本身可以成为一个双层优化问题：
-    meta-agent 进化 skill，base-agent 用这些 skill 生成和维护 context artifact。
+  - meta-level agent 优化 skill，base-level agent 生成和维护 context artifact；
+    这是双层优化问题。
 - 对应实现要求：
-  - 计划中必须区分：
-    - skill evolution
-    - context artifact optimization
-  - memory / context 不应被视为单一黑盒
+  - 必须区分：
+    - 自改进控制器
+    - 正常服务 runtime
+  - 不能把“改自己”和“执行用户任务”混成一个黑盒
 
 #### Scaling Agentic Verifier for Competitive Coding
 
 - 论文：<https://arxiv.org/abs/2602.04254>
 - 核心结论：
-  - verifier 不应只是被动评分器；更强做法是主动构造可区分输入与反例，
-    以暴露候选之间的行为差异。
+  - verifier 不只做被动打分，更应主动暴露候选之间的行为差异。
 - 对应实现要求：
-  - `crates/evals` 不应只包含 `pass/fail` evaluator
-  - 应预留 `active verifier`，能主动生成 counterexample / adversarial case
+  - `nanoclaw` 的 verifier 必须能做 replay diff 和 counterexample search
 
 #### Verified Multi-Agent Orchestration
 
 - 论文：<https://arxiv.org/abs/2603.11445>
 - 核心结论：
-  - plan-execute-verify-replan 的 verification-driven loop，
-    可以作为编排层的正式控制信号，而不只是末端 QA。
+  - verify 应是 orchestration level 的控制信号，而不是流程末端 QA。
 - 对应实现要求：
-  - verifier 结果要能反向驱动 replanning
-  - workflow IR 里应把 `Verify` / `Replan` 视为一等节点
+  - verifier 输出必须回流到自改进控制器
+  - verification-driven replan 应作为正式能力设计
 
-#### Group-Evolving Agents
+## 3. 研究归纳后的核心结论
 
-- 论文：<https://arxiv.org/html/2602.04837v1>
-- 核心结论：
-  - 组级经验共享比单 agent 独立 lineage 更有效；
-    多样性只有能被显式复用，才会转化成长期进化收益。
-- 对应实现要求：
-  - 后期 archive 不应只是单链 lineage
-  - 应支持 group / island 级经验复用与跨 lineage patch 迁移
+### 3.1 系统中心必须从“通用任务”改成“nanoclaw 自身运行证据”
 
-#### HyEvo
+这里最重要的数据源，不应是外部 benchmark，而应是：
 
-- 论文：<https://arxiv.org/html/2603.19639v1>
-- 核心结论：
-  - 纯 LLM workflow 不够经济；最新趋势是异构节点、反思生成、分层快筛。
-- 对应实现要求：
-  - 要把 CodeNode / VerifierNode 设计成正式执行节点
-  - 要有 cascaded sandbox evaluation
+- 失败 turn
+- 人工纠正
+- 高成本 / 高延迟 turn
+- 错误工具调用
+- 错误 subagent 路由
+- hook / verifier 拦截结果
+- 真实修复 patch
 
-### 2.3 基础 ArXiv 文献
+因此，本系统中心对象不应优先是泛化 `TaskSuite`，而应优先是：
 
-#### Reflexion
+- `SelfImproveSignal`
+- `SelfImproveTask`
+- `NanoclawRegressionCorpus`
+- `NanoclawArtifactVersion`
 
-- 论文：<https://arxiv.org/abs/2303.11366>
-- 核心结论：
-  - agent 可以不改权重，而通过语言化反思写入 episodic memory，
-    再在后续试次中改进行为。
-- 对应实现要求：
-  - 需要显式的失败反馈抽取
-  - 需要结构化 reflection memory，而不是把“经验”混在普通 transcript 里
+### 3.2 `nanoclaw-self-gym` 仍然需要，但它应从 runtime signal 长出来
 
-#### Voyager
+我之前强调 `TaskGym-first` 并非完全错误，但对你的目标来说，
+它必须内化成：
 
-- 论文：<https://arxiv.org/abs/2305.16291>
-- 核心结论：
-  - 自动 curriculum、可复用 skill library、基于执行反馈与自验证的迭代
-    prompting，能形成长期能力积累。
-- 对应实现要求：
-  - Meta Agent 要维护可检索 skill / procedure 库
-  - 每次改进都要变成可复用产物，而不是一次性临时上下文
+- `nanoclaw-self-gym`
 
-#### ADAS
+也就是：
 
-- 论文：<https://arxiv.org/abs/2408.08435>
-- 核心结论：
-  - agent 可以在代码空间中自动发现更强的 agent 设计；
-    “meta agent 编写更好的 agent”是可行方向。
-- 对应实现要求：
-  - workflow / prompt / tool policy 必须具备代码化表示
-  - 需要 archive、候选 lineage、跨任务迁移评测
+- 来源于 `nanoclaw` 自己的运行历史
+- 面向 `nanoclaw` 自己的 replay / regression / repair
+- 用于验证 `nanoclaw` 自己是否变好
 
-#### AFlow
+### 3.3 verifier 在这里是“防自毁边界”
 
-- 论文：<https://arxiv.org/abs/2410.10762>
-- 核心结论：
-  - 把 workflow 优化表述为代码表示上的搜索问题是有效的；
-    执行反馈与树状经验对搜索很关键。
-- 对应实现要求：
-  - `nanoclaw` 需要 workflow IR，而不只是临时 prompt 编排
-  - 需要 candidate execution log 与搜索经验缓存
+通用 code agent 的 verifier 更多是在判断“是否更强”。  
+`nanoclaw` 自改进的 verifier 还必须负责：
 
-#### OpenHands
+- 防止放宽 sandbox / approval
+- 防止 protected path 被破坏
+- 防止 replay 退化
+- 防止工具行为变坏
+- 防止 hook policy 漂移
 
-- 论文：<https://arxiv.org/abs/2407.16741>
-- 核心结论：
-  - 软件工程 agent 平台需要 sandbox、代码执行、web、multi-agent、
-    benchmark 共同构成闭环。
-- 对应实现要求：
-  - Meta Agent 不能脱离真实运行环境做“纸上优化”
+所以这里的 verifier 不是普通评分器，而是：
 
-#### SWE-Gym
+- quality gate
+- safety gate
+- behavior regression firewall
 
-- 论文：<https://arxiv.org/abs/2412.21139>
-- 核心结论：
-  - 软件工程 agent 的提升依赖真实代码库、真实运行环境、真实单测，
-    以及 verifier。
-- 对应实现要求：
-  - 必须有独立 verifier / evaluator 层
-  - 必须把“解决率 / 回归率 / 成本 / 延迟”作为联合目标
+### 3.4 archive 的真正终点是 `artifact version ledger`
 
-#### SEW
+对 `nanoclaw self-improvement` 来说，真正要积累的不是：
 
-- 论文：<https://arxiv.org/abs/2505.18646>
-- 核心结论：
-  - coding workflow 的 topology 与 prompt 都可以自进化，不必人工手写。
-- 对应实现要求：
-  - workflow 变体与 prompt 变体要统一进入 experiment archive
+- 文本反思
+- 单次 experiment 记录
 
-#### AlphaEvolve
+而是：
 
-- 论文：<https://arxiv.org/abs/2506.13131>
-- 核心结论：
-  - evolutionary coding agent 在多个 evaluator 持续反馈下，可以稳定优化
-    算法与代码，并得到可验证改进。
-- 对应实现要求：
-  - 代码级自演化必须依赖多 evaluator，而不是单一 LLM 自评
+- prompt artifact versions
+- skill artifact versions
+- workflow artifact versions
+- hook/verifier artifact versions
+- runtime patch artifact versions
 
-## 3. 归纳后的核心结论
+archive 应当围绕：
 
-把上面的项目与论文放在一起看，Meta Agent 的工业可行路径非常明确：
+- baseline
+- candidate
+- verifier bundle
+- promotion decision
+- rollback pointer
 
-1. 先把改进对象显式化
-   - prompt、skill、policy、workflow graph、code patch 都要成为一等对象。
-2. 再把反馈闭环结构化
-   - 成败、成本、延迟、安全事件、人工拒绝都要可度量。
-3. 再把改进执行隔离化
-   - 候选变体必须在独立 worktree / sandbox / remote runtime 中运行。
-4. 最后才做自动推广
-   - 没有 verifier、archive、rollback 的自修改，不是进化，是破坏。
+来设计。
 
-截至 2026-03-31，最新文献还把路线进一步收紧为三条新增约束：
+### 3.5 runtime code self-edit 是终点，但不能被永久后置
 
-1. 从 textual memory 升级到 executable skill / subagent accumulation
-   - 来自 AgentFactory、MCE
-2. 从被动 evaluator 升级到主动 verifier
-   - 来自 Scaling Agentic Verifier、VMAO
-3. 从单 agent lineage 升级到组级经验共享
-   - 来自 Group-Evolving Agents、HyEvo
+Prompt / Skill / Workflow 层是低风险起步点。  
+但如果目标真是 `nanoclaw` 改进 `nanoclaw`，那么最终必须进入：
 
-因此，`nanoclaw` 的计划不能停留在：
+- runtime code self-edit
 
-- 只做 reflection memory
-- 只做静态 benchmark 打分
-- 只做单条候选链条
+否则系统始终只是：
 
-而应明确转向：
+- 优化 nanoclaw 的“外层配置”
 
-- executable skills
-- active verifiers
-- archive + island/group evolution
+而不是真正优化：
 
-换句话说，Meta Agent 不是一个“更聪明的 planner”。
-它本质上是一个带实验平台的 agent compiler + evaluator + promoter。
+- `nanoclaw` 本体
 
-对 `nanoclaw` 来说，还必须再补上一句：
+## 4. 对当前仓库的直接含义
 
-- 如果没有 `baseline compare + isolated code runner + verifier-driven iteration`，
-  那么它只是一个 experiment harness，不是 self-improving code agent。
+从当前仓库结构看，已有基础能力并不少：
 
-## 4. 面向 `nanoclaw` 的目标架构
+- 事件与历史：
+  - `crates/runtime/src/runtime/event_log.rs`
+  - `apps/code-agent/src/backend/events.rs`
+  - `apps/code-agent/src/backend/session_history.rs`
+- runtime export：
+  - `crates/memory/src/runtime_exports.rs`
+- 子代理执行：
+  - `crates/runtime/src/subagent_impl.rs`
+  - `crates/runtime/src/agent_session_manager.rs`
+- hook 安全边界：
+  - `crates/runtime/src/hooks/handlers/agent.rs`
+  - 目前为 fail-closed stub
+- 持久化与归档：
+  - `crates/store/*`
+  - `crates/meta/*`
+
+这意味着仓库已经有：
+
+- 观测面
+- 子代理面
+- runtime 边界
+- 持久化面
+
+但还缺：
+
+1. `nanoclaw` 自身 signal mining
+2. `nanoclaw` 自回归语料
+3. `nanoclaw` artifact versioning
+4. 隔离 self-edit runner
+5. `nanoclaw` 专用 verifier bundle
+6. 后台自改进控制器
+
+## 5. 正确的目标架构
 
 ```text
-User-facing Agent Plane
-    │
-    ├── Normal runtime turns
-    └── Task/subagent execution
+Nanoclaw Runtime Plane
+    ├── user-facing turns
+    ├── subagent execution
+    ├── approvals / sandbox / hooks
+    └── transcripts / tool traces / event logs
             │
             ▼
 Observation Plane
-    ├── Session events
-    ├── Agent envelopes
-    ├── Token/cost/latency
-    ├── Artifacts
-    └── Memory exports
+    ├── failure mining
+    ├── correction mining
+    ├── cost / latency anomaly mining
+    ├── hook / verifier denials
+    └── runtime export snapshots
             │
             ▼
-Meta Agent Plane
-    ├── Critic
-    ├── Candidate generator
-    ├── Workflow optimizer
-    ├── Verifier orchestrator
-    └── Archive / lineage manager
+Self-Improvement Plane
+    ├── signal queue
+    ├── task miner
+    ├── self-regression corpus
+    ├── candidate artifact generator
+    ├── isolated self-edit runner
+    └── nanoclaw-specific verifiers
             │
             ▼
 Promotion Plane
-    ├── Safety gate
-    ├── Regression gate
-    ├── Human approval gate
-    └── Rollback / pinning
+    ├── versioned artifact ledger
+    ├── operator review
+    ├── staged rollout
+    └── rollback
 ```
 
-Meta Agent 的最小闭环应为：
+最小正确闭环应是：
 
 ```text
-Observe
-  -> Diagnose
-  -> Generate candidate
-  -> Sandbox run
-  -> Evaluate
-  -> Compare to baseline
-  -> Promote or reject
-  -> Write reflection + lineage
-```
-
-对 code-agent 目标来说，上面这条闭环必须进一步具体化为：
-
-```text
-pin baseline
-  -> run baseline on coding benchmark
-  -> derive failure taxonomy
-  -> generate code/config candidate
+observe nanoclaw runtime
+  -> derive self-improvement signals
+  -> build self-improvement tasks
+  -> pin current nanoclaw artifact version
+  -> produce candidate artifact version
   -> run candidate in isolated worktree
-  -> compare candidate vs baseline
-  -> verify regressions / counterexamples
-  -> promote or reject
-  -> persist lineage and rollback point
+  -> replay nanoclaw regressions and runtime-derived cases
+  -> run safety / behavior / policy verifiers
+  -> promote or reject candidate version
+  -> keep lineage and rollback pointer
 ```
 
-## 5. 当前仓库基础与缺口
+## 6. 需要显式建模的对象
 
-### 5.1 已具备的基础能力
+### 6.1 `SelfImproveSignal`
 
-从当前代码看，`nanoclaw` 已经不是从零开始：
-
-- 多 Agent 基础已经有：
-  - `crates/tools/src/agentic/task.rs`
-  - `crates/runtime/src/subagent_impl.rs`
-  - `crates/runtime/src/agent_session_manager.rs`
-  - `crates/runtime/src/agent_mailbox.rs`
-- 冲突控制已经有：
-  - `crates/runtime/src/write_lease.rs`
-- 事件与产物基础已经有：
-  - `crates/types/src/event.rs`
-  - 已有 `AgentEnvelope`、`AgentArtifact`、`AgentResultEnvelope`
-- 会话持久化与导出已经有：
-  - `crates/store/src/traits.rs`
-  - `crates/memory/src/runtime_exports.rs`
-- hook 与安全边界已经有：
-  - `crates/runtime/src/hooks/*`
-  - approval / sandbox / execution policy 都已有 runtime 边界
-
-这意味着：
-
-- 观测面已经有雏形
-- 子代理协调面已经有雏形
-- memory/export 面已经可复用
-
-### 5.2 关键缺口
-
-但要走到 Meta Agent，还缺几个决定性模块：
-
-#### 缺口 A：没有 evaluator / verifier substrate
-
-现状：
-
-- 仓库里没有独立的 benchmark / verifier / fitness substrate
-- 也没有“baseline vs candidate”统一评测协议
-
-后果：
-
-- agent 只能“执行”，不能“被系统性比较”
-
-#### 缺口 B：没有 experiment archive 与 lineage
-
-现状：
-
-- session event 能记历史
-- 但没有“候选变体、实验配置、评测结果、推广决策”的专门模型
-
-后果：
-
-- 无法做回滚、Pareto 排序、跨任务迁移分析
-
-#### 缺口 C：agent hook 还没有真正落地
-
-现状：
-
-- `crates/runtime/src/hooks/handlers/agent.rs`
-  目前仍是 fail-closed stub
-
-后果：
-
-- Meta Agent 还不能作为正式的 runtime control-plane extension 接入
-
-#### 缺口 D：没有 workflow IR
-
-现状：
-
-- 当前多 Agent 更偏“任务委派协议”
-- 还没有显式的 workflow graph / node / edge / evaluator loop 表达
-
-后果：
-
-- 无法把 AFlow / SEW / HyEvo 这类方法自然映射进来
-
-#### 缺口 E：没有隔离的自修改执行面
-
-现状：
-
-- 当前已有 sandbox 和写租约
-- 但没有专门面向“候选自修改”的 worktree / branch / experiment workspace
-
-后果：
-
-- 代码级自进化很难安全上线
-
-## 6. 建议的分层对象模型
-
-Meta Agent 不要直接优化“整个 runtime”，而应该优化以下五类对象：
-
-### 6.1 `PromptVariant`
-
-- 目标：
-  - 改写 system prompt、developer instructions、review rubric、reflection rubric
-- 风险：
-  - 最低
-- 适合作为：
-  - 第一阶段 MVP
-
-### 6.2 `SkillVariant`
-
-- 目标：
-  - 调整 skill 组合、加载顺序、项目级 skill 内容
-- 风险：
-  - 低
+- runtime 中可被聚合的改进信号
 - 来源：
-  - Voyager、AgentOptimizer
+  - errors
+  - retries
+  - denials
+  - human corrections
+  - cost anomalies
 
-### 6.3 `PolicyVariant`
+### 6.2 `SelfImproveTask`
 
-- 目标：
-  - 优化模型路由、reasoning effort、工具 allow/deny、task permission
-- 风险：
-  - 中
-- 约束：
-  - 不允许自动放宽 sandbox / approval 默认值
+- 由 signal 提炼出的、针对 `nanoclaw` 自身的改进任务
 
-### 6.4 `WorkflowVariant`
+### 6.3 `NanoclawArtifactVersion`
 
-- 目标：
-  - 优化 agent graph：并行、路由、评审回路、evaluator-optimizer 回路
-- 风险：
-  - 中高
-- 来源：
-  - LangGraph、AFlow、SEW
+- 版本化的 prompt / skill / workflow / hook / verifier / runtime code
 
-### 6.5 `CodePatchVariant`
+### 6.4 `NanoclawRegressionCorpus`
 
-- 目标：
-  - 修改 agent runtime、hook、tooling、workflow executor 代码
-- 风险：
-  - 最高
-- 来源：
-  - ADAS、AlphaEvolve、HyEvo
+- 来源于 `nanoclaw` 自身运行历史的 replay / regression / validation cases
+
+### 6.5 `NanoclawVerifierReport`
+
+- 包含：
+  - quality findings
+  - behavior regressions
+  - safety invariant violations
+  - replay diffs
+
+### 6.6 `PromotionProposal`
+
+- 一次正式的“是否让 `nanoclaw` 采用这个版本”的治理对象
 
 ## 7. 实现策略
 
-### 7.1 先做“离线自优化”，后做“在线自进化”
+### 7.1 先做 `self-observation`，再做 `self-edit`
+
+优先顺序应是：
+
+1. 观察自己
+2. 形成自己的回归语料
+3. 形成自己的版本化 artifact
+4. 在隔离环境中试改自己
+5. 最后再推广自己
+
+### 7.2 先做 `proposal`，再做 `automatic promotion`
+
+第一阶段更合理的目标不是自动切换，而是：
+
+- 自动产出高质量 `PromotionProposal`
+
+原因：
+
+- `nanoclaw self-improvement` 的首要风险不是效率，而是自毁
+
+### 7.3 先做低风险资产，再进 runtime code
 
 推荐顺序：
 
-1. 离线 `baseline compare + benchmark + promotion gate`
-2. 隔离 worktree 中的代码级 candidate runner
-3. 自动 critic derivation 与 verifier 驱动迭代
-4. 只有这条 coding loop 稳定后，再扩展 workflow search
-5. 有足够 guardrail 后，再允许有限在线触发
+1. prompt
+2. skill
+3. workflow / routing
+4. hook / verifier recipe
+5. runtime code
 
-不推荐：
+这样可以在不丢掉最终目标的前提下，逐步扩大权限面。
 
-- 直接在 live user session 内对自身主逻辑做在线改写
+## 8. 分阶段路线
 
-### 7.2 先做“evaluator-optimizer”，再做“evolutionary search”
-
-第一批可落地能力不需要复杂演化算法：
-
-- baseline
-- baseline comparator
-- candidate generator
-- evaluator
-- verifier
-- promotion gate
-
-这套最小闭环成熟后，再叠加：
-
-- archive
-- automatic critic derivation
-- diversity search
-- multi-island evolution
-- cross-task transfer
-
-这里需要特别收敛：
-
-- generator 的“花样丰富度”不是第一优先级
-- baseline compare 和 verifier 强度才是第一优先级
-- 如果 candidate 无法在真实 code task 上跑通，再多 generator 也只是纸面改进
-
-### 7.3 先做“配置与 workflow 进化”，再做“代码进化”
-
-原因很简单：
-
-- PromptVariant / SkillVariant / PolicyVariant 可回滚、可比对、低风险
-- WorkflowVariant 次之
-- CodePatchVariant 风险最高，应当最后进入自动化
-
-但针对 `self-improving code agent` 这个目标，需要补一个约束：
-
-- `CodePatchVariant` 虽然风险最高，却不能无限后置
-- 因为只有 code candidate loop 跑通，才能证明系统真的在改进 code agent
-- 所以应改为：
-  - 先用 prompt / policy 变体把 archive、evaluator、gate 跑通
-  - 然后尽快切到 worktree-scoped `CodePatchVariant`
-  - workflow IR、group evolution 继续后置
-
-## 8. 分阶段落地路线
-
-## Phase 0：观测与实验账本
+## Phase 0：Signal 与 Task
 
 目标：
 
-- 把“进化”所需数据面补齐
+- 把 `nanoclaw` 自己的运行问题提炼成正式任务
 
-建议改动：
-
-- 在 `crates/types` 增加实验实体
-  - `ExperimentId`
-  - `CandidateId`
-  - `BaselineId`
-  - `PromotionDecision`
-- 在 `crates/types/src/event.rs` 增加事件
-  - `ExperimentStarted`
-  - `CandidateGenerated`
-  - `CandidateEvaluated`
-  - `CandidatePromoted`
-  - `CandidateRejected`
-- 在 `crates/store` 持久化
-  - candidate config
-  - evaluator results
-  - lineage
-  - rollback pointer
-
-完成标志：
-
-- 任一候选改进都可重放、可比对、可追溯
-
-不做这一步的代价：
-
-- 后续所有“进化”都无法审计
-
-## Phase 1：Verifier / Evaluator Substrate
+## Phase 1：Regression Corpus 与 Verifier
 
 目标：
 
-- 为 Meta Agent 提供独立评分层
+- 形成 `nanoclaw` 自己的 replay / regression / safety 验证体系
 
-建议新增：
-
-- `crates/evals`
-
-核心 trait：
-
-```rust
-pub trait Evaluator {
-    async fn evaluate(&self, candidate: CandidateRef) -> EvalResult;
-}
-```
-
-第一批 evaluator：
-
-- `CommandExitEvaluator`
-  - 跑命令，看退出码
-- `TestSuiteEvaluator`
-  - 跑单测 / 集成测试
-- `OutputSchemaEvaluator`
-  - 检查结构化输出格式
-- `DiffPolicyEvaluator`
-  - 检查是否修改了受限路径
-- `SafetyEvaluator`
-  - 检查网络、权限、敏感文件触达
-- `CostLatencyEvaluator`
-  - 汇总 token / wall-clock / tool count
-
-第二批 verifier：
-
-- `CounterexampleVerifier`
-  - 主动构造输入，放大候选差异
-- `BehaviorDiffVerifier`
-  - 对 baseline 与 candidate 做行为分歧挖掘
-- `ReplanTriggerVerifier`
-  - 在 workflow 执行中触发 verify-replan
-
-第一批 benchmark：
-
-- 仓库内固定任务集
-  - 文档任务
-  - 代码审查任务
-  - 小型 bugfix 任务
-  - 只读研究任务
-- 后续再接：
-  - HumanEval / MBPP 风格任务
-  - SWE-Gym / SWE-Bench 风格任务
-
-完成标志：
-
-- 候选变体可得到统一分数：
-  - quality
-  - safety
-  - cost
-  - latency
-  - regressions
-
-## Phase 2：Baseline Compare 与 Coding Benchmark MVP
+## Phase 2：Artifact Versioning
 
 目标：
 
-- 先证明系统真的能判断“是否优于 baseline”
+- 让所有候选都成为正式 `artifact version`
 
-建议新增：
-
-- `crates/meta`
-  - `benchmark.rs`
-  - `promotion.rs`
-  - `improve.rs`
-- `crates/evals`
-  - `benchmarks/*`
-  - `verifiers/*`
-
-执行流：
-
-1. 固定 `baseline`
-2. 在同一 coding benchmark 上跑 baseline
-3. 对 candidate 跑同一组 evaluator / verifier
-4. 比较 `candidate vs baseline`
-5. 只在相对提升且无关键回归时允许 promotion
-6. 把 delta、回归、失败样本写入 experiment archive
-
-这里的核心不是 generator 丰富度，而是：
-
-- benchmark 稳定
-- compare 协议稳定
-- promotion 语义稳定
-
-完成标志：
-
-- 系统能明确回答“candidate 是否真的优于 baseline”
-- promotion 不再等价于“单独过阈值”
-
-## Phase 3：隔离 Worktree 中的 Code Candidate Runner
+## Phase 3：Isolated Self-Edit
 
 目标：
 
-- 让 `CodePatchVariant` 真正进入闭环，而不是只在配置层试验
+- 让 prompt / skill / workflow / code 候选都能在 worktree 中试运行
 
-建议新增：
-
-- `WorktreeCandidateRunner`
-- `GitGate`
-- `RegressionPack`
-
-运行原则：
-
-- 每个 code candidate 在独立 git worktree 或临时 clone 中执行
-- 默认只允许修改声明过的 write set
-- 所有 patch 必须经过 benchmark + verifier
-- 默认 fail-closed，不污染主工作区
-
-promotion gate 至少检查：
-
-- 全部关键 evaluator 通过
-- 无安全策略回退
-- 无 protected path 违规修改
-- 相对 baseline 无关键回归
-- 成本 / 延迟没有越过上限
-
-完成标志：
-
-- 系统能以 PR-like 方式产出自修改候选，而非直接覆盖主线
-
-## Phase 4：Automatic Critic Derivation 与 Iterative Controller
+## Phase 4：Promotion Proposal 与 Rollback
 
 目标：
 
-- 把 `Evaluate -> Diagnose -> Generate` 连成无需手写 critic 的闭环
+- 让 self-improvement 成为可审查、可回滚、可渐进推广的主路径
 
-建议新增：
-
-- `critic.rs`
-- `controller.rs`
-- `budget.rs`
-
-执行流：
-
-1. 从 benchmark / verifier failure 自动抽取 failure taxonomy
-2. 用 taxonomy 驱动 candidate generation
-3. 多轮运行 improve loop
-4. 在预算、early-stop、best-so-far 规则下收敛
-
-完成标志：
-
-- improve 不再只是一次性 run
-- critic report 不需要手工提供
-
-## Phase 5：Workflow IR 与 Hybrid Nodes
+## Phase 5：Runtime Code Self-Edit
 
 目标：
 
-- 在 code loop 稳定后，再把优化对象从参数升级为结构
+- 最终允许 `nanoclaw` 在受控条件下修改 `nanoclaw` 本体代码
 
-建议新增：
+## 9. 安全与治理原则
 
-- `crates/meta/src/workflow_ir.rs`
-- `crates/meta/src/workflow_exec.rs`
-- `crates/meta/src/workflow_templates.rs`
+### 9.1 不允许自动放宽安全边界
 
-最小 IR 节点类型：
+不允许自动放宽：
 
-- `PromptNode`
-- `ToolNode`
-- `SubagentNode`
-- `RouterNode`
-- `ParallelMapNode`
-- `JoinNode`
-- `EvaluatorNode`
-- `RetryNode`
-- `CodeNode`
+- sandbox
+- approval
+- network
+- protected paths
+- hook safety policy
 
-最小图模式：
+### 9.2 promotion 必须是版本切换，而不是直接覆盖
 
-- orchestrator-worker
-- evaluator-optimizer
-- review-revise
-- route-specialist
-- parallel-audit
+至少要有：
 
-实现策略：
+- baseline version
+- candidate version
+- staged rollout
+- rollback
 
-- 复用 `task` / `agent_spawn` / `agent_wait` 作为执行后端
-- 先手工模板化，再允许 LLM 变异图结构
+### 9.3 当前活跃 turn 默认不接受热切换
 
-完成标志：
+自改进的结果默认影响：
 
-- workflow 可序列化、可执行、可评测、可比较
+- 新 session
+- 新 run
+- shadow path
 
-## Phase 6：Archive、Pareto Front 与 Multi-Island Evolution
+而不是当前活跃 turn。
 
-目标：
+## 10. 简短结论
 
-- 在闭环稳定后，再从单候选优化走向持续种群进化
+真正对齐你需求的研究主线，不应写成：
 
-建议引入：
+- `TaskGym-first generic self-improving code agent`
 
-- archive
-  - 保存优胜候选与多样性候选
-- lineage graph
-  - 记录谁由谁变异而来
-- Pareto ranking
-  - 质量 / 成本 / 延迟 / 安全联合排序
-- island model
-  - 不同任务域维护不同子种群
-- group evolution
-  - 同一轮允许多个 agent / workflow 共享经验与 patch 方向
+而应写成：
 
-为何要最后做：
+- `runtime-coupled nanoclaw self-hosted self-improvement`
 
-- 这一步只有在 baseline compare、worktree runner、critic loop 已经稳定后才有价值
-- 否则只是更快地产生不可控候选
+因此，研究重点不再是：
 
-但这里的实现形态应优先参考 2026 文献，而不是传统单 parent 演化：
+- 如何优化一个通用 code agent
 
-- 支持 group-level reflection
-- 支持跨 lineage patch / skill 迁移
-- 支持以 workflow/tool usage 为主的模型无关改进
+而是：
 
-## 9. 推荐的数据与记忆分层
-
-### 9.1 Transcript
-
-- 保留原始执行过程
-- 不直接承载长期演化知识
-
-### 9.2 Reflection Memory
-
-- 存失败模式、修复策略、已知坑
-- 来源：
-  - Reflexion
-  - Voyager
-
-### 9.3 Skill Library
-
-- 存可复用 prompt、procedure、工具链套路
-
-### 9.4 Experiment Archive
-
-- 存候选、评分、对比、lineage、推广决策
-
-### 9.5 Benchmark Corpus
-
-- 存固定任务集与回归集
-
-这五层不能混在一个抽象里。
-尤其 `reflection memory` 与 `experiment archive` 必须分开：
-
-- 前者服务推理
-- 后者服务进化治理
-
-## 10. 安全与治理原则
-
-### 10.1 默认只允许向内收紧，不允许自动向外放权
-
-允许自动优化：
-
-- prompt
-- skill
-- model routing
-- workflow topology
-- read-only / tighter tool restrictions
-
-不允许自动优化：
-
-- 放宽 sandbox
-- 放宽 approval
-- 放宽网络权限
-- 关闭关键 verifier
-
-### 10.2 所有推广都必须可回滚
-
-至少需要：
-
-- baseline pin
-- candidate pin
-- one-click rollback
-- lineage 记录
-
-### 10.3 先 benchmark 过，再进入 live traffic
-
-推荐顺序：
-
-```text
-offline replay
-  -> benchmark pack
-  -> shadow mode
-  -> limited live traffic
-  -> default promotion
-```
-
-### 10.4 把“拒绝升级”当成正常结果
-
-多数候选应被淘汰。
-如果候选几乎都被接受，说明 evaluator 太弱。
-
-## 11. 建议的仓库落点
-
-### 11.1 新增 crate
-
-- `crates/evals`
-  - evaluator trait、benchmark adapters、result schema
-- `crates/meta`
-  - critic、candidate generator、workflow search、promotion gate
-
-### 11.2 重点改造现有模块
-
-- `crates/types/src/event.rs`
-  - 增加实验事件
-- `crates/store/src/traits.rs`
-  - 增加 experiment archive
-- `crates/memory/src/runtime_exports.rs`
-  - 导出 reflection / experiment summary
-- `crates/runtime/src/hooks/handlers/agent.rs`
-  - 从 fail-closed stub 升级为受控 meta-agent evaluator
-- `crates/runtime/src/subagent_impl.rs`
-  - 作为 workflow runtime backend 继续复用
-- `apps/code-agent/src/backend/*`
-  - 增加 experiment / promotion / benchmark 操作入口
-
-## 12. 建议的里程碑顺序
-
-### Milestone A
-
-- Phase 0 + Phase 1
-- 结果：
-  - 有统一实验账本
-  - 有 evaluator substrate
-
-### Milestone B
-
-- Phase 2 + Phase 3
-- 结果：
-  - 有 baseline compare
-  - 有 coding benchmark
-  - 有隔离 worktree code candidate runner
-
-### Milestone C
-
-- Phase 4
-- 结果：
-  - 有 automatic critic derivation
-  - 有多轮 iterative improve controller
-
-### Milestone D
-
-- Phase 5
-- 结果：
-  - 有 workflow IR 与 hybrid nodes
-
-### Milestone E
-
-- Phase 6
-- 结果：
-  - 有 archive、Pareto front 与 group/island evolution
-
-## 13. 我对 `nanoclaw` 的明确建议
-
-如果目标是“尽快做出真正 self-improving 的 code agent”，推荐路线是：
-
-1. 先停止扩 generator 花样
-2. 先把 `baseline compare + coding benchmark` 做硬
-3. 尽快接 `worktree-scoped CodePatchVariant`
-4. 再把 `critic` 从真实 failure 自动导出
-5. 最后才扩 workflow IR、hybrid nodes、group evolution
-
-理由：
-
-- 当前仓库已经具备 subagent、event、store、memory、write lease 基础
-- 最缺的是 evaluator、baseline compare、隔离执行、verifier-driven loop
-- 这些补齐后，系统才从“实验编排器”变成“自改进 code agent”
-
-## 14. 下一步执行清单
-
-建议按以下顺序开工：
-
-1. 建 `crates/evals`，先把统一 `EvalResult`、benchmark manifest 与基础 verifier 做出来。
-2. 在 `crates/types/src/event.rs` 与 `crates/store` 增加 baseline/candidate/decision 事件与持久化。
-3. 做 `baseline compare + relative promotion gate`：
-   - baseline 与 candidate 必须跑同一评测集
-   - promotion 必须看 delta，不只看绝对分
-4. 做最小 `worktree candidate runner`：
-   - 独立 worktree
-   - 独立 artifact
-   - 失败不污染主工作区
-5. 把 benchmark failure 自动转成 critic / failure taxonomy。
-6. 最后再做 workflow IR、hybrid nodes 与 group evolution。
-
-## 15. 简短结论
-
-工业级 Meta Agent 的正确实现路径，不是“让 agent 自己多想一点”，而是：
-
-- 把 baseline 固定下来
-- 把反馈闭环结构化
-- 把候选执行隔离化
-- 把 promotion 建立在相对改进之上
-
-对 `nanoclaw` 来说，更准确的路线应是：
-
-`subagent substrate`
--> `experiment archive + evaluator substrate`
--> `baseline compare + coding benchmark`
--> `isolated worktree code runner`
--> `automatic critic derivation + iterative improve`
--> `workflow IR + hybrid nodes`
--> `group/island evolution`
-
-这条路线和当前仓库基础是对齐的，也和现有工业项目与最新论文的共识一致。
+- 如何让 `nanoclaw` 观察自己
+- 如何让 `nanoclaw` 从自己的失败里生成改进任务
+- 如何让 `nanoclaw` 在隔离环境里试改自己
+- 如何让 `nanoclaw` 版本化地推广和回滚自己
