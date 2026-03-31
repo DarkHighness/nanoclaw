@@ -28,7 +28,7 @@ pub(crate) fn serialize_tool_details(details: &[ToolDetail]) -> Vec<String> {
 }
 
 impl ToolDetail {
-    fn serialized_lines(&self) -> Vec<String> {
+    pub(crate) fn serialized_lines(&self) -> Vec<String> {
         match self {
             Self::Command(command) | Self::Meta(command) => vec![format!("  └ {command}")],
             Self::TextBlock(lines) => serialize_detail_block(lines),
@@ -46,10 +46,47 @@ impl ToolDetail {
     }
 }
 
-/// Tool timeline entries are still serialized into plain transcript strings, so
-/// the shared formatter owns the tree-prefix protocol used by both live and
-/// historical views. Keeping that protocol in one place prevents the two
-/// surfaces from drifting into different layouts.
+pub(crate) fn preview_tool_details(details: &[ToolDetail], max_lines: usize) -> Vec<ToolDetail> {
+    let mut remaining = max_lines;
+    let mut preview = Vec::new();
+
+    for detail in details {
+        let visible_lines = detail.serialized_lines();
+        if visible_lines.is_empty() {
+            continue;
+        }
+        if remaining == 0 {
+            break;
+        }
+        if visible_lines.len() <= remaining {
+            preview.push(detail.clone());
+            remaining -= visible_lines.len();
+            continue;
+        }
+
+        preview.push(match detail {
+            ToolDetail::Command(command) => ToolDetail::Command(command.clone()),
+            ToolDetail::Meta(text) => ToolDetail::Meta(text.clone()),
+            ToolDetail::TextBlock(lines) => {
+                ToolDetail::TextBlock(lines.iter().take(remaining).cloned().collect())
+            }
+            ToolDetail::NamedBlock { label, kind, lines } => ToolDetail::NamedBlock {
+                label: label.clone(),
+                kind: *kind,
+                lines: lines
+                    .iter()
+                    .take(remaining.saturating_sub(1))
+                    .cloned()
+                    .collect(),
+            },
+        });
+        break;
+    }
+
+    preview
+}
+
+#[cfg(test)]
 pub(crate) fn summarize_tool_entry(
     headline: impl Into<String>,
     detail_lines: Vec<String>,

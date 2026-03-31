@@ -1,6 +1,6 @@
 use super::super::state::{
     TranscriptEntry, TranscriptShellBlockKind, TranscriptShellDetail, TranscriptShellEntry,
-    TuiState, preview_text,
+    TranscriptToolEntry, TranscriptToolStatus, TuiState, preview_text,
 };
 use super::shared::{
     pending_control_focus_label, pending_control_kind_label, pending_control_reason_label,
@@ -11,6 +11,7 @@ use super::transcript::TranscriptEntryKind;
 use super::transcript_markdown::render_shell_code_block;
 use super::transcript_markdown_blocks::code_span;
 use super::transcript_markdown_line::render_transcript_body_line;
+use crate::tool_render::{ToolDetail, ToolDetailBlockKind};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use std::time::Instant;
@@ -24,6 +25,44 @@ pub(super) fn should_collapse_shell_details(
     // Keep the default transcript on a single readable timeline. Operators can
     // opt back into the full tool payload stream via `/details`.
     !show_tool_details && entry.is_shell_summary() && hidden_shell_detail_line_count(entry) > 0
+}
+
+pub(super) fn should_collapse_tool_details(
+    entry: &TranscriptEntry,
+    show_tool_details: bool,
+) -> bool {
+    !show_tool_details && hidden_tool_detail_line_count(entry) > 0
+}
+
+pub(super) fn render_collapsed_tool_entry(
+    entry: &TranscriptEntry,
+    marker: &str,
+    accent: Color,
+    kind: TranscriptEntryKind,
+    animation_frame: Option<u128>,
+) -> Vec<Line<'static>> {
+    let tool = entry
+        .tool_entry()
+        .expect("collapsed tool entries require structured tool payloads");
+    let preview = tool.preview_with_detail_lines(COLLAPSED_SHELL_PREVIEW_DETAIL_LINES);
+    let hidden_line_count = hidden_tool_detail_line_count(entry);
+
+    let mut rendered = render_tool_entry(&preview, marker, kind, animation_frame);
+    if hidden_line_count > 0 {
+        rendered.push(Line::from(vec![
+            transcript_continuation_prefix(kind),
+            Span::styled(
+                format!(
+                    "{} hidden line{} · /details",
+                    hidden_line_count,
+                    if hidden_line_count == 1 { "" } else { "s" }
+                ),
+                Style::default().fg(SUBTLE),
+            ),
+        ]));
+    }
+    prefix_transcript_marker(&mut rendered, marker, accent, kind);
+    rendered
 }
 
 pub(super) fn render_collapsed_shell_summary(
@@ -55,6 +94,14 @@ pub(super) fn render_collapsed_shell_summary(
     }
     prefix_transcript_marker(&mut rendered, marker, accent, kind);
     rendered
+}
+
+fn hidden_tool_detail_line_count(entry: &TranscriptEntry) -> usize {
+    entry
+        .tool_entry()
+        .map(|tool| tool.serialized_lines().len().saturating_sub(1))
+        .unwrap_or_default()
+        .saturating_sub(COLLAPSED_SHELL_PREVIEW_DETAIL_LINES)
 }
 
 fn hidden_shell_detail_line_count(entry: &TranscriptEntry) -> usize {
@@ -152,6 +199,36 @@ pub(super) fn render_shell_summary_entry(
     rendered
 }
 
+pub(super) fn render_tool_entry(
+    entry: &TranscriptToolEntry,
+    marker: &str,
+    kind: TranscriptEntryKind,
+    animation_frame: Option<u128>,
+) -> Vec<Line<'static>> {
+    let mut rendered = Vec::new();
+    if let Some(animated) = render_animated_tool_status_line(entry, marker, kind, animation_frame) {
+        rendered.push(animated);
+    } else if !entry.headline.trim().is_empty() {
+        rendered.push(render_transcript_body_line(
+            &entry.headline,
+            marker,
+            kind,
+            false,
+            true,
+        ));
+    }
+
+    for detail in &entry.detail_lines {
+        rendered.extend(render_tool_detail(detail, kind));
+    }
+
+    if rendered.is_empty() {
+        rendered.push(Line::from(Span::raw("")));
+    }
+
+    rendered
+}
+
 fn render_animated_shell_status_line(
     raw_line: &str,
     marker: &str,
@@ -165,6 +242,24 @@ fn render_animated_shell_status_line(
         spans.push(Span::styled(
             remainder.to_string(),
             transcript_body_style(marker, kind, raw_line),
+        ));
+    }
+    Some(Line::from(spans))
+}
+
+fn render_animated_tool_status_line(
+    entry: &TranscriptToolEntry,
+    marker: &str,
+    kind: TranscriptEntryKind,
+    animation_frame: Option<u128>,
+) -> Option<Line<'static>> {
+    let frame_ms = animation_frame?;
+    let (status, remainder, accent) = tool_status_phrase(entry)?;
+    let mut spans = animated_status_phrase_spans(status, frame_ms, accent);
+    if !remainder.is_empty() {
+        spans.push(Span::styled(
+            remainder,
+            transcript_body_style(marker, kind, &entry.headline),
         ));
     }
     Some(Line::from(spans))
@@ -256,6 +351,25 @@ fn render_shell_detail(
     }
 }
 
+fn render_tool_detail(detail: &ToolDetail, kind: TranscriptEntryKind) -> Vec<Line<'static>> {
+    match detail {
+        ToolDetail::Command(command) => vec![detail_line(
+            false,
+            vec![Span::styled(command.clone(), Style::default().fg(USER))],
+        )],
+        ToolDetail::Meta(text) => vec![detail_line(
+            false,
+            vec![Span::styled(text.clone(), shell_meta_style(text))],
+        )],
+        ToolDetail::TextBlock(lines) => render_shell_text_block(lines, kind),
+        ToolDetail::NamedBlock {
+            label,
+            kind: block_kind,
+            lines,
+        } => render_named_tool_block(label, *block_kind, lines),
+    }
+}
+
 fn render_shell_text_block(lines: &[String], kind: TranscriptEntryKind) -> Vec<Line<'static>> {
     lines
         .iter()
@@ -302,6 +416,14 @@ fn render_named_shell_block(
     }));
 
     rendered
+}
+
+fn render_named_tool_block(
+    label: &str,
+    block_kind: ToolDetailBlockKind,
+    lines: &[String],
+) -> Vec<Line<'static>> {
+    render_named_shell_block(label, block_kind.into(), lines)
 }
 
 fn detail_line(continuation: bool, mut spans: Vec<Span<'static>>) -> Line<'static> {
@@ -754,6 +876,31 @@ pub(super) fn summary_color(line: &str) -> Color {
         WARN
     } else {
         TEXT
+    }
+}
+
+fn tool_status_phrase(entry: &TranscriptToolEntry) -> Option<(&'static str, String, Color)> {
+    match entry.status {
+        TranscriptToolStatus::WaitingApproval => Some((
+            "Awaiting approval",
+            format!(" for {}", entry.tool_name),
+            WARN,
+        )),
+        TranscriptToolStatus::Requested => {
+            Some(("Requested", format!(" {}", entry.tool_name), WARN))
+        }
+        TranscriptToolStatus::Running => Some(("Running", format!(" {}", entry.tool_name), USER)),
+        TranscriptToolStatus::Finished => {
+            Some(("Finished", format!(" {}", entry.tool_name), ASSISTANT))
+        }
+        TranscriptToolStatus::Approved => {
+            Some(("Approved", format!(" {}", entry.tool_name), ASSISTANT))
+        }
+        TranscriptToolStatus::Denied => Some(("Denied", format!(" {}", entry.tool_name), ERROR)),
+        TranscriptToolStatus::Cancelled => {
+            Some(("Cancelled", format!(" {}", entry.tool_name), ERROR))
+        }
+        TranscriptToolStatus::Failed => None,
     }
 }
 

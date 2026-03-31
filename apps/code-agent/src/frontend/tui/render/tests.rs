@@ -28,8 +28,9 @@ use crate::frontend::tui::commands::{
 };
 use crate::frontend::tui::state::{
     HistoryRollbackCandidate, InspectorEntry, MainPaneMode, PlanEntry, StatusLinePickerState,
-    TranscriptEntry, TranscriptShellDetail, TuiState,
+    TranscriptEntry, TranscriptShellDetail, TranscriptToolStatus, TuiState,
 };
+use crate::tool_render::ToolDetail;
 use agent::tools::{UserInputAnswer, UserInputOption, UserInputQuestion};
 use agent::types::MessageId;
 use ratatui::layout::Rect;
@@ -134,7 +135,7 @@ fn transcript_separates_assistant_and_tool_entries_with_breathing_room() {
     };
     state.transcript = vec![
         transcript_entry("• assistant reply"),
-        transcript_entry("• Running bash\n  └ $ cargo test"),
+        running_tool_transcript_entry(),
         transcript_entry("› next prompt"),
     ];
 
@@ -156,9 +157,7 @@ fn transcript_collapses_tool_details_by_default() {
         main_pane: MainPaneMode::Transcript,
         ..TuiState::default()
     };
-    state.transcript = vec![transcript_entry(
-        "• Finished bash\n  └ $ cargo test\n  └ exit 0\n    ok",
-    )];
+    state.transcript = vec![finished_tool_transcript_entry()];
 
     let rendered = build_transcript_lines(&state);
 
@@ -191,9 +190,7 @@ fn transcript_expands_tool_details_when_enabled() {
         show_tool_details: true,
         ..TuiState::default()
     };
-    state.transcript = vec![transcript_entry(
-        "• Finished bash\n  └ $ cargo test\n  └ exit 0\n    ok",
-    )];
+    state.transcript = vec![finished_tool_transcript_entry()];
 
     let rendered = build_transcript_lines(&state);
 
@@ -766,7 +763,7 @@ fn transcript_hides_progress_line_while_tool_cell_is_active() {
         turn_running: true,
         status: "Working".to_string(),
         active_tool_label: Some("bash".to_string()),
-        transcript: vec![transcript_entry("• Running bash\n  └ $ cargo test")],
+        transcript: vec![running_tool_transcript_entry()],
         ..TuiState::default()
     };
 
@@ -796,7 +793,7 @@ fn transcript_merges_pending_controls_into_the_active_tool_timeline_cell() {
         turn_running: true,
         status: "Working".to_string(),
         active_tool_label: Some("bash".to_string()),
-        transcript: vec![transcript_entry("• Running bash\n  └ $ cargo test")],
+        transcript: vec![running_tool_transcript_entry()],
         ..TuiState::default()
     };
     state.pending_controls = vec![
@@ -850,7 +847,7 @@ fn transcript_bridges_pending_picker_into_the_active_tool_timeline() {
         turn_running: true,
         status: "Working".to_string(),
         active_tool_label: Some("bash".to_string()),
-        transcript: vec![transcript_entry("• Running bash\n  └ $ cargo test")],
+        transcript: vec![running_tool_transcript_entry()],
         ..TuiState::default()
     };
     state.pending_controls = vec![
@@ -1205,6 +1202,26 @@ fn line_text_for(line: &ratatui::text::Line<'_>) -> String {
 
 fn transcript_entry(line: &str) -> TranscriptEntry {
     line.into()
+}
+
+fn running_tool_transcript_entry() -> TranscriptEntry {
+    TranscriptEntry::tool(
+        TranscriptToolStatus::Running,
+        "bash",
+        vec![ToolDetail::Command("$ cargo test".to_string())],
+    )
+}
+
+fn finished_tool_transcript_entry() -> TranscriptEntry {
+    TranscriptEntry::tool(
+        TranscriptToolStatus::Finished,
+        "bash",
+        vec![
+            ToolDetail::Command("$ cargo test".to_string()),
+            ToolDetail::Meta("exit 0".to_string()),
+            ToolDetail::TextBlock(vec!["ok".to_string()]),
+        ],
+    )
 }
 
 fn text_lines(text: &ratatui::text::Text<'_>) -> Vec<String> {

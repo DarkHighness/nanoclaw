@@ -1,10 +1,11 @@
-use super::super::state::{TranscriptEntry, TuiState};
+use super::super::state::{TranscriptEntry, TranscriptToolEntry, TranscriptToolStatus, TuiState};
 use super::transcript_markdown::render_markdown_body;
 use super::transcript_shell::{
     animation_frame_ms, live_progress_lines, pending_control_embedded_lines,
     pending_control_picker_bridge_entry, pending_control_picker_embedded_lines,
     pending_control_timeline_entry, prefix_transcript_marker, render_collapsed_shell_summary,
-    render_shell_summary_entry, should_collapse_shell_details,
+    render_collapsed_tool_entry, render_shell_summary_entry, render_tool_entry,
+    should_collapse_shell_details, should_collapse_tool_details,
 };
 pub(super) use super::transcript_shell::{
     line_has_visible_content, line_to_plain_text, transcript_body_style,
@@ -74,7 +75,7 @@ pub(super) fn build_transcript_lines_for_width(
         for (index, entry) in state.transcript.iter().enumerate() {
             let active_tool_entry = state.turn_running
                 && index + 1 == state.transcript.len()
-                && entry_kind_from_cell(entry) == TranscriptEntryKind::ShellSummary;
+                && entry.tool_entry().is_some();
             if index > 0 {
                 lines.push(Line::raw(""));
                 if entry_kind_from_cell(entry) == TranscriptEntryKind::UserPrompt {
@@ -166,15 +167,11 @@ fn format_transcript_cell_with_mode(
 ) -> Vec<Line<'static>> {
     let marker = entry.marker();
     let kind = entry_kind_from_cell(entry);
-    let accent = match kind {
-        TranscriptEntryKind::AssistantMessage => MUTED,
-        TranscriptEntryKind::UserPrompt => USER,
-        TranscriptEntryKind::ShellSummary => super::transcript_shell::summary_color(entry.body()),
-        TranscriptEntryKind::SuccessSummary => ASSISTANT,
-        TranscriptEntryKind::ErrorSummary => ERROR,
-        TranscriptEntryKind::WarningSummary => WARN,
-    };
+    let accent = entry_accent(entry, kind);
 
+    if should_collapse_tool_details(entry, show_tool_details) {
+        return render_collapsed_tool_entry(entry, marker, accent, kind, animation_frame);
+    }
     if should_collapse_shell_details(entry, show_tool_details) {
         return render_collapsed_shell_summary(entry, marker, accent, kind, animation_frame);
     }
@@ -196,19 +193,61 @@ fn render_transcript_body(
         return render_markdown_body(entry.body(), kind);
     }
 
+    if let Some(tool) = entry.tool_entry() {
+        return render_tool_entry(tool, marker, kind, animation_frame);
+    }
+
     let summary = entry
         .shell_summary()
         .expect("non-markdown transcript entries should expose shell summary payloads");
     render_shell_summary_entry(summary, marker, kind, animation_frame)
 }
 
+fn entry_accent(entry: &TranscriptEntry, kind: TranscriptEntryKind) -> ratatui::style::Color {
+    if let Some(tool) = entry.tool_entry() {
+        return match kind {
+            TranscriptEntryKind::ShellSummary => {
+                super::transcript_shell::summary_color(&tool.headline)
+            }
+            TranscriptEntryKind::SuccessSummary => ASSISTANT,
+            TranscriptEntryKind::ErrorSummary => ERROR,
+            TranscriptEntryKind::WarningSummary => WARN,
+            TranscriptEntryKind::AssistantMessage => MUTED,
+            TranscriptEntryKind::UserPrompt => USER,
+        };
+    }
+
+    match kind {
+        TranscriptEntryKind::AssistantMessage => MUTED,
+        TranscriptEntryKind::UserPrompt => USER,
+        TranscriptEntryKind::ShellSummary => super::transcript_shell::summary_color(entry.body()),
+        TranscriptEntryKind::SuccessSummary => ASSISTANT,
+        TranscriptEntryKind::ErrorSummary => ERROR,
+        TranscriptEntryKind::WarningSummary => WARN,
+    }
+}
+
 fn entry_kind_from_cell(entry: &TranscriptEntry) -> TranscriptEntryKind {
     match entry {
         TranscriptEntry::UserPrompt(_) => TranscriptEntryKind::UserPrompt,
         TranscriptEntry::AssistantMessage(_) => TranscriptEntryKind::AssistantMessage,
+        TranscriptEntry::Tool(tool) => entry_kind_from_tool(tool),
         TranscriptEntry::ShellSummary(_) => TranscriptEntryKind::ShellSummary,
         TranscriptEntry::SuccessSummary(_) => TranscriptEntryKind::SuccessSummary,
         TranscriptEntry::ErrorSummary(_) => TranscriptEntryKind::ErrorSummary,
         TranscriptEntry::WarningSummary(_) => TranscriptEntryKind::WarningSummary,
+    }
+}
+
+fn entry_kind_from_tool(tool: &TranscriptToolEntry) -> TranscriptEntryKind {
+    match tool.status {
+        TranscriptToolStatus::Approved => TranscriptEntryKind::SuccessSummary,
+        TranscriptToolStatus::Denied
+        | TranscriptToolStatus::Failed
+        | TranscriptToolStatus::Cancelled => TranscriptEntryKind::ErrorSummary,
+        TranscriptToolStatus::Requested
+        | TranscriptToolStatus::WaitingApproval
+        | TranscriptToolStatus::Running
+        | TranscriptToolStatus::Finished => TranscriptEntryKind::ShellSummary,
     }
 }

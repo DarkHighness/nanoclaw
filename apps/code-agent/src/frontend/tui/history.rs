@@ -1,4 +1,6 @@
-use super::state::{InspectorEntry, TranscriptEntry, TranscriptShellDetail, preview_text};
+use super::state::{
+    InspectorEntry, TranscriptEntry, TranscriptShellDetail, TranscriptToolStatus, preview_text,
+};
 use crate::backend::{
     LiveTaskControlAction, LiveTaskControlOutcome, LiveTaskMessageAction, LiveTaskMessageOutcome,
     LiveTaskSpawnOutcome, LiveTaskSummary, LiveTaskWaitOutcome, LoadedAgentSession, LoadedSession,
@@ -1015,8 +1017,9 @@ fn format_session_event_line(event: &SessionEventEnvelope) -> TranscriptEntry {
                     preview_text(reason, 72)
                 )));
             }
-            TranscriptEntry::shell_summary_tool_details(
-                format!("Awaiting approval for {}", call.tool_name),
+            TranscriptEntry::tool(
+                TranscriptToolStatus::WaitingApproval,
+                call.tool_name.to_string(),
                 detail_lines,
             )
         }
@@ -1024,24 +1027,24 @@ fn format_session_event_line(event: &SessionEventEnvelope) -> TranscriptEntry {
             call,
             approved,
             reason,
-        } => summary_entry(
+        } => TranscriptEntry::tool(
             if *approved {
-                SummaryTone::Success
+                TranscriptToolStatus::Approved
             } else {
-                SummaryTone::Error
+                TranscriptToolStatus::Denied
             },
-            if *approved {
-                format!("Approved {}", call.tool_name)
-            } else {
-                format!("Denied {}", call.tool_name)
-            },
-            [format_reason_detail(reason.as_deref()).unwrap_or_default()],
+            call.tool_name.to_string(),
+            format_reason_detail(reason.as_deref())
+                .into_iter()
+                .map(ToolDetail::Meta)
+                .collect(),
         ),
         SessionEventKind::ToolCallStarted { call } => {
             let preview_lines =
                 tool_arguments_preview_lines(call.tool_name.as_str(), &call.arguments);
-            TranscriptEntry::shell_summary_tool_details(
-                format!("Running {}", call.tool_name),
+            TranscriptEntry::tool(
+                TranscriptToolStatus::Running,
+                call.tool_name.to_string(),
                 tool_argument_details(&preview_lines),
             )
         }
@@ -1054,8 +1057,9 @@ fn format_session_event_line(event: &SessionEventEnvelope) -> TranscriptEntry {
                 &output.text_content(),
                 output.structured_content.as_ref(),
             ));
-            TranscriptEntry::shell_summary_tool_details(
-                format!("Finished {}", call.tool_name),
+            TranscriptEntry::tool(
+                TranscriptToolStatus::Finished,
+                call.tool_name.to_string(),
                 detail_lines,
             )
         }
@@ -1067,8 +1071,9 @@ fn format_session_event_line(event: &SessionEventEnvelope) -> TranscriptEntry {
                 "error {}",
                 preview_text(error, 72)
             )));
-            TranscriptEntry::error_summary_tool_details(
-                format!("{} failed", call.tool_name),
+            TranscriptEntry::tool(
+                TranscriptToolStatus::Failed,
+                call.tool_name.to_string(),
                 detail_lines,
             )
         }

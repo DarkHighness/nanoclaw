@@ -1,5 +1,6 @@
 use super::state::{
-    PlanEntry, SharedUiState, TranscriptEntry, TranscriptShellDetail, preview_text,
+    PlanEntry, SharedUiState, TranscriptEntry, TranscriptShellDetail, TranscriptToolStatus,
+    preview_text,
 };
 use crate::backend::SessionEvent;
 use crate::tool_render::{ToolDetail, tool_argument_details, tool_output_details_from_preview};
@@ -265,8 +266,9 @@ impl SharedRenderObserver {
 }
 
 fn requested_tool_entry(call: &crate::backend::SessionToolCall) -> TranscriptEntry {
-    TranscriptEntry::shell_summary_tool_details(
-        format!("Requested {}", call.tool_name),
+    TranscriptEntry::tool(
+        TranscriptToolStatus::Requested,
+        call.tool_name.clone(),
         tool_argument_detail_lines(call),
     )
 }
@@ -274,7 +276,11 @@ fn requested_tool_entry(call: &crate::backend::SessionToolCall) -> TranscriptEnt
 fn denied_tool_entry(call: &crate::backend::SessionToolCall, reason: &str) -> TranscriptEntry {
     let mut detail_lines = tool_argument_detail_lines(call);
     detail_lines.push(ToolDetail::Meta(preview_text(reason, 72)));
-    TranscriptEntry::error_summary_tool_details(format!("Denied {}", call.tool_name), detail_lines)
+    TranscriptEntry::tool(
+        TranscriptToolStatus::Denied,
+        call.tool_name.clone(),
+        detail_lines,
+    )
 }
 
 fn waiting_tool_entry(
@@ -285,15 +291,17 @@ fn waiting_tool_entry(
     if let Some(reason) = reasons.first() {
         detail_lines.push(ToolDetail::Meta(preview_text(reason, 72)));
     }
-    TranscriptEntry::shell_summary_tool_details(
-        format!("Awaiting approval for {}", call.tool_name),
+    TranscriptEntry::tool(
+        TranscriptToolStatus::WaitingApproval,
+        call.tool_name.clone(),
         detail_lines,
     )
 }
 
 fn running_tool_entry(call: &crate::backend::SessionToolCall) -> TranscriptEntry {
-    TranscriptEntry::shell_summary_tool_details(
-        format!("Running {}", call.tool_name),
+    TranscriptEntry::tool(
+        TranscriptToolStatus::Running,
+        call.tool_name.clone(),
         tool_argument_detail_lines(call),
     )
 }
@@ -309,8 +317,9 @@ fn completed_tool_entry(
         output_preview,
         structured_output_preview,
     ));
-    TranscriptEntry::shell_summary_tool_details(
-        format!("Finished {}", call.tool_name),
+    TranscriptEntry::tool(
+        TranscriptToolStatus::Finished,
+        call.tool_name.clone(),
         detail_lines,
     )
 }
@@ -318,7 +327,11 @@ fn completed_tool_entry(
 fn failed_tool_entry(call: &crate::backend::SessionToolCall, error: &str) -> TranscriptEntry {
     let mut detail_lines = tool_argument_detail_lines(call);
     detail_lines.push(ToolDetail::Meta(preview_text(error, 72)));
-    TranscriptEntry::error_summary_tool_details(format!("{} failed", call.tool_name), detail_lines)
+    TranscriptEntry::tool(
+        TranscriptToolStatus::Failed,
+        call.tool_name.clone(),
+        detail_lines,
+    )
 }
 
 fn cancelled_tool_entry(
@@ -331,8 +344,9 @@ fn cancelled_tool_entry(
             .map(|value| preview_text(value, 72))
             .unwrap_or_else(|| "cancelled".to_string()),
     ));
-    TranscriptEntry::error_summary_tool_details(
-        format!("Cancelled {}", call.tool_name),
+    TranscriptEntry::tool(
+        TranscriptToolStatus::Cancelled,
+        call.tool_name.clone(),
         detail_lines,
     )
 }

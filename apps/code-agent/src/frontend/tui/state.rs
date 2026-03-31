@@ -2,7 +2,9 @@ use crate::backend::{
     PendingControlKind, PendingControlSummary, SessionPermissionMode, StartupDiagnosticsSnapshot,
 };
 use crate::statusline::{StatusLineConfig, StatusLineField, status_line_fields};
-use crate::tool_render::{ToolDetail, ToolDetailBlockKind};
+use crate::tool_render::{
+    ToolDetail, ToolDetailBlockKind, preview_tool_details, serialize_tool_details,
+};
 use agent::types::MessageId;
 use agent::types::TokenLedgerSnapshot;
 use std::path::{Path, PathBuf};
@@ -182,21 +184,6 @@ impl TranscriptShellDetail {
     }
 }
 
-impl From<ToolDetail> for TranscriptShellDetail {
-    fn from(value: ToolDetail) -> Self {
-        match value {
-            ToolDetail::Command(command) => Self::Command(command),
-            ToolDetail::Meta(text) => Self::Meta(text),
-            ToolDetail::TextBlock(lines) => Self::TextBlock(lines),
-            ToolDetail::NamedBlock { label, kind, lines } => Self::NamedBlock {
-                label,
-                kind: kind.into(),
-                lines,
-            },
-        }
-    }
-}
-
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct TranscriptShellEntry {
     pub(crate) headline: String,
@@ -212,19 +199,6 @@ impl TranscriptShellEntry {
             headline: headline.into(),
             detail_lines,
         }
-    }
-
-    pub(crate) fn from_tool_details(
-        headline: impl Into<String>,
-        detail_lines: Vec<ToolDetail>,
-    ) -> Self {
-        Self::new(
-            headline,
-            detail_lines
-                .into_iter()
-                .map(TranscriptShellDetail::from)
-                .collect(),
-        )
     }
 
     fn from_body(body: &str) -> Self {
@@ -386,10 +360,94 @@ fn named_block_kind(label: &str) -> Option<TranscriptShellBlockKind> {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TranscriptToolStatus {
+    Requested,
+    WaitingApproval,
+    Approved,
+    Running,
+    Finished,
+    Denied,
+    Failed,
+    Cancelled,
+}
+
+impl TranscriptToolStatus {
+    fn headline(self, tool_name: &str) -> String {
+        match self {
+            Self::Requested => format!("Requested {tool_name}"),
+            Self::WaitingApproval => format!("Awaiting approval for {tool_name}"),
+            Self::Approved => format!("Approved {tool_name}"),
+            Self::Running => format!("Running {tool_name}"),
+            Self::Finished => format!("Finished {tool_name}"),
+            Self::Denied => format!("Denied {tool_name}"),
+            Self::Failed => format!("{tool_name} failed"),
+            Self::Cancelled => format!("Cancelled {tool_name}"),
+        }
+    }
+
+    fn marker(self) -> &'static str {
+        match self {
+            Self::Approved => "✔",
+            Self::Denied | Self::Failed | Self::Cancelled => "✗",
+            Self::Requested | Self::WaitingApproval | Self::Running | Self::Finished => "•",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct TranscriptToolEntry {
+    pub(crate) status: TranscriptToolStatus,
+    pub(crate) tool_name: String,
+    pub(crate) headline: String,
+    pub(crate) detail_lines: Vec<ToolDetail>,
+}
+
+impl TranscriptToolEntry {
+    pub(crate) fn new(
+        status: TranscriptToolStatus,
+        tool_name: impl Into<String>,
+        detail_lines: Vec<ToolDetail>,
+    ) -> Self {
+        let tool_name = tool_name.into();
+        let headline = status.headline(&tool_name);
+        Self {
+            status,
+            tool_name,
+            headline,
+            detail_lines,
+        }
+    }
+
+    pub(crate) fn marker(&self) -> &'static str {
+        self.status.marker()
+    }
+
+    pub(crate) fn serialized_lines(&self) -> Vec<String> {
+        let mut lines = vec![self.headline.clone()];
+        lines.extend(serialize_tool_details(&self.detail_lines));
+        lines
+    }
+
+    pub(crate) fn serialized_body(&self) -> String {
+        self.serialized_lines().join("\n")
+    }
+
+    pub(crate) fn preview_with_detail_lines(&self, max_lines: usize) -> Self {
+        Self {
+            status: self.status,
+            tool_name: self.tool_name.clone(),
+            headline: self.headline.clone(),
+            detail_lines: preview_tool_details(&self.detail_lines, max_lines),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum TranscriptEntry {
     UserPrompt(String),
     AssistantMessage(String),
+    Tool(TranscriptToolEntry),
     ShellSummary(TranscriptShellEntry),
     SuccessSummary(TranscriptShellEntry),
     ErrorSummary(TranscriptShellEntry),
@@ -397,6 +455,14 @@ pub(crate) enum TranscriptEntry {
 }
 
 impl TranscriptEntry {
+    pub(crate) fn tool(
+        status: TranscriptToolStatus,
+        tool_name: impl Into<String>,
+        detail_lines: Vec<ToolDetail>,
+    ) -> Self {
+        Self::Tool(TranscriptToolEntry::new(status, tool_name, detail_lines))
+    }
+
     pub(crate) fn shell_summary_details(
         headline: impl Into<String>,
         detail_lines: Vec<TranscriptShellDetail>,
@@ -418,33 +484,14 @@ impl TranscriptEntry {
         Self::ErrorSummary(TranscriptShellEntry::new(headline, detail_lines))
     }
 
-    pub(crate) fn shell_summary_tool_details(
-        headline: impl Into<String>,
-        detail_lines: Vec<ToolDetail>,
-    ) -> Self {
-        Self::ShellSummary(TranscriptShellEntry::from_tool_details(
-            headline,
-            detail_lines,
-        ))
-    }
-
-    pub(crate) fn error_summary_tool_details(
-        headline: impl Into<String>,
-        detail_lines: Vec<ToolDetail>,
-    ) -> Self {
-        Self::ErrorSummary(TranscriptShellEntry::from_tool_details(
-            headline,
-            detail_lines,
-        ))
-    }
-
     pub(crate) fn append_text(&mut self, delta: &str) -> bool {
         match self {
             Self::UserPrompt(text) | Self::AssistantMessage(text) => {
                 text.push_str(delta);
                 true
             }
-            Self::ShellSummary(_)
+            Self::Tool(_)
+            | Self::ShellSummary(_)
             | Self::SuccessSummary(_)
             | Self::ErrorSummary(_)
             | Self::WarningSummary(_) => false,
@@ -455,6 +502,7 @@ impl TranscriptEntry {
         match self {
             Self::UserPrompt(text) => format!("› {text}"),
             Self::AssistantMessage(text) => format!("• {text}"),
+            Self::Tool(entry) => format!("{} {}", entry.marker(), entry.serialized_body()),
             Self::ShellSummary(summary) => format!("• {}", summary.serialized_body()),
             Self::SuccessSummary(summary) => format!("✔ {}", summary.serialized_body()),
             Self::ErrorSummary(summary) => format!("✗ {}", summary.serialized_body()),
@@ -466,6 +514,7 @@ impl TranscriptEntry {
         match self {
             Self::UserPrompt(_) => "›",
             Self::AssistantMessage(_) | Self::ShellSummary(_) => "•",
+            Self::Tool(entry) => entry.marker(),
             Self::SuccessSummary(_) => "✔",
             Self::ErrorSummary(_) => "✗",
             Self::WarningSummary(_) => "⚠",
@@ -475,6 +524,7 @@ impl TranscriptEntry {
     pub(crate) fn body(&self) -> &str {
         match self {
             Self::UserPrompt(text) | Self::AssistantMessage(text) => text,
+            Self::Tool(entry) => entry.headline.as_str(),
             Self::ShellSummary(summary)
             | Self::SuccessSummary(summary)
             | Self::ErrorSummary(summary)
@@ -488,12 +538,24 @@ impl TranscriptEntry {
             | Self::SuccessSummary(summary)
             | Self::ErrorSummary(summary)
             | Self::WarningSummary(summary) => Some(summary),
-            Self::UserPrompt(_) | Self::AssistantMessage(_) => None,
+            Self::UserPrompt(_) | Self::AssistantMessage(_) | Self::Tool(_) => None,
         }
     }
 
     pub(crate) fn is_shell_summary(&self) -> bool {
         self.shell_summary().is_some()
+    }
+
+    pub(crate) fn tool_entry(&self) -> Option<&TranscriptToolEntry> {
+        match self {
+            Self::Tool(entry) => Some(entry),
+            Self::UserPrompt(_)
+            | Self::AssistantMessage(_)
+            | Self::ShellSummary(_)
+            | Self::SuccessSummary(_)
+            | Self::ErrorSummary(_)
+            | Self::WarningSummary(_) => None,
+        }
     }
 }
 
