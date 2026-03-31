@@ -553,10 +553,37 @@ pub(crate) fn parse_memory_text(
 }
 
 fn infer_metadata_from_path(path: &str) -> MemoryDocumentMetadata {
+    if path == ".nanoclaw/memory/MEMORY.md" {
+        return MemoryDocumentMetadata {
+            scope: MemoryScope::Semantic,
+            layer: "auto-memory-index".to_string(),
+            tags: vec!["auto-memory".to_string()],
+            ..MemoryDocumentMetadata::default()
+        };
+    }
+
     if path == "MEMORY.md" {
         return MemoryDocumentMetadata {
             scope: MemoryScope::Semantic,
             layer: "curated".to_string(),
+            ..MemoryDocumentMetadata::default()
+        };
+    }
+
+    if path == "AGENTS.md" {
+        return MemoryDocumentMetadata {
+            scope: MemoryScope::Procedural,
+            layer: "project-instructions".to_string(),
+            tags: vec!["instructions".to_string()],
+            ..MemoryDocumentMetadata::default()
+        };
+    }
+
+    if path.ends_with("/AGENTS.md") {
+        return MemoryDocumentMetadata {
+            scope: MemoryScope::Procedural,
+            layer: "path-instructions".to_string(),
+            tags: vec!["instructions".to_string()],
             ..MemoryDocumentMetadata::default()
         };
     }
@@ -983,9 +1010,21 @@ mod tests {
     #[tokio::test]
     async fn classifies_scopes_from_paths_and_frontmatter() {
         let dir = tempdir().unwrap();
+        fs::write(dir.path().join("AGENTS.md"), "# Rules\nstay grounded")
+            .await
+            .unwrap();
         fs::write(dir.path().join("MEMORY.md"), "# Root\nworkspace fact")
             .await
             .unwrap();
+        fs::create_dir_all(dir.path().join(".nanoclaw/memory"))
+            .await
+            .unwrap();
+        fs::write(
+            dir.path().join(".nanoclaw/memory/MEMORY.md"),
+            "# Managed Memory Index\n\nsummary",
+        )
+        .await
+        .unwrap();
         fs::create_dir_all(dir.path().join(".nanoclaw/memory/working/agent-sessions"))
             .await
             .unwrap();
@@ -1016,7 +1055,13 @@ mod tests {
             .map(|doc| (doc.path.as_str(), doc))
             .collect::<std::collections::BTreeMap<_, _>>();
 
+        assert_eq!(by_path["AGENTS.md"].metadata.scope, MemoryScope::Procedural);
+        assert_eq!(by_path["AGENTS.md"].metadata.layer, "project-instructions");
         assert_eq!(by_path["MEMORY.md"].metadata.scope, MemoryScope::Semantic);
+        assert_eq!(
+            by_path[".nanoclaw/memory/MEMORY.md"].metadata.layer,
+            "auto-memory-index"
+        );
         assert_eq!(
             by_path["memory/howto.md"].metadata.scope,
             MemoryScope::Procedural

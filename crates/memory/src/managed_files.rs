@@ -1,3 +1,4 @@
+use crate::auto_index::refresh_auto_memory_index;
 use crate::corpus::{parse_memory_text, stable_hash};
 use crate::state::{
     MEMORY_COORDINATION_CLAIMS_RELATIVE, MEMORY_COORDINATION_HANDOFFS_RELATIVE,
@@ -50,7 +51,7 @@ pub(crate) async fn record_memory(
     // target path before reading so concurrent agents cannot both observe the
     // same old body and overwrite each other's section append.
     let file_lock = managed_memory_file_lock(resolved.absolute_path());
-    let _guard = file_lock.lock().await;
+    let guard = file_lock.lock().await;
     let existing = load_managed_memory_file(workspace_root, &target.relative_path)
         .await
         .ok();
@@ -91,14 +92,17 @@ pub(crate) async fn record_memory(
         &request.content,
     );
 
-    write_memory_file_resolved(
+    let response = write_memory_file_resolved(
         &resolved,
         &target.document_title,
         &body,
         &metadata,
         "recorded",
     )
-    .await
+    .await?;
+    drop(guard);
+    refresh_auto_memory_index(workspace_root).await?;
+    Ok(response)
 }
 
 pub(crate) async fn load_managed_memory_file(
@@ -127,8 +131,11 @@ pub(crate) async fn write_memory_file(
 ) -> Result<MemoryMutationResponse> {
     let resolved = layout.resolve_managed_memory_path(Path::new(relative_path))?;
     let file_lock = managed_memory_file_lock(resolved.absolute_path());
-    let _guard = file_lock.lock().await;
-    write_memory_file_resolved(&resolved, title, body, metadata, action).await
+    let guard = file_lock.lock().await;
+    let response = write_memory_file_resolved(&resolved, title, body, metadata, action).await?;
+    drop(guard);
+    refresh_auto_memory_index(layout.workspace_root()).await?;
+    Ok(response)
 }
 
 async fn write_memory_file_resolved(

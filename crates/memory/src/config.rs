@@ -246,8 +246,11 @@ fn default_context_lines() -> usize {
 
 fn default_include_globs() -> Vec<String> {
     vec![
+        "AGENTS.md".to_string(),
+        "**/AGENTS.md".to_string(),
         "MEMORY.md".to_string(),
         "memory/**/*.md".to_string(),
+        ".nanoclaw/memory/MEMORY.md".to_string(),
         ".nanoclaw/memory/**/*.md".to_string(),
     ]
 }

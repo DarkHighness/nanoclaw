@@ -1,6 +1,7 @@
 use crate::{
     MemoryCorpus, MemoryCorpusConfig, MemorySidecarLifecycle, MemorySidecarStatus,
-    MemoryStateLayout, ResolvedStatePath, Result, load_memory_corpus,
+    MemoryStateLayout, ResolvedStatePath, Result, auto_index::refresh_auto_memory_index,
+    load_memory_corpus,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -157,6 +158,7 @@ async fn materialize_runtime_exports(
     )
     .await?;
     prune_stale_runtime_exports(output_dir.absolute_path(), &keep).await?;
+    refresh_auto_memory_index(layout.workspace_root()).await?;
 
     let stats = stats_from_bundle(&bundle, Some(output_dir.relative_display()));
     layout.write_lifecycle(

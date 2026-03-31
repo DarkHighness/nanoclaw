@@ -5,6 +5,7 @@
 //! operator-curated Markdown files (`MEMORY.md`, `memory/**/*.md`, and explicit
 //! extras) and exposes lookup tools for model turns.
 
+mod auto_index;
 mod backend;
 mod config;
 mod corpus;

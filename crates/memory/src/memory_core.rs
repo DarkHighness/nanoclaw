@@ -159,11 +159,7 @@ impl MemoryBackend for MemoryCoreBackend {
                     return None;
                 }
                 let signals = retrieval_policy::search_signals(&entry.path, &chunk.metadata, &req);
-                let lexical_score = if entry.path == "MEMORY.md" {
-                    (entry.score - 0.15).max(0.0)
-                } else {
-                    entry.score
-                };
+                let lexical_score = summary_memory_lexical_score(&entry.path, entry.score);
                 let retrieval_score = lexical_score * signals.total_multiplier();
                 let mut metadata = BTreeMap::new();
                 metadata.insert("snapshot_id".to_string(), json!(entry.snapshot_id));
@@ -367,6 +363,13 @@ fn render_snippet(text: &str, max_chars: usize) -> String {
         .collect::<String>();
     value.push_str("...");
     value
+}
+
+fn summary_memory_lexical_score(path: &str, score: f64) -> f64 {
+    if matches!(path, "MEMORY.md" | ".nanoclaw/memory/MEMORY.md") {
+        return (score - 0.15).max(0.0);
+    }
+    score
 }
 
 fn compare_hit_score(left: &MemorySearchHit, right: &MemorySearchHit) -> Ordering {
@@ -779,6 +782,52 @@ mod tests {
                 response.hits[0].path,
                 ".nanoclaw/memory/working/agent-sessions/agent_session_1.md"
             );
+        }
+    );
+
+    bounded_async_test!(
+        async fn auto_memory_index_does_not_outrank_specific_topic_file() {
+            let dir = tempdir().unwrap();
+            fs::create_dir_all(dir.path().join(".nanoclaw/memory/semantic"))
+                .await
+                .unwrap();
+            fs::write(
+                dir.path().join(".nanoclaw/memory/MEMORY.md"),
+                "---\nscope: semantic\nlayer: auto-memory-index\nstatus: ready\n---\n# Managed Memory Index\n\n- [Deploy Rule](semantic/deploy-rule.md)\n- deploy canary restart",
+            )
+            .await
+            .unwrap();
+            fs::write(
+                dir.path().join(".nanoclaw/memory/semantic/deploy-rule.md"),
+                "---\nscope: semantic\nlayer: managed-semantic\nstatus: ready\n---\n# Deploy Rule\n\nUse a canary deploy before restart.",
+            )
+            .await
+            .unwrap();
+
+            let backend =
+                MemoryCoreBackend::new(dir.path().to_path_buf(), MemoryCoreConfig::default());
+            let response = backend
+                .search(MemorySearchRequest {
+                    query: "deploy canary restart".to_string(),
+                    limit: Some(2),
+                    path_prefix: Some(".nanoclaw/memory/".to_string()),
+                    scopes: Some(vec![MemoryScope::Semantic]),
+                    tags: None,
+                    session_id: None,
+                    agent_session_id: None,
+                    agent_name: None,
+                    task_id: None,
+                    include_stale: Some(false),
+                })
+                .await
+                .unwrap();
+
+            assert_eq!(response.hits.len(), 2);
+            assert_eq!(
+                response.hits[0].path,
+                ".nanoclaw/memory/semantic/deploy-rule.md"
+            );
+            assert_eq!(response.hits[1].path, ".nanoclaw/memory/MEMORY.md");
         }
     );
 

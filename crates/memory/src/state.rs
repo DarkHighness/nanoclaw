@@ -5,6 +5,7 @@ use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const MEMORY_STATE_ROOT_RELATIVE: &str = ".nanoclaw/memory";
+pub const MEMORY_AUTO_INDEX_RELATIVE: &str = ".nanoclaw/memory/MEMORY.md";
 pub const MEMORY_PROCEDURAL_RELATIVE: &str = ".nanoclaw/memory/procedural";
 pub const MEMORY_SEMANTIC_RELATIVE: &str = ".nanoclaw/memory/semantic";
 pub const MEMORY_EPISODIC_RELATIVE: &str = ".nanoclaw/memory/episodic";
@@ -104,6 +105,11 @@ impl MemoryStateLayout {
         Self {
             workspace_root: workspace_root.as_ref().to_path_buf(),
         }
+    }
+
+    #[must_use]
+    pub fn workspace_root(&self) -> &Path {
+        &self.workspace_root
     }
 
     #[must_use]

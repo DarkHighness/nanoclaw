@@ -66,6 +66,9 @@ Intentionally still documented as not yet implemented:
   - current-state sandbox boundary note
 - `docs/code-agent-delivery-plan.md`
   - active app-convergence and code-agent industrialization plan
+- `docs/memory-core-alignment.md`
+  - active note for Claude-style instruction discovery and managed auto-memory
+    index behavior in `memory-core`
 - `docs/session-model-design.md`
   - canonical `Session` / `AgentSession` model and rename target for the
     repository-wide `Run*` migration
