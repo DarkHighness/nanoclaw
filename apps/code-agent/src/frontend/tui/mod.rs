@@ -1225,7 +1225,10 @@ impl CodeAgentTui {
                         state.status = format!("Operator task failed: {message}");
                         state.show_main_view(
                             "Operator Error",
-                            vec!["## Operator Error".to_string(), message.clone()],
+                            vec![
+                                InspectorEntry::section("Operator Error"),
+                                InspectorEntry::Plain(message.clone()),
+                            ],
                         );
                         state.push_activity(format!(
                             "operator task failed: {}",
@@ -1574,10 +1577,15 @@ impl CodeAgentTui {
                 let tool_names = self.session.startup_snapshot().tool_names;
                 self.ui_state.mutate(move |state| {
                     let lines = if tool_names.is_empty() {
-                        vec!["## Tools".to_string(), "No tools registered.".to_string()]
+                        vec![
+                            InspectorEntry::section("Tools"),
+                            InspectorEntry::Muted("No tools registered.".to_string()),
+                        ]
                     } else {
-                        std::iter::once("## Tools".to_string())
-                            .chain(tool_names.iter().map(|tool| format!("tool: {tool}")))
+                        std::iter::once(InspectorEntry::section("Tools"))
+                            .chain(tool_names.iter().map(|tool| {
+                                InspectorEntry::collection(tool.clone(), None::<String>)
+                            }))
                             .collect()
                     };
                     state.show_main_view("Tool Catalog", lines);
@@ -1591,16 +1599,17 @@ impl CodeAgentTui {
                 self.ui_state.mutate(move |state| {
                     let lines = if skills.is_empty() {
                         vec![
-                            "## Skills".to_string(),
-                            "No skills are available in the configured roots.".to_string(),
+                            InspectorEntry::section("Skills"),
+                            InspectorEntry::Muted(
+                                "No skills are available in the configured roots.".to_string(),
+                            ),
                         ]
                     } else {
-                        std::iter::once("## Skills".to_string())
+                        std::iter::once(InspectorEntry::section("Skills"))
                             .chain(skills.iter().map(|skill| {
-                                format!(
-                                    "{}: {}",
-                                    skill.name,
-                                    state::preview_text(&skill.description, 72)
+                                InspectorEntry::collection(
+                                    skill.name.clone(),
+                                    Some(state::preview_text(&skill.description, 72)),
                                 )
                             }))
                             .collect()
@@ -1625,11 +1634,11 @@ impl CodeAgentTui {
                 self.ui_state.mutate(move |state| {
                     let lines = if servers.is_empty() {
                         vec![
-                            "## MCP".to_string(),
-                            "No MCP servers connected.".to_string(),
+                            InspectorEntry::section("MCP"),
+                            InspectorEntry::Muted("No MCP servers connected.".to_string()),
                         ]
                     } else {
-                        std::iter::once("## MCP".to_string())
+                        std::iter::once(InspectorEntry::section("MCP"))
                             .chain(servers.iter().map(format_mcp_server_summary_line))
                             .collect()
                     };
@@ -1644,11 +1653,11 @@ impl CodeAgentTui {
                 self.ui_state.mutate(move |state| {
                     let lines = if prompts.is_empty() {
                         vec![
-                            "## MCP Prompts".to_string(),
-                            "No MCP prompts available.".to_string(),
+                            InspectorEntry::section("MCP Prompts"),
+                            InspectorEntry::Muted("No MCP prompts available.".to_string()),
                         ]
                     } else {
-                        std::iter::once("## MCP Prompts".to_string())
+                        std::iter::once(InspectorEntry::section("MCP Prompts"))
                             .chain(prompts.iter().map(format_mcp_prompt_summary_line))
                             .collect()
                     };
@@ -1663,11 +1672,11 @@ impl CodeAgentTui {
                 self.ui_state.mutate(move |state| {
                     let lines = if resources.is_empty() {
                         vec![
-                            "## MCP Resources".to_string(),
-                            "No MCP resources available.".to_string(),
+                            InspectorEntry::section("MCP Resources"),
+                            InspectorEntry::Muted("No MCP resources available.".to_string()),
                         ]
                     } else {
-                        std::iter::once("## MCP Resources".to_string())
+                        std::iter::once(InspectorEntry::section("MCP Resources"))
                             .chain(resources.iter().map(format_mcp_resource_summary_line))
                             .collect()
                     };
@@ -1840,12 +1849,18 @@ impl CodeAgentTui {
                 self.ui_state.mutate(move |state| {
                     let lines = if live_tasks.is_empty() {
                         vec![
-                            "## Live Tasks".to_string(),
-                            "no live child tasks attached to the active root agent".to_string(),
+                            InspectorEntry::section("Live Tasks"),
+                            InspectorEntry::Muted(
+                                "no live child tasks attached to the active root agent".to_string(),
+                            ),
                         ]
                     } else {
-                        std::iter::once("## Live Tasks".to_string())
-                            .chain(live_tasks.iter().map(format_live_task_summary_line))
+                        std::iter::once(InspectorEntry::section("Live Tasks"))
+                            .chain(
+                                live_tasks
+                                    .iter()
+                                    .map(|task| InspectorEntry::transcript(format_live_task_summary_line(task))),
+                            )
                             .collect()
                     };
                     state.show_main_view("Live Tasks", lines);
@@ -1998,16 +2013,22 @@ impl CodeAgentTui {
                 self.ui_state.mutate(move |state| {
                     let lines = if agent_sessions.is_empty() {
                         vec![
-                            "## Agent Sessions".to_string(),
-                            "no persisted agent sessions recorded yet".to_string(),
+                            InspectorEntry::section("Agent Sessions"),
+                            InspectorEntry::Muted(
+                                "no persisted agent sessions recorded yet".to_string(),
+                            ),
                         ]
                     } else {
-                        std::iter::once("## Agent Sessions".to_string())
+                        std::iter::once(InspectorEntry::section("Agent Sessions"))
                             .chain(
                                 agent_sessions
                                     .iter()
                                     .take(16)
-                                    .map(format_agent_session_summary_line),
+                                    .map(|summary| {
+                                        InspectorEntry::transcript(format_agent_session_summary_line(
+                                            summary,
+                                        ))
+                                    }),
                             )
                             .collect()
                     };
@@ -2063,12 +2084,14 @@ impl CodeAgentTui {
                 self.ui_state.mutate(move |state| {
                     let lines = if tasks.is_empty() {
                         vec![
-                            "## Tasks".to_string(),
-                            "no persisted tasks recorded yet".to_string(),
+                            InspectorEntry::section("Tasks"),
+                            InspectorEntry::Muted("no persisted tasks recorded yet".to_string()),
                         ]
                     } else {
-                        std::iter::once("## Tasks".to_string())
-                            .chain(tasks.iter().take(16).map(format_task_summary_line))
+                        std::iter::once(InspectorEntry::section("Tasks"))
+                            .chain(tasks.iter().take(16).map(|task| {
+                                InspectorEntry::transcript(format_task_summary_line(task))
+                            }))
                             .collect()
                     };
                     state.show_main_view("Tasks", lines);
@@ -2095,12 +2118,14 @@ impl CodeAgentTui {
                         }
                         let lines = if matches.is_empty() {
                             vec![
-                                "## Session Search".to_string(),
-                                format!("no sessions matched `{query}`"),
+                                InspectorEntry::section("Session Search"),
+                                InspectorEntry::Muted(format!("no sessions matched `{query}`")),
                             ]
                         } else {
-                            std::iter::once("## Session Search".to_string())
-                                .chain(matches.iter().take(12).map(format_session_search_line))
+                            std::iter::once(InspectorEntry::section("Session Search"))
+                                .chain(matches.iter().take(12).map(|session| {
+                                    InspectorEntry::transcript(format_session_search_line(session))
+                                }))
                                 .collect()
                         };
                         state.show_main_view("Session Search", lines);
@@ -2124,12 +2149,16 @@ impl CodeAgentTui {
                         state.session.stored_session_count = stored_session_count;
                         let lines = if sessions.is_empty() {
                             vec![
-                                "## Sessions".to_string(),
-                                "no persisted sessions recorded yet".to_string(),
+                                InspectorEntry::section("Sessions"),
+                                InspectorEntry::Muted(
+                                    "no persisted sessions recorded yet".to_string(),
+                                ),
                             ]
                         } else {
-                            std::iter::once("## Sessions".to_string())
-                                .chain(sessions.iter().take(12).map(format_session_summary_line))
+                            std::iter::once(InspectorEntry::section("Sessions"))
+                                .chain(sessions.iter().take(12).map(|session| {
+                                    InspectorEntry::transcript(format_session_summary_line(session))
+                                }))
                                 .collect()
                         };
                         state.show_main_view("Sessions", lines);
@@ -2698,7 +2727,7 @@ fn build_command_error_view(input: &str, message: &str) -> Vec<InspectorEntry> {
     let palette = command_palette_lines_for(query);
     if !palette.is_empty() {
         lines.push(InspectorEntry::Empty);
-        lines.extend(palette.into_iter().map(InspectorEntry::from));
+        lines.extend(palette);
     }
     lines
 }
@@ -2782,8 +2811,8 @@ mod tests {
         lines
             .iter()
             .map(|line| match line {
+                InspectorEntry::Section(text) => format!("## {text}"),
                 InspectorEntry::Raw(text)
-                | InspectorEntry::Section(text)
                 | InspectorEntry::Plain(text)
                 | InspectorEntry::Muted(text)
                 | InspectorEntry::Command(text) => text.clone(),
@@ -2800,7 +2829,7 @@ mod tests {
 
     #[test]
     fn command_palette_groups_operator_commands() {
-        let lines = command_palette_lines();
+        let lines = inspector_line_texts(&command_palette_lines());
 
         assert!(lines.iter().any(|line| line == "## Session"));
         assert!(lines.iter().any(|line| line == "## Agents"));

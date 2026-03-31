@@ -43,43 +43,84 @@ pub(super) fn build_key_value_text(lines: &[InspectorEntry]) -> Text<'static> {
 pub(super) fn build_command_palette_text(lines: &[InspectorEntry]) -> Text<'static> {
     let mut rendered = Vec::new();
     for entry in lines {
-        let line = inspector_entry_text(entry);
-        if let Some(section) = line.strip_prefix("## ") {
-            if !rendered.is_empty() {
-                rendered.push(Line::raw(""));
+        match entry {
+            InspectorEntry::Section(section) => {
+                if !rendered.is_empty() {
+                    rendered.push(Line::raw(""));
+                }
+                rendered.push(Line::from(Span::styled(
+                    section.clone(),
+                    Style::default().fg(MUTED),
+                )));
             }
-            rendered.push(Line::from(Span::styled(
-                section.to_string(),
-                Style::default().fg(MUTED),
-            )));
-            continue;
-        }
-        if line.starts_with("No ") {
-            rendered.push(Line::from(Span::styled(
-                line.to_string(),
+            InspectorEntry::CollectionItem { primary, secondary } => {
+                rendered.push(command_palette_line(primary, secondary.as_deref()));
+            }
+            InspectorEntry::Command(command) => {
+                rendered.push(command_palette_line(command, None));
+            }
+            InspectorEntry::Muted(line) => rendered.push(Line::from(Span::styled(
+                line.clone(),
                 Style::default().fg(SUBTLE),
-            )));
-            continue;
-        }
-        if let Some((command, summary)) = line.split_once("  ") {
-            rendered.push(Line::from(vec![
-                Span::styled("›", Style::default().fg(USER).add_modifier(Modifier::BOLD)),
-                Span::raw(" "),
-                Span::styled(
-                    command.to_string(),
-                    Style::default().fg(HEADER).add_modifier(Modifier::BOLD),
-                ),
-                Span::styled("  ", Style::default().fg(SUBTLE)),
-                Span::styled(summary.to_string(), Style::default().fg(MUTED)),
-            ]));
-        } else {
-            rendered.push(Line::from(Span::styled(
-                line.to_string(),
+            ))),
+            InspectorEntry::Raw(line) => {
+                if let Some(section) = line.strip_prefix("## ") {
+                    if !rendered.is_empty() {
+                        rendered.push(Line::raw(""));
+                    }
+                    rendered.push(Line::from(Span::styled(
+                        section.to_string(),
+                        Style::default().fg(MUTED),
+                    )));
+                } else if line.starts_with("No ") {
+                    rendered.push(Line::from(Span::styled(
+                        line.to_string(),
+                        Style::default().fg(SUBTLE),
+                    )));
+                } else if let Some((command, summary)) = line.split_once("  ") {
+                    rendered.push(command_palette_line(command, Some(summary)));
+                } else {
+                    rendered.push(Line::from(Span::styled(
+                        line.to_string(),
+                        Style::default().fg(TEXT),
+                    )));
+                }
+            }
+            InspectorEntry::Plain(line) => rendered.push(Line::from(Span::styled(
+                line.clone(),
                 Style::default().fg(TEXT),
-            )));
+            ))),
+            InspectorEntry::Field { key, value } => {
+                rendered.push(command_palette_line(key, Some(value)));
+            }
+            InspectorEntry::Transcript(entry) => {
+                rendered.extend(super::transcript::format_transcript_cell(entry));
+            }
+            InspectorEntry::Empty => rendered.push(Line::raw("")),
         }
     }
     Text::from(rendered)
+}
+
+fn command_palette_line(command: &str, summary: Option<&str>) -> Line<'static> {
+    let mut spans = vec![
+        Span::styled("›", Style::default().fg(USER).add_modifier(Modifier::BOLD)),
+        Span::raw(" "),
+        Span::styled(
+            command.to_string(),
+            Style::default().fg(HEADER).add_modifier(Modifier::BOLD),
+        ),
+    ];
+    if let Some(summary) = summary
+        && !summary.trim().is_empty()
+    {
+        spans.push(Span::styled("  ", Style::default().fg(SUBTLE)));
+        spans.push(Span::styled(
+            summary.to_string(),
+            Style::default().fg(MUTED),
+        ));
+    }
+    Line::from(spans)
 }
 
 fn render_key_value_entry(entry: &InspectorEntry, is_first: bool) -> Vec<Line<'static>> {

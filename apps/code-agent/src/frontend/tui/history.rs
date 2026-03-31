@@ -559,23 +559,34 @@ pub(crate) fn format_live_task_wait_outcome(outcome: &LiveTaskWaitOutcome) -> Ve
     ))]
 }
 
-pub(crate) fn format_startup_diagnostics(snapshot: &StartupDiagnosticsSnapshot) -> Vec<String> {
+pub(crate) fn format_startup_diagnostics(
+    snapshot: &StartupDiagnosticsSnapshot,
+) -> Vec<InspectorEntry> {
     let mut lines = vec![
-        "## Runtime".to_string(),
-        format!("local tools: {}", snapshot.local_tool_count),
-        format!("mcp tools: {}", snapshot.mcp_tool_count),
-        format!(
-            "plugins: {} enabled / {} total",
-            snapshot.enabled_plugin_count, snapshot.total_plugin_count
+        InspectorEntry::section("Runtime"),
+        InspectorEntry::field("local tools", snapshot.local_tool_count.to_string()),
+        InspectorEntry::field("mcp tools", snapshot.mcp_tool_count.to_string()),
+        InspectorEntry::field(
+            "plugins",
+            format!(
+                "{} enabled / {} total",
+                snapshot.enabled_plugin_count, snapshot.total_plugin_count
+            ),
         ),
-        format!("mcp servers: {}", snapshot.mcp_servers.len()),
+        InspectorEntry::field("mcp servers", snapshot.mcp_servers.len().to_string()),
     ];
     if !snapshot.plugin_details.is_empty() {
-        lines.push("## Plugins".to_string());
-        lines.extend(snapshot.plugin_details.iter().cloned());
+        lines.push(InspectorEntry::section("Plugins"));
+        lines.extend(
+            snapshot
+                .plugin_details
+                .iter()
+                .cloned()
+                .map(InspectorEntry::Plain),
+        );
     }
     if !snapshot.mcp_servers.is_empty() {
-        lines.push("## MCP Servers".to_string());
+        lines.push(InspectorEntry::section("MCP Servers"));
         lines.extend(
             snapshot
                 .mcp_servers
@@ -584,64 +595,61 @@ pub(crate) fn format_startup_diagnostics(snapshot: &StartupDiagnosticsSnapshot) 
         );
     }
     if !snapshot.warnings.is_empty() {
-        lines.push("## Warnings".to_string());
+        lines.push(InspectorEntry::section("Warnings"));
         lines.extend(
             snapshot
                 .warnings
                 .iter()
-                .map(|warning| format!("warning: {warning}")),
+                .map(|warning| InspectorEntry::Muted(format!("warning: {warning}"))),
         );
     }
     if !snapshot.diagnostics.is_empty() {
-        lines.push("## Diagnostics".to_string());
+        lines.push(InspectorEntry::section("Diagnostics"));
         lines.extend(
             snapshot
                 .diagnostics
                 .iter()
-                .map(|diagnostic| format!("diagnostic: {diagnostic}")),
+                .map(|diagnostic| InspectorEntry::Plain(format!("diagnostic: {diagnostic}"))),
         );
     }
     lines
 }
 
-pub(crate) fn format_mcp_server_summary_line(summary: &McpServerSummary) -> String {
-    format!(
-        "{}  tools={} prompts={} resources={}",
-        summary.server_name, summary.tool_count, summary.prompt_count, summary.resource_count
+pub(crate) fn format_mcp_server_summary_line(summary: &McpServerSummary) -> InspectorEntry {
+    InspectorEntry::collection(
+        summary.server_name.clone(),
+        Some(format!(
+            "tools={} prompts={} resources={}",
+            summary.tool_count, summary.prompt_count, summary.resource_count
+        )),
     )
 }
 
-pub(crate) fn format_mcp_prompt_summary_line(summary: &McpPromptSummary) -> String {
+pub(crate) fn format_mcp_prompt_summary_line(summary: &McpPromptSummary) -> InspectorEntry {
     let suffix = if summary.argument_names.is_empty() {
         String::new()
     } else {
         format!(" ({})", summary.argument_names.join(", "))
     };
-    if summary.description.is_empty() {
-        format!("{}:{}{}", summary.server_name, summary.prompt_name, suffix)
-    } else {
-        format!(
-            "{}:{}{} - {}",
-            summary.server_name, summary.prompt_name, suffix, summary.description
-        )
-    }
+    InspectorEntry::collection(
+        format!("{}:{}{}", summary.server_name, summary.prompt_name, suffix),
+        (!summary.description.is_empty()).then_some(summary.description.clone()),
+    )
 }
 
-pub(crate) fn format_mcp_resource_summary_line(summary: &McpResourceSummary) -> String {
-    format!(
-        "{}:{}{}{}",
-        summary.server_name,
-        summary.uri,
-        summary
-            .mime_type
-            .as_deref()
-            .map(|mime| format!(" [{mime}]"))
-            .unwrap_or_default(),
-        if summary.description.is_empty() {
-            String::new()
-        } else {
-            format!(" - {}", summary.description)
-        }
+pub(crate) fn format_mcp_resource_summary_line(summary: &McpResourceSummary) -> InspectorEntry {
+    InspectorEntry::collection(
+        format!(
+            "{}:{}{}",
+            summary.server_name,
+            summary.uri,
+            summary
+                .mime_type
+                .as_deref()
+                .map(|mime| format!(" [{mime}]"))
+                .unwrap_or_default(),
+        ),
+        (!summary.description.is_empty()).then_some(summary.description.clone()),
     )
 }
 

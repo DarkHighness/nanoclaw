@@ -1,3 +1,4 @@
+use super::state::InspectorEntry;
 use crate::backend::SessionPermissionMode;
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 
@@ -541,11 +542,11 @@ pub(crate) fn parse_slash_command(input: &str) -> SlashCommand {
     }
 }
 
-pub(crate) fn command_palette_lines() -> Vec<String> {
+pub(crate) fn command_palette_lines() -> Vec<InspectorEntry> {
     command_palette_lines_for(None)
 }
 
-pub(crate) fn command_palette_lines_for(query: Option<&str>) -> Vec<String> {
+pub(crate) fn command_palette_lines_for(query: Option<&str>) -> Vec<InspectorEntry> {
     let trimmed = query
         .map(str::trim)
         .filter(|query| !query.is_empty())
@@ -556,8 +557,8 @@ pub(crate) fn command_palette_lines_for(query: Option<&str>) -> Vec<String> {
         .unwrap_or_else(|| SLASH_COMMAND_SPECS.to_vec());
     if specs.is_empty() {
         return vec![
-            "## Command Palette".to_string(),
-            "No commands match this query.".to_string(),
+            InspectorEntry::section("Command Palette"),
+            InspectorEntry::Muted("No commands match this query.".to_string()),
         ];
     }
     let mut lines = Vec::new();
@@ -565,7 +566,7 @@ pub(crate) fn command_palette_lines_for(query: Option<&str>) -> Vec<String> {
     for spec in specs {
         if current_section != Some(spec.section) {
             current_section = Some(spec.section);
-            lines.push(format!("## {}", spec.section));
+            lines.push(InspectorEntry::section(spec.section));
         }
         let alias_suffix = if spec.aliases().is_empty() {
             String::new()
@@ -579,7 +580,10 @@ pub(crate) fn command_palette_lines_for(query: Option<&str>) -> Vec<String> {
                     .join(" ")
             )
         };
-        lines.push(format!("/{}  {}{}", spec.usage, spec.summary, alias_suffix));
+        lines.push(InspectorEntry::collection(
+            format!("/{}", spec.usage),
+            Some(format!("{}{}", spec.summary, alias_suffix)),
+        ));
     }
     lines
 }
@@ -884,6 +888,7 @@ mod tests {
         command_palette_lines_for, cycle_slash_command, move_slash_command_selection,
         parse_slash_command, resolve_slash_enter_action, slash_command_hint,
     };
+    use crate::frontend::tui::state::InspectorEntry;
 
     #[test]
     fn parses_session_query_with_spaces() {
@@ -1095,7 +1100,7 @@ mod tests {
 
     #[test]
     fn command_palette_includes_help_and_clear_alias() {
-        let lines = command_palette_lines();
+        let lines = inspector_line_texts(&command_palette_lines());
 
         assert!(lines.iter().any(|line| line == "## Session"));
         assert!(
@@ -1128,7 +1133,7 @@ mod tests {
 
     #[test]
     fn command_palette_can_filter_by_query() {
-        let lines = command_palette_lines_for(Some("agent"));
+        let lines = inspector_line_texts(&command_palette_lines_for(Some("agent")));
 
         assert!(lines.iter().any(|line| line == "## Agents"));
         assert!(
@@ -1137,6 +1142,32 @@ mod tests {
                 .any(|line| line.contains("/agent_sessions [session-ref]"))
         );
         assert!(!lines.iter().any(|line| line.contains("/export_transcript")));
+    }
+
+    fn inspector_line_texts(lines: &[InspectorEntry]) -> Vec<String> {
+        lines
+            .iter()
+            .map(|line| match line {
+                InspectorEntry::Raw(text)
+                | InspectorEntry::Section(text)
+                | InspectorEntry::Plain(text)
+                | InspectorEntry::Muted(text)
+                | InspectorEntry::Command(text) => {
+                    if matches!(line, InspectorEntry::Section(_)) {
+                        format!("## {text}")
+                    } else {
+                        text.clone()
+                    }
+                }
+                InspectorEntry::Field { key, value } => format!("{key}: {value}"),
+                InspectorEntry::Transcript(entry) => entry.serialized(),
+                InspectorEntry::CollectionItem { primary, secondary } => secondary
+                    .as_ref()
+                    .map(|secondary| format!("{primary}  {secondary}"))
+                    .unwrap_or_else(|| primary.clone()),
+                InspectorEntry::Empty => String::new(),
+            })
+            .collect()
     }
 
     #[test]
