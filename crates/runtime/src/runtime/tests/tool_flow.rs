@@ -5,7 +5,10 @@ use async_trait::async_trait;
 use futures::{StreamExt, stream, stream::BoxStream};
 use std::sync::{Arc, Mutex};
 use store::{InMemorySessionStore, SessionStore};
-use tools::{ApplyPatchTool, PatchTool, ReadTool, ToolExecutionContext, ToolRegistry};
+use tools::{
+    ApplyPatchTool, BashTool, ExecCommandTool, PatchTool, ReadTool, ToolExecutionContext,
+    ToolRegistry, WriteStdinTool,
+};
 use types::{
     DynamicToolSpec, ModelEvent, ModelRequest, SessionEventKind, ToolCall, ToolCallId,
     ToolLifecycleEventEnvelope, ToolLifecycleEventKind, ToolOrigin, ToolSource,
@@ -148,6 +151,36 @@ async fn runtime_filters_patch_tools_by_provider_surface() {
         .map(|spec| spec.name.to_string())
         .collect::<Vec<_>>();
     assert_eq!(request_tool_names, vec!["apply_patch"]);
+}
+
+#[tokio::test]
+async fn runtime_hides_compat_bash_when_exec_surfaces_are_present() {
+    let store = Arc::new(InMemorySessionStore::new());
+    let backend = Arc::new(ProviderRecordingBackend::new("openai"));
+    let mut registry = ToolRegistry::new();
+    registry.register(BashTool::new());
+    registry.register(ExecCommandTool::new());
+    registry.register(WriteStdinTool::new());
+    let mut runtime: AgentRuntime = AgentRuntimeBuilder::new(backend.clone(), store)
+        .hook_runner(Arc::new(HookRunner::default()))
+        .tool_registry(registry)
+        .build();
+
+    let tool_names = runtime
+        .tool_specs()
+        .into_iter()
+        .map(|spec| spec.name.to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(tool_names, vec!["exec_command", "write_stdin"]);
+
+    runtime.run_user_prompt("noop").await.unwrap();
+    let requests = backend.requests();
+    let request_tool_names = requests[0]
+        .tools
+        .iter()
+        .map(|spec| spec.name.to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(request_tool_names, vec!["exec_command", "write_stdin"]);
 }
 
 #[tokio::test]

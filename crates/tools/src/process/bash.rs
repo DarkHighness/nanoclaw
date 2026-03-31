@@ -25,7 +25,8 @@ use tokio::task::JoinHandle;
 use tokio::time::{sleep, timeout};
 use tracing::{debug, warn};
 use types::{
-    MessagePart, ToolCallId, ToolContinuation, ToolOutputMode, ToolResult, ToolSpec, new_opaque_id,
+    MessagePart, ToolAvailability, ToolCallId, ToolContinuation, ToolOutputMode, ToolResult,
+    ToolSpec, new_opaque_id,
 };
 
 use self::session_registry::{get_session, insert_session};
@@ -436,6 +437,13 @@ impl Tool for BashTool {
         .with_output_schema(
             serde_json::to_value(schema_for!(BashToolOutput)).expect("bash output schema"),
         )
+        // Keep `bash` registered so older prompts, persisted sessions, and
+        // operator workflows can still continue, but prefer the dedicated
+        // `exec_command` / `write_stdin` surface for new model turns.
+        .with_availability(ToolAvailability {
+            hidden_from_model: true,
+            ..ToolAvailability::default()
+        })
     }
 
     async fn execute(
