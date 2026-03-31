@@ -1825,7 +1825,7 @@ mod tests {
         ));
         assert_eq!(
             launch.initial_input.text_content(),
-            "latest failure screenshot"
+            "[image:image/png]\nlatest failure screenshot"
         );
     }
 
@@ -1857,7 +1857,10 @@ mod tests {
             launch.initial_input.parts.first(),
             Some(MessagePart::ImageUrl { url, .. }) if url == "https://example.com/failure.png"
         ));
-        assert_eq!(launch.initial_input.text_content(), "latest CI screenshot");
+        assert_eq!(
+            launch.initial_input.text_content(),
+            "[image_url:https://example.com/failure.png]\nlatest CI screenshot"
+        );
     }
 
     #[tokio::test]
@@ -1899,7 +1902,7 @@ mod tests {
         ));
         assert_eq!(
             launch.initial_input.text_content(),
-            "Summarize the findings"
+            "[file:report.pdf application/pdf report.pdf]\nSummarize the findings"
         );
     }
 
@@ -1940,7 +1943,7 @@ mod tests {
         ));
         assert_eq!(
             launch.initial_input.text_content(),
-            "Summarize the findings"
+            "[file:monthly.pdf application/pdf https://example.com/reports/monthly.pdf]\nSummarize the findings"
         );
     }
 

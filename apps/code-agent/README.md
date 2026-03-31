@@ -16,6 +16,7 @@ It intentionally keeps the host layer thin:
   - `local_file` now means a workspace file path, while `file` accepts either a workspace path or an `http/https` URL; both attach first-class file parts
   - OpenAI forwards file parts as `input_file`, while Anthropic upgrades PDFs to native `document` blocks and keeps other file types on a readable fallback path
   - `mention`, `skill`, and generic `item` inputs now travel as typed reference parts instead of being flattened into ad hoc resource metadata or JSON
+  - operator-visible transcript/search summaries now keep image and file placeholders in `Message::text_content()` instead of dropping attachment-only turns
 - append-only runtime loop from `runtime`
 - runtime steering and queued command support
 - loop detection as the primary guard against tool-call churn, without a fixed global iteration cap

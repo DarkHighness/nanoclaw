@@ -215,7 +215,9 @@ through `input_file`, while Anthropic promotes PDF attachments to native
 `document` blocks and keeps other file types on the existing readable fallback
 path. `mention`, `skill`, and generic `item` payloads now travel through a
 dedicated typed reference part instead of being hidden inside generic
-`Resource.metadata` or `Json` wrappers.
+`Resource.metadata` or `Json` wrappers. Operator-visible summaries now keep
+attachment placeholders in `Message::text_content()` as well, so rollback,
+search, and preview flows do not silently drop attachment-only turns.
 - state:
   `update_plan`, `request_user_input`, `request_permissions`
 - discovery:

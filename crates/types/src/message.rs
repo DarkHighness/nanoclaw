@@ -95,6 +95,33 @@ impl MessagePart {
 }
 
 #[must_use]
+pub fn file_display_text(
+    file_name: Option<&str>,
+    mime_type: Option<&str>,
+    uri: Option<&str>,
+) -> String {
+    format!(
+        "[file:{}{}{}]",
+        file_name.unwrap_or("unnamed"),
+        mime_type
+            .map(|value| format!(" {value}"))
+            .unwrap_or_default(),
+        uri.map(|value| format!(" {value}")).unwrap_or_default(),
+    )
+}
+
+#[must_use]
+pub fn image_url_display_text(url: &str, mime_type: Option<&str>) -> String {
+    format!(
+        "[image_url:{}{}]",
+        url,
+        mime_type
+            .map(|value| format!(" {value}"))
+            .unwrap_or_default(),
+    )
+}
+
+#[must_use]
 pub fn reference_display_text(
     kind: &str,
     name: Option<&str>,
@@ -111,6 +138,47 @@ pub fn reference_display_text(
             let kind = kind.trim();
             (!kind.is_empty()).then(|| format!("[{kind}]"))
         }
+    }
+}
+
+#[must_use]
+pub fn message_part_display_text(part: &MessagePart) -> Option<String> {
+    match part {
+        MessagePart::Text { text } => Some(text.clone()),
+        MessagePart::Reasoning { reasoning } => {
+            let text = reasoning.display_text();
+            (!text.is_empty()).then_some(text)
+        }
+        MessagePart::Image { mime_type, .. } => Some(format!("[image:{mime_type}]")),
+        MessagePart::ImageUrl { url, mime_type } => {
+            Some(image_url_display_text(url, mime_type.as_deref()))
+        }
+        MessagePart::File {
+            file_name,
+            mime_type,
+            uri,
+            ..
+        } => Some(file_display_text(
+            file_name.as_deref(),
+            mime_type.as_deref(),
+            uri.as_deref(),
+        )),
+        MessagePart::Resource {
+            text: Some(text), ..
+        } => Some(text.clone()),
+        MessagePart::Resource {
+            text: None, uri, ..
+        } => Some(uri.clone()),
+        MessagePart::Reference {
+            kind,
+            name,
+            uri,
+            text,
+        } => reference_display_text(kind, name.as_deref(), uri.as_deref(), text.as_deref()),
+        MessagePart::ToolResult { result } => Some(result.text_content()),
+        MessagePart::Json { .. }
+        | MessagePart::ProviderExtension { .. }
+        | MessagePart::ToolCall { .. } => None,
     }
 }
 
@@ -234,24 +302,7 @@ impl Message {
     pub fn text_content(&self) -> String {
         self.parts
             .iter()
-            .filter_map(|part| match part {
-                MessagePart::Text { text } => Some(text.clone()),
-                MessagePart::Reasoning { reasoning } => {
-                    let text = reasoning.display_text();
-                    if text.is_empty() { None } else { Some(text) }
-                }
-                MessagePart::Resource {
-                    text: Some(text), ..
-                } => Some(text.clone()),
-                MessagePart::Reference {
-                    kind,
-                    name,
-                    uri,
-                    text,
-                } => reference_display_text(kind, name.as_deref(), uri.as_deref(), text.as_deref()),
-                MessagePart::ToolResult { result } => Some(result.text_content()),
-                _ => None,
-            })
+            .filter_map(message_part_display_text)
             .collect::<Vec<_>>()
             .join("\n")
     }
@@ -290,5 +341,29 @@ mod tests {
         );
 
         assert_eq!(message.text_content(), "workspace");
+    }
+
+    #[test]
+    fn text_content_includes_attachment_placeholders() {
+        let message = Message::new(
+            MessageRole::User,
+            vec![
+                MessagePart::ImageUrl {
+                    url: "https://example.com/failure.png".to_string(),
+                    mime_type: Some("image/png".to_string()),
+                },
+                MessagePart::File {
+                    file_name: Some("report.pdf".to_string()),
+                    mime_type: Some("application/pdf".to_string()),
+                    data_base64: None,
+                    uri: Some("https://example.com/report.pdf".to_string()),
+                },
+            ],
+        );
+
+        assert_eq!(
+            message.text_content(),
+            "[image_url:https://example.com/failure.png image/png]\n[file:report.pdf application/pdf https://example.com/report.pdf]"
+        );
     }
 }
