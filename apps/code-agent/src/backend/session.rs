@@ -8,8 +8,8 @@ use crate::backend::{
     ApprovalCoordinator, ApprovalDecision, ApprovalPrompt, LoadedMcpPrompt, LoadedMcpResource,
     McpPromptSummary, McpResourceSummary, McpServerSummary, PermissionRequestCoordinator,
     PermissionRequestPrompt, ResumeSupport, SessionEvent, SessionEventObserver, SessionEventStream,
-    StartupDiagnosticsSnapshot, UserInputCoordinator, UserInputPrompt, list_mcp_prompts,
-    list_mcp_resources, list_mcp_servers, load_mcp_prompt, load_mcp_resource,
+    StartupDiagnosticsSnapshot, UserInputCoordinator, UserInputPrompt, build_system_preamble,
+    list_mcp_prompts, list_mcp_resources, list_mcp_servers, load_mcp_prompt, load_mcp_resource,
 };
 use crate::provider::{MutableAgentBackend, ReasoningEffortUpdate};
 use crate::statusline::StatusLineConfig;
@@ -29,10 +29,18 @@ use agent::types::{
 };
 use agent::{AgentRuntime, RuntimeCommand, Skill, ToolExecutionContext};
 use anyhow::Result;
+use nanoclaw_config::ResolvedAgentProfile;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 use store::SessionStore;
 use tokio::sync::Mutex as AsyncMutex;
+
+#[derive(Clone)]
+struct SessionPreambleConfig {
+    profile: ResolvedAgentProfile,
+    skill_catalog: agent::SkillCatalog,
+    plugin_instructions: Vec<String>,
+}
 
 /// This snapshot is the frontend-facing startup contract. It keeps stable host
 /// facts separate from the mutable runtime handle so new frontends can render
@@ -210,6 +218,7 @@ pub(crate) struct CodeAgentSession {
     permission_grants: PermissionGrantStore,
     session_tool_context: Arc<RwLock<ToolExecutionContext>>,
     default_sandbox_policy: SandboxPolicy,
+    preamble: SessionPreambleConfig,
 }
 
 impl CodeAgentSession {
@@ -227,6 +236,9 @@ impl CodeAgentSession {
         session_tool_context: Arc<RwLock<ToolExecutionContext>>,
         default_sandbox_policy: SandboxPolicy,
         startup: SessionStartupSnapshot,
+        profile: ResolvedAgentProfile,
+        skill_catalog: agent::SkillCatalog,
+        plugin_instructions: Vec<String>,
         skills: Vec<Skill>,
     ) -> Self {
         let workspace_root = startup.workspace_root.clone();
@@ -248,6 +260,11 @@ impl CodeAgentSession {
             permission_grants,
             session_tool_context,
             default_sandbox_policy,
+            preamble: SessionPreambleConfig {
+                profile,
+                skill_catalog,
+                plugin_instructions,
+            },
         }
     }
 
@@ -512,8 +529,10 @@ impl CodeAgentSession {
     }
 
     async fn start_fresh_session(&self) -> Result<SessionOperationOutcome> {
+        let instructions = self.rebuild_system_preamble();
         let (session_ref, agent_session_ref) = {
             let mut runtime = self.runtime.lock().await;
+            runtime.replace_base_instructions(instructions);
             runtime
                 .start_new_session()
                 .await
@@ -930,8 +949,10 @@ impl CodeAgentSession {
         let events = self.store.events(&session_id).await?;
         let runtime_session =
             session_resume::reconstruct_runtime_session(&events, &target_agent_session_id)?;
+        let instructions = self.rebuild_system_preamble();
         let (active_session_ref, active_agent_session_ref) = {
             let mut runtime = self.runtime.lock().await;
+            runtime.replace_base_instructions(instructions);
             runtime
                 .resume_session(runtime_session)
                 .await
@@ -998,6 +1019,15 @@ impl CodeAgentSession {
         let mut startup = self.startup.write().unwrap();
         startup.active_session_ref = session_ref;
         startup.root_agent_session_id = agent_session_ref;
+    }
+
+    fn rebuild_system_preamble(&self) -> Vec<String> {
+        build_system_preamble(
+            self.workspace_root(),
+            &self.preamble.profile,
+            &self.preamble.skill_catalog,
+            &self.preamble.plugin_instructions,
+        )
     }
 
     // Host-initiated live task operations should still append their lifecycle
@@ -1161,9 +1191,10 @@ mod tests {
         AgentHandle, AgentId, AgentResultEnvelope, AgentStatus, AgentTaskSpec, AgentWaitRequest,
         AgentWaitResponse, Message, ModelEvent, ModelRequest, SessionEventKind, SessionId,
     };
-    use agent::{AgentRuntimeBuilder, RuntimeCommand, Skill};
+    use agent::{AgentRuntimeBuilder, RuntimeCommand, Skill, SkillCatalog};
     use async_trait::async_trait;
     use futures::{StreamExt, stream, stream::BoxStream};
+    use nanoclaw_config::CoreConfig;
     use std::sync::{Arc, Mutex, RwLock};
     use store::{InMemorySessionStore, SessionStore};
 
@@ -1485,6 +1516,9 @@ mod tests {
             session_tool_context,
             default_sandbox_policy,
             startup,
+            CoreConfig::default().resolve_primary_agent().unwrap(),
+            SkillCatalog::default(),
+            Vec::new(),
             Vec::<Skill>::new(),
         )
     }
@@ -1550,6 +1584,60 @@ mod tests {
             SessionEventKind::SessionStart { reason }
                 if reason.as_deref() == Some("operator_new_session")
         )));
+    }
+
+    #[tokio::test]
+    async fn start_new_session_refreshes_workspace_memory_primer() {
+        let dir = tempfile::tempdir().unwrap();
+        let backend = RecordingPromptBackend::default();
+        let store = Arc::new(InMemorySessionStore::new());
+        let runtime = AgentRuntimeBuilder::new(Arc::new(backend.clone()), store.clone())
+            .hook_runner(Arc::new(HookRunner::default()))
+            .tool_context(ToolExecutionContext {
+                workspace_root: dir.path().to_path_buf(),
+                workspace_only: true,
+                ..Default::default()
+            })
+            .build();
+        let mut startup = startup_snapshot(dir.path());
+        startup.active_session_ref = runtime.session_id().to_string();
+        startup.root_agent_session_id = runtime.agent_session_id().to_string();
+        let session = build_session(runtime, Arc::new(NoopSubagentExecutor), store, startup);
+
+        session
+            .apply_control(RuntimeCommand::Prompt {
+                message: Message::user("before refresh"),
+            })
+            .await
+            .unwrap();
+        std::fs::write(
+            dir.path().join("AGENTS.md"),
+            "# Rules\nrefresh on new session",
+        )
+        .unwrap();
+
+        session
+            .apply_session_operation(SessionOperation::StartFresh)
+            .await
+            .unwrap();
+        session
+            .apply_control(RuntimeCommand::Prompt {
+                message: Message::user("after refresh"),
+            })
+            .await
+            .unwrap();
+
+        let requests = backend.requests();
+        assert_eq!(requests.len(), 2);
+        assert!(
+            !requests[0]
+                .instructions
+                .join("\n\n")
+                .contains("# Workspace Memory Primer")
+        );
+        let refreshed = requests[1].instructions.join("\n\n");
+        assert!(refreshed.contains("# Workspace Memory Primer"));
+        assert!(refreshed.contains("refresh on new session"));
     }
 
     #[tokio::test]
@@ -1768,6 +1856,69 @@ mod tests {
         );
         assert_eq!(outcome.transcript.len(), 1);
         assert_eq!(outcome.transcript[0].text_content(), "resume me");
+    }
+
+    #[tokio::test]
+    async fn resume_agent_session_refreshes_workspace_memory_primer() {
+        let dir = tempfile::tempdir().unwrap();
+        let backend = RecordingPromptBackend::default();
+        let store = Arc::new(InMemorySessionStore::new());
+        let runtime = AgentRuntimeBuilder::new(Arc::new(backend.clone()), store.clone())
+            .hook_runner(Arc::new(HookRunner::default()))
+            .tool_context(ToolExecutionContext {
+                workspace_root: dir.path().to_path_buf(),
+                workspace_only: true,
+                ..Default::default()
+            })
+            .build();
+        let original_session_ref = runtime.session_id().to_string();
+        let original_agent_session_ref = runtime.agent_session_id().to_string();
+        let mut startup = startup_snapshot(dir.path());
+        startup.active_session_ref = original_session_ref;
+        startup.root_agent_session_id = original_agent_session_ref.clone();
+        let session = build_session(
+            runtime,
+            Arc::new(NoopSubagentExecutor),
+            store.clone(),
+            startup,
+        );
+
+        session
+            .apply_control(RuntimeCommand::Prompt {
+                message: Message::user("before resume"),
+            })
+            .await
+            .unwrap();
+        session
+            .apply_session_operation(SessionOperation::StartFresh)
+            .await
+            .unwrap();
+        std::fs::write(dir.path().join("AGENTS.md"), "# Rules\nrefresh on resume").unwrap();
+
+        session
+            .apply_session_operation(SessionOperation::ResumeAgentSession {
+                agent_session_ref: original_agent_session_ref,
+            })
+            .await
+            .unwrap();
+        session
+            .apply_control(RuntimeCommand::Prompt {
+                message: Message::user("after resume"),
+            })
+            .await
+            .unwrap();
+
+        let requests = backend.requests();
+        assert_eq!(requests.len(), 2);
+        assert!(
+            !requests[0]
+                .instructions
+                .join("\n\n")
+                .contains("# Workspace Memory Primer")
+        );
+        let refreshed = requests[1].instructions.join("\n\n");
+        assert!(refreshed.contains("# Workspace Memory Primer"));
+        assert!(refreshed.contains("refresh on resume"));
     }
 
     #[tokio::test]

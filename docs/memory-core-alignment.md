@@ -82,5 +82,15 @@ It injects concise excerpts from:
 - `.nanoclaw/memory/MEMORY.md`
 
 The primer is intentionally static for one runtime session and trimmed to keep
-base instructions bounded. This aligns the current host with Claude's
-session-start behavior without introducing per-turn prompt recomputation yet.
+base instructions bounded.
+
+Refresh semantics are cache-oriented:
+
+- initial boot builds the primer once
+- `StartFresh` rebuilds it once before the next root session starts
+- `ResumeAgentSession` rebuilds it once before the reattached session starts
+- normal turns do not recompute or mutate base instructions
+
+That keeps workspace memory aligned with Claude's session-boundary behavior
+while avoiding per-turn base-instruction churn that would degrade prefix-cache
+reuse.

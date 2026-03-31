@@ -149,6 +149,14 @@ impl AgentRuntime {
         self.tool_context.effective_sandbox_policy = Some(policy);
     }
 
+    pub fn replace_base_instructions(&mut self, instructions: Vec<String>) {
+        // Hosts may rebuild the stable instruction prefix when switching to a
+        // fresh or resumed session. Keep this as an explicit session-boundary
+        // operation rather than mutating base instructions during normal turns,
+        // otherwise provider-side prefix caches churn unnecessarily.
+        self.base_instructions = instructions;
+    }
+
     pub(crate) fn model_visible_tool_specs(&self) -> Vec<types::ToolSpec> {
         let provider_name = self.backend.provider_name();
         self.tool_registry

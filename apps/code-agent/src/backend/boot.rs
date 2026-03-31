@@ -45,7 +45,9 @@ struct RuntimeBuildResult {
     model_backend: MutableAgentBackend,
     subagent_executor: Arc<dyn SubagentExecutor>,
     store: Arc<dyn store::SessionStore>,
+    skill_catalog: SkillCatalog,
     skills: Vec<Skill>,
+    plugin_instructions: Vec<String>,
     mcp_servers: Vec<ConnectedMcpServer>,
     host_process_surfaces_allowed: bool,
     store_label: String,
@@ -201,7 +203,9 @@ pub(crate) async fn build_session_with_approval_mode(
         model_backend,
         subagent_executor,
         store,
+        skill_catalog,
         skills,
+        plugin_instructions,
         mcp_servers,
         host_process_surfaces_allowed,
         store_label,
@@ -264,6 +268,9 @@ pub(crate) async fn build_session_with_approval_mode(
             startup_diagnostics,
             statusline: options.statusline.clone(),
         },
+        options.primary_profile.clone(),
+        skill_catalog,
+        plugin_instructions,
         skills,
     ))
 }
@@ -484,7 +491,7 @@ async fn build_runtime(
         .loop_detection_config(loop_detection_config)
         .instructions(instructions)
         .hooks(runtime_hooks)
-        .skill_catalog(skill_catalog)
+        .skill_catalog(skill_catalog.clone())
         .build();
 
     Ok(RuntimeBuildResult {
@@ -493,6 +500,8 @@ async fn build_runtime(
         subagent_executor,
         store,
         skills,
+        skill_catalog,
+        plugin_instructions,
         mcp_servers: connected_mcp_servers,
         host_process_surfaces_allowed,
         store_label: store_handle.label,
