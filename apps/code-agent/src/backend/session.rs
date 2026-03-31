@@ -20,7 +20,7 @@ use agent::runtime::{
 };
 use agent::tools::{
     GrantedPermissionResponse, RequestPermissionProfile, SandboxPolicy, SubagentExecutor,
-    SubagentParentContext, UserInputResponse, describe_sandbox_policy,
+    SubagentLaunchSpec, SubagentParentContext, UserInputResponse, describe_sandbox_policy,
     request_permission_profile_from_granted, sandbox_backend_status,
 };
 use agent::types::{
@@ -717,7 +717,7 @@ impl CodeAgentSession {
         };
         let mut handles = self
             .subagent_executor
-            .spawn(parent, vec![task])
+            .spawn(parent, vec![SubagentLaunchSpec::from_task(task)])
             .await
             .map_err(anyhow::Error::from)?;
         let handle = handles
@@ -1155,8 +1155,8 @@ mod tests {
     use crate::statusline::StatusLineConfig;
     use agent::runtime::{HookRunner, ModelBackend, PermissionGrantStore, Result as RuntimeResult};
     use agent::tools::{
-        Result as ToolResult, SubagentExecutor, SubagentParentContext, ToolError,
-        ToolExecutionContext,
+        Result as ToolResult, SubagentExecutor, SubagentLaunchSpec, SubagentParentContext,
+        ToolError, ToolExecutionContext,
     };
     use agent::types::{
         AgentHandle, AgentId, AgentResultEnvelope, AgentStatus, AgentTaskSpec, AgentWaitRequest,
@@ -1236,7 +1236,7 @@ mod tests {
         async fn spawn(
             &self,
             _parent: SubagentParentContext,
-            _tasks: Vec<agent::types::AgentTaskSpec>,
+            _tasks: Vec<SubagentLaunchSpec>,
         ) -> ToolResult<Vec<AgentHandle>> {
             Err(ToolError::invalid_state(
                 "test executor does not support spawn",
@@ -1328,13 +1328,17 @@ mod tests {
         async fn spawn(
             &self,
             parent: SubagentParentContext,
-            tasks: Vec<agent::types::AgentTaskSpec>,
+            tasks: Vec<SubagentLaunchSpec>,
         ) -> ToolResult<Vec<AgentHandle>> {
             self.spawn_parents.lock().unwrap().push(parent);
-            self.spawned_tasks.lock().unwrap().extend(tasks.clone());
+            self.spawned_tasks
+                .lock()
+                .unwrap()
+                .extend(tasks.iter().map(|launch| launch.task.clone()));
             let mut handles = self.handles.lock().unwrap();
             let mut spawned = Vec::with_capacity(tasks.len());
-            for task in tasks {
+            for launch in tasks {
+                let task = launch.task;
                 let handle = AgentHandle {
                     agent_id: AgentId::from(format!("agent-{}", task.task_id)),
                     parent_agent_id: None,

@@ -200,6 +200,50 @@ pub(crate) fn tool_arguments_preview_lines(tool_name: &str, arguments: &Value) -
         return lines;
     }
 
+    if tool_name == "spawn_agent" {
+        let agent_type = arguments
+            .get("agent_type")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("general-purpose");
+        let model = arguments
+            .get("model")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let reasoning_effort = arguments
+            .get("reasoning_effort")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let mut summary = format!("spawn {agent_type}");
+        if let Some(model) = model {
+            summary.push_str(&format!(" model={model}"));
+        }
+        if let Some(reasoning_effort) = reasoning_effort {
+            summary.push_str(&format!(" effort={reasoning_effort}"));
+        }
+        let mut lines = vec![summary];
+        if let Some(message) = arguments
+            .get("message")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            lines.extend(collapse_preview_text(message, 3, 96, PreviewCollapse::Head));
+            return lines;
+        }
+        let item_count = arguments
+            .get("items")
+            .and_then(Value::as_array)
+            .map_or(0, Vec::len);
+        if item_count > 0 {
+            lines.push(format!("{item_count} input item(s)"));
+        }
+        return lines;
+    }
+
     if tool_name == "wait_agent" {
         let target_count = arguments
             .get("targets")
@@ -581,6 +625,22 @@ mod tests {
 
         assert_eq!(rendered[0], "message agent_123");
         assert!(rendered[1].contains("focus the failing test"));
+    }
+
+    #[test]
+    fn spawn_agent_arguments_render_role_and_overrides_preview() {
+        let rendered = tool_arguments_preview_lines(
+            "spawn_agent",
+            &json!({
+                "agent_type": "reviewer",
+                "message": "Inspect the patch.",
+                "model": "gpt-5.4",
+                "reasoning_effort": "high"
+            }),
+        );
+
+        assert_eq!(rendered[0], "spawn reviewer model=gpt-5.4 effort=high");
+        assert!(rendered[1].contains("Inspect the patch."));
     }
 
     #[test]

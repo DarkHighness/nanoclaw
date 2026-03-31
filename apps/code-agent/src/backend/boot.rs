@@ -25,8 +25,10 @@ use agent::runtime::{
     NoopToolApprovalPolicy, PermissionGrantStore, RuntimeSubagentExecutor, SubagentProfileResolver,
     SubagentRuntimeProfile, ToolApprovalHandler,
 };
-use agent::tools::{SubagentExecutor, describe_sandbox_policy, ensure_sandbox_policy_supported};
-use agent::types::{AgentTaskSpec, HookHandler, HookRegistration};
+use agent::tools::{
+    SubagentExecutor, SubagentLaunchSpec, describe_sandbox_policy, ensure_sandbox_policy_supported,
+};
+use agent::types::{HookHandler, HookRegistration};
 use agent::{
     AgentRuntime, AgentRuntimeBuilder, SandboxPolicy, Skill, SkillCatalog, ToolExecutionContext,
     ToolRegistry,
@@ -67,13 +69,13 @@ pub(crate) struct CodeAgentSubagentProfileResolver {
     pub(crate) plugin_instructions: Vec<String>,
 }
 
-impl SubagentProfileResolver for CodeAgentSubagentProfileResolver {
-    fn resolve_profile(
+impl CodeAgentSubagentProfileResolver {
+    pub(crate) fn resolve_agent_profile(
         &self,
-        task: &AgentTaskSpec,
-    ) -> agent::runtime::Result<SubagentRuntimeProfile> {
-        let base_tool_context = self.base_tool_context.read().unwrap().clone();
-        let profile = self
+        launch: &SubagentLaunchSpec,
+    ) -> agent::runtime::Result<ResolvedAgentProfile> {
+        let task = &launch.task;
+        let mut profile = self
             .core
             .resolve_subagent_profile(Some(task.role.as_str()))
             .map_err(|error| {
@@ -82,6 +84,29 @@ impl SubagentProfileResolver for CodeAgentSubagentProfileResolver {
                     task.role
                 ))
             })?;
+        if let Some(model_alias) = launch.model.as_deref() {
+            // Launch-time model overrides should reuse the existing config
+            // resolver so provider capabilities and validation stay centralized.
+            profile.model = self.core.resolve_model(model_alias).map_err(|error| {
+                agent::runtime::RuntimeError::invalid_state(format!(
+                    "failed to resolve subagent model override `{model_alias}`: {error}",
+                ))
+            })?;
+        }
+        if let Some(reasoning_effort) = launch.reasoning_effort.as_deref() {
+            profile.reasoning_effort = Some(reasoning_effort.to_string());
+        }
+        Ok(profile)
+    }
+}
+
+impl SubagentProfileResolver for CodeAgentSubagentProfileResolver {
+    fn resolve_profile(
+        &self,
+        launch: &SubagentLaunchSpec,
+    ) -> agent::runtime::Result<SubagentRuntimeProfile> {
+        let base_tool_context = self.base_tool_context.read().unwrap().clone();
+        let profile = self.resolve_agent_profile(launch)?;
         let backend: Arc<dyn ModelBackend> = Arc::new(
             build_agent_backend(&profile, &self.env_map).map_err(|error| {
                 agent::runtime::RuntimeError::invalid_state(format!(

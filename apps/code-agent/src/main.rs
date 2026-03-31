@@ -292,8 +292,8 @@ mod tests {
     use agent::ToolExecutionContext;
     use agent::mcp::{McpServerConfig, McpTransportConfig};
     use agent::runtime::SubagentProfileResolver;
-    use agent::tools::{NetworkPolicy, SandboxMode};
-    use agent::types::{HookEvent, HookHandler, HookRegistration, HttpHookHandler};
+    use agent::tools::{NetworkPolicy, SandboxMode, SubagentLaunchSpec};
+    use agent::types::{AgentTaskSpec, HookEvent, HookHandler, HookRegistration, HttpHookHandler};
     use agent_env::EnvMap;
     use nanoclaw_config::{
         AgentProfileConfig, AgentSandboxMode, CoreConfig, ModelCapabilitiesConfig, ModelConfig,
@@ -541,7 +541,7 @@ mod tests {
         };
 
         let profile = resolver
-            .resolve_profile(&agent::types::AgentTaskSpec {
+            .resolve_profile(&SubagentLaunchSpec::from_task(AgentTaskSpec {
                 task_id: "review".to_string(),
                 role: "reviewer".to_string(),
                 prompt: "review".to_string(),
@@ -550,7 +550,7 @@ mod tests {
                 requested_write_set: Vec::new(),
                 dependency_ids: Vec::new(),
                 timeout_seconds: None,
-            })
+            }))
             .unwrap();
 
         assert_eq!(profile.profile_name, "roles.reviewer");
@@ -564,6 +564,68 @@ mod tests {
             profile.tool_context.network_policy,
             Some(NetworkPolicy::Off)
         );
+    }
+
+    #[test]
+    fn subagent_profile_resolver_applies_launch_model_and_reasoning_overrides() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join(".env"), "OPENAI_API_KEY=test-key\n").unwrap();
+        let resolver = CodeAgentSubagentProfileResolver {
+            core: CoreConfig::default().with_override(|config| {
+                let base_model = config.models["gpt_5_4_default"].clone();
+                config.models.insert(
+                    "reviewer_no_tools".to_string(),
+                    ModelConfig {
+                        capabilities: ModelCapabilitiesConfig {
+                            tool_calls: false,
+                            ..base_model.capabilities.clone()
+                        },
+                        ..base_model
+                    },
+                );
+                config.agents.roles.insert(
+                    "reviewer".to_string(),
+                    AgentProfileConfig {
+                        model: Some("reviewer_no_tools".to_string()),
+                        system_prompt: Some("Review only".to_string()),
+                        sandbox: Some(AgentSandboxMode::ReadOnly),
+                        ..AgentProfileConfig::default()
+                    },
+                );
+            }),
+            env_map: EnvMap::from_workspace_dir(dir.path()).unwrap(),
+            base_tool_context: Arc::new(std::sync::RwLock::new(ToolExecutionContext {
+                workspace_root: PathBuf::from("/workspace"),
+                worktree_root: Some(PathBuf::from("/workspace")),
+                workspace_only: true,
+                ..Default::default()
+            })),
+            skill_catalog: agent::SkillCatalog::default(),
+            plugin_instructions: vec!["Plugin instruction".to_string()],
+        };
+
+        let launch = SubagentLaunchSpec {
+            task: AgentTaskSpec {
+                task_id: "review".to_string(),
+                role: "reviewer".to_string(),
+                prompt: "review".to_string(),
+                steer: None,
+                allowed_tools: Vec::new(),
+                requested_write_set: Vec::new(),
+                dependency_ids: Vec::new(),
+                timeout_seconds: None,
+            },
+            model: Some("gpt_5_4_default".to_string()),
+            reasoning_effort: Some("high".to_string()),
+        };
+
+        let resolved = resolver.resolve_agent_profile(&launch).unwrap();
+        assert_eq!(resolved.model.alias, "gpt_5_4_default");
+        assert_eq!(resolved.reasoning_effort.as_deref(), Some("high"));
+
+        let profile = resolver.resolve_profile(&launch).unwrap();
+        assert!(profile.supports_tool_calls);
+        assert!(profile.instructions.join("\n").contains("Review only"));
     }
 
     #[test]

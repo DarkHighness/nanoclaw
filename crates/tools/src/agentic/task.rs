@@ -90,7 +90,18 @@ struct TaskBatchToolOutput {
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 pub struct AgentSpawnToolInput {
-    pub tasks: Vec<AgentTaskInput>,
+    #[serde(default)]
+    pub agent_type: Option<String>,
+    #[serde(default)]
+    pub fork_context: bool,
+    #[serde(default)]
+    pub items: Vec<AgentInputItem>,
+    #[serde(default)]
+    pub message: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub reasoning_effort: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
@@ -135,6 +146,24 @@ pub struct AgentResumeToolInput {
     pub id: AgentId,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SubagentLaunchSpec {
+    pub task: AgentTaskSpec,
+    pub model: Option<String>,
+    pub reasoning_effort: Option<String>,
+}
+
+impl SubagentLaunchSpec {
+    #[must_use]
+    pub fn from_task(task: AgentTaskSpec) -> Self {
+        Self {
+            task,
+            model: None,
+            reasoning_effort: None,
+        }
+    }
+}
+
 fn default_wait_mode() -> AgentWaitMode {
     AgentWaitMode::All
 }
@@ -144,7 +173,7 @@ pub trait SubagentExecutor: Send + Sync {
     async fn spawn(
         &self,
         parent: SubagentParentContext,
-        tasks: Vec<AgentTaskSpec>,
+        tasks: Vec<SubagentLaunchSpec>,
     ) -> Result<Vec<AgentHandle>>;
 
     async fn send(
@@ -223,7 +252,10 @@ impl Tool for TaskTool {
         let input: TaskToolInput = serde_json::from_value(arguments)?;
         let parent = SubagentParentContext::from(ctx);
         let task = normalize_task_input(input.task, 1)?;
-        let mut handles = self.executor.spawn(parent.clone(), vec![task]).await?;
+        let mut handles = self
+            .executor
+            .spawn(parent.clone(), vec![SubagentLaunchSpec::from_task(task)])
+            .await?;
         let agent = handles
             .pop()
             .ok_or_else(|| ToolError::invalid_state("task spawn returned no agent"))?;
@@ -287,7 +319,10 @@ impl Tool for TaskBatchTool {
             .into_iter()
             .enumerate()
             .map(|(index, task)| normalize_task_input(task, index + 1))
-            .collect::<Result<Vec<_>>>()?;
+            .collect::<Result<Vec<_>>>()?
+            .into_iter()
+            .map(SubagentLaunchSpec::from_task)
+            .collect::<Vec<_>>();
         let handles = self.executor.spawn(parent.clone(), tasks).await?;
         let wait = wait_for_batch(
             self.executor.as_ref(),
@@ -315,16 +350,14 @@ impl Tool for AgentSpawnTool {
     fn spec(&self) -> ToolSpec {
         builtin_tool_spec(
             SPAWN_AGENT_TOOL_NAME,
-            "Spawn one or more child agents without waiting, honoring in-batch dependencies before they start.",
-            serde_json::to_value(schema_for!(AgentSpawnToolInput))
-                .expect("spawn_agent schema"),
+            "Spawn one child agent without waiting so it can receive follow-up input later.",
+            serde_json::to_value(schema_for!(AgentSpawnToolInput)).expect("spawn_agent schema"),
             ToolOutputMode::Text,
             tool_approval_profile(false, false, false, false),
         )
         .with_aliases(vec![ToolName::from("agent_spawn")])
         .with_output_schema(
-            serde_json::to_value(schema_for!(Vec<AgentHandle>))
-                .expect("spawn_agent output schema"),
+            serde_json::to_value(schema_for!(AgentHandle)).expect("spawn_agent output schema"),
         )
     }
 
@@ -335,25 +368,19 @@ impl Tool for AgentSpawnTool {
         ctx: &ToolExecutionContext,
     ) -> Result<ToolResult> {
         let input: AgentSpawnToolInput = serde_json::from_value(arguments)?;
-        let tasks = input
-            .tasks
-            .into_iter()
-            .enumerate()
-            .map(|(index, task)| normalize_task_input(task, index + 1))
-            .collect::<Result<Vec<_>>>()?;
-        let handles = self
+        let launch = normalize_spawn_input(input, &call_id)?;
+        let mut handles = self
             .executor
-            .spawn(SubagentParentContext::from(ctx), tasks)
+            .spawn(SubagentParentContext::from(ctx), vec![launch])
             .await?;
+        let handle = handles
+            .pop()
+            .ok_or_else(|| ToolError::invalid_state("spawn_agent returned no agent"))?;
         build_tool_result(
             call_id,
             SPAWN_AGENT_TOOL_NAME,
-            handles
-                .iter()
-                .map(render_handle_line)
-                .collect::<Vec<_>>()
-                .join("\n"),
-            handles,
+            render_handle_line(&handle),
+            handle,
         )
     }
 }
@@ -579,6 +606,38 @@ fn normalize_task_input(input: AgentTaskInput, ordinal: usize) -> Result<AgentTa
     })
 }
 
+fn normalize_spawn_input(
+    input: AgentSpawnToolInput,
+    call_id: &ToolCallId,
+) -> Result<SubagentLaunchSpec> {
+    if input.fork_context {
+        return Err(ToolError::invalid(
+            "spawn_agent fork_context=true is not yet supported by the subagent runtime",
+        ));
+    }
+    let role = normalize_optional_non_empty(input.agent_type)
+        .unwrap_or_else(|| "general-purpose".to_string());
+    let prompt = compose_agent_input_text(
+        input.message,
+        &input.items,
+        "spawn_agent requires a message or at least one input item",
+    )?;
+    Ok(SubagentLaunchSpec {
+        task: AgentTaskSpec {
+            task_id: format!("spawn_{}", call_id),
+            role,
+            prompt,
+            steer: None,
+            allowed_tools: Vec::new(),
+            requested_write_set: Vec::new(),
+            dependency_ids: Vec::new(),
+            timeout_seconds: None,
+        },
+        model: normalize_optional_non_empty(input.model),
+        reasoning_effort: normalize_optional_non_empty(input.reasoning_effort),
+    })
+}
+
 fn normalize_send_input(input: AgentSendToolInput) -> Result<(AgentId, String, Value)> {
     if input.interrupt {
         // The current mailbox applies steering at safe points after the active
@@ -589,16 +648,24 @@ fn normalize_send_input(input: AgentSendToolInput) -> Result<(AgentId, String, V
         ));
     }
     let target = input.target;
+    let text = compose_agent_input_text(
+        input.message,
+        &input.items,
+        "send_input requires a message or at least one input item",
+    )?;
+    Ok((target, "steer".to_string(), Value::String(text)))
+}
+
+fn compose_agent_input_text(
+    message: Option<String>,
+    items: &[AgentInputItem],
+    empty_error: &str,
+) -> Result<String> {
     let mut parts = Vec::new();
-    if let Some(message) = input
-        .message
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-    {
+    if let Some(message) = normalize_optional_non_empty(message) {
         parts.push(message);
     }
-    let item_lines = input
-        .items
+    let item_lines = items
         .iter()
         .filter_map(render_agent_input_item)
         .collect::<Vec<_>>();
@@ -606,15 +673,15 @@ fn normalize_send_input(input: AgentSendToolInput) -> Result<(AgentId, String, V
         parts.push(item_lines.join("\n"));
     }
     if parts.is_empty() {
-        return Err(ToolError::invalid(
-            "send_input requires a message or at least one input item",
-        ));
+        return Err(ToolError::invalid(empty_error));
     }
-    Ok((
-        target,
-        "steer".to_string(),
-        Value::String(parts.join("\n\n")),
-    ))
+    Ok(parts.join("\n\n"))
+}
+
+fn normalize_optional_non_empty(value: Option<String>) -> Option<String> {
+    value
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 fn render_agent_input_item(item: &AgentInputItem) -> Option<String> {
@@ -942,8 +1009,8 @@ where
 mod tests {
     use super::{
         AgentCancelTool, AgentListTool, AgentResumeTool, AgentSendTool, AgentSpawnTool,
-        AgentTaskInput, AgentWaitTool, SubagentExecutor, SubagentParentContext, TaskBatchTool,
-        TaskBatchToolInput, TaskTool, TaskToolInput,
+        AgentTaskInput, AgentWaitTool, SubagentExecutor, SubagentLaunchSpec, SubagentParentContext,
+        TaskBatchTool, TaskBatchToolInput, TaskTool, TaskToolInput,
     };
     use crate::{Result, Tool, ToolError, ToolExecutionContext, ToolRegistry};
     use async_trait::async_trait;
@@ -953,8 +1020,8 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use tokio::sync::Notify;
     use types::{
-        AgentHandle, AgentId, AgentResultEnvelope, AgentSessionId, AgentStatus, AgentTaskSpec,
-        AgentWaitMode, AgentWaitRequest, AgentWaitResponse, SessionId, ToolCallId, ToolName,
+        AgentHandle, AgentId, AgentResultEnvelope, AgentSessionId, AgentStatus, AgentWaitMode,
+        AgentWaitRequest, AgentWaitResponse, SessionId, ToolCallId, ToolName,
     };
 
     #[derive(Default)]
@@ -970,7 +1037,7 @@ mod tests {
         sent: Vec<(AgentId, String, serde_json::Value)>,
         resumed: Vec<AgentId>,
         cancelled: Vec<AgentId>,
-        spawned_tasks: Vec<AgentTaskSpec>,
+        spawned_launches: Vec<SubagentLaunchSpec>,
     }
 
     struct BlockingWaitExecutor {
@@ -983,12 +1050,13 @@ mod tests {
         async fn spawn(
             &self,
             _parent: SubagentParentContext,
-            tasks: Vec<AgentTaskSpec>,
+            tasks: Vec<SubagentLaunchSpec>,
         ) -> Result<Vec<AgentHandle>> {
             let mut state = self.state.lock().unwrap();
             let mut handles = Vec::new();
-            for task in tasks {
-                state.spawned_tasks.push(task.clone());
+            for launch in tasks {
+                state.spawned_launches.push(launch.clone());
+                let task = launch.task;
                 let agent_id = AgentId::from(format!("agent_{}", task.task_id));
                 let handle = AgentHandle {
                     agent_id: agent_id.clone(),
@@ -1128,7 +1196,7 @@ mod tests {
         async fn spawn(
             &self,
             _parent: SubagentParentContext,
-            _tasks: Vec<AgentTaskSpec>,
+            _tasks: Vec<SubagentLaunchSpec>,
         ) -> Result<Vec<AgentHandle>> {
             unreachable!("blocking wait executor does not spawn agents")
         }
@@ -1257,8 +1325,9 @@ mod tests {
 
         let state = executor.state.lock().unwrap();
         let review = state
-            .spawned_tasks
+            .spawned_launches
             .iter()
+            .map(|launch| &launch.task)
             .find(|task| task.task_id == "review")
             .expect("review task should be forwarded to the executor");
         assert_eq!(review.dependency_ids, vec!["inspect"]);
@@ -1325,13 +1394,13 @@ mod tests {
         let spawned = spawn
             .execute(
                 ToolCallId::new(),
-                json!({"tasks":[{"task_id":"agent_a","prompt":"inspect","role":"explorer"}]}),
+                json!({"agent_type":"explorer","message":"inspect"}),
                 &ToolExecutionContext::default(),
             )
             .await
             .unwrap();
         let agent_id = AgentId::from(
-            spawned.structured_content.unwrap()[0]["agent_id"]
+            spawned.structured_content.unwrap()["agent_id"]
                 .as_str()
                 .unwrap(),
         );
@@ -1379,7 +1448,7 @@ mod tests {
         let resumed = resume
             .execute(
                 ToolCallId::new(),
-                json!({"id":"agent_agent_a"}),
+                json!({"id": agent_id}),
                 &ToolExecutionContext::default(),
             )
             .await
@@ -1389,7 +1458,7 @@ mod tests {
         let cancelled = cancel
             .execute(
                 ToolCallId::new(),
-                json!({"target":"agent_agent_a"}),
+                json!({"target": agent_id}),
                 &ToolExecutionContext::default(),
             )
             .await
@@ -1397,6 +1466,60 @@ mod tests {
         assert_eq!(cancelled.structured_content.unwrap()["status"], "cancelled");
         assert_eq!(executor.state.lock().unwrap().sent.len(), 1);
         assert_eq!(executor.state.lock().unwrap().resumed.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn spawn_agent_uses_codex_style_input_and_records_launch_overrides() {
+        let executor = Arc::new(FakeExecutor::default());
+        let tool = AgentSpawnTool::new(executor.clone());
+
+        let result = tool
+            .execute(
+                ToolCallId::new(),
+                json!({
+                    "agent_type": "reviewer",
+                    "message": "Review the current patch.",
+                    "items": [
+                        {"type": "text", "text": "Focus on regressions."},
+                        {"type": "mention", "name": "connector", "path": "app://tool-registry"}
+                    ],
+                    "model": "gpt-5.4",
+                    "reasoning_effort": "high"
+                }),
+                &ToolExecutionContext::default(),
+            )
+            .await
+            .unwrap();
+
+        let structured = result.structured_content.unwrap();
+        assert_eq!(structured["role"], "reviewer");
+
+        let state = executor.state.lock().unwrap();
+        assert_eq!(state.spawned_launches.len(), 1);
+        let launch = &state.spawned_launches[0];
+        assert_eq!(launch.task.role, "reviewer");
+        assert_eq!(launch.model.as_deref(), Some("gpt-5.4"));
+        assert_eq!(launch.reasoning_effort.as_deref(), Some("high"));
+        assert!(launch.task.task_id.starts_with("spawn_"));
+        assert!(launch.task.prompt.contains("Review the current patch."));
+        assert!(launch.task.prompt.contains("Focus on regressions."));
+        assert!(launch.task.prompt.contains("[mention]"));
+    }
+
+    #[tokio::test]
+    async fn spawn_agent_rejects_fork_context_until_runtime_supports_it() {
+        let executor = Arc::new(FakeExecutor::default());
+        let tool = AgentSpawnTool::new(executor);
+        let error = tool
+            .execute(
+                ToolCallId::new(),
+                json!({"fork_context": true, "message": "continue"}),
+                &ToolExecutionContext::default(),
+            )
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("fork_context=true"));
     }
 
     #[tokio::test]

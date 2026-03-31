@@ -17,8 +17,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use store::SessionStore;
 use tools::{
-    SubagentExecutor, SubagentParentContext, ToolError, ToolExecutionContext, ToolRegistry,
-    resolve_tool_path_against_workspace_root,
+    SubagentExecutor, SubagentLaunchSpec, SubagentParentContext, ToolError, ToolExecutionContext,
+    ToolRegistry, resolve_tool_path_against_workspace_root,
 };
 use types::{
     AgentArtifact, AgentEnvelope, AgentEnvelopeKind, AgentHandle, AgentId, AgentResultEnvelope,
@@ -56,7 +56,10 @@ pub struct SubagentRuntimeProfile {
 }
 
 pub trait SubagentProfileResolver: Send + Sync {
-    fn resolve_profile(&self, task: &AgentTaskSpec) -> Result<SubagentRuntimeProfile>;
+    // Launch overrides such as model/reasoning_effort belong at the spawn surface
+    // instead of inflating persisted task state. The resolver receives the launch
+    // envelope so it can derive the concrete runtime profile just before startup.
+    fn resolve_profile(&self, launch: &SubagentLaunchSpec) -> Result<SubagentRuntimeProfile>;
 }
 
 #[derive(Clone)]
@@ -826,17 +829,18 @@ impl SubagentExecutor for RuntimeSubagentExecutor {
     async fn spawn(
         &self,
         parent: SubagentParentContext,
-        tasks: Vec<AgentTaskSpec>,
+        tasks: Vec<SubagentLaunchSpec>,
     ) -> std::result::Result<Vec<AgentHandle>, ToolError> {
         let mut planned = Vec::new();
-        for task in tasks {
+        for launch in tasks {
             let (tool_registry, resolved_tools) = self
-                .resolve_child_tools(&task.allowed_tools)
+                .resolve_child_tools(&launch.task.allowed_tools)
                 .map_err(|error| ToolError::invalid_state(error.to_string()))?;
             let profile = self
                 .profile_resolver
-                .resolve_profile(&task)
+                .resolve_profile(&launch)
                 .map_err(|error| ToolError::invalid_state(error.to_string()))?;
+            let task = launch.task;
             if !profile.supports_tool_calls && !tool_registry.names().is_empty() {
                 return Err(ToolError::invalid(format!(
                     "subagent profile `{}` does not support tool calls, but task `{}` resolved local tools",
@@ -1731,7 +1735,8 @@ mod tests {
     use store::{InMemorySessionStore, SessionStore};
     use tokio::sync::Notify;
     use tools::{
-        ReadTool, SubagentExecutor, SubagentParentContext, ToolExecutionContext, ToolRegistry,
+        ReadTool, SubagentExecutor, SubagentLaunchSpec, SubagentParentContext,
+        ToolExecutionContext, ToolRegistry,
     };
     use types::{
         AgentEnvelopeKind, AgentStatus, AgentTaskSpec, AgentWaitMode, AgentWaitRequest,
@@ -1760,7 +1765,8 @@ mod tests {
     }
 
     impl SubagentProfileResolver for StaticProfileResolver {
-        fn resolve_profile(&self, task: &AgentTaskSpec) -> Result<SubagentRuntimeProfile> {
+        fn resolve_profile(&self, launch: &SubagentLaunchSpec) -> Result<SubagentRuntimeProfile> {
+            let task = &launch.task;
             Ok(SubagentRuntimeProfile {
                 profile_name: format!("roles.{}", task.role),
                 backend: self.backend.clone(),
@@ -1972,6 +1978,13 @@ mod tests {
         )
     }
 
+    fn launches(tasks: Vec<AgentTaskSpec>) -> Vec<SubagentLaunchSpec> {
+        tasks
+            .into_iter()
+            .map(SubagentLaunchSpec::from_task)
+            .collect()
+    }
+
     #[tokio::test]
     async fn runtime_subagent_executor_spawns_batch_and_waits_all() {
         let backend = Arc::new(ImmediateBackend::default());
@@ -1987,7 +2000,7 @@ mod tests {
         let handles = executor
             .spawn(
                 parent.clone(),
-                vec![
+                launches(vec![
                     AgentTaskSpec {
                         task_id: "inspect".to_string(),
                         role: "explorer".to_string(),
@@ -2008,7 +2021,7 @@ mod tests {
                         dependency_ids: Vec::new(),
                         timeout_seconds: None,
                     },
-                ],
+                ]),
             )
             .await
             .unwrap();
@@ -2051,7 +2064,7 @@ mod tests {
         let handle = executor
             .spawn(
                 parent.clone(),
-                vec![AgentTaskSpec {
+                launches(vec![AgentTaskSpec {
                     task_id: "inspect".to_string(),
                     role: "explorer".to_string(),
                     prompt: "inspect".to_string(),
@@ -2060,7 +2073,7 @@ mod tests {
                     requested_write_set: Vec::new(),
                     dependency_ids: Vec::new(),
                     timeout_seconds: None,
-                }],
+                }]),
             )
             .await
             .unwrap()
@@ -2113,6 +2126,7 @@ mod tests {
         let resumed_user_prompt = requests[1]
             .messages
             .iter()
+            .rev()
             .find(|message| message.role == MessageRole::User)
             .map(|message| message.text_content())
             .unwrap_or_default();
@@ -2136,7 +2150,7 @@ mod tests {
         let handles = executor
             .spawn(
                 SubagentParentContext::default(),
-                vec![AgentTaskSpec {
+                launches(vec![AgentTaskSpec {
                     task_id: "review".to_string(),
                     role: "reviewer".to_string(),
                     prompt: "review".to_string(),
@@ -2145,7 +2159,7 @@ mod tests {
                     requested_write_set: Vec::new(),
                     dependency_ids: Vec::new(),
                     timeout_seconds: None,
-                }],
+                }]),
             )
             .await
             .unwrap();
@@ -2181,7 +2195,7 @@ mod tests {
         let error = executor
             .spawn(
                 SubagentParentContext::default(),
-                vec![AgentTaskSpec {
+                launches(vec![AgentTaskSpec {
                     task_id: "review".to_string(),
                     role: "reviewer".to_string(),
                     prompt: "review".to_string(),
@@ -2190,7 +2204,7 @@ mod tests {
                     requested_write_set: Vec::new(),
                     dependency_ids: Vec::new(),
                     timeout_seconds: None,
-                }],
+                }]),
             )
             .await
             .expect_err("tool-capability mismatch must fail fast");
@@ -2220,7 +2234,7 @@ mod tests {
         let handles = executor
             .spawn(
                 parent.clone(),
-                vec![AgentTaskSpec {
+                launches(vec![AgentTaskSpec {
                     task_id: "inspect".to_string(),
                     role: "explorer".to_string(),
                     prompt: "inspect workspace".to_string(),
@@ -2229,7 +2243,7 @@ mod tests {
                     requested_write_set: Vec::new(),
                     dependency_ids: Vec::new(),
                     timeout_seconds: None,
-                }],
+                }]),
             )
             .await
             .unwrap();
@@ -2316,7 +2330,7 @@ mod tests {
         let handles = executor
             .spawn(
                 SubagentParentContext::default(),
-                vec![
+                launches(vec![
                     AgentTaskSpec {
                         task_id: "inspect".to_string(),
                         role: "explorer".to_string(),
@@ -2337,7 +2351,7 @@ mod tests {
                         dependency_ids: vec!["inspect".to_string()],
                         timeout_seconds: None,
                     },
-                ],
+                ]),
             )
             .await
             .unwrap();
@@ -2393,7 +2407,7 @@ mod tests {
         let handles = executor
             .spawn(
                 SubagentParentContext::default(),
-                vec![
+                launches(vec![
                     AgentTaskSpec {
                         task_id: "inspect".to_string(),
                         role: "explorer".to_string(),
@@ -2414,7 +2428,7 @@ mod tests {
                         dependency_ids: vec!["inspect".to_string()],
                         timeout_seconds: None,
                     },
-                ],
+                ]),
             )
             .await
             .unwrap();
@@ -2466,7 +2480,7 @@ mod tests {
         let handles = executor
             .spawn(
                 parent.clone(),
-                vec![AgentTaskSpec {
+                launches(vec![AgentTaskSpec {
                     task_id: "cancel_me".to_string(),
                     role: "explorer".to_string(),
                     prompt: "inspect".to_string(),
@@ -2475,7 +2489,7 @@ mod tests {
                     requested_write_set: Vec::new(),
                     dependency_ids: Vec::new(),
                     timeout_seconds: None,
-                }],
+                }]),
             )
             .await
             .unwrap();
@@ -2511,7 +2525,7 @@ mod tests {
         executor
             .spawn(
                 SubagentParentContext::default(),
-                vec![AgentTaskSpec {
+                launches(vec![AgentTaskSpec {
                     task_id: "one".to_string(),
                     role: "writer".to_string(),
                     prompt: "write".to_string(),
@@ -2520,7 +2534,7 @@ mod tests {
                     requested_write_set: vec!["src".to_string()],
                     dependency_ids: Vec::new(),
                     timeout_seconds: None,
-                }],
+                }]),
             )
             .await
             .unwrap();
@@ -2528,7 +2542,7 @@ mod tests {
         let error = executor
             .spawn(
                 SubagentParentContext::default(),
-                vec![AgentTaskSpec {
+                launches(vec![AgentTaskSpec {
                     task_id: "two".to_string(),
                     role: "writer".to_string(),
                     prompt: "write".to_string(),
@@ -2537,7 +2551,7 @@ mod tests {
                     requested_write_set: vec!["src/lib.rs".to_string()],
                     dependency_ids: Vec::new(),
                     timeout_seconds: None,
-                }],
+                }]),
             )
             .await
             .expect_err("conflicting lease must fail");
@@ -2553,7 +2567,7 @@ mod tests {
         let error = executor
             .spawn(
                 SubagentParentContext::default(),
-                vec![
+                launches(vec![
                     AgentTaskSpec {
                         task_id: "one".to_string(),
                         role: "writer".to_string(),
@@ -2574,7 +2588,7 @@ mod tests {
                         dependency_ids: Vec::new(),
                         timeout_seconds: None,
                     },
-                ],
+                ]),
             )
             .await
             .expect_err("conflicting batch must fail");
@@ -2592,7 +2606,7 @@ mod tests {
         let handles = executor
             .spawn(
                 SubagentParentContext::default(),
-                vec![AgentTaskSpec {
+                launches(vec![AgentTaskSpec {
                     task_id: "retry".to_string(),
                     role: "writer".to_string(),
                     prompt: "write".to_string(),
@@ -2601,7 +2615,7 @@ mod tests {
                     requested_write_set: vec!["src".to_string()],
                     dependency_ids: Vec::new(),
                     timeout_seconds: None,
-                }],
+                }]),
             )
             .await
             .expect("claims must be released after failed batch");
@@ -2630,7 +2644,7 @@ mod tests {
         let handles = executor
             .spawn(
                 parent.clone(),
-                vec![
+                launches(vec![
                     AgentTaskSpec {
                         task_id: "inspect".to_string(),
                         role: "explorer".to_string(),
@@ -2651,7 +2665,7 @@ mod tests {
                         dependency_ids: vec!["inspect".to_string()],
                         timeout_seconds: None,
                     },
-                ],
+                ]),
             )
             .await
             .unwrap();
@@ -2721,7 +2735,7 @@ mod tests {
         let handles = executor
             .spawn(
                 parent.clone(),
-                vec![
+                launches(vec![
                     AgentTaskSpec {
                         task_id: "inspect".to_string(),
                         role: "explorer".to_string(),
@@ -2742,7 +2756,7 @@ mod tests {
                         dependency_ids: vec!["inspect".to_string()],
                         timeout_seconds: None,
                     },
-                ],
+                ]),
             )
             .await
             .unwrap();
@@ -2799,7 +2813,7 @@ mod tests {
         let handles = executor
             .spawn(
                 SubagentParentContext::default(),
-                vec![
+                launches(vec![
                     AgentTaskSpec {
                         task_id: "inspect".to_string(),
                         role: "explorer".to_string(),
@@ -2820,7 +2834,7 @@ mod tests {
                         dependency_ids: vec!["inspect".to_string()],
                         timeout_seconds: None,
                     },
-                ],
+                ]),
             )
             .await
             .unwrap();
@@ -2891,7 +2905,7 @@ mod tests {
         let handles = executor
             .spawn(
                 SubagentParentContext::default(),
-                vec![
+                launches(vec![
                     AgentTaskSpec {
                         task_id: "inspect".to_string(),
                         role: "explorer".to_string(),
@@ -2912,7 +2926,7 @@ mod tests {
                         dependency_ids: vec!["inspect".to_string()],
                         timeout_seconds: None,
                     },
-                ],
+                ]),
             )
             .await
             .unwrap();
@@ -2955,7 +2969,7 @@ mod tests {
         let error = executor
             .spawn(
                 SubagentParentContext::default(),
-                vec![
+                launches(vec![
                     AgentTaskSpec {
                         task_id: "a".to_string(),
                         role: "explorer".to_string(),
@@ -2976,7 +2990,7 @@ mod tests {
                         dependency_ids: vec!["a".to_string()],
                         timeout_seconds: None,
                     },
-                ],
+                ]),
             )
             .await
             .expect_err("cyclic dependencies must be rejected");
@@ -3008,7 +3022,7 @@ mod tests {
         let handles = executor
             .spawn(
                 owner.clone(),
-                vec![AgentTaskSpec {
+                launches(vec![AgentTaskSpec {
                     task_id: "inspect".to_string(),
                     role: "explorer".to_string(),
                     prompt: "inspect".to_string(),
@@ -3017,7 +3031,7 @@ mod tests {
                     requested_write_set: Vec::new(),
                     dependency_ids: Vec::new(),
                     timeout_seconds: None,
-                }],
+                }]),
             )
             .await
             .unwrap();
@@ -3068,7 +3082,7 @@ mod tests {
         executor
             .spawn(
                 SubagentParentContext::default(),
-                vec![AgentTaskSpec {
+                launches(vec![AgentTaskSpec {
                     task_id: "root".to_string(),
                     role: "explorer".to_string(),
                     prompt: "inspect".to_string(),
@@ -3077,7 +3091,7 @@ mod tests {
                     requested_write_set: Vec::new(),
                     dependency_ids: Vec::new(),
                     timeout_seconds: None,
-                }],
+                }]),
             )
             .await
             .unwrap();
@@ -3087,7 +3101,7 @@ mod tests {
                     parent_agent_id: Some("agent_parent".into()),
                     ..SubagentParentContext::default()
                 },
-                vec![AgentTaskSpec {
+                launches(vec![AgentTaskSpec {
                     task_id: "nested".to_string(),
                     role: "explorer".to_string(),
                     prompt: "inspect".to_string(),
@@ -3096,7 +3110,7 @@ mod tests {
                     requested_write_set: Vec::new(),
                     dependency_ids: Vec::new(),
                     timeout_seconds: None,
-                }],
+                }]),
             )
             .await
             .unwrap();
