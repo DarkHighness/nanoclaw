@@ -147,20 +147,22 @@ pub(crate) fn load_theme_catalog(
     theme_file: Option<&str>,
     active_override: Option<&str>,
 ) -> Result<ThemeCatalog> {
-    let mut catalog = parse_theme_catalog(BUILTIN_THEME_CATALOG)
+    let mut catalog_file = parse_theme_catalog_file(BUILTIN_THEME_CATALOG)
         .context("failed to parse builtin code-agent themes")?;
     if let Some(theme_file) = theme_file {
         let path = resolve_path(workspace_root, theme_file);
         let raw = std::fs::read_to_string(&path).with_context(|| {
             format!("failed to read code-agent theme catalog {}", path.display())
         })?;
-        catalog = parse_theme_catalog(&raw).with_context(|| {
+        let user_catalog = parse_theme_catalog_file(&raw).with_context(|| {
             format!(
                 "failed to parse code-agent theme catalog {}",
                 path.display()
             )
         })?;
+        catalog_file = merge_theme_catalog_files(catalog_file, user_catalog);
     }
+    let mut catalog = materialize_theme_catalog(catalog_file)?;
     if let Some(active_override) = active_override {
         ensure!(
             catalog.contains(active_override),
@@ -172,7 +174,14 @@ pub(crate) fn load_theme_catalog(
 }
 
 fn parse_theme_catalog(raw: &str) -> Result<ThemeCatalog> {
-    let parsed: ThemeCatalogFile = toml::from_str(raw)?;
+    materialize_theme_catalog(parse_theme_catalog_file(raw)?)
+}
+
+fn parse_theme_catalog_file(raw: &str) -> Result<ThemeCatalogFile> {
+    Ok(toml::from_str(raw)?)
+}
+
+fn materialize_theme_catalog(parsed: ThemeCatalogFile) -> Result<ThemeCatalog> {
     if parsed.themes.is_empty() {
         bail!("theme catalog must define at least one theme");
     }
@@ -226,6 +235,19 @@ fn parse_theme_catalog(raw: &str) -> Result<ThemeCatalog> {
         active_theme,
         themes,
     })
+}
+
+fn merge_theme_catalog_files(
+    mut builtin: ThemeCatalogFile,
+    user_catalog: ThemeCatalogFile,
+) -> ThemeCatalogFile {
+    // User-supplied files extend the builtin catalog and may deliberately
+    // replace a builtin theme by reusing the same id.
+    builtin.themes.extend(user_catalog.themes);
+    if user_catalog.active.is_some() {
+        builtin.active = user_catalog.active;
+    }
+    builtin
 }
 
 fn parse_hex_color(value: &str) -> Result<Color> {
@@ -322,6 +344,40 @@ header = "#17120d"
         let catalog = load_theme_catalog(dir.path(), Some("themes.toml"), None).unwrap();
         assert_eq!(catalog.active_theme, "paper");
         assert!(catalog.contains("paper"));
+        assert!(catalog.contains("graphite"));
+    }
+
+    #[test]
+    fn user_theme_catalog_extends_builtin_themes_when_active_is_omitted() {
+        let dir = tempdir().unwrap();
+        let theme_path = dir.path().join("themes.toml");
+        std::fs::write(
+            &theme_path,
+            r##"
+[themes.paper]
+summary = "light paper"
+bg = "#faf6ef"
+main_bg = "#f5f0e7"
+footer_bg = "#efe8de"
+bottom_pane_bg = "#e7dfd2"
+border_active = "#8b8175"
+text = "#2b241d"
+muted = "#6f665d"
+subtle = "#9d9388"
+accent = "#2f7c82"
+user = "#9a6a2f"
+assistant = "#3c7c56"
+error = "#b4554f"
+warn = "#b37a21"
+header = "#17120d"
+            "##,
+        )
+        .unwrap();
+
+        let catalog = load_theme_catalog(dir.path(), Some("themes.toml"), None).unwrap();
+        assert_eq!(catalog.active_theme, "graphite");
+        assert!(catalog.contains("paper"));
+        assert!(catalog.contains("graphite"));
     }
 
     #[test]

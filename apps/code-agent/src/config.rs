@@ -223,5 +223,12 @@ mod tests {
                 .iter()
                 .any(|theme| theme.id == "paper")
         );
+        assert!(
+            config
+                .theme_catalog
+                .themes
+                .iter()
+                .any(|theme| theme.id == "graphite")
+        );
     }
 }
