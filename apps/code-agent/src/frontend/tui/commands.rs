@@ -114,7 +114,7 @@ const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
         section: "Session",
         name: "new",
         usage: "new",
-        summary: "fresh top-level session",
+        summary: "fresh session and reload active artifacts",
     },
     SlashCommandSpec {
         section: "Session",

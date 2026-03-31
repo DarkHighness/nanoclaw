@@ -12,7 +12,7 @@ use crate::backend::{
     build_session_with_approval_mode, inject_process_env, inspect_sandbox_preflight,
 };
 use crate::frontend::startup_prompt::confirm_unsandboxed_startup_screen;
-use crate::frontend::tui::{CodeAgentTui, SharedUiState};
+use crate::frontend::tui::{CodeAgentTui, SessionBootstrapConfig, SharedUiState};
 use crate::options::AppOptions;
 use agent::AgentWorkspaceLayout;
 use agent::runtime::{HostRuntimeLimits, build_host_tokio_runtime};
@@ -116,10 +116,17 @@ async fn async_main(workspace_root: PathBuf, options: AppOptions) -> Result<()> 
 
     let ui_state = SharedUiState::new();
     let session = build_session(&options, &workspace_root).await?;
+    let session_bootstrap =
+        SessionBootstrapConfig::interactive(options.clone(), workspace_root.clone());
 
-    CodeAgentTui::new(session, options.one_shot_prompt.clone(), ui_state)
-        .run()
-        .await
+    CodeAgentTui::new(
+        session,
+        session_bootstrap,
+        options.one_shot_prompt.clone(),
+        ui_state,
+    )
+    .run()
+    .await
 }
 
 fn launch_headless_one_shot(

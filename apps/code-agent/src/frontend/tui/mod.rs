@@ -7,10 +7,11 @@ mod state;
 
 use crate::backend::{
     CodeAgentSession, LiveTaskControlAction, LiveTaskMessageAction, LiveTaskWaitOutcome,
-    LoadedMcpPrompt, LoadedMcpResource, SessionOperation, SessionOperationAction,
-    SessionOperationOutcome, SessionPermissionMode, SessionStartupSnapshot, UserInputPrompt,
-    preview_id,
+    LoadedMcpPrompt, LoadedMcpResource, SessionApprovalMode, SessionOperation,
+    SessionOperationAction, SessionOperationOutcome, SessionPermissionMode, SessionStartupSnapshot,
+    UserInputPrompt, build_session_with_approval_mode, preview_id,
 };
+use crate::options::AppOptions;
 use crate::statusline::status_line_fields;
 use approval::approval_decision_for_key;
 use commands::{
@@ -55,6 +56,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::layout::Rect;
 use std::collections::BTreeMap;
 use std::io::{self, Stdout};
+use std::path::PathBuf;
 use std::time::Instant;
 use tokio::task::{JoinHandle, spawn_local};
 use tokio::time::{Duration, sleep};
@@ -62,6 +64,7 @@ use tracing::error;
 
 pub struct CodeAgentTui {
     session: CodeAgentSession,
+    session_bootstrap: SessionBootstrapConfig,
     initial_prompt: Option<String>,
     ui_state: SharedUiState,
     event_renderer: SharedRenderObserver,
@@ -72,6 +75,19 @@ pub struct CodeAgentTui {
 
 enum OperatorTaskOutcome {
     WaitLiveTask(LiveTaskWaitOutcome),
+}
+
+#[derive(Clone)]
+pub(crate) struct SessionBootstrapConfig {
+    options: AppOptions,
+    workspace_root: PathBuf,
+    approval_mode: SessionApprovalMode,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct SessionRestartState {
+    permission_mode: SessionPermissionMode,
+    model_reasoning_effort: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -109,14 +125,51 @@ fn summarize_nonfatal_error(operation: &'static str, error: &anyhow::Error) -> S
     error.to_string()
 }
 
+impl SessionBootstrapConfig {
+    pub(crate) fn interactive(options: AppOptions, workspace_root: PathBuf) -> Self {
+        Self {
+            options,
+            workspace_root,
+            approval_mode: SessionApprovalMode::Interactive,
+        }
+    }
+
+    async fn build_for_restart(&self, restart: &SessionRestartState) -> Result<CodeAgentSession> {
+        let mut options = self.options.clone();
+        // `/new` should reboot the host session so startup-time overlays can be
+        // reloaded, but operator-selected model effort is still a live choice
+        // rather than part of the persisted artifact ledger.
+        options.primary_profile.reasoning_effort = restart.model_reasoning_effort.clone();
+        let session =
+            build_session_with_approval_mode(&options, &self.workspace_root, self.approval_mode)
+                .await?;
+        if restart.permission_mode != SessionPermissionMode::Default {
+            session.set_permission_mode(restart.permission_mode).await?;
+        }
+        Ok(session)
+    }
+}
+
+impl SessionRestartState {
+    fn capture(session: &CodeAgentSession) -> Self {
+        let startup = session.startup_snapshot();
+        Self {
+            permission_mode: startup.permission_mode,
+            model_reasoning_effort: startup.model_reasoning_effort,
+        }
+    }
+}
+
 impl CodeAgentTui {
     pub fn new(
         session: CodeAgentSession,
+        session_bootstrap: SessionBootstrapConfig,
         initial_prompt: Option<String>,
         ui_state: SharedUiState,
     ) -> Self {
         Self {
             session,
+            session_bootstrap,
             initial_prompt,
             event_renderer: SharedRenderObserver::new(ui_state.clone()),
             ui_state,
@@ -1823,11 +1876,15 @@ impl CodeAgentTui {
                     return Ok(false);
                 }
 
+                let restart = SessionRestartState::capture(&self.session);
+                let previous_session = self.session.clone();
+                let new_session = self.session_bootstrap.build_for_restart(&restart).await?;
                 let dropped_commands = self.session.clear_queued_commands().await;
-                let outcome = self
-                    .session
-                    .apply_session_operation(SessionOperation::StartFresh)
-                    .await?;
+                let outcome = build_started_fresh_outcome(&new_session).await;
+                let _ = previous_session
+                    .end_session(Some("operator_new_session".to_string()))
+                    .await;
+                self.session = new_session;
                 self.replace_after_session_operation(outcome, dropped_commands);
                 Ok(false)
             }
@@ -2743,6 +2800,18 @@ fn queued_command_preview(command: &RuntimeCommand) -> String {
     }
 }
 
+async fn build_started_fresh_outcome(session: &CodeAgentSession) -> SessionOperationOutcome {
+    let startup = session.startup_snapshot();
+    SessionOperationOutcome {
+        action: SessionOperationAction::StartedFresh,
+        session_ref: startup.active_session_ref.clone(),
+        active_agent_session_ref: startup.root_agent_session_id.clone(),
+        requested_agent_session_ref: None,
+        startup,
+        transcript: session.active_visible_transcript().await,
+    }
+}
+
 fn pending_control_kind_label(kind: crate::backend::PendingControlKind) -> &'static str {
     match kind {
         crate::backend::PendingControlKind::Prompt => "prompt",
@@ -2791,7 +2860,7 @@ fn build_startup_inspector(session: &state::SessionSummary) -> Vec<InspectorEntr
         InspectorEntry::collection("/artifact <artifact-ref>", Some("inspect artifact")),
         InspectorEntry::collection("/agent_sessions", Some("inspect or resume agents")),
         InspectorEntry::collection("/spawn_task <role> <prompt>", Some("launch child agent")),
-        InspectorEntry::collection("/new", Some("start fresh without deleting history")),
+        InspectorEntry::collection("/new", Some("start fresh and reload active artifacts")),
         InspectorEntry::section("Environment"),
         InspectorEntry::field(
             "store",

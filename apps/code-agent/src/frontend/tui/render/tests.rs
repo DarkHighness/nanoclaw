@@ -1493,7 +1493,7 @@ fn command_hint_text_shows_browse_window_ellipsis() {
                 section: "Session",
                 name: "new",
                 usage: "new",
-                summary: "fresh top-level session",
+                summary: "fresh session and reload active artifacts",
             },
             SlashCommandSpec {
                 section: "History",
