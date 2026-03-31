@@ -425,7 +425,10 @@ mod tests {
     use tempfile::tempdir;
     use time::{Duration, OffsetDateTime};
     use tokio::fs;
-    use types::{AgentSessionId, Message, SessionEventEnvelope, SessionId};
+    use types::{
+        AgentSessionId, ExperimentEventEnvelope, ExperimentId, Message, SessionEventEnvelope,
+        SessionId,
+    };
 
     macro_rules! bounded_async_test {
         (async fn $name:ident() $body:block) => {
@@ -997,6 +1000,26 @@ mod tests {
             &self,
             _session_id: &SessionId,
         ) -> std::result::Result<Vec<Message>, SessionStoreError> {
+            Ok(Vec::new())
+        }
+
+        async fn append_experiment(
+            &self,
+            _event: ExperimentEventEnvelope,
+        ) -> std::result::Result<(), SessionStoreError> {
+            Ok(())
+        }
+
+        async fn list_experiments(
+            &self,
+        ) -> std::result::Result<Vec<store::ExperimentSummary>, SessionStoreError> {
+            Ok(Vec::new())
+        }
+
+        async fn experiment_events(
+            &self,
+            _experiment_id: &ExperimentId,
+        ) -> std::result::Result<Vec<ExperimentEventEnvelope>, SessionStoreError> {
             Ok(Vec::new())
         }
 

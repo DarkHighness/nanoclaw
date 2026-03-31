@@ -6,7 +6,7 @@ use crate::{
     EventSink, Result, SessionMemoryExportBundle, SessionMemoryExportRequest, SessionSearchResult,
     SessionStore, SessionStoreError, SessionSummary, apply_memory_export_request,
     build_memory_export_record, group_events_for_memory_export, search_session_events,
-    sort_memory_export_records,
+    sort_experiment_summaries, sort_memory_export_records, summarize_experiment_events,
 };
 use async_trait::async_trait;
 use futures::{StreamExt, stream};
@@ -15,10 +15,12 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::fs::{self, OpenOptions};
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 use tokio::sync::Mutex;
 use tracing::{debug, info};
-use types::{AgentSessionId, Message, SessionEventEnvelope, SessionId};
+use types::{
+    AgentSessionId, ExperimentEventEnvelope, ExperimentId, Message, SessionEventEnvelope, SessionId,
+};
 const SEARCH_REPLAY_CONCURRENCY_LIMIT: usize = 8;
 
 use self::index_sidecar::{
@@ -58,6 +60,7 @@ impl FileSessionStore {
         let root_dir = root_dir.into();
         info!(root = %root_dir.display(), "opening file session store");
         fs::create_dir_all(&root_dir).await?;
+        fs::create_dir_all(root_dir.join("experiments")).await?;
         let mut index = load_or_rebuild_index(&root_dir).await?;
         let pruned = select_sessions_to_prune(&index, &options.retention, current_timestamp_ms());
         for session_id in &pruned {
@@ -87,6 +90,15 @@ impl FileSessionStore {
 
     fn session_path(&self, session_id: &SessionId) -> PathBuf {
         self.root_dir.join(format!("{}.jsonl", session_id.as_str()))
+    }
+
+    fn experiments_dir(&self) -> PathBuf {
+        self.root_dir.join("experiments")
+    }
+
+    fn experiment_path(&self, experiment_id: &ExperimentId) -> PathBuf {
+        self.experiments_dir()
+            .join(format!("{}.jsonl", experiment_id.as_str()))
     }
 
     async fn persist_index(&self, index: &FileSessionStoreIndex) -> Result<()> {
@@ -181,6 +193,49 @@ impl FileSessionStore {
             index.clone()
         };
         self.persist_index(&index_snapshot).await?;
+        Ok(())
+    }
+
+    async fn append_locked_experiment_events(
+        &self,
+        events: &[ExperimentEventEnvelope],
+    ) -> Result<()> {
+        if events.is_empty() {
+            return Ok(());
+        }
+
+        let mut active_experiment_id: Option<ExperimentId> = None;
+        let mut active_file: Option<tokio::fs::File> = None;
+
+        for event in events {
+            if active_experiment_id.as_ref() != Some(&event.experiment_id) {
+                if let Some(mut file) = active_file.take() {
+                    file.flush().await?;
+                }
+                let path = self.experiment_path(&event.experiment_id);
+                if let Some(parent) = path.parent() {
+                    fs::create_dir_all(parent).await?;
+                }
+                active_file = Some(
+                    OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(&path)
+                        .await?,
+                );
+                active_experiment_id = Some(event.experiment_id.clone());
+            }
+
+            let file = active_file.as_mut().expect("active experiment file");
+            let encoded = serde_json::to_string(event)?;
+            file.write_all(encoded.as_bytes()).await?;
+            file.write_all(b"\n").await?;
+        }
+
+        if let Some(mut file) = active_file.take() {
+            file.flush().await?;
+        }
+
         Ok(())
     }
 }
@@ -312,6 +367,41 @@ impl SessionStore for FileSessionStore {
         Ok(replay_transcript(&self.events(session_id).await?))
     }
 
+    async fn append_experiment(&self, event: ExperimentEventEnvelope) -> Result<()> {
+        let _guard = self.write_lock.lock().await;
+        self.append_locked_experiment_events(std::slice::from_ref(&event))
+            .await
+    }
+
+    async fn append_experiment_batch(&self, events: Vec<ExperimentEventEnvelope>) -> Result<()> {
+        let _guard = self.write_lock.lock().await;
+        self.append_locked_experiment_events(&events).await
+    }
+
+    async fn list_experiments(&self) -> Result<Vec<crate::ExperimentSummary>> {
+        let experiment_ids = list_experiment_file_ids(&self.experiments_dir()).await?;
+        let mut experiments = Vec::new();
+        for experiment_id in experiment_ids {
+            let events = self.experiment_events(&experiment_id).await?;
+            if let Some(summary) = summarize_experiment_events(&experiment_id, &events) {
+                experiments.push(summary);
+            }
+        }
+        sort_experiment_summaries(&mut experiments);
+        Ok(experiments)
+    }
+
+    async fn experiment_events(
+        &self,
+        experiment_id: &ExperimentId,
+    ) -> Result<Vec<ExperimentEventEnvelope>> {
+        let path = self.experiment_path(experiment_id);
+        if !fs::try_exists(&path).await? {
+            return Err(SessionStoreError::ExperimentNotFound(experiment_id.clone()));
+        }
+        load_experiment_events_from_path(&path).await
+    }
+
     async fn export_for_memory(
         &self,
         request: SessionMemoryExportRequest,
@@ -388,6 +478,38 @@ impl SessionStore for FileSessionStore {
     }
 }
 
+async fn load_experiment_events_from_path(path: &Path) -> Result<Vec<ExperimentEventEnvelope>> {
+    let file = fs::File::open(path).await?;
+    let mut lines = tokio::io::BufReader::new(file).lines();
+    let mut events = Vec::new();
+    while let Some(line) = lines.next_line().await? {
+        if line.trim().is_empty() {
+            continue;
+        }
+        events.push(serde_json::from_str(&line)?);
+    }
+    Ok(events)
+}
+
+async fn list_experiment_file_ids(experiments_dir: &Path) -> Result<Vec<ExperimentId>> {
+    let mut experiment_ids = Vec::new();
+    let mut entries = fs::read_dir(experiments_dir).await?;
+    while let Some(entry) = entries.next_entry().await? {
+        if !entry.file_type().await?.is_file() {
+            continue;
+        }
+        let path = entry.path();
+        if path.extension().and_then(|value| value.to_str()) != Some("jsonl") {
+            continue;
+        }
+        if let Some(stem) = path.file_stem().and_then(|value| value.to_str()) {
+            experiment_ids.push(ExperimentId::from(stem));
+        }
+    }
+    experiment_ids.sort();
+    Ok(experiment_ids)
+}
+
 fn rebuild_index_record(event: &types::SessionEventKind) -> bool {
     matches!(
         event,
@@ -444,7 +566,9 @@ mod tests {
     use std::time::Duration;
     use types::{
         AgentArtifact, AgentEnvelope, AgentEnvelopeKind, AgentHandle, AgentId, AgentResultEnvelope,
-        AgentSessionId, AgentStatus, AgentTaskSpec, ContextWindowUsage, Message, MessageId,
+        AgentSessionId, AgentStatus, AgentTaskSpec, BaselineId, CandidateId, ContextWindowUsage,
+        ExperimentEventEnvelope, ExperimentEventKind, ExperimentId, ExperimentSpec,
+        ExperimentTarget, Message, MessageId, PromotionDecision, PromotionDecisionKind,
         SessionEventEnvelope, SessionEventKind, SessionId, TokenLedgerSnapshot, TokenUsage,
         TokenUsagePhase,
     };
@@ -540,6 +664,92 @@ mod tests {
                     .as_deref(),
                 Some("ship it")
             );
+        }
+    );
+
+    bounded_async_test!(
+        async fn persists_experiment_events_across_store_reopen() {
+            let dir = tempfile::tempdir().unwrap();
+            let experiment_id = ExperimentId::from("experiment-file");
+            let baseline_id = BaselineId::from("baseline-file");
+            let candidate_id = CandidateId::from("candidate-file");
+
+            let store = FileSessionStore::open(dir.path()).await.unwrap();
+            store
+                .append_experiment(ExperimentEventEnvelope::new(
+                    experiment_id.clone(),
+                    ExperimentEventKind::Started {
+                        spec: ExperimentSpec {
+                            target: ExperimentTarget::Workflow,
+                            goal: "stabilize planner retries".to_string(),
+                            source_session_id: Some(SessionId::from("session-source")),
+                            source_agent_session_id: Some(AgentSessionId::from("agent-source")),
+                            metadata: json!({"suite":"workflow-regression"}),
+                        },
+                    },
+                ))
+                .await
+                .unwrap();
+            store
+                .append_experiment_batch(vec![
+                    ExperimentEventEnvelope::new(
+                        experiment_id.clone(),
+                        ExperimentEventKind::BaselinePinned {
+                            baseline: types::BaselineSpec {
+                                baseline_id: baseline_id.clone(),
+                                target: ExperimentTarget::Workflow,
+                                label: "workflow-v1".to_string(),
+                                description: None,
+                                config: None,
+                            },
+                        },
+                    ),
+                    ExperimentEventEnvelope::new(
+                        experiment_id.clone(),
+                        ExperimentEventKind::CandidateGenerated {
+                            candidate: types::CandidateSpec {
+                                candidate_id: candidate_id.clone(),
+                                baseline_id: baseline_id,
+                                target: ExperimentTarget::Workflow,
+                                label: "workflow-v2".to_string(),
+                                description: Some("tighten retry gates".to_string()),
+                                config: json!({"retries":2}),
+                            },
+                        },
+                    ),
+                    ExperimentEventEnvelope::new(
+                        experiment_id.clone(),
+                        ExperimentEventKind::CandidateRejected {
+                            candidate_id: candidate_id.clone(),
+                            decision: PromotionDecision {
+                                kind: PromotionDecisionKind::Rejected,
+                                reason: "verifier coverage regressed".to_string(),
+                            },
+                        },
+                    ),
+                ])
+                .await
+                .unwrap();
+            drop(store);
+
+            let reopened = FileSessionStore::open(dir.path()).await.unwrap();
+            let events = reopened.experiment_events(&experiment_id).await.unwrap();
+            assert_eq!(events.len(), 4);
+
+            let summaries = reopened.list_experiments().await.unwrap();
+            assert_eq!(summaries.len(), 1);
+            assert_eq!(summaries[0].experiment_id, experiment_id);
+            assert_eq!(summaries[0].baseline_count, 1);
+            assert_eq!(summaries[0].candidate_count, 1);
+            assert_eq!(
+                summaries[0].goal.as_deref(),
+                Some("stabilize planner retries")
+            );
+            assert_eq!(
+                summaries[0].last_decision,
+                Some(PromotionDecisionKind::Rejected)
+            );
+            assert_eq!(summaries[0].promoted_candidate_id, None);
         }
     );
 

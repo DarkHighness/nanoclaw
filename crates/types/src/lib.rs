@@ -5,6 +5,7 @@
 
 mod error;
 mod event;
+mod experiment;
 mod hook;
 mod id;
 mod message;
@@ -13,6 +14,7 @@ mod usage;
 
 pub use error::*;
 pub use event::*;
+pub use experiment::*;
 pub use hook::*;
 pub use id::*;
 pub use message::*;

@@ -3,12 +3,15 @@ use crate::{
     EventSink, Result, SessionMemoryExportBundle, SessionMemoryExportRequest, SessionSearchResult,
     SessionStore, SessionStoreError, SessionSummary, apply_memory_export_request,
     build_memory_export_record, group_events_for_memory_export, search_session_events,
-    sort_memory_export_records, summarize_session_events,
+    sort_experiment_summaries, sort_memory_export_records, summarize_experiment_events,
+    summarize_session_events,
 };
 use async_trait::async_trait;
 use dashmap::DashMap;
 use std::sync::Arc;
-use types::{AgentSessionId, Message, SessionEventEnvelope, SessionId};
+use types::{
+    AgentSessionId, ExperimentEventEnvelope, ExperimentId, Message, SessionEventEnvelope, SessionId,
+};
 
 #[derive(Clone, Default)]
 pub struct InMemorySessionStore {
@@ -16,6 +19,9 @@ pub struct InMemorySessionStore {
     // search, and memory export. A sharded map removes the global store lock
     // while keeping each session's event vector behavior unchanged.
     events: Arc<DashMap<SessionId, Vec<SessionEventEnvelope>>>,
+    // Experiments are durable optimization artifacts, not transcript turns, so
+    // they stay on a separate append-only lane inside the same backend.
+    experiments: Arc<DashMap<ExperimentId, Vec<ExperimentEventEnvelope>>>,
 }
 
 impl InMemorySessionStore {
@@ -117,6 +123,44 @@ impl SessionStore for InMemorySessionStore {
         Ok(replay_transcript(&self.events(session_id).await?))
     }
 
+    async fn append_experiment(&self, event: ExperimentEventEnvelope) -> Result<()> {
+        self.experiments
+            .entry(event.experiment_id.clone())
+            .or_default()
+            .push(event);
+        Ok(())
+    }
+
+    async fn append_experiment_batch(&self, events: Vec<ExperimentEventEnvelope>) -> Result<()> {
+        for event in events {
+            self.experiments
+                .entry(event.experiment_id.clone())
+                .or_default()
+                .push(event);
+        }
+        Ok(())
+    }
+
+    async fn list_experiments(&self) -> Result<Vec<crate::ExperimentSummary>> {
+        let mut experiments = self
+            .experiments
+            .iter()
+            .filter_map(|entry| summarize_experiment_events(entry.key(), entry.value()))
+            .collect::<Vec<_>>();
+        sort_experiment_summaries(&mut experiments);
+        Ok(experiments)
+    }
+
+    async fn experiment_events(
+        &self,
+        experiment_id: &ExperimentId,
+    ) -> Result<Vec<ExperimentEventEnvelope>> {
+        self.experiments
+            .get(experiment_id)
+            .map(|entry| entry.value().clone())
+            .ok_or_else(|| SessionStoreError::ExperimentNotFound(experiment_id.clone()))
+    }
+
     async fn export_for_memory(
         &self,
         request: SessionMemoryExportRequest,
@@ -194,9 +238,10 @@ mod tests {
     use serde_json::json;
     use types::{
         AgentArtifact, AgentEnvelope, AgentEnvelopeKind, AgentHandle, AgentId, AgentResultEnvelope,
-        AgentSessionId, AgentStatus, AgentTaskSpec, ContextWindowUsage, Message,
-        SessionEventEnvelope, SessionEventKind, SessionId, TokenLedgerSnapshot, TokenUsage,
-        TokenUsagePhase,
+        AgentSessionId, AgentStatus, AgentTaskSpec, BaselineId, CandidateId, ContextWindowUsage,
+        ExperimentEventEnvelope, ExperimentEventKind, ExperimentId, ExperimentSpec,
+        ExperimentTarget, Message, PromotionDecision, PromotionDecisionKind, SessionEventEnvelope,
+        SessionEventKind, SessionId, TokenLedgerSnapshot, TokenUsage, TokenUsagePhase,
     };
 
     macro_rules! bounded_async_test {
@@ -207,6 +252,92 @@ mod tests {
             }
         };
     }
+
+    bounded_async_test!(
+        async fn archives_experiment_events_with_latest_summary() {
+            let store = InMemorySessionStore::new();
+            let experiment_id = ExperimentId::from("experiment-memory");
+            let baseline_id = BaselineId::from("baseline-memory");
+            let candidate_id = CandidateId::from("candidate-memory");
+
+            store
+                .append_experiment(ExperimentEventEnvelope::new(
+                    experiment_id.clone(),
+                    ExperimentEventKind::Started {
+                        spec: ExperimentSpec {
+                            target: ExperimentTarget::Prompt,
+                            goal: "reduce invalid tool plans".to_string(),
+                            source_session_id: Some(SessionId::from("session-source")),
+                            source_agent_session_id: Some(AgentSessionId::from("agent-source")),
+                            metadata: json!({"suite":"planner-smoke"}),
+                        },
+                    },
+                ))
+                .await
+                .unwrap();
+            store
+                .append_experiment_batch(vec![
+                    ExperimentEventEnvelope::new(
+                        experiment_id.clone(),
+                        ExperimentEventKind::BaselinePinned {
+                            baseline: types::BaselineSpec {
+                                baseline_id: baseline_id.clone(),
+                                target: ExperimentTarget::Prompt,
+                                label: "prompt-v1".to_string(),
+                                description: None,
+                                config: None,
+                            },
+                        },
+                    ),
+                    ExperimentEventEnvelope::new(
+                        experiment_id.clone(),
+                        ExperimentEventKind::CandidateGenerated {
+                            candidate: types::CandidateSpec {
+                                candidate_id: candidate_id.clone(),
+                                baseline_id: baseline_id.clone(),
+                                target: ExperimentTarget::Prompt,
+                                label: "prompt-v2".to_string(),
+                                description: Some("tighten planner rubric".to_string()),
+                                config: json!({"variant":"v2"}),
+                            },
+                        },
+                    ),
+                    ExperimentEventEnvelope::new(
+                        experiment_id.clone(),
+                        ExperimentEventKind::CandidatePromoted {
+                            candidate_id: candidate_id.clone(),
+                            decision: PromotionDecision {
+                                kind: PromotionDecisionKind::Promoted,
+                                reason: "offline evals improved".to_string(),
+                            },
+                        },
+                    ),
+                ])
+                .await
+                .unwrap();
+
+            let summaries = store.list_experiments().await.unwrap();
+            assert_eq!(summaries.len(), 1);
+            assert_eq!(summaries[0].experiment_id, experiment_id);
+            assert_eq!(summaries[0].baseline_count, 1);
+            assert_eq!(summaries[0].candidate_count, 1);
+            assert_eq!(
+                summaries[0].goal.as_deref(),
+                Some("reduce invalid tool plans")
+            );
+            assert_eq!(
+                summaries[0].promoted_candidate_id.as_ref(),
+                Some(&candidate_id)
+            );
+            assert_eq!(
+                summaries[0].last_decision,
+                Some(PromotionDecisionKind::Promoted)
+            );
+
+            let events = store.experiment_events(&experiment_id).await.unwrap();
+            assert_eq!(events.len(), 4);
+        }
+    );
 
     bounded_async_test!(
         async fn replays_basic_transcript() {

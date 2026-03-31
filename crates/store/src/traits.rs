@@ -6,8 +6,9 @@ use serde_json::Value;
 use std::collections::{BTreeMap, HashSet};
 use thiserror::Error;
 use types::{
-    AgentSessionId, HookEffect, Message, SessionEventEnvelope, SessionEventKind, SessionId,
-    TokenLedgerSnapshot, TokenUsage,
+    AgentSessionId, CandidateId, ExperimentEventEnvelope, ExperimentEventKind, ExperimentId,
+    ExperimentTarget, HookEffect, Message, PromotionDecisionKind, SessionEventEnvelope,
+    SessionEventKind, SessionId, TokenLedgerSnapshot, TokenUsage,
 };
 
 const TOKEN_USAGE_CHILD_FETCH_CONCURRENCY_LIMIT: usize = 8;
@@ -16,6 +17,8 @@ const TOKEN_USAGE_CHILD_FETCH_CONCURRENCY_LIMIT: usize = 8;
 pub enum SessionStoreError {
     #[error("session not found: {0}")]
     SessionNotFound(SessionId),
+    #[error("experiment not found: {0}")]
+    ExperimentNotFound(ExperimentId),
     #[error("session store IO error: {0}")]
     Io(#[from] std::io::Error),
     #[error("session store JSON error: {0}")]
@@ -40,6 +43,28 @@ pub struct SessionSearchResult {
     pub summary: SessionSummary,
     pub matched_event_count: usize,
     pub preview_matches: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExperimentSummary {
+    pub experiment_id: ExperimentId,
+    pub first_timestamp_ms: u128,
+    pub last_timestamp_ms: u128,
+    pub event_count: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<ExperimentTarget>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub goal: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_session_id: Option<SessionId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_agent_session_id: Option<AgentSessionId>,
+    pub baseline_count: usize,
+    pub candidate_count: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub promoted_candidate_id: Option<CandidateId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_decision: Option<PromotionDecisionKind>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -213,6 +238,106 @@ pub fn summarize_session_events(
         transcript_message_count,
         last_user_prompt,
     })
+}
+
+#[must_use]
+pub fn summarize_experiment_events(
+    experiment_id: &ExperimentId,
+    events: &[ExperimentEventEnvelope],
+) -> Option<ExperimentSummary> {
+    if events.is_empty() {
+        return None;
+    }
+
+    let mut first_timestamp_ms = u128::MAX;
+    let mut last_timestamp_ms = 0;
+    let mut target = None;
+    let mut goal = None;
+    let mut source_session_id = None;
+    let mut source_agent_session_id = None;
+    let mut baseline_ids = HashSet::new();
+    let mut candidate_ids = HashSet::new();
+    let mut promoted_candidate_id = None;
+    let mut last_decision = None;
+
+    for event in events {
+        first_timestamp_ms = first_timestamp_ms.min(event.timestamp_ms);
+        last_timestamp_ms = last_timestamp_ms.max(event.timestamp_ms);
+
+        match &event.event {
+            ExperimentEventKind::Started { spec } => {
+                target.get_or_insert(spec.target);
+                if goal.is_none() {
+                    goal = Some(spec.goal.clone());
+                }
+                if source_session_id.is_none() {
+                    source_session_id = spec.source_session_id.clone();
+                }
+                if source_agent_session_id.is_none() {
+                    source_agent_session_id = spec.source_agent_session_id.clone();
+                }
+            }
+            ExperimentEventKind::BaselinePinned { baseline } => {
+                baseline_ids.insert(baseline.baseline_id.clone());
+                target.get_or_insert(baseline.target);
+            }
+            ExperimentEventKind::CandidateGenerated { candidate } => {
+                baseline_ids.insert(candidate.baseline_id.clone());
+                candidate_ids.insert(candidate.candidate_id.clone());
+                target.get_or_insert(candidate.target);
+            }
+            ExperimentEventKind::CandidateEvaluated { evaluation } => {
+                candidate_ids.insert(evaluation.candidate_id.clone());
+            }
+            ExperimentEventKind::CandidatePromoted {
+                candidate_id,
+                decision,
+            } => {
+                candidate_ids.insert(candidate_id.clone());
+                promoted_candidate_id = Some(candidate_id.clone());
+                last_decision = Some(decision.kind);
+            }
+            ExperimentEventKind::CandidateRejected {
+                candidate_id,
+                decision,
+            }
+            | ExperimentEventKind::CandidateRolledBack {
+                candidate_id,
+                decision,
+            } => {
+                candidate_ids.insert(candidate_id.clone());
+                last_decision = Some(decision.kind);
+            }
+        }
+    }
+
+    Some(ExperimentSummary {
+        experiment_id: experiment_id.clone(),
+        first_timestamp_ms,
+        last_timestamp_ms,
+        event_count: events.len(),
+        target,
+        goal,
+        source_session_id,
+        source_agent_session_id,
+        baseline_count: baseline_ids.len(),
+        candidate_count: candidate_ids.len(),
+        promoted_candidate_id,
+        last_decision,
+    })
+}
+
+pub fn sort_experiment_summaries(experiments: &mut [ExperimentSummary]) {
+    experiments.sort_by(|left, right| {
+        right
+            .last_timestamp_ms
+            .cmp(&left.last_timestamp_ms)
+            .then_with(|| {
+                left.experiment_id
+                    .as_str()
+                    .cmp(right.experiment_id.as_str())
+            })
+    });
 }
 
 #[must_use]
@@ -1221,6 +1346,18 @@ pub trait SessionStore: EventSink {
     async fn events(&self, session_id: &SessionId) -> Result<Vec<SessionEventEnvelope>>;
     async fn agent_session_ids(&self, session_id: &SessionId) -> Result<Vec<AgentSessionId>>;
     async fn replay_transcript(&self, session_id: &SessionId) -> Result<Vec<Message>>;
+    async fn append_experiment(&self, event: ExperimentEventEnvelope) -> Result<()>;
+    async fn append_experiment_batch(&self, events: Vec<ExperimentEventEnvelope>) -> Result<()> {
+        for event in events {
+            self.append_experiment(event).await?;
+        }
+        Ok(())
+    }
+    async fn list_experiments(&self) -> Result<Vec<ExperimentSummary>>;
+    async fn experiment_events(
+        &self,
+        experiment_id: &ExperimentId,
+    ) -> Result<Vec<ExperimentEventEnvelope>>;
     async fn token_usage(&self, session_id: &SessionId) -> Result<SessionTokenUsageReport> {
         let root_events = self.events(session_id).await?;
         let session = session_token_usage_snapshot(&root_events).map(|ledger| TokenUsageRecord {
