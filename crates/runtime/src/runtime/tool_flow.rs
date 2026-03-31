@@ -45,7 +45,7 @@ impl AgentRuntime {
             )
             .await?;
         let pre_effects = self
-            .apply_hook_effects(turn_id, pre_hooks, None, Some(&tool_name))
+            .apply_hook_effects_with_observer(turn_id, pre_hooks, None, Some(&tool_name), observer)
             .await?;
         if let Some(arguments) = pre_effects.rewritten_tool_arguments.clone() {
             call.arguments = arguments;
@@ -84,7 +84,13 @@ impl AgentRuntime {
                     )
                     .await?;
                 let permission_effects = self
-                    .apply_hook_effects(turn_id, permission_hooks, None, Some(&tool_name))
+                    .apply_hook_effects_with_observer(
+                        turn_id,
+                        permission_hooks,
+                        None,
+                        Some(&tool_name),
+                        observer,
+                    )
                     .await?;
                 if matches!(
                     permission_effects.permission_behavior,
@@ -338,7 +344,13 @@ impl AgentRuntime {
                     )
                     .await?;
                 let post_effects = self
-                    .apply_hook_effects(turn_id, post_hooks, None, Some(&tool_name))
+                    .apply_hook_effects_with_observer(
+                        turn_id,
+                        post_hooks,
+                        None,
+                        Some(&tool_name),
+                        observer,
+                    )
                     .await?;
                 if let Some(reason) = post_effects.blocked_reason("post tool hook blocked") {
                     return Err(AgentCoreError::HookBlocked(reason).into());
@@ -404,7 +416,13 @@ impl AgentRuntime {
             )
             .await?;
         let _ = self
-            .apply_hook_effects(turn_id, failure_hooks, None, Some(&call.tool_name))
+            .apply_hook_effects_with_observer(
+                turn_id,
+                failure_hooks,
+                None,
+                Some(&call.tool_name),
+                observer,
+            )
             .await?;
         Ok(())
     }

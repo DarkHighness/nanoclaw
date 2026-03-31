@@ -1,5 +1,5 @@
 use super::AgentRuntime;
-use crate::{HookInvocationBatch, Result, RuntimeError};
+use crate::{HookInvocationBatch, Result, RuntimeError, RuntimeObserver, RuntimeProgressEvent};
 use types::{
     GateDecision, HookEffect, HookHandlerKind, HookMutationPermission, HookRegistration, Message,
     MessageId, MessageRole, MessageSelector, PermissionBehavior, PermissionDecision,
@@ -27,6 +27,12 @@ pub(super) enum TranscriptMutation {
     },
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum HookUiEvent {
+    Toast { variant: String, message: String },
+    PromptAppend { text: String, only_when_empty: bool },
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(super) struct AppliedHookEffects {
     pub current_message: Option<Message>,
@@ -40,6 +46,7 @@ pub(super) struct AppliedHookEffects {
     pub gate_reason: Option<String>,
     pub stop_reason: Option<String>,
     pub rewritten_tool_arguments: Option<serde_json::Value>,
+    pub ui_events: Vec<HookUiEvent>,
 }
 
 impl AppliedHookEffects {
@@ -116,6 +123,48 @@ impl AgentRuntime {
         self.append_hook_messages(turn_id, &applied.appended_messages)
             .await?;
         Ok(applied)
+    }
+
+    pub(super) async fn apply_hook_effects_with_observer(
+        &mut self,
+        turn_id: &TurnId,
+        batch: HookInvocationBatch,
+        current_message: Option<Message>,
+        current_tool_name: Option<&ToolName>,
+        observer: &mut dyn RuntimeObserver,
+    ) -> Result<AppliedHookEffects> {
+        let applied = self
+            .apply_hook_effects(turn_id, batch, current_message, current_tool_name)
+            .await?;
+        self.emit_hook_ui_events(&applied, observer)?;
+        Ok(applied)
+    }
+
+    fn emit_hook_ui_events(
+        &self,
+        applied: &AppliedHookEffects,
+        observer: &mut dyn RuntimeObserver,
+    ) -> Result<()> {
+        for event in &applied.ui_events {
+            match event {
+                HookUiEvent::Toast { variant, message } => {
+                    observer.on_event(RuntimeProgressEvent::TuiToastShow {
+                        variant: variant.clone(),
+                        message: message.clone(),
+                    })?;
+                }
+                HookUiEvent::PromptAppend {
+                    text,
+                    only_when_empty,
+                } => {
+                    observer.on_event(RuntimeProgressEvent::TuiPromptAppend {
+                        text: text.clone(),
+                        only_when_empty: *only_when_empty,
+                    })?;
+                }
+            }
+        }
+        Ok(())
     }
 
     async fn apply_transcript_mutations(
@@ -354,6 +403,21 @@ fn apply_hook_effect(
         HookEffect::InjectInstruction { text } => {
             applied.injected_instructions.push(text);
         }
+        HookEffect::ShowToast { variant, message } => {
+            applied.ui_events.push(HookUiEvent::Toast {
+                variant: normalize_toast_variant(registration, variant)?,
+                message: require_non_empty_ui_text(registration, "toast message", message)?,
+            });
+        }
+        HookEffect::AppendPrompt {
+            text,
+            only_when_empty,
+        } => {
+            applied.ui_events.push(HookUiEvent::PromptAppend {
+                text: require_non_empty_ui_text(registration, "prompt append text", text)?,
+                only_when_empty,
+            });
+        }
         HookEffect::Stop { reason } => {
             if applied.stop_reason.is_none() {
                 applied.stop_reason = Some(reason);
@@ -450,6 +514,18 @@ fn validate_effect(registration: &HookRegistration, effect: &HookEffect) -> Resu
             {
                 return Err(RuntimeError::hook(format!(
                     "hook `{}` is not allowed to gate execution",
+                    registration.name
+                )));
+            }
+        }
+        HookEffect::ShowToast { .. } | HookEffect::AppendPrompt { .. } => {
+            if !host_defined
+                && !effect_policy
+                    .as_ref()
+                    .is_some_and(|policy| policy.allow_tui_event_emission)
+            {
+                return Err(RuntimeError::hook(format!(
+                    "hook `{}` is not allowed to emit tui events",
                     registration.name
                 )));
             }
@@ -614,4 +690,32 @@ fn merge_gate_decision(current: Option<GateDecision>, next: GateDecision) -> Gat
         (Some(GateDecision::Block), _) | (_, GateDecision::Block) => GateDecision::Block,
         _ => GateDecision::Allow,
     }
+}
+
+fn require_non_empty_ui_text(
+    registration: &HookRegistration,
+    field: &str,
+    text: String,
+) -> Result<String> {
+    if text.trim().is_empty() {
+        return Err(RuntimeError::hook(format!(
+            "hook `{}` emitted an empty {field}",
+            registration.name
+        )));
+    }
+    Ok(text)
+}
+
+fn normalize_toast_variant(registration: &HookRegistration, variant: String) -> Result<String> {
+    let normalized = variant.trim().to_ascii_lowercase();
+    if matches!(
+        normalized.as_str(),
+        "info" | "success" | "warning" | "error"
+    ) {
+        return Ok(normalized);
+    }
+    Err(RuntimeError::hook(format!(
+        "hook `{}` emitted unsupported toast variant `{variant}`",
+        registration.name
+    )))
 }

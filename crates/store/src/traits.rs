@@ -344,6 +344,13 @@ fn previewable_event_strings(event: &SessionEventEnvelope) -> Vec<String> {
                     HookEffect::AddContext { text } | HookEffect::InjectInstruction { text } => {
                         values.push(format!("{hook_name}: {text}"));
                     }
+                    HookEffect::ShowToast { variant, message } => {
+                        values.push(format!("{hook_name}: {variant}"));
+                        values.push(format!("{hook_name}: {message}"));
+                    }
+                    HookEffect::AppendPrompt { text, .. } => {
+                        values.push(format!("{hook_name}: {text}"));
+                    }
                     HookEffect::Stop { reason } => {
                         values.push(format!("{hook_name}: {reason}"));
                     }
@@ -463,6 +470,13 @@ pub(crate) fn searchable_event_strings(event: &SessionEventEnvelope) -> Vec<Stri
                         }));
                     }
                     HookEffect::AddContext { text } | HookEffect::InjectInstruction { text } => {
+                        values.push(text.clone());
+                    }
+                    HookEffect::ShowToast { variant, message } => {
+                        values.push(variant.clone());
+                        values.push(message.clone());
+                    }
+                    HookEffect::AppendPrompt { text, .. } => {
                         values.push(text.clone());
                     }
                     HookEffect::Stop { reason } => {
@@ -1159,6 +1173,21 @@ fn collect_memory_export_sections(events: &[SessionEventEnvelope]) -> MemoryExpo
                         }
                         HookEffect::AddContext { text }
                         | HookEffect::InjectInstruction { text } => {
+                            push_unique(
+                                &mut sections.follow_up,
+                                format!("{hook_name}: {}", preview_text(text, 120)),
+                            );
+                        }
+                        HookEffect::ShowToast { variant, message } => {
+                            push_unique(
+                                &mut sections.follow_up,
+                                format!(
+                                    "{hook_name}: toast {variant} {}",
+                                    preview_text(message, 120)
+                                ),
+                            );
+                        }
+                        HookEffect::AppendPrompt { text, .. } => {
                             push_unique(
                                 &mut sections.follow_up,
                                 format!("{hook_name}: {}", preview_text(text, 120)),

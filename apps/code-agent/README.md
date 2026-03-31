@@ -26,6 +26,8 @@ It intentionally keeps the host layer thin:
 - workspace skills loaded from conventional skill roots
 - interactive approval for destructive tools
 - backend-owned approval and runtime event contracts for frontend reuse
+- hook-emitted live TUI cues (`show_toast`, `append_prompt`) projected through
+  the runtime observer plane instead of synthetic transcript text
 - streaming assistant output in a `ratatui` TUI
 - manual and automatic context compaction
 - persistent session history with replay and export commands

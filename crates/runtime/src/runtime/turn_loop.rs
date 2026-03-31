@@ -55,14 +55,14 @@ impl AgentRuntime {
                 }
                 let drained = self.hook_runner.drain_async_invocations().await;
                 let _ = self
-                    .apply_hook_effects(turn_id, drained, None, None)
+                    .apply_hook_effects_with_observer(turn_id, drained, None, None, observer)
                     .await?;
                 let _ = self.drain_runtime_steers(observer).await?;
                 continue;
             }
 
             if self
-                .handle_stop_hooks(turn_id, hooks, &response.assistant_text)
+                .handle_stop_hooks(turn_id, hooks, &response.assistant_text, observer)
                 .await?
             {
                 continue;
@@ -359,6 +359,7 @@ impl AgentRuntime {
         turn_id: &TurnId,
         hooks: &[HookRegistration],
         assistant_text: &str,
+        observer: &mut dyn RuntimeObserver,
     ) -> Result<bool> {
         let stop_hooks = self
             .run_hooks(
@@ -376,7 +377,7 @@ impl AgentRuntime {
             )
             .await?;
         let stop_effects = self
-            .apply_hook_effects(turn_id, stop_hooks, None, None)
+            .apply_hook_effects_with_observer(turn_id, stop_hooks, None, None, observer)
             .await?;
         if let Some(reason) = stop_effects.blocked_reason("stop blocked") {
             self.append_event(

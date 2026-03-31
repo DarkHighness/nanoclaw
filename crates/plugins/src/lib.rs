@@ -414,6 +414,14 @@ message_mutation = "allow"
                 .effects
                 .allow_gate_decision
         );
+        assert!(
+            plan.hooks[0]
+                .execution
+                .as_ref()
+                .expect("plugin hook execution policy")
+                .effects
+                .allow_tui_event_emission
+        );
     }
 
     #[test]

@@ -32,6 +32,17 @@ pub enum RuntimeProgressEvent {
         source: String,
         message: String,
     },
+    // Hook-emitted UI cues stay on the live observer plane instead of entering
+    // durable transcript history, so hosts can surface them without
+    // reinterpreting provider-facing messages.
+    TuiToastShow {
+        variant: String,
+        message: String,
+    },
+    TuiPromptAppend {
+        text: String,
+        only_when_empty: bool,
+    },
     AssistantTextDelta {
         delta: String,
     },

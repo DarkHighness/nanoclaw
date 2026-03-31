@@ -3,13 +3,41 @@ use crate::{
     AgentRuntimeBuilder, DefaultCommandHookExecutor, DefaultWasmHookExecutor,
     FailClosedAgentHookEvaluator, HookRunner, ReqwestHttpHookExecutor,
 };
+use async_trait::async_trait;
 use skills::{Skill, SkillCatalog};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use store::{InMemorySessionStore, SessionStore};
 use tools::ToolExecutionContext;
-use types::{HookEvent, HookHandler, HookRegistration, PromptHookHandler, SessionEventKind};
+use types::{
+    HookContext, HookEffect, HookEffectPolicy, HookEvent, HookExecutionPolicy, HookHandler,
+    HookRegistration, HookResult, PromptHookHandler, SessionEventKind,
+};
+
+struct UiPromptEvaluator;
+
+#[async_trait]
+impl crate::PromptHookEvaluator for UiPromptEvaluator {
+    async fn evaluate(
+        &self,
+        _registration: &HookRegistration,
+        _context: HookContext,
+    ) -> crate::Result<HookResult> {
+        Ok(HookResult {
+            effects: vec![
+                HookEffect::ShowToast {
+                    variant: "warning".to_string(),
+                    message: "review the hook result".to_string(),
+                },
+                HookEffect::AppendPrompt {
+                    text: "queue a follow-up".to_string(),
+                    only_when_empty: true,
+                },
+            ],
+        })
+    }
+}
 
 #[tokio::test]
 async fn runtime_applies_hook_effects_without_mutating_base_instructions() {
@@ -112,4 +140,106 @@ async fn runtime_applies_hook_effects_without_mutating_base_instructions() {
             && event == &HookEvent::UserPromptSubmit
             && !output.effects.is_empty()
     )));
+}
+
+#[tokio::test]
+async fn runtime_projects_hook_tui_events_into_live_observer_stream() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(InMemorySessionStore::new());
+    let backend = Arc::new(RecordingBackend::default());
+    let hook_runner = Arc::new(HookRunner::with_services(
+        Arc::new(DefaultCommandHookExecutor::default()),
+        Arc::new(ReqwestHttpHookExecutor::default()),
+        Arc::new(UiPromptEvaluator),
+        Arc::new(FailClosedAgentHookEvaluator),
+        Arc::new(DefaultWasmHookExecutor::default()),
+    ));
+    let mut runtime = AgentRuntimeBuilder::new(backend, store)
+        .hook_runner(hook_runner)
+        .tool_context(ToolExecutionContext {
+            workspace_root: dir.path().to_path_buf(),
+            workspace_only: true,
+            model_context_window_tokens: Some(128_000),
+            ..Default::default()
+        })
+        .hooks(vec![HookRegistration {
+            name: "ui_hint".into(),
+            event: HookEvent::UserPromptSubmit,
+            matcher: None,
+            handler: HookHandler::Prompt(PromptHookHandler {
+                prompt: "ignored".to_string(),
+            }),
+            timeout_ms: None,
+            execution: Some(HookExecutionPolicy {
+                effects: HookEffectPolicy {
+                    allow_tui_event_emission: true,
+                    ..HookEffectPolicy::default()
+                },
+                ..HookExecutionPolicy::default()
+            }),
+        }])
+        .build();
+    let mut observer = RecordingObserver::default();
+
+    runtime
+        .run_user_prompt_with_observer("hello", &mut observer)
+        .await
+        .unwrap();
+
+    assert!(observer.events().iter().any(|event| matches!(
+        event,
+        crate::RuntimeProgressEvent::TuiToastShow { variant, message }
+            if variant == "warning" && message == "review the hook result"
+    )));
+    assert!(observer.events().iter().any(|event| matches!(
+        event,
+        crate::RuntimeProgressEvent::TuiPromptAppend {
+            text,
+            only_when_empty,
+        } if text == "queue a follow-up" && *only_when_empty
+    )));
+}
+
+#[tokio::test]
+async fn runtime_rejects_hook_tui_events_without_effect_grant() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(InMemorySessionStore::new());
+    let backend = Arc::new(RecordingBackend::default());
+    let hook_runner = Arc::new(HookRunner::with_services(
+        Arc::new(DefaultCommandHookExecutor::default()),
+        Arc::new(ReqwestHttpHookExecutor::default()),
+        Arc::new(UiPromptEvaluator),
+        Arc::new(FailClosedAgentHookEvaluator),
+        Arc::new(DefaultWasmHookExecutor::default()),
+    ));
+    let mut runtime = AgentRuntimeBuilder::new(backend, store)
+        .hook_runner(hook_runner)
+        .tool_context(ToolExecutionContext {
+            workspace_root: dir.path().to_path_buf(),
+            workspace_only: true,
+            model_context_window_tokens: Some(128_000),
+            ..Default::default()
+        })
+        .hooks(vec![HookRegistration {
+            name: "ui_hint".into(),
+            event: HookEvent::UserPromptSubmit,
+            matcher: None,
+            handler: HookHandler::Prompt(PromptHookHandler {
+                prompt: "ignored".to_string(),
+            }),
+            timeout_ms: None,
+            execution: Some(HookExecutionPolicy::default()),
+        }])
+        .build();
+    let mut observer = RecordingObserver::default();
+
+    let error = match runtime
+        .run_user_prompt_with_observer("hello", &mut observer)
+        .await
+    {
+        Ok(_) => panic!("ui events without effect grant should fail"),
+        Err(error) => error,
+    };
+
+    assert!(error.to_string().contains("not allowed to emit tui events"));
 }

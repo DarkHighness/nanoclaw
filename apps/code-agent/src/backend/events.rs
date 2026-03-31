@@ -228,6 +228,17 @@ impl RuntimeObserver for SessionEventObserver {
             RuntimeProgressEvent::Notification { source, message } => {
                 SessionEvent::Notification { source, message }
             }
+            RuntimeProgressEvent::TuiToastShow { variant, message } => SessionEvent::TuiToastShow {
+                variant: session_toast_variant(&variant),
+                message,
+            },
+            RuntimeProgressEvent::TuiPromptAppend {
+                text,
+                only_when_empty,
+            } => SessionEvent::TuiPromptAppend {
+                text,
+                only_when_empty,
+            },
             RuntimeProgressEvent::ModelResponseCompleted {
                 assistant_text,
                 tool_calls,
@@ -303,6 +314,15 @@ fn session_tool_call(call: &agent::types::ToolCall) -> SessionToolCall {
     }
 }
 
+fn session_toast_variant(variant: &str) -> &'static str {
+    match variant {
+        "success" => "success",
+        "warning" => "warning",
+        "error" => "error",
+        _ => "info",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{SessionEvent, SessionEventObserver, SessionEventStream, session_tool_call};
@@ -347,6 +367,33 @@ mod tests {
                 source: "loop_detector".to_string(),
                 message: "loop detector warning".to_string(),
             }]
+        );
+    }
+
+    #[test]
+    fn observer_projects_runtime_tui_events_into_session_events() {
+        let stream = SessionEventStream::default();
+        let mut observer = SessionEventObserver::new(stream.clone());
+
+        observer
+            .on_event(RuntimeProgressEvent::TuiToastShow {
+                variant: "warning".to_string(),
+                message: "review the completed task".to_string(),
+            })
+            .expect("toast should record");
+        observer
+            .on_event(RuntimeProgressEvent::TuiPromptAppend {
+                text: "follow up on task result".to_string(),
+                only_when_empty: true,
+            })
+            .expect("prompt append should record");
+
+        assert_eq!(
+            stream.drain(),
+            vec![
+                SessionEvent::tui_warning_toast("review the completed task"),
+                SessionEvent::tui_prompt_append("follow up on task result", true),
+            ]
         );
     }
 

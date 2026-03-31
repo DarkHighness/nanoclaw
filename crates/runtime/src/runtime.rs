@@ -201,7 +201,8 @@ impl AgentRuntime {
         self.permission_grants.clear_all();
 
         let hooks = self.hook_registrations.clone();
-        self.start_agent_session(&TurnId::new(), &hooks, NEW_SESSION_REASON)
+        let mut observer = NoopRuntimeObserver;
+        self.start_agent_session(&TurnId::new(), &hooks, NEW_SESSION_REASON, &mut observer)
             .await
     }
 
@@ -233,7 +234,8 @@ impl AgentRuntime {
         self.permission_grants.clear_all();
 
         let hooks = self.hook_registrations.clone();
-        self.start_agent_session(&TurnId::new(), &hooks, RESUME_START_REASON)
+        let mut observer = NoopRuntimeObserver;
+        self.start_agent_session(&TurnId::new(), &hooks, RESUME_START_REASON, &mut observer)
             .await
     }
 
@@ -242,6 +244,7 @@ impl AgentRuntime {
         turn_id: &TurnId,
         hooks: &[HookRegistration],
         reason: &str,
+        observer: &mut dyn RuntimeObserver,
     ) -> Result<()> {
         if self.session.agent_session_started {
             return Ok(());
@@ -263,7 +266,7 @@ impl AgentRuntime {
             )
             .await?;
         let session_start_effects = self
-            .apply_hook_effects(turn_id, session_start_hooks, None, None)
+            .apply_hook_effects_with_observer(turn_id, session_start_hooks, None, None, observer)
             .await?;
         if let Some(reason) = session_start_effects.blocked_reason("session start blocked") {
             return Err(types::AgentCoreError::HookBlocked(reason).into());
@@ -286,6 +289,7 @@ impl AgentRuntime {
         hooks: &[HookRegistration],
         end_reason: &str,
         start_reason: &str,
+        observer: &mut dyn RuntimeObserver,
     ) -> Result<()> {
         let previous_agent_session_id = self.session.agent_session_id.clone();
         self.append_event(
@@ -310,7 +314,8 @@ impl AgentRuntime {
         self.session.agent_session_started = false;
         self.session.token_ledger = types::TokenLedgerSnapshot::default();
         self.reset_provider_continuation();
-        self.start_agent_session(turn_id, hooks, start_reason).await
+        self.start_agent_session(turn_id, hooks, start_reason, observer)
+            .await
     }
 
     pub async fn run_user_prompt(&mut self, prompt: impl Into<String>) -> Result<RunTurnOutcome> {

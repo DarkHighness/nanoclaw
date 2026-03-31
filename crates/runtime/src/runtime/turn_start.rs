@@ -18,13 +18,14 @@ impl AgentRuntime {
     ) -> Result<()> {
         self.clear_pending_request_effects();
         self.permission_grants.clear_turn();
-        self.ensure_session_started(turn_id, hooks).await?;
-        self.record_instruction_load(turn_id, hooks, instructions)
+        self.ensure_session_started(turn_id, hooks, observer)
+            .await?;
+        self.record_instruction_load(turn_id, hooks, instructions, observer)
             .await?;
 
         let async_context = self.hook_runner.drain_async_invocations().await;
         let _ = self
-            .apply_hook_effects(turn_id, async_context, None, None)
+            .apply_hook_effects_with_observer(turn_id, async_context, None, None, observer)
             .await?;
         let augmented = self.augment_user_message(message).await;
 
@@ -42,8 +43,9 @@ impl AgentRuntime {
         &mut self,
         turn_id: &TurnId,
         hooks: &[HookRegistration],
+        observer: &mut dyn RuntimeObserver,
     ) -> Result<()> {
-        self.start_agent_session(turn_id, hooks, "new_session")
+        self.start_agent_session(turn_id, hooks, "new_session", observer)
             .await
     }
 
@@ -52,6 +54,7 @@ impl AgentRuntime {
         turn_id: &TurnId,
         hooks: &[HookRegistration],
         instructions: &[String],
+        observer: &mut dyn RuntimeObserver,
     ) -> Result<()> {
         if instructions.is_empty() {
             return Ok(());
@@ -73,7 +76,7 @@ impl AgentRuntime {
             )
             .await?;
         let instruction_effects = self
-            .apply_hook_effects(turn_id, instruction_hooks, None, None)
+            .apply_hook_effects_with_observer(turn_id, instruction_hooks, None, None, observer)
             .await?;
         if let Some(reason) = instruction_effects.blocked_reason("instruction load blocked") {
             return Err(AgentCoreError::HookBlocked(reason).into());
@@ -111,7 +114,7 @@ impl AgentRuntime {
             )
             .await?;
         let user_effects = self
-            .apply_hook_effects(turn_id, user_hooks, Some(message), None)
+            .apply_hook_effects_with_observer(turn_id, user_hooks, Some(message), None, observer)
             .await?;
         if let Some(reason) = user_effects.blocked_reason("user prompt blocked") {
             return Err(AgentCoreError::HookBlocked(reason).into());

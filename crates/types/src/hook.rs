@@ -196,6 +196,8 @@ pub struct HookEffectPolicy {
     pub allow_permission_decision: bool,
     #[serde(default)]
     pub allow_gate_decision: bool,
+    #[serde(default)]
+    pub allow_tui_event_emission: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -320,6 +322,15 @@ pub enum HookEffect {
     },
     InjectInstruction {
         text: String,
+    },
+    ShowToast {
+        variant: String,
+        message: String,
+    },
+    AppendPrompt {
+        text: String,
+        #[serde(default)]
+        only_when_empty: bool,
     },
     Stop {
         reason: String,
@@ -467,5 +478,40 @@ mod tests {
             }
         );
         assert_eq!(message.role, MessageRole::Assistant);
+    }
+
+    #[test]
+    fn show_toast_round_trips() {
+        let json = serde_json::to_string(&HookEffect::ShowToast {
+            variant: "warning".to_string(),
+            message: "review queued work".to_string(),
+        })
+        .unwrap();
+
+        let parsed = serde_json::from_str::<HookEffect>(&json).unwrap();
+        assert_eq!(
+            parsed,
+            HookEffect::ShowToast {
+                variant: "warning".to_string(),
+                message: "review queued work".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn append_prompt_defaults_only_when_empty_to_false() {
+        let value = serde_json::json!({
+            "kind": "append_prompt",
+            "text": "queue follow-up"
+        });
+
+        let parsed = serde_json::from_value::<HookEffect>(value).unwrap();
+        assert_eq!(
+            parsed,
+            HookEffect::AppendPrompt {
+                text: "queue follow-up".to_string(),
+                only_when_empty: false,
+            }
+        );
     }
 }

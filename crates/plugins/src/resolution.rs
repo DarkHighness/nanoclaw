@@ -353,6 +353,7 @@ fn derive_effect_policy(
             .any(|policy| *policy == PluginToolPolicyCapability::RewriteArgs),
         allow_permission_decision: can_permission,
         allow_gate_decision: can_gate,
+        allow_tui_event_emission: true,
     }
 }
 
