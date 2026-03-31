@@ -17,13 +17,14 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use store::SessionStore;
 use tools::{
-    SubagentExecutor, SubagentLaunchSpec, SubagentParentContext, ToolError, ToolExecutionContext,
-    ToolRegistry, resolve_tool_path_against_workspace_root,
+    SubagentExecutor, SubagentInputDelivery, SubagentLaunchSpec, SubagentParentContext, ToolError,
+    ToolExecutionContext, ToolRegistry, resolve_tool_path_against_workspace_root,
 };
 use types::{
     AgentArtifact, AgentEnvelope, AgentEnvelopeKind, AgentHandle, AgentId, AgentResultEnvelope,
     AgentSessionId, AgentStatus, AgentTaskSpec, AgentWaitRequest, AgentWaitResponse,
-    HookRegistration, Message, SessionEventEnvelope, SessionEventKind, SessionId, ToolName,
+    HookRegistration, Message, MessageRole, SessionEventEnvelope, SessionEventKind, SessionId,
+    ToolName,
 };
 
 const DEFAULT_EXCLUDED_CHILD_TOOLS: &[&str] = &[
@@ -119,7 +120,10 @@ struct ResumableChildState {
 
 #[derive(Clone)]
 enum ChildStartMode {
-    RunInput(Message),
+    RunInput {
+        message: Message,
+        apply_initial_steer: bool,
+    },
     AwaitMessage,
 }
 
@@ -324,6 +328,140 @@ impl RuntimeSubagentExecutor {
                 .collect(),
         )
         .await
+    }
+
+    async fn queue_child_input(
+        &self,
+        parent: &SubagentParentContext,
+        handle: &AgentHandle,
+        message: Message,
+    ) -> Result<AgentHandle> {
+        self.session_manager
+            .mailbox(&handle.agent_id)?
+            .send_input(message.clone())
+            .map_err(|error| RuntimeError::invalid_state(error.to_string()))?;
+        self.append_agent_envelope(parent, handle, AgentEnvelopeKind::Input { message })
+            .await?;
+        Ok(handle.clone())
+    }
+
+    async fn interrupt_child_with_input(
+        &self,
+        parent: &SubagentParentContext,
+        handle: &AgentHandle,
+        message: Message,
+    ) -> Result<AgentHandle> {
+        let task = self.session_manager.task(&handle.agent_id)?;
+        let resumable = self
+            .resumable_children
+            .get(&handle.agent_id)
+            .map(|entry| entry.value().clone())
+            .ok_or_else(|| {
+                RuntimeError::invalid_state(format!("agent {} is not resumable", handle.agent_id))
+            })?;
+        let session = load_runtime_session(
+            self.store.as_ref(),
+            &handle.session_id,
+            &handle.agent_session_id,
+        )
+        .await?;
+        let mut session = session;
+        self.rollback_interrupted_turn(&mut session).await?;
+        let (mailbox, mailbox_rx) = agent_mailbox_channel();
+        let restarted =
+            self.session_manager
+                .restart(&handle.agent_id, mailbox, AgentStatus::Queued)?;
+        self.append_agent_envelope(
+            parent,
+            &restarted,
+            AgentEnvelopeKind::Input {
+                message: message.clone(),
+            },
+        )
+        .await?;
+        self.launch_child_async(ChildLaunchPlan {
+            parent: parent.clone(),
+            handle: restarted.clone(),
+            task,
+            tool_registry: resumable.tool_registry,
+            mailbox_rx,
+            dependency_agent_ids: Vec::new(),
+            profile: resumable.profile,
+            session,
+            persist_session_seed: false,
+            start_mode: ChildStartMode::RunInput {
+                message,
+                apply_initial_steer: false,
+            },
+        })
+        .await;
+        Ok(restarted)
+    }
+
+    async fn rollback_interrupted_turn(&self, session: &mut RuntimeSession) -> Result<()> {
+        let visible_indices = if let Some(summary_index) = session.compaction_summary_index {
+            let mut indices = Vec::with_capacity(
+                1 + session.retained_tail_indices.len() + session.transcript.len(),
+            );
+            indices.push(summary_index);
+            indices.extend(
+                session
+                    .retained_tail_indices
+                    .iter()
+                    .copied()
+                    .filter(|index| *index < summary_index),
+            );
+            indices.extend(session.post_summary_start..session.transcript.len());
+            indices
+        } else {
+            (0..session.transcript.len()).collect()
+        };
+        let Some(start_at) = visible_indices
+            .iter()
+            .rev()
+            .find(|index| {
+                session.transcript.get(**index).is_some_and(|message| {
+                    message.role == MessageRole::User
+                        && !session.removed_message_ids.contains(&message.message_id)
+                })
+            })
+            .copied()
+        else {
+            return Ok(());
+        };
+        let removed_message_ids = visible_indices
+            .into_iter()
+            .filter(|index| *index >= start_at)
+            .filter_map(|index| session.transcript.get(index))
+            .filter(|message| !session.removed_message_ids.contains(&message.message_id))
+            .map(|message| message.message_id.clone())
+            .collect::<Vec<_>>();
+        if removed_message_ids.is_empty() {
+            return Ok(());
+        }
+        for message_id in &removed_message_ids {
+            session.removed_message_ids.insert(message_id.clone());
+        }
+        // Interrupt semantics replace the in-flight turn rather than stacking a
+        // fresh prompt on top of a half-finished one. Persisting remove events
+        // keeps replay, resume, and live restart behavior aligned.
+        self.store
+            .append_batch(
+                removed_message_ids
+                    .into_iter()
+                    .map(|message_id| {
+                        SessionEventEnvelope::new(
+                            session.session_id.clone(),
+                            session.agent_session_id.clone(),
+                            None,
+                            None,
+                            SessionEventKind::TranscriptMessageRemoved { message_id },
+                        )
+                    })
+                    .collect(),
+            )
+            .await
+            .map_err(RuntimeError::from)
     }
 
     fn resolve_write_set(&self, files: &[String]) -> std::result::Result<Vec<PathBuf>, ToolError> {
@@ -1008,7 +1146,10 @@ impl SubagentExecutor for RuntimeSubagentExecutor {
                 profile: child.profile,
                 session: child.session,
                 persist_session_seed: child.persist_session_seed,
-                start_mode: ChildStartMode::RunInput(child.initial_input),
+                start_mode: ChildStartMode::RunInput {
+                    message: child.initial_input,
+                    apply_initial_steer: true,
+                },
             };
             if launch_plan.dependency_agent_ids.is_empty() {
                 ready.push(launch_plan);
@@ -1029,6 +1170,7 @@ impl SubagentExecutor for RuntimeSubagentExecutor {
         parent: SubagentParentContext,
         agent_id: AgentId,
         message: Message,
+        delivery: SubagentInputDelivery,
     ) -> std::result::Result<AgentHandle, ToolError> {
         let handle = self
             .session_manager
@@ -1038,15 +1180,22 @@ impl SubagentExecutor for RuntimeSubagentExecutor {
         if handle.status.is_terminal() {
             return Ok(handle);
         }
-        self.session_manager
-            .mailbox(&agent_id)
-            .map_err(|error| ToolError::invalid_state(error.to_string()))?
-            .send_input(message.clone())
-            .map_err(|error| ToolError::invalid_state(error.to_string()))?;
-        self.append_agent_envelope(&parent, &handle, AgentEnvelopeKind::Input { message })
-            .await
-            .map_err(|error| ToolError::invalid_state(error.to_string()))?;
-        Ok(handle)
+        let outcome = match delivery {
+            SubagentInputDelivery::Queue => self.queue_child_input(&parent, &handle, message).await,
+            SubagentInputDelivery::Interrupt
+                if matches!(
+                    handle.status,
+                    AgentStatus::Running | AgentStatus::WaitingApproval
+                ) =>
+            {
+                self.interrupt_child_with_input(&parent, &handle, message)
+                    .await
+            }
+            SubagentInputDelivery::Interrupt => {
+                self.queue_child_input(&parent, &handle, message).await
+            }
+        };
+        outcome.map_err(|error| ToolError::invalid_state(error.to_string()))
     }
 
     async fn wait(
@@ -1230,7 +1379,7 @@ impl ChildAgentWorker {
     async fn run(mut self) {
         let start_mode = self.start_mode.clone();
         let initial_status = match &start_mode {
-            ChildStartMode::RunInput(_) => AgentStatus::Running,
+            ChildStartMode::RunInput { .. } => AgentStatus::Running,
             ChildStartMode::AwaitMessage => AgentStatus::WaitingMessage,
         };
         if self.start(initial_status).await.is_err() {
@@ -1238,8 +1387,11 @@ impl ChildAgentWorker {
         }
 
         let mut next_inputs = match start_mode {
-            ChildStartMode::RunInput(message) => {
-                if let Some(steer) = self.task.steer.clone() {
+            ChildStartMode::RunInput {
+                message,
+                apply_initial_steer,
+            } => {
+                if apply_initial_steer && let Some(steer) = self.task.steer.clone() {
                     if let Err(error) = self
                         .runtime
                         .steer(
@@ -1744,8 +1896,8 @@ mod tests {
     use store::{EventSink, InMemorySessionStore, SessionStore};
     use tokio::sync::Notify;
     use tools::{
-        ReadTool, SubagentExecutor, SubagentLaunchSpec, SubagentParentContext,
-        ToolExecutionContext, ToolRegistry,
+        ReadTool, SubagentExecutor, SubagentInputDelivery, SubagentLaunchSpec,
+        SubagentParentContext, ToolExecutionContext, ToolRegistry,
     };
     use types::{
         AgentEnvelopeKind, AgentSessionId, AgentStatus, AgentTaskSpec, AgentWaitMode,
@@ -2203,6 +2355,7 @@ mod tests {
                 parent.clone(),
                 handle.agent_id.clone(),
                 Message::user("focus follow-up"),
+                SubagentInputDelivery::Queue,
             )
             .await
             .unwrap();
@@ -2306,7 +2459,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn runtime_subagent_executor_applies_steering_and_emits_lifecycle_events() {
+    async fn runtime_subagent_executor_queues_follow_up_input_and_emits_lifecycle_events() {
         let started = Arc::new(Notify::new());
         let release = Arc::new(Notify::new());
         let backend = Arc::new(BlockingBackend {
@@ -2347,6 +2500,7 @@ mod tests {
                 parent.clone(),
                 handles[0].agent_id.clone(),
                 Message::user("focus tests"),
+                SubagentInputDelivery::Queue,
             )
             .await
             .unwrap();
@@ -2404,6 +2558,116 @@ mod tests {
                 .iter()
                 .any(|event| matches!(event.event, SessionEventKind::SubagentStop { .. }))
         );
+    }
+
+    #[tokio::test]
+    async fn runtime_subagent_executor_interrupt_restarts_child_with_follow_up_input() {
+        let started = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let backend = Arc::new(BlockingBackend {
+            requests: Arc::new(Mutex::new(Vec::new())),
+            started: started.clone(),
+            release: release.clone(),
+            first_user_request_pending: Arc::new(Mutex::new(true)),
+        });
+        let store = Arc::new(InMemorySessionStore::new());
+        let executor = make_executor(backend.clone(), store.clone());
+        let parent = SubagentParentContext {
+            session_id: Some("run_parent".into()),
+            agent_session_id: Some("session_parent".into()),
+            turn_id: Some("turn_parent".into()),
+            parent_agent_id: Some("agent_parent".into()),
+        };
+
+        let handles = executor
+            .spawn(
+                parent.clone(),
+                launches(vec![AgentTaskSpec {
+                    task_id: "inspect".to_string(),
+                    role: "explorer".to_string(),
+                    prompt: "inspect workspace".to_string(),
+                    steer: None,
+                    allowed_tools: vec![ToolName::from("read")],
+                    requested_write_set: Vec::new(),
+                    dependency_ids: Vec::new(),
+                    timeout_seconds: None,
+                }]),
+            )
+            .await
+            .unwrap();
+
+        started.notified().await;
+        let restarted = executor
+            .send(
+                parent.clone(),
+                handles[0].agent_id.clone(),
+                Message::user("focus latest diff"),
+                SubagentInputDelivery::Interrupt,
+            )
+            .await
+            .unwrap();
+        assert_eq!(restarted.status, AgentStatus::Queued);
+
+        let wait = executor
+            .wait(
+                parent.clone(),
+                AgentWaitRequest {
+                    agent_ids: vec![handles[0].agent_id.clone()],
+                    mode: AgentWaitMode::All,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(wait.results[0].status, AgentStatus::Completed);
+        release.notify_waiters();
+
+        let requests = backend.requests.lock().unwrap().clone();
+        assert_eq!(requests.len(), 2);
+        let first_user_prompt = requests[0]
+            .messages
+            .iter()
+            .rev()
+            .find(|message| message.role == MessageRole::User)
+            .map(|message| message.text_content())
+            .unwrap_or_default();
+        let second_user_prompts = requests[1]
+            .messages
+            .iter()
+            .filter(|message| message.role == MessageRole::User)
+            .map(|message| message.text_content())
+            .collect::<Vec<_>>();
+        assert_eq!(first_user_prompt, "inspect workspace");
+        assert_eq!(second_user_prompts, vec!["focus latest diff".to_string()]);
+        assert!(
+            requests[1]
+                .messages
+                .iter()
+                .all(|message| message.role != MessageRole::System
+                    || !message.text_content().contains("focus latest diff"))
+        );
+
+        let events = store.events(&"run_parent".into()).await.unwrap();
+        assert!(
+            events
+                .iter()
+                .filter(|event| { matches!(event.event, SessionEventKind::SubagentStart { .. }) })
+                .count()
+                >= 2
+        );
+        assert!(events.iter().any(|event| matches!(
+            &event.event,
+            SessionEventKind::AgentEnvelope {
+                envelope: types::AgentEnvelope {
+                    kind: AgentEnvelopeKind::Input { message },
+                    ..
+                },
+            } if message.text_content() == "focus latest diff"
+        )));
+        let child_events = store.events(&handles[0].session_id).await.unwrap();
+        assert!(child_events.iter().any(|event| matches!(
+            &event.event,
+            SessionEventKind::TranscriptMessageRemoved { .. }
+        )));
     }
 
     #[tokio::test]
@@ -3133,6 +3397,7 @@ mod tests {
                 intruder.clone(),
                 handles[0].agent_id.clone(),
                 Message::user("nope"),
+                SubagentInputDelivery::Queue,
             )
             .await
             .expect_err("foreign parent must not send");

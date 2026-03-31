@@ -164,6 +164,37 @@ impl AgentSessionManager {
         Ok(handle)
     }
 
+    pub fn restart(
+        &self,
+        agent_id: &AgentId,
+        mailbox: AgentMailbox,
+        status: AgentStatus,
+    ) -> Result<AgentHandle> {
+        if status.is_terminal() {
+            return Err(RuntimeError::invalid_state(format!(
+                "restart requires a non-terminal status, got {status}"
+            )));
+        }
+        let record = self.record(agent_id)?;
+        let handle = {
+            let mut record = record.state.lock().unwrap();
+            if let Some(join_handle) = record.join_handle.take() {
+                join_handle.abort();
+            }
+            // Interrupt-driven restarts keep the durable agent identity but
+            // replace the mailbox so stale control messages cannot leak into
+            // the fresh worker instance.
+            record.handle.status = status;
+            record.mailbox = mailbox;
+            record.result = None;
+            record.error = None;
+            record.join_handle = None;
+            record.handle.clone()
+        };
+        self.updates.notify_waiters();
+        Ok(handle)
+    }
+
     pub fn list(&self) -> Vec<AgentHandle> {
         let mut handles = self
             .records

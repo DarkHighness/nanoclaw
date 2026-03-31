@@ -155,6 +155,12 @@ pub struct SubagentLaunchSpec {
     pub reasoning_effort: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SubagentInputDelivery {
+    Queue,
+    Interrupt,
+}
+
 impl SubagentLaunchSpec {
     #[must_use]
     pub fn from_task(task: AgentTaskSpec) -> Self {
@@ -186,6 +192,7 @@ pub trait SubagentExecutor: Send + Sync {
         parent: SubagentParentContext,
         agent_id: AgentId,
         message: Message,
+        delivery: SubagentInputDelivery,
     ) -> Result<AgentHandle>;
 
     async fn wait(
@@ -412,10 +419,10 @@ impl Tool for AgentSendTool {
         ctx: &ToolExecutionContext,
     ) -> Result<ToolResult> {
         let input: AgentSendToolInput = serde_json::from_value(arguments)?;
-        let (target, message) = normalize_send_input(input)?;
+        let (target, message, delivery) = normalize_send_input(input)?;
         let handle = self
             .executor
-            .send(SubagentParentContext::from(ctx), target, message)
+            .send(SubagentParentContext::from(ctx), target, message, delivery)
             .await?;
         build_tool_result(
             call_id,
@@ -639,22 +646,24 @@ fn normalize_spawn_input(
     })
 }
 
-fn normalize_send_input(input: AgentSendToolInput) -> Result<(AgentId, Message)> {
-    if input.interrupt {
-        // The current mailbox applies steering at safe points after the active
-        // child turn yields. Reject preemption requests until the runtime can
-        // guarantee immediate interruption semantics.
-        return Err(ToolError::invalid(
-            "send_input interrupt=true is not yet supported by the subagent runtime",
-        ));
-    }
+fn normalize_send_input(
+    input: AgentSendToolInput,
+) -> Result<(AgentId, Message, SubagentInputDelivery)> {
     let target = input.target;
     let normalized = normalize_agent_input(
         input.message,
         &input.items,
         "send_input requires a message or at least one input item",
     )?;
-    Ok((target, normalized.message))
+    Ok((
+        target,
+        normalized.message,
+        if input.interrupt {
+            SubagentInputDelivery::Interrupt
+        } else {
+            SubagentInputDelivery::Queue
+        },
+    ))
 }
 
 struct NormalizedAgentInput {
@@ -1077,8 +1086,8 @@ where
 mod tests {
     use super::{
         AgentCancelTool, AgentListTool, AgentResumeTool, AgentSendTool, AgentSpawnTool,
-        AgentTaskInput, AgentWaitTool, SubagentExecutor, SubagentLaunchSpec, SubagentParentContext,
-        TaskBatchTool, TaskBatchToolInput, TaskTool, TaskToolInput,
+        AgentTaskInput, AgentWaitTool, SubagentExecutor, SubagentInputDelivery, SubagentLaunchSpec,
+        SubagentParentContext, TaskBatchTool, TaskBatchToolInput, TaskTool, TaskToolInput,
     };
     use crate::{Result, Tool, ToolError, ToolExecutionContext, ToolRegistry};
     use async_trait::async_trait;
@@ -1101,7 +1110,7 @@ mod tests {
         handles: BTreeMap<AgentId, AgentHandle>,
         results: BTreeMap<AgentId, AgentResultEnvelope>,
         wait_any_queue: Vec<AgentId>,
-        sent: Vec<(AgentId, Message)>,
+        sent: Vec<(AgentId, SubagentInputDelivery, Message)>,
         resumed: Vec<AgentId>,
         cancelled: Vec<AgentId>,
         spawned_launches: Vec<SubagentLaunchSpec>,
@@ -1163,9 +1172,10 @@ mod tests {
             _parent: SubagentParentContext,
             agent_id: AgentId,
             message: Message,
+            delivery: SubagentInputDelivery,
         ) -> Result<AgentHandle> {
             let mut state = self.state.lock().unwrap();
-            state.sent.push((agent_id.clone(), message));
+            state.sent.push((agent_id.clone(), delivery, message));
             Ok(state.handles.get(&agent_id).cloned().unwrap())
         }
 
@@ -1272,6 +1282,7 @@ mod tests {
             _parent: SubagentParentContext,
             _agent_id: AgentId,
             _message: Message,
+            _delivery: SubagentInputDelivery,
         ) -> Result<AgentHandle> {
             unreachable!("blocking wait executor does not send messages")
         }
@@ -1529,8 +1540,10 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(cancelled.structured_content.unwrap()["status"], "cancelled");
-        assert_eq!(executor.state.lock().unwrap().sent.len(), 1);
-        assert_eq!(executor.state.lock().unwrap().resumed.len(), 1);
+        let state = executor.state.lock().unwrap();
+        assert_eq!(state.sent.len(), 1);
+        assert_eq!(state.sent[0].1, SubagentInputDelivery::Queue);
+        assert_eq!(state.resumed.len(), 1);
     }
 
     #[tokio::test]
@@ -1596,19 +1609,34 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn send_input_rejects_interrupt_until_runtime_supports_preemption() {
+    async fn send_input_forwards_interrupt_delivery_to_executor() {
         let executor = Arc::new(FakeExecutor::default());
-        let tool = AgentSendTool::new(executor);
-        let error = tool
-            .execute(
-                ToolCallId::new(),
-                json!({"target":"agent_a","interrupt":true,"message":"focus"}),
-                &ToolExecutionContext::default(),
-            )
-            .await
-            .unwrap_err();
+        let tool = AgentSendTool::new(executor.clone());
+        executor.state.lock().unwrap().handles.insert(
+            AgentId::from("agent_a"),
+            AgentHandle {
+                agent_id: AgentId::from("agent_a"),
+                parent_agent_id: Some(AgentId::from("agent_parent")),
+                session_id: SessionId::from("run_agent_a"),
+                agent_session_id: AgentSessionId::from("session_agent_a"),
+                task_id: "task_a".to_string(),
+                role: "worker".to_string(),
+                status: AgentStatus::Running,
+            },
+        );
+        tool.execute(
+            ToolCallId::new(),
+            json!({"target":"agent_a","interrupt":true,"message":"focus"}),
+            &ToolExecutionContext::default(),
+        )
+        .await
+        .unwrap();
 
-        assert!(error.to_string().contains("interrupt=true"));
+        let state = executor.state.lock().unwrap();
+        assert_eq!(state.sent.len(), 1);
+        assert_eq!(state.sent[0].0, AgentId::from("agent_a"));
+        assert_eq!(state.sent[0].1, SubagentInputDelivery::Interrupt);
+        assert_eq!(state.sent[0].2.text_content(), "focus");
     }
 
     #[tokio::test]

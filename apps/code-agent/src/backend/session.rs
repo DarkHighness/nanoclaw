@@ -20,8 +20,8 @@ use agent::runtime::{
 };
 use agent::tools::{
     GrantedPermissionResponse, RequestPermissionProfile, SandboxPolicy, SubagentExecutor,
-    SubagentLaunchSpec, SubagentParentContext, UserInputResponse, describe_sandbox_policy,
-    request_permission_profile_from_granted, sandbox_backend_status,
+    SubagentInputDelivery, SubagentLaunchSpec, SubagentParentContext, UserInputResponse,
+    describe_sandbox_policy, request_permission_profile_from_granted, sandbox_backend_status,
 };
 use agent::types::{
     AgentSessionId, AgentTaskSpec, AgentWaitMode, AgentWaitRequest, Message, SessionId,
@@ -742,7 +742,12 @@ impl CodeAgentSession {
         let handle = resolve_live_task_reference(&handles, task_or_agent_ref)?.clone();
         let updated = self
             .subagent_executor
-            .send(parent, handle.agent_id.clone(), Message::user(message))
+            .send(
+                parent,
+                handle.agent_id.clone(),
+                Message::user(message),
+                SubagentInputDelivery::Queue,
+            )
             .await
             .map_err(anyhow::Error::from)?;
         Ok(LiveTaskMessageOutcome {
@@ -1149,8 +1154,8 @@ mod tests {
     use crate::statusline::StatusLineConfig;
     use agent::runtime::{HookRunner, ModelBackend, PermissionGrantStore, Result as RuntimeResult};
     use agent::tools::{
-        Result as ToolResult, SubagentExecutor, SubagentLaunchSpec, SubagentParentContext,
-        ToolError, ToolExecutionContext,
+        Result as ToolResult, SubagentExecutor, SubagentInputDelivery, SubagentLaunchSpec,
+        SubagentParentContext, ToolError, ToolExecutionContext,
     };
     use agent::types::{
         AgentHandle, AgentId, AgentResultEnvelope, AgentStatus, AgentTaskSpec, AgentWaitRequest,
@@ -1241,6 +1246,7 @@ mod tests {
             _parent: SubagentParentContext,
             _agent_id: AgentId,
             _message: agent::types::Message,
+            _delivery: SubagentInputDelivery,
         ) -> ToolResult<AgentHandle> {
             Err(ToolError::invalid_state(
                 "test executor does not support send",
@@ -1289,7 +1295,7 @@ mod tests {
         handles: Mutex<Vec<AgentHandle>>,
         spawned_tasks: Mutex<Vec<AgentTaskSpec>>,
         spawn_parents: Mutex<Vec<SubagentParentContext>>,
-        sent_messages: Mutex<Vec<(AgentId, agent::types::Message)>>,
+        sent_messages: Mutex<Vec<(AgentId, SubagentInputDelivery, agent::types::Message)>>,
         wait_response: Mutex<Option<AgentWaitResponse>>,
     }
 
@@ -1354,6 +1360,7 @@ mod tests {
             _parent: SubagentParentContext,
             agent_id: AgentId,
             message: agent::types::Message,
+            delivery: SubagentInputDelivery,
         ) -> ToolResult<AgentHandle> {
             let handle = self
                 .handles
@@ -1363,7 +1370,10 @@ mod tests {
                 .find(|handle| handle.agent_id == agent_id)
                 .cloned()
                 .ok_or_else(|| ToolError::invalid_state("unknown agent"))?;
-            self.sent_messages.lock().unwrap().push((agent_id, message));
+            self.sent_messages
+                .lock()
+                .unwrap()
+                .push((agent_id, delivery, message));
             Ok(handle)
         }
 
@@ -1902,7 +1912,8 @@ mod tests {
         let sent_messages = executor.sent_messages.lock().unwrap();
         assert_eq!(sent_messages.len(), 1);
         assert_eq!(sent_messages[0].0, AgentId::from("agent-send"));
-        assert_eq!(sent_messages[0].1.text_content(), "focus on tests");
+        assert_eq!(sent_messages[0].1, SubagentInputDelivery::Queue);
+        assert_eq!(sent_messages[0].2.text_content(), "focus on tests");
     }
 
     #[tokio::test]
