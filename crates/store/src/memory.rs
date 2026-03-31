@@ -279,10 +279,13 @@ mod tests {
     use serde_json::json;
     use types::{
         AgentArtifact, AgentEnvelope, AgentEnvelopeKind, AgentHandle, AgentId, AgentResultEnvelope,
-        AgentSessionId, AgentStatus, AgentTaskSpec, BaselineId, CandidateId, ContextWindowUsage,
-        ExperimentEventEnvelope, ExperimentEventKind, ExperimentId, ExperimentSpec,
-        ExperimentTarget, Message, PromotionDecision, PromotionDecisionKind, SessionEventEnvelope,
-        SessionEventKind, SessionId, TokenLedgerSnapshot, TokenUsage, TokenUsagePhase,
+        AgentSessionId, AgentStatus, AgentTaskSpec, ArtifactId, ArtifactKind,
+        ArtifactLedgerEventEnvelope, ArtifactLedgerEventKind, ArtifactPromotionDecision,
+        ArtifactPromotionDecisionKind, ArtifactVersionId, BaselineId, CandidateId,
+        ContextWindowUsage, ExperimentEventEnvelope, ExperimentEventKind, ExperimentId,
+        ExperimentSpec, ExperimentTarget, Message, PromotionDecision, PromotionDecisionKind,
+        SessionEventEnvelope, SessionEventKind, SessionId, TokenLedgerSnapshot, TokenUsage,
+        TokenUsagePhase,
     };
 
     macro_rules! bounded_async_test {
@@ -377,6 +380,56 @@ mod tests {
 
             let events = store.experiment_events(&experiment_id).await.unwrap();
             assert_eq!(events.len(), 4);
+        }
+    );
+
+    bounded_async_test!(
+        async fn archives_artifact_events_with_latest_summary() {
+            let store = InMemorySessionStore::new();
+            let artifact_id = ArtifactId::from("artifact-memory");
+            let version_id = ArtifactVersionId::from("artifact-memory-v2");
+
+            store
+                .append_artifact(ArtifactLedgerEventEnvelope::new(
+                    artifact_id.clone(),
+                    ArtifactLedgerEventKind::VersionProposed {
+                        version: types::ArtifactVersion {
+                            version_id: version_id.clone(),
+                            kind: ArtifactKind::Prompt,
+                            label: "prompt-v2".to_string(),
+                            description: Some("tighten retry instructions".to_string()),
+                            parent_version_id: Some(ArtifactVersionId::from("artifact-memory-v1")),
+                            source_signal_ids: vec!["signal-memory".into()],
+                            source_task_ids: vec!["task-memory".to_string()],
+                            source_case_ids: vec!["case-memory".to_string()],
+                            payload: json!({"prompt":"be stricter"}),
+                            metadata: json!({"owner":"nanoclaw"}),
+                        },
+                    },
+                ))
+                .await
+                .unwrap();
+            store
+                .append_artifact(ArtifactLedgerEventEnvelope::new(
+                    artifact_id.clone(),
+                    ArtifactLedgerEventKind::VersionPromoted {
+                        version_id: version_id.clone(),
+                        decision: ArtifactPromotionDecision {
+                            kind: ArtifactPromotionDecisionKind::Promoted,
+                            reason: "self-regression corpus stayed green".to_string(),
+                            rollback_version_id: None,
+                        },
+                    },
+                ))
+                .await
+                .unwrap();
+
+            let summaries = store.list_artifacts().await.unwrap();
+            assert_eq!(summaries.len(), 1);
+            assert_eq!(summaries[0].artifact_id, artifact_id);
+            assert_eq!(summaries[0].kind, Some(ArtifactKind::Prompt));
+            assert_eq!(summaries[0].version_count, 1);
+            assert_eq!(summaries[0].promoted_version_id, Some(version_id));
         }
     );
 

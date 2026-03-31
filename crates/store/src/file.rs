@@ -688,11 +688,13 @@ mod tests {
     use std::time::Duration;
     use types::{
         AgentArtifact, AgentEnvelope, AgentEnvelopeKind, AgentHandle, AgentId, AgentResultEnvelope,
-        AgentSessionId, AgentStatus, AgentTaskSpec, BaselineId, CandidateId, ContextWindowUsage,
-        ExperimentEventEnvelope, ExperimentEventKind, ExperimentId, ExperimentSpec,
-        ExperimentTarget, Message, MessageId, PromotionDecision, PromotionDecisionKind,
-        SessionEventEnvelope, SessionEventKind, SessionId, TokenLedgerSnapshot, TokenUsage,
-        TokenUsagePhase,
+        AgentSessionId, AgentStatus, AgentTaskSpec, ArtifactId, ArtifactKind,
+        ArtifactLedgerEventEnvelope, ArtifactLedgerEventKind, ArtifactPromotionDecision,
+        ArtifactPromotionDecisionKind, ArtifactVersionId, BaselineId, CandidateId,
+        ContextWindowUsage, ExperimentEventEnvelope, ExperimentEventKind, ExperimentId,
+        ExperimentSpec, ExperimentTarget, Message, MessageId, PromotionDecision,
+        PromotionDecisionKind, SessionEventEnvelope, SessionEventKind, SessionId,
+        TokenLedgerSnapshot, TokenUsage, TokenUsagePhase,
     };
 
     use super::index_sidecar::append_search_text;
@@ -872,6 +874,59 @@ mod tests {
                 Some(PromotionDecisionKind::Rejected)
             );
             assert_eq!(summaries[0].promoted_candidate_id, None);
+        }
+    );
+
+    bounded_async_test!(
+        async fn persists_artifact_events_across_store_reopen() {
+            let dir = tempfile::tempdir().unwrap();
+            let artifact_id = ArtifactId::from("artifact-file");
+            let version_id = ArtifactVersionId::from("artifact-file-v2");
+
+            let store = FileSessionStore::open(dir.path()).await.unwrap();
+            store
+                .append_artifact(ArtifactLedgerEventEnvelope::new(
+                    artifact_id.clone(),
+                    ArtifactLedgerEventKind::VersionProposed {
+                        version: types::ArtifactVersion {
+                            version_id: version_id.clone(),
+                            kind: ArtifactKind::Hook,
+                            label: "hook-v2".to_string(),
+                            description: Some("tighten stop policy".to_string()),
+                            parent_version_id: Some(ArtifactVersionId::from("artifact-file-v1")),
+                            source_signal_ids: vec!["signal-file".into()],
+                            source_task_ids: vec!["task-file".to_string()],
+                            source_case_ids: vec!["case-file".to_string()],
+                            payload: json!({"hook":"guard"}),
+                            metadata: json!({"owner":"nanoclaw"}),
+                        },
+                    },
+                ))
+                .await
+                .unwrap();
+            store
+                .append_artifact(ArtifactLedgerEventEnvelope::new(
+                    artifact_id.clone(),
+                    ArtifactLedgerEventKind::VersionPromoted {
+                        version_id: version_id.clone(),
+                        decision: ArtifactPromotionDecision {
+                            kind: ArtifactPromotionDecisionKind::Promoted,
+                            reason: "validation stayed green".to_string(),
+                            rollback_version_id: None,
+                        },
+                    },
+                ))
+                .await
+                .unwrap();
+            drop(store);
+
+            let reopened = FileSessionStore::open(dir.path()).await.unwrap();
+            let events = reopened.artifact_events(&artifact_id).await.unwrap();
+            assert_eq!(events.len(), 2);
+            let summaries = reopened.list_artifacts().await.unwrap();
+            assert_eq!(summaries.len(), 1);
+            assert_eq!(summaries[0].artifact_id, artifact_id);
+            assert_eq!(summaries[0].promoted_version_id, Some(version_id));
         }
     );
 
