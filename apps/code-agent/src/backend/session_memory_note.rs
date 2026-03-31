@@ -1,5 +1,10 @@
 use agent::types::MessageId;
 
+const SESSION_MEMORY_SECTION_TOKEN_BUDGET: usize = 2_000;
+const SESSION_MEMORY_TOTAL_TOKEN_BUDGET: usize = 12_000;
+const SESSION_MEMORY_APPROX_CHARS_PER_TOKEN: usize = 4;
+const SESSION_MEMORY_SECTION_TRUNCATION_MARKER: &str = "[... section truncated for length ...]";
+
 struct SessionMemorySectionTemplate {
     heading: &'static str,
     description: &'static str,
@@ -59,6 +64,12 @@ struct ParsedSessionMemorySections {
 pub(crate) struct SessionMemoryNoteSnapshot {
     pub(crate) body: String,
     pub(crate) last_summarized_message_id: Option<MessageId>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SessionMemoryCompactContent {
+    pub(crate) truncated_content: String,
+    pub(crate) was_truncated: bool,
 }
 
 pub(crate) fn render_session_memory_note(summary: &str) -> String {
@@ -169,6 +180,7 @@ pub(crate) fn build_session_memory_update_prompt(
     current_note: &str,
     transcript_delta: &str,
 ) -> String {
+    let budget_reminders = build_session_memory_budget_reminders(current_note);
     format!(
         concat!(
             "IMPORTANT: This request is internal session-note maintenance, not part of the user conversation.\n",
@@ -181,17 +193,61 @@ pub(crate) fn build_session_memory_update_prompt(
             "- Do not mention note-taking instructions or this internal request.\n",
             "- Always refresh Current State.\n",
             "- Leave sections blank instead of adding filler.\n",
+            "- Keep each section under roughly {section_budget} tokens by condensing older or lower-value details before the note sprawls.\n",
+            "- Keep the full note under roughly {total_budget} tokens so it remains usable as post-compaction continuity.\n",
             "- Use only information grounded in the transcript delta.\n\n",
             "<current_session_note>\n",
             "{current_note}\n",
             "</current_session_note>\n\n",
             "<new_transcript_entries>\n",
             "{transcript_delta}\n",
-            "</new_transcript_entries>\n"
+            "</new_transcript_entries>\n",
+            "{budget_reminders}"
         ),
         current_note = current_note.trim(),
         transcript_delta = transcript_delta.trim(),
+        section_budget = SESSION_MEMORY_SECTION_TOKEN_BUDGET,
+        total_budget = SESSION_MEMORY_TOTAL_TOKEN_BUDGET,
+        budget_reminders = budget_reminders,
     )
+}
+
+pub(crate) fn truncate_session_memory_for_compaction(content: &str) -> SessionMemoryCompactContent {
+    let max_chars_per_section =
+        SESSION_MEMORY_SECTION_TOKEN_BUDGET * SESSION_MEMORY_APPROX_CHARS_PER_TOKEN;
+    let mut output_lines = Vec::new();
+    let mut current_section_header = String::new();
+    let mut current_section_lines = Vec::new();
+    let mut was_truncated = false;
+
+    for line in content.lines() {
+        if line.starts_with("# ") {
+            let result = flush_session_memory_section(
+                &current_section_header,
+                &current_section_lines,
+                max_chars_per_section,
+            );
+            output_lines.extend(result.lines);
+            was_truncated |= result.was_truncated;
+            current_section_header = line.to_string();
+            current_section_lines.clear();
+        } else {
+            current_section_lines.push(line.to_string());
+        }
+    }
+
+    let result = flush_session_memory_section(
+        &current_section_header,
+        &current_section_lines,
+        max_chars_per_section,
+    );
+    output_lines.extend(result.lines);
+    was_truncated |= result.was_truncated;
+
+    SessionMemoryCompactContent {
+        truncated_content: output_lines.join("\n"),
+        was_truncated,
+    }
 }
 
 fn extract_last_summarized_message_id(text: &str) -> Option<MessageId> {
@@ -250,6 +306,120 @@ fn parse_session_memory_sections(summary: &str) -> ParsedSessionMemorySections {
 
     parsed.preface = preface.join("\n").trim().to_string();
     parsed
+}
+
+fn build_session_memory_budget_reminders(current_note: &str) -> String {
+    let section_sizes = analyze_session_memory_section_sizes(current_note);
+    let total_tokens = estimate_session_memory_tokens(current_note);
+    let oversized_sections = section_sizes
+        .into_iter()
+        .filter(|(_, tokens)| *tokens > SESSION_MEMORY_SECTION_TOKEN_BUDGET)
+        .collect::<Vec<_>>();
+    if oversized_sections.is_empty() && total_tokens <= SESSION_MEMORY_TOTAL_TOKEN_BUDGET {
+        return String::new();
+    }
+
+    let mut parts = Vec::new();
+    if total_tokens > SESSION_MEMORY_TOTAL_TOKEN_BUDGET {
+        parts.push(format!(
+            "\n\nCRITICAL: The session note is currently ~{total_tokens} tokens, which exceeds the target budget of {total_budget} tokens. Condense it while preserving the most important continuity details. Prioritize keeping `Current State` and `Errors & Corrections` accurate.\n",
+            total_budget = SESSION_MEMORY_TOTAL_TOKEN_BUDGET,
+        ));
+    }
+    if !oversized_sections.is_empty() {
+        let oversized_lines = oversized_sections
+            .into_iter()
+            .map(|(section, tokens)| {
+                format!(
+                    "- \"{section}\" is ~{tokens} tokens (limit: {limit})",
+                    limit = SESSION_MEMORY_SECTION_TOKEN_BUDGET,
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        parts.push(format!(
+            "\n\nIMPORTANT: Condense these oversized sections before adding more detail:\n{oversized_lines}\n"
+        ));
+    }
+
+    parts.join("")
+}
+
+fn analyze_session_memory_section_sizes(content: &str) -> Vec<(String, usize)> {
+    let mut sections = Vec::new();
+    let mut current_section = None;
+    let mut current_lines = Vec::new();
+
+    for line in content.lines() {
+        if line.starts_with("# ") {
+            if let Some(current_section) = current_section.take() {
+                sections.push((
+                    current_section,
+                    estimate_session_memory_tokens(&current_lines.join("\n")),
+                ));
+                current_lines.clear();
+            }
+            current_section = Some(line.trim().to_string());
+        } else {
+            current_lines.push(line.to_string());
+        }
+    }
+
+    if let Some(current_section) = current_section {
+        sections.push((
+            current_section,
+            estimate_session_memory_tokens(&current_lines.join("\n")),
+        ));
+    }
+    sections
+}
+
+fn estimate_session_memory_tokens(text: &str) -> usize {
+    text.len().div_ceil(SESSION_MEMORY_APPROX_CHARS_PER_TOKEN)
+}
+
+fn flush_session_memory_section(
+    section_header: &str,
+    section_lines: &[String],
+    max_chars_per_section: usize,
+) -> FlushedSessionMemorySection {
+    if section_header.is_empty() {
+        return FlushedSessionMemorySection {
+            lines: section_lines.to_vec(),
+            was_truncated: false,
+        };
+    }
+
+    let section_content = section_lines.join("\n");
+    if section_content.len() <= max_chars_per_section {
+        let mut lines = vec![section_header.to_string()];
+        lines.extend(section_lines.to_vec());
+        return FlushedSessionMemorySection {
+            lines,
+            was_truncated: false,
+        };
+    }
+
+    let mut char_count = 0;
+    let mut kept_lines = vec![section_header.to_string()];
+    for line in section_lines {
+        if char_count + line.len() + 1 > max_chars_per_section {
+            break;
+        }
+        kept_lines.push(line.clone());
+        char_count += line.len() + 1;
+    }
+    kept_lines.push(String::new());
+    kept_lines.push(SESSION_MEMORY_SECTION_TRUNCATION_MARKER.to_string());
+    FlushedSessionMemorySection {
+        lines: kept_lines,
+        was_truncated: true,
+    }
+}
+
+struct FlushedSessionMemorySection {
+    lines: Vec<String>,
+    was_truncated: bool,
 }
 
 fn parse_template_heading(line: &str) -> Option<&'static str> {
@@ -316,9 +486,11 @@ fn section_body(sections: &[(&'static str, String)], heading: &'static str) -> S
 #[cfg(test)]
 mod tests {
     use super::{
-        build_session_memory_update_prompt, default_session_memory_note,
-        parse_session_memory_note_snapshot, render_session_memory_note, strip_memory_frontmatter,
-        upsert_session_memory_note_frontmatter,
+        SESSION_MEMORY_APPROX_CHARS_PER_TOKEN, SESSION_MEMORY_SECTION_TOKEN_BUDGET,
+        SESSION_MEMORY_TOTAL_TOKEN_BUDGET, build_session_memory_update_prompt,
+        default_session_memory_note, parse_session_memory_note_snapshot,
+        render_session_memory_note, strip_memory_frontmatter,
+        truncate_session_memory_for_compaction, upsert_session_memory_note_frontmatter,
     };
     use agent::types::MessageId;
 
@@ -401,6 +573,51 @@ mod tests {
         assert!(prompt.contains("<current_session_note>"));
         assert!(prompt.contains("<new_transcript_entries>"));
         assert!(prompt.contains("Always refresh Current State"));
+    }
+
+    #[test]
+    fn update_prompt_warns_about_section_and_total_budget_pressure() {
+        let oversized = "x".repeat(
+            (SESSION_MEMORY_TOTAL_TOKEN_BUDGET + 200) * SESSION_MEMORY_APPROX_CHARS_PER_TOKEN,
+        );
+        let prompt = build_session_memory_update_prompt(
+            format!("# Current State\n\n{oversized}").as_str(),
+            "assistant> keep only the critical details",
+        );
+
+        assert!(prompt.contains("exceeds the target budget"));
+        assert!(prompt.contains("\"# Current State\" is ~"));
+        assert!(prompt.contains("Condense these oversized sections"));
+    }
+
+    #[test]
+    fn compaction_truncation_preserves_structure_and_marks_oversized_sections() {
+        let oversized = "line\n".repeat(SESSION_MEMORY_SECTION_TOKEN_BUDGET * 4);
+        let content =
+            format!("# Current State\n_state_\n\n{oversized}\n# Worklog\n_steps_\n\n- kept");
+
+        let truncated = truncate_session_memory_for_compaction(&content);
+
+        assert!(truncated.was_truncated);
+        assert!(truncated.truncated_content.contains("# Current State"));
+        assert!(truncated.truncated_content.contains("_state_"));
+        assert!(
+            truncated
+                .truncated_content
+                .contains("[... section truncated for length ...]")
+        );
+        assert!(truncated.truncated_content.contains("# Worklog"));
+        assert!(truncated.truncated_content.contains("- kept"));
+    }
+
+    #[test]
+    fn compaction_truncation_leaves_small_notes_unchanged() {
+        let content = "# Current State\n_state_\n\nKeep going.\n";
+
+        let truncated = truncate_session_memory_for_compaction(content);
+
+        assert!(!truncated.was_truncated);
+        assert_eq!(truncated.truncated_content, content.trim_end());
     }
 
     #[test]

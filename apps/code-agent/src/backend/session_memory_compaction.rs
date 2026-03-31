@@ -1,5 +1,6 @@
 use crate::backend::session_memory_note::{
     default_session_memory_note, parse_session_memory_note_snapshot,
+    truncate_session_memory_for_compaction,
 };
 use agent::runtime::{CompactionRequest, CompactionResult, ConversationCompactor, Result};
 use agent::types::{MessageId, SessionId};
@@ -100,7 +101,9 @@ impl SessionMemoryConversationCompactor {
                 .saturating_sub(request.messages.len()),
             "using structured session memory note for compaction continuity"
         );
-        Some(CompactionResult { summary: note.body })
+        Some(CompactionResult {
+            summary: self.render_compaction_summary(&request.session_id, &note.body),
+        })
     }
 
     async fn wait_for_session_memory_refresh(&self, session_id: &SessionId) {
@@ -147,6 +150,19 @@ impl SessionMemoryConversationCompactor {
             return None;
         }
         Some(snapshot)
+    }
+
+    fn render_compaction_summary(&self, session_id: &SessionId, note_body: &str) -> String {
+        let truncated = truncate_session_memory_for_compaction(note_body);
+        if !truncated.was_truncated {
+            return truncated.truncated_content;
+        }
+
+        format!(
+            "{}\n\nSome session memory sections were truncated for length. The full session memory can be viewed at: {}",
+            truncated.truncated_content,
+            session_memory_note_absolute_path(&self.workspace_root, session_id).display(),
+        )
     }
 }
 
@@ -397,6 +413,60 @@ mod tests {
             .unwrap();
 
         assert!(result.summary.contains("Freshened session note."));
+        assert!(fallback.calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn truncates_oversized_session_note_sections_for_compaction() {
+        let dir = tempfile::tempdir().unwrap();
+        let session_id = SessionId::from("session-1");
+        let agent_session_id = AgentSessionId::from("agent-session-1");
+        let first = Message::user("first");
+        let second = Message::assistant("second");
+        let tail = Message::user("tail");
+        let oversized = "line\n".repeat(9_000);
+        std::fs::create_dir_all(dir.path().join(".nanoclaw/memory/working/sessions")).unwrap();
+        std::fs::write(
+            session_memory_note_absolute_path(dir.path(), &session_id),
+            format!(
+                "---\nscope: working\nlast_summarized_message_id: {}\n---\n\n# Current State\n_Current State_\n\n{oversized}",
+                tail.message_id
+            ),
+        )
+        .unwrap();
+        let refresh_state = shared_refresh_state(&session_id, &tail.message_id);
+        let fallback = Arc::new(RecordingFallbackCompactor::default());
+        let compactor = SessionMemoryConversationCompactor::new(
+            dir.path().to_path_buf(),
+            refresh_state,
+            fallback.clone(),
+        );
+
+        let result = compactor
+            .compact(CompactionRequest {
+                session_id: session_id.clone(),
+                agent_session_id,
+                turn_id: TurnId::new(),
+                messages: vec![first.clone(), second.clone()],
+                visible_messages: vec![first, second, tail],
+                instructions: None,
+            })
+            .await
+            .unwrap();
+
+        assert!(
+            result
+                .summary
+                .contains("[... section truncated for length ...]")
+        );
+        assert!(
+            result.summary.contains(
+                session_memory_note_absolute_path(dir.path(), &session_id)
+                    .display()
+                    .to_string()
+                    .as_str()
+            )
+        );
         assert!(fallback.calls().is_empty());
     }
 }

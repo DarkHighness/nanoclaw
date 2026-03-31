@@ -198,6 +198,11 @@ session note using an internal maintenance request:
   skeleton and italic guidance lines exactly
 - refreshed notes still use replace semantics in
   `.nanoclaw/memory/working/sessions/<session>.md`
+- the update prompt now reminds the model to keep each section under roughly
+  2,000 tokens and the full note under roughly 12,000 tokens
+- when the existing note is already over those limits, the update prompt points
+  at the specific oversized sections so the next refresh condenses them instead
+  of only appending more detail
 
 The session note now persists that boundary in its own frontmatter:
 
@@ -233,6 +238,10 @@ session note as the continuity summary itself.
 - if the note is missing, empty, stale relative to the current compact source,
   or the operator supplied explicit `/compact` notes, the wrapper falls back to
   the normal model compactor
+- before a note becomes the compaction summary, oversized sections are truncated
+  at line boundaries to roughly the same 2,000-token per-section budget Claude
+  uses, and the summary points back to the full note path when truncation
+  happened
 
 This keeps compaction continuity aligned with Claude's "session memory as the
 summary source" path without forcing every compaction to depend on a perfect
