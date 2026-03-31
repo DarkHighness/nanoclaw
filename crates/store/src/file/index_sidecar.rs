@@ -1,7 +1,7 @@
 use super::SessionStoreRetentionPolicy;
 use crate::{
     Result, SessionSummary, append_search_corpus_line, build_search_corpus, keep_recent_chars,
-    searchable_event_strings, summarize_session_events,
+    message_search_text, searchable_event_strings, summarize_session_events,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -60,7 +60,7 @@ pub(super) fn apply_event_to_record(
     }
     match &event.event {
         SessionEventKind::TranscriptMessage { message } => {
-            append_search_text(&mut record.search_corpus, &message.text_content());
+            append_search_text(&mut record.search_corpus, &message_search_text(message));
         }
         SessionEventKind::TranscriptMessagePatched { .. }
         | SessionEventKind::TranscriptMessageRemoved { .. } => {}

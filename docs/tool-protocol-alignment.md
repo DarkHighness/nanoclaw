@@ -220,7 +220,9 @@ attachment placeholders in `Message::text_content()` as well, so rollback,
 search, and preview flows do not silently drop attachment-only turns. MCP
 prompt/resource previews and transcript exports now share the same
 operator-visible message-part renderer instead of maintaining host-local
-formatting forks.
+formatting forks. Session search also now splits content-oriented matching from
+operator-visible previews, so structured message parts still render with their
+typed markers even when the index uses `text_content()` for matching.
 - state:
   `update_plan`, `request_user_input`, `request_permissions`
 - discovery:

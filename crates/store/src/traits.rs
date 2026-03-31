@@ -12,6 +12,20 @@ use types::{
 
 const TOKEN_USAGE_CHILD_FETCH_CONCURRENCY_LIMIT: usize = 8;
 
+/// Search indexing intentionally stays content-oriented so matching remains
+/// stable across host renderers and provider-specific structural wrappers.
+#[must_use]
+pub(crate) fn message_search_text(message: &Message) -> String {
+    message.text_content()
+}
+
+/// Operator-facing previews use the shared message renderer so transcript,
+/// export, and search surfaces present the same structural markers.
+#[must_use]
+pub(crate) fn message_preview_text(message: &Message) -> String {
+    types::message_operator_text(message)
+}
+
 #[derive(Debug, Error)]
 pub enum SessionStoreError {
     #[error("session not found: {0}")]
@@ -249,13 +263,13 @@ pub fn search_session_events(
     }
 
     for message in replay_transcript(events) {
-        let text = message.text_content();
+        let text = message_search_text(&message);
         if !text.to_lowercase().contains(&query_lower) {
             continue;
         }
         matched_event_count += 1;
         if matches.len() < 3 {
-            matches.push(preview_text(&text, 80));
+            matches.push(preview_text(&message_preview_text(&message), 80));
         }
     }
 
@@ -268,7 +282,13 @@ pub fn search_session_events(
             continue;
         }
         matched_event_count += 1;
-        for candidate in event_matches {
+        let preview_candidates = previewable_event_strings(event);
+        let candidates = if preview_candidates.is_empty() {
+            event_matches
+        } else {
+            preview_candidates
+        };
+        for candidate in candidates {
             if matches.len() == 3 {
                 break;
             }
@@ -287,6 +307,74 @@ pub fn search_session_events(
             matched_event_count,
             preview_matches: matches,
         })
+    }
+}
+
+fn previewable_event_strings(event: &SessionEventEnvelope) -> Vec<String> {
+    match &event.event {
+        SessionEventKind::ModelRequestStarted { request } => {
+            let mut values = Vec::new();
+            if !request.messages.is_empty() {
+                values.push(
+                    request
+                        .messages
+                        .iter()
+                        .map(message_preview_text)
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                );
+            }
+            values.extend(request.tools.iter().map(|tool| tool.name.to_string()));
+            values
+        }
+        SessionEventKind::HookCompleted {
+            hook_name, output, ..
+        } => {
+            let mut values = Vec::new();
+            for effect in &output.effects {
+                match effect {
+                    HookEffect::AppendMessage { parts, .. } => {
+                        for part in parts {
+                            values.push(types::message_part_operator_text(part));
+                        }
+                    }
+                    HookEffect::ReplaceMessage { message, .. } => {
+                        values.push(format!("{hook_name}: {}", message_preview_text(message)));
+                    }
+                    HookEffect::AddContext { text } | HookEffect::InjectInstruction { text } => {
+                        values.push(format!("{hook_name}: {text}"));
+                    }
+                    HookEffect::Stop { reason } => {
+                        values.push(format!("{hook_name}: {reason}"));
+                    }
+                    HookEffect::RewriteToolArgs {
+                        tool_name,
+                        arguments,
+                    } => {
+                        values.push(tool_name.to_string());
+                        values.push(arguments.to_string());
+                    }
+                    HookEffect::SetGateDecision { reason, .. }
+                    | HookEffect::SetPermissionDecision { reason, .. }
+                    | HookEffect::SetPermissionBehavior { reason, .. } => {
+                        if let Some(reason) = reason {
+                            values.push(format!("{hook_name}: {reason}"));
+                        }
+                    }
+                    HookEffect::PatchMessage { .. }
+                    | HookEffect::RemoveMessage { .. }
+                    | HookEffect::Elicitation { .. } => {}
+                }
+            }
+            values
+        }
+        SessionEventKind::AgentEnvelope { envelope } => match &envelope.kind {
+            types::AgentEnvelopeKind::Input { message, delivery } => {
+                vec![delivery.to_string(), message_preview_text(message)]
+            }
+            _ => searchable_event_strings(event),
+        },
+        _ => searchable_event_strings(event),
     }
 }
 
@@ -318,7 +406,7 @@ pub(crate) fn searchable_event_strings(event: &SessionEventEnvelope) -> Vec<Stri
                 request
                     .messages
                     .iter()
-                    .map(|message| message.text_content())
+                    .map(message_search_text)
                     .collect::<Vec<_>>()
                     .join("\n"),
             );
@@ -395,7 +483,7 @@ pub(crate) fn searchable_event_strings(event: &SessionEventEnvelope) -> Vec<Stri
                         }
                     }
                     HookEffect::ReplaceMessage { message, .. } => {
-                        values.push(message.text_content());
+                        values.push(message_search_text(message));
                     }
                     HookEffect::PatchMessage { .. }
                     | HookEffect::RemoveMessage { .. }
@@ -476,7 +564,7 @@ pub(crate) fn searchable_event_strings(event: &SessionEventEnvelope) -> Vec<Stri
             }
             types::AgentEnvelopeKind::Input { message, delivery } => {
                 values.push(delivery.to_string());
-                values.push(message.text_content());
+                values.push(message_search_text(message));
                 values.push(serde_json::to_string(message).unwrap_or_default());
             }
             types::AgentEnvelopeKind::Artifact { artifact } => {
@@ -683,7 +771,7 @@ pub(crate) fn build_search_corpus(events: &[SessionEventEnvelope]) -> String {
         }
     }
     for message in replay_transcript(events) {
-        append_search_corpus_line(&mut corpus, &message.text_content());
+        append_search_corpus_line(&mut corpus, &message_search_text(&message));
     }
     corpus
 }
@@ -1065,7 +1153,7 @@ fn collect_memory_export_sections(events: &[SessionEventEnvelope]) -> MemoryExpo
                                 &mut sections.decisions,
                                 format!(
                                     "{hook_name}: {}",
-                                    preview_text(&message.text_content(), 120)
+                                    preview_text(&message_preview_text(message), 120)
                                 ),
                             );
                         }
@@ -1285,4 +1373,83 @@ pub trait SessionStore: EventSink {
         &self,
         request: SessionMemoryExportRequest,
     ) -> Result<SessionMemoryExportBundle>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{SessionSummary, collect_memory_export_sections, search_session_events};
+    use types::{
+        AgentSessionId, HookEffect, HookEvent, HookResult, Message, MessagePart, MessageRole,
+        MessageSelector, SessionEventEnvelope, SessionEventKind, SessionId,
+    };
+
+    #[test]
+    fn search_session_events_uses_operator_preview_for_reference_messages() {
+        let summary = SessionSummary {
+            session_id: SessionId::from("session-1"),
+            first_timestamp_ms: 1,
+            last_timestamp_ms: 2,
+            event_count: 1,
+            agent_session_count: 1,
+            transcript_message_count: 1,
+            last_user_prompt: None,
+        };
+        let events = vec![SessionEventEnvelope::new(
+            summary.session_id.clone(),
+            AgentSessionId::from("agent-root"),
+            None,
+            None,
+            SessionEventKind::TranscriptMessage {
+                message: Message::new(
+                    MessageRole::User,
+                    vec![MessagePart::Reference {
+                        kind: "skill".to_string(),
+                        name: Some("openai-docs".to_string()),
+                        uri: Some("app://docs".to_string()),
+                        text: Some("Use official docs".to_string()),
+                    }],
+                ),
+            },
+        )];
+
+        let result = search_session_events(&summary, &events, "openai").unwrap();
+        assert_eq!(
+            result.preview_matches,
+            vec!["[reference:skill openai-docs app://docs Use official docs]".to_string()]
+        );
+    }
+
+    #[test]
+    fn memory_export_replace_message_preview_uses_operator_rendering() {
+        let events = vec![SessionEventEnvelope::new(
+            SessionId::from("session-1"),
+            AgentSessionId::from("agent-root"),
+            None,
+            None,
+            SessionEventKind::HookCompleted {
+                hook_name: "guard".to_string(),
+                event: HookEvent::SessionStart,
+                output: HookResult {
+                    effects: vec![HookEffect::ReplaceMessage {
+                        selector: MessageSelector::Current,
+                        message: Message::new(
+                            MessageRole::Assistant,
+                            vec![MessagePart::Reference {
+                                kind: "skill".to_string(),
+                                name: Some("openai-docs".to_string()),
+                                uri: None,
+                                text: Some("Use official docs".to_string()),
+                            }],
+                        ),
+                    }],
+                },
+            },
+        )];
+
+        let sections = collect_memory_export_sections(&events);
+        assert_eq!(
+            sections.decisions,
+            vec!["guard: [reference:skill openai-docs Use official docs]".to_string()]
+        );
+    }
 }
