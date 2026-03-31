@@ -1,4 +1,4 @@
-use crate::replay::{replay_transcript, visible_transcript};
+use crate::replay::visible_transcript;
 use async_trait::async_trait;
 use futures::{StreamExt, stream};
 use serde::{Deserialize, Serialize};
@@ -264,7 +264,7 @@ pub fn search_session_events(
         }
     }
 
-    for message in replay_transcript(events) {
+    for message in visible_transcript(events) {
         let text = message_search_text(&message);
         if !text.to_lowercase().contains(&query_lower) {
             continue;
@@ -276,7 +276,7 @@ pub fn search_session_events(
     }
 
     for event in events {
-        let event_matches = searchable_event_strings(event)
+        let event_matches = searchable_session_event_strings(event)
             .into_iter()
             .filter(|candidate| candidate.to_lowercase().contains(&query_lower))
             .collect::<Vec<_>>();
@@ -314,38 +314,17 @@ pub fn search_session_events(
 
 fn previewable_event_strings(event: &SessionEventEnvelope) -> Vec<String> {
     match &event.event {
-        SessionEventKind::ModelRequestStarted { request } => {
-            let mut values = Vec::new();
-            if !request.messages.is_empty() {
-                values.push(
-                    request
-                        .messages
-                        .iter()
-                        .map(message_preview_text)
-                        .collect::<Vec<_>>()
-                        .join("\n"),
-                );
-            }
-            values.extend(request.tools.iter().map(|tool| tool.name.to_string()));
-            values
-        }
+        SessionEventKind::ModelRequestStarted { request } => request
+            .tools
+            .iter()
+            .map(|tool| tool.name.to_string())
+            .collect(),
         SessionEventKind::HookCompleted {
             hook_name, output, ..
         } => {
             let mut values = Vec::new();
             for effect in &output.effects {
                 match effect {
-                    HookEffect::AppendMessage { parts, .. } => {
-                        for part in parts {
-                            values.push(types::message_part_operator_text(part));
-                        }
-                    }
-                    HookEffect::ReplaceMessage { message, .. } => {
-                        values.push(format!("{hook_name}: {}", message_preview_text(message)));
-                    }
-                    HookEffect::AddContext { text } | HookEffect::InjectInstruction { text } => {
-                        values.push(format!("{hook_name}: {text}"));
-                    }
                     HookEffect::ShowToast { variant, message } => {
                         values.push(format!("{hook_name}: {variant}"));
                         values.push(format!("{hook_name}: {message}"));
@@ -370,7 +349,11 @@ fn previewable_event_strings(event: &SessionEventEnvelope) -> Vec<String> {
                             values.push(format!("{hook_name}: {reason}"));
                         }
                     }
-                    HookEffect::PatchMessage { .. }
+                    HookEffect::AppendMessage { .. }
+                    | HookEffect::ReplaceMessage { .. }
+                    | HookEffect::AddContext { .. }
+                    | HookEffect::InjectInstruction { .. }
+                    | HookEffect::PatchMessage { .. }
                     | HookEffect::RemoveMessage { .. }
                     | HookEffect::Elicitation { .. } => {}
                 }
@@ -381,13 +364,16 @@ fn previewable_event_strings(event: &SessionEventEnvelope) -> Vec<String> {
             types::AgentEnvelopeKind::Input { message, delivery } => {
                 vec![delivery.to_string(), message_preview_text(message)]
             }
-            _ => searchable_event_strings(event),
+            _ => searchable_session_event_strings(event),
         },
-        _ => searchable_event_strings(event),
+        _ => searchable_session_event_strings(event),
     }
 }
 
-pub(crate) fn searchable_event_strings(event: &SessionEventEnvelope) -> Vec<String> {
+pub(crate) fn searchable_session_event_strings(event: &SessionEventEnvelope) -> Vec<String> {
+    // Session search should keep operator-facing structural metadata
+    // searchable without reintroducing transcript text that compaction already
+    // hid from the visible history window.
     let mut values = vec![event.agent_session_id.to_string()];
     match &event.event {
         SessionEventKind::SessionStart { reason }
@@ -411,14 +397,6 @@ pub(crate) fn searchable_event_strings(event: &SessionEventEnvelope) -> Vec<Stri
             values.push(prompt.clone());
         }
         SessionEventKind::ModelRequestStarted { request } => {
-            values.push(
-                request
-                    .messages
-                    .iter()
-                    .map(message_search_text)
-                    .collect::<Vec<_>>()
-                    .join("\n"),
-            );
             values.extend(request.tools.iter().map(|tool| tool.name.to_string()));
         }
         SessionEventKind::CompactionCompleted {
@@ -433,12 +411,7 @@ pub(crate) fn searchable_event_strings(event: &SessionEventEnvelope) -> Vec<Stri
                 "compaction {source_message_count} {retained_message_count} {summary_chars}"
             ));
         }
-        SessionEventKind::ModelResponseCompleted {
-            assistant_text,
-            tool_calls,
-            ..
-        } => {
-            values.push(assistant_text.clone());
+        SessionEventKind::ModelResponseCompleted { tool_calls, .. } => {
             values.extend(tool_calls.iter().map(|call| call.tool_name.to_string()));
         }
         SessionEventKind::TokenUsageUpdated { phase, ledger } => {
@@ -465,15 +438,6 @@ pub(crate) fn searchable_event_strings(event: &SessionEventEnvelope) -> Vec<Stri
             values.push(hook_name.clone());
             for effect in &output.effects {
                 match effect {
-                    HookEffect::AppendMessage { parts, .. } => {
-                        values.extend(parts.iter().filter_map(|part| match part {
-                            types::MessagePart::Text { text } => Some(text.clone()),
-                            _ => None,
-                        }));
-                    }
-                    HookEffect::AddContext { text } | HookEffect::InjectInstruction { text } => {
-                        values.push(text.clone());
-                    }
                     HookEffect::ShowToast { variant, message } => {
                         values.push(variant.clone());
                         values.push(message.clone());
@@ -498,10 +462,11 @@ pub(crate) fn searchable_event_strings(event: &SessionEventEnvelope) -> Vec<Stri
                             values.push(reason.clone());
                         }
                     }
-                    HookEffect::ReplaceMessage { message, .. } => {
-                        values.push(message_search_text(message));
-                    }
-                    HookEffect::PatchMessage { .. }
+                    HookEffect::AppendMessage { .. }
+                    | HookEffect::ReplaceMessage { .. }
+                    | HookEffect::AddContext { .. }
+                    | HookEffect::InjectInstruction { .. }
+                    | HookEffect::PatchMessage { .. }
                     | HookEffect::RemoveMessage { .. }
                     | HookEffect::Elicitation { .. } => {}
                 }
@@ -580,8 +545,7 @@ pub(crate) fn searchable_event_strings(event: &SessionEventEnvelope) -> Vec<Stri
             }
             types::AgentEnvelopeKind::Input { message, delivery } => {
                 values.push(delivery.to_string());
-                values.push(message_search_text(message));
-                values.push(serde_json::to_string(message).unwrap_or_default());
+                values.push(message_preview_text(message));
             }
             types::AgentEnvelopeKind::Artifact { artifact } => {
                 values.push(artifact.kind.clone());
@@ -782,11 +746,14 @@ fn collect_child_run_token_usage_contexts(
 pub(crate) fn build_search_corpus(events: &[SessionEventEnvelope]) -> String {
     let mut corpus = String::new();
     for event in events {
-        for value in searchable_event_strings(event) {
+        for value in searchable_session_event_strings(event) {
             append_search_corpus_line(&mut corpus, &value);
         }
     }
-    for message in replay_transcript(events) {
+    // Session search should index the same visible transcript window that the
+    // operator can inspect after compaction, while still keeping structural
+    // event metadata such as tool names and task ids searchable.
+    for message in visible_transcript(events) {
         append_search_corpus_line(&mut corpus, &message_search_text(&message));
     }
     corpus
@@ -1525,6 +1492,89 @@ mod tests {
 
         let summary = summarize_session_events(&session_id, &events).unwrap();
         assert_eq!(summary.transcript_message_count, 3);
+    }
+
+    #[test]
+    fn search_session_events_ignores_hidden_compacted_transcript_text() {
+        let session_id = SessionId::from("session_demo");
+        let agent_session_id = AgentSessionId::from("agent_demo");
+        let kept = Message::user("keep this").with_message_id(MessageId::from("msg_keep"));
+        let summary = Message::system("summary").with_message_id(MessageId::from("msg_summary"));
+        let after =
+            Message::assistant("after compaction").with_message_id(MessageId::from("msg_after"));
+        let events = vec![
+            SessionEventEnvelope::new(
+                session_id.clone(),
+                agent_session_id.clone(),
+                None,
+                None,
+                SessionEventKind::TranscriptMessage {
+                    message: Message::user("older prompt")
+                        .with_message_id(MessageId::from("msg_older_prompt")),
+                },
+            ),
+            SessionEventEnvelope::new(
+                session_id.clone(),
+                agent_session_id.clone(),
+                None,
+                None,
+                SessionEventKind::TranscriptMessage {
+                    message: Message::assistant("older answer")
+                        .with_message_id(MessageId::from("msg_older_answer")),
+                },
+            ),
+            SessionEventEnvelope::new(
+                session_id.clone(),
+                agent_session_id.clone(),
+                None,
+                None,
+                SessionEventKind::TranscriptMessage {
+                    message: kept.clone(),
+                },
+            ),
+            SessionEventEnvelope::new(
+                session_id.clone(),
+                agent_session_id.clone(),
+                None,
+                None,
+                SessionEventKind::TranscriptMessage {
+                    message: summary.clone(),
+                },
+            ),
+            SessionEventEnvelope::new(
+                session_id.clone(),
+                agent_session_id.clone(),
+                None,
+                None,
+                SessionEventKind::CompactionCompleted {
+                    reason: "manual".to_string(),
+                    source_message_count: 2,
+                    retained_message_count: 1,
+                    summary_chars: 7,
+                    summary_message_id: Some(summary.message_id.clone()),
+                    retained_tail_message_ids: vec![kept.message_id.clone()],
+                },
+            ),
+            SessionEventEnvelope::new(
+                session_id.clone(),
+                agent_session_id,
+                None,
+                None,
+                SessionEventKind::TranscriptMessage { message: after },
+            ),
+        ];
+        let summary = summarize_session_events(&session_id, &events).unwrap();
+
+        assert!(search_session_events(&summary, &events, "older answer").is_none());
+
+        let result = search_session_events(&summary, &events, "after compaction").unwrap();
+        assert_eq!(result.matched_event_count, 1);
+        assert!(
+            result
+                .preview_matches
+                .iter()
+                .any(|line| line.contains("after compaction"))
+        );
     }
 
     #[test]

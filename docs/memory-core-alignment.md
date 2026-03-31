@@ -347,6 +347,14 @@ transcript accounting for their message counts:
 - memory exports keep their transcript counts consistent with the post-
   compaction history shape they summarize
 
+Session search is now aligned to the same operator-visible boundary:
+
+- transcript text matches come only from the visible post-compaction window
+- structural event metadata such as tool names, task ids, and notifications
+  remains searchable
+- raw model-request payloads, hidden assistant bodies, and hook-injected prompt
+  text no longer make compacted-away transcript content look searchable again
+
 That keeps summary metadata aligned with the operator-facing transcript surface
 instead of mixing visible content with raw replay-only counts.
 

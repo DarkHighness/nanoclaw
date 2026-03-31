@@ -972,6 +972,117 @@ mod tests {
     );
 
     bounded_async_test!(
+        async fn search_sessions_skip_hidden_compacted_transcript_text() {
+            let dir = tempfile::tempdir().unwrap();
+            let store = FileSessionStore::open(dir.path()).await.unwrap();
+            let session_id = SessionId::new();
+            let agent_session_id = AgentSessionId::new();
+            let kept = Message::user("keep this").with_message_id(MessageId::from("msg_keep"));
+            let summary =
+                Message::system("summary").with_message_id(MessageId::from("msg_summary"));
+            let after = Message::assistant("after compaction")
+                .with_message_id(MessageId::from("msg_after"));
+
+            store
+                .append_batch(vec![
+                    SessionEventEnvelope::new(
+                        session_id.clone(),
+                        agent_session_id.clone(),
+                        None,
+                        None,
+                        SessionEventKind::TranscriptMessage {
+                            message: Message::user("older prompt")
+                                .with_message_id(MessageId::from("msg_older_prompt")),
+                        },
+                    ),
+                    SessionEventEnvelope::new(
+                        session_id.clone(),
+                        agent_session_id.clone(),
+                        None,
+                        None,
+                        SessionEventKind::TranscriptMessage {
+                            message: Message::assistant("older answer")
+                                .with_message_id(MessageId::from("msg_older_answer")),
+                        },
+                    ),
+                    SessionEventEnvelope::new(
+                        session_id.clone(),
+                        agent_session_id.clone(),
+                        None,
+                        None,
+                        SessionEventKind::TranscriptMessage {
+                            message: kept.clone(),
+                        },
+                    ),
+                    SessionEventEnvelope::new(
+                        session_id.clone(),
+                        agent_session_id.clone(),
+                        None,
+                        None,
+                        SessionEventKind::TranscriptMessage {
+                            message: summary.clone(),
+                        },
+                    ),
+                    SessionEventEnvelope::new(
+                        session_id.clone(),
+                        agent_session_id.clone(),
+                        None,
+                        None,
+                        SessionEventKind::CompactionCompleted {
+                            reason: "manual".to_string(),
+                            source_message_count: 2,
+                            retained_message_count: 1,
+                            summary_chars: 7,
+                            summary_message_id: Some(summary.message_id.clone()),
+                            retained_tail_message_ids: vec![kept.message_id.clone()],
+                        },
+                    ),
+                    SessionEventEnvelope::new(
+                        session_id.clone(),
+                        agent_session_id,
+                        None,
+                        None,
+                        SessionEventKind::TranscriptMessage { message: after },
+                    ),
+                ])
+                .await
+                .unwrap();
+
+            assert!(
+                store
+                    .search_sessions("older answer")
+                    .await
+                    .unwrap()
+                    .is_empty()
+            );
+
+            let matches = store.search_sessions("after compaction").await.unwrap();
+            assert_eq!(matches.len(), 1);
+            assert_eq!(matches[0].summary.transcript_message_count, 3);
+            assert!(
+                matches[0]
+                    .preview_matches
+                    .iter()
+                    .any(|line| line.contains("after compaction"))
+            );
+
+            drop(store);
+
+            let reopened = FileSessionStore::open(dir.path()).await.unwrap();
+            assert!(
+                reopened
+                    .search_sessions("older answer")
+                    .await
+                    .unwrap()
+                    .is_empty()
+            );
+            let matches = reopened.search_sessions("after compaction").await.unwrap();
+            assert_eq!(matches.len(), 1);
+            assert_eq!(matches[0].summary.transcript_message_count, 3);
+        }
+    );
+
+    bounded_async_test!(
         async fn retention_policy_prunes_oldest_runs_by_count() {
             let dir = tempfile::tempdir().unwrap();
             let store = FileSessionStore::open_with_options(
