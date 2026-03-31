@@ -1868,7 +1868,7 @@ pub trait SessionStore: EventSink {
 
 #[cfg(test)]
 mod tests {
-    use super::derive_self_improve_signals;
+    use super::{HIGH_TURN_LATENCY_WARNING_THRESHOLD_MS, derive_self_improve_signals};
     use types::{
         AgentHandle, AgentId, AgentResultEnvelope, AgentStatus, AgentTaskSpec, HookEffect,
         HookEvent, HookResult, MessageId, SessionEventEnvelope, SessionEventKind, SessionId,
@@ -2002,24 +2002,32 @@ mod tests {
     #[test]
     fn derives_hook_latency_and_critical_loop_signals() {
         let signals = derive_self_improve_signals(&[
-            event(
-                Some("turn-4"),
-                SessionEventKind::UserPromptSubmit {
-                    prompt: "hello".to_string(),
-                },
-            ),
-            event(
-                Some("turn-4"),
-                SessionEventKind::HookCompleted {
-                    hook_name: "stop-hook".to_string(),
-                    event: HookEvent::Stop,
-                    output: HookResult {
-                        effects: vec![HookEffect::Stop {
-                            reason: "policy stop".to_string(),
-                        }],
+            {
+                let mut event = event(
+                    Some("turn-4"),
+                    SessionEventKind::UserPromptSubmit {
+                        prompt: "hello".to_string(),
                     },
-                },
-            ),
+                );
+                event.timestamp_ms = 0;
+                event
+            },
+            {
+                let mut event = event(
+                    Some("turn-4"),
+                    SessionEventKind::HookCompleted {
+                        hook_name: "stop-hook".to_string(),
+                        event: HookEvent::Stop,
+                        output: HookResult {
+                            effects: vec![HookEffect::Stop {
+                                reason: "policy stop".to_string(),
+                            }],
+                        },
+                    },
+                );
+                event.timestamp_ms = 5;
+                event
+            },
             {
                 let mut event = event(
                     Some("turn-4"),
