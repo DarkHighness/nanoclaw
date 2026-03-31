@@ -2,7 +2,10 @@ use crate::backend::session_catalog;
 use crate::backend::session_history::{
     self, LoadedAgentSession, LoadedSession, SessionExportArtifact, preview_id,
 };
-use crate::backend::session_memory_note::render_session_memory_note;
+use crate::backend::session_memory_note::{
+    build_session_memory_update_prompt, default_session_memory_note, render_session_memory_note,
+    strip_memory_frontmatter,
+};
 use crate::backend::session_resume;
 use crate::backend::task_history::{self, LoadedTask, PersistedTaskSummary};
 use crate::backend::{
@@ -19,7 +22,7 @@ use agent::memory::{
     MemoryBackend, MemoryRecordMode, MemoryRecordRequest, MemoryScope, MemoryType,
 };
 use agent::runtime::{
-    PermissionGrantSnapshot, PermissionGrantStore, Result as RuntimeResult,
+    ModelBackend, PermissionGrantSnapshot, PermissionGrantStore, Result as RuntimeResult,
     RollbackVisibleHistoryOutcome, RunTurnOutcome, RuntimeCommandId, RuntimeControlPlane,
 };
 use agent::tools::{
@@ -28,17 +31,30 @@ use agent::tools::{
     describe_sandbox_policy, request_permission_profile_from_granted, sandbox_backend_status,
 };
 use agent::types::{
-    AgentSessionId, AgentTaskSpec, AgentWaitMode, AgentWaitRequest, Message, SessionId,
-    message_operator_text, new_opaque_id,
+    AgentSessionId, AgentTaskSpec, AgentWaitMode, AgentWaitRequest, Message, MessageId, ModelEvent,
+    ModelRequest, SessionId, ToolSpec, TurnId, message_operator_text, new_opaque_id,
 };
 use agent::{AgentRuntime, RuntimeCommand, Skill, ToolExecutionContext};
 use anyhow::Result;
+use futures::StreamExt;
 use nanoclaw_config::ResolvedAgentProfile;
+use serde_json::json;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 use store::SessionStore;
+use tokio::fs;
 use tokio::sync::Mutex as AsyncMutex;
+use tokio::time::{Duration, timeout};
 use tracing::warn;
+
+// Keep the host-side session-note refresher aligned with Claude Code's
+// default cadence so incremental updates happen often enough to preserve
+// continuity without turning every small turn into note churn.
+const SESSION_MEMORY_MIN_TOKENS_TO_INIT: usize = 10_000;
+const SESSION_MEMORY_MIN_TOKENS_BETWEEN_UPDATES: usize = 5_000;
+const SESSION_MEMORY_TOOL_CALLS_BETWEEN_UPDATES: usize = 3;
+const SESSION_MEMORY_UPDATE_TIMEOUT_MS: u64 = 15_000;
+const WORKSPACE_MEMORY_RECALL_METADATA_KEY: &str = "workspace_memory_recall";
 
 #[derive(Clone)]
 struct SessionPreambleConfig {
@@ -211,6 +227,41 @@ struct CompactionWorkingSnapshot {
     summary: String,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct SessionMemoryRefreshState {
+    initialized: bool,
+    refresh_in_flight: bool,
+    tokens_at_last_update: usize,
+    tool_calls_since_update: usize,
+    last_summarized_message_id: Option<MessageId>,
+}
+
+#[derive(Clone, Debug)]
+struct SessionMemoryRefreshContext {
+    session_id: SessionId,
+    agent_session_id: AgentSessionId,
+    visible_transcript: Vec<Message>,
+    context_tokens: usize,
+    completed_turn_count: usize,
+    tool_call_count: usize,
+    compaction_summary_message_id: Option<MessageId>,
+}
+
+#[derive(Clone, Debug)]
+struct SideQuestionContextSnapshot {
+    session_id: SessionId,
+    agent_session_id: AgentSessionId,
+    instructions: Vec<String>,
+    transcript: Vec<Message>,
+    tools: Vec<ToolSpec>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SideQuestionOutcome {
+    pub(crate) question: String,
+    pub(crate) response: String,
+}
+
 /// The backend session owns runtime state so frontends can speak to a stable
 /// host contract instead of sharing `AgentRuntime` directly.
 #[derive(Clone)]
@@ -232,13 +283,17 @@ pub(crate) struct CodeAgentSession {
     session_tool_context: Arc<RwLock<ToolExecutionContext>>,
     default_sandbox_policy: SandboxPolicy,
     preamble: SessionPreambleConfig,
+    session_memory_model_backend: Option<Arc<dyn ModelBackend>>,
     memory_backend: Option<Arc<dyn MemoryBackend>>,
+    session_memory_refresh: Arc<Mutex<SessionMemoryRefreshState>>,
+    side_question_context: Arc<RwLock<Option<SideQuestionContextSnapshot>>>,
 }
 
 impl CodeAgentSession {
     pub(crate) fn new(
         runtime: AgentRuntime,
         model_backend: Option<MutableAgentBackend>,
+        session_memory_model_backend: Option<Arc<dyn ModelBackend>>,
         subagent_executor: Arc<dyn SubagentExecutor>,
         store: Arc<dyn SessionStore>,
         mcp_servers: Vec<ConnectedMcpServer>,
@@ -257,6 +312,10 @@ impl CodeAgentSession {
         memory_backend: Option<Arc<dyn MemoryBackend>>,
     ) -> Self {
         let workspace_root = startup.workspace_root.clone();
+        let side_question_context = Some(Self::side_question_context_from_runtime(
+            &runtime,
+            None::<Message>,
+        ));
         let control_plane = runtime.control_plane();
         Self {
             runtime: Arc::new(AsyncMutex::new(runtime)),
@@ -280,7 +339,10 @@ impl CodeAgentSession {
                 skill_catalog,
                 plugin_instructions,
             },
+            session_memory_model_backend,
             memory_backend,
+            session_memory_refresh: Arc::new(Mutex::new(SessionMemoryRefreshState::default())),
+            side_question_context: Arc::new(RwLock::new(side_question_context)),
         }
     }
 
@@ -346,15 +408,25 @@ impl CodeAgentSession {
 
     pub(crate) async fn apply_control(&self, command: RuntimeCommand) -> Result<()> {
         let mut runtime = self.runtime.lock().await;
+        if let RuntimeCommand::Prompt { message } = &command {
+            self.store_side_question_context(Self::side_question_context_from_runtime(
+                &runtime,
+                Some(message.clone()),
+            ));
+        }
         let mut observer = SessionEventObserver::new(self.events.clone());
         runtime
             .apply_control_with_observer(command, &mut observer)
             .await
             .map_err(anyhow::Error::from)?;
         let snapshot = self.latest_compaction_working_snapshot(&runtime, &observer);
+        let refresh_context = self.session_memory_refresh_context(&runtime, &observer);
+        let side_question_context = Self::side_question_context_from_runtime(&runtime, None);
         self.sync_runtime_session_refs(&runtime);
         drop(runtime);
-        self.persist_compaction_working_snapshot(snapshot).await;
+        self.store_side_question_context(side_question_context);
+        self.sync_session_memory_after_runtime_activity(refresh_context, snapshot)
+            .await;
         Ok(())
     }
 
@@ -470,9 +542,13 @@ impl CodeAgentSession {
             .await
             .map_err(anyhow::Error::from)?;
         let snapshot = self.latest_compaction_working_snapshot(&runtime, &observer);
+        let refresh_context = self.session_memory_refresh_context(&runtime, &observer);
+        let side_question_context = Self::side_question_context_from_runtime(&runtime, None);
         self.sync_runtime_session_refs(&runtime);
         drop(runtime);
-        self.persist_compaction_working_snapshot(snapshot).await;
+        self.store_side_question_context(side_question_context);
+        self.sync_session_memory_after_runtime_activity(refresh_context, snapshot)
+            .await;
         Ok(drained)
     }
 
@@ -501,15 +577,23 @@ impl CodeAgentSession {
 
     pub(crate) async fn run_one_shot_prompt(&self, prompt: &str) -> Result<RunTurnOutcome> {
         let mut runtime = self.runtime.lock().await;
+        self.store_side_question_context(Self::side_question_context_from_runtime(
+            &runtime,
+            Some(Message::user(prompt)),
+        ));
         let mut observer = SessionEventObserver::new(self.events.clone());
         let outcome = runtime
             .run_user_prompt_with_observer(prompt, &mut observer)
             .await
             .map_err(anyhow::Error::from)?;
         let snapshot = self.latest_compaction_working_snapshot(&runtime, &observer);
+        let refresh_context = self.session_memory_refresh_context(&runtime, &observer);
+        let side_question_context = Self::side_question_context_from_runtime(&runtime, None);
         self.sync_runtime_session_refs(&runtime);
         drop(runtime);
-        self.persist_compaction_working_snapshot(snapshot).await;
+        self.store_side_question_context(side_question_context);
+        self.sync_session_memory_after_runtime_activity(refresh_context, snapshot)
+            .await;
         Ok(outcome)
     }
 
@@ -539,9 +623,13 @@ impl CodeAgentSession {
             .compact_now_with_observer(notes, &mut observer)
             .await?;
         let snapshot = self.latest_compaction_working_snapshot(&runtime, &observer);
+        let refresh_context = self.session_memory_refresh_context(&runtime, &observer);
+        let side_question_context = Self::side_question_context_from_runtime(&runtime, None);
         self.sync_runtime_session_refs(&runtime);
         drop(runtime);
-        self.persist_compaction_working_snapshot(snapshot).await;
+        self.store_side_question_context(side_question_context);
+        self.sync_session_memory_after_runtime_activity(refresh_context, snapshot)
+            .await;
         Ok(compacted)
     }
 
@@ -559,7 +647,7 @@ impl CodeAgentSession {
 
     async fn start_fresh_session(&self) -> Result<SessionOperationOutcome> {
         let instructions = self.rebuild_system_preamble();
-        let (session_ref, agent_session_ref) = {
+        let (session_ref, agent_session_ref, side_question_context) = {
             let mut runtime = self.runtime.lock().await;
             runtime.replace_base_instructions(instructions);
             runtime
@@ -569,8 +657,12 @@ impl CodeAgentSession {
             (
                 runtime.session_id().to_string(),
                 runtime.agent_session_id().to_string(),
+                Self::side_question_context_from_runtime(&runtime, None),
             )
         };
+        self.store_side_question_context(side_question_context.clone());
+        self.reset_session_memory_refresh_state(&side_question_context)
+            .await;
         self.set_runtime_session_refs(session_ref, agent_session_ref);
         self.refresh_stored_session_count().await?;
         Ok(self
@@ -677,6 +769,388 @@ impl CodeAgentSession {
             })
     }
 
+    fn side_question_context_from_runtime(
+        runtime: &AgentRuntime,
+        pending_prompt: Option<Message>,
+    ) -> SideQuestionContextSnapshot {
+        let mut transcript = runtime.visible_transcript_snapshot();
+        if let Some(pending_prompt) = pending_prompt {
+            transcript.push(pending_prompt);
+        }
+        SideQuestionContextSnapshot {
+            session_id: runtime.session_id(),
+            agent_session_id: runtime.agent_session_id(),
+            instructions: runtime.base_instructions_snapshot(),
+            transcript,
+            tools: runtime.tool_specs(),
+        }
+    }
+
+    fn store_side_question_context(&self, context: SideQuestionContextSnapshot) {
+        *self.side_question_context.write().unwrap() = Some(context);
+    }
+
+    fn session_memory_refresh_context(
+        &self,
+        runtime: &AgentRuntime,
+        observer: &SessionEventObserver,
+    ) -> Option<SessionMemoryRefreshContext> {
+        let completed_turn_count = observer.completed_turn_count();
+        let compaction_summary_message_id = observer.latest_compaction_summary_message_id();
+        if completed_turn_count == 0 && compaction_summary_message_id.is_none() {
+            return None;
+        }
+
+        Some(SessionMemoryRefreshContext {
+            session_id: runtime.session_id(),
+            agent_session_id: runtime.agent_session_id(),
+            visible_transcript: runtime.visible_transcript_snapshot(),
+            context_tokens: runtime
+                .token_ledger()
+                .context_window
+                .map(|usage| usage.used_tokens)
+                .unwrap_or_default(),
+            completed_turn_count,
+            tool_call_count: observer.requested_tool_call_count(),
+            compaction_summary_message_id,
+        })
+    }
+
+    async fn sync_session_memory_after_runtime_activity(
+        &self,
+        context: Option<SessionMemoryRefreshContext>,
+        snapshot: Option<CompactionWorkingSnapshot>,
+    ) {
+        if snapshot.is_some() {
+            self.persist_compaction_working_snapshot(snapshot).await;
+        }
+        let Some(context) = context else {
+            return;
+        };
+
+        if let Some(summary_message_id) = context.compaction_summary_message_id.clone() {
+            self.mark_session_memory_refreshed(&context, Some(summary_message_id));
+        }
+        if context.completed_turn_count > 0 {
+            let force_refresh = context.compaction_summary_message_id.is_some();
+            self.maybe_refresh_session_memory_note(context, force_refresh)
+                .await;
+        }
+    }
+
+    fn mark_session_memory_refreshed(
+        &self,
+        context: &SessionMemoryRefreshContext,
+        up_to_message_id: Option<MessageId>,
+    ) {
+        let last_message_id = up_to_message_id.or_else(|| {
+            context
+                .visible_transcript
+                .last()
+                .map(|message| message.message_id.clone())
+        });
+        let mut state = self
+            .session_memory_refresh
+            .lock()
+            .expect("session memory refresh state");
+        state.initialized = true;
+        state.refresh_in_flight = false;
+        state.tokens_at_last_update = context.context_tokens;
+        state.tool_calls_since_update = 0;
+        state.last_summarized_message_id = last_message_id;
+    }
+
+    fn clear_session_memory_refresh_in_flight(&self) {
+        let mut state = self
+            .session_memory_refresh
+            .lock()
+            .expect("session memory refresh state");
+        state.refresh_in_flight = false;
+    }
+
+    async fn maybe_refresh_session_memory_note(
+        &self,
+        context: SessionMemoryRefreshContext,
+        force_refresh: bool,
+    ) {
+        let Some(memory_backend) = self.memory_backend.as_ref() else {
+            return;
+        };
+        let Some(model_backend) = self.session_memory_model_backend.as_ref() else {
+            return;
+        };
+
+        let last_summarized_message_id = {
+            let mut state = self
+                .session_memory_refresh
+                .lock()
+                .expect("session memory refresh state");
+            state.tool_calls_since_update = state
+                .tool_calls_since_update
+                .saturating_add(context.tool_call_count);
+            if state.refresh_in_flight {
+                return;
+            }
+            let should_refresh = if force_refresh {
+                true
+            } else if !state.initialized {
+                context.context_tokens >= SESSION_MEMORY_MIN_TOKENS_TO_INIT
+            } else {
+                context
+                    .context_tokens
+                    .saturating_sub(state.tokens_at_last_update)
+                    >= SESSION_MEMORY_MIN_TOKENS_BETWEEN_UPDATES
+                    || state.tool_calls_since_update >= SESSION_MEMORY_TOOL_CALLS_BETWEEN_UPDATES
+            };
+            if !should_refresh {
+                return;
+            }
+            state.refresh_in_flight = true;
+            state.last_summarized_message_id.clone()
+        };
+
+        let transcript_delta = unsummarized_transcript_delta(
+            &context.visible_transcript,
+            last_summarized_message_id.as_ref(),
+        );
+        if transcript_delta.is_empty() {
+            self.mark_session_memory_refreshed(&context, None);
+            return;
+        }
+        let transcript_delta_text = render_session_memory_transcript_delta(&transcript_delta);
+        if transcript_delta_text.trim().is_empty() {
+            self.mark_session_memory_refreshed(&context, None);
+            return;
+        }
+
+        let current_note = self
+            .load_session_memory_note_body(&context.session_id)
+            .await
+            .unwrap_or_else(|_| default_session_memory_note());
+        let prompt =
+            build_session_memory_update_prompt(&current_note, transcript_delta_text.as_str());
+        let updated = match self
+            .run_session_memory_update(
+                model_backend.as_ref(),
+                &context,
+                Message::user(prompt),
+                Vec::new(),
+            )
+            .await
+        {
+            Ok(updated) => updated,
+            Err(error) => {
+                self.clear_session_memory_refresh_in_flight();
+                warn!(error = %error, "failed to refresh structured session memory note");
+                return;
+            }
+        };
+
+        let rendered = render_session_memory_note(&updated);
+        if let Err(error) = self
+            .write_session_memory_note(
+                memory_backend.as_ref(),
+                &context.session_id,
+                &context.agent_session_id,
+                rendered,
+                vec!["session-note".to_string(), "incremental".to_string()],
+            )
+            .await
+        {
+            self.clear_session_memory_refresh_in_flight();
+            warn!(error = %error, "failed to persist refreshed structured session memory note");
+            return;
+        }
+
+        self.mark_session_memory_refreshed(&context, None);
+    }
+
+    async fn load_session_memory_note_body(&self, session_id: &SessionId) -> Result<String> {
+        let path = self.session_memory_note_absolute_path(session_id);
+        match fs::read_to_string(path).await {
+            Ok(text) => Ok(strip_memory_frontmatter(&text).trim().to_string()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                Ok(default_session_memory_note())
+            }
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    async fn run_session_memory_update(
+        &self,
+        backend: &dyn ModelBackend,
+        context: &SessionMemoryRefreshContext,
+        prompt: Message,
+        tools: Vec<ToolSpec>,
+    ) -> Result<String> {
+        let request = ModelRequest {
+            session_id: context.session_id.clone(),
+            agent_session_id: context.agent_session_id.clone(),
+            turn_id: TurnId::new(),
+            instructions: Vec::new(),
+            messages: vec![prompt],
+            tools,
+            additional_context: Vec::new(),
+            continuation: None,
+            metadata: json!({ "code_agent": { "purpose": "session_memory_update" } }),
+        };
+        let mut stream = timeout(
+            Duration::from_millis(SESSION_MEMORY_UPDATE_TIMEOUT_MS),
+            backend.stream_turn(request),
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("session memory update timed out before model start"))??;
+
+        let mut text = String::new();
+        while let Some(event) = timeout(
+            Duration::from_millis(SESSION_MEMORY_UPDATE_TIMEOUT_MS),
+            stream.next(),
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("session memory update timed out while streaming"))?
+        {
+            match event? {
+                ModelEvent::TextDelta { delta } => text.push_str(&delta),
+                ModelEvent::ResponseComplete { .. } => {}
+                ModelEvent::ToolCallRequested { call } => {
+                    return Err(anyhow::anyhow!(
+                        "session memory update unexpectedly requested tool `{}`",
+                        call.tool_name
+                    ));
+                }
+                ModelEvent::Error { message } => {
+                    return Err(anyhow::anyhow!(message));
+                }
+            }
+        }
+
+        let trimmed = text.trim().to_string();
+        if trimmed.is_empty() {
+            return Err(anyhow::anyhow!(
+                "session memory update returned empty output"
+            ));
+        }
+        Ok(trimmed)
+    }
+
+    async fn write_session_memory_note(
+        &self,
+        memory_backend: &dyn MemoryBackend,
+        session_id: &SessionId,
+        agent_session_id: &AgentSessionId,
+        note: String,
+        tags: Vec<String>,
+    ) -> Result<()> {
+        memory_backend
+            .record(MemoryRecordRequest {
+                scope: MemoryScope::Working,
+                title: "Session continuation snapshot".to_string(),
+                content: note,
+                mode: MemoryRecordMode::Replace,
+                memory_type: Some(MemoryType::Project),
+                description: Some(
+                    "Latest structured session note for the current runtime session.".to_string(),
+                ),
+                layer: Some("session".to_string()),
+                tags,
+                session_id: Some(session_id.clone()),
+                agent_session_id: Some(agent_session_id.clone()),
+                agent_name: None,
+                task_id: None,
+            })
+            .await?;
+        Ok(())
+    }
+
+    async fn run_side_question(
+        &self,
+        backend: &dyn ModelBackend,
+        snapshot: &SideQuestionContextSnapshot,
+        prompt: Message,
+    ) -> Result<String> {
+        let mut messages = snapshot.transcript.clone();
+        messages.push(prompt);
+        let request = ModelRequest {
+            session_id: snapshot.session_id.clone(),
+            agent_session_id: snapshot.agent_session_id.clone(),
+            turn_id: TurnId::new(),
+            instructions: snapshot.instructions.clone(),
+            messages,
+            // Keep the tool surface identical to the parent context so the
+            // cacheable prefix stays close to the main request, then block any
+            // attempted tool call at execution time.
+            tools: snapshot.tools.clone(),
+            additional_context: Vec::new(),
+            continuation: None,
+            metadata: json!({ "code_agent": { "purpose": "side_question" } }),
+        };
+        let mut stream = timeout(
+            Duration::from_millis(SESSION_MEMORY_UPDATE_TIMEOUT_MS),
+            backend.stream_turn(request),
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("side question timed out before model start"))??;
+
+        let mut text = String::new();
+        while let Some(event) = timeout(
+            Duration::from_millis(SESSION_MEMORY_UPDATE_TIMEOUT_MS),
+            stream.next(),
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("side question timed out while streaming"))?
+        {
+            match event? {
+                ModelEvent::TextDelta { delta } => text.push_str(&delta),
+                ModelEvent::ResponseComplete { .. } => {}
+                ModelEvent::ToolCallRequested { call } => {
+                    return Err(anyhow::anyhow!(
+                        "side question unexpectedly requested tool `{}`",
+                        call.tool_name
+                    ));
+                }
+                ModelEvent::Error { message } => {
+                    return Err(anyhow::anyhow!(message));
+                }
+            }
+        }
+
+        let trimmed = text.trim().to_string();
+        if trimmed.is_empty() {
+            return Err(anyhow::anyhow!("side question returned an empty response"));
+        }
+        Ok(trimmed)
+    }
+
+    fn session_memory_note_absolute_path(&self, session_id: &SessionId) -> PathBuf {
+        self.workspace_root.join(format!(
+            ".nanoclaw/memory/working/sessions/{}.md",
+            session_id.as_str()
+        ))
+    }
+
+    async fn reset_session_memory_refresh_state(&self, context: &SideQuestionContextSnapshot) {
+        let note_exists =
+            fs::try_exists(self.session_memory_note_absolute_path(&context.session_id))
+                .await
+                .unwrap_or(false);
+        let mut state = self
+            .session_memory_refresh
+            .lock()
+            .expect("session memory refresh state");
+        state.initialized = note_exists;
+        state.refresh_in_flight = false;
+        state.tokens_at_last_update = 0;
+        state.tool_calls_since_update = 0;
+        state.last_summarized_message_id = note_exists
+            .then(|| {
+                context
+                    .transcript
+                    .last()
+                    .map(|message| message.message_id.clone())
+            })
+            .flatten();
+    }
+
     async fn persist_compaction_working_snapshot(
         &self,
         snapshot: Option<CompactionWorkingSnapshot>,
@@ -698,24 +1172,18 @@ impl CodeAgentSession {
         // The host renders a stable Claude-style note skeleton here so future
         // updates replace section content instead of drifting into ad hoc
         // compaction-specific Markdown shapes.
-        if let Err(error) = memory_backend
-            .record(MemoryRecordRequest {
-                scope: MemoryScope::Working,
-                title: "Session continuation snapshot".to_string(),
-                content: note,
-                mode: MemoryRecordMode::Replace,
-                memory_type: Some(MemoryType::Project),
-                description: Some(
-                    "Latest session continuation snapshot produced by conversation compaction."
-                        .to_string(),
-                ),
-                layer: Some("session".to_string()),
-                tags: vec!["compaction".to_string(), "continuation".to_string()],
-                session_id: Some(snapshot.session_id),
-                agent_session_id: Some(snapshot.agent_session_id),
-                agent_name: None,
-                task_id: None,
-            })
+        if let Err(error) = self
+            .write_session_memory_note(
+                memory_backend.as_ref(),
+                &snapshot.session_id,
+                &snapshot.agent_session_id,
+                note,
+                vec![
+                    "compaction".to_string(),
+                    "continuation".to_string(),
+                    "session-note".to_string(),
+                ],
+            )
             .await
         {
             warn!(error = %error, "failed to persist working memory snapshot after compaction");
@@ -1038,7 +1506,7 @@ impl CodeAgentSession {
         let runtime_session =
             session_resume::reconstruct_runtime_session(&events, &target_agent_session_id)?;
         let instructions = self.rebuild_system_preamble();
-        let (active_session_ref, active_agent_session_ref) = {
+        let (active_session_ref, active_agent_session_ref, side_question_context) = {
             let mut runtime = self.runtime.lock().await;
             runtime.replace_base_instructions(instructions);
             runtime
@@ -1048,8 +1516,12 @@ impl CodeAgentSession {
             (
                 runtime.session_id().to_string(),
                 runtime.agent_session_id().to_string(),
+                Self::side_question_context_from_runtime(&runtime, None),
             )
         };
+        self.store_side_question_context(side_question_context.clone());
+        self.reset_session_memory_refresh_state(&side_question_context)
+            .await;
         self.set_runtime_session_refs(active_session_ref.clone(), active_agent_session_ref.clone());
         self.refresh_stored_session_count().await?;
         Ok(self
@@ -1062,6 +1534,28 @@ impl CodeAgentSession {
 
     pub(crate) async fn active_visible_transcript(&self) -> Vec<Message> {
         self.runtime.lock().await.visible_transcript_snapshot()
+    }
+
+    pub(crate) async fn answer_side_question(&self, question: &str) -> Result<SideQuestionOutcome> {
+        let Some(model_backend) = self.session_memory_model_backend.as_ref() else {
+            return Err(anyhow::anyhow!(
+                "side questions are unavailable without a model backend"
+            ));
+        };
+        let snapshot = self
+            .side_question_context
+            .read()
+            .unwrap()
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("side question context is unavailable"))?;
+        let prompt = wrap_side_question(question);
+        let response = self
+            .run_side_question(model_backend.as_ref(), &snapshot, Message::user(prompt))
+            .await?;
+        Ok(SideQuestionOutcome {
+            question: question.trim().to_string(),
+            response,
+        })
     }
 
     pub(crate) async fn list_mcp_servers(&self) -> Vec<McpServerSummary> {
@@ -1201,6 +1695,56 @@ fn resolve_pending_control_reference<'a>(
     }
 }
 
+fn unsummarized_transcript_delta(
+    transcript: &[Message],
+    last_summarized_message_id: Option<&MessageId>,
+) -> Vec<Message> {
+    let start_index = last_summarized_message_id
+        .and_then(|message_id| {
+            transcript
+                .iter()
+                .position(|message| &message.message_id == message_id)
+                .map(|index| index + 1)
+        })
+        .unwrap_or(0);
+    transcript[start_index..]
+        .iter()
+        .filter(|message| {
+            !message
+                .metadata
+                .contains_key(WORKSPACE_MEMORY_RECALL_METADATA_KEY)
+        })
+        .cloned()
+        .collect()
+}
+
+fn render_session_memory_transcript_delta(messages: &[Message]) -> String {
+    messages
+        .iter()
+        .map(session_history::message_to_text)
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+fn wrap_side_question(question: &str) -> String {
+    format!(
+        concat!(
+            "<system-reminder>This is a side question from the user. Answer it directly in one response.\n\n",
+            "IMPORTANT CONTEXT:\n",
+            "- You are a separate lightweight query that must not interrupt the main work.\n",
+            "- You share the current conversation context but are not continuing the main task.\n",
+            "- Do not say you are interrupted or that you will go do more work later.\n\n",
+            "CRITICAL CONSTRAINTS:\n",
+            "- Do not call tools.\n",
+            "- Do not promise follow-up actions.\n",
+            "- If the answer is not available from the current context, say so plainly.\n",
+            "- Keep the answer focused on the side question itself.</system-reminder>\n\n",
+            "{question}"
+        ),
+        question = question.trim(),
+    )
+}
+
 fn resolve_live_task_reference<'a>(
     handles: &'a [agent::types::AgentHandle],
     task_or_agent_ref: &str,
@@ -1262,8 +1806,9 @@ fn resolve_live_task_reference<'a>(
 #[cfg(test)]
 mod tests {
     use super::{
-        CodeAgentSession, CompactionWorkingSnapshot, PendingControlKind, SessionOperation,
-        SessionOperationAction, SessionPermissionMode, SessionStartupSnapshot,
+        CodeAgentSession, CompactionWorkingSnapshot, PendingControlKind,
+        SessionMemoryRefreshContext, SessionOperation, SessionOperationAction,
+        SessionPermissionMode, SessionStartupSnapshot,
     };
     use crate::backend::{
         ApprovalCoordinator, PermissionRequestCoordinator, SessionEventStream,
@@ -1358,6 +1903,53 @@ mod tests {
                 usage: None,
                 reasoning: Vec::new(),
             })])
+            .boxed())
+        }
+    }
+
+    #[derive(Clone)]
+    struct ScriptedTextBackend {
+        requests: Arc<Mutex<Vec<ModelRequest>>>,
+        responses: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl ScriptedTextBackend {
+        fn new(responses: Vec<String>) -> Self {
+            Self {
+                requests: Arc::new(Mutex::new(Vec::new())),
+                responses: Arc::new(Mutex::new(responses)),
+            }
+        }
+
+        fn requests(&self) -> Vec<ModelRequest> {
+            self.requests.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait]
+    impl ModelBackend for ScriptedTextBackend {
+        async fn stream_turn(
+            &self,
+            request: ModelRequest,
+        ) -> RuntimeResult<BoxStream<'static, RuntimeResult<ModelEvent>>> {
+            self.requests.lock().unwrap().push(request);
+            let response = self
+                .responses
+                .lock()
+                .unwrap()
+                .drain(..1)
+                .next()
+                .expect("scripted text backend response");
+            Ok(stream::iter(vec![
+                Ok(ModelEvent::TextDelta { delta: response }),
+                Ok(ModelEvent::ResponseComplete {
+                    stop_reason: Some("stop".to_string()),
+                    message_id: None,
+                    continuation: None,
+                    usage: None,
+                    reasoning: Vec::new(),
+                }),
+            ])
             .boxed())
         }
     }
@@ -1599,7 +2191,7 @@ mod tests {
         store: Arc<dyn SessionStore>,
         startup: SessionStartupSnapshot,
     ) -> CodeAgentSession {
-        build_session_with_memory(runtime, subagent_executor, store, startup, None)
+        build_session_with_backends(runtime, subagent_executor, store, startup, None, None)
     }
 
     fn build_session_with_memory(
@@ -1608,6 +2200,24 @@ mod tests {
         store: Arc<dyn SessionStore>,
         startup: SessionStartupSnapshot,
         memory_backend: Option<Arc<dyn MemoryBackend>>,
+    ) -> CodeAgentSession {
+        build_session_with_backends(
+            runtime,
+            subagent_executor,
+            store,
+            startup,
+            memory_backend,
+            None,
+        )
+    }
+
+    fn build_session_with_backends(
+        runtime: agent::AgentRuntime,
+        subagent_executor: Arc<dyn SubagentExecutor>,
+        store: Arc<dyn SessionStore>,
+        startup: SessionStartupSnapshot,
+        memory_backend: Option<Arc<dyn MemoryBackend>>,
+        session_memory_model_backend: Option<Arc<dyn ModelBackend>>,
     ) -> CodeAgentSession {
         let default_sandbox_policy = runtime.base_sandbox_policy();
         let session_tool_context = Arc::new(RwLock::new(ToolExecutionContext {
@@ -1620,6 +2230,7 @@ mod tests {
         CodeAgentSession::new(
             runtime,
             None,
+            session_memory_model_backend,
             subagent_executor,
             store,
             Vec::new(),
@@ -2152,6 +2763,141 @@ mod tests {
         assert!(snapshot.contains("# Current State"));
         assert!(snapshot.contains("second snapshot"));
         assert!(!snapshot.contains("first snapshot"));
+    }
+
+    #[tokio::test]
+    async fn forced_session_note_refresh_uses_summary_message_boundary() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(InMemorySessionStore::new());
+        let runtime = AgentRuntimeBuilder::new(Arc::new(NeverBackend), store.clone())
+            .hook_runner(Arc::new(HookRunner::default()))
+            .tool_context(ToolExecutionContext {
+                workspace_root: dir.path().to_path_buf(),
+                workspace_only: true,
+                ..Default::default()
+            })
+            .build();
+        let session_id = runtime.session_id();
+        let agent_session_id = runtime.agent_session_id();
+        let mut startup = startup_snapshot(dir.path());
+        startup.active_session_ref = session_id.to_string();
+        startup.root_agent_session_id = agent_session_id.to_string();
+        let memory_backend: Arc<dyn MemoryBackend> = Arc::new(MemoryCoreBackend::new(
+            dir.path().to_path_buf(),
+            Default::default(),
+        ));
+        let note_backend = ScriptedTextBackend::new(vec![
+            concat!(
+                "# Current State\n",
+                "Tracked tail update after compaction.\n\n",
+                "# Worklog\n",
+                "- Refreshed from transcript delta only."
+            )
+            .to_string(),
+        ]);
+        let session = build_session_with_backends(
+            runtime,
+            Arc::new(NoopSubagentExecutor),
+            store,
+            startup,
+            Some(memory_backend),
+            Some(Arc::new(note_backend.clone())),
+        );
+
+        let summary_message = Message::system("summary before new work");
+        let tail_message = Message::assistant("tail update after compaction");
+        let context = SessionMemoryRefreshContext {
+            session_id: session_id.clone(),
+            agent_session_id: agent_session_id.clone(),
+            visible_transcript: vec![summary_message.clone(), tail_message.clone()],
+            context_tokens: 0,
+            completed_turn_count: 1,
+            tool_call_count: 0,
+            compaction_summary_message_id: Some(summary_message.message_id.clone()),
+        };
+
+        session.mark_session_memory_refreshed(&context, Some(summary_message.message_id.clone()));
+        session
+            .maybe_refresh_session_memory_note(context, true)
+            .await;
+
+        let requests = note_backend.requests();
+        assert_eq!(requests.len(), 1);
+        let update_prompt = requests[0].messages[0].text_content();
+        assert!(update_prompt.contains("tail update after compaction"));
+        assert!(!update_prompt.contains("summary before new work"));
+
+        let note = std::fs::read_to_string(
+            dir.path()
+                .join(format!(".nanoclaw/memory/working/sessions/{session_id}.md")),
+        )
+        .unwrap();
+        assert!(note.contains("# Session Title"));
+        assert!(note.contains("Tracked tail update after compaction."));
+        assert!(!note.contains("summary before new work"));
+
+        let state = session.session_memory_refresh.lock().unwrap().clone();
+        assert!(state.initialized);
+        assert_eq!(
+            state.last_summarized_message_id,
+            Some(tail_message.message_id.clone())
+        );
+    }
+
+    #[tokio::test]
+    async fn answer_side_question_uses_snapshot_context_and_wrapper_prompt() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(InMemorySessionStore::new());
+        let runtime_backend = RecordingPromptBackend::default();
+        let runtime = AgentRuntimeBuilder::new(Arc::new(runtime_backend), store.clone())
+            .hook_runner(Arc::new(HookRunner::default()))
+            .tool_context(ToolExecutionContext {
+                workspace_root: dir.path().to_path_buf(),
+                workspace_only: true,
+                ..Default::default()
+            })
+            .instructions(vec!["stable base instruction".to_string()])
+            .build();
+        let mut startup = startup_snapshot(dir.path());
+        startup.active_session_ref = runtime.session_id().to_string();
+        startup.root_agent_session_id = runtime.agent_session_id().to_string();
+        let side_backend = ScriptedTextBackend::new(vec!["Short answer.".to_string()]);
+        let session = build_session_with_backends(
+            runtime,
+            Arc::new(NoopSubagentExecutor),
+            store,
+            startup,
+            None,
+            Some(Arc::new(side_backend.clone())),
+        );
+
+        session
+            .apply_control(RuntimeCommand::Prompt {
+                message: Message::user("main thread question"),
+            })
+            .await
+            .unwrap();
+
+        let outcome = session
+            .answer_side_question("  what changed?  ")
+            .await
+            .unwrap();
+
+        assert_eq!(outcome.question, "what changed?");
+        assert_eq!(outcome.response, "Short answer.");
+
+        let requests = side_backend.requests();
+        assert_eq!(requests.len(), 1);
+        let request = &requests[0];
+        assert_eq!(request.instructions, vec!["stable base instruction"]);
+        assert!(request.tools.is_empty());
+        assert_eq!(request.messages.len(), 2);
+        assert_eq!(request.messages[0].text_content(), "main thread question");
+        let side_prompt = request.messages[1].text_content();
+        assert!(side_prompt.contains("This is a side question from the user"));
+        assert!(side_prompt.contains("Do not call tools."));
+        assert!(side_prompt.ends_with("what changed?"));
+        assert_eq!(request.metadata["code_agent"]["purpose"], "side_question");
     }
 
     #[tokio::test]

@@ -1,5 +1,7 @@
 use crate::Result;
-use types::{TokenLedgerSnapshot, TokenUsagePhase, ToolCall, ToolLifecycleEventEnvelope, TurnId};
+use types::{
+    MessageId, TokenLedgerSnapshot, TokenUsagePhase, ToolCall, ToolLifecycleEventEnvelope, TurnId,
+};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum RuntimeProgressEvent {
@@ -15,6 +17,8 @@ pub enum RuntimeProgressEvent {
         source_message_count: usize,
         retained_message_count: usize,
         summary: String,
+        compacted_through_message_id: MessageId,
+        summary_message_id: MessageId,
     },
     ModelRequestStarted {
         turn_id: TurnId,
@@ -23,6 +27,10 @@ pub enum RuntimeProgressEvent {
     TokenUsageUpdated {
         phase: TokenUsagePhase,
         ledger: TokenLedgerSnapshot,
+    },
+    Notification {
+        source: String,
+        message: String,
     },
     AssistantTextDelta {
         delta: String,

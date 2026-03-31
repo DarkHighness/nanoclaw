@@ -10,8 +10,8 @@ mod state;
 use crate::backend::{
     CodeAgentSession, LiveTaskControlAction, LiveTaskMessageAction, LiveTaskWaitOutcome,
     LoadedMcpPrompt, LoadedMcpResource, SessionOperation, SessionOperationAction,
-    SessionOperationOutcome, SessionPermissionMode, SessionStartupSnapshot, UserInputPrompt,
-    preview_id,
+    SessionOperationOutcome, SessionPermissionMode, SessionStartupSnapshot, SideQuestionOutcome,
+    UserInputPrompt, preview_id,
 };
 use crate::config::persist_tui_theme_selection;
 use crate::statusline::status_line_fields;
@@ -87,6 +87,7 @@ pub struct CodeAgentTui {
 
 enum OperatorTaskOutcome {
     WaitLiveTask(LiveTaskWaitOutcome),
+    SideQuestion(SideQuestionOutcome),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2034,6 +2035,27 @@ impl CodeAgentTui {
                         ));
                     });
                 }
+                Ok(Ok(OperatorTaskOutcome::SideQuestion(outcome))) => {
+                    let inspector = format_side_question_inspector(&outcome);
+                    self.ui_state.mutate(move |state| {
+                        state.show_main_view("BTW", inspector);
+                        state.show_toast(
+                            ToastTone::Info,
+                            format!(
+                                "/btw answered: {}",
+                                state::preview_text(&outcome.question, 48)
+                            ),
+                        );
+                        state.status = format!(
+                            "Answered /btw {}",
+                            state::preview_text(&outcome.question, 48)
+                        );
+                        state.push_activity(format!(
+                            "answered /btw {}",
+                            state::preview_text(&outcome.question, 48)
+                        ));
+                    });
+                }
                 Ok(Err(error)) => {
                     let message = summarize_nonfatal_error("operator task", &error);
                     self.ui_state.mutate(|state| {
@@ -2787,6 +2809,26 @@ impl CodeAgentTui {
                 }
                 Ok(false)
             }
+            SlashCommand::Btw { question } => {
+                let Some(question) = question else {
+                    self.ui_state.mutate(|state| {
+                        state.status = "Usage: /btw <question>".to_string();
+                        state.push_activity("invalid /btw invocation");
+                    });
+                    return Ok(false);
+                };
+                if self.operator_task.is_some() {
+                    self.ui_state.mutate(|state| {
+                        state.status =
+                            "Wait for the current operator-side action before running /btw"
+                                .to_string();
+                        state.push_activity("/btw blocked by operator task");
+                    });
+                    return Ok(false);
+                }
+                self.start_side_question(question);
+                Ok(false)
+            }
             SlashCommand::LiveTasks => {
                 let live_tasks = self.session.list_live_tasks().await?;
                 self.ui_state.mutate(move |state| {
@@ -2945,6 +2987,20 @@ impl CodeAgentTui {
         self.operator_task = Some(spawn_local(async move {
             let outcome = session.wait_live_task(&task_or_agent_ref).await?;
             Ok(OperatorTaskOutcome::WaitLiveTask(outcome))
+        }));
+    }
+
+    fn start_side_question(&mut self, question: String) {
+        let preview = state::preview_text(&question, 56);
+        self.ui_state.mutate(|state| {
+            state.clear_toast();
+            state.status = format!("Answering /btw {}", preview);
+            state.push_activity(format!("running /btw {}", preview));
+        });
+        let session = self.session.clone();
+        self.operator_task = Some(spawn_local(async move {
+            let outcome = session.answer_side_question(&question).await?;
+            Ok(OperatorTaskOutcome::SideQuestion(outcome))
         }));
     }
 
@@ -3700,6 +3756,15 @@ fn queued_command_preview(command: &RuntimeCommand) -> String {
             format!("applying steer: {}", state::preview_text(message, 40))
         }
     }
+}
+
+fn format_side_question_inspector(outcome: &SideQuestionOutcome) -> Vec<InspectorEntry> {
+    vec![
+        InspectorEntry::section("Side Question"),
+        InspectorEntry::field("Command", format!("/btw {}", outcome.question)),
+        InspectorEntry::section("Answer"),
+        InspectorEntry::Plain(outcome.response.clone()),
+    ]
 }
 
 fn pending_control_kind_label(kind: crate::backend::PendingControlKind) -> &'static str {

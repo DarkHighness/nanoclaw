@@ -207,6 +207,10 @@ impl AgentRuntime {
         if source_messages.len() < 2 {
             return Ok(false);
         }
+        let compacted_through_message_id = source_messages
+            .last()
+            .map(|message| message.message_id.clone())
+            .expect("compaction source messages must be non-empty");
 
         let pre_hooks = self
             .run_hooks(
@@ -291,7 +295,7 @@ impl AgentRuntime {
                 source_message_count: source_messages.len(),
                 retained_message_count: retained_tail_indices.len(),
                 summary_chars: result.summary.chars().count(),
-                summary_message_id: Some(summary_message_id),
+                summary_message_id: Some(summary_message_id.clone()),
                 retained_tail_message_ids,
             },
         )
@@ -301,6 +305,8 @@ impl AgentRuntime {
             source_message_count: source_messages.len(),
             retained_message_count: retained_tail_indices.len(),
             summary: result.summary.clone(),
+            compacted_through_message_id,
+            summary_message_id,
         })?;
 
         let post_hooks = self

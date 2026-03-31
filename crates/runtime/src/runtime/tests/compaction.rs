@@ -120,8 +120,13 @@ async fn manual_compaction_notifies_observer() {
         RuntimeProgressEvent::CompactionCompleted {
             source_message_count,
             retained_message_count,
+            compacted_through_message_id,
+            summary_message_id,
             ..
-        } if *source_message_count >= 2 && *retained_message_count >= 1
+        } if *source_message_count >= 2
+            && *retained_message_count >= 1
+            && !compacted_through_message_id.as_ref().is_empty()
+            && !summary_message_id.as_ref().is_empty()
     )));
 }
 

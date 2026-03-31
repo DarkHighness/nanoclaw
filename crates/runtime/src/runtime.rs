@@ -109,6 +109,11 @@ impl AgentRuntime {
     }
 
     #[must_use]
+    pub fn base_instructions_snapshot(&self) -> Vec<String> {
+        self.base_instructions.clone()
+    }
+
+    #[must_use]
     pub fn tool_registry_names(&self) -> Vec<String> {
         self.model_visible_tool_specs()
             .into_iter()

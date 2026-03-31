@@ -49,6 +49,7 @@ pub(crate) use session::{
     LiveTaskMessageOutcome, LiveTaskSpawnOutcome, LiveTaskSummary, LiveTaskWaitOutcome,
     ModelReasoningEffortOutcome, PendingControlKind, PendingControlSummary, SessionOperation,
     SessionOperationAction, SessionOperationOutcome, SessionPermissionMode, SessionStartupSnapshot,
+    SideQuestionOutcome,
 };
 pub(crate) use session_catalog::{
     PersistedAgentSessionSummary, PersistedSessionSearchMatch, PersistedSessionSummary,

@@ -160,6 +160,12 @@ const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
     },
     SlashCommandSpec {
         section: "Session",
+        name: "btw",
+        usage: "btw <question>",
+        summary: "ask a side question without interrupting work",
+    },
+    SlashCommandSpec {
+        section: "Session",
         name: "steer",
         usage: "steer <notes>",
         summary: "schedule safe-point guidance",
@@ -367,6 +373,9 @@ pub(crate) enum SlashCommand {
     Compact {
         notes: Option<String>,
     },
+    Btw {
+        question: Option<String>,
+    },
     New,
     AgentSessions {
         session_ref: Option<String>,
@@ -498,6 +507,14 @@ enum SlashSubcommand {
             allow_hyphen_values = true
         )]
         notes: Vec<String>,
+    },
+    Btw {
+        #[arg(
+            value_name = "QUESTION",
+            trailing_var_arg = true,
+            allow_hyphen_values = true
+        )]
+        question: Vec<String>,
     },
     #[command(alias = "clear")]
     New,
@@ -799,6 +816,9 @@ impl From<SlashSubcommand> for SlashCommand {
             SlashSubcommand::Compact { notes } => Self::Compact {
                 notes: join_optional_tail(notes),
             },
+            SlashSubcommand::Btw { question } => Self::Btw {
+                question: join_optional_tail(question),
+            },
             SlashSubcommand::New => Self::New,
             SlashSubcommand::AgentSessions { session_ref } => Self::AgentSessions { session_ref },
             SlashSubcommand::AgentSession { agent_session_ref } => {
@@ -968,6 +988,19 @@ mod tests {
         match parse_slash_command("/sessions fix failing test") {
             SlashCommand::Sessions { query } => {
                 assert_eq!(query, Some("fix failing test".to_string()));
+            }
+            _ => panic!("unexpected command"),
+        }
+    }
+
+    #[test]
+    fn parses_btw_question_with_spaces() {
+        match parse_slash_command("/btw what changed in the deploy flow") {
+            SlashCommand::Btw { question } => {
+                assert_eq!(
+                    question,
+                    Some("what changed in the deploy flow".to_string())
+                );
             }
             _ => panic!("unexpected command"),
         }

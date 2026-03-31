@@ -166,3 +166,54 @@ of persisting free-form Markdown directly:
 - later snapshot updates still use replace semantics, but they now replace the
   content inside one stable note shape rather than swapping between arbitrary
   summary layouts
+
+Compaction now also exposes two host-visible message boundaries:
+
+- `compacted_through_message_id`: the last pre-compaction message that was
+  folded into the summary window
+- `summary_message_id`: the synthetic summary message that replaced that window
+
+The host uses the summary boundary, not the raw source boundary, when it
+calculates later transcript deltas for incremental session-note refreshes.
+That avoids replaying already-compacted transcript text after the summary has
+become the new visible history anchor.
+
+## Incremental Session Notes
+
+Claude-style session memory is not only refreshed at compaction time.
+
+`nanoclaw` now also performs bounded incremental updates to the structured
+session note using an internal maintenance request:
+
+- the first incremental refresh starts once the visible context reaches 10,000
+  tokens
+- later refreshes happen after another 5,000 context tokens or 3 tool calls
+- the update request only receives transcript entries that were not already
+  covered by the last summary boundary
+- the model must return the full note while preserving the host-owned section
+  skeleton and italic guidance lines exactly
+- refreshed notes still use replace semantics in
+  `.nanoclaw/memory/working/sessions/<session>.md`
+
+This keeps the session note closer to Claude's continuously-maintained working
+memory without pushing note maintenance into base instructions or per-turn
+prompt-prefix churn.
+
+## Side Questions (`/btw`)
+
+Claude Code exposes side questions as a separate lightweight query path rather
+than as a normal turn in the main transcript.
+
+`nanoclaw` now mirrors that behavior with `/btw`:
+
+- `/btw <question>` runs even while the main turn is still working
+- it launches a separate operator-side request instead of interrupting the main
+  runtime
+- the request reuses the latest stable base instructions and visible transcript
+  snapshot from the main session
+- the wrapper prompt explicitly forbids tool calls and follow-up action promises
+- the answer returns as its own inspector view instead of mutating the main
+  conversation turn
+
+This keeps the cacheable prefix close to the parent session while preserving a
+clear boundary between "main work" and "side question" behavior.

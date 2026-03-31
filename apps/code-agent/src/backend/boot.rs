@@ -234,10 +234,12 @@ pub(crate) async fn build_session_with_approval_mode(
     // resumable session catalog above the raw runtime/store layer.
     let active_session_ref = runtime.session_id().to_string();
     let root_agent_session_id = runtime.agent_session_id().to_string();
+    let session_memory_model_backend: Arc<dyn ModelBackend> = Arc::new(model_backend.clone());
 
     Ok(super::CodeAgentSession::new(
         runtime,
         Some(model_backend),
+        Some(session_memory_model_backend),
         subagent_executor,
         store,
         mcp_servers,

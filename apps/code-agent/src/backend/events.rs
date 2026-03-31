@@ -1,6 +1,6 @@
 use crate::tool_render::tool_arguments_preview_lines;
 use agent::runtime::{Result as RuntimeResult, RuntimeObserver, RuntimeProgressEvent};
-use agent::types::{TokenLedgerSnapshot, TokenUsagePhase, ToolLifecycleEventKind};
+use agent::types::{MessageId, TokenLedgerSnapshot, TokenUsagePhase, ToolLifecycleEventKind};
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
@@ -29,6 +29,8 @@ pub(crate) enum SessionEvent {
         source_message_count: usize,
         retained_message_count: usize,
         summary: String,
+        compacted_through_message_id: MessageId,
+        summary_message_id: MessageId,
     },
     ModelRequestStarted {
         iteration: usize,
@@ -36,6 +38,10 @@ pub(crate) enum SessionEvent {
     TokenUsageUpdated {
         phase: TokenUsagePhase,
         ledger: TokenLedgerSnapshot,
+    },
+    Notification {
+        source: String,
+        message: String,
     },
     ModelResponseCompleted {
         assistant_text: String,
@@ -112,6 +118,29 @@ impl SessionEventObserver {
             _ => None,
         })
     }
+
+    pub(crate) fn latest_compaction_summary_message_id(&self) -> Option<MessageId> {
+        self.captured.iter().rev().find_map(|event| match event {
+            SessionEvent::CompactionCompleted {
+                summary_message_id, ..
+            } => Some(summary_message_id.clone()),
+            _ => None,
+        })
+    }
+
+    pub(crate) fn completed_turn_count(&self) -> usize {
+        self.captured
+            .iter()
+            .filter(|event| matches!(event, SessionEvent::TurnCompleted { .. }))
+            .count()
+    }
+
+    pub(crate) fn requested_tool_call_count(&self) -> usize {
+        self.captured
+            .iter()
+            .filter(|event| matches!(event, SessionEvent::ToolCallRequested { .. }))
+            .count()
+    }
 }
 
 impl RuntimeObserver for SessionEventObserver {
@@ -131,17 +160,24 @@ impl RuntimeObserver for SessionEventObserver {
                 source_message_count,
                 retained_message_count,
                 summary,
+                compacted_through_message_id,
+                summary_message_id,
             } => SessionEvent::CompactionCompleted {
                 reason,
                 source_message_count,
                 retained_message_count,
                 summary,
+                compacted_through_message_id,
+                summary_message_id,
             },
             RuntimeProgressEvent::ModelRequestStarted { iteration, .. } => {
                 SessionEvent::ModelRequestStarted { iteration }
             }
             RuntimeProgressEvent::TokenUsageUpdated { phase, ledger } => {
                 SessionEvent::TokenUsageUpdated { phase, ledger }
+            }
+            RuntimeProgressEvent::Notification { source, message } => {
+                SessionEvent::Notification { source, message }
             }
             RuntimeProgressEvent::ModelResponseCompleted {
                 assistant_text,
@@ -240,6 +276,27 @@ mod tests {
             stream.drain(),
             vec![SessionEvent::UserPromptAdded {
                 prompt: "hello".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn observer_projects_runtime_notifications_into_session_events() {
+        let stream = SessionEventStream::default();
+        let mut observer = SessionEventObserver::new(stream.clone());
+
+        observer
+            .on_event(RuntimeProgressEvent::Notification {
+                source: "loop_detector".to_string(),
+                message: "loop detector warning".to_string(),
+            })
+            .expect("notification should record");
+
+        assert_eq!(
+            stream.drain(),
+            vec![SessionEvent::Notification {
+                source: "loop_detector".to_string(),
+                message: "loop detector warning".to_string(),
             }]
         );
     }

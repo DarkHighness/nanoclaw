@@ -102,6 +102,49 @@ pub(crate) fn render_session_memory_note(summary: &str) -> String {
     lines.join("\n").trim_end().to_string()
 }
 
+pub(crate) fn default_session_memory_note() -> String {
+    render_session_memory_note("")
+}
+
+pub(crate) fn strip_memory_frontmatter(text: &str) -> &str {
+    let Some(rest) = text.strip_prefix("---\n") else {
+        return text;
+    };
+    let Some(frontmatter_end) = rest.find("\n---\n") else {
+        return text;
+    };
+    &rest[frontmatter_end + "\n---\n".len()..]
+}
+
+pub(crate) fn build_session_memory_update_prompt(
+    current_note: &str,
+    transcript_delta: &str,
+) -> String {
+    format!(
+        concat!(
+            "IMPORTANT: This request is internal session-note maintenance, not part of the user conversation.\n",
+            "Return only the full updated session note in Markdown.\n\n",
+            "CRITICAL RULES:\n",
+            "- Preserve every section header exactly as written in the current note.\n",
+            "- Preserve every italic description line exactly as written in the current note.\n",
+            "- Only update the content that appears below each italic description line.\n",
+            "- Do not add new sections, summaries, or meta commentary.\n",
+            "- Do not mention note-taking instructions or this internal request.\n",
+            "- Always refresh Current State.\n",
+            "- Leave sections blank instead of adding filler.\n",
+            "- Use only information grounded in the transcript delta.\n\n",
+            "<current_session_note>\n",
+            "{current_note}\n",
+            "</current_session_note>\n\n",
+            "<new_transcript_entries>\n",
+            "{transcript_delta}\n",
+            "</new_transcript_entries>\n"
+        ),
+        current_note = current_note.trim(),
+        transcript_delta = transcript_delta.trim(),
+    )
+}
+
 fn parse_session_memory_sections(summary: &str) -> ParsedSessionMemorySections {
     let mut parsed = ParsedSessionMemorySections {
         sections: SESSION_MEMORY_TEMPLATE
@@ -211,7 +254,10 @@ fn section_body(sections: &[(&'static str, String)], heading: &'static str) -> S
 
 #[cfg(test)]
 mod tests {
-    use super::render_session_memory_note;
+    use super::{
+        build_session_memory_update_prompt, default_session_memory_note,
+        render_session_memory_note, strip_memory_frontmatter,
+    };
 
     #[test]
     fn freeform_summary_falls_back_to_current_state_in_stable_template() {
@@ -263,5 +309,34 @@ mod tests {
             .expect("current state block");
         assert!(current_state_block.contains("Keep deploy paused until smoke tests pass."));
         assert!(current_state_block.contains("Fix the session note renderer."));
+    }
+
+    #[test]
+    fn default_note_keeps_the_full_template_shape() {
+        let note = default_session_memory_note();
+
+        assert!(note.contains("# Session Title"));
+        assert!(note.contains("# Current State"));
+        assert!(note.contains("# Worklog"));
+    }
+
+    #[test]
+    fn strip_memory_frontmatter_returns_markdown_body() {
+        let stripped =
+            strip_memory_frontmatter("---\nscope: working\n---\n\n# Current State\n\nKeep going.");
+
+        assert_eq!(stripped.trim(), "# Current State\n\nKeep going.");
+    }
+
+    #[test]
+    fn update_prompt_embeds_current_note_and_transcript_delta() {
+        let prompt = build_session_memory_update_prompt(
+            "# Current State\n\nFix it.",
+            "user> what changed?\n\nassistant> refreshed note",
+        );
+
+        assert!(prompt.contains("<current_session_note>"));
+        assert!(prompt.contains("<new_transcript_entries>"));
+        assert!(prompt.contains("Always refresh Current State"));
     }
 }
