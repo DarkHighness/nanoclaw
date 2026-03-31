@@ -6,6 +6,7 @@ mod boot_preamble;
 mod boot_runtime;
 mod boot_sandbox;
 mod events;
+mod memory_recall;
 mod permission_request;
 mod session;
 mod session_catalog;

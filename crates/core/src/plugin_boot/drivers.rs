@@ -1,16 +1,21 @@
 use super::background_sync::maybe_spawn_memory_background_sync;
+#[cfg(feature = "memory-embed")]
 use super::driver_env::materialize_api_key_envs;
 use super::registry::{
     DriverActivationOutcome, PluginDriverContext, PluginDriverFactory, PluginDriverRegistry,
 };
 use anyhow::{Context, Result};
+#[cfg(feature = "memory-embed")]
 use inference::{EmbeddingConfig, LlmServiceConfig, QueryExpansionConfig, RerankConfig};
 use mcp::McpServerConfig;
+#[cfg(feature = "memory-embed")]
 use memory::{
-    HybridWeights, MemoryBackend, MemoryBackgroundSyncConfig, MemoryCoreBackend, MemoryCoreConfig,
-    MemoryCorpusConfig, MemoryEmbedBackend, MemoryEmbedConfig, MemoryForgetTool, MemoryGetTool,
-    MemoryListTool, MemoryPromoteTool, MemoryRecordTool, MemorySearchConfig, MemorySearchTool,
-    MemoryVectorStoreConfig,
+    HybridWeights, MemoryBackgroundSyncConfig, MemoryCorpusConfig, MemoryEmbedBackend,
+    MemoryEmbedConfig, MemorySearchConfig, MemoryVectorStoreConfig,
+};
+use memory::{
+    MemoryBackend, MemoryCoreBackend, MemoryCoreConfig, MemoryForgetTool, MemoryGetTool,
+    MemoryListTool, MemoryPromoteTool, MemoryRecordTool, MemorySearchTool,
 };
 use plugins::{PluginExecutableActivation, build_hook_execution_policy};
 use serde::Deserialize;
@@ -22,13 +27,17 @@ use types::{
 
 const WASM_HOOK_RUNTIME_DRIVER_ID: &str = "builtin.wasm-hook-runtime";
 const WASM_HOOK_VALIDATOR_DRIVER_ID: &str = "builtin.wasm-hook-validator";
-#[cfg(test)]
+const MEMORY_EMBED_DRIVER_ID: &str = "builtin.memory-embed";
+#[cfg(all(test, feature = "memory-embed"))]
 const DEFAULT_MEMORY_REASONING_TIMEOUT_MS: u64 = 30_000;
 
 pub(super) fn builtin_registry() -> PluginDriverRegistry {
     let mut registry = PluginDriverRegistry::new();
     registry.register(Arc::new(MemoryCoreDriverFactory));
+    #[cfg(feature = "memory-embed")]
     registry.register(Arc::new(MemoryEmbedDriverFactory));
+    #[cfg(not(feature = "memory-embed"))]
+    registry.register(Arc::new(DisabledMemoryEmbedDriverFactory));
     registry.register(Arc::new(WasmHookRuntimeDriverFactory));
     registry.register(Arc::new(WasmHookValidatorDriverFactory));
     registry
@@ -44,6 +53,7 @@ struct WasmHookRuntimeDriverConfig {
     instructions: Vec<String>,
 }
 
+#[cfg(feature = "memory-embed")]
 #[derive(Clone, Debug, PartialEq, Deserialize, Default)]
 #[serde(default, deny_unknown_fields)]
 struct MemoryEmbedDriverConfig {
@@ -58,6 +68,7 @@ struct MemoryEmbedDriverConfig {
     vector_store: MemoryVectorStoreConfig,
 }
 
+#[cfg(feature = "memory-embed")]
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct MemoryQueryExpansionDriverConfig {
@@ -69,6 +80,7 @@ struct MemoryQueryExpansionDriverConfig {
     use_internal_profile: bool,
 }
 
+#[cfg(feature = "memory-embed")]
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct MemoryRerankDriverConfig {
@@ -121,6 +133,7 @@ impl PluginDriverFactory for MemoryCoreDriverFactory {
             &config,
             context.session_store.clone(),
         );
+        outcome.remember_primary_memory_backend(backend.clone());
         context
             .tools
             .register_arc(Arc::new(MemorySearchTool::new(backend.clone())));
@@ -151,11 +164,15 @@ impl PluginDriverFactory for MemoryCoreDriverFactory {
     }
 }
 
+#[cfg(feature = "memory-embed")]
 struct MemoryEmbedDriverFactory;
+#[cfg(not(feature = "memory-embed"))]
+struct DisabledMemoryEmbedDriverFactory;
 
+#[cfg(feature = "memory-embed")]
 impl PluginDriverFactory for MemoryEmbedDriverFactory {
     fn driver_id(&self) -> &'static str {
-        "builtin.memory-embed"
+        MEMORY_EMBED_DRIVER_ID
     }
 
     fn activate(
@@ -186,6 +203,7 @@ impl PluginDriverFactory for MemoryEmbedDriverFactory {
                 activation.plugin_id
             )
         })?;
+        outcome.remember_primary_memory_backend(backend.clone());
         context
             .tools
             .register_arc(Arc::new(MemorySearchTool::new(backend.clone())));
@@ -213,6 +231,26 @@ impl PluginDriverFactory for MemoryEmbedDriverFactory {
             &mut outcome.warnings,
         );
         Ok(())
+    }
+}
+
+#[cfg(not(feature = "memory-embed"))]
+impl PluginDriverFactory for DisabledMemoryEmbedDriverFactory {
+    fn driver_id(&self) -> &'static str {
+        MEMORY_EMBED_DRIVER_ID
+    }
+
+    fn activate(
+        &self,
+        activation: &PluginExecutableActivation,
+        _context: &mut PluginDriverContext<'_>,
+        _outcome: &mut DriverActivationOutcome,
+    ) -> Result<()> {
+        anyhow::bail!(
+            "plugin `{}` uses `{}` but this build was compiled without feature `memory-embed`; rebuild the host with `--features memory-embed`",
+            activation.plugin_id,
+            MEMORY_EMBED_DRIVER_ID
+        );
     }
 }
 
@@ -335,6 +373,7 @@ fn memory_core_backend(
     }
 }
 
+#[cfg(feature = "memory-embed")]
 fn memory_embed_backend(
     workspace_root: &Path,
     config: MemoryEmbedConfig,
@@ -348,6 +387,7 @@ fn memory_embed_backend(
     })
 }
 
+#[cfg(feature = "memory-embed")]
 fn resolve_memory_embed_driver_config(
     table: toml::map::Map<String, toml::Value>,
     activation: &PluginExecutableActivation,
@@ -391,6 +431,7 @@ fn resolve_memory_embed_driver_config(
     })
 }
 
+#[cfg(feature = "memory-embed")]
 fn resolve_query_expansion_config(
     config: Option<MemoryQueryExpansionDriverConfig>,
     activation: &PluginExecutableActivation,
@@ -439,6 +480,7 @@ fn resolve_query_expansion_config(
     ))
 }
 
+#[cfg(feature = "memory-embed")]
 fn resolve_rerank_config(
     config: Option<MemoryRerankDriverConfig>,
     activation: &PluginExecutableActivation,
@@ -475,6 +517,7 @@ fn resolve_rerank_config(
     Ok((Some(RerankConfig { service }), false))
 }
 
+#[cfg(feature = "memory-embed")]
 const fn default_query_expansion_variants() -> usize {
     1
 }
@@ -503,7 +546,7 @@ fn validated_wasm_module_path(activation: &PluginExecutableActivation) -> Result
     Ok(module_path)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "memory-embed"))]
 mod tests {
     use super::{DEFAULT_MEMORY_REASONING_TIMEOUT_MS, resolve_memory_embed_driver_config};
     use crate::plugin_boot::registry::{DriverActivationOutcome, PluginDriverContext};

@@ -94,3 +94,26 @@ Refresh semantics are cache-oriented:
 That keeps workspace memory aligned with Claude's session-boundary behavior
 while avoiding per-turn base-instruction churn that would degrade prefix-cache
 reuse.
+
+## Query-Time Recall
+
+Normal turns may still inject memory recall, but not through base instructions.
+
+The runtime now treats query-time recall as a separate synthetic message that is
+prepended before the operator's original user message:
+
+- recall is best-effort and timeout-bounded
+- recall is inserted as its own transcript message
+- the operator prompt remains a separate message with unchanged bytes
+- hooks, session events, and prompt previews continue to observe the original
+  user request, not a merged recall blob
+
+This boundary matters for both auditability and cache behavior. The recall path
+must not rebuild base instructions per turn, and it must not collapse recall
+into the same user message that the operator actually typed.
+
+Because `memory-core` lexical retrieval uses strict token conjunction, the
+augmentor shapes natural-language questions into concise content-term queries
+before searching. That keeps prompts like "Should I use a canary deploy before
+restart?" recallable without requiring the memory files to literally contain
+every conversational filler token.

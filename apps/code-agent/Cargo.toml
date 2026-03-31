@@ -4,6 +4,10 @@ edition = "2024"
 license = "MIT"
 version = "0.1.0"
 
+[features]
+default = []
+memory-embed = ["agent/memory-embed"]
+
 [dependencies]
 agent-env = { path = "../../crates/env" }
 agent = { path = "../../crates/core", features = ["agentic-tools", "code-intel", "web-tools"] }

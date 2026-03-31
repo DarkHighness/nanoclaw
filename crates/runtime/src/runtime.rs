@@ -7,10 +7,11 @@ mod turn_loop;
 mod turn_start;
 
 use crate::{
-    CompactionConfig, ConversationCompactor, HookInvocationBatch, HookRunner, LoopDetectionConfig,
-    ModelBackend, NoopRuntimeObserver, PermissionGrantStore, Result, RuntimeCommand,
-    RuntimeControlPlane, RuntimeObserver, RuntimeProgressEvent, RuntimeSession,
-    ToolApprovalHandler, ToolApprovalPolicy, ToolLoopDetector, append_transcript_message,
+    AugmentedUserMessage, CompactionConfig, ConversationCompactor, HookInvocationBatch, HookRunner,
+    LoopDetectionConfig, ModelBackend, NoopRuntimeObserver, PermissionGrantStore, Result,
+    RuntimeCommand, RuntimeControlPlane, RuntimeObserver, RuntimeProgressEvent, RuntimeSession,
+    ToolApprovalHandler, ToolApprovalPolicy, ToolLoopDetector, UserMessageAugmentationContext,
+    UserMessageAugmentor, append_transcript_message,
 };
 use skills::SkillCatalog;
 use std::sync::Arc;
@@ -37,6 +38,7 @@ pub struct AgentRuntime {
     control_plane: RuntimeControlPlane,
     session: RuntimeSession,
     permission_grants: PermissionGrantStore,
+    user_message_augmentor: Option<Arc<dyn UserMessageAugmentor>>,
 }
 
 pub struct RunTurnOutcome {
@@ -67,6 +69,7 @@ impl AgentRuntime {
         _skill_catalog: SkillCatalog,
         session: RuntimeSession,
         permission_grants: PermissionGrantStore,
+        user_message_augmentor: Option<Arc<dyn UserMessageAugmentor>>,
     ) -> Self {
         Self {
             backend,
@@ -86,6 +89,7 @@ impl AgentRuntime {
             control_plane: RuntimeControlPlane::new(),
             session,
             permission_grants,
+            user_message_augmentor,
         }
     }
 
@@ -437,6 +441,26 @@ impl AgentRuntime {
             .await?;
         self.run_turn_loop(&turn_id, &hooks, &instructions, observer)
             .await
+    }
+
+    pub(super) async fn augment_user_message(&self, message: Message) -> AugmentedUserMessage {
+        let Some(augmentor) = self.user_message_augmentor.as_ref() else {
+            return AugmentedUserMessage::unchanged(message);
+        };
+        let context = UserMessageAugmentationContext {
+            session_id: self.session.session_id.clone(),
+            agent_session_id: self.session.agent_session_id.clone(),
+        };
+        match augmentor
+            .augment_user_message(&context, message.clone())
+            .await
+        {
+            Ok(augmented) => augmented,
+            Err(error) => {
+                tracing::warn!(error = %error, "user message augmentation failed");
+                AugmentedUserMessage::unchanged(message)
+            }
+        }
     }
 
     pub(super) async fn drain_runtime_steers(

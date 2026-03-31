@@ -7,6 +7,7 @@
 mod agent_mailbox;
 mod agent_session_manager;
 mod approval;
+mod augmentor;
 mod backend;
 mod builder;
 mod compaction;
@@ -28,6 +29,7 @@ mod write_lease;
 pub use agent_mailbox::*;
 pub use agent_session_manager::*;
 pub use approval::*;
+pub use augmentor::*;
 pub use backend::*;
 pub use builder::*;
 pub use compaction::*;

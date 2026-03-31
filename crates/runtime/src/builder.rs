@@ -2,7 +2,7 @@ use crate::{
     AgentRuntime, AlwaysAllowToolApprovalHandler, CompactionConfig, ConversationCompactor,
     HookRunner, LoopDetectionConfig, ModelBackend, NoopConversationCompactor,
     NoopToolApprovalPolicy, PermissionGrantStore, RuntimeSession, ToolApprovalHandler,
-    ToolApprovalPolicy,
+    ToolApprovalPolicy, UserMessageAugmentor,
 };
 use skills::SkillCatalog;
 use std::sync::Arc;
@@ -26,6 +26,7 @@ pub struct AgentRuntimeBuilder {
     skill_catalog: SkillCatalog,
     session: RuntimeSession,
     permission_grants: PermissionGrantStore,
+    user_message_augmentor: Option<Arc<dyn UserMessageAugmentor>>,
 }
 
 impl AgentRuntimeBuilder {
@@ -47,6 +48,7 @@ impl AgentRuntimeBuilder {
             skill_catalog: SkillCatalog::default(),
             session: RuntimeSession::default(),
             permission_grants: PermissionGrantStore::default(),
+            user_message_augmentor: None,
         }
     }
 
@@ -138,6 +140,15 @@ impl AgentRuntimeBuilder {
     }
 
     #[must_use]
+    pub fn user_message_augmentor(
+        mut self,
+        user_message_augmentor: Arc<dyn UserMessageAugmentor>,
+    ) -> Self {
+        self.user_message_augmentor = Some(user_message_augmentor);
+        self
+    }
+
+    #[must_use]
     pub fn build(self) -> AgentRuntime {
         AgentRuntime::new(
             self.backend,
@@ -155,6 +166,7 @@ impl AgentRuntimeBuilder {
             self.skill_catalog,
             self.session,
             self.permission_grants,
+            self.user_message_augmentor,
         )
     }
 }

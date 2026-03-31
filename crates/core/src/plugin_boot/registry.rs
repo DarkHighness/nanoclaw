@@ -1,6 +1,7 @@
 use anyhow::{Result, bail};
 use inference::LlmServiceConfig;
 use mcp::McpServerConfig;
+use memory::MemoryBackend;
 use plugins::PluginExecutableActivation;
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -21,6 +22,7 @@ pub struct DriverActivationOutcome {
     pub mcp_servers: Vec<McpServerConfig>,
     pub instructions: Vec<String>,
     pub diagnostics: Vec<String>,
+    pub primary_memory_backend: Option<Arc<dyn MemoryBackend>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -71,6 +73,12 @@ impl DriverActivationOutcome {
                         message,
                     }),
             )
+    }
+
+    pub fn remember_primary_memory_backend(&mut self, backend: Arc<dyn MemoryBackend>) {
+        if self.primary_memory_backend.is_none() {
+            self.primary_memory_backend = Some(backend);
+        }
     }
 }
 
@@ -188,6 +196,7 @@ mod tests {
             }],
             instructions: vec!["driver instruction".to_string()],
             diagnostics: Vec::new(),
+            primary_memory_backend: None,
         };
         let mut hooks = vec![HookRegistration {
             name: "existing-hook".into(),
@@ -245,6 +254,7 @@ mod tests {
             mcp_servers: Vec::new(),
             instructions: Vec::new(),
             diagnostics: vec!["first diagnostic".to_string()],
+            primary_memory_backend: None,
         };
 
         assert_eq!(

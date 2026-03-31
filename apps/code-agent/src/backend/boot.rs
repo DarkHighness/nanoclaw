@@ -1,6 +1,7 @@
 use crate::backend::boot_inputs::DriverHostInputs;
 use crate::backend::boot_mcp::build_startup_diagnostics_snapshot;
 use crate::backend::boot_runtime::{build_runtime_tooling, register_subagent_tools};
+use crate::backend::memory_recall::WorkspaceMemoryRecallAugmentor;
 use crate::backend::store::build_store;
 use crate::backend::{
     ApprovalCoordinator, NonInteractivePermissionRequestHandler, NonInteractiveToolApprovalHandler,
@@ -474,8 +475,8 @@ async fn build_runtime(
         &startup_warnings,
         &driver_outcome,
     );
-
-    let runtime = AgentRuntimeBuilder::new(backend.clone(), store.clone())
+    let memory_backend = driver_outcome.primary_memory_backend.clone();
+    let runtime_builder = AgentRuntimeBuilder::new(backend.clone(), store.clone())
         .hook_runner(hook_runner)
         .tool_registry(tools)
         .tool_context(tool_context)
@@ -491,8 +492,16 @@ async fn build_runtime(
         .loop_detection_config(loop_detection_config)
         .instructions(instructions)
         .hooks(runtime_hooks)
-        .skill_catalog(skill_catalog.clone())
-        .build();
+        .skill_catalog(skill_catalog.clone());
+    let runtime = if let Some(memory_backend) = memory_backend.clone() {
+        runtime_builder
+            .user_message_augmentor(Arc::new(WorkspaceMemoryRecallAugmentor::new(
+                memory_backend,
+            )))
+            .build()
+    } else {
+        runtime_builder.build()
+    };
 
     Ok(RuntimeBuildResult {
         runtime,

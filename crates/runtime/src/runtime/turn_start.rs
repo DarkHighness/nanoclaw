@@ -26,9 +26,16 @@ impl AgentRuntime {
         let _ = self
             .apply_hook_effects(turn_id, async_context, None, None)
             .await?;
+        let augmented = self.augment_user_message(message).await;
 
-        self.submit_user_message(turn_id, hooks, message, observer)
-            .await
+        self.submit_user_message(
+            turn_id,
+            hooks,
+            augmented.prefix_messages,
+            augmented.message,
+            observer,
+        )
+        .await
     }
 
     async fn ensure_session_started(
@@ -85,6 +92,7 @@ impl AgentRuntime {
         &mut self,
         turn_id: &TurnId,
         hooks: &[HookRegistration],
+        prefix_messages: Vec<Message>,
         message: Message,
         observer: &mut dyn RuntimeObserver,
     ) -> Result<()> {
@@ -114,6 +122,12 @@ impl AgentRuntime {
             );
         };
 
+        // Augmentor-produced recall/context must stay as distinct transcript
+        // messages ahead of the operator prompt. Merging them back into the
+        // user message would hide provenance and mutate the original prompt
+        // bytes that hooks, logs, and providers should continue to observe.
+        self.append_prefix_messages(turn_id, prefix_messages)
+            .await?;
         let transcript_event = append_transcript_message(
             &mut self.session.transcript,
             user_message,
@@ -131,6 +145,24 @@ impl AgentRuntime {
         )
         .await?;
         observer.on_event(RuntimeProgressEvent::UserPromptAdded { prompt })?;
+        Ok(())
+    }
+
+    async fn append_prefix_messages(
+        &mut self,
+        turn_id: &TurnId,
+        messages: Vec<Message>,
+    ) -> Result<()> {
+        for message in messages {
+            let transcript_event = append_transcript_message(
+                &mut self.session.transcript,
+                message,
+                self.session.session_id.clone(),
+                self.session.agent_session_id.clone(),
+                turn_id.clone(),
+            );
+            self.store.append(transcript_event).await?;
+        }
         Ok(())
     }
 }

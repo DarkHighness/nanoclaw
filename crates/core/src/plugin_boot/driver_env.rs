@@ -1,3 +1,5 @@
+#![cfg(feature = "memory-embed")]
+
 use anyhow::{Result, anyhow};
 use types::PluginId;
 

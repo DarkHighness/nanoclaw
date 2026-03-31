@@ -1,7 +1,8 @@
 use super::support::{RecordingBackend, RecordingObserver};
 use crate::{
-    AgentRuntimeBuilder, HookRunner, ModelBackend, Result, RuntimeCommand, RuntimeControlPlane,
-    RuntimeProgressEvent,
+    AgentRuntimeBuilder, AugmentedUserMessage, HookRunner, ModelBackend, Result, RuntimeCommand,
+    RuntimeControlPlane, RuntimeProgressEvent, UserMessageAugmentationContext,
+    UserMessageAugmentor,
 };
 use async_trait::async_trait;
 use futures::{StreamExt, stream, stream::BoxStream};
@@ -14,6 +15,8 @@ use types::{
 };
 
 struct StreamingTextBackend;
+
+struct PrefixMessageAugmentor;
 
 #[derive(Clone, Default)]
 struct ToolTurnRecordingBackend {
@@ -48,6 +51,20 @@ impl ModelBackend for StreamingTextBackend {
             }),
         ])
         .boxed())
+    }
+}
+
+#[async_trait]
+impl UserMessageAugmentor for PrefixMessageAugmentor {
+    async fn augment_user_message(
+        &self,
+        _context: &UserMessageAugmentationContext,
+        message: Message,
+    ) -> Result<AugmentedUserMessage> {
+        Ok(AugmentedUserMessage {
+            prefix_messages: vec![Message::user("recalled memory")],
+            message,
+        })
     }
 }
 
@@ -234,6 +251,41 @@ async fn runtime_tracks_token_usage_and_context_window() {
             phase: TokenUsagePhase::ResponseCompleted,
             ledger,
         } if ledger.cumulative_usage == TokenUsage::from_input_output(120, 30, 20)
+    )));
+}
+
+#[tokio::test]
+async fn runtime_inserts_augmentor_prefix_messages_before_prompt() {
+    let dir = tempfile::tempdir().unwrap();
+    let backend = RecordingBackend::default();
+    let store = Arc::new(InMemorySessionStore::new());
+    let mut runtime = AgentRuntimeBuilder::new(Arc::new(backend.clone()), store)
+        .hook_runner(Arc::new(HookRunner::default()))
+        .tool_context(ToolExecutionContext {
+            workspace_root: dir.path().to_path_buf(),
+            workspace_only: true,
+            ..Default::default()
+        })
+        .user_message_augmentor(Arc::new(PrefixMessageAugmentor))
+        .build();
+    let mut observer = RecordingObserver::default();
+
+    runtime
+        .run_user_prompt_with_observer("inspect the repo", &mut observer)
+        .await
+        .unwrap();
+
+    let requests = backend.requests();
+    assert_eq!(requests.len(), 1);
+    let prompts = requests[0]
+        .messages
+        .iter()
+        .map(Message::text_content)
+        .collect::<Vec<_>>();
+    assert_eq!(prompts, vec!["recalled memory", "inspect the repo"]);
+    assert!(observer.events().iter().any(|event| matches!(
+        event,
+        RuntimeProgressEvent::UserPromptAdded { prompt } if prompt == "inspect the repo"
     )));
 }
 
