@@ -72,3 +72,9 @@ Intentionally still documented as not yet implemented:
 - `docs/tool-protocol-alignment.md`
   - active Codex/OpenCode/nanoclaw tool-surface alignment note and target
     protocol draft
+- `docs/meta-agent-evolution-plan.md`
+  - active 2026 literature-informed plan for a self-improving Meta Agent
+    control plane on top of the current subagent/runtime substrate
+- `docs/meta-agent-execution-plan.md`
+  - executable engineering breakdown for the first offline Meta Agent MVP,
+    including work packages, write sets, validation, and integration waves
