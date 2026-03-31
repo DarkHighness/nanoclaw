@@ -437,6 +437,7 @@ mod tests {
                 }],
                 instructions: vec!["driver instruction".to_string()],
                 diagnostics: vec!["prepared runtime".to_string()],
+                primary_memory_backend: None,
             },
         );
 
@@ -694,6 +695,7 @@ mod tests {
             mcp_servers: Vec::new(),
             instructions: Vec::new(),
             diagnostics: vec!["validated wasm hook module".to_string()],
+            primary_memory_backend: None,
         });
 
         assert_eq!(

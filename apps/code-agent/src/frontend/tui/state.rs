@@ -103,6 +103,19 @@ pub(crate) struct ComposerDraftState {
     pub(crate) draft_attachments: Vec<ComposerDraftAttachmentState>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ComposerRowAttachmentPreview {
+    pub(crate) index: usize,
+    pub(crate) summary: String,
+    pub(crate) detail: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ComposerAttachmentEditSummary {
+    pub(crate) detached: Vec<ComposerRowAttachmentPreview>,
+    pub(crate) reordered: bool,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct ComposerDraftAttachmentState {
     pub(crate) placeholder: Option<String>,
@@ -155,8 +168,15 @@ impl ComposerDraftState {
         }
     }
 
-    pub(crate) fn row_attachment_summaries(&self) -> Vec<(usize, String, String)> {
+    pub(crate) fn row_attachment_previews(&self) -> Vec<ComposerRowAttachmentPreview> {
         summarize_row_attachments(&self.draft_attachments)
+    }
+
+    pub(crate) fn row_attachment_summaries(&self) -> Vec<(usize, String, String)> {
+        self.row_attachment_previews()
+            .into_iter()
+            .map(|preview| (preview.index, preview.summary, preview.detail))
+            .collect()
     }
 
     fn normalized(mut self) -> Self {
@@ -1670,13 +1690,39 @@ impl TuiState {
         true
     }
 
-    pub(crate) fn row_attachment_summaries(&self) -> Vec<(usize, String, String)> {
+    pub(crate) fn row_attachment_previews(&self) -> Vec<ComposerRowAttachmentPreview> {
         summarize_row_attachments(&self.draft_attachments)
     }
 
-    pub(crate) fn selected_row_attachment_summary(&self) -> Option<(usize, String, String)> {
+    pub(crate) fn row_attachment_summaries(&self) -> Vec<(usize, String, String)> {
+        self.row_attachment_previews()
+            .into_iter()
+            .map(|preview| (preview.index, preview.summary, preview.detail))
+            .collect()
+    }
+
+    pub(crate) fn selected_row_attachment_preview(&self) -> Option<ComposerRowAttachmentPreview> {
         let selected = self.selected_row_attachment?;
-        self.row_attachment_summaries().into_iter().nth(selected)
+        self.row_attachment_previews().into_iter().nth(selected)
+    }
+
+    pub(crate) fn selected_row_attachment_summary(&self) -> Option<(usize, String, String)> {
+        self.selected_row_attachment_preview()
+            .map(|preview| (preview.index, preview.summary, preview.detail))
+    }
+
+    pub(crate) fn row_attachment_preview(
+        &self,
+        index: Option<usize>,
+    ) -> Option<ComposerRowAttachmentPreview> {
+        match index {
+            Some(index) if index > 0 => self
+                .row_attachment_previews()
+                .into_iter()
+                .find(|preview| preview.index == index),
+            Some(_) => None,
+            None => self.row_attachment_previews().into_iter().last(),
+        }
     }
 
     pub(crate) fn select_previous_row_attachment(&mut self) -> bool {
@@ -2104,7 +2150,11 @@ impl TuiState {
         Message::new(MessageRole::User, parts)
     }
 
-    pub(crate) fn apply_external_edit(&mut self, text: impl Into<String>) {
+    pub(crate) fn apply_external_edit(
+        &mut self,
+        text: impl Into<String>,
+    ) -> ComposerAttachmentEditSummary {
+        let before_rows = self.row_attachment_previews();
         let (row_attachments, mut text) = self.parse_external_editor_text(text.into());
         let mut inline_attachments = self
             .draft_attachments
@@ -2150,6 +2200,7 @@ impl TuiState {
         self.selected_row_attachment = None;
         self.input_history_navigation = None;
         self.reset_command_completion();
+        summarize_attachment_edit(&before_rows, &self.row_attachment_previews())
     }
 
     fn parse_external_editor_text(
@@ -2212,19 +2263,50 @@ impl TuiState {
 
 fn summarize_row_attachments(
     attachments: &[ComposerDraftAttachmentState],
-) -> Vec<(usize, String, String)> {
+) -> Vec<ComposerRowAttachmentPreview> {
     attachments
         .iter()
         .filter(|attachment| attachment.is_row_attachment())
         .enumerate()
         .filter_map(|(index, attachment)| {
-            Some((
-                index + 1,
-                attachment.row_summary()?,
-                attachment.row_detail().unwrap_or_default(),
-            ))
+            Some(ComposerRowAttachmentPreview {
+                index: index + 1,
+                summary: attachment.row_summary()?,
+                detail: attachment.row_detail().unwrap_or_default(),
+            })
         })
         .collect()
+}
+
+fn summarize_attachment_edit(
+    before: &[ComposerRowAttachmentPreview],
+    after: &[ComposerRowAttachmentPreview],
+) -> ComposerAttachmentEditSummary {
+    let after_keys = after
+        .iter()
+        .map(preview_identity_key)
+        .collect::<std::collections::BTreeSet<_>>();
+    let detached = before
+        .iter()
+        .filter(|preview| !after_keys.contains(&preview_identity_key(preview)))
+        .cloned()
+        .collect::<Vec<_>>();
+
+    let before_common = before
+        .iter()
+        .filter(|preview| after_keys.contains(&preview_identity_key(preview)))
+        .map(preview_identity_key)
+        .collect::<Vec<_>>();
+    let after_common = after.iter().map(preview_identity_key).collect::<Vec<_>>();
+
+    ComposerAttachmentEditSummary {
+        detached,
+        reordered: before_common != after_common,
+    }
+}
+
+fn preview_identity_key(preview: &ComposerRowAttachmentPreview) -> String {
+    format!("{}\u{0}{}", preview.summary, preview.detail)
 }
 
 fn bump_scroll(value: &mut u16, delta: i16) {
@@ -2495,9 +2577,9 @@ fn git_repo_name(workspace_root: &Path) -> Option<String> {
 mod tests {
     use super::{
         ComposerDraftAttachmentKind, ComposerDraftAttachmentState, ComposerDraftState,
-        ComposerKillBufferState, HistoryRollbackCandidate, MainPaneMode, SharedUiState, TuiState,
-        composer_draft_from_messages, composer_draft_from_parts, draft_preview_text, git_snapshot,
-        page_scroll_amount,
+        ComposerKillBufferState, ComposerRowAttachmentPreview, HistoryRollbackCandidate,
+        MainPaneMode, SharedUiState, TuiState, composer_draft_from_messages,
+        composer_draft_from_parts, draft_preview_text, git_snapshot, page_scroll_amount,
     };
     use crate::theme::ThemeSummary;
     use agent::types::{Message, MessageId, MessagePart, MessageRole};
@@ -3198,7 +3280,7 @@ mod tests {
         assert!(state.push_row_attachment(local_file_attachment("reports/run.pdf")));
         state.push_input_str("summarize the artifacts");
 
-        state.apply_external_edit(
+        let summary = state.apply_external_edit(
             "[Attachments]\n[File #2] reports/run.pdf\n\n[Prompt]\nupdated prompt".to_string(),
         );
 
@@ -3207,6 +3289,15 @@ mod tests {
             state.draft_attachments,
             vec![local_file_attachment("reports/run.pdf")]
         );
+        assert_eq!(
+            summary.detached,
+            vec![ComposerRowAttachmentPreview {
+                index: 1,
+                summary: "image · failure.png".to_string(),
+                detail: "artifacts/failure.png".to_string(),
+            }]
+        );
+        assert!(!summary.reordered);
     }
 
     #[test]
@@ -3215,10 +3306,30 @@ mod tests {
         assert!(state.push_row_attachment(local_image_attachment("artifacts/failure.png")));
         assert!(state.push_row_attachment(local_file_attachment("reports/run.pdf")));
 
-        state.apply_external_edit("[Attachments]\n\n[Prompt]\ntext only".to_string());
+        let summary = state.apply_external_edit("[Attachments]\n\n[Prompt]\ntext only".to_string());
 
         assert_eq!(state.input, "text only");
         assert!(state.draft_attachments.is_empty());
+        assert_eq!(summary.detached.len(), 2);
+        assert!(!summary.reordered);
+    }
+
+    #[test]
+    fn apply_external_edit_reports_reordered_rows() {
+        let mut state = TuiState::default();
+        assert!(state.push_row_attachment(local_image_attachment("artifacts/failure.png")));
+        assert!(state.push_row_attachment(local_file_attachment("reports/run.pdf")));
+        assert!(state.push_row_attachment(remote_image_attachment(
+            "https://example.com/assets/overview.png",
+        )));
+
+        let summary = state.apply_external_edit(
+            "[Attachments]\n[Image #3] https://example.com/assets/overview.png\n[Image #1] artifacts/failure.png\n[File #2] reports/run.pdf\n\n[Prompt]\ntext only"
+                .to_string(),
+        );
+
+        assert!(summary.detached.is_empty());
+        assert!(summary.reordered);
     }
 
     #[test]

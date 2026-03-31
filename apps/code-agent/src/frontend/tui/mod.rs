@@ -700,9 +700,14 @@ impl CodeAgentTui {
         match edit_result {
             Ok(text) => {
                 self.ui_state.mutate(|state| {
-                    state.apply_external_edit(text.trim_end().to_string());
-                    state.status = "Replaced composer text from external editor".to_string();
-                    state.push_activity("updated draft from external editor");
+                    let summary = state.apply_external_edit(text.trim_end().to_string());
+                    let status_suffix = external_editor_attachment_status_suffix(&summary);
+                    let activity_suffix = external_editor_attachment_activity_suffix(&summary);
+                    state.status =
+                        format!("Replaced composer text from external editor{status_suffix}");
+                    state.push_activity(format!(
+                        "updated draft from external editor{activity_suffix}"
+                    ));
                 });
             }
             Err(error) => {
@@ -787,8 +792,9 @@ impl CodeAgentTui {
                 state.select_next_row_attachment()
             };
             if moved {
-                if let Some((index, summary, _)) = state.selected_row_attachment_summary() {
-                    state.status = format!("Selected attachment #{index} · {summary}");
+                if let Some(preview) = state.selected_row_attachment_preview() {
+                    state.status =
+                        format!("Selected {}", attachment_preview_status_label(&preview));
                 } else {
                     state.status = "Returned to draft editing".to_string();
                 }
@@ -804,12 +810,11 @@ impl CodeAgentTui {
 
         let mut removed = false;
         self.ui_state.mutate(|state| {
+            let removed_preview = state.selected_row_attachment_preview();
             if let Some(attachment) = state.remove_selected_row_attachment() {
-                let summary = attachment
-                    .row_summary()
-                    .unwrap_or_else(|| "attachment".to_string());
-                state.status = format!("Detached {summary}");
-                state.push_activity(format!("detached {summary}"));
+                let label = removed_attachment_status_label(removed_preview.as_ref(), &attachment);
+                state.status = format!("Detached {label}");
+                state.push_activity(format!("detached {label}"));
                 removed = true;
             }
         });
@@ -1007,14 +1012,13 @@ impl CodeAgentTui {
     }
 
     fn detach_composer_attachment(&mut self, index: Option<usize>) {
-        self.ui_state
-            .mutate(|state| match state.remove_row_attachment(index) {
+        self.ui_state.mutate(|state| {
+            let preview = state.row_attachment_preview(index);
+            match state.remove_row_attachment(index) {
                 Some(attachment) => {
-                    let summary = attachment
-                        .row_summary()
-                        .unwrap_or_else(|| "attachment".to_string());
-                    state.status = format!("Detached {summary}");
-                    state.push_activity(format!("detached {summary}"));
+                    let label = removed_attachment_status_label(preview.as_ref(), &attachment);
+                    state.status = format!("Detached {label}");
+                    state.push_activity(format!("detached {label}"));
                 }
                 None => {
                     state.status = match index {
@@ -1023,7 +1027,8 @@ impl CodeAgentTui {
                     };
                     state.push_activity("no composer attachment removed");
                 }
-            });
+            }
+        });
     }
 
     fn move_composer_attachment(&mut self, from: usize, to: usize) {
@@ -3366,6 +3371,55 @@ fn history_rollback_status(
     )
 }
 
+fn attachment_preview_status_label(preview: &state::ComposerRowAttachmentPreview) -> String {
+    format!("attachment #{} · {}", preview.index, preview.summary)
+}
+
+fn removed_attachment_status_label(
+    preview: Option<&state::ComposerRowAttachmentPreview>,
+    attachment: &ComposerDraftAttachmentState,
+) -> String {
+    preview
+        .map(attachment_preview_status_label)
+        .or_else(|| {
+            attachment
+                .row_summary()
+                .map(|summary| format!("attachment · {summary}"))
+        })
+        .unwrap_or_else(|| "attachment".to_string())
+}
+
+fn external_editor_attachment_status_suffix(
+    summary: &state::ComposerAttachmentEditSummary,
+) -> String {
+    external_editor_attachment_feedback_suffix(summary)
+}
+
+fn external_editor_attachment_activity_suffix(
+    summary: &state::ComposerAttachmentEditSummary,
+) -> String {
+    external_editor_attachment_feedback_suffix(summary)
+}
+
+fn external_editor_attachment_feedback_suffix(
+    summary: &state::ComposerAttachmentEditSummary,
+) -> String {
+    match (summary.detached.len(), summary.reordered) {
+        (0, false) => String::new(),
+        (0, true) => " · reordered attachments".to_string(),
+        (1, false) => format!(
+            " · detached {}",
+            attachment_preview_status_label(&summary.detached[0])
+        ),
+        (count, false) => format!(" · detached {count} attachments"),
+        (1, true) => format!(
+            " · detached {} and reordered remaining",
+            attachment_preview_status_label(&summary.detached[0])
+        ),
+        (count, true) => format!(" · detached {count} attachments and reordered remaining"),
+    }
+}
+
 fn preview_path_tail(path: &str) -> String {
     if let Some(segment) = remote_attachment_tail_segment(path) {
         return segment;
@@ -3737,8 +3791,15 @@ mod tests {
     use super::build_history_rollback_candidates;
     use super::build_startup_inspector;
     use super::commands::command_palette_lines;
-    use super::state::{ComposerDraftAttachmentKind, InspectorEntry, SessionSummary};
-    use super::{PlainInputSubmitAction, merge_interrupt_steers, plain_input_submit_action};
+    use super::state::{
+        ComposerAttachmentEditSummary, ComposerDraftAttachmentKind, ComposerRowAttachmentPreview,
+        InspectorEntry, SessionSummary,
+    };
+    use super::{
+        PlainInputSubmitAction, attachment_preview_status_label,
+        external_editor_attachment_status_suffix, merge_interrupt_steers,
+        plain_input_submit_action,
+    };
     use crate::backend::SessionPermissionMode;
     use agent::types::{Message, MessageId, MessagePart, MessageRole};
     use crossterm::event::KeyCode;
@@ -3891,6 +3952,33 @@ mod tests {
     #[test]
     fn interrupt_merge_ignores_empty_steer_list() {
         assert_eq!(merge_interrupt_steers(Vec::new()), None);
+    }
+
+    #[test]
+    fn attachment_preview_status_label_formats_numbered_summary() {
+        assert_eq!(
+            attachment_preview_status_label(&ComposerRowAttachmentPreview {
+                index: 2,
+                summary: "file · run.pdf".to_string(),
+                detail: "reports/run.pdf".to_string(),
+            }),
+            "attachment #2 · file · run.pdf"
+        );
+    }
+
+    #[test]
+    fn external_editor_attachment_status_suffix_reports_detached_attachment() {
+        assert_eq!(
+            external_editor_attachment_status_suffix(&ComposerAttachmentEditSummary {
+                detached: vec![ComposerRowAttachmentPreview {
+                    index: 1,
+                    summary: "image · failure.png".to_string(),
+                    detail: "https://example.com/assets/failure.png".to_string(),
+                }],
+                reordered: true,
+            }),
+            " · detached attachment #1 · image · failure.png and reordered remaining"
+        );
     }
 
     #[test]
