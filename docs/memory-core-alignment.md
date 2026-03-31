@@ -337,6 +337,19 @@ visible transcript slices in first-seen agent-session order:
 That keeps operator-facing history exports closer to what the runtime actually
 showed during the session instead of replaying every hidden transcript node.
 
+Session list, search, and memory-export summaries now use that same visible
+transcript accounting for their message counts:
+
+- persisted `transcript_message_count` values no longer report hidden
+  pre-compaction replay nodes
+- file-store sidecars rebuild on compaction checkpoints so cached summaries stay
+  aligned with the live visible window
+- memory exports keep their transcript counts consistent with the post-
+  compaction history shape they summarize
+
+That keeps summary metadata aligned with the operator-facing transcript surface
+instead of mixing visible content with raw replay-only counts.
+
 ## Side Questions (`/btw`)
 
 Claude Code exposes side questions as a separate lightweight query path rather

@@ -389,10 +389,14 @@ impl SessionStore for FileSessionStore {
 }
 
 fn rebuild_index_record(event: &types::SessionEventKind) -> bool {
+    // Compaction rewrites the visible transcript window without mutating the
+    // older transcript message events, so cached summary counts must be
+    // rebuilt from the full session log instead of incrementally adjusted.
     matches!(
         event,
         types::SessionEventKind::TranscriptMessagePatched { .. }
             | types::SessionEventKind::TranscriptMessageRemoved { .. }
+            | types::SessionEventKind::CompactionCompleted { .. }
     )
 }
 
@@ -872,6 +876,98 @@ mod tests {
                     .iter()
                     .any(|line| line.contains("release checklist"))
             );
+        }
+    );
+
+    bounded_async_test!(
+        async fn list_sessions_counts_visible_transcript_after_compaction() {
+            let dir = tempfile::tempdir().unwrap();
+            let store = FileSessionStore::open(dir.path()).await.unwrap();
+            let session_id = SessionId::new();
+            let agent_session_id = AgentSessionId::new();
+            let older_prompt =
+                Message::user("older prompt").with_message_id(MessageId::from("msg_older_prompt"));
+            let older_answer = Message::assistant("older answer")
+                .with_message_id(MessageId::from("msg_older_answer"));
+            let kept = Message::user("keep this").with_message_id(MessageId::from("msg_keep"));
+            let summary =
+                Message::system("summary").with_message_id(MessageId::from("msg_summary"));
+            let after = Message::assistant("after compaction")
+                .with_message_id(MessageId::from("msg_after"));
+
+            store
+                .append_batch(vec![
+                    SessionEventEnvelope::new(
+                        session_id.clone(),
+                        agent_session_id.clone(),
+                        None,
+                        None,
+                        SessionEventKind::TranscriptMessage {
+                            message: older_prompt,
+                        },
+                    ),
+                    SessionEventEnvelope::new(
+                        session_id.clone(),
+                        agent_session_id.clone(),
+                        None,
+                        None,
+                        SessionEventKind::TranscriptMessage {
+                            message: older_answer,
+                        },
+                    ),
+                    SessionEventEnvelope::new(
+                        session_id.clone(),
+                        agent_session_id.clone(),
+                        None,
+                        None,
+                        SessionEventKind::TranscriptMessage {
+                            message: kept.clone(),
+                        },
+                    ),
+                    SessionEventEnvelope::new(
+                        session_id.clone(),
+                        agent_session_id.clone(),
+                        None,
+                        None,
+                        SessionEventKind::TranscriptMessage {
+                            message: summary.clone(),
+                        },
+                    ),
+                    SessionEventEnvelope::new(
+                        session_id.clone(),
+                        agent_session_id.clone(),
+                        None,
+                        None,
+                        SessionEventKind::CompactionCompleted {
+                            reason: "manual".to_string(),
+                            source_message_count: 2,
+                            retained_message_count: 1,
+                            summary_chars: 7,
+                            summary_message_id: Some(summary.message_id.clone()),
+                            retained_tail_message_ids: vec![kept.message_id.clone()],
+                        },
+                    ),
+                    SessionEventEnvelope::new(
+                        session_id.clone(),
+                        agent_session_id,
+                        None,
+                        None,
+                        SessionEventKind::TranscriptMessage { message: after },
+                    ),
+                ])
+                .await
+                .unwrap();
+
+            let sessions = store.list_sessions().await.unwrap();
+            assert_eq!(sessions.len(), 1);
+            assert_eq!(sessions[0].transcript_message_count, 3);
+
+            drop(store);
+
+            let reopened = FileSessionStore::open(dir.path()).await.unwrap();
+            let sessions = reopened.list_sessions().await.unwrap();
+            assert_eq!(sessions.len(), 1);
+            assert_eq!(sessions[0].transcript_message_count, 3);
         }
     );
 

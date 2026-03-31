@@ -1,4 +1,4 @@
-use crate::replay::replay_transcript;
+use crate::replay::{replay_transcript, visible_transcript};
 use async_trait::async_trait;
 use futures::{StreamExt, stream};
 use serde::{Deserialize, Serialize};
@@ -216,7 +216,9 @@ pub fn summarize_session_events(
             last_user_prompt = Some(prompt.clone());
         }
     }
-    let transcript_message_count = replay_transcript(events).len();
+    // Session-level transcript counts should mirror the post-compaction window
+    // that operators and resume flows actually see, not the full hidden replay.
+    let transcript_message_count = visible_transcript(events).len();
 
     Some(SessionSummary {
         session_id: session_id.clone(),
@@ -1036,7 +1038,7 @@ pub fn build_memory_export_record(
             last_user_prompt = Some(prompt.clone());
         }
     }
-    let transcript_message_count = replay_transcript(events).len();
+    let transcript_message_count = visible_transcript(events).len();
 
     Some(SessionMemoryExportRecord {
         summary: MemoryExportSummary {
@@ -1406,10 +1408,13 @@ pub trait SessionStore: EventSink {
 
 #[cfg(test)]
 mod tests {
-    use super::{SessionSummary, collect_memory_export_sections, search_session_events};
+    use super::{
+        MemoryExportScope, SessionSummary, build_memory_export_record,
+        collect_memory_export_sections, search_session_events, summarize_session_events,
+    };
     use types::{
-        AgentSessionId, HookEffect, HookEvent, HookResult, Message, MessagePart, MessageRole,
-        MessageSelector, SessionEventEnvelope, SessionEventKind, SessionId,
+        AgentSessionId, HookEffect, HookEvent, HookResult, Message, MessageId, MessagePart,
+        MessageRole, MessageSelector, SessionEventEnvelope, SessionEventKind, SessionId,
     };
 
     #[test]
@@ -1446,6 +1451,162 @@ mod tests {
             result.preview_matches,
             vec!["[reference:skill openai-docs app://docs Use official docs]".to_string()]
         );
+    }
+
+    #[test]
+    fn summarize_session_events_counts_visible_compacted_messages() {
+        let session_id = SessionId::from("session_demo");
+        let agent_session_id = AgentSessionId::from("agent_demo");
+        let kept = Message::user("keep this").with_message_id(MessageId::from("msg_keep"));
+        let summary = Message::system("summary").with_message_id(MessageId::from("msg_summary"));
+        let after =
+            Message::assistant("after compaction").with_message_id(MessageId::from("msg_after"));
+        let events = vec![
+            SessionEventEnvelope::new(
+                session_id.clone(),
+                agent_session_id.clone(),
+                None,
+                None,
+                SessionEventKind::TranscriptMessage {
+                    message: Message::user("older prompt")
+                        .with_message_id(MessageId::from("msg_older_prompt")),
+                },
+            ),
+            SessionEventEnvelope::new(
+                session_id.clone(),
+                agent_session_id.clone(),
+                None,
+                None,
+                SessionEventKind::TranscriptMessage {
+                    message: Message::assistant("older answer")
+                        .with_message_id(MessageId::from("msg_older_answer")),
+                },
+            ),
+            SessionEventEnvelope::new(
+                session_id.clone(),
+                agent_session_id.clone(),
+                None,
+                None,
+                SessionEventKind::TranscriptMessage {
+                    message: kept.clone(),
+                },
+            ),
+            SessionEventEnvelope::new(
+                session_id.clone(),
+                agent_session_id.clone(),
+                None,
+                None,
+                SessionEventKind::TranscriptMessage {
+                    message: summary.clone(),
+                },
+            ),
+            SessionEventEnvelope::new(
+                session_id.clone(),
+                agent_session_id.clone(),
+                None,
+                None,
+                SessionEventKind::CompactionCompleted {
+                    reason: "manual".to_string(),
+                    source_message_count: 2,
+                    retained_message_count: 1,
+                    summary_chars: 7,
+                    summary_message_id: Some(summary.message_id.clone()),
+                    retained_tail_message_ids: vec![kept.message_id.clone()],
+                },
+            ),
+            SessionEventEnvelope::new(
+                session_id.clone(),
+                agent_session_id,
+                None,
+                None,
+                SessionEventKind::TranscriptMessage { message: after },
+            ),
+        ];
+
+        let summary = summarize_session_events(&session_id, &events).unwrap();
+        assert_eq!(summary.transcript_message_count, 3);
+    }
+
+    #[test]
+    fn memory_export_record_counts_visible_compacted_messages() {
+        let session_id = SessionId::from("session_demo");
+        let agent_session_id = AgentSessionId::from("agent_demo");
+        let kept = Message::user("keep this").with_message_id(MessageId::from("msg_keep"));
+        let summary = Message::system("summary").with_message_id(MessageId::from("msg_summary"));
+        let after =
+            Message::assistant("after compaction").with_message_id(MessageId::from("msg_after"));
+        let events = vec![
+            SessionEventEnvelope::new(
+                session_id.clone(),
+                agent_session_id.clone(),
+                None,
+                None,
+                SessionEventKind::TranscriptMessage {
+                    message: Message::user("older prompt")
+                        .with_message_id(MessageId::from("msg_older_prompt")),
+                },
+            ),
+            SessionEventEnvelope::new(
+                session_id.clone(),
+                agent_session_id.clone(),
+                None,
+                None,
+                SessionEventKind::TranscriptMessage {
+                    message: Message::assistant("older answer")
+                        .with_message_id(MessageId::from("msg_older_answer")),
+                },
+            ),
+            SessionEventEnvelope::new(
+                session_id.clone(),
+                agent_session_id.clone(),
+                None,
+                None,
+                SessionEventKind::TranscriptMessage {
+                    message: kept.clone(),
+                },
+            ),
+            SessionEventEnvelope::new(
+                session_id.clone(),
+                agent_session_id.clone(),
+                None,
+                None,
+                SessionEventKind::TranscriptMessage {
+                    message: summary.clone(),
+                },
+            ),
+            SessionEventEnvelope::new(
+                session_id.clone(),
+                agent_session_id.clone(),
+                None,
+                None,
+                SessionEventKind::CompactionCompleted {
+                    reason: "manual".to_string(),
+                    source_message_count: 2,
+                    retained_message_count: 1,
+                    summary_chars: 7,
+                    summary_message_id: Some(summary.message_id.clone()),
+                    retained_tail_message_ids: vec![kept.message_id.clone()],
+                },
+            ),
+            SessionEventEnvelope::new(
+                session_id.clone(),
+                agent_session_id,
+                None,
+                None,
+                SessionEventKind::TranscriptMessage { message: after },
+            ),
+        ];
+
+        let record = build_memory_export_record(
+            MemoryExportScope::Session,
+            &session_id,
+            None,
+            None,
+            None,
+            &events,
+        )
+        .unwrap();
+        assert_eq!(record.summary.transcript_message_count, 3);
     }
 
     #[test]

@@ -11,7 +11,9 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use types::{AgentSessionId, SessionEventEnvelope, SessionEventKind, SessionId};
 
 pub(super) const INDEX_FILE_NAME: &str = "sessions.index.json";
-const INDEX_VERSION: u32 = 2;
+// Visible transcript counts now fold compaction checkpoints, so older sidecars
+// that stored raw replay counts must rebuild on open.
+const INDEX_VERSION: u32 = 3;
 const MAX_SEARCH_CORPUS_CHARS: usize = 16_384;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
