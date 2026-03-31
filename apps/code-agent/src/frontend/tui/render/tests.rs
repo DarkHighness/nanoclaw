@@ -27,9 +27,9 @@ use crate::frontend::tui::commands::{
     SlashCommandHint, SlashCommandSpec,
 };
 use crate::frontend::tui::state::{
-    ComposerDraftAttachmentKind, ComposerDraftAttachmentState, HistoryRollbackCandidate,
-    InspectorEntry, MainPaneMode, PlanEntry, StatusLinePickerState, ThemePickerState,
-    TranscriptEntry, TranscriptShellDetail, TranscriptToolStatus, TuiState,
+    ComposerDraftAttachmentKind, ComposerDraftAttachmentState, ComposerDraftState,
+    HistoryRollbackCandidate, InspectorEntry, MainPaneMode, PlanEntry, StatusLinePickerState,
+    ThemePickerState, TranscriptEntry, TranscriptShellDetail, TranscriptToolStatus, TuiState,
 };
 use crate::theme::ThemeSummary;
 use crate::tool_render::ToolDetail;
@@ -246,6 +246,7 @@ fn history_rollback_overlay_renders_selection_list_and_preview() {
         HistoryRollbackCandidate {
             message_id: MessageId::from("msg-1"),
             prompt: "first prompt".to_string(),
+            draft: ComposerDraftState::from_text("first prompt"),
             turn_preview_lines: vec![
                 transcript_entry("› first prompt"),
                 transcript_entry("• first answer"),
@@ -256,6 +257,7 @@ fn history_rollback_overlay_renders_selection_list_and_preview() {
         HistoryRollbackCandidate {
             message_id: MessageId::from("msg-2"),
             prompt: "second prompt".to_string(),
+            draft: ComposerDraftState::from_text("second prompt"),
             turn_preview_lines: vec![
                 transcript_entry("› second prompt"),
                 transcript_entry("• second answer"),

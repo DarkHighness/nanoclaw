@@ -47,7 +47,9 @@ use agent::tools::{
     ToolExecutionContext, UserInputAnswer, UserInputResponse, load_tool_image,
     resolve_tool_path_against_workspace_root,
 };
-use agent::types::{Message, MessagePart, MessageRole, message_operator_text};
+use agent::types::{
+    Message, MessagePart, MessageRole, message_operator_text, message_part_operator_text,
+};
 use anyhow::{Context, Result, anyhow};
 use base64::Engine;
 use crossterm::event::{
@@ -1748,8 +1750,10 @@ impl CodeAgentTui {
                     state.transcript = transcript;
                     state.follow_transcript = true;
                     state.transcript_scroll = u16::MAX;
-                    state.replace_input(candidate.prompt.clone());
-                    state.status = if candidate.prompt.trim().is_empty() {
+                    state.restore_input_draft(candidate.draft.clone());
+                    state.status = if candidate.draft.text.trim().is_empty()
+                        && candidate.draft.draft_attachments.is_empty()
+                    {
                         format!(
                             "Rolled back {} message(s). Selected turn had no text to restore",
                             outcome.removed_message_count
@@ -3333,15 +3337,125 @@ fn build_history_rollback_candidates(
                 .unwrap_or(transcript.len());
             let turn_slice = transcript.get(start_index..end_index)?;
             let prompt = agent::types::message_operator_text(message);
+            let draft = composer_draft_from_message(message);
             Some(state::HistoryRollbackCandidate {
                 message_id: message.message_id.clone(),
                 prompt,
+                draft,
                 turn_preview_lines: format_visible_transcript_preview_lines(turn_slice),
                 removed_turn_count: total_turns.saturating_sub(turn_index),
                 removed_message_count: transcript.len().saturating_sub(start_index),
             })
         })
         .collect()
+}
+
+fn composer_draft_from_message(message: &Message) -> state::ComposerDraftState {
+    let mut text = String::new();
+    let mut previous_inline = false;
+    let mut has_previous_text_fragment = false;
+    let mut draft_attachments = Vec::new();
+
+    for part in &message.parts {
+        if let Some(attachment) = composer_draft_attachment_from_part(part) {
+            if let Some(placeholder) = attachment.placeholder.as_ref() {
+                if has_previous_text_fragment && !previous_inline {
+                    text.push('\n');
+                }
+                text.push_str(placeholder);
+                previous_inline = true;
+                has_previous_text_fragment = true;
+            }
+            draft_attachments.push(attachment);
+            continue;
+        }
+
+        let fragment = composer_draft_text_fragment(part);
+        if fragment.is_empty() {
+            continue;
+        }
+        let inline = composer_draft_part_is_inline(part);
+        if has_previous_text_fragment {
+            if previous_inline && inline {
+                text.push_str(&fragment);
+            } else {
+                text.push('\n');
+                text.push_str(&fragment);
+            }
+        } else {
+            text.push_str(&fragment);
+        }
+        previous_inline = inline;
+        has_previous_text_fragment = true;
+    }
+
+    state::ComposerDraftState {
+        cursor: text.len(),
+        text,
+        draft_attachments,
+    }
+}
+
+fn composer_draft_attachment_from_part(part: &MessagePart) -> Option<ComposerDraftAttachmentState> {
+    match part {
+        MessagePart::Paste { label, text } => Some(ComposerDraftAttachmentState {
+            placeholder: Some(label.clone()),
+            kind: ComposerDraftAttachmentKind::LargePaste {
+                payload: text.clone(),
+            },
+        }),
+        MessagePart::Image { mime_type, .. } => Some(ComposerDraftAttachmentState {
+            placeholder: None,
+            kind: ComposerDraftAttachmentKind::LocalImage {
+                requested_path: format!("[image:{mime_type}]"),
+                part: part.clone(),
+            },
+        }),
+        MessagePart::ImageUrl { url, .. } => Some(ComposerDraftAttachmentState {
+            placeholder: None,
+            kind: ComposerDraftAttachmentKind::RemoteImage {
+                requested_url: url.clone(),
+                part: part.clone(),
+            },
+        }),
+        MessagePart::File { file_name, uri, .. } => {
+            let requested_path = uri
+                .as_ref()
+                .or(file_name.as_ref())
+                .cloned()
+                .unwrap_or_else(|| "[file]".to_string());
+            let kind = if is_remote_attachment_url(&requested_path) {
+                ComposerDraftAttachmentKind::RemoteFile {
+                    requested_url: requested_path,
+                    part: part.clone(),
+                }
+            } else {
+                ComposerDraftAttachmentKind::LocalFile {
+                    requested_path,
+                    part: part.clone(),
+                }
+            };
+            Some(ComposerDraftAttachmentState {
+                placeholder: None,
+                kind,
+            })
+        }
+        _ => None,
+    }
+}
+
+fn composer_draft_text_fragment(part: &MessagePart) -> String {
+    match part {
+        MessagePart::Paste { label, .. } => label.clone(),
+        _ => message_part_operator_text(part),
+    }
+}
+
+fn composer_draft_part_is_inline(part: &MessagePart) -> bool {
+    matches!(
+        part,
+        MessagePart::InlineText { .. } | MessagePart::Paste { .. }
+    )
 }
 
 fn history_rollback_status(
@@ -3730,7 +3844,7 @@ mod tests {
     use super::build_history_rollback_candidates;
     use super::build_startup_inspector;
     use super::commands::command_palette_lines;
-    use super::state::{InspectorEntry, SessionSummary};
+    use super::state::{ComposerDraftAttachmentKind, InspectorEntry, SessionSummary};
     use super::{PlainInputSubmitAction, merge_interrupt_steers, plain_input_submit_action};
     use crate::backend::SessionPermissionMode;
     use agent::types::{Message, MessageId, MessagePart, MessageRole};
@@ -3934,6 +4048,88 @@ mod tests {
         assert_eq!(
             candidates[0].prompt,
             "[image_url:https://example.com/diagram.png image/png]"
+        );
+        assert_eq!(candidates[0].draft.text, "");
+        assert_eq!(candidates[0].draft.draft_attachments.len(), 1);
+        assert!(matches!(
+            &candidates[0].draft.draft_attachments[0].kind,
+            ComposerDraftAttachmentKind::RemoteImage { requested_url, .. }
+                if requested_url == "https://example.com/diagram.png"
+        ));
+    }
+
+    #[test]
+    fn history_rollback_candidates_restore_text_and_row_attachments_into_draft() {
+        let transcript = vec![
+            Message::new(
+                MessageRole::User,
+                vec![
+                    MessagePart::ImageUrl {
+                        url: "https://example.com/diagram.png".to_string(),
+                        mime_type: Some("image/png".to_string()),
+                    },
+                    MessagePart::File {
+                        file_name: Some("run.pdf".to_string()),
+                        mime_type: Some("application/pdf".to_string()),
+                        data_base64: Some("cGRm".to_string()),
+                        uri: Some("reports/run.pdf".to_string()),
+                    },
+                    MessagePart::inline_text("summarize the artifact"),
+                ],
+            )
+            .with_message_id(MessageId::from("msg-1")),
+        ];
+
+        let candidates = build_history_rollback_candidates(&transcript);
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(
+            candidates[0].prompt,
+            "[image_url:https://example.com/diagram.png image/png]\n[file:run.pdf application/pdf reports/run.pdf]\nsummarize the artifact"
+        );
+        assert_eq!(candidates[0].draft.text, "summarize the artifact");
+        assert_eq!(candidates[0].draft.draft_attachments.len(), 2);
+        assert!(matches!(
+            &candidates[0].draft.draft_attachments[0].kind,
+            ComposerDraftAttachmentKind::RemoteImage { requested_url, .. }
+                if requested_url == "https://example.com/diagram.png"
+        ));
+        assert!(matches!(
+            &candidates[0].draft.draft_attachments[1].kind,
+            ComposerDraftAttachmentKind::LocalFile { requested_path, .. }
+                if requested_path == "reports/run.pdf"
+        ));
+    }
+
+    #[test]
+    fn history_rollback_candidates_restore_large_paste_placeholders_into_draft() {
+        let transcript = vec![
+            Message::new(
+                MessageRole::User,
+                vec![
+                    MessagePart::inline_text("before "),
+                    MessagePart::paste("[Paste #1]", "pasted body"),
+                    MessagePart::inline_text(" after"),
+                ],
+            )
+            .with_message_id(MessageId::from("msg-1")),
+        ];
+
+        let candidates = build_history_rollback_candidates(&transcript);
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].prompt, "before pasted body after");
+        assert_eq!(candidates[0].draft.text, "before [Paste #1] after");
+        assert_eq!(candidates[0].draft.draft_attachments.len(), 1);
+        assert!(matches!(
+            &candidates[0].draft.draft_attachments[0].kind,
+            ComposerDraftAttachmentKind::LargePaste { payload } if payload == "pasted body"
+        ));
+        assert_eq!(
+            candidates[0].draft.draft_attachments[0]
+                .placeholder
+                .as_deref(),
+            Some("[Paste #1]")
         );
     }
 }

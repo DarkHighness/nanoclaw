@@ -221,22 +221,23 @@ impl ComposerDraftAttachmentState {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct HistoryRollbackCandidate {
     pub(crate) message_id: MessageId,
     pub(crate) prompt: String,
+    pub(crate) draft: ComposerDraftState,
     pub(crate) turn_preview_lines: Vec<TranscriptEntry>,
     pub(crate) removed_turn_count: usize,
     pub(crate) removed_message_count: usize,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct HistoryRollbackOverlayState {
     pub(crate) selected: usize,
     pub(crate) candidates: Vec<HistoryRollbackCandidate>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) enum HistoryRollbackState {
     Primed,
     Selecting(HistoryRollbackOverlayState),
@@ -1354,6 +1355,10 @@ impl TuiState {
         self.replace_input_draft(ComposerDraftState::default());
     }
 
+    pub(crate) fn restore_input_draft(&mut self, draft: ComposerDraftState) {
+        self.replace_input_draft(draft);
+    }
+
     pub(crate) fn push_input_char(&mut self, ch: char) {
         self.input.insert(self.input_cursor, ch);
         self.input_cursor += ch.len_utf8();
@@ -2318,6 +2323,7 @@ mod tests {
             HistoryRollbackCandidate {
                 message_id: MessageId::from("msg-1"),
                 prompt: "first".to_string(),
+                draft: ComposerDraftState::from_text("first"),
                 turn_preview_lines: vec!["› first".into()],
                 removed_turn_count: 2,
                 removed_message_count: 4,
@@ -2325,6 +2331,7 @@ mod tests {
             HistoryRollbackCandidate {
                 message_id: MessageId::from("msg-2"),
                 prompt: "second".to_string(),
+                draft: ComposerDraftState::from_text("second"),
                 turn_preview_lines: vec!["› second".into()],
                 removed_turn_count: 1,
                 removed_message_count: 2,
