@@ -272,18 +272,20 @@ not have useful extensions, including `Dockerfile*`, `Containerfile*`, `go.mod`,
   the composer. The full payload stays in session-local draft attachment state,
   is submitted as a typed message part while persistent history stays plain
   text, and is restored when recalling a stashed draft.
-- `/image <path>` and `/file <path>` add first-class attachment rows above the
-  prompt line, and `/detach [index]` removes the latest row or a specific
-  numbered row. Those rows stay inside session-local draft history so recalled
-  drafts restore the same pending attachments.
+- `/image <path-or-url>` and `/file <path-or-url>` add first-class attachment
+  rows above the prompt line, including remote `http/https` attachments that
+  reuse provider-native URL transport instead of downloading through the host.
+  `/detach [index]` removes the latest row or a specific numbered row. Those
+  rows stay inside session-local draft history so recalled drafts restore the
+  same pending attachments.
 - `Alt+Up` opens the pending-control picker from the bottom pane.
 - In the pending-control picker: `Enter` edits the selected item, `Delete`
   withdraws it, and `Esc` closes the picker.
 - `/resources`
 - `/prompt <server> <name>`
 - `/resource <server> <uri>`
-- `/image <path>`
-- `/file <path>`
+- `/image <path-or-url>`
+- `/file <path-or-url>`
 - `/detach [index]`
 - `/steer <notes>`
 - `/new`

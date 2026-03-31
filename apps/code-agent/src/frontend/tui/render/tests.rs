@@ -521,6 +521,49 @@ fn multiline_composer_text_renders_attachment_rows_above_prompt() {
 }
 
 #[test]
+fn multiline_composer_text_renders_remote_attachment_rows_above_prompt() {
+    let mut state = TuiState::default();
+    state.draft_attachments = vec![
+        ComposerDraftAttachmentState {
+            placeholder: None,
+            kind: ComposerDraftAttachmentKind::RemoteImage {
+                requested_url: "https://example.com/assets/failure.png".to_string(),
+                part: MessagePart::ImageUrl {
+                    url: "https://example.com/assets/failure.png".to_string(),
+                    mime_type: Some("image/png".to_string()),
+                },
+            },
+        },
+        ComposerDraftAttachmentState {
+            placeholder: None,
+            kind: ComposerDraftAttachmentKind::RemoteFile {
+                requested_url: "https://example.com/reports/run.pdf".to_string(),
+                part: MessagePart::File {
+                    file_name: Some("run.pdf".to_string()),
+                    mime_type: Some("application/pdf".to_string()),
+                    data_base64: None,
+                    uri: Some("https://example.com/reports/run.pdf".to_string()),
+                },
+            },
+        },
+    ];
+    state.input = "summarize the remote artifacts".to_string();
+
+    let text = build_composer_text(&state, None);
+    let lines = text_lines(&text);
+
+    assert_eq!(
+        lines[0],
+        "· #1 image · failure.png · https://example.com/assets/failure.png"
+    );
+    assert_eq!(
+        lines[1],
+        "· #2 file · run.pdf · https://example.com/reports/run.pdf"
+    );
+    assert_eq!(lines[2], "› summarize the remote artifacts");
+}
+
+#[test]
 fn user_input_band_renders_progress_and_other_shortcut() {
     let prompt = crate::backend::UserInputPrompt {
         prompt_id: "prompt_1".to_string(),

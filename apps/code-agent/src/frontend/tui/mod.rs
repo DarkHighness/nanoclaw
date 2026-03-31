@@ -740,8 +740,31 @@ impl CodeAgentTui {
         let path = path.trim();
         if path.is_empty() {
             self.ui_state.mutate(|state| {
-                state.status = "Usage: /image <path>".to_string();
+                state.status = "Usage: /image <path-or-url>".to_string();
                 state.push_activity("invalid /image invocation");
+            });
+            return;
+        }
+
+        if is_remote_attachment_url(path) {
+            let attachment = ComposerDraftAttachmentState {
+                placeholder: None,
+                kind: ComposerDraftAttachmentKind::RemoteImage {
+                    requested_url: path.to_string(),
+                    part: MessagePart::ImageUrl {
+                        url: path.to_string(),
+                        mime_type: sniff_remote_image_mime(path).map(str::to_string),
+                    },
+                },
+            };
+            self.ui_state.mutate(|state| {
+                if state.push_row_attachment(attachment) {
+                    state.status = format!("Attached image {}", preview_path_tail(path));
+                    state.push_activity(format!("attached image {}", path));
+                } else {
+                    state.status = format!("Image {} is already attached", preview_path_tail(path));
+                    state.push_activity(format!("image already attached: {}", path));
+                }
             });
             return;
         }
@@ -784,8 +807,33 @@ impl CodeAgentTui {
         let path = path.trim();
         if path.is_empty() {
             self.ui_state.mutate(|state| {
-                state.status = "Usage: /file <path>".to_string();
+                state.status = "Usage: /file <path-or-url>".to_string();
                 state.push_activity("invalid /file invocation");
+            });
+            return;
+        }
+
+        if is_remote_attachment_url(path) {
+            let attachment = ComposerDraftAttachmentState {
+                placeholder: None,
+                kind: ComposerDraftAttachmentKind::RemoteFile {
+                    requested_url: path.to_string(),
+                    part: MessagePart::File {
+                        file_name: remote_attachment_file_name(path),
+                        mime_type: sniff_remote_file_mime(path).map(str::to_string),
+                        data_base64: None,
+                        uri: Some(path.to_string()),
+                    },
+                },
+            };
+            self.ui_state.mutate(|state| {
+                if state.push_row_attachment(attachment) {
+                    state.status = format!("Attached file {}", preview_path_tail(path));
+                    state.push_activity(format!("attached file {}", path));
+                } else {
+                    state.status = format!("File {} is already attached", preview_path_tail(path));
+                    state.push_activity(format!("file already attached: {}", path));
+                }
             });
             return;
         }
@@ -3166,12 +3214,43 @@ fn history_rollback_status(
 }
 
 fn preview_path_tail(path: &str) -> String {
+    if let Some(segment) = remote_attachment_tail_segment(path) {
+        return segment;
+    }
     Path::new(path)
         .file_name()
         .and_then(|value| value.to_str())
         .filter(|value| !value.is_empty())
         .unwrap_or(path)
         .to_string()
+}
+
+fn is_remote_attachment_url(path: &str) -> bool {
+    matches!(path.trim(), value if value.starts_with("http://") || value.starts_with("https://"))
+}
+
+fn remote_attachment_tail_segment(path: &str) -> Option<String> {
+    let (_, remainder) = path.trim().split_once("://")?;
+    let path = remainder
+        .split_once('/')
+        .map(|(_, path)| path)
+        .unwrap_or_default();
+    let trimmed = path
+        .split(['?', '#'])
+        .next()
+        .unwrap_or_default()
+        .trim_matches('/');
+    (!trimmed.is_empty()).then(|| {
+        trimmed
+            .rsplit('/')
+            .find(|segment| !segment.is_empty())
+            .unwrap_or(trimmed)
+            .to_string()
+    })
+}
+
+fn remote_attachment_file_name(path: &str) -> Option<String> {
+    remote_attachment_tail_segment(path).filter(|segment| !segment.is_empty())
 }
 
 async fn load_composer_file(
@@ -3204,6 +3283,36 @@ fn sniff_composer_file_mime(bytes: &[u8], path: &Path) -> Option<&'static str> {
         Some("pdf") => Some("application/pdf"),
         _ => None,
     }
+}
+
+fn sniff_remote_image_mime(path: &str) -> Option<&'static str> {
+    match remote_attachment_extension(path)?.as_str() {
+        "png" => Some("image/png"),
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "gif" => Some("image/gif"),
+        "webp" => Some("image/webp"),
+        "bmp" => Some("image/bmp"),
+        "svg" => Some("image/svg+xml"),
+        _ => None,
+    }
+}
+
+fn sniff_remote_file_mime(path: &str) -> Option<&'static str> {
+    match remote_attachment_extension(path)?.as_str() {
+        "pdf" => Some("application/pdf"),
+        _ => None,
+    }
+}
+
+fn remote_attachment_extension(path: &str) -> Option<String> {
+    let segment = remote_attachment_tail_segment(path)?;
+    segment
+        .rsplit_once('.')
+        .map(|(_, extension)| extension)
+        .and_then(|extension| {
+            let normalized = extension.trim();
+            (!normalized.is_empty()).then_some(normalized.to_ascii_lowercase())
+        })
 }
 
 fn queued_command_preview(command: &RuntimeCommand) -> String {

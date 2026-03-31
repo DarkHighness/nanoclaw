@@ -118,8 +118,16 @@ pub(crate) enum ComposerDraftAttachmentKind {
         requested_path: String,
         part: MessagePart,
     },
+    RemoteImage {
+        requested_url: String,
+        part: MessagePart,
+    },
     LocalFile {
         requested_path: String,
+        part: MessagePart,
+    },
+    RemoteFile {
+        requested_url: String,
         part: MessagePart,
     },
 }
@@ -174,19 +182,25 @@ impl ComposerDraftAttachmentState {
                 vec![MessagePart::paste(label, payload.clone())]
             }
             ComposerDraftAttachmentKind::LocalImage { part, .. }
-            | ComposerDraftAttachmentKind::LocalFile { part, .. } => vec![part.clone()],
+            | ComposerDraftAttachmentKind::RemoteImage { part, .. }
+            | ComposerDraftAttachmentKind::LocalFile { part, .. }
+            | ComposerDraftAttachmentKind::RemoteFile { part, .. } => vec![part.clone()],
         }
     }
 
     pub(crate) fn row_summary(&self) -> Option<String> {
         match &self.kind {
             ComposerDraftAttachmentKind::LargePaste { .. } => None,
-            ComposerDraftAttachmentKind::LocalImage { requested_path, .. } => {
-                Some(format!("image · {}", preview_path_tail(requested_path)))
-            }
-            ComposerDraftAttachmentKind::LocalFile { requested_path, .. } => {
-                Some(format!("file · {}", preview_path_tail(requested_path)))
-            }
+            ComposerDraftAttachmentKind::LocalImage { requested_path, .. }
+            | ComposerDraftAttachmentKind::RemoteImage {
+                requested_url: requested_path,
+                ..
+            } => Some(format!("image · {}", preview_path_tail(requested_path))),
+            ComposerDraftAttachmentKind::LocalFile { requested_path, .. }
+            | ComposerDraftAttachmentKind::RemoteFile {
+                requested_url: requested_path,
+                ..
+            } => Some(format!("file · {}", preview_path_tail(requested_path))),
         }
     }
 
@@ -194,9 +208,15 @@ impl ComposerDraftAttachmentState {
         match &self.kind {
             ComposerDraftAttachmentKind::LargePaste { .. } => None,
             ComposerDraftAttachmentKind::LocalImage { requested_path, .. }
-            | ComposerDraftAttachmentKind::LocalFile { requested_path, .. } => {
-                Some(requested_path.clone())
+            | ComposerDraftAttachmentKind::RemoteImage {
+                requested_url: requested_path,
+                ..
             }
+            | ComposerDraftAttachmentKind::LocalFile { requested_path, .. }
+            | ComposerDraftAttachmentKind::RemoteFile {
+                requested_url: requested_path,
+                ..
+            } => Some(requested_path.clone()),
         }
     }
 }
@@ -1790,12 +1810,35 @@ fn page_scroll_amount(viewport_height: u16, half_page: bool) -> i16 {
 }
 
 fn preview_path_tail(path: &str) -> String {
+    if let Some(segment) = remote_url_tail_segment(path) {
+        return segment;
+    }
     Path::new(path)
         .file_name()
         .and_then(|value| value.to_str())
         .filter(|value| !value.is_empty())
         .unwrap_or(path)
         .to_string()
+}
+
+fn remote_url_tail_segment(path: &str) -> Option<String> {
+    let (_, remainder) = path.trim().split_once("://")?;
+    let path = remainder
+        .split_once('/')
+        .map(|(_, path)| path)
+        .unwrap_or_default();
+    let trimmed = path
+        .split(['?', '#'])
+        .next()
+        .unwrap_or_default()
+        .trim_matches('/');
+    (!trimmed.is_empty()).then(|| {
+        trimmed
+            .rsplit('/')
+            .find(|segment| !segment.is_empty())
+            .unwrap_or(trimmed)
+            .to_string()
+    })
 }
 
 fn normalize_input_cursor(input: &str, cursor: usize) -> usize {
@@ -2445,6 +2488,52 @@ mod tests {
     }
 
     #[test]
+    fn take_submission_keeps_remote_row_attachments_as_first_class_parts() {
+        let mut state = TuiState::default();
+        assert!(state.push_row_attachment(remote_image_attachment(
+            "https://example.com/assets/failure.png"
+        )));
+        assert!(state.push_row_attachment(remote_file_attachment(
+            "https://example.com/reports/run.pdf"
+        )));
+        state.push_input_str("summarize the remote artifacts");
+
+        let submission = state.take_submission();
+
+        assert_eq!(
+            submission.persisted_history_text,
+            "[image_url:https://example.com/assets/failure.png image/png]\n[file:run.pdf application/pdf https://example.com/reports/run.pdf]\nsummarize the remote artifacts"
+        );
+        assert_eq!(
+            submission.local_history_draft,
+            ComposerDraftState {
+                text: "summarize the remote artifacts".to_string(),
+                cursor: "summarize the remote artifacts".len(),
+                draft_attachments: vec![
+                    remote_image_attachment("https://example.com/assets/failure.png"),
+                    remote_file_attachment("https://example.com/reports/run.pdf"),
+                ],
+            }
+        );
+        assert_eq!(
+            submission.message.parts,
+            vec![
+                MessagePart::ImageUrl {
+                    url: "https://example.com/assets/failure.png".to_string(),
+                    mime_type: Some("image/png".to_string()),
+                },
+                MessagePart::File {
+                    file_name: Some("run.pdf".to_string()),
+                    mime_type: Some("application/pdf".to_string()),
+                    data_base64: None,
+                    uri: Some("https://example.com/reports/run.pdf".to_string()),
+                },
+                MessagePart::inline_text("summarize the remote artifacts"),
+            ]
+        );
+    }
+
+    #[test]
     fn row_attachment_summaries_list_only_visible_attachment_rows() {
         let mut state = TuiState::default();
         assert!(state.push_row_attachment(local_image_attachment("artifacts/failure.png")));
@@ -2463,6 +2552,33 @@ mod tests {
                     2,
                     "file · run.pdf".to_string(),
                     "reports/run.pdf".to_string(),
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn row_attachment_summaries_keep_remote_urls_visible() {
+        let mut state = TuiState::default();
+        assert!(state.push_row_attachment(remote_image_attachment(
+            "https://example.com/assets/failure.png"
+        )));
+        assert!(state.push_row_attachment(remote_file_attachment(
+            "https://example.com/reports/run.pdf"
+        )));
+
+        assert_eq!(
+            state.row_attachment_summaries(),
+            vec![
+                (
+                    1,
+                    "image · failure.png".to_string(),
+                    "https://example.com/assets/failure.png".to_string(),
+                ),
+                (
+                    2,
+                    "file · run.pdf".to_string(),
+                    "https://example.com/reports/run.pdf".to_string(),
                 ),
             ]
         );
@@ -2594,6 +2710,34 @@ mod tests {
                     mime_type: Some("application/pdf".to_string()),
                     data_base64: Some("pdf-data".to_string()),
                     uri: Some(path.to_string()),
+                },
+            },
+        }
+    }
+
+    fn remote_image_attachment(url: &str) -> ComposerDraftAttachmentState {
+        ComposerDraftAttachmentState {
+            placeholder: None,
+            kind: ComposerDraftAttachmentKind::RemoteImage {
+                requested_url: url.to_string(),
+                part: MessagePart::ImageUrl {
+                    url: url.to_string(),
+                    mime_type: Some("image/png".to_string()),
+                },
+            },
+        }
+    }
+
+    fn remote_file_attachment(url: &str) -> ComposerDraftAttachmentState {
+        ComposerDraftAttachmentState {
+            placeholder: None,
+            kind: ComposerDraftAttachmentKind::RemoteFile {
+                requested_url: url.to_string(),
+                part: MessagePart::File {
+                    file_name: Some("run.pdf".to_string()),
+                    mime_type: Some("application/pdf".to_string()),
+                    data_base64: None,
+                    uri: Some(url.to_string()),
                 },
             },
         }

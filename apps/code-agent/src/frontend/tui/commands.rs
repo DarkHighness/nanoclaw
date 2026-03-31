@@ -119,14 +119,14 @@ const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
     SlashCommandSpec {
         section: "Session",
         name: "image",
-        usage: "image <path>",
-        summary: "attach local image to composer",
+        usage: "image <path-or-url>",
+        summary: "attach image to composer",
     },
     SlashCommandSpec {
         section: "Session",
         name: "file",
-        usage: "file <path>",
-        summary: "attach local file to composer",
+        usage: "file <path-or-url>",
+        summary: "attach file to composer",
     },
     SlashCommandSpec {
         section: "Session",
@@ -432,11 +432,11 @@ enum SlashSubcommand {
         name: Option<String>,
     },
     Image {
-        #[arg(value_name = "PATH", required = true, trailing_var_arg = true)]
+        #[arg(value_name = "PATH_OR_URL", required = true, trailing_var_arg = true)]
         path: Vec<String>,
     },
     File {
-        #[arg(value_name = "PATH", required = true, trailing_var_arg = true)]
+        #[arg(value_name = "PATH_OR_URL", required = true, trailing_var_arg = true)]
         path: Vec<String>,
     },
     Detach {
