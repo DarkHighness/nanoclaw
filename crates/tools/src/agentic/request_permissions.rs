@@ -179,7 +179,10 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            result.structured_content.unwrap()["scope"],
+            result
+                .structured_content
+                .as_ref()
+                .expect("structured output")["scope"],
             json!("session")
         );
         assert!(result.text_content().contains("current session"));

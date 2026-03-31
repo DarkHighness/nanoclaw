@@ -200,6 +200,8 @@ not count here because they are not currently in the live registry.
   `agent_list`, `agent_cancel`
 - state:
   `update_plan`, `request_user_input`, `request_permissions`
+- discovery:
+  `tool_search`, `tool_suggest`
 
 The `code-agent` host also now exposes a Codex-style `/permissions` control
 plane command that switches the session base sandbox mode between `default` and
@@ -229,7 +231,6 @@ These are the highest-signal missing capabilities today:
 - a first-class multi-kind tool spec with explicit freeform and native tool
   variants
 - a grammar-based `apply_patch`-style freeform tool surface
-- `tool_search` and `tool_suggest` style deferred tool discovery
 - plugin-defined custom tool loading
 - image or binary-view tool surfaces comparable to `view_image`
 
@@ -534,7 +535,6 @@ Once the shared protocol exists, add the missing industrial extension surfaces:
 Then add higher-variance parity work:
 
 - freeform `apply_patch`
-- tool discovery surfaces such as `tool_search` and `tool_suggest`
 - image or binary-view tools if the host app needs them
 - model-aware tool exposure and substitution rules
 
@@ -548,8 +548,7 @@ gaps.
 The recommended order is:
 
 1. add the remaining higher-variance parity work such as
-   freeform `apply_patch`, `tool_search`, or model-aware tool substitution
-   rules
+   freeform `apply_patch` or model-aware tool substitution rules
 
 That keeps the protocol phase bounded and moves the project from control-plane
 cleanup into the still-missing tool-surface parity work.

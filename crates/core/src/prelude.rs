@@ -18,9 +18,9 @@ pub use tools::{
 #[cfg(feature = "agentic-tools")]
 pub use tools::{
     PermissionGrantScope, PlanItem, PlanState, PlanStatus, RequestPermissionProfile,
-    RequestPermissionsArgs, RequestPermissionsTool, RequestUserInputTool, TaskTool, UpdatePlanTool,
-    UserInputAnswer, UserInputHandler, UserInputOption, UserInputQuestion, UserInputRequest,
-    UserInputResponse,
+    RequestPermissionsArgs, RequestPermissionsTool, RequestUserInputTool, TaskTool, ToolSearchTool,
+    ToolSuggestTool, UpdatePlanTool, UserInputAnswer, UserInputHandler, UserInputOption,
+    UserInputQuestion, UserInputRequest, UserInputResponse,
 };
 #[cfg(feature = "web-tools")]
 pub use tools::{WebFetchTool, WebSearchBackendsTool, WebSearchTool};

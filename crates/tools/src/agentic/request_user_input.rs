@@ -234,7 +234,13 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(result.structured_content.unwrap()["question_count"], 1);
+        assert_eq!(
+            result
+                .structured_content
+                .as_ref()
+                .expect("structured output")["question_count"],
+            1
+        );
         assert!(result.text_content().contains("Runtime (Recommended)"));
     }
 

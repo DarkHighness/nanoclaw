@@ -8,9 +8,9 @@ use agent::{
     CodeReferencesTool, CodeSymbolSearchTool, EditTool, ExecCommandTool, GlobTool, GrepTool,
     JsReplTool, ListTool, ManagedCodeIntelBackend, ManagedCodeIntelOptions,
     ManagedPolicyProcessExecutor, PatchTool, PlanState, ReadTool, RequestPermissionsTool,
-    RequestUserInputTool, SandboxPolicy, TaskTool, ToolRegistry, UpdatePlanTool, ViewImageTool,
-    WebFetchTool, WebSearchBackendsTool, WebSearchTool, WorkspaceTextCodeIntelBackend,
-    WriteStdinTool, WriteTool,
+    RequestUserInputTool, SandboxPolicy, TaskTool, ToolRegistry, ToolSearchTool, ToolSuggestTool,
+    UpdatePlanTool, ViewImageTool, WebFetchTool, WebSearchBackendsTool, WebSearchTool,
+    WorkspaceTextCodeIntelBackend, WriteStdinTool, WriteTool,
 };
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -114,6 +114,7 @@ fn build_builtin_tools(
         .unwrap_or_else(|| Arc::new(WorkspaceTextCodeIntelBackend::new()));
     let plan_state = PlanState::default();
     let mut tools = ToolRegistry::new();
+    let discovery_registry = tools.clone();
 
     if let Some(observer) = managed_code_intel {
         tools.register(ReadTool::with_file_activity_observer(observer.clone()));
@@ -160,6 +161,8 @@ fn build_builtin_tools(
         code_intel_backend.clone(),
     ));
     tools.register(CodeReferencesTool::with_backend(code_intel_backend));
+    tools.register(ToolSearchTool::new(discovery_registry.clone()));
+    tools.register(ToolSuggestTool::new(discovery_registry));
     tools.register(UpdatePlanTool::new(plan_state));
     tools.register(RequestUserInputTool::new());
     tools.register(RequestPermissionsTool::new());
@@ -314,6 +317,12 @@ mod tests {
 
         let tool_names = tooling.tools.names();
         assert!(tool_names.iter().any(|name| name.as_str() == "view_image"));
+        assert!(tool_names.iter().any(|name| name.as_str() == "tool_search"));
+        assert!(
+            tool_names
+                .iter()
+                .any(|name| name.as_str() == "tool_suggest")
+        );
         assert!(
             tool_names
                 .iter()
