@@ -1,4 +1,4 @@
-use super::session_catalog::PersistedAgentSessionSummary;
+use super::{session_catalog::PersistedAgentSessionSummary, session_resume};
 use agent::types::{
     AgentHandle, AgentSessionId, AgentStatus, AgentTaskSpec, Message, MessageRole,
     SessionEventEnvelope, SessionEventKind, SessionId,
@@ -249,7 +249,12 @@ fn project_loaded_agent_session(
         .filter(|event| event.agent_session_id == agent_session_id)
         .cloned()
         .collect::<Vec<_>>();
-    let transcript = replay_transcript(&scoped_events);
+    // Agent-session inspection should mirror the runtime-visible transcript
+    // shape when compaction metadata is available, but still degrade to raw
+    // replay for older checkpoints instead of failing the history view.
+    let transcript = session_resume::reconstruct_runtime_session(&scoped_events, &agent_session_id)
+        .map(|session| session_resume::visible_transcript(&session))
+        .unwrap_or_else(|_| replay_transcript(&scoped_events));
     let agent_token_usage = token_usage
         .agent_sessions
         .iter()
@@ -604,5 +609,102 @@ mod tests {
         assert_eq!(loaded.subagents[0].status, AgentStatus::Completed);
         assert_eq!(loaded.subagents[0].summary, "looks good");
         assert!(loaded.subagents[0].token_usage.is_some());
+    }
+
+    #[test]
+    fn projects_agent_session_visible_transcript_for_compacted_history() {
+        let session_id = SessionId::from("session-root");
+        let agent_session_id = AgentSessionId::from("agent-root");
+        let older_prompt = Message::user("older prompt").with_message_id("msg-1".into());
+        let older_answer = Message::assistant("older answer").with_message_id("msg-2".into());
+        let kept_prompt = Message::user("kept prompt").with_message_id("msg-3".into());
+        let summary = Message::system("compaction summary").with_message_id("msg-4".into());
+        let follow_up = Message::assistant("after compaction").with_message_id("msg-5".into());
+        let events = vec![
+            SessionEventEnvelope::new(
+                session_id.clone(),
+                agent_session_id.clone(),
+                None,
+                None,
+                SessionEventKind::TranscriptMessage {
+                    message: older_prompt,
+                },
+            ),
+            SessionEventEnvelope::new(
+                session_id.clone(),
+                agent_session_id.clone(),
+                None,
+                None,
+                SessionEventKind::TranscriptMessage {
+                    message: older_answer,
+                },
+            ),
+            SessionEventEnvelope::new(
+                session_id.clone(),
+                agent_session_id.clone(),
+                None,
+                None,
+                SessionEventKind::TranscriptMessage {
+                    message: kept_prompt.clone(),
+                },
+            ),
+            SessionEventEnvelope::new(
+                session_id.clone(),
+                agent_session_id.clone(),
+                None,
+                None,
+                SessionEventKind::TranscriptMessage {
+                    message: summary.clone(),
+                },
+            ),
+            SessionEventEnvelope::new(
+                session_id.clone(),
+                agent_session_id.clone(),
+                None,
+                None,
+                SessionEventKind::CompactionCompleted {
+                    reason: "manual".to_string(),
+                    source_message_count: 2,
+                    retained_message_count: 1,
+                    summary_chars: 17,
+                    summary_message_id: Some(summary.message_id.clone()),
+                    retained_tail_message_ids: vec![kept_prompt.message_id.clone()],
+                },
+            ),
+            SessionEventEnvelope::new(
+                session_id.clone(),
+                agent_session_id.clone(),
+                None,
+                None,
+                SessionEventKind::TranscriptMessage { message: follow_up },
+            ),
+        ];
+        let summary = super::PersistedAgentSessionSummary {
+            agent_session_ref: agent_session_id.to_string(),
+            session_ref: session_id.to_string(),
+            label: "root".to_string(),
+            first_timestamp_ms: 1,
+            last_timestamp_ms: 6,
+            event_count: events.len(),
+            transcript_message_count: 5,
+            last_user_prompt: Some("kept prompt".to_string()),
+            resume_support: super::super::session_catalog::ResumeSupport::AttachedToActiveRuntime,
+        };
+        let token_usage = SessionTokenUsageReport::default();
+
+        let loaded = project_loaded_agent_session(summary, &events, &token_usage);
+
+        assert_eq!(
+            loaded
+                .transcript
+                .iter()
+                .map(Message::text_content)
+                .collect::<Vec<_>>(),
+            vec![
+                "compaction summary".to_string(),
+                "kept prompt".to_string(),
+                "after compaction".to_string(),
+            ]
+        );
     }
 }

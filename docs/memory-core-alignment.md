@@ -315,6 +315,17 @@ of rebuilding turns from raw visible messages in the TUI:
 That keeps operator-driven rewinds aligned with the same round boundaries used
 by compaction, resume, and interrupt restarts.
 
+Persisted agent-session history views now reuse the same reconstructed visible
+transcript projection:
+
+- compacted agent sessions are loaded through the persisted runtime-session
+  checkpoint path before the host renders transcript history
+- when a checkpoint predates resume metadata, the host still falls back to raw
+  replay so history inspection stays available
+
+That keeps `/agent_session` closer to the live runtime transcript shape
+without breaking older stored sessions.
+
 ## Side Questions (`/btw`)
 
 Claude Code exposes side questions as a separate lightweight query path rather
