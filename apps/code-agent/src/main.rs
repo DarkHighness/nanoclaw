@@ -615,6 +615,7 @@ mod tests {
                 dependency_ids: Vec::new(),
                 timeout_seconds: None,
             },
+            fork_context: false,
             model: Some("gpt_5_4_default".to_string()),
             reasoning_effort: Some("high".to_string()),
         };

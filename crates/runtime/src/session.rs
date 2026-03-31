@@ -125,6 +125,86 @@ pub fn reconstruct_runtime_session(
     Ok(session)
 }
 
+#[must_use]
+pub fn fork_runtime_session(
+    parent: &RuntimeSession,
+    session_id: SessionId,
+    agent_session_id: AgentSessionId,
+) -> RuntimeSession {
+    // Forked child sessions inherit the parent's reconstructed transcript window
+    // but must start a fresh provider exchange and token ledger under their own
+    // runtime ids.
+    let mut session = parent.clone();
+    session.session_id = session_id;
+    session.agent_session_id = agent_session_id;
+    session.provider_continuation = None;
+    session.provider_transcript_cursor = 0;
+    session.agent_session_started = false;
+    session.token_ledger = TokenLedgerSnapshot::default();
+    session
+}
+
+pub fn seed_runtime_session_events(session: &RuntimeSession) -> Result<Vec<SessionEventEnvelope>> {
+    let mut events = session
+        .transcript
+        .iter()
+        .cloned()
+        .map(|message| {
+            SessionEventEnvelope::new(
+                session.session_id.clone(),
+                session.agent_session_id.clone(),
+                None,
+                None,
+                SessionEventKind::TranscriptMessage { message },
+            )
+        })
+        .collect::<Vec<_>>();
+
+    if let Some(summary_index) = session.compaction_summary_index {
+        let summary_message = session.transcript.get(summary_index).ok_or_else(|| {
+            RuntimeError::invalid_state(format!(
+                "forked session summary index out of bounds: {summary_index}"
+            ))
+        })?;
+        let retained_tail_message_ids = session
+            .retained_tail_indices
+            .iter()
+            .map(|index| {
+                session
+                    .transcript
+                    .get(*index)
+                    .map(|message| message.message_id.clone())
+                    .ok_or_else(|| {
+                        RuntimeError::invalid_state(format!(
+                            "forked session retained tail index out of bounds: {index}"
+                        ))
+                    })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let retained_before_summary = session
+            .retained_tail_indices
+            .iter()
+            .filter(|index| **index < summary_index)
+            .count();
+        events.push(SessionEventEnvelope::new(
+            session.session_id.clone(),
+            session.agent_session_id.clone(),
+            None,
+            None,
+            SessionEventKind::CompactionCompleted {
+                reason: "fork_context".to_string(),
+                source_message_count: summary_index.saturating_sub(retained_before_summary),
+                retained_message_count: retained_tail_message_ids.len(),
+                summary_chars: summary_message.text_content().chars().count(),
+                summary_message_id: Some(summary_message.message_id.clone()),
+                retained_tail_message_ids,
+            },
+        ));
+    }
+
+    Ok(events)
+}
+
 pub async fn load_runtime_session(
     store: &(dyn SessionStore + Send + Sync),
     session_id: &SessionId,

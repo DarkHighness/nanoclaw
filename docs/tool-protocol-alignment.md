@@ -201,9 +201,10 @@ not count here because they are not currently in the live registry.
 
 The child-control surfaces now follow Codex-style identifiers for
 `send_input`, `wait_agent`, `resume_agent`, and `close_agent`. `spawn_agent`
-still keeps a task-shaped payload until the runtime can honor Codex fields such
-as `fork_context`, `model`, and `reasoning_effort` with real execution
-semantics instead of lossy translation.
+now accepts the Codex-style launch fields `fork_context`, `model`, and
+`reasoning_effort`, and the runtime honors them with real execution semantics.
+The remaining gap is richer typed `items` payload handling beyond the current
+textual normalization layer.
 - state:
   `update_plan`, `request_user_input`, `request_permissions`
 - discovery:

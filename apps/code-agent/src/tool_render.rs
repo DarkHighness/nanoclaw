@@ -217,7 +217,14 @@ pub(crate) fn tool_arguments_preview_lines(tool_name: &str, arguments: &Value) -
             .and_then(Value::as_str)
             .map(str::trim)
             .filter(|value| !value.is_empty());
+        let fork_context = arguments
+            .get("fork_context")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
         let mut summary = format!("spawn {agent_type}");
+        if fork_context {
+            summary.push_str(" forked");
+        }
         if let Some(model) = model {
             summary.push_str(&format!(" model={model}"));
         }
@@ -634,12 +641,16 @@ mod tests {
             &json!({
                 "agent_type": "reviewer",
                 "message": "Inspect the patch.",
+                "fork_context": true,
                 "model": "gpt-5.4",
                 "reasoning_effort": "high"
             }),
         );
 
-        assert_eq!(rendered[0], "spawn reviewer model=gpt-5.4 effort=high");
+        assert_eq!(
+            rendered[0],
+            "spawn reviewer forked model=gpt-5.4 effort=high"
+        );
         assert!(rendered[1].contains("Inspect the patch."));
     }
 

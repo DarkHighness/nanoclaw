@@ -149,6 +149,7 @@ pub struct AgentResumeToolInput {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SubagentLaunchSpec {
     pub task: AgentTaskSpec,
+    pub fork_context: bool,
     pub model: Option<String>,
     pub reasoning_effort: Option<String>,
 }
@@ -158,6 +159,7 @@ impl SubagentLaunchSpec {
     pub fn from_task(task: AgentTaskSpec) -> Self {
         Self {
             task,
+            fork_context: false,
             model: None,
             reasoning_effort: None,
         }
@@ -610,11 +612,6 @@ fn normalize_spawn_input(
     input: AgentSpawnToolInput,
     call_id: &ToolCallId,
 ) -> Result<SubagentLaunchSpec> {
-    if input.fork_context {
-        return Err(ToolError::invalid(
-            "spawn_agent fork_context=true is not yet supported by the subagent runtime",
-        ));
-    }
     let role = normalize_optional_non_empty(input.agent_type)
         .unwrap_or_else(|| "general-purpose".to_string());
     let prompt = compose_agent_input_text(
@@ -633,6 +630,7 @@ fn normalize_spawn_input(
             dependency_ids: Vec::new(),
             timeout_seconds: None,
         },
+        fork_context: input.fork_context,
         model: normalize_optional_non_empty(input.model),
         reasoning_effort: normalize_optional_non_empty(input.reasoning_effort),
     })
@@ -1498,6 +1496,7 @@ mod tests {
         assert_eq!(state.spawned_launches.len(), 1);
         let launch = &state.spawned_launches[0];
         assert_eq!(launch.task.role, "reviewer");
+        assert!(!launch.fork_context);
         assert_eq!(launch.model.as_deref(), Some("gpt-5.4"));
         assert_eq!(launch.reasoning_effort.as_deref(), Some("high"));
         assert!(launch.task.task_id.starts_with("spawn_"));
@@ -1507,19 +1506,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn spawn_agent_rejects_fork_context_until_runtime_supports_it() {
+    async fn spawn_agent_forwards_fork_context_to_executor() {
         let executor = Arc::new(FakeExecutor::default());
-        let tool = AgentSpawnTool::new(executor);
-        let error = tool
-            .execute(
-                ToolCallId::new(),
-                json!({"fork_context": true, "message": "continue"}),
-                &ToolExecutionContext::default(),
-            )
-            .await
-            .unwrap_err();
+        let tool = AgentSpawnTool::new(executor.clone());
+        tool.execute(
+            ToolCallId::new(),
+            json!({"fork_context": true, "message": "continue"}),
+            &ToolExecutionContext::default(),
+        )
+        .await
+        .unwrap();
 
-        assert!(error.to_string().contains("fork_context=true"));
+        let state = executor.state.lock().unwrap();
+        assert_eq!(state.spawned_launches.len(), 1);
+        assert!(state.spawned_launches[0].fork_context);
     }
 
     #[tokio::test]

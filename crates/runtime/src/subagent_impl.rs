@@ -3,7 +3,7 @@ use crate::{
     AgentRuntime, AgentRuntimeBuilder, AgentSessionManager, CompactionConfig,
     ConversationCompactor, HookRunner, LoopDetectionConfig, ModelBackend, Result, RuntimeError,
     RuntimeSession, ToolApprovalHandler, ToolApprovalPolicy, WriteLeaseManager,
-    load_runtime_session,
+    fork_runtime_session, load_runtime_session, seed_runtime_session_events,
 };
 use async_trait::async_trait;
 use dashmap::DashMap;
@@ -86,6 +86,8 @@ struct PlannedChildSpawn {
     requested_files: Vec<PathBuf>,
     dependency_agent_ids: Vec<AgentId>,
     profile: SubagentRuntimeProfile,
+    session: RuntimeSession,
+    persist_session_seed: bool,
 }
 
 #[derive(Clone)]
@@ -104,6 +106,7 @@ struct ChildLaunchPlan {
     dependency_agent_ids: Vec<AgentId>,
     profile: SubagentRuntimeProfile,
     session: RuntimeSession,
+    persist_session_seed: bool,
     start_mode: ChildStartMode,
 }
 
@@ -190,6 +193,64 @@ impl RuntimeSubagentExecutor {
             ));
         }
         Ok((filtered, resolved_names))
+    }
+
+    async fn build_child_session(
+        &self,
+        parent: &SubagentParentContext,
+        handle: &AgentHandle,
+        fork_context: bool,
+    ) -> std::result::Result<(RuntimeSession, bool), ToolError> {
+        if !fork_context {
+            return Ok((
+                RuntimeSession::new(handle.session_id.clone(), handle.agent_session_id.clone()),
+                false,
+            ));
+        }
+
+        let parent_session_id = parent.session_id.as_ref().ok_or_else(|| {
+            ToolError::invalid_state(
+                "spawn_agent fork_context requires the parent runtime session id",
+            )
+        })?;
+        let parent_agent_session_id = parent.agent_session_id.as_ref().ok_or_else(|| {
+            ToolError::invalid_state(
+                "spawn_agent fork_context requires the parent agent session id",
+            )
+        })?;
+        let parent_session = load_runtime_session(
+            self.store.as_ref(),
+            parent_session_id,
+            parent_agent_session_id,
+        )
+        .await
+        .map_err(|error| ToolError::invalid_state(error.to_string()))?;
+        Ok((
+            fork_runtime_session(
+                &parent_session,
+                handle.session_id.clone(),
+                handle.agent_session_id.clone(),
+            ),
+            true,
+        ))
+    }
+
+    async fn persist_child_session_seed(
+        &self,
+        session: &RuntimeSession,
+    ) -> std::result::Result<(), ToolError> {
+        let events = seed_runtime_session_events(session)
+            .map_err(|error| ToolError::invalid_state(error.to_string()))?;
+        if events.is_empty() {
+            return Ok(());
+        }
+        // Persist the inherited transcript before the child worker starts so
+        // replayed history and `resume_agent` observe the same forked context
+        // the live runtime used for its first turn.
+        self.store
+            .append_batch(events)
+            .await
+            .map_err(|error| ToolError::invalid_state(error.to_string()))
     }
 
     async fn append_parent_event(
@@ -499,6 +560,18 @@ impl RuntimeSubagentExecutor {
         let failure_parent = plan.parent.clone();
         let failure_handle = plan.handle.clone();
         let failure_task = plan.task.clone();
+        if plan.persist_session_seed
+            && let Err(error) = self.persist_child_session_seed(&plan.session).await
+        {
+            self.fail_launch_child(
+                &failure_parent,
+                failure_handle,
+                failure_task,
+                format!("failed to persist forked child context: {error}"),
+            )
+            .await;
+            return;
+        }
         // Child startup rebuilds the runtime view, tool registry, and hook stack.
         // Run that work behind a bounded blocking lane so ready batches can warm
         // multiple children at once without unbounded fan-out.
@@ -854,22 +927,28 @@ impl SubagentExecutor for RuntimeSubagentExecutor {
             let requested_files = self
                 .resolve_write_set(&task.requested_write_set)
                 .map_err(|error| ToolError::invalid_state(error.to_string()))?;
+            let handle = AgentHandle {
+                agent_id: AgentId::new(),
+                parent_agent_id: parent.parent_agent_id.clone(),
+                session_id: SessionId::new(),
+                agent_session_id: AgentSessionId::new(),
+                task_id: task.task_id.clone(),
+                role: task.role.clone(),
+                status: AgentStatus::Queued,
+            };
+            let (session, persist_session_seed) = self
+                .build_child_session(&parent, &handle, launch.fork_context)
+                .await?;
 
             planned.push(PlannedChildSpawn {
-                handle: AgentHandle {
-                    agent_id: AgentId::new(),
-                    parent_agent_id: parent.parent_agent_id.clone(),
-                    session_id: SessionId::new(),
-                    agent_session_id: AgentSessionId::new(),
-                    task_id: task.task_id.clone(),
-                    role: task.role.clone(),
-                    status: AgentStatus::Queued,
-                },
+                handle,
                 task,
                 tool_registry,
                 requested_files,
                 dependency_agent_ids: Vec::new(),
                 profile,
+                session,
+                persist_session_seed,
             });
         }
         self.resolve_dependency_plan(&parent, &mut planned)?;
@@ -926,10 +1005,8 @@ impl SubagentExecutor for RuntimeSubagentExecutor {
                 mailbox_rx,
                 dependency_agent_ids: child.dependency_agent_ids,
                 profile: child.profile,
-                session: RuntimeSession::new(
-                    handle.session_id.clone(),
-                    handle.agent_session_id.clone(),
-                ),
+                session: child.session,
+                persist_session_seed: child.persist_session_seed,
                 start_mode: ChildStartMode::RunPrompt(initial_prompt),
             };
             if launch_plan.dependency_agent_ids.is_empty() {
@@ -1060,6 +1137,7 @@ impl SubagentExecutor for RuntimeSubagentExecutor {
             dependency_agent_ids: Vec::new(),
             profile: resumable.profile,
             session,
+            persist_session_seed: false,
             start_mode: ChildStartMode::AwaitMessage,
         };
         self.launch_child_async(launch_plan).await;
@@ -1732,15 +1810,16 @@ mod tests {
     use skills::SkillCatalog;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
-    use store::{InMemorySessionStore, SessionStore};
+    use store::{EventSink, InMemorySessionStore, SessionStore};
     use tokio::sync::Notify;
     use tools::{
         ReadTool, SubagentExecutor, SubagentLaunchSpec, SubagentParentContext,
         ToolExecutionContext, ToolRegistry,
     };
     use types::{
-        AgentEnvelopeKind, AgentStatus, AgentTaskSpec, AgentWaitMode, AgentWaitRequest,
-        MessageRole, ModelEvent, ModelRequest, SessionEventKind, ToolName,
+        AgentEnvelopeKind, AgentSessionId, AgentStatus, AgentTaskSpec, AgentWaitMode,
+        AgentWaitRequest, Message, MessageRole, ModelEvent, ModelRequest, SessionEventEnvelope,
+        SessionEventKind, SessionId, ToolName,
     };
 
     #[derive(Clone)]
@@ -2046,6 +2125,96 @@ mod tests {
             wait.results
                 .iter()
                 .all(|result| result.status == AgentStatus::Completed)
+        );
+    }
+
+    #[tokio::test]
+    async fn runtime_subagent_executor_fork_context_seeds_child_history_and_first_request() {
+        let backend = Arc::new(ImmediateBackend::default());
+        let store = Arc::new(InMemorySessionStore::new());
+        let executor = make_executor(backend.clone(), store.clone());
+        let parent = SubagentParentContext {
+            session_id: Some(SessionId::from("run_parent")),
+            agent_session_id: Some(AgentSessionId::from("session_parent")),
+            turn_id: Some("turn_parent".into()),
+            parent_agent_id: Some("agent_parent".into()),
+        };
+        store
+            .append_batch(vec![
+                SessionEventEnvelope::new(
+                    parent.session_id.clone().unwrap(),
+                    parent.agent_session_id.clone().unwrap(),
+                    None,
+                    None,
+                    SessionEventKind::TranscriptMessage {
+                        message: Message::user("parent question"),
+                    },
+                ),
+                SessionEventEnvelope::new(
+                    parent.session_id.clone().unwrap(),
+                    parent.agent_session_id.clone().unwrap(),
+                    None,
+                    None,
+                    SessionEventKind::TranscriptMessage {
+                        message: Message::assistant("parent answer"),
+                    },
+                ),
+            ])
+            .await
+            .unwrap();
+
+        let handle = executor
+            .spawn(
+                parent.clone(),
+                vec![SubagentLaunchSpec {
+                    task: AgentTaskSpec {
+                        task_id: "review".to_string(),
+                        role: "reviewer".to_string(),
+                        prompt: "review child".to_string(),
+                        steer: None,
+                        allowed_tools: vec![ToolName::from("read")],
+                        requested_write_set: Vec::new(),
+                        dependency_ids: Vec::new(),
+                        timeout_seconds: None,
+                    },
+                    fork_context: true,
+                    model: None,
+                    reasoning_effort: None,
+                }],
+            )
+            .await
+            .unwrap()
+            .pop()
+            .unwrap();
+
+        executor
+            .wait(
+                parent,
+                AgentWaitRequest {
+                    agent_ids: vec![handle.agent_id.clone()],
+                    mode: AgentWaitMode::All,
+                },
+            )
+            .await
+            .unwrap();
+
+        let requests = backend.requests.lock().unwrap().clone();
+        let request_messages = requests[0]
+            .messages
+            .iter()
+            .map(|message| (message.role.clone(), message.text_content()))
+            .collect::<Vec<_>>();
+        assert!(request_messages.contains(&(MessageRole::User, "parent question".to_string())));
+        assert!(request_messages.contains(&(MessageRole::Assistant, "parent answer".to_string())));
+        assert!(request_messages.contains(&(MessageRole::User, "review child".to_string())));
+
+        let replayed = store.replay_transcript(&handle.session_id).await.unwrap();
+        assert_eq!(replayed[0].text_content(), "parent question");
+        assert_eq!(replayed[1].text_content(), "parent answer");
+        assert!(
+            replayed
+                .iter()
+                .any(|message| message.text_content() == "review child")
         );
     }
 
