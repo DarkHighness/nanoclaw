@@ -101,12 +101,8 @@ pub(crate) fn summarize_tool_entry(
 }
 
 pub(crate) fn tool_arguments_preview_lines(tool_name: &str, arguments: &Value) -> Vec<String> {
-    if matches!(tool_name, "bash" | "exec_command") {
-        let command = if tool_name == "bash" {
-            arguments.get("command").and_then(Value::as_str)
-        } else {
-            arguments.get("cmd").and_then(Value::as_str)
-        };
+    if tool_name == "exec_command" {
+        let command = arguments.get("cmd").and_then(Value::as_str);
         if let Some(command) = command.map(str::trim).filter(|command| !command.is_empty()) {
             return collapse_preview_text(&format!("$ {command}"), 4, 96, PreviewCollapse::Head);
         }
@@ -215,7 +211,7 @@ pub(crate) fn tool_output_details(
     output_preview: &str,
     structured: Option<&Value>,
 ) -> Vec<ToolDetail> {
-    if matches!(tool_name, "bash" | "exec_command" | "write_stdin") {
+    if matches!(tool_name, "exec_command" | "write_stdin") {
         return process_output_details(tool_name, output_preview, structured);
     }
 
@@ -249,41 +245,39 @@ fn process_output_details(
 ) -> Vec<ToolDetail> {
     let mut detail_lines = Vec::new();
 
-    if tool_name != "bash" {
-        if let Some(session_id) = structured
-            .and_then(|value| value.get("session_id"))
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        {
-            detail_lines.push(ToolDetail::Meta(format!("session {session_id}")));
-        }
+    if let Some(session_id) = structured
+        .and_then(|value| value.get("session_id"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        detail_lines.push(ToolDetail::Meta(format!("session {session_id}")));
+    }
 
-        if tool_name == "write_stdin" {
-            if let Some(wrote_chars) = structured
-                .and_then(|value| value.get("wrote_chars"))
-                .and_then(Value::as_u64)
-                .filter(|wrote_chars| *wrote_chars > 0)
-            {
-                detail_lines.push(ToolDetail::Meta(format!("sent {wrote_chars} char(s)")));
-            }
-            if structured
-                .and_then(|value| value.get("closed_stdin"))
-                .and_then(Value::as_bool)
-                .unwrap_or(false)
-            {
-                detail_lines.push(ToolDetail::Meta("closed stdin".to_string()));
-            }
-        }
-
-        if let Some(state) = structured
-            .and_then(|value| value.get("state"))
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty() && *value != "completed")
+    if tool_name == "write_stdin" {
+        if let Some(wrote_chars) = structured
+            .and_then(|value| value.get("wrote_chars"))
+            .and_then(Value::as_u64)
+            .filter(|wrote_chars| *wrote_chars > 0)
         {
-            detail_lines.push(ToolDetail::Meta(state.to_string()));
+            detail_lines.push(ToolDetail::Meta(format!("sent {wrote_chars} char(s)")));
         }
+        if structured
+            .and_then(|value| value.get("closed_stdin"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            detail_lines.push(ToolDetail::Meta("closed stdin".to_string()));
+        }
+    }
+
+    if let Some(state) = structured
+        .and_then(|value| value.get("state"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && *value != "completed")
+    {
+        detail_lines.push(ToolDetail::Meta(state.to_string()));
     }
 
     let exit_code = structured
@@ -504,13 +498,6 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn bash_arguments_render_as_command_preview() {
-        let rendered = tool_arguments_preview_lines("bash", &json!({"command": "cargo test"}));
-
-        assert_eq!(rendered, vec!["$ cargo test"]);
-    }
-
-    #[test]
     fn exec_command_arguments_render_as_command_preview() {
         let rendered = tool_arguments_preview_lines("exec_command", &json!({"cmd": "cargo test"}));
 
@@ -529,14 +516,15 @@ mod tests {
     }
 
     #[test]
-    fn bash_output_uses_tree_details_instead_of_fences() {
+    fn exec_command_output_uses_tree_details_instead_of_fences() {
         let rendered = summarize_tool_entry(
-            "• Finished bash",
+            "• Finished exec_command",
             tool_output_detail_lines_from_preview(
-                "bash",
+                "exec_command",
                 "ok",
                 Some(
                     &json!({
+                        "session_id": "exec-123",
                         "exit_code": 0,
                         "timed_out": false,
                         "stdout": {"text": "ok"},

@@ -143,7 +143,7 @@ fn transcript_separates_assistant_and_tool_entries_with_breathing_room() {
 
     assert_eq!(line_text_for(&rendered[0]), "• assistant reply");
     assert!(line_text_for(&rendered[1]).is_empty());
-    assert_eq!(line_text_for(&rendered[2]), "• Running bash");
+    assert_eq!(line_text_for(&rendered[2]), "• Running exec_command");
     assert!(
         rendered
             .iter()
@@ -164,7 +164,7 @@ fn transcript_collapses_tool_details_by_default() {
     assert!(rendered.iter().any(|line| {
         line.spans
             .iter()
-            .any(|span| span.content.as_ref().contains("Finished bash"))
+            .any(|span| span.content.as_ref().contains("Finished exec_command"))
     }));
     assert!(rendered.iter().any(|line| {
         line.spans
@@ -590,23 +590,23 @@ fn user_input_band_renders_other_note_mode() {
 
 #[test]
 fn animated_progress_text_preserves_the_full_status_label() {
-    let spans = animated_progress_text_spans("Working · bash", 225);
+    let spans = animated_progress_text_spans("Working · exec_command", 225);
     let text = spans
         .iter()
         .map(|span| span.content.as_ref())
         .collect::<String>();
 
-    assert_eq!(text, "Working · bash");
+    assert_eq!(text, "Working · exec_command");
     assert!(spans.len() > 4);
 }
 
 #[test]
 fn shell_summary_highlights_requested_running_and_finished_status_phrases() {
     for headline in [
-        "Requested bash",
+        "Requested exec_command",
         "Queued follow-ups · 2",
-        "Running bash",
-        "Finished bash",
+        "Running exec_command",
+        "Finished exec_command",
     ] {
         let rendered =
             render_shell_summary_body(headline, "•", TranscriptEntryKind::ShellSummary, Some(225));
@@ -737,7 +737,7 @@ fn live_progress_hides_queue_count_while_pending_picker_is_open() {
         main_pane: MainPaneMode::Transcript,
         turn_running: true,
         status: "Working".to_string(),
-        active_tool_label: Some("bash".to_string()),
+        active_tool_label: Some("exec_command".to_string()),
         ..TuiState::default()
     };
     state.pending_controls = vec![PendingControlSummary {
@@ -752,7 +752,7 @@ fn live_progress_hides_queue_count_while_pending_picker_is_open() {
     let rendered = live_progress_lines(&state);
     let text = line_text_for(&rendered[0]);
 
-    assert!(text.contains("Working · bash"));
+    assert!(text.contains("Working · exec_command"));
     assert!(!text.contains("queued behind current tool"));
 }
 
@@ -762,7 +762,7 @@ fn transcript_hides_progress_line_while_tool_cell_is_active() {
         main_pane: MainPaneMode::Transcript,
         turn_running: true,
         status: "Working".to_string(),
-        active_tool_label: Some("bash".to_string()),
+        active_tool_label: Some("exec_command".to_string()),
         transcript: vec![running_tool_transcript_entry()],
         ..TuiState::default()
     };
@@ -771,7 +771,7 @@ fn transcript_hides_progress_line_while_tool_cell_is_active() {
 
     let running_count = rendered
         .iter()
-        .filter(|line| line_text_for(line).contains("Running bash"))
+        .filter(|line| line_text_for(line).contains("Running exec_command"))
         .count();
     assert_eq!(running_count, 1);
     assert!(
@@ -782,7 +782,7 @@ fn transcript_hides_progress_line_while_tool_cell_is_active() {
     assert!(
         rendered
             .iter()
-            .any(|line| line_text_for(line).contains("Working · bash"))
+            .any(|line| line_text_for(line).contains("Working · exec_command"))
     );
 }
 
@@ -792,7 +792,7 @@ fn transcript_merges_pending_controls_into_the_active_tool_timeline_cell() {
         main_pane: MainPaneMode::Transcript,
         turn_running: true,
         status: "Working".to_string(),
-        active_tool_label: Some("bash".to_string()),
+        active_tool_label: Some("exec_command".to_string()),
         transcript: vec![running_tool_transcript_entry()],
         ..TuiState::default()
     };
@@ -815,7 +815,7 @@ fn transcript_merges_pending_controls_into_the_active_tool_timeline_cell() {
 
     let running_count = rendered
         .iter()
-        .filter(|line| line_text_for(line).contains("Running bash"))
+        .filter(|line| line_text_for(line).contains("Running exec_command"))
         .count();
     assert_eq!(running_count, 1);
     let queued_headline = rendered
@@ -846,7 +846,7 @@ fn transcript_bridges_pending_picker_into_the_active_tool_timeline() {
         main_pane: MainPaneMode::Transcript,
         turn_running: true,
         status: "Working".to_string(),
-        active_tool_label: Some("bash".to_string()),
+        active_tool_label: Some("exec_command".to_string()),
         transcript: vec![running_tool_transcript_entry()],
         ..TuiState::default()
     };
@@ -1207,7 +1207,7 @@ fn transcript_entry(line: &str) -> TranscriptEntry {
 fn running_tool_transcript_entry() -> TranscriptEntry {
     TranscriptEntry::tool(
         TranscriptToolStatus::Running,
-        "bash",
+        "exec_command",
         vec![ToolDetail::Command("$ cargo test".to_string())],
     )
 }
@@ -1215,7 +1215,7 @@ fn running_tool_transcript_entry() -> TranscriptEntry {
 fn finished_tool_transcript_entry() -> TranscriptEntry {
     TranscriptEntry::tool(
         TranscriptToolStatus::Finished,
-        "bash",
+        "exec_command",
         vec![
             ToolDetail::Command("$ cargo test".to_string()),
             ToolDetail::Meta("exit 0".to_string()),
@@ -1349,7 +1349,7 @@ fn side_rail_stays_hidden_for_non_transcript_views() {
 #[test]
 fn approval_band_uses_structured_command_preview() {
     let text = build_approval_text(&ApprovalPrompt {
-        tool_name: "bash".to_string(),
+        tool_name: "exec_command".to_string(),
         origin: "local".to_string(),
         mode: Some("run".to_string()),
         working_directory: Some("/workspace/apps/code-agent".to_string()),
@@ -1358,7 +1358,7 @@ fn approval_band_uses_structured_command_preview() {
         reasons: vec!["sandbox policy requires approval".to_string()],
     });
 
-    assert!(line_text_for(&text.lines[0]).contains("Approve bash?"));
+    assert!(line_text_for(&text.lines[0]).contains("Approve exec_command?"));
     assert!(
         text.lines[1]
             .spans

@@ -4,7 +4,7 @@ use agent::runtime::{
 };
 use agent::tools::{SandboxBackendStatus, SubagentExecutor};
 use agent::{
-    ApplyPatchTool, BashTool, CodeDefinitionsTool, CodeDocumentSymbolsTool, CodeIntelBackend,
+    ApplyPatchTool, CodeDefinitionsTool, CodeDocumentSymbolsTool, CodeIntelBackend,
     CodeReferencesTool, CodeSymbolSearchTool, EditTool, ExecCommandTool, GlobTool, GrepTool,
     JsReplTool, ListTool, ManagedCodeIntelBackend, ManagedCodeIntelOptions,
     ManagedPolicyProcessExecutor, PatchTool, PlanState, ReadTool, RequestPermissionsTool,
@@ -142,14 +142,9 @@ fn build_builtin_tools(
     tools.register(WebFetchTool::new());
     tools.register(WebSearchTool::new());
     tools.register(WebSearchBackendsTool::new());
-    // Keep `bash` on the normal tool surface during the migration toward
-    // Codex-style exec surfaces. New sessions should prefer
-    // `exec_command`/`write_stdin`, while `bash` remains available so existing
-    // prompts and persisted sessions do not break abruptly.
-    tools.register(BashTool::with_process_executor_and_policy(
-        process_executor.clone(),
-        sandbox_policy.clone(),
-    ));
+    // `exec_command` and `write_stdin` are the only interactive process
+    // surfaces now exposed by the host. Keeping one session model avoids
+    // forcing TUI, approval, and provider layers to special-case legacy paths.
     tools.register(ExecCommandTool::with_process_executor_and_policy(
         process_executor.clone(),
         sandbox_policy.clone(),
@@ -288,13 +283,6 @@ mod tests {
             },
         );
 
-        assert!(
-            tooling
-                .tools
-                .names()
-                .into_iter()
-                .any(|name| name.as_str() == "bash")
-        );
         assert!(
             tooling
                 .tools

@@ -1297,12 +1297,15 @@ mod tests {
                 resume_support: ResumeSupport::AttachedToActiveRuntime,
             },
             matched_event_count: 3,
-            preview_matches: vec!["bash approval".to_string(), "cargo test".to_string()],
+            preview_matches: vec![
+                "exec_command approval".to_string(),
+                "cargo test".to_string(),
+            ],
         });
 
         assert_eq!(
             line.serialized(),
-            "• session_  Refine the approval preview\n  └ 12 messages · 40 events · 2 agent sessions · resume attached · matched 3 event(s) · preview bash approval | cargo test"
+            "• session_  Refine the approval preview\n  └ 12 messages · 40 events · 2 agent sessions · resume attached · matched 3 event(s) · preview exec_command approval | cargo test"
         );
     }
 
@@ -1347,8 +1350,8 @@ mod tests {
         let call = ToolCall {
             id: ToolCallId::from("tool-call-1"),
             call_id: ToolCallId::from("tool-call-1").into(),
-            tool_name: "bash".into(),
-            arguments: json!({"command": "cargo test"}),
+            tool_name: "exec_command".into(),
+            arguments: json!({"cmd": "cargo test"}),
             origin: ToolOrigin::Local,
         };
         let event = SessionEventEnvelope::new(
@@ -1364,7 +1367,7 @@ mod tests {
 
         assert_eq!(
             format_session_event_line(&event).serialized(),
-            "• Awaiting approval for bash\n  └ origin local\n  └ $ cargo test\n  └ reason sandbox policy requires approval"
+            "• Awaiting approval for exec_command\n  └ origin local\n  └ $ cargo test\n  └ reason sandbox policy requires approval"
         );
     }
 
@@ -1373,11 +1376,15 @@ mod tests {
         let call = ToolCall {
             id: ToolCallId::from("tool-call-1"),
             call_id: ToolCallId::from("tool-call-1").into(),
-            tool_name: "bash".into(),
-            arguments: json!({"command": "cargo test"}),
+            tool_name: "exec_command".into(),
+            arguments: json!({"cmd": "cargo test"}),
             origin: ToolOrigin::Local,
         };
-        let output = ToolResult::text(ToolCallId::from("tool-call-1"), "bash", "tests passed");
+        let output = ToolResult::text(
+            ToolCallId::from("tool-call-1"),
+            "exec_command",
+            "tests passed",
+        );
         let event = SessionEventEnvelope::new(
             SessionId::from("session-1"),
             AgentSessionId::from("agent-session-1"),
@@ -1388,7 +1395,7 @@ mod tests {
 
         assert_eq!(
             format_session_event_line(&event).serialized(),
-            "• Finished bash\n  └ $ cargo test\n  └ tests passed"
+            "• Finished exec_command\n  └ $ cargo test\n  └ tests passed"
         );
     }
 

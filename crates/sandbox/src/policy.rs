@@ -285,7 +285,6 @@ pub fn apply_granted_permission_profile(
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ExecutionOrigin {
-    BashTool,
     HookCommand,
     McpStdioServer { server_name: McpServerName },
     HostUtility { name: String },

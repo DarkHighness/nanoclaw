@@ -24,7 +24,7 @@ workspace. `apps/code-agent` is the sole actively maintained product layer.
 The intended boundary is:
 
 - minimal foundation closure: `types`, `runtime`, `tools`, `skills`, plus one provider adapter such as `provider`
-- core built-in tools: `read`, `write`, `edit`, `patch`, `glob`, `grep`, `list`, `bash`
+- core built-in tools: `read`, `write`, `edit`, `patch`, `glob`, `grep`, `list`, `exec_command`, `write_stdin`
 - optional tool bundles: non-essential tools such as first-party web access, code-intel navigation tools, and agentic task/todo tools compile only behind Cargo features
 - integration surfaces: `mcp` and `store` bolt onto the same runtime contracts
 - example product layer: `apps/code-agent` sits outside the foundation workspace, owns the product-facing host shell, and is the sole delivered app

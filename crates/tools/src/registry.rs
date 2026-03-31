@@ -243,7 +243,7 @@ mod tests {
     fn registry_exposes_names_and_specs_in_stable_sorted_order() {
         let mut registry = ToolRegistry::new();
         registry.register(NamedTool("write"));
-        registry.register(NamedTool("bash"));
+        registry.register(NamedTool("exec_command"));
         registry.register(NamedTool("read"));
 
         assert_eq!(
@@ -252,7 +252,7 @@ mod tests {
                 .into_iter()
                 .map(|name| name.to_string())
                 .collect::<Vec<_>>(),
-            vec!["bash", "read", "write"]
+            vec!["exec_command", "read", "write"]
         );
         assert_eq!(
             registry
@@ -260,7 +260,7 @@ mod tests {
                 .into_iter()
                 .map(|tool| tool.name.to_string())
                 .collect::<Vec<_>>(),
-            vec!["bash", "read", "write"]
+            vec!["exec_command", "read", "write"]
         );
     }
 
@@ -268,7 +268,7 @@ mod tests {
     fn registry_can_be_filtered_by_name() {
         let mut registry = ToolRegistry::new();
         registry.register(NamedTool("write"));
-        registry.register(NamedTool("bash"));
+        registry.register(NamedTool("exec_command"));
         registry.register(NamedTool("read"));
 
         let filtered =

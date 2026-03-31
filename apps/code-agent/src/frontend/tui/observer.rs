@@ -480,7 +480,7 @@ mod tests {
     fn tool_lifecycle_events_are_projected_into_transcript_timeline() {
         let ui_state = SharedUiState::new();
         let call = SessionToolCall {
-            tool_name: "bash".to_string(),
+            tool_name: "exec_command".to_string(),
             call_id: "call_123".to_string(),
             origin: "shell".to_string(),
             arguments_preview: vec!["$ ls".to_string()],
@@ -512,14 +512,14 @@ mod tests {
                 .all(|line| !transcript_text(line).contains('>'))
         );
         assert!(snapshot.transcript.iter().any(|line| transcript_text(line)
-            == "• Finished bash\n  └ $ ls\n  └ exit 0\n  └ listed files"));
+            == "• Finished exec_command\n  └ $ ls\n  └ exit 0\n  └ listed files"));
     }
 
     #[test]
     fn tool_request_and_completion_share_one_timeline_cell() {
         let ui_state = SharedUiState::new();
         let call = SessionToolCall {
-            tool_name: "bash".to_string(),
+            tool_name: "exec_command".to_string(),
             call_id: "call_123".to_string(),
             origin: "shell".to_string(),
             arguments_preview: vec!["$ ls".to_string()],
@@ -547,7 +547,7 @@ mod tests {
         assert_eq!(snapshot.transcript.len(), 1);
         assert_eq!(
             transcript_text(&snapshot.transcript[0]),
-            "• Finished bash\n  └ $ ls\n  └ exit 0\n  └ listed files"
+            "• Finished exec_command\n  └ $ ls\n  └ exit 0\n  └ listed files"
         );
     }
 
@@ -592,7 +592,7 @@ mod tests {
     fn approval_and_tool_run_share_one_timeline_cell() {
         let ui_state = SharedUiState::new();
         let call = SessionToolCall {
-            tool_name: "bash".to_string(),
+            tool_name: "exec_command".to_string(),
             call_id: "call_123".to_string(),
             origin: "local".to_string(),
             arguments_preview: vec!["$ cargo test".to_string()],
@@ -628,15 +628,15 @@ mod tests {
         assert_eq!(snapshot.transcript.len(), 1);
         assert_eq!(
             transcript_text(&snapshot.transcript[0]),
-            "• Finished bash\n  └ $ cargo test\n  └ exit 0\n  └ ok"
+            "• Finished exec_command\n  └ $ cargo test\n  └ exit 0\n  └ ok"
         );
     }
 
     #[test]
-    fn bash_failures_prefer_tail_output_preview() {
+    fn exec_command_failures_prefer_tail_output_preview() {
         let ui_state = SharedUiState::new();
         let call = SessionToolCall {
-            tool_name: "bash".to_string(),
+            tool_name: "exec_command".to_string(),
             call_id: "call_999".to_string(),
             origin: "local".to_string(),
             arguments_preview: vec!["$ cargo test".to_string()],

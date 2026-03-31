@@ -6,8 +6,8 @@ use futures::{StreamExt, stream, stream::BoxStream};
 use std::sync::{Arc, Mutex};
 use store::{InMemorySessionStore, SessionStore};
 use tools::{
-    ApplyPatchTool, BashTool, ExecCommandTool, PatchTool, ReadTool, ToolExecutionContext,
-    ToolRegistry, WriteStdinTool,
+    ApplyPatchTool, ExecCommandTool, PatchTool, ReadTool, ToolExecutionContext, ToolRegistry,
+    WriteStdinTool,
 };
 use types::{
     DynamicToolSpec, ModelEvent, ModelRequest, SessionEventKind, ToolCall, ToolCallId,
@@ -154,11 +154,10 @@ async fn runtime_filters_patch_tools_by_provider_surface() {
 }
 
 #[tokio::test]
-async fn runtime_hides_compat_bash_when_exec_surfaces_are_present() {
+async fn runtime_exposes_exec_surfaces_without_legacy_bash() {
     let store = Arc::new(InMemorySessionStore::new());
     let backend = Arc::new(ProviderRecordingBackend::new("openai"));
     let mut registry = ToolRegistry::new();
-    registry.register(BashTool::new());
     registry.register(ExecCommandTool::new());
     registry.register(WriteStdinTool::new());
     let mut runtime: AgentRuntime = AgentRuntimeBuilder::new(backend.clone(), store)

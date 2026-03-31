@@ -262,13 +262,13 @@ mod tests {
             call: ToolCall {
                 id: ToolCallId::new(),
                 call_id: "call_1".into(),
-                tool_name: "bash".into(),
+                tool_name: "exec_command".into(),
                 arguments,
                 origin: ToolOrigin::Local,
             },
             spec: ToolSpec {
                 ..ToolSpec::function(
-                    "bash",
+                    "exec_command",
                     "Run commands",
                     json!({"type":"object"}),
                     ToolOutputMode::Text,
@@ -283,20 +283,20 @@ mod tests {
     #[test]
     fn rule_set_matches_tool_origin_and_argument_prefix() {
         let mut tool_names = BTreeSet::new();
-        tool_names.insert(ToolName::from("bash"));
+        tool_names.insert(ToolName::from("exec_command"));
         let rules = ToolApprovalRuleSet::new(vec![ToolApprovalRule::ask(
             ToolApprovalMatcher {
                 tool_names,
                 origins: vec![ToolOriginMatcher::Local],
                 argument_matchers: vec![ToolArgumentMatcher::String {
-                    pointer: "/command".to_string(),
+                    pointer: "/cmd".to_string(),
                     matcher: StringMatcher::Prefix("git ".to_string()),
                 }],
             },
             "review git invocations",
         )]);
 
-        let decision = rules.decide(&request(json!({"command":"git status"})));
+        let decision = rules.decide(&request(json!({"cmd":"git status"})));
 
         assert_eq!(
             decision,
@@ -338,10 +338,10 @@ mod tests {
         let rules = ToolApprovalRuleSet::new(vec![
             ToolApprovalRule::allow(
                 ToolApprovalMatcher {
-                    tool_names: [ToolName::from("bash")].into_iter().collect(),
+                    tool_names: [ToolName::from("exec_command")].into_iter().collect(),
                     origins: vec![ToolOriginMatcher::Local],
                     argument_matchers: vec![ToolArgumentMatcher::String {
-                        pointer: "/command".to_string(),
+                        pointer: "/cmd".to_string(),
                         matcher: StringMatcher::Prefix("git status".to_string()),
                     }],
                 },
@@ -349,17 +349,17 @@ mod tests {
             ),
             ToolApprovalRule::deny(
                 ToolApprovalMatcher {
-                    tool_names: [ToolName::from("bash")].into_iter().collect(),
+                    tool_names: [ToolName::from("exec_command")].into_iter().collect(),
                     origins: vec![ToolOriginMatcher::Local],
                     argument_matchers: vec![ToolArgumentMatcher::Exists {
-                        pointer: "/command".to_string(),
+                        pointer: "/cmd".to_string(),
                     }],
                 },
-                "all other bash commands denied",
+                "all other exec commands denied",
             ),
         ]);
 
-        let decision = rules.decide(&request(json!({"command":"git status --short"})));
+        let decision = rules.decide(&request(json!({"cmd":"git status --short"})));
 
         assert_eq!(decision, ToolApprovalPolicyDecision::Allow);
     }

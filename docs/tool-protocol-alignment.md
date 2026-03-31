@@ -20,7 +20,7 @@ Historical background remains available in:
 
 - line-numbered `read` windows with snapshot and selection-hash anchors
 - staged multi-file `patch`
-- session-based `bash`
+- session-based interactive exec surfaces
 - paged `web_fetch` and structured `web_search`
 - optional code-intel tools
 - child-agent tools plus revision-guarded plan state
@@ -72,7 +72,7 @@ Completed so far:
 - `ToolResult` now includes first-class `attachments` and `continuation`
 - representative continuation emitters are live for:
   - `read` via file-window cursors
-  - `bash` via session stream cursors
+  - `exec_command` via session stream cursors
   - `web_fetch` via document-window cursors
 - image reads now emit a first attachment record instead of hiding artifact
   identity only inside ad hoc metadata
@@ -189,7 +189,7 @@ not count here because they are not currently in the live registry.
   `read`, `write`, `edit`, provider-specific patch surfaces (`apply_patch` on
   OpenAI, `patch` on Anthropic), `glob`, `grep`, `list`
 - execution:
-  `bash`, `js_repl`
+  `exec_command`, `write_stdin`, `js_repl`
 - web:
   `web_fetch`, `web_search`, `web_search_backends`
 - code intelligence:
@@ -258,9 +258,9 @@ industrial baseline:
 - tool exposure is not yet model-aware in the OpenCode sense, where one model
   family may see `apply_patch` while another sees `edit` and `write`
 - `request_permissions` and `/permissions` now cover the two Codex-like
-  permission control planes, but non-bash host subprocess surfaces are still
-  partially decided at boot instead of being re-evaluated uniformly from the
-  active session permission mode
+  permission control planes, but host subprocess surfaces are still partially
+  decided at boot instead of being re-evaluated uniformly from the active
+  session permission mode
 
 ## Target Protocol
 
@@ -444,8 +444,9 @@ The target is a two-tier edit surface:
 
 ### Execution Tools
 
-Keep the current `bash` session model. Align it with the Codex-style split
-between "start work" and "continue work" semantics by standardizing:
+Keep the current `exec_command` / `write_stdin` session model. Align it with
+the Codex-style split between "start work" and "continue work" semantics by
+standardizing:
 
 - session ids
 - output windows
@@ -505,7 +506,7 @@ new bundle of tools:
     metadata
   - extend `ToolResult` with attachments and continuation
   - preserve current tool behavior while upgrading the shared contract
-  - adapt representative continuation emitters in `read`, `bash`, and
+  - adapt representative continuation emitters in `read`, `exec_command`, and
     `web_fetch`
   - land the first runtime dynamic registration path on top of the richer
     protocol

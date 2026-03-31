@@ -150,12 +150,8 @@ fn tool_origin_label(origin: &ToolOrigin) -> String {
 }
 
 fn approval_content_preview(tool_name: &str, arguments: &Value) -> (String, Vec<String>) {
-    if matches!(tool_name, "bash" | "exec_command") {
-        let command = if tool_name == "bash" {
-            arguments.get("command").and_then(Value::as_str)
-        } else {
-            arguments.get("cmd").and_then(Value::as_str)
-        };
+    if tool_name == "exec_command" {
+        let command = arguments.get("cmd").and_then(Value::as_str);
         if let Some(command) = command.map(str::trim).filter(|command| !command.is_empty()) {
             return (
                 "command".to_string(),
@@ -324,47 +320,11 @@ mod tests {
     }
 
     #[test]
-    fn approval_prompt_extracts_bash_command_context() {
-        let prompt = ApprovalPrompt::from_request(&ToolApprovalRequest {
-            call: ToolCall {
-                id: ToolCallId::new(),
-                call_id: "call-1".into(),
-                tool_name: "bash".into(),
-                arguments: json!({
-                    "command": "cargo test -p code-agent",
-                    "cwd": "/workspace/apps/code-agent",
-                    "mode": "run"
-                }),
-                origin: ToolOrigin::Local,
-            },
-            spec: ToolSpec::function(
-                "bash",
-                "run shell commands",
-                json!({"type":"object"}),
-                ToolOutputMode::Text,
-                ToolOrigin::Local,
-                ToolSource::Builtin,
-            ),
-            reasons: vec!["sandbox policy requires approval".to_string()],
-        });
-
-        assert_eq!(prompt.tool_name, "bash");
-        assert_eq!(prompt.origin, "local");
-        assert_eq!(prompt.mode.as_deref(), Some("run"));
-        assert_eq!(
-            prompt.working_directory.as_deref(),
-            Some("/workspace/apps/code-agent")
-        );
-        assert_eq!(prompt.content_label, "command");
-        assert_eq!(prompt.content_preview, vec!["$ cargo test -p code-agent"]);
-    }
-
-    #[test]
     fn approval_prompt_extracts_exec_command_context() {
         let prompt = ApprovalPrompt::from_request(&ToolApprovalRequest {
             call: ToolCall {
                 id: ToolCallId::new(),
-                call_id: "call-2".into(),
+                call_id: "call-1".into(),
                 tool_name: "exec_command".into(),
                 arguments: json!({
                     "cmd": "cargo test -p code-agent",
@@ -384,6 +344,8 @@ mod tests {
         });
 
         assert_eq!(prompt.tool_name, "exec_command");
+        assert_eq!(prompt.origin, "local");
+        assert_eq!(prompt.mode, None);
         assert_eq!(
             prompt.working_directory.as_deref(),
             Some("/workspace/apps/code-agent")

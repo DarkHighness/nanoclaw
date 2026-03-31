@@ -3,7 +3,7 @@
 //! The default surface is intentionally small: `read`, `write`, `edit`,
 //! provider-specific patch tooling (`apply_patch` on OpenAI-oriented surfaces,
 //! `patch` on Anthropic-oriented surfaces), `glob`, `grep`, `list`,
-//! `view_image`, `bash`, `exec_command`, and `write_stdin`. Non-essential tool
+//! `view_image`, `exec_command`, and `write_stdin`. Non-essential tool
 //! bundles should be exposed through explicit Cargo features instead of
 //! silently expanding the default runtime surface.
 

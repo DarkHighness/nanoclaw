@@ -233,24 +233,6 @@ mod tests {
     }
 
     #[test]
-    fn session_tool_call_formats_bash_commands_for_tui_previews() {
-        let call = ToolCall {
-            id: ToolCallId::from("tool-call-1"),
-            call_id: ToolCallId::from("tool-call-1").into(),
-            tool_name: "bash".into(),
-            arguments: json!({"command": "cargo test -p code-agent"}),
-            origin: ToolOrigin::Local,
-        };
-
-        let projected = session_tool_call(&call);
-
-        assert_eq!(
-            projected.arguments_preview,
-            vec!["$ cargo test -p code-agent"]
-        );
-    }
-
-    #[test]
     fn session_tool_call_formats_exec_commands_for_tui_previews() {
         let call = ToolCall {
             id: ToolCallId::from("tool-call-2"),

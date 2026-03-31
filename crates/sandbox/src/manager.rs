@@ -427,7 +427,9 @@ mod tests {
                 stdout: ProcessStdio::Null,
                 stderr: ProcessStdio::Null,
                 kill_on_drop: true,
-                origin: ExecutionOrigin::BashTool,
+                origin: ExecutionOrigin::HostUtility {
+                    name: "exec_command".to_string(),
+                },
                 runtime_scope: RuntimeScope::default(),
                 sandbox_policy: SandboxPolicy {
                     mode: SandboxMode::WorkspaceWrite,
@@ -465,7 +467,9 @@ mod tests {
                 stdout: ProcessStdio::Null,
                 stderr: ProcessStdio::Null,
                 kill_on_drop: true,
-                origin: ExecutionOrigin::BashTool,
+                origin: ExecutionOrigin::HostUtility {
+                    name: "exec_command".to_string(),
+                },
                 runtime_scope: RuntimeScope::default(),
                 sandbox_policy: SandboxPolicy {
                     mode: SandboxMode::WorkspaceWrite,
@@ -500,7 +504,9 @@ mod tests {
                 stdout: ProcessStdio::Null,
                 stderr: ProcessStdio::Null,
                 kill_on_drop: true,
-                origin: ExecutionOrigin::BashTool,
+                origin: ExecutionOrigin::HostUtility {
+                    name: "exec_command".to_string(),
+                },
                 runtime_scope: RuntimeScope::default(),
                 sandbox_policy: SandboxPolicy {
                     mode: SandboxMode::WorkspaceWrite,

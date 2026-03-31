@@ -5,8 +5,8 @@ pub use runtime::{RuntimeCommand, RuntimeControlPlane, RuntimeSubagentExecutor};
 pub use skills::{Skill, SkillCatalog, load_skill_from_dir, load_skill_roots};
 pub use store::{FileSessionStore, InMemorySessionStore, SessionStore};
 pub use tools::{
-    ApplyPatchTool, BashTool, EditTool, ExecCommandTool, GlobTool, GrepTool, HostProcessExecutor,
-    JsReplTool, ListTool, ManagedPolicyProcessExecutor, PatchTool, ReadTool, SandboxPolicy, Tool,
+    ApplyPatchTool, EditTool, ExecCommandTool, GlobTool, GrepTool, HostProcessExecutor, JsReplTool,
+    ListTool, ManagedPolicyProcessExecutor, PatchTool, ReadTool, SandboxPolicy, Tool,
     ToolExecutionContext, ToolRegistry, ViewImageTool, WriteStdinTool, WriteTool,
 };
 #[cfg(feature = "code-intel")]

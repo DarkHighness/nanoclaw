@@ -26,12 +26,13 @@ Those mechanisms solve different problems and stay separate.
 
 ## Current Boundary
 
-The sandbox is no longer modeled as a `bash` implementation detail under
+The sandbox is no longer modeled as a process-tool implementation detail under
 `tools::process`.
 
 - `crates/sandbox` owns the policy model, backend selection, platform-specific
   command preparation, and allow-domains proxy runtime.
-- `crates/tools` consumes `sandbox` for process tools such as `bash`.
+- `crates/tools` consumes `sandbox` for process tools such as
+  `exec_command`.
 - `tools::process` remains only as a compatibility facade so existing imports do
   not have to migrate atomically.
 - model-visible file tools also consume `sandbox` path checks, so `.git`,
@@ -110,8 +111,8 @@ New code should depend on `sandbox` directly when it needs sandbox policy or
 process-boundary behavior.
 
 `tools::process` should only own tool-specific process behavior such as the
-interactive `bash` session protocol. It should not grow platform sandbox logic
-again.
+interactive `exec_command` / `write_stdin` session protocol. It should not grow
+platform sandbox logic again.
 
 Likewise, filesystem tools should not open-code their own protected-path rules.
 They should ask `sandbox` whether a path is readable or writable under the
