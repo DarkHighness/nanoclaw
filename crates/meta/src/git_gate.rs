@@ -49,6 +49,21 @@ pub async fn capture_worktree_diff(worktree_path: &Path) -> WorktreeRunnerResult
     .await
 }
 
+pub async fn capture_worktree_changed_paths(
+    worktree_path: &Path,
+) -> WorktreeRunnerResult<Vec<std::path::PathBuf>> {
+    let output = run_git(
+        worktree_path,
+        &["diff", "--name-only", "--find-renames", "-z"],
+    )
+    .await?;
+    Ok(output
+        .split('\0')
+        .filter(|entry| !entry.is_empty())
+        .map(std::path::PathBuf::from)
+        .collect())
+}
+
 async fn run_git(cwd: &Path, args: &[&str]) -> WorktreeRunnerResult<String> {
     let output = Command::new("git")
         .current_dir(cwd)

@@ -20,6 +20,7 @@ pub mod rollback;
 pub mod runner_trace;
 pub mod signals;
 pub mod tasks;
+pub mod verifier;
 pub mod worktree_runner;
 
 pub use archive::*;
@@ -36,4 +37,5 @@ pub use rollback::*;
 pub use runner_trace::*;
 pub use signals::*;
 pub use tasks::*;
+pub use verifier::*;
 pub use worktree_runner::*;

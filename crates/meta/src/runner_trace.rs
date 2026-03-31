@@ -46,6 +46,8 @@ pub struct WorktreeRunTrace {
     pub baseline_ref: String,
     pub worktree_path: PathBuf,
     #[serde(default)]
+    pub changed_paths: Vec<PathBuf>,
+    #[serde(default)]
     pub mutations: Vec<WorktreeMutation>,
     #[serde(default)]
     pub commands: Vec<WorktreeCommandTrace>,

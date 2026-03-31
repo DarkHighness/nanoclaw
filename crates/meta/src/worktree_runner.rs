@@ -1,4 +1,7 @@
-use crate::git_gate::{capture_worktree_diff, create_detached_worktree, remove_worktree};
+use crate::git_gate::{
+    capture_worktree_changed_paths, capture_worktree_diff, create_detached_worktree,
+    remove_worktree,
+};
 use crate::runner_trace::{
     WorktreeCommandSpec, WorktreeCommandStatus, WorktreeCommandTrace, WorktreeMutation,
     WorktreeRunTrace,
@@ -102,6 +105,7 @@ async fn run_in_worktree(
         traces.push(trace);
     }
 
+    let changed_paths = capture_worktree_changed_paths(worktree_path).await?;
     let git_diff = capture_worktree_diff(worktree_path).await?;
     Ok(WorktreeRunOutcome {
         succeeded,
@@ -111,6 +115,7 @@ async fn run_in_worktree(
             artifact_kind: plan.version.kind,
             baseline_ref: plan.baseline_ref.clone(),
             worktree_path: worktree_path.to_path_buf(),
+            changed_paths,
             mutations: plan.mutations.clone(),
             commands: traces,
             git_diff,
@@ -289,6 +294,10 @@ mod tests {
 
             assert!(outcome.succeeded);
             assert!(outcome.trace.cleanup_performed);
+            assert_eq!(
+                outcome.trace.changed_paths,
+                vec![std::path::PathBuf::from("prompt.txt")]
+            );
             assert!(outcome.trace.git_diff.contains("prompt.txt"));
             assert_eq!(
                 std::fs::read_to_string(dir.path().join("prompt.txt")).unwrap(),
