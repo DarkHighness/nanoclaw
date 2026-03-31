@@ -354,6 +354,12 @@ Runtime notification events now flow through the same live path too, so
 loop-detector warnings and provider-state degradation notices can raise toasts
 instead of remaining history-only diagnostics.
 
+The same event bus now exposes a minimal OpenCode-style TUI surface too:
+`tui.toast.show` raises transient notifications and `tui.prompt.append` can seed
+composer follow-ups. Code Agent uses that prompt-append path to drop a
+queue-ready background-task follow-up into an empty composer when a child task
+finishes while the main turn is still running.
+
 `/thinking` opens a picker when invoked without an explicit level. Hosts can
 also declare model-specific effort support in the core model config:
 

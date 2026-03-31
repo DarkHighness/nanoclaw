@@ -1685,6 +1685,18 @@ impl TuiState {
         self.reset_command_completion();
     }
 
+    pub(crate) fn append_input_text(&mut self, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        self.input.push_str(text);
+        self.input_cursor = self.input.len();
+        self.selected_row_attachment = None;
+        self.input_history_navigation = None;
+        self.input_vertical_column = None;
+        self.reset_command_completion();
+    }
+
     pub(crate) fn push_large_paste(&mut self, payload: &str) -> String {
         let placeholder = format!("[Paste #{}]", self.next_pending_paste_index());
         self.draft_attachments.push(ComposerDraftAttachmentState {

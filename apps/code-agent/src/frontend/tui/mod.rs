@@ -9,7 +9,7 @@ mod state;
 
 use crate::backend::{
     CodeAgentSession, LiveTaskControlAction, LiveTaskMessageAction, LiveTaskWaitOutcome,
-    LoadedMcpPrompt, LoadedMcpResource, SessionOperation, SessionOperationAction,
+    LoadedMcpPrompt, LoadedMcpResource, SessionEvent, SessionOperation, SessionOperationAction,
     SessionOperationOutcome, SessionPermissionMode, SessionStartupSnapshot, SideQuestionOutcome,
     UserInputPrompt, preview_id,
 };
@@ -2010,16 +2010,17 @@ impl CodeAgentTui {
             match task.await {
                 Ok(Ok(OperatorTaskOutcome::WaitLiveTask(outcome))) => {
                     let inspector = format_live_task_wait_outcome(&outcome);
+                    let turn_running = self.ui_state.snapshot().turn_running;
+                    let toast_tone = live_task_wait_ui_toast_tone(&outcome);
+                    let toast_message = live_task_wait_toast_message(&outcome, turn_running);
+                    let follow_up =
+                        live_task_wait_prompt_append(&outcome, turn_running).map(str::to_string);
                     self.ui_state.mutate(move |state| {
                         // Background child completion is easy to miss if it only
                         // flashes through the status line, so persist it into
                         // the transcript and promote the next-step cue into the
                         // composer when the operator is idle.
                         state.push_transcript(live_task_wait_notice_entry(&outcome));
-                        state.show_toast(
-                            live_task_wait_toast_tone(&outcome),
-                            live_task_wait_toast_message(&outcome, state.turn_running),
-                        );
                         state.set_live_task_finished_hint(
                             outcome.task_id.clone(),
                             outcome.status.clone(),
@@ -2034,18 +2035,36 @@ impl CodeAgentTui {
                             outcome.task_id, outcome.status
                         ));
                     });
+                    match toast_tone {
+                        ToastTone::Info => self
+                            .event_renderer
+                            .apply_event(SessionEvent::tui_info_toast(toast_message)),
+                        ToastTone::Success => self
+                            .event_renderer
+                            .apply_event(SessionEvent::tui_success_toast(toast_message)),
+                        ToastTone::Warning => self
+                            .event_renderer
+                            .apply_event(SessionEvent::tui_warning_toast(toast_message)),
+                        ToastTone::Error => self
+                            .event_renderer
+                            .apply_event(SessionEvent::tui_error_toast(toast_message)),
+                    }
+                    if let Some(follow_up) = follow_up {
+                        // Route background task nudges through the same prompt-append
+                        // path so future plugin or host producers can seed queueable
+                        // follow-ups without reaching into TUI state directly.
+                        self.event_renderer
+                            .apply_event(SessionEvent::tui_prompt_append(follow_up, true));
+                    }
                 }
                 Ok(Ok(OperatorTaskOutcome::SideQuestion(outcome))) => {
                     let inspector = format_side_question_inspector(&outcome);
+                    let toast_message = format!(
+                        "/btw answered: {}",
+                        state::preview_text(&outcome.question, 48)
+                    );
                     self.ui_state.mutate(move |state| {
                         state.show_main_view("BTW", inspector);
-                        state.show_toast(
-                            ToastTone::Info,
-                            format!(
-                                "/btw answered: {}",
-                                state::preview_text(&outcome.question, 48)
-                            ),
-                        );
                         state.status = format!(
                             "Answered /btw {}",
                             state::preview_text(&outcome.question, 48)
@@ -2055,17 +2074,16 @@ impl CodeAgentTui {
                             state::preview_text(&outcome.question, 48)
                         ));
                     });
+                    self.event_renderer
+                        .apply_event(SessionEvent::tui_info_toast(toast_message));
                 }
                 Ok(Err(error)) => {
                     let message = summarize_nonfatal_error("operator task", &error);
+                    let toast_message = format!(
+                        "operator task failed: {}",
+                        state::preview_text(&message, 80)
+                    );
                     self.ui_state.mutate(|state| {
-                        state.show_toast(
-                            ToastTone::Error,
-                            format!(
-                                "operator task failed: {}",
-                                state::preview_text(&message, 80)
-                            ),
-                        );
                         state.status = format!("Operator task failed: {message}");
                         state.show_main_view(
                             "Operator Error",
@@ -2079,16 +2097,17 @@ impl CodeAgentTui {
                             state::preview_text(&message, 56)
                         ));
                     });
+                    self.event_renderer
+                        .apply_event(SessionEvent::tui_error_toast(toast_message));
                 }
                 Err(error) => {
+                    let toast_message = format!("operator task join error: {error}");
                     self.ui_state.mutate(|state| {
-                        state.show_toast(
-                            ToastTone::Error,
-                            format!("operator task join error: {error}"),
-                        );
                         state.status = format!("Operator task join error: {error}");
                         state.push_activity(format!("operator task join error: {error}"));
                     });
+                    self.event_renderer
+                        .apply_event(SessionEvent::tui_error_toast(toast_message));
                 }
             }
         }
@@ -4047,7 +4066,7 @@ fn live_task_wait_notice_details(outcome: &LiveTaskWaitOutcome) -> Vec<Transcrip
     details
 }
 
-fn live_task_wait_toast_tone(outcome: &LiveTaskWaitOutcome) -> ToastTone {
+fn live_task_wait_ui_toast_tone(outcome: &LiveTaskWaitOutcome) -> ToastTone {
     match outcome.status {
         AgentStatus::Completed => ToastTone::Success,
         AgentStatus::Failed => ToastTone::Error,
@@ -4071,6 +4090,27 @@ fn live_task_wait_toast_message(outcome: &LiveTaskWaitOutcome, turn_running: boo
     )
 }
 
+fn live_task_wait_prompt_append(
+    outcome: &LiveTaskWaitOutcome,
+    turn_running: bool,
+) -> Option<&'static str> {
+    if !turn_running {
+        return None;
+    }
+    match outcome.status {
+        AgentStatus::Completed => {
+            Some("Review the completed background task and integrate any useful findings.")
+        }
+        AgentStatus::Failed => {
+            Some("Inspect the failed background task and decide whether to retry it.")
+        }
+        AgentStatus::Cancelled => {
+            Some("Inspect the cancelled background task and decide whether it should be restarted.")
+        }
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::build_history_rollback_candidates;
@@ -4082,11 +4122,12 @@ mod tests {
     };
     use super::{
         PlainInputSubmitAction, attachment_preview_status_label,
-        external_editor_attachment_status_suffix, looks_like_local_image_path,
-        merge_interrupt_steers, plain_input_submit_action,
+        external_editor_attachment_status_suffix, live_task_wait_prompt_append,
+        looks_like_local_image_path, merge_interrupt_steers, plain_input_submit_action,
     };
+    use crate::backend::LiveTaskWaitOutcome;
     use crate::backend::SessionPermissionMode;
-    use agent::types::{Message, MessageId, MessagePart, MessageRole};
+    use agent::types::{AgentStatus, Message, MessageId, MessagePart, MessageRole};
     use crossterm::event::KeyCode;
     use std::path::{Path, PathBuf};
 
@@ -4245,6 +4286,24 @@ mod tests {
             plain_input_submit_action("review this", true, true, true, KeyCode::Enter),
             Some(PlainInputSubmitAction::QueuePrompt)
         );
+    }
+
+    #[test]
+    fn live_task_wait_prompt_append_only_seeds_running_turns() {
+        let outcome = LiveTaskWaitOutcome {
+            requested_ref: "task_123".to_string(),
+            task_id: "task_123".to_string(),
+            status: AgentStatus::Completed,
+            summary: "done".to_string(),
+            agent_id: "agent_123".to_string(),
+            claimed_files: Vec::new(),
+        };
+
+        assert_eq!(
+            live_task_wait_prompt_append(&outcome, true),
+            Some("Review the completed background task and integrate any useful findings.")
+        );
+        assert_eq!(live_task_wait_prompt_append(&outcome, false), None);
     }
 
     #[test]

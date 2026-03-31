@@ -43,6 +43,14 @@ pub(crate) enum SessionEvent {
         source: String,
         message: String,
     },
+    TuiToastShow {
+        variant: &'static str,
+        message: String,
+    },
+    TuiPromptAppend {
+        text: String,
+        only_when_empty: bool,
+    },
     ModelResponseCompleted {
         assistant_text: String,
         tool_call_count: usize,
@@ -80,12 +88,53 @@ pub(crate) enum SessionEvent {
     },
 }
 
+impl SessionEvent {
+    pub(crate) fn tui_info_toast(message: impl Into<String>) -> Self {
+        Self::TuiToastShow {
+            variant: "info",
+            message: message.into(),
+        }
+    }
+
+    pub(crate) fn tui_success_toast(message: impl Into<String>) -> Self {
+        Self::TuiToastShow {
+            variant: "success",
+            message: message.into(),
+        }
+    }
+
+    pub(crate) fn tui_warning_toast(message: impl Into<String>) -> Self {
+        Self::TuiToastShow {
+            variant: "warning",
+            message: message.into(),
+        }
+    }
+
+    pub(crate) fn tui_error_toast(message: impl Into<String>) -> Self {
+        Self::TuiToastShow {
+            variant: "error",
+            message: message.into(),
+        }
+    }
+
+    pub(crate) fn tui_prompt_append(text: impl Into<String>, only_when_empty: bool) -> Self {
+        Self::TuiPromptAppend {
+            text: text.into(),
+            only_when_empty,
+        }
+    }
+}
+
 #[derive(Clone, Default)]
 pub(crate) struct SessionEventStream(Arc<Mutex<VecDeque<SessionEvent>>>);
 
 impl SessionEventStream {
     pub(crate) fn drain(&self) -> Vec<SessionEvent> {
         self.0.lock().unwrap().drain(..).collect()
+    }
+
+    pub(crate) fn publish(&self, event: SessionEvent) {
+        self.push(event);
     }
 
     fn push(&self, event: SessionEvent) {
@@ -298,6 +347,22 @@ mod tests {
                 source: "loop_detector".to_string(),
                 message: "loop detector warning".to_string(),
             }]
+        );
+    }
+
+    #[test]
+    fn manual_tui_events_are_published_into_the_stream() {
+        let stream = SessionEventStream::default();
+
+        stream.publish(SessionEvent::tui_warning_toast("toast"));
+        stream.publish(SessionEvent::tui_prompt_append("queued follow-up", true));
+
+        assert_eq!(
+            stream.drain(),
+            vec![
+                SessionEvent::tui_warning_toast("toast"),
+                SessionEvent::tui_prompt_append("queued follow-up", true),
+            ]
         );
     }
 

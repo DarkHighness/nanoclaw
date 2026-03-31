@@ -124,6 +124,21 @@ impl SharedRenderObserver {
                     preview_text(&message, 48)
                 ));
             }
+            SessionEvent::TuiToastShow { variant, message } => {
+                state.show_toast(map_ui_toast_tone(variant), message.clone());
+                state.push_activity(format!("tui toast: {}", preview_text(&message, 48)));
+            }
+            SessionEvent::TuiPromptAppend {
+                text,
+                only_when_empty,
+            } => {
+                if !only_when_empty
+                    || (state.input.is_empty() && state.draft_attachments.is_empty())
+                {
+                    state.append_input_text(&text);
+                    state.push_activity(format!("tui prompt append: {}", preview_text(&text, 48)));
+                }
+            }
             SessionEvent::ModelResponseCompleted {
                 tool_call_count, ..
             } => {
@@ -325,6 +340,15 @@ fn notification_toast_tone(source: &str, message: &str) -> ToastTone {
         ToastTone::Warning
     } else {
         ToastTone::Info
+    }
+}
+
+fn map_ui_toast_tone(variant: &str) -> ToastTone {
+    match variant {
+        "success" => ToastTone::Success,
+        "warning" => ToastTone::Warning,
+        "error" => ToastTone::Error,
+        _ => ToastTone::Info,
     }
 }
 
@@ -557,6 +581,54 @@ mod tests {
                 .expect("notification activity should be recorded")
                 .contains("notification loop_detector")
         );
+    }
+
+    #[test]
+    fn tui_toast_events_surface_transient_toasts() {
+        let ui_state = SharedUiState::new();
+        let mut observer = SharedRenderObserver::new(ui_state.clone());
+
+        observer.apply_event(SessionEvent::tui_success_toast("background result ready"));
+
+        let snapshot = ui_state.snapshot();
+        assert_eq!(
+            snapshot.toast.as_ref().map(|toast| toast.message.as_str()),
+            Some("background result ready")
+        );
+        assert!(
+            snapshot
+                .activity
+                .last()
+                .expect("toast activity should be recorded")
+                .contains("tui toast")
+        );
+    }
+
+    #[test]
+    fn tui_prompt_append_only_when_empty_respects_existing_drafts() {
+        let ui_state = SharedUiState::new();
+        let mut observer = SharedRenderObserver::new(ui_state.clone());
+
+        observer.apply_event(SessionEvent::TuiPromptAppend {
+            text: "queued follow-up".to_string(),
+            only_when_empty: true,
+        });
+
+        let snapshot = ui_state.snapshot();
+        assert_eq!(snapshot.input, "queued follow-up");
+
+        ui_state.mutate(|state| state.replace_input("existing"));
+        observer.apply_event(SessionEvent::TuiPromptAppend {
+            text: " + appended".to_string(),
+            only_when_empty: true,
+        });
+        observer.apply_event(SessionEvent::TuiPromptAppend {
+            text: " + appended".to_string(),
+            only_when_empty: false,
+        });
+
+        let snapshot = ui_state.snapshot();
+        assert_eq!(snapshot.input, "existing + appended");
     }
 
     #[test]
