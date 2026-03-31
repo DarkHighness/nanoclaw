@@ -47,9 +47,7 @@ use agent::tools::{
     ToolExecutionContext, UserInputAnswer, UserInputResponse, load_tool_image,
     resolve_tool_path_against_workspace_root,
 };
-use agent::types::{
-    Message, MessagePart, MessageRole, message_operator_text, message_part_operator_text,
-};
+use agent::types::{Message, MessagePart, MessageRole, message_operator_text};
 use anyhow::{Context, Result, anyhow};
 use base64::Engine;
 use crossterm::event::{
@@ -2523,7 +2521,9 @@ impl CodeAgentTui {
                     .await?;
                 self.ui_state.mutate(move |state| {
                     let inspector = build_mcp_prompt_inspector(&loaded);
-                    state.replace_input(loaded.input_text);
+                    state.restore_input_draft(state::composer_draft_from_messages(
+                        &loaded.input_messages,
+                    ));
                     state.show_main_view("Prompt", inspector);
                     state.status =
                         format!("Loaded MCP prompt {server_name}/{prompt_name} into input");
@@ -2535,7 +2535,8 @@ impl CodeAgentTui {
                 let loaded = self.session.load_mcp_resource(&server_name, &uri).await?;
                 self.ui_state.mutate(move |state| {
                     let inspector = build_mcp_resource_inspector(&loaded);
-                    state.replace_input(loaded.input_text);
+                    state
+                        .restore_input_draft(state::composer_draft_from_parts(&loaded.input_parts));
                     state.show_main_view("Resource", inspector);
                     state.status = format!("Loaded MCP resource {server_name}:{uri} into input");
                     state.push_activity(format!("loaded mcp resource {server_name}:{uri}"));
@@ -3337,7 +3338,7 @@ fn build_history_rollback_candidates(
                 .unwrap_or(transcript.len());
             let turn_slice = transcript.get(start_index..end_index)?;
             let prompt = agent::types::message_operator_text(message);
-            let draft = composer_draft_from_message(message);
+            let draft = state::composer_draft_from_message(message);
             Some(state::HistoryRollbackCandidate {
                 message_id: message.message_id.clone(),
                 prompt,
@@ -3348,114 +3349,6 @@ fn build_history_rollback_candidates(
             })
         })
         .collect()
-}
-
-fn composer_draft_from_message(message: &Message) -> state::ComposerDraftState {
-    let mut text = String::new();
-    let mut previous_inline = false;
-    let mut has_previous_text_fragment = false;
-    let mut draft_attachments = Vec::new();
-
-    for part in &message.parts {
-        if let Some(attachment) = composer_draft_attachment_from_part(part) {
-            if let Some(placeholder) = attachment.placeholder.as_ref() {
-                if has_previous_text_fragment && !previous_inline {
-                    text.push('\n');
-                }
-                text.push_str(placeholder);
-                previous_inline = true;
-                has_previous_text_fragment = true;
-            }
-            draft_attachments.push(attachment);
-            continue;
-        }
-
-        let fragment = composer_draft_text_fragment(part);
-        if fragment.is_empty() {
-            continue;
-        }
-        let inline = composer_draft_part_is_inline(part);
-        if has_previous_text_fragment {
-            if previous_inline && inline {
-                text.push_str(&fragment);
-            } else {
-                text.push('\n');
-                text.push_str(&fragment);
-            }
-        } else {
-            text.push_str(&fragment);
-        }
-        previous_inline = inline;
-        has_previous_text_fragment = true;
-    }
-
-    state::ComposerDraftState {
-        cursor: text.len(),
-        text,
-        draft_attachments,
-    }
-}
-
-fn composer_draft_attachment_from_part(part: &MessagePart) -> Option<ComposerDraftAttachmentState> {
-    match part {
-        MessagePart::Paste { label, text } => Some(ComposerDraftAttachmentState {
-            placeholder: Some(label.clone()),
-            kind: ComposerDraftAttachmentKind::LargePaste {
-                payload: text.clone(),
-            },
-        }),
-        MessagePart::Image { mime_type, .. } => Some(ComposerDraftAttachmentState {
-            placeholder: None,
-            kind: ComposerDraftAttachmentKind::LocalImage {
-                requested_path: format!("[image:{mime_type}]"),
-                part: part.clone(),
-            },
-        }),
-        MessagePart::ImageUrl { url, .. } => Some(ComposerDraftAttachmentState {
-            placeholder: None,
-            kind: ComposerDraftAttachmentKind::RemoteImage {
-                requested_url: url.clone(),
-                part: part.clone(),
-            },
-        }),
-        MessagePart::File { file_name, uri, .. } => {
-            let requested_path = uri
-                .as_ref()
-                .or(file_name.as_ref())
-                .cloned()
-                .unwrap_or_else(|| "[file]".to_string());
-            let kind = if is_remote_attachment_url(&requested_path) {
-                ComposerDraftAttachmentKind::RemoteFile {
-                    requested_url: requested_path,
-                    part: part.clone(),
-                }
-            } else {
-                ComposerDraftAttachmentKind::LocalFile {
-                    requested_path,
-                    part: part.clone(),
-                }
-            };
-            Some(ComposerDraftAttachmentState {
-                placeholder: None,
-                kind,
-            })
-        }
-        _ => None,
-    }
-}
-
-fn composer_draft_text_fragment(part: &MessagePart) -> String {
-    match part {
-        MessagePart::Paste { label, .. } => label.clone(),
-        _ => message_part_operator_text(part),
-    }
-}
-
-fn composer_draft_part_is_inline(part: &MessagePart) -> bool {
-    matches!(
-        part,
-        MessagePart::InlineText { .. } | MessagePart::Paste { .. }
-    )
 }
 
 fn history_rollback_status(

@@ -237,6 +237,131 @@ impl ComposerDraftAttachmentState {
     }
 }
 
+pub(crate) fn composer_draft_from_message(message: &Message) -> ComposerDraftState {
+    let mut text = String::new();
+    let mut previous_inline = false;
+    let mut has_previous_text_fragment = false;
+    let mut draft_attachments = Vec::new();
+
+    for part in &message.parts {
+        if let Some(attachment) = composer_draft_attachment_from_part(part) {
+            if let Some(placeholder) = attachment.placeholder.as_ref() {
+                if has_previous_text_fragment && !previous_inline {
+                    text.push('\n');
+                }
+                text.push_str(placeholder);
+                previous_inline = true;
+                has_previous_text_fragment = true;
+            }
+            draft_attachments.push(attachment);
+            continue;
+        }
+
+        let fragment = composer_draft_text_fragment(part);
+        if fragment.is_empty() {
+            continue;
+        }
+        let inline = composer_draft_part_is_inline(part);
+        if has_previous_text_fragment {
+            if previous_inline && inline {
+                text.push_str(&fragment);
+            } else {
+                text.push('\n');
+                text.push_str(&fragment);
+            }
+        } else {
+            text.push_str(&fragment);
+        }
+        previous_inline = inline;
+        has_previous_text_fragment = true;
+    }
+
+    ComposerDraftState {
+        cursor: text.len(),
+        text,
+        draft_attachments,
+    }
+}
+
+pub(crate) fn composer_draft_from_messages(messages: &[Message]) -> ComposerDraftState {
+    let mut combined = ComposerDraftState::default();
+    for draft in messages.iter().map(composer_draft_from_message) {
+        if !combined.text.is_empty() && !draft.text.is_empty() {
+            combined.text.push_str("\n\n");
+        }
+        combined.text.push_str(&draft.text);
+        combined.draft_attachments.extend(draft.draft_attachments);
+    }
+    combined.cursor = combined.text.len();
+    combined
+}
+
+pub(crate) fn composer_draft_from_parts(parts: &[MessagePart]) -> ComposerDraftState {
+    composer_draft_from_message(&Message::new(MessageRole::User, parts.to_vec()))
+}
+
+fn composer_draft_attachment_from_part(part: &MessagePart) -> Option<ComposerDraftAttachmentState> {
+    match part {
+        MessagePart::Paste { label, text } => Some(ComposerDraftAttachmentState {
+            placeholder: Some(label.clone()),
+            kind: ComposerDraftAttachmentKind::LargePaste {
+                payload: text.clone(),
+            },
+        }),
+        MessagePart::Image { mime_type, .. } => Some(ComposerDraftAttachmentState {
+            placeholder: None,
+            kind: ComposerDraftAttachmentKind::LocalImage {
+                requested_path: format!("[image:{mime_type}]"),
+                part: part.clone(),
+            },
+        }),
+        MessagePart::ImageUrl { url, .. } => Some(ComposerDraftAttachmentState {
+            placeholder: None,
+            kind: ComposerDraftAttachmentKind::RemoteImage {
+                requested_url: url.clone(),
+                part: part.clone(),
+            },
+        }),
+        MessagePart::File { file_name, uri, .. } => {
+            let requested_path = uri
+                .as_ref()
+                .or(file_name.as_ref())
+                .cloned()
+                .unwrap_or_else(|| "[file]".to_string());
+            let kind = if is_remote_url(&requested_path) {
+                ComposerDraftAttachmentKind::RemoteFile {
+                    requested_url: requested_path,
+                    part: part.clone(),
+                }
+            } else {
+                ComposerDraftAttachmentKind::LocalFile {
+                    requested_path,
+                    part: part.clone(),
+                }
+            };
+            Some(ComposerDraftAttachmentState {
+                placeholder: None,
+                kind,
+            })
+        }
+        _ => None,
+    }
+}
+
+fn composer_draft_text_fragment(part: &MessagePart) -> String {
+    match part {
+        MessagePart::Paste { label, .. } => label.clone(),
+        _ => agent::types::message_part_operator_text(part),
+    }
+}
+
+fn composer_draft_part_is_inline(part: &MessagePart) -> bool {
+    matches!(
+        part,
+        MessagePart::InlineText { .. } | MessagePart::Paste { .. }
+    )
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct HistoryRollbackCandidate {
     pub(crate) message_id: MessageId,
@@ -2082,6 +2207,10 @@ fn preview_path_tail(path: &str) -> String {
         .to_string()
 }
 
+fn is_remote_url(path: &str) -> bool {
+    matches!(path.trim(), value if value.starts_with("http://") || value.starts_with("https://"))
+}
+
 fn remote_url_tail_segment(path: &str) -> Option<String> {
     let (_, remainder) = path.trim().split_once("://")?;
     let path = remainder
@@ -2321,10 +2450,10 @@ mod tests {
     use super::{
         ComposerDraftAttachmentKind, ComposerDraftAttachmentState, ComposerDraftState,
         ComposerKillBufferState, HistoryRollbackCandidate, MainPaneMode, SharedUiState, TuiState,
-        git_snapshot, page_scroll_amount,
+        composer_draft_from_messages, composer_draft_from_parts, git_snapshot, page_scroll_amount,
     };
     use crate::theme::ThemeSummary;
-    use agent::types::{MessageId, MessagePart};
+    use agent::types::{Message, MessageId, MessagePart, MessageRole};
     use tempfile::tempdir;
 
     #[test]
@@ -3043,6 +3172,52 @@ mod tests {
 
         assert_eq!(state.input, "text only");
         assert!(state.draft_attachments.is_empty());
+    }
+
+    #[test]
+    fn composer_draft_from_messages_keeps_text_breaks_and_row_attachments() {
+        let draft = composer_draft_from_messages(&[
+            Message::new(
+                MessageRole::User,
+                vec![MessagePart::ImageUrl {
+                    url: "https://example.com/failure.png".to_string(),
+                    mime_type: Some("image/png".to_string()),
+                }],
+            ),
+            Message::new(
+                MessageRole::User,
+                vec![MessagePart::inline_text("summarize the failure")],
+            ),
+        ]);
+
+        assert_eq!(draft.text, "summarize the failure");
+        assert_eq!(
+            draft.draft_attachments,
+            vec![remote_image_attachment("https://example.com/failure.png")]
+        );
+    }
+
+    #[test]
+    fn composer_draft_from_parts_restores_inline_paste_and_row_attachments() {
+        let draft = composer_draft_from_parts(&[
+            MessagePart::File {
+                file_name: Some("run.pdf".to_string()),
+                mime_type: Some("application/pdf".to_string()),
+                data_base64: Some("pdf-data".to_string()),
+                uri: Some("reports/run.pdf".to_string()),
+            },
+            MessagePart::inline_text("review "),
+            MessagePart::paste("[Paste #1]", "body"),
+        ]);
+
+        assert_eq!(draft.text, "review [Paste #1]");
+        assert_eq!(
+            draft.draft_attachments,
+            vec![
+                local_file_attachment("reports/run.pdf"),
+                large_paste_attachment("body")
+            ]
+        );
     }
 
     #[test]

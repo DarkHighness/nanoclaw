@@ -287,6 +287,10 @@ not have useful extensions, including `Dockerfile*`, `Containerfile*`, `go.mod`,
   `Up`/`Down` moves across rows, `Down` on the final row returns to text
   editing, `Delete`/`Backspace` removes the selected row, and
   `/move_attachment <from> <to>` reorders rows explicitly.
+- `/prompt <server> <name>` and `/resource <server> <uri>` now restore richer
+  composer drafts too, so MCP-loaded images, files, and inline paste
+  placeholders come back as first-class draft attachments instead of being
+  flattened into plain text only.
 - `Alt+Up` opens the pending-control picker from the bottom pane.
 - In the pending-control picker: `Enter` edits the selected item, `Delete`
   withdraws it, and `Esc` closes the picker.
