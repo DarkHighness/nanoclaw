@@ -41,6 +41,7 @@ use nanoclaw_config::ResolvedAgentProfile;
 use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
+use std::time::Instant;
 use store::SessionStore;
 use tokio::fs;
 use tokio::sync::Mutex as AsyncMutex;
@@ -54,6 +55,7 @@ const SESSION_MEMORY_MIN_TOKENS_TO_INIT: usize = 10_000;
 const SESSION_MEMORY_MIN_TOKENS_BETWEEN_UPDATES: usize = 5_000;
 const SESSION_MEMORY_TOOL_CALLS_BETWEEN_UPDATES: usize = 3;
 const SESSION_MEMORY_UPDATE_TIMEOUT_MS: u64 = 15_000;
+const SESSION_MEMORY_UPDATE_STALE_MS: u64 = 60_000;
 const WORKSPACE_MEMORY_RECALL_METADATA_KEY: &str = "workspace_memory_recall";
 
 #[derive(Clone)]
@@ -227,10 +229,13 @@ struct CompactionWorkingSnapshot {
     summary: String,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default)]
 struct SessionMemoryRefreshState {
+    active_session_id: Option<SessionId>,
     initialized: bool,
     refresh_in_flight: bool,
+    refresh_started_at: Option<Instant>,
+    refresh_epoch: u64,
     tokens_at_last_update: usize,
     tool_calls_since_update: usize,
     last_summarized_message_id: Option<MessageId>,
@@ -245,6 +250,13 @@ struct SessionMemoryRefreshContext {
     completed_turn_count: usize,
     tool_call_count: usize,
     compaction_summary_message_id: Option<MessageId>,
+}
+
+#[derive(Clone, Debug)]
+struct SessionMemoryRefreshJob {
+    context: SessionMemoryRefreshContext,
+    transcript_delta_text: String,
+    epoch: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -317,6 +329,8 @@ impl CodeAgentSession {
             None::<Message>,
         ));
         let control_plane = runtime.control_plane();
+        let mut session_memory_refresh = SessionMemoryRefreshState::default();
+        session_memory_refresh.active_session_id = Some(runtime.session_id());
         Self {
             runtime: Arc::new(AsyncMutex::new(runtime)),
             control_plane,
@@ -341,7 +355,7 @@ impl CodeAgentSession {
             },
             session_memory_model_backend,
             memory_backend,
-            session_memory_refresh: Arc::new(Mutex::new(SessionMemoryRefreshState::default())),
+            session_memory_refresh: Arc::new(Mutex::new(session_memory_refresh)),
             side_question_context: Arc::new(RwLock::new(side_question_context)),
         }
     }
@@ -833,8 +847,7 @@ impl CodeAgentSession {
         }
         if context.completed_turn_count > 0 {
             let force_refresh = context.compaction_summary_message_id.is_some();
-            self.maybe_refresh_session_memory_note(context, force_refresh)
-                .await;
+            self.maybe_refresh_session_memory_note(context, force_refresh);
         }
     }
 
@@ -842,6 +855,15 @@ impl CodeAgentSession {
         &self,
         context: &SessionMemoryRefreshContext,
         up_to_message_id: Option<MessageId>,
+    ) {
+        self.mark_session_memory_refreshed_if_current(context, up_to_message_id, None);
+    }
+
+    fn mark_session_memory_refreshed_if_current(
+        &self,
+        context: &SessionMemoryRefreshContext,
+        up_to_message_id: Option<MessageId>,
+        expected_epoch: Option<u64>,
     ) {
         let last_message_id = up_to_message_id.or_else(|| {
             context
@@ -853,43 +875,76 @@ impl CodeAgentSession {
             .session_memory_refresh
             .lock()
             .expect("session memory refresh state");
+        if state.active_session_id.as_ref() != Some(&context.session_id) {
+            return;
+        }
+        if expected_epoch.is_some_and(|epoch| state.refresh_epoch != epoch) {
+            return;
+        }
         state.initialized = true;
         state.refresh_in_flight = false;
+        state.refresh_started_at = None;
         state.tokens_at_last_update = context.context_tokens;
         state.tool_calls_since_update = 0;
         state.last_summarized_message_id = last_message_id;
     }
 
-    fn clear_session_memory_refresh_in_flight(&self) {
+    fn clear_session_memory_refresh_in_flight(
+        &self,
+        context: &SessionMemoryRefreshContext,
+        expected_epoch: Option<u64>,
+    ) {
         let mut state = self
             .session_memory_refresh
             .lock()
             .expect("session memory refresh state");
+        if state.active_session_id.as_ref() != Some(&context.session_id) {
+            return;
+        }
+        if expected_epoch.is_some_and(|epoch| state.refresh_epoch != epoch) {
+            return;
+        }
         state.refresh_in_flight = false;
+        state.refresh_started_at = None;
     }
 
-    async fn maybe_refresh_session_memory_note(
+    fn maybe_refresh_session_memory_note(
         &self,
         context: SessionMemoryRefreshContext,
         force_refresh: bool,
     ) {
-        let Some(memory_backend) = self.memory_backend.as_ref() else {
+        if self.memory_backend.is_none() || self.session_memory_model_backend.is_none() {
             return;
-        };
-        let Some(model_backend) = self.session_memory_model_backend.as_ref() else {
-            return;
-        };
+        }
 
-        let last_summarized_message_id = {
+        let (last_summarized_message_id, epoch) = {
             let mut state = self
                 .session_memory_refresh
                 .lock()
                 .expect("session memory refresh state");
+            if state.active_session_id.as_ref() != Some(&context.session_id) {
+                state.active_session_id = Some(context.session_id.clone());
+                state.initialized = false;
+                state.refresh_in_flight = false;
+                state.refresh_started_at = None;
+                state.tokens_at_last_update = 0;
+                state.tool_calls_since_update = 0;
+                state.last_summarized_message_id = None;
+                state.refresh_epoch = state.refresh_epoch.wrapping_add(1);
+            }
             state.tool_calls_since_update = state
                 .tool_calls_since_update
                 .saturating_add(context.tool_call_count);
             if state.refresh_in_flight {
-                return;
+                let refresh_is_stale = state.refresh_started_at.is_some_and(|started_at| {
+                    started_at.elapsed() >= Duration::from_millis(SESSION_MEMORY_UPDATE_STALE_MS)
+                });
+                if !refresh_is_stale {
+                    return;
+                }
+                state.refresh_in_flight = false;
+                state.refresh_started_at = None;
+                state.refresh_epoch = state.refresh_epoch.wrapping_add(1);
             }
             let should_refresh = if force_refresh {
                 true
@@ -906,7 +961,12 @@ impl CodeAgentSession {
                 return;
             }
             state.refresh_in_flight = true;
-            state.last_summarized_message_id.clone()
+            state.refresh_started_at = Some(Instant::now());
+            state.refresh_epoch = state.refresh_epoch.wrapping_add(1);
+            (
+                state.last_summarized_message_id.clone(),
+                state.refresh_epoch,
+            )
         };
 
         let transcript_delta = unsummarized_transcript_delta(
@@ -914,25 +974,47 @@ impl CodeAgentSession {
             last_summarized_message_id.as_ref(),
         );
         if transcript_delta.is_empty() {
-            self.mark_session_memory_refreshed(&context, None);
+            self.mark_session_memory_refreshed_if_current(&context, None, Some(epoch));
             return;
         }
         let transcript_delta_text = render_session_memory_transcript_delta(&transcript_delta);
         if transcript_delta_text.trim().is_empty() {
-            self.mark_session_memory_refreshed(&context, None);
+            self.mark_session_memory_refreshed_if_current(&context, None, Some(epoch));
             return;
         }
 
+        let session = self.clone();
+        tokio::spawn(async move {
+            session
+                .run_session_memory_refresh_job(SessionMemoryRefreshJob {
+                    context,
+                    transcript_delta_text,
+                    epoch,
+                })
+                .await;
+        });
+    }
+
+    async fn run_session_memory_refresh_job(&self, job: SessionMemoryRefreshJob) {
+        let Some(memory_backend) = self.memory_backend.as_ref() else {
+            self.clear_session_memory_refresh_in_flight(&job.context, Some(job.epoch));
+            return;
+        };
+        let Some(model_backend) = self.session_memory_model_backend.as_ref() else {
+            self.clear_session_memory_refresh_in_flight(&job.context, Some(job.epoch));
+            return;
+        };
+
         let current_note = self
-            .load_session_memory_note_body(&context.session_id)
+            .load_session_memory_note_body(&job.context.session_id)
             .await
             .unwrap_or_else(|_| default_session_memory_note());
         let prompt =
-            build_session_memory_update_prompt(&current_note, transcript_delta_text.as_str());
+            build_session_memory_update_prompt(&current_note, job.transcript_delta_text.as_str());
         let updated = match self
             .run_session_memory_update(
                 model_backend.as_ref(),
-                &context,
+                &job.context,
                 Message::user(prompt),
                 Vec::new(),
             )
@@ -940,7 +1022,7 @@ impl CodeAgentSession {
         {
             Ok(updated) => updated,
             Err(error) => {
-                self.clear_session_memory_refresh_in_flight();
+                self.clear_session_memory_refresh_in_flight(&job.context, Some(job.epoch));
                 warn!(error = %error, "failed to refresh structured session memory note");
                 return;
             }
@@ -950,19 +1032,19 @@ impl CodeAgentSession {
         if let Err(error) = self
             .write_session_memory_note(
                 memory_backend.as_ref(),
-                &context.session_id,
-                &context.agent_session_id,
+                &job.context.session_id,
+                &job.context.agent_session_id,
                 rendered,
                 vec!["session-note".to_string(), "incremental".to_string()],
             )
             .await
         {
-            self.clear_session_memory_refresh_in_flight();
+            self.clear_session_memory_refresh_in_flight(&job.context, Some(job.epoch));
             warn!(error = %error, "failed to persist refreshed structured session memory note");
             return;
         }
 
-        self.mark_session_memory_refreshed(&context, None);
+        self.mark_session_memory_refreshed_if_current(&job.context, None, Some(job.epoch));
     }
 
     async fn load_session_memory_note_body(&self, session_id: &SessionId) -> Result<String> {
@@ -1137,8 +1219,11 @@ impl CodeAgentSession {
             .session_memory_refresh
             .lock()
             .expect("session memory refresh state");
+        state.active_session_id = Some(context.session_id.clone());
         state.initialized = note_exists;
         state.refresh_in_flight = false;
+        state.refresh_started_at = None;
+        state.refresh_epoch = state.refresh_epoch.wrapping_add(1);
         state.tokens_at_last_update = 0;
         state.tool_calls_since_update = 0;
         state.last_summarized_message_id = note_exists
@@ -1808,7 +1893,7 @@ mod tests {
     use super::{
         CodeAgentSession, CompactionWorkingSnapshot, PendingControlKind,
         SessionMemoryRefreshContext, SessionOperation, SessionOperationAction,
-        SessionPermissionMode, SessionStartupSnapshot,
+        SessionPermissionMode, SessionStartupSnapshot, SideQuestionContextSnapshot,
     };
     use crate::backend::{
         ApprovalCoordinator, PermissionRequestCoordinator, SessionEventStream,
@@ -1835,6 +1920,8 @@ mod tests {
     use nanoclaw_config::CoreConfig;
     use std::sync::{Arc, Mutex, RwLock};
     use store::{InMemorySessionStore, SessionStore};
+    use tokio::sync::Semaphore;
+    use tokio::time::{Duration, timeout};
 
     struct NeverBackend;
 
@@ -1940,6 +2027,59 @@ mod tests {
                 .drain(..1)
                 .next()
                 .expect("scripted text backend response");
+            Ok(stream::iter(vec![
+                Ok(ModelEvent::TextDelta { delta: response }),
+                Ok(ModelEvent::ResponseComplete {
+                    stop_reason: Some("stop".to_string()),
+                    message_id: None,
+                    continuation: None,
+                    usage: None,
+                    reasoning: Vec::new(),
+                }),
+            ])
+            .boxed())
+        }
+    }
+
+    #[derive(Clone)]
+    struct GatedTextBackend {
+        requests: Arc<Mutex<Vec<ModelRequest>>>,
+        gate: Arc<Semaphore>,
+        response: Arc<Mutex<Option<String>>>,
+    }
+
+    impl GatedTextBackend {
+        fn new(response: &str) -> Self {
+            Self {
+                requests: Arc::new(Mutex::new(Vec::new())),
+                gate: Arc::new(Semaphore::new(0)),
+                response: Arc::new(Mutex::new(Some(response.to_string()))),
+            }
+        }
+
+        fn requests(&self) -> Vec<ModelRequest> {
+            self.requests.lock().unwrap().clone()
+        }
+
+        fn release(&self) {
+            self.gate.add_permits(1);
+        }
+    }
+
+    #[async_trait]
+    impl ModelBackend for GatedTextBackend {
+        async fn stream_turn(
+            &self,
+            request: ModelRequest,
+        ) -> RuntimeResult<BoxStream<'static, RuntimeResult<ModelEvent>>> {
+            self.requests.lock().unwrap().push(request);
+            let _permit = self.gate.acquire().await.unwrap();
+            let response = self
+                .response
+                .lock()
+                .unwrap()
+                .take()
+                .unwrap_or_else(|| "# Current State\n\nreleased".to_string());
             Ok(stream::iter(vec![
                 Ok(ModelEvent::TextDelta { delta: response }),
                 Ok(ModelEvent::ResponseComplete {
@@ -2817,15 +2957,41 @@ mod tests {
         };
 
         session.mark_session_memory_refreshed(&context, Some(summary_message.message_id.clone()));
-        session
-            .maybe_refresh_session_memory_note(context, true)
-            .await;
+        session.maybe_refresh_session_memory_note(context, true);
+        timeout(Duration::from_secs(1), async {
+            loop {
+                if note_backend.requests().len() == 1 {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
 
         let requests = note_backend.requests();
         assert_eq!(requests.len(), 1);
         let update_prompt = requests[0].messages[0].text_content();
         assert!(update_prompt.contains("tail update after compaction"));
         assert!(!update_prompt.contains("summary before new work"));
+
+        timeout(Duration::from_secs(1), async {
+            loop {
+                let state = session.session_memory_refresh.lock().unwrap().clone();
+                if !state.refresh_in_flight
+                    && dir
+                        .path()
+                        .join(format!(".nanoclaw/memory/working/sessions/{session_id}.md"))
+                        .exists()
+                {
+                    break;
+                }
+                drop(state);
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
 
         let note = std::fs::read_to_string(
             dir.path()
@@ -2841,6 +3007,187 @@ mod tests {
         assert_eq!(
             state.last_summarized_message_id,
             Some(tail_message.message_id.clone())
+        );
+    }
+
+    #[tokio::test]
+    async fn session_note_refresh_runs_in_background_without_blocking_caller() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(InMemorySessionStore::new());
+        let runtime = AgentRuntimeBuilder::new(Arc::new(NeverBackend), store.clone())
+            .hook_runner(Arc::new(HookRunner::default()))
+            .tool_context(ToolExecutionContext {
+                workspace_root: dir.path().to_path_buf(),
+                workspace_only: true,
+                ..Default::default()
+            })
+            .build();
+        let session_id = runtime.session_id();
+        let agent_session_id = runtime.agent_session_id();
+        let mut startup = startup_snapshot(dir.path());
+        startup.active_session_ref = session_id.to_string();
+        startup.root_agent_session_id = agent_session_id.to_string();
+        let memory_backend: Arc<dyn MemoryBackend> = Arc::new(MemoryCoreBackend::new(
+            dir.path().to_path_buf(),
+            Default::default(),
+        ));
+        let note_backend =
+            GatedTextBackend::new("# Current State\n\nAsync refresh completed successfully.");
+        let session = build_session_with_backends(
+            runtime,
+            Arc::new(NoopSubagentExecutor),
+            store,
+            startup,
+            Some(memory_backend),
+            Some(Arc::new(note_backend.clone())),
+        );
+
+        let context = SessionMemoryRefreshContext {
+            session_id: session_id.clone(),
+            agent_session_id: agent_session_id.clone(),
+            visible_transcript: vec![Message::assistant("fresh transcript delta")],
+            context_tokens: 12_000,
+            completed_turn_count: 1,
+            tool_call_count: 0,
+            compaction_summary_message_id: None,
+        };
+
+        session.maybe_refresh_session_memory_note(context, true);
+        timeout(Duration::from_secs(1), async {
+            loop {
+                if note_backend.requests().len() == 1 {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+
+        let state = session.session_memory_refresh.lock().unwrap().clone();
+        assert!(state.refresh_in_flight);
+        assert!(
+            !dir.path()
+                .join(format!(".nanoclaw/memory/working/sessions/{session_id}.md"))
+                .exists()
+        );
+
+        note_backend.release();
+        timeout(Duration::from_secs(1), async {
+            loop {
+                let state = session.session_memory_refresh.lock().unwrap().clone();
+                if !state.refresh_in_flight {
+                    break;
+                }
+                drop(state);
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+
+        let note = std::fs::read_to_string(
+            dir.path()
+                .join(format!(".nanoclaw/memory/working/sessions/{session_id}.md")),
+        )
+        .unwrap();
+        assert!(note.contains("Async refresh completed successfully."));
+        let state = session.session_memory_refresh.lock().unwrap().clone();
+        assert!(!state.refresh_in_flight);
+        assert_eq!(state.active_session_id, Some(session_id));
+    }
+
+    #[tokio::test]
+    async fn session_switch_invalidates_in_flight_refresh_state_updates() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(InMemorySessionStore::new());
+        let runtime = AgentRuntimeBuilder::new(Arc::new(NeverBackend), store.clone())
+            .hook_runner(Arc::new(HookRunner::default()))
+            .tool_context(ToolExecutionContext {
+                workspace_root: dir.path().to_path_buf(),
+                workspace_only: true,
+                ..Default::default()
+            })
+            .build();
+        let session_id = runtime.session_id();
+        let agent_session_id = runtime.agent_session_id();
+        let mut startup = startup_snapshot(dir.path());
+        startup.active_session_ref = session_id.to_string();
+        startup.root_agent_session_id = agent_session_id.to_string();
+        let memory_backend: Arc<dyn MemoryBackend> = Arc::new(MemoryCoreBackend::new(
+            dir.path().to_path_buf(),
+            Default::default(),
+        ));
+        let note_backend = GatedTextBackend::new("# Current State\n\nOld session background note.");
+        let session = build_session_with_backends(
+            runtime,
+            Arc::new(NoopSubagentExecutor),
+            store,
+            startup,
+            Some(memory_backend),
+            Some(Arc::new(note_backend.clone())),
+        );
+
+        let old_context = SessionMemoryRefreshContext {
+            session_id: session_id.clone(),
+            agent_session_id: agent_session_id.clone(),
+            visible_transcript: vec![Message::assistant("old session delta")],
+            context_tokens: 12_000,
+            completed_turn_count: 1,
+            tool_call_count: 0,
+            compaction_summary_message_id: None,
+        };
+        session.maybe_refresh_session_memory_note(old_context, true);
+        timeout(Duration::from_secs(1), async {
+            loop {
+                if note_backend.requests().len() == 1 {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+
+        session
+            .reset_session_memory_refresh_state(&SideQuestionContextSnapshot {
+                session_id: SessionId::from("session-new"),
+                agent_session_id: AgentSessionId::from("agent-session-new"),
+                instructions: Vec::new(),
+                transcript: Vec::new(),
+                tools: Vec::new(),
+            })
+            .await;
+
+        note_backend.release();
+        timeout(Duration::from_secs(1), async {
+            loop {
+                let state = session.session_memory_refresh.lock().unwrap().clone();
+                if !state.refresh_in_flight
+                    && dir
+                        .path()
+                        .join(format!(".nanoclaw/memory/working/sessions/{session_id}.md"))
+                        .exists()
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+
+        let state = session.session_memory_refresh.lock().unwrap().clone();
+        assert_eq!(
+            state.active_session_id,
+            Some(SessionId::from("session-new"))
+        );
+        assert_eq!(state.last_summarized_message_id, None);
+        assert!(!state.initialized);
+        assert!(
+            dir.path()
+                .join(format!(".nanoclaw/memory/working/sessions/{session_id}.md"))
+                .exists()
         );
     }
 

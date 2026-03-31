@@ -188,6 +188,10 @@ session note using an internal maintenance request:
 - the first incremental refresh starts once the visible context reaches 10,000
   tokens
 - later refreshes happen after another 5,000 context tokens or 3 tool calls
+- the refresh runs in a background sidecar task instead of blocking the main
+  turn completion path
+- only one refresh may be in flight for a session at a time; stale in-flight
+  work is abandoned after 60 seconds so later turns can recover
 - the update request only receives transcript entries that were not already
   covered by the last summary boundary
 - the model must return the full note while preserving the host-owned section
@@ -197,7 +201,8 @@ session note using an internal maintenance request:
 
 This keeps the session note closer to Claude's continuously-maintained working
 memory without pushing note maintenance into base instructions or per-turn
-prompt-prefix churn.
+prompt-prefix churn, and it mirrors Claude's "background extraction with
+bounded stale recovery" shape more closely than a synchronous post-turn write.
 
 ## Side Questions (`/btw`)
 
