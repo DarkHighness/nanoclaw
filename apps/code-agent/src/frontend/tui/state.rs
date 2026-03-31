@@ -109,6 +109,12 @@ pub(crate) struct ComposerPendingPasteState {
     pub(crate) payload: String,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ComposerKillBufferState {
+    pub(crate) text: String,
+    pub(crate) pending_pastes: Vec<ComposerPendingPasteState>,
+}
+
 impl ComposerDraftState {
     pub(crate) fn from_text(text: impl Into<String>) -> Self {
         let text = text.into();
@@ -768,6 +774,9 @@ pub(crate) struct TuiState {
     pub(crate) input: String,
     pub(crate) input_cursor: usize,
     pub(crate) pending_pastes: Vec<ComposerPendingPasteState>,
+    // Keep kill/yank state outside the visible draft so Ctrl+Y can restore the
+    // latest killed tail even after submit/clear transitions.
+    pub(crate) kill_buffer: Option<ComposerKillBufferState>,
     pub(crate) input_history: Vec<String>,
     pub(crate) local_input_history: Vec<ComposerDraftState>,
     pub(crate) input_history_navigation: Option<ComposerHistoryNavigationState>,
@@ -1267,8 +1276,51 @@ impl TuiState {
         };
         self.input.drain(previous_index..self.input_cursor);
         self.input_cursor = previous_index;
+        self.prune_pending_pastes();
         self.input_history_navigation = None;
         self.reset_command_completion();
+    }
+
+    pub(crate) fn kill_input_to_end(&mut self) -> bool {
+        if self.input_cursor >= self.input.len() {
+            return false;
+        }
+
+        let killed_text = self.input[self.input_cursor..].to_string();
+        if killed_text.is_empty() {
+            return false;
+        }
+
+        self.kill_buffer = Some(ComposerKillBufferState {
+            text: killed_text,
+            pending_pastes: self.pending_pastes_for_text(&self.input[self.input_cursor..]),
+        });
+        self.input.truncate(self.input_cursor);
+        self.prune_pending_pastes();
+        self.input_history_navigation = None;
+        self.reset_command_completion();
+        true
+    }
+
+    pub(crate) fn yank_kill_buffer(&mut self) -> bool {
+        let Some(kill_buffer) = self.kill_buffer.clone() else {
+            return false;
+        };
+        if kill_buffer.text.is_empty() {
+            return false;
+        }
+
+        self.push_input_str(&kill_buffer.text);
+        for pending in kill_buffer.pending_pastes {
+            if self
+                .pending_pastes
+                .iter()
+                .all(|existing| existing.placeholder != pending.placeholder)
+            {
+                self.pending_pastes.push(pending);
+            }
+        }
+        true
     }
 
     pub(crate) fn move_input_cursor_left(&mut self) -> bool {
@@ -1459,6 +1511,19 @@ impl TuiState {
             + 1
     }
 
+    fn pending_pastes_for_text(&self, text: &str) -> Vec<ComposerPendingPasteState> {
+        self.pending_pastes
+            .iter()
+            .filter(|pending| text.contains(&pending.placeholder))
+            .cloned()
+            .collect()
+    }
+
+    fn prune_pending_pastes(&mut self) {
+        self.pending_pastes
+            .retain(|pending| self.input.contains(&pending.placeholder));
+    }
+
     fn take_submission_input(&mut self) -> String {
         self.input_history_navigation = None;
         self.command_completion_index = 0;
@@ -1641,8 +1706,9 @@ fn git_repo_name(workspace_root: &Path) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        ComposerDraftState, ComposerPendingPasteState, HistoryRollbackCandidate, MainPaneMode,
-        SharedUiState, TuiState, git_snapshot, page_scroll_amount,
+        ComposerDraftState, ComposerKillBufferState, ComposerPendingPasteState,
+        HistoryRollbackCandidate, MainPaneMode, SharedUiState, TuiState, git_snapshot,
+        page_scroll_amount,
     };
     use crate::theme::ThemeSummary;
     use agent::types::MessageId;
@@ -1986,5 +2052,77 @@ mod tests {
                 payload: "pasted body".to_string(),
             }]
         );
+    }
+
+    #[test]
+    fn ctrl_k_kills_the_tail_and_tracks_large_paste_payloads() {
+        let mut state = TuiState {
+            input: "prefix [Paste #1] suffix".to_string(),
+            input_cursor: 7,
+            pending_pastes: vec![ComposerPendingPasteState {
+                placeholder: "[Paste #1]".to_string(),
+                payload: "pasted body".to_string(),
+            }],
+            ..TuiState::default()
+        };
+
+        assert!(state.kill_input_to_end());
+        assert_eq!(state.input, "prefix ");
+        assert!(state.pending_pastes.is_empty());
+        assert_eq!(
+            state.kill_buffer,
+            Some(ComposerKillBufferState {
+                text: "[Paste #1] suffix".to_string(),
+                pending_pastes: vec![ComposerPendingPasteState {
+                    placeholder: "[Paste #1]".to_string(),
+                    payload: "pasted body".to_string(),
+                }],
+            })
+        );
+    }
+
+    #[test]
+    fn ctrl_y_reinserts_the_latest_killed_tail_with_payloads() {
+        let mut state = TuiState {
+            input: "prefix [Paste #1] suffix".to_string(),
+            input_cursor: 7,
+            pending_pastes: vec![ComposerPendingPasteState {
+                placeholder: "[Paste #1]".to_string(),
+                payload: "pasted body".to_string(),
+            }],
+            ..TuiState::default()
+        };
+
+        assert!(state.kill_input_to_end());
+        assert!(state.yank_kill_buffer());
+        assert_eq!(state.input, "prefix [Paste #1] suffix");
+        assert_eq!(
+            state.pending_pastes,
+            vec![ComposerPendingPasteState {
+                placeholder: "[Paste #1]".to_string(),
+                payload: "pasted body".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn kill_buffer_survives_submission_clears_and_expands_pending_pastes_on_yank() {
+        let ui_state = SharedUiState::new();
+        ui_state.mutate(|state| {
+            state.replace_input("prefix [Paste #1]");
+            state.pending_pastes.push(ComposerPendingPasteState {
+                placeholder: "[Paste #1]".to_string(),
+                payload: "pasted body".to_string(),
+            });
+            state.input_cursor = "prefix ".len();
+            let _ = state.kill_input_to_end();
+        });
+
+        assert_eq!(ui_state.take_input(), "prefix ");
+
+        ui_state.mutate(|state| {
+            assert!(state.yank_kill_buffer());
+        });
+        assert_eq!(ui_state.take_input(), "pasted body");
     }
 }

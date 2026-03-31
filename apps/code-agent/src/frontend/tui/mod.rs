@@ -362,6 +362,16 @@ impl CodeAgentTui {
                             self.cycle_model_reasoning_effort();
                             continue;
                         }
+                        KeyCode::Char('k') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            if self.kill_input_to_end() {
+                                continue;
+                            }
+                        }
+                        KeyCode::Char('y') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            if self.yank_kill_buffer() {
+                                continue;
+                            }
+                        }
                         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                             if self.stash_composer_draft_on_ctrl_c() {
                                 continue;
@@ -576,6 +586,28 @@ impl CodeAgentTui {
             }
         });
         stashed
+    }
+
+    fn kill_input_to_end(&mut self) -> bool {
+        if !self.composer_accepts_text_input() {
+            return false;
+        }
+
+        let mut killed = false;
+        self.ui_state
+            .mutate(|state| killed = state.kill_input_to_end());
+        killed
+    }
+
+    fn yank_kill_buffer(&mut self) -> bool {
+        if !self.composer_accepts_text_input() {
+            return false;
+        }
+
+        let mut yanked = false;
+        self.ui_state
+            .mutate(|state| yanked = state.yank_kill_buffer());
+        yanked
     }
 
     fn composer_accepts_text_input(&self) -> bool {
@@ -827,6 +859,14 @@ impl CodeAgentTui {
                     self.ui_state.mutate(|state| {
                         state.pop_input_char();
                     });
+                    true
+                }
+                KeyCode::Char('k') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    let _ = self.kill_input_to_end();
+                    true
+                }
+                KeyCode::Char('y') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    let _ = self.yank_kill_buffer();
                     true
                 }
                 KeyCode::Char(ch) if !key.modifiers.contains(KeyModifiers::CONTROL) => {

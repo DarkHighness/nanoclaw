@@ -260,6 +260,9 @@ not have useful extensions, including `Dockerfile*`, `Containerfile*`, `go.mod`,
   cursor is already at a buffer boundary; otherwise those keys move the cursor
   to the start or end of the current draft. `Left`, `Right`, `Home`, and `End`
   now edit inside the prompt instead of always acting on pane scroll state.
+- `Ctrl+K` kills the draft tail from the cursor to end-of-line into a local kill
+  buffer, and `Ctrl+Y` yanks it back. The kill buffer retains pending large-paste
+  payloads, so yanking after a clear or submit restores the full text.
 - `Ctrl+C` now clears the current draft into session-local composer history when
   the prompt line is non-empty, so `Up` can restore it. On an empty prompt line,
   `Ctrl+C` still exits the TUI.
