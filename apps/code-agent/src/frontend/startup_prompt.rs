@@ -1,9 +1,6 @@
 use crate::backend::SandboxFallbackNotice;
 use anyhow::Result;
-use crossterm::event::{
-    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
-    KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
-};
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
@@ -80,20 +77,6 @@ impl StartupPromptState {
             _ => None,
         }
     }
-
-    fn handle_mouse(&self, mouse: MouseEvent, area: Rect) -> Option<bool> {
-        if !matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
-            return None;
-        }
-        let layout = startup_prompt_layout(area);
-        if rect_contains(layout.abort_button, mouse.column, mouse.row) {
-            return Some(false);
-        }
-        if rect_contains(layout.continue_button, mouse.column, mouse.row) {
-            return Some(true);
-        }
-        None
-    }
 }
 
 struct StartupPromptLayout {
@@ -137,13 +120,6 @@ fn run_prompt_loop(
                     return Ok(decision);
                 }
             }
-            Event::Mouse(mouse) => {
-                let size = terminal.size()?;
-                let area = Rect::new(0, 0, size.width, size.height);
-                if let Some(decision) = state.handle_mouse(mouse, area) {
-                    return Ok(decision);
-                }
-            }
             Event::Resize(_, _) => {}
             _ => {}
         }
@@ -153,7 +129,10 @@ fn run_prompt_loop(
 fn enter_prompt_terminal() -> Result<Terminal<CrosstermBackend<Stdout>>> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    if let Err(error) = execute!(stdout, EnterAlternateScreen, EnableMouseCapture) {
+    // Preserve native terminal selection here as well. The startup prompt has
+    // complete keyboard coverage, so click-only affordances are not worth
+    // globally hijacking the terminal mouse protocol before the session starts.
+    if let Err(error) = execute!(stdout, EnterAlternateScreen) {
         let _ = disable_raw_mode();
         return Err(error.into());
     }
@@ -161,7 +140,7 @@ fn enter_prompt_terminal() -> Result<Terminal<CrosstermBackend<Stdout>>> {
         Ok(terminal) => Ok(terminal),
         Err(error) => {
             let mut cleanup_stdout = io::stdout();
-            let _ = execute!(cleanup_stdout, LeaveAlternateScreen, DisableMouseCapture);
+            let _ = execute!(cleanup_stdout, LeaveAlternateScreen);
             let _ = disable_raw_mode();
             Err(error.into())
         }
@@ -170,11 +149,7 @@ fn enter_prompt_terminal() -> Result<Terminal<CrosstermBackend<Stdout>>> {
 
 fn leave_prompt_terminal(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<()> {
     let raw_result = disable_raw_mode();
-    let screen_result = execute!(
-        terminal.backend_mut(),
-        LeaveAlternateScreen,
-        DisableMouseCapture
-    );
+    let screen_result = execute!(terminal.backend_mut(), LeaveAlternateScreen);
     let cursor_result = terminal.show_cursor();
     raw_result?;
     screen_result?;
@@ -563,13 +538,6 @@ fn centered_rect(area: Rect, width_percent: u16, height_percent: u16) -> Rect {
         .split(vertical[1])[1]
 }
 
-fn rect_contains(rect: Rect, column: u16, row: u16) -> bool {
-    column >= rect.x
-        && column < rect.x.saturating_add(rect.width)
-        && row >= rect.y
-        && row < rect.y.saturating_add(rect.height)
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
@@ -578,9 +546,7 @@ mod tests {
         build_reason_card_text, build_risk_card_text, build_summary_text, startup_prompt_layout,
     };
     use crate::backend::SandboxFallbackNotice;
-    use crossterm::event::{
-        KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
-    };
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use ratatui::layout::Rect;
     use ratatui::text::Text;
 
@@ -612,37 +578,6 @@ mod tests {
         assert_eq!(
             state.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
             Some(false)
-        );
-    }
-
-    #[test]
-    fn startup_prompt_mouse_clicks_activate_buttons() {
-        let state = StartupPromptState::default();
-        let layout = startup_prompt_layout(Rect::new(0, 0, 120, 40));
-
-        assert_eq!(
-            state.handle_mouse(
-                MouseEvent {
-                    kind: MouseEventKind::Down(MouseButton::Left),
-                    column: layout.abort_button.x + 1,
-                    row: layout.abort_button.y,
-                    modifiers: KeyModifiers::NONE,
-                },
-                Rect::new(0, 0, 120, 40),
-            ),
-            Some(false)
-        );
-        assert_eq!(
-            state.handle_mouse(
-                MouseEvent {
-                    kind: MouseEventKind::Down(MouseButton::Left),
-                    column: layout.continue_button.x + 1,
-                    row: layout.continue_button.y,
-                    modifiers: KeyModifiers::NONE,
-                },
-                Rect::new(0, 0, 120, 40),
-            ),
-            Some(true)
         );
     }
 
