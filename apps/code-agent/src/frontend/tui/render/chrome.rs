@@ -48,8 +48,9 @@ pub(super) fn composer_cursor_position(
 ) -> Position {
     let inner = bottom_band_inner_area(area);
     let scroll = composer_scroll(state, user_input, inner.height);
-    let (line, column) = composer_cursor_metrics(&state.input, state.input_cursor);
-    let lead_width = if line == 0 {
+    let (base_line, column) = composer_cursor_metrics(&state.input, state.input_cursor);
+    let line = base_line.saturating_add(composer_attachment_row_count(state, user_input));
+    let lead_width = if base_line == 0 {
         first_input_line_lead_width(state, user_input)
     } else {
         0
@@ -800,11 +801,12 @@ fn composer_uses_multiline_layout(
     state: &TuiState,
     user_input: Option<&UserInputView<'_>>,
 ) -> bool {
-    state.input.contains('\n')
-        && user_input.is_none_or(|view| {
-            view.flow
-                .is_none_or(|flow| flow.collecting_other_note || !state.input.is_empty())
-        })
+    composer_attachment_row_count(state, user_input) > 0
+        || state.input.contains('\n')
+            && user_input.is_none_or(|view| {
+                view.flow
+                    .is_none_or(|flow| flow.collecting_other_note || !state.input.is_empty())
+            })
 }
 
 fn composer_text_line_count(state: &TuiState, user_input: Option<&UserInputView<'_>>) -> u16 {
@@ -820,6 +822,7 @@ fn composer_scroll(state: &TuiState, user_input: Option<&UserInputView<'_>>, hei
         return 0;
     }
     let (cursor_line, _) = composer_cursor_metrics(&state.input, state.input_cursor);
+    let cursor_line = cursor_line.saturating_add(composer_attachment_row_count(state, user_input));
     let total_lines = composer_text_line_count(state, user_input);
     let viewport_height = height.max(1);
     let max_scroll = total_lines.saturating_sub(viewport_height);
@@ -832,12 +835,51 @@ fn build_multiline_composer_text(
     state: &TuiState,
     user_input: Option<&UserInputView<'_>>,
 ) -> Text<'static> {
-    let mut lines =
-        build_multiline_input_lines(&state.input, first_input_line_lead(state, user_input));
+    let mut lines = build_attachment_rows(state, user_input);
+    lines.extend(build_multiline_input_lines(
+        &state.input,
+        first_input_line_lead(state, user_input),
+    ));
     if let Some(hint_line) = multiline_hint_line(state, user_input) {
         lines.push(hint_line);
     }
     Text::from(lines)
+}
+
+fn composer_attachment_row_count(state: &TuiState, user_input: Option<&UserInputView<'_>>) -> u16 {
+    if user_input.is_some() {
+        return 0;
+    }
+    state
+        .row_attachment_summaries()
+        .len()
+        .min(u16::MAX as usize) as u16
+}
+
+fn build_attachment_rows(
+    state: &TuiState,
+    user_input: Option<&UserInputView<'_>>,
+) -> Vec<Line<'static>> {
+    if user_input.is_some() {
+        return Vec::new();
+    }
+    state
+        .row_attachment_summaries()
+        .into_iter()
+        .map(|(index, summary, detail)| {
+            let mut spans = vec![
+                Span::styled("·", Style::default().fg(palette().accent)),
+                Span::styled(" ", Style::default().fg(palette().subtle)),
+                Span::styled(format!("#{index} "), Style::default().fg(palette().muted)),
+                Span::styled(summary, Style::default().fg(palette().header)),
+            ];
+            if !detail.is_empty() {
+                spans.push(Span::styled(" · ", Style::default().fg(palette().subtle)));
+                spans.push(Span::styled(detail, Style::default().fg(palette().muted)));
+            }
+            Line::from(spans)
+        })
+        .collect()
 }
 
 fn build_multiline_input_lines(input: &str, lead: Option<String>) -> Vec<Line<'static>> {

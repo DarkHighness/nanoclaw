@@ -20,7 +20,7 @@ pub struct ViewImageToolInput {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct LoadedToolImage {
+pub struct LoadedToolImage {
     pub(crate) requested_path: String,
     pub(crate) resolved_path: PathBuf,
     pub(crate) mime_type: String,
@@ -29,7 +29,7 @@ pub(crate) struct LoadedToolImage {
 }
 
 impl LoadedToolImage {
-    pub(crate) fn message_part(&self) -> MessagePart {
+    pub fn message_part(&self) -> MessagePart {
         MessagePart::Image {
             mime_type: self.mime_type.clone(),
             data_base64: self.data_base64.clone(),
@@ -37,7 +37,7 @@ impl LoadedToolImage {
     }
 }
 
-pub(crate) async fn load_tool_image(
+pub async fn load_tool_image(
     requested_path: &str,
     ctx: &ToolExecutionContext,
 ) -> Result<LoadedToolImage> {

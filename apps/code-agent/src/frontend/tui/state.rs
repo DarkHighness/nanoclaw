@@ -90,31 +90,41 @@ pub(crate) struct PendingControlEditorState {
     pub(crate) kind: PendingControlKind,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct ComposerHistoryNavigationState {
     pub(crate) index: usize,
     pub(crate) draft: ComposerDraftState,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct ComposerDraftState {
     pub(crate) text: String,
     pub(crate) cursor: usize,
     pub(crate) draft_attachments: Vec<ComposerDraftAttachmentState>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct ComposerDraftAttachmentState {
-    pub(crate) placeholder: String,
+    pub(crate) placeholder: Option<String>,
     pub(crate) kind: ComposerDraftAttachmentKind,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) enum ComposerDraftAttachmentKind {
-    LargePaste { payload: String },
+    LargePaste {
+        payload: String,
+    },
+    LocalImage {
+        requested_path: String,
+        part: MessagePart,
+    },
+    LocalFile {
+        requested_path: String,
+        part: MessagePart,
+    },
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct ComposerKillBufferState {
     pub(crate) text: String,
     pub(crate) draft_attachments: Vec<ComposerDraftAttachmentState>,
@@ -139,9 +149,55 @@ impl ComposerDraftState {
 
     fn normalized(mut self) -> Self {
         self.cursor = normalize_input_cursor(&self.text, self.cursor);
-        self.draft_attachments
-            .retain(|attachment| self.text.contains(&attachment.placeholder));
+        self.draft_attachments.retain(|attachment| {
+            attachment
+                .placeholder
+                .as_ref()
+                .is_none_or(|placeholder| self.text.contains(placeholder))
+        });
         self
+    }
+}
+
+impl ComposerDraftAttachmentState {
+    fn is_row_attachment(&self) -> bool {
+        self.placeholder.is_none()
+    }
+
+    fn prompt_parts(&self) -> Vec<MessagePart> {
+        match &self.kind {
+            ComposerDraftAttachmentKind::LargePaste { payload } => {
+                let label = self
+                    .placeholder
+                    .clone()
+                    .unwrap_or_else(|| "[Paste]".to_string());
+                vec![MessagePart::paste(label, payload.clone())]
+            }
+            ComposerDraftAttachmentKind::LocalImage { part, .. }
+            | ComposerDraftAttachmentKind::LocalFile { part, .. } => vec![part.clone()],
+        }
+    }
+
+    pub(crate) fn row_summary(&self) -> Option<String> {
+        match &self.kind {
+            ComposerDraftAttachmentKind::LargePaste { .. } => None,
+            ComposerDraftAttachmentKind::LocalImage { requested_path, .. } => {
+                Some(format!("image · {}", preview_path_tail(requested_path)))
+            }
+            ComposerDraftAttachmentKind::LocalFile { requested_path, .. } => {
+                Some(format!("file · {}", preview_path_tail(requested_path)))
+            }
+        }
+    }
+
+    pub(crate) fn row_detail(&self) -> Option<String> {
+        match &self.kind {
+            ComposerDraftAttachmentKind::LargePaste { .. } => None,
+            ComposerDraftAttachmentKind::LocalImage { requested_path, .. }
+            | ComposerDraftAttachmentKind::LocalFile { requested_path, .. } => {
+                Some(requested_path.clone())
+            }
+        }
     }
 }
 
@@ -1296,13 +1352,65 @@ impl TuiState {
     pub(crate) fn push_large_paste(&mut self, payload: &str) -> String {
         let placeholder = format!("[Paste #{}]", self.next_pending_paste_index());
         self.draft_attachments.push(ComposerDraftAttachmentState {
-            placeholder: placeholder.clone(),
+            placeholder: Some(placeholder.clone()),
             kind: ComposerDraftAttachmentKind::LargePaste {
                 payload: payload.to_string(),
             },
         });
         self.push_input_str(&placeholder);
         placeholder
+    }
+
+    pub(crate) fn push_row_attachment(&mut self, attachment: ComposerDraftAttachmentState) -> bool {
+        if !attachment.is_row_attachment() {
+            return false;
+        }
+        if self
+            .draft_attachments
+            .iter()
+            .any(|existing| existing == &attachment)
+        {
+            return false;
+        }
+        self.draft_attachments.push(attachment);
+        self.input_history_navigation = None;
+        self.reset_command_completion();
+        true
+    }
+
+    pub(crate) fn remove_row_attachment(
+        &mut self,
+        index: Option<usize>,
+    ) -> Option<ComposerDraftAttachmentState> {
+        let row_indices = self
+            .draft_attachments
+            .iter()
+            .enumerate()
+            .filter_map(|(index, attachment)| attachment.is_row_attachment().then_some(index))
+            .collect::<Vec<_>>();
+        let target = match index {
+            Some(index) if index > 0 => row_indices.get(index - 1).copied(),
+            Some(_) => None,
+            None => row_indices.last().copied(),
+        }?;
+        self.input_history_navigation = None;
+        self.reset_command_completion();
+        Some(self.draft_attachments.remove(target))
+    }
+
+    pub(crate) fn row_attachment_summaries(&self) -> Vec<(usize, String, String)> {
+        self.draft_attachments
+            .iter()
+            .filter(|attachment| attachment.is_row_attachment())
+            .enumerate()
+            .filter_map(|(index, attachment)| {
+                Some((
+                    index + 1,
+                    attachment.row_summary()?,
+                    attachment.row_detail().unwrap_or_default(),
+                ))
+            })
+            .collect()
     }
 
     pub(crate) fn pop_input_char(&mut self) {
@@ -1559,7 +1667,8 @@ impl TuiState {
             .filter_map(|attachment| {
                 attachment
                     .placeholder
-                    .strip_prefix("[Paste #")
+                    .as_deref()
+                    .and_then(|placeholder| placeholder.strip_prefix("[Paste #"))
                     .and_then(|rest| rest.strip_suffix(']'))
                     .and_then(|value| value.parse::<usize>().ok())
             })
@@ -1571,14 +1680,23 @@ impl TuiState {
     fn draft_attachments_for_text(&self, text: &str) -> Vec<ComposerDraftAttachmentState> {
         self.draft_attachments
             .iter()
-            .filter(|attachment| text.contains(&attachment.placeholder))
+            .filter(|attachment| {
+                attachment
+                    .placeholder
+                    .as_ref()
+                    .is_some_and(|placeholder| text.contains(placeholder))
+            })
             .cloned()
             .collect()
     }
 
     fn prune_draft_attachments(&mut self) {
-        self.draft_attachments
-            .retain(|attachment| self.input.contains(&attachment.placeholder));
+        self.draft_attachments.retain(|attachment| {
+            attachment
+                .placeholder
+                .as_ref()
+                .is_none_or(|placeholder| self.input.contains(placeholder))
+        });
     }
 
     fn take_submission_input(&mut self) -> String {
@@ -1609,6 +1727,13 @@ impl TuiState {
 
     fn submission_message(&self) -> Message {
         let mut parts = Vec::new();
+        for attachment in self
+            .draft_attachments
+            .iter()
+            .filter(|attachment| attachment.is_row_attachment())
+        {
+            parts.extend(attachment.prompt_parts());
+        }
         let mut remaining = self.input.as_str();
 
         while !remaining.is_empty() {
@@ -1616,9 +1741,8 @@ impl TuiState {
                 .draft_attachments
                 .iter()
                 .filter_map(|attachment| {
-                    remaining
-                        .find(&attachment.placeholder)
-                        .map(|index| (index, attachment))
+                    let placeholder = attachment.placeholder.as_ref()?;
+                    remaining.find(placeholder).map(|index| (index, attachment))
                 })
                 .min_by_key(|(index, _)| *index);
             let Some((index, attachment)) = next_attachment else {
@@ -1630,16 +1754,14 @@ impl TuiState {
                 parts.push(MessagePart::inline_text(&remaining[..index]));
             }
 
-            match &attachment.kind {
-                ComposerDraftAttachmentKind::LargePaste { payload } => {
-                    parts.push(MessagePart::paste(
-                        attachment.placeholder.clone(),
-                        payload.clone(),
-                    ));
-                }
-            }
+            parts.extend(attachment.prompt_parts());
 
-            remaining = &remaining[index + attachment.placeholder.len()..];
+            remaining = &remaining[index
+                + attachment
+                    .placeholder
+                    .as_ref()
+                    .expect("inline attachment placeholder")
+                    .len()..];
         }
 
         if parts.is_empty() {
@@ -1665,6 +1787,15 @@ fn page_scroll_amount(viewport_height: u16, half_page: bool) -> i16 {
     let page = viewport_height.saturating_sub(2).max(1);
     let amount = if half_page { (page / 2).max(1) } else { page };
     amount.min(i16::MAX as u16) as i16
+}
+
+fn preview_path_tail(path: &str) -> String {
+    Path::new(path)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.is_empty())
+        .unwrap_or(path)
+        .to_string()
 }
 
 fn normalize_input_cursor(input: &str, cursor: usize) -> usize {
@@ -2272,6 +2403,91 @@ mod tests {
     }
 
     #[test]
+    fn take_submission_keeps_row_attachments_as_first_class_parts() {
+        let mut state = TuiState::default();
+        assert!(state.push_row_attachment(local_image_attachment("artifacts/failure.png")));
+        assert!(state.push_row_attachment(local_file_attachment("reports/run.pdf")));
+        state.push_input_str("describe the failure");
+
+        let submission = state.take_submission();
+
+        assert_eq!(
+            submission.persisted_history_text,
+            "[image:image/png]\n[file:run.pdf application/pdf reports/run.pdf]\ndescribe the failure"
+        );
+        assert_eq!(
+            submission.local_history_draft,
+            ComposerDraftState {
+                text: "describe the failure".to_string(),
+                cursor: "describe the failure".len(),
+                draft_attachments: vec![
+                    local_image_attachment("artifacts/failure.png"),
+                    local_file_attachment("reports/run.pdf"),
+                ],
+            }
+        );
+        assert_eq!(
+            submission.message.parts,
+            vec![
+                MessagePart::Image {
+                    mime_type: "image/png".to_string(),
+                    data_base64: "png-data".to_string(),
+                },
+                MessagePart::File {
+                    file_name: Some("run.pdf".to_string()),
+                    mime_type: Some("application/pdf".to_string()),
+                    data_base64: Some("pdf-data".to_string()),
+                    uri: Some("reports/run.pdf".to_string()),
+                },
+                MessagePart::inline_text("describe the failure"),
+            ]
+        );
+    }
+
+    #[test]
+    fn row_attachment_summaries_list_only_visible_attachment_rows() {
+        let mut state = TuiState::default();
+        assert!(state.push_row_attachment(local_image_attachment("artifacts/failure.png")));
+        let _ = state.push_large_paste("pasted body");
+        assert!(state.push_row_attachment(local_file_attachment("reports/run.pdf")));
+
+        assert_eq!(
+            state.row_attachment_summaries(),
+            vec![
+                (
+                    1,
+                    "image · failure.png".to_string(),
+                    "artifacts/failure.png".to_string(),
+                ),
+                (
+                    2,
+                    "file · run.pdf".to_string(),
+                    "reports/run.pdf".to_string(),
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn remove_row_attachment_defaults_to_latest_visible_row() {
+        let mut state = TuiState::default();
+        assert!(state.push_row_attachment(local_image_attachment("artifacts/failure.png")));
+        assert!(state.push_row_attachment(local_file_attachment("reports/run.pdf")));
+
+        let removed = state.remove_row_attachment(None);
+
+        assert_eq!(removed, Some(local_file_attachment("reports/run.pdf")));
+        assert_eq!(
+            state.row_attachment_summaries(),
+            vec![(
+                1,
+                "image · failure.png".to_string(),
+                "artifacts/failure.png".to_string(),
+            )]
+        );
+    }
+
+    #[test]
     fn stashed_draft_recall_restores_pending_paste_payloads() {
         let mut state = TuiState::default();
         let _ = state.push_large_paste("pasted body");
@@ -2348,9 +2564,37 @@ mod tests {
 
     fn large_paste_attachment(payload: &str) -> ComposerDraftAttachmentState {
         ComposerDraftAttachmentState {
-            placeholder: "[Paste #1]".to_string(),
+            placeholder: Some("[Paste #1]".to_string()),
             kind: ComposerDraftAttachmentKind::LargePaste {
                 payload: payload.to_string(),
+            },
+        }
+    }
+
+    fn local_image_attachment(path: &str) -> ComposerDraftAttachmentState {
+        ComposerDraftAttachmentState {
+            placeholder: None,
+            kind: ComposerDraftAttachmentKind::LocalImage {
+                requested_path: path.to_string(),
+                part: MessagePart::Image {
+                    mime_type: "image/png".to_string(),
+                    data_base64: "png-data".to_string(),
+                },
+            },
+        }
+    }
+
+    fn local_file_attachment(path: &str) -> ComposerDraftAttachmentState {
+        ComposerDraftAttachmentState {
+            placeholder: None,
+            kind: ComposerDraftAttachmentKind::LocalFile {
+                requested_path: path.to_string(),
+                part: MessagePart::File {
+                    file_name: Some("run.pdf".to_string()),
+                    mime_type: Some("application/pdf".to_string()),
+                    data_base64: Some("pdf-data".to_string()),
+                    uri: Some(path.to_string()),
+                },
             },
         }
     }

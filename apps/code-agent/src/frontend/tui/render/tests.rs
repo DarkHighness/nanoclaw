@@ -27,13 +27,14 @@ use crate::frontend::tui::commands::{
     SlashCommandHint, SlashCommandSpec,
 };
 use crate::frontend::tui::state::{
-    HistoryRollbackCandidate, InspectorEntry, MainPaneMode, PlanEntry, StatusLinePickerState,
-    ThemePickerState, TranscriptEntry, TranscriptShellDetail, TranscriptToolStatus, TuiState,
+    ComposerDraftAttachmentKind, ComposerDraftAttachmentState, HistoryRollbackCandidate,
+    InspectorEntry, MainPaneMode, PlanEntry, StatusLinePickerState, ThemePickerState,
+    TranscriptEntry, TranscriptShellDetail, TranscriptToolStatus, TuiState,
 };
 use crate::theme::ThemeSummary;
 use crate::tool_render::ToolDetail;
 use agent::tools::{UserInputAnswer, UserInputOption, UserInputQuestion};
-use agent::types::MessageId;
+use agent::types::{MessageId, MessagePart};
 use ratatui::layout::Rect;
 use std::collections::BTreeMap;
 
@@ -480,6 +481,43 @@ fn multiline_composer_text_keeps_followup_lines_and_shortcuts_visible() {
     assert_eq!(lines[1], "  second line");
     assert!(lines[2].contains("enter/tab save"));
     assert_eq!(composer_height(&state, None), 3);
+}
+
+#[test]
+fn multiline_composer_text_renders_attachment_rows_above_prompt() {
+    let mut state = TuiState::default();
+    state.draft_attachments = vec![
+        ComposerDraftAttachmentState {
+            placeholder: None,
+            kind: ComposerDraftAttachmentKind::LocalImage {
+                requested_path: "artifacts/failure.png".to_string(),
+                part: MessagePart::Image {
+                    mime_type: "image/png".to_string(),
+                    data_base64: "png-data".to_string(),
+                },
+            },
+        },
+        ComposerDraftAttachmentState {
+            placeholder: None,
+            kind: ComposerDraftAttachmentKind::LocalFile {
+                requested_path: "reports/run.pdf".to_string(),
+                part: MessagePart::File {
+                    file_name: Some("run.pdf".to_string()),
+                    mime_type: Some("application/pdf".to_string()),
+                    data_base64: Some("pdf-data".to_string()),
+                    uri: Some("reports/run.pdf".to_string()),
+                },
+            },
+        },
+    ];
+    state.input = "describe the failure".to_string();
+
+    let text = build_composer_text(&state, None);
+    let lines = text_lines(&text);
+
+    assert_eq!(lines[0], "· #1 image · failure.png · artifacts/failure.png");
+    assert_eq!(lines[1], "· #2 file · run.pdf · reports/run.pdf");
+    assert_eq!(lines[2], "› describe the failure");
 }
 
 #[test]

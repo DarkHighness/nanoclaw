@@ -36,15 +36,20 @@ use observer::SharedRenderObserver;
 use paste_burst::{CharDecision, FlushResult, PasteBurst};
 use render::{main_pane_viewport_height, render};
 pub(crate) use state::SharedUiState;
-use state::{ComposerSubmission, InspectorEntry, TuiState};
+use state::{
+    ComposerDraftAttachmentKind, ComposerDraftAttachmentState, ComposerSubmission, InspectorEntry,
+    TuiState,
+};
 
 use agent::RuntimeCommand;
 use agent::tools::{
-    GrantedPermissionResponse, PermissionGrantScope, RequestPermissionProfile, UserInputAnswer,
-    UserInputResponse,
+    GrantedPermissionResponse, PermissionGrantScope, RequestPermissionProfile,
+    ToolExecutionContext, UserInputAnswer, UserInputResponse, load_tool_image,
+    resolve_tool_path_against_workspace_root,
 };
-use agent::types::{Message, MessageRole, message_operator_text};
+use agent::types::{Message, MessagePart, MessageRole, message_operator_text};
 use anyhow::Result;
+use base64::Engine;
 use crossterm::event::{
     self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEvent, KeyEventKind,
     KeyModifiers,
@@ -58,7 +63,9 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::layout::Rect;
 use std::collections::BTreeMap;
 use std::io::{self, Stdout};
+use std::path::Path;
 use std::time::Instant;
+use tokio::fs;
 use tokio::task::{JoinHandle, spawn_local};
 use tokio::time::{Duration, sleep};
 use tracing::error;
@@ -108,6 +115,14 @@ struct UserInputView<'a> {
     prompt: &'a UserInputPrompt,
     flow: Option<&'a ActiveUserInputState>,
     input: &'a str,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct LoadedComposerFile {
+    requested_path: String,
+    file_name: Option<String>,
+    mime_type: Option<String>,
+    data_base64: String,
 }
 
 fn summarize_nonfatal_error(operation: &'static str, error: &anyhow::Error) -> String {
@@ -711,6 +726,126 @@ impl CodeAgentTui {
         if let Some(entries) = persisted {
             input_history::persist_input_history(&workspace_root, &entries);
         }
+    }
+
+    fn composer_attachment_context(&self) -> ToolExecutionContext {
+        ToolExecutionContext {
+            workspace_root: self.session.workspace_root().to_path_buf(),
+            workspace_only: true,
+            ..Default::default()
+        }
+    }
+
+    async fn attach_composer_image(&mut self, path: &str) {
+        let path = path.trim();
+        if path.is_empty() {
+            self.ui_state.mutate(|state| {
+                state.status = "Usage: /image <path>".to_string();
+                state.push_activity("invalid /image invocation");
+            });
+            return;
+        }
+
+        match load_tool_image(path, &self.composer_attachment_context()).await {
+            Ok(image) => {
+                let attachment = ComposerDraftAttachmentState {
+                    placeholder: None,
+                    kind: ComposerDraftAttachmentKind::LocalImage {
+                        requested_path: path.to_string(),
+                        part: image.message_part(),
+                    },
+                };
+                self.ui_state.mutate(|state| {
+                    if state.push_row_attachment(attachment) {
+                        state.status = format!("Attached image {}", preview_path_tail(path));
+                        state.push_activity(format!("attached image {}", path));
+                    } else {
+                        state.status =
+                            format!("Image {} is already attached", preview_path_tail(path));
+                        state.push_activity(format!("image already attached: {}", path));
+                    }
+                });
+            }
+            Err(error) => {
+                let error = anyhow::Error::from(error);
+                let message = summarize_nonfatal_error("attach image", &error);
+                self.ui_state.mutate(|state| {
+                    state.status = format!("Failed to attach image: {message}");
+                    state.push_activity(format!(
+                        "failed to attach image: {}",
+                        state::preview_text(&message, 56)
+                    ));
+                });
+            }
+        }
+    }
+
+    async fn attach_composer_file(&mut self, path: &str) {
+        let path = path.trim();
+        if path.is_empty() {
+            self.ui_state.mutate(|state| {
+                state.status = "Usage: /file <path>".to_string();
+                state.push_activity("invalid /file invocation");
+            });
+            return;
+        }
+
+        match load_composer_file(path, &self.composer_attachment_context()).await {
+            Ok(file) => {
+                let attachment = ComposerDraftAttachmentState {
+                    placeholder: None,
+                    kind: ComposerDraftAttachmentKind::LocalFile {
+                        requested_path: file.requested_path.clone(),
+                        part: MessagePart::File {
+                            file_name: file.file_name.clone(),
+                            mime_type: file.mime_type.clone(),
+                            data_base64: Some(file.data_base64),
+                            uri: Some(file.requested_path.clone()),
+                        },
+                    },
+                };
+                self.ui_state.mutate(|state| {
+                    if state.push_row_attachment(attachment) {
+                        state.status = format!("Attached file {}", preview_path_tail(path));
+                        state.push_activity(format!("attached file {}", path));
+                    } else {
+                        state.status =
+                            format!("File {} is already attached", preview_path_tail(path));
+                        state.push_activity(format!("file already attached: {}", path));
+                    }
+                });
+            }
+            Err(error) => {
+                let message = summarize_nonfatal_error("attach file", &error);
+                self.ui_state.mutate(|state| {
+                    state.status = format!("Failed to attach file: {message}");
+                    state.push_activity(format!(
+                        "failed to attach file: {}",
+                        state::preview_text(&message, 56)
+                    ));
+                });
+            }
+        }
+    }
+
+    fn detach_composer_attachment(&mut self, index: Option<usize>) {
+        self.ui_state
+            .mutate(|state| match state.remove_row_attachment(index) {
+                Some(attachment) => {
+                    let summary = attachment
+                        .row_summary()
+                        .unwrap_or_else(|| "attachment".to_string());
+                    state.status = format!("Detached {summary}");
+                    state.push_activity(format!("detached {summary}"));
+                }
+                None => {
+                    state.status = match index {
+                        Some(index) => format!("No composer attachment {index}"),
+                        None => "No composer attachment to detach".to_string(),
+                    };
+                    state.push_activity("no composer attachment removed");
+                }
+            });
     }
 
     fn move_command_selection(&mut self, backwards: bool) -> bool {
@@ -2041,6 +2176,18 @@ impl CodeAgentTui {
                 }
                 Ok(false)
             }
+            SlashCommand::Image { path } => {
+                self.attach_composer_image(&path).await;
+                Ok(false)
+            }
+            SlashCommand::File { path } => {
+                self.attach_composer_file(&path).await;
+                Ok(false)
+            }
+            SlashCommand::Detach { index } => {
+                self.detach_composer_attachment(index);
+                Ok(false)
+            }
             SlashCommand::Help { query } => {
                 let title = query
                     .as_deref()
@@ -3016,6 +3163,47 @@ fn history_rollback_status(
         candidate.removed_message_count,
         state::preview_text(&candidate.prompt, 40)
     )
+}
+
+fn preview_path_tail(path: &str) -> String {
+    Path::new(path)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.is_empty())
+        .unwrap_or(path)
+        .to_string()
+}
+
+async fn load_composer_file(
+    requested_path: &str,
+    ctx: &ToolExecutionContext,
+) -> Result<LoadedComposerFile> {
+    let resolved_path = resolve_tool_path_against_workspace_root(
+        requested_path,
+        ctx.effective_root(),
+        ctx.container_workdir.as_deref(),
+    )?;
+    ctx.assert_path_read_allowed(&resolved_path)?;
+    let bytes = fs::read(&resolved_path).await?;
+    Ok(LoadedComposerFile {
+        requested_path: requested_path.to_string(),
+        file_name: resolved_path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .map(str::to_string),
+        mime_type: sniff_composer_file_mime(&bytes, &resolved_path).map(str::to_string),
+        data_base64: base64::engine::general_purpose::STANDARD.encode(bytes),
+    })
+}
+
+fn sniff_composer_file_mime(bytes: &[u8], path: &Path) -> Option<&'static str> {
+    if bytes.starts_with(b"%PDF-") {
+        return Some("application/pdf");
+    }
+    match path.extension().and_then(|value| value.to_str()) {
+        Some("pdf") => Some("application/pdf"),
+        _ => None,
+    }
 }
 
 fn queued_command_preview(command: &RuntimeCommand) -> String {

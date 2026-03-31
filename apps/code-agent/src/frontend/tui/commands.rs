@@ -118,6 +118,24 @@ const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
     },
     SlashCommandSpec {
         section: "Session",
+        name: "image",
+        usage: "image <path>",
+        summary: "attach local image to composer",
+    },
+    SlashCommandSpec {
+        section: "Session",
+        name: "file",
+        usage: "file <path>",
+        summary: "attach local file to composer",
+    },
+    SlashCommandSpec {
+        section: "Session",
+        name: "detach",
+        usage: "detach [index]",
+        summary: "remove composer attachment",
+    },
+    SlashCommandSpec {
+        section: "Session",
         name: "new",
         usage: "new",
         summary: "fresh top-level session",
@@ -303,6 +321,15 @@ pub(crate) enum SlashCommand {
     Theme {
         name: Option<String>,
     },
+    Image {
+        path: String,
+    },
+    File {
+        path: String,
+    },
+    Detach {
+        index: Option<usize>,
+    },
     Help {
         query: Option<String>,
     },
@@ -403,6 +430,17 @@ enum SlashSubcommand {
     },
     Theme {
         name: Option<String>,
+    },
+    Image {
+        #[arg(value_name = "PATH", required = true, trailing_var_arg = true)]
+        path: Vec<String>,
+    },
+    File {
+        #[arg(value_name = "PATH", required = true, trailing_var_arg = true)]
+        path: Vec<String>,
+    },
+    Detach {
+        index: Option<usize>,
     },
     Help {
         #[arg(
@@ -712,6 +750,13 @@ impl From<SlashSubcommand> for SlashCommand {
             SlashSubcommand::Statusline => Self::StatusLine,
             SlashSubcommand::Thinking { effort } => Self::Thinking { effort },
             SlashSubcommand::Theme { name } => Self::Theme { name },
+            SlashSubcommand::Image { path } => Self::Image {
+                path: join_required_tail(path),
+            },
+            SlashSubcommand::File { path } => Self::File {
+                path: join_required_tail(path),
+            },
+            SlashSubcommand::Detach { index } => Self::Detach { index },
             SlashSubcommand::Help { query } => Self::Help {
                 query: join_optional_tail(query),
             },
@@ -1122,6 +1167,34 @@ mod tests {
         assert_eq!(
             parse_slash_command("/theme"),
             SlashCommand::Theme { name: None }
+        );
+    }
+
+    #[test]
+    fn parses_image_and_file_attachment_commands() {
+        assert_eq!(
+            parse_slash_command("/image artifacts/failure.png"),
+            SlashCommand::Image {
+                path: "artifacts/failure.png".to_string()
+            }
+        );
+        assert_eq!(
+            parse_slash_command("/file reports/run log.pdf"),
+            SlashCommand::File {
+                path: "reports/run log.pdf".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn parses_detach_with_optional_index() {
+        assert_eq!(
+            parse_slash_command("/detach 2"),
+            SlashCommand::Detach { index: Some(2) }
+        );
+        assert_eq!(
+            parse_slash_command("/detach"),
+            SlashCommand::Detach { index: None }
         );
     }
 

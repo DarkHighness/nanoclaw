@@ -841,6 +841,7 @@ dependencies = [
  "agent-env",
  "anyhow",
  "async-trait",
+ "base64",
  "chrono",
  "clap",
  "crossterm 0.29.0",
