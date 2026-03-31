@@ -526,11 +526,11 @@ fn multiline_composer_text_keeps_followup_lines_and_shortcuts_visible() {
 }
 
 #[test]
-fn multiline_composer_text_renders_attachment_rows_above_prompt() {
+fn multiline_composer_text_keeps_local_attachment_placeholders_inline() {
     let mut state = TuiState::default();
     state.draft_attachments = vec![
         ComposerDraftAttachmentState {
-            placeholder: None,
+            placeholder: Some("[Image #1]".to_string()),
             kind: ComposerDraftAttachmentKind::LocalImage {
                 requested_path: "artifacts/failure.png".to_string(),
                 part: MessagePart::Image {
@@ -540,7 +540,7 @@ fn multiline_composer_text_renders_attachment_rows_above_prompt() {
             },
         },
         ComposerDraftAttachmentState {
-            placeholder: None,
+            placeholder: Some("[File #1]".to_string()),
             kind: ComposerDraftAttachmentKind::LocalFile {
                 requested_path: "reports/run.pdf".to_string(),
                 part: MessagePart::File {
@@ -552,14 +552,13 @@ fn multiline_composer_text_renders_attachment_rows_above_prompt() {
             },
         },
     ];
-    state.input = "describe the failure".to_string();
+    state.input = "[Image #1] [File #1]\ndescribe the failure".to_string();
 
     let text = build_composer_text(&state, None);
     let lines = text_lines(&text);
 
-    assert_eq!(lines[0], "· #1 image · failure.png · artifacts/failure.png");
-    assert_eq!(lines[1], "· #2 file · run.pdf · reports/run.pdf");
-    assert_eq!(lines[2], "› describe the failure");
+    assert_eq!(lines[0], "› [Image #1] [File #1]");
+    assert_eq!(lines[1], "  describe the failure");
 }
 
 #[test]

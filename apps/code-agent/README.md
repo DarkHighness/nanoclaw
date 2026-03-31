@@ -273,11 +273,13 @@ not have useful extensions, including `Dockerfile*`, `Containerfile*`, `go.mod`,
   such as large-paste payloads, so yanking after a clear or submit restores the
   full text.
 - `Ctrl+O` opens `$VISUAL` or `$EDITOR` with the current composer text. When
-  row attachments are present, the editor seed includes an `[Attachments]`
-  section ahead of `[Prompt]`, so removing or reordering those placeholder
-  lines detaches or reorders the pending image/file rows. Saving and closing
-  reapplies the edited prompt text, drops missing inline placeholders, and
-  rebinds surviving large-paste placeholders to stable `[Paste #N]` labels.
+  remote attachment rows are present, the editor seed includes an
+  `[Attachments]` section ahead of `[Prompt]`, so removing or reordering those
+  placeholder lines detaches or reorders the pending remote image/file rows.
+  Saving and closing reapplies the edited prompt text, drops missing inline
+  placeholders, and rebinds surviving local attachment placeholders plus large
+  paste placeholders into stable `[Image #N]`, `[File #N]`, and `[Paste #N]`
+  labels.
 - `Ctrl+C` now clears the current draft into session-local composer history when
   the prompt line is non-empty, so `Up` can restore it. On an empty prompt line,
   `Ctrl+C` still exits the TUI.
@@ -285,12 +287,14 @@ not have useful extensions, including `Dockerfile*`, `Containerfile*`, `go.mod`,
   the composer. The full payload stays in session-local draft attachment state,
   is submitted as a typed message part while persistent history stays plain
   text, and is restored when recalling a stashed draft.
-- `/image <path-or-url>` and `/file <path-or-url>` add first-class attachment
-  rows above the prompt line, including remote `http/https` attachments that
-  reuse provider-native URL transport instead of downloading through the host.
-  `/detach [index]` removes the latest row or a specific numbered row. Those
-  rows stay inside session-local draft history so recalled drafts restore the
-  same pending attachments. `Up` at cursor position `0` selects the last row,
+- `/image <path-or-url>` and `/file <path-or-url>` add first-class composer
+  attachments. Local workspace paths are inserted into the prompt as inline
+  placeholders such as `[Image #1]` and `[File #1]`, while remote
+  `http/https` attachments stay as rows above the prompt line so they can be
+  selected and reordered separately. `/detach [index]` removes the latest row
+  or a specific numbered row. Those rows and inline placeholders both stay
+  inside session-local draft history so recalled drafts restore the same
+  pending attachments. `Up` at cursor position `0` selects the last row,
   `Up`/`Down` moves across rows, `Down` on the final row returns to text
   editing, `Delete`/`Backspace` removes the selected row, and
   `/move_attachment <from> <to>` reorders rows explicitly.

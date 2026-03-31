@@ -907,14 +907,14 @@ impl CodeAgentTui {
         match load_tool_image(path, &self.composer_attachment_context()).await {
             Ok(image) => {
                 let attachment = ComposerDraftAttachmentState {
-                    placeholder: None,
+                    placeholder: Some("[Image #1]".to_string()),
                     kind: ComposerDraftAttachmentKind::LocalImage {
                         requested_path: path.to_string(),
                         part: image.message_part(),
                     },
                 };
                 self.ui_state.mutate(|state| {
-                    if state.push_row_attachment(attachment) {
+                    if state.push_inline_attachment(attachment) {
                         state.status = format!("Attached image {}", preview_path_tail(path));
                         state.push_activity(format!("attached image {}", path));
                     } else {
@@ -976,7 +976,7 @@ impl CodeAgentTui {
         match load_composer_file(path, &self.composer_attachment_context()).await {
             Ok(file) => {
                 let attachment = ComposerDraftAttachmentState {
-                    placeholder: None,
+                    placeholder: Some("[File #1]".to_string()),
                     kind: ComposerDraftAttachmentKind::LocalFile {
                         requested_path: file.requested_path.clone(),
                         part: MessagePart::File {
@@ -988,7 +988,7 @@ impl CodeAgentTui {
                     },
                 };
                 self.ui_state.mutate(|state| {
-                    if state.push_row_attachment(attachment) {
+                    if state.push_inline_attachment(attachment) {
                         state.status = format!("Attached file {}", preview_path_tail(path));
                         state.push_activity(format!("attached file {}", path));
                     } else {
@@ -4040,7 +4040,7 @@ mod tests {
     }
 
     #[test]
-    fn history_rollback_candidates_restore_text_and_row_attachments_into_draft() {
+    fn history_rollback_candidates_restore_text_and_inline_attachments_into_draft() {
         let transcript = vec![
             Message::new(
                 MessageRole::User,
@@ -4055,7 +4055,7 @@ mod tests {
                         data_base64: Some("cGRm".to_string()),
                         uri: Some("reports/run.pdf".to_string()),
                     },
-                    MessagePart::inline_text("summarize the artifact"),
+                    MessagePart::inline_text(" summarize the artifact"),
                 ],
             )
             .with_message_id(MessageId::from("msg-1")),
@@ -4066,9 +4066,9 @@ mod tests {
         assert_eq!(candidates.len(), 1);
         assert_eq!(
             candidates[0].prompt,
-            "[image_url:https://example.com/diagram.png image/png]\n[file:run.pdf application/pdf reports/run.pdf]\nsummarize the artifact"
+            "[image_url:https://example.com/diagram.png image/png]\n[file:run.pdf application/pdf reports/run.pdf]\n summarize the artifact"
         );
-        assert_eq!(candidates[0].draft.text, "summarize the artifact");
+        assert_eq!(candidates[0].draft.text, "[File #1] summarize the artifact");
         assert_eq!(candidates[0].draft.draft_attachments.len(), 2);
         assert!(matches!(
             &candidates[0].draft.draft_attachments[0].kind,
