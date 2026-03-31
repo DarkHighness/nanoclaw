@@ -117,13 +117,25 @@ pub fn build_self_regression_case(
         last_user_prompt(&focus_transcript).or_else(|| last_user_prompt(&agent_session_transcript));
 
     SelfRegressionCase {
-        case_id: types::new_opaque_id(),
+        case_id: stable_case_id(&task),
         split: split_for_task(&task),
         task,
         focus_events,
         focus_transcript,
         agent_session_transcript,
         last_user_prompt,
+    }
+}
+
+fn stable_case_id(task: &SelfImproveTask) -> String {
+    // Case ids must round-trip from the task id so an artifact can cite source
+    // cases without depending on one-off corpus build randomness.
+    if let Some(suffix) = task.task_id.strip_prefix("task_") {
+        format!("case_{suffix}")
+    } else if let Some(suffix) = task.task_id.strip_prefix("task-") {
+        format!("case-{suffix}")
+    } else {
+        format!("case_{}", task.task_id)
     }
 }
 
@@ -226,6 +238,7 @@ mod tests {
         assert_eq!(case.focus_transcript.len(), 2);
         assert_eq!(case.agent_session_transcript.len(), 3);
         assert_eq!(case.last_user_prompt.as_deref(), Some("prompt two"));
+        assert_eq!(case.case_id, "case-turn-2");
     }
 
     #[tokio::test]
@@ -328,6 +341,7 @@ mod tests {
         );
 
         assert_eq!(left.split, right.split);
+        assert_eq!(left.case_id, right.case_id);
         assert!(matches!(
             left.split,
             SelfRegressionSplit::Train

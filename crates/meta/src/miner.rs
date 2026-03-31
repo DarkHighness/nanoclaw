@@ -1,12 +1,13 @@
 use crate::tasks::{SelfImproveTask, SelfImproveTaskKind, SelfImproveTaskPriority};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, hash_map::DefaultHasher};
+use std::hash::{Hash, Hasher};
 use store::SessionStore;
 use types::{
     EventId, SelfImproveSignalKind, SelfImproveSignalRecord, SessionId, SignalId, SignalSeverity,
-    ToolName, TurnId, new_opaque_id,
+    ToolName, TurnId,
 };
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 struct TaskGroupKey {
     kind: SelfImproveTaskKind,
     session_id: SessionId,
@@ -122,7 +123,10 @@ fn build_task(key: TaskGroupKey, accumulator: TaskAccumulator) -> SelfImproveTas
     let expected_outcome = task_expected_outcome(key.kind);
 
     SelfImproveTask {
-        task_id: new_opaque_id(),
+        // Task ids must be reproducible from the grouped runtime signal shape so
+        // later artifact lineage can keep referring back to the same task
+        // across repeated corpus rebuilds.
+        task_id: stable_task_id(&key),
         kind: key.kind,
         priority: accumulator
             .priority
@@ -141,6 +145,12 @@ fn build_task(key: TaskGroupKey, accumulator: TaskAccumulator) -> SelfImproveTas
         source_task_id: key.source_task_id,
         details: accumulator.details,
     }
+}
+
+fn stable_task_id(key: &TaskGroupKey) -> String {
+    let mut hasher = DefaultHasher::new();
+    key.hash(&mut hasher);
+    format!("task_{:016x}", hasher.finish())
 }
 
 fn classify_signal(kind: SelfImproveSignalKind) -> SelfImproveTaskKind {
@@ -386,6 +396,21 @@ mod tests {
             tasks[0].tool_name.as_ref().map(|value| value.as_str()),
             Some("bash")
         );
+    }
+
+    #[test]
+    fn task_ids_are_stable_for_the_same_signal_group() {
+        let signals = vec![signal(
+            SelfImproveSignalKind::ToolCallFailure,
+            SignalSeverity::Error,
+            "tool `bash` failed",
+        )];
+        let first = derive_self_improve_tasks(&signals);
+        let second = derive_self_improve_tasks(&signals);
+
+        assert_eq!(first.len(), 1);
+        assert_eq!(second.len(), 1);
+        assert_eq!(first[0].task_id, second[0].task_id);
     }
 
     #[test]
