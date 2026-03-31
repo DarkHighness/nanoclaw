@@ -1214,6 +1214,13 @@ impl TuiState {
         self.reset_command_completion();
     }
 
+    pub(crate) fn push_input_str(&mut self, text: &str) {
+        self.input.insert_str(self.input_cursor, text);
+        self.input_cursor += text.len();
+        self.input_history_navigation = None;
+        self.reset_command_completion();
+    }
+
     pub(crate) fn pop_input_char(&mut self) {
         let Some(previous_index) = previous_char_boundary(&self.input, self.input_cursor) else {
             return;
@@ -1813,5 +1820,18 @@ mod tests {
         state.pop_input_char();
         assert_eq!(state.input, "helo");
         assert_eq!(state.input_cursor(), 3);
+    }
+
+    #[test]
+    fn inserting_a_pasted_string_respects_the_cursor_position() {
+        let mut state = TuiState {
+            input: "helo".to_string(),
+            input_cursor: 2,
+            ..TuiState::default()
+        };
+
+        state.push_input_str("l\n");
+        assert_eq!(state.input, "hel\nlo");
+        assert_eq!(state.input_cursor(), 4);
     }
 }

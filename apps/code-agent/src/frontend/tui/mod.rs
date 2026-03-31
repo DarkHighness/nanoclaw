@@ -3,6 +3,7 @@ mod commands;
 mod history;
 mod input_history;
 mod observer;
+mod paste_burst;
 mod render;
 mod state;
 
@@ -32,6 +33,7 @@ use history::{
     format_visible_transcript_preview_lines,
 };
 use observer::SharedRenderObserver;
+use paste_burst::{CharDecision, FlushResult, PasteBurst};
 use render::{main_pane_viewport_height, render};
 pub(crate) use state::SharedUiState;
 use state::{InspectorEntry, TuiState};
@@ -43,7 +45,10 @@ use agent::tools::{
 };
 use agent::types::MessageRole;
 use anyhow::Result;
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::{
+    self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEvent, KeyEventKind,
+    KeyModifiers,
+};
 use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
@@ -66,6 +71,7 @@ pub struct CodeAgentTui {
     active_user_input: Option<ActiveUserInputState>,
     turn_task: Option<JoinHandle<Result<()>>>,
     operator_task: Option<JoinHandle<Result<OperatorTaskOutcome>>>,
+    paste_burst: PasteBurst,
 }
 
 enum OperatorTaskOutcome {
@@ -123,6 +129,7 @@ impl CodeAgentTui {
             active_user_input: None,
             turn_task: None,
             operator_task: None,
+            paste_burst: PasteBurst::default(),
         }
     }
 
@@ -134,7 +141,7 @@ impl CodeAgentTui {
         // Keep terminal-native mouse selection available in the main transcript.
         // The TUI only uses keyboard navigation here, so capturing mouse events
         // would mostly disable copy/select without providing meaningful utility.
-        execute!(stdout, EnterAlternateScreen)?;
+        execute!(stdout, EnterAlternateScreen, EnableBracketedPaste)?;
         let backend = CrosstermBackend::new(stdout);
         let mut terminal = Terminal::new(backend)?;
 
@@ -152,7 +159,11 @@ impl CodeAgentTui {
             .await;
 
         disable_raw_mode()?;
-        execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+        execute!(
+            terminal.backend_mut(),
+            DisableBracketedPaste,
+            LeaveAlternateScreen
+        )?;
         terminal.show_cursor()?;
         result
     }
@@ -162,6 +173,7 @@ impl CodeAgentTui {
         terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     ) -> Result<()> {
         loop {
+            self.flush_due_paste_burst();
             self.maybe_finish_turn().await?;
             self.apply_backend_events();
             self.maybe_finish_operator_task().await?;
@@ -200,6 +212,10 @@ impl CodeAgentTui {
                 continue;
             }
             match event::read()? {
+                Event::Paste(text) => {
+                    self.handle_explicit_paste(&text);
+                    continue;
+                }
                 Event::Key(key) => {
                     if key.kind != KeyEventKind::Press {
                         continue;
@@ -226,6 +242,9 @@ impl CodeAgentTui {
                         continue;
                     }
                     if self.handle_history_rollback_key(key).await? {
+                        continue;
+                    }
+                    if self.handle_paste_burst_key(key) {
                         continue;
                     }
                     match key.code {
@@ -458,6 +477,92 @@ impl CodeAgentTui {
             navigated = state.browse_input_history(backwards);
         });
         navigated
+    }
+
+    fn flush_due_paste_burst(&mut self) {
+        let now = Instant::now();
+        match self.paste_burst.flush_if_due(now) {
+            FlushResult::Paste(text) => self.insert_pasted_text(&text),
+            FlushResult::Typed(ch) => self.ui_state.mutate(|state| state.push_input_char(ch)),
+            FlushResult::None => {}
+        }
+    }
+
+    fn handle_explicit_paste(&mut self, text: &str) {
+        self.insert_pasted_text(text);
+        self.paste_burst.clear_after_explicit_paste();
+    }
+
+    fn handle_paste_burst_key(&mut self, key: KeyEvent) -> bool {
+        let now = Instant::now();
+        if let KeyCode::Char(ch) = key.code
+            && !key
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+        {
+            if ch.is_ascii() {
+                match self.paste_burst.on_plain_char(ch, now) {
+                    CharDecision::RetainFirstChar => return true,
+                    CharDecision::BeginBufferFromPending | CharDecision::BufferAppend => {
+                        self.paste_burst.append_char_to_buffer(ch, now);
+                        return true;
+                    }
+                }
+            } else if self.paste_burst.on_plain_char_no_hold(now) {
+                self.paste_burst.append_char_to_buffer(ch, now);
+                return true;
+            }
+            return false;
+        }
+
+        if matches!(key.code, KeyCode::Enter) {
+            if self.paste_burst.append_newline_if_active(now) {
+                return true;
+            }
+            if self
+                .paste_burst
+                .newline_should_insert_instead_of_submit(now)
+            {
+                self.insert_pasted_text("\n");
+                self.paste_burst.clear_window_after_non_char();
+                return true;
+            }
+        }
+
+        if let Some(flushed) = self.paste_burst.flush_before_modified_input() {
+            self.insert_pasted_text(&flushed);
+        }
+        self.paste_burst.clear_window_after_non_char();
+        false
+    }
+
+    fn insert_pasted_text(&mut self, text: &str) {
+        if text.is_empty() || !self.composer_accepts_text_input() {
+            return;
+        }
+        self.ui_state.mutate(|state| state.push_input_str(text));
+    }
+
+    fn composer_accepts_text_input(&self) -> bool {
+        if self.session.approval_prompt().is_some()
+            || self.session.permission_request_prompt().is_some()
+        {
+            return false;
+        }
+
+        let snapshot = self.ui_state.snapshot();
+        if snapshot.pending_control_picker.is_some()
+            || snapshot.statusline_picker.is_some()
+            || snapshot.thinking_effort_picker.is_some()
+            || snapshot.theme_picker.is_some()
+            || snapshot.history_rollback.is_some()
+        {
+            return false;
+        }
+
+        self.active_user_input
+            .as_ref()
+            .is_none_or(|flow| flow.collecting_other_note)
     }
 
     fn move_input_cursor_horizontal(&mut self, backwards: bool) -> bool {
