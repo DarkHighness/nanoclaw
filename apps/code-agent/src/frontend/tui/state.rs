@@ -92,7 +92,28 @@ pub(crate) struct PendingControlEditorState {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ComposerHistoryNavigationState {
     pub(crate) index: usize,
-    pub(crate) draft: String,
+    pub(crate) draft: ComposerDraftState,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ComposerDraftState {
+    pub(crate) text: String,
+    pub(crate) cursor: usize,
+}
+
+impl ComposerDraftState {
+    pub(crate) fn from_text(text: impl Into<String>) -> Self {
+        let text = text.into();
+        Self {
+            cursor: text.len(),
+            text,
+        }
+    }
+
+    fn normalized(mut self) -> Self {
+        self.cursor = normalize_input_cursor(&self.text, self.cursor);
+        self
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -734,7 +755,9 @@ pub(crate) struct TuiState {
     pub(crate) main_pane: MainPaneMode,
     pub(crate) show_tool_details: bool,
     pub(crate) input: String,
+    pub(crate) input_cursor: usize,
     pub(crate) input_history: Vec<String>,
+    pub(crate) local_input_history: Vec<ComposerDraftState>,
     pub(crate) input_history_navigation: Option<ComposerHistoryNavigationState>,
     pub(crate) command_completion_index: usize,
     pub(crate) transcript: Vec<TranscriptEntry>,
@@ -1148,63 +1171,128 @@ impl TuiState {
         input_history::record_input_history(&mut self.input_history, input)
     }
 
-    pub(crate) fn replace_input(&mut self, input: impl Into<String>) {
-        self.input = input.into();
+    pub(crate) fn record_local_input_history(&mut self, input: &str) -> bool {
         self.input_history_navigation = None;
-        self.reset_command_completion();
+        let Some(text) = input_history::normalized_history_text(input) else {
+            return false;
+        };
+        let draft = ComposerDraftState::from_text(text);
+        if self.local_input_history.last() == Some(&draft) {
+            return false;
+        }
+        self.local_input_history.push(draft);
+        if self.local_input_history.len() > input_history::MAX_COMPOSER_HISTORY_ENTRIES {
+            let overflow =
+                self.local_input_history.len() - input_history::MAX_COMPOSER_HISTORY_ENTRIES;
+            self.local_input_history.drain(0..overflow);
+        }
+        true
+    }
+
+    pub(crate) fn replace_input(&mut self, input: impl Into<String>) {
+        self.replace_input_draft(ComposerDraftState::from_text(input));
     }
 
     pub(crate) fn clear_input(&mut self) {
-        self.input.clear();
-        self.input_history_navigation = None;
-        self.reset_command_completion();
+        self.replace_input_draft(ComposerDraftState::default());
     }
 
     pub(crate) fn push_input_char(&mut self, ch: char) {
-        self.input.push(ch);
+        self.input.insert(self.input_cursor, ch);
+        self.input_cursor += ch.len_utf8();
         self.input_history_navigation = None;
         self.reset_command_completion();
     }
 
     pub(crate) fn pop_input_char(&mut self) {
-        self.input.pop();
+        let Some(previous_index) = previous_char_boundary(&self.input, self.input_cursor) else {
+            return;
+        };
+        self.input.drain(previous_index..self.input_cursor);
+        self.input_cursor = previous_index;
         self.input_history_navigation = None;
         self.reset_command_completion();
     }
 
+    pub(crate) fn move_input_cursor_left(&mut self) -> bool {
+        let Some(previous_index) = previous_char_boundary(&self.input, self.input_cursor) else {
+            return false;
+        };
+        self.input_cursor = previous_index;
+        true
+    }
+
+    pub(crate) fn move_input_cursor_right(&mut self) -> bool {
+        let Some(next_index) = next_char_boundary(&self.input, self.input_cursor) else {
+            return false;
+        };
+        self.input_cursor = next_index;
+        true
+    }
+
+    pub(crate) fn move_input_cursor_home(&mut self) -> bool {
+        if self.input_cursor == 0 {
+            return false;
+        }
+        self.input_cursor = 0;
+        true
+    }
+
+    pub(crate) fn move_input_cursor_end(&mut self) -> bool {
+        if self.input_cursor == self.input.len() {
+            return false;
+        }
+        self.input_cursor = self.input.len();
+        true
+    }
+
+    pub(crate) fn input_cursor(&self) -> usize {
+        self.input_cursor
+    }
+
+    pub(crate) fn input_cursor_at_history_boundary(&self) -> bool {
+        self.input.is_empty() || self.input_cursor == 0 || self.input_cursor == self.input.len()
+    }
+
+    pub(crate) fn input_prefix(&self) -> &str {
+        &self.input[..self.input_cursor]
+    }
+
     pub(crate) fn browse_input_history(&mut self, backwards: bool) -> bool {
-        if self.input_history.is_empty() {
+        let history = self.history_entry_drafts();
+        if history.is_empty() {
+            return false;
+        }
+        if self.input_history_navigation.is_none() && !self.input_cursor_at_history_boundary() {
             return false;
         }
 
         if backwards {
             let (next_index, draft) = match self.input_history_navigation.as_ref() {
                 Some(navigation) => (navigation.index.saturating_sub(1), navigation.draft.clone()),
-                None => (self.input_history.len() - 1, self.input.clone()),
+                None => (history.len() - 1, self.current_input_draft()),
             };
-            self.input = self.input_history[next_index].clone();
+            self.replace_input_draft(history[next_index].clone());
             self.input_history_navigation = Some(ComposerHistoryNavigationState {
                 index: next_index,
                 draft,
             });
-            self.reset_command_completion();
             return true;
         }
 
         let Some(navigation) = self.input_history_navigation.clone() else {
             return false;
         };
-        if navigation.index + 1 < self.input_history.len() {
-            self.input = self.input_history[navigation.index + 1].clone();
+        if navigation.index + 1 < history.len() {
+            self.replace_input_draft(history[navigation.index + 1].clone());
             self.input_history_navigation = Some(ComposerHistoryNavigationState {
                 index: navigation.index + 1,
                 draft: navigation.draft,
             });
         } else {
-            self.input = navigation.draft;
+            self.replace_input_draft(navigation.draft);
             self.input_history_navigation = None;
         }
-        self.reset_command_completion();
         true
     }
 
@@ -1254,6 +1342,47 @@ impl TuiState {
             MainPaneMode::View => self.inspector_scroll = u16::MAX,
         }
     }
+
+    fn replace_input_draft(&mut self, draft: ComposerDraftState) {
+        let draft = draft.normalized();
+        self.input = draft.text;
+        self.input_cursor = draft.cursor;
+        self.input_history_navigation = None;
+        self.reset_command_completion();
+    }
+
+    fn current_input_draft(&self) -> ComposerDraftState {
+        ComposerDraftState {
+            text: self.input.clone(),
+            cursor: self.input_cursor,
+        }
+    }
+
+    fn history_entry_drafts(&self) -> Vec<ComposerDraftState> {
+        let mut entries = self
+            .input_history
+            .iter()
+            .cloned()
+            .map(ComposerDraftState::from_text)
+            .collect::<Vec<_>>();
+        if self.local_input_history.is_empty() {
+            return entries;
+        }
+
+        // Local history retains richer in-session draft state. When it matches
+        // the persistent suffix, replace the plain-text entries instead of
+        // recalling duplicate prompts back-to-back.
+        let shared_suffix = self
+            .local_input_history
+            .iter()
+            .rev()
+            .zip(entries.iter().rev())
+            .take_while(|(local, persistent)| local.text == persistent.text)
+            .count();
+        entries.truncate(entries.len().saturating_sub(shared_suffix));
+        entries.extend(self.local_input_history.iter().cloned());
+        entries
+    }
 }
 
 fn bump_scroll(value: &mut u16, delta: i16) {
@@ -1268,6 +1397,37 @@ fn page_scroll_amount(viewport_height: u16, half_page: bool) -> i16 {
     let page = viewport_height.saturating_sub(2).max(1);
     let amount = if half_page { (page / 2).max(1) } else { page };
     amount.min(i16::MAX as u16) as i16
+}
+
+fn normalize_input_cursor(input: &str, cursor: usize) -> usize {
+    if cursor >= input.len() {
+        return input.len();
+    }
+    if input.is_char_boundary(cursor) {
+        return cursor;
+    }
+    previous_char_boundary(input, cursor).unwrap_or(0)
+}
+
+fn previous_char_boundary(input: &str, cursor: usize) -> Option<usize> {
+    if cursor == 0 {
+        return None;
+    }
+    input[..normalize_input_cursor(input, cursor)]
+        .char_indices()
+        .last()
+        .map(|(index, _)| index)
+}
+
+fn next_char_boundary(input: &str, cursor: usize) -> Option<usize> {
+    let cursor = normalize_input_cursor(input, cursor);
+    if cursor >= input.len() {
+        return None;
+    }
+    input[cursor..]
+        .chars()
+        .next()
+        .map(|ch| cursor + ch.len_utf8())
 }
 
 #[derive(Clone, Default)]
@@ -1297,6 +1457,7 @@ impl SharedUiState {
         let mut state = self.0.write().unwrap();
         state.input_history_navigation = None;
         state.command_completion_index = 0;
+        state.input_cursor = 0;
         std::mem::take(&mut state.input)
     }
 }
@@ -1396,7 +1557,8 @@ fn git_repo_name(workspace_root: &Path) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        HistoryRollbackCandidate, MainPaneMode, TuiState, git_snapshot, page_scroll_amount,
+        ComposerDraftState, HistoryRollbackCandidate, MainPaneMode, TuiState, git_snapshot,
+        page_scroll_amount,
     };
     use agent::types::MessageId;
     use tempfile::tempdir;
@@ -1526,12 +1688,14 @@ mod tests {
     fn composer_input_history_recalls_entries_and_restores_draft() {
         let mut state = TuiState {
             input: "current draft".to_string(),
+            input_cursor: "current draft".len(),
             input_history: vec!["first prompt".to_string(), "second prompt".to_string()],
             ..TuiState::default()
         };
 
         assert!(state.browse_input_history(true));
         assert_eq!(state.input, "second prompt");
+        assert_eq!(state.input_cursor(), "second prompt".len());
 
         assert!(state.browse_input_history(true));
         assert_eq!(state.input, "first prompt");
@@ -1541,6 +1705,7 @@ mod tests {
 
         assert!(state.browse_input_history(false));
         assert_eq!(state.input, "current draft");
+        assert_eq!(state.input_cursor(), "current draft".len());
 
         assert!(!state.browse_input_history(false));
     }
@@ -1560,5 +1725,57 @@ mod tests {
 
         assert!(state.browse_input_history(true));
         assert_eq!(state.input, "prompt two");
+    }
+
+    #[test]
+    fn history_recall_requires_cursor_at_buffer_boundary() {
+        let mut state = TuiState {
+            input: "current draft".to_string(),
+            input_cursor: 4,
+            input_history: vec!["first prompt".to_string(), "second prompt".to_string()],
+            ..TuiState::default()
+        };
+
+        assert!(!state.browse_input_history(true));
+
+        assert!(state.move_input_cursor_end());
+        assert!(state.browse_input_history(true));
+        assert_eq!(state.input, "second prompt");
+    }
+
+    #[test]
+    fn local_history_overrides_persistent_suffix_with_richer_drafts() {
+        let mut state = TuiState {
+            input_history: vec!["older".to_string(), "recent".to_string()],
+            local_input_history: vec![ComposerDraftState {
+                text: "recent".to_string(),
+                cursor: 2,
+            }],
+            ..TuiState::default()
+        };
+
+        assert!(state.browse_input_history(true));
+        assert_eq!(state.input, "recent");
+        assert_eq!(state.input_cursor(), 2);
+
+        assert!(state.browse_input_history(true));
+        assert_eq!(state.input, "older");
+    }
+
+    #[test]
+    fn inserting_and_deleting_respect_the_cursor_position() {
+        let mut state = TuiState {
+            input: "helo".to_string(),
+            input_cursor: 3,
+            ..TuiState::default()
+        };
+
+        state.push_input_char('l');
+        assert_eq!(state.input, "hello");
+        assert_eq!(state.input_cursor(), 4);
+
+        state.pop_input_char();
+        assert_eq!(state.input, "helo");
+        assert_eq!(state.input_cursor(), 3);
     }
 }

@@ -277,6 +277,9 @@ impl CodeAgentTui {
                             if self.move_command_selection(true) {
                                 continue;
                             }
+                            if self.move_input_cursor_boundary(true) {
+                                continue;
+                            }
                             self.ui_state.mutate(|state| state.scroll_focused(-1));
                         }
                         KeyCode::Down => {
@@ -286,7 +289,20 @@ impl CodeAgentTui {
                             if self.move_command_selection(false) {
                                 continue;
                             }
+                            if self.move_input_cursor_boundary(false) {
+                                continue;
+                            }
                             self.ui_state.mutate(|state| state.scroll_focused(1));
+                        }
+                        KeyCode::Left => {
+                            if self.move_input_cursor_horizontal(true) {
+                                continue;
+                            }
+                        }
+                        KeyCode::Right => {
+                            if self.move_input_cursor_horizontal(false) {
+                                continue;
+                            }
                         }
                         KeyCode::PageUp => {
                             self.ui_state.mutate(|state| {
@@ -299,9 +315,15 @@ impl CodeAgentTui {
                             });
                         }
                         KeyCode::Home => {
+                            if self.move_input_cursor_home() {
+                                continue;
+                            }
                             self.ui_state.mutate(|state| state.scroll_focused_home());
                         }
                         KeyCode::End => {
+                            if self.move_input_cursor_end() {
+                                continue;
+                            }
                             self.ui_state.mutate(|state| state.scroll_focused_end());
                         }
                         KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -437,10 +459,49 @@ impl CodeAgentTui {
         navigated
     }
 
+    fn move_input_cursor_horizontal(&mut self, backwards: bool) -> bool {
+        let mut moved = false;
+        self.ui_state.mutate(|state| {
+            moved = if backwards {
+                state.move_input_cursor_left()
+            } else {
+                state.move_input_cursor_right()
+            };
+        });
+        moved
+    }
+
+    fn move_input_cursor_boundary(&mut self, backwards: bool) -> bool {
+        let mut moved = false;
+        self.ui_state.mutate(|state| {
+            moved = if backwards {
+                state.move_input_cursor_home()
+            } else {
+                state.move_input_cursor_end()
+            };
+        });
+        moved
+    }
+
+    fn move_input_cursor_home(&mut self) -> bool {
+        let mut moved = false;
+        self.ui_state
+            .mutate(|state| moved = state.move_input_cursor_home());
+        moved
+    }
+
+    fn move_input_cursor_end(&mut self) -> bool {
+        let mut moved = false;
+        self.ui_state
+            .mutate(|state| moved = state.move_input_cursor_end());
+        moved
+    }
+
     fn record_submitted_input(&mut self, input: &str) {
         let workspace_root = self.session.workspace_root().to_path_buf();
         let mut persisted = None;
         self.ui_state.mutate(|state| {
+            let _ = state.record_local_input_history(input);
             if state.record_input_history(input) {
                 persisted = Some(state.input_history().to_vec());
             }
@@ -583,13 +644,41 @@ impl CodeAgentTui {
                 }
                 KeyCode::Up => {
                     self.ui_state.mutate(|state| {
-                        let _ = state.browse_input_history(true);
+                        if !state.browse_input_history(true) {
+                            let _ = state.move_input_cursor_home();
+                        }
                     });
                     true
                 }
                 KeyCode::Down => {
                     self.ui_state.mutate(|state| {
-                        let _ = state.browse_input_history(false);
+                        if !state.browse_input_history(false) {
+                            let _ = state.move_input_cursor_end();
+                        }
+                    });
+                    true
+                }
+                KeyCode::Left => {
+                    self.ui_state.mutate(|state| {
+                        let _ = state.move_input_cursor_left();
+                    });
+                    true
+                }
+                KeyCode::Right => {
+                    self.ui_state.mutate(|state| {
+                        let _ = state.move_input_cursor_right();
+                    });
+                    true
+                }
+                KeyCode::Home => {
+                    self.ui_state.mutate(|state| {
+                        let _ = state.move_input_cursor_home();
+                    });
+                    true
+                }
+                KeyCode::End => {
+                    self.ui_state.mutate(|state| {
+                        let _ = state.move_input_cursor_end();
                     });
                     true
                 }

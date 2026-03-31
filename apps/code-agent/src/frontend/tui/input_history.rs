@@ -19,7 +19,7 @@ fn composer_history_path(workspace_root: &Path) -> PathBuf {
         .join(COMPOSER_HISTORY_FILE_NAME)
 }
 
-fn normalized_history_text(value: &str) -> Option<String> {
+pub(crate) fn normalized_history_text(value: &str) -> Option<String> {
     let trimmed = value.trim();
     (!trimmed.is_empty()).then(|| trimmed.to_string())
 }

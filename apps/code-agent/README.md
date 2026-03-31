@@ -255,6 +255,11 @@ not have useful extensions, including `Dockerfile*`, `Containerfile*`, `go.mod`,
   `Right` to move forward, `Enter` to confirm, and `q` to cancel. Confirming a
   rollback removes the selected user turn and everything after it, then restores
   that user prompt into the composer for editing.
+- The composer now keeps a workspace-persistent text history plus an in-memory
+  session-local draft history. `Up` / `Down` recall prompt history only when the
+  cursor is already at a buffer boundary; otherwise those keys move the cursor
+  to the start or end of the current draft. `Left`, `Right`, `Home`, and `End`
+  now edit inside the prompt instead of always acting on pane scroll state.
 - `Alt+Up` opens the pending-control picker from the bottom pane.
 - In the pending-control picker: `Enter` edits the selected item, `Delete`
   withdraws it, and `Esc` closes the picker.

@@ -142,7 +142,7 @@ pub(crate) fn render(
             composer_inner
                 .x
                 .saturating_add(prefix_width)
-                .saturating_add(composer_cursor_width(&state.input)),
+                .saturating_add(composer_cursor_width(state.input_prefix())),
             composer_inner.y,
         ));
     }
