@@ -1199,6 +1199,25 @@ impl TuiState {
         true
     }
 
+    pub(crate) fn stash_current_input_draft(&mut self) -> bool {
+        self.input_history_navigation = None;
+        if self.input.is_empty() {
+            return false;
+        }
+
+        let draft = self.current_input_draft();
+        if self.local_input_history.last() == Some(&draft) {
+            return false;
+        }
+        self.local_input_history.push(draft);
+        if self.local_input_history.len() > input_history::MAX_COMPOSER_HISTORY_ENTRIES {
+            let overflow =
+                self.local_input_history.len() - input_history::MAX_COMPOSER_HISTORY_ENTRIES;
+            self.local_input_history.drain(0..overflow);
+        }
+        true
+    }
+
     pub(crate) fn replace_input(&mut self, input: impl Into<String>) {
         self.replace_input_draft(ComposerDraftState::from_text(input));
     }
@@ -1833,5 +1852,39 @@ mod tests {
         state.push_input_str("l\n");
         assert_eq!(state.input, "hel\nlo");
         assert_eq!(state.input_cursor(), 4);
+    }
+
+    #[test]
+    fn stashing_current_input_draft_preserves_exact_text_and_cursor() {
+        let mut state = TuiState {
+            input: "draft  \nline two".to_string(),
+            input_cursor: 7,
+            ..TuiState::default()
+        };
+
+        assert!(state.stash_current_input_draft());
+        assert_eq!(
+            state.local_input_history,
+            vec![ComposerDraftState {
+                text: "draft  \nline two".to_string(),
+                cursor: 7,
+            }]
+        );
+    }
+
+    #[test]
+    fn stashed_draft_can_be_recalled_with_up_after_clearing_input() {
+        let mut state = TuiState {
+            input: "draft  \nline two".to_string(),
+            input_cursor: 7,
+            ..TuiState::default()
+        };
+
+        assert!(state.stash_current_input_draft());
+        state.clear_input();
+
+        assert!(state.browse_input_history(true));
+        assert_eq!(state.input, "draft  \nline two");
+        assert_eq!(state.input_cursor(), 7);
     }
 }

@@ -361,6 +361,9 @@ impl CodeAgentTui {
                             continue;
                         }
                         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            if self.stash_composer_draft_on_ctrl_c() {
+                                continue;
+                            }
                             return Ok(());
                         }
                         KeyCode::Enter => {
@@ -541,6 +544,24 @@ impl CodeAgentTui {
             return;
         }
         self.ui_state.mutate(|state| state.push_input_str(text));
+    }
+
+    fn stash_composer_draft_on_ctrl_c(&mut self) -> bool {
+        if !self.composer_accepts_text_input() {
+            return false;
+        }
+
+        let mut stashed = false;
+        self.ui_state.mutate(|state| {
+            stashed = !state.input.is_empty();
+            if stashed {
+                let _ = state.stash_current_input_draft();
+                state.clear_input();
+                state.status = "Cleared draft; press Up to restore it".to_string();
+                state.push_activity("stashed current draft for history recall");
+            }
+        });
+        stashed
     }
 
     fn composer_accepts_text_input(&self) -> bool {
