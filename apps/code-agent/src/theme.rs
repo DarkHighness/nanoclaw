@@ -307,9 +307,15 @@ mod tests {
     #[test]
     fn parses_builtin_theme_catalog() {
         let catalog = parse_theme_catalog(super::BUILTIN_THEME_CATALOG).unwrap();
+        assert!(catalog.themes.len() >= 8);
+        assert!(catalog.contains("aurora"));
         assert!(catalog.contains("graphite"));
         assert!(catalog.contains("cinder"));
         assert!(catalog.contains("fjord"));
+        assert!(catalog.contains("meadow"));
+        assert!(catalog.contains("signal"));
+        assert!(catalog.contains("paper"));
+        assert!(catalog.contains("glacier"));
     }
 
     #[test]
