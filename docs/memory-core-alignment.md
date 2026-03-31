@@ -268,9 +268,10 @@ window around the summary boundary:
   runtime profile
 - large transcripts expand that tail until it carries at least a modest token
   and text-message floor
-- the split point is then rewound to the start of the surviving user-side turn
-  cluster so compaction does not keep only an assistant reply or only the tail
-  half of a synthetic recall + user prompt pair
+- the split point is then rewound to the start of the surviving request-side
+  turn cluster so compaction does not keep only an assistant reply, only the
+  tail half of a synthetic recall + user prompt pair, or a prompt without the
+  immediately preceding steer/reminder system message that framed it
 - tool call / tool result pairs remain indivisible across that boundary
 
 That keeps the post-compact transcript closer to Claude's "complete recent

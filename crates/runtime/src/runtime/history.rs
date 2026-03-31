@@ -428,9 +428,10 @@ fn rewind_split_at_to_turn_cluster_start(
 ) -> Option<usize> {
     // Post-compaction continuity is materially worse when the retained tail
     // starts in the middle of an assistant trajectory. Rewind across
-    // assistant/tool messages until the tail starts at the user-side cluster
-    // that kicked off the surviving turn, including synthetic recall/user
-    // prefix messages that share the same turn.
+    // assistant/tool messages until the tail starts at the request-side
+    // cluster that kicked off the surviving turn. That cluster can include
+    // system steer/reminder messages plus synthetic recall/user prefix
+    // messages that all belong to the same model request.
     loop {
         match visible_messages.get(split_at)?.role {
             MessageRole::Assistant | MessageRole::Tool => {
@@ -439,20 +440,19 @@ fn rewind_split_at_to_turn_cluster_start(
                 }
                 split_at -= 1;
             }
-            MessageRole::User => {
+            MessageRole::User | MessageRole::System => {
                 while split_at > 0
                     && matches!(
                         visible_messages
                             .get(split_at - 1)
                             .map(|message| &message.role),
-                        Some(MessageRole::User)
+                        Some(MessageRole::User | MessageRole::System)
                     )
                 {
                     split_at -= 1;
                 }
                 return (split_at >= 2).then_some(split_at);
             }
-            MessageRole::System => return (split_at >= 2).then_some(split_at),
         }
     }
 }
@@ -581,6 +581,22 @@ mod tests {
         let visible_messages = vec![
             Message::user("older prompt"),
             Message::assistant("older answer"),
+            Message::user("recalled workspace memory"),
+            Message::user("real user prompt"),
+            Message::assistant("latest assistant reply"),
+        ];
+
+        let split_at = select_compaction_split_index(&visible_messages, 1).expect("split index");
+
+        assert_eq!(split_at, 2);
+    }
+
+    #[test]
+    fn split_index_rewinds_to_preserve_request_side_system_messages() {
+        let visible_messages = vec![
+            Message::user("older prompt"),
+            Message::assistant("older answer"),
+            Message::system("prefer terse answers"),
             Message::user("recalled workspace memory"),
             Message::user("real user prompt"),
             Message::assistant("latest assistant reply"),
