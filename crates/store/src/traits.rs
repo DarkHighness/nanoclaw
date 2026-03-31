@@ -90,6 +90,8 @@ pub struct ArtifactSummary {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub latest_version_id: Option<ArtifactVersionId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_version_id: Option<ArtifactVersionId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub promoted_version_id: Option<ArtifactVersionId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_decision: Option<ArtifactPromotionDecisionKind>,
@@ -385,6 +387,7 @@ pub fn summarize_artifact_events(
     let mut source_task_ids = HashSet::new();
     let mut source_case_ids = HashSet::new();
     let mut latest_version_id = None;
+    let mut active_version_id = None;
     let mut promoted_version_id = None;
     let mut last_decision = None;
 
@@ -411,6 +414,7 @@ pub fn summarize_artifact_events(
             } => {
                 version_ids.insert(version_id.clone());
                 latest_version_id = Some(version_id.clone());
+                active_version_id = Some(version_id.clone());
                 promoted_version_id = Some(version_id.clone());
                 last_decision = Some(decision.kind);
             }
@@ -424,6 +428,9 @@ pub fn summarize_artifact_events(
             } => {
                 version_ids.insert(version_id.clone());
                 latest_version_id = Some(version_id.clone());
+                if matches!(decision.kind, ArtifactPromotionDecisionKind::RolledBack) {
+                    active_version_id = Some(version_id.clone());
+                }
                 last_decision = Some(decision.kind);
             }
         }
@@ -440,6 +447,7 @@ pub fn summarize_artifact_events(
         source_task_count: source_task_ids.len(),
         source_case_count: source_case_ids.len(),
         latest_version_id,
+        active_version_id,
         promoted_version_id,
         last_decision,
     })
