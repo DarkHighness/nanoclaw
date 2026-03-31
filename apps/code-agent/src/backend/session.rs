@@ -1267,6 +1267,16 @@ mod tests {
             })
         }
 
+        async fn resume(
+            &self,
+            _parent: SubagentParentContext,
+            _agent_id: AgentId,
+        ) -> ToolResult<AgentHandle> {
+            Err(ToolError::invalid_state(
+                "test executor does not support resume",
+            ))
+        }
+
         async fn list(&self, _parent: SubagentParentContext) -> ToolResult<Vec<AgentHandle>> {
             Ok(Vec::new())
         }
@@ -1380,6 +1390,20 @@ mod tests {
                     pending: Vec::new(),
                     results: Vec::new(),
                 }))
+        }
+
+        async fn resume(
+            &self,
+            _parent: SubagentParentContext,
+            agent_id: AgentId,
+        ) -> ToolResult<AgentHandle> {
+            let mut handles = self.handles.lock().unwrap();
+            let handle = handles
+                .iter_mut()
+                .find(|handle| handle.agent_id == agent_id)
+                .ok_or_else(|| ToolError::invalid_state("unknown agent"))?;
+            handle.status = AgentStatus::Queued;
+            Ok(handle.clone())
         }
 
         async fn list(&self, _parent: SubagentParentContext) -> ToolResult<Vec<AgentHandle>> {

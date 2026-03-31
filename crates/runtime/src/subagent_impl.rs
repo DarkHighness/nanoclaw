@@ -3,8 +3,10 @@ use crate::{
     AgentRuntime, AgentRuntimeBuilder, AgentSessionManager, CompactionConfig,
     ConversationCompactor, HookRunner, LoopDetectionConfig, ModelBackend, Result, RuntimeError,
     RuntimeSession, ToolApprovalHandler, ToolApprovalPolicy, WriteLeaseManager,
+    load_runtime_session,
 };
 use async_trait::async_trait;
+use dashmap::DashMap;
 use futures::stream::{self, StreamExt};
 use serde::Deserialize;
 use serde_json::Value;
@@ -30,6 +32,7 @@ const DEFAULT_EXCLUDED_CHILD_TOOLS: &[&str] = &[
     "spawn_agent",
     "send_input",
     "wait_agent",
+    "resume_agent",
     "list_agents",
     "close_agent",
     "agent_spawn",
@@ -70,6 +73,7 @@ pub struct RuntimeSubagentExecutor {
     profile_resolver: Arc<dyn SubagentProfileResolver>,
     session_manager: AgentSessionManager,
     write_lease_manager: Arc<WriteLeaseManager>,
+    resumable_children: Arc<DashMap<AgentId, ResumableChildState>>,
 }
 
 struct PlannedChildSpawn {
@@ -96,6 +100,20 @@ struct ChildLaunchPlan {
     mailbox_rx: AgentMailboxReceiver,
     dependency_agent_ids: Vec<AgentId>,
     profile: SubagentRuntimeProfile,
+    session: RuntimeSession,
+    start_mode: ChildStartMode,
+}
+
+#[derive(Clone)]
+struct ResumableChildState {
+    tool_registry: ToolRegistry,
+    profile: SubagentRuntimeProfile,
+}
+
+#[derive(Clone)]
+enum ChildStartMode {
+    RunPrompt(String),
+    AwaitMessage,
 }
 
 enum DependencyGate {
@@ -143,6 +161,7 @@ impl RuntimeSubagentExecutor {
             profile_resolver,
             session_manager: AgentSessionManager::new(),
             write_lease_manager: Arc::new(WriteLeaseManager::new()),
+            resumable_children: Arc::new(DashMap::new()),
         }
     }
 
@@ -447,10 +466,7 @@ impl RuntimeSubagentExecutor {
             .instructions(plan.profile.instructions.clone())
             .hooks(self.hooks.clone())
             .skill_catalog(self.skill_catalog.clone())
-            .session(RuntimeSession::new(
-                plan.handle.session_id.clone(),
-                plan.handle.agent_session_id.clone(),
-            ))
+            .session(plan.session.clone())
             .build()
     }
 
@@ -465,6 +481,7 @@ impl RuntimeSubagentExecutor {
             task: plan.task,
             runtime,
             mailbox_rx: plan.mailbox_rx,
+            start_mode: plan.start_mode,
         };
         let join_handle = tokio::spawn(async move { worker.run().await });
         // The record is inserted before any worker is launched, so losing it here
@@ -886,9 +903,17 @@ impl SubagentExecutor for RuntimeSubagentExecutor {
         for child in planned {
             let handle = child.handle.clone();
             let task = child.task.clone();
+            let initial_prompt = task.prompt.clone();
             let (mailbox, mailbox_rx) = agent_mailbox_channel();
             self.session_manager
                 .insert(handle.clone(), task.clone(), mailbox);
+            self.resumable_children.insert(
+                handle.agent_id.clone(),
+                ResumableChildState {
+                    tool_registry: child.tool_registry.clone(),
+                    profile: child.profile.clone(),
+                },
+            );
             let launch_plan = ChildLaunchPlan {
                 parent: parent.clone(),
                 handle: handle.clone(),
@@ -897,6 +922,11 @@ impl SubagentExecutor for RuntimeSubagentExecutor {
                 mailbox_rx,
                 dependency_agent_ids: child.dependency_agent_ids,
                 profile: child.profile,
+                session: RuntimeSession::new(
+                    handle.session_id.clone(),
+                    handle.agent_session_id.clone(),
+                ),
+                start_mode: ChildStartMode::RunPrompt(initial_prompt),
             };
             if launch_plan.dependency_agent_ids.is_empty() {
                 ready.push(launch_plan);
@@ -958,6 +988,78 @@ impl SubagentExecutor for RuntimeSubagentExecutor {
             .wait(request)
             .await
             .map_err(|error| ToolError::invalid_state(error.to_string()))
+    }
+
+    async fn resume(
+        &self,
+        parent: SubagentParentContext,
+        agent_id: AgentId,
+    ) -> std::result::Result<AgentHandle, ToolError> {
+        let handle = self
+            .session_manager
+            .handle(&agent_id)
+            .map_err(|error| ToolError::invalid_state(error.to_string()))?;
+        self.ensure_parent_can_access(&parent, &handle)?;
+        if !handle.status.is_terminal() {
+            return Err(ToolError::invalid(format!(
+                "agent {} is not terminal and cannot be resumed",
+                handle.agent_id
+            )));
+        }
+        let task = self
+            .session_manager
+            .task(&agent_id)
+            .map_err(|error| ToolError::invalid_state(error.to_string()))?;
+        let resumable = self
+            .resumable_children
+            .get(&agent_id)
+            .map(|entry| entry.value().clone())
+            .ok_or_else(|| {
+                ToolError::invalid_state(format!("agent {} is not resumable", handle.agent_id))
+            })?;
+        let requested_files = self
+            .resolve_write_set(&task.requested_write_set)
+            .map_err(|error| ToolError::invalid_state(error.to_string()))?;
+        if let Err(conflict) = self.write_lease_manager.claim(&agent_id, &requested_files) {
+            return Err(ToolError::invalid_state(format!(
+                "write lease conflict for {} owned by {}",
+                conflict.requested, conflict.owner
+            )));
+        }
+        let session = match load_runtime_session(
+            self.store.as_ref(),
+            &handle.session_id,
+            &handle.agent_session_id,
+        )
+        .await
+        {
+            Ok(session) => session,
+            Err(error) => {
+                self.write_lease_manager.release(&agent_id);
+                return Err(ToolError::invalid_state(error.to_string()));
+            }
+        };
+        let (mailbox, mailbox_rx) = agent_mailbox_channel();
+        let handle = match self.session_manager.reopen(&agent_id, mailbox) {
+            Ok(handle) => handle,
+            Err(error) => {
+                self.write_lease_manager.release(&agent_id);
+                return Err(ToolError::invalid_state(error.to_string()));
+            }
+        };
+        let launch_plan = ChildLaunchPlan {
+            parent,
+            handle: handle.clone(),
+            task,
+            tool_registry: resumable.tool_registry,
+            mailbox_rx,
+            dependency_agent_ids: Vec::new(),
+            profile: resumable.profile,
+            session,
+            start_mode: ChildStartMode::AwaitMessage,
+        };
+        self.launch_child_async(launch_plan).await;
+        Ok(handle)
     }
 
     async fn list(
@@ -1043,64 +1145,58 @@ struct ChildAgentWorker {
     task: AgentTaskSpec,
     runtime: AgentRuntime,
     mailbox_rx: AgentMailboxReceiver,
+    start_mode: ChildStartMode,
 }
 
 impl ChildAgentWorker {
     async fn run(mut self) {
-        let handle = match self
-            .session_manager
-            .update_status(&self.handle.agent_id, AgentStatus::Running)
-        {
-            Ok(handle) => handle,
-            Err(_) => return,
+        let start_mode = self.start_mode.clone();
+        let initial_status = match &start_mode {
+            ChildStartMode::RunPrompt(_) => AgentStatus::Running,
+            ChildStartMode::AwaitMessage => AgentStatus::WaitingMessage,
         };
-        self.handle = handle.clone();
-        let _ = self
-            .append_parent_events(vec![
-                SessionEventKind::SubagentStart {
-                    handle: handle.clone(),
-                    task: self.task.clone(),
-                },
-                SessionEventKind::AgentEnvelope {
-                    envelope: AgentEnvelope::new(
-                        self.handle.agent_id.clone(),
-                        self.handle.parent_agent_id.clone(),
-                        self.handle.session_id.clone(),
-                        self.handle.agent_session_id.clone(),
-                        AgentEnvelopeKind::StatusChanged {
-                            status: AgentStatus::Running,
-                        },
-                    ),
-                },
-                SessionEventKind::AgentEnvelope {
-                    envelope: AgentEnvelope::new(
-                        self.handle.agent_id.clone(),
-                        self.handle.parent_agent_id.clone(),
-                        self.handle.session_id.clone(),
-                        self.handle.agent_session_id.clone(),
-                        AgentEnvelopeKind::Started {
-                            task: self.task.clone(),
-                        },
-                    ),
-                },
-            ])
-            .await;
-
-        if let Some(steer) = self.task.steer.clone() {
-            if let Err(error) = self
-                .runtime
-                .steer(
-                    steer,
-                    Some(format!("subagent:{}:initial", self.task.task_id)),
-                )
-                .await
-            {
-                self.fail(error.to_string()).await;
-                return;
-            }
+        if self.start(initial_status).await.is_err() {
+            return;
         }
 
-        let mut next_prompt = Some(self.task.prompt.clone());
+        let mut next_prompt = match start_mode {
+            ChildStartMode::RunPrompt(prompt) => {
+                if let Some(steer) = self.task.steer.clone() {
+                    if let Err(error) = self
+                        .runtime
+                        .steer(
+                            steer,
+                            Some(format!("subagent:{}:initial", self.task.task_id)),
+                        )
+                        .await
+                    {
+                        self.fail(error.to_string()).await;
+                        return;
+                    }
+                }
+                Some(prompt)
+            }
+            ChildStartMode::AwaitMessage => match self.wait_for_resume_message().await {
+                MailboxOutcome::Continue => {
+                    if self.transition_status(AgentStatus::Running).await.is_err() {
+                        return;
+                    }
+                    Some(
+                        "Continue the assigned task using the latest parent steering. Report only new progress."
+                            .to_string(),
+                    )
+                }
+                MailboxOutcome::Cancel(reason) => {
+                    self.finish_cancel(reason).await;
+                    return;
+                }
+                MailboxOutcome::Finish => {
+                    self.finish_cancel(Some("child agent mailbox closed".to_string()))
+                        .await;
+                    return;
+                }
+            },
+        };
         while let Some(prompt) = next_prompt.take() {
             let outcome = match self.run_prompt(prompt).await {
                 Ok(outcome) => outcome,
@@ -1127,6 +1223,57 @@ impl ChildAgentWorker {
                 }
             }
         }
+    }
+
+    async fn start(&mut self, status: AgentStatus) -> Result<()> {
+        let handle = self
+            .session_manager
+            .update_status(&self.handle.agent_id, status.clone())?;
+        self.handle = handle.clone();
+        self.append_parent_events(vec![
+            SessionEventKind::SubagentStart {
+                handle: handle.clone(),
+                task: self.task.clone(),
+            },
+            SessionEventKind::AgentEnvelope {
+                envelope: AgentEnvelope::new(
+                    self.handle.agent_id.clone(),
+                    self.handle.parent_agent_id.clone(),
+                    self.handle.session_id.clone(),
+                    self.handle.agent_session_id.clone(),
+                    AgentEnvelopeKind::StatusChanged { status },
+                ),
+            },
+            SessionEventKind::AgentEnvelope {
+                envelope: AgentEnvelope::new(
+                    self.handle.agent_id.clone(),
+                    self.handle.parent_agent_id.clone(),
+                    self.handle.session_id.clone(),
+                    self.handle.agent_session_id.clone(),
+                    AgentEnvelopeKind::Started {
+                        task: self.task.clone(),
+                    },
+                ),
+            },
+        ])
+        .await
+    }
+
+    async fn transition_status(&mut self, status: AgentStatus) -> Result<()> {
+        let handle = self
+            .session_manager
+            .update_status(&self.handle.agent_id, status.clone())?;
+        self.handle = handle;
+        self.append_parent_events(vec![SessionEventKind::AgentEnvelope {
+            envelope: AgentEnvelope::new(
+                self.handle.agent_id.clone(),
+                self.handle.parent_agent_id.clone(),
+                self.handle.session_id.clone(),
+                self.handle.agent_session_id.clone(),
+                AgentEnvelopeKind::StatusChanged { status },
+            ),
+        }])
+        .await
     }
 
     async fn run_prompt(&mut self, prompt: String) -> Result<crate::RunTurnOutcome> {
@@ -1173,6 +1320,37 @@ impl ChildAgentWorker {
             MailboxOutcome::Continue
         } else {
             MailboxOutcome::Finish
+        }
+    }
+
+    async fn wait_for_resume_message(&mut self) -> MailboxOutcome {
+        loop {
+            match self.mailbox_rx.recv().await {
+                Some(AgentControlMessage::Message { channel, payload }) => {
+                    if channel != "steer" {
+                        continue;
+                    }
+                    let Some(message) = extract_steering_text(&payload) else {
+                        continue;
+                    };
+                    if self
+                        .runtime
+                        .steer(
+                            message,
+                            Some(format!("subagent:{}:{channel}", self.task.task_id)),
+                        )
+                        .await
+                        .is_ok()
+                    {
+                        return MailboxOutcome::Continue;
+                    }
+                    return MailboxOutcome::Cancel(Some("failed to apply steering".to_string()));
+                }
+                Some(AgentControlMessage::Cancel { reason }) => {
+                    return MailboxOutcome::Cancel(reason);
+                }
+                None => return MailboxOutcome::Finish,
+            }
         }
     }
 
@@ -1546,6 +1724,7 @@ mod tests {
     };
     use async_trait::async_trait;
     use futures::{StreamExt, stream, stream::BoxStream};
+    use serde_json::json;
     use skills::SkillCatalog;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
@@ -1854,6 +2033,97 @@ mod tests {
             wait.results
                 .iter()
                 .all(|result| result.status == AgentStatus::Completed)
+        );
+    }
+
+    #[tokio::test]
+    async fn runtime_subagent_executor_resumes_terminal_child_into_waiting_message() {
+        let backend = Arc::new(ImmediateBackend::default());
+        let store = Arc::new(InMemorySessionStore::new());
+        let executor = make_executor(backend.clone(), store);
+        let parent = SubagentParentContext {
+            session_id: Some("run_parent".into()),
+            agent_session_id: Some("session_parent".into()),
+            turn_id: Some("turn_parent".into()),
+            parent_agent_id: Some("agent_parent".into()),
+        };
+
+        let handle = executor
+            .spawn(
+                parent.clone(),
+                vec![AgentTaskSpec {
+                    task_id: "inspect".to_string(),
+                    role: "explorer".to_string(),
+                    prompt: "inspect".to_string(),
+                    steer: None,
+                    allowed_tools: vec![ToolName::from("read")],
+                    requested_write_set: Vec::new(),
+                    dependency_ids: Vec::new(),
+                    timeout_seconds: None,
+                }],
+            )
+            .await
+            .unwrap()
+            .pop()
+            .unwrap();
+
+        executor
+            .wait(
+                parent.clone(),
+                AgentWaitRequest {
+                    agent_ids: vec![handle.agent_id.clone()],
+                    mode: AgentWaitMode::All,
+                },
+            )
+            .await
+            .unwrap();
+
+        let resumed = executor
+            .resume(parent.clone(), handle.agent_id.clone())
+            .await
+            .unwrap();
+        assert_eq!(resumed.status, AgentStatus::Queued);
+
+        executor
+            .send(
+                parent.clone(),
+                handle.agent_id.clone(),
+                "steer".to_string(),
+                json!({"message":"focus follow-up"}),
+            )
+            .await
+            .unwrap();
+
+        let resumed_wait = executor
+            .wait(
+                parent,
+                AgentWaitRequest {
+                    agent_ids: vec![handle.agent_id.clone()],
+                    mode: AgentWaitMode::All,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(resumed_wait.completed.len(), 1);
+        assert_eq!(resumed_wait.results.len(), 1);
+        assert_eq!(resumed_wait.results[0].status, AgentStatus::Completed);
+
+        let requests = backend.requests.lock().unwrap().clone();
+        assert_eq!(requests.len(), 2);
+        let resumed_user_prompt = requests[1]
+            .messages
+            .iter()
+            .find(|message| message.role == MessageRole::User)
+            .map(|message| message.text_content())
+            .unwrap_or_default();
+        assert!(resumed_user_prompt.contains("Continue the assigned task"));
+        assert_ne!(resumed_user_prompt, "inspect");
+        assert!(
+            requests[1]
+                .messages
+                .iter()
+                .any(|message| message.role == MessageRole::System
+                    && message.text_content().contains("focus follow-up"))
         );
     }
 

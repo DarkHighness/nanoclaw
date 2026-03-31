@@ -197,7 +197,7 @@ not count here because they are not currently in the live registry.
   `code_references`
 - agentic:
   `task`, `task_batch`, `spawn_agent`, `send_input`, `wait_agent`,
-  `list_agents`, `close_agent`
+  `resume_agent`, `list_agents`, `close_agent`
 - state:
   `update_plan`, `request_user_input`, `request_permissions`
 - discovery:

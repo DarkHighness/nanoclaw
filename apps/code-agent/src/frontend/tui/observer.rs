@@ -216,6 +216,7 @@ impl SharedRenderObserver {
                         | "task_batch"
                         | "spawn_agent"
                         | "wait_agent"
+                        | "resume_agent"
                         | "agent_spawn"
                         | "agent_wait"
                 ) {

@@ -140,6 +140,30 @@ impl AgentSessionManager {
         Ok(handle)
     }
 
+    pub fn reopen(&self, agent_id: &AgentId, mailbox: AgentMailbox) -> Result<AgentHandle> {
+        let record = self.record(agent_id)?;
+        let handle = {
+            let mut record = record.state.lock().unwrap();
+            if !record.handle.status.is_terminal() {
+                return Err(RuntimeError::invalid_state(format!(
+                    "agent {} is not terminal and cannot be resumed",
+                    record.handle.agent_id
+                )));
+            }
+            // Resuming an agent must discard the previous terminal payload and
+            // replace the mailbox receiver so fresh control messages reach the
+            // new worker instead of the completed task.
+            record.handle.status = AgentStatus::Queued;
+            record.mailbox = mailbox;
+            record.result = None;
+            record.error = None;
+            record.join_handle = None;
+            record.handle.clone()
+        };
+        self.updates.notify_waiters();
+        Ok(handle)
+    }
+
     pub fn list(&self) -> Vec<AgentHandle> {
         let mut handles = self
             .records
@@ -523,5 +547,59 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![AgentId::from("agent_1"), AgentId::from("agent_2")]
         );
+    }
+
+    #[test]
+    fn reopen_resets_terminal_record_for_new_worker() {
+        let manager = AgentSessionManager::new();
+        let (mailbox, _) = agent_mailbox_channel();
+        manager.insert(
+            AgentHandle {
+                agent_id: "agent_1".into(),
+                parent_agent_id: None,
+                session_id: "run_1".into(),
+                agent_session_id: "session_1".into(),
+                task_id: "task_1".to_string(),
+                role: "explorer".to_string(),
+                status: AgentStatus::Completed,
+            },
+            AgentTaskSpec {
+                task_id: "task_1".to_string(),
+                role: "explorer".to_string(),
+                prompt: "inspect".to_string(),
+                steer: None,
+                allowed_tools: Vec::new(),
+                requested_write_set: Vec::new(),
+                dependency_ids: Vec::new(),
+                timeout_seconds: None,
+            },
+            mailbox,
+        );
+        manager
+            .finish(
+                &AgentId::from("agent_1"),
+                AgentStatus::Completed,
+                Some(AgentResultEnvelope {
+                    agent_id: "agent_1".into(),
+                    task_id: "task_1".to_string(),
+                    status: AgentStatus::Completed,
+                    summary: "done".to_string(),
+                    text: "ok".to_string(),
+                    artifacts: Vec::new(),
+                    claimed_files: Vec::new(),
+                    structured_payload: None,
+                }),
+                None,
+            )
+            .unwrap();
+
+        let (mailbox, _) = agent_mailbox_channel();
+        let reopened = manager.reopen(&AgentId::from("agent_1"), mailbox).unwrap();
+        assert_eq!(reopened.status, AgentStatus::Queued);
+
+        let snapshot = manager.snapshot(&AgentId::from("agent_1")).unwrap();
+        assert_eq!(snapshot.handle.status, AgentStatus::Queued);
+        assert!(snapshot.result.is_none());
+        assert!(snapshot.error.is_none());
     }
 }

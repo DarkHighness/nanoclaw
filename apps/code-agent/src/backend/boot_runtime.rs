@@ -86,6 +86,9 @@ pub(crate) fn register_subagent_tools(
     tools.register(agent::tools::AgentSpawnTool::new(subagent_executor.clone()));
     tools.register(agent::tools::AgentSendTool::new(subagent_executor.clone()));
     tools.register(agent::tools::AgentWaitTool::new(subagent_executor.clone()));
+    tools.register(agent::tools::AgentResumeTool::new(
+        subagent_executor.clone(),
+    ));
     tools.register(agent::tools::AgentListTool::new(subagent_executor.clone()));
     tools.register(agent::tools::AgentCancelTool::new(subagent_executor));
 }

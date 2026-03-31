@@ -8,7 +8,7 @@ It intentionally keeps the host layer thin:
 - model-visible coding tools: `read`, `view_image`, `write`, `edit`, provider-specific patch tools (`apply_patch` on OpenAI, `patch` on Anthropic), `glob`, `grep`, `list`, `exec_command`, `write_stdin`
 - discovery tools: `tool_search`, `tool_suggest`
 - optional code-intel tools: `code_symbol_search`, `code_document_symbols`, `code_definitions`, `code_references`
-- agentic tools: `update_plan`, `request_user_input`, `request_permissions`, `task`, `spawn_agent`, `send_input`, `wait_agent`, `list_agents`, `close_agent`
+- agentic tools: `update_plan`, `request_user_input`, `request_permissions`, `task`, `spawn_agent`, `send_input`, `wait_agent`, `resume_agent`, `list_agents`, `close_agent`
 - append-only runtime loop from `runtime`
 - runtime steering and queued command support
 - loop detection as the primary guard against tool-call churn, without a fixed global iteration cap

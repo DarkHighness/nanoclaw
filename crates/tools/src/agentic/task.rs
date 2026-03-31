@@ -17,6 +17,7 @@ use types::{
 const SPAWN_AGENT_TOOL_NAME: &str = "spawn_agent";
 const SEND_INPUT_TOOL_NAME: &str = "send_input";
 const WAIT_AGENT_TOOL_NAME: &str = "wait_agent";
+const RESUME_AGENT_TOOL_NAME: &str = "resume_agent";
 const LIST_AGENTS_TOOL_NAME: &str = "list_agents";
 const CLOSE_AGENT_TOOL_NAME: &str = "close_agent";
 
@@ -107,6 +108,11 @@ pub struct AgentCancelToolInput {
     pub reason: Option<String>,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+pub struct AgentResumeToolInput {
+    pub agent_id: AgentId,
+}
+
 fn default_wait_mode() -> AgentWaitMode {
     AgentWaitMode::All
 }
@@ -136,6 +142,9 @@ pub trait SubagentExecutor: Send + Sync {
         parent: SubagentParentContext,
         request: AgentWaitRequest,
     ) -> Result<AgentWaitResponse>;
+
+    async fn resume(&self, parent: SubagentParentContext, agent_id: AgentId)
+    -> Result<AgentHandle>;
 
     async fn list(&self, parent: SubagentParentContext) -> Result<Vec<AgentHandle>>;
 
@@ -168,6 +177,7 @@ define_executor_tool!(TaskBatchTool);
 define_executor_tool!(AgentSpawnTool);
 define_executor_tool!(AgentSendTool);
 define_executor_tool!(AgentWaitTool);
+define_executor_tool!(AgentResumeTool);
 define_executor_tool!(AgentListTool);
 define_executor_tool!(AgentCancelTool);
 
@@ -448,6 +458,41 @@ impl Tool for AgentListTool {
 }
 
 #[async_trait]
+impl Tool for AgentResumeTool {
+    fn spec(&self) -> ToolSpec {
+        builtin_tool_spec(
+            RESUME_AGENT_TOOL_NAME,
+            "Resume a previously closed child agent so it can receive more input.",
+            serde_json::to_value(schema_for!(AgentResumeToolInput)).expect("resume_agent schema"),
+            ToolOutputMode::Text,
+            tool_approval_profile(false, false, false, false),
+        )
+        .with_output_schema(
+            serde_json::to_value(schema_for!(AgentHandle)).expect("resume_agent output schema"),
+        )
+    }
+
+    async fn execute(
+        &self,
+        call_id: ToolCallId,
+        arguments: Value,
+        ctx: &ToolExecutionContext,
+    ) -> Result<ToolResult> {
+        let input: AgentResumeToolInput = serde_json::from_value(arguments)?;
+        let handle = self
+            .executor
+            .resume(SubagentParentContext::from(ctx), input.agent_id)
+            .await?;
+        build_tool_result(
+            call_id,
+            RESUME_AGENT_TOOL_NAME,
+            render_handle_line(&handle),
+            handle,
+        )
+    }
+}
+
+#[async_trait]
 impl Tool for AgentCancelTool {
     fn spec(&self) -> ToolSpec {
         builtin_tool_spec(
@@ -699,11 +744,11 @@ where
 #[cfg(test)]
 mod tests {
     use super::{
-        AgentCancelTool, AgentListTool, AgentSendTool, AgentSpawnTool, AgentTaskInput,
-        AgentWaitTool, SubagentExecutor, SubagentParentContext, TaskBatchTool, TaskBatchToolInput,
-        TaskTool, TaskToolInput,
+        AgentCancelTool, AgentListTool, AgentResumeTool, AgentSendTool, AgentSpawnTool,
+        AgentTaskInput, AgentWaitTool, SubagentExecutor, SubagentParentContext, TaskBatchTool,
+        TaskBatchToolInput, TaskTool, TaskToolInput,
     };
-    use crate::{Result, Tool, ToolExecutionContext, ToolRegistry};
+    use crate::{Result, Tool, ToolError, ToolExecutionContext, ToolRegistry};
     use async_trait::async_trait;
     use serde_json::Value;
     use serde_json::json;
@@ -725,6 +770,7 @@ mod tests {
         results: BTreeMap<AgentId, AgentResultEnvelope>,
         wait_any_queue: Vec<AgentId>,
         sent: Vec<(AgentId, String, serde_json::Value)>,
+        resumed: Vec<AgentId>,
         cancelled: Vec<AgentId>,
         spawned_tasks: Vec<AgentTaskSpec>,
     }
@@ -829,6 +875,21 @@ mod tests {
                     .filter_map(|agent_id| state.results.get(agent_id).cloned())
                     .collect(),
             })
+        }
+
+        async fn resume(
+            &self,
+            _parent: SubagentParentContext,
+            agent_id: AgentId,
+        ) -> Result<AgentHandle> {
+            let mut state = self.state.lock().unwrap();
+            state.resumed.push(agent_id.clone());
+            let handle = state
+                .handles
+                .get_mut(&agent_id)
+                .ok_or_else(|| ToolError::invalid_state("unknown agent"))?;
+            handle.status = AgentStatus::Queued;
+            Ok(handle.clone())
         }
 
         async fn list(&self, _parent: SubagentParentContext) -> Result<Vec<AgentHandle>> {
@@ -994,6 +1055,7 @@ mod tests {
         let spawn = AgentSpawnTool::new(executor.clone());
         let send = AgentSendTool::new(executor.clone());
         let wait = AgentWaitTool::new(executor.clone());
+        let resume = AgentResumeTool::new(executor.clone());
         let list = AgentListTool::new(executor.clone());
         let cancel = AgentCancelTool::new(executor.clone());
 
@@ -1052,6 +1114,16 @@ mod tests {
             1
         );
 
+        let resumed = resume
+            .execute(
+                ToolCallId::new(),
+                json!({"agent_id":"agent_agent_a"}),
+                &ToolExecutionContext::default(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resumed.structured_content.unwrap()["status"], "queued");
+
         let cancelled = cancel
             .execute(
                 ToolCallId::new(),
@@ -1062,6 +1134,7 @@ mod tests {
             .unwrap();
         assert_eq!(cancelled.structured_content.unwrap()["status"], "cancelled");
         assert_eq!(executor.state.lock().unwrap().sent.len(), 1);
+        assert_eq!(executor.state.lock().unwrap().resumed.len(), 1);
     }
 
     #[test]
@@ -1071,6 +1144,7 @@ mod tests {
         registry.register(AgentSpawnTool::new(executor.clone()));
         registry.register(AgentSendTool::new(executor.clone()));
         registry.register(AgentWaitTool::new(executor.clone()));
+        registry.register(AgentResumeTool::new(executor.clone()));
         registry.register(AgentListTool::new(executor.clone()));
         registry.register(AgentCancelTool::new(executor));
 
@@ -1083,6 +1157,7 @@ mod tests {
         assert!(registry.get("spawn_agent").is_some());
         assert!(registry.get("send_input").is_some());
         assert!(registry.get("wait_agent").is_some());
+        assert!(registry.get("resume_agent").is_some());
         assert!(registry.get("list_agents").is_some());
         assert!(registry.get("close_agent").is_some());
     }

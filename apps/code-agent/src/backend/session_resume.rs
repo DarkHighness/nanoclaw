@@ -1,10 +1,8 @@
-use agent::runtime::RuntimeSession;
-use agent::types::{AgentSessionId, MessageId, SessionEventEnvelope, SessionEventKind, SessionId};
-use anyhow::{Result, anyhow};
-use store::replay_transcript;
+use agent::runtime::{RuntimeSession, reconstruct_runtime_session as rebuild_runtime_session};
+use agent::types::{AgentSessionId, SessionEventEnvelope};
+use anyhow::Result;
 
-pub(crate) const HISTORY_ONLY_RESUME_REASON: &str =
-    "This persisted agent session predates resume checkpoints for compacted history.";
+pub(crate) use agent::runtime::HISTORY_ONLY_RESUME_REASON;
 
 pub(crate) fn can_resume_agent_session(
     events: &[SessionEventEnvelope],
@@ -17,82 +15,7 @@ pub(crate) fn reconstruct_runtime_session(
     events: &[SessionEventEnvelope],
     agent_session_id: &AgentSessionId,
 ) -> Result<RuntimeSession> {
-    let cutoff = events
-        .iter()
-        .rposition(|event| &event.agent_session_id == agent_session_id)
-        .ok_or_else(|| {
-            anyhow!("agent session missing from persisted event log: {agent_session_id}")
-        })?;
-    let slice = &events[..=cutoff];
-    let session_id = slice
-        .last()
-        .map(|event| event.session_id.clone())
-        .unwrap_or_else(SessionId::new);
-    let transcript = replay_transcript(slice);
-
-    let mut session = RuntimeSession::new(session_id, agent_session_id.clone());
-    session.transcript = transcript;
-
-    if let Some(checkpoint) = latest_compaction_checkpoint(slice)? {
-        let message_index = session
-            .transcript
-            .iter()
-            .enumerate()
-            .map(|(index, message)| (message.message_id.clone(), index))
-            .collect::<std::collections::BTreeMap<_, _>>();
-        let summary_index = message_index
-            .get(&checkpoint.summary_message_id)
-            .copied()
-            .ok_or_else(|| {
-                anyhow!(
-                    "compaction summary message missing from reconstructed transcript: {}",
-                    checkpoint.summary_message_id
-                )
-            })?;
-        session.compaction_summary_index = Some(summary_index);
-        session.retained_tail_indices = checkpoint
-            .retained_tail_message_ids
-            .iter()
-            .filter_map(|message_id| message_index.get(message_id).copied())
-            .filter(|index| *index < summary_index)
-            .collect();
-        session.post_summary_start = summary_index + 1;
-    }
-
-    Ok(session)
-}
-
-#[derive(Clone, Debug)]
-struct CompactionCheckpoint {
-    summary_message_id: MessageId,
-    retained_tail_message_ids: Vec<MessageId>,
-}
-
-fn latest_compaction_checkpoint(
-    events: &[SessionEventEnvelope],
-) -> Result<Option<CompactionCheckpoint>> {
-    let checkpoint = events.iter().rev().find_map(|event| match &event.event {
-        SessionEventKind::CompactionCompleted {
-            summary_message_id,
-            retained_tail_message_ids,
-            ..
-        } => Some((
-            summary_message_id.clone(),
-            retained_tail_message_ids.clone(),
-        )),
-        _ => None,
-    });
-
-    match checkpoint {
-        None => Ok(None),
-        Some((Some(summary_message_id), retained_tail_message_ids)) => {
-            Ok(Some(CompactionCheckpoint {
-                summary_message_id,
-                retained_tail_message_ids,
-            }))
-        }
-        Some((None, _)) => Err(anyhow!(HISTORY_ONLY_RESUME_REASON)),
-    }
+    rebuild_runtime_session(events, agent_session_id).map_err(Into::into)
 }
 
 #[cfg(test)]
