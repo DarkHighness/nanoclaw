@@ -208,7 +208,10 @@ user messages all the way into the child runtime instead of flattening them
 into steering text. `send_input interrupt=true` now has real restart semantics
 instead of degrading to a queued follow-up, and both `local_image` and
 `image_url` input items now flow through the same first-class image message
-parts that provider adapters use for multimodal prompts.
+parts that provider adapters use for multimodal prompts. `local_file` / `file`
+items now attach first-class file parts as well: OpenAI consumes them through
+`input_file`, while Anthropic promotes PDF attachments to native `document`
+blocks and keeps other file types on the existing readable fallback path.
 - state:
   `update_plan`, `request_user_input`, `request_permissions`
 - discovery:

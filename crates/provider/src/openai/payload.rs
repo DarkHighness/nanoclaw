@@ -251,7 +251,7 @@ fn openai_user_message_block(part: &MessagePart) -> Option<Value> {
             data_base64,
             uri,
         } => {
-            if let Some(uri) = uri {
+            if let Some(uri) = uri.as_deref().filter(|uri| is_remote_file_url(uri)) {
                 Some(json!({
                     "type": "input_file",
                     "file_url": uri,
@@ -303,6 +303,10 @@ fn openai_user_message_block(part: &MessagePart) -> Option<Value> {
         })),
         MessagePart::ToolResult { .. } => None,
     }
+}
+
+fn is_remote_file_url(uri: &str) -> bool {
+    uri.starts_with("http://") || uri.starts_with("https://")
 }
 
 fn openai_assistant_message_block(part: &MessagePart) -> Option<Value> {

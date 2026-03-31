@@ -358,6 +358,28 @@ fn anthropic_message(role: &str, parts: Vec<MessagePart>) -> Result<Value> {
                     "url": url,
                 }
             })),
+            MessagePart::File {
+                file_name,
+                mime_type,
+                data_base64,
+                uri,
+            } => {
+                if let Some(block) = anthropic_file_block(
+                    file_name.as_deref(),
+                    mime_type.as_deref(),
+                    data_base64.as_deref(),
+                    uri.as_deref(),
+                ) {
+                    content.push(block);
+                } else if let Some(text) = message_part_text(&MessagePart::File {
+                    file_name,
+                    mime_type,
+                    data_base64,
+                    uri,
+                }) {
+                    content.push(json!({"type":"text","text": text}));
+                }
+            }
             MessagePart::ToolCall { call } => content.push(json!({
                 "type": "tool_use",
                 "id": call.call_id,
@@ -387,6 +409,51 @@ fn anthropic_message(role: &str, parts: Vec<MessagePart>) -> Result<Value> {
         "role": role,
         "content": content,
     }))
+}
+
+fn anthropic_file_block(
+    file_name: Option<&str>,
+    mime_type: Option<&str>,
+    data_base64: Option<&str>,
+    uri: Option<&str>,
+) -> Option<Value> {
+    if !is_pdf_attachment(file_name, mime_type, uri) {
+        return None;
+    }
+    let title = file_name.map(ToOwned::to_owned);
+    if let Some(uri) = uri.filter(|uri| is_remote_file_url(uri)) {
+        return Some(json!({
+            "type": "document",
+            "source": {
+                "type": "url",
+                "url": uri,
+            },
+            "title": title,
+        }));
+    }
+    data_base64.map(|data| {
+        json!({
+            "type": "document",
+            "source": {
+                "type": "base64",
+                "media_type": "application/pdf",
+                "data": data,
+            },
+            "title": title,
+        })
+    })
+}
+
+fn is_pdf_attachment(file_name: Option<&str>, mime_type: Option<&str>, uri: Option<&str>) -> bool {
+    if mime_type == Some("application/pdf") {
+        return true;
+    }
+    file_name.is_some_and(|value| value.to_ascii_lowercase().ends_with(".pdf"))
+        || uri.is_some_and(|value| value.to_ascii_lowercase().ends_with(".pdf"))
+}
+
+fn is_remote_file_url(uri: &str) -> bool {
+    uri.starts_with("http://") || uri.starts_with("https://")
 }
 
 fn anthropic_tool_message(parts: Vec<MessagePart>) -> Result<Value> {
@@ -710,6 +777,41 @@ mod tests {
             json!({
                 "type": "url",
                 "url": "https://example.com/failure.png"
+            })
+        );
+        assert_eq!(body["messages"][0]["content"][1]["type"], json!("text"));
+    }
+
+    #[test]
+    fn anthropic_body_serializes_pdf_file_parts_as_document_blocks() {
+        let mut request = base_request();
+        request.messages = vec![Message::new(
+            types::MessageRole::User,
+            vec![
+                types::MessagePart::File {
+                    file_name: Some("report.pdf".to_string()),
+                    mime_type: Some("application/pdf".to_string()),
+                    data_base64: Some("cGRm".to_string()),
+                    uri: Some("docs/report.pdf".to_string()),
+                },
+                types::MessagePart::text("Summarize the findings"),
+            ],
+        )];
+
+        let body = build_anthropic_messages_body(
+            "claude-sonnet-4-6".to_string(),
+            request,
+            &RequestOptions::default(),
+        )
+        .unwrap();
+
+        assert_eq!(body["messages"][0]["content"][0]["type"], json!("document"));
+        assert_eq!(
+            body["messages"][0]["content"][0]["source"],
+            json!({
+                "type": "base64",
+                "media_type": "application/pdf",
+                "data": "cGRm"
             })
         );
         assert_eq!(body["messages"][0]["content"][1]["type"], json!("text"));

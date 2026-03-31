@@ -855,6 +855,32 @@ mod tests {
     }
 
     #[test]
+    fn openai_responses_body_keeps_local_file_parts_as_inline_input_files() {
+        let mut request = base_request();
+        request.messages = vec![Message::new(
+            types::MessageRole::User,
+            vec![MessagePart::File {
+                file_name: Some("report.pdf".to_string()),
+                mime_type: Some("application/pdf".to_string()),
+                data_base64: Some("cGRm".to_string()),
+                uri: Some("docs/report.pdf".to_string()),
+            }],
+        )];
+
+        let body =
+            build_openai_responses_body("gpt-5.4".to_string(), request, &RequestOptions::default())
+                .unwrap();
+
+        assert_eq!(body["input"][0]["type"], json!("message"));
+        assert_eq!(body["input"][0]["content"][0]["type"], json!("input_file"));
+        assert_eq!(
+            body["input"][0]["content"][0]["file_data"],
+            json!("data:application/pdf;base64,cGRm")
+        );
+        assert!(body["input"][0]["content"][0].get("file_url").is_none());
+    }
+
+    #[test]
     fn previous_response_not_found_maps_to_continuation_loss() {
         let error = classify_openai_error(
             404,

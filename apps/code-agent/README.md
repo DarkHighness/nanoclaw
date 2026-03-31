@@ -13,6 +13,7 @@ It intentionally keeps the host layer thin:
   - `spawn_agent` and `send_input` now forward `message + items` as structured user messages instead of flattening them into steering prose
   - `send_input interrupt=true` now performs a real child restart instead of queuing behind the active turn, and the TUI/history surfaces distinguish queued follow-ups from interrupt-driven restarts
   - `local_image` and `image_url` input items now become first-class image parts, so multimodal child prompts reuse provider-native image transport instead of a text-only resource fallback
+  - `local_file` / `file` input items now attach binary file parts; OpenAI forwards them as `input_file`, while Anthropic upgrades PDFs to native `document` blocks and keeps other file types on a readable fallback path
 - append-only runtime loop from `runtime`
 - runtime steering and queued command support
 - loop detection as the primary guard against tool-call churn, without a fixed global iteration cap

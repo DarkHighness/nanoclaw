@@ -95,9 +95,30 @@ pub fn message_part_text(part: &MessagePart) -> Option<String> {
         MessagePart::ProviderExtension { payload, .. } => Some(stringify_json(payload)),
         MessagePart::File { uri: Some(uri), .. } => Some(uri.clone()),
         MessagePart::File {
+            file_name: Some(file_name),
+            mime_type,
             data_base64: Some(_),
             ..
-        } => Some("<inline file payload>".to_string()),
+        } => Some(format!(
+            "[file:{}{}]",
+            file_name,
+            mime_type
+                .as_deref()
+                .map(|value| format!(" {value}"))
+                .unwrap_or_default()
+        )),
+        MessagePart::File {
+            file_name: None,
+            mime_type,
+            data_base64: Some(_),
+            ..
+        } => Some(format!(
+            "[inline_file{}]",
+            mime_type
+                .as_deref()
+                .map(|value| format!(" {value}"))
+                .unwrap_or_default()
+        )),
         MessagePart::File {
             data_base64: None,
             uri: None,

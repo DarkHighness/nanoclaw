@@ -1,15 +1,18 @@
 use crate::ToolExecutionContext;
 use crate::annotations::{builtin_tool_spec, tool_approval_profile};
-use crate::fs::load_tool_image;
+use crate::fs::{load_tool_image, resolve_tool_path_against_workspace_root};
 use crate::registry::Tool;
 use crate::{Result, ToolError};
 use async_trait::async_trait;
+use base64::Engine;
 use schemars::{JsonSchema, schema_for};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::fs;
 use types::{
     AgentHandle, AgentId, AgentInputDelivery, AgentResultEnvelope, AgentSessionId, AgentStatus,
     AgentTaskSpec, AgentWaitMode, AgentWaitRequest, AgentWaitResponse, CallId, Message,
@@ -171,6 +174,14 @@ impl SubagentLaunchSpec {
             reasoning_effort: None,
         }
     }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct LoadedAgentInputFile {
+    requested_path: String,
+    file_name: Option<String>,
+    mime_type: Option<String>,
+    data_base64: String,
 }
 
 fn default_wait_mode() -> AgentWaitMode {
@@ -752,6 +763,29 @@ async fn normalize_agent_input_item_parts(
         return Ok(parts);
     }
 
+    if is_local_file_item(item_type, path) {
+        let path = path.ok_or_else(|| {
+            ToolError::invalid(
+                "agent input items with type=file or type=local_file require a non-empty path",
+            )
+        })?;
+        let file = load_agent_input_file(path, ctx).await?;
+        let mut parts = vec![MessagePart::File {
+            file_name: file.file_name.clone(),
+            mime_type: file.mime_type.clone(),
+            data_base64: Some(file.data_base64),
+            // Keep the original workspace-relative path attached for transcript
+            // replay and provider fallbacks that cannot consume the binary part.
+            // Provider adapters must not blindly treat non-URL paths as remote
+            // fetch targets.
+            uri: Some(file.requested_path.clone()),
+        }];
+        if let Some(caption) = compose_item_caption(name, text) {
+            parts.push(MessagePart::text(caption));
+        }
+        return Ok(parts);
+    }
+
     if is_remote_image_item(item_type, image_url, path) {
         let url = image_url.ok_or_else(|| {
             ToolError::invalid(
@@ -818,6 +852,42 @@ fn compose_item_caption(name: Option<&str>, text: Option<&str>) -> Option<String
 
 fn is_remote_image_item(item_type: &str, image_url: Option<&str>, path: Option<&str>) -> bool {
     image_url.is_some() && path.is_none() && matches!(item_type, "image_url" | "image" | "item")
+}
+
+fn is_local_file_item(item_type: &str, path: Option<&str>) -> bool {
+    path.is_some() && matches!(item_type, "local_file" | "file")
+}
+
+async fn load_agent_input_file(
+    requested_path: &str,
+    ctx: &ToolExecutionContext,
+) -> Result<LoadedAgentInputFile> {
+    let resolved_path = resolve_tool_path_against_workspace_root(
+        requested_path,
+        ctx.effective_root(),
+        ctx.container_workdir.as_deref(),
+    )?;
+    ctx.assert_path_read_allowed(&resolved_path)?;
+    let bytes = fs::read(&resolved_path).await?;
+    Ok(LoadedAgentInputFile {
+        requested_path: requested_path.to_string(),
+        file_name: resolved_path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .map(str::to_string),
+        mime_type: sniff_agent_input_file_mime(&bytes, &resolved_path).map(str::to_string),
+        data_base64: base64::engine::general_purpose::STANDARD.encode(bytes),
+    })
+}
+
+fn sniff_agent_input_file_mime(bytes: &[u8], path: &Path) -> Option<&'static str> {
+    if bytes.starts_with(b"%PDF-") {
+        return Some("application/pdf");
+    }
+    match path.extension().and_then(|value| value.to_str()) {
+        Some("pdf") => Some("application/pdf"),
+        _ => None,
+    }
 }
 
 fn render_agent_input_item_summary(item: &AgentInputItem) -> Option<String> {
@@ -1715,6 +1785,49 @@ mod tests {
             Some(MessagePart::ImageUrl { url, .. }) if url == "https://example.com/failure.png"
         ));
         assert_eq!(launch.initial_input.text_content(), "latest CI screenshot");
+    }
+
+    #[tokio::test]
+    async fn spawn_agent_local_file_items_become_file_parts() {
+        let executor = Arc::new(FakeExecutor::default());
+        let tool = AgentSpawnTool::new(executor.clone());
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("report.pdf"), b"%PDF-1.7\npayload").unwrap();
+
+        tool.execute(
+            ToolCallId::new(),
+            json!({
+                "agent_type": "reviewer",
+                "items": [
+                    {
+                        "type": "local_file",
+                        "path": "report.pdf",
+                        "text": "Summarize the findings"
+                    }
+                ]
+            }),
+            &workspace_context(dir.path()),
+        )
+        .await
+        .unwrap();
+
+        let state = executor.state.lock().unwrap();
+        let launch = &state.spawned_launches[0];
+        assert!(matches!(
+            launch.initial_input.parts.first(),
+            Some(MessagePart::File {
+                file_name,
+                mime_type,
+                data_base64: Some(_),
+                uri: Some(uri),
+            }) if file_name.as_deref() == Some("report.pdf")
+                && mime_type.as_deref() == Some("application/pdf")
+                && uri == "report.pdf"
+        ));
+        assert_eq!(
+            launch.initial_input.text_content(),
+            "Summarize the findings"
+        );
     }
 
     #[tokio::test]
