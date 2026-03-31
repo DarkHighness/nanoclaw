@@ -36,14 +36,14 @@ use observer::SharedRenderObserver;
 use paste_burst::{CharDecision, FlushResult, PasteBurst};
 use render::{main_pane_viewport_height, render};
 pub(crate) use state::SharedUiState;
-use state::{InspectorEntry, TuiState};
+use state::{ComposerSubmission, InspectorEntry, TuiState};
 
 use agent::RuntimeCommand;
 use agent::tools::{
     GrantedPermissionResponse, PermissionGrantScope, RequestPermissionProfile, UserInputAnswer,
     UserInputResponse,
 };
-use agent::types::MessageRole;
+use agent::types::{Message, MessageRole, message_operator_text};
 use anyhow::Result;
 use crossterm::event::{
     self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEvent, KeyEventKind,
@@ -279,8 +279,8 @@ impl CodeAgentTui {
                                 snapshot.turn_running,
                                 KeyCode::Tab,
                             ) {
-                                let input = self.ui_state.take_input();
-                                self.apply_plain_input_submit(action, input).await;
+                                let submission = self.ui_state.take_submission();
+                                self.apply_plain_input_submit(action, submission).await;
                                 continue;
                             }
                             if self.apply_command_completion(false) {
@@ -415,15 +415,16 @@ impl CodeAgentTui {
                                     }
                                 }
                             }
-                            let input = self.ui_state.take_input();
                             if let Some(action) = plain_input_submit_action(
-                                &input,
+                                &snapshot.input,
                                 snapshot.turn_running,
                                 KeyCode::Enter,
                             ) {
-                                self.apply_plain_input_submit(action, input).await;
+                                let submission = self.ui_state.take_submission();
+                                self.apply_plain_input_submit(action, submission).await;
                                 continue;
                             }
+                            let input = self.ui_state.take_input();
                             if input.trim().is_empty() {
                                 continue;
                             }
@@ -690,6 +691,20 @@ impl CodeAgentTui {
         self.ui_state.mutate(|state| {
             let _ = state.record_local_input_history(input);
             if state.record_input_history(input) {
+                persisted = Some(state.input_history().to_vec());
+            }
+        });
+        if let Some(entries) = persisted {
+            input_history::persist_input_history(&workspace_root, &entries);
+        }
+    }
+
+    fn record_submitted_prompt(&mut self, submission: &ComposerSubmission) {
+        let workspace_root = self.session.workspace_root().to_path_buf();
+        let mut persisted = None;
+        self.ui_state.mutate(|state| {
+            let _ = state.record_local_input_draft(submission.local_history_draft.clone());
+            if state.record_input_history(&submission.persisted_history_text) {
                 persisted = Some(state.input_history().to_vec());
             }
         });
@@ -1618,16 +1633,26 @@ impl CodeAgentTui {
         Ok(())
     }
 
-    async fn apply_plain_input_submit(&mut self, action: PlainInputSubmitAction, input: String) {
-        self.record_submitted_input(&input);
+    async fn apply_plain_input_submit(
+        &mut self,
+        action: PlainInputSubmitAction,
+        submission: ComposerSubmission,
+    ) {
+        self.record_submitted_prompt(&submission);
         match action {
-            PlainInputSubmitAction::StartPrompt => self.start_turn(input).await,
+            PlainInputSubmitAction::StartPrompt => {
+                self.start_turn_message(submission.message).await
+            }
             PlainInputSubmitAction::QueuePrompt => {
-                self.queue_prompt_behind_active_turn(input).await;
+                self.queue_prompt_behind_active_turn_message(submission.message)
+                    .await;
             }
             PlainInputSubmitAction::SteerActiveTurn => {
-                self.schedule_runtime_steer_while_active(input, Some("inline_enter".to_string()))
-                    .await;
+                self.schedule_runtime_steer_while_active(
+                    submission.persisted_history_text,
+                    Some("inline_enter".to_string()),
+                )
+                .await;
             }
         }
     }
@@ -1677,16 +1702,21 @@ impl CodeAgentTui {
     }
 
     async fn start_turn(&mut self, prompt: String) {
+        self.start_turn_message(Message::user(prompt)).await;
+    }
+
+    async fn start_turn_message(&mut self, message: Message) {
         if self.turn_task.is_some() {
-            self.queue_prompt_behind_active_turn(prompt).await;
+            self.queue_prompt_behind_active_turn_message(message).await;
             return;
         }
 
-        self.start_command(RuntimeCommand::Prompt { prompt }).await;
+        self.start_command(RuntimeCommand::Prompt { message }).await;
     }
 
-    async fn queue_prompt_behind_active_turn(&mut self, prompt: String) {
-        match self.session.queue_prompt_command(prompt.clone()).await {
+    async fn queue_prompt_behind_active_turn_message(&mut self, message: Message) {
+        let preview = state::preview_text(&message_operator_text(&message), 40);
+        match self.session.queue_prompt_command(message).await {
             Ok(queued_id) => {
                 let pending = self.session.pending_controls();
                 let depth = pending.len();
@@ -1694,11 +1724,7 @@ impl CodeAgentTui {
                     state.session.queued_commands = depth;
                     state.sync_pending_controls(pending);
                     state.status = "Queued prompt behind the active turn".to_string();
-                    state.push_activity(format!(
-                        "queued prompt {}: {}",
-                        queued_id,
-                        state::preview_text(&prompt, 40)
-                    ));
+                    state.push_activity(format!("queued prompt {}: {}", queued_id, preview));
                 });
             }
             Err(error) => {
@@ -1818,7 +1844,10 @@ impl CodeAgentTui {
                     "interrupted current turn and resubmitted {steer_count} steer(s): {preview}"
                 ));
             });
-            self.start_command(RuntimeCommand::Prompt { prompt }).await;
+            self.start_command(RuntimeCommand::Prompt {
+                message: Message::user(prompt),
+            })
+            .await;
         } else {
             self.ui_state.mutate(|state| {
                 state.turn_running = false;
@@ -2991,8 +3020,9 @@ fn history_rollback_status(
 
 fn queued_command_preview(command: &RuntimeCommand) -> String {
     match command {
-        RuntimeCommand::Prompt { prompt } => {
-            format!("running prompt: {}", state::preview_text(prompt, 40))
+        RuntimeCommand::Prompt { message } => {
+            let preview = message_operator_text(message);
+            format!("running prompt: {}", state::preview_text(&preview, 40))
         }
         RuntimeCommand::Steer { message, .. } => {
             format!("applying steer: {}", state::preview_text(message, 40))

@@ -25,7 +25,7 @@ use agent::tools::{
 };
 use agent::types::{
     AgentSessionId, AgentTaskSpec, AgentWaitMode, AgentWaitRequest, Message, SessionId,
-    new_opaque_id,
+    message_operator_text, new_opaque_id,
 };
 use agent::{AgentRuntime, RuntimeCommand, Skill, ToolExecutionContext};
 use anyhow::Result;
@@ -322,8 +322,8 @@ impl CodeAgentSession {
         Ok(())
     }
 
-    pub(crate) async fn queue_prompt_command(&self, prompt: impl Into<String>) -> Result<String> {
-        let queued = self.control_plane.push_prompt(prompt);
+    pub(crate) async fn queue_prompt_command(&self, message: Message) -> Result<String> {
+        let queued = self.control_plane.push_prompt(message);
         Ok(queued.id.to_string())
     }
 
@@ -336,10 +336,10 @@ impl CodeAgentSession {
             .snapshot()
             .into_iter()
             .map(|queued| match queued.command {
-                RuntimeCommand::Prompt { prompt } => PendingControlSummary {
+                RuntimeCommand::Prompt { message } => PendingControlSummary {
                     id: queued.id.to_string(),
                     kind: PendingControlKind::Prompt,
-                    preview: prompt,
+                    preview: message_operator_text(&message),
                     reason: None,
                 },
                 RuntimeCommand::Steer { message, reason } => PendingControlSummary {
@@ -365,7 +365,7 @@ impl CodeAgentSession {
                 &RuntimeCommandId::from(current.id.clone()),
                 match current.kind {
                     PendingControlKind::Prompt => RuntimeCommand::Prompt {
-                        prompt: content.to_string(),
+                        message: Message::user(content.to_string()),
                     },
                     PendingControlKind::Steer => RuntimeCommand::Steer {
                         message: content.to_string(),
@@ -375,10 +375,10 @@ impl CodeAgentSession {
             )
             .ok_or_else(|| anyhow::anyhow!("pending control update failed for {control_ref}"))?;
         Ok(match updated.command {
-            RuntimeCommand::Prompt { prompt } => PendingControlSummary {
+            RuntimeCommand::Prompt { message } => PendingControlSummary {
                 id: updated.id.to_string(),
                 kind: PendingControlKind::Prompt,
-                preview: prompt,
+                preview: message_operator_text(&message),
                 reason: None,
             },
             RuntimeCommand::Steer { message, reason } => PendingControlSummary {
@@ -401,10 +401,10 @@ impl CodeAgentSession {
             .remove(&RuntimeCommandId::from(current.id.clone()))
             .ok_or_else(|| anyhow::anyhow!("pending control removal failed for {control_ref}"))?;
         Ok(match removed.command {
-            RuntimeCommand::Prompt { prompt } => PendingControlSummary {
+            RuntimeCommand::Prompt { message } => PendingControlSummary {
                 id: removed.id.to_string(),
                 kind: PendingControlKind::Prompt,
-                preview: prompt,
+                preview: message_operator_text(&message),
                 reason: None,
             },
             RuntimeCommand::Steer { message, reason } => PendingControlSummary {
@@ -1159,7 +1159,7 @@ mod tests {
     };
     use agent::types::{
         AgentHandle, AgentId, AgentResultEnvelope, AgentStatus, AgentTaskSpec, AgentWaitRequest,
-        AgentWaitResponse, ModelEvent, ModelRequest, SessionEventKind, SessionId,
+        AgentWaitResponse, Message, ModelEvent, ModelRequest, SessionEventKind, SessionId,
     };
     use agent::{AgentRuntimeBuilder, RuntimeCommand, Skill};
     use async_trait::async_trait;
@@ -1570,13 +1570,16 @@ mod tests {
         startup.root_agent_session_id = runtime.agent_session_id().to_string();
         let session = build_session(runtime, Arc::new(NoopSubagentExecutor), store, startup);
 
-        let queued_id = session.queue_prompt_command("second").await.unwrap();
+        let queued_id = session
+            .queue_prompt_command(Message::user("second"))
+            .await
+            .unwrap();
         assert!(!queued_id.is_empty());
         assert_eq!(session.queued_command_count(), 1);
 
         session
             .apply_control(RuntimeCommand::Prompt {
-                prompt: "first".to_string(),
+                message: Message::user("first"),
             })
             .await
             .unwrap();
@@ -1642,7 +1645,10 @@ mod tests {
         startup.root_agent_session_id = runtime.agent_session_id().to_string();
         let session = build_session(runtime, Arc::new(NoopSubagentExecutor), store, startup);
 
-        let prompt_id = session.queue_prompt_command("draft").await.unwrap();
+        let prompt_id = session
+            .queue_prompt_command(Message::user("draft"))
+            .await
+            .unwrap();
         let steer_id = session
             .schedule_runtime_steer("focus on tests", Some("manual".to_string()))
             .unwrap();
@@ -1677,7 +1683,7 @@ mod tests {
         let session = build_session(runtime, Arc::new(NoopSubagentExecutor), store, startup);
 
         let prompt_id = session
-            .queue_prompt_command("follow-up prompt")
+            .queue_prompt_command(Message::user("follow-up prompt"))
             .await
             .unwrap();
         let steer_one = session
@@ -1732,7 +1738,7 @@ mod tests {
 
         session
             .apply_control(RuntimeCommand::Prompt {
-                prompt: "resume me".to_string(),
+                message: Message::user("resume me"),
             })
             .await
             .unwrap();

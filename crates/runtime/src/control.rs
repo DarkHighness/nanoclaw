@@ -1,13 +1,14 @@
+use types::Message;
 use types::new_opaque_id;
 
 use std::collections::VecDeque;
 use std::fmt;
 use std::sync::{Arc, Mutex};
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum RuntimeCommand {
     Prompt {
-        prompt: String,
+        message: Message,
     },
     Steer {
         message: String,
@@ -52,7 +53,7 @@ pub enum RuntimeCommandLane {
     SafePoint,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct QueuedRuntimeCommand {
     pub id: RuntimeCommandId,
     pub command: RuntimeCommand,
@@ -84,13 +85,8 @@ impl RuntimeControlPlane {
         queued
     }
 
-    pub fn push_prompt(&self, prompt: impl Into<String>) -> QueuedRuntimeCommand {
-        self.push(
-            RuntimeCommand::Prompt {
-                prompt: prompt.into(),
-            },
-            RuntimeCommandLane::Idle,
-        )
+    pub fn push_prompt(&self, message: Message) -> QueuedRuntimeCommand {
+        self.push(RuntimeCommand::Prompt { message }, RuntimeCommandLane::Idle)
     }
 
     pub fn push_steer(
@@ -173,12 +169,13 @@ fn matches_runtime_command_kind(left: &RuntimeCommand, right: &RuntimeCommand) -
 #[cfg(test)]
 mod tests {
     use super::{RuntimeCommand, RuntimeCommandLane, RuntimeControlPlane};
+    use types::Message;
 
     #[test]
     fn queue_preserves_fifo_order() {
         let queue = RuntimeControlPlane::new();
-        let first = queue.push_prompt("one");
-        let second = queue.push_prompt("two");
+        let first = queue.push_prompt(Message::user("one"));
+        let second = queue.push_prompt(Message::user("two"));
 
         assert_eq!(queue.len(), 2);
         assert_eq!(queue.pop_next().unwrap().id, first.id);
@@ -189,7 +186,7 @@ mod tests {
     #[test]
     fn safe_point_pop_skips_idle_prompts() {
         let queue = RuntimeControlPlane::new();
-        let prompt = queue.push_prompt("one");
+        let prompt = queue.push_prompt(Message::user("one"));
         let steer = queue.push_steer("use concise output", Some("manual".to_string()));
 
         let popped = queue.pop_next_safe_point().unwrap();
@@ -200,27 +197,25 @@ mod tests {
     #[test]
     fn update_and_remove_mutate_operator_visible_queue() {
         let queue = RuntimeControlPlane::new();
-        let prompt = queue.push_prompt("draft");
+        let prompt = queue.push_prompt(Message::user("draft"));
         let steer = queue.push_steer("focus", Some("manual".to_string()));
 
         let updated = queue
             .update(
                 &prompt.id,
                 RuntimeCommand::Prompt {
-                    prompt: "edited".to_string(),
+                    message: Message::user("edited"),
                 },
             )
             .unwrap();
-        assert_eq!(
-            updated,
-            super::QueuedRuntimeCommand {
-                id: prompt.id.clone(),
-                command: RuntimeCommand::Prompt {
-                    prompt: "edited".to_string()
-                },
-                lane: RuntimeCommandLane::Idle,
+        assert_eq!(updated.id, prompt.id);
+        assert_eq!(updated.lane, RuntimeCommandLane::Idle);
+        match updated.command {
+            RuntimeCommand::Prompt { message } => {
+                assert_eq!(message.text_content(), "edited");
             }
-        );
+            RuntimeCommand::Steer { .. } => panic!("expected queued prompt"),
+        }
 
         let removed = queue.remove(&steer.id).unwrap();
         assert_eq!(removed.id, steer.id);
@@ -230,7 +225,7 @@ mod tests {
     #[test]
     fn clear_drains_pending_commands() {
         let queue = RuntimeControlPlane::new();
-        queue.push_prompt("one");
+        queue.push_prompt(Message::user("one"));
         queue.push_steer("use concise output", Some("manual".to_string()));
 
         assert_eq!(queue.clear(), 2);

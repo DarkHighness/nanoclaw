@@ -387,8 +387,8 @@ impl AgentRuntime {
         observer: &mut dyn RuntimeObserver,
     ) -> Result<Option<RunTurnOutcome>> {
         let outcome = match command {
-            RuntimeCommand::Prompt { prompt } => self
-                .run_user_prompt_with_observer(prompt, observer)
+            RuntimeCommand::Prompt { message } => self
+                .run_user_message_with_observer(message, observer)
                 .await
                 .map(Some),
             RuntimeCommand::Steer { message, reason } => {
@@ -465,8 +465,10 @@ impl AgentRuntime {
         while let Some(queued) = self.control_plane.pop_next() {
             applied_any = true;
             match queued.command {
-                RuntimeCommand::Prompt { prompt } => {
-                    let _ = self.run_user_prompt_with_observer(prompt, observer).await?;
+                RuntimeCommand::Prompt { message } => {
+                    let _ = self
+                        .run_user_message_with_observer(message, observer)
+                        .await?;
                 }
                 RuntimeCommand::Steer { message, reason } => {
                     self.steer_with_observer(message, reason, observer).await?;

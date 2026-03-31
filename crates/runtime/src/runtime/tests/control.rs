@@ -9,8 +9,8 @@ use std::sync::{Arc, Mutex};
 use store::{InMemorySessionStore, SessionStore};
 use tools::{ReadTool, ToolExecutionContext, ToolRegistry};
 use types::{
-    ModelEvent, ModelRequest, SessionEventKind, TokenUsage, TokenUsagePhase, ToolCall, ToolCallId,
-    ToolLifecycleEventKind, ToolOrigin,
+    Message, ModelEvent, ModelRequest, SessionEventKind, TokenUsage, TokenUsagePhase, ToolCall,
+    ToolCallId, ToolLifecycleEventKind, ToolOrigin,
 };
 
 struct StreamingTextBackend;
@@ -310,7 +310,7 @@ async fn runtime_apply_control_runs_prompt_and_steer_commands() {
 
     let prompt = runtime
         .apply_control(RuntimeCommand::Prompt {
-            prompt: "hello".to_string(),
+            message: Message::user("hello"),
         })
         .await
         .unwrap()
@@ -341,11 +341,11 @@ async fn runtime_apply_control_drains_runtime_prompt_queue_before_returning_idle
         })
         .build();
 
-    runtime.control_plane().push_prompt("second");
+    runtime.control_plane().push_prompt(Message::user("second"));
 
     let outcome = runtime
         .apply_control(RuntimeCommand::Prompt {
-            prompt: "first".to_string(),
+            message: Message::user("first"),
         })
         .await
         .unwrap()
@@ -385,7 +385,7 @@ async fn runtime_new_session_rotates_top_level_session_and_clears_state() {
         .unwrap();
     runtime
         .apply_control(RuntimeCommand::Prompt {
-            prompt: "hello".to_string(),
+            message: Message::user("hello"),
         })
         .await
         .unwrap();

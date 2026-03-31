@@ -7,8 +7,7 @@ use crate::theme::ThemeSummary;
 use crate::tool_render::{
     ToolDetail, ToolDetailBlockKind, preview_tool_details, serialize_tool_details,
 };
-use agent::types::MessageId;
-use agent::types::TokenLedgerSnapshot;
+use agent::types::{Message, MessageId, TokenLedgerSnapshot};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, RwLock};
@@ -119,6 +118,13 @@ pub(crate) enum ComposerDraftAttachmentKind {
 pub(crate) struct ComposerKillBufferState {
     pub(crate) text: String,
     pub(crate) draft_attachments: Vec<ComposerDraftAttachmentState>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ComposerSubmission {
+    pub(crate) message: Message,
+    pub(crate) persisted_history_text: String,
+    pub(crate) local_history_draft: ComposerDraftState,
 }
 
 impl ComposerDraftState {
@@ -1214,6 +1220,24 @@ impl TuiState {
             return false;
         };
         let draft = ComposerDraftState::from_text(text);
+        self.record_local_input_draft(draft)
+    }
+
+    pub(crate) fn record_local_input_draft(&mut self, mut draft: ComposerDraftState) -> bool {
+        self.input_history_navigation = None;
+        let normalized_text = input_history::normalized_history_text(&draft.text);
+        match normalized_text {
+            Some(text) => {
+                draft.text = text;
+                draft.cursor = draft.text.len();
+            }
+            None if draft.draft_attachments.is_empty() => return false,
+            None => {
+                draft.text.clear();
+                draft.cursor = 0;
+            }
+        }
+        let draft = draft.normalized();
         if self.local_input_history.last() == Some(&draft) {
             return false;
         }
@@ -1558,17 +1582,46 @@ impl TuiState {
     }
 
     fn take_submission_input(&mut self) -> String {
+        self.take_submission().persisted_history_text
+    }
+
+    fn take_submission(&mut self) -> ComposerSubmission {
+        let submission = self.current_submission();
         self.input_history_navigation = None;
         self.command_completion_index = 0;
         self.input_cursor = 0;
         self.input_vertical_column = None;
-        let mut input = std::mem::take(&mut self.input);
+        let _ = std::mem::take(&mut self.input);
+        self.draft_attachments.clear();
+        submission
+    }
+
+    fn current_submission(&self) -> ComposerSubmission {
+        let local_history_draft = self.submitted_draft();
+        let persisted_history_text = local_history_draft.text.clone();
+        ComposerSubmission {
+            message: Message::user(persisted_history_text.clone()),
+            persisted_history_text,
+            local_history_draft,
+        }
+    }
+
+    fn submitted_draft(&self) -> ComposerDraftState {
+        let mut text = self.input.clone();
+        // Composer-only draft attachments still collapse into prompt text at
+        // submission time. The runtime prompt path now carries `Message`, but
+        // the host has not promoted draft attachments into first-class parts
+        // yet, so placeholders must resolve before the turn is queued.
         for attachment in &self.draft_attachments {
             let ComposerDraftAttachmentKind::LargePaste { payload } = &attachment.kind;
-            input = input.replace(&attachment.placeholder, payload);
+            text = text.replace(&attachment.placeholder, payload);
         }
-        self.draft_attachments.clear();
-        input
+        ComposerDraftState {
+            cursor: text.len(),
+            text,
+            draft_attachments: Vec::new(),
+        }
+        .normalized()
     }
 }
 
@@ -1700,6 +1753,11 @@ impl SharedUiState {
     pub(crate) fn take_input(&self) -> String {
         let mut state = self.0.write().unwrap();
         state.take_submission_input()
+    }
+
+    pub(crate) fn take_submission(&self) -> ComposerSubmission {
+        let mut state = self.0.write().unwrap();
+        state.take_submission()
     }
 }
 
