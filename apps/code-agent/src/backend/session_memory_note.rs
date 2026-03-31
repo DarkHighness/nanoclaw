@@ -1,3 +1,5 @@
+use agent::types::MessageId;
+
 struct SessionMemorySectionTemplate {
     heading: &'static str,
     description: &'static str,
@@ -51,6 +53,12 @@ struct ParsedSessionMemorySections {
     recognized_headings: usize,
     preface: String,
     sections: Vec<(&'static str, String)>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct SessionMemoryNoteSnapshot {
+    pub(crate) body: String,
+    pub(crate) last_summarized_message_id: Option<MessageId>,
 }
 
 pub(crate) fn render_session_memory_note(summary: &str) -> String {
@@ -116,6 +124,47 @@ pub(crate) fn strip_memory_frontmatter(text: &str) -> &str {
     &rest[frontmatter_end + "\n---\n".len()..]
 }
 
+pub(crate) fn parse_session_memory_note_snapshot(text: &str) -> SessionMemoryNoteSnapshot {
+    SessionMemoryNoteSnapshot {
+        body: strip_memory_frontmatter(text).trim().to_string(),
+        last_summarized_message_id: extract_last_summarized_message_id(text),
+    }
+}
+
+pub(crate) fn upsert_session_memory_note_frontmatter(
+    text: &str,
+    last_summarized_message_id: Option<&MessageId>,
+) -> String {
+    let Some(rest) = text.strip_prefix("---\n") else {
+        return text.to_string();
+    };
+    let Some(frontmatter_end) = rest.find("\n---\n") else {
+        return text.to_string();
+    };
+    let frontmatter = &rest[..frontmatter_end];
+    let body = &rest[frontmatter_end + "\n---\n".len()..];
+    let mut lines = frontmatter
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("last_summarized_message_id:"))
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    if let Some(last_summarized_message_id) = last_summarized_message_id {
+        lines.push(format!(
+            "last_summarized_message_id: {}",
+            last_summarized_message_id.as_ref()
+        ));
+    }
+
+    let mut rendered = String::from("---\n");
+    if !lines.is_empty() {
+        rendered.push_str(&lines.join("\n"));
+        rendered.push('\n');
+    }
+    rendered.push_str("---\n");
+    rendered.push_str(body);
+    rendered
+}
+
 pub(crate) fn build_session_memory_update_prompt(
     current_note: &str,
     transcript_delta: &str,
@@ -143,6 +192,18 @@ pub(crate) fn build_session_memory_update_prompt(
         current_note = current_note.trim(),
         transcript_delta = transcript_delta.trim(),
     )
+}
+
+fn extract_last_summarized_message_id(text: &str) -> Option<MessageId> {
+    let rest = text.strip_prefix("---\n")?;
+    let frontmatter_end = rest.find("\n---\n")?;
+    rest[..frontmatter_end].lines().find_map(|line| {
+        line.trim_start()
+            .strip_prefix("last_summarized_message_id:")
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(MessageId::from)
+    })
 }
 
 fn parse_session_memory_sections(summary: &str) -> ParsedSessionMemorySections {
@@ -256,8 +317,10 @@ fn section_body(sections: &[(&'static str, String)], heading: &'static str) -> S
 mod tests {
     use super::{
         build_session_memory_update_prompt, default_session_memory_note,
-        render_session_memory_note, strip_memory_frontmatter,
+        parse_session_memory_note_snapshot, render_session_memory_note, strip_memory_frontmatter,
+        upsert_session_memory_note_frontmatter,
     };
+    use agent::types::MessageId;
 
     #[test]
     fn freeform_summary_falls_back_to_current_state_in_stable_template() {
@@ -338,5 +401,29 @@ mod tests {
         assert!(prompt.contains("<current_session_note>"));
         assert!(prompt.contains("<new_transcript_entries>"));
         assert!(prompt.contains("Always refresh Current State"));
+    }
+
+    #[test]
+    fn snapshot_parser_reads_last_summarized_message_id_from_frontmatter() {
+        let snapshot = parse_session_memory_note_snapshot(
+            "---\nscope: working\nlast_summarized_message_id: msg_123\n---\n\n# Current State\n\nKeep going.",
+        );
+
+        assert_eq!(
+            snapshot.last_summarized_message_id,
+            Some(MessageId::from("msg_123"))
+        );
+        assert_eq!(snapshot.body, "# Current State\n\nKeep going.");
+    }
+
+    #[test]
+    fn upsert_session_memory_note_frontmatter_replaces_boundary_line() {
+        let text = upsert_session_memory_note_frontmatter(
+            "---\nscope: working\nlast_summarized_message_id: old\n---\n\n# Current State\n\nKeep going.\n",
+            Some(&MessageId::from("msg_456")),
+        );
+
+        assert!(text.contains("last_summarized_message_id: msg_456"));
+        assert!(!text.contains("last_summarized_message_id: old"));
     }
 }

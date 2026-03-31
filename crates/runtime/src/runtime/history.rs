@@ -4,7 +4,13 @@ use crate::{
     append_transcript_message, estimate_prompt_tokens,
 };
 use serde_json::json;
-use types::{HookContext, HookEvent, Message, MessageId, MessageRole, TurnId};
+use std::collections::BTreeSet;
+use types::{
+    HookContext, HookEvent, Message, MessageId, MessagePart, MessageRole, ToolCallId, TurnId,
+};
+
+const RETAINED_TAIL_MIN_TOKENS: usize = 10_000;
+const RETAINED_TAIL_MIN_TEXT_MESSAGES: usize = 5;
 
 impl AgentRuntime {
     pub(crate) fn visible_message_indices(&self) -> Vec<usize> {
@@ -191,11 +197,12 @@ impl AgentRuntime {
         }
         let visible_messages = self.visible_transcript();
 
-        let retain_count = self
-            .compaction_config
-            .preserve_recent_messages
-            .min(visible_indices.len().saturating_sub(1));
-        let split_at = visible_indices.len().saturating_sub(retain_count);
+        let Some(split_at) = select_compaction_split_index(
+            &visible_messages,
+            self.compaction_config.preserve_recent_messages,
+        ) else {
+            return Ok(false);
+        };
         if split_at < 2 {
             return Ok(false);
         }
@@ -233,7 +240,7 @@ impl AgentRuntime {
             )
             .await?;
         let pre_effects = self
-            .apply_hook_effects(turn_id, pre_hooks, None, None)
+            .apply_hook_effects_with_observer(turn_id, pre_hooks, None, None, observer)
             .await?;
         if pre_effects.blocked_reason("compaction blocked").is_some() {
             return Ok(false);
@@ -332,7 +339,7 @@ impl AgentRuntime {
             )
             .await?;
         let _ = self
-            .apply_hook_effects(turn_id, post_hooks, None, None)
+            .apply_hook_effects_with_observer(turn_id, post_hooks, None, None, observer)
             .await?;
 
         let hooks = self.hook_registrations.clone();
@@ -340,12 +347,186 @@ impl AgentRuntime {
         // boundaries. Auto compaction can therefore split a single turn: the
         // prompt stays on the pre-compaction AgentSession, while the rebuilt
         // request window and subsequent provider response move to the fresh one.
-        self.rotate_agent_session(turn_id, &hooks, "compaction", "compaction")
+        self.rotate_agent_session(turn_id, &hooks, "compaction", "compaction", observer)
             .await?;
         if let Some(instructions) = post_compaction_instructions {
-            self.record_instruction_load(turn_id, &hooks, instructions)
+            self.record_instruction_load(turn_id, &hooks, instructions, observer)
                 .await?;
         }
         Ok(true)
+    }
+}
+
+fn select_compaction_split_index(
+    visible_messages: &[Message],
+    preserve_recent_messages: usize,
+) -> Option<usize> {
+    if visible_messages.len() < 2 {
+        return None;
+    }
+    let retain_count = preserve_recent_messages.min(visible_messages.len().saturating_sub(1));
+    let mut split_at = visible_messages.len().saturating_sub(retain_count);
+    if split_at < 2 {
+        return None;
+    }
+
+    split_at = expand_retained_tail_for_context_floor(visible_messages, split_at);
+    adjust_split_at_for_tool_pairs(visible_messages, split_at)
+}
+
+fn expand_retained_tail_for_context_floor(
+    visible_messages: &[Message],
+    mut split_at: usize,
+) -> usize {
+    // Claude-style session-memory compaction preserves a non-trivial tail of
+    // recent conversational context. Keep the current message-count floor, but
+    // for genuinely large transcripts expand the retained segment until it also
+    // carries enough recent text to ground the post-compact continuation.
+    if estimate_messages_tokens(visible_messages) < RETAINED_TAIL_MIN_TOKENS {
+        return split_at;
+    }
+
+    let mut retained_tokens = estimate_messages_tokens(&visible_messages[split_at..]);
+    let mut retained_text_messages = count_text_messages(&visible_messages[split_at..]);
+    while split_at > 2
+        && (retained_tokens < RETAINED_TAIL_MIN_TOKENS
+            || retained_text_messages < RETAINED_TAIL_MIN_TEXT_MESSAGES)
+    {
+        split_at -= 1;
+        retained_tokens += estimate_message_tokens(&visible_messages[split_at]);
+        retained_text_messages +=
+            usize::from(message_has_text_content(&visible_messages[split_at]));
+    }
+    split_at
+}
+
+fn adjust_split_at_for_tool_pairs(
+    visible_messages: &[Message],
+    mut split_at: usize,
+) -> Option<usize> {
+    loop {
+        let missing_call_ids = missing_tool_call_ids(&visible_messages[split_at..]);
+        if missing_call_ids.is_empty() {
+            return Some(split_at);
+        }
+        let previous_call_index =
+            find_previous_tool_call_index(visible_messages, split_at, &missing_call_ids)?;
+        if previous_call_index < 2 {
+            return None;
+        }
+        split_at = previous_call_index;
+    }
+}
+
+fn missing_tool_call_ids(messages: &[Message]) -> BTreeSet<ToolCallId> {
+    let tool_call_ids = messages
+        .iter()
+        .flat_map(message_tool_call_ids)
+        .collect::<BTreeSet<_>>();
+    messages
+        .iter()
+        .flat_map(message_tool_result_ids)
+        .filter(|tool_call_id| !tool_call_ids.contains(tool_call_id))
+        .collect()
+}
+
+fn find_previous_tool_call_index(
+    visible_messages: &[Message],
+    split_at: usize,
+    required_call_ids: &BTreeSet<ToolCallId>,
+) -> Option<usize> {
+    (0..split_at).rev().find(|index| {
+        message_tool_call_ids(&visible_messages[*index])
+            .into_iter()
+            .any(|tool_call_id| required_call_ids.contains(&tool_call_id))
+    })
+}
+
+fn message_tool_call_ids(message: &Message) -> Vec<ToolCallId> {
+    message
+        .parts
+        .iter()
+        .filter_map(|part| match part {
+            MessagePart::ToolCall { call } => Some(call.id.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn message_tool_result_ids(message: &Message) -> Vec<ToolCallId> {
+    message
+        .parts
+        .iter()
+        .filter_map(|part| match part {
+            MessagePart::ToolResult { result } => Some(result.id.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn estimate_messages_tokens(messages: &[Message]) -> usize {
+    messages.iter().map(estimate_message_tokens).sum()
+}
+
+fn estimate_message_tokens(message: &Message) -> usize {
+    (message.text_content().len() + 32).div_ceil(4)
+}
+
+fn count_text_messages(messages: &[Message]) -> usize {
+    messages
+        .iter()
+        .filter(|message| message_has_text_content(message))
+        .count()
+}
+
+fn message_has_text_content(message: &Message) -> bool {
+    matches!(message.role, MessageRole::User | MessageRole::Assistant)
+        && !message.text_content().trim().is_empty()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        RETAINED_TAIL_MIN_TEXT_MESSAGES, RETAINED_TAIL_MIN_TOKENS, count_text_messages,
+        estimate_messages_tokens, select_compaction_split_index,
+    };
+    use serde_json::json;
+    use types::{Message, MessagePart, ToolCall, ToolOrigin, ToolResult};
+
+    #[test]
+    fn split_index_expands_retained_tail_for_large_contexts() {
+        let visible_messages = (0..20)
+            .map(|index| Message::user(format!("message-{index} {}", "x".repeat(3000))))
+            .collect::<Vec<_>>();
+
+        let split_at = select_compaction_split_index(&visible_messages, 1).expect("split index");
+        let retained_tail = &visible_messages[split_at..];
+
+        assert!(estimate_messages_tokens(retained_tail) >= RETAINED_TAIL_MIN_TOKENS);
+        assert!(count_text_messages(retained_tail) >= RETAINED_TAIL_MIN_TEXT_MESSAGES);
+        assert!(split_at >= 2);
+    }
+
+    #[test]
+    fn split_index_moves_backward_to_preserve_tool_pairs() {
+        let visible_messages = vec![
+            Message::user("context one"),
+            Message::assistant("context two"),
+            Message::assistant_parts(vec![MessagePart::ToolCall {
+                call: ToolCall {
+                    id: "tool-call-1".into(),
+                    call_id: "call-1".into(),
+                    tool_name: "read_file".into(),
+                    arguments: json!({ "path": "README.md" }),
+                    origin: ToolOrigin::Local,
+                },
+            }]),
+            Message::tool_result(ToolResult::text("tool-call-1".into(), "read_file", "ok")),
+            Message::user("follow up"),
+        ];
+
+        let split_at = select_compaction_split_index(&visible_messages, 2).expect("split index");
+
+        assert_eq!(split_at, 2);
     }
 }

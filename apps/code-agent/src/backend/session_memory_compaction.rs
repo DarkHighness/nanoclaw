@@ -1,4 +1,6 @@
-use crate::backend::session_memory_note::{default_session_memory_note, strip_memory_frontmatter};
+use crate::backend::session_memory_note::{
+    default_session_memory_note, parse_session_memory_note_snapshot,
+};
 use agent::runtime::{CompactionRequest, CompactionResult, ConversationCompactor, Result};
 use agent::types::{MessageId, SessionId};
 use async_trait::async_trait;
@@ -78,7 +80,10 @@ impl SessionMemoryConversationCompactor {
         if state.active_session_id.as_ref() != Some(&request.session_id) || !state.initialized {
             return None;
         }
-        let last_summarized_message_id = state.last_summarized_message_id?;
+        let note = self.load_session_memory_note(&request.session_id).await?;
+        let last_summarized_message_id = note
+            .last_summarized_message_id
+            .or(state.last_summarized_message_id)?;
         let visible_source_end_index =
             find_message_index(&request.visible_messages, &source_last_message_id)?;
         let summarized_through_index =
@@ -86,8 +91,6 @@ impl SessionMemoryConversationCompactor {
         if summarized_through_index < visible_source_end_index {
             return None;
         }
-
-        let note = self.load_session_memory_note(&request.session_id).await?;
         info!(
             session_id = %request.session_id,
             source_message_count = request.messages.len(),
@@ -97,7 +100,7 @@ impl SessionMemoryConversationCompactor {
                 .saturating_sub(request.messages.len()),
             "using structured session memory note for compaction continuity"
         );
-        Some(CompactionResult { summary: note })
+        Some(CompactionResult { summary: note.body })
     }
 
     async fn wait_for_session_memory_refresh(&self, session_id: &SessionId) {
@@ -121,7 +124,10 @@ impl SessionMemoryConversationCompactor {
         }
     }
 
-    async fn load_session_memory_note(&self, session_id: &SessionId) -> Option<String> {
+    async fn load_session_memory_note(
+        &self,
+        session_id: &SessionId,
+    ) -> Option<crate::backend::session_memory_note::SessionMemoryNoteSnapshot> {
         let path = session_memory_note_absolute_path(&self.workspace_root, session_id);
         let text = match fs::read_to_string(&path).await {
             Ok(text) => text,
@@ -136,11 +142,11 @@ impl SessionMemoryConversationCompactor {
                 return None;
             }
         };
-        let body = strip_memory_frontmatter(&text).trim().to_string();
-        if body.is_empty() || body == default_session_memory_note().trim() {
+        let snapshot = parse_session_memory_note_snapshot(&text);
+        if snapshot.body.is_empty() || snapshot.body == default_session_memory_note().trim() {
             return None;
         }
-        Some(body)
+        Some(snapshot)
     }
 }
 
@@ -287,6 +293,53 @@ mod tests {
 
         assert_eq!(result.summary, "fallback summary");
         assert_eq!(fallback.calls().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn uses_persisted_note_boundary_when_runtime_state_was_lost() {
+        let dir = tempfile::tempdir().unwrap();
+        let session_id = SessionId::from("session-1");
+        let agent_session_id = AgentSessionId::from("agent-session-1");
+        let first = Message::user("first");
+        let second = Message::assistant("second");
+        let tail = Message::user("tail");
+        std::fs::create_dir_all(dir.path().join(".nanoclaw/memory/working/sessions")).unwrap();
+        std::fs::write(
+            session_memory_note_absolute_path(dir.path(), &session_id),
+            "---\nscope: working\nlast_summarized_message_id: msg_tail\n---\n\n# Current State\n\nUse the persisted boundary.",
+        )
+        .unwrap();
+        let refresh_state = Arc::new(Mutex::new(SessionMemoryRefreshState {
+            active_session_id: Some(session_id.clone()),
+            initialized: true,
+            refresh_in_flight: false,
+            refresh_started_at: None,
+            refresh_epoch: 0,
+            tokens_at_last_update: 0,
+            tool_calls_since_update: 0,
+            last_summarized_message_id: None,
+        }));
+        let fallback = Arc::new(RecordingFallbackCompactor::default());
+        let compactor = SessionMemoryConversationCompactor::new(
+            dir.path().to_path_buf(),
+            refresh_state,
+            fallback.clone(),
+        );
+
+        let result = compactor
+            .compact(CompactionRequest {
+                session_id,
+                agent_session_id,
+                turn_id: TurnId::new(),
+                messages: vec![first.clone(), second.clone()],
+                visible_messages: vec![first, second, tail.with_message_id("msg_tail")],
+                instructions: None,
+            })
+            .await
+            .unwrap();
+
+        assert!(result.summary.contains("Use the persisted boundary."));
+        assert!(fallback.calls().is_empty());
     }
 
     #[tokio::test]

@@ -7,8 +7,9 @@ use crate::backend::session_memory_compaction::{
     session_memory_note_absolute_path,
 };
 use crate::backend::session_memory_note::{
-    build_session_memory_update_prompt, default_session_memory_note, render_session_memory_note,
-    strip_memory_frontmatter,
+    build_session_memory_update_prompt, default_session_memory_note,
+    parse_session_memory_note_snapshot, render_session_memory_note,
+    upsert_session_memory_note_frontmatter,
 };
 use crate::backend::session_resume;
 use crate::backend::task_history::{self, LoadedTask, PersistedTaskSummary};
@@ -230,6 +231,7 @@ struct CompactionWorkingSnapshot {
     session_id: SessionId,
     agent_session_id: AgentSessionId,
     summary: String,
+    summary_message_id: MessageId,
 }
 
 #[derive(Clone, Debug)]
@@ -765,13 +767,14 @@ impl CodeAgentSession {
         runtime: &AgentRuntime,
         observer: &SessionEventObserver,
     ) -> Option<CompactionWorkingSnapshot> {
-        observer
-            .latest_compaction_summary()
-            .map(|summary| CompactionWorkingSnapshot {
-                session_id: runtime.session_id(),
-                agent_session_id: runtime.agent_session_id(),
-                summary,
-            })
+        let summary = observer.latest_compaction_summary()?;
+        let summary_message_id = observer.latest_compaction_summary_message_id()?;
+        Some(CompactionWorkingSnapshot {
+            session_id: runtime.session_id(),
+            agent_session_id: runtime.agent_session_id(),
+            summary,
+            summary_message_id,
+        })
     }
 
     fn side_question_context_from_runtime(
@@ -1026,6 +1029,10 @@ impl CodeAgentSession {
                 &job.context.session_id,
                 &job.context.agent_session_id,
                 rendered,
+                job.context
+                    .visible_transcript
+                    .last()
+                    .map(|message| message.message_id.clone()),
                 vec!["session-note".to_string(), "incremental".to_string()],
             )
             .await
@@ -1041,7 +1048,7 @@ impl CodeAgentSession {
     async fn load_session_memory_note_body(&self, session_id: &SessionId) -> Result<String> {
         let path = session_memory_note_absolute_path(self.workspace_root(), session_id);
         match fs::read_to_string(path).await {
-            Ok(text) => Ok(strip_memory_frontmatter(&text).trim().to_string()),
+            Ok(text) => Ok(parse_session_memory_note_snapshot(&text).body),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 Ok(default_session_memory_note())
             }
@@ -1112,6 +1119,7 @@ impl CodeAgentSession {
         session_id: &SessionId,
         agent_session_id: &AgentSessionId,
         note: String,
+        last_summarized_message_id: Option<MessageId>,
         tags: Vec<String>,
     ) -> Result<()> {
         memory_backend
@@ -1132,6 +1140,17 @@ impl CodeAgentSession {
                 task_id: None,
             })
             .await?;
+        // The generic memory backend owns note file writes, but the session
+        // continuity boundary is host-specific. Patch the same file's
+        // frontmatter immediately after the managed write so resume and future
+        // compaction decisions read one durable source of truth.
+        let path = session_memory_note_absolute_path(self.workspace_root(), session_id);
+        let text = fs::read_to_string(&path).await?;
+        let patched =
+            upsert_session_memory_note_frontmatter(&text, last_summarized_message_id.as_ref());
+        if patched != text {
+            fs::write(path, patched).await?;
+        }
         Ok(())
     }
 
@@ -1195,31 +1214,26 @@ impl CodeAgentSession {
     }
 
     async fn reset_session_memory_refresh_state(&self, context: &SideQuestionContextSnapshot) {
-        let note_exists = fs::try_exists(session_memory_note_absolute_path(
-            self.workspace_root(),
-            &context.session_id,
-        ))
-        .await
-        .unwrap_or(false);
+        let note_path =
+            session_memory_note_absolute_path(self.workspace_root(), &context.session_id);
+        let note_text = fs::read_to_string(&note_path).await.ok();
+        let note_snapshot = note_text
+            .as_deref()
+            .map(parse_session_memory_note_snapshot)
+            .filter(|snapshot| !snapshot.body.is_empty());
         let mut state = self
             .session_memory_refresh
             .lock()
             .expect("session memory refresh state");
         state.active_session_id = Some(context.session_id.clone());
-        state.initialized = note_exists;
+        state.initialized = note_snapshot.is_some();
         state.refresh_in_flight = false;
         state.refresh_started_at = None;
         state.refresh_epoch = state.refresh_epoch.wrapping_add(1);
         state.tokens_at_last_update = 0;
         state.tool_calls_since_update = 0;
-        state.last_summarized_message_id = note_exists
-            .then(|| {
-                context
-                    .transcript
-                    .last()
-                    .map(|message| message.message_id.clone())
-            })
-            .flatten();
+        state.last_summarized_message_id =
+            note_snapshot.and_then(|snapshot| snapshot.last_summarized_message_id);
     }
 
     async fn persist_compaction_working_snapshot(
@@ -1249,6 +1263,7 @@ impl CodeAgentSession {
                 &snapshot.session_id,
                 &snapshot.agent_session_id,
                 note,
+                Some(snapshot.summary_message_id.clone()),
                 vec![
                     "compaction".to_string(),
                     "continuation".to_string(),
@@ -1897,8 +1912,8 @@ mod tests {
     };
     use agent::types::{
         AgentHandle, AgentId, AgentResultEnvelope, AgentSessionId, AgentStatus, AgentTaskSpec,
-        AgentWaitRequest, AgentWaitResponse, Message, ModelEvent, ModelRequest, SessionEventKind,
-        SessionId,
+        AgentWaitRequest, AgentWaitResponse, Message, MessageId, ModelEvent, ModelRequest,
+        SessionEventKind, SessionId,
     };
     use agent::{AgentRuntimeBuilder, RuntimeCommand, Skill, SkillCatalog};
     use async_trait::async_trait;
@@ -2838,6 +2853,7 @@ mod tests {
         assert!(snapshot.contains("# Current State"));
         assert!(snapshot.contains("summary for 2 messages"));
         assert!(snapshot.contains("session_id:"));
+        assert!(snapshot.contains("last_summarized_message_id:"));
     }
 
     #[tokio::test]
@@ -2873,6 +2889,7 @@ mod tests {
                 session_id: SessionId::from("session-1"),
                 agent_session_id: AgentSessionId::from("agent-session-1"),
                 summary: "first snapshot".to_string(),
+                summary_message_id: MessageId::from("summary-first"),
             }))
             .await;
         session
@@ -2880,6 +2897,7 @@ mod tests {
                 session_id: SessionId::from("session-1"),
                 agent_session_id: AgentSessionId::from("agent-session-1"),
                 summary: "second snapshot".to_string(),
+                summary_message_id: MessageId::from("summary-second"),
             }))
             .await;
 
@@ -2891,6 +2909,7 @@ mod tests {
         assert!(snapshot.contains("# Session Title"));
         assert!(snapshot.contains("# Current State"));
         assert!(snapshot.contains("second snapshot"));
+        assert!(snapshot.contains("last_summarized_message_id: summary-second"));
         assert!(!snapshot.contains("first snapshot"));
     }
 

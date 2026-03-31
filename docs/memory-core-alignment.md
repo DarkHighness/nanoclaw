@@ -199,6 +199,15 @@ session note using an internal maintenance request:
 - refreshed notes still use replace semantics in
   `.nanoclaw/memory/working/sessions/<session>.md`
 
+The session note now persists that boundary in its own frontmatter:
+
+- every persisted session note carries `last_summarized_message_id`
+- incremental refresh writes the latest visible message id that the refreshed
+  note now covers
+- compaction snapshots write the synthetic `summary_message_id` they produced
+- resume and cold-start recovery now reload that durable boundary instead of
+  guessing coverage from the current visible transcript tail
+
 This keeps the session note closer to Claude's continuously-maintained working
 memory without pushing note maintenance into base instructions or per-turn
 prompt-prefix churn, and it mirrors Claude's "background extraction with
