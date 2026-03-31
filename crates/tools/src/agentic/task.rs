@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
+use std::time::Duration;
 use types::{
     AgentHandle, AgentId, AgentResultEnvelope, AgentSessionId, AgentStatus, AgentTaskSpec,
     AgentWaitMode, AgentWaitRequest, AgentWaitResponse, CallId, MessagePart, SessionId, ToolCallId,
@@ -93,32 +94,49 @@ pub struct AgentSpawnToolInput {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
-pub struct AgentSendToolInput {
-    pub agent_id: AgentId,
-    #[serde(default = "default_message_channel")]
-    pub channel: String,
+pub struct AgentInputItem {
+    #[serde(rename = "type", default)]
+    pub item_type: Option<String>,
     #[serde(default)]
-    pub payload: Value,
+    pub text: Option<String>,
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub image_url: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
-pub struct AgentCancelToolInput {
-    pub agent_id: AgentId,
+pub struct AgentSendToolInput {
+    pub target: AgentId,
     #[serde(default)]
-    pub reason: Option<String>,
+    pub interrupt: bool,
+    #[serde(default)]
+    pub items: Vec<AgentInputItem>,
+    #[serde(default)]
+    pub message: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+pub struct AgentWaitToolInput {
+    pub targets: Vec<AgentId>,
+    #[serde(default)]
+    pub timeout_ms: Option<u64>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+pub struct AgentCloseToolInput {
+    pub target: AgentId,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 pub struct AgentResumeToolInput {
-    pub agent_id: AgentId,
+    pub id: AgentId,
 }
 
 fn default_wait_mode() -> AgentWaitMode {
     AgentWaitMode::All
-}
-
-fn default_message_channel() -> String {
-    "steer".to_string()
 }
 
 #[async_trait]
@@ -282,7 +300,7 @@ impl Tool for TaskBatchTool {
         build_tool_result(
             call_id,
             "task_batch",
-            render_wait_summary("task_batch", &wait),
+            render_wait_summary("task_batch", &wait, false),
             TaskBatchToolOutput {
                 completed: wait.completed,
                 pending: wait.pending,
@@ -363,14 +381,10 @@ impl Tool for AgentSendTool {
         ctx: &ToolExecutionContext,
     ) -> Result<ToolResult> {
         let input: AgentSendToolInput = serde_json::from_value(arguments)?;
+        let (target, channel, payload) = normalize_send_input(input)?;
         let handle = self
             .executor
-            .send(
-                SubagentParentContext::from(ctx),
-                input.agent_id,
-                input.channel,
-                input.payload,
-            )
+            .send(SubagentParentContext::from(ctx), target, channel, payload)
             .await?;
         build_tool_result(
             call_id,
@@ -387,7 +401,7 @@ impl Tool for AgentWaitTool {
         builtin_tool_spec(
             WAIT_AGENT_TOOL_NAME,
             "Wait for one or more child agents to reach a terminal state.",
-            serde_json::to_value(schema_for!(AgentWaitRequest)).expect("wait_agent schema"),
+            serde_json::to_value(schema_for!(AgentWaitToolInput)).expect("wait_agent schema"),
             ToolOutputMode::Text,
             tool_approval_profile(false, false, false, false),
         )
@@ -403,15 +417,13 @@ impl Tool for AgentWaitTool {
         arguments: Value,
         ctx: &ToolExecutionContext,
     ) -> Result<ToolResult> {
-        let request: AgentWaitRequest = serde_json::from_value(arguments)?;
-        let wait = self
-            .executor
-            .wait(SubagentParentContext::from(ctx), request)
-            .await?;
+        let input: AgentWaitToolInput = serde_json::from_value(arguments)?;
+        let parent = SubagentParentContext::from(ctx);
+        let (wait, timed_out) = wait_for_targets(self.executor.as_ref(), parent, input).await?;
         build_tool_result(
             call_id,
             WAIT_AGENT_TOOL_NAME,
-            render_wait_summary(WAIT_AGENT_TOOL_NAME, &wait),
+            render_wait_summary(WAIT_AGENT_TOOL_NAME, &wait, timed_out),
             wait,
         )
     }
@@ -481,7 +493,7 @@ impl Tool for AgentResumeTool {
         let input: AgentResumeToolInput = serde_json::from_value(arguments)?;
         let handle = self
             .executor
-            .resume(SubagentParentContext::from(ctx), input.agent_id)
+            .resume(SubagentParentContext::from(ctx), input.id)
             .await?;
         build_tool_result(
             call_id,
@@ -498,7 +510,7 @@ impl Tool for AgentCancelTool {
         builtin_tool_spec(
             CLOSE_AGENT_TOOL_NAME,
             "Close a child agent by cancelling it if it is still running.",
-            serde_json::to_value(schema_for!(AgentCancelToolInput)).expect("close_agent schema"),
+            serde_json::to_value(schema_for!(AgentCloseToolInput)).expect("close_agent schema"),
             ToolOutputMode::Text,
             tool_approval_profile(false, false, false, false),
         )
@@ -514,14 +526,10 @@ impl Tool for AgentCancelTool {
         arguments: Value,
         ctx: &ToolExecutionContext,
     ) -> Result<ToolResult> {
-        let input: AgentCancelToolInput = serde_json::from_value(arguments)?;
+        let input: AgentCloseToolInput = serde_json::from_value(arguments)?;
         let handle = self
             .executor
-            .cancel(
-                SubagentParentContext::from(ctx),
-                input.agent_id,
-                input.reason,
-            )
+            .cancel(SubagentParentContext::from(ctx), input.target, None)
             .await?;
         build_tool_result(
             call_id,
@@ -569,6 +577,110 @@ fn normalize_task_input(input: AgentTaskInput, ordinal: usize) -> Result<AgentTa
         dependency_ids,
         timeout_seconds: input.timeout_seconds,
     })
+}
+
+fn normalize_send_input(input: AgentSendToolInput) -> Result<(AgentId, String, Value)> {
+    if input.interrupt {
+        // The current mailbox applies steering at safe points after the active
+        // child turn yields. Reject preemption requests until the runtime can
+        // guarantee immediate interruption semantics.
+        return Err(ToolError::invalid(
+            "send_input interrupt=true is not yet supported by the subagent runtime",
+        ));
+    }
+    let target = input.target;
+    let mut parts = Vec::new();
+    if let Some(message) = input
+        .message
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    {
+        parts.push(message);
+    }
+    let item_lines = input
+        .items
+        .iter()
+        .filter_map(render_agent_input_item)
+        .collect::<Vec<_>>();
+    if !item_lines.is_empty() {
+        parts.push(item_lines.join("\n"));
+    }
+    if parts.is_empty() {
+        return Err(ToolError::invalid(
+            "send_input requires a message or at least one input item",
+        ));
+    }
+    Ok((
+        target,
+        "steer".to_string(),
+        Value::String(parts.join("\n\n")),
+    ))
+}
+
+fn render_agent_input_item(item: &AgentInputItem) -> Option<String> {
+    let item_type = item
+        .item_type
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| {
+            if item
+                .text
+                .as_ref()
+                .is_some_and(|value| !value.trim().is_empty())
+            {
+                "text"
+            } else {
+                "item"
+            }
+        });
+    if item_type == "text" {
+        return item
+            .text
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToString::to_string);
+    }
+
+    let mut fields = Vec::new();
+    if let Some(name) = item
+        .name
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        fields.push(format!("name={name}"));
+    }
+    if let Some(path) = item
+        .path
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        fields.push(format!("path={path}"));
+    }
+    if let Some(url) = item
+        .image_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        fields.push(format!("image_url={url}"));
+    }
+    if let Some(text) = item
+        .text
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        fields.push(format!("text={}", text.replace('\n', " ")));
+    }
+    if fields.is_empty() {
+        Some(format!("[{item_type}]"))
+    } else {
+        Some(format!("[{item_type}] {}", fields.join(" ")))
+    }
 }
 
 fn normalize_paths(paths: Vec<String>) -> Vec<String> {
@@ -691,9 +803,94 @@ async fn wait_for_batch(
     })
 }
 
-fn render_wait_summary(tool_name: &str, wait: &AgentWaitResponse) -> String {
+async fn wait_for_targets(
+    executor: &dyn SubagentExecutor,
+    parent: SubagentParentContext,
+    input: AgentWaitToolInput,
+) -> Result<(AgentWaitResponse, bool)> {
+    if input.targets.is_empty() {
+        return Err(ToolError::invalid(
+            "wait_agent requires at least one target",
+        ));
+    }
+    let request = AgentWaitRequest {
+        agent_ids: input.targets,
+        mode: AgentWaitMode::All,
+    };
+    match input.timeout_ms {
+        Some(timeout_ms) => match tokio::time::timeout(
+            Duration::from_millis(timeout_ms),
+            executor.wait(parent.clone(), request.clone()),
+        )
+        .await
+        {
+            Ok(wait) => Ok((wait?, false)),
+            Err(_) => Ok((
+                snapshot_wait_response(executor, parent, request.agent_ids).await?,
+                true,
+            )),
+        },
+        None => Ok((executor.wait(parent, request).await?, false)),
+    }
+}
+
+async fn snapshot_wait_response(
+    executor: &dyn SubagentExecutor,
+    parent: SubagentParentContext,
+    agent_ids: Vec<AgentId>,
+) -> Result<AgentWaitResponse> {
+    // `wait_agent(timeout_ms=...)` still needs a coherent snapshot of terminal
+    // results and non-terminal handles after the timeout fires. Use `list` as
+    // the cheap status snapshot, then fetch results only for the agents that
+    // are already terminal so the timeout path never blocks again on runners
+    // that are still active.
+    let handles_by_id = executor
+        .list(parent.clone())
+        .await?
+        .into_iter()
+        .map(|handle| (handle.agent_id.clone(), handle))
+        .collect::<BTreeMap<_, _>>();
+    let mut completed = Vec::new();
+    let mut pending = Vec::new();
+    for agent_id in agent_ids {
+        let handle = handles_by_id
+            .get(&agent_id)
+            .cloned()
+            .ok_or_else(|| ToolError::invalid_state(format!("unknown child agent: {agent_id}")))?;
+        if handle.status.is_terminal() {
+            completed.push(handle);
+        } else {
+            pending.push(handle);
+        }
+    }
+    let results = if completed.is_empty() {
+        Vec::new()
+    } else {
+        executor
+            .wait(
+                parent,
+                AgentWaitRequest {
+                    agent_ids: completed
+                        .iter()
+                        .map(|handle| handle.agent_id.clone())
+                        .collect(),
+                    mode: AgentWaitMode::All,
+                },
+            )
+            .await?
+            .results
+    };
+    Ok(AgentWaitResponse {
+        completed,
+        pending,
+        results,
+    })
+}
+
+fn render_wait_summary(tool_name: &str, wait: &AgentWaitResponse, timed_out: bool) -> String {
+    let status = if timed_out { "timed_out" } else { "completed" };
     let mut lines = vec![format!(
-        "[{tool_name} completed={} pending={} results={}]",
+        "[{tool_name} {status} completed={} pending={} results={}]",
         wait.completed.len(),
         wait.pending.len(),
         wait.results.len()
@@ -754,6 +951,7 @@ mod tests {
     use serde_json::json;
     use std::collections::{BTreeMap, BTreeSet};
     use std::sync::{Arc, Mutex};
+    use tokio::sync::Notify;
     use types::{
         AgentHandle, AgentId, AgentResultEnvelope, AgentSessionId, AgentStatus, AgentTaskSpec,
         AgentWaitMode, AgentWaitRequest, AgentWaitResponse, SessionId, ToolCallId, ToolName,
@@ -773,6 +971,11 @@ mod tests {
         resumed: Vec<AgentId>,
         cancelled: Vec<AgentId>,
         spawned_tasks: Vec<AgentTaskSpec>,
+    }
+
+    struct BlockingWaitExecutor {
+        handles: Vec<AgentHandle>,
+        release: Arc<Notify>,
     }
 
     #[async_trait]
@@ -917,6 +1120,66 @@ mod tests {
             let handle = state.handles.get_mut(&agent_id).unwrap();
             handle.status = AgentStatus::Cancelled;
             Ok(handle.clone())
+        }
+    }
+
+    #[async_trait]
+    impl SubagentExecutor for BlockingWaitExecutor {
+        async fn spawn(
+            &self,
+            _parent: SubagentParentContext,
+            _tasks: Vec<AgentTaskSpec>,
+        ) -> Result<Vec<AgentHandle>> {
+            unreachable!("blocking wait executor does not spawn agents")
+        }
+
+        async fn send(
+            &self,
+            _parent: SubagentParentContext,
+            _agent_id: AgentId,
+            _channel: String,
+            _payload: Value,
+        ) -> Result<AgentHandle> {
+            unreachable!("blocking wait executor does not send messages")
+        }
+
+        async fn wait(
+            &self,
+            _parent: SubagentParentContext,
+            request: AgentWaitRequest,
+        ) -> Result<AgentWaitResponse> {
+            self.release.notified().await;
+            Ok(AgentWaitResponse {
+                completed: self
+                    .handles
+                    .iter()
+                    .filter(|handle| request.agent_ids.contains(&handle.agent_id))
+                    .cloned()
+                    .collect(),
+                pending: Vec::new(),
+                results: Vec::new(),
+            })
+        }
+
+        async fn resume(
+            &self,
+            _parent: SubagentParentContext,
+            _agent_id: AgentId,
+        ) -> Result<AgentHandle> {
+            unreachable!("blocking wait executor does not resume agents")
+        }
+
+        async fn list(&self, _parent: SubagentParentContext) -> Result<Vec<AgentHandle>> {
+            Ok(self.handles.clone())
+        }
+
+        async fn cancel(
+            &self,
+            _parent: SubagentParentContext,
+            _agent_id: AgentId,
+            _reason: Option<String>,
+        ) -> Result<AgentHandle> {
+            unreachable!("blocking wait executor does not cancel agents")
         }
     }
 
@@ -1076,9 +1339,8 @@ mod tests {
         send.execute(
             ToolCallId::new(),
             json!({
-                "agent_id": agent_id,
-                "channel": "steer",
-                "payload": {"message":"focus tests"}
+                "target": agent_id,
+                "message": "focus tests"
             }),
             &ToolExecutionContext::default(),
         )
@@ -1088,7 +1350,7 @@ mod tests {
         let waited = wait
             .execute(
                 ToolCallId::new(),
-                json!({"agent_ids":[agent_id],"mode":"all"}),
+                json!({"targets":[agent_id]}),
                 &ToolExecutionContext::default(),
             )
             .await
@@ -1117,7 +1379,7 @@ mod tests {
         let resumed = resume
             .execute(
                 ToolCallId::new(),
-                json!({"agent_id":"agent_agent_a"}),
+                json!({"id":"agent_agent_a"}),
                 &ToolExecutionContext::default(),
             )
             .await
@@ -1127,7 +1389,7 @@ mod tests {
         let cancelled = cancel
             .execute(
                 ToolCallId::new(),
-                json!({"agent_id":"agent_agent_a"}),
+                json!({"target":"agent_agent_a"}),
                 &ToolExecutionContext::default(),
             )
             .await
@@ -1135,6 +1397,56 @@ mod tests {
         assert_eq!(cancelled.structured_content.unwrap()["status"], "cancelled");
         assert_eq!(executor.state.lock().unwrap().sent.len(), 1);
         assert_eq!(executor.state.lock().unwrap().resumed.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn send_input_rejects_interrupt_until_runtime_supports_preemption() {
+        let executor = Arc::new(FakeExecutor::default());
+        let tool = AgentSendTool::new(executor);
+        let error = tool
+            .execute(
+                ToolCallId::new(),
+                json!({"target":"agent_a","interrupt":true,"message":"focus"}),
+                &ToolExecutionContext::default(),
+            )
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("interrupt=true"));
+    }
+
+    #[tokio::test]
+    async fn wait_agent_timeout_returns_pending_handles_without_blocking_forever() {
+        let tool = AgentWaitTool::new(Arc::new(BlockingWaitExecutor {
+            handles: vec![AgentHandle {
+                agent_id: AgentId::from("agent_pending"),
+                parent_agent_id: Some(AgentId::from("agent_parent")),
+                session_id: SessionId::from("run_pending"),
+                agent_session_id: AgentSessionId::from("session_pending"),
+                task_id: "pending".to_string(),
+                role: "worker".to_string(),
+                status: AgentStatus::Running,
+            }],
+            release: Arc::new(Notify::new()),
+        }));
+
+        let result = tool
+            .execute(
+                ToolCallId::new(),
+                json!({"targets":["agent_pending"],"timeout_ms":1}),
+                &ToolExecutionContext::default(),
+            )
+            .await
+            .unwrap();
+
+        let structured = result.structured_content.unwrap();
+        assert_eq!(structured["completed"].as_array().unwrap().len(), 0);
+        assert_eq!(structured["pending"].as_array().unwrap().len(), 1);
+        let text = match &result.parts[0] {
+            types::MessagePart::Text { text } => text,
+            other => panic!("unexpected tool result part: {other:?}"),
+        };
+        assert!(text.contains("timed_out"));
     }
 
     #[test]

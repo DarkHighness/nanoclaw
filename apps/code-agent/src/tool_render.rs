@@ -165,6 +165,63 @@ pub(crate) fn tool_arguments_preview_lines(tool_name: &str, arguments: &Value) -
         return lines;
     }
 
+    if tool_name == "send_input" {
+        let target = arguments
+            .get("target")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("<unknown>");
+        let interrupt = arguments
+            .get("interrupt")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let mut lines = vec![if interrupt {
+            format!("interrupt {target}")
+        } else {
+            format!("message {target}")
+        }];
+        if let Some(message) = arguments
+            .get("message")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            lines.extend(collapse_preview_text(message, 3, 96, PreviewCollapse::Head));
+            return lines;
+        }
+        let item_count = arguments
+            .get("items")
+            .and_then(Value::as_array)
+            .map_or(0, Vec::len);
+        if item_count > 0 {
+            lines.push(format!("{item_count} input item(s)"));
+        }
+        return lines;
+    }
+
+    if tool_name == "wait_agent" {
+        let target_count = arguments
+            .get("targets")
+            .and_then(Value::as_array)
+            .map_or(0, Vec::len);
+        let timeout_ms = arguments.get("timeout_ms").and_then(Value::as_u64);
+        return vec![match timeout_ms {
+            Some(timeout_ms) => format!("wait {target_count} agent(s) timeout={timeout_ms}ms"),
+            None => format!("wait {target_count} agent(s)"),
+        }];
+    }
+
+    if matches!(tool_name, "resume_agent" | "close_agent") {
+        for key in ["id", "target"] {
+            if let Some(value) = arguments.get(key).and_then(Value::as_str)
+                && !value.trim().is_empty()
+            {
+                return vec![format!("agent {}", value.trim())];
+            }
+        }
+    }
+
     for key in ["path", "uri", "query", "prompt", "message", "cmd"] {
         if let Some(value) = arguments.get(key).and_then(Value::as_str)
             && !value.trim().is_empty()
@@ -513,6 +570,31 @@ mod tests {
 
         assert_eq!(rendered[0], "session exec_123");
         assert!(rendered[1].contains("stdin hello\\\\n"));
+    }
+
+    #[test]
+    fn send_input_arguments_render_target_and_message_preview() {
+        let rendered = tool_arguments_preview_lines(
+            "send_input",
+            &json!({"target": "agent_123", "message": "focus the failing test"}),
+        );
+
+        assert_eq!(rendered[0], "message agent_123");
+        assert!(rendered[1].contains("focus the failing test"));
+    }
+
+    #[test]
+    fn wait_and_close_arguments_render_codex_style_target_fields() {
+        let wait = tool_arguments_preview_lines(
+            "wait_agent",
+            &json!({"targets": ["agent_1", "agent_2"], "timeout_ms": 5000}),
+        );
+        let close = tool_arguments_preview_lines("close_agent", &json!({"target": "agent_1"}));
+        let resume = tool_arguments_preview_lines("resume_agent", &json!({"id": "agent_2"}));
+
+        assert_eq!(wait, vec!["wait 2 agent(s) timeout=5000ms"]);
+        assert_eq!(close, vec!["agent agent_1"]);
+        assert_eq!(resume, vec!["agent agent_2"]);
     }
 
     #[test]
