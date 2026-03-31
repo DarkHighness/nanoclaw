@@ -265,6 +265,10 @@ not have useful extensions, including `Dockerfile*`, `Containerfile*`, `go.mod`,
   buffer, and `Ctrl+Y` yanks it back. The kill buffer retains draft attachments
   such as large-paste payloads, so yanking after a clear or submit restores the
   full text.
+- `Ctrl+O` opens `$VISUAL` or `$EDITOR` with the current composer text. Saving
+  and closing the editor reapplies the edited text, drops missing inline
+  placeholders, and rebinds surviving large-paste placeholders to stable
+  `[Paste #N]` labels.
 - `Ctrl+C` now clears the current draft into session-local composer history when
   the prompt line is non-empty, so `Up` can restore it. On an empty prompt line,
   `Ctrl+C` still exits the TUI.
@@ -277,7 +281,10 @@ not have useful extensions, including `Dockerfile*`, `Containerfile*`, `go.mod`,
   reuse provider-native URL transport instead of downloading through the host.
   `/detach [index]` removes the latest row or a specific numbered row. Those
   rows stay inside session-local draft history so recalled drafts restore the
-  same pending attachments.
+  same pending attachments. `Up` at cursor position `0` selects the last row,
+  `Up`/`Down` moves across rows, `Down` on the final row returns to text
+  editing, `Delete`/`Backspace` removes the selected row, and
+  `/move_attachment <from> <to>` reorders rows explicitly.
 - `Alt+Up` opens the pending-control picker from the bottom pane.
 - In the pending-control picker: `Enter` edits the selected item, `Delete`
   withdraws it, and `Esc` closes the picker.
@@ -287,6 +294,7 @@ not have useful extensions, including `Dockerfile*`, `Containerfile*`, `go.mod`,
 - `/image <path-or-url>`
 - `/file <path-or-url>`
 - `/detach [index]`
+- `/move_attachment <from> <to>`
 - `/steer <notes>`
 - `/new`
 - `/compact [notes]`

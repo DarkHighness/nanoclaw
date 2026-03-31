@@ -48,7 +48,7 @@ use agent::tools::{
     resolve_tool_path_against_workspace_root,
 };
 use agent::types::{Message, MessagePart, MessageRole, message_operator_text};
-use anyhow::Result;
+use anyhow::{Context, Result, anyhow};
 use base64::Engine;
 use crossterm::event::{
     self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEvent, KeyEventKind,
@@ -62,9 +62,13 @@ use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::Rect;
 use std::collections::BTreeMap;
+use std::env;
+use std::fs as stdfs;
 use std::io::{self, Stdout};
 use std::path::Path;
+use std::process::Command as ProcessCommand;
 use std::time::Instant;
+use tempfile::NamedTempFile;
 use tokio::fs;
 use tokio::task::{JoinHandle, spawn_local};
 use tokio::time::{Duration, sleep};
@@ -308,10 +312,13 @@ impl CodeAgentTui {
                             }
                         }
                         KeyCode::Up => {
-                            if self.navigate_input_history(true) {
+                            if self.move_command_selection(true) {
                                 continue;
                             }
-                            if self.move_command_selection(true) {
+                            if self.move_selected_row_attachment(true) {
+                                continue;
+                            }
+                            if self.navigate_input_history(true) {
                                 continue;
                             }
                             if self.move_input_cursor_vertical(true) {
@@ -323,10 +330,13 @@ impl CodeAgentTui {
                             self.ui_state.mutate(|state| state.scroll_focused(-1));
                         }
                         KeyCode::Down => {
-                            if self.navigate_input_history(false) {
+                            if self.move_command_selection(false) {
                                 continue;
                             }
-                            if self.move_command_selection(false) {
+                            if self.move_selected_row_attachment(false) {
+                                continue;
+                            }
+                            if self.navigate_input_history(false) {
                                 continue;
                             }
                             if self.move_input_cursor_vertical(false) {
@@ -381,6 +391,10 @@ impl CodeAgentTui {
                         }
                         KeyCode::Char('t') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                             self.cycle_model_reasoning_effort();
+                            continue;
+                        }
+                        KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            self.launch_external_editor(terminal).await?;
                             continue;
                         }
                         KeyCode::Char('k') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -475,9 +489,17 @@ impl CodeAgentTui {
                             }
                         }
                         KeyCode::Backspace => {
+                            if self.remove_selected_row_attachment() {
+                                continue;
+                            }
                             self.ui_state.mutate(|state| {
                                 state.pop_input_char();
                             });
+                        }
+                        KeyCode::Delete => {
+                            if self.remove_selected_row_attachment() {
+                                continue;
+                            }
                         }
                         KeyCode::Char(ch) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
                             self.ui_state.mutate(|state| {
@@ -599,7 +621,7 @@ impl CodeAgentTui {
 
         let mut stashed = false;
         self.ui_state.mutate(|state| {
-            stashed = !state.input.is_empty();
+            stashed = !state.input.is_empty() || !state.draft_attachments.is_empty();
             if stashed {
                 let _ = state.stash_current_input_draft();
                 state.clear_input();
@@ -630,6 +652,72 @@ impl CodeAgentTui {
         self.ui_state
             .mutate(|state| yanked = state.yank_kill_buffer());
         yanked
+    }
+
+    async fn launch_external_editor(
+        &mut self,
+        terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    ) -> Result<()> {
+        if !self.composer_accepts_text_input() {
+            return Ok(());
+        }
+
+        if let Some(flushed) = self.paste_burst.flush_before_modified_input() {
+            self.insert_pasted_text(&flushed);
+        }
+        self.paste_burst.clear_window_after_non_char();
+
+        let editor_command = match resolve_external_editor_command() {
+            Ok(command) => command,
+            Err(error) => {
+                self.ui_state.mutate(|state| {
+                    state.status = error.to_string();
+                    state.push_activity("external editor unavailable");
+                });
+                return Ok(());
+            }
+        };
+        let seed = self.ui_state.snapshot().input;
+
+        disable_raw_mode()?;
+        execute!(
+            terminal.backend_mut(),
+            DisableBracketedPaste,
+            LeaveAlternateScreen
+        )?;
+        terminal.show_cursor()?;
+
+        let edit_result = run_external_editor(&seed, &editor_command);
+
+        enable_raw_mode()?;
+        execute!(
+            terminal.backend_mut(),
+            EnterAlternateScreen,
+            EnableBracketedPaste
+        )?;
+        terminal.clear()?;
+
+        match edit_result {
+            Ok(text) => {
+                self.ui_state.mutate(|state| {
+                    state.apply_external_edit(text.trim_end().to_string());
+                    state.status = "Replaced composer text from external editor".to_string();
+                    state.push_activity("updated draft from external editor");
+                });
+            }
+            Err(error) => {
+                let message = summarize_nonfatal_error("external editor", &error);
+                self.ui_state.mutate(|state| {
+                    state.status = format!("Failed to open editor: {message}");
+                    state.push_activity(format!(
+                        "external editor failed: {}",
+                        state::preview_text(&message, 56)
+                    ));
+                });
+            }
+        }
+
+        Ok(())
     }
 
     fn composer_accepts_text_input(&self) -> bool {
@@ -684,6 +772,48 @@ impl CodeAgentTui {
             moved = state.move_input_cursor_vertical(backwards);
         });
         moved
+    }
+
+    fn move_selected_row_attachment(&mut self, backwards: bool) -> bool {
+        if !self.composer_accepts_text_input() {
+            return false;
+        }
+
+        let mut moved = false;
+        self.ui_state.mutate(|state| {
+            moved = if backwards {
+                state.select_previous_row_attachment()
+            } else {
+                state.select_next_row_attachment()
+            };
+            if moved {
+                if let Some((index, summary, _)) = state.selected_row_attachment_summary() {
+                    state.status = format!("Selected attachment #{index} · {summary}");
+                } else {
+                    state.status = "Returned to draft editing".to_string();
+                }
+            }
+        });
+        moved
+    }
+
+    fn remove_selected_row_attachment(&mut self) -> bool {
+        if !self.composer_accepts_text_input() {
+            return false;
+        }
+
+        let mut removed = false;
+        self.ui_state.mutate(|state| {
+            if let Some(attachment) = state.remove_selected_row_attachment() {
+                let summary = attachment
+                    .row_summary()
+                    .unwrap_or_else(|| "attachment".to_string());
+                state.status = format!("Detached {summary}");
+                state.push_activity(format!("detached {summary}"));
+                removed = true;
+            }
+        });
+        removed
     }
 
     fn move_input_cursor_home(&mut self) -> bool {
@@ -894,6 +1024,18 @@ impl CodeAgentTui {
                     state.push_activity("no composer attachment removed");
                 }
             });
+    }
+
+    fn move_composer_attachment(&mut self, from: usize, to: usize) {
+        self.ui_state.mutate(|state| {
+            if state.move_row_attachment(from, to) {
+                state.status = format!("Moved attachment #{from} to #{to}");
+                state.push_activity(format!("moved attachment #{from} -> #{to}"));
+            } else {
+                state.status = format!("Unable to move attachment #{from} to #{to}");
+                state.push_activity("attachment move rejected");
+            }
+        });
     }
 
     fn move_command_selection(&mut self, backwards: bool) -> bool {
@@ -2236,6 +2378,10 @@ impl CodeAgentTui {
                 self.detach_composer_attachment(index);
                 Ok(false)
             }
+            SlashCommand::MoveAttachment { from, to } => {
+                self.move_composer_attachment(from, to);
+                Ok(false)
+            }
             SlashCommand::Help { query } => {
                 let title = query
                     .as_deref()
@@ -3313,6 +3459,47 @@ fn remote_attachment_extension(path: &str) -> Option<String> {
             let normalized = extension.trim();
             (!normalized.is_empty()).then_some(normalized.to_ascii_lowercase())
         })
+}
+
+fn resolve_external_editor_command() -> Result<Vec<String>> {
+    let configured = env::var("VISUAL")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| {
+            env::var("EDITOR")
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+        })
+        .ok_or_else(|| anyhow!("Cannot open external editor: set $VISUAL or $EDITOR."))?;
+    let command = shlex::split(&configured)
+        .filter(|segments| !segments.is_empty())
+        .ok_or_else(|| anyhow!("Failed to parse external editor command: {configured}"))?;
+    Ok(command)
+}
+
+fn run_external_editor(seed: &str, editor_command: &[String]) -> Result<String> {
+    let file = NamedTempFile::new().context("create external editor temp file")?;
+    stdfs::write(file.path(), seed).context("seed external editor temp file")?;
+
+    let (program, args) = editor_command
+        .split_first()
+        .ok_or_else(|| anyhow!("External editor command is empty"))?;
+    let status = ProcessCommand::new(program)
+        .args(args)
+        .arg(file.path())
+        .status()
+        .with_context(|| format!("launch external editor `{program}`"))?;
+    if !status.success() {
+        return Err(anyhow!(
+            "External editor exited with status {}",
+            status
+                .code()
+                .map(|code| code.to_string())
+                .unwrap_or_else(|| "unknown".to_string())
+        ));
+    }
+
+    stdfs::read_to_string(file.path()).context("read external editor output")
 }
 
 fn queued_command_preview(command: &RuntimeCommand) -> String {

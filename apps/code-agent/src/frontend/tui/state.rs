@@ -863,6 +863,7 @@ pub(crate) struct TuiState {
     pub(crate) input_cursor: usize,
     pub(crate) input_vertical_column: Option<usize>,
     pub(crate) draft_attachments: Vec<ComposerDraftAttachmentState>,
+    pub(crate) selected_row_attachment: Option<usize>,
     // Keep kill/yank state outside the visible draft so Ctrl+Y can restore the
     // latest killed tail even after submit/clear transitions.
     pub(crate) kill_buffer: Option<ComposerKillBufferState>,
@@ -1328,7 +1329,7 @@ impl TuiState {
 
     pub(crate) fn stash_current_input_draft(&mut self) -> bool {
         self.input_history_navigation = None;
-        if self.input.is_empty() {
+        if self.input.is_empty() && self.draft_attachments.is_empty() {
             return false;
         }
 
@@ -1356,6 +1357,7 @@ impl TuiState {
     pub(crate) fn push_input_char(&mut self, ch: char) {
         self.input.insert(self.input_cursor, ch);
         self.input_cursor += ch.len_utf8();
+        self.selected_row_attachment = None;
         self.input_history_navigation = None;
         self.input_vertical_column = None;
         self.reset_command_completion();
@@ -1364,6 +1366,7 @@ impl TuiState {
     pub(crate) fn push_input_str(&mut self, text: &str) {
         self.input.insert_str(self.input_cursor, text);
         self.input_cursor += text.len();
+        self.selected_row_attachment = None;
         self.input_history_navigation = None;
         self.input_vertical_column = None;
         self.reset_command_completion();
@@ -1393,6 +1396,7 @@ impl TuiState {
             return false;
         }
         self.draft_attachments.push(attachment);
+        self.selected_row_attachment = None;
         self.input_history_navigation = None;
         self.reset_command_completion();
         true
@@ -1413,9 +1417,44 @@ impl TuiState {
             Some(_) => None,
             None => row_indices.last().copied(),
         }?;
+        self.selected_row_attachment = None;
         self.input_history_navigation = None;
         self.reset_command_completion();
         Some(self.draft_attachments.remove(target))
+    }
+
+    pub(crate) fn move_row_attachment(&mut self, from: usize, to: usize) -> bool {
+        if from == 0 || to == 0 || from == to {
+            return false;
+        }
+
+        let row_count = self.row_attachment_count();
+        if from > row_count || to > row_count {
+            return false;
+        }
+
+        let mut row_attachments = self
+            .draft_attachments
+            .iter()
+            .filter(|attachment| attachment.is_row_attachment())
+            .cloned()
+            .collect::<Vec<_>>();
+        let inline_attachments = self
+            .draft_attachments
+            .iter()
+            .filter(|attachment| !attachment.is_row_attachment())
+            .cloned()
+            .collect::<Vec<_>>();
+        let moved = row_attachments.remove(from - 1);
+        row_attachments.insert(to - 1, moved);
+        self.draft_attachments = row_attachments
+            .into_iter()
+            .chain(inline_attachments)
+            .collect();
+        self.selected_row_attachment = Some(to - 1);
+        self.input_history_navigation = None;
+        self.reset_command_completion();
+        true
     }
 
     pub(crate) fn row_attachment_summaries(&self) -> Vec<(usize, String, String)> {
@@ -1433,6 +1472,67 @@ impl TuiState {
             .collect()
     }
 
+    pub(crate) fn selected_row_attachment_summary(&self) -> Option<(usize, String, String)> {
+        let selected = self.selected_row_attachment?;
+        self.row_attachment_summaries().into_iter().nth(selected)
+    }
+
+    pub(crate) fn select_previous_row_attachment(&mut self) -> bool {
+        let row_count = self.row_attachment_count();
+        if row_count == 0 {
+            return false;
+        }
+
+        self.selected_row_attachment = Some(match self.selected_row_attachment {
+            Some(selected) => selected.saturating_sub(1),
+            None if self.input_cursor == 0 => row_count - 1,
+            None => return false,
+        });
+        self.input_vertical_column = None;
+        self.input_history_navigation = None;
+        self.reset_command_completion();
+        true
+    }
+
+    pub(crate) fn select_next_row_attachment(&mut self) -> bool {
+        let row_count = self.row_attachment_count();
+        let Some(selected) = self.selected_row_attachment else {
+            return false;
+        };
+        if selected + 1 < row_count {
+            self.selected_row_attachment = Some(selected + 1);
+        } else {
+            self.selected_row_attachment = None;
+        }
+        self.input_vertical_column = None;
+        self.input_history_navigation = None;
+        self.reset_command_completion();
+        true
+    }
+
+    pub(crate) fn remove_selected_row_attachment(
+        &mut self,
+    ) -> Option<ComposerDraftAttachmentState> {
+        let selected = self.selected_row_attachment?;
+        let row_indices = self
+            .draft_attachments
+            .iter()
+            .enumerate()
+            .filter_map(|(index, attachment)| attachment.is_row_attachment().then_some(index))
+            .collect::<Vec<_>>();
+        let target = row_indices.get(selected).copied()?;
+        let removed = self.draft_attachments.remove(target);
+        let remaining = row_indices.len().saturating_sub(1);
+        self.selected_row_attachment = if remaining == 0 {
+            None
+        } else {
+            Some(selected.min(remaining - 1))
+        };
+        self.input_history_navigation = None;
+        self.reset_command_completion();
+        Some(removed)
+    }
+
     pub(crate) fn pop_input_char(&mut self) {
         let Some(previous_index) = previous_char_boundary(&self.input, self.input_cursor) else {
             return;
@@ -1440,6 +1540,7 @@ impl TuiState {
         self.input.drain(previous_index..self.input_cursor);
         self.input_cursor = previous_index;
         self.prune_draft_attachments();
+        self.selected_row_attachment = None;
         self.input_history_navigation = None;
         self.input_vertical_column = None;
         self.reset_command_completion();
@@ -1461,6 +1562,7 @@ impl TuiState {
         });
         self.input.truncate(self.input_cursor);
         self.prune_draft_attachments();
+        self.selected_row_attachment = None;
         self.input_history_navigation = None;
         self.reset_command_completion();
         true
@@ -1488,6 +1590,7 @@ impl TuiState {
     }
 
     pub(crate) fn move_input_cursor_left(&mut self) -> bool {
+        self.selected_row_attachment = None;
         let Some(previous_index) = previous_char_boundary(&self.input, self.input_cursor) else {
             return false;
         };
@@ -1497,6 +1600,7 @@ impl TuiState {
     }
 
     pub(crate) fn move_input_cursor_right(&mut self) -> bool {
+        self.selected_row_attachment = None;
         let Some(next_index) = next_char_boundary(&self.input, self.input_cursor) else {
             return false;
         };
@@ -1506,6 +1610,7 @@ impl TuiState {
     }
 
     pub(crate) fn move_input_cursor_home(&mut self) -> bool {
+        self.selected_row_attachment = None;
         if self.input_cursor == 0 {
             return false;
         }
@@ -1515,6 +1620,7 @@ impl TuiState {
     }
 
     pub(crate) fn move_input_cursor_end(&mut self) -> bool {
+        self.selected_row_attachment = None;
         if self.input_cursor == self.input.len() {
             return false;
         }
@@ -1524,6 +1630,7 @@ impl TuiState {
     }
 
     pub(crate) fn move_input_cursor_vertical(&mut self, backwards: bool) -> bool {
+        self.selected_row_attachment = None;
         let cursor = normalize_input_cursor(&self.input, self.input_cursor);
         let current_line = line_range_for_cursor(&self.input, cursor);
         let target_line = if backwards {
@@ -1642,6 +1749,7 @@ impl TuiState {
         self.input_cursor = draft.cursor;
         self.input_vertical_column = None;
         self.draft_attachments = draft.draft_attachments;
+        self.selected_row_attachment = None;
         self.input_history_navigation = None;
         self.reset_command_completion();
     }
@@ -1792,6 +1900,67 @@ impl TuiState {
         // typed paste part preserves the out-of-band payload for future replay
         // and richer attachment-aware prompt submission.
         Message::new(MessageRole::User, parts)
+    }
+
+    pub(crate) fn apply_external_edit(&mut self, text: impl Into<String>) {
+        let mut text = text.into();
+        let row_attachments = self
+            .draft_attachments
+            .iter()
+            .filter(|attachment| attachment.is_row_attachment())
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut inline_attachments = self
+            .draft_attachments
+            .iter()
+            .filter_map(|attachment| {
+                let placeholder = attachment.placeholder.as_ref()?;
+                text.find(placeholder)
+                    .map(|index| (index, attachment.clone()))
+            })
+            .collect::<Vec<_>>();
+        inline_attachments.sort_by_key(|(index, _)| *index);
+
+        // External-editor replacement works on plain text, so inline draft
+        // attachments must be re-associated by placeholder presence and then
+        // renumbered into a stable sequence. Temporary tokens avoid accidental
+        // cascading replacements when the new numbering reuses an old label.
+        let mut rebound = Vec::with_capacity(inline_attachments.len());
+        let mut temporary_tokens = Vec::with_capacity(inline_attachments.len());
+        for (position, (_, mut attachment)) in inline_attachments.into_iter().enumerate() {
+            let Some(old_placeholder) = attachment.placeholder.clone() else {
+                continue;
+            };
+            let new_placeholder = match attachment.kind {
+                ComposerDraftAttachmentKind::LargePaste { .. } => {
+                    format!("[Paste #{}]", position + 1)
+                }
+                _ => old_placeholder.clone(),
+            };
+            let temporary = format!("[[NANOCLAW_REBASE_{position}]]");
+            text = text.replace(&old_placeholder, &temporary);
+            attachment.placeholder = Some(new_placeholder.clone());
+            rebound.push(attachment);
+            temporary_tokens.push((temporary, new_placeholder));
+        }
+        for (temporary, placeholder) in temporary_tokens {
+            text = text.replace(&temporary, &placeholder);
+        }
+
+        self.input = text;
+        self.input_cursor = self.input.len();
+        self.input_vertical_column = None;
+        self.draft_attachments = row_attachments.into_iter().chain(rebound).collect();
+        self.selected_row_attachment = None;
+        self.input_history_navigation = None;
+        self.reset_command_completion();
+    }
+
+    fn row_attachment_count(&self) -> usize {
+        self.draft_attachments
+            .iter()
+            .filter(|attachment| attachment.is_row_attachment())
+            .count()
     }
 }
 
@@ -2600,6 +2769,140 @@ mod tests {
                 "image · failure.png".to_string(),
                 "artifacts/failure.png".to_string(),
             )]
+        );
+    }
+
+    #[test]
+    fn move_row_attachment_reorders_visible_rows() {
+        let mut state = TuiState::default();
+        assert!(state.push_row_attachment(local_image_attachment("artifacts/failure.png")));
+        assert!(state.push_row_attachment(local_file_attachment("reports/run.pdf")));
+
+        assert!(state.move_row_attachment(2, 1));
+        assert_eq!(
+            state.row_attachment_summaries(),
+            vec![
+                (
+                    1,
+                    "file · run.pdf".to_string(),
+                    "reports/run.pdf".to_string(),
+                ),
+                (
+                    2,
+                    "image · failure.png".to_string(),
+                    "artifacts/failure.png".to_string(),
+                ),
+            ]
+        );
+        assert_eq!(
+            state.selected_row_attachment_summary(),
+            Some((
+                1,
+                "file · run.pdf".to_string(),
+                "reports/run.pdf".to_string(),
+            ))
+        );
+    }
+
+    #[test]
+    fn row_attachment_selection_moves_and_deletes_rows() {
+        let mut state = TuiState::default();
+        assert!(state.push_row_attachment(remote_image_attachment(
+            "https://example.com/assets/failure.png"
+        )));
+        assert!(state.push_row_attachment(remote_file_attachment(
+            "https://example.com/reports/run.pdf"
+        )));
+
+        assert!(state.select_previous_row_attachment());
+        assert_eq!(
+            state.selected_row_attachment_summary(),
+            Some((
+                2,
+                "file · run.pdf".to_string(),
+                "https://example.com/reports/run.pdf".to_string(),
+            ))
+        );
+
+        let removed = state.remove_selected_row_attachment();
+        assert_eq!(
+            removed,
+            Some(remote_file_attachment(
+                "https://example.com/reports/run.pdf"
+            ))
+        );
+        assert_eq!(
+            state.selected_row_attachment_summary(),
+            Some((
+                1,
+                "image · failure.png".to_string(),
+                "https://example.com/assets/failure.png".to_string(),
+            ))
+        );
+    }
+
+    #[test]
+    fn stash_current_input_draft_keeps_attachment_only_drafts() {
+        let mut state = TuiState::default();
+        assert!(state.push_row_attachment(remote_image_attachment(
+            "https://example.com/assets/failure.png"
+        )));
+
+        assert!(state.stash_current_input_draft());
+        state.clear_input();
+
+        assert!(state.browse_input_history(true));
+        assert_eq!(state.input, "");
+        assert_eq!(
+            state.draft_attachments,
+            vec![remote_image_attachment(
+                "https://example.com/assets/failure.png"
+            )]
+        );
+    }
+
+    #[test]
+    fn apply_external_edit_rebases_large_paste_placeholders_by_text_order() {
+        let mut state = TuiState::default();
+        let first = state.push_large_paste("first payload");
+        state.push_input_str(" and ");
+        let second = state.push_large_paste("second payload");
+
+        state.apply_external_edit(format!("{second} before {first}"));
+
+        assert_eq!(state.input, "[Paste #1] before [Paste #2]");
+        assert_eq!(
+            state.draft_attachments,
+            vec![
+                ComposerDraftAttachmentState {
+                    placeholder: Some("[Paste #1]".to_string()),
+                    kind: ComposerDraftAttachmentKind::LargePaste {
+                        payload: "second payload".to_string(),
+                    },
+                },
+                ComposerDraftAttachmentState {
+                    placeholder: Some("[Paste #2]".to_string()),
+                    kind: ComposerDraftAttachmentKind::LargePaste {
+                        payload: "first payload".to_string(),
+                    },
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn apply_external_edit_drops_missing_inline_attachments_and_keeps_rows() {
+        let mut state = TuiState::default();
+        assert!(state.push_row_attachment(local_file_attachment("reports/run.pdf")));
+        let placeholder = state.push_large_paste("pasted body");
+
+        state.apply_external_edit(format!("keep rows but not {placeholder}"));
+        state.apply_external_edit("keep rows only");
+
+        assert_eq!(state.input, "keep rows only");
+        assert_eq!(
+            state.draft_attachments,
+            vec![local_file_attachment("reports/run.pdf")]
         );
     }
 

@@ -136,6 +136,12 @@ const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
     },
     SlashCommandSpec {
         section: "Session",
+        name: "move_attachment",
+        usage: "move_attachment <from> <to>",
+        summary: "reorder composer attachments",
+    },
+    SlashCommandSpec {
+        section: "Session",
         name: "new",
         usage: "new",
         summary: "fresh top-level session",
@@ -330,6 +336,10 @@ pub(crate) enum SlashCommand {
     Detach {
         index: Option<usize>,
     },
+    MoveAttachment {
+        from: usize,
+        to: usize,
+    },
     Help {
         query: Option<String>,
     },
@@ -441,6 +451,10 @@ enum SlashSubcommand {
     },
     Detach {
         index: Option<usize>,
+    },
+    MoveAttachment {
+        from: usize,
+        to: usize,
     },
     Help {
         #[arg(
@@ -757,6 +771,7 @@ impl From<SlashSubcommand> for SlashCommand {
                 path: join_required_tail(path),
             },
             SlashSubcommand::Detach { index } => Self::Detach { index },
+            SlashSubcommand::MoveAttachment { from, to } => Self::MoveAttachment { from, to },
             SlashSubcommand::Help { query } => Self::Help {
                 query: join_optional_tail(query),
             },
@@ -1195,6 +1210,14 @@ mod tests {
         assert_eq!(
             parse_slash_command("/detach"),
             SlashCommand::Detach { index: None }
+        );
+    }
+
+    #[test]
+    fn parses_move_attachment_command() {
+        assert_eq!(
+            parse_slash_command("/move_attachment 2 1"),
+            SlashCommand::MoveAttachment { from: 2, to: 1 }
         );
     }
 

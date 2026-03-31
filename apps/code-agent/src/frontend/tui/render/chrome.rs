@@ -867,15 +867,36 @@ fn build_attachment_rows(
         .row_attachment_summaries()
         .into_iter()
         .map(|(index, summary, detail)| {
+            let selected = state.selected_row_attachment == Some(index.saturating_sub(1));
+            let marker = if selected { "›" } else { "·" };
+            let index_style = if selected {
+                Style::default()
+                    .fg(palette().accent)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(palette().muted)
+            };
+            let summary_style = if selected {
+                Style::default()
+                    .fg(palette().text)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(palette().header)
+            };
+            let detail_style = if selected {
+                Style::default().fg(palette().text)
+            } else {
+                Style::default().fg(palette().muted)
+            };
             let mut spans = vec![
-                Span::styled("·", Style::default().fg(palette().accent)),
+                Span::styled(marker, Style::default().fg(palette().accent)),
                 Span::styled(" ", Style::default().fg(palette().subtle)),
-                Span::styled(format!("#{index} "), Style::default().fg(palette().muted)),
-                Span::styled(summary, Style::default().fg(palette().header)),
+                Span::styled(format!("#{index} "), index_style),
+                Span::styled(summary, summary_style),
             ];
             if !detail.is_empty() {
                 spans.push(Span::styled(" · ", Style::default().fg(palette().subtle)));
-                spans.push(Span::styled(detail, Style::default().fg(palette().muted)));
+                spans.push(Span::styled(detail, detail_style));
             }
             Line::from(spans)
         })
@@ -945,6 +966,17 @@ fn multiline_hint_line(
     state: &TuiState,
     user_input: Option<&UserInputView<'_>>,
 ) -> Option<Line<'static>> {
+    if state.selected_row_attachment.is_some() {
+        return Some(Line::from(vec![
+            Span::styled("  ", Style::default().fg(palette().subtle)),
+            Span::styled("delete detach", Style::default().fg(palette().muted)),
+            Span::styled(" · ", Style::default().fg(palette().subtle)),
+            Span::styled("up/down move", Style::default().fg(palette().muted)),
+            Span::styled(" · ", Style::default().fg(palette().subtle)),
+            Span::styled("down draft", Style::default().fg(palette().muted)),
+        ]));
+    }
+
     if user_input
         .and_then(|view| view.flow)
         .is_some_and(|flow| flow.collecting_other_note)
