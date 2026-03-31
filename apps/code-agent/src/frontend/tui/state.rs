@@ -33,6 +33,7 @@ pub(crate) struct SessionSummary {
     pub(crate) model: String,
     pub(crate) model_reasoning_effort: Option<String>,
     pub(crate) supported_model_reasoning_efforts: Vec<String>,
+    pub(crate) supports_image_input: bool,
     pub(crate) workspace_root: PathBuf,
     pub(crate) git: GitSnapshot,
     pub(crate) tool_names: Vec<String>,

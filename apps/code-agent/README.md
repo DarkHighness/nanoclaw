@@ -298,6 +298,11 @@ not have useful extensions, including `Dockerfile*`, `Containerfile*`, `go.mod`,
   `Up`/`Down` moves across rows, `Down` on the final row returns to text
   editing, `Delete`/`Backspace` removes the selected row, and
   `/move_attachment <from> <to>` reorders rows explicitly.
+- Image attachments are gated by the active model surface. `/image` refuses to
+  attach on non-vision models, prompt submit blocks before clearing the draft
+  when pending image parts are present, and pasting a single local image path
+  auto-attaches it instead of inserting raw text when the active model accepts
+  image input.
 - `/prompt <server> <name>` and `/resource <server> <uri>` now restore richer
   composer drafts too, so MCP-loaded images, files, and inline paste
   placeholders come back as first-class draft attachments instead of being

@@ -194,7 +194,7 @@ impl CodeAgentTui {
         terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     ) -> Result<()> {
         loop {
-            self.flush_due_paste_burst();
+            self.flush_due_paste_burst().await;
             self.maybe_finish_turn().await?;
             self.apply_backend_events();
             self.maybe_finish_operator_task().await?;
@@ -234,7 +234,7 @@ impl CodeAgentTui {
             }
             match event::read()? {
                 Event::Paste(text) => {
-                    self.handle_explicit_paste(&text);
+                    self.handle_explicit_paste(&text).await;
                     continue;
                 }
                 Event::Key(key) => {
@@ -265,7 +265,7 @@ impl CodeAgentTui {
                     if self.handle_history_rollback_key(key).await? {
                         continue;
                     }
-                    if self.handle_paste_burst_key(key) {
+                    if self.handle_paste_burst_key(key).await {
                         continue;
                     }
                     match key.code {
@@ -295,9 +295,14 @@ impl CodeAgentTui {
                             }
                             if let Some(action) = plain_input_submit_action(
                                 &snapshot.input,
+                                composer_has_prompt_content(&snapshot),
+                                composer_requires_prompt_submission(&snapshot),
                                 snapshot.turn_running,
                                 KeyCode::Tab,
                             ) {
+                                if self.reject_unsupported_image_submission(&snapshot) {
+                                    continue;
+                                }
                                 let submission = self.ui_state.take_submission();
                                 self.apply_plain_input_submit(action, submission).await;
                                 continue;
@@ -446,9 +451,17 @@ impl CodeAgentTui {
                             }
                             if let Some(action) = plain_input_submit_action(
                                 &snapshot.input,
+                                composer_has_prompt_content(&snapshot),
+                                composer_requires_prompt_submission(&snapshot),
                                 snapshot.turn_running,
                                 KeyCode::Enter,
                             ) {
+                                // Rejecting here keeps the rich draft intact. Once
+                                // `take_submission()` runs the composer buffer and
+                                // attachment state are cleared on success.
+                                if self.reject_unsupported_image_submission(&snapshot) {
+                                    continue;
+                                }
                                 let submission = self.ui_state.take_submission();
                                 self.apply_plain_input_submit(action, submission).await;
                                 continue;
@@ -538,21 +551,21 @@ impl CodeAgentTui {
         navigated
     }
 
-    fn flush_due_paste_burst(&mut self) {
+    async fn flush_due_paste_burst(&mut self) {
         let now = Instant::now();
         match self.paste_burst.flush_if_due(now) {
-            FlushResult::Paste(text) => self.insert_pasted_text(&text),
+            FlushResult::Paste(text) => self.insert_pasted_text(&text).await,
             FlushResult::Typed(ch) => self.ui_state.mutate(|state| state.push_input_char(ch)),
             FlushResult::None => {}
         }
     }
 
-    fn handle_explicit_paste(&mut self, text: &str) {
-        self.insert_pasted_text(text);
+    async fn handle_explicit_paste(&mut self, text: &str) {
+        self.insert_pasted_text(text).await;
         self.paste_burst.clear_after_explicit_paste();
     }
 
-    fn handle_paste_burst_key(&mut self, key: KeyEvent) -> bool {
+    async fn handle_paste_burst_key(&mut self, key: KeyEvent) -> bool {
         let now = Instant::now();
         if let KeyCode::Char(ch) = key.code
             && !key
@@ -582,21 +595,24 @@ impl CodeAgentTui {
                 .paste_burst
                 .newline_should_insert_instead_of_submit(now)
             {
-                self.insert_pasted_text("\n");
+                self.insert_pasted_text("\n").await;
                 self.paste_burst.clear_window_after_non_char();
                 return true;
             }
         }
 
         if let Some(flushed) = self.paste_burst.flush_before_modified_input() {
-            self.insert_pasted_text(&flushed);
+            self.insert_pasted_text(&flushed).await;
         }
         self.paste_burst.clear_window_after_non_char();
         false
     }
 
-    fn insert_pasted_text(&mut self, text: &str) {
+    async fn insert_pasted_text(&mut self, text: &str) {
         if text.is_empty() || !self.composer_accepts_text_input() {
+            return;
+        }
+        if self.try_attach_pasted_image_path(text).await {
             return;
         }
         let large_paste = text.chars().count() > LARGE_PASTE_CHAR_THRESHOLD;
@@ -663,7 +679,7 @@ impl CodeAgentTui {
         }
 
         if let Some(flushed) = self.paste_burst.flush_before_modified_input() {
-            self.insert_pasted_text(&flushed);
+            self.insert_pasted_text(&flushed).await;
         }
         self.paste_burst.clear_window_after_non_char();
 
@@ -871,12 +887,75 @@ impl CodeAgentTui {
         }
     }
 
+    fn active_model_supports_image_input(&self) -> bool {
+        self.ui_state.snapshot().session.supports_image_input
+    }
+
+    fn reject_unsupported_image_submission(&mut self, snapshot: &TuiState) -> bool {
+        if snapshot.session.supports_image_input || !composer_uses_image_input(snapshot) {
+            return false;
+        }
+
+        let model = snapshot.session.model.clone();
+        self.ui_state.mutate(|state| {
+            state.status = format!(
+                "Model {model} does not support image input; remove images or switch models"
+            );
+            state.push_activity(format!("blocked image prompt on non-vision model {model}"));
+        });
+        true
+    }
+
+    async fn try_attach_pasted_image_path(&mut self, text: &str) -> bool {
+        let Some(path) = self.pasted_local_image_path_candidate(text).await else {
+            return false;
+        };
+        if !self.active_model_supports_image_input() {
+            return false;
+        }
+        self.attach_composer_image(&path).await;
+        true
+    }
+
+    async fn pasted_local_image_path_candidate(&self, text: &str) -> Option<String> {
+        let candidate = text.trim();
+        if candidate.is_empty()
+            || candidate.contains(['\n', '\r'])
+            || is_remote_attachment_url(candidate)
+        {
+            return None;
+        }
+
+        let context = self.composer_attachment_context();
+        let resolved_path = resolve_tool_path_against_workspace_root(
+            candidate,
+            context.effective_root(),
+            context.container_workdir.as_deref(),
+        )
+        .ok()?;
+        context.assert_path_read_allowed(&resolved_path).ok()?;
+        if !looks_like_local_image_path(&resolved_path) {
+            return None;
+        }
+        let metadata = fs::metadata(&resolved_path).await.ok()?;
+        metadata.is_file().then(|| candidate.to_string())
+    }
+
     async fn attach_composer_image(&mut self, path: &str) {
         let path = path.trim();
         if path.is_empty() {
             self.ui_state.mutate(|state| {
                 state.status = "Usage: /image <path-or-url>".to_string();
                 state.push_activity("invalid /image invocation");
+            });
+            return;
+        }
+
+        if !self.active_model_supports_image_input() {
+            self.ui_state.mutate(|state| {
+                state.status =
+                    format!("Model {} does not support image input", state.session.model);
+                state.push_activity("rejected image attachment on non-vision model");
             });
             return;
         }
@@ -3143,6 +3222,7 @@ impl CodeAgentTui {
                 supported_model_reasoning_efforts: snapshot
                     .supported_model_reasoning_efforts
                     .clone(),
+                supports_image_input: snapshot.supports_image_input,
                 workspace_root: workspace_root.clone(),
                 git: state::git_snapshot(&workspace_root, snapshot.host_process_surfaces_allowed),
                 tool_names: snapshot.tool_names.clone(),
@@ -3183,6 +3263,7 @@ impl CodeAgentTui {
             state.session.model_reasoning_effort = snapshot.model_reasoning_effort.clone();
             state.session.supported_model_reasoning_efforts =
                 snapshot.supported_model_reasoning_efforts.clone();
+            state.session.supports_image_input = snapshot.supports_image_input;
             state.session.workspace_root = snapshot.workspace_root.clone();
             state.session.git = git;
             state.session.tool_names = snapshot.tool_names.clone();
@@ -3299,13 +3380,18 @@ impl CodeAgentTui {
 
 fn plain_input_submit_action(
     input: &str,
+    has_prompt_content: bool,
+    requires_prompt_submission: bool,
     turn_running: bool,
     key: KeyCode,
 ) -> Option<PlainInputSubmitAction> {
-    if input.trim().is_empty() || input.starts_with('/') {
+    if !has_prompt_content || input.starts_with('/') {
         return None;
     }
     match (turn_running, key) {
+        (true, KeyCode::Enter) if requires_prompt_submission => {
+            Some(PlainInputSubmitAction::QueuePrompt)
+        }
         (true, KeyCode::Enter) => Some(PlainInputSubmitAction::SteerActiveTurn),
         (true, KeyCode::Tab) => Some(PlainInputSubmitAction::QueuePrompt),
         (false, KeyCode::Enter) => Some(PlainInputSubmitAction::StartPrompt),
@@ -3430,6 +3516,16 @@ fn preview_path_tail(path: &str) -> String {
         .filter(|value| !value.is_empty())
         .unwrap_or(path)
         .to_string()
+}
+
+fn looks_like_local_image_path(path: &Path) -> bool {
+    matches!(
+        path.extension()
+            .and_then(|value| value.to_str())
+            .map(|value| value.to_ascii_lowercase())
+            .as_deref(),
+        Some("png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "svg")
+    )
 }
 
 fn is_remote_attachment_url(path: &str) -> bool {
@@ -3582,6 +3678,29 @@ fn pending_control_kind_label(kind: crate::backend::PendingControlKind) -> &'sta
     }
 }
 
+fn composer_has_prompt_content(state: &TuiState) -> bool {
+    !state.input.trim().is_empty() || !state.draft_attachments.is_empty()
+}
+
+fn composer_requires_prompt_submission(state: &TuiState) -> bool {
+    state.draft_attachments.iter().any(|attachment| {
+        !matches!(
+            attachment.kind,
+            ComposerDraftAttachmentKind::LargePaste { .. }
+        )
+    })
+}
+
+fn composer_uses_image_input(state: &TuiState) -> bool {
+    state.draft_attachments.iter().any(|attachment| {
+        matches!(
+            attachment.kind,
+            ComposerDraftAttachmentKind::LocalImage { .. }
+                | ComposerDraftAttachmentKind::RemoteImage { .. }
+        )
+    })
+}
+
 fn build_startup_inspector(session: &state::SessionSummary) -> Vec<InspectorEntry> {
     let mut lines = vec![
         InspectorEntry::section("Ready"),
@@ -3591,6 +3710,14 @@ fn build_startup_inspector(session: &state::SessionSummary) -> Vec<InspectorEntr
         InspectorEntry::field(
             "model",
             format!("{} / {}", session.provider_label, session.model),
+        ),
+        InspectorEntry::field(
+            "image input",
+            if session.supports_image_input {
+                "enabled"
+            } else {
+                "disabled"
+            },
         ),
         InspectorEntry::field(
             "root",
@@ -3797,13 +3924,13 @@ mod tests {
     };
     use super::{
         PlainInputSubmitAction, attachment_preview_status_label,
-        external_editor_attachment_status_suffix, merge_interrupt_steers,
-        plain_input_submit_action,
+        external_editor_attachment_status_suffix, looks_like_local_image_path,
+        merge_interrupt_steers, plain_input_submit_action,
     };
     use crate::backend::SessionPermissionMode;
     use agent::types::{Message, MessageId, MessagePart, MessageRole};
     use crossterm::event::KeyCode;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     #[test]
     fn startup_inspector_surfaces_backend_boot_snapshot() {
@@ -3819,6 +3946,7 @@ mod tests {
                 "medium".to_string(),
                 "high".to_string(),
             ],
+            supports_image_input: true,
             workspace_root: PathBuf::from("/workspace"),
             git: Default::default(),
             tool_names: vec!["read".to_string(), "write".to_string()],
@@ -3851,6 +3979,7 @@ mod tests {
                 .iter()
                 .any(|line| line.contains("warning: falling back soon"))
         );
+        assert!(lines.iter().any(|line| line == "image input: enabled"));
         assert!(
             lines
                 .iter()
@@ -3909,7 +4038,7 @@ mod tests {
     #[test]
     fn running_enter_targets_active_turn_steer() {
         assert_eq!(
-            plain_input_submit_action("tighten the plan", true, KeyCode::Enter),
+            plain_input_submit_action("tighten the plan", true, false, true, KeyCode::Enter),
             Some(PlainInputSubmitAction::SteerActiveTurn)
         );
     }
@@ -3917,7 +4046,7 @@ mod tests {
     #[test]
     fn running_tab_queues_prompt() {
         assert_eq!(
-            plain_input_submit_action("write a regression test", true, KeyCode::Tab),
+            plain_input_submit_action("write a regression test", true, false, true, KeyCode::Tab),
             Some(PlainInputSubmitAction::QueuePrompt)
         );
     }
@@ -3925,7 +4054,13 @@ mod tests {
     #[test]
     fn idle_enter_starts_prompt() {
         assert_eq!(
-            plain_input_submit_action("write a regression test", false, KeyCode::Enter),
+            plain_input_submit_action(
+                "write a regression test",
+                true,
+                false,
+                false,
+                KeyCode::Enter
+            ),
             Some(PlainInputSubmitAction::StartPrompt)
         );
     }
@@ -3933,9 +4068,38 @@ mod tests {
     #[test]
     fn slash_input_keeps_command_flow() {
         assert_eq!(
-            plain_input_submit_action("/help", true, KeyCode::Enter),
+            plain_input_submit_action("/help", true, false, true, KeyCode::Enter),
             None
         );
+    }
+
+    #[test]
+    fn attachment_only_idle_enter_starts_prompt() {
+        assert_eq!(
+            plain_input_submit_action("", true, true, false, KeyCode::Enter),
+            Some(PlainInputSubmitAction::StartPrompt)
+        );
+    }
+
+    #[test]
+    fn attachment_prompt_running_enter_queues_follow_up_instead_of_steer() {
+        assert_eq!(
+            plain_input_submit_action("review this", true, true, true, KeyCode::Enter),
+            Some(PlainInputSubmitAction::QueuePrompt)
+        );
+    }
+
+    #[test]
+    fn local_image_path_detection_accepts_known_image_extensions() {
+        assert!(looks_like_local_image_path(Path::new(
+            "fixtures/failure.png"
+        )));
+        assert!(looks_like_local_image_path(Path::new(
+            "fixtures/failure.JPEG"
+        )));
+        assert!(!looks_like_local_image_path(Path::new(
+            "fixtures/failure.txt"
+        )));
     }
 
     #[test]
