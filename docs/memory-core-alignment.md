@@ -326,6 +326,17 @@ transcript projection:
 That keeps `/agent_session` closer to the live runtime transcript shape
 without breaking older stored sessions.
 
+Whole-session history and transcript export now compose those same per-agent
+visible transcript slices in first-seen agent-session order:
+
+- compacted root-agent windows stay compacted in `/session`
+- later root-agent rotations append their own visible transcript windows
+- transcript export no longer revives pre-compaction suffixes that the live
+  runtime has already replaced with a summary boundary
+
+That keeps operator-facing history exports closer to what the runtime actually
+showed during the session instead of replaying every hidden transcript node.
+
 ## Side Questions (`/btw`)
 
 Claude Code exposes side questions as a separate lightweight query path rather

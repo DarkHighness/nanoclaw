@@ -69,12 +69,12 @@ pub(crate) async fn load_session(
     session_ref: &str,
 ) -> Result<LoadedSession> {
     let (session_id, summary) = resolve_session(store, session_ref).await?;
-    let (events, agent_session_ids, transcript, token_usage) = tokio::try_join!(
+    let (events, agent_session_ids, token_usage) = tokio::try_join!(
         store.events(&session_id),
         store.agent_session_ids(&session_id),
-        store.replay_transcript(&session_id),
         store.token_usage(&session_id),
     )?;
+    let transcript = project_loaded_session_transcript(&events, &agent_session_ids);
     Ok(LoadedSession {
         summary,
         agent_session_ids,
@@ -123,7 +123,11 @@ pub(crate) async fn export_session_transcript(
     relative_or_absolute: &str,
 ) -> Result<SessionExportArtifact> {
     let (session_id, _) = resolve_session(store, session_ref).await?;
-    let transcript = store.replay_transcript(&session_id).await?;
+    let (events, agent_session_ids) = tokio::try_join!(
+        store.events(&session_id),
+        store.agent_session_ids(&session_id),
+    )?;
+    let transcript = project_loaded_session_transcript(&events, &agent_session_ids);
     let output_path = write_output_file(
         workspace_root,
         relative_or_absolute,
@@ -271,6 +275,30 @@ fn project_loaded_agent_session(
     }
 }
 
+fn project_loaded_session_transcript(
+    events: &[SessionEventEnvelope],
+    agent_session_ids: &[AgentSessionId],
+) -> Vec<Message> {
+    if agent_session_ids.is_empty() {
+        return replay_transcript(events);
+    }
+
+    let mut transcript = Vec::new();
+    for agent_session_id in agent_session_ids {
+        let scoped_events = events
+            .iter()
+            .filter(|event| &event.agent_session_id == agent_session_id)
+            .cloned()
+            .collect::<Vec<_>>();
+        let projected =
+            session_resume::reconstruct_runtime_session(&scoped_events, agent_session_id)
+                .map(|session| session_resume::visible_transcript(&session))
+                .unwrap_or_else(|_| replay_transcript(&scoped_events));
+        transcript.extend(projected);
+    }
+    transcript
+}
+
 fn collect_loaded_subagents(
     events: &[SessionEventEnvelope],
     token_usage: &SessionTokenUsageReport,
@@ -354,8 +382,8 @@ fn collect_loaded_subagents(
 #[cfg(test)]
 mod tests {
     use super::{
-        encode_session_events_jsonl, project_loaded_agent_session, render_transcript_text,
-        resolve_session_reference,
+        encode_session_events_jsonl, project_loaded_agent_session,
+        project_loaded_session_transcript, render_transcript_text, resolve_session_reference,
     };
     use agent::types::{
         AgentHandle, AgentResultEnvelope, AgentSessionId, AgentStatus, AgentTaskSpec, Message,
@@ -704,6 +732,120 @@ mod tests {
                 "compaction summary".to_string(),
                 "kept prompt".to_string(),
                 "after compaction".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn projects_session_visible_transcript_across_agent_session_boundaries() {
+        let session_id = SessionId::from("session-root");
+        let first_agent_session_id = AgentSessionId::from("agent-root-1");
+        let second_agent_session_id = AgentSessionId::from("agent-root-2");
+        let older_prompt = Message::user("older prompt").with_message_id("msg-1".into());
+        let older_answer = Message::assistant("older answer").with_message_id("msg-2".into());
+        let kept_prompt = Message::user("kept prompt").with_message_id("msg-3".into());
+        let summary = Message::system("compaction summary").with_message_id("msg-4".into());
+        let first_follow_up =
+            Message::assistant("after compaction").with_message_id("msg-5".into());
+        let second_prompt = Message::user("fresh session prompt").with_message_id("msg-6".into());
+        let second_answer =
+            Message::assistant("fresh session answer").with_message_id("msg-7".into());
+        let events = vec![
+            SessionEventEnvelope::new(
+                session_id.clone(),
+                first_agent_session_id.clone(),
+                None,
+                None,
+                SessionEventKind::TranscriptMessage {
+                    message: older_prompt,
+                },
+            ),
+            SessionEventEnvelope::new(
+                session_id.clone(),
+                first_agent_session_id.clone(),
+                None,
+                None,
+                SessionEventKind::TranscriptMessage {
+                    message: older_answer,
+                },
+            ),
+            SessionEventEnvelope::new(
+                session_id.clone(),
+                first_agent_session_id.clone(),
+                None,
+                None,
+                SessionEventKind::TranscriptMessage {
+                    message: kept_prompt.clone(),
+                },
+            ),
+            SessionEventEnvelope::new(
+                session_id.clone(),
+                first_agent_session_id.clone(),
+                None,
+                None,
+                SessionEventKind::TranscriptMessage {
+                    message: summary.clone(),
+                },
+            ),
+            SessionEventEnvelope::new(
+                session_id.clone(),
+                first_agent_session_id.clone(),
+                None,
+                None,
+                SessionEventKind::CompactionCompleted {
+                    reason: "manual".to_string(),
+                    source_message_count: 2,
+                    retained_message_count: 1,
+                    summary_chars: 17,
+                    summary_message_id: Some(summary.message_id.clone()),
+                    retained_tail_message_ids: vec![kept_prompt.message_id.clone()],
+                },
+            ),
+            SessionEventEnvelope::new(
+                session_id.clone(),
+                first_agent_session_id.clone(),
+                None,
+                None,
+                SessionEventKind::TranscriptMessage {
+                    message: first_follow_up,
+                },
+            ),
+            SessionEventEnvelope::new(
+                session_id.clone(),
+                second_agent_session_id.clone(),
+                None,
+                None,
+                SessionEventKind::TranscriptMessage {
+                    message: second_prompt,
+                },
+            ),
+            SessionEventEnvelope::new(
+                session_id,
+                second_agent_session_id.clone(),
+                None,
+                None,
+                SessionEventKind::TranscriptMessage {
+                    message: second_answer,
+                },
+            ),
+        ];
+
+        let transcript = project_loaded_session_transcript(
+            &events,
+            &[first_agent_session_id, second_agent_session_id],
+        );
+
+        assert_eq!(
+            transcript
+                .iter()
+                .map(Message::text_content)
+                .collect::<Vec<_>>(),
+            vec![
+                "compaction summary".to_string(),
+                "kept prompt".to_string(),
+                "after compaction".to_string(),
+                "fresh session prompt".to_string(),
+                "fresh session answer".to_string(),
             ]
         );
     }
