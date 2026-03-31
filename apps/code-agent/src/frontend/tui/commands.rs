@@ -232,6 +232,12 @@ const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
     },
     SlashCommandSpec {
         section: "Meta Agent",
+        name: "improve",
+        usage: "improve <path>",
+        summary: "run offline improve tournament",
+    },
+    SlashCommandSpec {
+        section: "Meta Agent",
         name: "experiments",
         usage: "experiments",
         summary: "browse persisted experiments",
@@ -371,6 +377,9 @@ pub(crate) enum SlashCommand {
     Benchmark {
         path: String,
     },
+    Improve {
+        path: String,
+    },
     Experiments,
     Experiment {
         experiment_ref: String,
@@ -507,6 +516,10 @@ enum SlashSubcommand {
         task_ref: String,
     },
     Benchmark {
+        #[arg(value_name = "PATH", required = true, trailing_var_arg = true)]
+        path: Vec<String>,
+    },
+    Improve {
         #[arg(value_name = "PATH", required = true, trailing_var_arg = true)]
         path: Vec<String>,
     },
@@ -789,6 +802,9 @@ impl From<SlashSubcommand> for SlashCommand {
             SlashSubcommand::Benchmark { path } => Self::Benchmark {
                 path: join_required_tail(path),
             },
+            SlashSubcommand::Improve { path } => Self::Improve {
+                path: join_required_tail(path),
+            },
             SlashSubcommand::Experiments => Self::Experiments,
             SlashSubcommand::Experiment { experiment_ref } => Self::Experiment { experiment_ref },
             SlashSubcommand::Sessions { query } => Self::Sessions {
@@ -1012,6 +1028,16 @@ mod tests {
         match parse_slash_command("/benchmark plans/meta agent benchmark.json") {
             SlashCommand::Benchmark { path } => {
                 assert_eq!(path, "plans/meta agent benchmark.json");
+            }
+            _ => panic!("unexpected command"),
+        }
+    }
+
+    #[test]
+    fn parses_improve_plan_path_tail() {
+        match parse_slash_command("/improve plans/meta agent improve.json") {
+            SlashCommand::Improve { path } => {
+                assert_eq!(path, "plans/meta agent improve.json");
             }
             _ => panic!("unexpected command"),
         }

@@ -197,6 +197,12 @@ pub(crate) struct BenchmarkExecutionOutcome {
     pub(crate) result: meta::BenchmarkRunOutcome,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ImproveExecutionOutcome {
+    pub(crate) plan_path: PathBuf,
+    pub(crate) result: meta::ImproveRunOutcome,
+}
+
 /// The backend session owns runtime state so frontends can speak to a stable
 /// host contract instead of sharing `AgentRuntime` directly.
 #[derive(Clone)]
@@ -844,6 +850,18 @@ impl CodeAgentSession {
         let runner = meta::OfflineBenchmarkRunner::new(self.store.clone());
         let result = runner.run(plan).await?;
         Ok(BenchmarkExecutionOutcome { plan_path, result })
+    }
+
+    pub(crate) async fn run_improve(
+        &self,
+        relative_or_absolute: &str,
+    ) -> Result<ImproveExecutionOutcome> {
+        let plan_path = resolve_operator_path(self.workspace_root(), relative_or_absolute);
+        let encoded = tokio::fs::read_to_string(&plan_path).await?;
+        let plan = serde_json::from_str::<meta::OfflineImprovePlan>(&encoded)?;
+        let runner = meta::OfflineImproveRunner::new(self.store.clone());
+        let result = runner.run(plan).await?;
+        Ok(ImproveExecutionOutcome { plan_path, result })
     }
 
     pub(crate) async fn load_agent_session(

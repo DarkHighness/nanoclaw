@@ -14,6 +14,8 @@ pub enum MetaError {
     Store(#[from] store::SessionStoreError),
     #[error(transparent)]
     EvaluatorRegistry(#[from] evals::EvaluatorRegistryError),
+    #[error("{0}")]
+    InvalidPlan(String),
 }
 
 pub type Result<T> = std::result::Result<T, MetaError>;
@@ -111,7 +113,7 @@ impl<S: SessionStore + ?Sized> OfflineBenchmarkRunner<S> {
     }
 }
 
-async fn evaluate_candidate(
+pub(crate) async fn evaluate_candidate(
     experiment_id: &ExperimentId,
     spec: &ExperimentSpec,
     baseline: &BaselineSpec,

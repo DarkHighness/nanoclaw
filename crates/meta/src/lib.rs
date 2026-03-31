@@ -8,6 +8,7 @@ pub mod benchmark;
 pub mod candidate;
 pub mod critic;
 pub mod experiment;
+pub mod improve;
 pub mod promotion;
 pub mod rollback;
 
@@ -15,5 +16,6 @@ pub use benchmark::*;
 pub use candidate::*;
 pub use critic::*;
 pub use experiment::*;
+pub use improve::*;
 pub use promotion::*;
 pub use rollback::*;

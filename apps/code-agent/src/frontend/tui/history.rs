@@ -1,8 +1,8 @@
 use super::state::{InspectorEntry, TranscriptEntry, TranscriptShellDetail, preview_text};
 use crate::backend::{
-    BenchmarkExecutionOutcome, LiveTaskControlAction, LiveTaskControlOutcome,
-    LiveTaskMessageAction, LiveTaskMessageOutcome, LiveTaskSpawnOutcome, LiveTaskSummary,
-    LiveTaskWaitOutcome, LoadedAgentSession, LoadedExperiment, LoadedSession,
+    BenchmarkExecutionOutcome, ImproveExecutionOutcome, LiveTaskControlAction,
+    LiveTaskControlOutcome, LiveTaskMessageAction, LiveTaskMessageOutcome, LiveTaskSpawnOutcome,
+    LiveTaskSummary, LiveTaskWaitOutcome, LoadedAgentSession, LoadedExperiment, LoadedSession,
     LoadedSubagentSession, LoadedTask, McpPromptSummary, McpResourceSummary, McpServerSummary,
     PersistedAgentSessionSummary, PersistedExperimentSummary, PersistedSessionSearchMatch,
     PersistedSessionSummary, PersistedTaskSummary, SessionExportArtifact, SessionExportKind,
@@ -753,6 +753,49 @@ pub(crate) fn format_benchmark_result(result: &BenchmarkExecutionOutcome) -> Vec
     lines
 }
 
+pub(crate) fn format_improve_result(result: &ImproveExecutionOutcome) -> Vec<InspectorEntry> {
+    let mut lines = vec![
+        InspectorEntry::section("Improve"),
+        InspectorEntry::field("plan", result.plan_path.display().to_string()),
+        InspectorEntry::field("experiment ref", result.result.experiment_id.to_string()),
+        InspectorEntry::field(
+            "winner",
+            result
+                .result
+                .winner_candidate_id
+                .as_ref()
+                .map(ToString::to_string)
+                .unwrap_or_else(|| "none".to_string()),
+        ),
+        InspectorEntry::field("candidates", result.result.candidates.len().to_string()),
+    ];
+    if !result.result.candidates.is_empty() {
+        lines.push(InspectorEntry::section("Candidate Outcomes"));
+        lines.extend(result.result.candidates.iter().map(|outcome| {
+            let tone = match outcome.decision.kind {
+                PromotionDecisionKind::Promoted => SummaryTone::Success,
+                PromotionDecisionKind::Rejected | PromotionDecisionKind::RolledBack => {
+                    SummaryTone::Info
+                }
+            };
+            InspectorEntry::transcript(summary_entry(
+                tone,
+                format!(
+                    "{} {}",
+                    outcome.candidate.label,
+                    promotion_decision_label(outcome.decision.kind)
+                ),
+                [
+                    format!("candidate {}", outcome.candidate.candidate_id),
+                    format!("score {}", format_optional_score(outcome.evaluation.score)),
+                    preview_text(&outcome.decision.reason, 96),
+                ],
+            ))
+        }));
+    }
+    lines
+}
+
 pub(crate) fn format_session_operation_outcome(
     outcome: &SessionOperationOutcome,
 ) -> Vec<InspectorEntry> {
@@ -1393,12 +1436,12 @@ fn format_session_event_line(event: &SessionEventEnvelope) -> TranscriptEntry {
 mod tests {
     use super::{
         format_agent_session_summary_line, format_benchmark_result, format_experiment_inspector,
-        format_experiment_summary_line, format_live_task_wait_outcome, format_session_event_line,
-        format_session_export_result, format_session_operation_outcome, format_session_search_line,
-        format_session_summary_line,
+        format_experiment_summary_line, format_improve_result, format_live_task_wait_outcome,
+        format_session_event_line, format_session_export_result, format_session_operation_outcome,
+        format_session_search_line, format_session_summary_line,
     };
     use crate::backend::{
-        BenchmarkExecutionOutcome, LiveTaskWaitOutcome, LoadedExperiment,
+        BenchmarkExecutionOutcome, ImproveExecutionOutcome, LiveTaskWaitOutcome, LoadedExperiment,
         PersistedAgentSessionSummary, PersistedExperimentSummary, PersistedSessionSearchMatch,
         PersistedSessionSummary, ResumeSupport, SessionExportArtifact, SessionExportKind,
         SessionOperationAction, SessionOperationOutcome, SessionStartupSnapshot,
@@ -1634,6 +1677,87 @@ mod tests {
                 .any(|line| line == "plan: /workspace/plans/benchmark.json")
         );
         assert!(lines.iter().any(|line| line.contains("score_gate true")));
+    }
+
+    #[test]
+    fn improve_result_lists_winner_and_candidate_scores() {
+        let lines = format_improve_result(&ImproveExecutionOutcome {
+            plan_path: PathBuf::from("/workspace/plans/improve.json"),
+            result: meta::ImproveRunOutcome {
+                experiment_id: ExperimentId::from("experiment-2"),
+                winner_candidate_id: Some("candidate-2".into()),
+                candidates: vec![
+                    meta::ImprovementCandidateOutcome {
+                        candidate: agent::types::CandidateSpec {
+                            candidate_id: "candidate-1".into(),
+                            baseline_id: "baseline-1".into(),
+                            target: ExperimentTarget::Policy,
+                            label: "policy-v2".to_string(),
+                            description: None,
+                            config: json!({"metrics":{"score":0.91}}),
+                        },
+                        evaluation: evals::EvaluationReport::from_evaluator_outcomes(
+                            "candidate-1".into(),
+                            vec![evals::EvaluatorOutcome {
+                                evaluator_name: "score_gate".to_string(),
+                                passed: true,
+                                score: Some(0.91),
+                                summary: "candidate cleared minimum".to_string(),
+                                details: None,
+                            }],
+                        ),
+                        decision: PromotionDecision {
+                            kind: PromotionDecisionKind::Rejected,
+                            reason: "candidate candidate-1 passed promotion gate but was not the top-scoring promotable variant".to_string(),
+                        },
+                    },
+                    meta::ImprovementCandidateOutcome {
+                        candidate: agent::types::CandidateSpec {
+                            candidate_id: "candidate-2".into(),
+                            baseline_id: "baseline-1".into(),
+                            target: ExperimentTarget::Policy,
+                            label: "policy-v3".to_string(),
+                            description: None,
+                            config: json!({"metrics":{"score":0.97}}),
+                        },
+                        evaluation: evals::EvaluationReport::from_evaluator_outcomes(
+                            "candidate-2".into(),
+                            vec![evals::EvaluatorOutcome {
+                                evaluator_name: "score_gate".to_string(),
+                                passed: true,
+                                score: Some(0.97),
+                                summary: "candidate cleared minimum".to_string(),
+                                details: None,
+                            }],
+                        ),
+                        decision: PromotionDecision {
+                            kind: PromotionDecisionKind::Promoted,
+                            reason: "candidate candidate-2 passed promotion gate".to_string(),
+                        },
+                    },
+                ],
+                summary: ExperimentSummary {
+                    experiment_id: ExperimentId::from("experiment-2"),
+                    first_timestamp_ms: 1,
+                    last_timestamp_ms: 3,
+                    event_count: 7,
+                    target: Some(ExperimentTarget::Policy),
+                    goal: Some("pick the best policy".to_string()),
+                    source_session_id: None,
+                    source_agent_session_id: None,
+                    baseline_count: 1,
+                    candidate_count: 2,
+                    promoted_candidate_id: Some("candidate-2".into()),
+                    last_decision: Some(PromotionDecisionKind::Promoted),
+                },
+            },
+        });
+        let lines = inspector_line_texts(&lines);
+
+        assert!(lines.iter().any(|line| line == "winner: candidate-2"));
+        assert!(lines.iter().any(|line| line.contains("policy-v2 rejected")));
+        assert!(lines.iter().any(|line| line.contains("score 0.910")));
+        assert!(lines.iter().any(|line| line.contains("policy-v3 promoted")));
     }
 
     #[test]
