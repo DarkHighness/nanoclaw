@@ -6,8 +6,8 @@ use crate::state::{
     MEMORY_WORKING_TASKS_RELATIVE,
 };
 use crate::{
-    MemoryDocumentMetadata, MemoryError, MemoryMutationResponse, MemoryRecordRequest, MemoryScope,
-    MemoryStateLayout, MemoryStatus, ResolvedStatePath, Result,
+    MemoryDocumentMetadata, MemoryError, MemoryMutationResponse, MemoryRecordMode,
+    MemoryRecordRequest, MemoryScope, MemoryStateLayout, MemoryStatus, ResolvedStatePath, Result,
 };
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -47,9 +47,9 @@ pub(crate) async fn record_memory(
         .or_else(|| default_agent_session_id.cloned());
     let target = resolve_record_target(&request, agent_session_id.as_ref())?;
     let resolved = layout.resolve_managed_memory_path(Path::new(&target.relative_path))?;
-    // `memory_record` is an append-style read-modify-write API. Lock the
+    // `memory_record` mutates one managed file per scope target. Lock the
     // target path before reading so concurrent agents cannot both observe the
-    // same old body and overwrite each other's section append.
+    // same old body and lose either an append or a replace update.
     let file_lock = managed_memory_file_lock(resolved.absolute_path());
     let guard = file_lock.lock().await;
     let existing = load_managed_memory_file(workspace_root, &target.relative_path)
@@ -87,21 +87,30 @@ pub(crate) async fn record_memory(
         .as_ref()
         .map(|document| document.body.as_str())
         .unwrap_or("");
-    let body = append_section(
-        existing_body,
-        &target.document_title,
-        &section_heading,
-        &request.content,
-    );
+    let (body, action) = match request.mode {
+        MemoryRecordMode::Append => (
+            append_section(
+                existing_body,
+                &target.document_title,
+                &section_heading,
+                &request.content,
+            ),
+            "recorded",
+        ),
+        MemoryRecordMode::Replace => (
+            append_section(
+                "",
+                &target.document_title,
+                &section_heading,
+                &request.content,
+            ),
+            "replaced",
+        ),
+    };
 
-    let response = write_memory_file_resolved(
-        &resolved,
-        &target.document_title,
-        &body,
-        &metadata,
-        "recorded",
-    )
-    .await?;
+    let response =
+        write_memory_file_resolved(&resolved, &target.document_title, &body, &metadata, action)
+            .await?;
     drop(guard);
     refresh_auto_memory_index(workspace_root).await?;
     Ok(response)
@@ -461,13 +470,14 @@ fn stable_memory_slug(value: &str, prefix: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        MEMORY_WORKING_TASKS_RELATIVE, MemoryRecordRequest, MemoryScope, Path,
+        MEMORY_WORKING_TASKS_RELATIVE, MemoryRecordMode, MemoryRecordRequest, MemoryScope, Path,
         managed_memory_file_lock, record_memory, stable_memory_slug,
     };
     use crate::MemoryStateLayout;
     use tempfile::tempdir;
     use tokio::fs;
     use tokio::time::{Duration, sleep};
+    use types::AgentSessionId;
 
     #[tokio::test]
     async fn record_memory_serializes_read_modify_write_per_file() {
@@ -493,6 +503,7 @@ mod tests {
                         scope: MemoryScope::Working,
                         title: "First note".to_string(),
                         content: "alpha".to_string(),
+                        mode: MemoryRecordMode::Append,
                         memory_type: None,
                         description: None,
                         layer: None,
@@ -517,6 +528,7 @@ mod tests {
                         scope: MemoryScope::Working,
                         title: "Second note".to_string(),
                         content: "beta".to_string(),
+                        mode: MemoryRecordMode::Append,
                         memory_type: None,
                         description: None,
                         layer: None,
@@ -553,6 +565,7 @@ mod tests {
                 scope: MemoryScope::Working,
                 title: "任务记录".to_string(),
                 content: "保留这段内容".to_string(),
+                mode: MemoryRecordMode::Append,
                 memory_type: None,
                 description: None,
                 layer: None,
@@ -584,5 +597,63 @@ mod tests {
             .unwrap();
         assert!(recorded.contains("task_id: 任务"));
         assert!(recorded.contains("保留这段内容"));
+    }
+
+    #[tokio::test]
+    async fn replace_mode_keeps_only_latest_working_session_snapshot() {
+        let dir = tempdir().unwrap();
+        let agent_session_id = AgentSessionId::from("agent-session-1");
+        record_memory(
+            dir.path(),
+            MemoryRecordRequest {
+                scope: MemoryScope::Working,
+                title: "Session continuation snapshot".to_string(),
+                content: "first snapshot".to_string(),
+                mode: MemoryRecordMode::Replace,
+                memory_type: None,
+                description: None,
+                layer: None,
+                tags: Vec::new(),
+                session_id: Some("session-1".into()),
+                agent_session_id: Some(agent_session_id.clone()),
+                agent_name: None,
+                task_id: None,
+            },
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        record_memory(
+            dir.path(),
+            MemoryRecordRequest {
+                scope: MemoryScope::Working,
+                title: "Session continuation snapshot".to_string(),
+                content: "second snapshot".to_string(),
+                mode: MemoryRecordMode::Replace,
+                memory_type: None,
+                description: None,
+                layer: None,
+                tags: Vec::new(),
+                session_id: Some("session-1".into()),
+                agent_session_id: Some(agent_session_id.clone()),
+                agent_name: None,
+                task_id: None,
+            },
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let recorded = fs::read_to_string(dir.path().join(format!(
+            "{}/{}.md",
+            super::MEMORY_WORKING_AGENT_SESSIONS_RELATIVE,
+            agent_session_id
+        )))
+        .await
+        .unwrap();
+        assert!(recorded.contains("second snapshot"));
+        assert!(!recorded.contains("first snapshot"));
     }
 }

@@ -417,7 +417,9 @@ mod tests {
     use super::{
         WORKSPACE_MEMORY_RECALL_METADATA_KEY, WorkspaceMemoryRecallAugmentor, build_search_queries,
     };
-    use agent::memory::{MemoryBackend, MemoryCoreBackend, MemoryRecordRequest, MemoryScope};
+    use agent::memory::{
+        MemoryBackend, MemoryCoreBackend, MemoryRecordMode, MemoryRecordRequest, MemoryScope,
+    };
     use agent::runtime::{UserMessageAugmentationContext, UserMessageAugmentor};
     use agent::types::{AgentSessionId, Message, MessageRole, SessionId};
     use std::sync::Arc;
@@ -522,6 +524,7 @@ mod tests {
                 scope: MemoryScope::Working,
                 title: "Session continuation snapshot".to_string(),
                 content: "Current state: canary deploy before restart because production rollback is sensitive.".to_string(),
+                mode: MemoryRecordMode::Replace,
                 memory_type: None,
                 description: Some(
                     "Latest continuation snapshot for the active session.".to_string(),

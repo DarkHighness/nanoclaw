@@ -911,6 +911,7 @@ mod tests {
                     scope: MemoryScope::Working,
                     title: "Observed fix".to_string(),
                     content: "Use a canary deploy before restart.".to_string(),
+                    mode: crate::MemoryRecordMode::Append,
                     memory_type: None,
                     description: None,
                     layer: None,

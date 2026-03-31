@@ -78,6 +78,26 @@ impl MemoryStatus {
     }
 }
 
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
+)]
+#[serde(rename_all = "kebab-case")]
+pub enum MemoryRecordMode {
+    #[default]
+    Append,
+    Replace,
+}
+
+impl MemoryRecordMode {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Append => "append",
+            Self::Replace => "replace",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MemoryDocumentMetadata {
     #[serde(default)]
@@ -224,6 +244,8 @@ pub struct MemoryRecordRequest {
     pub scope: MemoryScope,
     pub title: String,
     pub content: String,
+    #[serde(default)]
+    pub mode: MemoryRecordMode,
     #[serde(default)]
     pub memory_type: Option<MemoryType>,
     #[serde(default)]

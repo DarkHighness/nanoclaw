@@ -129,6 +129,8 @@ turns and for later resume.
 
 - when conversation compaction completes, the host writes the latest compact
   summary into `.nanoclaw/memory/working/agent-sessions/<agent-session>.md`
+- that write replaces the previous continuation snapshot for the same target so
+  the file stays a bounded latest-state handoff instead of an append-only log
 - the record is tagged as a continuation snapshot for the current runtime
   session
 - later query-time recall checks this working scope before consulting durable

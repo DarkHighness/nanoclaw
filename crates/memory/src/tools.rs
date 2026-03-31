@@ -1,6 +1,7 @@
 use crate::{
     MemoryBackend, MemoryForgetRequest, MemoryGetRequest, MemoryListRequest, MemoryPromoteRequest,
-    MemoryRecordRequest, MemoryScope, MemorySearchRequest, MemoryStatus, MemoryType,
+    MemoryRecordMode, MemoryRecordRequest, MemoryScope, MemorySearchRequest, MemoryStatus,
+    MemoryType,
 };
 use async_trait::async_trait;
 use schemars::{JsonSchema, schema_for};
@@ -75,6 +76,8 @@ pub struct MemoryRecordToolInput {
     pub scope: MemoryScope,
     pub title: String,
     pub content: String,
+    #[serde(default)]
+    pub mode: MemoryRecordMode,
     #[serde(default)]
     pub memory_type: Option<MemoryType>,
     #[serde(default)]
@@ -387,7 +390,7 @@ impl Tool for MemoryRecordTool {
     fn spec(&self) -> ToolSpec {
         builtin_tool_spec(
             "memory_record",
-            "Append working or coordination memory under .nanoclaw/memory, optionally tagging it with Claude-style type and description metadata.",
+            "Record working or coordination memory under .nanoclaw/memory, optionally appending or replacing the target document while tagging it with Claude-style type and description metadata.",
             serde_json::to_value(schema_for!(MemoryRecordToolInput)).expect("memory_record schema"),
             ToolOutputMode::Text,
             tool_approval_profile(true, false, true, false),
@@ -408,6 +411,7 @@ impl Tool for MemoryRecordTool {
                 scope: input.scope,
                 title: input.title,
                 content: input.content,
+                mode: input.mode,
                 memory_type: input.memory_type,
                 description: normalize_string(input.description),
                 layer: input.layer,
@@ -710,6 +714,56 @@ mod tests {
                 .unwrap();
         assert!(recorded.contains("agent_name: reviewer"));
         assert!(recorded.contains("task_id: task_17"));
+    }
+
+    #[tokio::test]
+    async fn memory_record_tool_replace_mode_keeps_only_latest_body() {
+        let dir = tempdir().unwrap();
+        let backend = Arc::new(MemoryCoreBackend::new(
+            dir.path().to_path_buf(),
+            MemoryCoreConfig::default(),
+        ));
+        let tool = MemoryRecordTool::new(backend);
+        let ctx = ToolExecutionContext {
+            workspace_root: dir.path().to_path_buf(),
+            session_id: Some(SessionId::from("session_1")),
+            agent_session_id: Some(AgentSessionId::from("agent_session_1")),
+            ..ToolExecutionContext::default()
+        };
+
+        tool.execute(
+            ToolCallId::new(),
+            json!({
+                "scope":"working",
+                "title":"Session continuation snapshot",
+                "content":"Current State\n\nfirst snapshot",
+                "mode":"replace"
+            }),
+            &ctx,
+        )
+        .await
+        .unwrap();
+        tool.execute(
+            ToolCallId::new(),
+            json!({
+                "scope":"working",
+                "title":"Session continuation snapshot",
+                "content":"Current State\n\nsecond snapshot",
+                "mode":"replace"
+            }),
+            &ctx,
+        )
+        .await
+        .unwrap();
+
+        let recorded = fs::read_to_string(
+            dir.path()
+                .join(".nanoclaw/memory/working/agent-sessions/agent_session_1.md"),
+        )
+        .await
+        .unwrap();
+        assert!(recorded.contains("second snapshot"));
+        assert!(!recorded.contains("first snapshot"));
     }
 
     #[tokio::test]

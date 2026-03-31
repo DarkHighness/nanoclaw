@@ -14,7 +14,9 @@ use crate::backend::{
 use crate::provider::{MutableAgentBackend, ReasoningEffortUpdate};
 use crate::statusline::StatusLineConfig;
 use agent::mcp::ConnectedMcpServer;
-use agent::memory::{MemoryBackend, MemoryRecordRequest, MemoryScope, MemoryType};
+use agent::memory::{
+    MemoryBackend, MemoryRecordMode, MemoryRecordRequest, MemoryScope, MemoryType,
+};
 use agent::runtime::{
     PermissionGrantSnapshot, PermissionGrantStore, Result as RuntimeResult,
     RollbackVisibleHistoryOutcome, RunTurnOutcome, RuntimeCommandId, RuntimeControlPlane,
@@ -695,6 +697,7 @@ impl CodeAgentSession {
                 scope: MemoryScope::Working,
                 title: "Session continuation snapshot".to_string(),
                 content: summary.to_string(),
+                mode: MemoryRecordMode::Replace,
                 memory_type: Some(MemoryType::Project),
                 description: Some(
                     "Latest session continuation snapshot produced by conversation compaction."
@@ -1253,8 +1256,8 @@ fn resolve_live_task_reference<'a>(
 #[cfg(test)]
 mod tests {
     use super::{
-        CodeAgentSession, PendingControlKind, SessionOperation, SessionOperationAction,
-        SessionPermissionMode, SessionStartupSnapshot,
+        CodeAgentSession, CompactionWorkingSnapshot, PendingControlKind, SessionOperation,
+        SessionOperationAction, SessionPermissionMode, SessionStartupSnapshot,
     };
     use crate::backend::{
         ApprovalCoordinator, PermissionRequestCoordinator, SessionEventStream,
@@ -1271,8 +1274,9 @@ mod tests {
         SubagentParentContext, ToolError, ToolExecutionContext,
     };
     use agent::types::{
-        AgentHandle, AgentId, AgentResultEnvelope, AgentStatus, AgentTaskSpec, AgentWaitRequest,
-        AgentWaitResponse, Message, ModelEvent, ModelRequest, SessionEventKind, SessionId,
+        AgentHandle, AgentId, AgentResultEnvelope, AgentSessionId, AgentStatus, AgentTaskSpec,
+        AgentWaitRequest, AgentWaitResponse, Message, ModelEvent, ModelRequest, SessionEventKind,
+        SessionId,
     };
     use agent::{AgentRuntimeBuilder, RuntimeCommand, Skill, SkillCatalog};
     use async_trait::async_trait;
@@ -2085,6 +2089,58 @@ mod tests {
         assert!(snapshot.contains("Session continuation snapshot"));
         assert!(snapshot.contains("summary for 2 messages"));
         assert!(snapshot.contains("session_id:"));
+    }
+
+    #[tokio::test]
+    async fn compaction_working_snapshot_replaces_previous_body() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(InMemorySessionStore::new());
+        let runtime = AgentRuntimeBuilder::new(Arc::new(StreamingTextBackend), store.clone())
+            .hook_runner(Arc::new(HookRunner::default()))
+            .tool_context(ToolExecutionContext {
+                workspace_root: dir.path().to_path_buf(),
+                workspace_only: true,
+                model_context_window_tokens: Some(128_000),
+                ..Default::default()
+            })
+            .build();
+        let mut startup = startup_snapshot(dir.path());
+        startup.active_session_ref = runtime.session_id().to_string();
+        startup.root_agent_session_id = runtime.agent_session_id().to_string();
+        let memory_backend: Arc<dyn MemoryBackend> = Arc::new(MemoryCoreBackend::new(
+            dir.path().to_path_buf(),
+            Default::default(),
+        ));
+        let session = build_session_with_memory(
+            runtime,
+            Arc::new(NoopSubagentExecutor),
+            store,
+            startup,
+            Some(memory_backend),
+        );
+
+        session
+            .persist_compaction_working_snapshot(Some(CompactionWorkingSnapshot {
+                session_id: SessionId::from("session-1"),
+                agent_session_id: AgentSessionId::from("agent-session-1"),
+                summary: "first snapshot".to_string(),
+            }))
+            .await;
+        session
+            .persist_compaction_working_snapshot(Some(CompactionWorkingSnapshot {
+                session_id: SessionId::from("session-1"),
+                agent_session_id: AgentSessionId::from("agent-session-1"),
+                summary: "second snapshot".to_string(),
+            }))
+            .await;
+
+        let snapshot = std::fs::read_to_string(
+            dir.path()
+                .join(".nanoclaw/memory/working/agent-sessions/agent-session-1.md"),
+        )
+        .unwrap();
+        assert!(snapshot.contains("second snapshot"));
+        assert!(!snapshot.contains("first snapshot"));
     }
 
     #[tokio::test]

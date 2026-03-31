@@ -309,7 +309,9 @@ mod tests {
     use super::refresh_auto_memory_index;
     use crate::managed_files::record_memory;
     use crate::promotion::promote_memory;
-    use crate::{MemoryPromoteRequest, MemoryRecordRequest, MemoryScope, MemoryType};
+    use crate::{
+        MemoryPromoteRequest, MemoryRecordMode, MemoryRecordRequest, MemoryScope, MemoryType,
+    };
     use tempfile::tempdir;
     use tokio::fs;
 
@@ -322,6 +324,7 @@ mod tests {
                 scope: MemoryScope::Working,
                 title: "Scratch".to_string(),
                 content: "temporary finding".to_string(),
+                mode: MemoryRecordMode::Append,
                 memory_type: None,
                 description: Some("Transient deploy debugging note.".to_string()),
                 layer: None,
