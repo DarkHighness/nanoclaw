@@ -68,13 +68,14 @@ pub(crate) async fn load_session(
     store: &Arc<dyn SessionStore>,
     session_ref: &str,
 ) -> Result<LoadedSession> {
-    let (session_id, summary) = resolve_session(store, session_ref).await?;
+    let (session_id, mut summary) = resolve_session(store, session_ref).await?;
     let (events, agent_session_ids, token_usage) = tokio::try_join!(
         store.events(&session_id),
         store.agent_session_ids(&session_id),
         store.token_usage(&session_id),
     )?;
     let transcript = project_loaded_session_transcript(&events, &agent_session_ids);
+    summary.transcript_message_count = transcript.len();
     Ok(LoadedSession {
         summary,
         agent_session_ids,
@@ -243,7 +244,7 @@ pub(crate) fn preview_id(value: &str) -> String {
 }
 
 fn project_loaded_agent_session(
-    summary: PersistedAgentSessionSummary,
+    mut summary: PersistedAgentSessionSummary,
     events: &[SessionEventEnvelope],
     token_usage: &SessionTokenUsageReport,
 ) -> LoadedAgentSession {
@@ -259,6 +260,7 @@ fn project_loaded_agent_session(
     let transcript = session_resume::reconstruct_runtime_session(&scoped_events, &agent_session_id)
         .map(|session| session_resume::visible_transcript(&session))
         .unwrap_or_else(|_| replay_transcript(&scoped_events));
+    summary.transcript_message_count = transcript.len();
     let agent_token_usage = token_usage
         .agent_sessions
         .iter()
