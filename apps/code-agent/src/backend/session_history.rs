@@ -1,8 +1,8 @@
 use super::session_catalog::PersistedAgentSessionSummary;
 use agent::types::{
     AgentHandle, AgentSessionId, AgentStatus, AgentTaskSpec, ArtifactId,
-    ArtifactLedgerEventEnvelope, ExperimentEventEnvelope, ExperimentId, Message, MessagePart,
-    MessageRole, SessionEventEnvelope, SessionEventKind, SessionId,
+    ArtifactLedgerEventEnvelope, ArtifactVersionId, ExperimentEventEnvelope, ExperimentId, Message,
+    MessagePart, MessageRole, SessionEventEnvelope, SessionEventKind, SessionId,
 };
 use anyhow::{Result, anyhow};
 use std::collections::BTreeMap;
@@ -296,6 +296,58 @@ pub(crate) fn resolve_artifact_reference(
                 .join(", ")
         )),
     }
+}
+
+pub(crate) fn resolve_artifact_version_reference(
+    events: &[ArtifactLedgerEventEnvelope],
+    version_ref: &str,
+) -> Result<ArtifactVersionId> {
+    let mut versions = artifact_version_ids(events);
+    versions.sort_by(|left, right| left.as_str().cmp(right.as_str()));
+    versions.dedup();
+
+    if let Some(version_id) = versions
+        .iter()
+        .find(|version_id| version_id.as_str() == version_ref)
+    {
+        return Ok(version_id.clone());
+    }
+
+    let matches = versions
+        .iter()
+        .filter(|version_id| version_id.as_str().starts_with(version_ref))
+        .collect::<Vec<_>>();
+    match matches.as_slice() {
+        [] => Err(anyhow!(
+            "unknown artifact version id or prefix: {version_ref}"
+        )),
+        [version_id] => Ok((*version_id).clone()),
+        many => Err(anyhow!(
+            "ambiguous artifact version prefix {version_ref}: {}",
+            many.iter()
+                .map(|version_id| preview_id(version_id.as_str()))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )),
+    }
+}
+
+fn artifact_version_ids(events: &[ArtifactLedgerEventEnvelope]) -> Vec<ArtifactVersionId> {
+    let mut versions = Vec::new();
+    for event in events {
+        match &event.event {
+            agent::types::ArtifactLedgerEventKind::VersionProposed { version } => {
+                versions.push(version.version_id.clone());
+            }
+            agent::types::ArtifactLedgerEventKind::VersionEvaluated { version_id, .. }
+            | agent::types::ArtifactLedgerEventKind::VersionPromoted { version_id, .. }
+            | agent::types::ArtifactLedgerEventKind::VersionRejected { version_id, .. }
+            | agent::types::ArtifactLedgerEventKind::VersionRolledBack { version_id, .. } => {
+                versions.push(version_id.clone());
+            }
+        }
+    }
+    versions
 }
 
 pub(crate) fn resolve_experiment_reference(

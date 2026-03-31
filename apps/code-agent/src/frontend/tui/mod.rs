@@ -18,16 +18,17 @@ use commands::{
     move_slash_command_selection, parse_slash_command, resolve_slash_enter_action,
 };
 use history::{
-    format_agent_session_inspector, format_agent_session_summary_line, format_artifact_inspector,
-    format_artifact_summary_line, format_benchmark_result, format_experiment_inspector,
-    format_experiment_summary_line, format_improve_result, format_live_task_control_outcome,
-    format_live_task_message_outcome, format_live_task_spawn_outcome,
-    format_live_task_summary_line, format_live_task_wait_outcome, format_mcp_prompt_summary_line,
-    format_mcp_resource_summary_line, format_mcp_server_summary_line, format_proposal_result,
-    format_session_export_result, format_session_inspector, format_session_operation_outcome,
-    format_session_search_line, format_session_summary_line, format_session_transcript_lines,
-    format_startup_diagnostics, format_task_inspector, format_task_summary_line,
-    format_visible_transcript_lines, format_visible_transcript_preview_lines,
+    format_agent_session_inspector, format_agent_session_summary_line,
+    format_artifact_decision_result, format_artifact_inspector, format_artifact_summary_line,
+    format_benchmark_result, format_experiment_inspector, format_experiment_summary_line,
+    format_improve_result, format_live_task_control_outcome, format_live_task_message_outcome,
+    format_live_task_spawn_outcome, format_live_task_summary_line, format_live_task_wait_outcome,
+    format_mcp_prompt_summary_line, format_mcp_resource_summary_line,
+    format_mcp_server_summary_line, format_proposal_result, format_session_export_result,
+    format_session_inspector, format_session_operation_outcome, format_session_search_line,
+    format_session_summary_line, format_session_transcript_lines, format_startup_diagnostics,
+    format_task_inspector, format_task_summary_line, format_visible_transcript_lines,
+    format_visible_transcript_preview_lines,
 };
 use observer::SharedRenderObserver;
 use render::{main_pane_viewport_height, render};
@@ -1980,6 +1981,8 @@ impl CodeAgentTui {
             | SlashCommand::Benchmark { .. }
             | SlashCommand::Improve { .. }
             | SlashCommand::Propose { .. }
+            | SlashCommand::Promote { .. }
+            | SlashCommand::Rollback { .. }
             | SlashCommand::Experiments
             | SlashCommand::Experiment { .. }
             | SlashCommand::Artifacts
@@ -2160,6 +2163,56 @@ impl CodeAgentTui {
                         plan_path, artifact_ref_preview
                     );
                     state.push_activity(format!("ran proposal {}", artifact_ref_preview));
+                });
+                Ok(false)
+            }
+            SlashCommand::Promote {
+                artifact_ref,
+                version_ref,
+                reason,
+            } => {
+                let outcome = self
+                    .session
+                    .promote_artifact_version(&artifact_ref, &version_ref, reason)
+                    .await?;
+                let inspector = format_artifact_decision_result(&outcome);
+                let artifact_ref_preview = preview_id(outcome.artifact_id.as_str());
+                let version_ref_preview = preview_id(outcome.version_id.as_str());
+                self.ui_state.mutate(move |state| {
+                    state.show_main_view("Promote", inspector);
+                    state.status = format!(
+                        "Promoted artifact {} to version {}",
+                        artifact_ref_preview, version_ref_preview
+                    );
+                    state.push_activity(format!(
+                        "promoted artifact {} -> {}",
+                        artifact_ref_preview, version_ref_preview
+                    ));
+                });
+                Ok(false)
+            }
+            SlashCommand::Rollback {
+                artifact_ref,
+                version_ref,
+                reason,
+            } => {
+                let outcome = self
+                    .session
+                    .rollback_artifact_version(&artifact_ref, &version_ref, reason)
+                    .await?;
+                let inspector = format_artifact_decision_result(&outcome);
+                let artifact_ref_preview = preview_id(outcome.artifact_id.as_str());
+                let version_ref_preview = preview_id(outcome.version_id.as_str());
+                self.ui_state.mutate(move |state| {
+                    state.show_main_view("Rollback", inspector);
+                    state.status = format!(
+                        "Rolled back artifact {} to version {}",
+                        artifact_ref_preview, version_ref_preview
+                    );
+                    state.push_activity(format!(
+                        "rolled back artifact {} -> {}",
+                        artifact_ref_preview, version_ref_preview
+                    ));
                 });
                 Ok(false)
             }
@@ -2723,6 +2776,14 @@ fn build_startup_inspector(session: &state::SessionSummary) -> Vec<InspectorEntr
         InspectorEntry::collection("/benchmark <path>", Some("run offline benchmark plan")),
         InspectorEntry::collection("/improve <path>", Some("run offline improve tournament")),
         InspectorEntry::collection("/propose <path>", Some("run artifact proposal plan")),
+        InspectorEntry::collection(
+            "/promote <artifact-ref> <version-ref> [reason]",
+            Some("promote artifact version"),
+        ),
+        InspectorEntry::collection(
+            "/rollback <artifact-ref> <version-ref> [reason]",
+            Some("rollback artifact version"),
+        ),
         InspectorEntry::collection("/experiments", Some("browse meta-agent archive")),
         InspectorEntry::collection("/artifacts", Some("browse artifact ledger")),
         InspectorEntry::collection("/artifact <artifact-ref>", Some("inspect artifact")),

@@ -24,7 +24,8 @@ use agent::tools::{
     request_permission_profile_from_granted, sandbox_backend_status,
 };
 use agent::types::{
-    AgentSessionId, AgentTaskSpec, AgentWaitMode, AgentWaitRequest, ArtifactId, ArtifactVersion,
+    AgentSessionId, AgentTaskSpec, AgentWaitMode, AgentWaitRequest, ArtifactId,
+    ArtifactPromotionDecision, ArtifactPromotionDecisionKind, ArtifactVersion, ArtifactVersionId,
     Message, SessionId, new_opaque_id,
 };
 use agent::{AgentRuntime, RuntimeCommand, Skill, ToolExecutionContext};
@@ -208,6 +209,14 @@ pub(crate) struct ImproveExecutionOutcome {
 pub(crate) struct ArtifactProposalExecutionOutcome {
     pub(crate) plan_path: PathBuf,
     pub(crate) result: meta::ArtifactProposalOutcome,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ArtifactDecisionExecutionOutcome {
+    pub(crate) artifact_id: ArtifactId,
+    pub(crate) version_id: ArtifactVersionId,
+    pub(crate) decision: ArtifactPromotionDecision,
+    pub(crate) summary: store::ArtifactSummary,
 }
 
 #[derive(Debug, Deserialize)]
@@ -926,6 +935,87 @@ impl CodeAgentSession {
             })
             .await?;
         Ok(ArtifactProposalExecutionOutcome { plan_path, result })
+    }
+
+    pub(crate) async fn promote_artifact_version(
+        &self,
+        artifact_ref: &str,
+        version_ref: &str,
+        reason: Option<String>,
+    ) -> Result<ArtifactDecisionExecutionOutcome> {
+        let loaded = session_history::load_artifact(&self.store, artifact_ref).await?;
+        let version_id =
+            session_history::resolve_artifact_version_reference(&loaded.events, version_ref)?;
+        if loaded.summary.active_version_id.as_ref() == Some(&version_id) {
+            anyhow::bail!("artifact version is already active: {}", version_id);
+        }
+        let archive = meta::ArtifactArchive::new(self.store.clone());
+        let decision = ArtifactPromotionDecision {
+            kind: ArtifactPromotionDecisionKind::Promoted,
+            reason: reason.unwrap_or_else(|| format!("operator promoted version {}", version_id)),
+            rollback_version_id: loaded.summary.active_version_id.clone(),
+        };
+        archive
+            .record_decision(
+                &loaded.summary.artifact_id,
+                version_id.clone(),
+                decision.clone(),
+            )
+            .await?;
+        let summary = archive
+            .summary(&loaded.summary.artifact_id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("artifact summary missing after promotion"))?;
+        Ok(ArtifactDecisionExecutionOutcome {
+            artifact_id: loaded.summary.artifact_id,
+            version_id,
+            decision,
+            summary,
+        })
+    }
+
+    pub(crate) async fn rollback_artifact_version(
+        &self,
+        artifact_ref: &str,
+        version_ref: &str,
+        reason: Option<String>,
+    ) -> Result<ArtifactDecisionExecutionOutcome> {
+        let loaded = session_history::load_artifact(&self.store, artifact_ref).await?;
+        let version_id =
+            session_history::resolve_artifact_version_reference(&loaded.events, version_ref)?;
+        let Some(active_version_id) = loaded.summary.active_version_id.clone() else {
+            anyhow::bail!(
+                "artifact has no active version to roll back from: {}",
+                loaded.summary.artifact_id
+            );
+        };
+        if active_version_id == version_id {
+            anyhow::bail!("artifact version is already active: {}", version_id);
+        }
+        let archive = meta::ArtifactArchive::new(self.store.clone());
+        let decision = ArtifactPromotionDecision {
+            kind: ArtifactPromotionDecisionKind::RolledBack,
+            reason: reason
+                .unwrap_or_else(|| format!("operator rolled back to version {}", version_id)),
+            rollback_version_id: Some(active_version_id),
+        };
+        archive
+            .record_decision(
+                &loaded.summary.artifact_id,
+                version_id.clone(),
+                decision.clone(),
+            )
+            .await?;
+        let summary = archive
+            .summary(&loaded.summary.artifact_id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("artifact summary missing after rollback"))?;
+        Ok(ArtifactDecisionExecutionOutcome {
+            artifact_id: loaded.summary.artifact_id,
+            version_id,
+            decision,
+            summary,
+        })
     }
 
     pub(crate) async fn load_agent_session(

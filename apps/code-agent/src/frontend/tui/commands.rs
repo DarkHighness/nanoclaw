@@ -267,6 +267,18 @@ const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
         summary: "run artifact proposal plan",
     },
     SlashCommandSpec {
+        section: "Meta Agent",
+        name: "promote",
+        usage: "promote <artifact-ref> <version-ref> [reason]",
+        summary: "promote artifact version",
+    },
+    SlashCommandSpec {
+        section: "Meta Agent",
+        name: "rollback",
+        usage: "rollback <artifact-ref> <version-ref> [reason]",
+        summary: "rollback artifact version",
+    },
+    SlashCommandSpec {
         section: "Catalog",
         name: "tools",
         usage: "tools",
@@ -408,6 +420,16 @@ pub(crate) enum SlashCommand {
     },
     Propose {
         path: String,
+    },
+    Promote {
+        artifact_ref: String,
+        version_ref: String,
+        reason: Option<String>,
+    },
+    Rollback {
+        artifact_ref: String,
+        version_ref: String,
+        reason: Option<String>,
     },
     Sessions {
         query: Option<String>,
@@ -559,6 +581,26 @@ enum SlashSubcommand {
     Propose {
         #[arg(value_name = "PATH", required = true, trailing_var_arg = true)]
         path: Vec<String>,
+    },
+    Promote {
+        artifact_ref: String,
+        version_ref: String,
+        #[arg(
+            value_name = "REASON",
+            trailing_var_arg = true,
+            allow_hyphen_values = true
+        )]
+        reason: Vec<String>,
+    },
+    Rollback {
+        artifact_ref: String,
+        version_ref: String,
+        #[arg(
+            value_name = "REASON",
+            trailing_var_arg = true,
+            allow_hyphen_values = true
+        )]
+        reason: Vec<String>,
     },
     Sessions {
         #[arg(
@@ -845,6 +887,24 @@ impl From<SlashSubcommand> for SlashCommand {
             SlashSubcommand::Propose { path } => Self::Propose {
                 path: join_required_tail(path),
             },
+            SlashSubcommand::Promote {
+                artifact_ref,
+                version_ref,
+                reason,
+            } => Self::Promote {
+                artifact_ref,
+                version_ref,
+                reason: join_optional_tail(reason),
+            },
+            SlashSubcommand::Rollback {
+                artifact_ref,
+                version_ref,
+                reason,
+            } => Self::Rollback {
+                artifact_ref,
+                version_ref,
+                reason: join_optional_tail(reason),
+            },
             SlashSubcommand::Sessions { query } => Self::Sessions {
                 query: join_optional_tail(query),
             },
@@ -1104,6 +1164,38 @@ mod tests {
         match parse_slash_command("/propose plans/self improve proposal.json") {
             SlashCommand::Propose { path } => {
                 assert_eq!(path, "plans/self improve proposal.json");
+            }
+            _ => panic!("unexpected command"),
+        }
+    }
+
+    #[test]
+    fn parses_promote_with_optional_reason_tail() {
+        match parse_slash_command("/promote artifact123 version456 approve for new sessions") {
+            SlashCommand::Promote {
+                artifact_ref,
+                version_ref,
+                reason,
+            } => {
+                assert_eq!(artifact_ref, "artifact123");
+                assert_eq!(version_ref, "version456");
+                assert_eq!(reason, Some("approve for new sessions".to_string()));
+            }
+            _ => panic!("unexpected command"),
+        }
+    }
+
+    #[test]
+    fn parses_rollback_with_optional_reason_tail() {
+        match parse_slash_command("/rollback artifact123 version111 revert verifier regression") {
+            SlashCommand::Rollback {
+                artifact_ref,
+                version_ref,
+                reason,
+            } => {
+                assert_eq!(artifact_ref, "artifact123");
+                assert_eq!(version_ref, "version111");
+                assert_eq!(reason, Some("revert verifier regression".to_string()));
             }
             _ => panic!("unexpected command"),
         }

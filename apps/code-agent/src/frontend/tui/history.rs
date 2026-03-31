@@ -1,13 +1,14 @@
 use super::state::{InspectorEntry, TranscriptEntry, TranscriptShellDetail, preview_text};
 use crate::backend::{
-    ArtifactProposalExecutionOutcome, BenchmarkExecutionOutcome, ImproveExecutionOutcome,
-    LiveTaskControlAction, LiveTaskControlOutcome, LiveTaskMessageAction, LiveTaskMessageOutcome,
-    LiveTaskSpawnOutcome, LiveTaskSummary, LiveTaskWaitOutcome, LoadedAgentSession, LoadedArtifact,
-    LoadedExperiment, LoadedSession, LoadedSubagentSession, LoadedTask, McpPromptSummary,
-    McpResourceSummary, McpServerSummary, PersistedAgentSessionSummary, PersistedArtifactSummary,
-    PersistedExperimentSummary, PersistedSessionSearchMatch, PersistedSessionSummary,
-    PersistedTaskSummary, SessionExportArtifact, SessionExportKind, SessionOperationAction,
-    SessionOperationOutcome, StartupDiagnosticsSnapshot, message_to_text, preview_id,
+    ArtifactDecisionExecutionOutcome, ArtifactProposalExecutionOutcome, BenchmarkExecutionOutcome,
+    ImproveExecutionOutcome, LiveTaskControlAction, LiveTaskControlOutcome, LiveTaskMessageAction,
+    LiveTaskMessageOutcome, LiveTaskSpawnOutcome, LiveTaskSummary, LiveTaskWaitOutcome,
+    LoadedAgentSession, LoadedArtifact, LoadedExperiment, LoadedSession, LoadedSubagentSession,
+    LoadedTask, McpPromptSummary, McpResourceSummary, McpServerSummary,
+    PersistedAgentSessionSummary, PersistedArtifactSummary, PersistedExperimentSummary,
+    PersistedSessionSearchMatch, PersistedSessionSummary, PersistedTaskSummary,
+    SessionExportArtifact, SessionExportKind, SessionOperationAction, SessionOperationOutcome,
+    StartupDiagnosticsSnapshot, message_to_text, preview_id,
 };
 use crate::tool_render::{
     ToolDetail, tool_argument_details, tool_arguments_preview_lines, tool_output_details,
@@ -193,6 +194,9 @@ pub(crate) fn format_artifact_summary_line(summary: &PersistedArtifactSummary) -
             "last decision {}",
             artifact_decision_label(decision)
         ));
+    }
+    if let Some(version_ref) = &summary.active_version_ref {
+        details.push(format!("active {}", preview_id(version_ref)));
     }
     if let Some(version_ref) = &summary.promoted_version_ref {
         details.push(format!("promoted {}", preview_id(version_ref)));
@@ -397,12 +401,19 @@ pub(crate) fn format_artifact_inspector(artifact: &LoadedArtifact) -> Vec<Inspec
         lines.push(InspectorEntry::field("kind", artifact_kind_label(kind)));
     }
     if artifact.summary.latest_version_id.is_some()
+        || artifact.summary.active_version_id.is_some()
         || artifact.summary.promoted_version_id.is_some()
     {
         lines.push(InspectorEntry::section("Versions"));
         if let Some(version_id) = &artifact.summary.latest_version_id {
             lines.push(InspectorEntry::field(
                 "latest version",
+                version_id.to_string(),
+            ));
+        }
+        if let Some(version_id) = &artifact.summary.active_version_id {
+            lines.push(InspectorEntry::field(
+                "active version",
                 version_id.to_string(),
             ));
         }
@@ -1007,6 +1018,31 @@ pub(crate) fn format_proposal_result(
                 Vec::<String>::new(),
             ))
         }));
+    }
+    lines
+}
+
+pub(crate) fn format_artifact_decision_result(
+    result: &ArtifactDecisionExecutionOutcome,
+) -> Vec<InspectorEntry> {
+    let mut lines = vec![
+        InspectorEntry::section("Artifact Decision"),
+        InspectorEntry::field("artifact ref", result.artifact_id.to_string()),
+        InspectorEntry::field("version ref", result.version_id.to_string()),
+        InspectorEntry::field("decision", artifact_decision_label(result.decision.kind)),
+        InspectorEntry::field("reason", preview_text(&result.decision.reason, 96)),
+    ];
+    if let Some(version_id) = &result.summary.active_version_id {
+        lines.push(InspectorEntry::field(
+            "active version",
+            version_id.to_string(),
+        ));
+    }
+    if let Some(version_id) = &result.summary.promoted_version_id {
+        lines.push(InspectorEntry::field(
+            "promoted version",
+            version_id.to_string(),
+        ));
     }
     lines
 }

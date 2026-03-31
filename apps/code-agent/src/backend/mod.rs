@@ -43,11 +43,12 @@ pub(crate) use permission_request::{
     SessionPermissionRequestHandler,
 };
 pub(crate) use session::{
-    ArtifactProposalExecutionOutcome, BenchmarkExecutionOutcome, CodeAgentSession,
-    ImproveExecutionOutcome, LiveTaskControlAction, LiveTaskControlOutcome, LiveTaskMessageAction,
-    LiveTaskMessageOutcome, LiveTaskSpawnOutcome, LiveTaskSummary, LiveTaskWaitOutcome,
-    ModelReasoningEffortOutcome, PendingControlKind, PendingControlSummary, SessionOperation,
-    SessionOperationAction, SessionOperationOutcome, SessionPermissionMode, SessionStartupSnapshot,
+    ArtifactDecisionExecutionOutcome, ArtifactProposalExecutionOutcome, BenchmarkExecutionOutcome,
+    CodeAgentSession, ImproveExecutionOutcome, LiveTaskControlAction, LiveTaskControlOutcome,
+    LiveTaskMessageAction, LiveTaskMessageOutcome, LiveTaskSpawnOutcome, LiveTaskSummary,
+    LiveTaskWaitOutcome, ModelReasoningEffortOutcome, PendingControlKind, PendingControlSummary,
+    SessionOperation, SessionOperationAction, SessionOperationOutcome, SessionPermissionMode,
+    SessionStartupSnapshot,
 };
 pub(crate) use session_catalog::{
     PersistedAgentSessionSummary, PersistedArtifactSummary, PersistedExperimentSummary,

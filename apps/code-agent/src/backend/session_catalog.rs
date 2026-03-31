@@ -71,6 +71,7 @@ pub(crate) struct PersistedArtifactSummary {
     pub(crate) source_task_count: usize,
     pub(crate) source_case_count: usize,
     pub(crate) latest_version_ref: Option<String>,
+    pub(crate) active_version_ref: Option<String>,
     pub(crate) promoted_version_ref: Option<String>,
     pub(crate) last_decision: Option<ArtifactPromotionDecisionKind>,
 }
@@ -162,6 +163,7 @@ pub(crate) fn persisted_artifact_summary(summary: &ArtifactSummary) -> Persisted
         source_task_count: summary.source_task_count,
         source_case_count: summary.source_case_count,
         latest_version_ref: summary.latest_version_id.as_ref().map(ToString::to_string),
+        active_version_ref: summary.active_version_id.as_ref().map(ToString::to_string),
         promoted_version_ref: summary
             .promoted_version_id
             .as_ref()
