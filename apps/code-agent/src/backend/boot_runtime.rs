@@ -219,10 +219,19 @@ pub(crate) fn host_process_surfaces_allowed(
 
 #[cfg(test)]
 mod tests {
-    use super::{build_runtime_tooling, host_process_surfaces_allowed};
+    use super::{build_runtime_tooling, host_process_surfaces_allowed, register_subagent_tools};
     use crate::options::AppOptions;
-    use agent::tools::{NetworkPolicy, SandboxBackendKind, SandboxBackendStatus, SandboxPolicy};
+    use agent::tools::{
+        NetworkPolicy, SandboxBackendKind, SandboxBackendStatus, SandboxPolicy, SubagentExecutor,
+        SubagentInputDelivery, SubagentLaunchSpec, SubagentParentContext,
+    };
+    use agent::types::{
+        AgentHandle, AgentId, AgentResultEnvelope, AgentWaitRequest, AgentWaitResponse,
+    };
     use agent_env::EnvMap;
+    use async_trait::async_trait;
+    use serde_json::Value;
+    use std::sync::Arc;
     use std::sync::{Mutex, OnceLock};
     use tempfile::tempdir;
 
@@ -339,5 +348,134 @@ mod tests {
                 .iter()
                 .any(|name| name.as_str() == "web_search_backends")
         );
+    }
+
+    #[test]
+    fn openai_visible_tool_schemas_compile_to_provider_safe_subset() {
+        let options = load_options();
+        let workspace = tempdir().unwrap();
+        let mut tooling = build_runtime_tooling(
+            &options,
+            workspace.path(),
+            &SandboxPolicy::permissive(),
+            &SandboxBackendStatus::Unavailable {
+                reason: "not needed".to_string(),
+            },
+        );
+        register_subagent_tools(&mut tooling.tools, Arc::new(NoopSubagentExecutor));
+
+        let openai_specs = tooling
+            .tools
+            .specs()
+            .into_iter()
+            .filter(|spec| spec.is_model_visible_for_provider("openai"))
+            .collect::<Vec<_>>();
+
+        assert!(!openai_specs.is_empty());
+
+        for spec in openai_specs {
+            if !matches!(spec.kind, agent::types::ToolKind::Function) {
+                continue;
+            }
+
+            let tool_schema = agent::provider::tool_schema(&spec);
+            let parameters = &tool_schema["parameters"];
+            assert_eq!(
+                parameters["type"],
+                Value::String("object".to_string()),
+                "tool `{}` must expose object parameters to OpenAI",
+                spec.name
+            );
+            assert_schema_is_provider_safe_subset(parameters, &spec.name.to_string());
+        }
+    }
+
+    fn assert_schema_is_provider_safe_subset(value: &Value, tool_name: &str) {
+        match value {
+            Value::Object(map) => {
+                for forbidden in ["$ref", "$defs", "definitions", "allOf", "anyOf", "oneOf"] {
+                    assert!(
+                        !map.contains_key(forbidden),
+                        "tool `{tool_name}` leaked forbidden schema keyword `{forbidden}`: {value}"
+                    );
+                }
+                for child in map.values() {
+                    assert_schema_is_provider_safe_subset(child, tool_name);
+                }
+            }
+            Value::Array(values) => {
+                for child in values {
+                    assert_schema_is_provider_safe_subset(child, tool_name);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    struct NoopSubagentExecutor;
+
+    #[async_trait]
+    impl SubagentExecutor for NoopSubagentExecutor {
+        async fn spawn(
+            &self,
+            _parent: SubagentParentContext,
+            _tasks: Vec<SubagentLaunchSpec>,
+        ) -> agent::tools::Result<Vec<AgentHandle>> {
+            Err(agent::tools::ToolError::invalid_state(
+                "test executor does not support spawn",
+            ))
+        }
+
+        async fn send(
+            &self,
+            _parent: SubagentParentContext,
+            _agent_id: AgentId,
+            _message: agent::types::Message,
+            _delivery: SubagentInputDelivery,
+        ) -> agent::tools::Result<AgentHandle> {
+            Err(agent::tools::ToolError::invalid_state(
+                "test executor does not support send",
+            ))
+        }
+
+        async fn wait(
+            &self,
+            _parent: SubagentParentContext,
+            _request: AgentWaitRequest,
+        ) -> agent::tools::Result<AgentWaitResponse> {
+            Ok(AgentWaitResponse {
+                completed: Vec::new(),
+                pending: Vec::new(),
+                results: Vec::<AgentResultEnvelope>::new(),
+            })
+        }
+
+        async fn resume(
+            &self,
+            _parent: SubagentParentContext,
+            _agent_id: AgentId,
+        ) -> agent::tools::Result<AgentHandle> {
+            Err(agent::tools::ToolError::invalid_state(
+                "test executor does not support resume",
+            ))
+        }
+
+        async fn list(
+            &self,
+            _parent: SubagentParentContext,
+        ) -> agent::tools::Result<Vec<AgentHandle>> {
+            Ok(Vec::new())
+        }
+
+        async fn cancel(
+            &self,
+            _parent: SubagentParentContext,
+            _agent_id: AgentId,
+            _reason: Option<String>,
+        ) -> agent::tools::Result<AgentHandle> {
+            Err(agent::tools::ToolError::invalid_state(
+                "test executor does not support cancel",
+            ))
+        }
     }
 }

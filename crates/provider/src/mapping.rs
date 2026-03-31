@@ -1,63 +1,252 @@
 use crate::{ProviderError, Result};
 use serde_json::{Map, Value, json};
+use std::collections::BTreeSet;
 use types::{
     MessagePart, ReasoningContent, ToolKind, ToolResult, ToolSpec, reference_display_text,
 };
 
 #[must_use]
 pub fn coerce_object_schema(schema: &Value) -> Value {
-    let mut schema = schema.clone();
-    sanitize_tool_schema(&mut schema);
-    schema
+    // OpenAI Responses is noticeably less tolerant than the broader JSON Schema
+    // ecosystem. Forwarding raw schemars output (especially `$ref`, `$defs`,
+    // `allOf`, or boolean schemas) can turn the whole request into a backend
+    // error. Compile the provider-facing tool schema into a small stable subset
+    // instead of mutating the original value in place.
+    compile_tool_schema(schema, schema, &mut BTreeSet::new())
 }
 
-fn sanitize_tool_schema(value: &mut Value) {
+fn compile_tool_schema(value: &Value, root: &Value, seen_refs: &mut BTreeSet<String>) -> Value {
+    if let Some(reference) = value
+        .as_object()
+        .and_then(|map| map.get("$ref"))
+        .and_then(Value::as_str)
+    {
+        return compile_ref_schema(reference, root, seen_refs);
+    }
+
     match value {
         Value::Bool(_) => {
             // Provider tool surfaces do not accept JSON Schema boolean shorthand.
             // Downgrading to a permissive string schema is safer than forwarding
             // `true` / `false` and letting the backend reject the whole request.
-            *value = json!({ "type": "string" });
+            json!({ "type": "string" })
         }
-        Value::Array(values) => {
-            for value in values {
-                sanitize_tool_schema(value);
-            }
-        }
-        Value::Object(map) => {
-            if let Some(properties) = map.get_mut("properties")
-                && let Some(properties) = properties.as_object_mut()
-            {
-                for value in properties.values_mut() {
-                    sanitize_tool_schema(value);
-                }
-            }
-            if let Some(items) = map.get_mut("items") {
-                sanitize_tool_schema(items);
-            }
-            for combiner in ["oneOf", "anyOf", "allOf", "prefixItems"] {
-                if let Some(value) = map.get_mut(combiner) {
-                    sanitize_tool_schema(value);
-                }
-            }
-            if let Some(additional_properties) = map.get_mut("additionalProperties")
-                && !matches!(additional_properties, Value::Bool(_))
-            {
-                sanitize_tool_schema(additional_properties);
-            }
-
-            let schema_type = infer_schema_type(map);
-            map.insert("type".to_string(), Value::String(schema_type.clone()));
-
-            if schema_type == "object" && !map.contains_key("properties") {
-                map.insert("properties".to_string(), Value::Object(Map::new()));
-            }
-            if schema_type == "array" && !map.contains_key("items") {
-                map.insert("items".to_string(), json!({ "type": "string" }));
-            }
-        }
-        _ => {}
+        Value::Object(map) => compile_schema_object(map, root, seen_refs),
+        _ => json!({ "type": "string" }),
     }
+}
+
+fn compile_ref_schema(reference: &str, root: &Value, seen_refs: &mut BTreeSet<String>) -> Value {
+    if !seen_refs.insert(reference.to_string()) {
+        return json!({ "type": "string" });
+    }
+    let compiled = resolve_local_schema_ref(root, reference)
+        .map(|target| compile_tool_schema(target, root, seen_refs))
+        .unwrap_or_else(|| json!({ "type": "string" }));
+    seen_refs.remove(reference);
+    compiled
+}
+
+fn compile_schema_object(
+    map: &Map<String, Value>,
+    root: &Value,
+    seen_refs: &mut BTreeSet<String>,
+) -> Value {
+    if let Some(combined) = compile_combined_object_schema(map, root, seen_refs) {
+        return combined;
+    }
+
+    match infer_schema_type(map).as_str() {
+        "object" => compile_object_schema(map, root, seen_refs),
+        "array" => compile_array_schema(map, root, seen_refs),
+        "number" | "integer" => compile_scalar_schema("number", map),
+        "boolean" => compile_scalar_schema("boolean", map),
+        _ => compile_scalar_schema("string", map),
+    }
+}
+
+fn compile_combined_object_schema(
+    map: &Map<String, Value>,
+    root: &Value,
+    seen_refs: &mut BTreeSet<String>,
+) -> Option<Value> {
+    if normalized_schema_type(map.get("type")).is_some()
+        || map.contains_key("properties")
+        || map.contains_key("required")
+        || map.contains_key("additionalProperties")
+    {
+        return None;
+    }
+
+    for combiner in ["allOf", "anyOf", "oneOf"] {
+        let Some(Value::Array(variants)) = map.get(combiner) else {
+            continue;
+        };
+
+        let compiled_objects = variants
+            .iter()
+            .map(|variant| compile_tool_schema(variant, root, seen_refs))
+            .filter_map(|variant| match variant {
+                Value::Object(object)
+                    if object.get("type").and_then(Value::as_str) == Some("object") =>
+                {
+                    Some(object)
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        if compiled_objects.is_empty() {
+            continue;
+        }
+
+        let mut properties = Map::new();
+        let mut required = BTreeSet::new();
+        let mut additional_properties = None;
+        for object in compiled_objects {
+            if let Some(object_properties) = object.get("properties").and_then(Value::as_object) {
+                for (key, value) in object_properties {
+                    properties.insert(key.clone(), value.clone());
+                }
+            }
+            if let Some(object_required) = object.get("required").and_then(Value::as_array) {
+                for field in object_required.iter().filter_map(Value::as_str) {
+                    required.insert(field.to_string());
+                }
+            }
+            if additional_properties.is_none() {
+                additional_properties = object.get("additionalProperties").cloned();
+            }
+        }
+
+        let mut compiled = Map::new();
+        compiled.insert("type".to_string(), Value::String("object".to_string()));
+        compiled.insert("properties".to_string(), Value::Object(properties));
+        insert_description(&mut compiled, map);
+        if !required.is_empty() {
+            compiled.insert(
+                "required".to_string(),
+                Value::Array(required.into_iter().map(Value::String).collect()),
+            );
+        }
+        if let Some(additional_properties) = additional_properties {
+            compiled.insert("additionalProperties".to_string(), additional_properties);
+        }
+        return Some(Value::Object(compiled));
+    }
+
+    None
+}
+
+fn compile_object_schema(
+    map: &Map<String, Value>,
+    root: &Value,
+    seen_refs: &mut BTreeSet<String>,
+) -> Value {
+    let properties = map
+        .get("properties")
+        .and_then(Value::as_object)
+        .map(|properties| {
+            properties
+                .iter()
+                .map(|(key, value)| (key.clone(), compile_tool_schema(value, root, seen_refs)))
+                .collect::<Map<String, Value>>()
+        })
+        .unwrap_or_default();
+
+    let mut compiled = Map::new();
+    compiled.insert("type".to_string(), Value::String("object".to_string()));
+    compiled.insert("properties".to_string(), Value::Object(properties));
+    insert_description(&mut compiled, map);
+    if let Some(required) = normalized_required(map.get("required")) {
+        compiled.insert(
+            "required".to_string(),
+            Value::Array(required.into_iter().map(Value::String).collect()),
+        );
+    }
+    if let Some(additional_properties) =
+        compile_additional_properties(map.get("additionalProperties"), root, seen_refs)
+    {
+        compiled.insert("additionalProperties".to_string(), additional_properties);
+    }
+    Value::Object(compiled)
+}
+
+fn compile_array_schema(
+    map: &Map<String, Value>,
+    root: &Value,
+    seen_refs: &mut BTreeSet<String>,
+) -> Value {
+    let items = map
+        .get("items")
+        .map(|items| compile_tool_schema(items, root, seen_refs))
+        .unwrap_or_else(|| json!({ "type": "string" }));
+
+    let mut compiled = Map::new();
+    compiled.insert("type".to_string(), Value::String("array".to_string()));
+    compiled.insert("items".to_string(), items);
+    insert_description(&mut compiled, map);
+    Value::Object(compiled)
+}
+
+fn compile_scalar_schema(schema_type: &str, map: &Map<String, Value>) -> Value {
+    let mut compiled = Map::new();
+    compiled.insert("type".to_string(), Value::String(schema_type.to_string()));
+    insert_description(&mut compiled, map);
+    Value::Object(compiled)
+}
+
+fn compile_additional_properties(
+    value: Option<&Value>,
+    root: &Value,
+    seen_refs: &mut BTreeSet<String>,
+) -> Option<Value> {
+    match value {
+        Some(Value::Bool(allowed)) => Some(Value::Bool(*allowed)),
+        Some(schema) => Some(compile_tool_schema(schema, root, seen_refs)),
+        None => None,
+    }
+}
+
+fn insert_description(target: &mut Map<String, Value>, map: &Map<String, Value>) {
+    if let Some(description) = map
+        .get("description")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|description| !description.is_empty())
+    {
+        target.insert(
+            "description".to_string(),
+            Value::String(description.to_string()),
+        );
+    }
+}
+
+fn normalized_required(value: Option<&Value>) -> Option<Vec<String>> {
+    let required = value
+        .and_then(Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(Value::as_str)
+                .map(ToOwned::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    (!required.is_empty()).then_some(required)
+}
+
+fn resolve_local_schema_ref<'a>(root: &'a Value, reference: &str) -> Option<&'a Value> {
+    let path = reference.strip_prefix("#/")?;
+    let mut current = root;
+    for segment in path.split('/') {
+        let token = segment.replace("~1", "/").replace("~0", "~");
+        current = match current {
+            Value::Object(map) => map.get(token.as_str())?,
+            Value::Array(values) => values.get(token.parse::<usize>().ok()?)?,
+            _ => return None,
+        };
+    }
+    Some(current)
 }
 
 fn infer_schema_type(map: &Map<String, Value>) -> String {
@@ -351,6 +540,7 @@ mod tests {
 
         assert_eq!(coerced["type"], json!("object"));
         assert_eq!(coerced["properties"]["path"]["type"], json!("string"));
+        assert!(coerced.get("allOf").is_none());
     }
 
     #[test]
@@ -381,19 +571,17 @@ mod tests {
         assert_eq!(coerced["type"], json!("object"));
         assert_eq!(coerced["properties"]["payload"]["type"], json!("object"));
         assert_eq!(coerced["properties"]["payload"]["properties"], json!({}));
+        assert_eq!(
+            coerced["properties"]["payload"]["additionalProperties"],
+            json!(true)
+        );
         assert_eq!(coerced["properties"]["targets"]["type"], json!("array"));
         assert_eq!(
             coerced["properties"]["targets"]["items"]["type"],
             json!("string")
         );
-        assert_eq!(
-            coerced["properties"]["mode"]["oneOf"][0]["type"],
-            json!("string")
-        );
-        assert_eq!(
-            coerced["properties"]["mode"]["oneOf"][1]["type"],
-            json!("string")
-        );
+        assert_eq!(coerced["properties"]["mode"]["type"], json!("string"));
+        assert!(coerced["properties"]["mode"]["oneOf"].is_null());
     }
 
     #[test]
@@ -401,7 +589,15 @@ mod tests {
         let schema = json!({
             "type": "object",
             "additionalProperties": {
-                "items": true
+                "required": ["value"],
+                "properties": {
+                    "value": {
+                        "anyOf": [
+                            { "type": "string" },
+                            { "type": "number" }
+                        ]
+                    }
+                }
             }
         });
 
@@ -409,9 +605,13 @@ mod tests {
 
         assert_eq!(coerced["type"], json!("object"));
         assert_eq!(coerced["properties"], json!({}));
-        assert_eq!(coerced["additionalProperties"]["type"], json!("array"));
+        assert_eq!(coerced["additionalProperties"]["type"], json!("object"));
         assert_eq!(
-            coerced["additionalProperties"]["items"]["type"],
+            coerced["additionalProperties"]["required"],
+            json!(["value"])
+        );
+        assert_eq!(
+            coerced["additionalProperties"]["properties"]["value"]["type"],
             json!("string")
         );
     }
@@ -427,6 +627,56 @@ mod tests {
 
         assert_eq!(coerced["type"], json!("object"));
         assert_eq!(coerced["properties"], json!({}));
+    }
+
+    #[test]
+    fn coerce_object_schema_resolves_local_refs_and_merges_flatten_like_roots() {
+        let schema = json!({
+            "$defs": {
+                "TaskBase": {
+                    "type": "object",
+                    "properties": {
+                        "task_id": { "type": "string" },
+                        "prompt": { "type": "string" }
+                    },
+                    "required": ["prompt"]
+                },
+                "TaskMeta": {
+                    "type": "object",
+                    "properties": {
+                        "role": { "type": "string" }
+                    }
+                }
+            },
+            "allOf": [
+                { "$ref": "#/$defs/TaskBase" },
+                { "$ref": "#/$defs/TaskMeta" }
+            ]
+        });
+
+        let coerced = coerce_object_schema(&schema);
+
+        assert_eq!(coerced["type"], json!("object"));
+        assert_eq!(coerced["properties"]["task_id"]["type"], json!("string"));
+        assert_eq!(coerced["properties"]["prompt"]["type"], json!("string"));
+        assert_eq!(coerced["properties"]["role"]["type"], json!("string"));
+        assert_eq!(coerced["required"], json!(["prompt"]));
+        assert!(coerced.get("$defs").is_none());
+        assert!(coerced.get("allOf").is_none());
+    }
+
+    #[test]
+    fn coerce_object_schema_normalizes_integer_scalars_to_number() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "page": { "type": "integer" }
+            }
+        });
+
+        let coerced = coerce_object_schema(&schema);
+
+        assert_eq!(coerced["properties"]["page"]["type"], json!("number"));
     }
 
     #[test]
