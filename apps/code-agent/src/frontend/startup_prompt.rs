@@ -13,7 +13,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Margin, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
+use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
 use std::io::{self, Stdout};
 
 const BG: Color = Color::Rgb(15, 17, 20);
@@ -27,7 +27,6 @@ const USER: Color = Color::Rgb(221, 188, 128);
 const HEADER: Color = Color::Rgb(244, 244, 239);
 const WARN: Color = Color::Rgb(223, 179, 88);
 const ERROR: Color = Color::Rgb(227, 125, 118);
-const BORDER_ACTIVE: Color = Color::Rgb(165, 168, 160);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum StartupPromptSelection {
@@ -289,40 +288,43 @@ fn render_action_button(
     selected: bool,
     accent: Color,
 ) {
-    let (background, foreground, border) = if selected {
-        (accent, BG, accent)
-    } else {
-        (FOOTER_BG, TEXT, BORDER_ACTIVE)
-    };
     frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled(
-                format!("{shortcut} "),
-                Style::default()
-                    .fg(if selected { BG } else { accent })
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(label, Style::default().fg(foreground)),
-        ]))
-        .alignment(Alignment::Center)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(border))
-                .style(Style::default().bg(background)),
-        )
-        .style(
-            Style::default()
-                .fg(foreground)
-                .bg(background)
-                .add_modifier(if selected {
-                    Modifier::BOLD
-                } else {
-                    Modifier::empty()
-                }),
-        ),
+        Paragraph::new(build_action_button_line(shortcut, label, selected, accent))
+            .alignment(Alignment::Center)
+            .style(Style::default().bg(BOTTOM_PANE_BG)),
         area,
     );
+}
+
+fn build_action_button_line(
+    shortcut: &'static str,
+    label: &'static str,
+    selected: bool,
+    accent: Color,
+) -> Line<'static> {
+    let marker = if selected { "› " } else { "  " };
+    let shortcut_style = if selected {
+        Style::default()
+            .fg(BG)
+            .bg(accent)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(accent).add_modifier(Modifier::BOLD)
+    };
+    let label_style = if selected {
+        Style::default().fg(HEADER).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(TEXT)
+    };
+    Line::from(vec![
+        Span::styled(
+            marker,
+            Style::default().fg(if selected { accent } else { SUBTLE }),
+        ),
+        Span::styled(format!(" {shortcut} "), shortcut_style),
+        Span::styled(" ", Style::default().fg(SUBTLE)),
+        Span::styled(label, label_style),
+    ])
 }
 
 fn build_summary_text() -> Text<'static> {
@@ -468,7 +470,7 @@ fn startup_prompt_layout(area: Rect) -> StartupPromptLayout {
         .constraints([
             Constraint::Length(4),
             Constraint::Min(14),
-            Constraint::Length(if stack_buttons { 9 } else { 4 }),
+            Constraint::Length(if stack_buttons { 5 } else { 2 }),
             Constraint::Length(1),
         ])
         .split(inner);
@@ -502,19 +504,16 @@ fn startup_prompt_layout(area: Rect) -> StartupPromptLayout {
     });
     let action_sections = Layout::default()
         .direction(Direction::Vertical)
-        // Keep the buttons on a two-row hit target so mouse interactions are
-        // forgiving inside the prompt footer instead of requiring a single
-        // exact terminal row.
         .constraints(if stack_buttons {
             vec![
                 Constraint::Length(1),
                 Constraint::Length(1),
-                Constraint::Length(3),
                 Constraint::Length(1),
-                Constraint::Length(3),
+                Constraint::Length(1),
+                Constraint::Length(1),
             ]
         } else {
-            vec![Constraint::Length(1), Constraint::Length(3)]
+            vec![Constraint::Length(1), Constraint::Length(1)]
         })
         .split(action_inner);
     let (abort_button, continue_button) = if stack_buttons {
@@ -574,9 +573,9 @@ fn rect_contains(rect: Rect, column: u16, row: u16) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        StartupPromptSelection, StartupPromptState, build_fix_card_text, build_footer_text,
-        build_policy_card_text, build_reason_card_text, build_risk_card_text, build_summary_text,
-        startup_prompt_layout,
+        ACCENT, BG, HEADER, StartupPromptSelection, StartupPromptState, TEXT,
+        build_action_button_line, build_fix_card_text, build_footer_text, build_policy_card_text,
+        build_reason_card_text, build_risk_card_text, build_summary_text, startup_prompt_layout,
     };
     use crate::backend::SandboxFallbackNotice;
     use crossterm::event::{
@@ -626,7 +625,7 @@ mod tests {
                 MouseEvent {
                     kind: MouseEventKind::Down(MouseButton::Left),
                     column: layout.abort_button.x + 1,
-                    row: layout.abort_button.y + 1,
+                    row: layout.abort_button.y,
                     modifiers: KeyModifiers::NONE,
                 },
                 Rect::new(0, 0, 120, 40),
@@ -638,7 +637,7 @@ mod tests {
                 MouseEvent {
                     kind: MouseEventKind::Down(MouseButton::Left),
                     column: layout.continue_button.x + 1,
-                    row: layout.continue_button.y + 1,
+                    row: layout.continue_button.y,
                     modifiers: KeyModifiers::NONE,
                 },
                 Rect::new(0, 0, 120, 40),
@@ -652,6 +651,31 @@ mod tests {
         let layout = startup_prompt_layout(Rect::new(0, 0, 80, 40));
         assert!(layout.continue_button.y > layout.abort_button.y);
         assert_eq!(layout.continue_button.x, layout.abort_button.x);
+        assert_eq!(layout.abort_button.height, 1);
+        assert_eq!(layout.continue_button.height, 1);
+    }
+
+    #[test]
+    fn startup_prompt_keeps_wide_buttons_single_row() {
+        let layout = startup_prompt_layout(Rect::new(0, 0, 120, 40));
+        assert_eq!(layout.abort_button.height, 1);
+        assert_eq!(layout.continue_button.height, 1);
+    }
+
+    #[test]
+    fn startup_prompt_selected_button_uses_high_contrast_label() {
+        let line = build_action_button_line("Y", "Continue Without Sandbox", true, ACCENT);
+        assert_eq!(line.spans[1].style.bg, Some(ACCENT));
+        assert_eq!(line.spans[1].style.fg, Some(BG));
+        assert_eq!(line.spans[3].style.fg, Some(HEADER));
+    }
+
+    #[test]
+    fn startup_prompt_unselected_button_keeps_badge_background_clear() {
+        let line = build_action_button_line("Esc", "Abort Startup", false, ACCENT);
+        assert_eq!(line.spans[1].style.bg, None);
+        assert_eq!(line.spans[1].style.fg, Some(ACCENT));
+        assert_eq!(line.spans[3].style.fg, Some(TEXT));
     }
 
     #[test]
