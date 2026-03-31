@@ -290,6 +290,18 @@ That keeps resumed sessions closer to the live post-compact context shape
 instead of reviving a mid-round suffix that the current runtime would no longer
 preserve.
 
+Interrupt-driven restarts now reuse the same request-side cluster shape:
+
+- rollback no longer drops only the final user prompt from an active turn
+- if the interrupted turn started with steer/reminder or synthetic recall
+  context, that request-side prefix is removed together with the follow-through
+  assistant trajectory
+- compacted summaries and retained tails stay stable because the rewind walks
+  visible transcript order instead of raw transcript indices
+
+That keeps restarts aligned with Claude's "replace the active round" behavior
+instead of leaving behind half of the interrupted request context.
+
 ## Side Questions (`/btw`)
 
 Claude Code exposes side questions as a separate lightweight query path rather

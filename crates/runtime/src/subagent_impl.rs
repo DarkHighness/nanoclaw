@@ -407,40 +407,14 @@ impl RuntimeSubagentExecutor {
     }
 
     async fn rollback_interrupted_turn(&self, session: &mut RuntimeSession) -> Result<()> {
-        let visible_indices = if let Some(summary_index) = session.compaction_summary_index {
-            let mut indices = Vec::with_capacity(
-                1 + session.retained_tail_indices.len() + session.transcript.len(),
-            );
-            indices.push(summary_index);
-            indices.extend(
-                session
-                    .retained_tail_indices
-                    .iter()
-                    .copied()
-                    .filter(|index| *index < summary_index),
-            );
-            indices.extend(session.post_summary_start..session.transcript.len());
-            indices
-        } else {
-            (0..session.transcript.len()).collect()
-        };
-        let Some(start_at) = visible_indices
-            .iter()
-            .rev()
-            .find(|index| {
-                session.transcript.get(**index).is_some_and(|message| {
-                    message.role == MessageRole::User
-                        && !session.removed_message_ids.contains(&message.message_id)
-                })
-            })
-            .copied()
+        let visible_indices = Self::visible_session_message_indices(session);
+        let Some(start_position) = Self::interrupted_turn_start_position(session, &visible_indices)
         else {
             return Ok(());
         };
-        let removed_message_ids = visible_indices
-            .into_iter()
-            .filter(|index| *index >= start_at)
-            .filter_map(|index| session.transcript.get(index))
+        let removed_message_ids = visible_indices[start_position..]
+            .iter()
+            .filter_map(|index| session.transcript.get(*index))
             .filter(|message| !session.removed_message_ids.contains(&message.message_id))
             .map(|message| message.message_id.clone())
             .collect::<Vec<_>>();
@@ -470,6 +444,72 @@ impl RuntimeSubagentExecutor {
             )
             .await
             .map_err(RuntimeError::from)
+    }
+
+    fn visible_session_message_indices(session: &RuntimeSession) -> Vec<usize> {
+        let indices = if let Some(summary_index) = session.compaction_summary_index {
+            let mut indices = Vec::with_capacity(
+                1 + session.retained_tail_indices.len() + session.transcript.len(),
+            );
+            indices.push(summary_index);
+            indices.extend(
+                session
+                    .retained_tail_indices
+                    .iter()
+                    .copied()
+                    .filter(|index| *index < summary_index),
+            );
+            indices.extend(session.post_summary_start..session.transcript.len());
+            indices
+        } else {
+            (0..session.transcript.len()).collect()
+        };
+        indices
+            .into_iter()
+            .filter(|index| {
+                session.transcript.get(*index).is_some_and(|message| {
+                    !session.removed_message_ids.contains(&message.message_id)
+                })
+            })
+            .collect()
+    }
+
+    fn interrupted_turn_start_position(
+        session: &RuntimeSession,
+        visible_indices: &[usize],
+    ) -> Option<usize> {
+        let mut start_position = visible_indices.iter().rposition(|index| {
+            session.transcript.get(*index).is_some_and(|message| {
+                message.role == MessageRole::User
+                    && !session.removed_message_ids.contains(&message.message_id)
+            })
+        })?;
+
+        // Interrupt-driven restarts should rewind the whole active request-side
+        // cluster, not only the final user prompt. Walking visible order keeps
+        // compacted summary nodes and retained tails stable even when transcript
+        // indices no longer match the rendered transcript order.
+        while start_position > 0 {
+            let previous_position = start_position - 1;
+            if session.compaction_summary_index == visible_indices.get(previous_position).copied() {
+                break;
+            }
+            let Some(previous_message) = visible_indices
+                .get(previous_position)
+                .and_then(|index| session.transcript.get(*index))
+            else {
+                break;
+            };
+            if !matches!(
+                previous_message.role,
+                MessageRole::User | MessageRole::System
+            ) {
+                break;
+            }
+            start_position = previous_position;
+        }
+
+        Some(start_position)
     }
 
     fn resolve_write_set(&self, files: &[String]) -> std::result::Result<Vec<PathBuf>, ToolError> {
@@ -1894,7 +1934,7 @@ mod tests {
     use crate::Result;
     use crate::{
         AlwaysAllowToolApprovalHandler, CompactionConfig, HookRunner, LoopDetectionConfig,
-        ModelBackend, NoopConversationCompactor, NoopToolApprovalPolicy,
+        ModelBackend, NoopConversationCompactor, NoopToolApprovalPolicy, RuntimeSession,
     };
     use async_trait::async_trait;
     use futures::{StreamExt, stream, stream::BoxStream};
@@ -2677,6 +2717,79 @@ mod tests {
             &event.event,
             SessionEventKind::TranscriptMessageRemoved { .. }
         )));
+    }
+
+    #[test]
+    fn interrupted_turn_rewinds_to_request_side_cluster_head() {
+        let mut session = RuntimeSession::new("run_parent".into(), "session_child".into());
+        session.transcript = vec![
+            Message::user("older prompt"),
+            Message::assistant("older answer"),
+            Message::system("prefer terse answers"),
+            Message::user("recalled workspace memory"),
+            Message::user("real user prompt"),
+            Message::assistant("draft reply"),
+        ];
+
+        let visible_indices = RuntimeSubagentExecutor::visible_session_message_indices(&session);
+        let start_position =
+            RuntimeSubagentExecutor::interrupted_turn_start_position(&session, &visible_indices)
+                .expect("rewind start");
+        let removed_roles = visible_indices[start_position..]
+            .iter()
+            .filter_map(|index| session.transcript.get(*index))
+            .map(|message| message.role)
+            .collect::<Vec<_>>();
+
+        assert_eq!(start_position, 2);
+        assert_eq!(
+            removed_roles,
+            vec![
+                MessageRole::System,
+                MessageRole::User,
+                MessageRole::User,
+                MessageRole::Assistant,
+            ]
+        );
+    }
+
+    #[test]
+    fn interrupted_turn_keeps_compaction_summary_and_retained_tail_stable() {
+        let mut session = RuntimeSession::new("run_parent".into(), "session_child".into());
+        session.transcript = vec![
+            Message::user("older prompt"),
+            Message::assistant("older answer"),
+            Message::user("kept prompt"),
+            Message::assistant("kept answer"),
+            Message::system("compaction summary"),
+            Message::system("prefer terse answers"),
+            Message::user("real user prompt"),
+            Message::assistant("draft reply"),
+        ];
+        session.compaction_summary_index = Some(4);
+        session.retained_tail_indices = vec![2, 3];
+        session.post_summary_start = 5;
+
+        let visible_indices = RuntimeSubagentExecutor::visible_session_message_indices(&session);
+        let start_position =
+            RuntimeSubagentExecutor::interrupted_turn_start_position(&session, &visible_indices)
+                .expect("rewind start");
+        let removed_messages = visible_indices[start_position..]
+            .iter()
+            .filter_map(|index| session.transcript.get(*index))
+            .map(|message| message.text_content())
+            .collect::<Vec<_>>();
+
+        assert_eq!(visible_indices, vec![4, 2, 3, 5, 6, 7]);
+        assert_eq!(start_position, 3);
+        assert_eq!(
+            removed_messages,
+            vec![
+                "prefer terse answers".to_string(),
+                "real user prompt".to_string(),
+                "draft reply".to_string(),
+            ]
+        );
     }
 
     #[tokio::test]
