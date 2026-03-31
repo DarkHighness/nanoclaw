@@ -155,6 +155,10 @@ impl ComposerDraftState {
         }
     }
 
+    pub(crate) fn row_attachment_summaries(&self) -> Vec<(usize, String, String)> {
+        summarize_row_attachments(&self.draft_attachments)
+    }
+
     fn normalized(mut self) -> Self {
         self.cursor = normalize_input_cursor(&self.text, self.cursor);
         self.draft_attachments.retain(|attachment| {
@@ -164,6 +168,42 @@ impl ComposerDraftState {
                 .is_none_or(|placeholder| self.text.contains(placeholder))
         });
         self
+    }
+}
+
+pub(crate) fn draft_preview_text(
+    draft: &ComposerDraftState,
+    fallback_prompt: &str,
+    max_chars: usize,
+) -> String {
+    let attachment_preview = draft
+        .row_attachment_summaries()
+        .into_iter()
+        .map(|(index, summary, _)| format!("#{index} {summary}"))
+        .collect::<Vec<_>>();
+    let mut parts = Vec::new();
+    if !attachment_preview.is_empty() {
+        let head = attachment_preview
+            .iter()
+            .take(2)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", ");
+        let remainder = attachment_preview.len().saturating_sub(2);
+        if remainder == 0 {
+            parts.push(head);
+        } else {
+            parts.push(format!("{head}, +{remainder} more"));
+        }
+    }
+    let trimmed_text = draft.text.trim();
+    if !trimmed_text.is_empty() {
+        parts.push(trimmed_text.to_string());
+    }
+    if parts.is_empty() {
+        preview_text(fallback_prompt, max_chars)
+    } else {
+        preview_text(&parts.join(" · "), max_chars)
     }
 }
 
@@ -1631,18 +1671,7 @@ impl TuiState {
     }
 
     pub(crate) fn row_attachment_summaries(&self) -> Vec<(usize, String, String)> {
-        self.draft_attachments
-            .iter()
-            .filter(|attachment| attachment.is_row_attachment())
-            .enumerate()
-            .filter_map(|(index, attachment)| {
-                Some((
-                    index + 1,
-                    attachment.row_summary()?,
-                    attachment.row_detail().unwrap_or_default(),
-                ))
-            })
-            .collect()
+        summarize_row_attachments(&self.draft_attachments)
     }
 
     pub(crate) fn selected_row_attachment_summary(&self) -> Option<(usize, String, String)> {
@@ -2181,6 +2210,23 @@ impl TuiState {
     }
 }
 
+fn summarize_row_attachments(
+    attachments: &[ComposerDraftAttachmentState],
+) -> Vec<(usize, String, String)> {
+    attachments
+        .iter()
+        .filter(|attachment| attachment.is_row_attachment())
+        .enumerate()
+        .filter_map(|(index, attachment)| {
+            Some((
+                index + 1,
+                attachment.row_summary()?,
+                attachment.row_detail().unwrap_or_default(),
+            ))
+        })
+        .collect()
+}
+
 fn bump_scroll(value: &mut u16, delta: i16) {
     if delta >= 0 {
         *value = value.saturating_add(delta as u16);
@@ -2450,7 +2496,8 @@ mod tests {
     use super::{
         ComposerDraftAttachmentKind, ComposerDraftAttachmentState, ComposerDraftState,
         ComposerKillBufferState, HistoryRollbackCandidate, MainPaneMode, SharedUiState, TuiState,
-        composer_draft_from_messages, composer_draft_from_parts, git_snapshot, page_scroll_amount,
+        composer_draft_from_messages, composer_draft_from_parts, draft_preview_text, git_snapshot,
+        page_scroll_amount,
     };
     use crate::theme::ThemeSummary;
     use agent::types::{Message, MessageId, MessagePart, MessageRole};
@@ -3217,6 +3264,26 @@ mod tests {
                 local_file_attachment("reports/run.pdf"),
                 large_paste_attachment("body")
             ]
+        );
+    }
+
+    #[test]
+    fn draft_preview_text_prefers_attachment_summaries_over_raw_markers() {
+        let draft = ComposerDraftState {
+            text: "summarize the artifact".to_string(),
+            cursor: "summarize the artifact".len(),
+            draft_attachments: vec![remote_image_attachment(
+                "https://example.com/assets/failure.png",
+            )],
+        };
+
+        assert_eq!(
+            draft_preview_text(
+                &draft,
+                "[image_url:https://example.com/assets/failure.png image/png]",
+                80,
+            ),
+            "#1 image · failure.png · summarize the artifact"
         );
     }
 

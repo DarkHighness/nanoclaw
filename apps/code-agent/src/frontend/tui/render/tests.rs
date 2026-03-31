@@ -293,6 +293,46 @@ fn history_rollback_overlay_renders_selection_list_and_preview() {
 }
 
 #[test]
+fn history_rollback_overlay_uses_attachment_aware_preview_labels() {
+    let mut state = TuiState::default();
+    let _ = state.open_history_rollback_overlay(vec![HistoryRollbackCandidate {
+        message_id: MessageId::from("msg-1"),
+        prompt: "[image_url:https://example.com/assets/failure.png image/png]".to_string(),
+        draft: ComposerDraftState {
+            text: String::new(),
+            cursor: 0,
+            draft_attachments: vec![ComposerDraftAttachmentState {
+                placeholder: None,
+                kind: ComposerDraftAttachmentKind::RemoteImage {
+                    requested_url: "https://example.com/assets/failure.png".to_string(),
+                    part: MessagePart::ImageUrl {
+                        url: "https://example.com/assets/failure.png".to_string(),
+                        mime_type: Some("image/png".to_string()),
+                    },
+                },
+            }],
+        },
+        turn_preview_lines: vec![transcript_entry("› restore attachments")],
+        removed_turn_count: 1,
+        removed_message_count: 1,
+    }]);
+
+    let list = build_history_rollback_list_text(&state);
+    let preview = build_history_rollback_preview_text(&state);
+
+    assert!(
+        text_lines(&list)
+            .iter()
+            .any(|line| line.contains("#1 image · failure.png"))
+    );
+    assert!(
+        text_lines(&preview)
+            .iter()
+            .any(|line| line.contains("#1 image · failure.png"))
+    );
+}
+
+#[test]
 fn welcome_lines_keep_the_start_screen_sparse() {
     let mut state = TuiState::default();
     state.session.workspace_name = "nanoclaw".to_string();

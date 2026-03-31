@@ -378,7 +378,11 @@ pub(super) fn build_composer_line(state: &TuiState) -> Line<'static> {
                 ));
                 spans.push(Span::styled(" · ", Style::default().fg(palette().subtle)));
                 spans.push(Span::styled(
-                    preview_text(&selected.prompt, 32),
+                    crate::frontend::tui::state::draft_preview_text(
+                        &selected.draft,
+                        &selected.prompt,
+                        32,
+                    ),
                     Style::default().fg(palette().text),
                 ));
             } else {

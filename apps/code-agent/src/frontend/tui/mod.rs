@@ -3362,7 +3362,7 @@ fn history_rollback_status(
         total,
         candidate.removed_turn_count,
         candidate.removed_message_count,
-        state::preview_text(&candidate.prompt, 40)
+        state::draft_preview_text(&candidate.draft, &candidate.prompt, 40)
     )
 }
 

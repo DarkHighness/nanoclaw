@@ -1,4 +1,4 @@
-use super::super::state::{TuiState, preview_text};
+use super::super::state::{TuiState, draft_preview_text};
 use super::shared::clamp_scroll;
 use super::theme::palette;
 use super::transcript::format_transcript_cell;
@@ -137,7 +137,7 @@ pub(super) fn build_history_rollback_list_text(state: &TuiState) -> Text<'static
             ),
             Span::raw(" "),
             Span::styled(
-                preview_text(&candidate.prompt, 40),
+                draft_preview_text(&candidate.draft, &candidate.prompt, 40),
                 Style::default()
                     .fg(if selected {
                         palette().header
@@ -182,7 +182,7 @@ pub(super) fn build_history_rollback_preview_text(state: &TuiState) -> Text<'sta
             Span::styled("Turn Preview", Style::default().fg(palette().header)),
             Span::styled(" · ", Style::default().fg(palette().subtle)),
             Span::styled(
-                preview_text(&candidate.prompt, 56),
+                draft_preview_text(&candidate.draft, &candidate.prompt, 56),
                 Style::default().fg(palette().text),
             ),
         ]),
