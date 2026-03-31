@@ -85,7 +85,7 @@ tracing = "0.1.41"
 uuid = { version = "1.18.1", features = ["serde", "v4"] }
 wide = "1.2.0"
 wiremock = "0.6.5"
-wasmtime = "34.0.2"
+wasmtime = { version = "34.0.2", default-features = false, features = ["cranelift", "runtime", "std"] }
 wat = "1.241.2"
 agent-env = { path = "env" }
 inference = { path = "inference" }
