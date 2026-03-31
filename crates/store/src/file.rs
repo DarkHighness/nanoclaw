@@ -3,10 +3,11 @@ mod index_sidecar;
 
 use crate::replay::replay_transcript;
 use crate::{
-    EventSink, Result, SessionMemoryExportBundle, SessionMemoryExportRequest, SessionSearchResult,
-    SessionStore, SessionStoreError, SessionSummary, apply_memory_export_request,
-    build_memory_export_record, group_events_for_memory_export, search_session_events,
-    sort_experiment_summaries, sort_memory_export_records, summarize_experiment_events,
+    ArtifactSummary, EventSink, Result, SessionMemoryExportBundle, SessionMemoryExportRequest,
+    SessionSearchResult, SessionStore, SessionStoreError, SessionSummary,
+    apply_memory_export_request, build_memory_export_record, group_events_for_memory_export,
+    search_session_events, sort_artifact_summaries, sort_experiment_summaries,
+    sort_memory_export_records, summarize_artifact_events, summarize_experiment_events,
 };
 use async_trait::async_trait;
 use futures::{StreamExt, stream};
@@ -19,7 +20,8 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 use tokio::sync::Mutex;
 use tracing::{debug, info};
 use types::{
-    AgentSessionId, ExperimentEventEnvelope, ExperimentId, Message, SessionEventEnvelope, SessionId,
+    AgentSessionId, ArtifactId, ArtifactLedgerEventEnvelope, ExperimentEventEnvelope, ExperimentId,
+    Message, SessionEventEnvelope, SessionId,
 };
 const SEARCH_REPLAY_CONCURRENCY_LIMIT: usize = 8;
 
@@ -61,6 +63,7 @@ impl FileSessionStore {
         info!(root = %root_dir.display(), "opening file session store");
         fs::create_dir_all(&root_dir).await?;
         fs::create_dir_all(root_dir.join("experiments")).await?;
+        fs::create_dir_all(root_dir.join("artifacts")).await?;
         let mut index = load_or_rebuild_index(&root_dir).await?;
         let pruned = select_sessions_to_prune(&index, &options.retention, current_timestamp_ms());
         for session_id in &pruned {
@@ -99,6 +102,15 @@ impl FileSessionStore {
     fn experiment_path(&self, experiment_id: &ExperimentId) -> PathBuf {
         self.experiments_dir()
             .join(format!("{}.jsonl", experiment_id.as_str()))
+    }
+
+    fn artifacts_dir(&self) -> PathBuf {
+        self.root_dir.join("artifacts")
+    }
+
+    fn artifact_path(&self, artifact_id: &ArtifactId) -> PathBuf {
+        self.artifacts_dir()
+            .join(format!("{}.jsonl", artifact_id.as_str()))
     }
 
     async fn persist_index(&self, index: &FileSessionStoreIndex) -> Result<()> {
@@ -227,6 +239,49 @@ impl FileSessionStore {
             }
 
             let file = active_file.as_mut().expect("active experiment file");
+            let encoded = serde_json::to_string(event)?;
+            file.write_all(encoded.as_bytes()).await?;
+            file.write_all(b"\n").await?;
+        }
+
+        if let Some(mut file) = active_file.take() {
+            file.flush().await?;
+        }
+
+        Ok(())
+    }
+
+    async fn append_locked_artifact_events(
+        &self,
+        events: &[ArtifactLedgerEventEnvelope],
+    ) -> Result<()> {
+        if events.is_empty() {
+            return Ok(());
+        }
+
+        let mut active_artifact_id: Option<ArtifactId> = None;
+        let mut active_file: Option<tokio::fs::File> = None;
+
+        for event in events {
+            if active_artifact_id.as_ref() != Some(&event.artifact_id) {
+                if let Some(mut file) = active_file.take() {
+                    file.flush().await?;
+                }
+                let path = self.artifact_path(&event.artifact_id);
+                if let Some(parent) = path.parent() {
+                    fs::create_dir_all(parent).await?;
+                }
+                active_file = Some(
+                    OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(&path)
+                        .await?,
+                );
+                active_artifact_id = Some(event.artifact_id.clone());
+            }
+
+            let file = active_file.as_mut().expect("active artifact file");
             let encoded = serde_json::to_string(event)?;
             file.write_all(encoded.as_bytes()).await?;
             file.write_all(b"\n").await?;
@@ -402,6 +457,41 @@ impl SessionStore for FileSessionStore {
         load_experiment_events_from_path(&path).await
     }
 
+    async fn append_artifact(&self, event: ArtifactLedgerEventEnvelope) -> Result<()> {
+        let _guard = self.write_lock.lock().await;
+        self.append_locked_artifact_events(std::slice::from_ref(&event))
+            .await
+    }
+
+    async fn append_artifact_batch(&self, events: Vec<ArtifactLedgerEventEnvelope>) -> Result<()> {
+        let _guard = self.write_lock.lock().await;
+        self.append_locked_artifact_events(&events).await
+    }
+
+    async fn list_artifacts(&self) -> Result<Vec<ArtifactSummary>> {
+        let artifact_ids = list_artifact_file_ids(&self.artifacts_dir()).await?;
+        let mut artifacts = Vec::new();
+        for artifact_id in artifact_ids {
+            let events = self.artifact_events(&artifact_id).await?;
+            if let Some(summary) = summarize_artifact_events(&artifact_id, &events) {
+                artifacts.push(summary);
+            }
+        }
+        sort_artifact_summaries(&mut artifacts);
+        Ok(artifacts)
+    }
+
+    async fn artifact_events(
+        &self,
+        artifact_id: &ArtifactId,
+    ) -> Result<Vec<ArtifactLedgerEventEnvelope>> {
+        let path = self.artifact_path(artifact_id);
+        if !fs::try_exists(&path).await? {
+            return Err(SessionStoreError::ArtifactNotFound(artifact_id.clone()));
+        }
+        load_artifact_events_from_path(&path).await
+    }
+
     async fn export_for_memory(
         &self,
         request: SessionMemoryExportRequest,
@@ -491,6 +581,19 @@ async fn load_experiment_events_from_path(path: &Path) -> Result<Vec<ExperimentE
     Ok(events)
 }
 
+async fn load_artifact_events_from_path(path: &Path) -> Result<Vec<ArtifactLedgerEventEnvelope>> {
+    let file = fs::File::open(path).await?;
+    let mut lines = tokio::io::BufReader::new(file).lines();
+    let mut events = Vec::new();
+    while let Some(line) = lines.next_line().await? {
+        if line.trim().is_empty() {
+            continue;
+        }
+        events.push(serde_json::from_str(&line)?);
+    }
+    Ok(events)
+}
+
 async fn list_experiment_file_ids(experiments_dir: &Path) -> Result<Vec<ExperimentId>> {
     let mut experiment_ids = Vec::new();
     let mut entries = fs::read_dir(experiments_dir).await?;
@@ -508,6 +611,25 @@ async fn list_experiment_file_ids(experiments_dir: &Path) -> Result<Vec<Experime
     }
     experiment_ids.sort();
     Ok(experiment_ids)
+}
+
+async fn list_artifact_file_ids(artifacts_dir: &Path) -> Result<Vec<ArtifactId>> {
+    let mut artifact_ids = Vec::new();
+    let mut entries = fs::read_dir(artifacts_dir).await?;
+    while let Some(entry) = entries.next_entry().await? {
+        if !entry.file_type().await?.is_file() {
+            continue;
+        }
+        let path = entry.path();
+        if path.extension().and_then(|value| value.to_str()) != Some("jsonl") {
+            continue;
+        }
+        if let Some(stem) = path.file_stem().and_then(|value| value.to_str()) {
+            artifact_ids.push(ArtifactId::from(stem));
+        }
+    }
+    artifact_ids.sort();
+    Ok(artifact_ids)
 }
 
 fn rebuild_index_record(event: &types::SessionEventKind) -> bool {

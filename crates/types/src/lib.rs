@@ -3,6 +3,7 @@
 //! This crate is part of the smallest useful runtime closure. It defines the
 //! shared message, tool, hook, id, and event types used everywhere else.
 
+mod artifact;
 mod error;
 mod event;
 mod experiment;
@@ -13,6 +14,7 @@ mod signal;
 mod tool;
 mod usage;
 
+pub use artifact::*;
 pub use error::*;
 pub use event::*;
 pub use experiment::*;

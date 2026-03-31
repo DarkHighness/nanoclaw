@@ -6,10 +6,12 @@ use serde_json::Value;
 use std::collections::{BTreeMap, HashSet};
 use thiserror::Error;
 use types::{
-    AgentSessionId, CandidateId, ExperimentEventEnvelope, ExperimentEventKind, ExperimentId,
-    ExperimentTarget, HookEffect, Message, PromotionDecisionKind, SelfImproveSignalKind,
-    SelfImproveSignalRecord, SessionEventEnvelope, SessionEventKind, SessionId, SignalSeverity,
-    SignalSource, TokenLedgerSnapshot, TokenUsage, TurnId,
+    AgentSessionId, ArtifactId, ArtifactKind, ArtifactLedgerEventEnvelope, ArtifactLedgerEventKind,
+    ArtifactPromotionDecisionKind, ArtifactVersionId, CandidateId, ExperimentEventEnvelope,
+    ExperimentEventKind, ExperimentId, ExperimentTarget, HookEffect, Message,
+    PromotionDecisionKind, SelfImproveSignalKind, SelfImproveSignalRecord, SessionEventEnvelope,
+    SessionEventKind, SessionId, SignalSeverity, SignalSource, TokenLedgerSnapshot, TokenUsage,
+    TurnId,
 };
 
 const TOKEN_USAGE_CHILD_FETCH_CONCURRENCY_LIMIT: usize = 8;
@@ -23,6 +25,8 @@ pub enum SessionStoreError {
     SessionNotFound(SessionId),
     #[error("experiment not found: {0}")]
     ExperimentNotFound(ExperimentId),
+    #[error("artifact not found: {0}")]
+    ArtifactNotFound(ArtifactId),
     #[error("session store IO error: {0}")]
     Io(#[from] std::io::Error),
     #[error("session store JSON error: {0}")]
@@ -69,6 +73,26 @@ pub struct ExperimentSummary {
     pub promoted_candidate_id: Option<CandidateId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_decision: Option<PromotionDecisionKind>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArtifactSummary {
+    pub artifact_id: ArtifactId,
+    pub first_timestamp_ms: u128,
+    pub last_timestamp_ms: u128,
+    pub event_count: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<ArtifactKind>,
+    pub version_count: usize,
+    pub source_signal_count: usize,
+    pub source_task_count: usize,
+    pub source_case_count: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latest_version_id: Option<ArtifactVersionId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub promoted_version_id: Option<ArtifactVersionId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_decision: Option<ArtifactPromotionDecisionKind>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -341,6 +365,92 @@ pub fn sort_experiment_summaries(experiments: &mut [ExperimentSummary]) {
                     .as_str()
                     .cmp(right.experiment_id.as_str())
             })
+    });
+}
+
+#[must_use]
+pub fn summarize_artifact_events(
+    artifact_id: &ArtifactId,
+    events: &[ArtifactLedgerEventEnvelope],
+) -> Option<ArtifactSummary> {
+    if events.is_empty() {
+        return None;
+    }
+
+    let mut first_timestamp_ms = u128::MAX;
+    let mut last_timestamp_ms = 0;
+    let mut kind = None;
+    let mut version_ids = HashSet::new();
+    let mut source_signal_ids = HashSet::new();
+    let mut source_task_ids = HashSet::new();
+    let mut source_case_ids = HashSet::new();
+    let mut latest_version_id = None;
+    let mut promoted_version_id = None;
+    let mut last_decision = None;
+
+    for event in events {
+        first_timestamp_ms = first_timestamp_ms.min(event.timestamp_ms);
+        last_timestamp_ms = last_timestamp_ms.max(event.timestamp_ms);
+
+        match &event.event {
+            ArtifactLedgerEventKind::VersionProposed { version } => {
+                kind.get_or_insert(version.kind);
+                version_ids.insert(version.version_id.clone());
+                latest_version_id = Some(version.version_id.clone());
+                source_signal_ids.extend(version.source_signal_ids.iter().cloned());
+                source_task_ids.extend(version.source_task_ids.iter().cloned());
+                source_case_ids.extend(version.source_case_ids.iter().cloned());
+            }
+            ArtifactLedgerEventKind::VersionEvaluated { version_id, .. } => {
+                version_ids.insert(version_id.clone());
+                latest_version_id = Some(version_id.clone());
+            }
+            ArtifactLedgerEventKind::VersionPromoted {
+                version_id,
+                decision,
+            } => {
+                version_ids.insert(version_id.clone());
+                latest_version_id = Some(version_id.clone());
+                promoted_version_id = Some(version_id.clone());
+                last_decision = Some(decision.kind);
+            }
+            ArtifactLedgerEventKind::VersionRejected {
+                version_id,
+                decision,
+            }
+            | ArtifactLedgerEventKind::VersionRolledBack {
+                version_id,
+                decision,
+            } => {
+                version_ids.insert(version_id.clone());
+                latest_version_id = Some(version_id.clone());
+                last_decision = Some(decision.kind);
+            }
+        }
+    }
+
+    Some(ArtifactSummary {
+        artifact_id: artifact_id.clone(),
+        first_timestamp_ms,
+        last_timestamp_ms,
+        event_count: events.len(),
+        kind,
+        version_count: version_ids.len(),
+        source_signal_count: source_signal_ids.len(),
+        source_task_count: source_task_ids.len(),
+        source_case_count: source_case_ids.len(),
+        latest_version_id,
+        promoted_version_id,
+        last_decision,
+    })
+}
+
+pub fn sort_artifact_summaries(artifacts: &mut [ArtifactSummary]) {
+    artifacts.sort_by(|left, right| {
+        right
+            .last_timestamp_ms
+            .cmp(&left.last_timestamp_ms)
+            .then_with(|| left.artifact_id.as_str().cmp(right.artifact_id.as_str()))
     });
 }
 
@@ -1795,6 +1905,18 @@ pub trait SessionStore: EventSink {
         &self,
         experiment_id: &ExperimentId,
     ) -> Result<Vec<ExperimentEventEnvelope>>;
+    async fn append_artifact(&self, event: ArtifactLedgerEventEnvelope) -> Result<()>;
+    async fn append_artifact_batch(&self, events: Vec<ArtifactLedgerEventEnvelope>) -> Result<()> {
+        for event in events {
+            self.append_artifact(event).await?;
+        }
+        Ok(())
+    }
+    async fn list_artifacts(&self) -> Result<Vec<ArtifactSummary>>;
+    async fn artifact_events(
+        &self,
+        artifact_id: &ArtifactId,
+    ) -> Result<Vec<ArtifactLedgerEventEnvelope>>;
     async fn self_improve_signals(
         &self,
         session_id: &SessionId,

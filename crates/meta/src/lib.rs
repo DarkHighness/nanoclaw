@@ -4,6 +4,7 @@
 //! candidate generation, experiment orchestration, promotion, and rollback
 //! logic without another workspace-seeding change.
 
+pub mod archive;
 pub mod benchmark;
 pub mod candidate;
 pub mod corpus;
@@ -17,6 +18,7 @@ pub mod rollback;
 pub mod signals;
 pub mod tasks;
 
+pub use archive::*;
 pub use benchmark::*;
 pub use candidate::*;
 pub use corpus::*;

@@ -1,16 +1,18 @@
 use crate::replay::replay_transcript;
 use crate::{
-    EventSink, Result, SessionMemoryExportBundle, SessionMemoryExportRequest, SessionSearchResult,
-    SessionStore, SessionStoreError, SessionSummary, apply_memory_export_request,
-    build_memory_export_record, group_events_for_memory_export, search_session_events,
-    sort_experiment_summaries, sort_memory_export_records, summarize_experiment_events,
+    ArtifactSummary, EventSink, Result, SessionMemoryExportBundle, SessionMemoryExportRequest,
+    SessionSearchResult, SessionStore, SessionStoreError, SessionSummary,
+    apply_memory_export_request, build_memory_export_record, group_events_for_memory_export,
+    search_session_events, sort_artifact_summaries, sort_experiment_summaries,
+    sort_memory_export_records, summarize_artifact_events, summarize_experiment_events,
     summarize_session_events,
 };
 use async_trait::async_trait;
 use dashmap::DashMap;
 use std::sync::Arc;
 use types::{
-    AgentSessionId, ExperimentEventEnvelope, ExperimentId, Message, SessionEventEnvelope, SessionId,
+    AgentSessionId, ArtifactId, ArtifactLedgerEventEnvelope, ExperimentEventEnvelope, ExperimentId,
+    Message, SessionEventEnvelope, SessionId,
 };
 
 #[derive(Clone, Default)]
@@ -22,6 +24,7 @@ pub struct InMemorySessionStore {
     // Experiments are durable optimization artifacts, not transcript turns, so
     // they stay on a separate append-only lane inside the same backend.
     experiments: Arc<DashMap<ExperimentId, Vec<ExperimentEventEnvelope>>>,
+    artifacts: Arc<DashMap<ArtifactId, Vec<ArtifactLedgerEventEnvelope>>>,
 }
 
 impl InMemorySessionStore {
@@ -159,6 +162,44 @@ impl SessionStore for InMemorySessionStore {
             .get(experiment_id)
             .map(|entry| entry.value().clone())
             .ok_or_else(|| SessionStoreError::ExperimentNotFound(experiment_id.clone()))
+    }
+
+    async fn append_artifact(&self, event: ArtifactLedgerEventEnvelope) -> Result<()> {
+        self.artifacts
+            .entry(event.artifact_id.clone())
+            .or_default()
+            .push(event);
+        Ok(())
+    }
+
+    async fn append_artifact_batch(&self, events: Vec<ArtifactLedgerEventEnvelope>) -> Result<()> {
+        for event in events {
+            self.artifacts
+                .entry(event.artifact_id.clone())
+                .or_default()
+                .push(event);
+        }
+        Ok(())
+    }
+
+    async fn list_artifacts(&self) -> Result<Vec<ArtifactSummary>> {
+        let mut artifacts = self
+            .artifacts
+            .iter()
+            .filter_map(|entry| summarize_artifact_events(entry.key(), entry.value()))
+            .collect::<Vec<_>>();
+        sort_artifact_summaries(&mut artifacts);
+        Ok(artifacts)
+    }
+
+    async fn artifact_events(
+        &self,
+        artifact_id: &ArtifactId,
+    ) -> Result<Vec<ArtifactLedgerEventEnvelope>> {
+        self.artifacts
+            .get(artifact_id)
+            .map(|entry| entry.value().clone())
+            .ok_or_else(|| SessionStoreError::ArtifactNotFound(artifact_id.clone()))
     }
 
     async fn export_for_memory(

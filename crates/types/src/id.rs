@@ -123,6 +123,8 @@ define_id!(EnvelopeId);
 define_id!(MessageId);
 define_id!(SessionId);
 define_id!(AgentSessionId);
+define_id!(ArtifactId);
+define_id!(ArtifactVersionId);
 define_id!(ExperimentId);
 define_id!(CandidateId);
 define_id!(BaselineId);
