@@ -1,7 +1,7 @@
 use agent::DriverActivationOutcome;
 use agent::mcp::{ConnectedMcpServer, McpPrompt, McpPromptArgument, McpResource};
 use agent::types::{
-    HookHostApiGrant, HookMutationPermission, HookNetworkPolicy, MessagePart, ToolOrigin, ToolSpec,
+    HookHostApiGrant, HookMutationPermission, HookNetworkPolicy, ToolOrigin, ToolSpec,
 };
 use anyhow::{Result, anyhow};
 use serde_json::Value;
@@ -236,7 +236,7 @@ fn prompt_to_text(prompt: &McpPrompt) -> String {
     prompt
         .messages
         .iter()
-        .map(|message| message.text_content())
+        .map(agent::types::message_operator_text)
         .collect::<Vec<_>>()
         .join("\n\n")
 }
@@ -245,88 +245,12 @@ fn resource_to_text(resource: &McpResource) -> String {
     let parts = resource
         .parts
         .iter()
-        .map(message_part_to_text)
+        .map(agent::types::message_part_operator_text)
         .collect::<Vec<_>>();
     if parts.is_empty() {
         resource.description.clone()
     } else {
         parts.join("\n\n")
-    }
-}
-
-fn message_part_to_text(part: &MessagePart) -> String {
-    match part {
-        MessagePart::Text { text } => text.clone(),
-        MessagePart::Image { mime_type, .. } => format!("[image:{mime_type}]"),
-        MessagePart::ImageUrl { url, mime_type } => format!(
-            "[image_url:{}{}]",
-            url,
-            mime_type
-                .as_deref()
-                .map(|value| format!(" {value}"))
-                .unwrap_or_default(),
-        ),
-        MessagePart::File {
-            file_name,
-            mime_type,
-            uri,
-            ..
-        } => format!(
-            "[file:{}{}{}]",
-            file_name.clone().unwrap_or_else(|| "unnamed".to_string()),
-            mime_type
-                .as_deref()
-                .map(|value| format!(" {value}"))
-                .unwrap_or_default(),
-            uri.as_deref()
-                .map(|value| format!(" {value}"))
-                .unwrap_or_default(),
-        ),
-        MessagePart::Reasoning { reasoning } => {
-            format!("[reasoning:{}]", reasoning.display_text())
-        }
-        MessagePart::ToolCall { call } => format!("[tool_call:{}]", call.tool_name),
-        MessagePart::ToolResult { result } => {
-            format!("[tool_result:{}]", result.tool_name)
-        }
-        MessagePart::Resource {
-            uri,
-            mime_type,
-            text,
-            ..
-        } => format!(
-            "[resource:{}{}{}]",
-            uri,
-            mime_type
-                .as_deref()
-                .map(|value| format!(" {value}"))
-                .unwrap_or_default(),
-            text.as_deref()
-                .map(|value| format!(" {}", value))
-                .unwrap_or_default(),
-        ),
-        MessagePart::Reference {
-            kind,
-            name,
-            uri,
-            text,
-        } => format!(
-            "[reference:{}{}{}{}]",
-            kind,
-            name.as_deref()
-                .map(|value| format!(" {value}"))
-                .unwrap_or_default(),
-            uri.as_deref()
-                .map(|value| format!(" {value}"))
-                .unwrap_or_default(),
-            text.as_deref()
-                .map(|value| format!(" {}", value))
-                .unwrap_or_default(),
-        ),
-        MessagePart::Json { value } => format!("[json:{}]", value),
-        MessagePart::ProviderExtension { provider, kind, .. } => {
-            format!("[provider_extension:{provider}/{kind}]")
-        }
     }
 }
 
@@ -489,9 +413,15 @@ fn describe_host_api_grant(grant: &HookHostApiGrant) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{McpServerSummary, StartupDiagnosticsSnapshot, build_startup_diagnostics_snapshot};
+    use super::{
+        McpServerSummary, StartupDiagnosticsSnapshot, build_startup_diagnostics_snapshot,
+        prompt_to_text, resource_to_text,
+    };
     use agent::DriverActivationOutcome;
-    use agent::types::{ToolOrigin, ToolOutputMode, ToolSource, ToolSpec};
+    use agent::mcp::{McpPrompt, McpResource};
+    use agent::types::{
+        Message, MessagePart, MessageRole, ToolOrigin, ToolOutputMode, ToolSource, ToolSpec,
+    };
     use tempfile::tempdir;
 
     #[test]
@@ -562,6 +492,56 @@ mod tests {
                 ],
                 diagnostics: vec!["validated wasm hook module".to_string()],
             }
+        );
+    }
+
+    #[test]
+    fn prompt_and_resource_text_reuse_operator_message_rendering() {
+        let prompt = McpPrompt {
+            name: "review".to_string(),
+            title: None,
+            description: "fallback".to_string(),
+            arguments: Vec::new(),
+            messages: vec![Message::new(
+                MessageRole::User,
+                vec![
+                    MessagePart::ImageUrl {
+                        url: "https://example.com/failure.png".to_string(),
+                        mime_type: None,
+                    },
+                    MessagePart::ToolCall {
+                        call: agent::types::ToolCall {
+                            id: agent::types::ToolCallId::new(),
+                            call_id: agent::types::CallId::new(),
+                            tool_name: "read".into(),
+                            arguments: serde_json::Value::Null,
+                            origin: agent::types::ToolOrigin::Local,
+                        },
+                    },
+                ],
+            )],
+        };
+        let resource = McpResource {
+            uri: "file://resource".to_string(),
+            name: "resource".to_string(),
+            title: None,
+            description: "fallback resource".to_string(),
+            mime_type: Some("application/json".to_string()),
+            parts: vec![MessagePart::Reference {
+                kind: "mention".to_string(),
+                name: Some("connector".to_string()),
+                uri: Some("app://connector".to_string()),
+                text: Some("Follow this reference".to_string()),
+            }],
+        };
+
+        assert_eq!(
+            prompt_to_text(&prompt),
+            "[image_url:https://example.com/failure.png]\n[tool_call:read]"
+        );
+        assert_eq!(
+            resource_to_text(&resource),
+            "[reference:mention connector app://connector Follow this reference]"
         );
     }
 }

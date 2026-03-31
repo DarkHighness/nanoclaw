@@ -17,6 +17,7 @@ It intentionally keeps the host layer thin:
   - OpenAI forwards file parts as `input_file`, while Anthropic upgrades PDFs to native `document` blocks and keeps other file types on a readable fallback path
   - `mention`, `skill`, and generic `item` inputs now travel as typed reference parts instead of being flattened into ad hoc resource metadata or JSON
   - operator-visible transcript/search summaries now keep image and file placeholders in `Message::text_content()` instead of dropping attachment-only turns
+  - transcript exports and MCP prompt/resource previews now reuse the same operator-visible message-part renderer instead of drifting across host-specific formatters
 - append-only runtime loop from `runtime`
 - runtime steering and queued command support
 - loop detection as the primary guard against tool-call churn, without a fixed global iteration cap

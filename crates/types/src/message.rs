@@ -122,6 +122,19 @@ pub fn image_url_display_text(url: &str, mime_type: Option<&str>) -> String {
 }
 
 #[must_use]
+pub fn resource_display_text(uri: &str, mime_type: Option<&str>, text: Option<&str>) -> String {
+    format!(
+        "[resource:{}{}{}]",
+        uri,
+        mime_type
+            .map(|value| format!(" {value}"))
+            .unwrap_or_default(),
+        text.map(|value| format!(" {}", value.replace('\n', " ")))
+            .unwrap_or_default(),
+    )
+}
+
+#[must_use]
 pub fn reference_display_text(
     kind: &str,
     name: Option<&str>,
@@ -139,6 +152,23 @@ pub fn reference_display_text(
             (!kind.is_empty()).then(|| format!("[{kind}]"))
         }
     }
+}
+
+#[must_use]
+pub fn reference_operator_text(
+    kind: &str,
+    name: Option<&str>,
+    uri: Option<&str>,
+    text: Option<&str>,
+) -> String {
+    format!(
+        "[reference:{}{}{}{}]",
+        kind,
+        name.map(|value| format!(" {value}")).unwrap_or_default(),
+        uri.map(|value| format!(" {value}")).unwrap_or_default(),
+        text.map(|value| format!(" {}", value.replace('\n', " ")))
+            .unwrap_or_default(),
+    )
 }
 
 #[must_use]
@@ -180,6 +210,69 @@ pub fn message_part_display_text(part: &MessagePart) -> Option<String> {
         | MessagePart::ProviderExtension { .. }
         | MessagePart::ToolCall { .. } => None,
     }
+}
+
+/// Render a message part for operator-visible transcript, replay, and export
+/// surfaces. Unlike `message_part_display_text`, this keeps structural
+/// markers for non-text parts so different host views cannot silently drift.
+#[must_use]
+pub fn message_part_operator_text(part: &MessagePart) -> String {
+    match part {
+        MessagePart::Text { text } => text.clone(),
+        MessagePart::Reasoning { reasoning } => {
+            let text = reasoning.display_text();
+            if text.is_empty() {
+                "[reasoning]".to_string()
+            } else {
+                format!("[reasoning] {text}")
+            }
+        }
+        MessagePart::Image { mime_type, .. } => format!("[image:{mime_type}]"),
+        MessagePart::ImageUrl { url, mime_type } => {
+            image_url_display_text(url, mime_type.as_deref())
+        }
+        MessagePart::File {
+            file_name,
+            mime_type,
+            uri,
+            ..
+        } => file_display_text(file_name.as_deref(), mime_type.as_deref(), uri.as_deref()),
+        MessagePart::Reference {
+            kind,
+            name,
+            uri,
+            text,
+        } => reference_operator_text(kind, name.as_deref(), uri.as_deref(), text.as_deref()),
+        MessagePart::ToolCall { call } => format!("[tool_call:{}]", call.tool_name),
+        MessagePart::ToolResult { result } => {
+            let text = result.text_content();
+            if text.is_empty() {
+                format!("[tool_result:{}]", result.tool_name)
+            } else {
+                format!("[tool_result:{}] {text}", result.tool_name)
+            }
+        }
+        MessagePart::Resource {
+            uri,
+            mime_type,
+            text,
+            ..
+        } => resource_display_text(uri, mime_type.as_deref(), text.as_deref()),
+        MessagePart::Json { value } => format!("[json] {value}"),
+        MessagePart::ProviderExtension { provider, kind, .. } => {
+            format!("[provider_extension:{provider}:{kind}]")
+        }
+    }
+}
+
+#[must_use]
+pub fn message_operator_text(message: &Message) -> String {
+    message
+        .parts
+        .iter()
+        .map(message_part_operator_text)
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -310,7 +403,9 @@ impl Message {
 
 #[cfg(test)]
 mod tests {
-    use super::{Message, MessagePart, MessageRole};
+    use super::{Message, MessagePart, MessageRole, message_operator_text};
+    use crate::{ToolCall, ToolCallId, ToolName};
+    use serde_json::Value;
 
     #[test]
     fn text_content_joins_text_parts() {
@@ -364,6 +459,35 @@ mod tests {
         assert_eq!(
             message.text_content(),
             "[image_url:https://example.com/failure.png image/png]\n[file:report.pdf application/pdf https://example.com/report.pdf]"
+        );
+    }
+
+    #[test]
+    fn operator_text_keeps_structural_markers_for_non_text_parts() {
+        let message = Message::new(
+            MessageRole::Assistant,
+            vec![
+                MessagePart::Reference {
+                    kind: "skill".to_string(),
+                    name: Some("openai-docs".to_string()),
+                    uri: None,
+                    text: Some("Use official docs".to_string()),
+                },
+                MessagePart::ToolCall {
+                    call: ToolCall {
+                        id: ToolCallId::new(),
+                        call_id: crate::CallId::new(),
+                        tool_name: ToolName::from("read"),
+                        arguments: Value::Null,
+                        origin: crate::ToolOrigin::Local,
+                    },
+                },
+            ],
+        );
+
+        assert_eq!(
+            message_operator_text(&message),
+            "[reference:skill openai-docs Use official docs]\n[tool_call:read]"
         );
     }
 }

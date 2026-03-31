@@ -1,6 +1,6 @@
 use super::session_catalog::PersistedAgentSessionSummary;
 use agent::types::{
-    AgentHandle, AgentSessionId, AgentStatus, AgentTaskSpec, Message, MessagePart, MessageRole,
+    AgentHandle, AgentSessionId, AgentStatus, AgentTaskSpec, Message, MessageRole,
     SessionEventEnvelope, SessionEventKind, SessionId,
 };
 use anyhow::{Result, anyhow};
@@ -231,100 +231,7 @@ pub(crate) fn message_to_text(message: &Message) -> String {
         MessageRole::Assistant => "assistant",
         MessageRole::Tool => "tool",
     };
-    format!(
-        "{role}> {}",
-        message
-            .parts
-            .iter()
-            .map(message_part_to_text)
-            .collect::<Vec<_>>()
-            .join("\n")
-    )
-}
-
-fn message_part_to_text(part: &MessagePart) -> String {
-    match part {
-        MessagePart::Text { text } => text.clone(),
-        MessagePart::Image { mime_type, .. } => format!("[image:{mime_type}]"),
-        MessagePart::ImageUrl { url, mime_type } => format!(
-            "[image_url:{}{}]",
-            url,
-            mime_type
-                .as_deref()
-                .map(|value| format!(" {value}"))
-                .unwrap_or_default(),
-        ),
-        MessagePart::File {
-            file_name,
-            mime_type,
-            uri,
-            ..
-        } => format!(
-            "[file:{}{}{}]",
-            file_name.clone().unwrap_or_else(|| "unnamed".to_string()),
-            mime_type
-                .as_deref()
-                .map(|value| format!(" {value}"))
-                .unwrap_or_default(),
-            uri.as_deref()
-                .map(|value| format!(" {value}"))
-                .unwrap_or_default(),
-        ),
-        MessagePart::Reasoning { reasoning } => {
-            let text = reasoning.display_text();
-            if text.is_empty() {
-                "[reasoning]".to_string()
-            } else {
-                format!("[reasoning] {text}")
-            }
-        }
-        MessagePart::ToolCall { call } => format!("[tool_call:{}]", call.tool_name),
-        MessagePart::ToolResult { result } => {
-            format!(
-                "[tool_result:{}] {}",
-                result.tool_name,
-                result.text_content()
-            )
-        }
-        MessagePart::Resource {
-            uri,
-            mime_type,
-            text,
-            ..
-        } => format!(
-            "[resource:{}{}{}]",
-            uri,
-            mime_type
-                .as_deref()
-                .map(|value| format!(" {value}"))
-                .unwrap_or_default(),
-            text.as_deref()
-                .map(|value: &str| format!(" {}", value.replace('\n', " ")))
-                .unwrap_or_default(),
-        ),
-        MessagePart::Reference {
-            kind,
-            name,
-            uri,
-            text,
-        } => format!(
-            "[reference:{}{}{}{}]",
-            kind,
-            name.as_deref()
-                .map(|value| format!(" {value}"))
-                .unwrap_or_default(),
-            uri.as_deref()
-                .map(|value| format!(" {value}"))
-                .unwrap_or_default(),
-            text.as_deref()
-                .map(|value| format!(" {}", value.replace('\n', " ")))
-                .unwrap_or_default(),
-        ),
-        MessagePart::Json { value } => format!("[json] {value}"),
-        MessagePart::ProviderExtension { provider, kind, .. } => {
-            format!("[provider_extension:{provider}:{kind}]")
-        }
-    }
+    format!("{role}> {}", agent::types::message_operator_text(message))
 }
 
 pub(crate) fn preview_id(value: &str) -> String {
@@ -530,6 +437,30 @@ mod tests {
         assert_eq!(
             render_transcript_text(&transcript),
             "user> first\n\nassistant> second\n"
+        );
+    }
+
+    #[test]
+    fn transcript_export_keeps_attachment_and_reference_markers() {
+        let transcript = vec![Message::new(
+            MessageRole::User,
+            vec![
+                MessagePart::ImageUrl {
+                    url: "https://example.com/failure.png".to_string(),
+                    mime_type: None,
+                },
+                MessagePart::Reference {
+                    kind: "skill".to_string(),
+                    name: Some("openai-docs".to_string()),
+                    uri: None,
+                    text: Some("Use official docs".to_string()),
+                },
+            ],
+        )];
+
+        assert_eq!(
+            render_transcript_text(&transcript),
+            "user> [image_url:https://example.com/failure.png]\n[reference:skill openai-docs Use official docs]\n"
         );
     }
 
