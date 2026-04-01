@@ -8,7 +8,7 @@ use crate::backend::session_memory_compaction::{
 };
 use crate::backend::session_memory_note::{
     build_session_memory_update_prompt, default_session_memory_note,
-    parse_session_memory_note_snapshot, render_session_memory_note,
+    parse_session_memory_note_snapshot, render_session_memory_note, session_memory_note_title,
     upsert_session_memory_note_frontmatter,
 };
 use crate::backend::session_resume;
@@ -43,9 +43,11 @@ use agent::types::{
 };
 use agent::{AgentRuntime, RuntimeCommand, Skill, ToolExecutionContext};
 use anyhow::Result;
-use futures::StreamExt;
+use futures::{StreamExt, stream};
 use nanoclaw_config::ResolvedAgentProfile;
 use serde_json::json;
+use std::collections::{BTreeMap, BTreeSet};
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 use std::time::Instant;
@@ -62,6 +64,7 @@ const SESSION_MEMORY_MIN_TOKENS_TO_INIT: usize = 10_000;
 const SESSION_MEMORY_MIN_TOKENS_BETWEEN_UPDATES: usize = 5_000;
 const SESSION_MEMORY_TOOL_CALLS_BETWEEN_UPDATES: usize = 3;
 const SESSION_MEMORY_UPDATE_TIMEOUT_MS: u64 = 15_000;
+const SESSION_NOTE_TITLE_LOAD_CONCURRENCY_LIMIT: usize = 8;
 const WORKSPACE_MEMORY_RECALL_METADATA_KEY: &str = "workspace_memory_recall";
 
 #[derive(Clone)]
@@ -1334,9 +1337,18 @@ impl CodeAgentSession {
         let sessions = session_history::list_sessions(&self.store).await?;
         self.set_stored_session_count(sessions.len());
         let active_session_ref = self.startup_snapshot().active_session_ref;
+        let session_titles = self
+            .load_session_note_titles(sessions.iter().map(|summary| summary.session_id.clone()))
+            .await;
         Ok(sessions
             .iter()
-            .map(|summary| session_catalog::persisted_session_summary(summary, &active_session_ref))
+            .map(|summary| {
+                session_catalog::persisted_session_summary(
+                    summary,
+                    &active_session_ref,
+                    session_titles.get(&summary.session_id).cloned(),
+                )
+            })
             .collect())
     }
 
@@ -1344,14 +1356,61 @@ impl CodeAgentSession {
         &self,
         query: &str,
     ) -> Result<Vec<crate::backend::PersistedSessionSearchMatch>> {
+        let query = query.trim();
+        if query.is_empty() {
+            return Ok(Vec::new());
+        }
         let matches = session_history::search_sessions(&self.store, query).await?;
+        let sessions = session_history::list_sessions(&self.store).await?;
         let active_session_ref = self.startup_snapshot().active_session_ref;
-        Ok(matches
+        let session_titles = self
+            .load_session_note_titles(sessions.iter().map(|summary| summary.session_id.clone()))
+            .await;
+        let mut seen_session_refs = BTreeSet::new();
+        let mut title_matches = Vec::new();
+        let mut other_matches = Vec::new();
+
+        for result in matches {
+            let session_title = session_titles.get(&result.summary.session_id).cloned();
+            let mut persisted = session_catalog::persisted_session_search_match(
+                &result,
+                &active_session_ref,
+                session_title.clone(),
+            );
+            let matched_title =
+                prepend_session_title_preview(&mut persisted, session_title.as_deref(), query);
+            seen_session_refs.insert(persisted.summary.session_ref.clone());
+            if matched_title {
+                title_matches.push(persisted);
+            } else {
+                other_matches.push(persisted);
+            }
+        }
+
+        let title_only_matches = sessions
             .iter()
-            .map(|result| {
-                session_catalog::persisted_session_search_match(result, &active_session_ref)
+            .filter_map(|summary| {
+                let session_title = session_titles.get(&summary.session_id)?.clone();
+                if !session_title_matches_query(Some(&session_title), query)
+                    || seen_session_refs.contains(summary.session_id.as_str())
+                {
+                    return None;
+                }
+                Some(crate::backend::PersistedSessionSearchMatch {
+                    summary: session_catalog::persisted_session_summary(
+                        summary,
+                        &active_session_ref,
+                        Some(session_title.clone()),
+                    ),
+                    matched_event_count: 0,
+                    preview_matches: vec![session_title_preview(&session_title)],
+                })
             })
-            .collect())
+            .collect::<Vec<_>>();
+
+        title_matches.extend(title_only_matches);
+        title_matches.extend(other_matches);
+        Ok(title_matches)
     }
 
     pub(crate) async fn list_agent_sessions(
@@ -1363,6 +1422,9 @@ impl CodeAgentSession {
             .map(|session_ref| session_history::resolve_session_reference(&sessions, session_ref))
             .transpose()?;
         let active_agent_session_ref = self.startup_snapshot().root_agent_session_id;
+        let session_titles = self
+            .load_session_note_titles(sessions.iter().map(|summary| summary.session_id.clone()))
+            .await;
         let mut agent_sessions = Vec::new();
         for summary in sessions.into_iter().filter(|summary| {
             filtered_session_id
@@ -1372,6 +1434,7 @@ impl CodeAgentSession {
             let events = self.store.events(&summary.session_id).await?;
             agent_sessions.extend(session_catalog::persisted_agent_session_summaries(
                 summary.session_id.as_str(),
+                session_titles.get(&summary.session_id).map(String::as_str),
                 &events,
                 &active_agent_session_ref,
             ));
@@ -1383,6 +1446,41 @@ impl CodeAgentSession {
                 .then_with(|| left.agent_session_ref.cmp(&right.agent_session_ref))
         });
         Ok(agent_sessions)
+    }
+
+    // Session-note titles are host-owned derived memory, not store-owned
+    // transcript metadata, so the catalog layer reads them here instead of
+    // widening the session-store schema for one frontend-specific cue.
+    async fn load_session_note_titles<I>(&self, session_ids: I) -> BTreeMap<SessionId, String>
+    where
+        I: IntoIterator<Item = SessionId>,
+    {
+        let workspace_root = self.workspace_root().to_path_buf();
+        stream::iter(session_ids.into_iter().map(|session_id| {
+            let workspace_root = workspace_root.clone();
+            async move {
+                let path = session_memory_note_absolute_path(&workspace_root, &session_id);
+                let text = match fs::read_to_string(path).await {
+                    Ok(text) => text,
+                    Err(error) if error.kind() == ErrorKind::NotFound => return None,
+                    Err(error) => {
+                        warn!(
+                            session_id = %session_id,
+                            error = %error,
+                            "failed to load session note title"
+                        );
+                        return None;
+                    }
+                };
+                session_memory_note_title(&text).map(|title| (session_id, title))
+            }
+        }))
+        .buffer_unordered(SESSION_NOTE_TITLE_LOAD_CONCURRENCY_LIMIT)
+        .filter_map(async move |entry| entry)
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .collect()
     }
 
     pub(crate) async fn list_tasks(
@@ -2031,6 +2129,39 @@ fn resolve_live_task_reference<'a>(
     }
 }
 
+fn session_title_matches_query(session_title: Option<&str>, query: &str) -> bool {
+    let query = query.trim().to_lowercase();
+    if query.is_empty() {
+        return false;
+    }
+    session_title
+        .map(str::to_lowercase)
+        .is_some_and(|title| title.contains(&query))
+}
+
+fn session_title_preview(session_title: &str) -> String {
+    format!("session title: {}", session_title.trim())
+}
+
+fn prepend_session_title_preview(
+    result: &mut crate::backend::PersistedSessionSearchMatch,
+    session_title: Option<&str>,
+    query: &str,
+) -> bool {
+    if !session_title_matches_query(session_title, query) {
+        return false;
+    }
+    let Some(session_title) = session_title else {
+        return false;
+    };
+    let preview = session_title_preview(session_title);
+    if !result.preview_matches.iter().any(|entry| entry == &preview) {
+        result.preview_matches.insert(0, preview);
+        result.preview_matches.truncate(3);
+    }
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -2056,14 +2187,14 @@ mod tests {
     use agent::types::{
         AgentHandle, AgentId, AgentResultEnvelope, AgentSessionId, AgentStatus, AgentTaskSpec,
         AgentWaitRequest, AgentWaitResponse, Message, MessageId, ModelEvent, ModelRequest,
-        SessionEventKind, SessionId,
+        SessionEventEnvelope, SessionEventKind, SessionId,
     };
     use agent::{AgentRuntimeBuilder, RuntimeCommand, Skill, SkillCatalog};
     use async_trait::async_trait;
     use futures::{StreamExt, stream, stream::BoxStream};
     use nanoclaw_config::CoreConfig;
     use std::sync::{Arc, Mutex, RwLock};
-    use store::{InMemorySessionStore, SessionStore};
+    use store::{EventSink, InMemorySessionStore, SessionStore};
     use tokio::sync::Semaphore;
     use tokio::time::{Duration, timeout};
 
@@ -2537,6 +2668,20 @@ mod tests {
         )
     }
 
+    fn write_session_note_title(
+        workspace_root: &std::path::Path,
+        session_id: &SessionId,
+        title: &str,
+    ) {
+        let path =
+            workspace_root.join(format!(".nanoclaw/memory/working/sessions/{session_id}.md"));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let note = super::render_session_memory_note(&format!(
+            "# Session Title\n\n{title}\n\n# Current State\n\nContinue from the saved plan."
+        ));
+        std::fs::write(path, note).unwrap();
+    }
+
     fn sample_handle(task_id: &str, agent_id: &str, status: AgentStatus) -> AgentHandle {
         AgentHandle {
             agent_id: AgentId::from(agent_id),
@@ -2812,6 +2957,120 @@ mod tests {
         assert!(remaining.iter().any(|control| control.id == prompt_id));
         assert!(!remaining.iter().any(|control| control.id == steer_one));
         assert!(!remaining.iter().any(|control| control.id == steer_two));
+    }
+
+    #[tokio::test]
+    async fn search_sessions_includes_title_only_session_note_matches() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(InMemorySessionStore::new());
+        let runtime = AgentRuntimeBuilder::new(Arc::new(NeverBackend), store.clone())
+            .hook_runner(Arc::new(HookRunner::default()))
+            .tool_context(ToolExecutionContext {
+                workspace_root: dir.path().to_path_buf(),
+                workspace_only: true,
+                ..Default::default()
+            })
+            .build();
+        let session = build_session(
+            runtime,
+            Arc::new(NoopSubagentExecutor),
+            store.clone(),
+            startup_snapshot(dir.path()),
+        );
+        let archived_session_id = SessionId::from("session-archived");
+
+        store
+            .append(SessionEventEnvelope::new(
+                archived_session_id.clone(),
+                AgentSessionId::from("agent-archived"),
+                None,
+                None,
+                SessionEventKind::UserPromptSubmit {
+                    prompt: "status update".to_string(),
+                },
+            ))
+            .await
+            .unwrap();
+        write_session_note_title(
+            dir.path(),
+            &archived_session_id,
+            "Deploy rollback follow-up",
+        );
+
+        let matches = session.search_sessions("rollback").await.unwrap();
+
+        assert_eq!(matches.len(), 1);
+        assert_eq!(
+            matches[0].summary.session_ref,
+            archived_session_id.to_string()
+        );
+        assert_eq!(
+            matches[0].summary.session_title.as_deref(),
+            Some("Deploy rollback follow-up")
+        );
+        assert_eq!(matches[0].matched_event_count, 0);
+        assert_eq!(
+            matches[0].preview_matches,
+            vec!["session title: Deploy rollback follow-up".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn list_agent_sessions_carries_parent_session_note_title() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(InMemorySessionStore::new());
+        let runtime = AgentRuntimeBuilder::new(Arc::new(NeverBackend), store.clone())
+            .hook_runner(Arc::new(HookRunner::default()))
+            .tool_context(ToolExecutionContext {
+                workspace_root: dir.path().to_path_buf(),
+                workspace_only: true,
+                ..Default::default()
+            })
+            .build();
+        let session = build_session(
+            runtime,
+            Arc::new(NoopSubagentExecutor),
+            store.clone(),
+            startup_snapshot(dir.path()),
+        );
+        let archived_session_id = SessionId::from("session-archived");
+
+        store
+            .append_batch(vec![
+                SessionEventEnvelope::new(
+                    archived_session_id.clone(),
+                    AgentSessionId::from("agent-root"),
+                    None,
+                    None,
+                    SessionEventKind::SessionStart {
+                        reason: Some("resume".to_string()),
+                    },
+                ),
+                SessionEventEnvelope::new(
+                    archived_session_id.clone(),
+                    AgentSessionId::from("agent-root"),
+                    None,
+                    None,
+                    SessionEventKind::UserPromptSubmit {
+                        prompt: "inspect".to_string(),
+                    },
+                ),
+            ])
+            .await
+            .unwrap();
+        write_session_note_title(
+            dir.path(),
+            &archived_session_id,
+            "Deploy rollback follow-up",
+        );
+
+        let agent_sessions = session.list_agent_sessions(None).await.unwrap();
+
+        assert_eq!(agent_sessions.len(), 1);
+        assert_eq!(
+            agent_sessions[0].session_title.as_deref(),
+            Some("Deploy rollback follow-up")
+        );
     }
 
     #[tokio::test]

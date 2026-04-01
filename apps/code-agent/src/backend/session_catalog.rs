@@ -32,6 +32,7 @@ pub(crate) struct PersistedSessionSummary {
     pub(crate) event_count: usize,
     pub(crate) worker_session_count: usize,
     pub(crate) transcript_message_count: usize,
+    pub(crate) session_title: Option<String>,
     pub(crate) last_user_prompt: Option<String>,
     pub(crate) resume_support: ResumeSupport,
 }
@@ -52,6 +53,7 @@ pub(crate) struct PersistedAgentSessionSummary {
     pub(crate) last_timestamp_ms: u128,
     pub(crate) event_count: usize,
     pub(crate) transcript_message_count: usize,
+    pub(crate) session_title: Option<String>,
     pub(crate) last_user_prompt: Option<String>,
     pub(crate) resume_support: ResumeSupport,
 }
@@ -69,6 +71,7 @@ const TOP_LEVEL_HISTORY_ONLY_REASON: &str =
 pub(crate) fn persisted_session_summary(
     summary: &SessionSummary,
     active_session_ref: &str,
+    session_title: Option<String>,
 ) -> PersistedSessionSummary {
     PersistedSessionSummary {
         session_ref: summary.session_id.to_string(),
@@ -77,6 +80,7 @@ pub(crate) fn persisted_session_summary(
         event_count: summary.event_count,
         worker_session_count: summary.agent_session_count,
         transcript_message_count: summary.transcript_message_count,
+        session_title,
         last_user_prompt: summary.last_user_prompt.clone(),
         resume_support: session_resume_support_for(summary.session_id.as_str(), active_session_ref),
     }
@@ -85,9 +89,10 @@ pub(crate) fn persisted_session_summary(
 pub(crate) fn persisted_session_search_match(
     result: &SessionSearchResult,
     active_session_ref: &str,
+    session_title: Option<String>,
 ) -> PersistedSessionSearchMatch {
     PersistedSessionSearchMatch {
-        summary: persisted_session_summary(&result.summary, active_session_ref),
+        summary: persisted_session_summary(&result.summary, active_session_ref, session_title),
         matched_event_count: result.matched_event_count,
         preview_matches: result.preview_matches.clone(),
     }
@@ -95,6 +100,7 @@ pub(crate) fn persisted_session_search_match(
 
 pub(crate) fn persisted_agent_session_summaries(
     session_ref: &str,
+    session_title: Option<&str>,
     events: &[SessionEventEnvelope],
     active_agent_session_ref: &str,
 ) -> Vec<PersistedAgentSessionSummary> {
@@ -154,6 +160,7 @@ pub(crate) fn persisted_agent_session_summaries(
                 events,
                 &agent_session_id,
             ),
+            session_title: session_title.map(ToString::to_string),
             last_user_prompt: entry.last_user_prompt,
             resume_support: agent_session_resume_support_for(
                 events,
@@ -282,11 +289,16 @@ mod tests {
                 last_user_prompt: Some("inspect".to_string()),
             },
             "active_session",
+            Some("Active session title".to_string()),
         );
 
         assert_eq!(
             summary.resume_support,
             ResumeSupport::AttachedToActiveRuntime
+        );
+        assert_eq!(
+            summary.session_title.as_deref(),
+            Some("Active session title")
         );
     }
 
@@ -301,6 +313,7 @@ mod tests {
                 last_timestamp_ms: 2,
                 event_count: 3,
                 transcript_message_count: 1,
+                session_title: None,
                 last_user_prompt: None,
                 resume_support: ResumeSupport::NotYetSupported {
                     reason: HISTORY_ONLY_RESUME_REASON.to_string(),
@@ -360,6 +373,7 @@ mod tests {
 
         let summaries = persisted_agent_session_summaries(
             "session_demo",
+            Some("Deploy rollback follow-up"),
             &events,
             root_agent_session_id.as_str(),
         );
@@ -376,6 +390,10 @@ mod tests {
             .find(|summary| summary.agent_session_ref == "agent_root")
             .unwrap();
         assert_eq!(root.label, "root");
+        assert_eq!(
+            root.session_title.as_deref(),
+            Some("Deploy rollback follow-up")
+        );
         assert_eq!(root.last_user_prompt.as_deref(), Some("inspect"));
         assert_eq!(root.resume_support.label(), "attached");
     }

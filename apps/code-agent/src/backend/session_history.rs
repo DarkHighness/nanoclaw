@@ -606,6 +606,7 @@ mod tests {
             last_timestamp_ms: 5,
             event_count: events.len(),
             transcript_message_count: 2,
+            session_title: None,
             last_user_prompt: Some("inspect".to_string()),
             resume_support: super::super::session_catalog::ResumeSupport::AttachedToActiveRuntime,
         };
@@ -717,6 +718,7 @@ mod tests {
             last_timestamp_ms: 6,
             event_count: events.len(),
             transcript_message_count: 5,
+            session_title: None,
             last_user_prompt: Some("kept prompt".to_string()),
             resume_support: super::super::session_catalog::ResumeSupport::AttachedToActiveRuntime,
         };

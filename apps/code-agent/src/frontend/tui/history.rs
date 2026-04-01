@@ -31,13 +31,14 @@ fn completed_tool_entry(
 }
 
 pub(crate) fn format_session_summary_line(summary: &PersistedSessionSummary) -> TranscriptEntry {
-    let prompt = summary
-        .last_user_prompt
+    let title_or_prompt = summary
+        .session_title
         .as_deref()
+        .or(summary.last_user_prompt.as_deref())
         .map(|value| preview_text(value, 36))
         .unwrap_or_else(|| "no prompt yet".to_string());
     info_summary_entry(
-        format!("{}  {}", preview_id(&summary.session_ref), prompt),
+        format!("{}  {}", preview_id(&summary.session_ref), title_or_prompt),
         [format!(
             "{} messages · {} events · {} agent sessions · resume {}",
             summary.transcript_message_count,
@@ -51,10 +52,16 @@ pub(crate) fn format_session_summary_line(summary: &PersistedSessionSummary) -> 
 pub(crate) fn format_agent_session_summary_line(
     summary: &PersistedAgentSessionSummary,
 ) -> TranscriptEntry {
-    let prompt = summary
-        .last_user_prompt
+    let context = summary
+        .session_title
         .as_deref()
-        .map(|value| preview_text(value, 36))
+        .map(|value| format!("title {}", preview_text(value, 36)))
+        .or_else(|| {
+            summary
+                .last_user_prompt
+                .as_deref()
+                .map(|value| format!("prompt {}", preview_text(value, 36)))
+        })
         .unwrap_or_else(|| "no prompt yet".to_string());
     info_summary_entry(
         format!(
@@ -63,12 +70,12 @@ pub(crate) fn format_agent_session_summary_line(
             summary.label
         ),
         [format!(
-            "session {} · {} messages · {} events · resume {} · prompt {}",
+            "session {} · {} messages · {} events · resume {} · {}",
             preview_id(&summary.session_ref),
             summary.transcript_message_count,
             summary.event_count,
             summary.resume_support.label(),
-            prompt
+            context
         )],
     )
 }
@@ -122,14 +129,20 @@ pub(crate) fn format_live_task_spawn_outcome(
 }
 
 pub(crate) fn format_session_search_line(result: &PersistedSessionSearchMatch) -> TranscriptEntry {
-    let prompt = result
+    let title_or_prompt = result
         .summary
-        .last_user_prompt
+        .session_title
+        .as_deref()
+        .or(result.summary.last_user_prompt.as_deref())
         .as_deref()
         .map(|value| preview_text(value, 36))
         .unwrap_or_else(|| "no prompt yet".to_string());
     info_summary_entry(
-        format!("{}  {}", preview_id(&result.summary.session_ref), prompt),
+        format!(
+            "{}  {}",
+            preview_id(&result.summary.session_ref),
+            title_or_prompt
+        ),
         [format!(
             "{} messages · {} events · {} agent sessions · resume {} · matched {} event(s){}",
             result.summary.transcript_message_count,
@@ -263,6 +276,12 @@ pub(crate) fn format_agent_session_inspector(session: &LoadedAgentSession) -> Ve
         ),
         InspectorEntry::field("resume", session.summary.resume_support.label()),
     ];
+    if let Some(session_title) = &session.summary.session_title {
+        lines.push(InspectorEntry::field(
+            "session title",
+            preview_text(session_title, 80),
+        ));
+    }
     if let Some(token_usage) = &session.token_usage {
         lines.push(InspectorEntry::section("Token Budget"));
         if let Some(window) = token_usage.ledger.context_window {
@@ -1253,6 +1272,7 @@ mod tests {
             event_count: 40,
             worker_session_count: 2,
             transcript_message_count: 12,
+            session_title: None,
             last_user_prompt: Some("Refine the approval preview".to_string()),
             resume_support: ResumeSupport::AttachedToActiveRuntime,
         });
@@ -1273,6 +1293,7 @@ mod tests {
             transcript_message_count: 6,
             first_timestamp_ms: 1,
             last_timestamp_ms: 2,
+            session_title: None,
             last_user_prompt: Some("Investigate flaky tests".to_string()),
             resume_support: ResumeSupport::AttachedToActiveRuntime,
         });
@@ -1293,6 +1314,7 @@ mod tests {
                 event_count: 40,
                 worker_session_count: 2,
                 transcript_message_count: 12,
+                session_title: None,
                 last_user_prompt: Some("Refine the approval preview".to_string()),
                 resume_support: ResumeSupport::AttachedToActiveRuntime,
             },
@@ -1306,6 +1328,47 @@ mod tests {
         assert_eq!(
             line.serialized(),
             "• session_  Refine the approval preview\n  └ 12 messages · 40 events · 2 agent sessions · resume attached · matched 3 event(s) · preview exec_command approval | cargo test"
+        );
+    }
+
+    #[test]
+    fn session_summary_prefers_session_note_title_over_prompt() {
+        let line = format_session_summary_line(&PersistedSessionSummary {
+            session_ref: "session_12345678".to_string(),
+            first_timestamp_ms: 1,
+            last_timestamp_ms: 2,
+            event_count: 40,
+            worker_session_count: 2,
+            transcript_message_count: 12,
+            session_title: Some("Deploy rollback follow-up".to_string()),
+            last_user_prompt: Some("Refine the approval preview".to_string()),
+            resume_support: ResumeSupport::AttachedToActiveRuntime,
+        });
+
+        assert_eq!(
+            line.serialized(),
+            "• session_  Deploy rollback follow-up\n  └ 12 messages · 40 events · 2 agent sessions · resume attached"
+        );
+    }
+
+    #[test]
+    fn agent_session_summary_surfaces_parent_session_title() {
+        let line = format_agent_session_summary_line(&PersistedAgentSessionSummary {
+            agent_session_ref: "agent_session_123456".to_string(),
+            session_ref: "session_123456".to_string(),
+            label: "planner".to_string(),
+            event_count: 14,
+            transcript_message_count: 6,
+            first_timestamp_ms: 1,
+            last_timestamp_ms: 2,
+            session_title: Some("Deploy rollback follow-up".to_string()),
+            last_user_prompt: Some("Investigate flaky tests".to_string()),
+            resume_support: ResumeSupport::AttachedToActiveRuntime,
+        });
+
+        assert_eq!(
+            line.serialized(),
+            "• agent_se  planner\n  └ session session_ · 6 messages · 14 events · resume attached · title Deploy rollback follow-up"
         );
     }
 

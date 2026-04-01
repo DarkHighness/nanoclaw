@@ -142,6 +142,13 @@ pub(crate) fn parse_session_memory_note_snapshot(text: &str) -> SessionMemoryNot
     }
 }
 
+pub(crate) fn session_memory_note_title(text: &str) -> Option<String> {
+    let snapshot = parse_session_memory_note_snapshot(text);
+    let parsed = parse_session_memory_sections(&snapshot.body);
+    let title = section_body(&parsed.sections, "Session Title");
+    (!title.is_empty()).then_some(title)
+}
+
 pub(crate) fn upsert_session_memory_note_frontmatter(
     text: &str,
     last_summarized_message_id: Option<&MessageId>,
@@ -489,7 +496,7 @@ mod tests {
         SESSION_MEMORY_APPROX_CHARS_PER_TOKEN, SESSION_MEMORY_SECTION_TOKEN_BUDGET,
         SESSION_MEMORY_TOTAL_TOKEN_BUDGET, build_session_memory_update_prompt,
         default_session_memory_note, parse_session_memory_note_snapshot,
-        render_session_memory_note, strip_memory_frontmatter,
+        render_session_memory_note, session_memory_note_title, strip_memory_frontmatter,
         truncate_session_memory_for_compaction, upsert_session_memory_note_frontmatter,
     };
     use agent::types::MessageId;
@@ -642,5 +649,32 @@ mod tests {
 
         assert!(text.contains("last_summarized_message_id: msg_456"));
         assert!(!text.contains("last_summarized_message_id: old"));
+    }
+
+    #[test]
+    fn session_memory_note_title_reads_structured_title_section() {
+        let note = concat!(
+            "---\n",
+            "scope: working\n",
+            "---\n\n",
+            "# Session Title\n",
+            "_A short and distinctive 5-10 word descriptive title for the session. Super info dense, no filler_\n\n",
+            "Deploy rollback follow-up\n\n",
+            "# Current State\n",
+            "_What is actively being worked on right now? Pending tasks not yet completed. Immediate next steps._\n\n",
+            "Validate the hotfix.\n"
+        );
+
+        assert_eq!(
+            session_memory_note_title(note).as_deref(),
+            Some("Deploy rollback follow-up")
+        );
+    }
+
+    #[test]
+    fn session_memory_note_title_ignores_blank_title_section() {
+        let note = default_session_memory_note();
+
+        assert_eq!(session_memory_note_title(&note), None);
     }
 }

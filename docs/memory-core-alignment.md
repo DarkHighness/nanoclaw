@@ -371,6 +371,22 @@ That keeps session search closer to an operator selector with concise cues,
 instead of ranking sessions mainly by how many times the query string happened
 to appear in transcript text.
 
+Structured session notes now also feed the operator's session catalog surface:
+
+- when `.nanoclaw/memory/working/sessions/<session>.md` has a `Session Title`,
+  `/sessions` prefers that title over the raw last-user-prompt preview
+- `/agent_sessions` carries the parent session title so resume-oriented lists
+  expose the same high-signal cue
+- `/sessions <query>` now includes title-only matches from structured session
+  notes even when the query text never appeared in the visible transcript
+- those title matches are merged ahead of transcript-only hits, but this stays
+  a host-side enrichment so the underlying session-store schema remains
+  transcript-focused and memory-backend agnostic
+
+That is closer to Claude's resume picker shape, where session-memory-derived
+titles act as first-class selector metadata instead of staying trapped inside
+continuity notes that only compaction and recall can see.
+
 ## Side Questions (`/btw`)
 
 Claude Code exposes side questions as a separate lightweight query path rather
