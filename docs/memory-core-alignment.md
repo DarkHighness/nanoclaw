@@ -387,6 +387,19 @@ That is closer to Claude's resume picker shape, where session-memory-derived
 titles act as first-class selector metadata instead of staying trapped inside
 continuity notes that only compaction and recall can see.
 
+Those titles now also participate in host-side operator reference resolution:
+
+- `/session`, `/export_session`, `/export_transcript`, `/agent_sessions <ref>`,
+  and `/tasks <ref>` still prefer hard ids and prefixes first
+- when no id or prefix matches, those commands fall back to a unique
+  `Session Title` match from the structured session note
+- `/resume <ref>` uses the same fallback, but resolves a unique matching
+  session title to that session's root agent-session instead of treating
+  worker agent ids as title-addressable selectors
+
+That keeps the durable store schema transcript-centric while moving the
+operator-facing selection semantics closer to Claude's session picker behavior.
+
 ## Side Questions (`/btw`)
 
 Claude Code exposes side questions as a separate lightweight query path rather

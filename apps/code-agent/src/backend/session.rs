@@ -51,7 +51,7 @@ use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 use std::time::Instant;
-use store::SessionStore;
+use store::{SessionStore, SessionSummary};
 use tokio::fs;
 use tokio::sync::Mutex as AsyncMutex;
 use tokio::time::{Duration, timeout};
@@ -1418,13 +1418,15 @@ impl CodeAgentSession {
         session_ref: Option<&str>,
     ) -> Result<Vec<crate::backend::PersistedAgentSessionSummary>> {
         let sessions = session_history::list_sessions(&self.store).await?;
-        let filtered_session_id = session_ref
-            .map(|session_ref| session_history::resolve_session_reference(&sessions, session_ref))
-            .transpose()?;
-        let active_agent_session_ref = self.startup_snapshot().root_agent_session_id;
         let session_titles = self
             .load_session_note_titles(sessions.iter().map(|summary| summary.session_id.clone()))
             .await;
+        let filtered_session_id = session_ref
+            .map(|session_ref| {
+                self.resolve_session_reference_from_catalog(&sessions, &session_titles, session_ref)
+            })
+            .transpose()?;
+        let active_agent_session_ref = self.startup_snapshot().root_agent_session_id;
         let mut agent_sessions = Vec::new();
         for summary in sessions.into_iter().filter(|summary| {
             filtered_session_id
@@ -1487,7 +1489,16 @@ impl CodeAgentSession {
         &self,
         session_ref: Option<&str>,
     ) -> Result<Vec<PersistedTaskSummary>> {
-        task_history::list_tasks(&self.store, session_ref).await
+        let resolved_session_ref = if let Some(session_ref) = session_ref {
+            Some(
+                self.resolve_session_reference_from_operator_input(session_ref)
+                    .await?
+                    .to_string(),
+            )
+        } else {
+            None
+        };
+        task_history::list_tasks(&self.store, resolved_session_ref.as_deref()).await
     }
 
     pub(crate) async fn list_live_tasks(&self) -> Result<Vec<LiveTaskSummary>> {
@@ -1657,17 +1668,19 @@ impl CodeAgentSession {
     }
 
     pub(crate) async fn load_session(&self, session_ref: &str) -> Result<LoadedSession> {
-        session_history::load_session(&self.store, session_ref).await
+        let session_id = self
+            .resolve_session_reference_from_operator_input(session_ref)
+            .await?;
+        session_history::load_session(&self.store, session_id.as_str()).await
     }
 
     pub(crate) async fn load_agent_session(
         &self,
         agent_session_ref: &str,
     ) -> Result<LoadedAgentSession> {
-        let agent_sessions = self.list_agent_sessions(None).await?;
-        let summary =
-            session_catalog::resolve_agent_session_reference(&agent_sessions, agent_session_ref)?
-                .clone();
+        let summary = self
+            .resolve_agent_session_reference_from_operator_input(agent_session_ref)
+            .await?;
         session_history::load_agent_session(&self.store, summary).await
     }
 
@@ -1712,10 +1725,13 @@ impl CodeAgentSession {
         session_ref: &str,
         relative_or_absolute: &str,
     ) -> Result<SessionExportArtifact> {
+        let session_id = self
+            .resolve_session_reference_from_operator_input(session_ref)
+            .await?;
         session_history::export_session_events(
             &self.store,
             self.workspace_root(),
-            session_ref,
+            session_id.as_str(),
             relative_or_absolute,
         )
         .await
@@ -1726,10 +1742,13 @@ impl CodeAgentSession {
         session_ref: &str,
         relative_or_absolute: &str,
     ) -> Result<SessionExportArtifact> {
+        let session_id = self
+            .resolve_session_reference_from_operator_input(session_ref)
+            .await?;
         session_history::export_session_transcript(
             &self.store,
             self.workspace_root(),
-            session_ref,
+            session_id.as_str(),
             relative_or_absolute,
         )
         .await
@@ -1757,9 +1776,9 @@ impl CodeAgentSession {
         &self,
         agent_session_ref: &str,
     ) -> Result<SessionOperationOutcome> {
-        let agent_sessions = self.list_agent_sessions(None).await?;
-        let summary =
-            session_catalog::resolve_agent_session_reference(&agent_sessions, agent_session_ref)?;
+        let summary = self
+            .resolve_agent_session_reference_from_operator_input(agent_session_ref)
+            .await?;
         match &summary.resume_support {
             ResumeSupport::AttachedToActiveRuntime => {
                 return Ok(self
@@ -1805,6 +1824,171 @@ impl CodeAgentSession {
                 Some(summary.agent_session_ref.clone()),
             )
             .await)
+    }
+
+    async fn resolve_session_reference_from_operator_input(
+        &self,
+        session_ref: &str,
+    ) -> Result<SessionId> {
+        let sessions = session_history::list_sessions(&self.store).await?;
+        let session_titles = self
+            .load_session_note_titles(sessions.iter().map(|summary| summary.session_id.clone()))
+            .await;
+        self.resolve_session_reference_from_catalog(&sessions, &session_titles, session_ref)
+    }
+
+    async fn resolve_agent_session_reference_from_operator_input(
+        &self,
+        agent_session_ref: &str,
+    ) -> Result<crate::backend::PersistedAgentSessionSummary> {
+        let agent_sessions = self.list_agent_sessions(None).await?;
+        self.resolve_agent_session_reference_from_catalog(&agent_sessions, agent_session_ref)
+    }
+
+    fn resolve_session_reference_from_catalog(
+        &self,
+        sessions: &[SessionSummary],
+        session_titles: &BTreeMap<SessionId, String>,
+        session_ref: &str,
+    ) -> Result<SessionId> {
+        if let Some(session) = sessions
+            .iter()
+            .find(|summary| summary.session_id.as_str() == session_ref)
+        {
+            return Ok(session.session_id.clone());
+        }
+
+        let prefix_matches = sessions
+            .iter()
+            .filter(|summary| summary.session_id.as_str().starts_with(session_ref))
+            .collect::<Vec<_>>();
+        match prefix_matches.as_slice() {
+            [session] => return Ok(session.session_id.clone()),
+            [] => {}
+            _ => {
+                return Err(anyhow::anyhow!(
+                    "ambiguous session prefix {session_ref}: {}",
+                    prefix_matches
+                        .iter()
+                        .take(6)
+                        .map(|session| preview_id(session.session_id.as_str()))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ));
+            }
+        }
+
+        let title_matches = sessions
+            .iter()
+            .filter_map(|summary| {
+                let session_title = session_titles.get(&summary.session_id)?;
+                session_title_matches_query(Some(session_title.as_str()), session_ref)
+                    .then_some((summary, session_title.as_str()))
+            })
+            .collect::<Vec<_>>();
+        match title_matches.as_slice() {
+            [] => Err(anyhow::anyhow!(
+                "unknown session id, prefix, or session title: {session_ref}"
+            )),
+            [(summary, _)] => Ok(summary.session_id.clone()),
+            _ => Err(anyhow::anyhow!(
+                "ambiguous session title {session_ref}: {}",
+                title_matches
+                    .iter()
+                    .take(6)
+                    .map(|(summary, title)| session_title_reference_preview(
+                        summary.session_id.as_str(),
+                        title
+                    ))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )),
+        }
+    }
+
+    // Session-title fallback is intentionally host-owned. Claude-style session
+    // selectors use human-readable memory cues, but the underlying store should
+    // keep stable transcript ids as its only hard reference surface.
+    fn resolve_agent_session_reference_from_catalog(
+        &self,
+        agent_sessions: &[crate::backend::PersistedAgentSessionSummary],
+        agent_session_ref: &str,
+    ) -> Result<crate::backend::PersistedAgentSessionSummary> {
+        if let Some(summary) = agent_sessions
+            .iter()
+            .find(|summary| summary.agent_session_ref == agent_session_ref)
+        {
+            return Ok(summary.clone());
+        }
+
+        let prefix_matches = agent_sessions
+            .iter()
+            .filter(|summary| summary.agent_session_ref.starts_with(agent_session_ref))
+            .collect::<Vec<_>>();
+        match prefix_matches.as_slice() {
+            [summary] => return Ok((*summary).clone()),
+            [] => {}
+            _ => {
+                return Err(anyhow::anyhow!(
+                    "ambiguous agent session prefix {agent_session_ref}: {}",
+                    prefix_matches
+                        .iter()
+                        .take(6)
+                        .map(|summary| preview_id(summary.agent_session_ref.as_str()))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ));
+            }
+        }
+
+        let mut session_matches = BTreeMap::new();
+        for summary in agent_sessions.iter().filter(|summary| {
+            session_title_matches_query(summary.session_title.as_deref(), agent_session_ref)
+        }) {
+            session_matches
+                .entry(summary.session_ref.clone())
+                .or_insert_with(Vec::new)
+                .push(summary);
+        }
+        match session_matches.len() {
+            0 => Err(anyhow::anyhow!(
+                "unknown agent session id, prefix, or session title: {agent_session_ref}"
+            )),
+            1 => {
+                let summaries = session_matches.into_values().next().unwrap();
+                summaries
+                    .iter()
+                    .find(|summary| summary.label == "root")
+                    .or_else(|| (summaries.len() == 1).then_some(&summaries[0]))
+                    .map(|summary| (*summary).clone())
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "ambiguous agent session title {agent_session_ref}: {}",
+                            summaries
+                                .iter()
+                                .take(6)
+                                .map(|summary| preview_id(summary.agent_session_ref.as_str()))
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        )
+                    })
+            }
+            _ => Err(anyhow::anyhow!(
+                "ambiguous session title {agent_session_ref}: {}",
+                session_matches
+                    .iter()
+                    .take(6)
+                    .map(|(session_ref, summaries)| {
+                        let title = summaries
+                            .first()
+                            .and_then(|summary| summary.session_title.as_deref())
+                            .unwrap_or("");
+                        session_title_reference_preview(session_ref, title)
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )),
+        }
     }
 
     pub(crate) async fn active_visible_transcript(&self) -> Vec<Message> {
@@ -2141,6 +2325,14 @@ fn session_title_matches_query(session_title: Option<&str>, query: &str) -> bool
 
 fn session_title_preview(session_title: &str) -> String {
     format!("session title: {}", session_title.trim())
+}
+
+fn session_title_reference_preview(session_ref: &str, session_title: &str) -> String {
+    format!(
+        "{} ({})",
+        preview_id(session_ref),
+        session_title.trim().chars().take(32).collect::<String>()
+    )
 }
 
 fn prepend_session_title_preview(
@@ -3016,6 +3208,112 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn load_session_resolves_unique_session_note_title_reference() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(InMemorySessionStore::new());
+        let runtime = AgentRuntimeBuilder::new(Arc::new(NeverBackend), store.clone())
+            .hook_runner(Arc::new(HookRunner::default()))
+            .tool_context(ToolExecutionContext {
+                workspace_root: dir.path().to_path_buf(),
+                workspace_only: true,
+                ..Default::default()
+            })
+            .build();
+        let session = build_session(
+            runtime,
+            Arc::new(NoopSubagentExecutor),
+            store.clone(),
+            startup_snapshot(dir.path()),
+        );
+        let archived_session_id = SessionId::from("session-archived");
+
+        store
+            .append(SessionEventEnvelope::new(
+                archived_session_id.clone(),
+                AgentSessionId::from("agent-archived"),
+                None,
+                None,
+                SessionEventKind::UserPromptSubmit {
+                    prompt: "status update".to_string(),
+                },
+            ))
+            .await
+            .unwrap();
+        write_session_note_title(
+            dir.path(),
+            &archived_session_id,
+            "Deploy rollback follow-up",
+        );
+
+        let loaded = session.load_session("rollback").await.unwrap();
+
+        assert_eq!(loaded.summary.session_id, archived_session_id);
+        assert_eq!(loaded.events.len(), 1);
+        assert!(matches!(
+            &loaded.events[0].event,
+            SessionEventKind::UserPromptSubmit { prompt } if prompt == "status update"
+        ));
+    }
+
+    #[tokio::test]
+    async fn load_session_rejects_ambiguous_session_note_title_reference() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(InMemorySessionStore::new());
+        let runtime = AgentRuntimeBuilder::new(Arc::new(NeverBackend), store.clone())
+            .hook_runner(Arc::new(HookRunner::default()))
+            .tool_context(ToolExecutionContext {
+                workspace_root: dir.path().to_path_buf(),
+                workspace_only: true,
+                ..Default::default()
+            })
+            .build();
+        let session = build_session(
+            runtime,
+            Arc::new(NoopSubagentExecutor),
+            store.clone(),
+            startup_snapshot(dir.path()),
+        );
+
+        for (session_id, agent_session_id, prompt, title) in [
+            (
+                SessionId::from("session-archived-a"),
+                AgentSessionId::from("agent-archived-a"),
+                "status update",
+                "Deploy rollback follow-up",
+            ),
+            (
+                SessionId::from("session-archived-b"),
+                AgentSessionId::from("agent-archived-b"),
+                "rollback checklist",
+                "Rollback verification",
+            ),
+        ] {
+            store
+                .append(SessionEventEnvelope::new(
+                    session_id.clone(),
+                    agent_session_id,
+                    None,
+                    None,
+                    SessionEventKind::UserPromptSubmit {
+                        prompt: prompt.to_string(),
+                    },
+                ))
+                .await
+                .unwrap();
+            write_session_note_title(dir.path(), &session_id, title);
+        }
+
+        let error = session
+            .load_session("rollback")
+            .await
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("ambiguous session title rollback"));
+        assert!(error.contains("session-"));
+    }
+
+    #[tokio::test]
     async fn list_agent_sessions_carries_parent_session_note_title() {
         let dir = tempfile::tempdir().unwrap();
         let store = Arc::new(InMemorySessionStore::new());
@@ -3127,6 +3425,63 @@ mod tests {
             outcome.startup.root_agent_session_id,
             outcome.active_agent_session_ref
         );
+        assert_eq!(outcome.transcript.len(), 1);
+        assert_eq!(outcome.transcript[0].text_content(), "resume me");
+    }
+
+    #[tokio::test]
+    async fn resume_agent_session_resolves_session_note_title_to_root_agent() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(InMemorySessionStore::new());
+        let runtime = AgentRuntimeBuilder::new(Arc::new(StreamingTextBackend), store.clone())
+            .hook_runner(Arc::new(HookRunner::default()))
+            .tool_context(ToolExecutionContext {
+                workspace_root: dir.path().to_path_buf(),
+                workspace_only: true,
+                ..Default::default()
+            })
+            .build();
+        let original_session_ref = runtime.session_id().to_string();
+        let original_agent_session_ref = runtime.agent_session_id().to_string();
+        let mut startup = startup_snapshot(dir.path());
+        startup.active_session_ref = original_session_ref.clone();
+        startup.root_agent_session_id = original_agent_session_ref.clone();
+        let session = build_session(
+            runtime,
+            Arc::new(NoopSubagentExecutor),
+            store.clone(),
+            startup,
+        );
+
+        session
+            .apply_control(RuntimeCommand::Prompt {
+                message: Message::user("resume me"),
+            })
+            .await
+            .unwrap();
+        write_session_note_title(
+            dir.path(),
+            &SessionId::from(original_session_ref.clone()),
+            "Deploy rollback follow-up",
+        );
+        session
+            .apply_session_operation(SessionOperation::StartFresh)
+            .await
+            .unwrap();
+
+        let outcome = session
+            .apply_session_operation(SessionOperation::ResumeAgentSession {
+                agent_session_ref: "rollback".to_string(),
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(outcome.action, SessionOperationAction::Reattached);
+        assert_eq!(
+            outcome.requested_agent_session_ref.as_deref(),
+            Some(original_agent_session_ref.as_str())
+        );
+        assert_eq!(outcome.session_ref, original_session_ref);
         assert_eq!(outcome.transcript.len(), 1);
         assert_eq!(outcome.transcript[0].text_content(), "resume me");
     }
