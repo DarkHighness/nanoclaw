@@ -231,6 +231,39 @@ memory without pushing note maintenance into base instructions or per-turn
 prompt-prefix churn, and it mirrors Claude's "background extraction with
 bounded stale recovery" shape more closely than a synchronous post-turn write.
 
+## Episodic Daily Capture
+
+Claude-style memory is not only a bounded working note. It also keeps an
+append-only capture layer that can feed later memory extraction and
+consolidation without depending on the current session note body.
+
+`nanoclaw` now mirrors that lower-level capture path in two places:
+
+- `memory_record` now supports `scope=episodic` with a default `daily-log`
+  layer that writes to
+  `.nanoclaw/memory/episodic/logs/YYYY/MM/YYYY-MM-DD.md`
+- those daily-log records are append-only and reject `replace`, because this
+  layer is meant to preserve raw captured facts rather than act like a mutable
+  working note
+- the host now runs a background episodic-capture request after completed
+  turns, using only the visible transcript delta since the last captured
+  message id
+- the capture request is tool-free, returns at most five concise bullets, and
+  is constrained to record durable facts such as preferences, corrections,
+  incidents, coordination pointers, and explicit "remember this" instructions
+- if the model finds nothing worth preserving, no daily-log entry is written
+- session switches and resumes reset the capture cursor to the latest visible
+  transcript tail so historical transcript already covered by the current
+  session state is not appended again
+
+This keeps episodic capture out of base instructions and out of the structured
+working note itself. The daily log is raw material for later consolidation, not
+an automatically-promoted durable memory file.
+
+That closes an important Claude-style gap: `nanoclaw` no longer depends only on
+working-memory snapshots plus manual promotion tools. It now has an append-only
+capture surface that can support a future extraction or consolidation pipeline.
+
 ## Session-Memory Compaction
 
 Claude Code does not only refresh session memory in the background. When

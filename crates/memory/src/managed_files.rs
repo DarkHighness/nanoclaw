@@ -2,8 +2,9 @@ use crate::auto_index::refresh_auto_memory_index;
 use crate::corpus::{parse_memory_text, stable_hash};
 use crate::state::{
     MEMORY_COORDINATION_CLAIMS_RELATIVE, MEMORY_COORDINATION_HANDOFFS_RELATIVE,
-    MEMORY_COORDINATION_PLANS_RELATIVE, MEMORY_WORKING_AGENT_SESSIONS_RELATIVE,
-    MEMORY_WORKING_SESSIONS_RELATIVE, MEMORY_WORKING_TASKS_RELATIVE,
+    MEMORY_COORDINATION_PLANS_RELATIVE, MEMORY_EPISODIC_LOGS_RELATIVE,
+    MEMORY_WORKING_AGENT_SESSIONS_RELATIVE, MEMORY_WORKING_SESSIONS_RELATIVE,
+    MEMORY_WORKING_TASKS_RELATIVE,
 };
 use crate::{
     MemoryDocumentMetadata, MemoryError, MemoryMutationResponse, MemoryRecordMode,
@@ -87,25 +88,47 @@ pub(crate) async fn record_memory(
         .as_ref()
         .map(|document| document.body.as_str())
         .unwrap_or("");
-    let (body, action) = match request.mode {
-        MemoryRecordMode::Append => (
-            append_section(
-                existing_body,
-                &target.document_title,
-                &section_heading,
-                &request.content,
+    let (body, action) = match target.layer.as_str() {
+        "daily-log" => {
+            // Episodic daily logs are the raw capture surface for later
+            // consolidation. They stay append-only so background extractors
+            // cannot rewrite or silently collapse prior operator-facing facts.
+            if request.mode == MemoryRecordMode::Replace {
+                return Err(MemoryError::invalid(
+                    "episodic daily-log records are append-only and do not support `replace` mode",
+                ));
+            }
+            let entries = normalize_daily_log_entries(&request.content);
+            if entries.is_empty() {
+                return Err(MemoryError::invalid(
+                    "episodic daily-log records require non-empty bullet content",
+                ));
+            }
+            (
+                append_daily_log_entries(existing_body, &target.document_title, now_ms, &entries),
+                "recorded",
+            )
+        }
+        _ => match request.mode {
+            MemoryRecordMode::Append => (
+                append_section(
+                    existing_body,
+                    &target.document_title,
+                    &section_heading,
+                    &request.content,
+                ),
+                "recorded",
             ),
-            "recorded",
-        ),
-        MemoryRecordMode::Replace => (
-            append_section(
-                "",
-                &target.document_title,
-                &section_heading,
-                &request.content,
+            MemoryRecordMode::Replace => (
+                append_section(
+                    "",
+                    &target.document_title,
+                    &section_heading,
+                    &request.content,
+                ),
+                "replaced",
             ),
-            "replaced",
-        ),
+        },
     };
 
     let response =
@@ -370,12 +393,111 @@ fn resolve_record_target(
                 document_title: request.title.trim().to_string(),
             })
         }
-        MemoryScope::Procedural | MemoryScope::Semantic | MemoryScope::Episodic => {
-            Err(MemoryError::invalid(
-                "memory_record currently supports only working or coordination scopes",
-            ))
+        MemoryScope::Episodic => {
+            let collection = request
+                .layer
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or("daily-log");
+            match collection {
+                "daily-log" | "daily" | "log" | "logs" => {
+                    let today = OffsetDateTime::now_utc().date();
+                    let month = u8::from(today.month());
+                    Ok(RecordTarget {
+                        relative_path: format!(
+                            "{MEMORY_EPISODIC_LOGS_RELATIVE}/{:04}/{:02}/{}.md",
+                            today.year(),
+                            month,
+                            today
+                        ),
+                        layer: "daily-log".to_string(),
+                        document_title: format!("Daily Log {today}"),
+                    })
+                }
+                _ => Err(MemoryError::invalid(
+                    "episodic memory layer must be `daily-log` or empty",
+                )),
+            }
         }
+        MemoryScope::Procedural | MemoryScope::Semantic => Err(MemoryError::invalid(
+            "memory_record currently supports working, coordination, or episodic daily-log scopes",
+        )),
     }
+}
+
+fn append_daily_log_entries(
+    existing_body: &str,
+    document_title: &str,
+    timestamp_ms: u64,
+    entries: &[String],
+) -> String {
+    let mut body = if existing_body.trim().is_empty() {
+        format!("# {document_title}")
+    } else {
+        existing_body.trim().to_string()
+    };
+
+    for entry in entries {
+        body.push_str("\n\n");
+        body.push_str(&render_daily_log_entry(timestamp_ms, entry));
+    }
+
+    body
+}
+
+fn render_daily_log_entry(timestamp_ms: u64, entry: &str) -> String {
+    let timestamp = format_timestamp_ms(timestamp_ms);
+    let normalized_lines = entry
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>();
+    let first_line = normalized_lines
+        .first()
+        .copied()
+        .unwrap_or("[empty daily log entry]");
+    let mut rendered = format!("- {timestamp} — {first_line}");
+    for line in normalized_lines.iter().skip(1) {
+        rendered.push('\n');
+        rendered.push_str("  ");
+        rendered.push_str(line);
+    }
+    rendered
+}
+
+fn normalize_daily_log_entries(content: &str) -> Vec<String> {
+    let mut entries = Vec::new();
+    let mut current = Vec::new();
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let bullet = trimmed
+            .strip_prefix("- ")
+            .or_else(|| trimmed.strip_prefix("* "))
+            .or_else(|| trimmed.strip_prefix("+ "));
+        let is_numbered = trimmed
+            .split_once(". ")
+            .is_some_and(|(prefix, _)| prefix.chars().all(|ch| ch.is_ascii_digit()));
+        if let Some(bullet_body) =
+            bullet.or_else(|| is_numbered.then(|| trimmed.split_once(". ").unwrap().1))
+        {
+            if !current.is_empty() {
+                entries.push(current.join("\n"));
+                current.clear();
+            }
+            current.push(bullet_body.trim().to_string());
+            continue;
+        }
+
+        current.push(trimmed.to_string());
+    }
+    if !current.is_empty() {
+        entries.push(current.join("\n"));
+    }
+    entries
 }
 
 fn append_section(
@@ -501,6 +623,7 @@ mod tests {
     };
     use crate::MemoryStateLayout;
     use tempfile::tempdir;
+    use time::OffsetDateTime;
     use tokio::fs;
     use tokio::time::{Duration, sleep};
     use types::AgentSessionId;
@@ -680,5 +803,80 @@ mod tests {
         .unwrap();
         assert!(recorded.contains("second snapshot"));
         assert!(!recorded.contains("first snapshot"));
+    }
+
+    #[tokio::test]
+    async fn episodic_daily_log_records_append_timestamped_entries() {
+        let dir = tempdir().unwrap();
+        let today = OffsetDateTime::now_utc().date();
+        let month = u8::from(today.month());
+        let response = record_memory(
+            dir.path(),
+            MemoryRecordRequest {
+                scope: MemoryScope::Episodic,
+                title: "Daily capture".to_string(),
+                content: "- user prefers canary deploys\n- incident timeline moved to pager"
+                    .to_string(),
+                mode: MemoryRecordMode::Append,
+                memory_type: None,
+                description: None,
+                layer: None,
+                tags: vec!["capture".to_string()],
+                session_id: Some("session-1".into()),
+                agent_session_id: Some("agent-session-1".into()),
+                agent_name: None,
+                task_id: None,
+            },
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            response.path,
+            format!(
+                ".nanoclaw/memory/episodic/logs/{:04}/{:02}/{}.md",
+                today.year(),
+                month,
+                today
+            )
+        );
+        let recorded = fs::read_to_string(dir.path().join(&response.path))
+            .await
+            .unwrap();
+        assert!(recorded.contains("# Daily Log"));
+        assert!(recorded.contains("user prefers canary deploys"));
+        assert!(recorded.contains("incident timeline moved to pager"));
+        assert!(recorded.contains("tags:"));
+    }
+
+    #[tokio::test]
+    async fn episodic_daily_log_rejects_replace_mode() {
+        let dir = tempdir().unwrap();
+        let error = record_memory(
+            dir.path(),
+            MemoryRecordRequest {
+                scope: MemoryScope::Episodic,
+                title: "Daily capture".to_string(),
+                content: "capture".to_string(),
+                mode: MemoryRecordMode::Replace,
+                memory_type: None,
+                description: None,
+                layer: None,
+                tags: Vec::new(),
+                session_id: Some("session-1".into()),
+                agent_session_id: Some("agent-session-1".into()),
+                agent_name: None,
+                task_id: None,
+            },
+            None,
+            None,
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("append-only"));
     }
 }

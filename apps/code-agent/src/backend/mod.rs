@@ -10,6 +10,7 @@ mod memory_recall;
 mod permission_request;
 mod session;
 mod session_catalog;
+mod session_episodic_capture;
 mod session_history;
 mod session_memory_compaction;
 mod session_memory_note;

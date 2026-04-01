@@ -9,6 +9,7 @@ pub const MEMORY_AUTO_INDEX_RELATIVE: &str = ".nanoclaw/memory/MEMORY.md";
 pub const MEMORY_PROCEDURAL_RELATIVE: &str = ".nanoclaw/memory/procedural";
 pub const MEMORY_SEMANTIC_RELATIVE: &str = ".nanoclaw/memory/semantic";
 pub const MEMORY_EPISODIC_RELATIVE: &str = ".nanoclaw/memory/episodic";
+pub const MEMORY_EPISODIC_LOGS_RELATIVE: &str = ".nanoclaw/memory/episodic/logs";
 pub const MEMORY_EPISODIC_SESSIONS_RELATIVE: &str = ".nanoclaw/memory/episodic/sessions";
 pub const MEMORY_EPISODIC_AGENT_SESSIONS_RELATIVE: &str =
     ".nanoclaw/memory/episodic/agent-sessions";

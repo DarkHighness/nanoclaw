@@ -1,4 +1,7 @@
 use crate::backend::session_catalog;
+use crate::backend::session_episodic_capture::{
+    build_session_episodic_capture_prompt, parse_session_episodic_capture_entries,
+};
 use crate::backend::session_history::{
     self, LoadedAgentSession, LoadedSession, SessionExportArtifact, preview_id,
 };
@@ -49,7 +52,7 @@ use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Instant;
 use store::{SessionStore, SessionSummary};
 use tokio::fs;
@@ -297,6 +300,22 @@ struct SessionMemoryRefreshJob {
     epoch: u64,
 }
 
+#[derive(Clone, Debug, Default)]
+struct SessionEpisodicCaptureState {
+    active_session_id: Option<SessionId>,
+    capture_in_flight: bool,
+    capture_started_at: Option<Instant>,
+    capture_epoch: u64,
+    last_captured_message_id: Option<MessageId>,
+}
+
+#[derive(Clone, Debug)]
+struct SessionEpisodicCaptureJob {
+    context: SessionMemoryRefreshContext,
+    transcript_delta_text: String,
+    epoch: u64,
+}
+
 #[derive(Clone, Debug)]
 struct SideQuestionContextSnapshot {
     session_id: SessionId,
@@ -336,6 +355,7 @@ pub(crate) struct CodeAgentSession {
     session_memory_model_backend: Option<Arc<dyn ModelBackend>>,
     memory_backend: Option<Arc<dyn MemoryBackend>>,
     session_memory_refresh: SharedSessionMemoryRefreshState,
+    session_episodic_capture: Arc<Mutex<SessionEpisodicCaptureState>>,
     side_question_context: Arc<RwLock<Option<SideQuestionContextSnapshot>>>,
 }
 
@@ -369,6 +389,15 @@ impl CodeAgentSession {
         ));
         let control_plane = runtime.control_plane();
         session_memory_refresh.lock().unwrap().active_session_id = Some(runtime.session_id());
+        let initial_captured_message_id = side_question_context
+            .as_ref()
+            .and_then(|snapshot| snapshot.transcript.last())
+            .map(|message| message.message_id.clone());
+        let session_episodic_capture = Arc::new(Mutex::new(SessionEpisodicCaptureState {
+            active_session_id: Some(runtime.session_id()),
+            last_captured_message_id: initial_captured_message_id,
+            ..SessionEpisodicCaptureState::default()
+        }));
         Self {
             runtime: Arc::new(AsyncMutex::new(runtime)),
             control_plane,
@@ -394,6 +423,7 @@ impl CodeAgentSession {
             session_memory_model_backend,
             memory_backend,
             session_memory_refresh,
+            session_episodic_capture,
             side_question_context: Arc::new(RwLock::new(side_question_context)),
         }
     }
@@ -895,6 +925,11 @@ impl CodeAgentSession {
             self.mark_session_memory_refreshed(&context, Some(summary_message_id));
         }
         if context.completed_turn_count > 0 {
+            // Claude-style capture and structured session memory serve different
+            // purposes: the daily log keeps append-only raw facts for later
+            // consolidation, while the session note stays a bounded working
+            // handoff. Run both in the background without merging them.
+            self.maybe_capture_session_episodic_memory(context.clone());
             let force_refresh = context.compaction_summary_message_id.is_some();
             self.maybe_refresh_session_memory_note(context, force_refresh);
         }
@@ -955,6 +990,111 @@ impl CodeAgentSession {
         }
         state.refresh_in_flight = false;
         state.refresh_started_at = None;
+    }
+
+    fn mark_session_episodic_capture_completed_if_current(
+        &self,
+        context: &SessionMemoryRefreshContext,
+        expected_epoch: Option<u64>,
+    ) {
+        let last_message_id = context
+            .visible_transcript
+            .last()
+            .map(|message| message.message_id.clone());
+        let mut state = self
+            .session_episodic_capture
+            .lock()
+            .expect("session episodic capture state");
+        if state.active_session_id.as_ref() != Some(&context.session_id) {
+            return;
+        }
+        if expected_epoch.is_some_and(|epoch| state.capture_epoch != epoch) {
+            return;
+        }
+        state.capture_in_flight = false;
+        state.capture_started_at = None;
+        state.last_captured_message_id = last_message_id;
+    }
+
+    fn clear_session_episodic_capture_in_flight(
+        &self,
+        context: &SessionMemoryRefreshContext,
+        expected_epoch: Option<u64>,
+    ) {
+        let mut state = self
+            .session_episodic_capture
+            .lock()
+            .expect("session episodic capture state");
+        if state.active_session_id.as_ref() != Some(&context.session_id) {
+            return;
+        }
+        if expected_epoch.is_some_and(|epoch| state.capture_epoch != epoch) {
+            return;
+        }
+        state.capture_in_flight = false;
+        state.capture_started_at = None;
+    }
+
+    fn maybe_capture_session_episodic_memory(&self, context: SessionMemoryRefreshContext) {
+        if self.memory_backend.is_none() || self.session_memory_model_backend.is_none() {
+            return;
+        }
+
+        let (last_captured_message_id, epoch): (Option<MessageId>, u64) = {
+            let mut state = self
+                .session_episodic_capture
+                .lock()
+                .expect("session episodic capture state");
+            if state.active_session_id.as_ref() != Some(&context.session_id) {
+                state.active_session_id = Some(context.session_id.clone());
+                state.capture_in_flight = false;
+                state.capture_started_at = None;
+                state.capture_epoch = state.capture_epoch.wrapping_add(1);
+                state.last_captured_message_id = None;
+            }
+            if state.capture_in_flight {
+                let capture_is_stale =
+                    state.capture_started_at.is_some_and(|started_at: Instant| {
+                        started_at.elapsed()
+                            >= Duration::from_millis(SESSION_MEMORY_STALE_THRESHOLD_MS)
+                    });
+                if !capture_is_stale {
+                    return;
+                }
+                state.capture_in_flight = false;
+                state.capture_started_at = None;
+                state.capture_epoch = state.capture_epoch.wrapping_add(1);
+            }
+            state.capture_in_flight = true;
+            state.capture_started_at = Some(Instant::now());
+            state.capture_epoch = state.capture_epoch.wrapping_add(1);
+            (state.last_captured_message_id.clone(), state.capture_epoch)
+        };
+
+        let transcript_delta = unsummarized_transcript_delta(
+            &context.visible_transcript,
+            last_captured_message_id.as_ref(),
+        );
+        if transcript_delta.is_empty() {
+            self.mark_session_episodic_capture_completed_if_current(&context, Some(epoch));
+            return;
+        }
+        let transcript_delta_text = render_session_memory_transcript_delta(&transcript_delta);
+        if transcript_delta_text.trim().is_empty() {
+            self.mark_session_episodic_capture_completed_if_current(&context, Some(epoch));
+            return;
+        }
+
+        let session = self.clone();
+        tokio::spawn(async move {
+            session
+                .run_session_episodic_capture_job(SessionEpisodicCaptureJob {
+                    context,
+                    transcript_delta_text,
+                    epoch,
+                })
+                .await;
+        });
     }
 
     fn maybe_refresh_session_memory_note(
@@ -1100,6 +1240,51 @@ impl CodeAgentSession {
         self.mark_session_memory_refreshed_if_current(&job.context, None, Some(job.epoch));
     }
 
+    async fn run_session_episodic_capture_job(&self, job: SessionEpisodicCaptureJob) {
+        let Some(memory_backend) = self.memory_backend.as_ref() else {
+            self.clear_session_episodic_capture_in_flight(&job.context, Some(job.epoch));
+            return;
+        };
+        let Some(model_backend) = self.session_memory_model_backend.as_ref() else {
+            self.clear_session_episodic_capture_in_flight(&job.context, Some(job.epoch));
+            return;
+        };
+
+        let prompt = build_session_episodic_capture_prompt(&job.transcript_delta_text);
+        let response = match self
+            .run_session_episodic_capture(
+                model_backend.as_ref(),
+                &job.context,
+                Message::user(prompt),
+            )
+            .await
+        {
+            Ok(response) => response,
+            Err(error) => {
+                self.clear_session_episodic_capture_in_flight(&job.context, Some(job.epoch));
+                warn!(error = %error, "failed to capture episodic daily-log memory");
+                return;
+            }
+        };
+
+        let entries = parse_session_episodic_capture_entries(&response);
+        if entries.is_empty() {
+            self.mark_session_episodic_capture_completed_if_current(&job.context, Some(job.epoch));
+            return;
+        }
+
+        if let Err(error) = self
+            .write_session_episodic_daily_log(memory_backend.as_ref(), &job.context, &entries)
+            .await
+        {
+            self.clear_session_episodic_capture_in_flight(&job.context, Some(job.epoch));
+            warn!(error = %error, "failed to persist episodic daily-log memory");
+            return;
+        }
+
+        self.mark_session_episodic_capture_completed_if_current(&job.context, Some(job.epoch));
+    }
+
     async fn load_session_memory_note_body(&self, session_id: &SessionId) -> Result<String> {
         let path = session_memory_note_absolute_path(self.workspace_root(), session_id);
         match fs::read_to_string(path).await {
@@ -1168,6 +1353,56 @@ impl CodeAgentSession {
         Ok(trimmed)
     }
 
+    async fn run_session_episodic_capture(
+        &self,
+        backend: &dyn ModelBackend,
+        context: &SessionMemoryRefreshContext,
+        prompt: Message,
+    ) -> Result<String> {
+        let request = ModelRequest {
+            session_id: context.session_id.clone(),
+            agent_session_id: context.agent_session_id.clone(),
+            turn_id: TurnId::new(),
+            instructions: Vec::new(),
+            messages: vec![prompt],
+            tools: Vec::new(),
+            additional_context: Vec::new(),
+            continuation: None,
+            metadata: json!({ "code_agent": { "purpose": "session_episodic_capture" } }),
+        };
+        let mut stream = timeout(
+            Duration::from_millis(SESSION_MEMORY_UPDATE_TIMEOUT_MS),
+            backend.stream_turn(request),
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("session episodic capture timed out before model start"))??;
+
+        let mut text = String::new();
+        while let Some(event) = timeout(
+            Duration::from_millis(SESSION_MEMORY_UPDATE_TIMEOUT_MS),
+            stream.next(),
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("session episodic capture timed out while streaming"))?
+        {
+            match event? {
+                ModelEvent::TextDelta { delta } => text.push_str(&delta),
+                ModelEvent::ResponseComplete { .. } => {}
+                ModelEvent::ToolCallRequested { call } => {
+                    return Err(anyhow::anyhow!(
+                        "session episodic capture unexpectedly requested tool `{}`",
+                        call.tool_name
+                    ));
+                }
+                ModelEvent::Error { message } => {
+                    return Err(anyhow::anyhow!(message));
+                }
+            }
+        }
+
+        Ok(text.trim().to_string())
+    }
+
     async fn write_session_memory_note(
         &self,
         memory_backend: &dyn MemoryBackend,
@@ -1206,6 +1441,38 @@ impl CodeAgentSession {
         if patched != text {
             fs::write(path, patched).await?;
         }
+        Ok(())
+    }
+
+    async fn write_session_episodic_daily_log(
+        &self,
+        memory_backend: &dyn MemoryBackend,
+        context: &SessionMemoryRefreshContext,
+        entries: &[String],
+    ) -> Result<()> {
+        let content = entries
+            .iter()
+            .map(|entry| format!("- {}", entry.trim()))
+            .collect::<Vec<_>>()
+            .join("\n");
+        memory_backend
+            .record(MemoryRecordRequest {
+                scope: MemoryScope::Episodic,
+                title: "Session daily log capture".to_string(),
+                content,
+                mode: MemoryRecordMode::Append,
+                memory_type: None,
+                description: Some(
+                    "Append-only episodic capture for later memory consolidation.".to_string(),
+                ),
+                layer: Some("daily-log".to_string()),
+                tags: vec!["daily-log".to_string(), "session-capture".to_string()],
+                session_id: Some(context.session_id.clone()),
+                agent_session_id: Some(context.agent_session_id.clone()),
+                agent_name: None,
+                task_id: None,
+            })
+            .await?;
         Ok(())
     }
 
@@ -1289,6 +1556,20 @@ impl CodeAgentSession {
         state.tool_calls_since_update = 0;
         state.last_summarized_message_id =
             note_snapshot.and_then(|snapshot| snapshot.last_summarized_message_id);
+        drop(state);
+
+        let mut capture_state = self
+            .session_episodic_capture
+            .lock()
+            .expect("session episodic capture state");
+        capture_state.active_session_id = Some(context.session_id.clone());
+        capture_state.capture_in_flight = false;
+        capture_state.capture_started_at = None;
+        capture_state.capture_epoch = capture_state.capture_epoch.wrapping_add(1);
+        capture_state.last_captured_message_id = context
+            .transcript
+            .last()
+            .map(|message| message.message_id.clone());
     }
 
     async fn persist_compaction_working_snapshot(
@@ -3954,6 +4235,174 @@ mod tests {
                 .join(format!(".nanoclaw/memory/working/sessions/{session_id}.md"))
                 .exists()
         );
+    }
+
+    #[tokio::test]
+    async fn episodic_capture_appends_daily_log_entries_in_background() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(InMemorySessionStore::new());
+        let runtime = AgentRuntimeBuilder::new(Arc::new(NeverBackend), store.clone())
+            .hook_runner(Arc::new(HookRunner::default()))
+            .tool_context(ToolExecutionContext {
+                workspace_root: dir.path().to_path_buf(),
+                workspace_only: true,
+                ..Default::default()
+            })
+            .build();
+        let session_id = runtime.session_id();
+        let agent_session_id = runtime.agent_session_id();
+        let mut startup = startup_snapshot(dir.path());
+        startup.active_session_ref = session_id.to_string();
+        startup.root_agent_session_id = agent_session_id.to_string();
+        let memory_backend: Arc<dyn MemoryBackend> = Arc::new(MemoryCoreBackend::new(
+            dir.path().to_path_buf(),
+            Default::default(),
+        ));
+        let capture_backend = ScriptedTextBackend::new(vec![
+            "- User prefers canary deploys\n- Incident coordination moved to pager".to_string(),
+        ]);
+        let session = build_session_with_backends(
+            runtime,
+            Arc::new(NoopSubagentExecutor),
+            store,
+            startup,
+            Some(memory_backend),
+            Some(Arc::new(capture_backend.clone())),
+        );
+        let context = SessionMemoryRefreshContext {
+            session_id: session_id.clone(),
+            agent_session_id: agent_session_id.clone(),
+            visible_transcript: vec![
+                Message::user("remember that canary deploys are preferred"),
+                Message::assistant("I'll keep that in mind and note the incident channel."),
+            ],
+            context_tokens: 1_000,
+            completed_turn_count: 1,
+            tool_call_count: 0,
+            compaction_summary_message_id: None,
+        };
+        session.maybe_capture_session_episodic_memory(context);
+        let logs_root = dir.path().join(".nanoclaw/memory/episodic/logs");
+        timeout(Duration::from_secs(1), async {
+            loop {
+                let has_log_file = std::fs::read_dir(&logs_root)
+                    .ok()
+                    .into_iter()
+                    .flat_map(|entries| entries.filter_map(|entry| entry.ok()))
+                    .map(|entry| entry.path())
+                    .filter(|path| path.is_dir())
+                    .flat_map(|year_dir| {
+                        std::fs::read_dir(year_dir)
+                            .ok()
+                            .into_iter()
+                            .flat_map(|entries| entries.filter_map(|entry| entry.ok()))
+                            .map(|entry| entry.path())
+                            .filter(|path| path.is_dir())
+                            .collect::<Vec<_>>()
+                    })
+                    .any(|month_dir| {
+                        std::fs::read_dir(month_dir)
+                            .ok()
+                            .into_iter()
+                            .flat_map(|entries| entries.filter_map(|entry| entry.ok()))
+                            .any(|entry| entry.path().is_file())
+                    });
+                if capture_backend.requests().len() == 1 && has_log_file {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+
+        let requests = capture_backend.requests();
+        assert_eq!(requests.len(), 1);
+        let prompt = requests[0].messages[0].text_content();
+        assert!(prompt.contains("append-only episodic daily log"));
+        assert!(prompt.contains("canary deploys are preferred"));
+
+        timeout(Duration::from_secs(1), async {
+            loop {
+                let state = session.session_episodic_capture.lock().unwrap().clone();
+                if !state.capture_in_flight {
+                    break;
+                }
+                drop(state);
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+
+        let year_dir = std::fs::read_dir(&logs_root)
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        let month_dir = std::fs::read_dir(&year_dir)
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        let log_path = std::fs::read_dir(&month_dir)
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        let recorded = std::fs::read_to_string(log_path).unwrap();
+        assert!(recorded.contains("scope: episodic"));
+        assert!(recorded.contains("layer: daily-log"));
+        assert!(recorded.contains("User prefers canary deploys"));
+        assert!(recorded.contains("Incident coordination moved to pager"));
+        let state = session.session_episodic_capture.lock().unwrap().clone();
+        assert!(!state.capture_in_flight);
+        assert_eq!(state.active_session_id, Some(session_id));
+    }
+
+    #[tokio::test]
+    async fn reset_session_memory_refresh_state_rebases_episodic_capture_cursor() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(InMemorySessionStore::new());
+        let runtime = AgentRuntimeBuilder::new(Arc::new(NeverBackend), store.clone())
+            .hook_runner(Arc::new(HookRunner::default()))
+            .tool_context(ToolExecutionContext {
+                workspace_root: dir.path().to_path_buf(),
+                workspace_only: true,
+                ..Default::default()
+            })
+            .build();
+        let session = build_session(
+            runtime,
+            Arc::new(NoopSubagentExecutor),
+            store,
+            startup_snapshot(dir.path()),
+        );
+        let resumed_tail = Message::assistant("resume tail");
+
+        session
+            .reset_session_memory_refresh_state(&SideQuestionContextSnapshot {
+                session_id: SessionId::from("session-new"),
+                agent_session_id: AgentSessionId::from("agent-session-new"),
+                instructions: Vec::new(),
+                transcript: vec![resumed_tail.clone()],
+                tools: Vec::new(),
+            })
+            .await;
+
+        let state = session.session_episodic_capture.lock().unwrap().clone();
+        assert_eq!(
+            state.active_session_id,
+            Some(SessionId::from("session-new"))
+        );
+        assert_eq!(
+            state.last_captured_message_id,
+            Some(resumed_tail.message_id.clone())
+        );
+        assert!(!state.capture_in_flight);
     }
 
     #[tokio::test]

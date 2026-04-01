@@ -390,7 +390,7 @@ impl Tool for MemoryRecordTool {
     fn spec(&self) -> ToolSpec {
         builtin_tool_spec(
             "memory_record",
-            "Record working or coordination memory under .nanoclaw/memory, optionally appending or replacing the target document while tagging it with Claude-style type and description metadata.",
+            "Record working, coordination, or append-only episodic daily-log memory under .nanoclaw/memory, optionally appending or replacing the target document while tagging it with Claude-style type and description metadata.",
             serde_json::to_value(schema_for!(MemoryRecordToolInput)).expect("memory_record schema"),
             ToolOutputMode::Text,
             tool_approval_profile(true, false, true, false),
@@ -764,6 +764,48 @@ mod tests {
         .unwrap();
         assert!(recorded.contains("second snapshot"));
         assert!(!recorded.contains("first snapshot"));
+    }
+
+    #[tokio::test]
+    async fn memory_record_tool_defaults_episodic_scope_to_daily_log() {
+        let dir = tempdir().unwrap();
+        let backend = Arc::new(MemoryCoreBackend::new(
+            dir.path().to_path_buf(),
+            MemoryCoreConfig::default(),
+        ));
+        let tool = MemoryRecordTool::new(backend);
+        let ctx = ToolExecutionContext {
+            workspace_root: dir.path().to_path_buf(),
+            session_id: Some(SessionId::from("session_1")),
+            agent_session_id: Some(AgentSessionId::from("agent_session_1")),
+            ..ToolExecutionContext::default()
+        };
+        let today = time::OffsetDateTime::now_utc().date();
+        let month = u8::from(today.month());
+
+        tool.execute(
+            ToolCallId::new(),
+            json!({
+                "scope":"episodic",
+                "title":"Daily capture",
+                "content":"- user prefers canary deploys"
+            }),
+            &ctx,
+        )
+        .await
+        .unwrap();
+
+        let recorded = fs::read_to_string(dir.path().join(format!(
+            ".nanoclaw/memory/episodic/logs/{:04}/{:02}/{}.md",
+            today.year(),
+            month,
+            today
+        )))
+        .await
+        .unwrap();
+        assert!(recorded.contains("scope: episodic"));
+        assert!(recorded.contains("layer: daily-log"));
+        assert!(recorded.contains("user prefers canary deploys"));
     }
 
     #[tokio::test]
