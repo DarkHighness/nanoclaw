@@ -165,7 +165,9 @@ impl Tool for UpdateExecutionTool {
             serde_json::to_value(schema_for!(UpdateExecutionInput))
                 .expect("update_execution schema"),
             ToolOutputMode::Text,
-            tool_approval_profile(false, true, true, false),
+            // Execution snapshots are internal coordination state. They should
+            // not ask for approval like filesystem or process side effects.
+            tool_approval_profile(false, false, true, false),
         )
         .with_output_schema(
             serde_json::to_value(schema_for!(UpdateExecutionToolOutput))
@@ -565,5 +567,13 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(parsed.action, ExecutionAction::Set);
+    }
+
+    #[test]
+    fn update_execution_spec_is_approval_free_for_internal_coordination() {
+        let spec = UpdateExecutionTool::new(ExecutionState::new()).spec();
+        assert!(!spec.approval.mutates_state);
+        assert!(!spec.approval.open_world);
+        assert_eq!(spec.approval.idempotent, Some(true));
     }
 }

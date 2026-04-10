@@ -2,11 +2,21 @@
 
 Date: 2026-04-10
 
-Status: Active
+Status: Completed
 
 Follow-up note: `write_stdin` no longer carries its own approval burden. The
 harmful decision belongs to `exec_command`, so stdin follow-ups stay approval
 free while `exec_command` keeps the host-scoped approval boundary.
+
+Follow-up note: `update_plan` and `update_execution` now stay approval-free as
+well. They mutate host-owned coordination state, not the workspace or an
+external system, so they no longer share the filesystem or process approval
+path.
+
+Follow-up note: MCP resource reads are now transport-aware. `code-agent`
+auto-allows `read_mcp_resource` only when the request resolves to a locally
+launched `stdio` MCP server. Remote `streamable_http` MCP resources still stay
+on the default approval path.
 
 ## Goal
 
@@ -66,8 +76,8 @@ Explicitly **not** included in this slice:
 - mutating filesystem tools
 - MCP tool calls in general
 - custom tools in general
-- `read_mcp_resource`, because its safety envelope depends on the connected MCP
-  server rather than a code-agent-owned HTTP surface
+- remote `read_mcp_resource`, because its safety envelope still depends on the
+  connected MCP server rather than a code-agent-owned HTTP surface
 
 ## Implementation Plan
 
@@ -84,19 +94,26 @@ Explicitly **not** included in this slice:
    - `/permissions` only changes the base sandbox mode
    - code-agent now auto-allows a narrow built-in read-only web-research slice
 
-## Expected File Changes
+## Completed Scope
 
-- `docs/code-agent-approval-policy-plan.md`
-- `docs/plan.md`
-- `apps/code-agent/src/backend/mod.rs`
-- `apps/code-agent/src/backend/boot.rs`
-- `apps/code-agent/src/backend/tool_approval_policy.rs` (new)
-- `apps/code-agent/README.md`
+- `apps/code-agent` keeps the approval relaxation host-scoped through
+  `tool_approval_policy.rs` and the existing runtime wiring.
+- `write_stdin`, `update_plan`, and `update_execution` stay approval-free
+  because they continue an already-approved session or mutate host-owned
+  coordination state.
+- MCP tool and resource specs now carry transport-aware boundary metadata so
+  approval rules can distinguish local `stdio` servers from remote
+  `streamable_http` services.
+- `read_mcp_resource` is auto-allowed only when the resolved MCP server boundary
+  is a local process.
+- product and design docs now describe the boundary split between sandbox mode,
+  approval policy, and transport-aware MCP surfaces.
 
 ## Validation
 
-- unit tests for the code-agent approval-policy helper
-- targeted app-workspace tests covering policy wiring and approval behavior
+- `cargo test --manifest-path crates/Cargo.toml -p types`
+- `cargo test --manifest-path crates/Cargo.toml -p runtime approval`
+- `cargo test --manifest-path crates/Cargo.toml -p mcp stdio_integration`
 - `cargo test --manifest-path apps/Cargo.toml -p code-agent`
 
 ## Rollback Boundary

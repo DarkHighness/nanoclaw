@@ -479,6 +479,9 @@ standardizing:
 - lifecycle states
 - approval profile metadata
 
+The approval model should treat `write_stdin` like a continuation of an already
+approved execution session, not like a fresh risky action.
+
 ### Planning And Interaction
 
 Add first-class planning and interactive clarification tools:
@@ -490,6 +493,10 @@ Add first-class planning and interactive clarification tools:
 
 These should not be treated as one-off application commands. They are part of
 the runtime contract for industrial code agents.
+
+That also means `update_plan` and similar coordination surfaces should stay out
+of the normal tool-approval path. They mutate host-owned workflow state, not the
+workspace or an external system.
 
 ### Agent Tools
 

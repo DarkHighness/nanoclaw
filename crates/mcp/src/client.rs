@@ -20,8 +20,9 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 use tracing::{debug, info};
 use types::{
-    McpServerName, Message, MessagePart, MessageRole, ToolApprovalProfile, ToolCallId, ToolKind,
-    ToolOrigin, ToolOutputMode, ToolResult, ToolSource, ToolSpec, new_opaque_id,
+    McpServerName, McpToolBoundary, McpTransportKind, Message, MessagePart, MessageRole,
+    ToolApprovalProfile, ToolCallId, ToolKind, ToolOrigin, ToolOutputMode, ToolResult, ToolSource,
+    ToolSpec, new_opaque_id,
 };
 
 const MCP_CONNECT_CONCURRENCY_LIMIT: usize = 8;
@@ -111,6 +112,7 @@ pub async fn connect_and_catalog_mcp_servers_with_options(
                     index,
                     ConnectedMcpServer {
                         server_name: config.name,
+                        boundary: boundary_for_transport(&config.transport),
                         client,
                         catalog,
                     },
@@ -144,6 +146,7 @@ where
 
 pub struct RmcpClient {
     server_name: McpServerName,
+    boundary: McpToolBoundary,
     peer: rmcp::Peer<rmcp::RoleClient>,
     // The running RMCP service is retained only to keep the transport task
     // alive for the peer. Nothing in the current substrate mutates it after
@@ -180,6 +183,7 @@ impl RmcpClient {
         let peer = service.peer().clone();
         Ok(Self {
             server_name: config.name.clone(),
+            boundary: boundary_for_transport(&config.transport),
             peer,
             _service: Mutex::new(service),
         })
@@ -195,7 +199,7 @@ impl McpClient for RmcpClient {
             .await
             .map_err(|error| McpError::protocol(error.to_string()))?
             .into_iter()
-            .map(|tool| tool_spec_from_rmcp(&self.server_name, tool))
+            .map(|tool| tool_spec_from_rmcp(&self.server_name, &self.boundary, tool))
             .collect::<Result<Vec<_>>>()?;
         let prompts = self
             .peer
@@ -390,7 +394,11 @@ fn http_headers(headers: &BTreeMap<String, String>) -> Result<HashMap<HeaderName
         .collect()
 }
 
-fn tool_spec_from_rmcp(server_name: &McpServerName, tool: Tool) -> Result<ToolSpec> {
+fn tool_spec_from_rmcp(
+    server_name: &McpServerName,
+    boundary: &McpToolBoundary,
+    tool: Tool,
+) -> Result<ToolSpec> {
     let approval = tool
         .annotations
         .map(|annotations| {
@@ -427,7 +435,18 @@ fn tool_spec_from_rmcp(server_name: &McpServerName, tool: Tool) -> Result<ToolSp
         supports_parallel_tool_calls: false,
         availability: Default::default(),
         approval,
+        mcp_boundary: Some(boundary.clone()),
+        mcp_server_boundaries: Default::default(),
     })
+}
+
+fn boundary_for_transport(transport: &McpTransportConfig) -> McpToolBoundary {
+    match transport {
+        McpTransportConfig::Stdio { .. } => McpToolBoundary::local_process(McpTransportKind::Stdio),
+        McpTransportConfig::StreamableHttp { .. } => {
+            McpToolBoundary::remote_service(McpTransportKind::StreamableHttp)
+        }
+    }
 }
 
 fn tool_result_from_rmcp(tool_name: &str, result: rmcp::model::CallToolResult) -> ToolResult {

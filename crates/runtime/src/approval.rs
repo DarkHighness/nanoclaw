@@ -3,7 +3,10 @@ use async_trait::async_trait;
 use reqwest::Url;
 use serde_json::Value;
 use std::collections::BTreeSet;
-use types::{McpServerName, ToolCall, ToolName, ToolSpec};
+use types::{
+    McpServerName, McpToolBoundary, McpToolBoundaryClass, McpTransportKind, ToolCall, ToolName,
+    ToolSpec,
+};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ToolApprovalRequest {
@@ -106,6 +109,21 @@ pub enum ToolArgumentMatcher {
     },
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct ToolMcpBoundaryMatcher {
+    pub transports: Vec<McpTransportKind>,
+    pub boundary_classes: Vec<McpToolBoundaryClass>,
+}
+
+impl ToolMcpBoundaryMatcher {
+    fn matches(&self, boundary: &McpToolBoundary) -> bool {
+        if !self.transports.is_empty() && !self.transports.contains(&boundary.transport) {
+            return false;
+        }
+        self.boundary_classes.is_empty() || self.boundary_classes.contains(&boundary.boundary_class)
+    }
+}
+
 impl ToolArgumentMatcher {
     fn matches(&self, arguments: &Value) -> bool {
         match self {
@@ -130,6 +148,7 @@ pub struct ToolApprovalMatcher {
     pub tool_names: BTreeSet<ToolName>,
     pub origins: Vec<ToolOriginMatcher>,
     pub argument_matchers: Vec<ToolArgumentMatcher>,
+    pub mcp_boundary: Option<ToolMcpBoundaryMatcher>,
 }
 
 impl ToolApprovalMatcher {
@@ -145,6 +164,14 @@ impl ToolApprovalMatcher {
                 .any(|origin| origin_matches(origin, &request.call.origin))
         {
             return false;
+        }
+        if let Some(matcher) = &self.mcp_boundary {
+            let Some(boundary) = request.spec.effective_mcp_boundary(&request.call) else {
+                return false;
+            };
+            if !matcher.matches(boundary) {
+                return false;
+            }
         }
         self.argument_matchers
             .iter()
@@ -251,11 +278,14 @@ mod tests {
     use super::{
         StringMatcher, ToolApprovalMatcher, ToolApprovalPolicy, ToolApprovalPolicyDecision,
         ToolApprovalRequest, ToolApprovalRule, ToolApprovalRuleSet, ToolArgumentMatcher,
-        ToolOriginMatcher,
+        ToolMcpBoundaryMatcher, ToolOriginMatcher,
     };
     use serde_json::json;
     use std::collections::BTreeSet;
-    use types::{ToolCall, ToolCallId, ToolName, ToolOrigin, ToolOutputMode, ToolSource, ToolSpec};
+    use types::{
+        McpToolBoundary, McpToolBoundaryClass, McpTransportKind, ToolCall, ToolCallId, ToolName,
+        ToolOrigin, ToolOutputMode, ToolSource, ToolSpec,
+    };
 
     fn request(arguments: serde_json::Value) -> ToolApprovalRequest {
         ToolApprovalRequest {
@@ -292,6 +322,7 @@ mod tests {
                     pointer: "/cmd".to_string(),
                     matcher: StringMatcher::Prefix("git ".to_string()),
                 }],
+                mcp_boundary: None,
             },
             "review git invocations",
         )]);
@@ -316,6 +347,7 @@ mod tests {
                     pointer: "/url".to_string(),
                     matcher: StringMatcher::Suffix(".internal".to_string()),
                 }],
+                mcp_boundary: None,
             },
             "blocked internal host",
         )]);
@@ -344,6 +376,7 @@ mod tests {
                         pointer: "/cmd".to_string(),
                         matcher: StringMatcher::Prefix("git status".to_string()),
                     }],
+                    mcp_boundary: None,
                 },
                 "status is safe",
             ),
@@ -354,6 +387,7 @@ mod tests {
                     argument_matchers: vec![ToolArgumentMatcher::Exists {
                         pointer: "/cmd".to_string(),
                     }],
+                    mcp_boundary: None,
                 },
                 "all other exec commands denied",
             ),
@@ -362,5 +396,53 @@ mod tests {
         let decision = rules.decide(&request(json!({"cmd":"git status --short"})));
 
         assert_eq!(decision, ToolApprovalPolicyDecision::Allow);
+    }
+
+    #[test]
+    fn rule_set_can_match_transport_aware_mcp_boundaries() {
+        let request = ToolApprovalRequest {
+            call: ToolCall {
+                id: ToolCallId::new(),
+                call_id: "call-mcp-1".into(),
+                tool_name: "read_mcp_resource".into(),
+                arguments: json!({"server_name": "fixture", "uri": "fixture://guide"}),
+                origin: ToolOrigin::Mcp {
+                    server_name: "*".into(),
+                },
+            },
+            spec: ToolSpec::function(
+                "read_mcp_resource",
+                "Read resource",
+                json!({"type":"object"}),
+                ToolOutputMode::ContentParts,
+                ToolOrigin::Mcp {
+                    server_name: "*".into(),
+                },
+                ToolSource::McpResource {
+                    server_name: "*".into(),
+                },
+            )
+            .with_mcp_server_boundaries(std::collections::BTreeMap::from([(
+                "fixture".into(),
+                McpToolBoundary::local_process(McpTransportKind::Stdio),
+            )])),
+            reasons: Vec::new(),
+        };
+        let rules = ToolApprovalRuleSet::new(vec![ToolApprovalRule::allow(
+            ToolApprovalMatcher {
+                tool_names: [ToolName::from("read_mcp_resource")].into_iter().collect(),
+                origins: vec![ToolOriginMatcher::McpServer {
+                    server_name: "*".into(),
+                }],
+                argument_matchers: Vec::new(),
+                mcp_boundary: Some(ToolMcpBoundaryMatcher {
+                    transports: vec![McpTransportKind::Stdio],
+                    boundary_classes: vec![McpToolBoundaryClass::LocalProcess],
+                }),
+            },
+            "local MCP resource reads are trusted",
+        )]);
+
+        assert_eq!(rules.decide(&request), ToolApprovalPolicyDecision::Allow);
     }
 }

@@ -26,7 +26,8 @@ It intentionally keeps the host layer thin:
 - workspace skills loaded from conventional skill roots
 - interactive approval for destructive tools and higher-risk external reads,
   with a narrow host allowlist for safe built-in web research tools, configured
-  simple `exec_command` prefixes, and approval-free `write_stdin` follow-ups
+  simple `exec_command` prefixes, approval-free `write_stdin` follow-ups, and
+  transport-aware MCP resource reads
 - backend-owned approval and runtime event contracts for frontend reuse
 - hook-emitted live TUI cues (`show_toast`, `append_prompt`) projected through
   the runtime observer plane instead of synthetic transcript text
@@ -100,8 +101,8 @@ for the current turn or session.
 
 That sandbox toggle is separate from host approval policy. It does not disable
 approval prompts by itself, and `code-agent` now auto-allows only the built-in
-`web_search` / `web_fetch` slice instead of treating all read-only tools as
-globally safe.
+`web_search` / `web_fetch` slice plus local-process `read_mcp_resource` calls
+instead of treating all read-only tools as globally safe.
 
 `code-agent` can also remember host-local simple command prefixes through
 `.nanoclaw/apps/code-agent.toml`. These rules are intentionally narrow. They
@@ -110,6 +111,16 @@ single simple command without shell control syntax such as pipes, redirects,
 command substitution, chained commands, or newlines. `write_stdin` does not open
 a second approval step. Harmfulness is decided on `exec_command`, and stdin
 follow-ups stay inside that existing session.
+
+`update_plan` and `update_execution` are also approval-free now. They mutate
+host-owned coordination state, not the workspace or an external system, so they
+no longer share the same approval path as filesystem writes or new process
+execution.
+
+MCP resource reads now use the connected server boundary instead of treating
+every MCP resource as the same risk. Resources from locally launched `stdio`
+servers stay on the trusted local-process path, while `streamable_http` MCP
+resources still fall back to the normal approval flow.
 
 The bottom status line is configurable through `.nanoclaw/apps/code-agent.toml`.
 By default it surfaces the current status, full model name plus reasoning

@@ -1,11 +1,12 @@
 use crate::{ConnectedMcpServer, McpClient, McpResource, McpResourceTemplate, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use tools::{DynamicTool, DynamicToolHandler, McpToolAdapter, Result as ToolsResult, ToolError};
 use types::{
-    CallId, McpServerName, MessagePart, ToolApprovalProfile, ToolCallId, ToolContinuation,
-    ToolOrigin, ToolOutputMode, ToolResult, ToolSource, ToolSpec,
+    CallId, McpServerName, McpToolBoundary, MessagePart, ToolApprovalProfile, ToolCallId,
+    ToolContinuation, ToolOrigin, ToolOutputMode, ToolResult, ToolSource, ToolSpec,
 };
 
 const DEFAULT_MCP_RESOURCE_MAX_CHARS: usize = 32 * 1024;
@@ -151,6 +152,7 @@ pub fn catalog_resource_tools_as_registry_entries(
 }
 
 fn build_list_mcp_resources_tool(servers: Vec<ConnectedMcpServer>) -> DynamicTool {
+    let server_boundaries = mcp_server_boundaries(&servers);
     let spec = ToolSpec::function(
         "list_mcp_resources",
         "List MCP resources exposed by connected servers. Supports optional filtering by server name and URI prefix.",
@@ -165,6 +167,7 @@ fn build_list_mcp_resources_tool(servers: Vec<ConnectedMcpServer>) -> DynamicToo
     )
     .with_output_schema(list_mcp_resources_output_schema())
     .with_parallel_support(true)
+    .with_mcp_server_boundaries(server_boundaries)
     .with_approval(ToolApprovalProfile::new(true, false, Some(true), false));
     let handler: DynamicToolHandler = Arc::new(move |call_id, arguments, _ctx| {
         let servers = servers.clone();
@@ -174,6 +177,7 @@ fn build_list_mcp_resources_tool(servers: Vec<ConnectedMcpServer>) -> DynamicToo
 }
 
 fn build_read_mcp_resource_tool(servers: Vec<ConnectedMcpServer>) -> DynamicTool {
+    let server_boundaries = mcp_server_boundaries(&servers);
     let spec = ToolSpec::function(
         "read_mcp_resource",
         "Read one MCP resource from a connected server. Text-like resources return a paged text window; binary-like resources return content parts.",
@@ -188,6 +192,7 @@ fn build_read_mcp_resource_tool(servers: Vec<ConnectedMcpServer>) -> DynamicTool
     )
     .with_output_schema(read_mcp_resource_output_schema())
     .with_parallel_support(true)
+    .with_mcp_server_boundaries(server_boundaries)
     .with_approval(ToolApprovalProfile::new(true, false, Some(true), true).with_network(true));
     let handler: DynamicToolHandler = Arc::new(move |call_id, arguments, _ctx| {
         let servers = servers.clone();
@@ -197,6 +202,7 @@ fn build_read_mcp_resource_tool(servers: Vec<ConnectedMcpServer>) -> DynamicTool
 }
 
 fn build_list_mcp_resource_templates_tool(servers: Vec<ConnectedMcpServer>) -> DynamicTool {
+    let server_boundaries = mcp_server_boundaries(&servers);
     let spec = ToolSpec::function(
         "list_mcp_resource_templates",
         "List MCP resource templates exposed by connected servers. Supports optional filtering by server name and URI template prefix.",
@@ -211,6 +217,7 @@ fn build_list_mcp_resource_templates_tool(servers: Vec<ConnectedMcpServer>) -> D
     )
     .with_output_schema(list_mcp_resource_templates_output_schema())
     .with_parallel_support(true)
+    .with_mcp_server_boundaries(server_boundaries)
     .with_approval(ToolApprovalProfile::new(true, false, Some(true), false));
     let handler: DynamicToolHandler = Arc::new(move |call_id, arguments, _ctx| {
         let servers = servers.clone();
@@ -285,6 +292,15 @@ fn execute_list_mcp_resources(
         })),
         is_error: false,
     })
+}
+
+fn mcp_server_boundaries(
+    servers: &[ConnectedMcpServer],
+) -> BTreeMap<McpServerName, McpToolBoundary> {
+    servers
+        .iter()
+        .map(|server| (server.server_name.clone(), server.boundary.clone()))
+        .collect()
 }
 
 fn execute_list_mcp_resource_templates(
@@ -701,7 +717,7 @@ mod tests {
     use serde_json::json;
     use std::sync::Arc;
     use tools::{Tool, ToolExecutionContext};
-    use types::{MessagePart, ToolCallId, ToolContinuation};
+    use types::{McpToolBoundary, McpTransportKind, MessagePart, ToolCallId, ToolContinuation};
 
     #[tokio::test]
     async fn resource_bridge_exposes_list_and_read_tools() {
@@ -735,6 +751,7 @@ mod tests {
         ));
         let server = ConnectedMcpServer {
             server_name: "fixture".into(),
+            boundary: McpToolBoundary::local_process(McpTransportKind::Stdio),
             client,
             catalog: McpCatalog {
                 server_name: "fixture".into(),
@@ -768,6 +785,18 @@ mod tests {
         assert_eq!(tools[0].spec().name.as_str(), "list_mcp_resources");
         assert_eq!(tools[1].spec().name.as_str(), "list_mcp_resource_templates");
         assert_eq!(tools[2].spec().name.as_str(), "read_mcp_resource");
+        assert_eq!(
+            tools[2].spec().effective_mcp_boundary(&types::ToolCall {
+                id: ToolCallId::new(),
+                call_id: "approval-check".into(),
+                tool_name: "read_mcp_resource".into(),
+                arguments: json!({"server_name": "fixture", "uri": "fixture://guide"}),
+                origin: types::ToolOrigin::Mcp {
+                    server_name: "*".into(),
+                },
+            }),
+            Some(&McpToolBoundary::local_process(McpTransportKind::Stdio))
+        );
 
         let list = tools[0]
             .execute(
@@ -821,6 +850,7 @@ mod tests {
     async fn resource_bridge_reads_non_text_resources_as_content_parts() {
         let server = ConnectedMcpServer {
             server_name: "fixture".into(),
+            boundary: McpToolBoundary::remote_service(McpTransportKind::StreamableHttp),
             client: Arc::new(MockMcpClient::new(
                 McpCatalog {
                     server_name: "fixture".into(),

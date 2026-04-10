@@ -2,8 +2,7 @@ use crate::{CallId, McpServerName, MessagePart, PluginId, ToolCallId};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::borrow::Borrow;
-use std::fmt;
+use std::{borrow::Borrow, collections::BTreeMap, fmt};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -126,6 +125,44 @@ pub enum ToolSource {
     ProviderBuiltin {
         provider: String,
     },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum McpTransportKind {
+    Stdio,
+    StreamableHttp,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum McpToolBoundaryClass {
+    LocalProcess,
+    RemoteService,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct McpToolBoundary {
+    pub transport: McpTransportKind,
+    pub boundary_class: McpToolBoundaryClass,
+}
+
+impl McpToolBoundary {
+    #[must_use]
+    pub fn local_process(transport: McpTransportKind) -> Self {
+        Self {
+            transport,
+            boundary_class: McpToolBoundaryClass::LocalProcess,
+        }
+    }
+
+    #[must_use]
+    pub fn remote_service(transport: McpTransportKind) -> Self {
+        Self {
+            transport,
+            boundary_class: McpToolBoundaryClass::RemoteService,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default, JsonSchema)]
@@ -352,6 +389,10 @@ pub struct ToolSpec {
     pub availability: ToolAvailability,
     #[serde(default)]
     pub approval: ToolApprovalProfile,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp_boundary: Option<McpToolBoundary>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub mcp_server_boundaries: BTreeMap<McpServerName, McpToolBoundary>,
 }
 
 impl ToolSpec {
@@ -379,6 +420,8 @@ impl ToolSpec {
             supports_parallel_tool_calls: false,
             availability: ToolAvailability::default(),
             approval: ToolApprovalProfile::default(),
+            mcp_boundary: None,
+            mcp_server_boundaries: BTreeMap::new(),
         }
     }
 
@@ -412,6 +455,8 @@ impl ToolSpec {
             supports_parallel_tool_calls: false,
             availability: ToolAvailability::default(),
             approval: ToolApprovalProfile::default(),
+            mcp_boundary: None,
+            mcp_server_boundaries: BTreeMap::new(),
         }
     }
 
@@ -430,6 +475,21 @@ impl ToolSpec {
     #[must_use]
     pub fn with_approval(mut self, approval: ToolApprovalProfile) -> Self {
         self.approval = approval;
+        self
+    }
+
+    #[must_use]
+    pub fn with_mcp_boundary(mut self, boundary: McpToolBoundary) -> Self {
+        self.mcp_boundary = Some(boundary);
+        self
+    }
+
+    #[must_use]
+    pub fn with_mcp_server_boundaries(
+        mut self,
+        boundaries: BTreeMap<McpServerName, McpToolBoundary>,
+    ) -> Self {
+        self.mcp_server_boundaries = boundaries;
         self
     }
 
@@ -465,6 +525,24 @@ impl ToolSpec {
                 .provider_allowlist
                 .iter()
                 .any(|allowed| allowed == provider_name)
+    }
+
+    #[must_use]
+    pub fn effective_mcp_boundary<'a>(&'a self, call: &ToolCall) -> Option<&'a McpToolBoundary> {
+        if let Some(boundary) = self.mcp_boundary.as_ref() {
+            return Some(boundary);
+        }
+
+        if let ToolOrigin::Mcp { server_name } = &call.origin {
+            if let Some(boundary) = self.mcp_server_boundaries.get(server_name) {
+                return Some(boundary);
+            }
+        }
+
+        call.arguments
+            .get("server_name")
+            .and_then(Value::as_str)
+            .and_then(|server_name| self.mcp_server_boundaries.get(server_name))
     }
 }
 
@@ -603,5 +681,82 @@ impl ToolResult {
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        McpToolBoundary, McpTransportKind, ToolCall, ToolCallId, ToolOrigin, ToolOutputMode,
+        ToolSource, ToolSpec,
+    };
+    use serde_json::json;
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn direct_mcp_boundary_is_resolved_from_tool_spec() {
+        let call = ToolCall {
+            id: ToolCallId::new(),
+            call_id: "call-1".into(),
+            tool_name: "inspect_context".into(),
+            arguments: json!({}),
+            origin: ToolOrigin::Mcp {
+                server_name: "fixture".into(),
+            },
+        };
+        let spec = ToolSpec::function(
+            "inspect_context",
+            "inspect",
+            json!({"type": "object"}),
+            ToolOutputMode::Text,
+            ToolOrigin::Mcp {
+                server_name: "fixture".into(),
+            },
+            ToolSource::McpTool {
+                server_name: "fixture".into(),
+            },
+        )
+        .with_mcp_boundary(McpToolBoundary::local_process(McpTransportKind::Stdio));
+
+        assert_eq!(
+            spec.effective_mcp_boundary(&call),
+            Some(&McpToolBoundary::local_process(McpTransportKind::Stdio))
+        );
+    }
+
+    #[test]
+    fn shared_mcp_boundary_is_resolved_from_server_name_argument() {
+        let call = ToolCall {
+            id: ToolCallId::new(),
+            call_id: "call-2".into(),
+            tool_name: "read_mcp_resource".into(),
+            arguments: json!({"server_name": "fixture", "uri": "fixture://guide"}),
+            origin: ToolOrigin::Mcp {
+                server_name: "*".into(),
+            },
+        };
+        let spec = ToolSpec::function(
+            "read_mcp_resource",
+            "read",
+            json!({"type": "object"}),
+            ToolOutputMode::ContentParts,
+            ToolOrigin::Mcp {
+                server_name: "*".into(),
+            },
+            ToolSource::McpResource {
+                server_name: "*".into(),
+            },
+        )
+        .with_mcp_server_boundaries(BTreeMap::from([(
+            "fixture".into(),
+            McpToolBoundary::remote_service(McpTransportKind::StreamableHttp),
+        )]));
+
+        assert_eq!(
+            spec.effective_mcp_boundary(&call),
+            Some(&McpToolBoundary::remote_service(
+                McpTransportKind::StreamableHttp,
+            ))
+        );
     }
 }

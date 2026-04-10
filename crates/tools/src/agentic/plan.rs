@@ -102,7 +102,9 @@ impl Tool for UpdatePlanTool {
             "Updates the task plan. Provide an optional explanation and a list of plan items, each with a step and status. The shared plan keeps at most one step in_progress at a time, and extra in_progress items are demoted to pending.",
             serde_json::to_value(schema_for!(UpdatePlanInput)).expect("update_plan schema"),
             ToolOutputMode::Text,
-            tool_approval_profile(false, true, true, false),
+            // This mutates host-owned workflow state, not the workspace or any
+            // external system, so it should stay outside the approval path.
+            tool_approval_profile(false, false, true, false),
         )
         .with_output_schema(
             serde_json::to_value(schema_for!(UpdatePlanToolOutput))
@@ -413,5 +415,13 @@ mod tests {
         assert_eq!(structured["kind"], "error");
         assert_eq!(structured["expected_revision"], "stale");
         assert!(result.is_error);
+    }
+
+    #[test]
+    fn update_plan_spec_is_approval_free_for_internal_coordination() {
+        let spec = UpdatePlanTool::new(PlanState::default()).spec();
+        assert!(!spec.approval.mutates_state);
+        assert!(!spec.approval.open_world);
+        assert_eq!(spec.approval.idempotent, Some(true));
     }
 }

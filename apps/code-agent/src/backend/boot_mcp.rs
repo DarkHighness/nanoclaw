@@ -450,6 +450,8 @@ mod tests {
                     supports_parallel_tool_calls: false,
                     availability: Default::default(),
                     approval: Default::default(),
+                    mcp_boundary: None,
+                    mcp_server_boundaries: Default::default(),
                 },
                 ToolSpec {
                     name: "remote".into(),
@@ -470,6 +472,8 @@ mod tests {
                     supports_parallel_tool_calls: false,
                     availability: Default::default(),
                     approval: Default::default(),
+                    mcp_boundary: None,
+                    mcp_server_boundaries: Default::default(),
                 },
             ],
             &[],

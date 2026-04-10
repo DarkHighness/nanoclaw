@@ -10,7 +10,7 @@ use tempfile::tempdir;
 use tokio::process::Command;
 use tokio::time::{Duration, timeout};
 use tools::{ExecRequest, HostProcessExecutor, ProcessExecutor};
-use types::{MessagePart, ToolOrigin};
+use types::{McpToolBoundary, McpTransportKind, MessagePart, ToolOrigin};
 
 #[derive(Clone)]
 struct RecordingExecutor {
@@ -63,6 +63,10 @@ async fn stdio_server_supports_catalog_tool_prompt_and_resource_round_trips() {
     assert_eq!(servers.len(), 1);
     let server = &servers[0];
     assert_eq!(server.server_name.as_str(), "fixture");
+    assert_eq!(
+        server.boundary,
+        McpToolBoundary::local_process(McpTransportKind::Stdio)
+    );
 
     assert_eq!(server.catalog.tools.len(), 1);
     let tool = &server.catalog.tools[0];
@@ -77,6 +81,10 @@ async fn stdio_server_supports_catalog_tool_prompt_and_resource_round_trips() {
     assert!(!tool.approval.mutates_state);
     assert_eq!(tool.approval.idempotent, Some(true));
     assert!(!tool.approval.open_world);
+    assert_eq!(
+        tool.mcp_boundary,
+        Some(McpToolBoundary::local_process(McpTransportKind::Stdio))
+    );
     assert!(tool.output_schema.is_some());
 
     assert_eq!(server.catalog.prompts.len(), 1);

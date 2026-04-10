@@ -149,6 +149,7 @@ async fn approval_policy_can_auto_allow_matching_tool_calls() {
                 pointer: "/path".to_string(),
                 matcher: StringMatcher::Prefix("sample".to_string()),
             }],
+            mcp_boundary: None,
         },
         "allow the sample fixture destructive tool",
     )]));
@@ -197,6 +198,7 @@ async fn approval_policy_can_require_review_for_otherwise_safe_tools() {
                 pointer: "/path".to_string(),
                 matcher: StringMatcher::Exact("sample.txt".to_string()),
             }],
+            mcp_boundary: None,
         },
         "sensitive file read requires review",
     )]));
