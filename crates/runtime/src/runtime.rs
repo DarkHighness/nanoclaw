@@ -340,7 +340,7 @@ impl AgentRuntime {
 
     pub async fn run_user_message(&mut self, message: Message) -> Result<RunTurnOutcome> {
         let mut observer = NoopRuntimeObserver;
-        self.run_user_message_with_observer(message, &mut observer)
+        self.run_user_message_with_observer(message, None, &mut observer)
             .await
     }
 
@@ -423,8 +423,11 @@ impl AgentRuntime {
         observer: &mut dyn RuntimeObserver,
     ) -> Result<Option<RunTurnOutcome>> {
         let outcome = match command {
-            RuntimeCommand::Prompt { message } => self
-                .run_user_message_with_observer(message, observer)
+            RuntimeCommand::Prompt {
+                message,
+                submitted_prompt,
+            } => self
+                .run_user_message_with_observer(message, submitted_prompt, observer)
                 .await
                 .map(Some),
             RuntimeCommand::Steer { message, reason } => {
@@ -441,16 +444,20 @@ impl AgentRuntime {
         prompt: impl Into<String>,
         observer: &mut dyn RuntimeObserver,
     ) -> Result<RunTurnOutcome> {
-        self.run_user_message_with_observer(Message::user(prompt.into()), observer)
+        self.run_user_message_with_observer(Message::user(prompt.into()), None, observer)
             .await
     }
 
     pub async fn run_user_message_with_observer(
         &mut self,
         message: Message,
+        submitted_prompt: Option<types::SubmittedPromptSnapshot>,
         observer: &mut dyn RuntimeObserver,
     ) -> Result<RunTurnOutcome> {
-        let prompt = message.text_content();
+        let prompt = submitted_prompt
+            .clone()
+            .unwrap_or_else(|| types::SubmittedPromptSnapshot::from_message(&message))
+            .preview_text();
         let turn_id = TurnId::new();
         let hooks = self.hook_registrations.clone();
         let instructions = self.base_instructions.clone();
@@ -461,8 +468,15 @@ impl AgentRuntime {
             prompt_chars = prompt.chars().count(),
             "starting user turn"
         );
-        self.prepare_user_turn(&turn_id, &hooks, &instructions, message, observer)
-            .await?;
+        self.prepare_user_turn(
+            &turn_id,
+            &hooks,
+            &instructions,
+            message,
+            submitted_prompt,
+            observer,
+        )
+        .await?;
         self.run_turn_loop(&turn_id, &hooks, &instructions, observer)
             .await
     }
@@ -521,9 +535,12 @@ impl AgentRuntime {
         while let Some(queued) = self.control_plane.pop_next() {
             applied_any = true;
             match queued.command {
-                RuntimeCommand::Prompt { message } => {
+                RuntimeCommand::Prompt {
+                    message,
+                    submitted_prompt,
+                } => {
                     let _ = self
-                        .run_user_message_with_observer(message, observer)
+                        .run_user_message_with_observer(message, submitted_prompt, observer)
                         .await?;
                 }
                 RuntimeCommand::Steer { message, reason } => {

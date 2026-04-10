@@ -3,8 +3,8 @@ use crate::{Result, RuntimeObserver, RuntimeProgressEvent, append_transcript_mes
 use serde_json::json;
 use std::collections::BTreeMap;
 use types::{
-    AgentCoreError, HookContext, HookEvent, HookRegistration, Message, SessionEventKind, TurnId,
-    message_operator_text,
+    AgentCoreError, HookContext, HookEvent, HookRegistration, Message, SessionEventKind,
+    SubmittedPromptSnapshot, TurnId, message_operator_text,
 };
 
 impl AgentRuntime {
@@ -14,6 +14,7 @@ impl AgentRuntime {
         hooks: &[HookRegistration],
         instructions: &[String],
         message: Message,
+        submitted_prompt: Option<SubmittedPromptSnapshot>,
         observer: &mut dyn RuntimeObserver,
     ) -> Result<()> {
         self.clear_pending_request_effects();
@@ -34,6 +35,7 @@ impl AgentRuntime {
             hooks,
             augmented.prefix_messages,
             augmented.message,
+            submitted_prompt,
             observer,
         )
         .await
@@ -97,6 +99,7 @@ impl AgentRuntime {
         hooks: &[HookRegistration],
         prefix_messages: Vec<Message>,
         message: Message,
+        submitted_prompt: Option<SubmittedPromptSnapshot>,
         observer: &mut dyn RuntimeObserver,
     ) -> Result<()> {
         let prompt = preview_user_message(&message);
@@ -114,7 +117,13 @@ impl AgentRuntime {
             )
             .await?;
         let user_effects = self
-            .apply_hook_effects_with_observer(turn_id, user_hooks, Some(message), None, observer)
+            .apply_hook_effects_with_observer(
+                turn_id,
+                user_hooks,
+                Some(message.clone()),
+                None,
+                observer,
+            )
             .await?;
         if let Some(reason) = user_effects.blocked_reason("user prompt blocked") {
             return Err(AgentCoreError::HookBlocked(reason).into());
@@ -123,6 +132,11 @@ impl AgentRuntime {
             return Err(
                 AgentCoreError::HookBlocked("user prompt removed by hook".to_string()).into(),
             );
+        };
+        let event_prompt = if user_message == message {
+            submitted_prompt.unwrap_or_else(|| SubmittedPromptSnapshot::from_message(&user_message))
+        } else {
+            SubmittedPromptSnapshot::from_message(&user_message)
         };
 
         // Augmentor-produced recall/context must stay as distinct transcript
@@ -143,7 +157,7 @@ impl AgentRuntime {
             Some(turn_id.clone()),
             None,
             SessionEventKind::UserPromptSubmit {
-                prompt: prompt.clone(),
+                prompt: event_prompt,
             },
         )
         .await?;

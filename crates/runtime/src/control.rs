@@ -1,5 +1,5 @@
-use types::Message;
 use types::new_opaque_id;
+use types::{Message, SubmittedPromptSnapshot};
 
 use std::collections::VecDeque;
 use std::fmt;
@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex};
 pub enum RuntimeCommand {
     Prompt {
         message: Message,
+        submitted_prompt: Option<SubmittedPromptSnapshot>,
     },
     Steer {
         message: String,
@@ -86,7 +87,21 @@ impl RuntimeControlPlane {
     }
 
     pub fn push_prompt(&self, message: Message) -> QueuedRuntimeCommand {
-        self.push(RuntimeCommand::Prompt { message }, RuntimeCommandLane::Idle)
+        self.push_prompt_with_snapshot(message, None)
+    }
+
+    pub fn push_prompt_with_snapshot(
+        &self,
+        message: Message,
+        submitted_prompt: Option<SubmittedPromptSnapshot>,
+    ) -> QueuedRuntimeCommand {
+        self.push(
+            RuntimeCommand::Prompt {
+                message,
+                submitted_prompt,
+            },
+            RuntimeCommandLane::Idle,
+        )
     }
 
     pub fn push_steer(
@@ -205,13 +220,14 @@ mod tests {
                 &prompt.id,
                 RuntimeCommand::Prompt {
                     message: Message::user("edited"),
+                    submitted_prompt: None,
                 },
             )
             .unwrap();
         assert_eq!(updated.id, prompt.id);
         assert_eq!(updated.lane, RuntimeCommandLane::Idle);
         match updated.command {
-            RuntimeCommand::Prompt { message } => {
+            RuntimeCommand::Prompt { message, .. } => {
                 assert_eq!(message.text_content(), "edited");
             }
             RuntimeCommand::Steer { .. } => panic!("expected queued prompt"),

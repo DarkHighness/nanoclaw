@@ -363,6 +363,7 @@ async fn runtime_apply_control_runs_prompt_and_steer_commands() {
     let prompt = runtime
         .apply_control(RuntimeCommand::Prompt {
             message: Message::user("hello"),
+            submitted_prompt: None,
         })
         .await
         .unwrap()
@@ -398,6 +399,7 @@ async fn runtime_apply_control_drains_runtime_prompt_queue_before_returning_idle
     let outcome = runtime
         .apply_control(RuntimeCommand::Prompt {
             message: Message::user("first"),
+            submitted_prompt: None,
         })
         .await
         .unwrap()
@@ -438,6 +440,7 @@ async fn runtime_new_session_rotates_top_level_session_and_clears_state() {
     runtime
         .apply_control(RuntimeCommand::Prompt {
             message: Message::user("hello"),
+            submitted_prompt: None,
         })
         .await
         .unwrap();
