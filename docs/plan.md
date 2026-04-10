@@ -66,6 +66,9 @@ Intentionally still documented as not yet implemented:
   - current-state sandbox boundary note
 - `docs/code-agent-delivery-plan.md`
   - active app-convergence and code-agent industrialization plan
+- `docs/code-agent-approval-policy-plan.md`
+  - active host-scoped plan for relaxing repeated approval prompts on a narrow
+    safe read-only tool allowlist
 - `docs/memory-core-alignment.md`
   - active note for Claude-style instruction discovery and managed auto-memory
     index behavior in `memory-core`
