@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, HashSet};
 use thiserror::Error;
 use types::{
     AgentSessionId, HookEffect, Message, SessionEventEnvelope, SessionEventKind, SessionId,
-    TokenLedgerSnapshot, TokenUsage,
+    SessionSummaryTokenUsage, TokenLedgerSnapshot, TokenUsage,
 };
 
 const TOKEN_USAGE_CHILD_FETCH_CONCURRENCY_LIMIT: usize = 8;
@@ -47,6 +47,8 @@ pub struct SessionSummary {
     pub agent_session_count: usize,
     pub transcript_message_count: usize,
     pub last_user_prompt: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_usage: Option<SessionSummaryTokenUsage>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -222,12 +224,16 @@ pub fn summarize_session_events(
         last_timestamp_ms = last_timestamp_ms.max(event.timestamp_ms);
         agent_session_ids.insert(event.agent_session_id.clone());
         if let SessionEventKind::UserPromptSubmit { prompt } = &event.event {
-            last_user_prompt = Some(prompt.clone());
+            let preview = prompt.preview_text();
+            if !preview.is_empty() {
+                last_user_prompt = Some(preview);
+            }
         }
     }
     // Session-level transcript counts should mirror the post-compaction window
     // that operators and resume flows actually see, not the full hidden replay.
     let transcript_message_count = visible_transcript(events).len();
+    let token_usage = session_token_usage_snapshot(events).map(SessionSummaryTokenUsage::from);
 
     Some(SessionSummary {
         session_id: session_id.clone(),
@@ -237,6 +243,7 @@ pub fn summarize_session_events(
         agent_session_count: agent_session_ids.len(),
         transcript_message_count,
         last_user_prompt,
+        token_usage,
     })
 }
 
@@ -490,7 +497,7 @@ pub(crate) fn searchable_session_event_strings(event: &SessionEventEnvelope) -> 
             }
         }
         SessionEventKind::UserPromptSubmit { prompt } => {
-            values.push(prompt.clone());
+            values.extend(prompt.search_strings());
         }
         SessionEventKind::ModelRequestStarted { request } => {
             values.extend(request.tools.iter().map(|tool| tool.name.to_string()));
@@ -728,13 +735,19 @@ pub fn session_token_usage_snapshot(
     // A top-level Session can span multiple root AgentSessions after compaction.
     // The session-wide ledger must therefore aggregate the final cumulative
     // ledger from each root AgentSession instead of reusing only the latest one.
-    session_ledger.cumulative_usage = TokenUsage::default();
-    for ledger in latest_by_agent_session.values() {
-        session_ledger
-            .cumulative_usage
-            .accumulate(&ledger.cumulative_usage);
-    }
+    session_ledger.cumulative_usage = aggregate_token_usage(latest_by_agent_session.values());
     Some(session_ledger)
+}
+
+#[must_use]
+pub fn aggregate_token_usage<'a>(
+    ledgers: impl Iterator<Item = &'a TokenLedgerSnapshot>,
+) -> TokenUsage {
+    let mut aggregate = TokenUsage::default();
+    for ledger in ledgers {
+        aggregate.accumulate(&ledger.cumulative_usage);
+    }
+    aggregate
 }
 
 #[must_use]
@@ -1098,7 +1111,10 @@ pub fn build_memory_export_record(
         first_timestamp_ms = first_timestamp_ms.min(event.timestamp_ms);
         last_timestamp_ms = last_timestamp_ms.max(event.timestamp_ms);
         if let SessionEventKind::UserPromptSubmit { prompt } = &event.event {
-            last_user_prompt = Some(prompt.clone());
+            let preview = prompt.preview_text();
+            if !preview.is_empty() {
+                last_user_prompt = Some(preview);
+            }
         }
     }
     let transcript_message_count = visible_transcript(events).len();
@@ -1478,6 +1494,8 @@ mod tests {
     use types::{
         AgentSessionId, HookEffect, HookEvent, HookResult, Message, MessageId, MessagePart,
         MessageRole, MessageSelector, SessionEventEnvelope, SessionEventKind, SessionId,
+        SessionSummaryTokenUsage, SubmittedPromptAttachment, SubmittedPromptAttachmentKind,
+        SubmittedPromptSnapshot, TokenLedgerSnapshot, TokenUsage, TokenUsagePhase,
     };
 
     #[test]
@@ -1490,6 +1508,7 @@ mod tests {
             agent_session_count: 1,
             transcript_message_count: 1,
             last_user_prompt: None,
+            token_usage: None,
         };
         let events = vec![SessionEventEnvelope::new(
             summary.session_id.clone(),
@@ -1683,6 +1702,7 @@ mod tests {
             agent_session_count: 1,
             transcript_message_count: 1,
             last_user_prompt: Some("release planner".to_string()),
+            token_usage: None,
         };
         let events = vec![
             SessionEventEnvelope::new(
@@ -1722,6 +1742,102 @@ mod tests {
             result.preview_matches[2].contains("release transcript excerpt"),
             "expected transcript preview last, got {:?}",
             result.preview_matches
+        );
+    }
+
+    #[test]
+    fn summarize_session_events_projects_token_usage_into_summary() {
+        let session_id = SessionId::from("session-token");
+        let agent_a = AgentSessionId::from("agent-a");
+        let agent_b = AgentSessionId::from("agent-b");
+        let events = vec![
+            SessionEventEnvelope::new(
+                session_id.clone(),
+                agent_a.clone(),
+                None,
+                None,
+                SessionEventKind::TokenUsageUpdated {
+                    phase: TokenUsagePhase::ResponseCompleted,
+                    ledger: TokenLedgerSnapshot {
+                        context_window: Some(types::ContextWindowUsage {
+                            used_tokens: 50,
+                            max_tokens: 1000,
+                        }),
+                        last_usage: Some(TokenUsage::from_input_output(10, 2, 0)),
+                        cumulative_usage: TokenUsage::from_input_output(10, 2, 0),
+                    },
+                },
+            ),
+            SessionEventEnvelope::new(
+                session_id.clone(),
+                agent_b,
+                None,
+                None,
+                SessionEventKind::TokenUsageUpdated {
+                    phase: TokenUsagePhase::ResponseCompleted,
+                    ledger: TokenLedgerSnapshot {
+                        context_window: Some(types::ContextWindowUsage {
+                            used_tokens: 70,
+                            max_tokens: 1000,
+                        }),
+                        last_usage: Some(TokenUsage::from_input_output(5, 1, 0)),
+                        cumulative_usage: TokenUsage::from_input_output(5, 1, 0),
+                    },
+                },
+            ),
+        ];
+
+        let summary = summarize_session_events(&session_id, &events).unwrap();
+        assert_eq!(
+            summary.token_usage,
+            Some(SessionSummaryTokenUsage {
+                context_window: Some(types::ContextWindowUsage {
+                    used_tokens: 70,
+                    max_tokens: 1000,
+                }),
+                cumulative_usage: TokenUsage::from_input_output(15, 3, 0),
+            })
+        );
+    }
+
+    #[test]
+    fn search_session_events_indexes_attachment_metadata_from_prompt_snapshots() {
+        let summary = SessionSummary {
+            session_id: SessionId::from("session-attachment"),
+            first_timestamp_ms: 1,
+            last_timestamp_ms: 1,
+            event_count: 1,
+            agent_session_count: 1,
+            transcript_message_count: 0,
+            last_user_prompt: Some("inspect attachments".to_string()),
+            token_usage: None,
+        };
+        let events = vec![SessionEventEnvelope::new(
+            summary.session_id.clone(),
+            AgentSessionId::from("agent-root"),
+            None,
+            None,
+            SessionEventKind::UserPromptSubmit {
+                prompt: SubmittedPromptSnapshot {
+                    text: "inspect attachments".to_string(),
+                    attachments: vec![SubmittedPromptAttachment {
+                        placeholder: None,
+                        kind: SubmittedPromptAttachmentKind::LocalFile {
+                            requested_path: "reports/run.pdf".to_string(),
+                            file_name: Some("run.pdf".to_string()),
+                            mime_type: Some("application/pdf".to_string()),
+                        },
+                    }],
+                },
+            },
+        )];
+
+        let result = search_session_events(&summary, &events, "run.pdf").unwrap();
+        assert!(
+            result
+                .preview_matches
+                .iter()
+                .any(|line| line.contains("file reports/run.pdf") || line.contains("run.pdf"))
         );
     }
 

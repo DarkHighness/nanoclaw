@@ -394,9 +394,11 @@ fn default_indexed_record(event: SessionEventEnvelope) -> IndexedSessionRecord {
             agent_session_count: 0,
             transcript_message_count: 0,
             last_user_prompt: None,
+            token_usage: None,
         },
         agent_session_ids: Vec::new(),
         search_corpus: String::new(),
+        agent_session_token_usage: std::collections::BTreeMap::new(),
     }
 }
 
@@ -432,8 +434,8 @@ mod tests {
     use types::{
         AgentArtifact, AgentEnvelope, AgentEnvelopeKind, AgentHandle, AgentId, AgentResultEnvelope,
         AgentSessionId, AgentStatus, AgentTaskSpec, ContextWindowUsage, Message, MessageId,
-        SessionEventEnvelope, SessionEventKind, SessionId, TokenLedgerSnapshot, TokenUsage,
-        TokenUsagePhase,
+        SessionEventEnvelope, SessionEventKind, SessionId, SubmittedPromptSnapshot,
+        TokenLedgerSnapshot, TokenUsage, TokenUsagePhase,
     };
 
     use super::index_sidecar::append_search_text;
@@ -495,7 +497,7 @@ mod tests {
                         None,
                         None,
                         SessionEventKind::UserPromptSubmit {
-                            prompt: "ship it".to_string(),
+                            prompt: SubmittedPromptSnapshot::from_text("ship it"),
                         },
                     ),
                     SessionEventEnvelope::new(
@@ -572,7 +574,7 @@ mod tests {
                 None,
                 None,
                 SessionEventKind::UserPromptSubmit {
-                    prompt: "older".to_string(),
+                    prompt: SubmittedPromptSnapshot::from_text("older"),
                 },
             );
             older_event.timestamp_ms = 1;
@@ -582,7 +584,7 @@ mod tests {
                 None,
                 None,
                 SessionEventKind::UserPromptSubmit {
-                    prompt: "newer".to_string(),
+                    prompt: SubmittedPromptSnapshot::from_text("newer"),
                 },
             );
             newer_event.timestamp_ms = 2;
@@ -646,7 +648,7 @@ mod tests {
                         None,
                         None,
                         SessionEventKind::UserPromptSubmit {
-                            prompt: "release planner".to_string(),
+                            prompt: SubmittedPromptSnapshot::from_text("release planner"),
                         },
                     ),
                     SessionEventEnvelope::new(
@@ -664,7 +666,7 @@ mod tests {
                         None,
                         None,
                         SessionEventKind::UserPromptSubmit {
-                            prompt: "status update".to_string(),
+                            prompt: SubmittedPromptSnapshot::from_text("status update"),
                         },
                     ),
                     SessionEventEnvelope::new(
@@ -829,6 +831,7 @@ mod tests {
                 .unwrap();
 
             let report = store.token_usage(&session_id).await.unwrap();
+            let summaries = store.list_sessions().await.unwrap();
             assert_eq!(
                 report
                     .session
@@ -848,6 +851,27 @@ mod tests {
             assert_eq!(
                 report.aggregate_usage,
                 TokenUsage::from_input_output(165, 35, 15)
+            );
+            assert_eq!(summaries.len(), 2);
+            assert_eq!(
+                summaries
+                    .iter()
+                    .find(|summary| summary.session_id == session_id)
+                    .and_then(|summary| summary.token_usage.clone())
+                    .map(|usage| usage.cumulative_usage),
+                Some(TokenUsage::from_input_output(125, 25, 10))
+            );
+
+            drop(store);
+            let reopened = FileSessionStore::open(dir.path()).await.unwrap();
+            let reopened_summaries = reopened.list_sessions().await.unwrap();
+            assert_eq!(
+                reopened_summaries
+                    .iter()
+                    .find(|summary| summary.session_id == session_id)
+                    .and_then(|summary| summary.token_usage.clone())
+                    .map(|usage| usage.cumulative_usage),
+                Some(TokenUsage::from_input_output(125, 25, 10))
             );
         }
     );
@@ -1159,7 +1183,7 @@ mod tests {
                 None,
                 None,
                 SessionEventKind::UserPromptSubmit {
-                    prompt: "older".to_string(),
+                    prompt: SubmittedPromptSnapshot::from_text("older"),
                 },
             );
             older_event.timestamp_ms = current_timestamp_ms().saturating_sub(10_000);
@@ -1169,7 +1193,7 @@ mod tests {
                 None,
                 None,
                 SessionEventKind::UserPromptSubmit {
-                    prompt: "newer".to_string(),
+                    prompt: SubmittedPromptSnapshot::from_text("newer"),
                 },
             );
             newer_event.timestamp_ms = current_timestamp_ms();
@@ -1197,7 +1221,7 @@ mod tests {
                 None,
                 None,
                 SessionEventKind::UserPromptSubmit {
-                    prompt: "old".to_string(),
+                    prompt: SubmittedPromptSnapshot::from_text("old"),
                 },
             );
             old_event.timestamp_ms = current_timestamp_ms().saturating_sub(10_000);
@@ -1207,7 +1231,7 @@ mod tests {
                 None,
                 None,
                 SessionEventKind::UserPromptSubmit {
-                    prompt: "fresh".to_string(),
+                    prompt: SubmittedPromptSnapshot::from_text("fresh"),
                 },
             );
             fresh_event.timestamp_ms = current_timestamp_ms();
@@ -1254,7 +1278,7 @@ mod tests {
                     None,
                     None,
                     SessionEventKind::UserPromptSubmit {
-                        prompt: "ship release".to_string(),
+                        prompt: SubmittedPromptSnapshot::from_text("ship release"),
                     },
                 ))
                 .await
@@ -1324,7 +1348,7 @@ mod tests {
 
             for event in [
                 SessionEventKind::UserPromptSubmit {
-                    prompt: "review the latest patch".to_string(),
+                    prompt: SubmittedPromptSnapshot::from_text("review the latest patch"),
                 },
                 SessionEventKind::TaskCreated {
                     task: task.clone(),

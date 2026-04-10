@@ -4,16 +4,18 @@ use crate::{
     message_search_text, searchable_session_event_strings, summarize_session_events,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use tokio::fs;
 use tokio::io::{AsyncBufReadExt, BufReader};
-use types::{AgentSessionId, SessionEventEnvelope, SessionEventKind, SessionId};
+use types::{
+    AgentSessionId, SessionEventEnvelope, SessionEventKind, SessionId, SessionSummaryTokenUsage,
+};
 
 pub(super) const INDEX_FILE_NAME: &str = "sessions.index.json";
 // Visible transcript counts now fold compaction checkpoints, so older sidecars
 // that stored raw replay counts must rebuild on open.
-const INDEX_VERSION: u32 = 3;
+const INDEX_VERSION: u32 = 4;
 const MAX_SEARCH_CORPUS_CHARS: usize = 16_384;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -27,6 +29,8 @@ pub(super) struct IndexedSessionRecord {
     // append-only JSONL transcript remains the source of truth for replay and
     // exact preview generation.
     pub(super) search_corpus: String,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub(super) agent_session_token_usage: BTreeMap<AgentSessionId, SessionSummaryTokenUsage>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -58,7 +62,18 @@ pub(super) fn apply_event_to_record(
         record.summary.transcript_message_count += 1;
     }
     if let SessionEventKind::UserPromptSubmit { prompt } = &event.event {
-        record.summary.last_user_prompt = Some(prompt.clone());
+        let preview = prompt.preview_text();
+        if !preview.is_empty() {
+            record.summary.last_user_prompt = Some(preview);
+        }
+    }
+    if let SessionEventKind::TokenUsageUpdated { ledger, .. } = &event.event {
+        record.agent_session_token_usage.insert(
+            event.agent_session_id.clone(),
+            SessionSummaryTokenUsage::from(ledger),
+        );
+        record.summary.token_usage =
+            summarize_record_token_usage(&record.agent_session_token_usage, ledger.context_window);
     }
     match &event.event {
         SessionEventKind::TranscriptMessage { message } => {
@@ -72,6 +87,23 @@ pub(super) fn apply_event_to_record(
             }
         }
     }
+}
+
+fn summarize_record_token_usage(
+    by_agent_session: &BTreeMap<AgentSessionId, SessionSummaryTokenUsage>,
+    latest_context_window: Option<types::ContextWindowUsage>,
+) -> Option<SessionSummaryTokenUsage> {
+    if by_agent_session.is_empty() {
+        return None;
+    }
+    let mut cumulative_usage = types::TokenUsage::default();
+    for usage in by_agent_session.values() {
+        cumulative_usage.accumulate(&usage.cumulative_usage);
+    }
+    Some(SessionSummaryTokenUsage {
+        context_window: latest_context_window,
+        cumulative_usage,
+    })
 }
 
 pub(super) fn append_search_text(search_corpus: &mut String, value: &str) {
@@ -218,6 +250,16 @@ pub(super) fn indexed_record_from_events(
         summary,
         agent_session_ids,
         search_corpus: build_search_corpus(&events),
+        agent_session_token_usage: events
+            .iter()
+            .filter_map(|event| match &event.event {
+                SessionEventKind::TokenUsageUpdated { ledger, .. } => Some((
+                    event.agent_session_id.clone(),
+                    SessionSummaryTokenUsage::from(ledger),
+                )),
+                _ => None,
+            })
+            .collect(),
     })
 }
 

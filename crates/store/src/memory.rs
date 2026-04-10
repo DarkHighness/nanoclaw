@@ -178,8 +178,8 @@ mod tests {
     use types::{
         AgentArtifact, AgentEnvelope, AgentEnvelopeKind, AgentHandle, AgentId, AgentResultEnvelope,
         AgentSessionId, AgentStatus, AgentTaskSpec, ContextWindowUsage, Message,
-        SessionEventEnvelope, SessionEventKind, SessionId, TokenLedgerSnapshot, TokenUsage,
-        TokenUsagePhase,
+        SessionEventEnvelope, SessionEventKind, SessionId, SubmittedPromptSnapshot,
+        TokenLedgerSnapshot, TokenUsage, TokenUsagePhase,
     };
 
     macro_rules! bounded_async_test {
@@ -240,7 +240,7 @@ mod tests {
                 None,
                 None,
                 SessionEventKind::UserPromptSubmit {
-                    prompt: "older".to_string(),
+                    prompt: SubmittedPromptSnapshot::from_text("older"),
                 },
             );
             older_event.timestamp_ms = 1;
@@ -250,7 +250,7 @@ mod tests {
                 None,
                 None,
                 SessionEventKind::UserPromptSubmit {
-                    prompt: "newer".to_string(),
+                    prompt: SubmittedPromptSnapshot::from_text("newer"),
                 },
             );
             newer_event.timestamp_ms = 2;
@@ -278,7 +278,7 @@ mod tests {
                     None,
                     None,
                     SessionEventKind::UserPromptSubmit {
-                        prompt: "prepare release".to_string(),
+                        prompt: SubmittedPromptSnapshot::from_text("prepare release"),
                     },
                 ))
                 .await
@@ -323,7 +323,7 @@ mod tests {
                         None,
                         None,
                         SessionEventKind::UserPromptSubmit {
-                            prompt: "release planner".to_string(),
+                            prompt: SubmittedPromptSnapshot::from_text("release planner"),
                         },
                     ),
                     SessionEventEnvelope::new(
@@ -341,7 +341,7 @@ mod tests {
                         None,
                         None,
                         SessionEventKind::UserPromptSubmit {
-                            prompt: "status update".to_string(),
+                            prompt: SubmittedPromptSnapshot::from_text("status update"),
                         },
                     ),
                     SessionEventEnvelope::new(
@@ -480,7 +480,7 @@ mod tests {
                     None,
                     None,
                     SessionEventKind::UserPromptSubmit {
-                        prompt: "deploy release".to_string(),
+                        prompt: SubmittedPromptSnapshot::from_text("deploy release"),
                     },
                 ))
                 .await
@@ -549,7 +549,7 @@ mod tests {
 
             for event in [
                 SessionEventKind::UserPromptSubmit {
-                    prompt: "review the latest patch".to_string(),
+                    prompt: SubmittedPromptSnapshot::from_text("review the latest patch"),
                 },
                 SessionEventKind::TaskCreated {
                     task: task.clone(),
