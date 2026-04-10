@@ -1,8 +1,8 @@
 //! App-specific config loading for the code-agent example.
 //!
 //! Core runtime config comes from `nanoclaw-config`. This module owns only the
-//! code-agent-specific LSP helper settings layered on top of the shared core
-//! config surface.
+//! code-agent-specific host settings layered on top of the shared core config
+//! surface.
 
 use crate::statusline::StatusLineConfig;
 use crate::theme::{ThemeCatalog, load_theme_catalog};
@@ -34,6 +34,7 @@ pub(crate) struct CodeAgentConfig {
     pub lsp_enabled: bool,
     pub lsp_auto_install: bool,
     pub lsp_install_root: Option<PathBuf>,
+    pub exec_always_approve_simple_prefixes: Vec<String>,
     pub statusline: StatusLineConfig,
     pub theme_catalog: ThemeCatalog,
 }
@@ -42,7 +43,20 @@ pub(crate) struct CodeAgentConfig {
 #[serde(default)]
 struct CodeAgentAppConfig {
     lsp: CodeAgentLspConfig,
+    approval: CodeAgentApprovalConfig,
     tui: CodeAgentTuiConfig,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
+struct CodeAgentApprovalConfig {
+    exec: CodeAgentExecApprovalConfig,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
+struct CodeAgentExecApprovalConfig {
+    always_approve_simple_prefixes: Vec<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -95,6 +109,9 @@ impl CodeAgentConfig {
                 .install_root
                 .as_deref()
                 .map(|value| resolve_path(workspace_root, value)),
+            exec_always_approve_simple_prefixes: normalize_exec_approval_prefixes(
+                app.approval.exec.always_approve_simple_prefixes,
+            ),
             statusline: app.tui.statusline,
             theme_catalog: load_theme_catalog(
                 workspace_root,
@@ -148,6 +165,14 @@ fn resolve_path(base_dir: &Path, value: &str) -> PathBuf {
     } else {
         base_dir.join(path)
     }
+}
+
+fn normalize_exec_approval_prefixes(values: Vec<String>) -> Vec<String> {
+    values
+        .into_iter()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .collect()
 }
 
 #[cfg(test)]
@@ -208,6 +233,30 @@ mod tests {
         assert!(!config.statusline.branch);
         assert!(!config.statusline.clock);
         assert!(config.statusline.session);
+    }
+
+    #[tokio::test]
+    async fn loads_exec_approval_prefixes_from_app_config() {
+        let _guard = env_test_lock().lock().unwrap();
+        let dir = tempdir().unwrap();
+        let app_dir = dir.path().join(".nanoclaw/apps");
+        std::fs::create_dir_all(&app_dir).unwrap();
+        std::fs::write(
+            app_dir.join("code-agent.toml"),
+            r#"
+                [approval.exec]
+                always_approve_simple_prefixes = [" git status ", "", "cargo test -p store"]
+            "#,
+        )
+        .unwrap();
+
+        let env_map = EnvMap::from_workspace_dir(dir.path()).unwrap();
+        let config = CodeAgentConfig::load_from_dir(dir.path(), &env_map).unwrap();
+
+        assert_eq!(
+            config.exec_always_approve_simple_prefixes,
+            vec!["git status".to_string(), "cargo test -p store".to_string()]
+        );
     }
 
     #[tokio::test]
