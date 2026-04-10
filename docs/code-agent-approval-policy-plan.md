@@ -4,6 +4,10 @@ Date: 2026-04-10
 
 Status: Active
 
+Follow-up note: `write_stdin` no longer carries its own approval burden. The
+harmful decision belongs to `exec_command`, so stdin follow-ups stay approval
+free while `exec_command` keeps the host-scoped approval boundary.
+
 ## Goal
 
 Reduce repeated approval prompts in `apps/code-agent` for a narrow set of safe,
@@ -58,7 +62,7 @@ common research flows without trusting arbitrary external tool metadata.
 
 Explicitly **not** included in this slice:
 
-- `exec_command` / `write_stdin`
+- broad `exec_command` trust widening
 - mutating filesystem tools
 - MCP tool calls in general
 - custom tools in general

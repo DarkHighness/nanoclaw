@@ -25,7 +25,8 @@ It intentionally keeps the host layer thin:
 - provider adapter from `provider`
 - workspace skills loaded from conventional skill roots
 - interactive approval for destructive tools and higher-risk external reads,
-  with a narrow host allowlist for safe built-in web research tools
+  with a narrow host allowlist for safe built-in web research tools, configured
+  simple `exec_command` prefixes, and approval-free `write_stdin` follow-ups
 - backend-owned approval and runtime event contracts for frontend reuse
 - hook-emitted live TUI cues (`show_toast`, `append_prompt`) projected through
   the runtime observer plane instead of synthetic transcript text
@@ -102,6 +103,14 @@ approval prompts by itself, and `code-agent` now auto-allows only the built-in
 `web_search` / `web_fetch` slice instead of treating all read-only tools as
 globally safe.
 
+`code-agent` can also remember host-local simple command prefixes through
+`.nanoclaw/apps/code-agent.toml`. These rules are intentionally narrow. They
+only apply to built-in local `exec_command` calls whose raw shell string stays a
+single simple command without shell control syntax such as pipes, redirects,
+command substitution, chained commands, or newlines. `write_stdin` does not open
+a second approval step. Harmfulness is decided on `exec_command`, and stdin
+follow-ups stay inside that existing session.
+
 The bottom status line is configurable through `.nanoclaw/apps/code-agent.toml`.
 By default it surfaces the current status, full model name plus reasoning
 effort, current directory name, git repository and branch when available,
@@ -152,6 +161,20 @@ session = false
 ```
 
 Set any field to `false` to hide it from the bottom status line.
+
+Example host-local approval settings:
+
+```toml
+[approval.exec]
+always_approve_simple_prefixes = [
+  "git status",
+  "cargo test -p store",
+]
+```
+
+These prefixes match only simple shell commands. A command like `git status`
+can auto-approve `git status --short`, but `git status; rm -rf .` still falls
+back to the normal approval flow.
 
 Example:
 
