@@ -1,10 +1,11 @@
 use crate::{
-    AgentId, AgentSessionId, CallId, EnvelopeId, EventId, HookEvent, HookResult, Message,
-    MessageId, Reasoning, ResponseId, SessionId, TokenLedgerSnapshot, TokenUsage, TokenUsagePhase,
-    ToolCall, ToolCallId, ToolName, ToolSpec, TurnId,
+    AgentId, AgentSessionId, CallId, ContextWindowUsage, EnvelopeId, EventId, HookEvent,
+    HookResult, Message, MessageId, MessagePart, Reasoning, ResponseId, SessionId,
+    TokenLedgerSnapshot, TokenUsage, TokenUsagePhase, ToolCall, ToolCallId, ToolName, ToolSpec,
+    TurnId,
 };
 use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 use std::fmt;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -245,6 +246,307 @@ pub struct ModelRequest {
     pub metadata: Value,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SubmittedPromptAttachmentKind {
+    Paste {
+        text: String,
+    },
+    LocalImage {
+        requested_path: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mime_type: Option<String>,
+    },
+    RemoteImage {
+        requested_url: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mime_type: Option<String>,
+    },
+    LocalFile {
+        requested_path: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        file_name: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mime_type: Option<String>,
+    },
+    RemoteFile {
+        requested_url: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        file_name: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mime_type: Option<String>,
+    },
+    EmbeddedImage {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mime_type: Option<String>,
+    },
+    EmbeddedFile {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        file_name: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mime_type: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        uri: Option<String>,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct SubmittedPromptAttachment {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placeholder: Option<String>,
+    #[serde(flatten)]
+    pub kind: SubmittedPromptAttachmentKind,
+}
+
+impl SubmittedPromptAttachment {
+    #[must_use]
+    pub fn from_message_part(part: &MessagePart) -> Option<Self> {
+        match part {
+            MessagePart::Paste { label, text } => Some(Self {
+                placeholder: Some(label.clone()),
+                kind: SubmittedPromptAttachmentKind::Paste { text: text.clone() },
+            }),
+            MessagePart::Image { mime_type, .. } => Some(Self {
+                placeholder: None,
+                kind: SubmittedPromptAttachmentKind::EmbeddedImage {
+                    mime_type: Some(mime_type.clone()),
+                },
+            }),
+            MessagePart::ImageUrl { url, mime_type } => Some(Self {
+                placeholder: None,
+                kind: SubmittedPromptAttachmentKind::RemoteImage {
+                    requested_url: url.clone(),
+                    mime_type: mime_type.clone(),
+                },
+            }),
+            MessagePart::File {
+                file_name,
+                mime_type,
+                uri,
+                ..
+            } => Some(Self {
+                placeholder: None,
+                kind: match uri {
+                    Some(uri) if uri.starts_with("http://") || uri.starts_with("https://") => {
+                        SubmittedPromptAttachmentKind::RemoteFile {
+                            requested_url: uri.clone(),
+                            file_name: file_name.clone(),
+                            mime_type: mime_type.clone(),
+                        }
+                    }
+                    Some(uri) => SubmittedPromptAttachmentKind::LocalFile {
+                        requested_path: uri.clone(),
+                        file_name: file_name.clone(),
+                        mime_type: mime_type.clone(),
+                    },
+                    None => SubmittedPromptAttachmentKind::EmbeddedFile {
+                        file_name: file_name.clone(),
+                        mime_type: mime_type.clone(),
+                        uri: None,
+                    },
+                },
+            }),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub fn preview_text(&self) -> String {
+        match &self.kind {
+            SubmittedPromptAttachmentKind::Paste { .. } => self
+                .placeholder
+                .clone()
+                .unwrap_or_else(|| "[Paste]".to_string()),
+            SubmittedPromptAttachmentKind::LocalImage { requested_path, .. } => {
+                format!("image {}", requested_path)
+            }
+            SubmittedPromptAttachmentKind::RemoteImage { requested_url, .. } => {
+                format!("image {}", requested_url)
+            }
+            SubmittedPromptAttachmentKind::LocalFile { requested_path, .. } => {
+                format!("file {}", requested_path)
+            }
+            SubmittedPromptAttachmentKind::RemoteFile { requested_url, .. } => {
+                format!("file {}", requested_url)
+            }
+            SubmittedPromptAttachmentKind::EmbeddedImage { mime_type } => {
+                format!("image {}", mime_type.as_deref().unwrap_or("embedded"))
+            }
+            SubmittedPromptAttachmentKind::EmbeddedFile {
+                file_name,
+                mime_type,
+                uri,
+            } => format!(
+                "file {}",
+                file_name
+                    .as_deref()
+                    .or(uri.as_deref())
+                    .or(mime_type.as_deref())
+                    .unwrap_or("embedded")
+            ),
+        }
+    }
+
+    #[must_use]
+    pub fn search_strings(&self) -> Vec<String> {
+        let mut values = vec![self.preview_text()];
+        match &self.kind {
+            SubmittedPromptAttachmentKind::Paste { text } => values.push(text.clone()),
+            SubmittedPromptAttachmentKind::LocalImage { requested_path, .. }
+            | SubmittedPromptAttachmentKind::LocalFile { requested_path, .. } => {
+                values.push(requested_path.clone());
+            }
+            SubmittedPromptAttachmentKind::RemoteImage { requested_url, .. }
+            | SubmittedPromptAttachmentKind::RemoteFile { requested_url, .. } => {
+                values.push(requested_url.clone());
+            }
+            SubmittedPromptAttachmentKind::EmbeddedImage { .. } => {}
+            SubmittedPromptAttachmentKind::EmbeddedFile {
+                file_name,
+                mime_type,
+                uri,
+            } => {
+                if let Some(file_name) = file_name {
+                    values.push(file_name.clone());
+                }
+                if let Some(mime_type) = mime_type {
+                    values.push(mime_type.clone());
+                }
+                if let Some(uri) = uri {
+                    values.push(uri.clone());
+                }
+            }
+        }
+        values
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct SubmittedPromptSnapshot {
+    #[serde(default)]
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<SubmittedPromptAttachment>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(untagged)]
+enum SubmittedPromptSnapshotWire {
+    Legacy(String),
+    Snapshot(SubmittedPromptSnapshotData),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+struct SubmittedPromptSnapshotData {
+    #[serde(default)]
+    text: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    attachments: Vec<SubmittedPromptAttachment>,
+}
+
+impl From<SubmittedPromptSnapshotData> for SubmittedPromptSnapshot {
+    fn from(value: SubmittedPromptSnapshotData) -> Self {
+        Self {
+            text: value.text,
+            attachments: value.attachments,
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for SubmittedPromptSnapshot {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        match SubmittedPromptSnapshotWire::deserialize(deserializer)? {
+            SubmittedPromptSnapshotWire::Legacy(text) => Ok(Self::from_text(text)),
+            SubmittedPromptSnapshotWire::Snapshot(snapshot) => Ok(snapshot.into()),
+        }
+    }
+}
+
+impl SubmittedPromptSnapshot {
+    #[must_use]
+    pub fn from_text(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            attachments: Vec::new(),
+        }
+    }
+
+    #[must_use]
+    pub fn from_message(message: &Message) -> Self {
+        Self {
+            text: message.text_content(),
+            attachments: message
+                .parts
+                .iter()
+                .filter_map(SubmittedPromptAttachment::from_message_part)
+                .collect(),
+        }
+    }
+
+    #[must_use]
+    pub fn preview_text(&self) -> String {
+        let trimmed = self.text.trim();
+        if !trimmed.is_empty() {
+            return trimmed.to_string();
+        }
+        self.attachments
+            .iter()
+            .map(SubmittedPromptAttachment::preview_text)
+            .collect::<Vec<_>>()
+            .join(" · ")
+    }
+
+    #[must_use]
+    pub fn search_strings(&self) -> Vec<String> {
+        let mut values = Vec::new();
+        if !self.text.trim().is_empty() {
+            values.push(self.text.clone());
+        }
+        values.extend(
+            self.attachments
+                .iter()
+                .flat_map(SubmittedPromptAttachment::search_strings),
+        );
+        values
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct SessionSummaryTokenUsage {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<ContextWindowUsage>,
+    #[serde(default)]
+    pub cumulative_usage: TokenUsage,
+}
+
+impl SessionSummaryTokenUsage {
+    #[must_use]
+    pub fn is_zero(&self) -> bool {
+        self.context_window.is_none() && self.cumulative_usage.is_zero()
+    }
+}
+
+impl From<TokenLedgerSnapshot> for SessionSummaryTokenUsage {
+    fn from(value: TokenLedgerSnapshot) -> Self {
+        Self {
+            context_window: value.context_window,
+            cumulative_usage: value.cumulative_usage,
+        }
+    }
+}
+
+impl From<&TokenLedgerSnapshot> for SessionSummaryTokenUsage {
+    fn from(value: &TokenLedgerSnapshot) -> Self {
+        Self {
+            context_window: value.context_window,
+            cumulative_usage: value.cumulative_usage,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ModelEvent {
@@ -316,7 +618,7 @@ pub enum SessionEventKind {
         reason: Option<String>,
     },
     UserPromptSubmit {
-        prompt: String,
+        prompt: SubmittedPromptSnapshot,
     },
     ModelRequestStarted {
         request: ModelRequest,
@@ -499,7 +801,8 @@ impl SessionEventEnvelope {
 mod tests {
     use super::{
         AgentEnvelope, AgentEnvelopeKind, AgentResultEnvelope, AgentStatus, AgentTaskSpec,
-        SessionEventEnvelope, SessionEventKind, ToolLifecycleEventKind,
+        SessionEventEnvelope, SessionEventKind, SubmittedPromptAttachment,
+        SubmittedPromptAttachmentKind, SubmittedPromptSnapshot, ToolLifecycleEventKind,
     };
     use crate::{AgentId, ToolCall, ToolCallId, ToolName, ToolOrigin, ToolResult};
 
@@ -604,5 +907,47 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn user_prompt_submit_deserializes_legacy_string_payloads() {
+        let event: SessionEventKind = serde_json::from_value(serde_json::json!({
+            "kind": "user_prompt_submit",
+            "prompt": "inspect the failure"
+        }))
+        .unwrap();
+
+        assert_eq!(
+            event,
+            SessionEventKind::UserPromptSubmit {
+                prompt: SubmittedPromptSnapshot::from_text("inspect the failure")
+            }
+        );
+    }
+
+    #[test]
+    fn user_prompt_submit_serializes_rich_prompt_snapshots_as_objects() {
+        let event = SessionEventKind::UserPromptSubmit {
+            prompt: SubmittedPromptSnapshot {
+                text: "[File #1]\nsummarize the report".to_string(),
+                attachments: vec![SubmittedPromptAttachment {
+                    placeholder: Some("[File #1]".to_string()),
+                    kind: SubmittedPromptAttachmentKind::LocalFile {
+                        requested_path: "reports/run.pdf".to_string(),
+                        file_name: Some("run.pdf".to_string()),
+                        mime_type: Some("application/pdf".to_string()),
+                    },
+                }],
+            },
+        };
+
+        let encoded = serde_json::to_value(&event).unwrap();
+        assert_eq!(encoded["kind"], "user_prompt_submit");
+        assert_eq!(encoded["prompt"]["text"], "[File #1]\nsummarize the report");
+        assert_eq!(encoded["prompt"]["attachments"][0]["kind"], "local_file");
+        assert_eq!(
+            encoded["prompt"]["attachments"][0]["requested_path"],
+            "reports/run.pdf"
+        );
     }
 }
