@@ -490,7 +490,7 @@ impl CodeAgentSession {
 
     pub(crate) async fn apply_control(&self, command: RuntimeCommand) -> Result<()> {
         let mut runtime = self.runtime.lock().await;
-        if let RuntimeCommand::Prompt { message } = &command {
+        if let RuntimeCommand::Prompt { message, .. } = &command {
             self.store_side_question_context(Self::side_question_context_from_runtime(
                 &runtime,
                 Some(message.clone()),
@@ -512,8 +512,14 @@ impl CodeAgentSession {
         Ok(())
     }
 
-    pub(crate) async fn queue_prompt_command(&self, message: Message) -> Result<String> {
-        let queued = self.control_plane.push_prompt(message);
+    pub(crate) async fn queue_prompt_command(
+        &self,
+        message: Message,
+        submitted_prompt: Option<agent::types::SubmittedPromptSnapshot>,
+    ) -> Result<String> {
+        let queued = self
+            .control_plane
+            .push_prompt_with_snapshot(message, submitted_prompt);
         Ok(queued.id.to_string())
     }
 
@@ -526,7 +532,7 @@ impl CodeAgentSession {
             .snapshot()
             .into_iter()
             .map(|queued| match queued.command {
-                RuntimeCommand::Prompt { message } => PendingControlSummary {
+                RuntimeCommand::Prompt { message, .. } => PendingControlSummary {
                     id: queued.id.to_string(),
                     kind: PendingControlKind::Prompt,
                     preview: message_operator_text(&message),
@@ -556,6 +562,9 @@ impl CodeAgentSession {
                 match current.kind {
                     PendingControlKind::Prompt => RuntimeCommand::Prompt {
                         message: Message::user(content.to_string()),
+                        submitted_prompt: Some(agent::types::SubmittedPromptSnapshot::from_text(
+                            content.to_string(),
+                        )),
                     },
                     PendingControlKind::Steer => RuntimeCommand::Steer {
                         message: content.to_string(),
@@ -565,7 +574,7 @@ impl CodeAgentSession {
             )
             .ok_or_else(|| anyhow::anyhow!("pending control update failed for {control_ref}"))?;
         Ok(match updated.command {
-            RuntimeCommand::Prompt { message } => PendingControlSummary {
+            RuntimeCommand::Prompt { message, .. } => PendingControlSummary {
                 id: updated.id.to_string(),
                 kind: PendingControlKind::Prompt,
                 preview: message_operator_text(&message),
@@ -591,7 +600,7 @@ impl CodeAgentSession {
             .remove(&RuntimeCommandId::from(current.id.clone()))
             .ok_or_else(|| anyhow::anyhow!("pending control removal failed for {control_ref}"))?;
         Ok(match removed.command {
-            RuntimeCommand::Prompt { message } => PendingControlSummary {
+            RuntimeCommand::Prompt { message, .. } => PendingControlSummary {
                 id: removed.id.to_string(),
                 kind: PendingControlKind::Prompt,
                 preview: message_operator_text(&message),
@@ -2660,7 +2669,7 @@ mod tests {
     use agent::types::{
         AgentHandle, AgentId, AgentResultEnvelope, AgentSessionId, AgentStatus, AgentTaskSpec,
         AgentWaitRequest, AgentWaitResponse, Message, MessageId, ModelEvent, ModelRequest,
-        SessionEventEnvelope, SessionEventKind, SessionId,
+        SessionEventEnvelope, SessionEventKind, SessionId, SubmittedPromptSnapshot,
     };
     use agent::{AgentRuntimeBuilder, RuntimeCommand, Skill, SkillCatalog};
     use async_trait::async_trait;
@@ -3239,6 +3248,7 @@ mod tests {
         session
             .apply_control(RuntimeCommand::Prompt {
                 message: Message::user("before refresh"),
+                submitted_prompt: None,
             })
             .await
             .unwrap();
@@ -3255,6 +3265,7 @@ mod tests {
         session
             .apply_control(RuntimeCommand::Prompt {
                 message: Message::user("after refresh"),
+                submitted_prompt: None,
             })
             .await
             .unwrap();
@@ -3291,7 +3302,7 @@ mod tests {
         let session = build_session(runtime, Arc::new(NoopSubagentExecutor), store, startup);
 
         let queued_id = session
-            .queue_prompt_command(Message::user("second"))
+            .queue_prompt_command(Message::user("second"), None)
             .await
             .unwrap();
         assert!(!queued_id.is_empty());
@@ -3300,6 +3311,7 @@ mod tests {
         session
             .apply_control(RuntimeCommand::Prompt {
                 message: Message::user("first"),
+                submitted_prompt: None,
             })
             .await
             .unwrap();
@@ -3366,7 +3378,7 @@ mod tests {
         let session = build_session(runtime, Arc::new(NoopSubagentExecutor), store, startup);
 
         let prompt_id = session
-            .queue_prompt_command(Message::user("draft"))
+            .queue_prompt_command(Message::user("draft"), None)
             .await
             .unwrap();
         let steer_id = session
@@ -3403,7 +3415,7 @@ mod tests {
         let session = build_session(runtime, Arc::new(NoopSubagentExecutor), store, startup);
 
         let prompt_id = session
-            .queue_prompt_command(Message::user("follow-up prompt"))
+            .queue_prompt_command(Message::user("follow-up prompt"), None)
             .await
             .unwrap();
         let steer_one = session
@@ -3459,7 +3471,7 @@ mod tests {
                 None,
                 None,
                 SessionEventKind::UserPromptSubmit {
-                    prompt: "status update".to_string(),
+                    prompt: SubmittedPromptSnapshot::from_text("status update"),
                 },
             ))
             .await
@@ -3515,7 +3527,7 @@ mod tests {
                 None,
                 None,
                 SessionEventKind::UserPromptSubmit {
-                    prompt: "status update".to_string(),
+                    prompt: SubmittedPromptSnapshot::from_text("status update"),
                 },
             ))
             .await
@@ -3532,7 +3544,7 @@ mod tests {
         assert_eq!(loaded.events.len(), 1);
         assert!(matches!(
             &loaded.events[0].event,
-            SessionEventKind::UserPromptSubmit { prompt } if prompt == "status update"
+            SessionEventKind::UserPromptSubmit { prompt } if prompt.text == "status update"
         ));
     }
 
@@ -3576,7 +3588,7 @@ mod tests {
                     None,
                     None,
                     SessionEventKind::UserPromptSubmit {
-                        prompt: prompt.to_string(),
+                        prompt: SubmittedPromptSnapshot::from_text(prompt),
                     },
                 ))
                 .await
@@ -3631,7 +3643,7 @@ mod tests {
                     None,
                     None,
                     SessionEventKind::UserPromptSubmit {
-                        prompt: "inspect".to_string(),
+                        prompt: SubmittedPromptSnapshot::from_text("inspect"),
                     },
                 ),
             ])
@@ -3679,6 +3691,7 @@ mod tests {
         session
             .apply_control(RuntimeCommand::Prompt {
                 message: Message::user("resume me"),
+                submitted_prompt: None,
             })
             .await
             .unwrap();
@@ -3737,6 +3750,7 @@ mod tests {
         session
             .apply_control(RuntimeCommand::Prompt {
                 message: Message::user("resume me"),
+                submitted_prompt: None,
             })
             .await
             .unwrap();
@@ -3795,6 +3809,7 @@ mod tests {
         session
             .apply_control(RuntimeCommand::Prompt {
                 message: Message::user("before resume"),
+                submitted_prompt: None,
             })
             .await
             .unwrap();
@@ -3813,6 +3828,7 @@ mod tests {
         session
             .apply_control(RuntimeCommand::Prompt {
                 message: Message::user("after resume"),
+                submitted_prompt: None,
             })
             .await
             .unwrap();
@@ -3868,6 +3884,7 @@ mod tests {
         session
             .apply_control(RuntimeCommand::Prompt {
                 message: Message::user("first turn"),
+                submitted_prompt: None,
             })
             .await
             .unwrap();
@@ -4435,6 +4452,7 @@ mod tests {
         session
             .apply_control(RuntimeCommand::Prompt {
                 message: Message::user("main thread question"),
+                submitted_prompt: None,
             })
             .await
             .unwrap();
