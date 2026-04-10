@@ -69,6 +69,9 @@ Intentionally still documented as not yet implemented:
 - `docs/code-agent-approval-policy-plan.md`
   - active host-scoped plan for relaxing repeated approval prompts on a narrow
     safe read-only tool allowlist
+- `docs/code-agent-history-and-token-durability-plan.md`
+  - active plan for a complete repair of prompt-history richness and
+    summary-level token durability in `code-agent`
 - `docs/memory-core-alignment.md`
   - active note for Claude-style instruction discovery and managed auto-memory
     index behavior in `memory-core`
