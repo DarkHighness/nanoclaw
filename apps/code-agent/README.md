@@ -24,7 +24,8 @@ It intentionally keeps the host layer thin:
 - loop detection as the primary guard against tool-call churn, without a fixed global iteration cap
 - provider adapter from `provider`
 - workspace skills loaded from conventional skill roots
-- interactive approval for destructive tools
+- interactive approval for destructive tools and higher-risk external reads,
+  with a narrow host allowlist for safe built-in web research tools
 - backend-owned approval and runtime event contracts for frontend reuse
 - hook-emitted live TUI cues (`show_toast`, `append_prompt`) projected through
   the runtime observer plane instead of synthetic transcript text
@@ -95,6 +96,11 @@ Use `/permissions` inside the TUI to inspect or switch the session base sandbox
 mode between `default` and `danger-full-access`. Model-issued
 `request_permissions` grants stay separate and layer on top of that base mode
 for the current turn or session.
+
+That sandbox toggle is separate from host approval policy. It does not disable
+approval prompts by itself, and `code-agent` now auto-allows only the built-in
+`web_search` / `web_fetch` slice instead of treating all read-only tools as
+globally safe.
 
 The bottom status line is configurable through `.nanoclaw/apps/code-agent.toml`.
 By default it surfaces the current status, full model name plus reasoning

@@ -17,6 +17,7 @@ mod session_memory_note;
 mod session_resume;
 mod store;
 mod task_history;
+mod tool_approval_policy;
 mod user_input;
 
 pub(crate) use approval::{
@@ -62,6 +63,7 @@ pub(crate) use session_history::{
     SessionExportKind, message_to_text, preview_id,
 };
 pub(crate) use task_history::{LoadedTask, LoadedTaskMessage, PersistedTaskSummary};
+pub(crate) use tool_approval_policy::build_code_agent_tool_approval_policy;
 pub(crate) use user_input::{
     NonInteractiveUserInputHandler, SessionUserInputHandler, UserInputCoordinator, UserInputPrompt,
 };

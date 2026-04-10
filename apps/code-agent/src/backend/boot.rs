@@ -10,9 +10,10 @@ use crate::backend::{
     ApprovalCoordinator, NonInteractivePermissionRequestHandler, NonInteractiveToolApprovalHandler,
     NonInteractiveUserInputHandler, PermissionRequestCoordinator, SessionEventStream,
     SessionPermissionRequestHandler, SessionToolApprovalHandler, SessionUserInputHandler,
-    UserInputCoordinator, build_plugin_activation_plan, build_sandbox_policy,
-    build_system_preamble, build_tool_context, dedup_mcp_servers, log_sandbox_status,
-    merge_driver_host_inputs, resolve_mcp_servers, resolve_skill_roots, tool_context_for_profile,
+    UserInputCoordinator, build_code_agent_tool_approval_policy, build_plugin_activation_plan,
+    build_sandbox_policy, build_system_preamble, build_tool_context, dedup_mcp_servers,
+    log_sandbox_status, merge_driver_host_inputs, resolve_mcp_servers, resolve_skill_roots,
+    tool_context_for_profile,
 };
 use crate::options::AppOptions;
 use crate::provider::{
@@ -26,8 +27,8 @@ use agent::mcp::{
 };
 use agent::runtime::{
     CompactionConfig, ConversationCompactor, ModelBackend, ModelConversationCompactor,
-    NoopToolApprovalPolicy, PermissionGrantStore, RuntimeSubagentExecutor, SubagentProfileResolver,
-    SubagentRuntimeProfile, ToolApprovalHandler,
+    PermissionGrantStore, RuntimeSubagentExecutor, SubagentProfileResolver, SubagentRuntimeProfile,
+    ToolApprovalHandler, ToolApprovalPolicy,
 };
 use agent::tools::{
     SubagentExecutor, SubagentLaunchSpec, describe_sandbox_policy, ensure_sandbox_policy_supported,
@@ -474,13 +475,15 @@ async fn build_runtime(
         skill_catalog: skill_catalog.clone(),
         plugin_instructions: plugin_instructions.clone(),
     });
+    let approval_policy: Arc<dyn ToolApprovalPolicy> =
+        Arc::new(build_code_agent_tool_approval_policy());
     let subagent_executor: Arc<dyn SubagentExecutor> = Arc::new(RuntimeSubagentExecutor::new(
         hook_runner.clone(),
         store.clone(),
         tools.clone(),
         tool_context.clone(),
         approval_handler.clone(),
-        Arc::new(NoopToolApprovalPolicy),
+        approval_policy.clone(),
         loop_detection_config.clone(),
         runtime_hooks.clone(),
         skill_catalog.clone(),
@@ -507,6 +510,7 @@ async fn build_runtime(
         .tool_registry(tools)
         .tool_context(tool_context)
         .tool_approval_handler(approval_handler)
+        .tool_approval_policy(approval_policy)
         .permission_grants(permission_grants)
         .conversation_compactor(compactor)
         .compaction_config(CompactionConfig {
