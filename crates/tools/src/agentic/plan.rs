@@ -58,6 +58,8 @@ pub struct UpdatePlanInput {
 enum UpdatePlanToolOutput {
     Success {
         explanation: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        warnings: Vec<String>,
         count: usize,
         revision_before: String,
         revision_after: String,
@@ -79,6 +81,12 @@ pub struct UpdatePlanTool {
     state: PlanState,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct NormalizedPlan {
+    items: Vec<PlanItem>,
+    warnings: Vec<String>,
+}
+
 impl UpdatePlanTool {
     #[must_use]
     pub fn new(state: PlanState) -> Self {
@@ -91,7 +99,7 @@ impl Tool for UpdatePlanTool {
     fn spec(&self) -> ToolSpec {
         builtin_tool_spec(
             "update_plan",
-            "Updates the task plan. Provide an optional explanation and a list of plan items, each with a step and status. At most one step can be in_progress at a time.",
+            "Updates the task plan. Provide an optional explanation and a list of plan items, each with a step and status. The shared plan keeps at most one step in_progress at a time, and extra in_progress items are demoted to pending.",
             serde_json::to_value(schema_for!(UpdatePlanInput)).expect("update_plan schema"),
             ToolOutputMode::Text,
             tool_approval_profile(false, true, true, false),
@@ -146,18 +154,19 @@ impl Tool for UpdatePlanTool {
             });
         }
 
-        self.state.replace(normalized.clone()).await;
-        let revision_after = revision_for(&normalized);
-        let (pending_count, in_progress_count, completed_count) = status_counts(&normalized);
+        self.state.replace(normalized.items.clone()).await;
+        let revision_after = revision_for(&normalized.items);
+        let (pending_count, in_progress_count, completed_count) = status_counts(&normalized.items);
         let structured_output = UpdatePlanToolOutput::Success {
             explanation: input.explanation.clone(),
-            count: normalized.len(),
+            warnings: normalized.warnings.clone(),
+            count: normalized.items.len(),
             revision_before: revision_before.clone(),
             revision_after: revision_after.clone(),
             pending_count,
             in_progress_count,
             completed_count,
-            items: normalized.clone(),
+            items: normalized.items.clone(),
         };
 
         Ok(ToolResult {
@@ -166,7 +175,8 @@ impl Tool for UpdatePlanTool {
             tool_name: "update_plan".into(),
             parts: vec![MessagePart::text(render_plan_update(
                 input.explanation.as_deref(),
-                &normalized,
+                &normalized.items,
+                &normalized.warnings,
                 &revision_before,
                 &revision_after,
             ))],
@@ -176,22 +186,24 @@ impl Tool for UpdatePlanTool {
             ),
             continuation: None,
             metadata: Some(serde_json::json!({
-                "count": normalized.len(),
+                "count": normalized.items.len(),
                 "revision_before": revision_before,
                 "revision_after": revision_after,
                 "pending_count": pending_count,
                 "in_progress_count": in_progress_count,
                 "completed_count": completed_count,
-                "items": normalized,
+                "warnings": normalized.warnings,
+                "items": normalized.items,
             })),
             is_error: false,
         })
     }
 }
 
-fn normalize_plan_items(items: Vec<PlanItem>) -> Result<Vec<PlanItem>> {
+fn normalize_plan_items(items: Vec<PlanItem>) -> Result<NormalizedPlan> {
     let mut normalized = Vec::with_capacity(items.len());
-    let mut in_progress_count = 0usize;
+    let mut saw_in_progress = false;
+    let mut demoted_in_progress_count = 0usize;
     for item in items {
         let step = item.step.trim();
         if step.is_empty() {
@@ -199,27 +211,43 @@ fn normalize_plan_items(items: Vec<PlanItem>) -> Result<Vec<PlanItem>> {
                 "update_plan requires every step to have non-empty text",
             ));
         }
-        if matches!(item.status, PlanStatus::InProgress) {
-            in_progress_count += 1;
-        }
+        let status = if matches!(item.status, PlanStatus::InProgress) {
+            if saw_in_progress {
+                demoted_in_progress_count += 1;
+                PlanStatus::Pending
+            } else {
+                saw_in_progress = true;
+                PlanStatus::InProgress
+            }
+        } else {
+            item.status
+        };
         normalized.push(PlanItem {
             step: step.to_string(),
-            status: item.status,
+            status,
         });
     }
 
-    if in_progress_count > 1 {
-        return Err(ToolError::invalid(
-            "update_plan allows at most one in_progress step",
+    let mut warnings = Vec::new();
+    if demoted_in_progress_count > 0 {
+        // Agents often resend the whole plan and accidentally mark multiple
+        // steps active. Empty steps and revision mismatches still fail closed,
+        // but duplicate in-progress states are safe to normalize locally.
+        warnings.push(format!(
+            "demoted {demoted_in_progress_count} extra in_progress step(s) to pending so the plan keeps a single active item"
         ));
     }
 
-    Ok(normalized)
+    Ok(NormalizedPlan {
+        items: normalized,
+        warnings,
+    })
 }
 
 fn render_plan_update(
     explanation: Option<&str>,
     items: &[PlanItem],
+    warnings: &[String],
     revision_before: &str,
     revision_after: &str,
 ) -> String {
@@ -232,6 +260,7 @@ fn render_plan_update(
     if let Some(explanation) = explanation.map(str::trim).filter(|value| !value.is_empty()) {
         sections.push(format!("explanation> {explanation}"));
     }
+    sections.extend(warnings.iter().map(|warning| format!("warning> {warning}")));
     sections.push(String::new());
     sections.push(render_plan(items));
     sections.join("\n")
@@ -338,9 +367,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn update_plan_rejects_multiple_in_progress_steps() {
+    async fn update_plan_normalizes_multiple_in_progress_steps() {
         let tool = UpdatePlanTool::new(PlanState::default());
-        let error = tool
+        let result = tool
             .execute(
                 ToolCallId::new(),
                 json!({
@@ -352,8 +381,15 @@ mod tests {
                 &ToolExecutionContext::default(),
             )
             .await
-            .expect_err("multiple in_progress steps should fail");
-        assert!(error.to_string().contains("at most one in_progress step"));
+            .expect("multiple in_progress steps should normalize");
+        let structured = result.structured_content.unwrap();
+        assert_eq!(structured["kind"], "success");
+        assert_eq!(
+            structured["warnings"][0],
+            "demoted 1 extra in_progress step(s) to pending so the plan keeps a single active item"
+        );
+        assert_eq!(structured["items"][0]["status"], "in_progress");
+        assert_eq!(structured["items"][1]["status"], "pending");
     }
 
     #[tokio::test]
