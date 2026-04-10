@@ -2,7 +2,9 @@ use crate::backend::session_resume::{
     HISTORY_ONLY_RESUME_REASON, can_resume_agent_session, reconstruct_runtime_session,
     visible_transcript,
 };
-use agent::types::{AgentSessionId, SessionEventEnvelope, SessionEventKind};
+use agent::types::{
+    AgentSessionId, SessionEventEnvelope, SessionEventKind, SessionSummaryTokenUsage,
+};
 use anyhow::{Result, anyhow};
 use std::collections::BTreeMap;
 use store::{SessionSearchResult, SessionSummary, replay_transcript};
@@ -34,6 +36,7 @@ pub(crate) struct PersistedSessionSummary {
     pub(crate) transcript_message_count: usize,
     pub(crate) session_title: Option<String>,
     pub(crate) last_user_prompt: Option<String>,
+    pub(crate) token_usage: Option<SessionSummaryTokenUsage>,
     pub(crate) resume_support: ResumeSupport,
 }
 
@@ -82,6 +85,7 @@ pub(crate) fn persisted_session_summary(
         transcript_message_count: summary.transcript_message_count,
         session_title,
         last_user_prompt: summary.last_user_prompt.clone(),
+        token_usage: summary.token_usage.clone(),
         resume_support: session_resume_support_for(summary.session_id.as_str(), active_session_ref),
     }
 }
@@ -134,7 +138,10 @@ pub(crate) fn persisted_agent_session_summaries(
         entry.event_count += 1;
         match &event.event {
             SessionEventKind::UserPromptSubmit { prompt } => {
-                entry.last_user_prompt = Some(prompt.clone());
+                let preview = prompt.preview_text();
+                if !preview.is_empty() {
+                    entry.last_user_prompt = Some(preview);
+                }
             }
             SessionEventKind::SubagentStart { task, .. } => {
                 entry.label.get_or_insert_with(|| task.role.clone());
@@ -273,7 +280,9 @@ mod tests {
         resolve_agent_session_resume_status,
     };
     use crate::backend::session_resume::HISTORY_ONLY_RESUME_REASON;
-    use agent::types::{AgentSessionId, SessionEventEnvelope, SessionEventKind, SessionId};
+    use agent::types::{
+        AgentSessionId, SessionEventEnvelope, SessionEventKind, SessionId, SubmittedPromptSnapshot,
+    };
     use store::SessionSummary;
 
     #[test]
@@ -287,6 +296,7 @@ mod tests {
                 agent_session_count: 1,
                 transcript_message_count: 4,
                 last_user_prompt: Some("inspect".to_string()),
+                token_usage: None,
             },
             "active_session",
             Some("Active session title".to_string()),
@@ -357,7 +367,7 @@ mod tests {
                 None,
                 None,
                 SessionEventKind::UserPromptSubmit {
-                    prompt: "inspect".to_string(),
+                    prompt: SubmittedPromptSnapshot::from_text("inspect"),
                 },
             ),
             SessionEventEnvelope::new(

@@ -17,7 +17,7 @@ use crate::tool_render::{
 };
 use agent::types::{
     AgentEnvelopeKind, AgentSessionId, AgentStatus, HookEvent, Message, SessionEventEnvelope,
-    SessionEventKind,
+    SessionEventKind, SessionSummaryTokenUsage,
 };
 use store::TokenUsageRecord;
 
@@ -40,10 +40,11 @@ pub(crate) fn format_session_summary_line(summary: &PersistedSessionSummary) -> 
     info_summary_entry(
         format!("{}  {}", preview_id(&summary.session_ref), title_or_prompt),
         [format!(
-            "{} messages · {} events · {} agent sessions · resume {}",
+            "{} messages · {} events · {} agent sessions{} · resume {}",
             summary.transcript_message_count,
             summary.event_count,
             summary.worker_session_count,
+            format_summary_token_usage(summary.token_usage.as_ref()),
             summary.resume_support.label()
         )],
     )
@@ -144,10 +145,11 @@ pub(crate) fn format_session_search_line(result: &PersistedSessionSearchMatch) -
             title_or_prompt
         ),
         [format!(
-            "{} messages · {} events · {} agent sessions · resume {} · matched {} event(s){}",
+            "{} messages · {} events · {} agent sessions{} · resume {} · matched {} event(s){}",
             result.summary.transcript_message_count,
             result.summary.event_count,
             result.summary.worker_session_count,
+            format_summary_token_usage(result.summary.token_usage.as_ref()),
             result.summary.resume_support.label(),
             result.matched_event_count,
             result
@@ -162,6 +164,20 @@ pub(crate) fn format_session_search_line(result: &PersistedSessionSearchMatch) -
                 })
         )],
     )
+}
+
+fn format_summary_token_usage(token_usage: Option<&SessionSummaryTokenUsage>) -> String {
+    token_usage
+        .filter(|token_usage| !token_usage.is_zero())
+        .map(|token_usage| {
+            format!(
+                " · tokens in={} out={} cache={}",
+                token_usage.cumulative_usage.input_tokens,
+                token_usage.cumulative_usage.output_tokens,
+                token_usage.cumulative_usage.cache_read_tokens,
+            )
+        })
+        .unwrap_or_default()
 }
 
 pub(crate) fn format_session_inspector(session: &LoadedSession) -> Vec<InspectorEntry> {
@@ -965,7 +981,7 @@ fn format_session_event_line(event: &SessionEventEnvelope) -> TranscriptEntry {
             ],
         ),
         SessionEventKind::UserPromptSubmit { prompt } => {
-            TranscriptEntry::UserPrompt(preview_text(prompt, 96))
+            TranscriptEntry::UserPrompt(preview_text(&prompt.preview_text(), 96))
         }
         SessionEventKind::ModelRequestStarted { request } => info_summary_entry(
             "Requested model response",
@@ -1274,6 +1290,7 @@ mod tests {
             transcript_message_count: 12,
             session_title: None,
             last_user_prompt: Some("Refine the approval preview".to_string()),
+            token_usage: None,
             resume_support: ResumeSupport::AttachedToActiveRuntime,
         });
 
@@ -1316,6 +1333,7 @@ mod tests {
                 transcript_message_count: 12,
                 session_title: None,
                 last_user_prompt: Some("Refine the approval preview".to_string()),
+                token_usage: None,
                 resume_support: ResumeSupport::AttachedToActiveRuntime,
             },
             matched_event_count: 3,
@@ -1342,6 +1360,7 @@ mod tests {
             transcript_message_count: 12,
             session_title: Some("Deploy rollback follow-up".to_string()),
             last_user_prompt: Some("Refine the approval preview".to_string()),
+            token_usage: None,
             resume_support: ResumeSupport::AttachedToActiveRuntime,
         });
 

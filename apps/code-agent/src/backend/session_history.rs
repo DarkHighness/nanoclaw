@@ -390,7 +390,7 @@ mod tests {
     use agent::types::{
         AgentHandle, AgentResultEnvelope, AgentSessionId, AgentStatus, AgentTaskSpec, Message,
         MessagePart, MessageRole, SessionEventEnvelope, SessionEventKind, SessionId,
-        TokenLedgerSnapshot,
+        SubmittedPromptSnapshot, TokenLedgerSnapshot,
     };
     use store::{
         SessionSummary, SessionTokenUsageReport, TokenUsageRecord,
@@ -408,6 +408,7 @@ mod tests {
                 agent_session_count: 1,
                 transcript_message_count: 2,
                 last_user_prompt: Some("first".to_string()),
+                token_usage: None,
             },
             SessionSummary {
                 session_id: SessionId::from("def67890"),
@@ -417,6 +418,7 @@ mod tests {
                 agent_session_count: 1,
                 transcript_message_count: 2,
                 last_user_prompt: Some("second".to_string()),
+                token_usage: None,
             },
         ];
 
@@ -437,6 +439,7 @@ mod tests {
                 agent_session_count: 1,
                 transcript_message_count: 2,
                 last_user_prompt: None,
+                token_usage: None,
             },
             SessionSummary {
                 session_id: SessionId::from("abc67890"),
@@ -446,6 +449,7 @@ mod tests {
                 agent_session_count: 1,
                 transcript_message_count: 2,
                 last_user_prompt: None,
+                token_usage: None,
             },
         ];
 
@@ -546,7 +550,7 @@ mod tests {
                 None,
                 None,
                 SessionEventKind::UserPromptSubmit {
-                    prompt: "inspect".to_string(),
+                    prompt: SubmittedPromptSnapshot::from_text("inspect"),
                 },
             ),
             SessionEventEnvelope::new(
