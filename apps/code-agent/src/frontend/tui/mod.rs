@@ -38,8 +38,9 @@ use paste_burst::{CharDecision, FlushResult, PasteBurst};
 use render::{main_pane_viewport_height, render};
 pub(crate) use state::SharedUiState;
 use state::{
-    ComposerDraftAttachmentKind, ComposerDraftAttachmentState, ComposerSubmission, InspectorEntry,
-    ToastTone, TranscriptEntry, TranscriptShellDetail, TuiState,
+    ComposerDraftAttachmentKind, ComposerDraftAttachmentState, ComposerDraftState,
+    ComposerSubmission, InspectorEntry, ToastTone, TranscriptEntry, TranscriptShellDetail,
+    TuiState,
 };
 use tool_state::restore_tool_panels;
 
@@ -49,7 +50,9 @@ use agent::tools::{
     ToolExecutionContext, UserInputAnswer, UserInputResponse, load_tool_image,
     resolve_tool_path_against_workspace_root,
 };
-use agent::types::{AgentStatus, Message, MessagePart, message_operator_text};
+use agent::types::{
+    AgentStatus, Message, MessagePart, SubmittedPromptSnapshot, message_operator_text,
+};
 use anyhow::{Context, Result, anyhow};
 use base64::Engine;
 use crossterm::event::{
@@ -862,7 +865,7 @@ impl CodeAgentTui {
         let mut persisted = None;
         self.ui_state.mutate(|state| {
             let _ = state.record_local_input_history(input);
-            if state.record_input_history(input) {
+            if state.record_input_history(SubmittedPromptSnapshot::from_text(input.to_string())) {
                 persisted = Some(state.input_history().to_vec());
             }
         });
@@ -878,7 +881,7 @@ impl CodeAgentTui {
             state.clear_composer_context_hint();
             state.clear_toast();
             let _ = state.record_local_input_draft(submission.local_history_draft.clone());
-            if state.record_input_history(&submission.persisted_history_text) {
+            if state.record_input_history(submission.prompt_snapshot.clone()) {
                 persisted = Some(state.input_history().to_vec());
             }
         });
@@ -993,11 +996,17 @@ impl CodeAgentTui {
 
         match load_tool_image(path, &self.composer_attachment_context()).await {
             Ok(image) => {
+                let part = image.message_part();
+                let mime_type = match &part {
+                    MessagePart::Image { mime_type, .. } => Some(mime_type.clone()),
+                    _ => None,
+                };
                 let attachment = ComposerDraftAttachmentState {
                     placeholder: Some("[Image #1]".to_string()),
                     kind: ComposerDraftAttachmentKind::LocalImage {
                         requested_path: path.to_string(),
-                        part: image.message_part(),
+                        mime_type,
+                        part: Some(part),
                     },
                 };
                 self.ui_state.mutate(|state| {
@@ -1066,12 +1075,14 @@ impl CodeAgentTui {
                     placeholder: Some("[File #1]".to_string()),
                     kind: ComposerDraftAttachmentKind::LocalFile {
                         requested_path: file.requested_path.clone(),
-                        part: MessagePart::File {
+                        file_name: file.file_name.clone(),
+                        mime_type: file.mime_type.clone(),
+                        part: Some(MessagePart::File {
                             file_name: file.file_name.clone(),
                             mime_type: file.mime_type.clone(),
                             data_base64: Some(file.data_base64),
                             uri: Some(file.requested_path.clone()),
-                        },
+                        }),
                     },
                 };
                 self.ui_state.mutate(|state| {
@@ -2136,22 +2147,134 @@ impl CodeAgentTui {
         submission: ComposerSubmission,
     ) {
         self.record_submitted_prompt(&submission);
+        let message = match self
+            .materialize_prompt_message(&submission.local_history_draft)
+            .await
+        {
+            Ok(message) => message,
+            Err(error) => {
+                let message = summarize_nonfatal_error("materialize prompt", &error);
+                self.ui_state.mutate(|state| {
+                    state.status = format!("Failed to prepare prompt: {message}");
+                    state.push_activity(format!(
+                        "failed to prepare prompt: {}",
+                        state::preview_text(&message, 56)
+                    ));
+                });
+                return;
+            }
+        };
         match action {
             PlainInputSubmitAction::StartPrompt => {
-                self.start_turn_message(submission.message).await
+                self.start_turn_message(message, Some(submission.prompt_snapshot))
+                    .await
             }
             PlainInputSubmitAction::QueuePrompt => {
-                self.queue_prompt_behind_active_turn_message(submission.message)
-                    .await;
+                self.queue_prompt_behind_active_turn_message(
+                    message,
+                    Some(submission.prompt_snapshot),
+                )
+                .await;
             }
             PlainInputSubmitAction::SteerActiveTurn => {
                 self.schedule_runtime_steer_while_active(
-                    submission.persisted_history_text,
+                    submission.prompt_snapshot.text,
                     Some("inline_enter".to_string()),
                 )
                 .await;
             }
         }
+    }
+
+    async fn materialize_prompt_message(&self, draft: &ComposerDraftState) -> Result<Message> {
+        let mut parts = Vec::new();
+        for attachment in draft
+            .draft_attachments
+            .iter()
+            .filter(|attachment| attachment.placeholder.is_none())
+        {
+            parts.extend(self.materialize_attachment_parts(attachment).await?);
+        }
+
+        let mut remaining = draft.text.as_str();
+        while !remaining.is_empty() {
+            let next_attachment = draft
+                .draft_attachments
+                .iter()
+                .filter_map(|attachment| {
+                    let placeholder = attachment.placeholder.as_ref()?;
+                    remaining.find(placeholder).map(|index| (index, attachment))
+                })
+                .min_by_key(|(index, _)| *index);
+            let Some((index, attachment)) = next_attachment else {
+                parts.push(MessagePart::inline_text(remaining));
+                break;
+            };
+
+            if index > 0 {
+                parts.push(MessagePart::inline_text(&remaining[..index]));
+            }
+            parts.extend(self.materialize_attachment_parts(attachment).await?);
+            remaining = &remaining[index
+                + attachment
+                    .placeholder
+                    .as_ref()
+                    .expect("inline attachment placeholder")
+                    .len()..];
+        }
+
+        Ok(if parts.is_empty() {
+            Message::user("")
+        } else {
+            Message::new(agent::types::MessageRole::User, parts)
+        })
+    }
+
+    async fn materialize_attachment_parts(
+        &self,
+        attachment: &ComposerDraftAttachmentState,
+    ) -> Result<Vec<MessagePart>> {
+        Ok(match &attachment.kind {
+            ComposerDraftAttachmentKind::LargePaste { payload } => {
+                let label = attachment
+                    .placeholder
+                    .clone()
+                    .unwrap_or_else(|| "[Paste]".to_string());
+                vec![MessagePart::paste(label, payload.clone())]
+            }
+            ComposerDraftAttachmentKind::LocalImage {
+                part: Some(part), ..
+            }
+            | ComposerDraftAttachmentKind::LocalFile {
+                part: Some(part), ..
+            }
+            | ComposerDraftAttachmentKind::RemoteImage { part, .. }
+            | ComposerDraftAttachmentKind::RemoteFile { part, .. } => vec![part.clone()],
+            ComposerDraftAttachmentKind::LocalImage {
+                requested_path,
+                part: None,
+                ..
+            } => vec![
+                load_tool_image(requested_path, &self.composer_attachment_context())
+                    .await?
+                    .message_part(),
+            ],
+            ComposerDraftAttachmentKind::LocalFile {
+                requested_path,
+                file_name,
+                mime_type,
+                part: None,
+            } => {
+                let file =
+                    load_composer_file(requested_path, &self.composer_attachment_context()).await?;
+                vec![MessagePart::File {
+                    file_name: file_name.clone().or(file.file_name),
+                    mime_type: mime_type.clone().or(file.mime_type),
+                    data_base64: Some(file.data_base64),
+                    uri: Some(file.requested_path),
+                }]
+            }
+        })
     }
 
     async fn try_apply_pending_control_edit(&mut self, input: &str) -> bool {
@@ -2199,21 +2322,42 @@ impl CodeAgentTui {
     }
 
     async fn start_turn(&mut self, prompt: String) {
-        self.start_turn_message(Message::user(prompt)).await;
+        self.start_turn_message(
+            Message::user(prompt.clone()),
+            Some(SubmittedPromptSnapshot::from_text(prompt)),
+        )
+        .await;
     }
 
-    async fn start_turn_message(&mut self, message: Message) {
+    async fn start_turn_message(
+        &mut self,
+        message: Message,
+        submitted_prompt: Option<SubmittedPromptSnapshot>,
+    ) {
         if self.turn_task.is_some() {
-            self.queue_prompt_behind_active_turn_message(message).await;
+            self.queue_prompt_behind_active_turn_message(message, submitted_prompt)
+                .await;
             return;
         }
 
-        self.start_command(RuntimeCommand::Prompt { message }).await;
+        self.start_command(RuntimeCommand::Prompt {
+            message,
+            submitted_prompt,
+        })
+        .await;
     }
 
-    async fn queue_prompt_behind_active_turn_message(&mut self, message: Message) {
+    async fn queue_prompt_behind_active_turn_message(
+        &mut self,
+        message: Message,
+        submitted_prompt: Option<SubmittedPromptSnapshot>,
+    ) {
         let preview = state::preview_text(&message_operator_text(&message), 40);
-        match self.session.queue_prompt_command(message).await {
+        match self
+            .session
+            .queue_prompt_command(message, submitted_prompt)
+            .await
+        {
             Ok(queued_id) => {
                 let pending = self.session.pending_controls();
                 let depth = pending.len();
@@ -2343,6 +2487,7 @@ impl CodeAgentTui {
             });
             self.start_command(RuntimeCommand::Prompt {
                 message: Message::user(prompt),
+                submitted_prompt: None,
             })
             .await;
         } else {
@@ -3776,7 +3921,7 @@ fn run_external_editor(seed: &str, editor_command: &[String]) -> Result<String> 
 
 fn queued_command_preview(command: &RuntimeCommand) -> String {
     match command {
-        RuntimeCommand::Prompt { message } => {
+        RuntimeCommand::Prompt { message, .. } => {
             let preview = message_operator_text(message);
             format!("running prompt: {}", state::preview_text(&preview, 40))
         }

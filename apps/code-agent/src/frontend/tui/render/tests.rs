@@ -572,22 +572,25 @@ fn multiline_composer_text_keeps_local_attachment_placeholders_inline() {
             placeholder: Some("[Image #1]".to_string()),
             kind: ComposerDraftAttachmentKind::LocalImage {
                 requested_path: "artifacts/failure.png".to_string(),
-                part: MessagePart::Image {
+                mime_type: Some("image/png".to_string()),
+                part: Some(MessagePart::Image {
                     mime_type: "image/png".to_string(),
                     data_base64: "png-data".to_string(),
-                },
+                }),
             },
         },
         ComposerDraftAttachmentState {
             placeholder: Some("[File #1]".to_string()),
             kind: ComposerDraftAttachmentKind::LocalFile {
                 requested_path: "reports/run.pdf".to_string(),
-                part: MessagePart::File {
+                file_name: Some("run.pdf".to_string()),
+                mime_type: Some("application/pdf".to_string()),
+                part: Some(MessagePart::File {
                     file_name: Some("run.pdf".to_string()),
                     mime_type: Some("application/pdf".to_string()),
                     data_base64: Some("pdf-data".to_string()),
                     uri: Some("reports/run.pdf".to_string()),
-                },
+                }),
             },
         },
     ];

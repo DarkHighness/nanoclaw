@@ -8,7 +8,8 @@ use crate::tool_render::{
     ToolDetail, ToolDetailBlockKind, preview_tool_details, serialize_tool_details,
 };
 use agent::types::{
-    AgentStatus, Message, MessageId, MessagePart, MessageRole, TokenLedgerSnapshot,
+    AgentStatus, Message, MessageId, MessagePart, MessageRole, SubmittedPromptAttachment,
+    SubmittedPromptAttachmentKind, SubmittedPromptSnapshot, TokenLedgerSnapshot,
 };
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -166,7 +167,8 @@ pub(crate) enum ComposerDraftAttachmentKind {
     },
     LocalImage {
         requested_path: String,
-        part: MessagePart,
+        mime_type: Option<String>,
+        part: Option<MessagePart>,
     },
     RemoteImage {
         requested_url: String,
@@ -174,7 +176,9 @@ pub(crate) enum ComposerDraftAttachmentKind {
     },
     LocalFile {
         requested_path: String,
-        part: MessagePart,
+        file_name: Option<String>,
+        mime_type: Option<String>,
+        part: Option<MessagePart>,
     },
     RemoteFile {
         requested_url: String,
@@ -190,8 +194,7 @@ pub(crate) struct ComposerKillBufferState {
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct ComposerSubmission {
-    pub(crate) message: Message,
-    pub(crate) persisted_history_text: String,
+    pub(crate) prompt_snapshot: SubmittedPromptSnapshot,
     pub(crate) local_history_draft: ComposerDraftState,
 }
 
@@ -266,6 +269,72 @@ pub(crate) fn draft_preview_text(
 }
 
 impl ComposerDraftAttachmentState {
+    fn submitted_prompt_attachment(&self) -> SubmittedPromptAttachment {
+        SubmittedPromptAttachment {
+            placeholder: self.placeholder.clone(),
+            kind: match &self.kind {
+                ComposerDraftAttachmentKind::LargePaste { payload } => {
+                    SubmittedPromptAttachmentKind::Paste {
+                        text: payload.clone(),
+                    }
+                }
+                ComposerDraftAttachmentKind::LocalImage {
+                    requested_path,
+                    mime_type,
+                    ..
+                } => SubmittedPromptAttachmentKind::LocalImage {
+                    requested_path: requested_path.clone(),
+                    mime_type: mime_type.clone(),
+                },
+                ComposerDraftAttachmentKind::RemoteImage {
+                    requested_url,
+                    part,
+                } => {
+                    let mime_type = match part {
+                        MessagePart::ImageUrl { mime_type, .. } => mime_type.clone(),
+                        _ => None,
+                    };
+                    SubmittedPromptAttachmentKind::RemoteImage {
+                        requested_url: requested_url.clone(),
+                        mime_type,
+                    }
+                }
+                ComposerDraftAttachmentKind::LocalFile {
+                    requested_path,
+                    file_name,
+                    mime_type,
+                    ..
+                } => SubmittedPromptAttachmentKind::LocalFile {
+                    requested_path: requested_path.clone(),
+                    file_name: file_name.clone(),
+                    mime_type: mime_type.clone(),
+                },
+                ComposerDraftAttachmentKind::RemoteFile {
+                    requested_url,
+                    part,
+                } => {
+                    let (file_name, mime_type) = match part {
+                        MessagePart::File {
+                            file_name,
+                            mime_type,
+                            ..
+                        } => (file_name.clone(), mime_type.clone()),
+                        _ => (None, None),
+                    };
+                    SubmittedPromptAttachmentKind::RemoteFile {
+                        requested_url: requested_url.clone(),
+                        file_name,
+                        mime_type,
+                    }
+                }
+            },
+        }
+    }
+
+    fn same_persisted_attachment(&self, other: &Self) -> bool {
+        self.submitted_prompt_attachment() == other.submitted_prompt_attachment()
+    }
+
     fn is_row_attachment(&self) -> bool {
         self.placeholder.is_none()
     }
@@ -288,22 +357,6 @@ impl ComposerDraftAttachmentState {
 
     fn default_inline_placeholder(&self) -> Option<String> {
         default_inline_placeholder(&self.kind)
-    }
-
-    fn prompt_parts(&self) -> Vec<MessagePart> {
-        match &self.kind {
-            ComposerDraftAttachmentKind::LargePaste { payload } => {
-                let label = self
-                    .placeholder
-                    .clone()
-                    .unwrap_or_else(|| "[Paste]".to_string());
-                vec![MessagePart::paste(label, payload.clone())]
-            }
-            ComposerDraftAttachmentKind::LocalImage { part, .. }
-            | ComposerDraftAttachmentKind::RemoteImage { part, .. }
-            | ComposerDraftAttachmentKind::LocalFile { part, .. }
-            | ComposerDraftAttachmentKind::RemoteFile { part, .. } => vec![part.clone()],
-        }
     }
 
     pub(crate) fn row_summary(&self) -> Option<String> {
@@ -403,6 +456,117 @@ pub(crate) fn composer_draft_from_parts(parts: &[MessagePart]) -> ComposerDraftS
     composer_draft_from_message(&Message::new(MessageRole::User, parts.to_vec()))
 }
 
+pub(crate) fn composer_draft_from_prompt_snapshot(
+    snapshot: &SubmittedPromptSnapshot,
+) -> ComposerDraftState {
+    ComposerDraftState {
+        cursor: snapshot.text.len(),
+        text: snapshot.text.clone(),
+        draft_attachments: snapshot
+            .attachments
+            .iter()
+            .cloned()
+            .map(composer_draft_attachment_from_snapshot)
+            .collect(),
+    }
+    .normalized()
+}
+
+pub(crate) fn submitted_prompt_snapshot_from_draft(
+    draft: &ComposerDraftState,
+) -> SubmittedPromptSnapshot {
+    SubmittedPromptSnapshot {
+        text: draft.text.clone(),
+        attachments: draft
+            .draft_attachments
+            .iter()
+            .map(ComposerDraftAttachmentState::submitted_prompt_attachment)
+            .collect(),
+    }
+}
+
+fn composer_draft_attachment_from_snapshot(
+    attachment: SubmittedPromptAttachment,
+) -> ComposerDraftAttachmentState {
+    let placeholder = attachment.placeholder.clone();
+    let kind = match attachment.kind {
+        SubmittedPromptAttachmentKind::Paste { text } => {
+            ComposerDraftAttachmentKind::LargePaste { payload: text }
+        }
+        SubmittedPromptAttachmentKind::LocalImage {
+            requested_path,
+            mime_type,
+        } => ComposerDraftAttachmentKind::LocalImage {
+            requested_path,
+            mime_type,
+            part: None,
+        },
+        SubmittedPromptAttachmentKind::RemoteImage {
+            requested_url,
+            mime_type,
+        } => ComposerDraftAttachmentKind::RemoteImage {
+            requested_url: requested_url.clone(),
+            part: MessagePart::ImageUrl {
+                url: requested_url,
+                mime_type,
+            },
+        },
+        SubmittedPromptAttachmentKind::LocalFile {
+            requested_path,
+            file_name,
+            mime_type,
+        } => ComposerDraftAttachmentKind::LocalFile {
+            requested_path,
+            file_name,
+            mime_type,
+            part: None,
+        },
+        SubmittedPromptAttachmentKind::RemoteFile {
+            requested_url,
+            file_name,
+            mime_type,
+        } => ComposerDraftAttachmentKind::RemoteFile {
+            requested_url: requested_url.clone(),
+            part: MessagePart::File {
+                file_name,
+                mime_type,
+                data_base64: None,
+                uri: Some(requested_url),
+            },
+        },
+        SubmittedPromptAttachmentKind::EmbeddedImage { mime_type } => {
+            ComposerDraftAttachmentKind::RemoteImage {
+                requested_url: mime_type
+                    .clone()
+                    .unwrap_or_else(|| "embedded-image".to_string()),
+                part: MessagePart::ImageUrl {
+                    url: mime_type
+                        .clone()
+                        .unwrap_or_else(|| "embedded-image".to_string()),
+                    mime_type,
+                },
+            }
+        }
+        SubmittedPromptAttachmentKind::EmbeddedFile {
+            file_name,
+            mime_type,
+            uri,
+        } => {
+            let requested_path = uri
+                .clone()
+                .or(file_name.clone())
+                .unwrap_or_else(|| "embedded-file".to_string());
+            ComposerDraftAttachmentKind::LocalFile {
+                requested_path,
+                file_name,
+                mime_type,
+                part: None,
+            }
+        }
+    };
+    ComposerDraftAttachmentState { placeholder, kind }
+}
+
 fn composer_draft_attachment_from_part(part: &MessagePart) -> Option<ComposerDraftAttachmentState> {
     match part {
         MessagePart::Paste { label, text } => Some(ComposerDraftAttachmentState {
@@ -415,7 +579,8 @@ fn composer_draft_attachment_from_part(part: &MessagePart) -> Option<ComposerDra
             placeholder: Some("[Image #1]".to_string()),
             kind: ComposerDraftAttachmentKind::LocalImage {
                 requested_path: format!("[image:{mime_type}]"),
-                part: part.clone(),
+                mime_type: Some(mime_type.clone()),
+                part: Some(part.clone()),
             },
         }),
         MessagePart::ImageUrl { url, .. } => Some(ComposerDraftAttachmentState {
@@ -425,7 +590,12 @@ fn composer_draft_attachment_from_part(part: &MessagePart) -> Option<ComposerDra
                 part: part.clone(),
             },
         }),
-        MessagePart::File { file_name, uri, .. } => {
+        MessagePart::File {
+            file_name,
+            mime_type,
+            uri,
+            ..
+        } => {
             let requested_path = uri
                 .as_ref()
                 .or(file_name.as_ref())
@@ -439,7 +609,9 @@ fn composer_draft_attachment_from_part(part: &MessagePart) -> Option<ComposerDra
             } else {
                 ComposerDraftAttachmentKind::LocalFile {
                     requested_path,
-                    part: part.clone(),
+                    file_name: file_name.clone(),
+                    mime_type: mime_type.clone(),
+                    part: Some(part.clone()),
                 }
             };
             Some(ComposerDraftAttachmentState {
@@ -1205,7 +1377,7 @@ pub(crate) struct TuiState {
     // Keep kill/yank state outside the visible draft so Ctrl+Y can restore the
     // latest killed tail even after submit/clear transitions.
     pub(crate) kill_buffer: Option<ComposerKillBufferState>,
-    pub(crate) input_history: Vec<String>,
+    pub(crate) input_history: Vec<SubmittedPromptSnapshot>,
     pub(crate) local_input_history: Vec<ComposerDraftState>,
     pub(crate) input_history_navigation: Option<ComposerHistoryNavigationState>,
     pub(crate) command_completion_index: usize,
@@ -1645,18 +1817,18 @@ impl TuiState {
         }
     }
 
-    pub(crate) fn set_input_history(&mut self, entries: Vec<String>) {
+    pub(crate) fn set_input_history(&mut self, entries: Vec<SubmittedPromptSnapshot>) {
         self.input_history = entries;
         self.input_history_navigation = None;
     }
 
-    pub(crate) fn input_history(&self) -> &[String] {
+    pub(crate) fn input_history(&self) -> &[SubmittedPromptSnapshot] {
         &self.input_history
     }
 
-    pub(crate) fn record_input_history(&mut self, input: &str) -> bool {
+    pub(crate) fn record_input_history(&mut self, prompt: SubmittedPromptSnapshot) -> bool {
         self.input_history_navigation = None;
-        input_history::record_input_history(&mut self.input_history, input)
+        input_history::record_input_history(&mut self.input_history, prompt)
     }
 
     pub(crate) fn record_local_input_history(&mut self, input: &str) -> bool {
@@ -1683,7 +1855,10 @@ impl TuiState {
             }
         }
         let draft = draft.normalized();
-        if self.local_input_history.last() == Some(&draft) {
+        if self.local_input_history.last().is_some_and(|existing| {
+            submitted_prompt_snapshot_from_draft(existing)
+                == submitted_prompt_snapshot_from_draft(&draft)
+        }) {
             return false;
         }
         self.local_input_history.push(draft);
@@ -1702,7 +1877,10 @@ impl TuiState {
         }
 
         let draft = self.current_input_draft();
-        if self.local_input_history.last() == Some(&draft) {
+        if self.local_input_history.last().is_some_and(|existing| {
+            submitted_prompt_snapshot_from_draft(existing)
+                == submitted_prompt_snapshot_from_draft(&draft)
+        }) {
             return false;
         }
         self.local_input_history.push(draft);
@@ -1813,7 +1991,7 @@ impl TuiState {
         if self
             .draft_attachments
             .iter()
-            .any(|existing| existing.kind == attachment.kind)
+            .any(|existing| existing.same_persisted_attachment(&attachment))
         {
             return false;
         }
@@ -1838,7 +2016,7 @@ impl TuiState {
         if self
             .draft_attachments
             .iter()
-            .any(|existing| existing.kind == attachment.kind)
+            .any(|existing| existing.same_persisted_attachment(&attachment))
         {
             return false;
         }
@@ -2233,7 +2411,7 @@ impl TuiState {
             .input_history
             .iter()
             .cloned()
-            .map(ComposerDraftState::from_text)
+            .map(|snapshot| composer_draft_from_prompt_snapshot(&snapshot))
             .collect::<Vec<_>>();
         if self.local_input_history.is_empty() {
             return entries;
@@ -2247,7 +2425,10 @@ impl TuiState {
             .iter()
             .rev()
             .zip(entries.iter().rev())
-            .take_while(|(local, persistent)| local.text == persistent.text)
+            .take_while(|(local, persistent)| {
+                submitted_prompt_snapshot_from_draft(local)
+                    == submitted_prompt_snapshot_from_draft(persistent)
+            })
             .count();
         entries.truncate(entries.len().saturating_sub(shared_suffix));
         entries.extend(self.local_input_history.iter().cloned());
@@ -2294,7 +2475,55 @@ impl TuiState {
     }
 
     fn take_submission_input(&mut self) -> String {
-        self.take_submission().persisted_history_text
+        let text = self.expanded_input_text();
+        let _ = self.take_submission();
+        text
+    }
+
+    fn expanded_input_text(&self) -> String {
+        let mut expanded = self.input.clone();
+        for attachment in &self.draft_attachments {
+            let Some(placeholder) = attachment.placeholder.as_ref() else {
+                continue;
+            };
+            let replacement = match &attachment.kind {
+                ComposerDraftAttachmentKind::LargePaste { payload } => payload.clone(),
+                ComposerDraftAttachmentKind::LocalImage {
+                    part: Some(part), ..
+                }
+                | ComposerDraftAttachmentKind::RemoteImage { part, .. }
+                | ComposerDraftAttachmentKind::LocalFile {
+                    part: Some(part), ..
+                }
+                | ComposerDraftAttachmentKind::RemoteFile { part, .. } => {
+                    agent::types::message_part_operator_text(part)
+                }
+                ComposerDraftAttachmentKind::LocalImage {
+                    requested_path,
+                    mime_type,
+                    ..
+                } => format!(
+                    "[image:{}{}]",
+                    requested_path,
+                    mime_type
+                        .as_deref()
+                        .map(|mime| format!(" {mime}"))
+                        .unwrap_or_default()
+                ),
+                ComposerDraftAttachmentKind::LocalFile {
+                    requested_path,
+                    file_name,
+                    mime_type,
+                    ..
+                } => agent::types::file_display_text(
+                    file_name.as_deref(),
+                    mime_type.as_deref(),
+                    Some(requested_path),
+                ),
+            };
+            expanded = expanded.replace(placeholder, &replacement);
+        }
+        expanded
     }
 
     fn take_submission(&mut self) -> ComposerSubmission {
@@ -2310,62 +2539,11 @@ impl TuiState {
 
     fn current_submission(&self) -> ComposerSubmission {
         let local_history_draft = self.current_input_draft();
-        let message = self.submission_message();
-        let persisted_history_text = message.text_content();
+        let prompt_snapshot = submitted_prompt_snapshot_from_draft(&local_history_draft);
         ComposerSubmission {
-            message,
-            persisted_history_text,
+            prompt_snapshot,
             local_history_draft,
         }
-    }
-
-    fn submission_message(&self) -> Message {
-        let mut parts = Vec::new();
-        for attachment in self
-            .draft_attachments
-            .iter()
-            .filter(|attachment| attachment.is_row_attachment())
-        {
-            parts.extend(attachment.prompt_parts());
-        }
-        let mut remaining = self.input.as_str();
-
-        while !remaining.is_empty() {
-            let next_attachment = self
-                .draft_attachments
-                .iter()
-                .filter_map(|attachment| {
-                    let placeholder = attachment.placeholder.as_ref()?;
-                    remaining.find(placeholder).map(|index| (index, attachment))
-                })
-                .min_by_key(|(index, _)| *index);
-            let Some((index, attachment)) = next_attachment else {
-                parts.push(MessagePart::inline_text(remaining));
-                break;
-            };
-
-            if index > 0 {
-                parts.push(MessagePart::inline_text(&remaining[..index]));
-            }
-
-            parts.extend(attachment.prompt_parts());
-
-            remaining = &remaining[index
-                + attachment
-                    .placeholder
-                    .as_ref()
-                    .expect("inline attachment placeholder")
-                    .len()..];
-        }
-
-        if parts.is_empty() {
-            return Message::user("");
-        }
-
-        // Inline draft fragments keep the original placeholder spacing while the
-        // typed paste part preserves the out-of-band payload for future replay
-        // and richer attachment-aware prompt submission.
-        Message::new(MessageRole::User, parts)
     }
 
     fn renormalize_draft_attachment_placeholders(&mut self) {
@@ -2863,7 +3041,10 @@ mod tests {
         composer_draft_from_parts, draft_preview_text, git_snapshot, page_scroll_amount,
     };
     use crate::theme::ThemeSummary;
-    use agent::types::{Message, MessageId, MessagePart, MessageRole};
+    use agent::types::{
+        Message, MessageId, MessagePart, MessageRole, SubmittedPromptAttachment,
+        SubmittedPromptAttachmentKind, SubmittedPromptSnapshot,
+    };
     use std::time::{Duration, Instant};
     use tempfile::tempdir;
 
@@ -3008,7 +3189,10 @@ mod tests {
         let mut state = TuiState {
             input: "current draft".to_string(),
             input_cursor: "current draft".len(),
-            input_history: vec!["first prompt".to_string(), "second prompt".to_string()],
+            input_history: vec![
+                SubmittedPromptSnapshot::from_text("first prompt"),
+                SubmittedPromptSnapshot::from_text("second prompt"),
+            ],
             ..TuiState::default()
         };
 
@@ -3057,7 +3241,10 @@ mod tests {
     #[test]
     fn editing_after_history_recall_resets_navigation_cursor() {
         let mut state = TuiState {
-            input_history: vec!["prompt one".to_string(), "prompt two".to_string()],
+            input_history: vec![
+                SubmittedPromptSnapshot::from_text("prompt one"),
+                SubmittedPromptSnapshot::from_text("prompt two"),
+            ],
             ..TuiState::default()
         };
 
@@ -3076,7 +3263,10 @@ mod tests {
         let mut state = TuiState {
             input: "current draft".to_string(),
             input_cursor: 4,
-            input_history: vec!["first prompt".to_string(), "second prompt".to_string()],
+            input_history: vec![
+                SubmittedPromptSnapshot::from_text("first prompt"),
+                SubmittedPromptSnapshot::from_text("second prompt"),
+            ],
             ..TuiState::default()
         };
 
@@ -3090,7 +3280,10 @@ mod tests {
     #[test]
     fn local_history_overrides_persistent_suffix_with_richer_drafts() {
         let mut state = TuiState {
-            input_history: vec!["older".to_string(), "recent".to_string()],
+            input_history: vec![
+                SubmittedPromptSnapshot::from_text("older"),
+                SubmittedPromptSnapshot::from_text("recent"),
+            ],
             local_input_history: vec![ComposerDraftState {
                 text: "recent".to_string(),
                 cursor: 2,
@@ -3240,8 +3433,16 @@ mod tests {
         let submission = state.take_submission();
 
         assert_eq!(
-            submission.persisted_history_text,
-            "prefix pasted body suffix"
+            submission.prompt_snapshot,
+            SubmittedPromptSnapshot {
+                text: "prefix [Paste #1] suffix".to_string(),
+                attachments: vec![SubmittedPromptAttachment {
+                    placeholder: Some("[Paste #1]".to_string()),
+                    kind: SubmittedPromptAttachmentKind::Paste {
+                        text: "pasted body".to_string(),
+                    },
+                }],
+            }
         );
         assert_eq!(
             submission.local_history_draft,
@@ -3250,14 +3451,6 @@ mod tests {
                 cursor: "prefix [Paste #1] suffix".len(),
                 draft_attachments: vec![large_paste_attachment("pasted body")],
             }
-        );
-        assert_eq!(
-            submission.message.parts,
-            vec![
-                MessagePart::inline_text("prefix "),
-                MessagePart::paste("[Paste #1]", "pasted body"),
-                MessagePart::inline_text(" suffix"),
-            ]
         );
     }
 
@@ -3272,8 +3465,27 @@ mod tests {
         let submission = state.take_submission();
 
         assert_eq!(
-            submission.persisted_history_text,
-            "[image:image/png]\n \n[file:run.pdf application/pdf reports/run.pdf]\n\ndescribe the failure"
+            submission.prompt_snapshot,
+            SubmittedPromptSnapshot {
+                text: "[Image #1] [File #1]\ndescribe the failure".to_string(),
+                attachments: vec![
+                    SubmittedPromptAttachment {
+                        placeholder: Some("[Image #1]".to_string()),
+                        kind: SubmittedPromptAttachmentKind::LocalImage {
+                            requested_path: "artifacts/failure.png".to_string(),
+                            mime_type: Some("image/png".to_string()),
+                        },
+                    },
+                    SubmittedPromptAttachment {
+                        placeholder: Some("[File #1]".to_string()),
+                        kind: SubmittedPromptAttachmentKind::LocalFile {
+                            requested_path: "reports/run.pdf".to_string(),
+                            file_name: Some("run.pdf".to_string()),
+                            mime_type: Some("application/pdf".to_string()),
+                        },
+                    },
+                ],
+            }
         );
         assert_eq!(
             submission.local_history_draft,
@@ -3285,23 +3497,6 @@ mod tests {
                     local_file_attachment("reports/run.pdf"),
                 ],
             }
-        );
-        assert_eq!(
-            submission.message.parts,
-            vec![
-                MessagePart::Image {
-                    mime_type: "image/png".to_string(),
-                    data_base64: "png-data".to_string(),
-                },
-                MessagePart::inline_text(" "),
-                MessagePart::File {
-                    file_name: Some("run.pdf".to_string()),
-                    mime_type: Some("application/pdf".to_string()),
-                    data_base64: Some("pdf-data".to_string()),
-                    uri: Some("reports/run.pdf".to_string()),
-                },
-                MessagePart::inline_text("\ndescribe the failure"),
-            ]
         );
     }
 
@@ -3319,8 +3514,27 @@ mod tests {
         let submission = state.take_submission();
 
         assert_eq!(
-            submission.persisted_history_text,
-            "[image_url:https://example.com/assets/failure.png image/png]\n[file:run.pdf application/pdf https://example.com/reports/run.pdf]\nsummarize the remote artifacts"
+            submission.prompt_snapshot,
+            SubmittedPromptSnapshot {
+                text: "summarize the remote artifacts".to_string(),
+                attachments: vec![
+                    SubmittedPromptAttachment {
+                        placeholder: None,
+                        kind: SubmittedPromptAttachmentKind::RemoteImage {
+                            requested_url: "https://example.com/assets/failure.png".to_string(),
+                            mime_type: Some("image/png".to_string()),
+                        },
+                    },
+                    SubmittedPromptAttachment {
+                        placeholder: None,
+                        kind: SubmittedPromptAttachmentKind::RemoteFile {
+                            requested_url: "https://example.com/reports/run.pdf".to_string(),
+                            file_name: Some("run.pdf".to_string()),
+                            mime_type: Some("application/pdf".to_string()),
+                        },
+                    },
+                ],
+            }
         );
         assert_eq!(
             submission.local_history_draft,
@@ -3332,22 +3546,6 @@ mod tests {
                     remote_file_attachment("https://example.com/reports/run.pdf"),
                 ],
             }
-        );
-        assert_eq!(
-            submission.message.parts,
-            vec![
-                MessagePart::ImageUrl {
-                    url: "https://example.com/assets/failure.png".to_string(),
-                    mime_type: Some("image/png".to_string()),
-                },
-                MessagePart::File {
-                    file_name: Some("run.pdf".to_string()),
-                    mime_type: Some("application/pdf".to_string()),
-                    data_base64: None,
-                    uri: Some("https://example.com/reports/run.pdf".to_string()),
-                },
-                MessagePart::inline_text("summarize the remote artifacts"),
-            ]
         );
     }
 
@@ -3784,10 +3982,11 @@ mod tests {
             placeholder: Some("[Image #1]".to_string()),
             kind: ComposerDraftAttachmentKind::LocalImage {
                 requested_path: path.to_string(),
-                part: MessagePart::Image {
+                mime_type: Some("image/png".to_string()),
+                part: Some(MessagePart::Image {
                     mime_type: "image/png".to_string(),
                     data_base64: "png-data".to_string(),
-                },
+                }),
             },
         }
     }
@@ -3797,12 +3996,14 @@ mod tests {
             placeholder: Some("[File #1]".to_string()),
             kind: ComposerDraftAttachmentKind::LocalFile {
                 requested_path: path.to_string(),
-                part: MessagePart::File {
+                file_name: Some("run.pdf".to_string()),
+                mime_type: Some("application/pdf".to_string()),
+                part: Some(MessagePart::File {
                     file_name: Some("run.pdf".to_string()),
                     mime_type: Some("application/pdf".to_string()),
                     data_base64: Some("pdf-data".to_string()),
                     uri: Some(path.to_string()),
-                },
+                }),
             },
         }
     }
@@ -3812,10 +4013,11 @@ mod tests {
             placeholder: None,
             kind: ComposerDraftAttachmentKind::LocalImage {
                 requested_path: path.to_string(),
-                part: MessagePart::Image {
+                mime_type: Some("image/png".to_string()),
+                part: Some(MessagePart::Image {
                     mime_type: "image/png".to_string(),
                     data_base64: "png-data".to_string(),
-                },
+                }),
             },
         }
     }
@@ -3825,12 +4027,14 @@ mod tests {
             placeholder: None,
             kind: ComposerDraftAttachmentKind::LocalFile {
                 requested_path: path.to_string(),
-                part: MessagePart::File {
+                file_name: Some("run.pdf".to_string()),
+                mime_type: Some("application/pdf".to_string()),
+                part: Some(MessagePart::File {
                     file_name: Some("run.pdf".to_string()),
                     mime_type: Some("application/pdf".to_string()),
                     data_base64: Some("pdf-data".to_string()),
                     uri: Some(path.to_string()),
-                },
+                }),
             },
         }
     }
