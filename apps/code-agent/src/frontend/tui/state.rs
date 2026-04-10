@@ -1003,16 +1003,26 @@ impl TranscriptToolEntry {
 pub(crate) struct TranscriptPlanEntry {
     pub(crate) headline: String,
     pub(crate) explanation: Option<String>,
+    pub(crate) warnings: Vec<String>,
     pub(crate) items: Vec<PlanEntry>,
 }
 
 impl TranscriptPlanEntry {
-    pub(crate) fn new(explanation: Option<String>, items: Vec<PlanEntry>) -> Self {
+    pub(crate) fn new(
+        explanation: Option<String>,
+        warnings: Vec<String>,
+        items: Vec<PlanEntry>,
+    ) -> Self {
         Self {
             headline: "Updated Plan".to_string(),
             explanation: explanation
                 .map(|value| value.trim().to_string())
                 .filter(|value| !value.is_empty()),
+            warnings: warnings
+                .into_iter()
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+                .collect(),
             items,
         }
     }
@@ -1022,6 +1032,11 @@ impl TranscriptPlanEntry {
         if let Some(explanation) = &self.explanation {
             lines.push(format!("  └ {explanation}"));
         }
+        lines.extend(
+            self.warnings
+                .iter()
+                .map(|warning| format!("  └ warning {warning}")),
+        );
         if self.items.is_empty() {
             lines.push("  └ (no steps provided)".to_string());
         } else {
@@ -1125,8 +1140,12 @@ impl TranscriptEntry {
         Self::Tool(TranscriptToolEntry::new(status, tool_name, detail_lines))
     }
 
-    pub(crate) fn plan_update(explanation: Option<String>, items: Vec<PlanEntry>) -> Self {
-        Self::Plan(TranscriptPlanEntry::new(explanation, items))
+    pub(crate) fn plan_update(
+        explanation: Option<String>,
+        warnings: Vec<String>,
+        items: Vec<PlanEntry>,
+    ) -> Self {
+        Self::Plan(TranscriptPlanEntry::new(explanation, warnings, items))
     }
 
     pub(crate) fn execution_update(

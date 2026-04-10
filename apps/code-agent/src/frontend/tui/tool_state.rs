@@ -12,15 +12,16 @@ pub(crate) fn plan_items_from_tool_output(
     tool_name: &str,
     structured_output_preview: Option<&str>,
 ) -> Option<Vec<PlanEntry>> {
-    plan_payload_from_tool_output(tool_name, structured_output_preview).map(|(_, items)| items)
+    plan_payload_from_tool_output(tool_name, structured_output_preview).map(|(_, _, items)| items)
 }
 
 pub(crate) fn plan_update_entry_from_tool_output(
     tool_name: &str,
     structured_output_preview: Option<&str>,
 ) -> Option<TranscriptEntry> {
-    let (explanation, items) = plan_payload_from_tool_output(tool_name, structured_output_preview)?;
-    Some(TranscriptEntry::plan_update(explanation, items))
+    let (explanation, warnings, items) =
+        plan_payload_from_tool_output(tool_name, structured_output_preview)?;
+    Some(TranscriptEntry::plan_update(explanation, warnings, items))
 }
 
 pub(crate) fn execution_state_from_tool_output(
@@ -66,7 +67,7 @@ pub(crate) fn restore_tool_panels(events: &[SessionEventEnvelope]) -> RestoredTo
 fn plan_payload_from_tool_output(
     tool_name: &str,
     structured_output_preview: Option<&str>,
-) -> Option<(Option<String>, Vec<PlanEntry>)> {
+) -> Option<(Option<String>, Vec<String>, Vec<PlanEntry>)> {
     if tool_name != "update_plan" {
         return None;
     }
@@ -81,8 +82,22 @@ fn plan_payload_from_tool_output(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string);
+    let warnings = value
+        .get("warnings")
+        .and_then(Value::as_array)
+        .map(|warnings| {
+            warnings
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
     Some((
         explanation,
+        warnings,
         items
             .iter()
             .filter_map(|item| {

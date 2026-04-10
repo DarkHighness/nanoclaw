@@ -692,6 +692,7 @@ mod tests {
             structured_output_preview: Some(
                 json!({
                     "kind": "success",
+                    "warnings": ["demoted 1 extra in_progress step(s) to pending"],
                     "items": [
                         {"step": "Inspect repo", "status": "completed"},
                         {"step": "Refine TUI", "status": "in_progress"}
@@ -705,7 +706,7 @@ mod tests {
         assert_eq!(snapshot.transcript.len(), 1);
         assert_eq!(
             transcript_text(&snapshot.transcript[0]),
-            "• Updated Plan\n  └ [x] Inspect repo\n  └ [~] Refine TUI"
+            "• Updated Plan\n  └ warning demoted 1 extra in_progress step(s) to pending\n  └ [x] Inspect repo\n  └ [~] Refine TUI"
         );
         assert_eq!(snapshot.plan_items.len(), 2);
         assert_eq!(snapshot.plan_items[1].content, "Refine TUI");

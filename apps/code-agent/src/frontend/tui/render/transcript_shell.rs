@@ -254,6 +254,19 @@ pub(super) fn render_plan_entry(
         ]));
     }
 
+    for warning in &entry.warnings {
+        rendered.push(Line::from(vec![
+            transcript_continuation_prefix(kind),
+            Span::styled(
+                "warning ".to_string(),
+                Style::default()
+                    .fg(palette().warn)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(warning.clone(), Style::default().fg(palette().text)),
+        ]));
+    }
+
     if entry.items.is_empty() {
         rendered.push(Line::from(vec![
             transcript_continuation_prefix(kind),

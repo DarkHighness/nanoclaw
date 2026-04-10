@@ -1531,6 +1531,7 @@ fn transcript_renders_plan_updates_as_dedicated_cells() {
     };
     state.transcript = vec![TranscriptEntry::plan_update(
         Some("Keep the transcript focused on the next slice.".to_string()),
+        vec!["Demoted extra active steps to pending.".to_string()],
         vec![
             PlanEntry {
                 id: "p1".to_string(),
@@ -1555,6 +1556,9 @@ fn transcript_renders_plan_updates_as_dedicated_cells() {
     assert_eq!(rendered[0].spans[2].content.as_ref(), "Updated Plan");
     assert!(rendered.iter().any(|line| {
         line_text_for(line).contains("Keep the transcript focused on the next slice.")
+    }));
+    assert!(rendered.iter().any(|line| {
+        line_text_for(line).contains("warning Demoted extra active steps to pending.")
     }));
     assert!(
         rendered
