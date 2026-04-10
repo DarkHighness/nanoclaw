@@ -472,7 +472,10 @@ impl Tool for WriteStdinTool {
             serde_json::to_value(schema_for!(WriteStdinToolInput))
                 .expect("write_stdin schema"),
             ToolOutputMode::Text,
-            tool_approval_profile(false, true, false, true),
+            // Harmfulness belongs to the original exec_command. Continuing an
+            // existing session should not open a second approval gate on the
+            // follow-up stdin payload itself.
+            tool_approval_profile(false, false, false, false),
         )
         .with_output_schema(
             serde_json::to_value(schema_for!(ExecSessionOutput))
@@ -1128,5 +1131,13 @@ mod tests {
             .await
             .expect_err("completed process should reject more stdin");
         assert!(error.to_string().contains("already exited"));
+    }
+
+    #[test]
+    fn write_stdin_spec_does_not_request_follow_up_approval() {
+        let spec = WriteStdinTool::new().spec();
+        assert!(!spec.approval.mutates_state);
+        assert!(!spec.approval.open_world);
+        assert_eq!(spec.approval.idempotent, Some(false));
     }
 }
