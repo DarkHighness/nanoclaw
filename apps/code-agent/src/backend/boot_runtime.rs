@@ -5,7 +5,8 @@ use agent::runtime::{
 };
 use agent::tools::{
     CodeCallHierarchyDirection, CodeCallHierarchyEntry, CodeHover, CodeNavigationTarget,
-    CodeReference, CodeSymbol, FileActivityObserver, SandboxBackendStatus, SubagentExecutor,
+    CodeReference, CodeSymbol, FileActivityObserver, ProcessExecutor, SandboxBackendStatus,
+    SandboxError, SubagentExecutor,
 };
 use agent::{
     ApplyPatchTool, CodeCallHierarchyTool, CodeDefinitionsTool, CodeDocumentSymbolsTool,
@@ -13,11 +14,13 @@ use agent::{
     CodeSymbolSearchTool, EditTool, ExecCommandTool, ExecutionState, GlobTool, GrepTool,
     JsReplTool, ListTool, ManagedCodeIntelBackend, ManagedCodeIntelOptions,
     ManagedPolicyProcessExecutor, PatchTool, PlanState, ReadTool, RequestPermissionsTool,
-    RequestUserInputTool, SandboxPolicy, SkillCatalog, SkillTool, TaskTool, ToolExecutionContext,
-    ToolRegistry, ToolSearchTool, ToolSuggestTool, UpdateExecutionTool, UpdatePlanTool,
-    ViewImageTool, WebFetchTool, WebSearchBackendsTool, WebSearchTool,
-    WorkspaceTextCodeIntelBackend, WriteStdinTool, WriteTool,
+    RequestUserInputTool, SandboxPolicy, SkillCatalog, SkillTool, TaskTool, ToolCallId,
+    ToolExecutionContext, ToolRegistry, ToolResult, ToolSearchTool, ToolSuggestTool,
+    UpdateExecutionTool, UpdatePlanTool, ViewImageTool, WebFetchTool, WebSearchBackendsTool,
+    WebSearchTool, WorkspaceTextCodeIntelBackend, WriteStdinTool, WriteTool,
 };
+use async_trait::async_trait;
+use serde_json::Value;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
@@ -26,10 +29,17 @@ use tracing::warn;
 pub(crate) const COMMAND_HOOK_DISABLED_WARNING_PREFIX: &str =
     "sandbox backend unavailable; disabled command hooks to avoid host subprocess execution:";
 pub(crate) const MANAGED_CODE_INTEL_DISABLED_WARNING_PREFIX: &str = "sandbox backend unavailable; disabled managed code-intel helpers to avoid host subprocess execution:";
+const HOST_PROCESS_SURFACES_DISABLED_MESSAGE: &str = "host subprocess surfaces are disabled in the current session. Switch /permissions to danger-full-access or enable a supported sandbox backend.";
+
+#[derive(Clone)]
+pub(crate) struct SwitchableHostProcessExecutor {
+    inner: Arc<dyn ProcessExecutor>,
+    enabled: Arc<RwLock<bool>>,
+}
 
 #[derive(Clone)]
 pub(crate) struct SwitchableCommandHookExecutor {
-    process_executor: Arc<ManagedPolicyProcessExecutor>,
+    process_executor: Arc<dyn ProcessExecutor>,
     state: Arc<RwLock<SwitchableCommandHookState>>,
 }
 
@@ -43,7 +53,7 @@ struct SwitchableCommandHookState {
 struct ManagedCodeIntelConfig {
     workspace_root: PathBuf,
     options: ManagedCodeIntelOptions,
-    process_executor: Arc<ManagedPolicyProcessExecutor>,
+    process_executor: Arc<dyn ProcessExecutor>,
 }
 
 impl ManagedCodeIntelConfig {
@@ -68,7 +78,7 @@ pub(crate) struct SwitchableCodeIntelBackend {
 pub(crate) struct RuntimeTooling {
     pub(crate) hook_runner: Arc<HookRunner>,
     pub(crate) loop_detection_config: LoopDetectionConfig,
-    pub(crate) process_executor: Arc<ManagedPolicyProcessExecutor>,
+    pub(crate) process_executor: Arc<SwitchableHostProcessExecutor>,
     pub(crate) command_hook_executor: Arc<SwitchableCommandHookExecutor>,
     pub(crate) code_intel_backend: Arc<SwitchableCodeIntelBackend>,
     pub(crate) host_process_surfaces_allowed: bool,
@@ -76,10 +86,47 @@ pub(crate) struct RuntimeTooling {
     pub(crate) tools: ToolRegistry,
 }
 
+impl SwitchableHostProcessExecutor {
+    #[must_use]
+    pub(crate) fn new(inner: Arc<dyn ProcessExecutor>, enabled: bool) -> Self {
+        Self {
+            inner,
+            enabled: Arc::new(RwLock::new(enabled)),
+        }
+    }
+
+    pub(crate) fn set_host_process_surfaces(&self, enabled: bool) {
+        *self.enabled.write().unwrap() = enabled;
+    }
+
+    pub(crate) fn ensure_enabled(&self, tool_name: &str) -> agent::tools::Result<()> {
+        if *self.enabled.read().unwrap() {
+            return Ok(());
+        }
+        Err(agent::tools::ToolError::invalid_state(format!(
+            "{tool_name} is unavailable because {HOST_PROCESS_SURFACES_DISABLED_MESSAGE}"
+        )))
+    }
+}
+
+impl ProcessExecutor for SwitchableHostProcessExecutor {
+    fn prepare(
+        &self,
+        request: agent::tools::ExecRequest,
+    ) -> std::result::Result<tokio::process::Command, SandboxError> {
+        if !*self.enabled.read().unwrap() {
+            return Err(SandboxError::invalid_state(
+                HOST_PROCESS_SURFACES_DISABLED_MESSAGE,
+            ));
+        }
+        self.inner.prepare(request)
+    }
+}
+
 impl SwitchableCommandHookExecutor {
     #[must_use]
     pub(crate) fn new(
-        process_executor: Arc<ManagedPolicyProcessExecutor>,
+        process_executor: Arc<dyn ProcessExecutor>,
         sandbox_policy: SandboxPolicy,
         enabled: bool,
     ) -> Self {
@@ -96,6 +143,40 @@ impl SwitchableCommandHookExecutor {
         let mut state = self.state.write().unwrap();
         state.enabled = enabled;
         state.sandbox_policy = sandbox_policy;
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct GuardedWriteStdinTool {
+    gate: Arc<SwitchableHostProcessExecutor>,
+    inner: WriteStdinTool,
+}
+
+impl GuardedWriteStdinTool {
+    #[must_use]
+    pub(crate) fn new(gate: Arc<SwitchableHostProcessExecutor>) -> Self {
+        Self {
+            gate,
+            inner: WriteStdinTool::new(),
+        }
+    }
+}
+
+#[async_trait]
+impl agent::Tool for GuardedWriteStdinTool {
+    fn spec(&self) -> agent::types::ToolSpec {
+        self.inner.spec()
+    }
+
+    async fn execute(
+        &self,
+        call_id: ToolCallId,
+        arguments: Value,
+        ctx: &ToolExecutionContext,
+    ) -> agent::tools::Result<ToolResult> {
+        let _ = ctx;
+        self.gate.ensure_enabled("write_stdin")?;
+        self.inner.execute(call_id, arguments, ctx).await
     }
 }
 
@@ -128,7 +209,7 @@ impl SwitchableCodeIntelBackend {
     fn new(
         options: &AppOptions,
         workspace_root: &Path,
-        process_executor: Arc<ManagedPolicyProcessExecutor>,
+        process_executor: Arc<dyn ProcessExecutor>,
         host_process_surfaces_allowed: bool,
         sandbox_status: &SandboxBackendStatus,
         startup_warnings: &mut Vec<String>,
@@ -183,7 +264,7 @@ impl SwitchableCodeIntelBackend {
     #[must_use]
     pub(crate) fn managed_for_workspace(
         workspace_root: &Path,
-        process_executor: Arc<ManagedPolicyProcessExecutor>,
+        process_executor: Arc<dyn ProcessExecutor>,
         enabled: bool,
     ) -> Self {
         let config = ManagedCodeIntelConfig {
@@ -369,9 +450,12 @@ pub(crate) fn build_runtime_tooling(
     sandbox_status: &SandboxBackendStatus,
     skill_catalog: SkillCatalog,
 ) -> RuntimeTooling {
-    let process_executor = Arc::new(ManagedPolicyProcessExecutor::new());
     let host_process_surfaces_allowed =
         host_process_surfaces_allowed(sandbox_policy, sandbox_status);
+    let process_executor = Arc::new(SwitchableHostProcessExecutor::new(
+        Arc::new(ManagedPolicyProcessExecutor::new()),
+        host_process_surfaces_allowed,
+    ));
     let command_hook_executor = Arc::new(SwitchableCommandHookExecutor::new(
         process_executor.clone(),
         sandbox_policy.clone(),
@@ -408,8 +492,8 @@ pub(crate) fn build_runtime_tooling(
             ..LoopDetectionConfig::default()
         },
         process_executor,
-        command_hook_executor,
         code_intel_backend,
+        command_hook_executor,
         host_process_surfaces_allowed,
         startup_warnings,
         tools,
@@ -435,7 +519,7 @@ pub(crate) fn register_subagent_tools(
 fn build_builtin_tools(
     sandbox_policy: &SandboxPolicy,
     code_intel_backend: Arc<SwitchableCodeIntelBackend>,
-    process_executor: Arc<ManagedPolicyProcessExecutor>,
+    process_executor: Arc<SwitchableHostProcessExecutor>,
     skill_catalog: SkillCatalog,
 ) -> ToolRegistry {
     let file_activity_backend = code_intel_backend.clone();
@@ -481,7 +565,7 @@ fn build_builtin_tools(
         process_executor.clone(),
         sandbox_policy.clone(),
     ));
-    tools.register(WriteStdinTool::new());
+    tools.register(GuardedWriteStdinTool::new(process_executor));
     tools.register(CodeSymbolSearchTool::with_backend(
         code_intel_backend.clone(),
     ));
@@ -521,14 +605,15 @@ mod tests {
     use agent::SkillCatalog;
     use agent::tools::{
         NetworkPolicy, SandboxBackendKind, SandboxBackendStatus, SandboxPolicy, SubagentExecutor,
-        SubagentInputDelivery, SubagentLaunchSpec, SubagentParentContext,
+        SubagentInputDelivery, SubagentLaunchSpec, SubagentParentContext, ToolExecutionContext,
     };
     use agent::types::{
-        AgentHandle, AgentId, AgentResultEnvelope, AgentWaitRequest, AgentWaitResponse,
+        AgentHandle, AgentId, AgentResultEnvelope, AgentWaitRequest, AgentWaitResponse, ToolCallId,
+        ToolName,
     };
     use agent_env::EnvMap;
     use async_trait::async_trait;
-    use serde_json::Value;
+    use serde_json::{Value, json};
     use std::sync::Arc;
     use std::sync::{Mutex, OnceLock};
     use tempfile::tempdir;
@@ -711,6 +796,134 @@ mod tests {
             }
             _ => {}
         }
+    }
+
+    #[tokio::test]
+    async fn write_stdin_is_blocked_when_host_process_surfaces_turn_off_mid_session() {
+        let options = load_options();
+        let workspace = tempdir().unwrap();
+        let tooling = build_runtime_tooling(
+            &options,
+            workspace.path(),
+            &SandboxPolicy::permissive(),
+            &SandboxBackendStatus::Unavailable {
+                reason: "not needed".to_string(),
+            },
+            SkillCatalog::default(),
+        );
+        let exec_tool = tooling.tools.get("exec_command").expect("exec tool");
+        let ctx = ToolExecutionContext {
+            workspace_root: workspace.path().to_path_buf(),
+            effective_sandbox_policy: Some(SandboxPolicy::permissive()),
+            ..Default::default()
+        };
+        let result = exec_tool
+            .execute(
+                ToolCallId::new(),
+                json!({"cmd": "cat", "yield_time_ms": 10}),
+                &ctx,
+            )
+            .await
+            .expect("start exec session");
+        let session_id = result
+            .structured_content
+            .as_ref()
+            .and_then(|value| value.get("session_id"))
+            .and_then(Value::as_str)
+            .expect("exec session id")
+            .to_string();
+
+        tooling.process_executor.set_host_process_surfaces(false);
+        let write_tool = tooling.tools.get("write_stdin").expect("write tool");
+        let error = write_tool
+            .execute(
+                ToolCallId::new(),
+                json!({"session_id": session_id, "chars": "hello"}),
+                &ctx,
+            )
+            .await
+            .expect_err("write_stdin should fail closed once host process surfaces are disabled");
+        assert!(
+            error
+                .to_string()
+                .contains("host subprocess surfaces are disabled")
+        );
+
+        tooling.process_executor.set_host_process_surfaces(true);
+        write_tool
+            .execute(
+                ToolCallId::new(),
+                json!({"session_id": session_id, "close_stdin": true, "yield_time_ms": 10}),
+                &ctx,
+            )
+            .await
+            .expect("cleanup exec session");
+    }
+
+    #[tokio::test]
+    async fn child_tool_snapshots_share_runtime_host_process_gate() {
+        let options = load_options();
+        let workspace = tempdir().unwrap();
+        let tooling = build_runtime_tooling(
+            &options,
+            workspace.path(),
+            &SandboxPolicy::permissive(),
+            &SandboxBackendStatus::Unavailable {
+                reason: "not needed".to_string(),
+            },
+            SkillCatalog::default(),
+        );
+        let child_tools = tooling.tools.filtered_by_names(&[
+            ToolName::from("exec_command"),
+            ToolName::from("write_stdin"),
+        ]);
+        let ctx = ToolExecutionContext {
+            workspace_root: workspace.path().to_path_buf(),
+            effective_sandbox_policy: Some(SandboxPolicy::permissive()),
+            ..Default::default()
+        };
+        let exec_tool = child_tools.get("exec_command").expect("exec tool");
+        let result = exec_tool
+            .execute(
+                ToolCallId::new(),
+                json!({"cmd": "cat", "yield_time_ms": 10}),
+                &ctx,
+            )
+            .await
+            .expect("start child exec session");
+        let session_id = result
+            .structured_content
+            .as_ref()
+            .and_then(|value| value.get("session_id"))
+            .and_then(Value::as_str)
+            .expect("exec session id")
+            .to_string();
+
+        tooling.process_executor.set_host_process_surfaces(false);
+        let write_tool = child_tools.get("write_stdin").expect("write tool");
+        let error = write_tool
+            .execute(
+                ToolCallId::new(),
+                json!({"session_id": session_id, "chars": "hello"}),
+                &ctx,
+            )
+            .await
+            .expect_err("child snapshot should observe revoked host process access");
+        assert!(
+            error
+                .to_string()
+                .contains("host subprocess surfaces are disabled")
+        );
+
+        tooling.process_executor.set_host_process_surfaces(true);
+        write_tool
+            .execute(
+                ToolCallId::new(),
+                json!({"session_id": session_id, "close_stdin": true, "yield_time_ms": 10}),
+                &ctx,
+            )
+            .await
+            .expect("cleanup child exec session");
     }
 
     struct NoopSubagentExecutor;

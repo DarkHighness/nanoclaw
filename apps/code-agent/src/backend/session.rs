@@ -1,6 +1,6 @@
 use crate::backend::boot_runtime::{
     COMMAND_HOOK_DISABLED_WARNING_PREFIX, MANAGED_CODE_INTEL_DISABLED_WARNING_PREFIX,
-    SwitchableCodeIntelBackend, SwitchableCommandHookExecutor,
+    SwitchableCodeIntelBackend, SwitchableCommandHookExecutor, SwitchableHostProcessExecutor,
 };
 use crate::backend::session_catalog;
 use crate::backend::session_episodic_capture::{
@@ -361,6 +361,7 @@ pub(crate) struct CodeAgentSession {
     runtime_hooks: Arc<RwLock<Vec<HookRegistration>>>,
     configured_runtime_hooks: Arc<Vec<HookRegistration>>,
     mcp_process_executor: Arc<dyn agent::tools::ProcessExecutor>,
+    host_process_executor: Arc<SwitchableHostProcessExecutor>,
     command_hook_executor: Arc<SwitchableCommandHookExecutor>,
     code_intel_backend: Arc<SwitchableCodeIntelBackend>,
     approvals: ApprovalCoordinator,
@@ -393,6 +394,7 @@ impl CodeAgentSession {
         runtime_hooks: Arc<RwLock<Vec<HookRegistration>>>,
         configured_runtime_hooks: Vec<HookRegistration>,
         mcp_process_executor: Arc<dyn agent::tools::ProcessExecutor>,
+        host_process_executor: Arc<SwitchableHostProcessExecutor>,
         command_hook_executor: Arc<SwitchableCommandHookExecutor>,
         code_intel_backend: Arc<SwitchableCodeIntelBackend>,
         approvals: ApprovalCoordinator,
@@ -437,6 +439,7 @@ impl CodeAgentSession {
             runtime_hooks,
             configured_runtime_hooks: Arc::new(configured_runtime_hooks),
             mcp_process_executor,
+            host_process_executor,
             command_hook_executor,
             code_intel_backend,
             approvals,
@@ -962,8 +965,10 @@ impl CodeAgentSession {
     fn set_runtime_hooks(&self, runtime: &mut AgentRuntime, host_process_surfaces_allowed: bool) {
         let hooks = self.runtime_hooks_for_host_process_mode(host_process_surfaces_allowed);
         runtime.replace_hooks(hooks.clone());
-        // Root runtime turns can swap their hook stack in place, but future
-        // child runtimes are built from this shared snapshot during spawn.
+        // Active child runtimes intentionally keep the hook list they launched
+        // with. Permission-mode revocation is enforced at execution time by the
+        // shared command executor, while future child runtimes pick up this
+        // refreshed snapshot during spawn.
         *self.runtime_hooks.write().unwrap() = hooks;
     }
 
@@ -1068,6 +1073,8 @@ impl CodeAgentSession {
         };
         let (tool_names, side_question_context, startup_diagnostics) = {
             let mut runtime = self.runtime.lock().await;
+            self.host_process_executor
+                .set_host_process_surfaces(host_process_surfaces_allowed);
             self.command_hook_executor
                 .set_host_process_surfaces(host_process_surfaces_allowed, policy.clone());
             self.code_intel_backend
@@ -2955,7 +2962,7 @@ mod tests {
     };
     use crate::backend::boot_runtime::{
         COMMAND_HOOK_DISABLED_WARNING_PREFIX, MANAGED_CODE_INTEL_DISABLED_WARNING_PREFIX,
-        SwitchableCodeIntelBackend, SwitchableCommandHookExecutor,
+        SwitchableCodeIntelBackend, SwitchableCommandHookExecutor, SwitchableHostProcessExecutor,
     };
     use crate::backend::{
         ApprovalCoordinator, McpServerSummary, PermissionRequestCoordinator, SessionEventStream,
@@ -3492,7 +3499,10 @@ mod tests {
         session_memory_model_backend: Option<Arc<dyn ModelBackend>>,
     ) -> CodeAgentSession {
         let default_sandbox_policy = runtime.base_sandbox_policy();
-        let process_executor = Arc::new(agent::ManagedPolicyProcessExecutor::new());
+        let process_executor = Arc::new(SwitchableHostProcessExecutor::new(
+            Arc::new(agent::ManagedPolicyProcessExecutor::new()),
+            startup.host_process_surfaces_allowed,
+        ));
         let runtime_hooks = Arc::new(RwLock::new(if startup.host_process_surfaces_allowed {
             configured_runtime_hooks.clone()
         } else {
@@ -3519,6 +3529,7 @@ mod tests {
             configured_mcp_servers,
             runtime_hooks,
             configured_runtime_hooks,
+            process_executor.clone() as Arc<dyn agent::tools::ProcessExecutor>,
             process_executor.clone(),
             Arc::new(SwitchableCommandHookExecutor::new(
                 process_executor,

@@ -2,8 +2,8 @@ use crate::backend::boot_inputs::DriverHostInputs;
 use crate::backend::boot_mcp::build_startup_diagnostics_snapshot;
 use crate::backend::boot_runtime::{
     COMMAND_HOOK_DISABLED_WARNING_PREFIX, SwitchableCodeIntelBackend,
-    SwitchableCommandHookExecutor, build_runtime_tooling, host_process_surfaces_allowed,
-    register_subagent_tools,
+    SwitchableCommandHookExecutor, SwitchableHostProcessExecutor, build_runtime_tooling,
+    host_process_surfaces_allowed, register_subagent_tools,
 };
 use crate::backend::memory_recall::WorkspaceMemoryRecallAugmentor;
 use crate::backend::session_memory_compaction::{
@@ -66,6 +66,7 @@ struct RuntimeBuildResult {
     runtime_hook_state: Arc<RwLock<Vec<HookRegistration>>>,
     configured_runtime_hooks: Vec<HookRegistration>,
     mcp_process_executor: Arc<dyn agent::tools::ProcessExecutor>,
+    host_process_executor: Arc<SwitchableHostProcessExecutor>,
     command_hook_executor: Arc<SwitchableCommandHookExecutor>,
     code_intel_backend: Arc<SwitchableCodeIntelBackend>,
     host_process_surfaces_allowed: bool,
@@ -264,6 +265,7 @@ pub(crate) async fn build_session_with_approval_mode(
         runtime_hook_state,
         configured_runtime_hooks,
         mcp_process_executor,
+        host_process_executor,
         command_hook_executor,
         code_intel_backend,
         host_process_surfaces_allowed,
@@ -303,6 +305,7 @@ pub(crate) async fn build_session_with_approval_mode(
         runtime_hook_state,
         configured_runtime_hooks,
         mcp_process_executor,
+        host_process_executor,
         command_hook_executor,
         code_intel_backend,
         approvals,
@@ -610,7 +613,8 @@ async fn build_runtime(
         mcp_server_configs: resolved_mcp_servers,
         runtime_hook_state,
         configured_runtime_hooks,
-        mcp_process_executor: process_executor as Arc<dyn agent::tools::ProcessExecutor>,
+        mcp_process_executor: process_executor.clone() as Arc<dyn agent::tools::ProcessExecutor>,
+        host_process_executor: process_executor,
         command_hook_executor,
         code_intel_backend,
         host_process_surfaces_allowed,

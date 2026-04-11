@@ -599,29 +599,33 @@ Then add higher-variance parity work:
   - reconnect startup-skipped stdio MCP, command hooks, and managed
     code-intel helpers when the session permission mode re-enables
     host-process surfaces
+  - add a shared runtime host-process gate so already-running child runtimes
+    can keep their immutable startup snapshot while `exec_command`,
+    `write_stdin`, command-backed custom tools, and managed helper spawns
+    still fail closed after the parent session revokes host-process access
+  - keep active child runtimes on their launch-time command-hook snapshot;
+    permission changes now revoke host subprocess execution via the shared
+    execution-time gate, and newly spawned children pick up the refreshed
+    hook set
 - remaining:
   - image or binary-view tools if the host app needs them
-  - decide whether already-running child runtimes should hot-reload command
-    hook registrations after a parent permission-mode switch, or continue to
-    pick up the updated hook stack only on the next child launch
 
 ## Immediate Next Implementation Slice
 
 The shared protocol foundation is now in place, and MCP resources now have
-their own first-class tool surfaces. The next slice should stop expanding local
-tool contracts and either close or explicitly document the last live-child
-runtime edge around permission-mode-driven hook updates.
+their own first-class tool surfaces. The live-child runtime edge around
+permission-mode-driven hook updates is now closed by contract: active child
+runtimes keep their launch-time hook list, revocation is enforced by the shared
+execution-time host-process gate, and new children inherit the refreshed hook
+snapshot.
 
 The recommended order is:
 
-1. decide whether active child runtimes need live command-hook hot reload after
-   the parent session toggles permission mode, or whether restart-on-next-spawn
-   is the intended contract
-2. only then decide whether the host app still needs extra parity work such as
-   image or binary-view tools
+1. only decide whether the host app still needs extra parity work such as image
+   or binary-view tools
 
-That keeps the protocol phase bounded and resolves the last hook-governance
-ambiguity before adding any new high-variance surfaces.
+That keeps the protocol phase bounded without reopening hook-governance
+complexity after the runtime gate contract has been fixed.
 
 ## Archive Trigger
 
