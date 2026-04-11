@@ -106,9 +106,9 @@ frontend boundary and reduced the size of the TUI controller.
   - History rollback flow moved into `frontend/tui/history_rollback.rs`.
   - Startup/session-shell synchronization moved into
     `frontend/tui/session_shell.rs`.
-- The TUI shell now uses a persistent top header plus a minimal welcome screen
-  instead of relying on an oversized ASCII splash and a bottom-only status
-  model.
+- The TUI shell now uses a persistent top header plus a restrained welcome
+  screen that preserves the ASCII splash as the brand mark instead of treating
+  the logo as disposable chrome.
 
 This is a better industrial direction because boundary intent is now encoded in
 the code layout instead of being left as convention.
@@ -175,6 +175,25 @@ it into a set of domain modules instead of one expanding host controller.
 
 This reduces one of the previous failure modes: changing operator workflows,
 runtime controls, and background-task logic in the same file.
+
+## Sixth-pass TUI flow breakup
+
+The main TUI controller was still acting as a god object even after the earlier
+package and protocol work. The next pass split behavior by responsibility
+instead of continuing to grow `frontend/tui/mod.rs`.
+
+- Keyboard and picker control flow now lives in
+  `frontend/tui/interaction_keys.rs`.
+- Turn lifecycle, queue drain, theme application, and prompt materialization
+  now live in `frontend/tui/runtime_flow.rs`.
+- Slash-command dispatch and history-oriented command handling now live in
+  `frontend/tui/slash_commands.rs`.
+- `frontend/tui/mod.rs` is reduced to shell wiring, the event loop, shared
+  helpers, and tests rather than owning every operator workflow directly.
+
+This matters because command handling, transient runtime orchestration, and raw
+input choreography now change in separate modules with smaller recompilation and
+review surfaces.
 
 ## UI direction
 
