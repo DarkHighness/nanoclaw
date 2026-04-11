@@ -1,4 +1,4 @@
-use super::state::InspectorEntry;
+use super::state::{InspectorAction, InspectorEntry};
 use crate::interaction::SessionPermissionMode;
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 
@@ -8,8 +8,8 @@ mod parse;
 #[cfg(test)]
 pub(crate) use completion::command_palette_lines;
 pub(crate) use completion::{
-    command_palette_lines_for, cycle_slash_command, move_slash_command_selection,
-    resolve_slash_enter_action, slash_command_hint,
+    command_palette_lines_for, cycle_slash_command, inspector_action_for_slash_name,
+    move_slash_command_selection, resolve_slash_enter_action, slash_command_hint,
 };
 pub(crate) use parse::parse_slash_command;
 

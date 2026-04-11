@@ -1,9 +1,9 @@
 use super::{
-    format_agent_session_summary_line, format_live_task_wait_outcome, format_session_event_line,
-    format_session_export_result, format_session_operation_outcome, format_session_search_line,
-    format_session_summary_line,
+    format_agent_session_summary_collection, format_agent_session_summary_line,
+    format_live_task_wait_outcome, format_session_event_line, format_session_export_result,
+    format_session_operation_outcome, format_session_search_line, format_session_summary_line,
 };
-use crate::frontend::tui::state::InspectorEntry;
+use crate::frontend::tui::state::{InspectorAction, InspectorEntry};
 use crate::ui::{
     LiveTaskSummary, LiveTaskWaitOutcome, PersistedAgentSessionSummary,
     PersistedSessionSearchMatch, PersistedSessionSummary, ResumeSupport, SessionExportArtifact,
@@ -89,6 +89,45 @@ fn agent_session_summary_is_kept_to_two_lines() {
         line.serialized(),
         "• agent_se  planner\n  └ session session_ · 6 messages · 14 events · resume attached · prompt Investigate flaky tests"
     );
+}
+
+#[test]
+fn agent_session_collection_exposes_resume_as_alternate_action() {
+    let entry = format_agent_session_summary_collection(&PersistedAgentSessionSummary {
+        agent_session_ref: "agent_session_123456".to_string(),
+        session_ref: "session_123456".to_string(),
+        label: "planner".to_string(),
+        event_count: 14,
+        transcript_message_count: 6,
+        first_timestamp_ms: 1,
+        last_timestamp_ms: 2,
+        session_title: None,
+        last_user_prompt: Some("Investigate flaky tests".to_string()),
+        resume_support: ResumeSupport::Reattachable,
+    });
+
+    match entry {
+        InspectorEntry::CollectionItem {
+            action,
+            alternate_action,
+            ..
+        } => {
+            assert_eq!(
+                action,
+                Some(InspectorAction::RunCommand(
+                    "/agent_session agent_session_123456".to_string()
+                ))
+            );
+            let alternate_action = alternate_action.expect("alternate resume action");
+            assert_eq!(alternate_action.key_hint, "r");
+            assert_eq!(alternate_action.label, "resume");
+            assert_eq!(
+                alternate_action.action,
+                InspectorAction::RunCommand("/resume agent_session_123456".to_string())
+            );
+        }
+        _ => panic!("expected collection item"),
+    }
 }
 
 #[test]
@@ -347,7 +386,9 @@ fn inspector_line_texts(lines: &[InspectorEntry]) -> Vec<String> {
                 .lines()
                 .map(ToOwned::to_owned)
                 .collect::<Vec<_>>(),
-            InspectorEntry::CollectionItem { primary, secondary } => vec![
+            InspectorEntry::CollectionItem {
+                primary, secondary, ..
+            } => vec![
                 secondary
                     .as_ref()
                     .map(|secondary| format!("{primary}  {secondary}"))

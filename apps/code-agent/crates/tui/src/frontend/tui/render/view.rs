@@ -1,5 +1,6 @@
 use super::super::state::{
-    InspectorEntry, StatusLinePickerState, ThemePickerState, ThinkingEffortPickerState,
+    InspectorAction, InspectorEntry, StatusLinePickerState, ThemePickerState,
+    ThinkingEffortPickerState,
 };
 use super::theme::palette;
 use crate::statusline::{StatusLineConfig, status_line_fields};
@@ -7,11 +8,15 @@ use crate::theme::ThemeSummary;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 
-pub(super) fn build_inspector_text(title: &str, lines: &[InspectorEntry]) -> Text<'static> {
+pub(super) fn build_inspector_text(
+    title: &str,
+    lines: &[InspectorEntry],
+    selected_collection: Option<usize>,
+) -> Text<'static> {
     if is_command_palette_title(title) {
-        build_command_palette_text(lines)
+        build_command_palette_text(lines, selected_collection)
     } else if is_collection_inspector(title) {
-        build_collection_text(title, lines)
+        build_collection_text(title, lines, selected_collection)
     } else {
         build_key_value_text(lines)
     }
@@ -38,8 +43,12 @@ pub(super) fn build_key_value_text(lines: &[InspectorEntry]) -> Text<'static> {
     Text::from(rendered)
 }
 
-pub(super) fn build_command_palette_text(lines: &[InspectorEntry]) -> Text<'static> {
+pub(super) fn build_command_palette_text(
+    lines: &[InspectorEntry],
+    selected_collection: Option<usize>,
+) -> Text<'static> {
     let mut rendered = Vec::new();
+    let mut actionable_index = 0;
     for entry in lines {
         match entry {
             InspectorEntry::Section(section) => {
@@ -57,11 +66,25 @@ pub(super) fn build_command_palette_text(lines: &[InspectorEntry]) -> Text<'stat
                     ),
                 ]));
             }
-            InspectorEntry::CollectionItem { primary, secondary } => {
-                rendered.extend(command_palette_item_lines(primary, secondary.as_deref()));
+            InspectorEntry::CollectionItem {
+                primary,
+                secondary,
+                action,
+                alternate_action,
+            } => {
+                let selected = (action.is_some() || alternate_action.is_some())
+                    && selected_collection == Some(actionable_index);
+                if action.is_some() || alternate_action.is_some() {
+                    actionable_index += 1;
+                }
+                rendered.extend(command_palette_item_lines(
+                    primary,
+                    secondary.as_deref(),
+                    selected,
+                ));
             }
             InspectorEntry::Command(command) => {
-                rendered.extend(command_palette_item_lines(command, None));
+                rendered.extend(command_palette_item_lines(command, None, false));
             }
             InspectorEntry::Muted(line) => rendered.push(Line::from(Span::styled(
                 line.clone(),
@@ -72,7 +95,7 @@ pub(super) fn build_command_palette_text(lines: &[InspectorEntry]) -> Text<'stat
                 Style::default().fg(palette().text),
             ))),
             InspectorEntry::Field { key, value } => {
-                rendered.extend(command_palette_item_lines(key, Some(value)));
+                rendered.extend(command_palette_item_lines(key, Some(value), false));
             }
             InspectorEntry::Transcript(entry) => {
                 rendered.extend(super::transcript::format_transcript_cell(entry));
@@ -83,20 +106,34 @@ pub(super) fn build_command_palette_text(lines: &[InspectorEntry]) -> Text<'stat
     Text::from(rendered)
 }
 
-fn command_palette_item_lines(command: &str, summary: Option<&str>) -> Vec<Line<'static>> {
+fn command_palette_item_lines(
+    command: &str,
+    summary: Option<&str>,
+    selected: bool,
+) -> Vec<Line<'static>> {
     let mut lines = vec![Line::from(vec![
         Span::styled(
-            "›",
-            Style::default()
-                .fg(palette().accent)
-                .add_modifier(Modifier::BOLD),
+            if selected { "›" } else { "·" },
+            Style::default().fg(if selected {
+                palette().accent
+            } else {
+                palette().subtle
+            }),
         ),
         Span::raw(" "),
         Span::styled(
             command.to_string(),
             Style::default()
-                .fg(palette().header)
-                .add_modifier(Modifier::BOLD),
+                .fg(if selected {
+                    palette().header
+                } else {
+                    palette().text
+                })
+                .add_modifier(if selected {
+                    Modifier::BOLD
+                } else {
+                    Modifier::empty()
+                }),
         ),
     ])];
     if let Some(summary) = summary
@@ -106,7 +143,11 @@ fn command_palette_item_lines(command: &str, summary: Option<&str>) -> Vec<Line<
             Span::styled("  ", Style::default().fg(palette().subtle)),
             Span::styled(
                 summary.trim().to_string(),
-                Style::default().fg(palette().muted),
+                Style::default().fg(if selected {
+                    palette().muted
+                } else {
+                    palette().subtle
+                }),
             ),
         ]));
     }
@@ -153,13 +194,14 @@ fn render_key_value_entry(entry: &InspectorEntry, is_first: bool) -> Vec<Line<'s
             line.clone(),
             plain_text_style(line),
         ))],
-        InspectorEntry::CollectionItem { primary, secondary } => {
-            vec![collection_line(
-                primary,
-                secondary.as_deref(),
-                palette().border_active,
-            )]
-        }
+        InspectorEntry::CollectionItem {
+            primary, secondary, ..
+        } => collection_item_lines(
+            primary,
+            secondary.as_deref(),
+            palette().border_active,
+            false,
+        ),
         InspectorEntry::Empty => vec![Line::raw("")],
     }
 }
@@ -390,9 +432,14 @@ pub(super) fn build_theme_picker_text(
     Text::from(lines)
 }
 
-pub(super) fn build_collection_text(title: &str, lines: &[InspectorEntry]) -> Text<'static> {
+pub(super) fn build_collection_text(
+    title: &str,
+    lines: &[InspectorEntry],
+    selected_collection: Option<usize>,
+) -> Text<'static> {
     let accent = inspector_accent(title);
     let mut rendered = Vec::new();
+    let mut actionable_index = 0;
     for entry in lines {
         match entry {
             InspectorEntry::Section(section) => rendered.push(Line::from(Span::styled(
@@ -403,8 +450,23 @@ pub(super) fn build_collection_text(title: &str, lines: &[InspectorEntry]) -> Te
                 line.clone(),
                 Style::default().fg(palette().subtle),
             ))),
-            InspectorEntry::CollectionItem { primary, secondary } => {
-                rendered.push(collection_line(primary, secondary.as_deref(), accent));
+            InspectorEntry::CollectionItem {
+                primary,
+                secondary,
+                action,
+                alternate_action,
+            } => {
+                let selected = (action.is_some() || alternate_action.is_some())
+                    && selected_collection == Some(actionable_index);
+                if action.is_some() || alternate_action.is_some() {
+                    actionable_index += 1;
+                }
+                rendered.extend(collection_item_lines(
+                    primary,
+                    secondary.as_deref(),
+                    accent,
+                    selected,
+                ));
             }
             InspectorEntry::Transcript(entry) => {
                 rendered.extend(render_collection_transcript_entry(entry, accent));
@@ -420,7 +482,7 @@ pub(super) fn build_collection_text(title: &str, lines: &[InspectorEntry]) -> Te
                     .add_modifier(Modifier::BOLD),
             ))),
             InspectorEntry::Field { key, value } => {
-                rendered.push(collection_line(key, Some(value), accent));
+                rendered.extend(collection_item_lines(key, Some(value), accent, false));
             }
             InspectorEntry::Empty => rendered.push(Line::raw("")),
         }
@@ -477,25 +539,45 @@ fn render_collection_transcript_entry(
     rendered
 }
 
-fn collection_line(primary: &str, secondary: Option<&str>, accent: Color) -> Line<'static> {
-    let mut spans = vec![
-        Span::styled("-", Style::default().fg(palette().muted)),
+fn collection_item_lines(
+    primary: &str,
+    secondary: Option<&str>,
+    accent: Color,
+    selected: bool,
+) -> Vec<Line<'static>> {
+    let mut lines = vec![Line::from(vec![
+        Span::styled(
+            if selected { "›" } else { "·" },
+            Style::default().fg(if selected { accent } else { palette().subtle }),
+        ),
         Span::raw(" "),
         Span::styled(
             primary.to_string(),
-            Style::default().fg(accent).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(if selected { accent } else { palette().text })
+                .add_modifier(if selected {
+                    Modifier::BOLD
+                } else {
+                    Modifier::empty()
+                }),
         ),
-    ];
+    ])];
     if let Some(secondary) = secondary
         && !secondary.trim().is_empty()
     {
-        spans.push(Span::raw("  "));
-        spans.push(Span::styled(
-            secondary.trim().to_string(),
-            Style::default().fg(palette().muted),
-        ));
+        lines.push(Line::from(vec![
+            Span::styled("  ", Style::default().fg(palette().subtle)),
+            Span::styled(
+                secondary.trim().to_string(),
+                Style::default().fg(if selected {
+                    palette().muted
+                } else {
+                    palette().subtle
+                }),
+            ),
+        ]));
     }
-    Line::from(spans)
+    lines
 }
 
 fn is_collection_inspector(title: &str) -> bool {
@@ -601,10 +683,69 @@ fn inspector_entry_text(entry: &InspectorEntry) -> String {
         | InspectorEntry::Command(line) => line.clone(),
         InspectorEntry::Field { key, value } => format!("{key}: {value}"),
         InspectorEntry::Transcript(entry) => entry.serialized(),
-        InspectorEntry::CollectionItem { primary, secondary } => secondary
+        InspectorEntry::CollectionItem {
+            primary, secondary, ..
+        } => secondary
             .as_ref()
             .map(|secondary| format!("{primary}  {secondary}"))
             .unwrap_or_else(|| primary.clone()),
         InspectorEntry::Empty => String::new(),
+    }
+}
+
+pub(super) fn collection_picker_footer(
+    title: &str,
+    selected: Option<&InspectorEntry>,
+) -> Option<Line<'static>> {
+    let InspectorEntry::CollectionItem {
+        action,
+        alternate_action,
+        ..
+    } = selected?
+    else {
+        return None;
+    };
+    let action_label = action
+        .as_ref()
+        .map(|action| collection_action_label(title, action))
+        .unwrap_or("select");
+    let mut spans = vec![
+        Span::styled("enter", Style::default().fg(palette().accent)),
+        Span::styled(
+            format!(" {action_label}"),
+            Style::default().fg(palette().muted),
+        ),
+    ];
+    if let Some(alternate_action) = alternate_action {
+        spans.push(Span::styled(" · ", Style::default().fg(palette().subtle)));
+        spans.push(Span::styled(
+            alternate_action.key_hint.clone(),
+            Style::default().fg(palette().assistant),
+        ));
+        spans.push(Span::styled(
+            format!(" {}", alternate_action.label),
+            Style::default().fg(palette().muted),
+        ));
+    }
+    spans.push(Span::styled(" · ", Style::default().fg(palette().subtle)));
+    spans.push(Span::styled("↑↓", Style::default().fg(palette().accent)));
+    spans.push(Span::styled(" move", Style::default().fg(palette().muted)));
+    spans.push(Span::styled(" · ", Style::default().fg(palette().subtle)));
+    spans.push(Span::styled("esc", Style::default().fg(palette().header)));
+    spans.push(Span::styled(" close", Style::default().fg(palette().muted)));
+    Some(Line::from(spans))
+}
+
+fn collection_action_label(title: &str, action: &InspectorAction) -> &'static str {
+    if is_command_palette_title(title) {
+        match action {
+            InspectorAction::RunCommand(_) => "run",
+            InspectorAction::FillInput(_) => "insert",
+        }
+    } else {
+        match action {
+            InspectorAction::RunCommand(_) => "open",
+            InspectorAction::FillInput(_) => "insert",
+        }
     }
 }

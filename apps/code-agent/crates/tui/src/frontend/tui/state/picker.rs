@@ -22,6 +22,11 @@ pub(crate) struct PendingControlPickerState {
     pub(crate) selected: usize,
 }
 
+#[derive(Clone, Debug, Default)]
+pub(crate) struct CollectionPickerState {
+    pub(crate) selected: usize,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PendingControlEditorState {
     pub(crate) id: String,
@@ -59,6 +64,8 @@ impl TuiState {
         self.inspector_title = title.into();
         self.inspector = lines.into_iter().collect();
         self.inspector_scroll = 0;
+        self.collection_picker = first_actionable_collection_index(&self.inspector)
+            .map(|selected| CollectionPickerState { selected });
         self.pending_control_picker = None;
         self.statusline_picker = None;
         self.thinking_effort_picker = None;
@@ -68,6 +75,7 @@ impl TuiState {
 
     pub(crate) fn show_transcript_pane(&mut self) {
         self.main_pane = MainPaneMode::Transcript;
+        self.collection_picker = None;
         self.pending_control_picker = None;
         self.statusline_picker = None;
         self.thinking_effort_picker = None;
@@ -80,6 +88,7 @@ impl TuiState {
         self.inspector_title = "Status Line".to_string();
         self.inspector.clear();
         self.inspector_scroll = 0;
+        self.collection_picker = None;
         self.pending_control_picker = None;
         self.thinking_effort_picker = None;
         self.theme_picker = None;
@@ -94,6 +103,7 @@ impl TuiState {
         self.inspector_title = "Thinking Effort".to_string();
         self.inspector.clear();
         self.inspector_scroll = 0;
+        self.collection_picker = None;
         self.pending_control_picker = None;
         self.statusline_picker = None;
         self.theme_picker = None;
@@ -114,6 +124,7 @@ impl TuiState {
         self.inspector_title = "Theme".to_string();
         self.inspector.clear();
         self.inspector_scroll = 0;
+        self.collection_picker = None;
         self.pending_control_picker = None;
         self.statusline_picker = None;
         self.thinking_effort_picker = None;
@@ -150,6 +161,7 @@ impl TuiState {
             return false;
         }
         self.main_pane = MainPaneMode::Transcript;
+        self.collection_picker = None;
         let selected = if select_latest {
             self.pending_controls.len().saturating_sub(1)
         } else {
@@ -209,6 +221,7 @@ impl TuiState {
 
     pub(crate) fn prime_history_rollback(&mut self) {
         self.main_pane = MainPaneMode::Transcript;
+        self.collection_picker = None;
         self.pending_control_picker = None;
         self.statusline_picker = None;
         self.thinking_effort_picker = None;
@@ -224,6 +237,7 @@ impl TuiState {
             return false;
         }
         self.main_pane = MainPaneMode::Transcript;
+        self.collection_picker = None;
         self.pending_control_picker = None;
         self.statusline_picker = None;
         self.thinking_effort_picker = None;
@@ -239,6 +253,31 @@ impl TuiState {
 
     pub(crate) fn clear_history_rollback(&mut self) {
         self.history_rollback = None;
+    }
+
+    pub(crate) fn move_collection_picker(&mut self, backwards: bool) -> bool {
+        let Some(picker) = self.collection_picker.as_mut() else {
+            return false;
+        };
+        let total = actionable_collection_count(&self.inspector);
+        if total == 0 {
+            return false;
+        }
+        picker.selected = if backwards {
+            picker.selected.checked_sub(1).unwrap_or(total - 1)
+        } else {
+            (picker.selected + 1) % total
+        };
+        true
+    }
+
+    pub(crate) fn selected_collection_entry(&self) -> Option<InspectorEntry> {
+        let selected = self.collection_picker.as_ref()?.selected;
+        self.inspector
+            .iter()
+            .filter(|entry| is_actionable_collection_entry(entry))
+            .nth(selected)
+            .cloned()
     }
 
     pub(crate) fn history_rollback_is_primed(&self) -> bool {
@@ -389,4 +428,29 @@ impl TuiState {
             .as_ref()
             .map(|picker| picker.original_theme.clone())
     }
+}
+
+fn first_actionable_collection_index(lines: &[InspectorEntry]) -> Option<usize> {
+    lines
+        .iter()
+        .any(is_actionable_collection_entry)
+        .then_some(0)
+}
+
+fn actionable_collection_count(lines: &[InspectorEntry]) -> usize {
+    lines
+        .iter()
+        .filter(|entry| is_actionable_collection_entry(entry))
+        .count()
+}
+
+fn is_actionable_collection_entry(entry: &InspectorEntry) -> bool {
+    matches!(
+        entry,
+        InspectorEntry::CollectionItem {
+            action,
+            alternate_action,
+            ..
+        } if action.is_some() || alternate_action.is_some()
+    )
 }

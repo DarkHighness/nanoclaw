@@ -41,9 +41,10 @@ pub(crate) use outcomes::{
     format_live_task_wait_outcome, format_session_export_result, format_session_operation_outcome,
 };
 pub(crate) use summaries::{
-    format_agent_session_summary_line, format_live_task_spawn_outcome,
-    format_live_task_summary_line, format_session_search_line, format_session_summary_line,
-    format_task_summary_line,
+    format_agent_session_summary_collection, format_agent_session_summary_line,
+    format_live_task_spawn_outcome, format_live_task_summary_line,
+    format_session_search_collection, format_session_search_line,
+    format_session_summary_collection, format_session_summary_line, format_task_summary_collection,
 };
 
 #[derive(Clone, Copy)]

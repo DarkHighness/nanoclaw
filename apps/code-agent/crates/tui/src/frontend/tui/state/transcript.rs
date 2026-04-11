@@ -678,6 +678,19 @@ impl From<String> for TranscriptEntry {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum InspectorAction {
+    RunCommand(String),
+    FillInput(String),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct InspectorKeyAction {
+    pub(crate) key_hint: String,
+    pub(crate) label: String,
+    pub(crate) action: InspectorAction,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum InspectorEntry {
     Section(String),
     Field {
@@ -688,6 +701,8 @@ pub(crate) enum InspectorEntry {
     CollectionItem {
         primary: String,
         secondary: Option<String>,
+        action: Option<InspectorAction>,
+        alternate_action: Option<InspectorKeyAction>,
     },
     Plain(String),
     Muted(String),
@@ -718,6 +733,35 @@ impl InspectorEntry {
         Self::CollectionItem {
             primary: primary.into(),
             secondary: secondary.map(Into::into),
+            action: None,
+            alternate_action: None,
+        }
+    }
+
+    pub(crate) fn actionable_collection(
+        primary: impl Into<String>,
+        secondary: Option<impl Into<String>>,
+        action: InspectorAction,
+    ) -> Self {
+        Self::CollectionItem {
+            primary: primary.into(),
+            secondary: secondary.map(Into::into),
+            action: Some(action),
+            alternate_action: None,
+        }
+    }
+
+    pub(crate) fn actionable_collection_with_alt(
+        primary: impl Into<String>,
+        secondary: Option<impl Into<String>>,
+        action: InspectorAction,
+        alternate_action: InspectorKeyAction,
+    ) -> Self {
+        Self::CollectionItem {
+            primary: primary.into(),
+            secondary: secondary.map(Into::into),
+            action: Some(action),
+            alternate_action: Some(alternate_action),
         }
     }
 }

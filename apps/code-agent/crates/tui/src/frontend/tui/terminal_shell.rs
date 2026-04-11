@@ -1,6 +1,6 @@
 use super::*;
 
-enum TerminalLoopControl {
+pub(crate) enum TerminalLoopControl {
     Continue,
     Exit,
 }
@@ -142,6 +142,9 @@ impl CodeAgentTui {
             || self.handle_theme_picker_key(key)
         {
             return Ok(TerminalLoopControl::Continue);
+        }
+        if let Some(control) = self.handle_collection_picker_key(key).await? {
+            return Ok(control);
         }
         if self.handle_history_rollback_key(key).await? || self.handle_paste_burst_key(key).await {
             return Ok(TerminalLoopControl::Continue);

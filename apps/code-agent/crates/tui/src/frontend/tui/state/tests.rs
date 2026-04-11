@@ -1,8 +1,9 @@
 use super::{
     ComposerDraftAttachmentKind, ComposerDraftAttachmentState, ComposerDraftState,
-    ComposerKillBufferState, ComposerRowAttachmentPreview, HistoryRollbackCandidate, MainPaneMode,
-    SharedUiState, ToastState, ToastTone, TuiState, composer_draft_from_messages,
-    composer_draft_from_parts, draft_preview_text, git_snapshot, page_scroll_amount,
+    ComposerKillBufferState, ComposerRowAttachmentPreview, HistoryRollbackCandidate,
+    InspectorAction, InspectorEntry, MainPaneMode, SharedUiState, ToastState, ToastTone, TuiState,
+    composer_draft_from_messages, composer_draft_from_parts, draft_preview_text, git_snapshot,
+    page_scroll_amount,
 };
 use crate::theme::ThemeSummary;
 use agent::types::{
@@ -200,6 +201,45 @@ fn open_theme_picker_tracks_original_theme_for_restore() {
     assert_eq!(picker.selected, 1);
     assert_eq!(picker.original_theme, "fjord");
     assert_eq!(state.original_theme().as_deref(), Some("fjord"));
+}
+
+#[test]
+fn show_main_view_selects_the_first_actionable_collection_item() {
+    let mut state = TuiState::default();
+    state.show_main_view(
+        "Sessions",
+        [
+            InspectorEntry::section("Sessions"),
+            InspectorEntry::actionable_collection(
+                "session_1  first",
+                Some("open the first session"),
+                InspectorAction::RunCommand("/session session_1".to_string()),
+            ),
+            InspectorEntry::actionable_collection(
+                "session_2  second",
+                Some("open the second session"),
+                InspectorAction::RunCommand("/session session_2".to_string()),
+            ),
+        ],
+    );
+
+    assert_eq!(
+        state
+            .collection_picker
+            .as_ref()
+            .map(|picker| picker.selected),
+        Some(0)
+    );
+    assert!(matches!(
+        state.selected_collection_entry(),
+        Some(InspectorEntry::CollectionItem { primary, .. }) if primary == "session_1  first"
+    ));
+
+    assert!(state.move_collection_picker(false));
+    assert!(matches!(
+        state.selected_collection_entry(),
+        Some(InspectorEntry::CollectionItem { primary, .. }) if primary == "session_2  second"
+    ));
 }
 
 #[test]

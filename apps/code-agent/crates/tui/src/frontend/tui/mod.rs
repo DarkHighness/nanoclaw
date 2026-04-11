@@ -43,14 +43,14 @@ use commands::{
     move_slash_command_selection, parse_slash_command, resolve_slash_enter_action,
 };
 use history::{
-    format_agent_session_inspector, format_agent_session_summary_line,
+    format_agent_session_inspector, format_agent_session_summary_collection,
     format_live_task_control_outcome, format_live_task_message_outcome,
     format_live_task_spawn_outcome, format_live_task_summary_line, format_live_task_wait_outcome,
     format_mcp_prompt_summary_line, format_mcp_resource_summary_line,
     format_mcp_server_summary_line, format_session_export_result, format_session_inspector,
-    format_session_operation_outcome, format_session_search_line, format_session_summary_line,
-    format_session_transcript_lines, format_startup_diagnostics, format_task_inspector,
-    format_task_summary_line, format_visible_transcript_lines,
+    format_session_operation_outcome, format_session_search_collection,
+    format_session_summary_collection, format_session_transcript_lines, format_startup_diagnostics,
+    format_task_inspector, format_task_summary_collection, format_visible_transcript_lines,
     format_visible_transcript_preview_lines,
 };
 use observer::SharedRenderObserver;

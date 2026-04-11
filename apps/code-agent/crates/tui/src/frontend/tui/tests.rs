@@ -96,7 +96,9 @@ fn inspector_line_texts(lines: &[InspectorEntry]) -> Vec<String> {
             | InspectorEntry::Command(text) => text.clone(),
             InspectorEntry::Field { key, value } => format!("{key}: {value}"),
             InspectorEntry::Transcript(entry) => entry.serialized(),
-            InspectorEntry::CollectionItem { primary, secondary } => secondary
+            InspectorEntry::CollectionItem {
+                primary, secondary, ..
+            } => secondary
                 .as_ref()
                 .map(|secondary| format!("{primary}  {secondary}"))
                 .unwrap_or_else(|| primary.clone()),

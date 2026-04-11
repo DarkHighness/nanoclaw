@@ -1,9 +1,10 @@
 use super::{
     SlashCommand, SlashCommandArgumentSpec, SlashCommandEnterAction, command_palette_lines,
-    command_palette_lines_for, cycle_slash_command, move_slash_command_selection,
-    parse_slash_command, resolve_slash_enter_action, slash_command_hint,
+    command_palette_lines_for, cycle_slash_command, inspector_action_for_slash_name,
+    move_slash_command_selection, parse_slash_command, resolve_slash_enter_action,
+    slash_command_hint,
 };
-use crate::frontend::tui::state::InspectorEntry;
+use crate::frontend::tui::state::{InspectorAction, InspectorEntry};
 
 #[test]
 fn parses_session_query_with_spaces() {
@@ -77,6 +78,18 @@ fn parses_task_lookup() {
         }
         _ => panic!("unexpected command"),
     }
+}
+
+#[test]
+fn command_palette_marks_required_argument_commands_as_input_seeds() {
+    assert_eq!(
+        inspector_action_for_slash_name("session"),
+        Some(InspectorAction::FillInput("/session ".to_string()))
+    );
+    assert_eq!(
+        inspector_action_for_slash_name("details"),
+        Some(InspectorAction::RunCommand("/details".to_string()))
+    );
 }
 
 #[test]
@@ -343,7 +356,9 @@ fn inspector_line_texts(lines: &[InspectorEntry]) -> Vec<String> {
             }
             InspectorEntry::Field { key, value } => format!("{key}: {value}"),
             InspectorEntry::Transcript(entry) => entry.serialized(),
-            InspectorEntry::CollectionItem { primary, secondary } => secondary
+            InspectorEntry::CollectionItem {
+                primary, secondary, ..
+            } => secondary
                 .as_ref()
                 .map(|secondary| format!("{primary}  {secondary}"))
                 .unwrap_or_else(|| primary.clone()),

@@ -39,12 +39,29 @@ pub(crate) fn command_palette_lines_for(query: Option<&str>) -> Vec<InspectorEnt
                     .join(" ")
             )
         };
-        lines.push(InspectorEntry::collection(
+        lines.push(InspectorEntry::actionable_collection(
             format!("/{}", spec.usage),
             Some(format!("{}{}", spec.summary, alias_suffix)),
+            inspector_action_for_slash_spec(spec),
         ));
     }
     lines
+}
+
+pub(crate) fn inspector_action_for_slash_name(name: &str) -> Option<InspectorAction> {
+    SLASH_COMMAND_SPECS
+        .iter()
+        .copied()
+        .find(|spec| spec.name == name)
+        .map(inspector_action_for_slash_spec)
+}
+
+pub(crate) fn inspector_action_for_slash_spec(spec: SlashCommandSpec) -> InspectorAction {
+    if spec.requires_arguments() {
+        InspectorAction::FillInput(format!("/{} ", spec.name))
+    } else {
+        InspectorAction::RunCommand(format!("/{}", spec.name))
+    }
 }
 
 pub(crate) fn slash_command_hint(input: &str, selected_index: usize) -> Option<SlashCommandHint> {

@@ -358,6 +358,10 @@ not have useful extensions, including `Dockerfile*`, `Containerfile*`, `go.mod`,
   Saving and closing reapplies the edited prompt text, drops missing inline
   placeholders, and rebinds surviving local attachment placeholders plus large
   paste placeholders into stable `[Image #N]`, `[File #N]`, and `[Paste #N]`
+- In command and history views, `Up` / `Down` move the focused list row. `Enter`
+  opens or runs the selected item. Agent-session rows that are still
+  reattachable also expose `r` to resume directly from the list without typing
+  `/resume <agent-session-ref>` by hand.
   labels.
 - `Ctrl+C` now clears the current draft into session-local composer history when
   the prompt line is non-empty, so `Up` can restore it. On an empty prompt line,
@@ -504,11 +508,15 @@ common Markdown structure all render directly in the transcript, and file
 mutation tools such as `write`, `edit`, and `patch` now surface structured diff
 previews instead of only terse completion summaries.
 
-Approval prompts now render as compact bottom-pane questions with inline
-command previews instead of large modal panels. The command catalog now opens
-as a centered modal-style view, and the old live side rail has been retired so
-plan / execution context reads as dedicated transcript system cells instead of
-competing with the main timeline in a parallel column.
+Approval prompts now render as centered modal overlays with labeled context,
+request, reason, and key rows instead of sharing space with the bottom prompt
+band. The command catalog also opens as a centered modal-style view, while
+history and other collection-heavy views now use selectable two-line cards with
+inline keyboard hints so opening sessions, inspecting agent sessions, and
+resuming reattachable runtimes all happen directly from the list. The old live
+side rail has been retired so plan / execution context reads as dedicated
+transcript system cells instead of competing with the main timeline in a
+parallel column.
 
 Interactive approval and live runtime updates now also route through
 backend-owned contracts, so the TUI renders session events and approval prompts

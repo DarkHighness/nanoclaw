@@ -1,6 +1,91 @@
 use super::*;
+use crate::frontend::tui::state::InspectorAction;
+use crate::frontend::tui::terminal_shell::TerminalLoopControl;
 
 impl CodeAgentTui {
+    pub(crate) async fn handle_collection_picker_key(
+        &mut self,
+        key: KeyEvent,
+    ) -> Result<Option<TerminalLoopControl>> {
+        let snapshot = self.ui_state.snapshot();
+        if snapshot.collection_picker.is_none() || !snapshot.input.is_empty() {
+            return Ok(None);
+        }
+
+        match key.code {
+            KeyCode::Up => {
+                self.ui_state.mutate(|state| {
+                    let _ = state.move_collection_picker(true);
+                });
+                Ok(Some(TerminalLoopControl::Continue))
+            }
+            KeyCode::Down => {
+                self.ui_state.mutate(|state| {
+                    let _ = state.move_collection_picker(false);
+                });
+                Ok(Some(TerminalLoopControl::Continue))
+            }
+            KeyCode::Home => {
+                self.ui_state.mutate(|state| {
+                    if let Some(picker) = state.collection_picker.as_mut() {
+                        picker.selected = 0;
+                    }
+                });
+                Ok(Some(TerminalLoopControl::Continue))
+            }
+            KeyCode::End => {
+                self.ui_state.mutate(|state| {
+                    if let Some(picker) = state.collection_picker.as_mut() {
+                        picker.selected = state
+                            .inspector
+                            .iter()
+                            .filter(|entry| {
+                                matches!(
+                                    entry,
+                                    InspectorEntry::CollectionItem {
+                                        action,
+                                        alternate_action,
+                                        ..
+                                    } if action.is_some() || alternate_action.is_some()
+                                )
+                            })
+                            .count()
+                            .saturating_sub(1);
+                    }
+                });
+                Ok(Some(TerminalLoopControl::Continue))
+            }
+            KeyCode::Enter => {
+                let Some(InspectorEntry::CollectionItem {
+                    action: Some(action),
+                    primary,
+                    ..
+                }) = snapshot.selected_collection_entry()
+                else {
+                    return Ok(Some(TerminalLoopControl::Continue));
+                };
+                self.apply_inspector_action(action, &primary).await
+            }
+            KeyCode::Char('r') | KeyCode::Char('R') => {
+                let Some(InspectorEntry::CollectionItem {
+                    alternate_action: Some(alternate_action),
+                    primary,
+                    ..
+                }) = snapshot.selected_collection_entry()
+                else {
+                    self.ui_state.mutate(|state| {
+                        state.status = "Selected item does not support resume".to_string();
+                        state.push_activity("collection resume unavailable");
+                    });
+                    return Ok(Some(TerminalLoopControl::Continue));
+                };
+                self.apply_inspector_action(alternate_action.action, &primary)
+                    .await
+            }
+            _ => Ok(None),
+        }
+    }
+
     pub(crate) fn move_command_selection(&mut self, backwards: bool) -> bool {
         let snapshot = self.ui_state.snapshot();
         let Some(index) = move_slash_command_selection(
@@ -321,6 +406,31 @@ impl CodeAgentTui {
                 true
             }
             _ => false,
+        }
+    }
+
+    async fn apply_inspector_action(
+        &mut self,
+        action: InspectorAction,
+        primary_label: &str,
+    ) -> Result<Option<TerminalLoopControl>> {
+        match action {
+            InspectorAction::RunCommand(command) => {
+                if self.apply_command(&command).await? {
+                    return Ok(Some(TerminalLoopControl::Exit));
+                }
+                Ok(Some(TerminalLoopControl::Continue))
+            }
+            InspectorAction::FillInput(input) => {
+                let preview = state::preview_text(primary_label, 56);
+                self.ui_state.mutate(move |state| {
+                    state.show_transcript_pane();
+                    state.replace_input(input);
+                    state.status = format!("Inserted command for {preview}");
+                    state.push_activity(format!("inserted command from {preview}"));
+                });
+                Ok(Some(TerminalLoopControl::Continue))
+            }
         }
     }
 }

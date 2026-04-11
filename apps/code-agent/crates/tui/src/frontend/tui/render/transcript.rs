@@ -72,7 +72,7 @@ pub(super) fn build_transcript_lines_for_width(
             Style::default().fg(palette().muted),
         )));
         lines.push(Line::raw(""));
-        lines.extend(build_inspector_text(&state.inspector_title, &state.inspector).lines);
+        lines.extend(build_inspector_text(&state.inspector_title, &state.inspector, None).lines);
         lines.push(Line::raw(""));
     }
 

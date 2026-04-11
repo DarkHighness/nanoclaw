@@ -27,8 +27,8 @@ use crate::frontend::tui::commands::{
 };
 use crate::frontend::tui::state::{
     ComposerContextHint, ComposerDraftAttachmentKind, ComposerDraftAttachmentState,
-    ComposerDraftState, ExecutionEntry, HistoryRollbackCandidate, InspectorEntry, MainPaneMode,
-    PlanEntry, StatusLinePickerState, ThemePickerState, ToastTone, TranscriptEntry,
+    ComposerDraftState, ExecutionEntry, HistoryRollbackCandidate, InspectorAction, InspectorEntry,
+    MainPaneMode, PlanEntry, StatusLinePickerState, ThemePickerState, ToastTone, TranscriptEntry,
     TranscriptShellDetail, TranscriptToolStatus, TuiState,
 };
 use crate::interaction::{
@@ -849,13 +849,12 @@ fn collection_text_renders_shell_summary_blocks_for_history_rows() {
         "Sessions",
         &[
             section_entry("Sessions"),
-            shell_summary_entry(
+            actionable_collection_entry(
                 "sess_123  no prompt yet",
-                vec![raw_detail(
-                    "12 messages · 40 events · 2 agent sessions · resume attached",
-                )],
+                "12 messages · 40 events · 2 agent sessions · resume attached",
             ),
         ],
+        Some(0),
     );
 
     assert_eq!(rendered.lines[1].spans[0].content.as_ref(), "›");
@@ -875,17 +874,13 @@ fn collection_text_keeps_history_rows_compact() {
     let rendered = build_collection_text(
         "Sessions",
         &[
-            shell_summary_entry(
-                "sess_123  no prompt yet",
-                vec![raw_detail("12 messages · 40 events")],
-            ),
-            shell_summary_entry(
-                "sess_456  resume prompt",
-                vec![raw_detail("4 messages · 9 events")],
-            ),
+            actionable_collection_entry("sess_123  no prompt yet", "12 messages · 40 events"),
+            actionable_collection_entry("sess_456  resume prompt", "4 messages · 9 events"),
         ],
+        Some(1),
     );
 
+    assert_eq!(rendered.lines[0].spans[0].content.as_ref(), "·");
     assert_eq!(rendered.lines[2].spans[0].content.as_ref(), "›");
     assert_eq!(
         rendered.lines[2].spans[2].content.as_ref(),
@@ -964,11 +959,14 @@ fn theme_picker_text_renders_available_themes() {
 
 #[test]
 fn command_palette_text_matches_picker_style() {
-    let rendered = build_command_palette_text(&[
-        section_entry("Session"),
-        collection_entry("/help [query]", "browse commands"),
-        collection_entry("/sessions [query]", "browse persisted sessions"),
-    ]);
+    let rendered = build_command_palette_text(
+        &[
+            section_entry("Session"),
+            actionable_collection_entry("/help [query]", "browse commands"),
+            actionable_collection_entry("/sessions [query]", "browse persisted sessions"),
+        ],
+        Some(0),
+    );
 
     assert_eq!(rendered.lines[0].spans[0].content.as_ref(), "section");
     assert_eq!(rendered.lines[0].spans[2].content.as_ref(), "Session");
@@ -2090,8 +2088,12 @@ fn command_entry(command: &str) -> InspectorEntry {
     InspectorEntry::Command(command.to_string())
 }
 
-fn collection_entry(primary: &str, secondary: &str) -> InspectorEntry {
-    InspectorEntry::collection(primary, Some(secondary))
+fn actionable_collection_entry(primary: &str, secondary: &str) -> InspectorEntry {
+    InspectorEntry::actionable_collection(
+        primary,
+        Some(secondary),
+        InspectorAction::RunCommand(primary.to_string()),
+    )
 }
 
 fn shell_summary_entry(headline: &str, details: Vec<TranscriptShellDetail>) -> InspectorEntry {

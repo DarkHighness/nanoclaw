@@ -1,4 +1,5 @@
 use super::*;
+use crate::frontend::tui::commands::inspector_action_for_slash_name;
 
 pub(crate) fn format_side_question_inspector(outcome: &SideQuestionOutcome) -> Vec<InspectorEntry> {
     vec![
@@ -10,6 +11,11 @@ pub(crate) fn format_side_question_inspector(outcome: &SideQuestionOutcome) -> V
 }
 
 pub(crate) fn build_startup_inspector(session: &state::SessionSummary) -> Vec<InspectorEntry> {
+    let command_entry = |name: &str, usage: &'static str, summary: &'static str| {
+        inspector_action_for_slash_name(name)
+            .map(|action| InspectorEntry::actionable_collection(usage, Some(summary), action))
+            .unwrap_or_else(|| InspectorEntry::collection(usage, Some(summary)))
+    };
     let mut lines = vec![
         InspectorEntry::section("Ready"),
         InspectorEntry::field("workspace", session.workspace_name.clone()),
@@ -32,20 +38,29 @@ pub(crate) fn build_startup_inspector(session: &state::SessionSummary) -> Vec<In
             state::preview_text(&session.workspace_root.display().to_string(), 56),
         ),
         InspectorEntry::section("Next"),
-        InspectorEntry::collection("/help [query]", Some("browse commands")),
-        InspectorEntry::collection("/statusline", Some("choose footer items")),
-        InspectorEntry::collection("/thinking [level]", Some("pick or set model effort")),
-        InspectorEntry::collection("/theme [name]", Some("pick or set tui theme")),
-        InspectorEntry::collection("/details", Some("toggle tool details")),
-        InspectorEntry::collection(
+        command_entry("help", "/help [query]", "browse commands"),
+        command_entry("statusline", "/statusline", "choose footer items"),
+        command_entry("thinking", "/thinking [level]", "pick or set model effort"),
+        command_entry("theme", "/theme [name]", "pick or set tui theme"),
+        command_entry("details", "/details", "toggle tool details"),
+        command_entry(
+            "permissions",
             "/permissions [mode]",
-            Some("inspect or switch sandbox mode"),
+            "inspect or switch sandbox mode",
         ),
-        InspectorEntry::collection("/queue", Some("browse pending prompts and steers")),
-        InspectorEntry::collection("/sessions", Some("browse history")),
-        InspectorEntry::collection("/agent_sessions", Some("inspect or resume agents")),
-        InspectorEntry::collection("/spawn_task <role> <prompt>", Some("launch child agent")),
-        InspectorEntry::collection("/new", Some("start fresh without deleting history")),
+        command_entry("queue", "/queue", "browse pending prompts and steers"),
+        command_entry("sessions", "/sessions", "browse history"),
+        command_entry(
+            "agent_sessions",
+            "/agent_sessions",
+            "inspect or resume agents",
+        ),
+        command_entry(
+            "spawn_task",
+            "/spawn_task <role> <prompt>",
+            "launch child agent",
+        ),
+        command_entry("new", "/new", "start fresh without deleting history"),
         InspectorEntry::section("Environment"),
         InspectorEntry::field(
             "store",

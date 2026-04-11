@@ -22,13 +22,14 @@ pub(crate) use composer::{
     composer_draft_from_messages, composer_draft_from_parts, draft_preview_text,
 };
 pub(crate) use picker::{
-    HistoryRollbackCandidate, HistoryRollbackState, PendingControlEditorState,
-    PendingControlPickerState, StatusLinePickerState, ThemePickerState, ThinkingEffortPickerState,
+    CollectionPickerState, HistoryRollbackCandidate, HistoryRollbackState,
+    PendingControlEditorState, PendingControlPickerState, StatusLinePickerState, ThemePickerState,
+    ThinkingEffortPickerState,
 };
 pub(crate) use transcript::{
-    InspectorEntry, TranscriptEntry, TranscriptExecutionEntry, TranscriptPlanEntry,
-    TranscriptShellBlockKind, TranscriptShellDetail, TranscriptShellEntry, TranscriptToolEntry,
-    TranscriptToolStatus,
+    InspectorAction, InspectorEntry, InspectorKeyAction, TranscriptEntry, TranscriptExecutionEntry,
+    TranscriptPlanEntry, TranscriptShellBlockKind, TranscriptShellDetail, TranscriptShellEntry,
+    TranscriptToolEntry, TranscriptToolStatus,
 };
 
 #[derive(Clone, Debug, Default)]
@@ -153,6 +154,7 @@ pub(crate) struct TuiState {
     pub(crate) pending_controls: Vec<PendingControlSummary>,
     pub(crate) pending_control_picker: Option<PendingControlPickerState>,
     pub(crate) editing_pending_control: Option<PendingControlEditorState>,
+    pub(crate) collection_picker: Option<CollectionPickerState>,
     pub(crate) statusline_picker: Option<StatusLinePickerState>,
     pub(crate) thinking_effort_picker: Option<ThinkingEffortPickerState>,
     pub(crate) theme_picker: Option<ThemePickerState>,

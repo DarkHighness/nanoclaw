@@ -20,9 +20,7 @@ impl CodeAgentTui {
                     } else {
                         std::iter::once(InspectorEntry::section("Agent Sessions"))
                             .chain(agent_sessions.iter().take(16).map(|summary| {
-                                InspectorEntry::transcript(format_agent_session_summary_line(
-                                    summary,
-                                ))
+                                format_agent_session_summary_collection(summary)
                             }))
                             .collect()
                     };
@@ -31,7 +29,7 @@ impl CodeAgentTui {
                         "No agent sessions available yet".to_string()
                     } else {
                         format!(
-                            "Listed {} agent sessions. Use /agent_session <agent-session-ref> to open one.",
+                            "Listed {} agent sessions. Enter opens details; r resumes when available.",
                             agent_sessions.len()
                         )
                     };
@@ -94,9 +92,7 @@ impl CodeAgentTui {
                         ]
                     } else {
                         std::iter::once(InspectorEntry::section("Tasks"))
-                            .chain(tasks.iter().take(16).map(|task| {
-                                InspectorEntry::transcript(format_task_summary_line(task))
-                            }))
+                            .chain(tasks.iter().take(16).map(format_task_summary_collection))
                             .collect()
                     };
                     state.show_main_view("Tasks", lines);
@@ -104,7 +100,7 @@ impl CodeAgentTui {
                         "No tasks available yet".to_string()
                     } else {
                         format!(
-                            "Listed {} tasks. Use /task <task-id> to open one.",
+                            "Listed {} tasks. Enter opens the selected task.",
                             tasks.len()
                         )
                     };
@@ -131,9 +127,12 @@ impl CodeAgentTui {
                             ]
                         } else {
                             std::iter::once(InspectorEntry::section("Session Search"))
-                                .chain(matches.iter().take(12).map(|session| {
-                                    InspectorEntry::transcript(format_session_search_line(session))
-                                }))
+                                .chain(
+                                    matches
+                                        .iter()
+                                        .take(12)
+                                        .map(format_session_search_collection),
+                                )
                                 .collect()
                         };
                         state.show_main_view("Session Search", lines);
@@ -141,7 +140,7 @@ impl CodeAgentTui {
                             format!("No sessions matched `{query}`")
                         } else {
                             format!(
-                                "Found {} matching sessions. Use /session <session-ref> to open one.",
+                                "Found {} matching sessions. Enter opens the selected session.",
                                 matches.len()
                             )
                         };
@@ -165,9 +164,12 @@ impl CodeAgentTui {
                             ]
                         } else {
                             std::iter::once(InspectorEntry::section("Sessions"))
-                                .chain(sessions.iter().take(12).map(|session| {
-                                    InspectorEntry::transcript(format_session_summary_line(session))
-                                }))
+                                .chain(
+                                    sessions
+                                        .iter()
+                                        .take(12)
+                                        .map(format_session_summary_collection),
+                                )
                                 .collect()
                         };
                         state.show_main_view("Sessions", lines);
@@ -175,7 +177,7 @@ impl CodeAgentTui {
                             "No sessions available yet".to_string()
                         } else {
                             format!(
-                                "Listed {} sessions. Use /session <session-ref> to open one.",
+                                "Listed {} sessions. Enter opens the selected session.",
                                 sessions.len()
                             )
                         };
