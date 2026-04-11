@@ -60,6 +60,8 @@ struct RuntimeBuildResult {
     skills: Vec<Skill>,
     plugin_instructions: Vec<String>,
     mcp_servers: Vec<ConnectedMcpServer>,
+    mcp_server_configs: Vec<McpServerConfig>,
+    mcp_process_executor: Arc<dyn agent::tools::ProcessExecutor>,
     host_process_surfaces_allowed: bool,
     store_label: String,
     store_warning: Option<String>,
@@ -252,6 +254,8 @@ pub(crate) async fn build_session_with_approval_mode(
         skills,
         plugin_instructions,
         mcp_servers,
+        mcp_server_configs,
+        mcp_process_executor,
         host_process_surfaces_allowed,
         store_label,
         store_warning,
@@ -285,6 +289,8 @@ pub(crate) async fn build_session_with_approval_mode(
         subagent_executor,
         store,
         mcp_servers,
+        mcp_server_configs,
+        mcp_process_executor,
         approvals,
         user_inputs,
         permission_requests,
@@ -453,17 +459,16 @@ async fn build_runtime(
         plugin_instructions,
         &driver_outcome,
     );
-    let mcp_servers = filter_boot_mcp_servers(
-        mcp_servers,
+    let resolved_mcp_servers = dedup_mcp_servers(resolve_mcp_servers(&mcp_servers, workspace_root));
+    let boot_mcp_servers = filter_boot_mcp_servers(
+        resolved_mcp_servers.clone(),
         host_process_surfaces_allowed,
         &mut startup_warnings,
     );
     let mut connected_mcp_servers = Vec::new();
-    if !mcp_servers.is_empty() {
-        let resolved_mcp_servers =
-            dedup_mcp_servers(resolve_mcp_servers(&mcp_servers, workspace_root));
+    if !boot_mcp_servers.is_empty() {
         let connected = connect_and_catalog_mcp_servers_with_options(
-            &resolved_mcp_servers,
+            &boot_mcp_servers,
             McpConnectOptions {
                 process_executor: process_executor.clone(),
                 sandbox_policy: sandbox_policy.clone(),
@@ -584,6 +589,8 @@ async fn build_runtime(
         skill_catalog,
         plugin_instructions,
         mcp_servers: connected_mcp_servers,
+        mcp_server_configs: resolved_mcp_servers,
+        mcp_process_executor: process_executor as Arc<dyn agent::tools::ProcessExecutor>,
         host_process_surfaces_allowed,
         store_label: store_handle.label,
         store_warning: store_handle.warning,

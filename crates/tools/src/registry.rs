@@ -118,6 +118,18 @@ impl ToolRegistry {
         self.try_register_arc(Arc::new(DynamicTool::new(spec, handler)))
     }
 
+    pub fn remove(&self, name: &str) -> bool {
+        let mut state = self.state.write().expect("tool registry write lock");
+        let Some(canonical) = state.canonical_name_for(name) else {
+            return false;
+        };
+        let removed = state.tools.remove(&canonical).is_some();
+        if removed {
+            state.aliases.retain(|_, target| target != &canonical);
+        }
+        removed
+    }
+
     #[must_use]
     pub fn get(&self, name: &str) -> Option<Arc<dyn Tool>> {
         let state = self.state.read().expect("tool registry read lock");
@@ -469,5 +481,29 @@ mod tests {
             )
             .expect_err("conflicting aliases should be rejected");
         assert!(error.to_string().contains("lookup"));
+    }
+
+    #[test]
+    fn registry_remove_drops_tool_and_aliases_from_shared_state() {
+        let registry = ToolRegistry::new();
+        registry
+            .register_dynamic(
+                DynamicToolSpec::function(
+                    "dynamic_echo",
+                    "echoes one query field",
+                    json!({"type": "object"}),
+                )
+                .with_aliases(vec![ToolName::from("lookup")]),
+                Arc::new(|call_id, _arguments, _ctx| {
+                    Box::pin(async move { Ok(ToolResult::text(call_id, "dynamic_echo", "ok")) })
+                }),
+            )
+            .unwrap();
+
+        assert!(registry.remove("lookup"));
+        assert!(registry.get("dynamic_echo").is_none());
+        assert!(registry.get("lookup").is_none());
+        assert!(registry.specs().is_empty());
+        assert!(!registry.remove("dynamic_echo"));
     }
 }

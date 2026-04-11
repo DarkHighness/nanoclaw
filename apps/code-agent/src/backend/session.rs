@@ -25,7 +25,11 @@ use crate::backend::{
 };
 use crate::provider::{MutableAgentBackend, ReasoningEffortUpdate};
 use crate::statusline::StatusLineConfig;
-use agent::mcp::ConnectedMcpServer;
+use agent::mcp::{
+    ConnectedMcpServer, McpConnectOptions, McpServerConfig, McpTransportConfig,
+    catalog_resource_tools_as_registry_entries, catalog_tools_as_registry_entries,
+    connect_and_catalog_mcp_servers_with_options,
+};
 use agent::memory::{
     MemoryBackend, MemoryRecordMode, MemoryRecordRequest, MemoryScope, MemoryType,
 };
@@ -35,9 +39,9 @@ use agent::runtime::{
     VisibleHistoryRollbackRound,
 };
 use agent::tools::{
-    GrantedPermissionResponse, HOST_FEATURE_HOST_PROCESS_SURFACES, RequestPermissionProfile,
-    SandboxPolicy, SubagentExecutor, SubagentInputDelivery, SubagentLaunchSpec,
-    SubagentParentContext, UserInputResponse, describe_sandbox_policy,
+    GrantedPermissionResponse, HOST_FEATURE_HOST_PROCESS_SURFACES, McpToolAdapter,
+    RequestPermissionProfile, SandboxPolicy, SubagentExecutor, SubagentInputDelivery,
+    SubagentLaunchSpec, SubagentParentContext, UserInputResponse, describe_sandbox_policy,
     request_permission_profile_from_granted, sandbox_backend_status,
 };
 use agent::types::{
@@ -59,7 +63,7 @@ use store::{SessionStore, SessionSummary};
 use tokio::fs;
 use tokio::sync::Mutex as AsyncMutex;
 use tokio::time::{Duration, timeout};
-use tracing::warn;
+use tracing::{info, warn};
 
 // Keep the host-side session-note refresher aligned with Claude Code's
 // default cadence so incremental updates happen often enough to preserve
@@ -70,6 +74,13 @@ const SESSION_MEMORY_TOOL_CALLS_BETWEEN_UPDATES: usize = 3;
 const SESSION_MEMORY_UPDATE_TIMEOUT_MS: u64 = 15_000;
 const SESSION_NOTE_TITLE_LOAD_CONCURRENCY_LIMIT: usize = 8;
 const WORKSPACE_MEMORY_RECALL_METADATA_KEY: &str = "workspace_memory_recall";
+const STDIO_MCP_DISABLED_WARNING_PREFIX: &str =
+    "sandbox backend unavailable; skipped stdio MCP servers to avoid host subprocess execution:";
+const MCP_RESOURCE_TOOL_NAMES: [&str; 3] = [
+    "list_mcp_resources",
+    "list_mcp_resource_templates",
+    "read_mcp_resource",
+];
 
 #[derive(Clone)]
 struct SessionPreambleConfig {
@@ -341,7 +352,9 @@ pub(crate) struct CodeAgentSession {
     model_backend: Option<MutableAgentBackend>,
     subagent_executor: Arc<dyn SubagentExecutor>,
     store: Arc<dyn SessionStore>,
-    mcp_servers: Arc<Vec<ConnectedMcpServer>>,
+    mcp_servers: Arc<RwLock<Vec<ConnectedMcpServer>>>,
+    configured_mcp_servers: Arc<Vec<McpServerConfig>>,
+    mcp_process_executor: Arc<dyn agent::tools::ProcessExecutor>,
     approvals: ApprovalCoordinator,
     user_inputs: UserInputCoordinator,
     permission_requests: PermissionRequestCoordinator,
@@ -368,6 +381,8 @@ impl CodeAgentSession {
         subagent_executor: Arc<dyn SubagentExecutor>,
         store: Arc<dyn SessionStore>,
         mcp_servers: Vec<ConnectedMcpServer>,
+        configured_mcp_servers: Vec<McpServerConfig>,
+        mcp_process_executor: Arc<dyn agent::tools::ProcessExecutor>,
         approvals: ApprovalCoordinator,
         user_inputs: UserInputCoordinator,
         permission_requests: PermissionRequestCoordinator,
@@ -405,7 +420,9 @@ impl CodeAgentSession {
             model_backend,
             subagent_executor,
             store,
-            mcp_servers: Arc::new(mcp_servers),
+            mcp_servers: Arc::new(RwLock::new(mcp_servers)),
+            configured_mcp_servers: Arc::new(configured_mcp_servers),
+            mcp_process_executor,
             approvals,
             user_inputs,
             permission_requests,
@@ -443,6 +460,65 @@ impl CodeAgentSession {
 
     pub(crate) fn permission_mode(&self) -> SessionPermissionMode {
         self.startup.read().unwrap().permission_mode
+    }
+
+    fn connected_mcp_servers_snapshot(&self) -> Vec<ConnectedMcpServer> {
+        self.mcp_servers.read().unwrap().clone()
+    }
+
+    fn configured_stdio_mcp_server_names(&self) -> Vec<String> {
+        self.configured_mcp_servers
+            .iter()
+            .filter_map(|server| match server.transport {
+                McpTransportConfig::Stdio { .. } => Some(server.name.to_string()),
+                McpTransportConfig::StreamableHttp { .. } => None,
+            })
+            .collect()
+    }
+
+    fn pending_stdio_mcp_server_configs(&self) -> Vec<McpServerConfig> {
+        let connected_names = self
+            .mcp_servers
+            .read()
+            .unwrap()
+            .iter()
+            .map(|server| server.server_name.clone())
+            .collect::<BTreeSet<_>>();
+        self.configured_mcp_servers
+            .iter()
+            .filter(|server| matches!(server.transport, McpTransportConfig::Stdio { .. }))
+            .filter(|server| !connected_names.contains(&server.name))
+            .cloned()
+            .collect()
+    }
+
+    fn refresh_startup_diagnostics_snapshot(
+        &self,
+        runtime: &AgentRuntime,
+        host_process_surfaces_allowed: bool,
+    ) -> StartupDiagnosticsSnapshot {
+        let mut snapshot = self.startup.read().unwrap().startup_diagnostics.clone();
+        let tool_specs = runtime.tool_specs();
+        let local_tool_count = tool_specs
+            .iter()
+            .filter(|tool| matches!(tool.origin, agent::types::ToolOrigin::Local))
+            .count();
+        snapshot.local_tool_count = local_tool_count;
+        snapshot.mcp_tool_count = tool_specs.len().saturating_sub(local_tool_count);
+        snapshot.mcp_servers = list_mcp_servers(&self.connected_mcp_servers_snapshot());
+        snapshot
+            .warnings
+            .retain(|warning| !warning.starts_with(STDIO_MCP_DISABLED_WARNING_PREFIX));
+        if !host_process_surfaces_allowed {
+            let blocked = self.configured_stdio_mcp_server_names();
+            if !blocked.is_empty() {
+                snapshot.warnings.push(format!(
+                    "{STDIO_MCP_DISABLED_WARNING_PREFIX} {}",
+                    blocked.join(", ")
+                ));
+            }
+        }
+        snapshot
     }
 
     fn sandbox_policy_for_mode(&self, mode: SessionPermissionMode) -> SandboxPolicy {
@@ -800,6 +876,115 @@ impl CodeAgentSession {
         self.permission_requests.resolve(response)
     }
 
+    async fn connect_pending_stdio_mcp_servers(
+        &self,
+        sandbox_policy: &SandboxPolicy,
+    ) -> Result<Vec<(ConnectedMcpServer, Vec<McpToolAdapter>)>> {
+        let pending_configs = self.pending_stdio_mcp_server_configs();
+        if pending_configs.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let connected = connect_and_catalog_mcp_servers_with_options(
+            &pending_configs,
+            McpConnectOptions {
+                process_executor: self.mcp_process_executor.clone(),
+                sandbox_policy: sandbox_policy.clone(),
+                ..Default::default()
+            },
+        )
+        .await?;
+        let mut prepared = Vec::with_capacity(connected.len());
+        for server in connected {
+            let adapters = catalog_tools_as_registry_entries(server.client.clone()).await?;
+            prepared.push((server, adapters));
+        }
+        Ok(prepared)
+    }
+
+    fn rebuild_mcp_resource_tools(&self, runtime: &mut AgentRuntime) {
+        let registry = runtime.tool_registry_handle();
+        // Resource listing/reading stays behind fixed aggregate tool names, so
+        // permission-mode changes that add or remove servers must rebuild the
+        // shared specs to keep per-server MCP boundary metadata accurate.
+        for tool_name in MCP_RESOURCE_TOOL_NAMES {
+            registry.remove(tool_name);
+        }
+        for resource_tool in
+            catalog_resource_tools_as_registry_entries(self.connected_mcp_servers_snapshot())
+        {
+            let mut registry = registry.clone();
+            registry.register(resource_tool);
+        }
+    }
+
+    fn attach_connected_stdio_mcp_servers(
+        &self,
+        runtime: &mut AgentRuntime,
+        connected_servers: Vec<(ConnectedMcpServer, Vec<McpToolAdapter>)>,
+    ) {
+        if connected_servers.is_empty() {
+            return;
+        }
+
+        let registry = runtime.tool_registry_handle();
+        let mut attached_server_names = Vec::new();
+        {
+            let mut current_servers = self.mcp_servers.write().unwrap();
+            for (server, adapters) in connected_servers {
+                // Stdio MCP servers were intentionally skipped at boot when the
+                // host could not service local subprocesses. Once the session
+                // enables that capability, register their per-server tools and
+                // fold them back into the shared MCP resource surfaces.
+                attached_server_names.push(server.server_name.to_string());
+                for adapter in adapters {
+                    let mut registry = registry.clone();
+                    registry.register(adapter);
+                }
+                current_servers.push(server);
+            }
+        }
+        self.rebuild_mcp_resource_tools(runtime);
+        info!(
+            "connected deferred stdio MCP servers after permission-mode change: {}",
+            attached_server_names.join(", ")
+        );
+    }
+
+    fn detach_local_stdio_mcp_servers(&self, runtime: &mut AgentRuntime) {
+        let removed_servers = {
+            let mut current_servers = self.mcp_servers.write().unwrap();
+            let (retained, removed): (Vec<_>, Vec<_>) =
+                current_servers.drain(..).partition(|server| {
+                    !matches!(
+                        server.boundary.transport,
+                        agent::types::McpTransportKind::Stdio
+                    )
+                });
+            *current_servers = retained;
+            removed
+        };
+        if removed_servers.is_empty() {
+            return;
+        }
+
+        let registry = runtime.tool_registry_handle();
+        let removed_server_names = removed_servers
+            .iter()
+            .map(|server| server.server_name.to_string())
+            .collect::<Vec<_>>();
+        for server in &removed_servers {
+            for tool in &server.catalog.tools {
+                registry.remove(tool.name.as_str());
+            }
+        }
+        self.rebuild_mcp_resource_tools(runtime);
+        info!(
+            "detached local stdio MCP servers after permission-mode change: {}",
+            removed_server_names.join(", ")
+        );
+    }
+
     pub(crate) async fn set_permission_mode(
         &self,
         mode: SessionPermissionMode,
@@ -810,8 +995,18 @@ impl CodeAgentSession {
         let sandbox_summary = describe_sandbox_policy(&policy, &backend_status);
         let host_process_surfaces_allowed =
             !policy.requires_enforcement() || backend_status.is_available();
-        let (tool_names, side_question_context) = {
+        let connected_stdio_mcp_servers = if host_process_surfaces_allowed {
+            self.connect_pending_stdio_mcp_servers(&policy).await?
+        } else {
+            Vec::new()
+        };
+        let (tool_names, side_question_context, startup_diagnostics) = {
             let mut runtime = self.runtime.lock().await;
+            if host_process_surfaces_allowed {
+                self.attach_connected_stdio_mcp_servers(&mut runtime, connected_stdio_mcp_servers);
+            } else {
+                self.detach_local_stdio_mcp_servers(&mut runtime);
+            }
             let mut visibility = runtime.tool_visibility_context_snapshot();
             visibility.set_feature_enabled(
                 HOST_FEATURE_HOST_PROCESS_SURFACES,
@@ -828,6 +1023,7 @@ impl CodeAgentSession {
             (
                 runtime.tool_registry_names(),
                 Self::side_question_context_from_runtime(&runtime, None),
+                self.refresh_startup_diagnostics_snapshot(&runtime, host_process_surfaces_allowed),
             )
         };
         self.store_side_question_context(side_question_context);
@@ -845,6 +1041,7 @@ impl CodeAgentSession {
             startup.sandbox_summary = sandbox_summary.clone();
             startup.host_process_surfaces_allowed = host_process_surfaces_allowed;
             startup.tool_names = tool_names;
+            startup.startup_diagnostics = startup_diagnostics;
         }
 
         Ok(SessionPermissionModeOutcome {
@@ -2325,15 +2522,18 @@ impl CodeAgentSession {
     }
 
     pub(crate) async fn list_mcp_servers(&self) -> Vec<McpServerSummary> {
-        list_mcp_servers(self.mcp_servers.as_slice())
+        let servers = self.connected_mcp_servers_snapshot();
+        list_mcp_servers(&servers)
     }
 
     pub(crate) async fn list_mcp_prompts(&self) -> Vec<McpPromptSummary> {
-        list_mcp_prompts(self.mcp_servers.as_slice())
+        let servers = self.connected_mcp_servers_snapshot();
+        list_mcp_prompts(&servers)
     }
 
     pub(crate) async fn list_mcp_resources(&self) -> Vec<McpResourceSummary> {
-        list_mcp_resources(self.mcp_servers.as_slice())
+        let servers = self.connected_mcp_servers_snapshot();
+        list_mcp_resources(&servers)
     }
 
     pub(crate) async fn load_mcp_prompt(
@@ -2341,7 +2541,8 @@ impl CodeAgentSession {
         server_name: &str,
         prompt_name: &str,
     ) -> Result<LoadedMcpPrompt> {
-        load_mcp_prompt(self.mcp_servers.as_slice(), server_name, prompt_name).await
+        let servers = self.connected_mcp_servers_snapshot();
+        load_mcp_prompt(&servers, server_name, prompt_name).await
     }
 
     pub(crate) async fn load_mcp_resource(
@@ -2349,7 +2550,8 @@ impl CodeAgentSession {
         server_name: &str,
         uri: &str,
     ) -> Result<LoadedMcpResource> {
-        load_mcp_resource(self.mcp_servers.as_slice(), server_name, uri).await
+        let servers = self.connected_mcp_servers_snapshot();
+        load_mcp_resource(&servers, server_name, uri).await
     }
 
     fn set_stored_session_count(&self, count: usize) {
@@ -2672,34 +2874,43 @@ fn prepend_session_title_preview(
 mod tests {
     use super::{
         CodeAgentSession, CompactionWorkingSnapshot, LiveTaskAttentionAction, LiveTaskSummary,
-        LiveTaskWaitOutcome, PendingControlKind, SessionMemoryRefreshContext, SessionOperation,
-        SessionOperationAction, SessionPermissionMode, SessionStartupSnapshot,
-        SideQuestionContextSnapshot,
+        LiveTaskWaitOutcome, PendingControlKind, STDIO_MCP_DISABLED_WARNING_PREFIX,
+        SessionMemoryRefreshContext, SessionOperation, SessionOperationAction,
+        SessionPermissionMode, SessionStartupSnapshot, SideQuestionContextSnapshot,
     };
     use crate::backend::{
-        ApprovalCoordinator, PermissionRequestCoordinator, SessionEventStream,
-        StartupDiagnosticsSnapshot, UserInputCoordinator,
+        ApprovalCoordinator, McpServerSummary, PermissionRequestCoordinator, SessionEventStream,
+        StartupDiagnosticsSnapshot, UserInputCoordinator, list_mcp_servers,
     };
     use crate::statusline::StatusLineConfig;
+    use agent::mcp::{
+        ConnectedMcpServer, McpCatalog, McpResource, McpResourceTemplate, McpServerConfig,
+        McpTransportConfig, MockMcpClient, catalog_resource_tools_as_registry_entries,
+        catalog_tools_as_registry_entries,
+    };
     use agent::memory::{MemoryBackend, MemoryCoreBackend};
     use agent::runtime::{
         CompactionConfig, CompactionRequest, CompactionResult, ConversationCompactor, HookRunner,
         ModelBackend, PermissionGrantStore, Result as RuntimeResult,
     };
     use agent::tools::{
-        ExecCommandTool, Result as ToolResult, SubagentExecutor, SubagentInputDelivery,
-        SubagentLaunchSpec, SubagentParentContext, ToolError, ToolExecutionContext, ToolRegistry,
-        WriteStdinTool,
+        ExecCommandTool, HOST_FEATURE_HOST_PROCESS_SURFACES, Result as ToolResult,
+        SubagentExecutor, SubagentInputDelivery, SubagentLaunchSpec, SubagentParentContext,
+        ToolError, ToolExecutionContext, ToolRegistry, WriteStdinTool,
     };
     use agent::types::{
         AgentHandle, AgentId, AgentResultEnvelope, AgentSessionId, AgentStatus, AgentTaskSpec,
-        AgentWaitRequest, AgentWaitResponse, Message, MessageId, ModelEvent, ModelRequest,
-        SessionEventEnvelope, SessionEventKind, SessionId, SubmittedPromptSnapshot,
+        AgentWaitRequest, AgentWaitResponse, McpToolBoundary, McpTransportKind, Message, MessageId,
+        MessagePart, ModelEvent, ModelRequest, SessionEventEnvelope, SessionEventKind, SessionId,
+        SubmittedPromptSnapshot, ToolAvailability, ToolOrigin, ToolOutputMode, ToolSource,
+        ToolSpec, ToolVisibilityContext,
     };
     use agent::{AgentRuntimeBuilder, RuntimeCommand, Skill, SkillCatalog};
     use async_trait::async_trait;
     use futures::{StreamExt, stream, stream::BoxStream};
     use nanoclaw_config::CoreConfig;
+    use serde_json::json;
+    use std::collections::BTreeMap;
     use std::sync::{Arc, Mutex, RwLock};
     use store::{EventSink, InMemorySessionStore, SessionStore};
     use tokio::sync::Semaphore;
@@ -3113,7 +3324,16 @@ mod tests {
         store: Arc<dyn SessionStore>,
         startup: SessionStartupSnapshot,
     ) -> CodeAgentSession {
-        build_session_with_backends(runtime, subagent_executor, store, startup, None, None)
+        build_session_with_backends(
+            runtime,
+            subagent_executor,
+            store,
+            startup,
+            Vec::new(),
+            Vec::new(),
+            None,
+            None,
+        )
     }
 
     fn build_session_with_memory(
@@ -3128,7 +3348,29 @@ mod tests {
             subagent_executor,
             store,
             startup,
+            Vec::new(),
+            Vec::new(),
             memory_backend,
+            None,
+        )
+    }
+
+    fn build_session_with_mcp(
+        runtime: agent::AgentRuntime,
+        subagent_executor: Arc<dyn SubagentExecutor>,
+        store: Arc<dyn SessionStore>,
+        startup: SessionStartupSnapshot,
+        mcp_servers: Vec<ConnectedMcpServer>,
+        configured_mcp_servers: Vec<McpServerConfig>,
+    ) -> CodeAgentSession {
+        build_session_with_backends(
+            runtime,
+            subagent_executor,
+            store,
+            startup,
+            mcp_servers,
+            configured_mcp_servers,
+            None,
             None,
         )
     }
@@ -3138,6 +3380,8 @@ mod tests {
         subagent_executor: Arc<dyn SubagentExecutor>,
         store: Arc<dyn SessionStore>,
         startup: SessionStartupSnapshot,
+        mcp_servers: Vec<ConnectedMcpServer>,
+        configured_mcp_servers: Vec<McpServerConfig>,
         memory_backend: Option<Arc<dyn MemoryBackend>>,
         session_memory_model_backend: Option<Arc<dyn ModelBackend>>,
     ) -> CodeAgentSession {
@@ -3155,7 +3399,9 @@ mod tests {
             session_memory_model_backend,
             subagent_executor,
             store,
-            Vec::new(),
+            mcp_servers,
+            configured_mcp_servers,
+            Arc::new(agent::ManagedPolicyProcessExecutor::new()),
             ApprovalCoordinator::default(),
             UserInputCoordinator::default(),
             PermissionRequestCoordinator::default(),
@@ -3173,6 +3419,88 @@ mod tests {
                 crate::backend::session_memory_compaction::SessionMemoryRefreshState::default(),
             )),
         )
+    }
+
+    fn local_stdio_mcp_config(server_name: &str) -> McpServerConfig {
+        McpServerConfig {
+            name: server_name.into(),
+            transport: McpTransportConfig::Stdio {
+                command: "fixture-mcp".to_string(),
+                args: Vec::new(),
+                env: BTreeMap::new(),
+                cwd: None,
+            },
+        }
+    }
+
+    fn local_stdio_mcp_server(server_name: &str) -> ConnectedMcpServer {
+        let boundary = McpToolBoundary::local_process(McpTransportKind::Stdio);
+        let tool_spec = ToolSpec::function(
+            "fixture_lookup",
+            "Fixture MCP tool",
+            json!({"type": "object", "properties": {}}),
+            ToolOutputMode::Text,
+            ToolOrigin::Mcp {
+                server_name: server_name.into(),
+            },
+            ToolSource::McpTool {
+                server_name: server_name.into(),
+            },
+        )
+        .with_mcp_boundary(boundary.clone())
+        .with_availability(ToolAvailability {
+            feature_flags: vec![HOST_FEATURE_HOST_PROCESS_SURFACES.to_string()],
+            ..ToolAvailability::default()
+        });
+        let catalog = McpCatalog {
+            server_name: server_name.into(),
+            tools: vec![tool_spec],
+            prompts: Vec::new(),
+            resources: vec![McpResource {
+                uri: format!("{server_name}://guide"),
+                name: "guide".to_string(),
+                title: Some("Guide".to_string()),
+                description: "fixture guide".to_string(),
+                mime_type: Some("text/plain".to_string()),
+                parts: vec![MessagePart::Text {
+                    text: "fixture resource".to_string(),
+                }],
+            }],
+            resource_templates: vec![McpResourceTemplate {
+                uri_template: format!("{server_name}://guide/{{section}}"),
+                name: "guide-template".to_string(),
+                title: Some("Guide Template".to_string()),
+                description: "templated fixture guide".to_string(),
+                mime_type: Some("text/plain".to_string()),
+            }],
+        };
+        ConnectedMcpServer {
+            server_name: server_name.into(),
+            boundary,
+            client: Arc::new(MockMcpClient::new(
+                catalog.clone(),
+                Arc::new(|tool_name, _arguments| {
+                    Ok(agent::types::ToolResult::text(
+                        agent::types::ToolCallId::new(),
+                        tool_name,
+                        "fixture ok",
+                    ))
+                }),
+            )),
+            catalog,
+        }
+    }
+
+    async fn register_mcp_server_tools(registry: &mut ToolRegistry, server: ConnectedMcpServer) {
+        for adapter in catalog_tools_as_registry_entries(server.client.clone())
+            .await
+            .unwrap()
+        {
+            registry.register(adapter);
+        }
+        for resource_tool in catalog_resource_tools_as_registry_entries(vec![server]) {
+            registry.register(resource_tool);
+        }
     }
 
     fn write_session_note_title(
@@ -3391,6 +3719,117 @@ mod tests {
             snapshot.tool_names,
             vec!["exec_command".to_string(), "write_stdin".to_string()]
         );
+    }
+
+    #[tokio::test]
+    async fn attaching_stdio_mcp_servers_registers_tools_and_resources() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(InMemorySessionStore::new());
+        let runtime = AgentRuntimeBuilder::new(Arc::new(NeverBackend), store.clone())
+            .hook_runner(Arc::new(HookRunner::default()))
+            .tool_context(ToolExecutionContext {
+                workspace_root: dir.path().to_path_buf(),
+                workspace_only: true,
+                model_visibility: ToolVisibilityContext::default()
+                    .with_feature(HOST_FEATURE_HOST_PROCESS_SURFACES),
+                ..Default::default()
+            })
+            .build();
+        let session = build_session_with_mcp(
+            runtime,
+            Arc::new(NoopSubagentExecutor),
+            store,
+            startup_snapshot(dir.path()),
+            Vec::new(),
+            vec![local_stdio_mcp_config("fixture")],
+        );
+        let connected_server = local_stdio_mcp_server("fixture");
+        let adapters = catalog_tools_as_registry_entries(connected_server.client.clone())
+            .await
+            .unwrap();
+
+        let mut runtime = session.runtime.lock().await;
+        session.attach_connected_stdio_mcp_servers(
+            &mut runtime,
+            vec![(connected_server.clone(), adapters)],
+        );
+
+        let tool_names = runtime
+            .tool_specs()
+            .into_iter()
+            .map(|spec| spec.name.to_string())
+            .collect::<Vec<_>>();
+        assert!(tool_names.iter().any(|name| name == "fixture_lookup"));
+        assert!(tool_names.iter().any(|name| name == "list_mcp_resources"));
+        assert!(tool_names.iter().any(|name| name == "read_mcp_resource"));
+        assert_eq!(session.connected_mcp_servers_snapshot().len(), 1);
+        assert_eq!(
+            session.connected_mcp_servers_snapshot()[0]
+                .server_name
+                .as_str(),
+            "fixture"
+        );
+    }
+
+    #[tokio::test]
+    async fn detaching_stdio_mcp_servers_removes_tools_and_restores_warning() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(InMemorySessionStore::new());
+        let connected_server = local_stdio_mcp_server("fixture");
+        let mut registry = ToolRegistry::new();
+        register_mcp_server_tools(&mut registry, connected_server.clone()).await;
+        let runtime = AgentRuntimeBuilder::new(Arc::new(NeverBackend), store.clone())
+            .hook_runner(Arc::new(HookRunner::default()))
+            .tool_registry(registry)
+            .tool_context(ToolExecutionContext {
+                workspace_root: dir.path().to_path_buf(),
+                workspace_only: true,
+                model_visibility: ToolVisibilityContext::default()
+                    .with_feature(HOST_FEATURE_HOST_PROCESS_SURFACES),
+                ..Default::default()
+            })
+            .build();
+        let mut startup = startup_snapshot(dir.path());
+        startup.host_process_surfaces_allowed = true;
+        startup.tool_names = runtime.tool_registry_names();
+        startup.startup_diagnostics.mcp_servers =
+            list_mcp_servers(std::slice::from_ref(&connected_server));
+        let session = build_session_with_mcp(
+            runtime,
+            Arc::new(NoopSubagentExecutor),
+            store,
+            startup,
+            vec![connected_server.clone()],
+            vec![local_stdio_mcp_config("fixture")],
+        );
+
+        let mut runtime = session.runtime.lock().await;
+        session.detach_local_stdio_mcp_servers(&mut runtime);
+        let diagnostics = session.refresh_startup_diagnostics_snapshot(&runtime, false);
+
+        assert!(session.connected_mcp_servers_snapshot().is_empty());
+        assert!(
+            runtime
+                .tool_registry_handle()
+                .get("fixture_lookup")
+                .is_none()
+        );
+        assert!(
+            runtime
+                .tool_registry_handle()
+                .get("list_mcp_resources")
+                .is_none()
+        );
+        assert!(
+            runtime
+                .tool_registry_handle()
+                .get("read_mcp_resource")
+                .is_none()
+        );
+        assert_eq!(diagnostics.mcp_servers, Vec::<McpServerSummary>::new());
+        assert!(diagnostics.warnings.iter().any(|warning| {
+            warning.starts_with(STDIO_MCP_DISABLED_WARNING_PREFIX) && warning.contains("fixture")
+        }));
     }
 
     #[tokio::test]
@@ -4036,6 +4475,8 @@ mod tests {
             Arc::new(NoopSubagentExecutor),
             store,
             startup,
+            Vec::new(),
+            Vec::new(),
             Some(memory_backend),
             Some(Arc::new(note_backend.clone())),
         );
@@ -4134,6 +4575,8 @@ mod tests {
             Arc::new(NoopSubagentExecutor),
             store,
             startup,
+            Vec::new(),
+            Vec::new(),
             Some(memory_backend),
             Some(Arc::new(note_backend.clone())),
         );
@@ -4220,6 +4663,8 @@ mod tests {
             Arc::new(NoopSubagentExecutor),
             store,
             startup,
+            Vec::new(),
+            Vec::new(),
             Some(memory_backend),
             Some(Arc::new(note_backend.clone())),
         );
@@ -4316,6 +4761,8 @@ mod tests {
             Arc::new(NoopSubagentExecutor),
             store,
             startup,
+            Vec::new(),
+            Vec::new(),
             Some(memory_backend),
             Some(Arc::new(capture_backend.clone())),
         );
@@ -4478,6 +4925,8 @@ mod tests {
             Arc::new(NoopSubagentExecutor),
             store,
             startup,
+            Vec::new(),
+            Vec::new(),
             None,
             Some(Arc::new(side_backend.clone())),
         );

@@ -94,6 +94,10 @@ Completed so far:
   - already-connected local-process MCP tools and MCP resource surfaces share
     the same feature gate, including execution-time filtering for aggregate MCP
     resource listing and reads
+- stdio MCP servers that were skipped at startup now reconnect when a later
+  session permission-mode switch re-enables host subprocess surfaces, and they
+  disconnect again when the session returns to a mode that cannot service local
+  child processes
 - OpenAI Responses mapping now supports freeform/custom tools, including
   transcript replay through `custom_tool_call` and
   `custom_tool_call_output`
@@ -106,7 +110,6 @@ Still pending inside this pass:
 
 - boot-skipped local subprocess surfaces still need lazy reconnect or runtime
   reload paths if they should appear after a later permission-mode switch:
-  - stdio MCP servers that were never connected at startup
   - other startup-gated local helper surfaces such as managed subprocess-backed
     hooks or code-intel helpers
 
@@ -595,8 +598,9 @@ Then add higher-variance parity work:
     host capability flags instead of only provider identity
 - remaining:
   - image or binary-view tools if the host app needs them
-  - runtime reconnect or reload for startup-skipped subprocess-backed tool
-    surfaces
+  - runtime reconnect or reload for the remaining startup-skipped
+    subprocess-backed helper surfaces such as command hooks and managed
+    code-intel helpers
 
 ## Immediate Next Implementation Slice
 
@@ -607,9 +611,8 @@ startup-skipped subprocess-backed surfaces.
 
 The recommended order is:
 
-1. add a runtime reconnect or reload path for stdio MCP servers and similar
-   subprocess-backed helpers that are skipped at startup under restrictive
-   permission modes
+1. add a runtime rebuild path for command hooks and managed code-intel helpers
+   that are still frozen at startup under restrictive permission modes
 2. only then decide whether the host app still needs extra parity work such as
    image or binary-view tools
 

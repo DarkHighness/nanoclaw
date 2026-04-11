@@ -169,7 +169,7 @@ pub(crate) fn build_sandbox_fallback_notice(
     Some(SandboxFallbackNotice {
         policy_summary: describe_sandbox_policy(&preflight.policy, &preflight.status),
         reason: reason.clone(),
-        risk_summary: "continuing will disable sandbox enforcement; shell access, command hooks, stdio MCP servers, and managed code-intel helpers stay disabled to avoid host subprocess execution".to_string(),
+        risk_summary: "continuing will disable sandbox enforcement; shell access stays degraded, command hooks and managed code-intel helpers stay disabled, and stdio MCP servers stay disconnected until the session re-enables host subprocess surfaces".to_string(),
         setup_steps: platform_sandbox_setup_steps(reason),
     })
 }

@@ -344,7 +344,8 @@ fn build_risk_card_text() -> Text<'static> {
         Line::raw(""),
         bullet_line("shell access stays degraded"),
         bullet_line("command hooks stay disabled"),
-        bullet_line("stdio MCP + managed code-intel helpers stay degraded"),
+        bullet_line("stdio MCP starts degraded until host-process surfaces return"),
+        bullet_line("managed code-intel helpers stay disabled"),
     ])
 }
 
