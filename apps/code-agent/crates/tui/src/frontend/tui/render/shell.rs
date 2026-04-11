@@ -42,14 +42,13 @@ pub(super) fn bottom_band_inner_area(area: Rect) -> Rect {
 }
 
 pub(super) fn bottom_layout_constraints(
-    header_height: u16,
     approval_height: Option<u16>,
     pending_height: Option<u16>,
     command_hint_height: Option<u16>,
     toast_height: Option<u16>,
     composer_height: u16,
 ) -> Vec<Constraint> {
-    let mut constraints = vec![Constraint::Length(header_height), Constraint::Min(10)];
+    let mut constraints = vec![Constraint::Min(10)];
     if let Some(height) = approval_height {
         constraints.push(Constraint::Length(height));
     }

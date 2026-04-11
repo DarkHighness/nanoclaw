@@ -5,6 +5,7 @@ use super::chrome::{
 use super::history_rollback_overlay::{
     build_history_rollback_list_text, build_history_rollback_preview_text,
 };
+use super::main_pane_viewport_height;
 use super::picker::build_command_hint_text;
 use super::should_render_side_rail;
 use super::statusline::{format_footer_context, format_toast_line, toast_height};
@@ -2058,6 +2059,16 @@ fn footer_context_renders_configured_status_items() {
             .iter()
             .any(|span| { span.content.as_ref().contains("session_") })
     );
+}
+
+#[test]
+fn main_pane_viewport_height_does_not_reserve_top_header_space() {
+    let state = TuiState::default();
+    let area = Rect::new(0, 0, 120, 30);
+
+    let viewport = main_pane_viewport_height(area, &state, None, None, None);
+
+    assert_eq!(viewport, 30 - composer_height(&state, None) - 1);
 }
 
 #[test]

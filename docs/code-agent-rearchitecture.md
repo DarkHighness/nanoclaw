@@ -106,9 +106,9 @@ frontend boundary and reduced the size of the TUI controller.
   - History rollback flow moved into `frontend/tui/history_rollback.rs`.
   - Startup/session-shell synchronization moved into
     `frontend/tui/session_shell.rs`.
-- The TUI shell now uses a persistent top header plus a restrained welcome
-  screen that preserves the ASCII splash as the brand mark instead of treating
-  the logo as disposable chrome.
+- The TUI shell now keeps the transcript flush with the top of the viewport and
+  uses a restrained welcome screen that preserves the ASCII splash as the brand
+  mark instead of treating the logo as disposable chrome.
 
 This is a better industrial direction because boundary intent is now encoded in
 the code layout instead of being left as convention.
@@ -205,12 +205,12 @@ Codex-like operator surface:
 - restrained teal accent for focus states
 - muted gold/green user-assistant contrast that reads clearly without looking
   like a dashboard
-- persistent session header for workspace/model/runtime state
+- no persistent top status strip; runtime context stays in the footer and side rail
 - reduced visual noise on startup with a compact text-led welcome view
 - preserved ASCII splash as the brand mark, with the surrounding shell chrome
   simplified instead of deleting the logo entirely
-- shell-first information hierarchy: session header, main transcript, side rail,
-  composer, statusline
+- shell-first information hierarchy: main transcript, side rail, composer,
+  footer context
 
 This keeps the UI calm and tool-like rather than ornamental.
 
