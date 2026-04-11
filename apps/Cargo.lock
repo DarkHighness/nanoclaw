@@ -844,6 +844,10 @@ dependencies = [
  "base64",
  "chrono",
  "clap",
+ "code-agent-backend",
+ "code-agent-config",
+ "code-agent-contracts",
+ "code-agent-tui",
  "crossterm",
  "futures",
  "nanoclaw-config",
@@ -860,6 +864,89 @@ dependencies = [
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
+ "tui-markdown",
+ "unicode-width 0.2.0",
+]
+
+[[package]]
+name = "code-agent-backend"
+version = "0.1.0"
+dependencies = [
+ "agent",
+ "agent-env",
+ "anyhow",
+ "async-trait",
+ "base64",
+ "chrono",
+ "code-agent-config",
+ "code-agent-contracts",
+ "futures",
+ "nanoclaw-config",
+ "serde",
+ "serde_json",
+ "shlex",
+ "store",
+ "tempfile",
+ "tokio",
+ "toml",
+ "toml_edit 0.22.27",
+ "tracing",
+ "unicode-width 0.2.0",
+]
+
+[[package]]
+name = "code-agent-config"
+version = "0.1.0"
+dependencies = [
+ "agent",
+ "agent-env",
+ "anyhow",
+ "code-agent-contracts",
+ "nanoclaw-config",
+ "serde",
+ "shlex",
+ "tempfile",
+ "tokio",
+ "toml",
+ "toml_edit 0.22.27",
+]
+
+[[package]]
+name = "code-agent-contracts"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "ratatui",
+ "ratatui-core",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "toml",
+ "tui-markdown",
+]
+
+[[package]]
+name = "code-agent-tui"
+version = "0.1.0"
+dependencies = [
+ "agent",
+ "anyhow",
+ "base64",
+ "chrono",
+ "clap",
+ "code-agent-backend",
+ "code-agent-config",
+ "code-agent-contracts",
+ "crossterm",
+ "futures",
+ "ratatui",
+ "ratatui-core",
+ "serde_json",
+ "shlex",
+ "store",
+ "tempfile",
+ "tokio",
+ "tracing",
  "tui-markdown",
  "unicode-width 0.2.0",
 ]

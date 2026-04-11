@@ -1,0 +1,15 @@
+[package]
+name = "code-agent-contracts"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+ratatui.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+toml.workspace = true
+tui-markdown = { version = "0.3.7", default-features = false, features = ["highlight-code"] }
+ratatui-core = "0.1.0"

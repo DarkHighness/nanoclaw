@@ -1,0 +1,4090 @@
+use super::input_history;
+use crate::backend::{
+    PendingControlKind, PendingControlSummary, SessionPermissionMode, StartupDiagnosticsSnapshot,
+};
+use crate::statusline::{StatusLineConfig, StatusLineField, status_line_fields};
+use crate::theme::ThemeSummary;
+use crate::tool_render::{
+    ToolDetail, ToolDetailBlockKind, preview_tool_details, serialize_tool_details,
+};
+use agent::types::{
+    AgentStatus, Message, MessageId, MessagePart, MessageRole, SubmittedPromptAttachment,
+    SubmittedPromptAttachmentKind, SubmittedPromptSnapshot, TokenLedgerSnapshot,
+};
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::sync::{Arc, RwLock};
+use std::time::{Duration, Instant};
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct GitSnapshot {
+    pub(crate) available: bool,
+    pub(crate) repo_name: String,
+    pub(crate) branch: String,
+    pub(crate) staged: usize,
+    pub(crate) modified: usize,
+    pub(crate) untracked: usize,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct SessionSummary {
+    pub(crate) workspace_name: String,
+    pub(crate) active_session_ref: String,
+    pub(crate) root_agent_session_id: String,
+    pub(crate) provider_label: String,
+    pub(crate) model: String,
+    pub(crate) model_reasoning_effort: Option<String>,
+    pub(crate) supported_model_reasoning_efforts: Vec<String>,
+    pub(crate) supports_image_input: bool,
+    pub(crate) workspace_root: PathBuf,
+    pub(crate) git: GitSnapshot,
+    pub(crate) tool_names: Vec<String>,
+    pub(crate) store_label: String,
+    pub(crate) store_warning: Option<String>,
+    pub(crate) stored_session_count: usize,
+    pub(crate) default_sandbox_summary: String,
+    pub(crate) sandbox_summary: String,
+    pub(crate) permission_mode: SessionPermissionMode,
+    pub(crate) host_process_surfaces_allowed: bool,
+    pub(crate) startup_diagnostics: StartupDiagnosticsSnapshot,
+    pub(crate) queued_commands: usize,
+    pub(crate) token_ledger: TokenLedgerSnapshot,
+    pub(crate) statusline: StatusLineConfig,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum MainPaneMode {
+    #[default]
+    Transcript,
+    View,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct PlanEntry {
+    pub(crate) id: String,
+    pub(crate) content: String,
+    pub(crate) status: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ExecutionEntry {
+    pub(crate) scope_label: String,
+    pub(crate) status: String,
+    pub(crate) summary: String,
+    pub(crate) next_action: Option<String>,
+    pub(crate) verification: Option<String>,
+    pub(crate) blocker: Option<String>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct StatusLinePickerState {
+    pub(crate) selected: usize,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ThinkingEffortPickerState {
+    pub(crate) selected: usize,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ThemePickerState {
+    pub(crate) selected: usize,
+    pub(crate) original_theme: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum ComposerContextHint {
+    LiveTaskFinished {
+        task_id: String,
+        status: AgentStatus,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum ToastTone {
+    #[default]
+    Info,
+    Success,
+    Warning,
+    Error,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ToastState {
+    pub(crate) message: String,
+    pub(crate) tone: ToastTone,
+    pub(crate) expires_at: Instant,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct PendingControlPickerState {
+    pub(crate) selected: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PendingControlEditorState {
+    pub(crate) id: String,
+    pub(crate) kind: PendingControlKind,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ComposerHistoryNavigationState {
+    pub(crate) index: usize,
+    pub(crate) draft: ComposerDraftState,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct ComposerDraftState {
+    pub(crate) text: String,
+    pub(crate) cursor: usize,
+    pub(crate) draft_attachments: Vec<ComposerDraftAttachmentState>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ComposerRowAttachmentPreview {
+    pub(crate) index: usize,
+    pub(crate) summary: String,
+    pub(crate) detail: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ComposerAttachmentEditSummary {
+    pub(crate) detached: Vec<ComposerRowAttachmentPreview>,
+    pub(crate) reordered: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ComposerDraftAttachmentState {
+    pub(crate) placeholder: Option<String>,
+    pub(crate) kind: ComposerDraftAttachmentKind,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum ComposerDraftAttachmentKind {
+    LargePaste {
+        payload: String,
+    },
+    LocalImage {
+        requested_path: String,
+        mime_type: Option<String>,
+        part: Option<MessagePart>,
+    },
+    RemoteImage {
+        requested_url: String,
+        part: MessagePart,
+    },
+    LocalFile {
+        requested_path: String,
+        file_name: Option<String>,
+        mime_type: Option<String>,
+        part: Option<MessagePart>,
+    },
+    RemoteFile {
+        requested_url: String,
+        part: MessagePart,
+    },
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct ComposerKillBufferState {
+    pub(crate) text: String,
+    pub(crate) draft_attachments: Vec<ComposerDraftAttachmentState>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ComposerSubmission {
+    pub(crate) prompt_snapshot: SubmittedPromptSnapshot,
+    pub(crate) local_history_draft: ComposerDraftState,
+}
+
+impl ComposerDraftState {
+    pub(crate) fn from_text(text: impl Into<String>) -> Self {
+        let text = text.into();
+        Self {
+            cursor: text.len(),
+            text,
+            draft_attachments: Vec::new(),
+        }
+    }
+
+    pub(crate) fn row_attachment_previews(&self) -> Vec<ComposerRowAttachmentPreview> {
+        summarize_row_attachments(&self.draft_attachments)
+    }
+
+    pub(crate) fn row_attachment_summaries(&self) -> Vec<(usize, String, String)> {
+        self.row_attachment_previews()
+            .into_iter()
+            .map(|preview| (preview.index, preview.summary, preview.detail))
+            .collect()
+    }
+
+    fn normalized(mut self) -> Self {
+        self.draft_attachments.retain(|attachment| {
+            attachment
+                .placeholder
+                .as_ref()
+                .is_none_or(|placeholder| self.text.contains(placeholder))
+        });
+        normalize_attachment_placeholders(&mut self.text, &mut self.draft_attachments);
+        self.cursor = normalize_input_cursor(&self.text, self.cursor.min(self.text.len()));
+        self
+    }
+}
+
+pub(crate) fn draft_preview_text(
+    draft: &ComposerDraftState,
+    fallback_prompt: &str,
+    max_chars: usize,
+) -> String {
+    let attachment_preview = draft
+        .row_attachment_summaries()
+        .into_iter()
+        .map(|(index, summary, _)| format!("#{index} {summary}"))
+        .collect::<Vec<_>>();
+    let mut parts = Vec::new();
+    if !attachment_preview.is_empty() {
+        let head = attachment_preview
+            .iter()
+            .take(2)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", ");
+        let remainder = attachment_preview.len().saturating_sub(2);
+        if remainder == 0 {
+            parts.push(head);
+        } else {
+            parts.push(format!("{head}, +{remainder} more"));
+        }
+    }
+    let trimmed_text = draft.text.trim();
+    if !trimmed_text.is_empty() {
+        parts.push(trimmed_text.to_string());
+    }
+    if parts.is_empty() {
+        preview_text(fallback_prompt, max_chars)
+    } else {
+        preview_text(&parts.join(" · "), max_chars)
+    }
+}
+
+impl ComposerDraftAttachmentState {
+    fn submitted_prompt_attachment(&self) -> SubmittedPromptAttachment {
+        SubmittedPromptAttachment {
+            placeholder: self.placeholder.clone(),
+            kind: match &self.kind {
+                ComposerDraftAttachmentKind::LargePaste { payload } => {
+                    SubmittedPromptAttachmentKind::Paste {
+                        text: payload.clone(),
+                    }
+                }
+                ComposerDraftAttachmentKind::LocalImage {
+                    requested_path,
+                    mime_type,
+                    ..
+                } => SubmittedPromptAttachmentKind::LocalImage {
+                    requested_path: requested_path.clone(),
+                    mime_type: mime_type.clone(),
+                },
+                ComposerDraftAttachmentKind::RemoteImage {
+                    requested_url,
+                    part,
+                } => {
+                    let mime_type = match part {
+                        MessagePart::ImageUrl { mime_type, .. } => mime_type.clone(),
+                        _ => None,
+                    };
+                    SubmittedPromptAttachmentKind::RemoteImage {
+                        requested_url: requested_url.clone(),
+                        mime_type,
+                    }
+                }
+                ComposerDraftAttachmentKind::LocalFile {
+                    requested_path,
+                    file_name,
+                    mime_type,
+                    ..
+                } => SubmittedPromptAttachmentKind::LocalFile {
+                    requested_path: requested_path.clone(),
+                    file_name: file_name.clone(),
+                    mime_type: mime_type.clone(),
+                },
+                ComposerDraftAttachmentKind::RemoteFile {
+                    requested_url,
+                    part,
+                } => {
+                    let (file_name, mime_type) = match part {
+                        MessagePart::File {
+                            file_name,
+                            mime_type,
+                            ..
+                        } => (file_name.clone(), mime_type.clone()),
+                        _ => (None, None),
+                    };
+                    SubmittedPromptAttachmentKind::RemoteFile {
+                        requested_url: requested_url.clone(),
+                        file_name,
+                        mime_type,
+                    }
+                }
+            },
+        }
+    }
+
+    fn same_persisted_attachment(&self, other: &Self) -> bool {
+        self.submitted_prompt_attachment() == other.submitted_prompt_attachment()
+    }
+
+    fn is_row_attachment(&self) -> bool {
+        self.placeholder.is_none()
+    }
+
+    fn external_editor_row_token(&self, index: usize) -> Option<String> {
+        match self.kind {
+            ComposerDraftAttachmentKind::LocalImage { .. }
+            | ComposerDraftAttachmentKind::RemoteImage { .. } => Some(format!("[Image #{index}]")),
+            ComposerDraftAttachmentKind::LocalFile { .. }
+            | ComposerDraftAttachmentKind::RemoteFile { .. } => Some(format!("[File #{index}]")),
+            ComposerDraftAttachmentKind::LargePaste { .. } => None,
+        }
+    }
+
+    fn external_editor_row_line(&self, index: usize) -> Option<String> {
+        let token = self.external_editor_row_token(index)?;
+        let detail = self.row_detail()?;
+        Some(format!("{token} {detail}"))
+    }
+
+    fn default_inline_placeholder(&self) -> Option<String> {
+        default_inline_placeholder(&self.kind)
+    }
+
+    pub(crate) fn row_summary(&self) -> Option<String> {
+        match &self.kind {
+            ComposerDraftAttachmentKind::LargePaste { .. } => None,
+            ComposerDraftAttachmentKind::LocalImage { requested_path, .. }
+            | ComposerDraftAttachmentKind::RemoteImage {
+                requested_url: requested_path,
+                ..
+            } => Some(format!("image · {}", preview_path_tail(requested_path))),
+            ComposerDraftAttachmentKind::LocalFile { requested_path, .. }
+            | ComposerDraftAttachmentKind::RemoteFile {
+                requested_url: requested_path,
+                ..
+            } => Some(format!("file · {}", preview_path_tail(requested_path))),
+        }
+    }
+
+    pub(crate) fn row_detail(&self) -> Option<String> {
+        match &self.kind {
+            ComposerDraftAttachmentKind::LargePaste { .. } => None,
+            ComposerDraftAttachmentKind::LocalImage { requested_path, .. }
+            | ComposerDraftAttachmentKind::RemoteImage {
+                requested_url: requested_path,
+                ..
+            }
+            | ComposerDraftAttachmentKind::LocalFile { requested_path, .. }
+            | ComposerDraftAttachmentKind::RemoteFile {
+                requested_url: requested_path,
+                ..
+            } => Some(requested_path.clone()),
+        }
+    }
+}
+
+pub(crate) fn composer_draft_from_message(message: &Message) -> ComposerDraftState {
+    let mut text = String::new();
+    let mut previous_inline = false;
+    let mut has_previous_text_fragment = false;
+    let mut draft_attachments = Vec::new();
+
+    for part in &message.parts {
+        if let Some(attachment) = composer_draft_attachment_from_part(part) {
+            if let Some(placeholder) = attachment.placeholder.as_ref() {
+                if has_previous_text_fragment && !previous_inline {
+                    text.push('\n');
+                }
+                text.push_str(placeholder);
+                previous_inline = true;
+                has_previous_text_fragment = true;
+            }
+            draft_attachments.push(attachment);
+            continue;
+        }
+
+        let fragment = composer_draft_text_fragment(part);
+        if fragment.is_empty() {
+            continue;
+        }
+        let inline = composer_draft_part_is_inline(part);
+        if has_previous_text_fragment {
+            if previous_inline && inline {
+                text.push_str(&fragment);
+            } else {
+                text.push('\n');
+                text.push_str(&fragment);
+            }
+        } else {
+            text.push_str(&fragment);
+        }
+        previous_inline = inline;
+        has_previous_text_fragment = true;
+    }
+
+    ComposerDraftState {
+        cursor: text.len(),
+        text,
+        draft_attachments,
+    }
+    .normalized()
+}
+
+pub(crate) fn composer_draft_from_messages(messages: &[Message]) -> ComposerDraftState {
+    let mut combined = ComposerDraftState::default();
+    for draft in messages.iter().map(composer_draft_from_message) {
+        if !combined.text.is_empty() && !draft.text.is_empty() {
+            combined.text.push_str("\n\n");
+        }
+        combined.text.push_str(&draft.text);
+        combined.draft_attachments.extend(draft.draft_attachments);
+    }
+    combined.cursor = combined.text.len();
+    combined.normalized()
+}
+
+pub(crate) fn composer_draft_from_parts(parts: &[MessagePart]) -> ComposerDraftState {
+    composer_draft_from_message(&Message::new(MessageRole::User, parts.to_vec()))
+}
+
+pub(crate) fn composer_draft_from_prompt_snapshot(
+    snapshot: &SubmittedPromptSnapshot,
+) -> ComposerDraftState {
+    ComposerDraftState {
+        cursor: snapshot.text.len(),
+        text: snapshot.text.clone(),
+        draft_attachments: snapshot
+            .attachments
+            .iter()
+            .cloned()
+            .map(composer_draft_attachment_from_snapshot)
+            .collect(),
+    }
+    .normalized()
+}
+
+pub(crate) fn submitted_prompt_snapshot_from_draft(
+    draft: &ComposerDraftState,
+) -> SubmittedPromptSnapshot {
+    SubmittedPromptSnapshot {
+        text: draft.text.clone(),
+        attachments: draft
+            .draft_attachments
+            .iter()
+            .map(ComposerDraftAttachmentState::submitted_prompt_attachment)
+            .collect(),
+    }
+}
+
+fn composer_draft_attachment_from_snapshot(
+    attachment: SubmittedPromptAttachment,
+) -> ComposerDraftAttachmentState {
+    let placeholder = attachment.placeholder.clone();
+    let kind = match attachment.kind {
+        SubmittedPromptAttachmentKind::Paste { text } => {
+            ComposerDraftAttachmentKind::LargePaste { payload: text }
+        }
+        SubmittedPromptAttachmentKind::LocalImage {
+            requested_path,
+            mime_type,
+        } => ComposerDraftAttachmentKind::LocalImage {
+            requested_path,
+            mime_type,
+            part: None,
+        },
+        SubmittedPromptAttachmentKind::RemoteImage {
+            requested_url,
+            mime_type,
+        } => ComposerDraftAttachmentKind::RemoteImage {
+            requested_url: requested_url.clone(),
+            part: MessagePart::ImageUrl {
+                url: requested_url,
+                mime_type,
+            },
+        },
+        SubmittedPromptAttachmentKind::LocalFile {
+            requested_path,
+            file_name,
+            mime_type,
+        } => ComposerDraftAttachmentKind::LocalFile {
+            requested_path,
+            file_name,
+            mime_type,
+            part: None,
+        },
+        SubmittedPromptAttachmentKind::RemoteFile {
+            requested_url,
+            file_name,
+            mime_type,
+        } => ComposerDraftAttachmentKind::RemoteFile {
+            requested_url: requested_url.clone(),
+            part: MessagePart::File {
+                file_name,
+                mime_type,
+                data_base64: None,
+                uri: Some(requested_url),
+            },
+        },
+        SubmittedPromptAttachmentKind::EmbeddedImage { mime_type } => {
+            ComposerDraftAttachmentKind::RemoteImage {
+                requested_url: mime_type
+                    .clone()
+                    .unwrap_or_else(|| "embedded-image".to_string()),
+                part: MessagePart::ImageUrl {
+                    url: mime_type
+                        .clone()
+                        .unwrap_or_else(|| "embedded-image".to_string()),
+                    mime_type,
+                },
+            }
+        }
+        SubmittedPromptAttachmentKind::EmbeddedFile {
+            file_name,
+            mime_type,
+            uri,
+        } => {
+            let requested_path = uri
+                .clone()
+                .or(file_name.clone())
+                .unwrap_or_else(|| "embedded-file".to_string());
+            ComposerDraftAttachmentKind::LocalFile {
+                requested_path,
+                file_name,
+                mime_type,
+                part: None,
+            }
+        }
+    };
+    ComposerDraftAttachmentState { placeholder, kind }
+}
+
+fn composer_draft_attachment_from_part(part: &MessagePart) -> Option<ComposerDraftAttachmentState> {
+    match part {
+        MessagePart::Paste { label, text } => Some(ComposerDraftAttachmentState {
+            placeholder: Some(label.clone()),
+            kind: ComposerDraftAttachmentKind::LargePaste {
+                payload: text.clone(),
+            },
+        }),
+        MessagePart::Image { mime_type, .. } => Some(ComposerDraftAttachmentState {
+            placeholder: Some("[Image #1]".to_string()),
+            kind: ComposerDraftAttachmentKind::LocalImage {
+                requested_path: format!("[image:{mime_type}]"),
+                mime_type: Some(mime_type.clone()),
+                part: Some(part.clone()),
+            },
+        }),
+        MessagePart::ImageUrl { url, .. } => Some(ComposerDraftAttachmentState {
+            placeholder: None,
+            kind: ComposerDraftAttachmentKind::RemoteImage {
+                requested_url: url.clone(),
+                part: part.clone(),
+            },
+        }),
+        MessagePart::File {
+            file_name,
+            mime_type,
+            uri,
+            ..
+        } => {
+            let requested_path = uri
+                .as_ref()
+                .or(file_name.as_ref())
+                .cloned()
+                .unwrap_or_else(|| "[file]".to_string());
+            let kind = if is_remote_url(&requested_path) {
+                ComposerDraftAttachmentKind::RemoteFile {
+                    requested_url: requested_path,
+                    part: part.clone(),
+                }
+            } else {
+                ComposerDraftAttachmentKind::LocalFile {
+                    requested_path,
+                    file_name: file_name.clone(),
+                    mime_type: mime_type.clone(),
+                    part: Some(part.clone()),
+                }
+            };
+            Some(ComposerDraftAttachmentState {
+                placeholder: default_inline_placeholder(&kind),
+                kind,
+            })
+        }
+        _ => None,
+    }
+}
+
+fn composer_draft_text_fragment(part: &MessagePart) -> String {
+    match part {
+        MessagePart::Paste { label, .. } => label.clone(),
+        _ => agent::types::message_part_operator_text(part),
+    }
+}
+
+fn composer_draft_part_is_inline(part: &MessagePart) -> bool {
+    matches!(
+        part,
+        MessagePart::InlineText { .. } | MessagePart::Paste { .. }
+    )
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct HistoryRollbackCandidate {
+    pub(crate) message_id: MessageId,
+    pub(crate) prompt: String,
+    pub(crate) draft: ComposerDraftState,
+    pub(crate) turn_preview_lines: Vec<TranscriptEntry>,
+    pub(crate) removed_turn_count: usize,
+    pub(crate) removed_message_count: usize,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct HistoryRollbackOverlayState {
+    pub(crate) selected: usize,
+    pub(crate) candidates: Vec<HistoryRollbackCandidate>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum HistoryRollbackState {
+    Primed,
+    Selecting(HistoryRollbackOverlayState),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TranscriptShellBlockKind {
+    Stdout,
+    Stderr,
+    Diff,
+}
+
+impl From<ToolDetailBlockKind> for TranscriptShellBlockKind {
+    fn from(value: ToolDetailBlockKind) -> Self {
+        match value {
+            ToolDetailBlockKind::Stdout => Self::Stdout,
+            ToolDetailBlockKind::Stderr => Self::Stderr,
+            ToolDetailBlockKind::Diff => Self::Diff,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum TranscriptShellDetail {
+    Command(String),
+    Meta(String),
+    TextBlock(Vec<String>),
+    NamedBlock {
+        label: String,
+        kind: TranscriptShellBlockKind,
+        lines: Vec<String>,
+    },
+    Raw {
+        text: String,
+        continuation: bool,
+    },
+}
+
+impl TranscriptShellDetail {
+    pub(crate) fn from_prefixed(raw: &str) -> Option<Self> {
+        if let Some(detail) = raw.strip_prefix("  └ ") {
+            return Some(Self::Raw {
+                text: detail.to_string(),
+                continuation: false,
+            });
+        }
+        if let Some(detail) = raw.strip_prefix("    ") {
+            return Some(Self::Raw {
+                text: detail.to_string(),
+                continuation: true,
+            });
+        }
+        if raw.trim().is_empty() {
+            return None;
+        }
+        Some(Self::Raw {
+            text: raw.to_string(),
+            continuation: false,
+        })
+    }
+
+    pub(crate) fn serialized_lines(&self) -> Vec<String> {
+        match self {
+            Self::Command(command) | Self::Meta(command) => vec![format!("  └ {command}")],
+            Self::TextBlock(lines) => serialize_detail_block(lines),
+            Self::NamedBlock { label, lines, .. } => {
+                let mut rendered = vec![format!("  └ {label}")];
+                rendered.extend(
+                    lines
+                        .iter()
+                        .filter(|line| !line.trim().is_empty())
+                        .map(|line| format!("    {line}")),
+                );
+                rendered
+            }
+            Self::Raw { text, continuation } => {
+                if *continuation {
+                    vec![format!("    {text}")]
+                } else {
+                    vec![format!("  └ {text}")]
+                }
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct TranscriptShellEntry {
+    pub(crate) headline: String,
+    pub(crate) detail_lines: Vec<TranscriptShellDetail>,
+}
+
+impl TranscriptShellEntry {
+    pub(crate) fn new(
+        headline: impl Into<String>,
+        detail_lines: Vec<TranscriptShellDetail>,
+    ) -> Self {
+        Self {
+            headline: headline.into(),
+            detail_lines,
+        }
+    }
+
+    fn from_body(body: &str) -> Self {
+        let mut lines = body.lines();
+        let headline = lines.next().unwrap_or_default().to_string();
+        let remaining = lines.collect::<Vec<_>>();
+        let mut detail_lines = Vec::new();
+        let mut index = 0;
+
+        while let Some(raw_line) = remaining.get(index).copied() {
+            let Some(detail) = raw_line.strip_prefix("  └ ") else {
+                if let Some(detail_line) = TranscriptShellDetail::from_prefixed(raw_line) {
+                    detail_lines.push(detail_line);
+                }
+                index += 1;
+                continue;
+            };
+
+            let mut block_lines = Vec::new();
+            let mut next = index + 1;
+            while let Some(continuation) = remaining.get(next).copied() {
+                let Some(continuation) = continuation.strip_prefix("    ") else {
+                    break;
+                };
+                block_lines.push(continuation.to_string());
+                next += 1;
+            }
+
+            detail_lines.push(classify_shell_detail(detail, block_lines));
+            index = next;
+        }
+
+        Self::new(headline, detail_lines)
+    }
+
+    pub(crate) fn serialized_lines(&self) -> Vec<String> {
+        let mut lines = vec![self.headline.clone()];
+        lines.extend(
+            self.detail_lines
+                .iter()
+                .flat_map(TranscriptShellDetail::serialized_lines),
+        );
+        lines
+    }
+
+    pub(crate) fn preview_with_detail_lines(&self, max_lines: usize) -> Self {
+        let mut remaining = max_lines;
+        let mut detail_lines = Vec::new();
+        for detail in &self.detail_lines {
+            let visible_lines = detail.serialized_lines();
+            if visible_lines.is_empty() {
+                continue;
+            }
+            if remaining == 0 {
+                break;
+            }
+            if visible_lines.len() <= remaining {
+                detail_lines.push(detail.clone());
+                remaining -= visible_lines.len();
+                continue;
+            }
+
+            detail_lines.push(match detail {
+                TranscriptShellDetail::TextBlock(lines) => TranscriptShellDetail::TextBlock(
+                    lines.iter().take(remaining).cloned().collect(),
+                ),
+                TranscriptShellDetail::NamedBlock { label, kind, lines } => {
+                    TranscriptShellDetail::NamedBlock {
+                        label: label.clone(),
+                        kind: *kind,
+                        lines: lines
+                            .iter()
+                            .take(remaining.saturating_sub(1))
+                            .cloned()
+                            .collect(),
+                    }
+                }
+                TranscriptShellDetail::Command(command) => {
+                    TranscriptShellDetail::Command(command.clone())
+                }
+                TranscriptShellDetail::Meta(text) => TranscriptShellDetail::Meta(text.clone()),
+                TranscriptShellDetail::Raw { text, continuation } => TranscriptShellDetail::Raw {
+                    text: text.clone(),
+                    continuation: *continuation,
+                },
+            });
+            break;
+        }
+
+        Self::new(self.headline.clone(), detail_lines)
+    }
+
+    pub(crate) fn serialized_body(&self) -> String {
+        self.serialized_lines().join("\n")
+    }
+}
+
+fn classify_shell_detail(text: &str, block_lines: Vec<String>) -> TranscriptShellDetail {
+    if text.starts_with("$ ") && block_lines.is_empty() {
+        return TranscriptShellDetail::Command(text.to_string());
+    }
+    if block_lines.is_empty() && is_shell_meta_line(text) {
+        return TranscriptShellDetail::Meta(text.to_string());
+    }
+    if let Some(kind) = named_block_kind(text) {
+        return TranscriptShellDetail::NamedBlock {
+            label: text.to_string(),
+            kind,
+            lines: block_lines,
+        };
+    }
+    if block_lines.is_empty() {
+        TranscriptShellDetail::Raw {
+            text: text.to_string(),
+            continuation: false,
+        }
+    } else {
+        let mut lines = Vec::with_capacity(block_lines.len() + 1);
+        lines.push(text.to_string());
+        lines.extend(block_lines);
+        TranscriptShellDetail::TextBlock(lines)
+    }
+}
+
+fn serialize_detail_block(lines: &[String]) -> Vec<String> {
+    let mut rendered = Vec::new();
+    for (index, line) in lines
+        .iter()
+        .filter(|line| !line.trim().is_empty())
+        .enumerate()
+    {
+        if index == 0 {
+            rendered.push(format!("  └ {line}"));
+        } else {
+            rendered.push(format!("    {line}"));
+        }
+    }
+    rendered
+}
+
+fn is_shell_meta_line(text: &str) -> bool {
+    text.starts_with("exit ")
+        || text == "timed out"
+        || text.starts_with("snapshot ")
+        || text.starts_with("reason ")
+        || text.starts_with("origin ")
+        || text == "cancelled"
+}
+
+fn named_block_kind(label: &str) -> Option<TranscriptShellBlockKind> {
+    if label == "stdout" {
+        Some(TranscriptShellBlockKind::Stdout)
+    } else if label == "stderr" {
+        Some(TranscriptShellBlockKind::Stderr)
+    } else if label.starts_with("diff ") || label == "diff" {
+        Some(TranscriptShellBlockKind::Diff)
+    } else {
+        None
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TranscriptToolStatus {
+    Requested,
+    WaitingApproval,
+    Approved,
+    Running,
+    Finished,
+    Denied,
+    Failed,
+    Cancelled,
+}
+
+impl TranscriptToolStatus {
+    fn headline(self, tool_name: &str) -> String {
+        match self {
+            Self::Requested => format!("Requested {tool_name}"),
+            Self::WaitingApproval => format!("Awaiting approval for {tool_name}"),
+            Self::Approved => format!("Approved {tool_name}"),
+            Self::Running => format!("Running {tool_name}"),
+            Self::Finished => format!("Finished {tool_name}"),
+            Self::Denied => format!("Denied {tool_name}"),
+            Self::Failed => format!("{tool_name} failed"),
+            Self::Cancelled => format!("Cancelled {tool_name}"),
+        }
+    }
+
+    fn marker(self) -> &'static str {
+        match self {
+            Self::Approved => "✔",
+            Self::Denied | Self::Failed | Self::Cancelled => "✗",
+            Self::Requested | Self::WaitingApproval | Self::Running | Self::Finished => "•",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct TranscriptToolEntry {
+    pub(crate) status: TranscriptToolStatus,
+    pub(crate) tool_name: String,
+    pub(crate) headline: String,
+    pub(crate) detail_lines: Vec<ToolDetail>,
+}
+
+impl TranscriptToolEntry {
+    pub(crate) fn new(
+        status: TranscriptToolStatus,
+        tool_name: impl Into<String>,
+        detail_lines: Vec<ToolDetail>,
+    ) -> Self {
+        let tool_name = tool_name.into();
+        let headline = status.headline(&tool_name);
+        Self {
+            status,
+            tool_name,
+            headline,
+            detail_lines,
+        }
+    }
+
+    pub(crate) fn marker(&self) -> &'static str {
+        self.status.marker()
+    }
+
+    pub(crate) fn serialized_lines(&self) -> Vec<String> {
+        let mut lines = vec![self.headline.clone()];
+        lines.extend(serialize_tool_details(&self.detail_lines));
+        lines
+    }
+
+    pub(crate) fn serialized_body(&self) -> String {
+        self.serialized_lines().join("\n")
+    }
+
+    pub(crate) fn preview_with_detail_lines(&self, max_lines: usize) -> Self {
+        Self {
+            status: self.status,
+            tool_name: self.tool_name.clone(),
+            headline: self.headline.clone(),
+            detail_lines: preview_tool_details(&self.detail_lines, max_lines),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct TranscriptPlanEntry {
+    pub(crate) headline: String,
+    pub(crate) explanation: Option<String>,
+    pub(crate) warnings: Vec<String>,
+    pub(crate) items: Vec<PlanEntry>,
+}
+
+impl TranscriptPlanEntry {
+    pub(crate) fn new(
+        explanation: Option<String>,
+        warnings: Vec<String>,
+        items: Vec<PlanEntry>,
+    ) -> Self {
+        Self {
+            headline: "Updated Plan".to_string(),
+            explanation: explanation
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty()),
+            warnings: warnings
+                .into_iter()
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+                .collect(),
+            items,
+        }
+    }
+
+    pub(crate) fn serialized_lines(&self) -> Vec<String> {
+        let mut lines = vec![self.headline.clone()];
+        if let Some(explanation) = &self.explanation {
+            lines.push(format!("  └ {explanation}"));
+        }
+        lines.extend(
+            self.warnings
+                .iter()
+                .map(|warning| format!("  └ warning {warning}")),
+        );
+        if self.items.is_empty() {
+            lines.push("  └ (no steps provided)".to_string());
+        } else {
+            lines.extend(self.items.iter().map(|item| {
+                format!(
+                    "  └ [{}] {}",
+                    plan_status_marker(item.status.as_str()),
+                    item.content
+                )
+            }));
+        }
+        lines
+    }
+
+    pub(crate) fn serialized_body(&self) -> String {
+        self.serialized_lines().join("\n")
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct TranscriptExecutionEntry {
+    pub(crate) headline: String,
+    pub(crate) state: Option<ExecutionEntry>,
+}
+
+impl TranscriptExecutionEntry {
+    pub(crate) fn new(headline: impl Into<String>, state: Option<ExecutionEntry>) -> Self {
+        Self {
+            headline: headline.into(),
+            state,
+        }
+    }
+
+    pub(crate) fn serialized_lines(&self) -> Vec<String> {
+        let mut lines = vec![self.headline.clone()];
+        let Some(state) = &self.state else {
+            lines.push("  └ (cleared)".to_string());
+            return lines;
+        };
+        lines.push(format!(
+            "  └ [{}] {}",
+            execution_status_marker(&state.status),
+            state.summary
+        ));
+        if !state.scope_label.is_empty() {
+            lines.push(format!("  └ scope {}", state.scope_label));
+        }
+        if let Some(next_action) = state.next_action.as_deref() {
+            lines.push(format!("  └ next {next_action}"));
+        }
+        if let Some(verification) = state.verification.as_deref() {
+            lines.push(format!("  └ verify {verification}"));
+        }
+        if let Some(blocker) = state.blocker.as_deref() {
+            lines.push(format!("  └ blocker {blocker}"));
+        }
+        lines
+    }
+
+    pub(crate) fn serialized_body(&self) -> String {
+        self.serialized_lines().join("\n")
+    }
+}
+
+fn plan_status_marker(status: &str) -> &'static str {
+    match status {
+        "completed" => "x",
+        "in_progress" => "~",
+        _ => " ",
+    }
+}
+
+fn execution_status_marker(status: &str) -> &'static str {
+    match status {
+        "completed" => "x",
+        "blocked" => "!",
+        "verifying" => "~",
+        _ => ">",
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum TranscriptEntry {
+    UserPrompt(String),
+    AssistantMessage(String),
+    Tool(TranscriptToolEntry),
+    Plan(TranscriptPlanEntry),
+    Execution(TranscriptExecutionEntry),
+    ShellSummary(TranscriptShellEntry),
+    SuccessSummary(TranscriptShellEntry),
+    ErrorSummary(TranscriptShellEntry),
+    WarningSummary(TranscriptShellEntry),
+}
+
+impl TranscriptEntry {
+    pub(crate) fn tool(
+        status: TranscriptToolStatus,
+        tool_name: impl Into<String>,
+        detail_lines: Vec<ToolDetail>,
+    ) -> Self {
+        Self::Tool(TranscriptToolEntry::new(status, tool_name, detail_lines))
+    }
+
+    pub(crate) fn plan_update(
+        explanation: Option<String>,
+        warnings: Vec<String>,
+        items: Vec<PlanEntry>,
+    ) -> Self {
+        Self::Plan(TranscriptPlanEntry::new(explanation, warnings, items))
+    }
+
+    pub(crate) fn execution_update(
+        headline: impl Into<String>,
+        state: Option<ExecutionEntry>,
+    ) -> Self {
+        Self::Execution(TranscriptExecutionEntry::new(headline, state))
+    }
+
+    pub(crate) fn shell_summary_details(
+        headline: impl Into<String>,
+        detail_lines: Vec<TranscriptShellDetail>,
+    ) -> Self {
+        Self::ShellSummary(TranscriptShellEntry::new(headline, detail_lines))
+    }
+
+    pub(crate) fn success_summary_details(
+        headline: impl Into<String>,
+        detail_lines: Vec<TranscriptShellDetail>,
+    ) -> Self {
+        Self::SuccessSummary(TranscriptShellEntry::new(headline, detail_lines))
+    }
+
+    pub(crate) fn warning_summary_details(
+        headline: impl Into<String>,
+        detail_lines: Vec<TranscriptShellDetail>,
+    ) -> Self {
+        Self::WarningSummary(TranscriptShellEntry::new(headline, detail_lines))
+    }
+
+    pub(crate) fn error_summary_details(
+        headline: impl Into<String>,
+        detail_lines: Vec<TranscriptShellDetail>,
+    ) -> Self {
+        Self::ErrorSummary(TranscriptShellEntry::new(headline, detail_lines))
+    }
+
+    pub(crate) fn append_text(&mut self, delta: &str) -> bool {
+        match self {
+            Self::UserPrompt(text) | Self::AssistantMessage(text) => {
+                text.push_str(delta);
+                true
+            }
+            Self::Tool(_)
+            | Self::Plan(_)
+            | Self::Execution(_)
+            | Self::ShellSummary(_)
+            | Self::SuccessSummary(_)
+            | Self::ErrorSummary(_)
+            | Self::WarningSummary(_) => false,
+        }
+    }
+
+    pub(crate) fn serialized(&self) -> String {
+        match self {
+            Self::UserPrompt(text) => format!("› {text}"),
+            Self::AssistantMessage(text) => format!("• {text}"),
+            Self::Tool(entry) => format!("{} {}", entry.marker(), entry.serialized_body()),
+            Self::Plan(entry) => format!("• {}", entry.serialized_body()),
+            Self::Execution(entry) => format!("• {}", entry.serialized_body()),
+            Self::ShellSummary(summary) => format!("• {}", summary.serialized_body()),
+            Self::SuccessSummary(summary) => format!("✔ {}", summary.serialized_body()),
+            Self::ErrorSummary(summary) => format!("✗ {}", summary.serialized_body()),
+            Self::WarningSummary(summary) => format!("⚠ {}", summary.serialized_body()),
+        }
+    }
+
+    pub(crate) fn marker(&self) -> &'static str {
+        match self {
+            Self::UserPrompt(_) => "›",
+            Self::AssistantMessage(_) | Self::ShellSummary(_) => "•",
+            Self::Tool(entry) => entry.marker(),
+            Self::Plan(_) => "•",
+            Self::Execution(_) => "•",
+            Self::SuccessSummary(_) => "✔",
+            Self::ErrorSummary(_) => "✗",
+            Self::WarningSummary(_) => "⚠",
+        }
+    }
+
+    pub(crate) fn body(&self) -> &str {
+        match self {
+            Self::UserPrompt(text) | Self::AssistantMessage(text) => text,
+            Self::Tool(entry) => entry.headline.as_str(),
+            Self::Plan(entry) => entry.headline.as_str(),
+            Self::Execution(entry) => entry.headline.as_str(),
+            Self::ShellSummary(summary)
+            | Self::SuccessSummary(summary)
+            | Self::ErrorSummary(summary)
+            | Self::WarningSummary(summary) => summary.headline.as_str(),
+        }
+    }
+
+    pub(crate) fn shell_summary(&self) -> Option<&TranscriptShellEntry> {
+        match self {
+            Self::ShellSummary(summary)
+            | Self::SuccessSummary(summary)
+            | Self::ErrorSummary(summary)
+            | Self::WarningSummary(summary) => Some(summary),
+            Self::UserPrompt(_)
+            | Self::AssistantMessage(_)
+            | Self::Tool(_)
+            | Self::Plan(_)
+            | Self::Execution(_) => None,
+        }
+    }
+
+    pub(crate) fn is_shell_summary(&self) -> bool {
+        self.shell_summary().is_some()
+    }
+
+    pub(crate) fn tool_entry(&self) -> Option<&TranscriptToolEntry> {
+        match self {
+            Self::Tool(entry) => Some(entry),
+            Self::UserPrompt(_)
+            | Self::AssistantMessage(_)
+            | Self::Plan(_)
+            | Self::Execution(_)
+            | Self::ShellSummary(_)
+            | Self::SuccessSummary(_)
+            | Self::ErrorSummary(_)
+            | Self::WarningSummary(_) => None,
+        }
+    }
+
+    pub(crate) fn plan_entry(&self) -> Option<&TranscriptPlanEntry> {
+        match self {
+            Self::Plan(entry) => Some(entry),
+            Self::UserPrompt(_)
+            | Self::AssistantMessage(_)
+            | Self::Tool(_)
+            | Self::Execution(_)
+            | Self::ShellSummary(_)
+            | Self::SuccessSummary(_)
+            | Self::ErrorSummary(_)
+            | Self::WarningSummary(_) => None,
+        }
+    }
+
+    pub(crate) fn execution_entry(&self) -> Option<&TranscriptExecutionEntry> {
+        match self {
+            Self::Execution(entry) => Some(entry),
+            Self::UserPrompt(_)
+            | Self::AssistantMessage(_)
+            | Self::Tool(_)
+            | Self::Plan(_)
+            | Self::ShellSummary(_)
+            | Self::SuccessSummary(_)
+            | Self::ErrorSummary(_)
+            | Self::WarningSummary(_) => None,
+        }
+    }
+}
+
+impl std::fmt::Display for TranscriptEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.serialized())
+    }
+}
+
+impl From<&str> for TranscriptEntry {
+    fn from(value: &str) -> Self {
+        Self::from(value.to_string())
+    }
+}
+
+impl From<String> for TranscriptEntry {
+    fn from(value: String) -> Self {
+        if let Some(body) = value.strip_prefix("› ") {
+            return Self::UserPrompt(body.to_string());
+        }
+        if let Some(body) = value.strip_prefix("✔ ") {
+            return Self::SuccessSummary(TranscriptShellEntry::from_body(body));
+        }
+        if let Some(body) = value.strip_prefix("✗ ") {
+            return Self::ErrorSummary(TranscriptShellEntry::from_body(body));
+        }
+        if let Some(body) = value.strip_prefix("⚠ ") {
+            return Self::WarningSummary(TranscriptShellEntry::from_body(body));
+        }
+        if let Some(body) = value.strip_prefix("• ") {
+            if body.lines().any(|line| line.starts_with("  └ ")) {
+                return Self::ShellSummary(TranscriptShellEntry::from_body(body));
+            }
+            return Self::AssistantMessage(body.to_string());
+        }
+        Self::AssistantMessage(value)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum InspectorEntry {
+    Section(String),
+    Field {
+        key: String,
+        value: String,
+    },
+    Transcript(TranscriptEntry),
+    CollectionItem {
+        primary: String,
+        secondary: Option<String>,
+    },
+    Plain(String),
+    Muted(String),
+    Command(String),
+    Empty,
+}
+
+impl InspectorEntry {
+    pub(crate) fn section(title: impl Into<String>) -> Self {
+        Self::Section(title.into())
+    }
+
+    pub(crate) fn field(key: impl Into<String>, value: impl Into<String>) -> Self {
+        Self::Field {
+            key: key.into(),
+            value: value.into(),
+        }
+    }
+
+    pub(crate) fn transcript(entry: impl Into<TranscriptEntry>) -> Self {
+        Self::Transcript(entry.into())
+    }
+
+    pub(crate) fn collection(
+        primary: impl Into<String>,
+        secondary: Option<impl Into<String>>,
+    ) -> Self {
+        Self::CollectionItem {
+            primary: primary.into(),
+            secondary: secondary.map(Into::into),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct TuiState {
+    pub(crate) session: SessionSummary,
+    pub(crate) theme: String,
+    pub(crate) themes: Vec<ThemeSummary>,
+    pub(crate) main_pane: MainPaneMode,
+    pub(crate) show_tool_details: bool,
+    pub(crate) input: String,
+    pub(crate) input_cursor: usize,
+    pub(crate) input_vertical_column: Option<usize>,
+    pub(crate) draft_attachments: Vec<ComposerDraftAttachmentState>,
+    pub(crate) selected_row_attachment: Option<usize>,
+    // Keep kill/yank state outside the visible draft so Ctrl+Y can restore the
+    // latest killed tail even after submit/clear transitions.
+    pub(crate) kill_buffer: Option<ComposerKillBufferState>,
+    pub(crate) input_history: Vec<SubmittedPromptSnapshot>,
+    pub(crate) local_input_history: Vec<ComposerDraftState>,
+    pub(crate) input_history_navigation: Option<ComposerHistoryNavigationState>,
+    pub(crate) command_completion_index: usize,
+    pub(crate) composer_context_hint: Option<ComposerContextHint>,
+    pub(crate) toast: Option<ToastState>,
+    pub(crate) transcript: Vec<TranscriptEntry>,
+    pub(crate) transcript_scroll: u16,
+    pub(crate) follow_transcript: bool,
+    pub(crate) inspector_title: String,
+    pub(crate) inspector: Vec<InspectorEntry>,
+    pub(crate) inspector_scroll: u16,
+    pub(crate) activity: Vec<String>,
+    pub(crate) activity_scroll: u16,
+    pub(crate) status: String,
+    pub(crate) turn_running: bool,
+    pub(crate) turn_started_at: Option<Instant>,
+    pub(crate) active_tool_label: Option<String>,
+    pub(crate) plan_items: Vec<PlanEntry>,
+    pub(crate) execution: Option<ExecutionEntry>,
+    pub(crate) pending_controls: Vec<PendingControlSummary>,
+    pub(crate) pending_control_picker: Option<PendingControlPickerState>,
+    pub(crate) editing_pending_control: Option<PendingControlEditorState>,
+    pub(crate) statusline_picker: Option<StatusLinePickerState>,
+    pub(crate) thinking_effort_picker: Option<ThinkingEffortPickerState>,
+    pub(crate) theme_picker: Option<ThemePickerState>,
+    pub(crate) history_rollback: Option<HistoryRollbackState>,
+}
+
+impl TuiState {
+    pub(crate) fn external_editor_seed_text(&self) -> String {
+        let row_lines = self
+            .draft_attachments
+            .iter()
+            .filter(|attachment| attachment.is_row_attachment())
+            .enumerate()
+            .filter_map(|(index, attachment)| attachment.external_editor_row_line(index + 1))
+            .collect::<Vec<_>>();
+        if row_lines.is_empty() {
+            return self.input.clone();
+        }
+
+        // Row attachments stay outside the normal composer text so the main TUI
+        // can render them as dedicated rows. The external editor needs a text
+        // representation though, so we project them into a small prelude that
+        // can be reordered or cleared before the actual prompt body.
+        let mut lines = Vec::with_capacity(row_lines.len() + 4);
+        lines.push("[Attachments]".to_string());
+        lines.extend(row_lines);
+        lines.push(String::new());
+        lines.push("[Prompt]".to_string());
+        if !self.input.is_empty() {
+            lines.push(self.input.clone());
+        }
+        lines.join("\n")
+    }
+
+    pub(crate) fn show_main_view<I>(&mut self, title: impl Into<String>, lines: I)
+    where
+        I: IntoIterator<Item = InspectorEntry>,
+    {
+        self.main_pane = MainPaneMode::View;
+        self.inspector_title = title.into();
+        self.inspector = lines.into_iter().collect();
+        self.inspector_scroll = 0;
+        self.pending_control_picker = None;
+        self.statusline_picker = None;
+        self.thinking_effort_picker = None;
+        self.theme_picker = None;
+        self.history_rollback = None;
+    }
+
+    pub(crate) fn show_transcript_pane(&mut self) {
+        self.main_pane = MainPaneMode::Transcript;
+        self.pending_control_picker = None;
+        self.statusline_picker = None;
+        self.thinking_effort_picker = None;
+        self.theme_picker = None;
+        self.history_rollback = None;
+    }
+
+    pub(crate) fn open_statusline_picker(&mut self) {
+        self.main_pane = MainPaneMode::View;
+        self.inspector_title = "Status Line".to_string();
+        self.inspector.clear();
+        self.inspector_scroll = 0;
+        self.pending_control_picker = None;
+        self.thinking_effort_picker = None;
+        self.theme_picker = None;
+        self.history_rollback = None;
+        self.statusline_picker
+            .get_or_insert_with(StatusLinePickerState::default)
+            .selected = 0;
+    }
+
+    pub(crate) fn open_thinking_effort_picker(&mut self) {
+        self.main_pane = MainPaneMode::View;
+        self.inspector_title = "Thinking Effort".to_string();
+        self.inspector.clear();
+        self.inspector_scroll = 0;
+        self.pending_control_picker = None;
+        self.statusline_picker = None;
+        self.theme_picker = None;
+        self.history_rollback = None;
+        let selected = self
+            .session
+            .supported_model_reasoning_efforts
+            .iter()
+            .position(|level| {
+                Some(level.as_str()) == self.session.model_reasoning_effort.as_deref()
+            })
+            .unwrap_or(0);
+        self.thinking_effort_picker = Some(ThinkingEffortPickerState { selected });
+    }
+
+    pub(crate) fn open_theme_picker(&mut self) {
+        self.main_pane = MainPaneMode::View;
+        self.inspector_title = "Theme".to_string();
+        self.inspector.clear();
+        self.inspector_scroll = 0;
+        self.pending_control_picker = None;
+        self.statusline_picker = None;
+        self.thinking_effort_picker = None;
+        self.theme_picker = None;
+        self.history_rollback = None;
+        let selected = self
+            .themes
+            .iter()
+            .position(|candidate| candidate.id == self.theme)
+            .unwrap_or(0);
+        self.theme_picker = Some(ThemePickerState {
+            selected,
+            original_theme: self.theme.clone(),
+        });
+    }
+
+    pub(crate) fn close_statusline_picker(&mut self) {
+        self.statusline_picker = None;
+        self.show_transcript_pane();
+    }
+
+    pub(crate) fn close_thinking_effort_picker(&mut self) {
+        self.thinking_effort_picker = None;
+        self.show_transcript_pane();
+    }
+
+    pub(crate) fn close_theme_picker(&mut self) {
+        self.theme_picker = None;
+        self.show_transcript_pane();
+    }
+
+    pub(crate) fn open_pending_control_picker(&mut self, select_latest: bool) -> bool {
+        if self.pending_controls.is_empty() {
+            return false;
+        }
+        self.main_pane = MainPaneMode::Transcript;
+        let selected = if select_latest {
+            self.pending_controls.len().saturating_sub(1)
+        } else {
+            self.pending_control_picker
+                .as_ref()
+                .map(|picker| picker.selected)
+                .unwrap_or_else(|| self.pending_controls.len().saturating_sub(1))
+                .min(self.pending_controls.len().saturating_sub(1))
+        };
+        self.pending_control_picker = Some(PendingControlPickerState { selected });
+        self.statusline_picker = None;
+        self.thinking_effort_picker = None;
+        self.theme_picker = None;
+        self.history_rollback = None;
+        true
+    }
+
+    pub(crate) fn close_pending_control_picker(&mut self) {
+        self.pending_control_picker = None;
+    }
+
+    pub(crate) fn move_pending_control_picker(&mut self, backwards: bool) -> bool {
+        let Some(picker) = self.pending_control_picker.as_mut() else {
+            return false;
+        };
+        let total = self.pending_controls.len();
+        if total == 0 {
+            return false;
+        }
+        picker.selected = if backwards {
+            picker.selected.checked_sub(1).unwrap_or(total - 1)
+        } else {
+            (picker.selected + 1) % total
+        };
+        true
+    }
+
+    pub(crate) fn selected_pending_control(&self) -> Option<PendingControlSummary> {
+        let picker = self.pending_control_picker.as_ref()?;
+        self.pending_controls.get(picker.selected).cloned()
+    }
+
+    pub(crate) fn begin_pending_control_edit(&mut self) -> Option<PendingControlSummary> {
+        let selected = self.selected_pending_control()?;
+        self.replace_input(selected.preview.clone());
+        self.editing_pending_control = Some(PendingControlEditorState {
+            id: selected.id.clone(),
+            kind: selected.kind,
+        });
+        self.pending_control_picker = None;
+        Some(selected)
+    }
+
+    pub(crate) fn clear_pending_control_edit(&mut self) {
+        self.editing_pending_control = None;
+    }
+
+    pub(crate) fn prime_history_rollback(&mut self) {
+        self.main_pane = MainPaneMode::Transcript;
+        self.pending_control_picker = None;
+        self.statusline_picker = None;
+        self.thinking_effort_picker = None;
+        self.theme_picker = None;
+        self.history_rollback = Some(HistoryRollbackState::Primed);
+    }
+
+    pub(crate) fn open_history_rollback_overlay(
+        &mut self,
+        candidates: Vec<HistoryRollbackCandidate>,
+    ) -> bool {
+        if candidates.is_empty() {
+            return false;
+        }
+        self.main_pane = MainPaneMode::Transcript;
+        self.pending_control_picker = None;
+        self.statusline_picker = None;
+        self.thinking_effort_picker = None;
+        self.theme_picker = None;
+        self.history_rollback = Some(HistoryRollbackState::Selecting(
+            HistoryRollbackOverlayState {
+                selected: candidates.len().saturating_sub(1),
+                candidates,
+            },
+        ));
+        true
+    }
+
+    pub(crate) fn clear_history_rollback(&mut self) {
+        self.history_rollback = None;
+    }
+
+    pub(crate) fn history_rollback_is_primed(&self) -> bool {
+        matches!(self.history_rollback, Some(HistoryRollbackState::Primed))
+    }
+
+    pub(crate) fn history_rollback_overlay(&self) -> Option<&HistoryRollbackOverlayState> {
+        match self.history_rollback.as_ref() {
+            Some(HistoryRollbackState::Selecting(overlay)) => Some(overlay),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn move_history_rollback_selection(&mut self, backwards: bool) -> bool {
+        let Some(HistoryRollbackState::Selecting(overlay)) = self.history_rollback.as_mut() else {
+            return false;
+        };
+        let total = overlay.candidates.len();
+        if total == 0 {
+            return false;
+        }
+        overlay.selected = if backwards {
+            overlay.selected.checked_sub(1).unwrap_or(total - 1)
+        } else {
+            (overlay.selected + 1) % total
+        };
+        true
+    }
+
+    pub(crate) fn jump_history_rollback_selection(&mut self, oldest: bool) -> bool {
+        let Some(HistoryRollbackState::Selecting(overlay)) = self.history_rollback.as_mut() else {
+            return false;
+        };
+        if overlay.candidates.is_empty() {
+            return false;
+        }
+        overlay.selected = if oldest {
+            0
+        } else {
+            overlay.candidates.len().saturating_sub(1)
+        };
+        true
+    }
+
+    pub(crate) fn selected_history_rollback_candidate(&self) -> Option<&HistoryRollbackCandidate> {
+        let overlay = self.history_rollback_overlay()?;
+        overlay.candidates.get(overlay.selected)
+    }
+
+    pub(crate) fn sync_pending_controls(&mut self, controls: Vec<PendingControlSummary>) {
+        self.pending_controls = controls;
+        if let Some(picker) = self.pending_control_picker.as_mut() {
+            picker.selected = picker
+                .selected
+                .min(self.pending_controls.len().saturating_sub(1));
+            if self.pending_controls.is_empty() {
+                self.pending_control_picker = None;
+            }
+        }
+        if let Some(editor) = self.editing_pending_control.as_ref()
+            && !self
+                .pending_controls
+                .iter()
+                .any(|control| control.id == editor.id)
+        {
+            self.editing_pending_control = None;
+        }
+    }
+
+    pub(crate) fn move_statusline_picker(&mut self, backwards: bool) -> bool {
+        let Some(picker) = self.statusline_picker.as_mut() else {
+            return false;
+        };
+        let total = status_line_fields().len();
+        if total == 0 {
+            return false;
+        }
+        picker.selected = if backwards {
+            picker.selected.checked_sub(1).unwrap_or(total - 1)
+        } else {
+            (picker.selected + 1) % total
+        };
+        true
+    }
+
+    pub(crate) fn selected_statusline_field(&self) -> Option<StatusLineField> {
+        let picker = self.statusline_picker.as_ref()?;
+        status_line_fields()
+            .get(picker.selected)
+            .map(|spec| spec.field)
+    }
+
+    pub(crate) fn toggle_selected_statusline_field(&mut self) -> Option<(StatusLineField, bool)> {
+        let field = self.selected_statusline_field()?;
+        let enabled = self.session.statusline.toggle(field);
+        Some((field, enabled))
+    }
+
+    pub(crate) fn move_thinking_effort_picker(&mut self, backwards: bool) -> bool {
+        let Some(picker) = self.thinking_effort_picker.as_mut() else {
+            return false;
+        };
+        let total = self.session.supported_model_reasoning_efforts.len();
+        if total == 0 {
+            return false;
+        }
+        picker.selected = if backwards {
+            picker.selected.checked_sub(1).unwrap_or(total - 1)
+        } else {
+            (picker.selected + 1) % total
+        };
+        true
+    }
+
+    pub(crate) fn selected_thinking_effort(&self) -> Option<String> {
+        let picker = self.thinking_effort_picker.as_ref()?;
+        self.session
+            .supported_model_reasoning_efforts
+            .get(picker.selected)
+            .cloned()
+    }
+
+    pub(crate) fn move_theme_picker(&mut self, backwards: bool) -> bool {
+        let Some(picker) = self.theme_picker.as_mut() else {
+            return false;
+        };
+        let total = self.themes.len();
+        if total == 0 {
+            return false;
+        }
+        picker.selected = if backwards {
+            picker.selected.checked_sub(1).unwrap_or(total - 1)
+        } else {
+            (picker.selected + 1) % total
+        };
+        true
+    }
+
+    pub(crate) fn selected_theme(&self) -> Option<String> {
+        let picker = self.theme_picker.as_ref()?;
+        self.themes
+            .get(picker.selected)
+            .map(|theme| theme.id.clone())
+    }
+
+    pub(crate) fn original_theme(&self) -> Option<String> {
+        self.theme_picker
+            .as_ref()
+            .map(|picker| picker.original_theme.clone())
+    }
+
+    pub(crate) fn push_activity(&mut self, line: impl Into<String>) {
+        self.activity.push(line.into());
+        self.activity_scroll = u16::MAX;
+        if self.activity.len() > 128 {
+            let overflow = self.activity.len() - 128;
+            self.activity.drain(0..overflow);
+        }
+    }
+
+    pub(crate) fn push_transcript(&mut self, entry: impl Into<TranscriptEntry>) {
+        self.transcript.push(entry.into());
+        self.mark_transcript_follow();
+    }
+
+    pub(crate) fn replace_transcript(
+        &mut self,
+        index: usize,
+        entry: impl Into<TranscriptEntry>,
+    ) -> bool {
+        let Some(slot) = self.transcript.get_mut(index) else {
+            return false;
+        };
+        *slot = entry.into();
+        self.mark_transcript_follow();
+        true
+    }
+
+    pub(crate) fn append_transcript_text(&mut self, index: usize, delta: &str) -> bool {
+        let Some(entry) = self.transcript.get_mut(index) else {
+            return false;
+        };
+        let appended = entry.append_text(delta);
+        if appended {
+            self.mark_transcript_follow();
+        }
+        appended
+    }
+
+    fn mark_transcript_follow(&mut self) {
+        if self.follow_transcript {
+            self.transcript_scroll = u16::MAX;
+        }
+    }
+
+    pub(crate) fn set_input_history(&mut self, entries: Vec<SubmittedPromptSnapshot>) {
+        self.input_history = entries;
+        self.input_history_navigation = None;
+    }
+
+    pub(crate) fn input_history(&self) -> &[SubmittedPromptSnapshot] {
+        &self.input_history
+    }
+
+    pub(crate) fn record_input_history(&mut self, prompt: SubmittedPromptSnapshot) -> bool {
+        self.input_history_navigation = None;
+        input_history::record_input_history(&mut self.input_history, prompt)
+    }
+
+    pub(crate) fn record_local_input_history(&mut self, input: &str) -> bool {
+        self.input_history_navigation = None;
+        let Some(text) = input_history::normalized_history_text(input) else {
+            return false;
+        };
+        let draft = ComposerDraftState::from_text(text);
+        self.record_local_input_draft(draft)
+    }
+
+    pub(crate) fn record_local_input_draft(&mut self, mut draft: ComposerDraftState) -> bool {
+        self.input_history_navigation = None;
+        let normalized_text = input_history::normalized_history_text(&draft.text);
+        match normalized_text {
+            Some(text) => {
+                draft.text = text;
+                draft.cursor = draft.text.len();
+            }
+            None if draft.draft_attachments.is_empty() => return false,
+            None => {
+                draft.text.clear();
+                draft.cursor = 0;
+            }
+        }
+        let draft = draft.normalized();
+        if self.local_input_history.last().is_some_and(|existing| {
+            submitted_prompt_snapshot_from_draft(existing)
+                == submitted_prompt_snapshot_from_draft(&draft)
+        }) {
+            return false;
+        }
+        self.local_input_history.push(draft);
+        if self.local_input_history.len() > input_history::MAX_COMPOSER_HISTORY_ENTRIES {
+            let overflow =
+                self.local_input_history.len() - input_history::MAX_COMPOSER_HISTORY_ENTRIES;
+            self.local_input_history.drain(0..overflow);
+        }
+        true
+    }
+
+    pub(crate) fn stash_current_input_draft(&mut self) -> bool {
+        self.input_history_navigation = None;
+        if self.input.is_empty() && self.draft_attachments.is_empty() {
+            return false;
+        }
+
+        let draft = self.current_input_draft();
+        if self.local_input_history.last().is_some_and(|existing| {
+            submitted_prompt_snapshot_from_draft(existing)
+                == submitted_prompt_snapshot_from_draft(&draft)
+        }) {
+            return false;
+        }
+        self.local_input_history.push(draft);
+        if self.local_input_history.len() > input_history::MAX_COMPOSER_HISTORY_ENTRIES {
+            let overflow =
+                self.local_input_history.len() - input_history::MAX_COMPOSER_HISTORY_ENTRIES;
+            self.local_input_history.drain(0..overflow);
+        }
+        true
+    }
+
+    pub(crate) fn replace_input(&mut self, input: impl Into<String>) {
+        self.replace_input_draft(ComposerDraftState::from_text(input));
+    }
+
+    pub(crate) fn clear_input(&mut self) {
+        self.replace_input_draft(ComposerDraftState::default());
+    }
+
+    pub(crate) fn set_live_task_finished_hint(
+        &mut self,
+        task_id: impl Into<String>,
+        status: AgentStatus,
+    ) {
+        self.composer_context_hint = Some(ComposerContextHint::LiveTaskFinished {
+            task_id: task_id.into(),
+            status,
+        });
+    }
+
+    pub(crate) fn clear_composer_context_hint(&mut self) {
+        self.composer_context_hint = None;
+    }
+
+    pub(crate) fn show_toast(&mut self, tone: ToastTone, message: impl Into<String>) {
+        self.toast = Some(ToastState {
+            message: message.into(),
+            tone,
+            expires_at: Instant::now() + Duration::from_secs(4),
+        });
+    }
+
+    pub(crate) fn clear_toast(&mut self) {
+        self.toast = None;
+    }
+
+    pub(crate) fn expire_toast_if_due(&mut self) -> bool {
+        let expired = self
+            .toast
+            .as_ref()
+            .is_some_and(|toast| Instant::now() >= toast.expires_at);
+        if expired {
+            self.toast = None;
+        }
+        expired
+    }
+
+    pub(crate) fn restore_input_draft(&mut self, draft: ComposerDraftState) {
+        self.replace_input_draft(draft);
+    }
+
+    pub(crate) fn push_input_char(&mut self, ch: char) {
+        self.input.insert(self.input_cursor, ch);
+        self.input_cursor += ch.len_utf8();
+        self.selected_row_attachment = None;
+        self.input_history_navigation = None;
+        self.input_vertical_column = None;
+        self.reset_command_completion();
+    }
+
+    pub(crate) fn push_input_str(&mut self, text: &str) {
+        self.input.insert_str(self.input_cursor, text);
+        self.input_cursor += text.len();
+        self.selected_row_attachment = None;
+        self.input_history_navigation = None;
+        self.input_vertical_column = None;
+        self.reset_command_completion();
+    }
+
+    pub(crate) fn append_input_text(&mut self, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        self.input.push_str(text);
+        self.input_cursor = self.input.len();
+        self.selected_row_attachment = None;
+        self.input_history_navigation = None;
+        self.input_vertical_column = None;
+        self.reset_command_completion();
+    }
+
+    pub(crate) fn push_large_paste(&mut self, payload: &str) -> String {
+        let placeholder = format!("[Paste #{}]", self.next_pending_paste_index());
+        self.draft_attachments.push(ComposerDraftAttachmentState {
+            placeholder: Some(placeholder.clone()),
+            kind: ComposerDraftAttachmentKind::LargePaste {
+                payload: payload.to_string(),
+            },
+        });
+        self.push_input_str(&placeholder);
+        placeholder
+    }
+
+    pub(crate) fn push_row_attachment(&mut self, attachment: ComposerDraftAttachmentState) -> bool {
+        if !attachment.is_row_attachment() {
+            return false;
+        }
+        if self
+            .draft_attachments
+            .iter()
+            .any(|existing| existing.same_persisted_attachment(&attachment))
+        {
+            return false;
+        }
+        self.draft_attachments.push(attachment);
+        self.renormalize_draft_attachment_placeholders();
+        self.selected_row_attachment = None;
+        self.input_history_navigation = None;
+        self.reset_command_completion();
+        true
+    }
+
+    pub(crate) fn push_inline_attachment(
+        &mut self,
+        mut attachment: ComposerDraftAttachmentState,
+    ) -> bool {
+        if attachment.is_row_attachment() {
+            attachment.placeholder = attachment.default_inline_placeholder();
+        }
+        let Some(placeholder) = attachment.placeholder.clone() else {
+            return false;
+        };
+        if self
+            .draft_attachments
+            .iter()
+            .any(|existing| existing.same_persisted_attachment(&attachment))
+        {
+            return false;
+        }
+        self.draft_attachments.push(attachment);
+        self.push_input_str(&placeholder);
+        self.renormalize_draft_attachment_placeholders();
+        true
+    }
+
+    pub(crate) fn remove_row_attachment(
+        &mut self,
+        index: Option<usize>,
+    ) -> Option<ComposerDraftAttachmentState> {
+        let row_indices = self
+            .draft_attachments
+            .iter()
+            .enumerate()
+            .filter_map(|(index, attachment)| attachment.is_row_attachment().then_some(index))
+            .collect::<Vec<_>>();
+        let target = match index {
+            Some(index) if index > 0 => row_indices.get(index - 1).copied(),
+            Some(_) => None,
+            None => row_indices.last().copied(),
+        }?;
+        let removed = self.draft_attachments.remove(target);
+        self.renormalize_draft_attachment_placeholders();
+        self.selected_row_attachment = None;
+        self.input_history_navigation = None;
+        self.reset_command_completion();
+        Some(removed)
+    }
+
+    pub(crate) fn move_row_attachment(&mut self, from: usize, to: usize) -> bool {
+        if from == 0 || to == 0 || from == to {
+            return false;
+        }
+
+        let row_count = self.row_attachment_count();
+        if from > row_count || to > row_count {
+            return false;
+        }
+
+        let mut row_attachments = self
+            .draft_attachments
+            .iter()
+            .filter(|attachment| attachment.is_row_attachment())
+            .cloned()
+            .collect::<Vec<_>>();
+        let inline_attachments = self
+            .draft_attachments
+            .iter()
+            .filter(|attachment| !attachment.is_row_attachment())
+            .cloned()
+            .collect::<Vec<_>>();
+        let moved = row_attachments.remove(from - 1);
+        row_attachments.insert(to - 1, moved);
+        self.draft_attachments = row_attachments
+            .into_iter()
+            .chain(inline_attachments)
+            .collect();
+        self.renormalize_draft_attachment_placeholders();
+        self.selected_row_attachment = Some(to - 1);
+        self.input_history_navigation = None;
+        self.reset_command_completion();
+        true
+    }
+
+    pub(crate) fn row_attachment_previews(&self) -> Vec<ComposerRowAttachmentPreview> {
+        summarize_row_attachments(&self.draft_attachments)
+    }
+
+    pub(crate) fn row_attachment_summaries(&self) -> Vec<(usize, String, String)> {
+        self.row_attachment_previews()
+            .into_iter()
+            .map(|preview| (preview.index, preview.summary, preview.detail))
+            .collect()
+    }
+
+    pub(crate) fn selected_row_attachment_preview(&self) -> Option<ComposerRowAttachmentPreview> {
+        let selected = self.selected_row_attachment?;
+        self.row_attachment_previews().into_iter().nth(selected)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn selected_row_attachment_summary(&self) -> Option<(usize, String, String)> {
+        self.selected_row_attachment_preview()
+            .map(|preview| (preview.index, preview.summary, preview.detail))
+    }
+
+    pub(crate) fn row_attachment_preview(
+        &self,
+        index: Option<usize>,
+    ) -> Option<ComposerRowAttachmentPreview> {
+        match index {
+            Some(index) if index > 0 => self
+                .row_attachment_previews()
+                .into_iter()
+                .find(|preview| preview.index == index),
+            Some(_) => None,
+            None => self.row_attachment_previews().into_iter().last(),
+        }
+    }
+
+    pub(crate) fn select_previous_row_attachment(&mut self) -> bool {
+        let row_count = self.row_attachment_count();
+        if row_count == 0 {
+            return false;
+        }
+
+        self.selected_row_attachment = Some(match self.selected_row_attachment {
+            Some(selected) => selected.saturating_sub(1),
+            None if self.input_cursor == 0 => row_count - 1,
+            None => return false,
+        });
+        self.input_vertical_column = None;
+        self.input_history_navigation = None;
+        self.reset_command_completion();
+        true
+    }
+
+    pub(crate) fn select_next_row_attachment(&mut self) -> bool {
+        let row_count = self.row_attachment_count();
+        let Some(selected) = self.selected_row_attachment else {
+            return false;
+        };
+        if selected + 1 < row_count {
+            self.selected_row_attachment = Some(selected + 1);
+        } else {
+            self.selected_row_attachment = None;
+        }
+        self.input_vertical_column = None;
+        self.input_history_navigation = None;
+        self.reset_command_completion();
+        true
+    }
+
+    pub(crate) fn remove_selected_row_attachment(
+        &mut self,
+    ) -> Option<ComposerDraftAttachmentState> {
+        let selected = self.selected_row_attachment?;
+        let row_indices = self
+            .draft_attachments
+            .iter()
+            .enumerate()
+            .filter_map(|(index, attachment)| attachment.is_row_attachment().then_some(index))
+            .collect::<Vec<_>>();
+        let target = row_indices.get(selected).copied()?;
+        let removed = self.draft_attachments.remove(target);
+        self.renormalize_draft_attachment_placeholders();
+        let remaining = row_indices.len().saturating_sub(1);
+        self.selected_row_attachment = if remaining == 0 {
+            None
+        } else {
+            Some(selected.min(remaining - 1))
+        };
+        self.input_history_navigation = None;
+        self.reset_command_completion();
+        Some(removed)
+    }
+
+    pub(crate) fn pop_input_char(&mut self) {
+        let Some(previous_index) = previous_char_boundary(&self.input, self.input_cursor) else {
+            return;
+        };
+        self.input.drain(previous_index..self.input_cursor);
+        self.input_cursor = previous_index;
+        self.prune_draft_attachments();
+        self.selected_row_attachment = None;
+        self.input_history_navigation = None;
+        self.input_vertical_column = None;
+        self.reset_command_completion();
+    }
+
+    pub(crate) fn kill_input_to_end(&mut self) -> bool {
+        if self.input_cursor >= self.input.len() {
+            return false;
+        }
+
+        let killed_text = self.input[self.input_cursor..].to_string();
+        if killed_text.is_empty() {
+            return false;
+        }
+
+        self.kill_buffer = Some(ComposerKillBufferState {
+            text: killed_text,
+            draft_attachments: self.draft_attachments_for_text(&self.input[self.input_cursor..]),
+        });
+        self.input.truncate(self.input_cursor);
+        self.prune_draft_attachments();
+        self.selected_row_attachment = None;
+        self.input_history_navigation = None;
+        self.reset_command_completion();
+        true
+    }
+
+    pub(crate) fn yank_kill_buffer(&mut self) -> bool {
+        let Some(kill_buffer) = self.kill_buffer.clone() else {
+            return false;
+        };
+        if kill_buffer.text.is_empty() {
+            return false;
+        }
+
+        self.push_input_str(&kill_buffer.text);
+        for attachment in kill_buffer.draft_attachments {
+            if self
+                .draft_attachments
+                .iter()
+                .all(|existing| existing.placeholder != attachment.placeholder)
+            {
+                self.draft_attachments.push(attachment);
+            }
+        }
+        true
+    }
+
+    pub(crate) fn move_input_cursor_left(&mut self) -> bool {
+        self.selected_row_attachment = None;
+        let Some(previous_index) = previous_char_boundary(&self.input, self.input_cursor) else {
+            return false;
+        };
+        self.input_cursor = previous_index;
+        self.input_vertical_column = None;
+        true
+    }
+
+    pub(crate) fn move_input_cursor_right(&mut self) -> bool {
+        self.selected_row_attachment = None;
+        let Some(next_index) = next_char_boundary(&self.input, self.input_cursor) else {
+            return false;
+        };
+        self.input_cursor = next_index;
+        self.input_vertical_column = None;
+        true
+    }
+
+    pub(crate) fn move_input_cursor_home(&mut self) -> bool {
+        self.selected_row_attachment = None;
+        if self.input_cursor == 0 {
+            return false;
+        }
+        self.input_cursor = 0;
+        self.input_vertical_column = None;
+        true
+    }
+
+    pub(crate) fn move_input_cursor_end(&mut self) -> bool {
+        self.selected_row_attachment = None;
+        if self.input_cursor == self.input.len() {
+            return false;
+        }
+        self.input_cursor = self.input.len();
+        self.input_vertical_column = None;
+        true
+    }
+
+    pub(crate) fn move_input_cursor_vertical(&mut self, backwards: bool) -> bool {
+        self.selected_row_attachment = None;
+        let cursor = normalize_input_cursor(&self.input, self.input_cursor);
+        let current_line = line_range_for_cursor(&self.input, cursor);
+        let target_line = if backwards {
+            previous_line_range(&self.input, current_line.start)
+        } else {
+            next_line_range(&self.input, current_line.end)
+        };
+        let Some(target_line) = target_line else {
+            return false;
+        };
+
+        let current_column = display_width(&self.input[current_line.start..cursor]);
+        let desired_column = self.input_vertical_column.unwrap_or(current_column);
+        self.input_cursor = target_line.start
+            + byte_index_for_display_column(&self.input[target_line.clone()], desired_column);
+        self.input_vertical_column = Some(desired_column);
+        true
+    }
+
+    #[cfg(test)]
+    pub(crate) fn input_cursor(&self) -> usize {
+        self.input_cursor
+    }
+
+    pub(crate) fn input_cursor_at_history_boundary(&self) -> bool {
+        self.input.is_empty() || self.input_cursor == 0 || self.input_cursor == self.input.len()
+    }
+
+    pub(crate) fn browse_input_history(&mut self, backwards: bool) -> bool {
+        let history = self.history_entry_drafts();
+        if history.is_empty() {
+            return false;
+        }
+        if self.input_history_navigation.is_none() && !self.input_cursor_at_history_boundary() {
+            return false;
+        }
+
+        if backwards {
+            let (next_index, draft) = match self.input_history_navigation.as_ref() {
+                Some(navigation) => (navigation.index.saturating_sub(1), navigation.draft.clone()),
+                None => (history.len() - 1, self.current_input_draft()),
+            };
+            self.replace_input_draft(history[next_index].clone());
+            self.input_history_navigation = Some(ComposerHistoryNavigationState {
+                index: next_index,
+                draft,
+            });
+            return true;
+        }
+
+        let Some(navigation) = self.input_history_navigation.clone() else {
+            return false;
+        };
+        if navigation.index + 1 < history.len() {
+            self.replace_input_draft(history[navigation.index + 1].clone());
+            self.input_history_navigation = Some(ComposerHistoryNavigationState {
+                index: navigation.index + 1,
+                draft: navigation.draft,
+            });
+        } else {
+            self.replace_input_draft(navigation.draft);
+            self.input_history_navigation = None;
+        }
+        true
+    }
+
+    pub(crate) fn reset_command_completion(&mut self) {
+        self.command_completion_index = 0;
+    }
+
+    pub(crate) fn scroll_focused(&mut self, delta: i16) {
+        match self.main_pane {
+            MainPaneMode::Transcript => {
+                // Manual transcript scrolling detaches the viewport from live
+                // follow mode until the operator explicitly jumps back to end.
+                self.follow_transcript = false;
+                bump_scroll(&mut self.transcript_scroll, delta);
+            }
+            MainPaneMode::View => bump_scroll(&mut self.inspector_scroll, delta),
+        }
+    }
+
+    pub(crate) fn scroll_focused_page(
+        &mut self,
+        viewport_height: u16,
+        half_page: bool,
+        backwards: bool,
+    ) {
+        let amount = page_scroll_amount(viewport_height, half_page);
+        let delta = if backwards { -amount } else { amount };
+        self.scroll_focused(delta);
+    }
+
+    pub(crate) fn scroll_focused_home(&mut self) {
+        match self.main_pane {
+            MainPaneMode::Transcript => {
+                self.follow_transcript = false;
+                self.transcript_scroll = 0;
+            }
+            MainPaneMode::View => self.inspector_scroll = 0,
+        }
+    }
+
+    pub(crate) fn scroll_focused_end(&mut self) {
+        match self.main_pane {
+            MainPaneMode::Transcript => {
+                self.follow_transcript = true;
+                self.transcript_scroll = u16::MAX;
+            }
+            MainPaneMode::View => self.inspector_scroll = u16::MAX,
+        }
+    }
+
+    fn replace_input_draft(&mut self, draft: ComposerDraftState) {
+        let draft = draft.normalized();
+        self.input = draft.text;
+        self.input_cursor = draft.cursor;
+        self.input_vertical_column = None;
+        self.draft_attachments = draft.draft_attachments;
+        self.selected_row_attachment = None;
+        self.input_history_navigation = None;
+        self.reset_command_completion();
+    }
+
+    fn current_input_draft(&self) -> ComposerDraftState {
+        ComposerDraftState {
+            text: self.input.clone(),
+            cursor: self.input_cursor,
+            draft_attachments: self.draft_attachments.clone(),
+        }
+        .normalized()
+    }
+
+    fn history_entry_drafts(&self) -> Vec<ComposerDraftState> {
+        let mut entries = self
+            .input_history
+            .iter()
+            .cloned()
+            .map(|snapshot| composer_draft_from_prompt_snapshot(&snapshot))
+            .collect::<Vec<_>>();
+        if self.local_input_history.is_empty() {
+            return entries;
+        }
+
+        // Local history retains richer in-session draft state. When it matches
+        // the persistent suffix, replace the plain-text entries instead of
+        // recalling duplicate prompts back-to-back.
+        let shared_suffix = self
+            .local_input_history
+            .iter()
+            .rev()
+            .zip(entries.iter().rev())
+            .take_while(|(local, persistent)| {
+                submitted_prompt_snapshot_from_draft(local)
+                    == submitted_prompt_snapshot_from_draft(persistent)
+            })
+            .count();
+        entries.truncate(entries.len().saturating_sub(shared_suffix));
+        entries.extend(self.local_input_history.iter().cloned());
+        entries
+    }
+
+    fn next_pending_paste_index(&self) -> usize {
+        self.draft_attachments
+            .iter()
+            .filter_map(|attachment| {
+                attachment
+                    .placeholder
+                    .as_deref()
+                    .and_then(|placeholder| placeholder.strip_prefix("[Paste #"))
+                    .and_then(|rest| rest.strip_suffix(']'))
+                    .and_then(|value| value.parse::<usize>().ok())
+            })
+            .max()
+            .unwrap_or(0)
+            + 1
+    }
+
+    fn draft_attachments_for_text(&self, text: &str) -> Vec<ComposerDraftAttachmentState> {
+        self.draft_attachments
+            .iter()
+            .filter(|attachment| {
+                attachment
+                    .placeholder
+                    .as_ref()
+                    .is_some_and(|placeholder| text.contains(placeholder))
+            })
+            .cloned()
+            .collect()
+    }
+
+    fn prune_draft_attachments(&mut self) {
+        self.draft_attachments.retain(|attachment| {
+            attachment
+                .placeholder
+                .as_ref()
+                .is_none_or(|placeholder| self.input.contains(placeholder))
+        });
+        self.renormalize_draft_attachment_placeholders();
+    }
+
+    fn take_submission_input(&mut self) -> String {
+        let text = self.expanded_input_text();
+        let _ = self.take_submission();
+        text
+    }
+
+    fn expanded_input_text(&self) -> String {
+        let mut expanded = self.input.clone();
+        for attachment in &self.draft_attachments {
+            let Some(placeholder) = attachment.placeholder.as_ref() else {
+                continue;
+            };
+            let replacement = match &attachment.kind {
+                ComposerDraftAttachmentKind::LargePaste { payload } => payload.clone(),
+                ComposerDraftAttachmentKind::LocalImage {
+                    part: Some(part), ..
+                }
+                | ComposerDraftAttachmentKind::RemoteImage { part, .. }
+                | ComposerDraftAttachmentKind::LocalFile {
+                    part: Some(part), ..
+                }
+                | ComposerDraftAttachmentKind::RemoteFile { part, .. } => {
+                    agent::types::message_part_operator_text(part)
+                }
+                ComposerDraftAttachmentKind::LocalImage {
+                    requested_path,
+                    mime_type,
+                    ..
+                } => format!(
+                    "[image:{}{}]",
+                    requested_path,
+                    mime_type
+                        .as_deref()
+                        .map(|mime| format!(" {mime}"))
+                        .unwrap_or_default()
+                ),
+                ComposerDraftAttachmentKind::LocalFile {
+                    requested_path,
+                    file_name,
+                    mime_type,
+                    ..
+                } => agent::types::file_display_text(
+                    file_name.as_deref(),
+                    mime_type.as_deref(),
+                    Some(requested_path),
+                ),
+            };
+            expanded = expanded.replace(placeholder, &replacement);
+        }
+        expanded
+    }
+
+    fn take_submission(&mut self) -> ComposerSubmission {
+        let submission = self.current_submission();
+        self.input_history_navigation = None;
+        self.command_completion_index = 0;
+        self.input_cursor = 0;
+        self.input_vertical_column = None;
+        let _ = std::mem::take(&mut self.input);
+        self.draft_attachments.clear();
+        submission
+    }
+
+    fn current_submission(&self) -> ComposerSubmission {
+        let local_history_draft = self.current_input_draft();
+        let prompt_snapshot = submitted_prompt_snapshot_from_draft(&local_history_draft);
+        ComposerSubmission {
+            prompt_snapshot,
+            local_history_draft,
+        }
+    }
+
+    fn renormalize_draft_attachment_placeholders(&mut self) {
+        normalize_attachment_placeholders(&mut self.input, &mut self.draft_attachments);
+        self.input_cursor =
+            normalize_input_cursor(&self.input, self.input_cursor.min(self.input.len()));
+    }
+
+    pub(crate) fn apply_external_edit(
+        &mut self,
+        text: impl Into<String>,
+    ) -> ComposerAttachmentEditSummary {
+        let before_rows = self.row_attachment_previews();
+        let (row_attachments, text) = self.parse_external_editor_text(text.into());
+        let mut inline_attachments = self
+            .draft_attachments
+            .iter()
+            .filter_map(|attachment| {
+                let placeholder = attachment.placeholder.as_ref()?;
+                text.find(placeholder)
+                    .map(|index| (index, attachment.clone()))
+            })
+            .collect::<Vec<_>>();
+        inline_attachments.sort_by_key(|(index, _)| *index);
+
+        self.input = text;
+        self.input_cursor = self.input.len();
+        self.input_vertical_column = None;
+        self.draft_attachments = row_attachments
+            .into_iter()
+            .chain(
+                inline_attachments
+                    .into_iter()
+                    .map(|(_, attachment)| attachment),
+            )
+            .collect();
+        self.renormalize_draft_attachment_placeholders();
+        self.selected_row_attachment = None;
+        self.input_history_navigation = None;
+        self.reset_command_completion();
+        summarize_attachment_edit(&before_rows, &self.row_attachment_previews())
+    }
+
+    fn parse_external_editor_text(
+        &self,
+        text: String,
+    ) -> (Vec<ComposerDraftAttachmentState>, String) {
+        let row_attachments = self
+            .draft_attachments
+            .iter()
+            .filter(|attachment| attachment.is_row_attachment())
+            .cloned()
+            .collect::<Vec<_>>();
+        if row_attachments.is_empty() {
+            return (row_attachments, text);
+        }
+
+        let lines = text.lines().map(str::to_string).collect::<Vec<_>>();
+        if lines.first().map(String::as_str) != Some("[Attachments]") {
+            return (row_attachments, text);
+        }
+        let Some(prompt_index) = lines.iter().position(|line| line == "[Prompt]") else {
+            return (row_attachments, text);
+        };
+
+        // Only the attachment prelude participates in row replay. The prompt
+        // body stays plain text so inline placeholders like `[Paste #N]` can be
+        // rebound separately without leaking row markers into the live draft.
+        let rebound_rows = lines[1..prompt_index]
+            .iter()
+            .filter_map(|line| {
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
+                    return None;
+                }
+                row_attachments
+                    .iter()
+                    .enumerate()
+                    .find_map(|(index, attachment)| {
+                        let token = attachment.external_editor_row_token(index + 1)?;
+                        trimmed.starts_with(&token).then(|| attachment.clone())
+                    })
+            })
+            .fold(Vec::new(), |mut rebound, attachment| {
+                if !rebound.iter().any(|existing| existing == &attachment) {
+                    rebound.push(attachment);
+                }
+                rebound
+            });
+        let prompt_text = lines[prompt_index + 1..].join("\n");
+        (rebound_rows, prompt_text)
+    }
+
+    fn row_attachment_count(&self) -> usize {
+        self.draft_attachments
+            .iter()
+            .filter(|attachment| attachment.is_row_attachment())
+            .count()
+    }
+}
+
+fn summarize_row_attachments(
+    attachments: &[ComposerDraftAttachmentState],
+) -> Vec<ComposerRowAttachmentPreview> {
+    attachments
+        .iter()
+        .filter(|attachment| attachment.is_row_attachment())
+        .enumerate()
+        .filter_map(|(index, attachment)| {
+            Some(ComposerRowAttachmentPreview {
+                index: index + 1,
+                summary: attachment.row_summary()?,
+                detail: attachment.row_detail().unwrap_or_default(),
+            })
+        })
+        .collect()
+}
+
+fn default_inline_placeholder(kind: &ComposerDraftAttachmentKind) -> Option<String> {
+    match kind {
+        ComposerDraftAttachmentKind::LargePaste { .. } => Some("[Paste #1]".to_string()),
+        ComposerDraftAttachmentKind::LocalImage { .. } => Some("[Image #1]".to_string()),
+        ComposerDraftAttachmentKind::LocalFile { .. } => Some("[File #1]".to_string()),
+        ComposerDraftAttachmentKind::RemoteImage { .. }
+        | ComposerDraftAttachmentKind::RemoteFile { .. } => None,
+    }
+}
+
+fn normalize_attachment_placeholders(
+    text: &mut String,
+    attachments: &mut [ComposerDraftAttachmentState],
+) {
+    let mut image_index = attachments
+        .iter()
+        .filter(|attachment| {
+            matches!(
+                attachment.kind,
+                ComposerDraftAttachmentKind::RemoteImage { .. }
+            )
+        })
+        .count();
+    let mut file_index = attachments
+        .iter()
+        .filter(|attachment| {
+            matches!(
+                attachment.kind,
+                ComposerDraftAttachmentKind::RemoteFile { .. }
+            )
+        })
+        .count();
+    let mut paste_index = 0;
+    let mut replacements = Vec::new();
+
+    for (position, attachment) in attachments.iter_mut().enumerate() {
+        let next_placeholder = match (&attachment.kind, attachment.placeholder.as_ref()) {
+            (ComposerDraftAttachmentKind::LargePaste { .. }, _) => {
+                paste_index += 1;
+                Some(format!("[Paste #{paste_index}]"))
+            }
+            (ComposerDraftAttachmentKind::LocalImage { .. }, Some(_)) => {
+                image_index += 1;
+                Some(format!("[Image #{image_index}]"))
+            }
+            (ComposerDraftAttachmentKind::LocalFile { .. }, Some(_)) => {
+                file_index += 1;
+                Some(format!("[File #{file_index}]"))
+            }
+            (ComposerDraftAttachmentKind::LocalImage { .. }, None)
+            | (ComposerDraftAttachmentKind::LocalFile { .. }, None)
+            | (ComposerDraftAttachmentKind::RemoteImage { .. }, _)
+            | (ComposerDraftAttachmentKind::RemoteFile { .. }, _) => None,
+        };
+
+        match (attachment.placeholder.clone(), next_placeholder) {
+            (Some(current), Some(updated)) if current != updated => {
+                let temporary = format!("[[NANOCLAW_ATTACH_REBASE_{position}]]");
+                *text = text.replace(&current, &temporary);
+                attachment.placeholder = Some(updated.clone());
+                replacements.push((temporary, updated));
+            }
+            (None, Some(updated)) => {
+                attachment.placeholder = Some(updated);
+            }
+            (_, None) => attachment.placeholder = None,
+            _ => {}
+        }
+    }
+
+    for (temporary, placeholder) in replacements {
+        *text = text.replace(&temporary, &placeholder);
+    }
+}
+
+fn summarize_attachment_edit(
+    before: &[ComposerRowAttachmentPreview],
+    after: &[ComposerRowAttachmentPreview],
+) -> ComposerAttachmentEditSummary {
+    let after_keys = after
+        .iter()
+        .map(preview_identity_key)
+        .collect::<std::collections::BTreeSet<_>>();
+    let detached = before
+        .iter()
+        .filter(|preview| !after_keys.contains(&preview_identity_key(preview)))
+        .cloned()
+        .collect::<Vec<_>>();
+
+    let before_common = before
+        .iter()
+        .filter(|preview| after_keys.contains(&preview_identity_key(preview)))
+        .map(preview_identity_key)
+        .collect::<Vec<_>>();
+    let after_common = after.iter().map(preview_identity_key).collect::<Vec<_>>();
+
+    ComposerAttachmentEditSummary {
+        detached,
+        reordered: before_common != after_common,
+    }
+}
+
+fn preview_identity_key(preview: &ComposerRowAttachmentPreview) -> String {
+    format!("{}\u{0}{}", preview.summary, preview.detail)
+}
+
+fn bump_scroll(value: &mut u16, delta: i16) {
+    if delta >= 0 {
+        *value = value.saturating_add(delta as u16);
+    } else {
+        *value = value.saturating_sub(delta.unsigned_abs());
+    }
+}
+
+fn page_scroll_amount(viewport_height: u16, half_page: bool) -> i16 {
+    let page = viewport_height.saturating_sub(2).max(1);
+    let amount = if half_page { (page / 2).max(1) } else { page };
+    amount.min(i16::MAX as u16) as i16
+}
+
+fn preview_path_tail(path: &str) -> String {
+    if let Some(segment) = remote_url_tail_segment(path) {
+        return segment;
+    }
+    Path::new(path)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.is_empty())
+        .unwrap_or(path)
+        .to_string()
+}
+
+fn is_remote_url(path: &str) -> bool {
+    matches!(path.trim(), value if value.starts_with("http://") || value.starts_with("https://"))
+}
+
+fn remote_url_tail_segment(path: &str) -> Option<String> {
+    let (_, remainder) = path.trim().split_once("://")?;
+    let path = remainder
+        .split_once('/')
+        .map(|(_, path)| path)
+        .unwrap_or_default();
+    let trimmed = path
+        .split(['?', '#'])
+        .next()
+        .unwrap_or_default()
+        .trim_matches('/');
+    (!trimmed.is_empty()).then(|| {
+        trimmed
+            .rsplit('/')
+            .find(|segment| !segment.is_empty())
+            .unwrap_or(trimmed)
+            .to_string()
+    })
+}
+
+fn normalize_input_cursor(input: &str, cursor: usize) -> usize {
+    if cursor >= input.len() {
+        return input.len();
+    }
+    if input.is_char_boundary(cursor) {
+        return cursor;
+    }
+    previous_char_boundary(input, cursor).unwrap_or(0)
+}
+
+fn line_range_for_cursor(input: &str, cursor: usize) -> std::ops::Range<usize> {
+    let cursor = normalize_input_cursor(input, cursor);
+    let start = input[..cursor]
+        .rfind('\n')
+        .map(|index| index + 1)
+        .unwrap_or(0);
+    let end = input[cursor..]
+        .find('\n')
+        .map(|offset| cursor + offset)
+        .unwrap_or(input.len());
+    start..end
+}
+
+fn previous_line_range(input: &str, current_line_start: usize) -> Option<std::ops::Range<usize>> {
+    if current_line_start == 0 {
+        return None;
+    }
+    let previous_end = current_line_start.saturating_sub(1);
+    let previous_start = input[..previous_end]
+        .rfind('\n')
+        .map(|index| index + 1)
+        .unwrap_or(0);
+    Some(previous_start..previous_end)
+}
+
+fn next_line_range(input: &str, current_line_end: usize) -> Option<std::ops::Range<usize>> {
+    if current_line_end >= input.len() {
+        return None;
+    }
+    let next_start = current_line_end + 1;
+    let next_end = input[next_start..]
+        .find('\n')
+        .map(|offset| next_start + offset)
+        .unwrap_or(input.len());
+    Some(next_start..next_end)
+}
+
+fn byte_index_for_display_column(line: &str, desired_column: usize) -> usize {
+    if desired_column == 0 {
+        return 0;
+    }
+
+    let mut width = 0;
+    for (index, ch) in line.char_indices() {
+        let char_width = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if width + char_width > desired_column {
+            return index;
+        }
+        width += char_width;
+    }
+    line.len()
+}
+
+fn display_width(text: &str) -> usize {
+    UnicodeWidthStr::width(text)
+}
+
+fn previous_char_boundary(input: &str, cursor: usize) -> Option<usize> {
+    if cursor == 0 {
+        return None;
+    }
+    input[..normalize_input_cursor(input, cursor)]
+        .char_indices()
+        .last()
+        .map(|(index, _)| index)
+}
+
+fn next_char_boundary(input: &str, cursor: usize) -> Option<usize> {
+    let cursor = normalize_input_cursor(input, cursor);
+    if cursor >= input.len() {
+        return None;
+    }
+    input[cursor..]
+        .chars()
+        .next()
+        .map(|ch| cursor + ch.len_utf8())
+}
+
+#[derive(Clone, Default)]
+pub struct SharedUiState(Arc<RwLock<TuiState>>);
+
+impl SharedUiState {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub(crate) fn snapshot(&self) -> TuiState {
+        self.0.read().unwrap().clone()
+    }
+
+    pub(crate) fn replace(&self, state: TuiState) {
+        *self.0.write().unwrap() = state;
+    }
+
+    pub(crate) fn mutate<F>(&self, f: F)
+    where
+        F: FnOnce(&mut TuiState),
+    {
+        f(&mut self.0.write().unwrap());
+    }
+
+    pub(crate) fn take_input(&self) -> String {
+        let mut state = self.0.write().unwrap();
+        state.take_submission_input()
+    }
+
+    pub(crate) fn take_submission(&self) -> ComposerSubmission {
+        let mut state = self.0.write().unwrap();
+        state.take_submission()
+    }
+}
+
+pub(crate) fn preview_text(value: &str, max_chars: usize) -> String {
+    let collapsed = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    if collapsed.is_empty() {
+        return "<empty>".to_string();
+    }
+    if collapsed.chars().count() <= max_chars {
+        collapsed
+    } else {
+        format!(
+            "{}...",
+            collapsed
+                .chars()
+                .take(max_chars.saturating_sub(3))
+                .collect::<String>()
+        )
+    }
+}
+
+pub(crate) fn git_snapshot(
+    workspace_root: &Path,
+    host_process_surfaces_allowed: bool,
+) -> GitSnapshot {
+    // The TUI git snapshot is a convenience-only host subprocess. When the
+    // operator continues without sandbox enforcement, keep the UI on the same
+    // fail-closed boundary as the runtime tool and hook surfaces.
+    if !host_process_surfaces_allowed {
+        return GitSnapshot::default();
+    }
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(workspace_root)
+        .arg("status")
+        .arg("--short")
+        .arg("--branch")
+        .output();
+    let Ok(output) = output else {
+        return GitSnapshot::default();
+    };
+    if !output.status.success() {
+        return GitSnapshot::default();
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut lines = stdout.lines();
+    let branch = lines
+        .next()
+        .map(|line| line.trim_start_matches("## ").to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+    let repo_name = git_repo_name(workspace_root).unwrap_or_default();
+    let mut staged = 0;
+    let mut modified = 0;
+    let mut untracked = 0;
+    for line in lines {
+        if line.starts_with("??") {
+            untracked += 1;
+            continue;
+        }
+        let bytes = line.as_bytes();
+        if bytes.first().copied().unwrap_or(b' ') != b' ' {
+            staged += 1;
+        }
+        if bytes.get(1).copied().unwrap_or(b' ') != b' ' {
+            modified += 1;
+        }
+    }
+    GitSnapshot {
+        available: true,
+        repo_name,
+        branch,
+        staged,
+        modified,
+        untracked,
+    }
+}
+
+fn git_repo_name(workspace_root: &Path) -> Option<String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(workspace_root)
+        .arg("rev-parse")
+        .arg("--show-toplevel")
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let root = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    Path::new(&root)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .map(str::to_string)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        ComposerDraftAttachmentKind, ComposerDraftAttachmentState, ComposerDraftState,
+        ComposerKillBufferState, ComposerRowAttachmentPreview, HistoryRollbackCandidate,
+        MainPaneMode, SharedUiState, ToastState, ToastTone, TuiState, composer_draft_from_messages,
+        composer_draft_from_parts, draft_preview_text, git_snapshot, page_scroll_amount,
+    };
+    use crate::theme::ThemeSummary;
+    use agent::types::{
+        Message, MessageId, MessagePart, MessageRole, SubmittedPromptAttachment,
+        SubmittedPromptAttachmentKind, SubmittedPromptSnapshot,
+    };
+    use std::time::{Duration, Instant};
+    use tempfile::tempdir;
+
+    #[test]
+    fn git_snapshot_skips_host_process_when_disabled() {
+        let dir = tempdir().unwrap();
+        let snapshot = git_snapshot(dir.path(), false);
+
+        assert!(!snapshot.available);
+        assert!(snapshot.repo_name.is_empty());
+        assert!(snapshot.branch.is_empty());
+    }
+
+    #[test]
+    fn transcript_push_keeps_manual_scroll_position_until_follow_is_restored() {
+        let mut state = TuiState {
+            main_pane: MainPaneMode::Transcript,
+            follow_transcript: true,
+            ..TuiState::default()
+        };
+
+        state.push_transcript("first");
+        assert_eq!(state.transcript_scroll, u16::MAX);
+
+        state.scroll_focused(-2);
+        assert!(!state.follow_transcript);
+
+        state.push_transcript("second");
+        assert_eq!(state.transcript_scroll, u16::MAX.saturating_sub(2));
+
+        state.scroll_focused_end();
+        assert!(state.follow_transcript);
+
+        state.push_transcript("third");
+        assert_eq!(state.transcript_scroll, u16::MAX);
+    }
+
+    #[test]
+    fn expired_toast_is_cleared_on_next_tick() {
+        let mut state = TuiState::default();
+        state.toast = Some(ToastState {
+            message: "background wait done".to_string(),
+            tone: ToastTone::Info,
+            expires_at: Instant::now() - Duration::from_secs(1),
+        });
+
+        assert!(state.expire_toast_if_due());
+        assert!(state.toast.is_none());
+    }
+
+    #[test]
+    fn transcript_home_disables_follow_until_end_is_requested() {
+        let mut state = TuiState {
+            main_pane: MainPaneMode::Transcript,
+            follow_transcript: true,
+            ..TuiState::default()
+        };
+
+        state.scroll_focused_home();
+        assert_eq!(state.transcript_scroll, 0);
+        assert!(!state.follow_transcript);
+
+        state.scroll_focused_end();
+        assert_eq!(state.transcript_scroll, u16::MAX);
+        assert!(state.follow_transcript);
+    }
+
+    #[test]
+    fn page_scroll_amount_keeps_overlap_and_supports_half_pages() {
+        assert_eq!(page_scroll_amount(20, false), 18);
+        assert_eq!(page_scroll_amount(20, true), 9);
+        assert_eq!(page_scroll_amount(1, false), 1);
+        assert_eq!(page_scroll_amount(2, true), 1);
+    }
+
+    #[test]
+    fn transcript_page_scroll_uses_viewport_height() {
+        let mut state = TuiState {
+            main_pane: MainPaneMode::Transcript,
+            follow_transcript: true,
+            transcript_scroll: 40,
+            ..TuiState::default()
+        };
+
+        state.scroll_focused_page(20, true, true);
+        assert_eq!(state.transcript_scroll, 31);
+        assert!(!state.follow_transcript);
+
+        state.scroll_focused_page(20, false, false);
+        assert_eq!(state.transcript_scroll, 49);
+    }
+
+    #[test]
+    fn history_rollback_overlay_opens_on_latest_candidate_and_wraps_navigation() {
+        let mut state = TuiState::default();
+        let candidates = vec![
+            HistoryRollbackCandidate {
+                message_id: MessageId::from("msg-1"),
+                prompt: "first".to_string(),
+                draft: ComposerDraftState::from_text("first"),
+                turn_preview_lines: vec!["› first".into()],
+                removed_turn_count: 2,
+                removed_message_count: 4,
+            },
+            HistoryRollbackCandidate {
+                message_id: MessageId::from("msg-2"),
+                prompt: "second".to_string(),
+                draft: ComposerDraftState::from_text("second"),
+                turn_preview_lines: vec!["› second".into()],
+                removed_turn_count: 1,
+                removed_message_count: 2,
+            },
+        ];
+
+        assert!(state.open_history_rollback_overlay(candidates));
+        assert_eq!(
+            state
+                .selected_history_rollback_candidate()
+                .map(|candidate| candidate.prompt.as_str()),
+            Some("second")
+        );
+
+        assert!(state.move_history_rollback_selection(true));
+        assert_eq!(
+            state
+                .selected_history_rollback_candidate()
+                .map(|candidate| candidate.prompt.as_str()),
+            Some("first")
+        );
+
+        assert!(state.move_history_rollback_selection(true));
+        assert_eq!(
+            state
+                .selected_history_rollback_candidate()
+                .map(|candidate| candidate.prompt.as_str()),
+            Some("second")
+        );
+    }
+
+    #[test]
+    fn composer_input_history_recalls_entries_and_restores_draft() {
+        let mut state = TuiState {
+            input: "current draft".to_string(),
+            input_cursor: "current draft".len(),
+            input_history: vec![
+                SubmittedPromptSnapshot::from_text("first prompt"),
+                SubmittedPromptSnapshot::from_text("second prompt"),
+            ],
+            ..TuiState::default()
+        };
+
+        assert!(state.browse_input_history(true));
+        assert_eq!(state.input, "second prompt");
+        assert_eq!(state.input_cursor(), "second prompt".len());
+
+        assert!(state.browse_input_history(true));
+        assert_eq!(state.input, "first prompt");
+
+        assert!(state.browse_input_history(false));
+        assert_eq!(state.input, "second prompt");
+
+        assert!(state.browse_input_history(false));
+        assert_eq!(state.input, "current draft");
+        assert_eq!(state.input_cursor(), "current draft".len());
+
+        assert!(!state.browse_input_history(false));
+    }
+
+    #[test]
+    fn open_theme_picker_tracks_original_theme_for_restore() {
+        let mut state = TuiState {
+            theme: "fjord".to_string(),
+            themes: vec![
+                ThemeSummary {
+                    id: "graphite".to_string(),
+                    summary: "dark slate".to_string(),
+                },
+                ThemeSummary {
+                    id: "fjord".to_string(),
+                    summary: "deep blue".to_string(),
+                },
+            ],
+            ..TuiState::default()
+        };
+
+        state.open_theme_picker();
+
+        let picker = state.theme_picker.as_ref().unwrap();
+        assert_eq!(picker.selected, 1);
+        assert_eq!(picker.original_theme, "fjord");
+        assert_eq!(state.original_theme().as_deref(), Some("fjord"));
+    }
+
+    #[test]
+    fn editing_after_history_recall_resets_navigation_cursor() {
+        let mut state = TuiState {
+            input_history: vec![
+                SubmittedPromptSnapshot::from_text("prompt one"),
+                SubmittedPromptSnapshot::from_text("prompt two"),
+            ],
+            ..TuiState::default()
+        };
+
+        assert!(state.browse_input_history(true));
+        assert_eq!(state.input, "prompt two");
+
+        state.push_input_char('!');
+        assert_eq!(state.input, "prompt two!");
+
+        assert!(state.browse_input_history(true));
+        assert_eq!(state.input, "prompt two");
+    }
+
+    #[test]
+    fn history_recall_requires_cursor_at_buffer_boundary() {
+        let mut state = TuiState {
+            input: "current draft".to_string(),
+            input_cursor: 4,
+            input_history: vec![
+                SubmittedPromptSnapshot::from_text("first prompt"),
+                SubmittedPromptSnapshot::from_text("second prompt"),
+            ],
+            ..TuiState::default()
+        };
+
+        assert!(!state.browse_input_history(true));
+
+        assert!(state.move_input_cursor_end());
+        assert!(state.browse_input_history(true));
+        assert_eq!(state.input, "second prompt");
+    }
+
+    #[test]
+    fn local_history_overrides_persistent_suffix_with_richer_drafts() {
+        let mut state = TuiState {
+            input_history: vec![
+                SubmittedPromptSnapshot::from_text("older"),
+                SubmittedPromptSnapshot::from_text("recent"),
+            ],
+            local_input_history: vec![ComposerDraftState {
+                text: "recent".to_string(),
+                cursor: 2,
+                draft_attachments: Vec::new(),
+            }],
+            ..TuiState::default()
+        };
+
+        assert!(state.browse_input_history(true));
+        assert_eq!(state.input, "recent");
+        assert_eq!(state.input_cursor(), 2);
+
+        assert!(state.browse_input_history(true));
+        assert_eq!(state.input, "older");
+    }
+
+    #[test]
+    fn inserting_and_deleting_respect_the_cursor_position() {
+        let mut state = TuiState {
+            input: "helo".to_string(),
+            input_cursor: 3,
+            ..TuiState::default()
+        };
+
+        state.push_input_char('l');
+        assert_eq!(state.input, "hello");
+        assert_eq!(state.input_cursor(), 4);
+
+        state.pop_input_char();
+        assert_eq!(state.input, "helo");
+        assert_eq!(state.input_cursor(), 3);
+    }
+
+    #[test]
+    fn inserting_a_pasted_string_respects_the_cursor_position() {
+        let mut state = TuiState {
+            input: "helo".to_string(),
+            input_cursor: 2,
+            ..TuiState::default()
+        };
+
+        state.push_input_str("l\n");
+        assert_eq!(state.input, "hel\nlo");
+        assert_eq!(state.input_cursor(), 4);
+    }
+
+    #[test]
+    fn vertical_cursor_motion_moves_between_lines_without_triggering_history() {
+        let mut state = TuiState {
+            input: "alpha\nbeta\ngamma".to_string(),
+            input_cursor: "alpha\nbe".len(),
+            ..TuiState::default()
+        };
+
+        assert!(state.move_input_cursor_vertical(false));
+        assert_eq!(state.input_cursor(), "alpha\nbeta\nga".len());
+
+        assert!(state.move_input_cursor_vertical(true));
+        assert_eq!(state.input_cursor(), "alpha\nbe".len());
+    }
+
+    #[test]
+    fn vertical_cursor_motion_keeps_the_desired_column_across_short_lines() {
+        let mut state = TuiState {
+            input: "wide line\nx\nwide tail".to_string(),
+            input_cursor: "wide li".len(),
+            ..TuiState::default()
+        };
+
+        assert!(state.move_input_cursor_vertical(false));
+        assert_eq!(state.input_cursor(), "wide line\nx".len());
+
+        assert!(state.move_input_cursor_vertical(false));
+        assert_eq!(state.input_cursor(), "wide line\nx\nwide ta".len());
+    }
+
+    #[test]
+    fn stashing_current_input_draft_preserves_exact_text_and_cursor() {
+        let mut state = TuiState {
+            input: "draft  \nline two".to_string(),
+            input_cursor: 7,
+            ..TuiState::default()
+        };
+
+        assert!(state.stash_current_input_draft());
+        assert_eq!(
+            state.local_input_history,
+            vec![ComposerDraftState {
+                text: "draft  \nline two".to_string(),
+                cursor: 7,
+                draft_attachments: Vec::new(),
+            }]
+        );
+    }
+
+    #[test]
+    fn stashed_draft_can_be_recalled_with_up_after_clearing_input() {
+        let mut state = TuiState {
+            input: "draft  \nline two".to_string(),
+            input_cursor: 7,
+            ..TuiState::default()
+        };
+
+        assert!(state.stash_current_input_draft());
+        state.clear_input();
+
+        assert!(state.browse_input_history(true));
+        assert_eq!(state.input, "draft  \nline two");
+        assert_eq!(state.input_cursor(), 7);
+    }
+
+    #[test]
+    fn large_paste_creates_placeholder_and_tracks_payload() {
+        let mut state = TuiState::default();
+
+        let placeholder = state.push_large_paste("pasted body");
+
+        assert_eq!(placeholder, "[Paste #1]");
+        assert_eq!(state.input, "[Paste #1]");
+        assert_eq!(
+            state.draft_attachments,
+            vec![large_paste_attachment("pasted body")]
+        );
+    }
+
+    #[test]
+    fn take_input_expands_pending_paste_placeholders() {
+        let ui_state = SharedUiState::new();
+        ui_state.mutate(|state| {
+            let _ = state.push_large_paste("pasted body");
+        });
+
+        assert_eq!(ui_state.take_input(), "pasted body");
+
+        let snapshot = ui_state.snapshot();
+        assert!(snapshot.draft_attachments.is_empty());
+        assert!(snapshot.input.is_empty());
+    }
+
+    #[test]
+    fn take_submission_keeps_large_paste_as_typed_part_and_preserves_local_draft() {
+        let mut state = TuiState::default();
+        state.push_input_str("prefix ");
+        let _ = state.push_large_paste("pasted body");
+        state.push_input_str(" suffix");
+
+        let submission = state.take_submission();
+
+        assert_eq!(
+            submission.prompt_snapshot,
+            SubmittedPromptSnapshot {
+                text: "prefix [Paste #1] suffix".to_string(),
+                attachments: vec![SubmittedPromptAttachment {
+                    placeholder: Some("[Paste #1]".to_string()),
+                    kind: SubmittedPromptAttachmentKind::Paste {
+                        text: "pasted body".to_string(),
+                    },
+                }],
+            }
+        );
+        assert_eq!(
+            submission.local_history_draft,
+            ComposerDraftState {
+                text: "prefix [Paste #1] suffix".to_string(),
+                cursor: "prefix [Paste #1] suffix".len(),
+                draft_attachments: vec![large_paste_attachment("pasted body")],
+            }
+        );
+    }
+
+    #[test]
+    fn take_submission_keeps_local_attachment_placeholders_as_first_class_parts() {
+        let mut state = TuiState::default();
+        assert!(state.push_inline_attachment(local_image_attachment("artifacts/failure.png")));
+        state.push_input_str(" ");
+        assert!(state.push_inline_attachment(local_file_attachment("reports/run.pdf")));
+        state.push_input_str("\ndescribe the failure");
+
+        let submission = state.take_submission();
+
+        assert_eq!(
+            submission.prompt_snapshot,
+            SubmittedPromptSnapshot {
+                text: "[Image #1] [File #1]\ndescribe the failure".to_string(),
+                attachments: vec![
+                    SubmittedPromptAttachment {
+                        placeholder: Some("[Image #1]".to_string()),
+                        kind: SubmittedPromptAttachmentKind::LocalImage {
+                            requested_path: "artifacts/failure.png".to_string(),
+                            mime_type: Some("image/png".to_string()),
+                        },
+                    },
+                    SubmittedPromptAttachment {
+                        placeholder: Some("[File #1]".to_string()),
+                        kind: SubmittedPromptAttachmentKind::LocalFile {
+                            requested_path: "reports/run.pdf".to_string(),
+                            file_name: Some("run.pdf".to_string()),
+                            mime_type: Some("application/pdf".to_string()),
+                        },
+                    },
+                ],
+            }
+        );
+        assert_eq!(
+            submission.local_history_draft,
+            ComposerDraftState {
+                text: "[Image #1] [File #1]\ndescribe the failure".to_string(),
+                cursor: "[Image #1] [File #1]\ndescribe the failure".len(),
+                draft_attachments: vec![
+                    local_image_attachment("artifacts/failure.png"),
+                    local_file_attachment("reports/run.pdf"),
+                ],
+            }
+        );
+    }
+
+    #[test]
+    fn take_submission_keeps_remote_row_attachments_as_first_class_parts() {
+        let mut state = TuiState::default();
+        assert!(state.push_row_attachment(remote_image_attachment(
+            "https://example.com/assets/failure.png"
+        )));
+        assert!(state.push_row_attachment(remote_file_attachment(
+            "https://example.com/reports/run.pdf"
+        )));
+        state.push_input_str("summarize the remote artifacts");
+
+        let submission = state.take_submission();
+
+        assert_eq!(
+            submission.prompt_snapshot,
+            SubmittedPromptSnapshot {
+                text: "summarize the remote artifacts".to_string(),
+                attachments: vec![
+                    SubmittedPromptAttachment {
+                        placeholder: None,
+                        kind: SubmittedPromptAttachmentKind::RemoteImage {
+                            requested_url: "https://example.com/assets/failure.png".to_string(),
+                            mime_type: Some("image/png".to_string()),
+                        },
+                    },
+                    SubmittedPromptAttachment {
+                        placeholder: None,
+                        kind: SubmittedPromptAttachmentKind::RemoteFile {
+                            requested_url: "https://example.com/reports/run.pdf".to_string(),
+                            file_name: Some("run.pdf".to_string()),
+                            mime_type: Some("application/pdf".to_string()),
+                        },
+                    },
+                ],
+            }
+        );
+        assert_eq!(
+            submission.local_history_draft,
+            ComposerDraftState {
+                text: "summarize the remote artifacts".to_string(),
+                cursor: "summarize the remote artifacts".len(),
+                draft_attachments: vec![
+                    remote_image_attachment("https://example.com/assets/failure.png"),
+                    remote_file_attachment("https://example.com/reports/run.pdf"),
+                ],
+            }
+        );
+    }
+
+    #[test]
+    fn row_attachment_summaries_list_only_visible_attachment_rows() {
+        let mut state = TuiState::default();
+        assert!(state.push_row_attachment(local_image_row_attachment("artifacts/failure.png")));
+        let _ = state.push_large_paste("pasted body");
+        assert!(state.push_row_attachment(local_file_row_attachment("reports/run.pdf")));
+
+        assert_eq!(
+            state.row_attachment_summaries(),
+            vec![
+                (
+                    1,
+                    "image · failure.png".to_string(),
+                    "artifacts/failure.png".to_string(),
+                ),
+                (
+                    2,
+                    "file · run.pdf".to_string(),
+                    "reports/run.pdf".to_string(),
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn row_attachment_summaries_keep_remote_urls_visible() {
+        let mut state = TuiState::default();
+        assert!(state.push_row_attachment(remote_image_attachment(
+            "https://example.com/assets/failure.png"
+        )));
+        assert!(state.push_row_attachment(remote_file_attachment(
+            "https://example.com/reports/run.pdf"
+        )));
+
+        assert_eq!(
+            state.row_attachment_summaries(),
+            vec![
+                (
+                    1,
+                    "image · failure.png".to_string(),
+                    "https://example.com/assets/failure.png".to_string(),
+                ),
+                (
+                    2,
+                    "file · run.pdf".to_string(),
+                    "https://example.com/reports/run.pdf".to_string(),
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn remove_row_attachment_defaults_to_latest_visible_row() {
+        let mut state = TuiState::default();
+        assert!(state.push_row_attachment(local_image_row_attachment("artifacts/failure.png")));
+        assert!(state.push_row_attachment(local_file_row_attachment("reports/run.pdf")));
+
+        let removed = state.remove_row_attachment(None);
+
+        assert_eq!(removed, Some(local_file_row_attachment("reports/run.pdf")));
+        assert_eq!(
+            state.row_attachment_summaries(),
+            vec![(
+                1,
+                "image · failure.png".to_string(),
+                "artifacts/failure.png".to_string(),
+            )]
+        );
+    }
+
+    #[test]
+    fn move_row_attachment_reorders_visible_rows() {
+        let mut state = TuiState::default();
+        assert!(state.push_row_attachment(local_image_row_attachment("artifacts/failure.png")));
+        assert!(state.push_row_attachment(local_file_row_attachment("reports/run.pdf")));
+
+        assert!(state.move_row_attachment(2, 1));
+        assert_eq!(
+            state.row_attachment_summaries(),
+            vec![
+                (
+                    1,
+                    "file · run.pdf".to_string(),
+                    "reports/run.pdf".to_string(),
+                ),
+                (
+                    2,
+                    "image · failure.png".to_string(),
+                    "artifacts/failure.png".to_string(),
+                ),
+            ]
+        );
+        assert_eq!(
+            state.selected_row_attachment_summary(),
+            Some((
+                1,
+                "file · run.pdf".to_string(),
+                "reports/run.pdf".to_string(),
+            ))
+        );
+    }
+
+    #[test]
+    fn row_attachment_selection_moves_and_deletes_rows() {
+        let mut state = TuiState::default();
+        assert!(state.push_row_attachment(remote_image_attachment(
+            "https://example.com/assets/failure.png"
+        )));
+        assert!(state.push_row_attachment(remote_file_attachment(
+            "https://example.com/reports/run.pdf"
+        )));
+
+        assert!(state.select_previous_row_attachment());
+        assert_eq!(
+            state.selected_row_attachment_summary(),
+            Some((
+                2,
+                "file · run.pdf".to_string(),
+                "https://example.com/reports/run.pdf".to_string(),
+            ))
+        );
+
+        let removed = state.remove_selected_row_attachment();
+        assert_eq!(
+            removed,
+            Some(remote_file_attachment(
+                "https://example.com/reports/run.pdf"
+            ))
+        );
+        assert_eq!(
+            state.selected_row_attachment_summary(),
+            Some((
+                1,
+                "image · failure.png".to_string(),
+                "https://example.com/assets/failure.png".to_string(),
+            ))
+        );
+    }
+
+    #[test]
+    fn stash_current_input_draft_keeps_attachment_only_drafts() {
+        let mut state = TuiState::default();
+        assert!(state.push_row_attachment(remote_image_attachment(
+            "https://example.com/assets/failure.png"
+        )));
+
+        assert!(state.stash_current_input_draft());
+        state.clear_input();
+
+        assert!(state.browse_input_history(true));
+        assert_eq!(state.input, "");
+        assert_eq!(
+            state.draft_attachments,
+            vec![remote_image_attachment(
+                "https://example.com/assets/failure.png"
+            )]
+        );
+    }
+
+    #[test]
+    fn apply_external_edit_rebases_large_paste_placeholders_by_text_order() {
+        let mut state = TuiState::default();
+        let first = state.push_large_paste("first payload");
+        state.push_input_str(" and ");
+        let second = state.push_large_paste("second payload");
+
+        state.apply_external_edit(format!("{second} before {first}"));
+
+        assert_eq!(state.input, "[Paste #1] before [Paste #2]");
+        assert_eq!(
+            state.draft_attachments,
+            vec![
+                ComposerDraftAttachmentState {
+                    placeholder: Some("[Paste #1]".to_string()),
+                    kind: ComposerDraftAttachmentKind::LargePaste {
+                        payload: "second payload".to_string(),
+                    },
+                },
+                ComposerDraftAttachmentState {
+                    placeholder: Some("[Paste #2]".to_string()),
+                    kind: ComposerDraftAttachmentKind::LargePaste {
+                        payload: "first payload".to_string(),
+                    },
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn apply_external_edit_drops_missing_inline_attachments_and_keeps_rows() {
+        let mut state = TuiState::default();
+        assert!(state.push_row_attachment(local_file_row_attachment("reports/run.pdf")));
+        let placeholder = state.push_large_paste("pasted body");
+
+        state.apply_external_edit(format!("keep rows but not {placeholder}"));
+        state.apply_external_edit("keep rows only");
+
+        assert_eq!(state.input, "keep rows only");
+        assert_eq!(
+            state.draft_attachments,
+            vec![local_file_row_attachment("reports/run.pdf")]
+        );
+    }
+
+    #[test]
+    fn external_editor_seed_text_surfaces_attachment_section_before_prompt() {
+        let mut state = TuiState::default();
+        assert!(state.push_row_attachment(local_image_row_attachment("artifacts/failure.png")));
+        assert!(state.push_row_attachment(remote_file_attachment(
+            "https://example.com/reports/run.pdf"
+        )));
+        state.push_input_str("summarize the artifacts");
+
+        assert_eq!(
+            state.external_editor_seed_text(),
+            "[Attachments]\n[Image #1] artifacts/failure.png\n[File #2] https://example.com/reports/run.pdf\n\n[Prompt]\nsummarize the artifacts"
+        );
+    }
+
+    #[test]
+    fn apply_external_edit_reorders_and_drops_rows_from_attachment_section() {
+        let mut state = TuiState::default();
+        assert!(state.push_row_attachment(local_image_row_attachment("artifacts/failure.png")));
+        assert!(state.push_row_attachment(local_file_row_attachment("reports/run.pdf")));
+        state.push_input_str("summarize the artifacts");
+
+        let summary = state.apply_external_edit(
+            "[Attachments]\n[File #2] reports/run.pdf\n\n[Prompt]\nupdated prompt".to_string(),
+        );
+
+        assert_eq!(state.input, "updated prompt");
+        assert_eq!(
+            state.draft_attachments,
+            vec![local_file_row_attachment("reports/run.pdf")]
+        );
+        assert_eq!(
+            summary.detached,
+            vec![ComposerRowAttachmentPreview {
+                index: 1,
+                summary: "image · failure.png".to_string(),
+                detail: "artifacts/failure.png".to_string(),
+            }]
+        );
+        assert!(!summary.reordered);
+    }
+
+    #[test]
+    fn apply_external_edit_can_clear_all_rows_from_attachment_section() {
+        let mut state = TuiState::default();
+        assert!(state.push_row_attachment(local_image_row_attachment("artifacts/failure.png")));
+        assert!(state.push_row_attachment(local_file_row_attachment("reports/run.pdf")));
+
+        let summary = state.apply_external_edit("[Attachments]\n\n[Prompt]\ntext only".to_string());
+
+        assert_eq!(state.input, "text only");
+        assert!(state.draft_attachments.is_empty());
+        assert_eq!(summary.detached.len(), 2);
+        assert!(!summary.reordered);
+    }
+
+    #[test]
+    fn apply_external_edit_reports_reordered_rows() {
+        let mut state = TuiState::default();
+        assert!(state.push_row_attachment(local_image_row_attachment("artifacts/failure.png")));
+        assert!(state.push_row_attachment(local_file_row_attachment("reports/run.pdf")));
+        assert!(state.push_row_attachment(remote_image_attachment(
+            "https://example.com/assets/overview.png",
+        )));
+
+        let summary = state.apply_external_edit(
+            "[Attachments]\n[Image #3] https://example.com/assets/overview.png\n[Image #1] artifacts/failure.png\n[File #2] reports/run.pdf\n\n[Prompt]\ntext only"
+                .to_string(),
+        );
+
+        assert!(summary.detached.is_empty());
+        assert!(summary.reordered);
+    }
+
+    #[test]
+    fn composer_draft_from_messages_keeps_text_breaks_and_row_attachments() {
+        let draft = composer_draft_from_messages(&[
+            Message::new(
+                MessageRole::User,
+                vec![MessagePart::ImageUrl {
+                    url: "https://example.com/failure.png".to_string(),
+                    mime_type: Some("image/png".to_string()),
+                }],
+            ),
+            Message::new(
+                MessageRole::User,
+                vec![MessagePart::inline_text("summarize the failure")],
+            ),
+        ]);
+
+        assert_eq!(draft.text, "summarize the failure");
+        assert_eq!(
+            draft.draft_attachments,
+            vec![remote_image_attachment("https://example.com/failure.png")]
+        );
+    }
+
+    #[test]
+    fn composer_draft_from_parts_restores_inline_paste_and_local_attachment_placeholders() {
+        let draft = composer_draft_from_parts(&[
+            MessagePart::File {
+                file_name: Some("run.pdf".to_string()),
+                mime_type: Some("application/pdf".to_string()),
+                data_base64: Some("pdf-data".to_string()),
+                uri: Some("reports/run.pdf".to_string()),
+            },
+            MessagePart::inline_text(" review "),
+            MessagePart::paste("[Paste #1]", "body"),
+        ]);
+
+        assert_eq!(draft.text, "[File #1] review [Paste #1]");
+        assert_eq!(
+            draft.draft_attachments,
+            vec![
+                local_file_attachment("reports/run.pdf"),
+                large_paste_attachment("body")
+            ]
+        );
+    }
+
+    #[test]
+    fn draft_preview_text_prefers_attachment_summaries_over_raw_markers() {
+        let draft = ComposerDraftState {
+            text: "summarize the artifact".to_string(),
+            cursor: "summarize the artifact".len(),
+            draft_attachments: vec![remote_image_attachment(
+                "https://example.com/assets/failure.png",
+            )],
+        };
+
+        assert_eq!(
+            draft_preview_text(
+                &draft,
+                "[image_url:https://example.com/assets/failure.png image/png]",
+                80,
+            ),
+            "#1 image · failure.png · summarize the artifact"
+        );
+    }
+
+    #[test]
+    fn stashed_draft_recall_restores_pending_paste_payloads() {
+        let mut state = TuiState::default();
+        let _ = state.push_large_paste("pasted body");
+
+        assert!(state.stash_current_input_draft());
+        state.clear_input();
+
+        assert!(state.browse_input_history(true));
+        assert_eq!(state.input, "[Paste #1]");
+        assert_eq!(
+            state.draft_attachments,
+            vec![large_paste_attachment("pasted body")]
+        );
+    }
+
+    #[test]
+    fn ctrl_k_kills_the_tail_and_tracks_large_paste_payloads() {
+        let mut state = TuiState {
+            input: "prefix [Paste #1] suffix".to_string(),
+            input_cursor: 7,
+            draft_attachments: vec![large_paste_attachment("pasted body")],
+            ..TuiState::default()
+        };
+
+        assert!(state.kill_input_to_end());
+        assert_eq!(state.input, "prefix ");
+        assert!(state.draft_attachments.is_empty());
+        assert_eq!(
+            state.kill_buffer,
+            Some(ComposerKillBufferState {
+                text: "[Paste #1] suffix".to_string(),
+                draft_attachments: vec![large_paste_attachment("pasted body")],
+            })
+        );
+    }
+
+    #[test]
+    fn ctrl_y_reinserts_the_latest_killed_tail_with_payloads() {
+        let mut state = TuiState {
+            input: "prefix [Paste #1] suffix".to_string(),
+            input_cursor: 7,
+            draft_attachments: vec![large_paste_attachment("pasted body")],
+            ..TuiState::default()
+        };
+
+        assert!(state.kill_input_to_end());
+        assert!(state.yank_kill_buffer());
+        assert_eq!(state.input, "prefix [Paste #1] suffix");
+        assert_eq!(
+            state.draft_attachments,
+            vec![large_paste_attachment("pasted body")]
+        );
+    }
+
+    #[test]
+    fn kill_buffer_survives_submission_clears_and_expands_draft_attachments_on_yank() {
+        let ui_state = SharedUiState::new();
+        ui_state.mutate(|state| {
+            state.replace_input("prefix [Paste #1]");
+            state
+                .draft_attachments
+                .push(large_paste_attachment("pasted body"));
+            state.input_cursor = "prefix ".len();
+            let _ = state.kill_input_to_end();
+        });
+
+        assert_eq!(ui_state.take_input(), "prefix ");
+
+        ui_state.mutate(|state| {
+            assert!(state.yank_kill_buffer());
+        });
+        assert_eq!(ui_state.take_input(), "pasted body");
+    }
+
+    fn large_paste_attachment(payload: &str) -> ComposerDraftAttachmentState {
+        ComposerDraftAttachmentState {
+            placeholder: Some("[Paste #1]".to_string()),
+            kind: ComposerDraftAttachmentKind::LargePaste {
+                payload: payload.to_string(),
+            },
+        }
+    }
+
+    fn local_image_attachment(path: &str) -> ComposerDraftAttachmentState {
+        ComposerDraftAttachmentState {
+            placeholder: Some("[Image #1]".to_string()),
+            kind: ComposerDraftAttachmentKind::LocalImage {
+                requested_path: path.to_string(),
+                mime_type: Some("image/png".to_string()),
+                part: Some(MessagePart::Image {
+                    mime_type: "image/png".to_string(),
+                    data_base64: "png-data".to_string(),
+                }),
+            },
+        }
+    }
+
+    fn local_file_attachment(path: &str) -> ComposerDraftAttachmentState {
+        ComposerDraftAttachmentState {
+            placeholder: Some("[File #1]".to_string()),
+            kind: ComposerDraftAttachmentKind::LocalFile {
+                requested_path: path.to_string(),
+                file_name: Some("run.pdf".to_string()),
+                mime_type: Some("application/pdf".to_string()),
+                part: Some(MessagePart::File {
+                    file_name: Some("run.pdf".to_string()),
+                    mime_type: Some("application/pdf".to_string()),
+                    data_base64: Some("pdf-data".to_string()),
+                    uri: Some(path.to_string()),
+                }),
+            },
+        }
+    }
+
+    fn local_image_row_attachment(path: &str) -> ComposerDraftAttachmentState {
+        ComposerDraftAttachmentState {
+            placeholder: None,
+            kind: ComposerDraftAttachmentKind::LocalImage {
+                requested_path: path.to_string(),
+                mime_type: Some("image/png".to_string()),
+                part: Some(MessagePart::Image {
+                    mime_type: "image/png".to_string(),
+                    data_base64: "png-data".to_string(),
+                }),
+            },
+        }
+    }
+
+    fn local_file_row_attachment(path: &str) -> ComposerDraftAttachmentState {
+        ComposerDraftAttachmentState {
+            placeholder: None,
+            kind: ComposerDraftAttachmentKind::LocalFile {
+                requested_path: path.to_string(),
+                file_name: Some("run.pdf".to_string()),
+                mime_type: Some("application/pdf".to_string()),
+                part: Some(MessagePart::File {
+                    file_name: Some("run.pdf".to_string()),
+                    mime_type: Some("application/pdf".to_string()),
+                    data_base64: Some("pdf-data".to_string()),
+                    uri: Some(path.to_string()),
+                }),
+            },
+        }
+    }
+
+    fn remote_image_attachment(url: &str) -> ComposerDraftAttachmentState {
+        ComposerDraftAttachmentState {
+            placeholder: None,
+            kind: ComposerDraftAttachmentKind::RemoteImage {
+                requested_url: url.to_string(),
+                part: MessagePart::ImageUrl {
+                    url: url.to_string(),
+                    mime_type: Some("image/png".to_string()),
+                },
+            },
+        }
+    }
+
+    fn remote_file_attachment(url: &str) -> ComposerDraftAttachmentState {
+        ComposerDraftAttachmentState {
+            placeholder: None,
+            kind: ComposerDraftAttachmentKind::RemoteFile {
+                requested_url: url.to_string(),
+                part: MessagePart::File {
+                    file_name: Some("run.pdf".to_string()),
+                    mime_type: Some("application/pdf".to_string()),
+                    data_base64: None,
+                    uri: Some(url.to_string()),
+                },
+            },
+        }
+    }
+}

@@ -1,24 +1,12 @@
-mod backend;
-mod config;
-mod frontend;
-mod options;
-mod preview;
-mod provider;
-mod statusline;
-mod theme;
-mod tool_render;
-
-use crate::backend::{
-    SandboxFallbackNotice, SessionApprovalMode, build_sandbox_fallback_notice, build_session,
-    build_session_with_approval_mode, inject_process_env, inspect_sandbox_preflight,
-};
-use crate::frontend::startup_prompt::confirm_unsandboxed_startup_screen;
-use crate::frontend::tui::{CodeAgentTui, SharedUiState};
-use crate::options::AppOptions;
 use agent::AgentWorkspaceLayout;
 use agent::runtime::{HostRuntimeLimits, build_host_tokio_runtime};
 use agent_env::EnvMap;
 use anyhow::{Context, Result, bail};
+use code_agent_backend::{
+    AppOptions, SandboxFallbackNotice, SessionApprovalMode, build_sandbox_fallback_notice,
+    build_session, build_session_with_approval_mode, inject_process_env, inspect_sandbox_preflight,
+};
+use code_agent_tui::{CodeAgentTui, SharedUiState, confirm_unsandboxed_startup_screen};
 use std::env;
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
@@ -288,12 +276,6 @@ mod tests {
         SandboxFallbackAction, choose_sandbox_fallback_action, format_sandbox_abort_message,
         launch_headless_one_shot,
     };
-    use crate::backend::{
-        CodeAgentSubagentProfileResolver, SandboxFallbackNotice, build_sandbox_policy,
-        dedup_mcp_servers, driver_host_output_lines, merge_driver_host_inputs, resolve_mcp_servers,
-        tool_context_for_profile,
-    };
-    use crate::options::{AppOptions, parse_bool_flag};
     use agent::DriverActivationOutcome;
     use agent::ToolExecutionContext;
     use agent::mcp::{McpServerConfig, McpTransportConfig};
@@ -301,6 +283,11 @@ mod tests {
     use agent::tools::{NetworkPolicy, SandboxMode, SubagentLaunchSpec};
     use agent::types::{AgentTaskSpec, HookEvent, HookHandler, HookRegistration, HttpHookHandler};
     use agent_env::EnvMap;
+    use code_agent_backend::{
+        AppOptions, CodeAgentSubagentProfileResolver, SandboxFallbackNotice, build_sandbox_policy,
+        dedup_mcp_servers, driver_host_output_lines, merge_driver_host_inputs, parse_bool_flag,
+        resolve_mcp_servers, tool_context_for_profile,
+    };
     use nanoclaw_config::{
         AgentProfileConfig, AgentSandboxMode, CoreConfig, ModelCapabilitiesConfig, ModelConfig,
     };

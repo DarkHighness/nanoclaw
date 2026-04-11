@@ -11,6 +11,10 @@ memory-embed = ["agent/memory-embed"]
 [dependencies]
 agent-env = { path = "../../crates/env" }
 agent = { path = "../../crates/core", features = ["agentic-tools", "code-intel", "web-tools"] }
+code-agent-backend = { path = "crates/backend" }
+code-agent-config = { path = "crates/config" }
+code-agent-contracts = { path = "crates/contracts" }
+code-agent-tui = { path = "crates/tui" }
 nanoclaw-config = { path = "../../crates/config" }
 store = { path = "../../crates/store" }
 anyhow = "1.0.100"

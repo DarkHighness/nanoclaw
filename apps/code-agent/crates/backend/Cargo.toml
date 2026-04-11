@@ -1,0 +1,27 @@
+[package]
+name = "code-agent-backend"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+agent = { path = "../../../../crates/core", features = ["agentic-tools", "code-intel", "web-tools"] }
+agent-env.workspace = true
+anyhow.workspace = true
+async-trait.workspace = true
+base64.workspace = true
+chrono = { version = "0.4.42", default-features = false, features = ["clock"] }
+code-agent-config = { path = "../config" }
+code-agent-contracts = { path = "../contracts" }
+futures.workspace = true
+nanoclaw-config = { path = "../../../../crates/config" }
+serde.workspace = true
+serde_json.workspace = true
+shlex.workspace = true
+store = { path = "../../../../crates/store" }
+tempfile.workspace = true
+tokio.workspace = true
+toml.workspace = true
+toml_edit = "0.22.27"
+tracing.workspace = true
+unicode-width = "0.2.0"
