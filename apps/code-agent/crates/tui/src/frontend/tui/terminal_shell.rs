@@ -366,6 +366,14 @@ impl CodeAgentTui {
             });
             return Ok(());
         }
+        if snapshot.input.is_empty() && snapshot.main_pane == state::MainPaneMode::View {
+            self.ui_state.mutate(|state| {
+                state.show_transcript_pane();
+                state.status = "Closed view".to_string();
+                state.push_activity("closed main view");
+            });
+            return Ok(());
+        }
         if self.turn_task.is_some() {
             self.interrupt_active_turn().await?;
             return Ok(());

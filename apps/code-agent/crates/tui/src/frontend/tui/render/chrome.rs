@@ -1,8 +1,6 @@
 use super::super::UserInputView;
 use super::super::approval::ApprovalPrompt;
-use super::super::state::{
-    ComposerContextHint, ExecutionEntry, MainPaneMode, PlanEntry, TuiState, preview_text,
-};
+use super::super::state::{ComposerContextHint, TuiState, preview_text};
 use super::shared::{
     composer_cursor_metrics, pending_control_focus_label, pending_control_kind_label,
 };
@@ -13,7 +11,7 @@ use crate::backend::preview_id;
 use crate::interaction::{PendingControlKind, PermissionProfile, PermissionRequestPrompt};
 use crate::preview::{PreviewCollapse, collapse_preview_lines};
 use ratatui::layout::{Position, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Paragraph, Wrap};
 
@@ -200,130 +198,10 @@ pub(super) fn user_input_band_height(user_input: &UserInputView<'_>) -> u16 {
 }
 
 pub(super) fn should_render_side_rail(state: &TuiState, area: Rect) -> bool {
-    state.main_pane == MainPaneMode::Transcript
-        && area.width >= 128
-        && (lsp_side_rail_available(state)
-            || !state.plan_items.is_empty()
-            || state.execution.is_some())
-}
-
-pub(super) fn side_rail_width(total_width: u16) -> u16 {
-    total_width.saturating_mul(22) / 100
-}
-
-pub(super) fn build_side_rail_lines(state: &TuiState) -> Vec<Line<'static>> {
-    let mut lines = Vec::new();
-
-    if lsp_side_rail_available(state) {
-        lines.push(section_title_line("LSP", palette().accent));
-        let degraded = state
-            .session
-            .startup_diagnostics
-            .warnings
-            .iter()
-            .any(|warning| warning.contains("managed code-intel"));
-        let warning_count = state.session.startup_diagnostics.warnings.len();
-        let diagnostic_count = state.session.startup_diagnostics.diagnostics.len();
-        lines.push(status_line(
-            if degraded { "degraded" } else { "ready" },
-            if degraded {
-                palette().warn
-            } else {
-                palette().assistant
-            },
-        ));
-        lines.push(rail_summary_line(format!(
-            "{warning_count} warnings · {diagnostic_count} diagnostics"
-        )));
-        let lsp_notes = state
-            .session
-            .startup_diagnostics
-            .warnings
-            .iter()
-            .map(|warning| (preview_text(warning, 40), palette().warn))
-            .chain(
-                state
-                    .session
-                    .startup_diagnostics
-                    .diagnostics
-                    .iter()
-                    .map(|diagnostic| (preview_text(diagnostic, 40), palette().accent)),
-            )
-            .take(3)
-            .collect::<Vec<_>>();
-        if lsp_notes.is_empty() {
-            lines.push(rail_summary_line("No diagnostics yet."));
-        } else {
-            lines.extend(
-                lsp_notes
-                    .into_iter()
-                    .map(|(note, color)| bullet_line(&note, color)),
-            );
-        }
-        lines.push(Line::raw(""));
-    }
-
-    if !state.plan_items.is_empty() {
-        lines.push(section_title_line("Plan", palette().user));
-        let (active, pending, done) = plan_counts(&state.plan_items);
-        lines.push(rail_summary_line(format!(
-            "{active} active · {pending} pending · {done} done"
-        )));
-        let mut plan_items = state.plan_items.iter().collect::<Vec<_>>();
-        plan_items.sort_by_key(|item| (plan_status_rank(&item.status), item.content.as_str()));
-        let visible = plan_items.iter().take(5).copied().collect::<Vec<_>>();
-        lines.extend(visible.iter().map(|item| render_plan_line(item)));
-        if plan_items.len() > visible.len() {
-            lines.push(rail_summary_line(format!(
-                "+{} more",
-                plan_items.len() - visible.len()
-            )));
-        }
-        lines.push(Line::raw(""));
-    }
-
-    if let Some(execution) = state.execution.as_ref() {
-        lines.push(section_title_line("Execution", palette().accent));
-        lines.push(status_line(
-            execution.status.as_str(),
-            execution_status_color(execution),
-        ));
-        lines.push(rail_summary_line(preview_text(&execution.summary, 40)));
-        if !execution.scope_label.is_empty() {
-            lines.push(rail_summary_line(format!(
-                "scope {}",
-                preview_text(&execution.scope_label, 32)
-            )));
-        }
-        if let Some(next_action) = execution.next_action.as_deref() {
-            lines.push(bullet_line(
-                &format!("next {}", preview_text(next_action, 36)),
-                palette().accent,
-            ));
-        }
-        if let Some(verification) = execution.verification.as_deref() {
-            lines.push(bullet_line(
-                &format!("verify {}", preview_text(verification, 36)),
-                palette().assistant,
-            ));
-        }
-        if let Some(blocker) = execution.blocker.as_deref() {
-            lines.push(bullet_line(
-                &format!("blocker {}", preview_text(blocker, 36)),
-                palette().error,
-            ));
-        }
-    }
-
-    if lines.is_empty() {
-        lines.push(section_title_line("Context", palette().muted));
-        lines.push(Line::from(Span::styled(
-            "No live side context.",
-            Style::default().fg(palette().subtle),
-        )));
-    }
-
-    lines
+    // Plan and execution state now belong to transcript-native system cells, so
+    // the live timeline keeps full width instead of competing with a side rail.
+    let _ = (state, area);
+    false
 }
 
 fn approval_section_label(label: &str) -> Line<'static> {
@@ -1077,105 +955,4 @@ fn composer_context_hint_spans(state: &TuiState, hint: &ComposerContextHint) -> 
             spans
         }
     }
-}
-
-fn lsp_side_rail_available(state: &TuiState) -> bool {
-    state.session.tool_names.iter().any(|tool| {
-        matches!(
-            tool.as_str(),
-            "code_symbol_search"
-                | "code_document_symbols"
-                | "code_definitions"
-                | "code_references"
-                | "code_hover"
-                | "code_implementations"
-                | "code_call_hierarchy"
-        )
-    })
-}
-
-fn execution_status_color(entry: &ExecutionEntry) -> Color {
-    match entry.status.as_str() {
-        "blocked" => palette().error,
-        "verifying" => palette().accent,
-        "completed" => palette().assistant,
-        _ => palette().header,
-    }
-}
-
-fn section_title_line(title: &str, accent: Color) -> Line<'static> {
-    Line::from(vec![
-        Span::styled("•", Style::default().fg(accent)),
-        Span::styled(" ", Style::default().fg(palette().subtle)),
-        Span::styled(title.to_string(), Style::default().fg(palette().muted)),
-    ])
-}
-
-fn bullet_line(body: &str, color: Color) -> Line<'static> {
-    Line::from(vec![
-        Span::styled("•", Style::default().fg(color)),
-        Span::raw(" "),
-        Span::styled(body.to_string(), Style::default().fg(palette().muted)),
-    ])
-}
-
-fn status_line(body: &str, color: Color) -> Line<'static> {
-    Line::from(vec![
-        Span::styled("●", Style::default().fg(color)),
-        Span::raw(" "),
-        Span::styled(body.to_string(), Style::default().fg(color)),
-    ])
-}
-
-fn rail_summary_line(body: impl Into<String>) -> Line<'static> {
-    Line::from(Span::styled(
-        body.into(),
-        Style::default().fg(palette().subtle),
-    ))
-}
-
-fn plan_counts(items: &[PlanEntry]) -> (usize, usize, usize) {
-    items
-        .iter()
-        .fold((0, 0, 0), |(active, pending, done), item| {
-            match item.status.as_str() {
-                "in_progress" => (active + 1, pending, done),
-                "completed" => (active, pending, done + 1),
-                _ => (active, pending + 1, done),
-            }
-        })
-}
-
-fn plan_status_rank(status: &str) -> usize {
-    match status {
-        "in_progress" => 0,
-        "pending" => 1,
-        "completed" => 2,
-        _ => 3,
-    }
-}
-
-fn render_plan_line(item: &PlanEntry) -> Line<'static> {
-    let (marker, color) = match item.status.as_str() {
-        "completed" => ("x", palette().assistant),
-        "in_progress" => ("~", palette().warn),
-        _ => ("·", palette().muted),
-    };
-    Line::from(vec![
-        Span::styled("[", Style::default().fg(palette().subtle)),
-        Span::styled(
-            marker,
-            Style::default().fg(color).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled("]", Style::default().fg(palette().subtle)),
-        Span::raw(" "),
-        Span::styled(
-            preview_text(&item.content, 30),
-            if item.status == "completed" {
-                Style::default().fg(palette().muted)
-            } else {
-                Style::default().fg(palette().text)
-            },
-        ),
-    ])
 }

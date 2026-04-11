@@ -505,9 +505,10 @@ mutation tools such as `write`, `edit`, and `patch` now surface structured diff
 previews instead of only terse completion summaries.
 
 Approval prompts now render as compact bottom-pane questions with inline
-command previews instead of large modal panels. The bottom status line also now
-carries the current runtime status, detail-toggle state, queue depth, and
-session context in one structured row instead of a thin context-only footer.
+command previews instead of large modal panels. The command catalog now opens
+as a centered modal-style view, and the old live side rail has been retired so
+plan / execution context reads as dedicated transcript system cells instead of
+competing with the main timeline in a parallel column.
 
 Interactive approval and live runtime updates now also route through
 backend-owned contracts, so the TUI renders session events and approval prompts

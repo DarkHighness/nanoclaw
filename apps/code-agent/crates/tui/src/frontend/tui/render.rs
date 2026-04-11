@@ -21,18 +21,17 @@ use crate::interaction::PermissionRequestPrompt;
 use chrome::{
     approval_band_height, composer_cursor_position, composer_height,
     permission_request_band_height, render_approval_band, render_composer,
-    render_permission_request_band, render_user_input_band, should_render_side_rail,
-    side_rail_width, user_input_band_height,
+    render_permission_request_band, render_user_input_band, user_input_band_height,
 };
 use history_rollback_overlay::render_history_rollback_overlay;
 use picker::{
     command_hint_height, pending_control_height, render_command_hint_band,
     render_pending_control_band,
 };
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::layout::{Direction, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::widgets::Block;
-use shell::{bottom_layout_constraints, render_main_pane, render_side_rail};
+use shell::{bottom_layout_constraints, render_main_pane};
 use statusline::{render_status_line, render_toast_band, toast_height};
 use theme::palette;
 
@@ -104,19 +103,7 @@ pub(crate) fn render(
     let composer_area = vertical[next_index];
     let status_area = vertical[next_index + 1];
 
-    if should_render_side_rail(state, main_area) {
-        let horizontal = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([
-                Constraint::Min(10),
-                Constraint::Length(side_rail_width(main_area.width)),
-            ])
-            .split(main_area);
-        render_main_pane(frame, horizontal[0], state);
-        render_side_rail(frame, horizontal[1], state);
-    } else {
-        render_main_pane(frame, main_area, state);
-    }
+    render_main_pane(frame, main_area, state);
     if let Some(approval) = approval {
         render_approval_band(frame, prompt_area.expect("approval area"), approval);
     } else if let Some(permission_request) = permission_request {

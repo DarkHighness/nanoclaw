@@ -1,5 +1,4 @@
 use super::super::state::{MainPaneMode, TuiState};
-use super::chrome::build_side_rail_lines;
 use super::shared::clamp_scroll;
 use super::theme::palette;
 use super::transcript::render_transcript;
@@ -7,31 +6,16 @@ use super::view::{
     build_inspector_text, build_statusline_picker_text, build_theme_picker_text,
     build_thinking_effort_picker_text, should_render_view_title,
 };
-use ratatui::layout::{Constraint, Margin, Rect};
-use ratatui::style::Style;
+use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 
 pub(super) fn render_main_pane(frame: &mut ratatui::Frame<'_>, area: Rect, state: &TuiState) {
     match state.main_pane {
         MainPaneMode::Transcript => render_transcript(frame, area, state),
         MainPaneMode::View => render_main_view(frame, area, state),
     }
-}
-
-pub(super) fn render_side_rail(frame: &mut ratatui::Frame<'_>, area: Rect, state: &TuiState) {
-    frame.render_widget(
-        Block::default().style(Style::default().bg(palette().main_bg)),
-        area,
-    );
-    let inner = area.inner(Margin {
-        vertical: 0,
-        horizontal: 1,
-    });
-    let rail = Paragraph::new(Text::from(build_side_rail_lines(state)))
-        .wrap(Wrap { trim: false })
-        .style(Style::default().fg(palette().text).bg(palette().main_bg));
-    frame.render_widget(rail, inner);
 }
 
 pub(super) fn bottom_band_inner_area(area: Rect) -> Rect {
@@ -71,45 +55,156 @@ fn render_main_view(frame: &mut ratatui::Frame<'_>, area: Rect, state: &TuiState
         Block::default().style(Style::default().bg(palette().main_bg)),
         area,
     );
-    let inner = area.inner(Margin {
-        vertical: 0,
-        horizontal: 2,
-    });
     let title = if state.inspector_title.is_empty() {
         "View"
     } else {
         state.inspector_title.as_str()
     };
-    let text = if let Some(picker) = state.statusline_picker.as_ref() {
-        build_statusline_picker_text(&state.session.statusline, picker)
-    } else if let Some(picker) = state.thinking_effort_picker.as_ref() {
-        build_thinking_effort_picker_text(
-            state.session.model_reasoning_effort.as_deref(),
-            &state.session.supported_model_reasoning_efforts,
-            picker,
-        )
-    } else if let Some(picker) = state.theme_picker.as_ref() {
-        build_theme_picker_text(&state.theme, &state.themes, picker)
-    } else {
-        let mut lines = Vec::new();
-        if should_render_view_title(title, &state.inspector) {
-            lines.push(Line::from(Span::styled(
-                title.to_string(),
-                Style::default().fg(palette().muted),
-            )));
-            lines.push(Line::raw(""));
-        }
-        lines.extend(build_inspector_text(title, &state.inspector).lines);
-        Text::from(lines)
-    };
-    let scroll = clamp_scroll(
-        state.inspector_scroll,
-        text.lines.len().max(1),
-        inner.height,
-    );
+
+    if let Some(picker) = state.statusline_picker.as_ref() {
+        render_standard_main_view(
+            frame,
+            area,
+            build_statusline_picker_text(&state.session.statusline, picker),
+            state.inspector_scroll,
+        );
+        return;
+    }
+
+    if let Some(picker) = state.thinking_effort_picker.as_ref() {
+        render_standard_main_view(
+            frame,
+            area,
+            build_thinking_effort_picker_text(
+                state.session.model_reasoning_effort.as_deref(),
+                &state.session.supported_model_reasoning_efforts,
+                picker,
+            ),
+            state.inspector_scroll,
+        );
+        return;
+    }
+
+    if let Some(picker) = state.theme_picker.as_ref() {
+        render_standard_main_view(
+            frame,
+            area,
+            build_theme_picker_text(&state.theme, &state.themes, picker),
+            state.inspector_scroll,
+        );
+        return;
+    }
+
+    if title.starts_with("Command Palette") {
+        render_command_palette_modal(
+            frame,
+            area,
+            title,
+            build_inspector_text(title, &state.inspector),
+            state.inspector_scroll,
+        );
+        return;
+    }
+
+    let mut lines = Vec::new();
+    if should_render_view_title(title, &state.inspector) {
+        lines.push(Line::from(Span::styled(
+            title.to_string(),
+            Style::default().fg(palette().muted),
+        )));
+        lines.push(Line::raw(""));
+    }
+    lines.extend(build_inspector_text(title, &state.inspector).lines);
+    render_standard_main_view(frame, area, Text::from(lines), state.inspector_scroll);
+}
+
+fn render_standard_main_view(
+    frame: &mut ratatui::Frame<'_>,
+    area: Rect,
+    text: Text<'static>,
+    scroll_state: u16,
+) {
+    let inner = area.inner(Margin {
+        vertical: 0,
+        horizontal: 2,
+    });
+    let scroll = clamp_scroll(scroll_state, text.lines.len().max(1), inner.height);
     let view = Paragraph::new(text)
         .scroll((scroll, 0))
         .wrap(Wrap { trim: false })
         .style(Style::default().fg(palette().text).bg(palette().main_bg));
     frame.render_widget(view, inner);
+}
+
+fn render_command_palette_modal(
+    frame: &mut ratatui::Frame<'_>,
+    area: Rect,
+    title: &str,
+    text: Text<'static>,
+    scroll_state: u16,
+) {
+    let popup = centered_rect(area, 76, 74);
+    frame.render_widget(Clear, popup);
+    frame.render_widget(
+        Block::default()
+            .title(format!(" {title} "))
+            .title_style(
+                Style::default()
+                    .fg(palette().header)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(palette().border_active))
+            .style(Style::default().bg(palette().footer_bg)),
+        popup,
+    );
+    let inner = popup.inner(Margin {
+        vertical: 1,
+        horizontal: 2,
+    });
+    let sections = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(6), Constraint::Length(1)])
+        .split(inner);
+    let scroll = clamp_scroll(scroll_state, text.lines.len().max(1), sections[0].height);
+    frame.render_widget(
+        Paragraph::new(text)
+            .scroll((scroll, 0))
+            .wrap(Wrap { trim: false })
+            .style(Style::default().fg(palette().text).bg(palette().footer_bg)),
+        sections[0],
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("esc", Style::default().fg(palette().accent)),
+            Span::styled(" close", Style::default().fg(palette().muted)),
+            Span::styled(" · ", Style::default().fg(palette().subtle)),
+            Span::styled("↑↓", Style::default().fg(palette().accent)),
+            Span::styled(" scroll", Style::default().fg(palette().muted)),
+            Span::styled(" · ", Style::default().fg(palette().subtle)),
+            Span::styled("/help query", Style::default().fg(palette().accent)),
+            Span::styled(" filter", Style::default().fg(palette().muted)),
+        ]))
+        .style(Style::default().bg(palette().footer_bg)),
+        sections[1],
+    );
+}
+
+fn centered_rect(area: Rect, width_percent: u16, height_percent: u16) -> Rect {
+    let vertical = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage((100_u16.saturating_sub(height_percent)) / 2),
+            Constraint::Percentage(height_percent),
+            Constraint::Percentage((100_u16.saturating_sub(height_percent)) / 2),
+        ])
+        .split(area);
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage((100_u16.saturating_sub(width_percent)) / 2),
+            Constraint::Percentage(width_percent),
+            Constraint::Percentage((100_u16.saturating_sub(width_percent)) / 2),
+        ])
+        .split(vertical[1])[1]
 }

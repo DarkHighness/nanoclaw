@@ -210,13 +210,7 @@ pub(super) fn render_tool_entry(
     if let Some(animated) = render_animated_tool_status_line(entry, marker, kind, animation_frame) {
         rendered.push(animated);
     } else if !entry.headline.trim().is_empty() {
-        rendered.push(render_transcript_body_line(
-            &entry.headline,
-            marker,
-            kind,
-            false,
-            true,
-        ));
+        rendered.push(render_tool_status_line(entry));
     }
 
     for detail in &entry.detail_lines {
@@ -419,14 +413,11 @@ fn render_animated_tool_status_line(
     animation_frame: Option<u128>,
 ) -> Option<Line<'static>> {
     let frame_ms = animation_frame?;
-    let (status, remainder, accent) = tool_status_phrase(entry)?;
-    let mut spans = animated_status_phrase_spans(status, frame_ms, accent);
-    if !remainder.is_empty() {
-        spans.push(Span::styled(
-            remainder,
-            transcript_body_style(marker, kind, &entry.headline),
-        ));
-    }
+    let _ = (marker, kind);
+    let (status_label, accent) = tool_status_label(entry.status);
+    let mut spans = tool_headline_prefix_spans(&entry.tool_name);
+    spans.push(Span::styled(" · ", Style::default().fg(palette().subtle)));
+    spans.extend(animated_status_phrase_spans(status_label, frame_ms, accent));
     Some(Line::from(spans))
 }
 
@@ -530,10 +521,11 @@ fn render_tool_detail(detail: &ToolDetail, kind: TranscriptEntryKind) -> Vec<Lin
     match detail {
         ToolDetail::Command(command) => vec![detail_line(
             false,
-            vec![Span::styled(
-                command.clone(),
-                Style::default().fg(palette().user),
-            )],
+            vec![
+                Span::styled("cmd", Style::default().fg(palette().subtle)),
+                Span::styled(" ", Style::default().fg(palette().subtle)),
+                Span::styled(command.clone(), Style::default().fg(palette().user)),
+            ],
         )],
         ToolDetail::Meta(text) => vec![detail_line(
             false,
@@ -611,6 +603,30 @@ fn render_named_tool_block(
     lines: &[String],
 ) -> Vec<Line<'static>> {
     render_named_shell_block(label, block_kind.into(), lines)
+}
+
+fn render_tool_status_line(entry: &TranscriptToolEntry) -> Line<'static> {
+    let (status_label, accent) = tool_status_label(entry.status);
+    let mut spans = tool_headline_prefix_spans(&entry.tool_name);
+    spans.push(Span::styled(" · ", Style::default().fg(palette().subtle)));
+    spans.push(Span::styled(
+        status_label.to_string(),
+        Style::default().fg(accent).add_modifier(Modifier::BOLD),
+    ));
+    Line::from(spans)
+}
+
+fn tool_headline_prefix_spans(tool_name: &str) -> Vec<Span<'static>> {
+    vec![
+        Span::styled("tool", Style::default().fg(palette().subtle)),
+        Span::raw(" "),
+        Span::styled(
+            tool_name.to_string(),
+            Style::default()
+                .fg(palette().header)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ]
 }
 
 fn detail_line(continuation: bool, mut spans: Vec<Span<'static>>) -> Line<'static> {
@@ -1096,38 +1112,16 @@ pub(super) fn summary_color(line: &str) -> Color {
     }
 }
 
-fn tool_status_phrase(entry: &TranscriptToolEntry) -> Option<(&'static str, String, Color)> {
-    match entry.status {
-        TranscriptToolStatus::WaitingApproval => Some((
-            "Awaiting approval",
-            format!(" for {}", entry.tool_name),
-            palette().warn,
-        )),
-        TranscriptToolStatus::Requested => {
-            Some(("Requested", format!(" {}", entry.tool_name), palette().warn))
-        }
-        TranscriptToolStatus::Running => {
-            Some(("Running", format!(" {}", entry.tool_name), palette().user))
-        }
-        TranscriptToolStatus::Finished => Some((
-            "Finished",
-            format!(" {}", entry.tool_name),
-            palette().assistant,
-        )),
-        TranscriptToolStatus::Approved => Some((
-            "Approved",
-            format!(" {}", entry.tool_name),
-            palette().assistant,
-        )),
-        TranscriptToolStatus::Denied => {
-            Some(("Denied", format!(" {}", entry.tool_name), palette().error))
-        }
-        TranscriptToolStatus::Cancelled => Some((
-            "Cancelled",
-            format!(" {}", entry.tool_name),
-            palette().error,
-        )),
-        TranscriptToolStatus::Failed => None,
+fn tool_status_label(status: TranscriptToolStatus) -> (&'static str, Color) {
+    match status {
+        TranscriptToolStatus::WaitingApproval => ("awaiting approval", palette().warn),
+        TranscriptToolStatus::Requested => ("requested", palette().warn),
+        TranscriptToolStatus::Running => ("running", palette().user),
+        TranscriptToolStatus::Finished => ("finished", palette().assistant),
+        TranscriptToolStatus::Approved => ("approved", palette().assistant),
+        TranscriptToolStatus::Denied => ("denied", palette().error),
+        TranscriptToolStatus::Cancelled => ("cancelled", palette().error),
+        TranscriptToolStatus::Failed => ("failed", palette().error),
     }
 }
 

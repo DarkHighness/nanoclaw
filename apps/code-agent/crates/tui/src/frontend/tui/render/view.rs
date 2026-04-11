@@ -46,16 +46,22 @@ pub(super) fn build_command_palette_text(lines: &[InspectorEntry]) -> Text<'stat
                 if !rendered.is_empty() {
                     rendered.push(Line::raw(""));
                 }
-                rendered.push(Line::from(Span::styled(
-                    section.clone(),
-                    Style::default().fg(palette().muted),
-                )));
+                rendered.push(Line::from(vec![
+                    Span::styled("section", Style::default().fg(palette().subtle)),
+                    Span::styled(" · ", Style::default().fg(palette().subtle)),
+                    Span::styled(
+                        section.clone(),
+                        Style::default()
+                            .fg(palette().header)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                ]));
             }
             InspectorEntry::CollectionItem { primary, secondary } => {
-                rendered.push(command_palette_line(primary, secondary.as_deref()));
+                rendered.extend(command_palette_item_lines(primary, secondary.as_deref()));
             }
             InspectorEntry::Command(command) => {
-                rendered.push(command_palette_line(command, None));
+                rendered.extend(command_palette_item_lines(command, None));
             }
             InspectorEntry::Muted(line) => rendered.push(Line::from(Span::styled(
                 line.clone(),
@@ -66,7 +72,7 @@ pub(super) fn build_command_palette_text(lines: &[InspectorEntry]) -> Text<'stat
                 Style::default().fg(palette().text),
             ))),
             InspectorEntry::Field { key, value } => {
-                rendered.push(command_palette_line(key, Some(value)));
+                rendered.extend(command_palette_item_lines(key, Some(value)));
             }
             InspectorEntry::Transcript(entry) => {
                 rendered.extend(super::transcript::format_transcript_cell(entry));
@@ -77,12 +83,12 @@ pub(super) fn build_command_palette_text(lines: &[InspectorEntry]) -> Text<'stat
     Text::from(rendered)
 }
 
-fn command_palette_line(command: &str, summary: Option<&str>) -> Line<'static> {
-    let mut spans = vec![
+fn command_palette_item_lines(command: &str, summary: Option<&str>) -> Vec<Line<'static>> {
+    let mut lines = vec![Line::from(vec![
         Span::styled(
             "›",
             Style::default()
-                .fg(palette().user)
+                .fg(palette().accent)
                 .add_modifier(Modifier::BOLD),
         ),
         Span::raw(" "),
@@ -92,17 +98,19 @@ fn command_palette_line(command: &str, summary: Option<&str>) -> Line<'static> {
                 .fg(palette().header)
                 .add_modifier(Modifier::BOLD),
         ),
-    ];
+    ])];
     if let Some(summary) = summary
         && !summary.trim().is_empty()
     {
-        spans.push(Span::styled("  ", Style::default().fg(palette().subtle)));
-        spans.push(Span::styled(
-            summary.to_string(),
-            Style::default().fg(palette().muted),
-        ));
+        lines.push(Line::from(vec![
+            Span::styled("  ", Style::default().fg(palette().subtle)),
+            Span::styled(
+                summary.trim().to_string(),
+                Style::default().fg(palette().muted),
+            ),
+        ]));
     }
-    Line::from(spans)
+    lines
 }
 
 fn render_key_value_entry(entry: &InspectorEntry, is_first: bool) -> Vec<Line<'static>> {

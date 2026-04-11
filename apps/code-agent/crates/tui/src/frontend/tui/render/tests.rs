@@ -1,13 +1,12 @@
 use super::chrome::{
     approval_preview_lines, build_approval_text, build_composer_line, build_composer_text,
-    build_side_rail_lines, build_user_input_text, composer_height,
+    build_user_input_text, composer_height, should_render_side_rail,
 };
 use super::history_rollback_overlay::{
     build_history_rollback_list_text, build_history_rollback_preview_text,
 };
 use super::main_pane_viewport_height;
 use super::picker::build_command_hint_text;
-use super::should_render_side_rail;
 use super::statusline::{format_footer_context, format_toast_line, toast_height};
 use super::transcript::TranscriptEntryKind;
 use super::transcript::build_transcript_lines;
@@ -148,7 +147,7 @@ fn transcript_separates_assistant_and_tool_entries_with_breathing_room() {
 
     assert_eq!(line_text_for(&rendered[0]), "• assistant reply");
     assert!(line_text_for(&rendered[1]).is_empty());
-    assert_eq!(line_text_for(&rendered[2]), "• Running exec_command");
+    assert_eq!(line_text_for(&rendered[2]), "• tool exec_command · running");
     assert!(
         rendered
             .iter()
@@ -167,9 +166,8 @@ fn transcript_collapses_tool_details_by_default() {
     let rendered = build_transcript_lines(&state);
 
     assert!(rendered.iter().any(|line| {
-        line.spans
-            .iter()
-            .any(|span| span.content.as_ref().contains("Finished exec_command"))
+        let text = line_text_for(line);
+        text.contains("tool exec_command") && text.contains("finished")
     }));
     assert!(rendered.iter().any(|line| {
         line.spans
@@ -972,15 +970,16 @@ fn command_palette_text_matches_picker_style() {
         collection_entry("/sessions [query]", "browse persisted sessions"),
     ]);
 
-    assert_eq!(rendered.lines[0].spans[0].content.as_ref(), "Session");
+    assert_eq!(rendered.lines[0].spans[0].content.as_ref(), "section");
+    assert_eq!(rendered.lines[0].spans[2].content.as_ref(), "Session");
     assert_eq!(rendered.lines[1].spans[0].content.as_ref(), "›");
     assert_eq!(rendered.lines[1].spans[2].content.as_ref(), "/help [query]");
     assert_eq!(
-        rendered.lines[1].spans[4].content.as_ref(),
+        rendered.lines[2].spans[1].content.as_ref(),
         "browse commands"
     );
     assert_eq!(
-        rendered.lines[2].spans[2].content.as_ref(),
+        rendered.lines[3].spans[2].content.as_ref(),
         "/sessions [query]"
     );
 }
@@ -1048,7 +1047,7 @@ fn transcript_hides_progress_line_while_tool_cell_is_active() {
 
     let running_count = rendered
         .iter()
-        .filter(|line| line_text_for(line).contains("Running exec_command"))
+        .filter(|line| line_text_for(line).contains("tool exec_command · running"))
         .count();
     assert_eq!(running_count, 1);
     assert!(
@@ -1092,7 +1091,7 @@ fn transcript_merges_pending_controls_into_the_active_tool_timeline_cell() {
 
     let running_count = rendered
         .iter()
-        .filter(|line| line_text_for(line).contains("Running exec_command"))
+        .filter(|line| line_text_for(line).contains("tool exec_command · running"))
         .count();
     assert_eq!(running_count, 1);
     let queued_headline = rendered
@@ -1626,95 +1625,15 @@ fn text_lines(text: &ratatui::text::Text<'_>) -> Vec<String> {
 }
 
 #[test]
-fn side_rail_surfaces_plan_and_lsp_summary() {
+fn side_rail_stays_disabled_even_when_transcript_has_live_context() {
     let mut state = TuiState::default();
     state.main_pane = MainPaneMode::Transcript;
     state.session.tool_names = vec!["code_symbol_search".to_string()];
-    state.session.startup_diagnostics.diagnostics = vec!["rust-analyzer attached".to_string()];
-    state.plan_items = vec![
-        PlanEntry {
-            id: "t1".to_string(),
-            content: "Refine transcript".to_string(),
-            status: "in_progress".to_string(),
-        },
-        PlanEntry {
-            id: "t2".to_string(),
-            content: "Tighten command palette".to_string(),
-            status: "pending".to_string(),
-        },
-        PlanEntry {
-            id: "t3".to_string(),
-            content: "Finish diagnostics".to_string(),
-            status: "completed".to_string(),
-        },
-    ];
-
-    let lines = build_side_rail_lines(&state);
-
-    assert!(line_text_for(&lines[0]).contains("LSP"));
-    assert!(lines.iter().any(|line| {
-        line.spans
-            .iter()
-            .any(|span| span.content.as_ref().contains("0 warnings · 1 diagnostics"))
-    }));
-    assert!(lines.iter().any(|line| {
-        line.spans
-            .iter()
-            .any(|span| span.content.as_ref().contains("rust-analyzer attached"))
-    }));
-    assert!(lines.iter().any(|line| {
-        line.spans.iter().any(|span| {
-            span.content
-                .as_ref()
-                .contains("1 active · 1 pending · 1 done")
-        })
-    }));
-    assert!(lines.iter().any(|line| {
-        line.spans
-            .iter()
-            .any(|span| span.content.as_ref().contains("Refine transcript"))
-    }));
-}
-
-#[test]
-fn side_rail_surfaces_execution_snapshot() {
-    let mut state = TuiState::default();
-    state.main_pane = MainPaneMode::Transcript;
-    state.execution = Some(ExecutionEntry {
-        scope_label: "root session".to_string(),
-        status: "verifying".to_string(),
-        summary: "Run targeted code-intel regression tests".to_string(),
-        next_action: Some("Inspect hover snapshots".to_string()),
-        verification: Some("cargo test -p tools code_intel".to_string()),
-        blocker: None,
-    });
-
-    let lines = build_side_rail_lines(&state);
-
-    assert!(lines.iter().any(|line| {
-        line.spans
-            .iter()
-            .any(|span| span.content.as_ref().contains("Execution"))
-    }));
-    assert!(lines.iter().any(|line| {
-        line.spans
-            .iter()
-            .any(|span| span.content.as_ref().contains("verifying"))
-    }));
-    assert!(lines.iter().any(|line| {
-        line.spans.iter().any(|span| {
-            span.content
-                .as_ref()
-                .contains("Run targeted code-intel regression tests")
-        })
-    }));
-}
-
-#[test]
-fn side_rail_stays_hidden_for_non_transcript_views() {
-    let mut state = TuiState::default();
-    state.main_pane = MainPaneMode::View;
-    state.session.tool_names = vec!["code_symbol_search".to_string()];
+    state.plan_items = vec![PlanEntry {
+        id: "t1".to_string(),
+        content: "Refine transcript".to_string(),
+        status: "in_progress".to_string(),
+    }];
 
     assert!(!should_render_side_rail(
         &state,
