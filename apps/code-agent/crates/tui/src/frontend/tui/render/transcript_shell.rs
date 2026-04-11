@@ -415,9 +415,11 @@ fn render_animated_tool_status_line(
     let frame_ms = animation_frame?;
     let _ = (marker, kind);
     let (status_label, accent) = tool_status_label(entry.status);
-    let mut spans = tool_headline_prefix_spans(&entry.tool_name);
-    spans.push(Span::styled(" · ", Style::default().fg(palette().subtle)));
+    let mut spans = tool_name_spans(&entry.tool_name);
+    spans.push(Span::styled(" ", Style::default().fg(palette().subtle)));
+    spans.push(Span::styled("[", Style::default().fg(palette().subtle)));
     spans.extend(animated_status_phrase_spans(status_label, frame_ms, accent));
+    spans.push(Span::styled("]", Style::default().fg(palette().subtle)));
     Some(Line::from(spans))
 }
 
@@ -521,17 +523,17 @@ fn render_tool_detail(detail: &ToolDetail, kind: TranscriptEntryKind) -> Vec<Lin
     match detail {
         ToolDetail::Command(command) => vec![detail_line(
             false,
-            vec![
-                Span::styled("cmd", Style::default().fg(palette().subtle)),
-                Span::styled(" ", Style::default().fg(palette().subtle)),
-                Span::styled(command.clone(), Style::default().fg(palette().user)),
-            ],
+            labeled_detail_spans("command", palette().accent, vec![code_span(command)]),
         )],
         ToolDetail::Meta(text) => vec![detail_line(
             false,
-            vec![Span::styled(text.clone(), shell_meta_style(text))],
+            labeled_detail_spans(
+                tool_meta_label(text),
+                tool_meta_label_color(text),
+                vec![Span::styled(text.clone(), shell_meta_style(text))],
+            ),
         )],
-        ToolDetail::TextBlock(lines) => render_shell_text_block(lines, kind),
+        ToolDetail::TextBlock(lines) => render_tool_text_block(lines, kind),
         ToolDetail::NamedBlock {
             label,
             kind: block_kind,
@@ -602,31 +604,58 @@ fn render_named_tool_block(
     block_kind: ToolDetailBlockKind,
     lines: &[String],
 ) -> Vec<Line<'static>> {
-    render_named_shell_block(label, block_kind.into(), lines)
+    let block_kind = TranscriptShellBlockKind::from(block_kind);
+    let mut rendered = Vec::new();
+    if let Some((first, rest)) = lines.split_first() {
+        rendered.push(detail_line(
+            false,
+            labeled_detail_spans(
+                label,
+                shell_block_label_style(block_kind)
+                    .fg
+                    .unwrap_or(palette().text),
+                vec![tool_block_span(first, block_kind)],
+            ),
+        ));
+        rendered.extend(
+            rest.iter()
+                .map(|line| detail_line(true, vec![tool_block_span(line, block_kind)])),
+        );
+    } else {
+        rendered.push(detail_line(
+            false,
+            labeled_detail_spans(
+                label,
+                shell_block_label_style(block_kind)
+                    .fg
+                    .unwrap_or(palette().text),
+                Vec::new(),
+            ),
+        ));
+    }
+    rendered
 }
 
 fn render_tool_status_line(entry: &TranscriptToolEntry) -> Line<'static> {
     let (status_label, accent) = tool_status_label(entry.status);
-    let mut spans = tool_headline_prefix_spans(&entry.tool_name);
-    spans.push(Span::styled(" · ", Style::default().fg(palette().subtle)));
+    let mut spans = tool_name_spans(&entry.tool_name);
+    spans.push(Span::styled(" ", Style::default().fg(palette().subtle)));
+    spans.push(Span::styled("[", Style::default().fg(palette().subtle)));
     spans.push(Span::styled(
         status_label.to_string(),
         Style::default().fg(accent).add_modifier(Modifier::BOLD),
     ));
+    spans.push(Span::styled("]", Style::default().fg(palette().subtle)));
     Line::from(spans)
 }
 
-fn tool_headline_prefix_spans(tool_name: &str) -> Vec<Span<'static>> {
-    vec![
-        Span::styled("tool", Style::default().fg(palette().subtle)),
-        Span::raw(" "),
-        Span::styled(
-            tool_name.to_string(),
-            Style::default()
-                .fg(palette().header)
-                .add_modifier(Modifier::BOLD),
-        ),
-    ]
+fn tool_name_spans(tool_name: &str) -> Vec<Span<'static>> {
+    vec![Span::styled(
+        tool_name.to_string(),
+        Style::default()
+            .fg(palette().header)
+            .add_modifier(Modifier::BOLD),
+    )]
 }
 
 fn detail_line(continuation: bool, mut spans: Vec<Span<'static>>) -> Line<'static> {
@@ -636,6 +665,78 @@ fn detail_line(continuation: bool, mut spans: Vec<Span<'static>>) -> Line<'stati
         Span::styled(prefix.to_string(), Style::default().fg(palette().subtle)),
     );
     Line::from(spans)
+}
+
+fn labeled_detail_spans(
+    label: &str,
+    label_color: Color,
+    mut body: Vec<Span<'static>>,
+) -> Vec<Span<'static>> {
+    let mut spans = vec![Span::styled(
+        format!("{label:<8}"),
+        Style::default()
+            .fg(label_color)
+            .add_modifier(Modifier::BOLD),
+    )];
+    if !body.is_empty() {
+        spans.push(Span::raw(" "));
+        spans.append(&mut body);
+    }
+    spans
+}
+
+fn render_tool_text_block(lines: &[String], kind: TranscriptEntryKind) -> Vec<Line<'static>> {
+    let mut rendered = Vec::new();
+    if let Some((first, rest)) = lines.split_first() {
+        rendered.push(detail_line(
+            false,
+            labeled_detail_spans(
+                "output",
+                palette().muted,
+                vec![Span::styled(
+                    first.clone(),
+                    Style::default().fg(shell_block_line_style(kind).fg.unwrap_or(palette().text)),
+                )],
+            ),
+        ));
+        rendered.extend(rest.iter().map(|line| {
+            detail_line(
+                true,
+                vec![Span::styled(line.clone(), shell_block_line_style(kind))],
+            )
+        }));
+    }
+    rendered
+}
+
+fn tool_meta_label(text: &str) -> &'static str {
+    if text.starts_with("exit ") || text == "timed out" || text == "cancelled" {
+        "result"
+    } else {
+        "note"
+    }
+}
+
+fn tool_meta_label_color(text: &str) -> Color {
+    if text.starts_with("exit ") {
+        shell_meta_style(text).fg.unwrap_or(palette().text)
+    } else if text == "timed out" || text == "cancelled" {
+        palette().warn
+    } else {
+        palette().subtle
+    }
+}
+
+fn tool_block_span(line: &str, kind: TranscriptShellBlockKind) -> Span<'static> {
+    match kind {
+        TranscriptShellBlockKind::Diff => code_span(line),
+        TranscriptShellBlockKind::Stderr => {
+            Span::styled(line.to_string(), Style::default().fg(palette().error))
+        }
+        TranscriptShellBlockKind::Stdout => {
+            Span::styled(line.to_string(), Style::default().fg(palette().text))
+        }
+    }
 }
 
 fn shell_meta_style(text: &str) -> Style {

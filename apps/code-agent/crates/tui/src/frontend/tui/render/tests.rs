@@ -147,7 +147,7 @@ fn transcript_separates_assistant_and_tool_entries_with_breathing_room() {
 
     assert_eq!(line_text_for(&rendered[0]), "• assistant reply");
     assert!(line_text_for(&rendered[1]).is_empty());
-    assert_eq!(line_text_for(&rendered[2]), "• tool exec_command · running");
+    assert_eq!(line_text_for(&rendered[2]), "• exec_command [running]");
     assert!(
         rendered
             .iter()
@@ -167,7 +167,7 @@ fn transcript_collapses_tool_details_by_default() {
 
     assert!(rendered.iter().any(|line| {
         let text = line_text_for(line);
-        text.contains("tool exec_command") && text.contains("finished")
+        text.contains("exec_command") && text.contains("[finished]")
     }));
     assert!(rendered.iter().any(|line| {
         line.spans
@@ -1047,7 +1047,7 @@ fn transcript_hides_progress_line_while_tool_cell_is_active() {
 
     let running_count = rendered
         .iter()
-        .filter(|line| line_text_for(line).contains("tool exec_command · running"))
+        .filter(|line| line_text_for(line).contains("exec_command [running]"))
         .count();
     assert_eq!(running_count, 1);
     assert!(
@@ -1091,7 +1091,7 @@ fn transcript_merges_pending_controls_into_the_active_tool_timeline_cell() {
 
     let running_count = rendered
         .iter()
-        .filter(|line| line_text_for(line).contains("tool exec_command · running"))
+        .filter(|line| line_text_for(line).contains("exec_command [running]"))
         .count();
     assert_eq!(running_count, 1);
     let queued_headline = rendered
@@ -1647,7 +1647,7 @@ fn side_rail_stays_disabled_even_when_transcript_has_live_context() {
 }
 
 #[test]
-fn approval_band_uses_structured_command_preview() {
+fn approval_modal_uses_structured_command_preview() {
     let text = build_approval_text(&ApprovalPrompt {
         tool_name: "exec_command".to_string(),
         origin: "local".to_string(),
@@ -1658,16 +1658,19 @@ fn approval_band_uses_structured_command_preview() {
         reasons: vec!["sandbox policy requires approval".to_string()],
     });
 
-    assert!(line_text_for(&text.lines[0]).contains("Approve exec_command?"));
-    assert!(
-        text.lines[1]
-            .spans
-            .iter()
-            .any(|span| { span.content.as_ref().contains("/workspace/apps/code-agent") })
-    );
+    assert!(line_text_for(&text.lines[0]).contains("approval required"));
+    assert!(line_text_for(&text.lines[0]).contains("exec_command"));
+    assert!(line_text_for(&text.lines[1]).contains("context"));
+    assert!(line_text_for(&text.lines[1]).contains("/workspace/apps/code-agent"));
+    assert!(line_text_for(&text.lines[1]).contains("run"));
     assert!(!line_text_for(&text.lines[1]).contains("local"));
-    assert_eq!(text.lines[2].spans[0].content.as_ref(), "command");
-    assert_eq!(text.lines[4].spans[0].content.as_ref(), "why");
+    assert!(line_text_for(&text.lines[2]).contains("command"));
+    assert!(line_text_for(&text.lines[3]).contains("reason"));
+    assert!(
+        text.lines
+            .iter()
+            .any(|line| line_text_for(line).contains("keys"))
+    );
     assert!(text.lines.iter().any(|line| {
         line.spans
             .iter()
@@ -1683,7 +1686,7 @@ fn approval_band_uses_structured_command_preview() {
 }
 
 #[test]
-fn approval_band_hides_local_origin_when_it_adds_no_operator_value() {
+fn approval_modal_hides_local_origin_when_it_adds_no_operator_value() {
     let text = build_approval_text(&ApprovalPrompt {
         tool_name: "write".to_string(),
         origin: "local".to_string(),
@@ -1694,8 +1697,9 @@ fn approval_band_hides_local_origin_when_it_adds_no_operator_value() {
         reasons: vec!["needs approval".to_string()],
     });
 
-    assert!(line_text_for(&text.lines[0]).contains("Approve write?"));
-    assert_eq!(text.lines[1].spans[0].content.as_ref(), "arguments");
+    assert!(line_text_for(&text.lines[0]).contains("approval required"));
+    assert!(line_text_for(&text.lines[0]).contains("write"));
+    assert!(line_text_for(&text.lines[1]).contains("arguments"));
     assert!(
         text.lines
             .iter()
@@ -1986,6 +1990,25 @@ fn main_pane_viewport_height_does_not_reserve_top_header_space() {
     let area = Rect::new(0, 0, 120, 30);
 
     let viewport = main_pane_viewport_height(area, &state, None, None, None);
+
+    assert_eq!(viewport, 30 - composer_height(&state, None) - 1);
+}
+
+#[test]
+fn main_pane_viewport_height_does_not_shrink_for_approval_modal() {
+    let state = TuiState::default();
+    let area = Rect::new(0, 0, 120, 30);
+    let approval = ApprovalPrompt {
+        tool_name: "exec_command".to_string(),
+        origin: "local".to_string(),
+        mode: None,
+        working_directory: None,
+        content_label: "command".to_string(),
+        content_preview: vec!["$ cargo test".to_string()],
+        reasons: vec!["sandbox policy requires approval".to_string()],
+    };
+
+    let viewport = main_pane_viewport_height(area, &state, Some(&approval), None, None);
 
     assert_eq!(viewport, 30 - composer_height(&state, None) - 1);
 }

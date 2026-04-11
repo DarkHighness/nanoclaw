@@ -19,9 +19,9 @@ use super::commands::slash_command_hint;
 use super::state::TuiState;
 use crate::interaction::PermissionRequestPrompt;
 use chrome::{
-    approval_band_height, composer_cursor_position, composer_height,
-    permission_request_band_height, render_approval_band, render_composer,
-    render_permission_request_band, render_user_input_band, user_input_band_height,
+    composer_cursor_position, composer_height, permission_request_band_height,
+    render_approval_modal, render_composer, render_permission_request_band, render_user_input_band,
+    user_input_band_height,
 };
 use history_rollback_overlay::render_history_rollback_overlay;
 use picker::{
@@ -48,18 +48,17 @@ pub(crate) fn render(
         area,
     );
 
-    let prompt_height = approval
-        .map(approval_band_height)
-        .or_else(|| permission_request.map(permission_request_band_height))
+    let approval_active = approval.is_some();
+    let prompt_height = permission_request
+        .map(permission_request_band_height)
         .or_else(|| user_input.map(user_input_band_height));
-    let pending_height =
-        if approval.is_none() && permission_request.is_none() && user_input.is_none() {
-            pending_control_height(state)
-        } else {
-            None
-        };
-    let command_hint = if approval.is_none() && permission_request.is_none() && user_input.is_none()
+    let pending_height = if !approval_active && permission_request.is_none() && user_input.is_none()
     {
+        pending_control_height(state)
+    } else {
+        None
+    };
+    let command_hint = if !approval_active && permission_request.is_none() && user_input.is_none() {
         slash_command_hint(&state.input, state.command_completion_index)
     } else {
         None
@@ -104,9 +103,7 @@ pub(crate) fn render(
     let status_area = vertical[next_index + 1];
 
     render_main_pane(frame, main_area, state);
-    if let Some(approval) = approval {
-        render_approval_band(frame, prompt_area.expect("approval area"), approval);
-    } else if let Some(permission_request) = permission_request {
+    if let Some(permission_request) = permission_request {
         render_permission_request_band(
             frame,
             prompt_area.expect("permission request area"),
@@ -130,11 +127,14 @@ pub(crate) fn render(
     }
     render_composer(frame, composer_area, state, user_input);
     render_status_line(frame, status_area, state);
+    if let Some(approval) = approval {
+        render_approval_modal(frame, area, approval);
+    }
     if state.history_rollback_overlay().is_some() {
         render_history_rollback_overlay(frame, area, state);
     }
 
-    if state.history_rollback_overlay().is_none() {
+    if state.history_rollback_overlay().is_none() && approval.is_none() {
         frame.set_cursor_position(composer_cursor_position(composer_area, state, user_input));
     }
 }
@@ -146,18 +146,17 @@ pub(crate) fn main_pane_viewport_height(
     permission_request: Option<&PermissionRequestPrompt>,
     user_input: Option<&UserInputView<'_>>,
 ) -> u16 {
-    let prompt_height = approval
-        .map(approval_band_height)
-        .or_else(|| permission_request.map(permission_request_band_height))
+    let approval_active = approval.is_some();
+    let prompt_height = permission_request
+        .map(permission_request_band_height)
         .or_else(|| user_input.map(user_input_band_height));
-    let pending_height =
-        if approval.is_none() && permission_request.is_none() && user_input.is_none() {
-            pending_control_height(state)
-        } else {
-            None
-        };
-    let command_hint = if approval.is_none() && permission_request.is_none() && user_input.is_none()
+    let pending_height = if !approval_active && permission_request.is_none() && user_input.is_none()
     {
+        pending_control_height(state)
+    } else {
+        None
+    };
+    let command_hint = if !approval_active && permission_request.is_none() && user_input.is_none() {
         slash_command_hint(&state.input, state.command_completion_index)
     } else {
         None

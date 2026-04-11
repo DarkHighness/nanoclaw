@@ -10,10 +10,10 @@ use super::transcript_markdown::code_span;
 use crate::backend::preview_id;
 use crate::interaction::{PendingControlKind, PermissionProfile, PermissionRequestPrompt};
 use crate::preview::{PreviewCollapse, collapse_preview_lines};
-use ratatui::layout::{Position, Rect};
+use ratatui::layout::{Constraint, Direction, Layout, Margin, Position, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 
 const MAX_COMPOSER_HEIGHT: u16 = 6;
 
@@ -65,24 +65,34 @@ pub(super) fn composer_cursor_position(
     )
 }
 
-pub(super) fn render_approval_band(
+pub(super) fn render_approval_modal(
     frame: &mut ratatui::Frame<'_>,
     area: Rect,
     approval: &ApprovalPrompt,
 ) {
+    let popup = centered_rect(area, 76, 42);
+    frame.render_widget(Clear, popup);
     frame.render_widget(
-        Block::default().style(Style::default().bg(palette().bottom_pane_bg)),
-        area,
+        Block::default()
+            .title(" Approval ")
+            .title_style(
+                Style::default()
+                    .fg(palette().warn)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(palette().warn))
+            .style(Style::default().bg(palette().footer_bg)),
+        popup,
     );
-    let inner = bottom_band_inner_area(area);
+    let inner = popup.inner(Margin {
+        vertical: 1,
+        horizontal: 2,
+    });
     frame.render_widget(
         Paragraph::new(build_approval_text(approval))
             .wrap(Wrap { trim: false })
-            .style(
-                Style::default()
-                    .fg(palette().text)
-                    .bg(palette().bottom_pane_bg),
-            ),
+            .style(Style::default().fg(palette().text).bg(palette().footer_bg)),
         inner,
     );
 }
@@ -134,14 +144,14 @@ pub(super) fn render_permission_request_band(
 pub(super) fn build_approval_text(approval: &ApprovalPrompt) -> Text<'static> {
     let mut lines = vec![Line::from(vec![
         Span::styled(
-            "approval",
+            "approval required",
             Style::default()
                 .fg(palette().warn)
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(" · ", Style::default().fg(palette().subtle)),
         Span::styled(
-            format!("Approve {}?", approval.tool_name),
+            approval.tool_name.clone(),
             Style::default()
                 .fg(palette().header)
                 .add_modifier(Modifier::BOLD),
@@ -150,40 +160,47 @@ pub(super) fn build_approval_text(approval: &ApprovalPrompt) -> Text<'static> {
     if let Some(context) = approval_context_line(approval) {
         lines.push(context);
     }
-    lines.push(approval_section_label(&approval.content_label));
-    for line in approval_preview_lines(&approval.content_preview) {
-        lines.push(Line::from(vec![
-            Span::styled("  ", Style::default().fg(palette().subtle)),
-            code_span(&line),
-        ]));
+    for (index, line) in approval_preview_lines(&approval.content_preview)
+        .into_iter()
+        .enumerate()
+    {
+        lines.push(approval_detail_line(
+            (index == 0).then_some(approval.content_label.as_str()),
+            vec![code_span(&line)],
+        ));
     }
     if !approval.reasons.is_empty() {
-        lines.push(approval_section_label("why"));
-        lines.extend(approval.reasons.iter().take(2).map(|reason| {
-            Line::from(vec![
-                Span::styled("  • ", Style::default().fg(palette().subtle)),
-                Span::styled(
-                    preview_text(reason, 96),
-                    Style::default().fg(palette().muted),
-                ),
-            ])
-        }));
+        lines.extend(
+            approval
+                .reasons
+                .iter()
+                .take(2)
+                .enumerate()
+                .map(|(index, reason)| {
+                    approval_detail_line(
+                        (index == 0).then_some("reason"),
+                        vec![Span::styled(
+                            preview_text(reason, 96),
+                            Style::default().fg(palette().muted),
+                        )],
+                    )
+                }),
+        );
     }
-    lines.push(Line::from(vec![
-        Span::styled("y", Style::default().fg(palette().accent)),
-        Span::styled(" approve", Style::default().fg(palette().muted)),
-        Span::styled(" · ", Style::default().fg(palette().subtle)),
-        Span::styled("n", Style::default().fg(palette().error)),
-        Span::styled(" deny", Style::default().fg(palette().muted)),
-        Span::styled(" · ", Style::default().fg(palette().subtle)),
-        Span::styled("esc", Style::default().fg(palette().header)),
-        Span::styled(" dismiss", Style::default().fg(palette().muted)),
-    ]));
+    lines.push(approval_detail_line(
+        Some("keys"),
+        vec![
+            Span::styled("y", Style::default().fg(palette().accent)),
+            Span::styled(" approve", Style::default().fg(palette().muted)),
+            Span::styled(" · ", Style::default().fg(palette().subtle)),
+            Span::styled("n", Style::default().fg(palette().error)),
+            Span::styled(" deny", Style::default().fg(palette().muted)),
+            Span::styled(" · ", Style::default().fg(palette().subtle)),
+            Span::styled("esc", Style::default().fg(palette().header)),
+            Span::styled(" dismiss", Style::default().fg(palette().muted)),
+        ],
+    ));
     Text::from(lines)
-}
-
-pub(super) fn approval_band_height(approval: &ApprovalPrompt) -> u16 {
-    build_approval_text(approval).lines.len().clamp(5, 10) as u16
 }
 
 pub(super) fn permission_request_band_height(prompt: &PermissionRequestPrompt) -> u16 {
@@ -239,7 +256,46 @@ fn approval_context_line(approval: &ApprovalPrompt) -> Option<Line<'static>> {
             Style::default().fg(palette().accent),
         ));
     }
-    (!spans.is_empty()).then(|| Line::from(spans))
+    (!spans.is_empty()).then(|| approval_detail_line(Some("context"), spans))
+}
+
+fn approval_detail_line(label: Option<&str>, mut body: Vec<Span<'static>>) -> Line<'static> {
+    let mut spans = vec![Span::styled("  ", Style::default().fg(palette().subtle))];
+    if let Some(label) = label {
+        spans.push(Span::styled(
+            format!("{label:<8}"),
+            Style::default()
+                .fg(palette().muted)
+                .add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::raw(" "));
+    } else {
+        spans.push(Span::styled(
+            " ".repeat(9),
+            Style::default().fg(palette().subtle),
+        ));
+    }
+    spans.append(&mut body);
+    Line::from(spans)
+}
+
+fn centered_rect(area: Rect, width_percent: u16, height_percent: u16) -> Rect {
+    let vertical = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage((100_u16.saturating_sub(height_percent)) / 2),
+            Constraint::Percentage(height_percent),
+            Constraint::Percentage((100_u16.saturating_sub(height_percent)) / 2),
+        ])
+        .split(area);
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage((100_u16.saturating_sub(width_percent)) / 2),
+            Constraint::Percentage(width_percent),
+            Constraint::Percentage((100_u16.saturating_sub(width_percent)) / 2),
+        ])
+        .split(vertical[1])[1]
 }
 
 pub(super) fn approval_preview_lines(lines: &[String]) -> Vec<String> {
