@@ -1,43 +1,13 @@
 use super::session_history::{list_sessions, resolve_session_reference};
+use crate::ui::{LoadedTask, LoadedTaskMessage, PersistedTaskSummary};
 use agent::types::{
-    AgentArtifact, AgentEnvelope, AgentEnvelopeKind, AgentResultEnvelope, AgentStatus,
-    AgentTaskSpec, Message, SessionEventEnvelope, SessionEventKind, SessionId,
+    AgentEnvelope, AgentEnvelopeKind, AgentStatus, AgentTaskSpec, Message, SessionEventEnvelope,
+    SessionEventKind, SessionId,
 };
 use anyhow::{Result, anyhow};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use store::{SessionStore, TokenUsageRecord};
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PersistedTaskSummary {
-    pub task_id: String,
-    pub session_ref: String,
-    pub parent_agent_session_ref: String,
-    pub child_session_ref: Option<String>,
-    pub child_agent_session_ref: Option<String>,
-    pub role: String,
-    pub status: AgentStatus,
-    pub first_timestamp_ms: u128,
-    pub last_timestamp_ms: u128,
-    pub summary: String,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct LoadedTaskMessage {
-    pub message: Message,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct LoadedTask {
-    pub summary: PersistedTaskSummary,
-    pub spec: AgentTaskSpec,
-    pub child_transcript: Vec<Message>,
-    pub result: Option<AgentResultEnvelope>,
-    pub error: Option<String>,
-    pub artifacts: Vec<AgentArtifact>,
-    pub messages: Vec<LoadedTaskMessage>,
-    pub token_usage: Option<TokenUsageRecord>,
-}
 
 pub async fn list_tasks(
     store: &Arc<dyn SessionStore>,

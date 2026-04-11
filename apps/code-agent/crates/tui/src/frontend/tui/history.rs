@@ -4,16 +4,17 @@ use super::state::{
 use super::tool_state::{
     execution_update_entry_from_tool_output, plan_update_entry_from_tool_output,
 };
-use crate::backend::{
-    LiveTaskControlAction, LiveTaskControlOutcome, LiveTaskMessageAction, LiveTaskMessageOutcome,
-    LiveTaskSpawnOutcome, LiveTaskSummary, LiveTaskWaitOutcome, LoadedAgentSession, LoadedSession,
-    LoadedSubagentSession, LoadedTask, McpPromptSummary, McpResourceSummary, McpServerSummary,
-    PersistedAgentSessionSummary, PersistedSessionSearchMatch, PersistedSessionSummary,
-    PersistedTaskSummary, SessionExportArtifact, SessionExportKind, SessionOperationAction,
-    SessionOperationOutcome, StartupDiagnosticsSnapshot, message_to_text, preview_id,
-};
+use crate::backend::{message_to_text, preview_id};
 use crate::tool_render::{
     ToolDetail, tool_argument_details, tool_arguments_preview_lines, tool_output_details,
+};
+use crate::ui::{
+    LiveTaskControlAction, LiveTaskControlOutcome, LiveTaskMessageAction, LiveTaskMessageOutcome,
+    LiveTaskSpawnOutcome, LiveTaskSummary, LiveTaskWaitOutcome, LoadedAgentSession, LoadedSession,
+    LoadedSubagentSession, LoadedTask, LoadedTaskMessage, McpPromptSummary, McpResourceSummary,
+    McpServerSummary, PersistedAgentSessionSummary, PersistedSessionSearchMatch,
+    PersistedSessionSummary, PersistedTaskSummary, SessionExportArtifact, SessionExportKind,
+    SessionOperationAction, SessionOperationOutcome, StartupDiagnosticsSnapshot,
 };
 use agent::types::{
     AgentEnvelopeKind, AgentSessionId, AgentStatus, HookEvent, Message, SessionEventEnvelope,
@@ -819,7 +820,7 @@ fn format_loaded_subagent_line(subagent: &LoadedSubagentSession) -> TranscriptEn
     ))
 }
 
-fn format_task_message_line(message: &crate::backend::LoadedTaskMessage) -> TranscriptEntry {
+fn format_task_message_line(message: &LoadedTaskMessage) -> TranscriptEntry {
     TranscriptEntry::UserPrompt(preview_text(&message_to_text(&message.message), 72))
 }
 
@@ -1233,12 +1234,12 @@ mod tests {
         format_session_event_line, format_session_export_result, format_session_operation_outcome,
         format_session_search_line, format_session_summary_line,
     };
-    use crate::backend::{
+    use crate::frontend::tui::state::InspectorEntry;
+    use crate::ui::{
         LiveTaskSummary, LiveTaskWaitOutcome, PersistedAgentSessionSummary,
         PersistedSessionSearchMatch, PersistedSessionSummary, ResumeSupport, SessionExportArtifact,
         SessionExportKind, SessionOperationAction, SessionOperationOutcome, SessionStartupSnapshot,
     };
-    use crate::frontend::tui::state::InspectorEntry;
     use agent::types::{
         AgentSessionId, AgentStatus, Message, SessionEventEnvelope, SessionEventKind, SessionId,
         ToolCall, ToolCallId, ToolOrigin, ToolResult,

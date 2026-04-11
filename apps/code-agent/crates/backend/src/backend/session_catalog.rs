@@ -2,65 +2,15 @@ use crate::backend::session_resume::{
     HISTORY_ONLY_RESUME_REASON, can_resume_agent_session, reconstruct_runtime_session,
     visible_transcript,
 };
-use agent::types::{
-    AgentSessionId, SessionEventEnvelope, SessionEventKind, SessionSummaryTokenUsage,
+use crate::ui::{
+    PersistedAgentSessionSummary, PersistedSessionSearchMatch, PersistedSessionSummary,
+    ResumeSupport,
 };
+use agent::types::{AgentSessionId, SessionEventEnvelope, SessionEventKind};
 #[cfg(test)]
 use anyhow::{Result, anyhow};
 use std::collections::BTreeMap;
 use store::{SessionSearchResult, SessionSummary, replay_transcript};
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ResumeSupport {
-    AttachedToActiveRuntime,
-    Reattachable,
-    NotYetSupported { reason: String },
-}
-
-impl ResumeSupport {
-    pub fn label(&self) -> &'static str {
-        match self {
-            Self::AttachedToActiveRuntime => "attached",
-            Self::Reattachable => "reattachable",
-            Self::NotYetSupported { .. } => "history-only",
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PersistedSessionSummary {
-    pub session_ref: String,
-    pub first_timestamp_ms: u128,
-    pub last_timestamp_ms: u128,
-    pub event_count: usize,
-    pub worker_session_count: usize,
-    pub transcript_message_count: usize,
-    pub session_title: Option<String>,
-    pub last_user_prompt: Option<String>,
-    pub token_usage: Option<SessionSummaryTokenUsage>,
-    pub resume_support: ResumeSupport,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PersistedSessionSearchMatch {
-    pub summary: PersistedSessionSummary,
-    pub matched_event_count: usize,
-    pub preview_matches: Vec<String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PersistedAgentSessionSummary {
-    pub agent_session_ref: String,
-    pub session_ref: String,
-    pub label: String,
-    pub first_timestamp_ms: u128,
-    pub last_timestamp_ms: u128,
-    pub event_count: usize,
-    pub transcript_message_count: usize,
-    pub session_title: Option<String>,
-    pub last_user_prompt: Option<String>,
-    pub resume_support: ResumeSupport,
-}
 
 #[cfg(test)]
 #[derive(Clone, Debug, PartialEq, Eq)]

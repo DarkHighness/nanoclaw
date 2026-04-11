@@ -1,4 +1,5 @@
 use super::*;
+use crate::ui::HistoryRollbackOutcome;
 
 impl CodeAgentTui {
     pub(super) async fn handle_history_rollback_key(&mut self, key: KeyEvent) -> Result<bool> {
@@ -112,7 +113,10 @@ impl CodeAgentTui {
     }
 
     pub(super) async fn history_rollback_candidates(&self) -> Vec<state::HistoryRollbackCandidate> {
-        let rounds = self.session.history_rollback_rounds().await;
+        let rounds: Vec<HistoryRollbackRound> = self
+            .run_ui(UIAsyncCommand::HistoryRollbackRounds)
+            .await
+            .unwrap_or_default();
         build_history_rollback_candidates(&rounds)
     }
 
@@ -142,8 +146,9 @@ impl CodeAgentTui {
         let selected = overlay.selected;
 
         match self
-            .session
-            .rollback_visible_history_to_message(candidate.message_id.as_str())
+            .run_ui::<HistoryRollbackOutcome>(UIAsyncCommand::RollbackVisibleHistoryToMessage {
+                message_id: candidate.message_id.to_string(),
+            })
             .await
         {
             Ok(outcome) => {

@@ -97,7 +97,7 @@ These rules are the core of the new design and should be preserved.
 The first pass established package boundaries. The second pass tightened the
 frontend boundary and reduced the size of the TUI controller.
 
-- `code-agent-backend` now exposes `CodeAgentFrontendSession` as the TUI-facing
+- `code-agent-backend` now exposes `CodeAgentUiSession` as the TUI-facing
   backend adapter.
   - This keeps the raw runtime/session object as a backend concern and gives
     the shell one explicit surface to depend on.
@@ -126,12 +126,55 @@ runtime handlers translated data ad hoc.
   - This removes duplicated permission-profile mapping from multiple files.
   - It also keeps session/coordinator modules focused on runtime control rather
     than frontend shaping.
-- `CodeAgentFrontendSession` now returns contract-safe skill summaries instead
-  of leaking `agent::Skill`, and it no longer exposes unused permission runtime
+- `CodeAgentUiSession` now returns contract-safe skill summaries instead of
+  leaking `agent::Skill`, and it no longer exposes unused permission runtime
   snapshots to the TUI.
+- The UI boundary is now expressed as `UIQuery`, `UICommand`, and async
+  command/result protocol types rather than a widening method table.
+  - The TUI renders from query snapshots.
+  - Operator actions dispatch explicit commands.
+  - Background or I/O-bearing work crosses the boundary through async commands.
 
 This matters because the TUI boundary is now a deliberate host protocol, not
 whatever runtime structures happened to be convenient to forward.
+
+## Fourth-pass protocol extraction
+
+The next pass moved the operator-facing session protocol and DTOs out of
+`code-agent-backend` and into `code-agent-contracts`.
+
+- `code-agent-contracts::ui` is now the single source of truth for:
+  - session and live-task snapshots
+  - history/export DTOs
+  - MCP inspection summaries
+  - render-time event payloads
+  - `UIQuery`, `UICommand`, `UIResult`, `UIAsyncCommand`, and `UIAsyncResult`
+- `code-agent-backend` now focuses on executing that protocol through
+  `CodeAgentUiSession` rather than owning the protocol type definitions.
+- `code-agent-tui` now imports operator-facing DTOs from `contracts::ui`
+  instead of treating backend re-exports as its main type surface.
+
+This matters because the dependency direction is now explicit:
+
+- `contracts` defines what the operator shell may observe or request
+- `backend` implements those requests
+- `tui` renders and dispatches against the contract
+
+That is materially closer to a transport-safe command/query architecture than a
+wide in-process facade.
+
+## Fifth-pass session breakup
+
+The backend session root is still large, but the next pass has started turning
+it into a set of domain modules instead of one expanding host controller.
+
+- History rollback moved into `backend/session/history.rs`.
+- Live-task orchestration moved into `backend/session/live_tasks.rs`.
+- Approval, permission, and user-input control handling already live in their
+  own session submodules.
+
+This reduces one of the previous failure modes: changing operator workflows,
+runtime controls, and background-task logic in the same file.
 
 ## UI direction
 
@@ -167,9 +210,10 @@ controller. It is still not the final industrial end-state.
 
 The next refinement steps should be:
 
-- split `backend/session.rs` into domain modules such as lifecycle, history,
-  permissions, and live-task orchestration
 - split `frontend/tui/state.rs` so transcript state, composer state, and picker
   state do not evolve inside one file
-- narrow `CodeAgentFrontendSession` further so the TUI depends on a smaller
-  explicit command/query protocol instead of a wide adapter
+- continue splitting `backend/session.rs` so lifecycle, resume/catalog lookup,
+  memory refresh, and side-question handling are not co-located
+- consider moving the remaining history-load/task-load DTO formatting helpers
+  fully behind `contracts::ui`-owned adapters so the TUI only depends on
+  backend for execution surfaces

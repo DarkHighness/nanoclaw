@@ -6,8 +6,8 @@ use super::tool_state::{
     execution_state_from_tool_output, execution_update_entry_from_tool_output,
     plan_items_from_tool_output, plan_update_entry_from_tool_output,
 };
-use crate::backend::SessionEvent;
 use crate::tool_render::{ToolDetail, tool_argument_details, tool_output_details_from_preview};
+use crate::ui::{SessionEvent, SessionToolCall};
 use std::collections::HashMap;
 
 pub(crate) struct SharedRenderObserver {
@@ -306,7 +306,7 @@ impl SharedRenderObserver {
     }
 }
 
-fn requested_tool_entry(call: &crate::backend::SessionToolCall) -> TranscriptEntry {
+fn requested_tool_entry(call: &SessionToolCall) -> TranscriptEntry {
     TranscriptEntry::tool(
         TranscriptToolStatus::Requested,
         call.tool_name.clone(),
@@ -362,7 +362,7 @@ fn map_ui_toast_tone(variant: &str) -> ToastTone {
     }
 }
 
-fn denied_tool_entry(call: &crate::backend::SessionToolCall, reason: &str) -> TranscriptEntry {
+fn denied_tool_entry(call: &SessionToolCall, reason: &str) -> TranscriptEntry {
     let mut detail_lines = tool_argument_detail_lines(call);
     detail_lines.push(ToolDetail::Meta(preview_text(reason, 72)));
     TranscriptEntry::tool(
@@ -372,10 +372,7 @@ fn denied_tool_entry(call: &crate::backend::SessionToolCall, reason: &str) -> Tr
     )
 }
 
-fn waiting_tool_entry(
-    call: &crate::backend::SessionToolCall,
-    reasons: &[String],
-) -> TranscriptEntry {
+fn waiting_tool_entry(call: &SessionToolCall, reasons: &[String]) -> TranscriptEntry {
     let mut detail_lines = tool_argument_detail_lines(call);
     if let Some(reason) = reasons.first() {
         detail_lines.push(ToolDetail::Meta(preview_text(reason, 72)));
@@ -387,7 +384,7 @@ fn waiting_tool_entry(
     )
 }
 
-fn running_tool_entry(call: &crate::backend::SessionToolCall) -> TranscriptEntry {
+fn running_tool_entry(call: &SessionToolCall) -> TranscriptEntry {
     TranscriptEntry::tool(
         TranscriptToolStatus::Running,
         call.tool_name.clone(),
@@ -396,7 +393,7 @@ fn running_tool_entry(call: &crate::backend::SessionToolCall) -> TranscriptEntry
 }
 
 fn completed_tool_entry(
-    call: &crate::backend::SessionToolCall,
+    call: &SessionToolCall,
     output_preview: &str,
     structured_output_preview: Option<&str>,
 ) -> TranscriptEntry {
@@ -424,7 +421,7 @@ fn completed_tool_entry(
     )
 }
 
-fn failed_tool_entry(call: &crate::backend::SessionToolCall, error: &str) -> TranscriptEntry {
+fn failed_tool_entry(call: &SessionToolCall, error: &str) -> TranscriptEntry {
     let mut detail_lines = tool_argument_detail_lines(call);
     detail_lines.push(ToolDetail::Meta(preview_text(error, 72)));
     TranscriptEntry::tool(
@@ -434,10 +431,7 @@ fn failed_tool_entry(call: &crate::backend::SessionToolCall, error: &str) -> Tra
     )
 }
 
-fn cancelled_tool_entry(
-    call: &crate::backend::SessionToolCall,
-    reason: Option<&str>,
-) -> TranscriptEntry {
+fn cancelled_tool_entry(call: &SessionToolCall, reason: Option<&str>) -> TranscriptEntry {
     let mut detail_lines = tool_argument_detail_lines(call);
     detail_lines.push(ToolDetail::Meta(
         reason
@@ -451,7 +445,7 @@ fn cancelled_tool_entry(
     )
 }
 
-fn tool_argument_detail_lines(call: &crate::backend::SessionToolCall) -> Vec<ToolDetail> {
+fn tool_argument_detail_lines(call: &SessionToolCall) -> Vec<ToolDetail> {
     tool_argument_details(&call.arguments_preview)
 }
 
@@ -489,8 +483,8 @@ fn replace_or_push_tool_line(
 #[cfg(test)]
 mod tests {
     use super::SharedRenderObserver;
-    use crate::backend::{SessionEvent, SessionToolCall};
     use crate::frontend::tui::state::SharedUiState;
+    use crate::ui::{SessionEvent, SessionToolCall};
     use agent::types::{ContextWindowUsage, TokenLedgerSnapshot, TokenUsage, TokenUsagePhase};
     use serde_json::json;
 

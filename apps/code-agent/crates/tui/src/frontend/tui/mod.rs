@@ -11,19 +11,26 @@ mod session_shell;
 mod state;
 mod tool_state;
 
-use crate::backend::{
-    CodeAgentFrontendSession, HistoryRollbackRound, LiveTaskAttentionAction, LiveTaskControlAction,
-    LiveTaskMessageAction, LiveTaskWaitOutcome, LoadedMcpPrompt, LoadedMcpResource, SessionEvent,
-    SessionOperation, SessionOperationAction, SessionOperationOutcome, SessionStartupSnapshot,
-    SideQuestionOutcome, preview_id,
-};
+use crate::backend::{CodeAgentUiSession, preview_id};
 use crate::config::persist_tui_theme_selection;
 use crate::interaction::{
-    PermissionProfile, PermissionRequestDecision, SessionPermissionMode, UserInputAnswer,
-    UserInputPrompt, UserInputSubmission,
+    ApprovalPrompt, ModelReasoningEffortOutcome, PermissionProfile, PermissionRequestDecision,
+    PermissionRequestPrompt, SessionPermissionMode, UserInputAnswer, UserInputPrompt,
+    UserInputSubmission,
 };
 use crate::statusline::status_line_fields;
 use crate::theme::{ThemeCatalog, active_theme_id, install_theme_catalog, set_active_theme};
+use crate::ui::{
+    HistoryRollbackRound, LiveTaskAttentionAction, LiveTaskAttentionOutcome, LiveTaskControlAction,
+    LiveTaskControlOutcome, LiveTaskMessageAction, LiveTaskMessageOutcome, LiveTaskSpawnOutcome,
+    LiveTaskSummary, LiveTaskWaitOutcome, LoadedAgentSession, LoadedMcpPrompt, LoadedMcpResource,
+    LoadedSession, LoadedTask, McpPromptSummary, McpResourceSummary, McpServerSummary,
+    PersistedAgentSessionSummary, PersistedSessionSearchMatch, PersistedSessionSummary,
+    PersistedTaskSummary, SessionEvent, SessionExportArtifact, SessionOperation,
+    SessionOperationAction, SessionOperationOutcome, SessionStartupSnapshot, SideQuestionOutcome,
+    StartupDiagnosticsSnapshot, UIAsyncCommand, UIAsyncValue, UICommand, UIQuery, UIQueryValue,
+    UIResultValue,
+};
 use approval::approval_decision_for_key;
 use commands::{
     SlashCommand, SlashCommandEnterAction, command_palette_lines_for, cycle_slash_command,
@@ -85,7 +92,7 @@ use tokio::time::{Duration, sleep};
 use tracing::error;
 
 pub struct CodeAgentTui {
-    session: CodeAgentFrontendSession,
+    session: CodeAgentUiSession,
     initial_prompt: Option<String>,
     ui_state: SharedUiState,
     event_renderer: SharedRenderObserver,
@@ -147,7 +154,7 @@ fn summarize_nonfatal_error(operation: &'static str, error: &anyhow::Error) -> S
 
 impl CodeAgentTui {
     pub fn new(
-        session: CodeAgentFrontendSession,
+        session: CodeAgentUiSession,
         initial_prompt: Option<String>,
         ui_state: SharedUiState,
         theme_catalog: ThemeCatalog,
@@ -163,6 +170,147 @@ impl CodeAgentTui {
             operator_task: None,
             paste_burst: PasteBurst::default(),
         }
+    }
+
+    fn query<T: UIQueryValue>(&self, query: UIQuery) -> T {
+        self.session.query(query)
+    }
+
+    fn dispatch<T: UIResultValue>(&self, command: UICommand) -> Result<T> {
+        self.session.dispatch(command)
+    }
+
+    async fn run_ui<T: UIAsyncValue>(&self, command: UIAsyncCommand) -> Result<T> {
+        self.session.run(command).await
+    }
+
+    fn workspace_root_buf(&self) -> std::path::PathBuf {
+        self.query(UIQuery::WorkspaceRoot)
+    }
+
+    fn startup_snapshot(&self) -> SessionStartupSnapshot {
+        self.query(UIQuery::StartupSnapshot)
+    }
+
+    fn host_process_surfaces_allowed(&self) -> bool {
+        self.query(UIQuery::HostProcessSurfacesAllowed)
+    }
+
+    fn approval_prompt(&self) -> Option<ApprovalPrompt> {
+        self.query(UIQuery::ApprovalPrompt)
+    }
+
+    fn permission_request_prompt(&self) -> Option<PermissionRequestPrompt> {
+        self.query(UIQuery::PermissionRequestPrompt)
+    }
+
+    fn user_input_prompt(&self) -> Option<UserInputPrompt> {
+        self.query(UIQuery::UserInputPrompt)
+    }
+
+    fn pending_controls(&self) -> Vec<crate::interaction::PendingControlSummary> {
+        self.query(UIQuery::PendingControls)
+    }
+
+    fn queued_command_count(&self) -> usize {
+        self.query(UIQuery::QueuedCommandCount)
+    }
+
+    fn startup_diagnostics(&self) -> StartupDiagnosticsSnapshot {
+        self.query(UIQuery::StartupDiagnostics)
+    }
+
+    fn permission_grant_profiles(&self) -> (PermissionProfile, PermissionProfile) {
+        self.query(UIQuery::PermissionGrantProfiles)
+    }
+
+    fn skills(&self) -> Vec<crate::interaction::SkillSummary> {
+        self.query(UIQuery::Skills)
+    }
+
+    fn resolve_approval(&self, decision: crate::interaction::ApprovalDecision) -> bool {
+        self.dispatch(UICommand::ResolveApproval(decision))
+            .unwrap_or(false)
+    }
+
+    fn resolve_permission_request(&self, decision: PermissionRequestDecision) -> bool {
+        self.dispatch(UICommand::ResolvePermissionRequest(decision))
+            .unwrap_or(false)
+    }
+
+    fn resolve_user_input(&self, submission: UserInputSubmission) -> bool {
+        self.dispatch(UICommand::ResolveUserInput(submission))
+            .unwrap_or(false)
+    }
+
+    fn cancel_user_input(&self, reason: impl Into<String>) -> bool {
+        self.dispatch(UICommand::CancelUserInput {
+            reason: reason.into(),
+        })
+        .unwrap_or(false)
+    }
+
+    fn remove_pending_control(
+        &self,
+        control_ref: &str,
+    ) -> Result<crate::interaction::PendingControlSummary> {
+        self.dispatch(UICommand::RemovePendingControl {
+            control_ref: control_ref.to_string(),
+        })
+    }
+
+    fn update_pending_control(
+        &self,
+        control_ref: &str,
+        content: &str,
+    ) -> Result<crate::interaction::PendingControlSummary> {
+        self.dispatch(UICommand::UpdatePendingControl {
+            control_ref: control_ref.to_string(),
+            content: content.to_string(),
+        })
+    }
+
+    fn schedule_runtime_steer(
+        &self,
+        message: impl Into<String>,
+        reason: Option<String>,
+    ) -> Result<String> {
+        self.dispatch(UICommand::ScheduleRuntimeSteer {
+            message: message.into(),
+            reason,
+        })
+    }
+
+    fn take_pending_steers(&self) -> Result<Vec<crate::interaction::PendingControlSummary>> {
+        self.dispatch(UICommand::TakePendingSteers)
+    }
+
+    fn cycle_model_reasoning_effort_result(&self) -> Result<ModelReasoningEffortOutcome> {
+        self.dispatch(UICommand::CycleModelReasoningEffort)
+    }
+
+    fn set_model_reasoning_effort_result(
+        &self,
+        effort: &str,
+    ) -> Result<ModelReasoningEffortOutcome> {
+        self.dispatch(UICommand::SetModelReasoningEffort {
+            effort: effort.to_string(),
+        })
+    }
+
+    fn schedule_live_task_attention(
+        &self,
+        outcome: &LiveTaskWaitOutcome,
+        turn_running: bool,
+    ) -> Result<LiveTaskAttentionOutcome> {
+        self.dispatch(UICommand::ScheduleLiveTaskAttention {
+            outcome: outcome.clone(),
+            turn_running,
+        })
+    }
+
+    async fn refresh_stored_session_count(&self) -> Result<usize> {
+        self.run_ui(UIAsyncCommand::RefreshStoredSessionCount).await
     }
 
     pub async fn run(mut self) -> Result<()> {
@@ -186,8 +334,9 @@ impl CodeAgentTui {
             task.abort();
         }
         let _ = self
-            .session
-            .end_session(Some("operator_exit".to_string()))
+            .run_ui::<()>(UIAsyncCommand::EndSession {
+                reason: Some("operator_exit".to_string()),
+            })
             .await;
 
         disable_raw_mode()?;
@@ -213,12 +362,12 @@ impl CodeAgentTui {
                 let _ = state.expire_toast_if_due();
             });
             self.sync_runtime_control_state();
-            let permission_request_prompt = self.session.permission_request_prompt();
-            let user_input_prompt = self.session.user_input_prompt();
+            let permission_request_prompt = self.permission_request_prompt();
+            let user_input_prompt = self.user_input_prompt();
             self.sync_user_input_prompt(user_input_prompt.as_ref());
 
             let snapshot = self.ui_state.snapshot();
-            let approval = self.session.approval_prompt();
+            let approval = self.approval_prompt();
             let user_input_view = user_input_prompt.as_ref().map(|prompt| UserInputView {
                 prompt,
                 flow: self.active_user_input.as_ref(),
@@ -556,12 +705,12 @@ impl CodeAgentTui {
     }
 
     fn handle_approval_key(&mut self, key: KeyEvent) -> bool {
-        let Some(prompt) = self.session.approval_prompt() else {
+        let Some(prompt) = self.approval_prompt() else {
             return false;
         };
         if let Some(decision) = approval_decision_for_key(key) {
             let approved = matches!(decision, crate::interaction::ApprovalDecision::Approve);
-            if self.session.resolve_approval(decision) {
+            if self.resolve_approval(decision) {
                 self.ui_state.mutate(|state| {
                     if approved {
                         state.status = format!("Approved {}", prompt.tool_name);
@@ -578,7 +727,7 @@ impl CodeAgentTui {
     }
 
     fn handle_permission_request_key(&mut self, key: KeyEvent) -> bool {
-        let Some(_prompt) = self.session.permission_request_prompt() else {
+        let Some(_prompt) = self.permission_request_prompt() else {
             return false;
         };
         let decision = match key.code {
@@ -588,7 +737,7 @@ impl CodeAgentTui {
             _ => None,
         };
         if let Some(decision) = decision {
-            if self.session.resolve_permission_request(decision) {
+            if self.resolve_permission_request(decision) {
                 self.ui_state.mutate(|state| match decision {
                     PermissionRequestDecision::GrantOnce => {
                         state.status = "Granted additional permissions for the turn".to_string();
@@ -613,7 +762,7 @@ impl CodeAgentTui {
         if key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('c')) {
             return false;
         }
-        let Some(prompt) = self.session.user_input_prompt() else {
+        let Some(prompt) = self.user_input_prompt() else {
             return false;
         };
         self.sync_user_input_prompt(Some(&prompt));
@@ -726,10 +875,7 @@ impl CodeAgentTui {
         } else {
             match key.code {
                 KeyCode::Esc => {
-                    if self
-                        .session
-                        .cancel_user_input("operator cancelled user input request")
-                    {
+                    if self.cancel_user_input("operator cancelled user input request") {
                         self.active_user_input = None;
                         self.ui_state.mutate(|state| {
                             state.clear_input();
@@ -890,7 +1036,7 @@ impl CodeAgentTui {
                     || matches!(key.code, KeyCode::Delete | KeyCode::Backspace) =>
             {
                 if let Some(selected) = snapshot.selected_pending_control() {
-                    match self.session.remove_pending_control(&selected.id) {
+                    match self.remove_pending_control(&selected.id) {
                         Ok(removed) => {
                             let removed_id = removed.id.clone();
                             self.sync_runtime_control_state();
@@ -1093,15 +1239,12 @@ impl CodeAgentTui {
         if !finished {
             return Ok(());
         }
-        let git = state::git_snapshot(
-            self.session.workspace_root(),
-            self.session.host_process_surfaces_allowed(),
-        );
+        let workspace_root = self.workspace_root_buf();
+        let git = state::git_snapshot(&workspace_root, self.host_process_surfaces_allowed());
         if let Some(task) = self.turn_task.take() {
             match task.await {
                 Ok(Ok(())) => {
-                    let stored_session_count =
-                        self.session.refresh_stored_session_count().await.ok();
+                    let stored_session_count = self.refresh_stored_session_count().await.ok();
                     self.ui_state.mutate(|state| {
                         state.turn_running = false;
                         state.turn_started_at = None;
@@ -1143,7 +1286,7 @@ impl CodeAgentTui {
             }
         }
         self.sync_runtime_control_state();
-        if self.turn_task.is_none() && self.session.queued_command_count() > 0 {
+        if self.turn_task.is_none() && self.queued_command_count() > 0 {
             self.start_runtime_queue_drain();
         }
         Ok(())
@@ -1186,7 +1329,7 @@ impl CodeAgentTui {
             let submission = UserInputSubmission {
                 answers: flow.answers.clone(),
             };
-            if self.session.resolve_user_input(submission) {
+            if self.resolve_user_input(submission) {
                 self.active_user_input = None;
                 self.ui_state.mutate(|state| {
                     state.clear_input();
@@ -1223,9 +1366,7 @@ impl CodeAgentTui {
                     let turn_running = self.ui_state.snapshot().turn_running;
                     let toast_tone = live_task_wait_ui_toast_tone(&outcome);
                     let toast_message = live_task_wait_toast_message(&outcome, turn_running);
-                    let attention = self
-                        .session
-                        .schedule_live_task_attention(&outcome, turn_running)?;
+                    let attention = self.schedule_live_task_attention(&outcome, turn_running)?;
                     let notice_outcome = outcome.clone();
                     let live_task_id = outcome.task_id.clone();
                     let live_task_status = outcome.status.clone();
@@ -1274,9 +1415,7 @@ impl CodeAgentTui {
                         });
                     });
                     self.sync_runtime_control_state();
-                    if !turn_running
-                        && self.turn_task.is_none()
-                        && self.session.queued_command_count() > 0
+                    if !turn_running && self.turn_task.is_none() && self.queued_command_count() > 0
                     {
                         self.start_runtime_queue_drain();
                     }
@@ -1486,7 +1625,7 @@ impl CodeAgentTui {
             });
             return true;
         }
-        match self.session.update_pending_control(&editing.id, content) {
+        match self.update_pending_control(&editing.id, content) {
             Ok(updated) => {
                 self.sync_runtime_control_state();
                 self.ui_state.mutate(|state| {
@@ -1551,12 +1690,14 @@ impl CodeAgentTui {
     ) {
         let preview = state::preview_text(&message_operator_text(&message), 40);
         match self
-            .session
-            .queue_prompt_command(message, submitted_prompt)
+            .run_ui::<String>(UIAsyncCommand::QueuePromptCommand {
+                message,
+                submitted_prompt,
+            })
             .await
         {
             Ok(queued_id) => {
-                let pending = self.session.pending_controls();
+                let pending = self.pending_controls();
                 let depth = pending.len();
                 self.ui_state.mutate(|state| {
                     state.session.queued_commands = depth;
@@ -1584,9 +1725,9 @@ impl CodeAgentTui {
         reason: Option<String>,
     ) {
         let preview = state::preview_text(&message, 40);
-        match self.session.schedule_runtime_steer(message, reason) {
+        match self.schedule_runtime_steer(message, reason) {
             Ok(queued_id) => {
-                let pending = self.session.pending_controls();
+                let pending = self.pending_controls();
                 self.ui_state.mutate(|state| {
                     state.session.queued_commands = pending.len();
                     state.sync_pending_controls(pending);
@@ -1624,16 +1765,18 @@ impl CodeAgentTui {
         });
 
         let session = self.session.clone();
-        self.turn_task = Some(spawn_local(
-            async move { session.apply_control(command).await },
-        ));
+        self.turn_task = Some(spawn_local(async move {
+            session
+                .run::<()>(UIAsyncCommand::ApplyControl { command })
+                .await
+        }));
     }
 
     fn start_runtime_queue_drain(&mut self) {
         // The host only restarts draining once the active task goes idle. The
         // runtime still owns dequeue order and queue depth, so the TUI reads
         // the current depth instead of speculating about the next popped item.
-        let queued = self.session.queued_command_count();
+        let queued = self.queued_command_count();
         self.ui_state.mutate(|state| {
             state.show_transcript_pane();
             state.follow_transcript = true;
@@ -1647,7 +1790,10 @@ impl CodeAgentTui {
 
         let session = self.session.clone();
         self.turn_task = Some(spawn_local(async move {
-            session.drain_queued_controls().await.map(|_| ())
+            session
+                .run::<bool>(UIAsyncCommand::DrainQueuedControls)
+                .await
+                .map(|_| ())
         }));
     }
 
@@ -1659,7 +1805,7 @@ impl CodeAgentTui {
         // Once the live task is aborted, any safe-point steer would never be
         // merged in-band. Resubmit all pending steers as one fresh prompt in
         // FIFO order so their intent matches the sequence the operator entered.
-        let pending_steers = self.session.take_pending_steers()?;
+        let pending_steers = self.take_pending_steers()?;
         self.sync_runtime_control_state();
 
         let steers = pending_steers
@@ -1706,7 +1852,7 @@ impl CodeAgentTui {
     }
 
     fn cycle_model_reasoning_effort(&mut self) {
-        match self.session.cycle_model_reasoning_effort() {
+        match self.cycle_model_reasoning_effort_result() {
             Ok(outcome) => self.apply_model_reasoning_effort_outcome(outcome, "cycled"),
             Err(error) => self.record_model_reasoning_effort_error(summarize_nonfatal_error(
                 "cycle model reasoning effort",
@@ -1716,7 +1862,7 @@ impl CodeAgentTui {
     }
 
     fn set_model_reasoning_effort(&mut self, effort: &str) {
-        match self.session.set_model_reasoning_effort(effort) {
+        match self.set_model_reasoning_effort_result(effort) {
             Ok(outcome) => self.apply_model_reasoning_effort_outcome(outcome, "set"),
             Err(error) => self.record_model_reasoning_effort_error(summarize_nonfatal_error(
                 "set model reasoning effort",
@@ -1727,7 +1873,7 @@ impl CodeAgentTui {
 
     fn apply_model_reasoning_effort_outcome(
         &mut self,
-        outcome: crate::backend::ModelReasoningEffortOutcome,
+        outcome: ModelReasoningEffortOutcome,
         verb: &str,
     ) {
         let current = outcome
@@ -1785,7 +1931,8 @@ impl CodeAgentTui {
                     return;
                 }
 
-                match persist_tui_theme_selection(self.session.workspace_root(), &current) {
+                let workspace_root = self.workspace_root_buf();
+                match persist_tui_theme_selection(&workspace_root, &current) {
                     Ok(()) => {
                         let previous = previous_override
                             .or(previous)
@@ -1911,7 +2058,7 @@ impl CodeAgentTui {
                 Ok(false)
             }
             SlashCommand::Tools => {
-                let tool_names = self.session.startup_snapshot().tool_names;
+                let tool_names = self.startup_snapshot().tool_names;
                 self.ui_state.mutate(move |state| {
                     let lines = if tool_names.is_empty() {
                         vec![
@@ -1932,7 +2079,7 @@ impl CodeAgentTui {
                 Ok(false)
             }
             SlashCommand::Skills => {
-                let skills = self.session.skills();
+                let skills = self.skills();
                 self.ui_state.mutate(move |state| {
                     let lines = if skills.is_empty() {
                         vec![
@@ -1958,7 +2105,7 @@ impl CodeAgentTui {
                 Ok(false)
             }
             SlashCommand::Diagnostics => {
-                let diagnostics = self.session.startup_diagnostics();
+                let diagnostics = self.startup_diagnostics();
                 self.ui_state.mutate(move |state| {
                     state.show_main_view("Diagnostics", format_startup_diagnostics(&diagnostics));
                     state.status = "Opened startup diagnostics".to_string();
@@ -1967,7 +2114,8 @@ impl CodeAgentTui {
                 Ok(false)
             }
             SlashCommand::Mcp => {
-                let servers = self.session.list_mcp_servers().await;
+                let servers: Vec<McpServerSummary> =
+                    self.run_ui(UIAsyncCommand::ListMcpServers).await?;
                 self.ui_state.mutate(move |state| {
                     let lines = if servers.is_empty() {
                         vec![
@@ -1986,7 +2134,8 @@ impl CodeAgentTui {
                 Ok(false)
             }
             SlashCommand::Prompts => {
-                let prompts = self.session.list_mcp_prompts().await;
+                let prompts: Vec<McpPromptSummary> =
+                    self.run_ui(UIAsyncCommand::ListMcpPrompts).await?;
                 self.ui_state.mutate(move |state| {
                     let lines = if prompts.is_empty() {
                         vec![
@@ -2005,7 +2154,8 @@ impl CodeAgentTui {
                 Ok(false)
             }
             SlashCommand::Resources => {
-                let resources = self.session.list_mcp_resources().await;
+                let resources: Vec<McpResourceSummary> =
+                    self.run_ui(UIAsyncCommand::ListMcpResources).await?;
                 self.ui_state.mutate(move |state| {
                     let lines = if resources.is_empty() {
                         vec![
@@ -2027,9 +2177,11 @@ impl CodeAgentTui {
                 server_name,
                 prompt_name,
             } => {
-                let loaded = self
-                    .session
-                    .load_mcp_prompt(&server_name, &prompt_name)
+                let loaded: LoadedMcpPrompt = self
+                    .run_ui(UIAsyncCommand::LoadMcpPrompt {
+                        server_name: server_name.clone(),
+                        prompt_name: prompt_name.clone(),
+                    })
                     .await?;
                 self.ui_state.mutate(move |state| {
                     let inspector = build_mcp_prompt_inspector(&loaded);
@@ -2044,7 +2196,12 @@ impl CodeAgentTui {
                 Ok(false)
             }
             SlashCommand::Resource { server_name, uri } => {
-                let loaded = self.session.load_mcp_resource(&server_name, &uri).await?;
+                let loaded: LoadedMcpResource = self
+                    .run_ui(UIAsyncCommand::LoadMcpResource {
+                        server_name: server_name.clone(),
+                        uri: uri.clone(),
+                    })
+                    .await?;
                 self.ui_state.mutate(move |state| {
                     let inspector = build_mcp_resource_inspector(&loaded);
                     state
@@ -2079,7 +2236,7 @@ impl CodeAgentTui {
                 Ok(false)
             }
             SlashCommand::Queue => {
-                let pending = self.session.pending_controls();
+                let pending = self.pending_controls();
                 let opened = !pending.is_empty();
                 self.ui_state.mutate(|state| {
                     state.sync_pending_controls(pending);
@@ -2112,9 +2269,11 @@ impl CodeAgentTui {
                         return Ok(false);
                     }
 
-                    let outcome = self.session.set_permission_mode(mode).await?;
-                    let snapshot = self.session.startup_snapshot();
-                    let (turn_grants, session_grants) = self.session.permission_grant_profiles();
+                    let outcome: crate::interaction::SessionPermissionModeOutcome = self
+                        .run_ui(UIAsyncCommand::SetPermissionMode { mode })
+                        .await?;
+                    let snapshot = self.startup_snapshot();
+                    let (turn_grants, session_grants) = self.permission_grant_profiles();
                     let inspector =
                         build_permissions_inspector(&snapshot, &turn_grants, &session_grants);
                     self.sync_session_summary_from_snapshot(&snapshot);
@@ -2138,8 +2297,8 @@ impl CodeAgentTui {
                         }
                     });
                 } else {
-                    let snapshot = self.session.startup_snapshot();
-                    let (turn_grants, session_grants) = self.session.permission_grant_profiles();
+                    let snapshot = self.startup_snapshot();
+                    let (turn_grants, session_grants) = self.permission_grant_profiles();
                     let inspector =
                         build_permissions_inspector(&snapshot, &turn_grants, &session_grants);
                     self.ui_state.mutate(move |state| {
@@ -2160,10 +2319,12 @@ impl CodeAgentTui {
                     return Ok(false);
                 }
 
-                let dropped_commands = self.session.clear_queued_commands().await;
-                let outcome = self
-                    .session
-                    .apply_session_operation(SessionOperation::StartFresh)
+                let dropped_commands: usize =
+                    self.run_ui(UIAsyncCommand::ClearQueuedCommands).await?;
+                let outcome: SessionOperationOutcome = self
+                    .run_ui(UIAsyncCommand::ApplySessionOperation {
+                        operation: SessionOperation::StartFresh,
+                    })
                     .await?;
                 self.replace_after_session_operation(outcome, dropped_commands);
                 Ok(false)
@@ -2176,7 +2337,7 @@ impl CodeAgentTui {
                     });
                     return Ok(false);
                 }
-                let compacted = self.session.compact_now(notes).await?;
+                let compacted: bool = self.run_ui(UIAsyncCommand::CompactNow { notes }).await?;
                 self.apply_backend_events();
                 if !compacted {
                     self.ui_state.mutate(|state| {
@@ -2207,7 +2368,8 @@ impl CodeAgentTui {
                 Ok(false)
             }
             SlashCommand::LiveTasks => {
-                let live_tasks = self.session.list_live_tasks().await?;
+                let live_tasks: Vec<LiveTaskSummary> =
+                    self.run_ui(UIAsyncCommand::ListLiveTasks).await?;
                 self.ui_state.mutate(move |state| {
                     let lines = if live_tasks.is_empty() {
                         vec![
@@ -2239,7 +2401,12 @@ impl CodeAgentTui {
                 Ok(false)
             }
             SlashCommand::SpawnTask { role, prompt } => {
-                let outcome = self.session.spawn_live_task(&role, &prompt).await?;
+                let outcome: LiveTaskSpawnOutcome = self
+                    .run_ui(UIAsyncCommand::SpawnLiveTask {
+                        role: role.clone(),
+                        prompt: prompt.clone(),
+                    })
+                    .await?;
                 let inspector = format_live_task_spawn_outcome(&outcome);
                 self.ui_state.mutate(move |state| {
                     state.show_main_view("Live Task Spawn", inspector);
@@ -2263,9 +2430,11 @@ impl CodeAgentTui {
                     });
                     return Ok(false);
                 };
-                let outcome = self
-                    .session
-                    .send_live_task(&task_or_agent_ref, &message)
+                let outcome: LiveTaskMessageOutcome = self
+                    .run_ui(UIAsyncCommand::SendLiveTask {
+                        task_or_agent_ref: task_or_agent_ref.clone(),
+                        message: message.clone(),
+                    })
                     .await?;
                 let inspector = format_live_task_message_outcome(&outcome);
                 self.ui_state.mutate(move |state| {
@@ -2305,9 +2474,11 @@ impl CodeAgentTui {
                 task_or_agent_ref,
                 reason,
             } => {
-                let outcome = self
-                    .session
-                    .cancel_live_task(&task_or_agent_ref, reason.clone())
+                let outcome: LiveTaskControlOutcome = self
+                    .run_ui(UIAsyncCommand::CancelLiveTask {
+                        task_or_agent_ref: task_or_agent_ref.clone(),
+                        reason: reason.clone(),
+                    })
                     .await?;
                 let inspector = format_live_task_control_outcome(&outcome);
                 self.ui_state.mutate(move |state| {
@@ -2362,7 +2533,9 @@ impl CodeAgentTui {
         });
         let session = self.session.clone();
         self.operator_task = Some(spawn_local(async move {
-            let outcome = session.wait_live_task(&task_or_agent_ref).await?;
+            let outcome = session
+                .run::<LiveTaskWaitOutcome>(UIAsyncCommand::WaitLiveTask { task_or_agent_ref })
+                .await?;
             Ok(OperatorTaskOutcome::WaitLiveTask(outcome))
         }));
     }
@@ -2376,7 +2549,9 @@ impl CodeAgentTui {
         });
         let session = self.session.clone();
         self.operator_task = Some(spawn_local(async move {
-            let outcome = session.answer_side_question(&question).await?;
+            let outcome = session
+                .run::<SideQuestionOutcome>(UIAsyncCommand::AnswerSideQuestion { question })
+                .await?;
             Ok(OperatorTaskOutcome::SideQuestion(outcome))
         }));
     }
@@ -2384,9 +2559,10 @@ impl CodeAgentTui {
     async fn apply_history_command(&mut self, command: SlashCommand) -> Result<bool> {
         match command {
             SlashCommand::AgentSessions { session_ref } => {
-                let agent_sessions = self
-                    .session
-                    .list_agent_sessions(session_ref.as_deref())
+                let agent_sessions: Vec<PersistedAgentSessionSummary> = self
+                    .run_ui(UIAsyncCommand::ListAgentSessions {
+                        session_ref: session_ref.clone(),
+                    })
                     .await?;
                 self.ui_state.mutate(move |state| {
                     let lines = if agent_sessions.is_empty() {
@@ -2433,7 +2609,11 @@ impl CodeAgentTui {
                     });
                     return Ok(false);
                 }
-                let loaded = self.session.load_agent_session(&agent_session_ref).await?;
+                let loaded: LoadedAgentSession = self
+                    .run_ui(UIAsyncCommand::LoadAgentSession {
+                        agent_session_ref: agent_session_ref.clone(),
+                    })
+                    .await?;
                 let inspector = format_agent_session_inspector(&loaded);
                 let transcript = format_visible_transcript_lines(&loaded.transcript);
                 let restored = restore_tool_panels(&loaded.events);
@@ -2461,7 +2641,11 @@ impl CodeAgentTui {
                 Ok(false)
             }
             SlashCommand::Tasks { session_ref } => {
-                let tasks = self.session.list_tasks(session_ref.as_deref()).await?;
+                let tasks: Vec<PersistedTaskSummary> = self
+                    .run_ui(UIAsyncCommand::ListTasks {
+                        session_ref: session_ref.clone(),
+                    })
+                    .await?;
                 self.ui_state.mutate(move |state| {
                     let lines = if tasks.is_empty() {
                         vec![
@@ -2490,9 +2674,12 @@ impl CodeAgentTui {
             }
             SlashCommand::Sessions { query } => {
                 if let Some(query) = query {
-                    let matches = self.session.search_sessions(&query).await?;
-                    let stored_session_count =
-                        self.session.refresh_stored_session_count().await.ok();
+                    let matches: Vec<PersistedSessionSearchMatch> = self
+                        .run_ui(UIAsyncCommand::SearchSessions {
+                            query: query.clone(),
+                        })
+                        .await?;
+                    let stored_session_count = self.refresh_stored_session_count().await.ok();
                     self.ui_state.mutate(move |state| {
                         if let Some(stored_session_count) = stored_session_count {
                             state.session.stored_session_count = stored_session_count;
@@ -2524,7 +2711,8 @@ impl CodeAgentTui {
                         ));
                     });
                 } else {
-                    let sessions = self.session.list_sessions().await?;
+                    let sessions: Vec<PersistedSessionSummary> =
+                        self.run_ui(UIAsyncCommand::ListSessions).await?;
                     let stored_session_count = sessions.len();
                     self.ui_state.mutate(move |state| {
                         state.session.stored_session_count = stored_session_count;
@@ -2565,7 +2753,11 @@ impl CodeAgentTui {
                     });
                     return Ok(false);
                 }
-                let loaded = self.session.load_session(&session_ref).await?;
+                let loaded: LoadedSession = self
+                    .run_ui(UIAsyncCommand::LoadSession {
+                        session_ref: session_ref.clone(),
+                    })
+                    .await?;
                 let inspector = format_session_inspector(&loaded);
                 let transcript = format_session_transcript_lines(&loaded);
                 let restored = restore_tool_panels(&loaded.events);
@@ -2598,7 +2790,11 @@ impl CodeAgentTui {
                     });
                     return Ok(false);
                 }
-                let loaded = self.session.load_task(&task_ref).await?;
+                let loaded: LoadedTask = self
+                    .run_ui(UIAsyncCommand::LoadTask {
+                        task_ref: task_ref.clone(),
+                    })
+                    .await?;
                 let inspector = format_task_inspector(&loaded);
                 let transcript = format_visible_transcript_lines(&loaded.child_transcript);
                 let task_id = loaded.summary.task_id.clone();
@@ -2630,17 +2826,21 @@ impl CodeAgentTui {
                     });
                     return Ok(false);
                 }
-                let outcome = self
-                    .session
-                    .apply_session_operation(SessionOperation::ResumeAgentSession {
-                        agent_session_ref,
+                let outcome: SessionOperationOutcome = self
+                    .run_ui(UIAsyncCommand::ApplySessionOperation {
+                        operation: SessionOperation::ResumeAgentSession { agent_session_ref },
                     })
                     .await?;
                 self.replace_after_session_operation(outcome, 0);
                 Ok(false)
             }
             SlashCommand::ExportSession { session_ref, path } => {
-                let export = self.session.export_session(&session_ref, &path).await?;
+                let export: SessionExportArtifact = self
+                    .run_ui(UIAsyncCommand::ExportSession {
+                        session_ref: session_ref.clone(),
+                        path: path.clone(),
+                    })
+                    .await?;
                 let inspector = format_session_export_result(&export);
                 let session_ref_preview = preview_id(export.session_id.as_str());
                 let output_path = export.output_path.display().to_string();
@@ -2655,9 +2855,11 @@ impl CodeAgentTui {
                 Ok(false)
             }
             SlashCommand::ExportTranscript { session_ref, path } => {
-                let export = self
-                    .session
-                    .export_session_transcript(&session_ref, &path)
+                let export: SessionExportArtifact = self
+                    .run_ui(UIAsyncCommand::ExportSessionTranscript {
+                        session_ref: session_ref.clone(),
+                        path: path.clone(),
+                    })
                     .await?;
                 let inspector = format_session_export_result(&export);
                 let session_ref_preview = preview_id(export.session_id.as_str());
@@ -3300,7 +3502,8 @@ mod tests {
         external_editor_attachment_status_suffix, live_task_wait_toast_message,
         looks_like_local_image_path, merge_interrupt_steers, plain_input_submit_action,
     };
-    use crate::backend::{HistoryRollbackRound, LiveTaskWaitOutcome, SessionPermissionMode};
+    use crate::interaction::SessionPermissionMode;
+    use crate::ui::{HistoryRollbackRound, LiveTaskSummary, LiveTaskWaitOutcome};
     use agent::types::{AgentStatus, Message, MessageId, MessagePart, MessageRole};
     use crossterm::event::KeyCode;
     use std::path::{Path, PathBuf};
@@ -3471,7 +3674,7 @@ mod tests {
             summary: "done".to_string(),
             agent_id: "agent_123".to_string(),
             claimed_files: Vec::new(),
-            remaining_live_tasks: vec![crate::backend::LiveTaskSummary {
+            remaining_live_tasks: vec![LiveTaskSummary {
                 agent_id: "agent_456".to_string(),
                 task_id: "task_456".to_string(),
                 role: "reviewer".to_string(),

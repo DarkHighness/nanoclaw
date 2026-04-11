@@ -2,7 +2,7 @@ use super::*;
 
 impl CodeAgentTui {
     pub(super) fn startup_state(&self) -> TuiState {
-        self.startup_state_from_snapshot(&self.session.startup_snapshot())
+        self.startup_state_from_snapshot(&self.query(UIQuery::StartupSnapshot))
     }
 
     pub(super) fn startup_state_from_snapshot(
@@ -146,7 +146,8 @@ impl CodeAgentTui {
     }
 
     pub(super) fn sync_runtime_control_state(&self) {
-        let pending = self.session.pending_controls();
+        let pending: Vec<crate::interaction::PendingControlSummary> =
+            self.query(UIQuery::PendingControls);
         self.ui_state.mutate(|state| {
             state.session.queued_commands = pending.len();
             state.sync_pending_controls(pending);
@@ -154,7 +155,10 @@ impl CodeAgentTui {
     }
 
     pub(super) fn apply_backend_events(&mut self) {
-        for event in self.session.drain_events() {
+        for event in self
+            .dispatch::<Vec<SessionEvent>>(UICommand::DrainEvents)
+            .unwrap_or_default()
+        {
             self.event_renderer.apply_event(event);
         }
     }

@@ -1,11 +1,11 @@
 use super::input_history;
-use crate::backend::StartupDiagnosticsSnapshot;
 use crate::interaction::{PendingControlKind, PendingControlSummary, SessionPermissionMode};
 use crate::statusline::{StatusLineConfig, StatusLineField, status_line_fields};
 use crate::theme::ThemeSummary;
 use crate::tool_render::{
     ToolDetail, ToolDetailBlockKind, preview_tool_details, serialize_tool_details,
 };
+use crate::ui::StartupDiagnosticsSnapshot;
 use agent::types::{
     AgentStatus, Message, MessageId, MessagePart, MessageRole, SubmittedPromptAttachment,
     SubmittedPromptAttachmentKind, SubmittedPromptSnapshot, TokenLedgerSnapshot,

@@ -6,9 +6,7 @@ use crate::backend::session_catalog;
 use crate::backend::session_episodic_capture::{
     build_session_episodic_capture_prompt, parse_session_episodic_capture_entries,
 };
-use crate::backend::session_history::{
-    self, LoadedAgentSession, LoadedSession, SessionExportArtifact, preview_id,
-};
+use crate::backend::session_history::{self, preview_id};
 use crate::backend::session_memory_compaction::{
     SESSION_MEMORY_STALE_THRESHOLD_MS, SharedSessionMemoryRefreshState,
     session_memory_note_absolute_path,
@@ -19,25 +17,31 @@ use crate::backend::session_memory_note::{
     upsert_session_memory_note_frontmatter,
 };
 use crate::backend::session_resume;
-use crate::backend::task_history::{self, LoadedTask, PersistedTaskSummary};
+use crate::backend::task_history::{self};
 use crate::backend::{
-    ApprovalCoordinator, LoadedMcpPrompt, LoadedMcpResource, McpPromptSummary, McpResourceSummary,
-    McpServerSummary, PermissionRequestCoordinator, ResumeSupport, SessionEvent,
-    SessionEventObserver, SessionEventStream, StartupDiagnosticsSnapshot, UserInputCoordinator,
-    build_system_preamble, list_mcp_prompts, list_mcp_resources, list_mcp_servers, load_mcp_prompt,
-    load_mcp_resource,
+    ApprovalCoordinator, PermissionRequestCoordinator, SessionEventObserver, SessionEventStream,
+    UserInputCoordinator, build_system_preamble, list_mcp_prompts, list_mcp_resources,
+    list_mcp_servers, load_mcp_prompt, load_mcp_resource,
 };
-use crate::frontend_contract::{
-    pending_control_summary, permission_profile_from_granted, skill_summary_from_skill,
-};
-use crate::interaction::{
-    ModelReasoningEffortOutcome, PendingControlKind, PendingControlSummary, PermissionProfile,
-    PermissionRequestDecision, SessionPermissionMode, SessionPermissionModeOutcome, SkillSummary,
-    UserInputSubmission,
-};
+mod controls;
+mod dialogs;
+mod history;
+mod live_tasks;
+mod permissions;
+
+use crate::frontend_contract::skill_summary_from_skill;
+use crate::interaction::{ModelReasoningEffortOutcome, SkillSummary};
 use crate::provider::{MutableAgentBackend, ReasoningEffortUpdate};
-use crate::statusline::StatusLineConfig;
-use crate::{ApprovalDecision, ApprovalPrompt, PermissionRequestPrompt, UserInputPrompt};
+use crate::ui::{
+    HistoryRollbackOutcome, HistoryRollbackRound, LiveTaskAttentionAction,
+    LiveTaskAttentionOutcome, LiveTaskControlAction, LiveTaskControlOutcome, LiveTaskMessageAction,
+    LiveTaskMessageOutcome, LiveTaskSpawnOutcome, LiveTaskSummary, LiveTaskWaitOutcome,
+    LoadedAgentSession, LoadedMcpPrompt, LoadedMcpResource, LoadedSession, LoadedTask,
+    McpPromptSummary, McpResourceSummary, McpServerSummary, PersistedTaskSummary, ResumeSupport,
+    SessionEvent, SessionExportArtifact, SessionOperation, SessionOperationAction,
+    SessionOperationOutcome, SessionStartupSnapshot, SideQuestionOutcome,
+    StartupDiagnosticsSnapshot,
+};
 use agent::mcp::{
     ConnectedMcpServer, McpConnectOptions, McpServerConfig, McpTransportConfig,
     catalog_resource_tools_as_registry_entries, catalog_tools_as_registry_entries,
@@ -47,14 +51,12 @@ use agent::memory::{
     MemoryBackend, MemoryRecordMode, MemoryRecordRequest, MemoryScope, MemoryType,
 };
 use agent::runtime::{
-    ModelBackend, PermissionGrantSnapshot, PermissionGrantStore, Result as RuntimeResult,
-    RollbackVisibleHistoryOutcome, RunTurnOutcome, RuntimeCommandId, RuntimeControlPlane,
-    VisibleHistoryRollbackRound,
+    ModelBackend, PermissionGrantStore, Result as RuntimeResult, RollbackVisibleHistoryOutcome,
+    RunTurnOutcome, RuntimeControlPlane, VisibleHistoryRollbackRound,
 };
 use agent::tools::{
-    HOST_FEATURE_HOST_PROCESS_SURFACES, McpToolAdapter, SandboxPolicy, SubagentExecutor,
-    SubagentInputDelivery, SubagentLaunchSpec, SubagentParentContext, describe_sandbox_policy,
-    sandbox_backend_status,
+    McpToolAdapter, SandboxPolicy, SubagentExecutor, SubagentInputDelivery, SubagentLaunchSpec,
+    SubagentParentContext,
 };
 use agent::types::{
     AgentSessionId, AgentStatus, AgentTaskSpec, AgentWaitMode, AgentWaitRequest, HookHandler,
@@ -107,155 +109,6 @@ struct SessionPreambleConfig {
 /// This snapshot is the frontend-facing startup contract. It keeps stable host
 /// facts separate from the mutable runtime handle so new frontends can render
 /// the same session metadata without reconstructing boot logic locally.
-#[derive(Clone, Debug, Default)]
-pub struct SessionStartupSnapshot {
-    pub workspace_name: String,
-    pub workspace_root: PathBuf,
-    pub active_session_ref: String,
-    pub root_agent_session_id: String,
-    pub provider_label: String,
-    pub model: String,
-    pub model_reasoning_effort: Option<String>,
-    pub supported_model_reasoning_efforts: Vec<String>,
-    pub supports_image_input: bool,
-    pub tool_names: Vec<String>,
-    pub store_label: String,
-    pub store_warning: Option<String>,
-    pub stored_session_count: usize,
-    pub default_sandbox_summary: String,
-    pub sandbox_summary: String,
-    pub permission_mode: SessionPermissionMode,
-    pub host_process_surfaces_allowed: bool,
-    pub startup_diagnostics: StartupDiagnosticsSnapshot,
-    pub statusline: StatusLineConfig,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum SessionOperation {
-    StartFresh,
-    ResumeAgentSession { agent_session_ref: String },
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SessionOperationAction {
-    StartedFresh,
-    AlreadyAttached,
-    Reattached,
-}
-
-#[derive(Clone, Debug)]
-pub struct SessionOperationOutcome {
-    pub action: SessionOperationAction,
-    pub session_ref: String,
-    pub active_agent_session_ref: String,
-    pub requested_agent_session_ref: Option<String>,
-    pub startup: SessionStartupSnapshot,
-    pub transcript: Vec<Message>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct LiveTaskSummary {
-    pub agent_id: String,
-    pub task_id: String,
-    pub role: String,
-    pub status: agent::types::AgentStatus,
-    pub session_ref: String,
-    pub agent_session_ref: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct LiveTaskSpawnOutcome {
-    pub task: LiveTaskSummary,
-    pub prompt: String,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum LiveTaskControlAction {
-    Cancelled,
-    AlreadyTerminal,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct LiveTaskControlOutcome {
-    pub requested_ref: String,
-    pub agent_id: String,
-    pub task_id: String,
-    pub status: agent::types::AgentStatus,
-    pub action: LiveTaskControlAction,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum LiveTaskMessageAction {
-    Sent,
-    AlreadyTerminal,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct LiveTaskMessageOutcome {
-    pub requested_ref: String,
-    pub agent_id: String,
-    pub task_id: String,
-    pub status: agent::types::AgentStatus,
-    pub action: LiveTaskMessageAction,
-    pub message: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct LiveTaskWaitOutcome {
-    pub requested_ref: String,
-    pub agent_id: String,
-    pub task_id: String,
-    pub status: agent::types::AgentStatus,
-    pub summary: String,
-    pub claimed_files: Vec<String>,
-    pub remaining_live_tasks: Vec<LiveTaskSummary>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum LiveTaskAttentionAction {
-    QueuedPrompt,
-    ScheduledSteer,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct LiveTaskAttentionOutcome {
-    pub action: LiveTaskAttentionAction,
-    pub control_id: String,
-    pub preview: String,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct HistoryRollbackOutcome {
-    pub transcript: Vec<Message>,
-    pub removed_message_count: usize,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct HistoryRollbackRound {
-    pub rollback_message_id: MessageId,
-    pub prompt_message: Message,
-    pub round_messages: Vec<Message>,
-    pub removed_turn_count: usize,
-    pub removed_message_count: usize,
-}
-
-fn history_rollback_round_from_snapshot(
-    snapshot: VisibleHistoryRollbackRound,
-) -> Option<HistoryRollbackRound> {
-    let prompt_message = snapshot
-        .messages
-        .iter()
-        .find(|message| message.message_id == snapshot.prompt_message_id)
-        .cloned()?;
-    Some(HistoryRollbackRound {
-        rollback_message_id: snapshot.rollback_message_id,
-        prompt_message,
-        round_messages: snapshot.messages,
-        removed_turn_count: snapshot.removed_turn_count,
-        removed_message_count: snapshot.removed_message_count,
-    })
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct CompactionWorkingSnapshot {
     session_id: SessionId,
@@ -305,12 +158,6 @@ struct SideQuestionContextSnapshot {
     instructions: Vec<String>,
     transcript: Vec<Message>,
     tools: Vec<ToolSpec>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SideQuestionOutcome {
-    pub question: String,
-    pub response: String,
 }
 
 struct ActiveTurnGuard {
@@ -451,14 +298,6 @@ impl CodeAgentSession {
         self.startup.read().unwrap().clone()
     }
 
-    pub fn host_process_surfaces_allowed(&self) -> bool {
-        self.startup.read().unwrap().host_process_surfaces_allowed
-    }
-
-    pub fn permission_mode(&self) -> SessionPermissionMode {
-        self.startup.read().unwrap().permission_mode
-    }
-
     fn connected_mcp_servers_snapshot(&self) -> Vec<ConnectedMcpServer> {
         self.mcp_servers.read().unwrap().clone()
     }
@@ -559,14 +398,6 @@ impl CodeAgentSession {
         snapshot
     }
 
-    fn sandbox_policy_for_mode(&self, mode: SessionPermissionMode) -> SandboxPolicy {
-        match mode {
-            SessionPermissionMode::Default => self.default_sandbox_policy.clone(),
-            SessionPermissionMode::DangerFullAccess => SandboxPolicy::permissive()
-                .with_fail_if_unavailable(self.default_sandbox_policy.fail_if_unavailable),
-        }
-    }
-
     pub fn skills(&self) -> &[Skill] {
         self.skills.as_slice()
     }
@@ -640,114 +471,6 @@ impl CodeAgentSession {
         Ok(queued.id.to_string())
     }
 
-    pub fn queued_command_count(&self) -> usize {
-        self.control_plane.len()
-    }
-
-    pub fn pending_controls(&self) -> Vec<PendingControlSummary> {
-        self.control_plane
-            .snapshot()
-            .into_iter()
-            .map(|queued| pending_control_summary(queued.id.to_string(), queued.command))
-            .collect()
-    }
-
-    pub fn update_pending_control(
-        &self,
-        control_ref: &str,
-        content: &str,
-    ) -> Result<PendingControlSummary> {
-        let controls = self.pending_controls();
-        let current = resolve_pending_control_reference(&controls, control_ref)?;
-        let updated = self
-            .control_plane
-            .update(
-                &RuntimeCommandId::from(current.id.clone()),
-                match current.kind {
-                    PendingControlKind::Prompt => RuntimeCommand::Prompt {
-                        message: Message::user(content.to_string()),
-                        submitted_prompt: Some(agent::types::SubmittedPromptSnapshot::from_text(
-                            content.to_string(),
-                        )),
-                    },
-                    PendingControlKind::Steer => RuntimeCommand::Steer {
-                        message: content.to_string(),
-                        reason: current.reason.clone(),
-                    },
-                },
-            )
-            .ok_or_else(|| anyhow::anyhow!("pending control update failed for {control_ref}"))?;
-        Ok(pending_control_summary(
-            updated.id.to_string(),
-            updated.command,
-        ))
-    }
-
-    pub fn remove_pending_control(&self, control_ref: &str) -> Result<PendingControlSummary> {
-        let controls = self.pending_controls();
-        let current = resolve_pending_control_reference(&controls, control_ref)?;
-        let removed = self
-            .control_plane
-            .remove(&RuntimeCommandId::from(current.id.clone()))
-            .ok_or_else(|| anyhow::anyhow!("pending control removal failed for {control_ref}"))?;
-        Ok(pending_control_summary(
-            removed.id.to_string(),
-            removed.command,
-        ))
-    }
-
-    pub async fn clear_queued_commands(&self) -> usize {
-        let mut runtime = self.runtime.lock().await;
-        let cleared = runtime.clear_pending_runtime_commands_for_host();
-        self.sync_runtime_session_refs(&runtime);
-        cleared
-    }
-
-    pub async fn drain_queued_controls(&self) -> Result<bool> {
-        let _turn_guard = self.begin_active_turn()?;
-        let mut runtime = self.runtime.lock().await;
-        let mut observer = SessionEventObserver::new(self.events.clone());
-        // Frontends never pop queued prompts themselves. They only wake the
-        // runtime at an idle edge so the runtime can drain its own queue and
-        // emit one consistent event stream for every dequeued control.
-        let drained = runtime
-            .drain_queued_controls_with_observer(&mut observer)
-            .await
-            .map_err(anyhow::Error::from)?;
-        let snapshot = self.latest_compaction_working_snapshot(&runtime, &observer);
-        let refresh_context = self.session_memory_refresh_context(&runtime, &observer);
-        let side_question_context = Self::side_question_context_from_runtime(&runtime, None);
-        self.sync_runtime_session_refs(&runtime);
-        drop(runtime);
-        self.store_side_question_context(side_question_context);
-        self.sync_session_memory_after_runtime_activity(refresh_context, snapshot)
-            .await;
-        Ok(drained)
-    }
-
-    pub fn schedule_runtime_steer(
-        &self,
-        message: impl Into<String>,
-        reason: Option<String>,
-    ) -> Result<String> {
-        // Active-turn steer must bypass the host prompt queue so the runtime can
-        // merge it only at its own safe points between model/tool phases.
-        let queued = self.control_plane.push_steer(message, reason);
-        Ok(queued.id.to_string())
-    }
-
-    pub fn take_pending_steers(&self) -> Result<Vec<PendingControlSummary>> {
-        let steers = self
-            .pending_controls()
-            .into_iter()
-            .filter(|control| control.kind == PendingControlKind::Steer)
-            .collect::<Vec<_>>();
-        for steer in &steers {
-            let _ = self.remove_pending_control(&steer.id)?;
-        }
-        Ok(steers)
-    }
-
     pub async fn run_one_shot_prompt(&self, prompt: &str) -> Result<RunTurnOutcome> {
         let _turn_guard = self.begin_active_turn()?;
         let mut runtime = self.runtime.lock().await;
@@ -769,35 +492,6 @@ impl CodeAgentSession {
         self.sync_session_memory_after_runtime_activity(refresh_context, snapshot)
             .await;
         Ok(outcome)
-    }
-
-    pub async fn rollback_visible_history_to_message(
-        &self,
-        message_id: &str,
-    ) -> Result<HistoryRollbackOutcome> {
-        let mut runtime = self.runtime.lock().await;
-        let RollbackVisibleHistoryOutcome {
-            removed_message_ids,
-        } = runtime
-            .rollback_visible_history_to_message(message_id.into())
-            .await
-            .map_err(anyhow::Error::from)?;
-        let transcript = runtime.visible_transcript_snapshot();
-        self.sync_runtime_session_refs(&runtime);
-        Ok(HistoryRollbackOutcome {
-            transcript,
-            removed_message_count: removed_message_ids.len(),
-        })
-    }
-
-    pub async fn history_rollback_rounds(&self) -> Vec<HistoryRollbackRound> {
-        self.runtime
-            .lock()
-            .await
-            .visible_history_rollback_rounds_snapshot()
-            .into_iter()
-            .filter_map(history_rollback_round_from_snapshot)
-            .collect()
     }
 
     pub async fn compact_now(&self, notes: Option<String>) -> RuntimeResult<bool> {
@@ -852,34 +546,6 @@ impl CodeAgentSession {
         Ok(self
             .build_session_operation_outcome(SessionOperationAction::StartedFresh, None)
             .await)
-    }
-
-    pub fn approval_prompt(&self) -> Option<ApprovalPrompt> {
-        self.approvals.snapshot()
-    }
-
-    pub fn resolve_approval(&self, decision: ApprovalDecision) -> bool {
-        self.approvals.resolve(decision)
-    }
-
-    pub fn user_input_prompt(&self) -> Option<UserInputPrompt> {
-        self.user_inputs.snapshot()
-    }
-
-    pub fn resolve_user_input(&self, submission: UserInputSubmission) -> bool {
-        self.user_inputs.resolve(submission)
-    }
-
-    pub fn cancel_user_input(&self, reason: impl Into<String>) -> bool {
-        self.user_inputs.cancel(reason)
-    }
-
-    pub fn permission_request_prompt(&self) -> Option<PermissionRequestPrompt> {
-        self.permission_requests.snapshot()
-    }
-
-    pub fn resolve_permission_request(&self, decision: PermissionRequestDecision) -> bool {
-        self.permission_requests.resolve(decision)
     }
 
     async fn connect_pending_stdio_mcp_servers(
@@ -1001,86 +667,6 @@ impl CodeAgentSession {
         );
     }
 
-    pub async fn set_permission_mode(
-        &self,
-        mode: SessionPermissionMode,
-    ) -> Result<SessionPermissionModeOutcome> {
-        self.ensure_turn_idle_for_permission_switch()?;
-        let previous = self.permission_mode();
-        let policy = self.sandbox_policy_for_mode(mode);
-        let backend_status = sandbox_backend_status(&policy);
-        let sandbox_summary = describe_sandbox_policy(&policy, &backend_status);
-        let host_process_block_reason = backend_status.reason().map(str::to_string);
-        let host_process_surfaces_allowed =
-            !policy.requires_enforcement() || backend_status.is_available();
-        let connected_stdio_mcp_servers = if host_process_surfaces_allowed {
-            self.connect_pending_stdio_mcp_servers(&policy).await?
-        } else {
-            Vec::new()
-        };
-        let (tool_names, side_question_context, startup_diagnostics) = {
-            let mut runtime = self.runtime.lock().await;
-            self.host_process_executor
-                .set_host_process_surfaces(host_process_surfaces_allowed);
-            self.command_hook_executor
-                .set_host_process_surfaces(host_process_surfaces_allowed, policy.clone());
-            self.code_intel_backend
-                .set_managed_helpers_enabled(host_process_surfaces_allowed);
-            self.set_runtime_hooks(&mut runtime, host_process_surfaces_allowed);
-            if host_process_surfaces_allowed {
-                self.attach_connected_stdio_mcp_servers(&mut runtime, connected_stdio_mcp_servers);
-            } else {
-                self.detach_local_stdio_mcp_servers(&mut runtime);
-            }
-            let mut visibility = runtime.tool_visibility_context_snapshot();
-            visibility.set_feature_enabled(
-                HOST_FEATURE_HOST_PROCESS_SURFACES,
-                host_process_surfaces_allowed,
-            );
-
-            // Sticky `request_permissions` grants stay in the runtime-owned
-            // grant store. This setter only swaps the session's base sandbox
-            // mode so later tool calls and newly spawned subagents inherit the
-            // same host-selected baseline.
-            runtime.replace_tool_visibility_context(visibility);
-            runtime.set_base_sandbox_policy(policy.clone());
-            self.sync_runtime_session_refs(&runtime);
-            (
-                runtime.tool_registry_names(),
-                Self::side_question_context_from_runtime(&runtime, None),
-                self.refresh_startup_diagnostics_snapshot(
-                    &runtime,
-                    host_process_surfaces_allowed,
-                    host_process_block_reason.as_deref(),
-                ),
-            )
-        };
-        self.store_side_question_context(side_question_context);
-        {
-            let mut tool_context = self.session_tool_context.write().unwrap();
-            tool_context.effective_sandbox_policy = Some(policy);
-            tool_context.model_visibility.set_feature_enabled(
-                HOST_FEATURE_HOST_PROCESS_SURFACES,
-                host_process_surfaces_allowed,
-            );
-        }
-        {
-            let mut startup = self.startup.write().unwrap();
-            startup.permission_mode = mode;
-            startup.sandbox_summary = sandbox_summary.clone();
-            startup.host_process_surfaces_allowed = host_process_surfaces_allowed;
-            startup.tool_names = tool_names;
-            startup.startup_diagnostics = startup_diagnostics;
-        }
-
-        Ok(SessionPermissionModeOutcome {
-            previous,
-            current: mode,
-            sandbox_summary,
-            host_process_surfaces_allowed,
-        })
-    }
-
     fn begin_active_turn(&self) -> Result<ActiveTurnGuard> {
         if self
             .runtime_turn_active
@@ -1092,27 +678,6 @@ impl CodeAgentSession {
         Ok(ActiveTurnGuard {
             active: self.runtime_turn_active.clone(),
         })
-    }
-
-    fn ensure_turn_idle_for_permission_switch(&self) -> Result<()> {
-        if self.runtime_turn_active.load(Ordering::Acquire) {
-            return Err(anyhow::anyhow!(
-                PERMISSION_MODE_SWITCH_BLOCKED_WHILE_TURN_RUNNING
-            ));
-        }
-        Ok(())
-    }
-
-    pub fn permission_grant_snapshot(&self) -> PermissionGrantSnapshot {
-        self.permission_grants.snapshot()
-    }
-
-    pub fn permission_grant_profiles(&self) -> (PermissionProfile, PermissionProfile) {
-        let snapshot = self.permission_grant_snapshot();
-        (
-            permission_profile_from_granted(&snapshot.turn),
-            permission_profile_from_granted(&snapshot.session),
-        )
     }
 
     pub fn drain_events(&self) -> Vec<SessionEvent> {
@@ -2049,165 +1614,6 @@ impl CodeAgentSession {
         task_history::list_tasks(&self.store, resolved_session_ref.as_deref()).await
     }
 
-    pub async fn list_live_tasks(&self) -> Result<Vec<LiveTaskSummary>> {
-        let parent = self.live_task_parent_context();
-        let handles = self
-            .subagent_executor
-            .list(parent)
-            .await
-            .map_err(anyhow::Error::from)?;
-        Ok(live_task_summaries(&handles))
-    }
-
-    pub async fn spawn_live_task(&self, role: &str, prompt: &str) -> Result<LiveTaskSpawnOutcome> {
-        let role = role.trim();
-        if role.is_empty() {
-            return Err(anyhow::anyhow!("live task role cannot be empty"));
-        }
-        let prompt = prompt.trim();
-        if prompt.is_empty() {
-            return Err(anyhow::anyhow!("live task prompt cannot be empty"));
-        }
-
-        let parent = self.live_task_parent_context();
-        let task = AgentTaskSpec {
-            task_id: new_live_task_id(),
-            role: role.to_string(),
-            prompt: prompt.to_string(),
-            steer: None,
-            allowed_tools: Vec::new(),
-            requested_write_set: Vec::new(),
-            dependency_ids: Vec::new(),
-            timeout_seconds: None,
-        };
-        let mut handles = self
-            .subagent_executor
-            .spawn(parent, vec![SubagentLaunchSpec::from_task(task)])
-            .await
-            .map_err(anyhow::Error::from)?;
-        let handle = handles
-            .pop()
-            .ok_or_else(|| anyhow::anyhow!("live task spawn returned no child handle"))?;
-        Ok(LiveTaskSpawnOutcome {
-            task: live_task_summary(&handle),
-            prompt: prompt.to_string(),
-        })
-    }
-
-    pub async fn send_live_task(
-        &self,
-        task_or_agent_ref: &str,
-        message: &str,
-    ) -> Result<LiveTaskMessageOutcome> {
-        let parent = self.live_task_parent_context();
-        let handles = self
-            .subagent_executor
-            .list(parent.clone())
-            .await
-            .map_err(anyhow::Error::from)?;
-        let handle = resolve_live_task_reference(&handles, task_or_agent_ref)?.clone();
-        let updated = self
-            .subagent_executor
-            .send(
-                parent,
-                handle.agent_id.clone(),
-                Message::user(message),
-                SubagentInputDelivery::Queue,
-            )
-            .await
-            .map_err(anyhow::Error::from)?;
-        Ok(LiveTaskMessageOutcome {
-            requested_ref: task_or_agent_ref.to_string(),
-            agent_id: updated.agent_id.to_string(),
-            task_id: updated.task_id,
-            status: updated.status.clone(),
-            action: if handle.status.is_terminal() {
-                LiveTaskMessageAction::AlreadyTerminal
-            } else {
-                LiveTaskMessageAction::Sent
-            },
-            message: message.to_string(),
-        })
-    }
-
-    pub async fn wait_live_task(&self, task_or_agent_ref: &str) -> Result<LiveTaskWaitOutcome> {
-        let parent = self.live_task_parent_context();
-        let handles = self
-            .subagent_executor
-            .list(parent.clone())
-            .await
-            .map_err(anyhow::Error::from)?;
-        let handle = resolve_live_task_reference(&handles, task_or_agent_ref)?.clone();
-        let response = self
-            .subagent_executor
-            .wait(
-                parent.clone(),
-                AgentWaitRequest {
-                    agent_ids: vec![handle.agent_id.clone()],
-                    mode: AgentWaitMode::All,
-                },
-            )
-            .await
-            .map_err(anyhow::Error::from)?;
-        let completed = response
-            .completed
-            .into_iter()
-            .find(|candidate| candidate.agent_id == handle.agent_id)
-            .unwrap_or(handle);
-        let result = response
-            .results
-            .into_iter()
-            .find(|candidate| candidate.agent_id.as_str() == completed.agent_id.as_str())
-            .ok_or_else(|| anyhow::anyhow!("missing live task result for {}", completed.task_id))?;
-        let refreshed_handles = self
-            .subagent_executor
-            .list(parent)
-            .await
-            .map_err(anyhow::Error::from)?;
-        let remaining_live_tasks = live_task_summaries(&refreshed_handles)
-            .into_iter()
-            .filter(|task| task.agent_id != completed.agent_id.as_str())
-            .filter(|task| !task.status.is_terminal())
-            .collect();
-        Ok(LiveTaskWaitOutcome {
-            requested_ref: task_or_agent_ref.to_string(),
-            agent_id: completed.agent_id.to_string(),
-            task_id: completed.task_id,
-            status: completed.status,
-            summary: result.summary,
-            claimed_files: result.claimed_files,
-            remaining_live_tasks,
-        })
-    }
-
-    pub fn schedule_live_task_attention(
-        &self,
-        outcome: &LiveTaskWaitOutcome,
-        turn_running: bool,
-    ) -> Result<LiveTaskAttentionOutcome> {
-        let preview = render_live_task_attention_message(outcome);
-        if turn_running {
-            let control_id = self.schedule_runtime_steer(
-                preview.clone(),
-                Some(format!("live_task_wait_complete:{}", outcome.task_id)),
-            )?;
-            return Ok(LiveTaskAttentionOutcome {
-                action: LiveTaskAttentionAction::ScheduledSteer,
-                control_id,
-                preview,
-            });
-        }
-
-        let queued = self
-            .control_plane
-            .push_prompt(Message::user(preview.clone()));
-        Ok(LiveTaskAttentionOutcome {
-            action: LiveTaskAttentionAction::QueuedPrompt,
-            control_id: queued.id.to_string(),
-            preview,
-        })
-    }
-
     pub async fn load_session(&self, session_ref: &str) -> Result<LoadedSession> {
         let session_id = self
             .resolve_session_reference_from_operator_input(session_ref)
@@ -2226,36 +1632,6 @@ impl CodeAgentSession {
         let tasks = self.list_tasks(None).await?;
         let summary = task_history::resolve_task_reference(&tasks, task_ref)?.clone();
         task_history::load_task(&self.store, summary).await
-    }
-
-    pub async fn cancel_live_task(
-        &self,
-        task_or_agent_ref: &str,
-        reason: Option<String>,
-    ) -> Result<LiveTaskControlOutcome> {
-        let parent = self.live_task_parent_context();
-        let handles = self
-            .subagent_executor
-            .list(parent.clone())
-            .await
-            .map_err(anyhow::Error::from)?;
-        let handle = resolve_live_task_reference(&handles, task_or_agent_ref)?.clone();
-        let updated = self
-            .subagent_executor
-            .cancel(parent, handle.agent_id.clone(), reason)
-            .await
-            .map_err(anyhow::Error::from)?;
-        Ok(LiveTaskControlOutcome {
-            requested_ref: task_or_agent_ref.to_string(),
-            agent_id: updated.agent_id.to_string(),
-            task_id: updated.task_id,
-            status: updated.status.clone(),
-            action: if handle.status.is_terminal() {
-                LiveTaskControlAction::AlreadyTerminal
-            } else {
-                LiveTaskControlAction::Cancelled
-            },
-        })
     }
 
     pub async fn export_session(
@@ -2621,19 +1997,6 @@ impl CodeAgentSession {
         )
     }
 
-    // Host-initiated live task operations should still append their lifecycle
-    // into the active top-level session, otherwise operator-side spawn/send/
-    // cancel actions disappear from durable task history.
-    fn live_task_parent_context(&self) -> SubagentParentContext {
-        let startup = self.startup_snapshot();
-        SubagentParentContext {
-            session_id: Some(SessionId::from(startup.active_session_ref)),
-            agent_session_id: Some(AgentSessionId::from(startup.root_agent_session_id)),
-            turn_id: None,
-            parent_agent_id: None,
-        }
-    }
-
     async fn build_session_operation_outcome(
         &self,
         action: SessionOperationAction,
@@ -2649,109 +2012,6 @@ impl CodeAgentSession {
             startup,
             transcript,
         }
-    }
-}
-
-fn new_live_task_id() -> String {
-    format!("task_{}", new_opaque_id())
-}
-
-fn live_task_summary(handle: &agent::types::AgentHandle) -> LiveTaskSummary {
-    LiveTaskSummary {
-        agent_id: handle.agent_id.to_string(),
-        task_id: handle.task_id.clone(),
-        role: handle.role.clone(),
-        status: handle.status.clone(),
-        session_ref: handle.session_id.to_string(),
-        agent_session_ref: handle.agent_session_id.to_string(),
-    }
-}
-
-fn live_task_summaries(handles: &[agent::types::AgentHandle]) -> Vec<LiveTaskSummary> {
-    let mut summaries = handles.iter().map(live_task_summary).collect::<Vec<_>>();
-    summaries.sort_by(|left, right| {
-        left.task_id
-            .cmp(&right.task_id)
-            .then_with(|| left.agent_id.cmp(&right.agent_id))
-    });
-    summaries
-}
-
-fn render_live_task_attention_message(outcome: &LiveTaskWaitOutcome) -> String {
-    let mut lines = vec![format!(
-        "Background task {} finished with status {}.",
-        outcome.task_id, outcome.status
-    )];
-    if !outcome.summary.trim().is_empty() {
-        lines.push(format!("Task summary: {}", outcome.summary.trim()));
-    }
-    if !outcome.claimed_files.is_empty() {
-        lines.push(format!(
-            "Claimed files: {}.",
-            outcome.claimed_files.join(", ")
-        ));
-    }
-    if !outcome.remaining_live_tasks.is_empty() {
-        lines.push(format!(
-            "Still running background tasks: {}.",
-            outcome
-                .remaining_live_tasks
-                .iter()
-                .map(render_live_task_attention_task)
-                .collect::<Vec<_>>()
-                .join(", ")
-        ));
-    }
-    lines.push(live_task_attention_instruction(outcome.status.clone()).to_string());
-    lines.join("\n")
-}
-
-fn render_live_task_attention_task(task: &LiveTaskSummary) -> String {
-    format!("{} ({}, {})", task.task_id, task.role, task.status)
-}
-
-fn live_task_attention_instruction(status: AgentStatus) -> &'static str {
-    match status {
-        AgentStatus::Completed => {
-            "Review the completed background task and integrate any useful findings."
-        }
-        AgentStatus::Failed => "Inspect the failed background task and decide whether to retry it.",
-        AgentStatus::Cancelled => {
-            "Inspect the cancelled background task and decide whether it should be restarted."
-        }
-        AgentStatus::Queued
-        | AgentStatus::Running
-        | AgentStatus::WaitingApproval
-        | AgentStatus::WaitingMessage => {
-            "Inspect the background task state before deciding on the next step."
-        }
-    }
-}
-
-fn resolve_pending_control_reference<'a>(
-    controls: &'a [PendingControlSummary],
-    control_ref: &str,
-) -> Result<&'a PendingControlSummary> {
-    if let Some(control) = controls.iter().find(|control| control.id == control_ref) {
-        return Ok(control);
-    }
-
-    let matches = controls
-        .iter()
-        .filter(|control| control.id.starts_with(control_ref))
-        .collect::<Vec<_>>();
-    match matches.as_slice() {
-        [] => Err(anyhow::anyhow!("unknown pending control: {control_ref}")),
-        [control] => Ok(control),
-        _ => Err(anyhow::anyhow!(
-            "ambiguous pending control prefix {control_ref}: {}",
-            matches
-                .iter()
-                .take(6)
-                .map(|control| preview_id(&control.id))
-                .collect::<Vec<_>>()
-                .join(", ")
-        )),
     }
 }
 
@@ -2805,64 +2065,6 @@ fn wrap_side_question(question: &str) -> String {
     )
 }
 
-fn resolve_live_task_reference<'a>(
-    handles: &'a [agent::types::AgentHandle],
-    task_or_agent_ref: &str,
-) -> Result<&'a agent::types::AgentHandle> {
-    if let Some(handle) = handles
-        .iter()
-        .find(|handle| handle.task_id == task_or_agent_ref)
-    {
-        return Ok(handle);
-    }
-    if let Some(handle) = handles
-        .iter()
-        .find(|handle| handle.agent_id.as_str() == task_or_agent_ref)
-    {
-        return Ok(handle);
-    }
-
-    let task_matches = handles
-        .iter()
-        .filter(|handle| handle.task_id.starts_with(task_or_agent_ref))
-        .collect::<Vec<_>>();
-    match task_matches.as_slice() {
-        [handle] => return Ok(handle),
-        [] => {}
-        _ => {
-            return Err(anyhow::anyhow!(
-                "ambiguous live task prefix {task_or_agent_ref}: {}",
-                task_matches
-                    .iter()
-                    .take(6)
-                    .map(|handle| handle.task_id.clone())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ));
-        }
-    }
-
-    let agent_matches = handles
-        .iter()
-        .filter(|handle| handle.agent_id.as_str().starts_with(task_or_agent_ref))
-        .collect::<Vec<_>>();
-    match agent_matches.as_slice() {
-        [] => Err(anyhow::anyhow!(
-            "unknown live task or agent id: {task_or_agent_ref}"
-        )),
-        [handle] => Ok(handle),
-        _ => Err(anyhow::anyhow!(
-            "ambiguous live agent prefix {task_or_agent_ref}: {}",
-            agent_matches
-                .iter()
-                .take(6)
-                .map(|handle| preview_id(handle.agent_id.as_str()))
-                .collect::<Vec<_>>()
-                .join(", ")
-        )),
-    }
-}
-
 fn session_title_matches_query(session_title: Option<&str>, query: &str) -> bool {
     let query = query.trim().to_lowercase();
     if query.is_empty() {
@@ -2908,10 +2110,9 @@ fn prepend_session_title_preview(
 mod tests {
     use super::{
         CodeAgentSession, CompactionWorkingSnapshot, LiveTaskAttentionAction, LiveTaskSummary,
-        LiveTaskWaitOutcome, PERMISSION_MODE_SWITCH_BLOCKED_WHILE_TURN_RUNNING, PendingControlKind,
+        LiveTaskWaitOutcome, PERMISSION_MODE_SWITCH_BLOCKED_WHILE_TURN_RUNNING,
         STDIO_MCP_DISABLED_WARNING_PREFIX, SessionMemoryRefreshContext, SessionOperation,
-        SessionOperationAction, SessionPermissionMode, SessionStartupSnapshot,
-        SideQuestionContextSnapshot,
+        SessionOperationAction, SessionStartupSnapshot, SideQuestionContextSnapshot,
     };
     use crate::backend::boot_runtime::{
         COMMAND_HOOK_DISABLED_WARNING_PREFIX, MANAGED_CODE_INTEL_DISABLED_WARNING_PREFIX,
@@ -2921,6 +2122,8 @@ mod tests {
         ApprovalCoordinator, McpServerSummary, PermissionRequestCoordinator, SessionEventStream,
         StartupDiagnosticsSnapshot, UserInputCoordinator, list_mcp_servers,
     };
+    use crate::interaction::PendingControlKind;
+    use crate::interaction::SessionPermissionMode;
     use crate::statusline::StatusLineConfig;
     use agent::mcp::{
         ConnectedMcpServer, McpCatalog, McpResource, McpResourceTemplate, McpServerConfig,

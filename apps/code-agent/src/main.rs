@@ -3,7 +3,7 @@ use agent::runtime::{HostRuntimeLimits, build_host_tokio_runtime};
 use agent_env::EnvMap;
 use anyhow::{Context, Result, bail};
 use code_agent_backend::{
-    AppOptions, CodeAgentFrontendSession, SandboxFallbackNotice, SessionApprovalMode,
+    AppOptions, CodeAgentUiSession, SandboxFallbackNotice, SessionApprovalMode,
     build_sandbox_fallback_notice, build_session, build_session_with_approval_mode,
     inject_process_env, inspect_sandbox_preflight,
 };
@@ -105,7 +105,7 @@ async fn async_main(workspace_root: PathBuf, options: AppOptions) -> Result<()> 
     }
 
     let ui_state = SharedUiState::new();
-    let session = CodeAgentFrontendSession::from(build_session(&options, &workspace_root).await?);
+    let session = CodeAgentUiSession::from(build_session(&options, &workspace_root).await?);
 
     CodeAgentTui::new(
         session,

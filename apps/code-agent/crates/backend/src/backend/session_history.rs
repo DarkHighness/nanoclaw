@@ -1,4 +1,9 @@
-use super::{session_catalog::PersistedAgentSessionSummary, session_resume};
+use super::session_resume;
+use crate::ui::PersistedAgentSessionSummary;
+use crate::ui::{
+    LoadedAgentSession, LoadedSession, LoadedSubagentSession, SessionExportArtifact,
+    SessionExportKind,
+};
 use agent::types::{
     AgentHandle, AgentSessionId, AgentStatus, AgentTaskSpec, Message, MessageRole,
     SessionEventEnvelope, SessionEventKind, SessionId,
@@ -8,50 +13,8 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use store::{
-    SessionSearchResult, SessionStore, SessionSummary, SessionTokenUsageReport, TokenUsageRecord,
-    replay_transcript,
+    SessionSearchResult, SessionStore, SessionSummary, SessionTokenUsageReport, replay_transcript,
 };
-
-#[derive(Clone, Debug)]
-pub struct LoadedSession {
-    pub summary: SessionSummary,
-    pub agent_session_ids: Vec<AgentSessionId>,
-    pub transcript: Vec<Message>,
-    pub events: Vec<SessionEventEnvelope>,
-    pub token_usage: SessionTokenUsageReport,
-}
-
-#[derive(Clone, Debug)]
-pub struct LoadedAgentSession {
-    pub summary: PersistedAgentSessionSummary,
-    pub transcript: Vec<Message>,
-    pub events: Vec<SessionEventEnvelope>,
-    pub token_usage: Option<TokenUsageRecord>,
-    pub subagents: Vec<LoadedSubagentSession>,
-}
-
-#[derive(Clone, Debug)]
-pub struct LoadedSubagentSession {
-    pub handle: AgentHandle,
-    pub task: AgentTaskSpec,
-    pub status: AgentStatus,
-    pub summary: String,
-    pub token_usage: Option<TokenUsageRecord>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SessionExportKind {
-    EventsJsonl,
-    TranscriptText,
-}
-
-#[derive(Clone, Debug)]
-pub struct SessionExportArtifact {
-    pub kind: SessionExportKind,
-    pub session_id: SessionId,
-    pub output_path: PathBuf,
-    pub item_count: usize,
-}
 
 pub async fn list_sessions(store: &Arc<dyn SessionStore>) -> Result<Vec<SessionSummary>> {
     Ok(store.list_sessions().await?)
@@ -612,7 +575,7 @@ mod tests {
             transcript_message_count: 2,
             session_title: None,
             last_user_prompt: Some("inspect".to_string()),
-            resume_support: super::super::session_catalog::ResumeSupport::AttachedToActiveRuntime,
+            resume_support: crate::ui::ResumeSupport::AttachedToActiveRuntime,
         };
         let token_usage = SessionTokenUsageReport {
             session: None,
@@ -724,7 +687,7 @@ mod tests {
             transcript_message_count: 5,
             session_title: None,
             last_user_prompt: Some("kept prompt".to_string()),
-            resume_support: super::super::session_catalog::ResumeSupport::AttachedToActiveRuntime,
+            resume_support: crate::ui::ResumeSupport::AttachedToActiveRuntime,
         };
         let token_usage = SessionTokenUsageReport::default();
 

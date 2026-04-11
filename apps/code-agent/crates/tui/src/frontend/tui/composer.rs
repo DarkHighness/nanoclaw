@@ -216,9 +216,7 @@ impl CodeAgentTui {
     }
 
     pub(super) fn composer_accepts_text_input(&self) -> bool {
-        if self.session.approval_prompt().is_some()
-            || self.session.permission_request_prompt().is_some()
-        {
+        if self.approval_prompt().is_some() || self.permission_request_prompt().is_some() {
             return false;
         }
 
@@ -326,7 +324,7 @@ impl CodeAgentTui {
     }
 
     pub(super) fn record_submitted_input(&mut self, input: &str) {
-        let workspace_root = self.session.workspace_root_buf();
+        let workspace_root = self.workspace_root_buf();
         let mut persisted = None;
         self.ui_state.mutate(|state| {
             let _ = state.record_local_input_history(input);
@@ -340,7 +338,7 @@ impl CodeAgentTui {
     }
 
     pub(super) fn record_submitted_prompt(&mut self, submission: &ComposerSubmission) {
-        let workspace_root = self.session.workspace_root_buf();
+        let workspace_root = self.workspace_root_buf();
         let mut persisted = None;
         self.ui_state.mutate(|state| {
             state.clear_composer_context_hint();
@@ -357,7 +355,7 @@ impl CodeAgentTui {
 
     pub(super) fn composer_attachment_context(&self) -> ToolExecutionContext {
         ToolExecutionContext {
-            workspace_root: self.session.workspace_root_buf(),
+            workspace_root: self.workspace_root_buf(),
             workspace_only: true,
             ..Default::default()
         }
