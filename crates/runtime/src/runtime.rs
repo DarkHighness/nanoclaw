@@ -190,6 +190,10 @@ impl AgentRuntime {
         self.tool_context.model_visibility = visibility;
     }
 
+    pub fn replace_hooks(&mut self, hooks: Vec<HookRegistration>) {
+        self.hook_registrations = hooks;
+    }
+
     #[must_use]
     pub fn tool_visibility_context_snapshot(&self) -> types::ToolVisibilityContext {
         self.tool_context.model_visibility.clone()

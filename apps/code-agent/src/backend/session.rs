@@ -1,3 +1,7 @@
+use crate::backend::boot_runtime::{
+    COMMAND_HOOK_DISABLED_WARNING_PREFIX, MANAGED_CODE_INTEL_DISABLED_WARNING_PREFIX,
+    SwitchableCodeIntelBackend, SwitchableCommandHookExecutor,
+};
 use crate::backend::session_catalog;
 use crate::backend::session_episodic_capture::{
     build_session_episodic_capture_prompt, parse_session_episodic_capture_entries,
@@ -45,9 +49,9 @@ use agent::tools::{
     request_permission_profile_from_granted, sandbox_backend_status,
 };
 use agent::types::{
-    AgentSessionId, AgentStatus, AgentTaskSpec, AgentWaitMode, AgentWaitRequest, Message,
-    MessageId, ModelEvent, ModelRequest, SessionId, ToolSpec, TurnId, message_operator_text,
-    new_opaque_id,
+    AgentSessionId, AgentStatus, AgentTaskSpec, AgentWaitMode, AgentWaitRequest, HookHandler,
+    HookRegistration, Message, MessageId, ModelEvent, ModelRequest, SessionId, ToolSpec, TurnId,
+    message_operator_text, new_opaque_id,
 };
 use agent::{AgentRuntime, RuntimeCommand, Skill, ToolExecutionContext};
 use anyhow::Result;
@@ -354,7 +358,11 @@ pub(crate) struct CodeAgentSession {
     store: Arc<dyn SessionStore>,
     mcp_servers: Arc<RwLock<Vec<ConnectedMcpServer>>>,
     configured_mcp_servers: Arc<Vec<McpServerConfig>>,
+    runtime_hooks: Arc<RwLock<Vec<HookRegistration>>>,
+    configured_runtime_hooks: Arc<Vec<HookRegistration>>,
     mcp_process_executor: Arc<dyn agent::tools::ProcessExecutor>,
+    command_hook_executor: Arc<SwitchableCommandHookExecutor>,
+    code_intel_backend: Arc<SwitchableCodeIntelBackend>,
     approvals: ApprovalCoordinator,
     user_inputs: UserInputCoordinator,
     permission_requests: PermissionRequestCoordinator,
@@ -382,7 +390,11 @@ impl CodeAgentSession {
         store: Arc<dyn SessionStore>,
         mcp_servers: Vec<ConnectedMcpServer>,
         configured_mcp_servers: Vec<McpServerConfig>,
+        runtime_hooks: Arc<RwLock<Vec<HookRegistration>>>,
+        configured_runtime_hooks: Vec<HookRegistration>,
         mcp_process_executor: Arc<dyn agent::tools::ProcessExecutor>,
+        command_hook_executor: Arc<SwitchableCommandHookExecutor>,
+        code_intel_backend: Arc<SwitchableCodeIntelBackend>,
         approvals: ApprovalCoordinator,
         user_inputs: UserInputCoordinator,
         permission_requests: PermissionRequestCoordinator,
@@ -422,7 +434,11 @@ impl CodeAgentSession {
             store,
             mcp_servers: Arc::new(RwLock::new(mcp_servers)),
             configured_mcp_servers: Arc::new(configured_mcp_servers),
+            runtime_hooks,
+            configured_runtime_hooks: Arc::new(configured_runtime_hooks),
             mcp_process_executor,
+            command_hook_executor,
+            code_intel_backend,
             approvals,
             user_inputs,
             permission_requests,
@@ -492,10 +508,36 @@ impl CodeAgentSession {
             .collect()
     }
 
+    fn configured_command_hook_names(&self) -> Vec<String> {
+        self.configured_runtime_hooks
+            .iter()
+            .filter_map(|hook| match hook.handler {
+                HookHandler::Command(_) => Some(hook.name.to_string()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn runtime_hooks_for_host_process_mode(
+        &self,
+        host_process_surfaces_allowed: bool,
+    ) -> Vec<HookRegistration> {
+        if host_process_surfaces_allowed {
+            return self.configured_runtime_hooks.as_ref().clone();
+        }
+
+        self.configured_runtime_hooks
+            .iter()
+            .filter(|hook| !matches!(hook.handler, HookHandler::Command(_)))
+            .cloned()
+            .collect()
+    }
+
     fn refresh_startup_diagnostics_snapshot(
         &self,
         runtime: &AgentRuntime,
         host_process_surfaces_allowed: bool,
+        host_process_block_reason: Option<&str>,
     ) -> StartupDiagnosticsSnapshot {
         let mut snapshot = self.startup.read().unwrap().startup_diagnostics.clone();
         let tool_specs = runtime.tool_specs();
@@ -506,15 +548,30 @@ impl CodeAgentSession {
         snapshot.local_tool_count = local_tool_count;
         snapshot.mcp_tool_count = tool_specs.len().saturating_sub(local_tool_count);
         snapshot.mcp_servers = list_mcp_servers(&self.connected_mcp_servers_snapshot());
-        snapshot
-            .warnings
-            .retain(|warning| !warning.starts_with(STDIO_MCP_DISABLED_WARNING_PREFIX));
+        snapshot.warnings.retain(|warning| {
+            !warning.starts_with(STDIO_MCP_DISABLED_WARNING_PREFIX)
+                && !warning.starts_with(COMMAND_HOOK_DISABLED_WARNING_PREFIX)
+                && !warning.starts_with(MANAGED_CODE_INTEL_DISABLED_WARNING_PREFIX)
+        });
         if !host_process_surfaces_allowed {
             let blocked = self.configured_stdio_mcp_server_names();
             if !blocked.is_empty() {
                 snapshot.warnings.push(format!(
                     "{STDIO_MCP_DISABLED_WARNING_PREFIX} {}",
                     blocked.join(", ")
+                ));
+            }
+            let blocked_hooks = self.configured_command_hook_names();
+            if !blocked_hooks.is_empty() {
+                snapshot.warnings.push(format!(
+                    "{COMMAND_HOOK_DISABLED_WARNING_PREFIX} {}",
+                    blocked_hooks.join(", ")
+                ));
+            }
+            if self.code_intel_backend.managed_helpers_supported() {
+                let reason = host_process_block_reason.unwrap_or("backend unavailable");
+                snapshot.warnings.push(format!(
+                    "{MANAGED_CODE_INTEL_DISABLED_WARNING_PREFIX} {reason}"
                 ));
             }
         }
@@ -902,6 +959,14 @@ impl CodeAgentSession {
         Ok(prepared)
     }
 
+    fn set_runtime_hooks(&self, runtime: &mut AgentRuntime, host_process_surfaces_allowed: bool) {
+        let hooks = self.runtime_hooks_for_host_process_mode(host_process_surfaces_allowed);
+        runtime.replace_hooks(hooks.clone());
+        // Root runtime turns can swap their hook stack in place, but future
+        // child runtimes are built from this shared snapshot during spawn.
+        *self.runtime_hooks.write().unwrap() = hooks;
+    }
+
     fn rebuild_mcp_resource_tools(&self, runtime: &mut AgentRuntime) {
         let registry = runtime.tool_registry_handle();
         // Resource listing/reading stays behind fixed aggregate tool names, so
@@ -993,6 +1058,7 @@ impl CodeAgentSession {
         let policy = self.sandbox_policy_for_mode(mode);
         let backend_status = sandbox_backend_status(&policy);
         let sandbox_summary = describe_sandbox_policy(&policy, &backend_status);
+        let host_process_block_reason = backend_status.reason().map(str::to_string);
         let host_process_surfaces_allowed =
             !policy.requires_enforcement() || backend_status.is_available();
         let connected_stdio_mcp_servers = if host_process_surfaces_allowed {
@@ -1002,6 +1068,11 @@ impl CodeAgentSession {
         };
         let (tool_names, side_question_context, startup_diagnostics) = {
             let mut runtime = self.runtime.lock().await;
+            self.command_hook_executor
+                .set_host_process_surfaces(host_process_surfaces_allowed, policy.clone());
+            self.code_intel_backend
+                .set_managed_helpers_enabled(host_process_surfaces_allowed);
+            self.set_runtime_hooks(&mut runtime, host_process_surfaces_allowed);
             if host_process_surfaces_allowed {
                 self.attach_connected_stdio_mcp_servers(&mut runtime, connected_stdio_mcp_servers);
             } else {
@@ -1023,7 +1094,11 @@ impl CodeAgentSession {
             (
                 runtime.tool_registry_names(),
                 Self::side_question_context_from_runtime(&runtime, None),
-                self.refresh_startup_diagnostics_snapshot(&runtime, host_process_surfaces_allowed),
+                self.refresh_startup_diagnostics_snapshot(
+                    &runtime,
+                    host_process_surfaces_allowed,
+                    host_process_block_reason.as_deref(),
+                ),
             )
         };
         self.store_side_question_context(side_question_context);
@@ -2878,6 +2953,10 @@ mod tests {
         SessionMemoryRefreshContext, SessionOperation, SessionOperationAction,
         SessionPermissionMode, SessionStartupSnapshot, SideQuestionContextSnapshot,
     };
+    use crate::backend::boot_runtime::{
+        COMMAND_HOOK_DISABLED_WARNING_PREFIX, MANAGED_CODE_INTEL_DISABLED_WARNING_PREFIX,
+        SwitchableCodeIntelBackend, SwitchableCommandHookExecutor,
+    };
     use crate::backend::{
         ApprovalCoordinator, McpServerSummary, PermissionRequestCoordinator, SessionEventStream,
         StartupDiagnosticsSnapshot, UserInputCoordinator, list_mcp_servers,
@@ -2900,8 +2979,9 @@ mod tests {
     };
     use agent::types::{
         AgentHandle, AgentId, AgentResultEnvelope, AgentSessionId, AgentStatus, AgentTaskSpec,
-        AgentWaitRequest, AgentWaitResponse, McpToolBoundary, McpTransportKind, Message, MessageId,
-        MessagePart, ModelEvent, ModelRequest, SessionEventEnvelope, SessionEventKind, SessionId,
+        AgentWaitRequest, AgentWaitResponse, CommandHookHandler, HookEvent, HookHandler,
+        HookRegistration, McpToolBoundary, McpTransportKind, Message, MessageId, MessagePart,
+        ModelEvent, ModelRequest, SessionEventEnvelope, SessionEventKind, SessionId,
         SubmittedPromptSnapshot, ToolAvailability, ToolOrigin, ToolOutputMode, ToolSource,
         ToolSpec, ToolVisibilityContext,
     };
@@ -3385,7 +3465,43 @@ mod tests {
         memory_backend: Option<Arc<dyn MemoryBackend>>,
         session_memory_model_backend: Option<Arc<dyn ModelBackend>>,
     ) -> CodeAgentSession {
+        build_session_with_runtime_state(
+            runtime,
+            subagent_executor,
+            store,
+            startup,
+            mcp_servers,
+            configured_mcp_servers,
+            Vec::new(),
+            Arc::new(SwitchableCodeIntelBackend::lexical_only()),
+            memory_backend,
+            session_memory_model_backend,
+        )
+    }
+
+    fn build_session_with_runtime_state(
+        runtime: agent::AgentRuntime,
+        subagent_executor: Arc<dyn SubagentExecutor>,
+        store: Arc<dyn SessionStore>,
+        startup: SessionStartupSnapshot,
+        mcp_servers: Vec<ConnectedMcpServer>,
+        configured_mcp_servers: Vec<McpServerConfig>,
+        configured_runtime_hooks: Vec<HookRegistration>,
+        code_intel_backend: Arc<SwitchableCodeIntelBackend>,
+        memory_backend: Option<Arc<dyn MemoryBackend>>,
+        session_memory_model_backend: Option<Arc<dyn ModelBackend>>,
+    ) -> CodeAgentSession {
         let default_sandbox_policy = runtime.base_sandbox_policy();
+        let process_executor = Arc::new(agent::ManagedPolicyProcessExecutor::new());
+        let runtime_hooks = Arc::new(RwLock::new(if startup.host_process_surfaces_allowed {
+            configured_runtime_hooks.clone()
+        } else {
+            configured_runtime_hooks
+                .iter()
+                .filter(|hook| !matches!(hook.handler, HookHandler::Command(_)))
+                .cloned()
+                .collect()
+        }));
         let session_tool_context = Arc::new(RwLock::new(ToolExecutionContext {
             workspace_root: startup.workspace_root.clone(),
             worktree_root: Some(startup.workspace_root.clone()),
@@ -3401,7 +3517,15 @@ mod tests {
             store,
             mcp_servers,
             configured_mcp_servers,
-            Arc::new(agent::ManagedPolicyProcessExecutor::new()),
+            runtime_hooks,
+            configured_runtime_hooks,
+            process_executor.clone(),
+            Arc::new(SwitchableCommandHookExecutor::new(
+                process_executor,
+                default_sandbox_policy.clone(),
+                startup.host_process_surfaces_allowed,
+            )),
+            code_intel_backend,
             ApprovalCoordinator::default(),
             UserInputCoordinator::default(),
             PermissionRequestCoordinator::default(),
@@ -3488,6 +3612,20 @@ mod tests {
                 }),
             )),
             catalog,
+        }
+    }
+
+    fn command_hook(name: &str) -> HookRegistration {
+        HookRegistration {
+            name: name.into(),
+            event: HookEvent::SessionStart,
+            matcher: None,
+            handler: HookHandler::Command(CommandHookHandler {
+                command: "/bin/true".to_string(),
+                asynchronous: false,
+            }),
+            timeout_ms: None,
+            execution: None,
         }
     }
 
@@ -3722,6 +3860,147 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn permission_mode_switch_restores_command_hooks_into_runtime_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(InMemorySessionStore::new());
+        let runtime = AgentRuntimeBuilder::new(Arc::new(NeverBackend), store.clone())
+            .hook_runner(Arc::new(HookRunner::default()))
+            .tool_context(ToolExecutionContext {
+                workspace_root: dir.path().to_path_buf(),
+                workspace_only: true,
+                ..Default::default()
+            })
+            .build();
+        let mut startup = startup_snapshot(dir.path());
+        startup.host_process_surfaces_allowed = false;
+        startup.startup_diagnostics.warnings =
+            vec![format!("{COMMAND_HOOK_DISABLED_WARNING_PREFIX} guard")];
+        let session = build_session_with_runtime_state(
+            runtime,
+            Arc::new(NoopSubagentExecutor),
+            store,
+            startup,
+            Vec::new(),
+            Vec::new(),
+            vec![command_hook("guard")],
+            Arc::new(SwitchableCodeIntelBackend::lexical_only()),
+            None,
+            None,
+        );
+
+        assert!(session.runtime_hooks.read().unwrap().is_empty());
+
+        session
+            .set_permission_mode(SessionPermissionMode::DangerFullAccess)
+            .await
+            .unwrap();
+
+        let hook_names = session
+            .runtime_hooks
+            .read()
+            .unwrap()
+            .iter()
+            .map(|hook| hook.name.to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(hook_names, vec!["guard".to_string()]);
+        assert!(
+            session
+                .startup_snapshot()
+                .startup_diagnostics
+                .warnings
+                .iter()
+                .all(|warning| !warning.starts_with(COMMAND_HOOK_DISABLED_WARNING_PREFIX))
+        );
+    }
+
+    #[tokio::test]
+    async fn refresh_startup_diagnostics_reports_deferred_command_hooks() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(InMemorySessionStore::new());
+        let runtime = AgentRuntimeBuilder::new(Arc::new(NeverBackend), store.clone())
+            .hook_runner(Arc::new(HookRunner::default()))
+            .tool_context(ToolExecutionContext {
+                workspace_root: dir.path().to_path_buf(),
+                workspace_only: true,
+                ..Default::default()
+            })
+            .build();
+        let session = build_session_with_runtime_state(
+            runtime,
+            Arc::new(NoopSubagentExecutor),
+            store,
+            startup_snapshot(dir.path()),
+            Vec::new(),
+            Vec::new(),
+            vec![command_hook("guard")],
+            Arc::new(SwitchableCodeIntelBackend::lexical_only()),
+            None,
+            None,
+        );
+
+        let runtime = session.runtime.lock().await;
+        let diagnostics =
+            session.refresh_startup_diagnostics_snapshot(&runtime, false, Some("bwrap missing"));
+
+        assert!(diagnostics.warnings.iter().any(|warning| {
+            warning.starts_with(COMMAND_HOOK_DISABLED_WARNING_PREFIX) && warning.contains("guard")
+        }));
+    }
+
+    #[tokio::test]
+    async fn permission_mode_switch_enables_managed_code_intel_and_clears_warning() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(InMemorySessionStore::new());
+        let runtime = AgentRuntimeBuilder::new(Arc::new(NeverBackend), store.clone())
+            .hook_runner(Arc::new(HookRunner::default()))
+            .tool_context(ToolExecutionContext {
+                workspace_root: dir.path().to_path_buf(),
+                workspace_only: true,
+                ..Default::default()
+            })
+            .build();
+        let code_intel_backend = Arc::new(SwitchableCodeIntelBackend::managed_for_workspace(
+            dir.path(),
+            Arc::new(agent::ManagedPolicyProcessExecutor::new()),
+            false,
+        ));
+        let mut startup = startup_snapshot(dir.path());
+        startup.host_process_surfaces_allowed = false;
+        startup.startup_diagnostics.warnings = vec![format!(
+            "{MANAGED_CODE_INTEL_DISABLED_WARNING_PREFIX} bwrap missing"
+        )];
+        let session = build_session_with_runtime_state(
+            runtime,
+            Arc::new(NoopSubagentExecutor),
+            store,
+            startup,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            code_intel_backend,
+            None,
+            None,
+        );
+
+        assert!(!session.code_intel_backend.managed_helpers_enabled());
+
+        session
+            .set_permission_mode(SessionPermissionMode::DangerFullAccess)
+            .await
+            .unwrap();
+
+        assert!(session.code_intel_backend.managed_helpers_enabled());
+        assert!(
+            session
+                .startup_snapshot()
+                .startup_diagnostics
+                .warnings
+                .iter()
+                .all(|warning| !warning.starts_with(MANAGED_CODE_INTEL_DISABLED_WARNING_PREFIX))
+        );
+    }
+
+    #[tokio::test]
     async fn attaching_stdio_mcp_servers_registers_tools_and_resources() {
         let dir = tempfile::tempdir().unwrap();
         let store = Arc::new(InMemorySessionStore::new());
@@ -3805,7 +4084,8 @@ mod tests {
 
         let mut runtime = session.runtime.lock().await;
         session.detach_local_stdio_mcp_servers(&mut runtime);
-        let diagnostics = session.refresh_startup_diagnostics_snapshot(&runtime, false);
+        let diagnostics =
+            session.refresh_startup_diagnostics_snapshot(&runtime, false, Some("bwrap missing"));
 
         assert!(session.connected_mcp_servers_snapshot().is_empty());
         assert!(

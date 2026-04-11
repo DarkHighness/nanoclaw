@@ -1,31 +1,365 @@
 use crate::options::AppOptions;
+use agent::runtime::RuntimeError;
 use agent::runtime::{
     CommandHookExecutor, DefaultCommandHookExecutor, HookRunner, LoopDetectionConfig,
 };
-use agent::tools::{SandboxBackendStatus, SubagentExecutor};
+use agent::tools::{
+    CodeCallHierarchyDirection, CodeCallHierarchyEntry, CodeHover, CodeNavigationTarget,
+    CodeReference, CodeSymbol, FileActivityObserver, SandboxBackendStatus, SubagentExecutor,
+};
 use agent::{
     ApplyPatchTool, CodeCallHierarchyTool, CodeDefinitionsTool, CodeDocumentSymbolsTool,
     CodeHoverTool, CodeImplementationsTool, CodeIntelBackend, CodeReferencesTool,
     CodeSymbolSearchTool, EditTool, ExecCommandTool, ExecutionState, GlobTool, GrepTool,
     JsReplTool, ListTool, ManagedCodeIntelBackend, ManagedCodeIntelOptions,
     ManagedPolicyProcessExecutor, PatchTool, PlanState, ReadTool, RequestPermissionsTool,
-    RequestUserInputTool, SandboxPolicy, SkillCatalog, SkillTool, TaskTool, ToolRegistry,
-    ToolSearchTool, ToolSuggestTool, UpdateExecutionTool, UpdatePlanTool, ViewImageTool,
-    WebFetchTool, WebSearchBackendsTool, WebSearchTool, WorkspaceTextCodeIntelBackend,
-    WriteStdinTool, WriteTool,
+    RequestUserInputTool, SandboxPolicy, SkillCatalog, SkillTool, TaskTool, ToolExecutionContext,
+    ToolRegistry, ToolSearchTool, ToolSuggestTool, UpdateExecutionTool, UpdatePlanTool,
+    ViewImageTool, WebFetchTool, WebSearchBackendsTool, WebSearchTool,
+    WorkspaceTextCodeIntelBackend, WriteStdinTool, WriteTool,
 };
 use std::collections::BTreeMap;
-use std::path::Path;
-use std::sync::Arc;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, RwLock};
 use tracing::warn;
+
+pub(crate) const COMMAND_HOOK_DISABLED_WARNING_PREFIX: &str =
+    "sandbox backend unavailable; disabled command hooks to avoid host subprocess execution:";
+pub(crate) const MANAGED_CODE_INTEL_DISABLED_WARNING_PREFIX: &str = "sandbox backend unavailable; disabled managed code-intel helpers to avoid host subprocess execution:";
+
+#[derive(Clone)]
+pub(crate) struct SwitchableCommandHookExecutor {
+    process_executor: Arc<ManagedPolicyProcessExecutor>,
+    state: Arc<RwLock<SwitchableCommandHookState>>,
+}
+
+#[derive(Clone)]
+struct SwitchableCommandHookState {
+    enabled: bool,
+    sandbox_policy: SandboxPolicy,
+}
+
+#[derive(Clone)]
+struct ManagedCodeIntelConfig {
+    workspace_root: PathBuf,
+    options: ManagedCodeIntelOptions,
+    process_executor: Arc<ManagedPolicyProcessExecutor>,
+}
+
+impl ManagedCodeIntelConfig {
+    fn build_backend(&self) -> Arc<ManagedCodeIntelBackend> {
+        Arc::new(ManagedCodeIntelBackend::new(
+            self.workspace_root.clone(),
+            self.options.clone(),
+            self.process_executor.clone(),
+            SandboxPolicy::permissive(),
+            SandboxPolicy::permissive(),
+        ))
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct SwitchableCodeIntelBackend {
+    fallback: WorkspaceTextCodeIntelBackend,
+    managed_config: Option<ManagedCodeIntelConfig>,
+    managed_backend: Arc<RwLock<Option<Arc<ManagedCodeIntelBackend>>>>,
+}
 
 pub(crate) struct RuntimeTooling {
     pub(crate) hook_runner: Arc<HookRunner>,
     pub(crate) loop_detection_config: LoopDetectionConfig,
     pub(crate) process_executor: Arc<ManagedPolicyProcessExecutor>,
+    pub(crate) command_hook_executor: Arc<SwitchableCommandHookExecutor>,
+    pub(crate) code_intel_backend: Arc<SwitchableCodeIntelBackend>,
     pub(crate) host_process_surfaces_allowed: bool,
     pub(crate) startup_warnings: Vec<String>,
     pub(crate) tools: ToolRegistry,
+}
+
+impl SwitchableCommandHookExecutor {
+    #[must_use]
+    pub(crate) fn new(
+        process_executor: Arc<ManagedPolicyProcessExecutor>,
+        sandbox_policy: SandboxPolicy,
+        enabled: bool,
+    ) -> Self {
+        Self {
+            process_executor,
+            state: Arc::new(RwLock::new(SwitchableCommandHookState {
+                enabled,
+                sandbox_policy,
+            })),
+        }
+    }
+
+    pub(crate) fn set_host_process_surfaces(&self, enabled: bool, sandbox_policy: SandboxPolicy) {
+        let mut state = self.state.write().unwrap();
+        state.enabled = enabled;
+        state.sandbox_policy = sandbox_policy;
+    }
+}
+
+#[async_trait::async_trait]
+impl CommandHookExecutor for SwitchableCommandHookExecutor {
+    async fn execute(
+        &self,
+        registration: &agent::types::HookRegistration,
+        context: agent::types::HookContext,
+    ) -> agent::runtime::Result<agent::types::HookResult> {
+        let state = self.state.read().unwrap().clone();
+        if !state.enabled {
+            return Err(RuntimeError::hook(
+                "command hooks are disabled until host-process surfaces are enabled",
+            ));
+        }
+
+        DefaultCommandHookExecutor::with_process_executor_and_policy(
+            BTreeMap::new(),
+            self.process_executor.clone(),
+            state.sandbox_policy,
+        )
+        .execute(registration, context)
+        .await
+    }
+}
+
+impl SwitchableCodeIntelBackend {
+    #[must_use]
+    fn new(
+        options: &AppOptions,
+        workspace_root: &Path,
+        process_executor: Arc<ManagedPolicyProcessExecutor>,
+        host_process_surfaces_allowed: bool,
+        sandbox_status: &SandboxBackendStatus,
+        startup_warnings: &mut Vec<String>,
+    ) -> Self {
+        let managed_config = options.lsp_enabled.then(|| {
+            let mut lsp_options = ManagedCodeIntelOptions::for_workspace(workspace_root);
+            lsp_options.auto_install = options.lsp_auto_install;
+            if let Some(install_root) = &options.lsp_install_root {
+                lsp_options.install_root = install_root.clone();
+            }
+            ManagedCodeIntelConfig {
+                workspace_root: workspace_root.to_path_buf(),
+                options: lsp_options,
+                process_executor,
+            }
+        });
+        let managed_backend = if host_process_surfaces_allowed {
+            managed_config
+                .as_ref()
+                .map(ManagedCodeIntelConfig::build_backend)
+        } else {
+            if managed_config.is_some()
+                && let Some(reason) = sandbox_status.reason()
+            {
+                warn!(
+                    "sandbox enforcement backend unavailable; disabling managed code-intel helpers to avoid host fallback: {reason}"
+                );
+                startup_warnings.push(format!(
+                    "{MANAGED_CODE_INTEL_DISABLED_WARNING_PREFIX} {reason}"
+                ));
+            }
+            None
+        };
+
+        Self {
+            fallback: WorkspaceTextCodeIntelBackend::new(),
+            managed_config,
+            managed_backend: Arc::new(RwLock::new(managed_backend)),
+        }
+    }
+
+    #[must_use]
+    pub(crate) fn lexical_only() -> Self {
+        Self {
+            fallback: WorkspaceTextCodeIntelBackend::new(),
+            managed_config: None,
+            managed_backend: Arc::new(RwLock::new(None)),
+        }
+    }
+
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn managed_for_workspace(
+        workspace_root: &Path,
+        process_executor: Arc<ManagedPolicyProcessExecutor>,
+        enabled: bool,
+    ) -> Self {
+        let config = ManagedCodeIntelConfig {
+            workspace_root: workspace_root.to_path_buf(),
+            options: ManagedCodeIntelOptions::for_workspace(workspace_root),
+            process_executor,
+        };
+        let managed_backend = enabled.then(|| config.build_backend());
+        Self {
+            fallback: WorkspaceTextCodeIntelBackend::new(),
+            managed_config: Some(config),
+            managed_backend: Arc::new(RwLock::new(managed_backend)),
+        }
+    }
+
+    fn managed_backend_snapshot(&self) -> Option<Arc<ManagedCodeIntelBackend>> {
+        self.managed_backend.read().unwrap().clone()
+    }
+
+    pub(crate) fn managed_helpers_supported(&self) -> bool {
+        self.managed_config.is_some()
+    }
+
+    pub(crate) fn managed_helpers_enabled(&self) -> bool {
+        self.managed_backend.read().unwrap().is_some()
+    }
+
+    pub(crate) fn set_managed_helpers_enabled(&self, enabled: bool) {
+        let Some(config) = &self.managed_config else {
+            return;
+        };
+
+        let mut backend = self.managed_backend.write().unwrap();
+        if enabled {
+            if backend.is_none() {
+                *backend = Some(config.build_backend());
+            }
+        } else {
+            *backend = None;
+        }
+    }
+}
+
+impl FileActivityObserver for SwitchableCodeIntelBackend {
+    fn did_open(&self, path: PathBuf) {
+        if let Some(backend) = self.managed_backend_snapshot() {
+            backend.did_open(path);
+        }
+    }
+
+    fn did_change(&self, path: PathBuf) {
+        if let Some(backend) = self.managed_backend_snapshot() {
+            backend.did_change(path);
+        }
+    }
+
+    fn did_save(&self, path: PathBuf) {
+        if let Some(backend) = self.managed_backend_snapshot() {
+            backend.did_save(path);
+        }
+    }
+
+    fn did_remove(&self, path: PathBuf) {
+        if let Some(backend) = self.managed_backend_snapshot() {
+            backend.did_remove(path);
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl CodeIntelBackend for SwitchableCodeIntelBackend {
+    fn name(&self) -> &'static str {
+        if let Some(backend) = self.managed_backend_snapshot() {
+            backend.name()
+        } else {
+            self.fallback.name()
+        }
+    }
+
+    async fn workspace_symbols(
+        &self,
+        query: &str,
+        limit: usize,
+        ctx: &ToolExecutionContext,
+    ) -> agent::tools::Result<Vec<CodeSymbol>> {
+        if let Some(backend) = self.managed_backend_snapshot() {
+            backend.workspace_symbols(query, limit, ctx).await
+        } else {
+            self.fallback.workspace_symbols(query, limit, ctx).await
+        }
+    }
+
+    async fn document_symbols(
+        &self,
+        path: &Path,
+        limit: usize,
+        ctx: &ToolExecutionContext,
+    ) -> agent::tools::Result<Vec<CodeSymbol>> {
+        if let Some(backend) = self.managed_backend_snapshot() {
+            backend.document_symbols(path, limit, ctx).await
+        } else {
+            self.fallback.document_symbols(path, limit, ctx).await
+        }
+    }
+
+    async fn definitions(
+        &self,
+        target: &CodeNavigationTarget,
+        limit: usize,
+        ctx: &ToolExecutionContext,
+    ) -> agent::tools::Result<Vec<CodeSymbol>> {
+        if let Some(backend) = self.managed_backend_snapshot() {
+            backend.definitions(target, limit, ctx).await
+        } else {
+            self.fallback.definitions(target, limit, ctx).await
+        }
+    }
+
+    async fn references(
+        &self,
+        target: &CodeNavigationTarget,
+        include_declaration: bool,
+        limit: usize,
+        ctx: &ToolExecutionContext,
+    ) -> agent::tools::Result<Vec<CodeReference>> {
+        if let Some(backend) = self.managed_backend_snapshot() {
+            backend
+                .references(target, include_declaration, limit, ctx)
+                .await
+        } else {
+            self.fallback
+                .references(target, include_declaration, limit, ctx)
+                .await
+        }
+    }
+
+    async fn hover(
+        &self,
+        target: &CodeNavigationTarget,
+        ctx: &ToolExecutionContext,
+    ) -> agent::tools::Result<Option<CodeHover>> {
+        if let Some(backend) = self.managed_backend_snapshot() {
+            backend.hover(target, ctx).await
+        } else {
+            self.fallback.hover(target, ctx).await
+        }
+    }
+
+    async fn implementations(
+        &self,
+        target: &CodeNavigationTarget,
+        limit: usize,
+        ctx: &ToolExecutionContext,
+    ) -> agent::tools::Result<Vec<CodeSymbol>> {
+        if let Some(backend) = self.managed_backend_snapshot() {
+            backend.implementations(target, limit, ctx).await
+        } else {
+            self.fallback.implementations(target, limit, ctx).await
+        }
+    }
+
+    async fn call_hierarchy(
+        &self,
+        target: &CodeNavigationTarget,
+        direction: CodeCallHierarchyDirection,
+        limit: usize,
+        ctx: &ToolExecutionContext,
+    ) -> agent::tools::Result<Vec<CodeCallHierarchyEntry>> {
+        if let Some(backend) = self.managed_backend_snapshot() {
+            backend.call_hierarchy(target, direction, limit, ctx).await
+        } else {
+            self.fallback
+                .call_hierarchy(target, direction, limit, ctx)
+                .await
+        }
+    }
 }
 
 pub(crate) fn build_runtime_tooling(
@@ -38,20 +372,12 @@ pub(crate) fn build_runtime_tooling(
     let process_executor = Arc::new(ManagedPolicyProcessExecutor::new());
     let host_process_surfaces_allowed =
         host_process_surfaces_allowed(sandbox_policy, sandbox_status);
-    let command_executor: Arc<dyn CommandHookExecutor> = if host_process_surfaces_allowed {
-        Arc::new(
-            DefaultCommandHookExecutor::with_process_executor_and_policy(
-                BTreeMap::new(),
-                process_executor.clone(),
-                sandbox_policy.clone(),
-            ),
-        )
-    } else {
-        // Startup may continue without sandbox enforcement after an explicit
-        // operator override, but command hooks still need to fail closed so
-        // they never widen into silent host execution.
-        Arc::new(DefaultCommandHookExecutor::default())
-    };
+    let command_hook_executor = Arc::new(SwitchableCommandHookExecutor::new(
+        process_executor.clone(),
+        sandbox_policy.clone(),
+        host_process_surfaces_allowed,
+    ));
+    let command_executor: Arc<dyn CommandHookExecutor> = command_hook_executor.clone();
     let hook_runner = Arc::new(HookRunner::with_services(
         command_executor,
         Arc::new(agent::runtime::ReqwestHttpHookExecutor::default()),
@@ -59,12 +385,19 @@ pub(crate) fn build_runtime_tooling(
         Arc::new(agent::runtime::FailClosedAgentHookEvaluator),
         Arc::new(agent::runtime::DefaultWasmHookExecutor::default()),
     ));
-    let (tools, startup_warnings) = build_builtin_tools(
+    let mut startup_warnings = Vec::new();
+    let code_intel_backend = Arc::new(SwitchableCodeIntelBackend::new(
         options,
         workspace_root,
-        sandbox_policy,
+        process_executor.clone(),
+        host_process_surfaces_allowed,
         sandbox_status,
-        &process_executor,
+        &mut startup_warnings,
+    ));
+    let tools = build_builtin_tools(
+        sandbox_policy,
+        code_intel_backend.clone(),
+        process_executor.clone(),
         skill_catalog,
     );
 
@@ -75,6 +408,8 @@ pub(crate) fn build_runtime_tooling(
             ..LoopDetectionConfig::default()
         },
         process_executor,
+        command_hook_executor,
+        code_intel_backend,
         host_process_surfaces_allowed,
         startup_warnings,
         tools,
@@ -98,50 +433,37 @@ pub(crate) fn register_subagent_tools(
 }
 
 fn build_builtin_tools(
-    options: &AppOptions,
-    workspace_root: &Path,
     sandbox_policy: &SandboxPolicy,
-    sandbox_status: &SandboxBackendStatus,
-    process_executor: &Arc<ManagedPolicyProcessExecutor>,
+    code_intel_backend: Arc<SwitchableCodeIntelBackend>,
+    process_executor: Arc<ManagedPolicyProcessExecutor>,
     skill_catalog: SkillCatalog,
-) -> (ToolRegistry, Vec<String>) {
-    let host_process_surfaces_allowed =
-        host_process_surfaces_allowed(sandbox_policy, sandbox_status);
-    let mut startup_warnings = Vec::new();
-    let managed_code_intel = build_managed_code_intel(
-        options,
-        workspace_root,
-        process_executor,
-        host_process_surfaces_allowed,
-        sandbox_status,
-        &mut startup_warnings,
-    );
-    let code_intel_backend: Arc<dyn CodeIntelBackend> = managed_code_intel
-        .clone()
-        .map(|backend| backend as Arc<dyn CodeIntelBackend>)
-        .unwrap_or_else(|| Arc::new(WorkspaceTextCodeIntelBackend::new()));
+) -> ToolRegistry {
+    let file_activity_backend = code_intel_backend.clone();
+    let code_intel_backend: Arc<dyn CodeIntelBackend> = code_intel_backend;
     let plan_state = PlanState::default();
     let execution_state = ExecutionState::default();
     let mut tools = ToolRegistry::new();
     let discovery_registry = tools.clone();
 
-    if let Some(observer) = managed_code_intel {
-        tools.register(ReadTool::with_file_activity_observer(observer.clone()));
-        tools.register(ViewImageTool::with_file_activity_observer(observer.clone()));
-        tools.register(WriteTool::with_file_activity_observer(observer.clone()));
-        tools.register(EditTool::with_file_activity_observer(observer.clone()));
-        tools.register(ApplyPatchTool::with_file_activity_observer(
-            observer.clone(),
-        ));
-        tools.register(PatchTool::with_file_activity_observer(observer));
-    } else {
-        tools.register(ReadTool::new());
-        tools.register(ViewImageTool::new());
-        tools.register(WriteTool::new());
-        tools.register(EditTool::new());
-        tools.register(ApplyPatchTool::new());
-        tools.register(PatchTool::new());
-    }
+    let file_activity_observer: Arc<dyn FileActivityObserver> = file_activity_backend;
+    tools.register(ReadTool::with_file_activity_observer(
+        file_activity_observer.clone(),
+    ));
+    tools.register(ViewImageTool::with_file_activity_observer(
+        file_activity_observer.clone(),
+    ));
+    tools.register(WriteTool::with_file_activity_observer(
+        file_activity_observer.clone(),
+    ));
+    tools.register(EditTool::with_file_activity_observer(
+        file_activity_observer.clone(),
+    ));
+    tools.register(ApplyPatchTool::with_file_activity_observer(
+        file_activity_observer.clone(),
+    ));
+    tools.register(PatchTool::with_file_activity_observer(
+        file_activity_observer,
+    ));
     tools.register(GlobTool::new());
     tools.register(GrepTool::new());
     tools.register(ListTool::new());
@@ -182,45 +504,7 @@ fn build_builtin_tools(
     tools.register(SkillTool::new(skill_catalog));
     tools.register(RequestUserInputTool::new());
     tools.register(RequestPermissionsTool::new());
-    (tools, startup_warnings)
-}
-
-fn build_managed_code_intel(
-    options: &AppOptions,
-    workspace_root: &Path,
-    process_executor: &Arc<ManagedPolicyProcessExecutor>,
-    host_process_surfaces_allowed: bool,
-    sandbox_status: &SandboxBackendStatus,
-    startup_warnings: &mut Vec<String>,
-) -> Option<Arc<ManagedCodeIntelBackend>> {
-    if options.lsp_enabled && !host_process_surfaces_allowed {
-        if let Some(reason) = sandbox_status.reason() {
-            warn!(
-                "sandbox enforcement backend unavailable; disabling managed code-intel helpers to avoid host fallback: {reason}"
-            );
-            startup_warnings.push(format!(
-                "sandbox backend unavailable; disabled managed code-intel helpers to avoid host subprocess execution: {reason}"
-            ));
-        }
-        return None;
-    }
-    // Managed LSP helpers run outside the normal foreground tool approval path.
-    // Boot keeps that policy decision local so future frontends inherit the
-    // same helper behavior without duplicating host wiring rules.
-    options.lsp_enabled.then(|| {
-        let mut lsp_options = ManagedCodeIntelOptions::for_workspace(workspace_root);
-        lsp_options.auto_install = options.lsp_auto_install;
-        if let Some(install_root) = &options.lsp_install_root {
-            lsp_options.install_root = install_root.clone();
-        }
-        Arc::new(ManagedCodeIntelBackend::new(
-            workspace_root.to_path_buf(),
-            lsp_options,
-            process_executor.clone(),
-            SandboxPolicy::permissive(),
-            SandboxPolicy::permissive(),
-        ))
-    })
+    tools
 }
 
 pub(crate) fn host_process_surfaces_allowed(

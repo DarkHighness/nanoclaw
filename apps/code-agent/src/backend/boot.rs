@@ -1,7 +1,9 @@
 use crate::backend::boot_inputs::DriverHostInputs;
 use crate::backend::boot_mcp::build_startup_diagnostics_snapshot;
 use crate::backend::boot_runtime::{
-    build_runtime_tooling, host_process_surfaces_allowed, register_subagent_tools,
+    COMMAND_HOOK_DISABLED_WARNING_PREFIX, SwitchableCodeIntelBackend,
+    SwitchableCommandHookExecutor, build_runtime_tooling, host_process_surfaces_allowed,
+    register_subagent_tools,
 };
 use crate::backend::memory_recall::WorkspaceMemoryRecallAugmentor;
 use crate::backend::session_memory_compaction::{
@@ -61,7 +63,11 @@ struct RuntimeBuildResult {
     plugin_instructions: Vec<String>,
     mcp_servers: Vec<ConnectedMcpServer>,
     mcp_server_configs: Vec<McpServerConfig>,
+    runtime_hook_state: Arc<RwLock<Vec<HookRegistration>>>,
+    configured_runtime_hooks: Vec<HookRegistration>,
     mcp_process_executor: Arc<dyn agent::tools::ProcessExecutor>,
+    command_hook_executor: Arc<SwitchableCommandHookExecutor>,
+    code_intel_backend: Arc<SwitchableCodeIntelBackend>,
     host_process_surfaces_allowed: bool,
     store_label: String,
     store_warning: Option<String>,
@@ -255,7 +261,11 @@ pub(crate) async fn build_session_with_approval_mode(
         plugin_instructions,
         mcp_servers,
         mcp_server_configs,
+        runtime_hook_state,
+        configured_runtime_hooks,
         mcp_process_executor,
+        command_hook_executor,
+        code_intel_backend,
         host_process_surfaces_allowed,
         store_label,
         store_warning,
@@ -290,7 +300,11 @@ pub(crate) async fn build_session_with_approval_mode(
         store,
         mcp_servers,
         mcp_server_configs,
+        runtime_hook_state,
+        configured_runtime_hooks,
         mcp_process_executor,
+        command_hook_executor,
+        code_intel_backend,
         approvals,
         user_inputs,
         permission_requests,
@@ -388,6 +402,8 @@ async fn build_runtime(
     );
     let loop_detection_config = runtime_tooling.loop_detection_config;
     let process_executor = runtime_tooling.process_executor.clone();
+    let command_hook_executor = runtime_tooling.command_hook_executor.clone();
+    let code_intel_backend = runtime_tooling.code_intel_backend.clone();
     let host_process_surfaces_allowed = runtime_tooling.host_process_surfaces_allowed;
     let mut startup_warnings = runtime_tooling.startup_warnings.clone();
     let hook_runner = runtime_tooling.hook_runner.clone();
@@ -501,11 +517,13 @@ async fn build_runtime(
         .flat_map(|skill| skill.hooks.clone())
         .collect::<Vec<_>>();
     runtime_hooks.extend(skill_hooks);
-    runtime_hooks = filter_runtime_hooks(
-        runtime_hooks,
+    let configured_runtime_hooks = runtime_hooks;
+    let runtime_hooks = filter_runtime_hooks(
+        configured_runtime_hooks.clone(),
         host_process_surfaces_allowed,
         &mut startup_warnings,
     );
+    let runtime_hook_state = Arc::new(RwLock::new(runtime_hooks.clone()));
     let instructions = build_system_preamble(
         workspace_root,
         &options.primary_profile,
@@ -531,7 +549,7 @@ async fn build_runtime(
         approval_handler.clone(),
         approval_policy.clone(),
         loop_detection_config.clone(),
-        runtime_hooks.clone(),
+        runtime_hook_state.clone(),
         skill_catalog.clone(),
         subagent_profile_resolver,
     ));
@@ -590,7 +608,11 @@ async fn build_runtime(
         plugin_instructions,
         mcp_servers: connected_mcp_servers,
         mcp_server_configs: resolved_mcp_servers,
+        runtime_hook_state,
+        configured_runtime_hooks,
         mcp_process_executor: process_executor as Arc<dyn agent::tools::ProcessExecutor>,
+        command_hook_executor,
+        code_intel_backend,
         host_process_surfaces_allowed,
         store_label: store_handle.label,
         store_warning: store_handle.warning,
@@ -613,7 +635,7 @@ fn filter_runtime_hooks(
         .partition(|hook| !matches!(hook.handler, HookHandler::Command(_)));
     if !blocked.is_empty() {
         let warning = format!(
-            "sandbox backend unavailable; disabled command hooks to avoid host subprocess execution: {}",
+            "{COMMAND_HOOK_DISABLED_WARNING_PREFIX} {}",
             blocked
                 .iter()
                 .map(|hook| hook.name.as_str())

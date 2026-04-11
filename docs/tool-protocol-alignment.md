@@ -306,9 +306,9 @@ industrial baseline:
 - the agent tool family is useful but fragmented; naming and lifecycle are not
   yet normalized to one clear task/session/close/resume model
 - `request_permissions` and `/permissions` now cover the two Codex-like
-  permission control planes, but host subprocess surfaces are still partially
-  decided at boot instead of being re-evaluated uniformly from the active
-  session permission mode
+  permission control planes, and the root runtime now re-evaluates host
+  subprocess surfaces from the active session permission mode instead of
+  freezing stdio MCP, command hooks, and managed code-intel helpers at boot
 
 ## Target Protocol
 
@@ -596,28 +596,32 @@ Then add higher-variance parity work:
     structured local `patch` tool for Anthropic
   - make typed tool availability evaluate against provider, model, role, and
     host capability flags instead of only provider identity
+  - reconnect startup-skipped stdio MCP, command hooks, and managed
+    code-intel helpers when the session permission mode re-enables
+    host-process surfaces
 - remaining:
   - image or binary-view tools if the host app needs them
-  - runtime reconnect or reload for the remaining startup-skipped
-    subprocess-backed helper surfaces such as command hooks and managed
-    code-intel helpers
+  - decide whether already-running child runtimes should hot-reload command
+    hook registrations after a parent permission-mode switch, or continue to
+    pick up the updated hook stack only on the next child launch
 
 ## Immediate Next Implementation Slice
 
 The shared protocol foundation is now in place, and MCP resources now have
 their own first-class tool surfaces. The next slice should stop expanding local
-tool contracts and instead close the remaining runtime-governance gap for
-startup-skipped subprocess-backed surfaces.
+tool contracts and either close or explicitly document the last live-child
+runtime edge around permission-mode-driven hook updates.
 
 The recommended order is:
 
-1. add a runtime rebuild path for command hooks and managed code-intel helpers
-   that are still frozen at startup under restrictive permission modes
+1. decide whether active child runtimes need live command-hook hot reload after
+   the parent session toggles permission mode, or whether restart-on-next-spawn
+   is the intended contract
 2. only then decide whether the host app still needs extra parity work such as
    image or binary-view tools
 
-That keeps the protocol phase bounded and closes the last startup-vs-session
-tool-governance mismatch before adding any new high-variance surfaces.
+That keeps the protocol phase bounded and resolves the last hook-governance
+ambiguity before adding any new high-variance surfaces.
 
 ## Archive Trigger
 

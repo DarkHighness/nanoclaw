@@ -14,7 +14,7 @@ use skills::SkillCatalog;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::future::Future;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use store::SessionStore;
 use tools::{
     SubagentExecutor, SubagentInputDelivery, SubagentLaunchSpec, SubagentParentContext, ToolError,
@@ -72,7 +72,7 @@ pub struct RuntimeSubagentExecutor {
     tool_approval_handler: Arc<dyn ToolApprovalHandler>,
     tool_approval_policy: Arc<dyn ToolApprovalPolicy>,
     loop_detection_config: LoopDetectionConfig,
-    hooks: Vec<HookRegistration>,
+    hooks: Arc<RwLock<Vec<HookRegistration>>>,
     skill_catalog: SkillCatalog,
     profile_resolver: Arc<dyn SubagentProfileResolver>,
     session_manager: AgentSessionManager,
@@ -155,7 +155,7 @@ impl RuntimeSubagentExecutor {
         tool_approval_handler: Arc<dyn ToolApprovalHandler>,
         tool_approval_policy: Arc<dyn ToolApprovalPolicy>,
         loop_detection_config: LoopDetectionConfig,
-        hooks: Vec<HookRegistration>,
+        hooks: Arc<RwLock<Vec<HookRegistration>>>,
         skill_catalog: SkillCatalog,
         profile_resolver: Arc<dyn SubagentProfileResolver>,
     ) -> Self {
@@ -715,7 +715,7 @@ impl RuntimeSubagentExecutor {
             .compaction_config(plan.profile.compaction_config.clone())
             .loop_detection_config(self.loop_detection_config.clone())
             .instructions(plan.profile.instructions.clone())
-            .hooks(self.hooks.clone())
+            .hooks(self.hooks.read().unwrap().clone())
             .skill_catalog(self.skill_catalog.clone())
             .session(plan.session.clone())
             .build()
