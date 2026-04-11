@@ -21,6 +21,10 @@ pub enum ExecutionAction {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ExecutionStatus {
+    // Models sometimes reuse the plan vocabulary when updating execution
+    // state. Treating `in_progress` as `active` keeps the runtime resilient
+    // without widening the canonical status we emit back to the UI.
+    #[serde(alias = "in_progress")]
     Active,
     Blocked,
     Verifying,
@@ -161,7 +165,7 @@ impl Tool for UpdateExecutionTool {
     fn spec(&self) -> ToolSpec {
         builtin_tool_spec(
             "update_execution",
-            "Track the live execution state for the current session or subagent. Use this to record the actively executing slice, blockers, and verification status. Do not mirror the full task plan here.",
+            "Track the live execution state for the current session or subagent. Use this to record the actively executing slice, blockers, and verification status. Status must be one of active, blocked, verifying, or completed; do not use plan labels such as in_progress here. Do not mirror the full task plan here.",
             serde_json::to_value(schema_for!(UpdateExecutionInput))
                 .expect("update_execution schema"),
             ToolOutputMode::Text,
@@ -570,10 +574,44 @@ mod tests {
     }
 
     #[test]
+    fn in_progress_status_alias_maps_to_active() {
+        let parsed = serde_json::from_value::<super::UpdateExecutionInput>(json!({
+            "status": "in_progress",
+            "summary": "Inspect runtime"
+        }))
+        .unwrap();
+        assert_eq!(parsed.status, Some(ExecutionStatus::Active));
+    }
+
+    #[test]
     fn update_execution_spec_is_approval_free_for_internal_coordination() {
         let spec = UpdateExecutionTool::new(ExecutionState::new()).spec();
         assert!(!spec.approval.mutates_state);
         assert!(!spec.approval.open_world);
         assert_eq!(spec.approval.idempotent, Some(true));
+    }
+
+    #[test]
+    fn update_execution_spec_publishes_canonical_status_values() {
+        let spec = UpdateExecutionTool::new(ExecutionState::new()).spec();
+        let schema = spec
+            .input_schema
+            .as_ref()
+            .expect("update_execution input schema")
+            .to_string();
+
+        assert!(
+            spec.description
+                .contains("active, blocked, verifying, or completed")
+        );
+        assert!(
+            spec.description
+                .contains("do not use plan labels such as in_progress")
+        );
+        assert!(schema.contains("\"active\""));
+        assert!(schema.contains("\"blocked\""));
+        assert!(schema.contains("\"verifying\""));
+        assert!(schema.contains("\"completed\""));
+        assert!(!schema.contains("\"in_progress\""));
     }
 }
