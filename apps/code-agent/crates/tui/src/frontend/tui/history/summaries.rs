@@ -2,6 +2,7 @@ use super::*;
 use crate::frontend::tui::state::{InspectorAction, InspectorEntry, InspectorKeyAction};
 use crate::ui::ResumeSupport;
 
+#[cfg(test)]
 pub(crate) fn format_session_summary_line(summary: &PersistedSessionSummary) -> TranscriptEntry {
     info_summary_entry(
         session_summary_primary(summary),
@@ -19,6 +20,7 @@ pub(crate) fn format_session_summary_collection(
     )
 }
 
+#[cfg(test)]
 pub(crate) fn format_agent_session_summary_line(
     summary: &PersistedAgentSessionSummary,
 ) -> TranscriptEntry {
@@ -94,6 +96,7 @@ pub(crate) fn format_live_task_spawn_outcome(
     ))]
 }
 
+#[cfg(test)]
 pub(crate) fn format_session_search_line(result: &PersistedSessionSearchMatch) -> TranscriptEntry {
     info_summary_entry(
         session_search_primary(result),

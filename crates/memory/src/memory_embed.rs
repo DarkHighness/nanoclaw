@@ -807,7 +807,7 @@ impl MemoryBackend for MemoryEmbedBackend {
             ) {
                 let lexical_ranked = self
                     .lexical_index
-                    .search_ranked(&weighted_query.text, prefix.as_deref(), candidate_limit)
+                    .search_hits(&weighted_query.text, prefix.as_deref(), candidate_limit)
                     .await?
                     .into_iter()
                     .map(|entry| (entry.chunk_id, entry.score))

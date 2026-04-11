@@ -217,15 +217,6 @@ impl LexicalIndex {
         }
     }
 
-    pub(crate) async fn search_ranked(
-        &self,
-        query: &str,
-        path_prefix: Option<&str>,
-        limit: usize,
-    ) -> Result<Vec<LexicalSearchMatch>> {
-        self.search_hits(query, path_prefix, limit).await
-    }
-
     pub(crate) async fn search_hits(
         &self,
         query: &str,

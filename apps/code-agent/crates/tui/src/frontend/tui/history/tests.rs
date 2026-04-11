@@ -1,7 +1,9 @@
 use super::{
-    format_agent_session_summary_collection, format_agent_session_summary_line,
-    format_live_task_wait_outcome, format_session_event_line, format_session_export_result,
-    format_session_operation_outcome, format_session_search_line, format_session_summary_line,
+    format_agent_session_summary_collection, format_live_task_wait_outcome,
+    format_session_event_line, format_session_export_result, format_session_operation_outcome,
+    summaries::{
+        format_agent_session_summary_line, format_session_search_line, format_session_summary_line,
+    },
 };
 use crate::frontend::tui::state::{InspectorAction, InspectorEntry};
 use crate::ui::{

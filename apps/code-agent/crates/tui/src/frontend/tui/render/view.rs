@@ -22,6 +22,7 @@ pub(super) fn build_inspector_text(
     }
 }
 
+#[cfg(test)]
 pub(super) fn should_render_view_title(title: &str, lines: &[InspectorEntry]) -> bool {
     let Some(first_non_empty) = lines
         .iter()
@@ -675,6 +676,7 @@ fn plain_text_style(line: &str) -> Style {
     }
 }
 
+#[cfg(test)]
 fn inspector_entry_text(entry: &InspectorEntry) -> String {
     match entry {
         InspectorEntry::Section(line)

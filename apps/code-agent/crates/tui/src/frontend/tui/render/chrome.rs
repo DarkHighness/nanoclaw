@@ -214,6 +214,7 @@ pub(super) fn user_input_band_height(user_input: &UserInputView<'_>) -> u16 {
     build_user_input_text(user_input).lines.len().clamp(6, 12) as u16
 }
 
+#[cfg(test)]
 pub(super) fn should_render_side_rail(state: &TuiState, area: Rect) -> bool {
     // Plan and execution state now belong to transcript-native system cells, so
     // the live timeline keeps full width instead of competing with a side rail.
