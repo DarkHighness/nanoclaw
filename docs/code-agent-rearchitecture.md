@@ -195,6 +195,25 @@ This matters because command handling, transient runtime orchestration, and raw
 input choreography now change in separate modules with smaller recompilation and
 review surfaces.
 
+## Seventh-pass TUI state breakup
+
+The remaining TUI hot spot was `frontend/tui/state.rs`. It still mixed
+transcript DTOs, picker overlays, composer attachment protocol, history recall,
+external-editor projection, and viewport helpers in one module.
+
+- Transcript and inspector DTOs now live in `frontend/tui/state/transcript.rs`.
+- Picker, pending-control, and history-rollback overlays now live in
+  `frontend/tui/state/picker.rs`.
+- Composer draft modeling, attachment normalization, submission snapshots, and
+  editor/history behavior now live in `frontend/tui/state/composer.rs`.
+- `frontend/tui/state.rs` now keeps only the shared root state, toast and
+  viewport behavior, shared UI state wrapper, and git snapshot helpers.
+
+This matters because the TUI state model now reflects three real subdomains:
+transcript presentation, picker overlays, and composer workflow. The root state
+module is still present as an integration seam, but it no longer owns every UI
+behavior itself.
+
 ## UI direction
 
 The UI changes are not just palette swaps. The shell now shifts toward a more
