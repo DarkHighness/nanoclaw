@@ -370,6 +370,53 @@ flow in one file.
 This matters because command routing, persisted-history browsing, and
 background operator actions now evolve on separate module seams.
 
+## Sixteenth-pass TUI control-domain breakup
+
+After the slash-command breakup, the next remaining TUI coupling point was not
+the root controller itself but the secondary control domains that still sat
+behind single large files.
+
+- `frontend/tui/operator_support.rs` is now a router over dedicated
+  `attachments`, `control`, `inspectors`, and `live_tasks` submodules.
+- `frontend/tui/runtime_flow.rs` is now a router over `operator_tasks`,
+  `runtime_control`, `settings`, and `submission`.
+- `frontend/tui/interaction_keys.rs` is now a router over `pickers`,
+  `prompts`, and `user_input`.
+- `frontend/tui/slash_commands.rs` now routes only; attachment, MCP,
+  session-control, live-task command, and history/task replay families live in
+  distinct sibling modules.
+
+This matters because the TUI no longer hides secondary god files behind a
+small root. Each control family now has one explicit domain home instead of
+sharing a large mixed "helpers" module.
+
+## Seventeenth-pass shell lifecycle breakup
+
+Once the control domains were isolated, the remaining hidden coupling lived in
+the TUI shell lifecycle itself: the root controller still mixed the UI session
+protocol facade, session snapshot/state replacement helpers, and the terminal
+event pump.
+
+- `frontend/tui/session_bridge.rs` now owns the `UIQuery` / `UICommand` /
+  `UIAsyncCommand` facade methods that let the shell talk to the backend
+  protocol without spreading raw session calls everywhere.
+- `frontend/tui/session_shell.rs` now focuses on session snapshot projection,
+  startup-state replacement, backend-event draining, and turn/operator task
+  abort helpers.
+- `frontend/tui/terminal_shell.rs` now owns terminal lifecycle, draw/sync
+  cadence, event dispatch, and key dispatch.
+- `frontend/tui/mod.rs` is reduced to type definitions, imports, and module
+  wiring instead of mixing protocol, shell, and event-loop behavior.
+
+This matters because the TUI now has three explicit seams:
+
+- protocol bridge
+- session-state shell helpers
+- terminal runtime loop
+
+That split matches the real runtime responsibilities instead of the historical
+file layout.
+
 ## UI direction
 
 The UI changes are not just palette swaps. The shell now shifts toward a more
@@ -398,18 +445,17 @@ Validated with:
 
 ## Remaining follow-up
 
-The current split establishes real package boundaries, adds a TUI-facing backend
-facade, and removes a meaningful chunk of orchestration from the primary TUI
-controller. It is still not the final industrial end-state.
+The current split is now close to the intended industrial end-state for this
+crate family. The remaining larger files are no longer mixed by accident; they
+each represent one bounded runtime or presentation domain.
 
-The next refinement steps should be:
-
-- split `frontend/tui/operator_support.rs` again if it starts accumulating
-  unrelated policy; attachment/editor helpers and inspector builders are the
-  first obvious fault line
-- continue splitting `frontend/tui/slash_commands.rs` if the remaining
-  session-control and MCP command branches keep growing; those are now the
-  clearest next domain boundary
-- consider moving the remaining history-load/task-load DTO formatting helpers
-  fully behind `contracts::ui`-owned adapters so the TUI only depends on
-  backend for execution surfaces
+- `frontend/tui/terminal_shell.rs` is still sizable, but it now owns only the
+  terminal event pump and key routing. Further splitting should happen only if
+  a distinct secondary domain appears inside that loop again.
+- `frontend/tui/slash_commands/history.rs` and
+  `frontend/tui/slash_commands/session.rs` are still among the larger command
+  modules, but each is now one coherent slash-command family rather than a
+  mixed command bag.
+- The next meaningful improvement is not more file splitting for its own sake;
+  it is continuing to move pure DTO projection and formatting toward
+  `contracts::ui` when that removes real duplication across frontends.

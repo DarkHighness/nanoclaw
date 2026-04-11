@@ -1,0 +1,378 @@
+use super::*;
+
+enum TerminalLoopControl {
+    Continue,
+    Exit,
+}
+
+impl CodeAgentTui {
+    pub async fn run(mut self) -> Result<()> {
+        self.ui_state.replace(self.startup_state());
+
+        enable_raw_mode()?;
+        let mut stdout = io::stdout();
+        // Keep terminal-native mouse selection available in the main transcript.
+        // The TUI only uses keyboard navigation here, so capturing mouse events
+        // would mostly disable copy/select without providing meaningful utility.
+        execute!(stdout, EnterAlternateScreen, EnableBracketedPaste)?;
+        let backend = CrosstermBackend::new(stdout);
+        let mut terminal = Terminal::new(backend)?;
+
+        if let Some(prompt) = self.initial_prompt.take() {
+            self.start_turn(prompt).await;
+        }
+
+        let result = self.event_loop(&mut terminal).await;
+        if let Some(task) = self.operator_task.take() {
+            task.abort();
+        }
+        let _ = self
+            .run_ui::<()>(UIAsyncCommand::EndSession {
+                reason: Some("operator_exit".to_string()),
+            })
+            .await;
+
+        disable_raw_mode()?;
+        execute!(
+            terminal.backend_mut(),
+            DisableBracketedPaste,
+            LeaveAlternateScreen
+        )?;
+        terminal.show_cursor()?;
+        result
+    }
+
+    async fn event_loop(
+        &mut self,
+        terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    ) -> Result<()> {
+        loop {
+            let viewport_height = self.sync_and_draw_terminal(terminal).await?;
+            if !event::poll(Duration::ZERO)? {
+                sleep(Duration::from_millis(16)).await;
+                continue;
+            }
+            if matches!(
+                self.handle_terminal_event(event::read()?, terminal, viewport_height)
+                    .await?,
+                TerminalLoopControl::Exit
+            ) {
+                return Ok(());
+            }
+        }
+    }
+
+    async fn sync_and_draw_terminal(
+        &mut self,
+        terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    ) -> Result<u16> {
+        self.flush_due_paste_burst().await;
+        self.maybe_finish_turn().await?;
+        self.apply_backend_events();
+        self.maybe_finish_operator_task().await?;
+        self.ui_state.mutate(|state| {
+            let _ = state.expire_toast_if_due();
+        });
+        self.sync_runtime_control_state();
+        let permission_request_prompt = self.permission_request_prompt();
+        let user_input_prompt = self.user_input_prompt();
+        self.sync_user_input_prompt(user_input_prompt.as_ref());
+
+        let snapshot = self.ui_state.snapshot();
+        let approval = self.approval_prompt();
+        let user_input_view = user_input_prompt.as_ref().map(|prompt| UserInputView {
+            prompt,
+            flow: self.active_user_input.as_ref(),
+            input: snapshot.input.as_str(),
+        });
+        let terminal_size = terminal.size()?;
+        let viewport_height = main_pane_viewport_height(
+            Rect::new(0, 0, terminal_size.width, terminal_size.height),
+            &snapshot,
+            approval.as_ref(),
+            permission_request_prompt.as_ref(),
+            user_input_view.as_ref(),
+        );
+        terminal.draw(|frame| {
+            render(
+                frame,
+                &snapshot,
+                approval.as_ref(),
+                permission_request_prompt.as_ref(),
+                user_input_view.as_ref(),
+            )
+        })?;
+        Ok(viewport_height)
+    }
+
+    async fn handle_terminal_event(
+        &mut self,
+        event: Event,
+        terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+        viewport_height: u16,
+    ) -> Result<TerminalLoopControl> {
+        match event {
+            Event::Paste(text) => {
+                self.handle_explicit_paste(&text).await;
+                Ok(TerminalLoopControl::Continue)
+            }
+            Event::Key(key) => {
+                self.handle_terminal_key(key, terminal, viewport_height)
+                    .await
+            }
+            _ => Ok(TerminalLoopControl::Continue),
+        }
+    }
+
+    async fn handle_terminal_key(
+        &mut self,
+        key: KeyEvent,
+        terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+        viewport_height: u16,
+    ) -> Result<TerminalLoopControl> {
+        if key.kind != KeyEventKind::Press {
+            return Ok(TerminalLoopControl::Continue);
+        }
+        if self.handle_approval_key(key)
+            || self.handle_permission_request_key(key)
+            || self.handle_user_input_key(key)
+            || self.handle_pending_control_picker_key(key)
+            || self.handle_statusline_picker_key(key)
+            || self.handle_thinking_effort_picker_key(key)
+            || self.handle_theme_picker_key(key)
+        {
+            return Ok(TerminalLoopControl::Continue);
+        }
+        if self.handle_history_rollback_key(key).await? || self.handle_paste_burst_key(key).await {
+            return Ok(TerminalLoopControl::Continue);
+        }
+        self.handle_terminal_key_code(key, terminal, viewport_height)
+            .await
+    }
+
+    async fn handle_terminal_key_code(
+        &mut self,
+        key: KeyEvent,
+        terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+        viewport_height: u16,
+    ) -> Result<TerminalLoopControl> {
+        match key.code {
+            KeyCode::Up if key.modifiers.contains(KeyModifiers::ALT) => {
+                self.ui_state.mutate(|state| {
+                    let opened = state.open_pending_control_picker(true);
+                    if opened {
+                        state.status = "Opened pending controls".to_string();
+                    }
+                });
+            }
+            KeyCode::Down if key.modifiers.contains(KeyModifiers::ALT) => {
+                self.ui_state.mutate(|state| {
+                    if state.pending_control_picker.is_some() {
+                        let _ = state.move_pending_control_picker(false);
+                    } else {
+                        let _ = state.open_pending_control_picker(true);
+                    }
+                });
+            }
+            KeyCode::Tab => self.handle_tab_key().await?,
+            KeyCode::BackTab => {
+                let _ = self.apply_command_completion(true);
+            }
+            KeyCode::Up => self.handle_vertical_navigation(true),
+            KeyCode::Down => self.handle_vertical_navigation(false),
+            KeyCode::Left => {
+                let _ = self.move_input_cursor_horizontal(true);
+            }
+            KeyCode::Right => {
+                let _ = self.move_input_cursor_horizontal(false);
+            }
+            KeyCode::PageUp => {
+                self.ui_state
+                    .mutate(|state| state.scroll_focused_page(viewport_height, false, true));
+            }
+            KeyCode::PageDown => {
+                self.ui_state
+                    .mutate(|state| state.scroll_focused_page(viewport_height, false, false));
+            }
+            KeyCode::Home => {
+                if !self.move_input_cursor_home() {
+                    self.ui_state.mutate(|state| state.scroll_focused_home());
+                }
+            }
+            KeyCode::End => {
+                if !self.move_input_cursor_end() {
+                    self.ui_state.mutate(|state| state.scroll_focused_end());
+                }
+            }
+            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.ui_state
+                    .mutate(|state| state.scroll_focused_page(viewport_height, true, true));
+            }
+            KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.ui_state
+                    .mutate(|state| state.scroll_focused_page(viewport_height, true, false));
+            }
+            KeyCode::Char('t') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.cycle_model_reasoning_effort();
+            }
+            KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.launch_external_editor(terminal).await?;
+            }
+            KeyCode::Char('k') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                let _ = self.kill_input_to_end();
+            }
+            KeyCode::Char('y') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                let _ = self.yank_kill_buffer();
+            }
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if !self.stash_composer_draft_on_ctrl_c() {
+                    return Ok(TerminalLoopControl::Exit);
+                }
+            }
+            KeyCode::Enter => {
+                if matches!(self.handle_enter_key().await?, TerminalLoopControl::Exit) {
+                    return Ok(TerminalLoopControl::Exit);
+                }
+            }
+            KeyCode::Esc => self.handle_escape_key().await?,
+            KeyCode::Backspace => {
+                if !self.remove_selected_row_attachment() {
+                    self.ui_state.mutate(|state| {
+                        state.pop_input_char();
+                    });
+                }
+            }
+            KeyCode::Delete => {
+                let _ = self.remove_selected_row_attachment();
+            }
+            KeyCode::Char(ch) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.ui_state.mutate(|state| {
+                    state.push_input_char(ch);
+                });
+            }
+            _ => {}
+        }
+
+        Ok(TerminalLoopControl::Continue)
+    }
+
+    fn handle_vertical_navigation(&mut self, backwards: bool) {
+        if self.move_command_selection(backwards)
+            || self.move_selected_row_attachment(backwards)
+            || self.navigate_input_history(backwards)
+            || self.move_input_cursor_vertical(backwards)
+            || self.move_input_cursor_boundary(backwards)
+        {
+            return;
+        }
+        self.ui_state.mutate(|state| {
+            state.scroll_focused(if backwards { -1 } else { 1 });
+        });
+    }
+
+    async fn handle_tab_key(&mut self) -> Result<()> {
+        let snapshot = self.ui_state.snapshot();
+        if self.try_apply_pending_control_edit(&snapshot.input).await {
+            return Ok(());
+        }
+        if let Some(action) = plain_input_submit_action(
+            &snapshot.input,
+            composer_has_prompt_content(&snapshot),
+            composer_requires_prompt_submission(&snapshot),
+            snapshot.turn_running,
+            KeyCode::Tab,
+        ) {
+            if self.reject_unsupported_image_submission(&snapshot) {
+                return Ok(());
+            }
+            let submission = self.ui_state.take_submission();
+            self.apply_plain_input_submit(action, submission).await;
+            return Ok(());
+        }
+        let _ = self.apply_command_completion(false);
+        Ok(())
+    }
+
+    async fn handle_enter_key(&mut self) -> Result<TerminalLoopControl> {
+        let snapshot = self.ui_state.snapshot();
+        if self.try_apply_pending_control_edit(&snapshot.input).await {
+            return Ok(TerminalLoopControl::Continue);
+        }
+        if snapshot.input.starts_with('/') {
+            if let Some(action) =
+                resolve_slash_enter_action(&snapshot.input, snapshot.command_completion_index)
+            {
+                match action {
+                    SlashCommandEnterAction::Complete { input, index } => {
+                        self.ui_state.mutate(|state| {
+                            state.replace_input(input);
+                            state.command_completion_index = index;
+                        });
+                        return Ok(TerminalLoopControl::Continue);
+                    }
+                    SlashCommandEnterAction::Execute(input) => {
+                        self.record_submitted_input(&input);
+                        self.ui_state.mutate(|state| {
+                            state.clear_input();
+                        });
+                        if self.apply_command(&input).await? {
+                            return Ok(TerminalLoopControl::Exit);
+                        }
+                        return Ok(TerminalLoopControl::Continue);
+                    }
+                }
+            }
+        }
+        if let Some(action) = plain_input_submit_action(
+            &snapshot.input,
+            composer_has_prompt_content(&snapshot),
+            composer_requires_prompt_submission(&snapshot),
+            snapshot.turn_running,
+            KeyCode::Enter,
+        ) {
+            // Rejecting here keeps the rich draft intact. Once `take_submission()`
+            // runs the composer buffer and attachment state are cleared on success.
+            if self.reject_unsupported_image_submission(&snapshot) {
+                return Ok(TerminalLoopControl::Continue);
+            }
+            let submission = self.ui_state.take_submission();
+            self.apply_plain_input_submit(action, submission).await;
+            return Ok(TerminalLoopControl::Continue);
+        }
+
+        let input = self.ui_state.take_input();
+        if input.trim().is_empty() {
+            return Ok(TerminalLoopControl::Continue);
+        }
+        if input.starts_with('/') {
+            self.record_submitted_input(&input);
+            if self.apply_command(&input).await? {
+                return Ok(TerminalLoopControl::Exit);
+            }
+        } else {
+            self.start_turn(input).await;
+        }
+        Ok(TerminalLoopControl::Continue)
+    }
+
+    async fn handle_escape_key(&mut self) -> Result<()> {
+        let snapshot = self.ui_state.snapshot();
+        if snapshot.editing_pending_control.is_some() {
+            self.ui_state.mutate(|state| {
+                state.clear_pending_control_edit();
+                state.clear_input();
+                state.status = "Cancelled pending control edit".to_string();
+                state.push_activity("cancelled pending control edit");
+            });
+            return Ok(());
+        }
+        if self.turn_task.is_some() {
+            self.interrupt_active_turn().await?;
+            return Ok(());
+        }
+        if snapshot.input.is_empty() && snapshot.main_pane == state::MainPaneMode::Transcript {
+            self.prime_history_rollback().await?;
+        }
+        Ok(())
+    }
+}
