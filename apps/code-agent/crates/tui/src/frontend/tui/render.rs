@@ -1,4 +1,5 @@
 mod chrome;
+mod header;
 mod history_rollback_overlay;
 mod picker;
 mod shared;
@@ -24,6 +25,7 @@ use chrome::{
     render_permission_request_band, render_user_input_band, should_render_side_rail,
     side_rail_width, user_input_band_height,
 };
+use header::{header_height, render_header};
 use history_rollback_overlay::render_history_rollback_overlay;
 use picker::{
     command_hint_height, pending_control_height, render_command_hint_band,
@@ -71,6 +73,7 @@ pub(crate) fn render(
     let vertical = Layout::default()
         .direction(Direction::Vertical)
         .constraints(bottom_layout_constraints(
+            header_height(),
             prompt_height,
             pending_height,
             command_hint_height,
@@ -79,6 +82,8 @@ pub(crate) fn render(
         ))
         .split(area);
     let mut next_index = 0;
+    let header_area = vertical[next_index];
+    next_index += 1;
     let main_area = vertical[next_index];
     next_index += 1;
     let prompt_area = prompt_height.map(|_| {
@@ -117,6 +122,7 @@ pub(crate) fn render(
     } else {
         render_main_pane(frame, main_area, state);
     }
+    render_header(frame, header_area, state);
     if let Some(approval) = approval {
         render_approval_band(frame, prompt_area.expect("approval area"), approval);
     } else if let Some(permission_request) = permission_request {
@@ -181,6 +187,7 @@ pub(crate) fn main_pane_viewport_height(
     let vertical = Layout::default()
         .direction(Direction::Vertical)
         .constraints(bottom_layout_constraints(
+            header_height(),
             prompt_height,
             pending_height,
             command_hint_height,
@@ -189,7 +196,7 @@ pub(crate) fn main_pane_viewport_height(
         ))
         .split(area);
     vertical
-        .first()
+        .get(1)
         .map(|rect| rect.height.max(1))
         .unwrap_or(area.height.max(1))
 }

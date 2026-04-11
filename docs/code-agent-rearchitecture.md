@@ -87,18 +87,46 @@ These rules are the core of the new design and should be preserved.
   `tui`.
 - Terminal lifecycle, key handling, and visual composition belong in `tui`, not
   in `backend`.
+- The TUI should talk to `code-agent-backend` through a dedicated frontend
+  facade, not by importing the raw session object directly throughout the shell.
 - Test-only helpers should be behind `#[cfg(test)]` or deleted, never kept alive
   with blanket dead-code suppression.
 
+## Second-pass tightening
+
+The first pass established package boundaries. The second pass tightened the
+frontend boundary and reduced the size of the TUI controller.
+
+- `code-agent-backend` now exposes `CodeAgentFrontendSession` as the TUI-facing
+  backend adapter.
+  - This keeps the raw runtime/session object as a backend concern and gives
+    the shell one explicit surface to depend on.
+- `code-agent-tui` no longer keeps all operator behavior inside one file.
+  - Composer and attachment logic moved into `frontend/tui/composer.rs`.
+  - History rollback flow moved into `frontend/tui/history_rollback.rs`.
+  - Startup/session-shell synchronization moved into
+    `frontend/tui/session_shell.rs`.
+- The TUI shell now uses a persistent top header plus a minimal welcome screen
+  instead of relying on an oversized ASCII splash and a bottom-only status
+  model.
+
+This is a better industrial direction because boundary intent is now encoded in
+the code layout instead of being left as convention.
+
 ## UI direction
 
-The default theme now shifts to a more Codex-like neutral shell:
+The UI changes are not just palette swaps. The shell now shifts toward a more
+Codex-like operator surface:
 
 - darker graphite background
 - softer stone text instead of bright blue-heavy contrast
 - restrained teal accent for focus states
 - muted gold/green user-assistant contrast that reads clearly without looking
   like a dashboard
+- persistent session header for workspace/model/runtime state
+- reduced visual noise on startup with a compact text-led welcome view
+- shell-first information hierarchy: session header, main transcript, side rail,
+  composer, statusline
 
 This keeps the UI calm and tool-like rather than ornamental.
 
@@ -111,7 +139,15 @@ Validated with:
 
 ## Remaining follow-up
 
-The current split establishes real package boundaries and removes the duplicated
-monolith from the binary crate. The next refinement step should be to narrow the
-public backend facade further so the TUI depends on an even smaller explicit
-session contract instead of a broad host API surface.
+The current split establishes real package boundaries, adds a TUI-facing backend
+facade, and removes a meaningful chunk of orchestration from the primary TUI
+controller. It is still not the final industrial end-state.
+
+The next refinement steps should be:
+
+- split `backend/session.rs` into domain modules such as lifecycle, history,
+  permissions, and live-task orchestration
+- split `frontend/tui/state.rs` so transcript state, composer state, and picker
+  state do not evolve inside one file
+- narrow `CodeAgentFrontendSession` further so the TUI depends on a smaller
+  explicit command/query protocol instead of a wide adapter

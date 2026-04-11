@@ -3,36 +3,18 @@ use crate::frontend::tui::state::TuiState;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
-const FULL_LOGO_LINES: [&str; 6] = [
-    "▄▄     ▄▄▄    ▄▄       ▄▄     ▄▄▄    ▄▄▄▄     ▄   ▄▄▄▄   ▄▄▄         ▄▄     ▄▄▄",
-    "██▄   ██▀   ▄█▀▀█▄     ██▄   ██▀   ▄█▀▀████▄  ▀██████▀  ▀██▀       ▄█▀▀█▄  █▀██  ██  ██▀▀",
-    "███▄  ██    ██  ██     ███▄  ██    ██    ██     ██       ██        ██  ██    ██  ██  ██",
-    "██ ▀█▄██    ██▀▀██     ██ ▀█▄██    ██    ██     ██       ██        ██▀▀██    ██  ██  ██",
-    "██   ▀██  ▄ ██  ██     ██   ▀██    ██    ██     ██       ██      ▄ ██  ██    ██▄ ██▄ ██",
-    "▀██▀    ██  ▀██▀  ▀█▄█ ▀██▀    ██     ▀████▀      ▀█████  ████████ ▀██▀  ▀█▄█  ▀████▀███▀",
-];
-const COMPACT_LOGO_LINES: [&str; 3] = [
-    "███  ██ ▄████▄ ███  ██ ▄████▄ ▄█████ ██     ▄████▄ ██     ██",
-    "██ ▀▄██ ██▄▄██ ██ ▀▄██ ██  ██ ██     ██     ██▄▄██ ██ ▄█▄ ██",
-    "██   ██ ██  ██ ██   ██ ▀████▀ ▀█████ ██████ ██  ██  ▀██▀██▀",
-];
-
 pub(super) fn build_welcome_lines(
     state: &TuiState,
     viewport_width: u16,
     viewport_height: u16,
 ) -> Vec<Line<'static>> {
-    let compact = viewport_height < 20 || viewport_width < 110;
-    let mut core = build_welcome_logo_lines(compact);
+    let compact = viewport_height < 20 || viewport_width < 96;
+    let mut core = build_welcome_title_lines(compact);
     core.push(Line::raw(""));
     core.push(build_meta_summary_line(state));
     core.push(Line::raw(""));
-    core.push(Line::from(vec![
-        Span::styled("Type a prompt", Style::default().fg(palette().text)),
-        Span::styled(" or ", Style::default().fg(palette().subtle)),
-        Span::styled("/help", Style::default().fg(palette().accent)),
-        Span::styled(".", Style::default().fg(palette().subtle)),
-    ]));
+    core.push(build_prompt_line(compact));
+    core.push(build_shortcut_line(compact));
 
     let top_padding = usize::from(viewport_height.saturating_sub(core.len() as u16) / 2);
     let mut lines = vec![Line::raw(""); top_padding];
@@ -40,19 +22,48 @@ pub(super) fn build_welcome_lines(
     lines
 }
 
-fn build_welcome_logo_lines(compact: bool) -> Vec<Line<'static>> {
-    if compact {
-        return COMPACT_LOGO_LINES
-            .into_iter()
-            .map(logo_line)
-            .collect::<Vec<_>>();
-    }
+fn build_welcome_title_lines(compact: bool) -> Vec<Line<'static>> {
+    let subtitle = if compact {
+        "Terminal shell for coding work"
+    } else {
+        "Terminal shell for focused coding work"
+    };
+    vec![
+        Line::from(vec![Span::styled(
+            "Code Agent",
+            Style::default()
+                .fg(palette().header)
+                .add_modifier(Modifier::BOLD),
+        )]),
+        Line::from(vec![Span::styled(
+            subtitle,
+            Style::default().fg(palette().muted),
+        )]),
+    ]
+}
 
-    // Preserve the operator-supplied brand mark as-is on wide terminals.
-    FULL_LOGO_LINES
-        .into_iter()
-        .map(logo_line)
-        .collect::<Vec<_>>()
+fn build_prompt_line(compact: bool) -> Line<'static> {
+    let detail = if compact {
+        "Ask for a change or run /help."
+    } else {
+        "Ask for a change, inspect the workspace, or run /help."
+    };
+    Line::from(vec![Span::styled(
+        detail,
+        Style::default().fg(palette().text),
+    )])
+}
+
+fn build_shortcut_line(compact: bool) -> Line<'static> {
+    let suffix = if compact {
+        "Enter run · Tab queue · ^T effort"
+    } else {
+        "Enter run · Tab queue · ^T effort · ^O editor"
+    };
+    Line::from(vec![Span::styled(
+        suffix,
+        Style::default().fg(palette().accent),
+    )])
 }
 
 fn build_meta_summary_line(state: &TuiState) -> Line<'static> {
@@ -75,13 +86,4 @@ fn model_label(state: &TuiState) -> String {
         Some(effort) => format!("{} · {}", state.session.model, effort),
         None => state.session.model.clone(),
     }
-}
-
-fn logo_line(text: &str) -> Line<'static> {
-    Line::from(vec![Span::styled(
-        text.to_string(),
-        Style::default()
-            .fg(palette().header)
-            .add_modifier(Modifier::BOLD),
-    )])
 }

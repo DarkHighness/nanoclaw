@@ -45,11 +45,12 @@ pub use permission_request::{
     SessionPermissionRequestHandler,
 };
 pub use session::{
-    CodeAgentSession, HistoryRollbackRound, LiveTaskAttentionAction, LiveTaskControlAction,
-    LiveTaskControlOutcome, LiveTaskMessageAction, LiveTaskMessageOutcome, LiveTaskSpawnOutcome,
-    LiveTaskSummary, LiveTaskWaitOutcome, ModelReasoningEffortOutcome, PendingControlKind,
-    PendingControlSummary, SessionOperation, SessionOperationAction, SessionOperationOutcome,
-    SessionPermissionMode, SessionStartupSnapshot, SideQuestionOutcome,
+    CodeAgentSession, HistoryRollbackOutcome, HistoryRollbackRound, LiveTaskAttentionAction,
+    LiveTaskAttentionOutcome, LiveTaskControlAction, LiveTaskControlOutcome, LiveTaskMessageAction,
+    LiveTaskMessageOutcome, LiveTaskSpawnOutcome, LiveTaskSummary, LiveTaskWaitOutcome,
+    ModelReasoningEffortOutcome, PendingControlKind, PendingControlSummary, SessionOperation,
+    SessionOperationAction, SessionOperationOutcome, SessionPermissionMode,
+    SessionPermissionModeOutcome, SessionStartupSnapshot, SideQuestionOutcome,
 };
 pub use session_catalog::{
     PersistedAgentSessionSummary, PersistedSessionSearchMatch, PersistedSessionSummary,

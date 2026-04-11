@@ -342,20 +342,22 @@ fn welcome_lines_keep_the_start_screen_sparse() {
 
     let lines = build_welcome_lines(&state, 140, 28);
 
-    assert!(lines.iter().any(|line| {
-        line_text_for(line).contains("▄▄     ▄▄▄    ▄▄       ▄▄     ▄▄▄")
-    }));
-    assert!(lines.iter().any(|line| {
-        line_text_for(line).contains("▀██▀    ██  ▀██▀  ▀█▄█")
-    }));
-    assert!(lines.iter().any(|line| {
-        line_text_for(line).contains("workspace nanoclaw  ·  model gpt-5.4 · high")
-    }));
     assert!(
         lines
             .iter()
-            .any(|line| { line_text_for(line).contains("Type a prompt or /help.") })
+            .any(|line| line_text_for(line).contains("Code Agent"))
     );
+    assert!(
+        lines
+            .iter()
+            .any(|line| { line_text_for(line).contains("Terminal shell for focused coding work") })
+    );
+    assert!(lines.iter().any(|line| {
+        line_text_for(line).contains("workspace nanoclaw  ·  model gpt-5.4 · high")
+    }));
+    assert!(lines.iter().any(|line| {
+        line_text_for(line).contains("Ask for a change, inspect the workspace, or run /help.")
+    }));
 }
 
 #[test]
@@ -366,12 +368,16 @@ fn welcome_lines_switch_to_the_compact_logo_on_narrow_viewports() {
 
     let lines = build_welcome_lines(&state, 80, 28);
 
-    assert!(lines.iter().any(|line| {
-        line_text_for(line).contains("███  ██ ▄████▄ ███  ██ ▄████▄")
-    }));
-    assert!(lines.iter().any(|line| {
-        line_text_for(line).contains("██   ██ ██  ██ ██   ██ ▀████▀")
-    }));
+    assert!(
+        lines
+            .iter()
+            .any(|line| line_text_for(line).contains("Code Agent"))
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|line| { line_text_for(line).contains("Terminal shell for coding work") })
+    );
 }
 
 #[test]
