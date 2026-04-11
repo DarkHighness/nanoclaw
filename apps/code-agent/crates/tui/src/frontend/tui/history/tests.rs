@@ -369,9 +369,8 @@ fn file_tool_completion_event_includes_diff_block() {
 
     let rendered = format_session_event_line(&event).serialized();
     assert!(rendered.contains("• Finished write"));
-    assert!(rendered.contains("  └ diff src/lib.rs"));
-    assert!(rendered.contains("@@ -1,1 +1,1 @@"));
-    assert!(rendered.contains("+new()"));
+    assert!(rendered.contains("  └ files src/lib.rs"));
+    assert!(rendered.contains("action [r] review diff"));
 }
 
 fn inspector_line_texts(lines: &[InspectorEntry]) -> Vec<String> {

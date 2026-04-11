@@ -298,6 +298,7 @@ pub(crate) struct TranscriptToolEntry {
     pub(crate) tool_name: String,
     pub(crate) headline: String,
     pub(crate) detail_lines: Vec<ToolDetail>,
+    pub(crate) review: Option<ToolReview>,
 }
 
 impl TranscriptToolEntry {
@@ -306,6 +307,15 @@ impl TranscriptToolEntry {
         tool_name: impl Into<String>,
         detail_lines: Vec<ToolDetail>,
     ) -> Self {
+        Self::new_with_review(status, tool_name, detail_lines, None)
+    }
+
+    pub(crate) fn new_with_review(
+        status: TranscriptToolStatus,
+        tool_name: impl Into<String>,
+        detail_lines: Vec<ToolDetail>,
+        review: Option<ToolReview>,
+    ) -> Self {
         let tool_name = tool_name.into();
         let headline = status.headline(&tool_name);
         Self {
@@ -313,6 +323,7 @@ impl TranscriptToolEntry {
             tool_name,
             headline,
             detail_lines,
+            review,
         }
     }
 
@@ -336,6 +347,7 @@ impl TranscriptToolEntry {
             tool_name: self.tool_name.clone(),
             headline: self.headline.clone(),
             detail_lines: preview_tool_details(&self.detail_lines, max_lines),
+            review: self.review.clone(),
         }
     }
 }
@@ -479,6 +491,20 @@ impl TranscriptEntry {
         detail_lines: Vec<ToolDetail>,
     ) -> Self {
         Self::Tool(TranscriptToolEntry::new(status, tool_name, detail_lines))
+    }
+
+    pub(crate) fn tool_with_review(
+        status: TranscriptToolStatus,
+        tool_name: impl Into<String>,
+        detail_lines: Vec<ToolDetail>,
+        review: Option<ToolReview>,
+    ) -> Self {
+        Self::Tool(TranscriptToolEntry::new_with_review(
+            status,
+            tool_name,
+            detail_lines,
+            review,
+        ))
     }
 
     pub(crate) fn plan_update(

@@ -2,7 +2,7 @@ use crate::interaction::{PendingControlKind, PendingControlSummary, SessionPermi
 use crate::statusline::{StatusLineConfig, StatusLineField, status_line_fields};
 use crate::theme::ThemeSummary;
 use crate::tool_render::{
-    ToolDetail, ToolDetailBlockKind, preview_tool_details, serialize_tool_details,
+    ToolDetail, ToolDetailBlockKind, ToolReview, preview_tool_details, serialize_tool_details,
 };
 use crate::ui::StartupDiagnosticsSnapshot;
 use agent::types::{AgentStatus, SubmittedPromptSnapshot, TokenLedgerSnapshot};
@@ -24,7 +24,7 @@ pub(crate) use composer::{
 pub(crate) use picker::{
     CollectionPickerState, HistoryRollbackCandidate, HistoryRollbackState,
     PendingControlEditorState, PendingControlPickerState, StatusLinePickerState, ThemePickerState,
-    ThinkingEffortPickerState,
+    ThinkingEffortPickerState, ToolReviewOverlayState,
 };
 pub(crate) use transcript::{
     InspectorAction, InspectorEntry, InspectorKeyAction, TranscriptEntry, TranscriptExecutionEntry,
@@ -138,6 +138,7 @@ pub(crate) struct TuiState {
     pub(crate) composer_context_hint: Option<ComposerContextHint>,
     pub(crate) toast: Option<ToastState>,
     pub(crate) transcript: Vec<TranscriptEntry>,
+    pub(crate) transcript_selection: Option<usize>,
     pub(crate) transcript_scroll: u16,
     pub(crate) follow_transcript: bool,
     pub(crate) inspector_title: String,
@@ -159,6 +160,7 @@ pub(crate) struct TuiState {
     pub(crate) thinking_effort_picker: Option<ThinkingEffortPickerState>,
     pub(crate) theme_picker: Option<ThemePickerState>,
     pub(crate) history_rollback: Option<HistoryRollbackState>,
+    pub(crate) tool_review: Option<ToolReviewOverlayState>,
 }
 
 impl TuiState {
@@ -229,6 +231,54 @@ impl TuiState {
         expired
     }
 
+    pub(crate) fn move_transcript_selection(&mut self, backwards: bool) -> bool {
+        let selectable = selectable_transcript_indices(&self.transcript);
+        if selectable.is_empty() {
+            return false;
+        }
+        let current = self.transcript_selection.and_then(|selected| {
+            selectable
+                .iter()
+                .position(|candidate| *candidate == selected)
+        });
+        let next = match current {
+            Some(current) if backwards => current.checked_sub(1).unwrap_or(selectable.len() - 1),
+            Some(current) => (current + 1) % selectable.len(),
+            None if backwards => selectable.len() - 1,
+            None => 0,
+        };
+        self.follow_transcript = false;
+        self.transcript_selection = Some(selectable[next]);
+        true
+    }
+
+    pub(crate) fn jump_transcript_selection(&mut self, oldest: bool) -> bool {
+        let selectable = selectable_transcript_indices(&self.transcript);
+        if selectable.is_empty() {
+            return false;
+        }
+        self.follow_transcript = false;
+        self.transcript_selection = Some(if oldest {
+            selectable[0]
+        } else {
+            selectable[selectable.len() - 1]
+        });
+        true
+    }
+
+    pub(crate) fn clear_transcript_selection(&mut self) {
+        self.transcript_selection = None;
+    }
+
+    pub(crate) fn selected_transcript_entry(&self) -> Option<&TranscriptEntry> {
+        let index = self.transcript_selection?;
+        self.transcript.get(index)
+    }
+
+    pub(crate) fn selected_transcript_tool(&self) -> Option<&TranscriptToolEntry> {
+        self.selected_transcript_entry()?.tool_entry()
+    }
+
     pub(crate) fn scroll_focused(&mut self, delta: i16) {
         match self.main_pane {
             MainPaneMode::Transcript => {
@@ -271,6 +321,14 @@ impl TuiState {
             MainPaneMode::View => self.inspector_scroll = u16::MAX,
         }
     }
+}
+
+fn selectable_transcript_indices(transcript: &[TranscriptEntry]) -> Vec<usize> {
+    transcript
+        .iter()
+        .enumerate()
+        .filter_map(|(index, entry)| entry.tool_entry().map(|_| index))
+        .collect()
 }
 
 fn bump_scroll(value: &mut u16, delta: i16) {

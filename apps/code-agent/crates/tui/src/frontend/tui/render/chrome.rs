@@ -119,24 +119,34 @@ pub(super) fn render_user_input_band(
     );
 }
 
-pub(super) fn render_permission_request_band(
+pub(super) fn render_permission_request_modal(
     frame: &mut ratatui::Frame<'_>,
     area: Rect,
     prompt: &PermissionRequestPrompt,
 ) {
+    let popup = centered_rect(area, 78, 58);
+    frame.render_widget(Clear, popup);
     frame.render_widget(
-        Block::default().style(Style::default().bg(palette().bottom_pane_bg)),
-        area,
+        Block::default()
+            .title(" Permissions ")
+            .title_style(
+                Style::default()
+                    .fg(palette().warn)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(palette().warn))
+            .style(Style::default().bg(palette().footer_bg)),
+        popup,
     );
-    let inner = bottom_band_inner_area(area);
+    let inner = popup.inner(Margin {
+        vertical: 1,
+        horizontal: 2,
+    });
     frame.render_widget(
         Paragraph::new(build_permission_request_text(prompt))
             .wrap(Wrap { trim: false })
-            .style(
-                Style::default()
-                    .fg(palette().text)
-                    .bg(palette().bottom_pane_bg),
-            ),
+            .style(Style::default().fg(palette().text).bg(palette().footer_bg)),
         inner,
     );
 }
@@ -201,13 +211,6 @@ pub(super) fn build_approval_text(approval: &ApprovalPrompt) -> Text<'static> {
         ],
     ));
     Text::from(lines)
-}
-
-pub(super) fn permission_request_band_height(prompt: &PermissionRequestPrompt) -> u16 {
-    build_permission_request_text(prompt)
-        .lines
-        .len()
-        .clamp(6, 12) as u16
 }
 
 pub(super) fn user_input_band_height(user_input: &UserInputView<'_>) -> u16 {

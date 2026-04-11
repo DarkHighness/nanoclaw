@@ -1,11 +1,12 @@
 use super::{
     ComposerDraftAttachmentKind, ComposerDraftAttachmentState, ComposerDraftState,
     ComposerKillBufferState, ComposerRowAttachmentPreview, HistoryRollbackCandidate,
-    InspectorAction, InspectorEntry, MainPaneMode, SharedUiState, ToastState, ToastTone, TuiState,
-    composer_draft_from_messages, composer_draft_from_parts, draft_preview_text, git_snapshot,
-    page_scroll_amount,
+    InspectorAction, InspectorEntry, MainPaneMode, SharedUiState, ToastState, ToastTone,
+    TranscriptEntry, TranscriptToolStatus, TuiState, composer_draft_from_messages,
+    composer_draft_from_parts, draft_preview_text, git_snapshot, page_scroll_amount,
 };
 use crate::theme::ThemeSummary;
+use crate::tool_render::{ToolDetail, ToolReview, ToolReviewFile};
 use agent::types::{
     Message, MessageId, MessagePart, MessageRole, SubmittedPromptAttachment,
     SubmittedPromptAttachmentKind, SubmittedPromptSnapshot,
@@ -146,6 +147,68 @@ fn history_rollback_overlay_opens_on_latest_candidate_and_wraps_navigation() {
             .selected_history_rollback_candidate()
             .map(|candidate| candidate.prompt.as_str()),
         Some("second")
+    );
+}
+
+#[test]
+fn transcript_selection_moves_between_tool_entries_only() {
+    let mut state = TuiState::default();
+    state.transcript = vec![
+        TranscriptEntry::AssistantMessage("assistant".to_string()),
+        TranscriptEntry::tool(
+            TranscriptToolStatus::Running,
+            "exec_command",
+            vec![ToolDetail::Command("$ cargo test".to_string())],
+        ),
+        TranscriptEntry::UserPrompt("prompt".to_string()),
+        TranscriptEntry::tool(
+            TranscriptToolStatus::Finished,
+            "write",
+            vec![ToolDetail::LabeledValue {
+                label: "effect".to_string(),
+                value: "Updated src/lib.rs".to_string(),
+            }],
+        ),
+    ];
+
+    assert!(state.move_transcript_selection(false));
+    assert_eq!(state.transcript_selection, Some(1));
+
+    assert!(state.move_transcript_selection(false));
+    assert_eq!(state.transcript_selection, Some(3));
+
+    assert!(state.move_transcript_selection(false));
+    assert_eq!(state.transcript_selection, Some(1));
+}
+
+#[test]
+fn selected_tool_review_overlay_uses_review_from_selected_entry() {
+    let mut state = TuiState {
+        transcript_selection: Some(0),
+        ..TuiState::default()
+    };
+    state.transcript = vec![TranscriptEntry::tool_with_review(
+        TranscriptToolStatus::Finished,
+        "write",
+        vec![ToolDetail::LabeledValue {
+            label: "effect".to_string(),
+            value: "Updated src/lib.rs".to_string(),
+        }],
+        Some(ToolReview {
+            summary: Some("Updated src/lib.rs".to_string()),
+            files: vec![ToolReviewFile {
+                path: "src/lib.rs".to_string(),
+                preview_lines: vec!["+new()".to_string()],
+            }],
+        }),
+    )];
+
+    assert!(state.open_selected_tool_review_overlay());
+    assert_eq!(
+        state
+            .selected_tool_review_file()
+            .map(|file| file.path.as_str()),
+        Some("src/lib.rs")
     );
 }
 

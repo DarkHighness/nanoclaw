@@ -18,6 +18,7 @@ use ratatui::text::{Line, Span};
 use std::time::Instant;
 
 const COLLAPSED_SHELL_PREVIEW_DETAIL_LINES: usize = 2;
+const SELECTED_TOOL_PREVIEW_DETAIL_LINES: usize = 5;
 
 pub(super) fn should_collapse_shell_details(
     entry: &TranscriptEntry,
@@ -41,12 +42,18 @@ pub(super) fn render_collapsed_tool_entry(
     accent: Color,
     kind: TranscriptEntryKind,
     animation_frame: Option<u128>,
+    selected: bool,
 ) -> Vec<Line<'static>> {
     let tool = entry
         .tool_entry()
         .expect("collapsed tool entries require structured tool payloads");
-    let preview = tool.preview_with_detail_lines(COLLAPSED_SHELL_PREVIEW_DETAIL_LINES);
-    let hidden_line_count = hidden_tool_detail_line_count(entry);
+    let preview_line_count = if selected {
+        SELECTED_TOOL_PREVIEW_DETAIL_LINES
+    } else {
+        COLLAPSED_SHELL_PREVIEW_DETAIL_LINES
+    };
+    let preview = tool.preview_with_detail_lines(preview_line_count);
+    let hidden_line_count = hidden_tool_detail_line_count_with_limit(entry, preview_line_count);
 
     let mut rendered = render_tool_entry(&preview, marker, kind, animation_frame);
     if hidden_line_count > 0 {
@@ -97,12 +104,19 @@ pub(super) fn render_collapsed_shell_summary(
     rendered
 }
 
-fn hidden_tool_detail_line_count(entry: &TranscriptEntry) -> usize {
+fn hidden_tool_detail_line_count_with_limit(
+    entry: &TranscriptEntry,
+    max_detail_lines: usize,
+) -> usize {
     entry
         .tool_entry()
         .map(|tool| tool.serialized_lines().len().saturating_sub(1))
         .unwrap_or_default()
-        .saturating_sub(COLLAPSED_SHELL_PREVIEW_DETAIL_LINES)
+        .saturating_sub(max_detail_lines)
+}
+
+fn hidden_tool_detail_line_count(entry: &TranscriptEntry) -> usize {
+    hidden_tool_detail_line_count_with_limit(entry, COLLAPSED_SHELL_PREVIEW_DETAIL_LINES)
 }
 
 fn hidden_shell_detail_line_count(entry: &TranscriptEntry) -> usize {
@@ -533,6 +547,30 @@ fn render_tool_detail(detail: &ToolDetail, kind: TranscriptEntryKind) -> Vec<Lin
                 vec![Span::styled(text.clone(), shell_meta_style(text))],
             ),
         )],
+        ToolDetail::LabeledValue { label, value } => vec![detail_line(
+            false,
+            labeled_detail_spans(
+                label,
+                tool_detail_label_color(label),
+                vec![Span::styled(
+                    value.clone(),
+                    tool_detail_value_style(label, value),
+                )],
+            ),
+        )],
+        ToolDetail::LabeledBlock { label, lines } => render_labeled_tool_block(label, lines),
+        ToolDetail::ActionHint {
+            key_hint,
+            label,
+            detail,
+        } => vec![detail_line(
+            false,
+            labeled_detail_spans(
+                "action",
+                palette().assistant,
+                tool_action_spans(key_hint, label, detail.as_deref()),
+            ),
+        )],
         ToolDetail::TextBlock(lines) => render_tool_text_block(lines, kind),
         ToolDetail::NamedBlock {
             label,
@@ -636,6 +674,38 @@ fn render_named_tool_block(
     rendered
 }
 
+fn render_labeled_tool_block(label: &str, lines: &[String]) -> Vec<Line<'static>> {
+    let mut rendered = Vec::new();
+    if let Some((first, rest)) = lines.split_first() {
+        rendered.push(detail_line(
+            false,
+            labeled_detail_spans(
+                label,
+                tool_detail_label_color(label),
+                vec![Span::styled(
+                    first.clone(),
+                    tool_detail_value_style(label, first),
+                )],
+            ),
+        ));
+        rendered.extend(rest.iter().map(|line| {
+            detail_line(
+                true,
+                vec![Span::styled(
+                    line.clone(),
+                    Style::default().fg(palette().muted),
+                )],
+            )
+        }));
+    } else {
+        rendered.push(detail_line(
+            false,
+            labeled_detail_spans(label, tool_detail_label_color(label), Vec::new()),
+        ));
+    }
+    rendered
+}
+
 fn render_tool_status_line(entry: &TranscriptToolEntry) -> Line<'static> {
     let (status_label, accent) = tool_status_label(entry.status);
     let mut spans = tool_name_spans(&entry.tool_name);
@@ -707,6 +777,41 @@ fn render_tool_text_block(lines: &[String], kind: TranscriptEntryKind) -> Vec<Li
         }));
     }
     rendered
+}
+
+fn tool_action_spans(key_hint: &str, label: &str, detail: Option<&str>) -> Vec<Span<'static>> {
+    let mut spans = vec![
+        Span::styled(key_hint.to_string(), Style::default().fg(palette().accent)),
+        Span::styled(format!(" {label}"), Style::default().fg(palette().muted)),
+    ];
+    if let Some(detail) = detail.filter(|detail| !detail.trim().is_empty()) {
+        spans.push(Span::styled(" · ", Style::default().fg(palette().subtle)));
+        spans.push(Span::styled(
+            detail.to_string(),
+            Style::default().fg(palette().text),
+        ));
+    }
+    spans
+}
+
+fn tool_detail_label_color(label: &str) -> Color {
+    match label {
+        "intent" | "command" => palette().accent,
+        "effect" | "action" => palette().assistant,
+        "files" => palette().header,
+        "result" => palette().warn,
+        _ => palette().subtle,
+    }
+}
+
+fn tool_detail_value_style(label: &str, value: &str) -> Style {
+    match label {
+        "result" => shell_meta_style(value),
+        "files" => Style::default().fg(palette().text),
+        "effect" => Style::default().fg(palette().text),
+        "intent" => Style::default().fg(palette().text),
+        _ => Style::default().fg(palette().muted),
+    }
 }
 
 fn tool_meta_label(text: &str) -> &'static str {

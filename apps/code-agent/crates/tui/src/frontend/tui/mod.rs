@@ -15,6 +15,7 @@ mod session_shell;
 mod slash_commands;
 mod state;
 mod terminal_shell;
+mod tool_review;
 mod tool_state;
 
 use crate::backend::{CodeAgentUiSession, preview_id};

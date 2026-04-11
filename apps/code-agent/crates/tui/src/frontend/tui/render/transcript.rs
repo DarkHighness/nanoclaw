@@ -78,6 +78,7 @@ pub(super) fn build_transcript_lines_for_width(
 
     if !state.transcript.is_empty() {
         for (index, entry) in state.transcript.iter().enumerate() {
+            let selected = state.transcript_selection == Some(index);
             let active_tool_entry = state.turn_running
                 && index + 1 == state.transcript.len()
                 && entry.tool_entry().is_some();
@@ -88,13 +89,18 @@ pub(super) fn build_transcript_lines_for_width(
                     lines.push(Line::raw(""));
                 }
             }
-            lines.extend(format_transcript_cell_with_mode(
+            let mut cell_lines = format_transcript_cell_with_mode(
                 entry,
                 state.show_tool_details,
                 (state.turn_running && index + 1 == state.transcript.len())
                     .then_some(tool_timeline_animation)
                     .flatten(),
-            ));
+                selected,
+            );
+            if selected {
+                highlight_transcript_cell(&mut cell_lines);
+            }
+            lines.extend(cell_lines);
             if active_tool_entry {
                 if let Some(embedded) =
                     pending_control_embedded_lines(state, tool_timeline_animation)
@@ -125,6 +131,7 @@ pub(super) fn build_transcript_lines_for_width(
                     .turn_running
                     .then_some(tool_timeline_animation)
                     .flatten(),
+                false,
             ));
         }
     }
@@ -167,20 +174,21 @@ pub(super) enum TranscriptEntryKind {
 }
 
 pub(super) fn format_transcript_cell(entry: &TranscriptEntry) -> Vec<Line<'static>> {
-    format_transcript_cell_with_mode(entry, true, None)
+    format_transcript_cell_with_mode(entry, true, None, false)
 }
 
 fn format_transcript_cell_with_mode(
     entry: &TranscriptEntry,
     show_tool_details: bool,
     animation_frame: Option<u128>,
+    selected: bool,
 ) -> Vec<Line<'static>> {
     let marker = entry.marker();
     let kind = entry_kind_from_cell(entry);
     let accent = entry_accent(entry, kind);
 
     if should_collapse_tool_details(entry, show_tool_details) {
-        return render_collapsed_tool_entry(entry, marker, accent, kind, animation_frame);
+        return render_collapsed_tool_entry(entry, marker, accent, kind, animation_frame, selected);
     }
     if should_collapse_shell_details(entry, show_tool_details) {
         return render_collapsed_shell_summary(entry, marker, accent, kind, animation_frame);
@@ -188,6 +196,14 @@ fn format_transcript_cell_with_mode(
     let mut rendered = render_transcript_body(entry, marker, kind, animation_frame);
     prefix_transcript_marker(&mut rendered, marker, accent, kind);
     rendered
+}
+
+fn highlight_transcript_cell(lines: &mut [Line<'static>]) {
+    for line in lines.iter_mut() {
+        for span in &mut line.spans {
+            span.style = span.style.bg(palette().footer_bg);
+        }
+    }
 }
 
 fn render_transcript_body(

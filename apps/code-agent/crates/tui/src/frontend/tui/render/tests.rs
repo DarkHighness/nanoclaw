@@ -8,6 +8,7 @@ use super::history_rollback_overlay::{
 use super::main_pane_viewport_height;
 use super::picker::build_command_hint_text;
 use super::statusline::{format_footer_context, format_toast_line, toast_height};
+use super::tool_review_overlay::{build_tool_review_list_text, build_tool_review_preview_text};
 use super::transcript::TranscriptEntryKind;
 use super::transcript::build_transcript_lines;
 use super::transcript::build_transcript_lines_for_width;
@@ -32,10 +33,11 @@ use crate::frontend::tui::state::{
     TranscriptShellDetail, TranscriptToolStatus, TuiState,
 };
 use crate::interaction::{
-    PendingControlKind, PendingControlSummary, UserInputAnswer, UserInputOption, UserInputQuestion,
+    PendingControlKind, PendingControlSummary, PermissionProfile, PermissionRequestPrompt,
+    UserInputAnswer, UserInputOption, UserInputQuestion,
 };
 use crate::theme::ThemeSummary;
-use crate::tool_render::ToolDetail;
+use crate::tool_render::{ToolDetail, ToolReview, ToolReviewFile};
 use agent::types::{AgentStatus, MessageId, MessagePart};
 use ratatui::layout::Rect;
 use std::collections::BTreeMap;
@@ -207,6 +209,23 @@ fn transcript_expands_tool_details_when_enabled() {
             .iter()
             .any(|line| line_text_for(line).contains("ok"))
     );
+}
+
+#[test]
+fn selected_tool_entry_surfaces_review_action_in_collapsed_mode() {
+    let mut state = TuiState {
+        main_pane: MainPaneMode::Transcript,
+        transcript_selection: Some(0),
+        ..TuiState::default()
+    };
+    state.transcript = vec![reviewable_tool_transcript_entry()];
+
+    let rendered = build_transcript_lines(&state);
+
+    assert!(rendered.iter().any(|line| {
+        let text = line_text_for(line);
+        text.contains("review diff") && text.contains("src/lib.rs")
+    }));
 }
 
 #[test]
@@ -1527,6 +1546,41 @@ fn finished_tool_transcript_entry() -> TranscriptEntry {
     )
 }
 
+fn reviewable_tool_transcript_entry() -> TranscriptEntry {
+    TranscriptEntry::tool_with_review(
+        TranscriptToolStatus::Finished,
+        "write",
+        vec![
+            ToolDetail::LabeledValue {
+                label: "effect".to_string(),
+                value: "Updated src/lib.rs".to_string(),
+            },
+            ToolDetail::LabeledValue {
+                label: "files".to_string(),
+                value: "src/lib.rs".to_string(),
+            },
+            ToolDetail::ActionHint {
+                key_hint: "r".to_string(),
+                label: "review diff".to_string(),
+                detail: Some("src/lib.rs".to_string()),
+            },
+        ],
+        Some(ToolReview {
+            summary: Some("Updated src/lib.rs".to_string()),
+            files: vec![ToolReviewFile {
+                path: "src/lib.rs".to_string(),
+                preview_lines: vec![
+                    "--- src/lib.rs".to_string(),
+                    "+++ src/lib.rs".to_string(),
+                    "@@ -1,1 +1,1 @@".to_string(),
+                    "-old()".to_string(),
+                    "+new()".to_string(),
+                ],
+            }],
+        }),
+    )
+}
+
 #[test]
 fn transcript_renders_plan_updates_as_dedicated_cells() {
     let mut state = TuiState {
@@ -1645,6 +1699,29 @@ fn side_rail_stays_disabled_even_when_transcript_has_live_context() {
 }
 
 #[test]
+fn tool_review_overlay_renders_file_list_and_preview() {
+    let mut state = TuiState {
+        transcript_selection: Some(0),
+        ..TuiState::default()
+    };
+    state.transcript = vec![reviewable_tool_transcript_entry()];
+
+    assert!(state.open_selected_tool_review_overlay());
+
+    let list = build_tool_review_list_text(&state);
+    let preview = build_tool_review_preview_text(&state);
+
+    assert!(list.lines.iter().any(|line| {
+        let text = line_text_for(line);
+        text.contains("src/lib.rs")
+    }));
+    assert!(preview.lines.iter().any(|line| {
+        let text = line_text_for(line);
+        text.contains("+new()")
+    }));
+}
+
+#[test]
 fn approval_modal_uses_structured_command_preview() {
     let text = build_approval_text(&ApprovalPrompt {
         tool_name: "exec_command".to_string(),
@@ -1716,6 +1793,33 @@ fn approval_preview_lines_collapse_long_argument_blocks() {
     ]);
 
     assert_eq!(lines, vec!["one", "two", "three", "… +2 lines"]);
+}
+
+#[test]
+fn permission_request_modal_does_not_shrink_main_pane_viewport() {
+    let state = TuiState::default();
+    let area = Rect {
+        x: 0,
+        y: 0,
+        width: 100,
+        height: 30,
+    };
+    let prompt = PermissionRequestPrompt {
+        prompt_id: "perm-1".to_string(),
+        reason: Some("need write access".to_string()),
+        requested: PermissionProfile {
+            read_roots: Vec::new(),
+            write_roots: vec!["/workspace".to_string()],
+            network_full: false,
+            network_domains: Vec::new(),
+        },
+        current_turn: PermissionProfile::default(),
+        current_session: PermissionProfile::default(),
+    };
+
+    let viewport = main_pane_viewport_height(area, &state, None, Some(&prompt), None);
+
+    assert_eq!(viewport, 28);
 }
 
 #[test]

@@ -6,7 +6,9 @@ use super::tool_state::{
     execution_state_from_tool_output, execution_update_entry_from_tool_output,
     plan_items_from_tool_output, plan_update_entry_from_tool_output,
 };
-use crate::tool_render::{ToolDetail, tool_argument_details, tool_output_details_from_preview};
+use crate::tool_render::{
+    ToolDetail, tool_argument_details, tool_output_details_from_preview, tool_review_from_preview,
+};
 use crate::ui::{SessionEvent, SessionToolCall};
 use std::collections::HashMap;
 
@@ -414,10 +416,11 @@ fn completed_tool_entry(
         output_preview,
         structured_output_preview,
     ));
-    TranscriptEntry::tool(
+    TranscriptEntry::tool_with_review(
         TranscriptToolStatus::Finished,
         call.tool_name.clone(),
         detail_lines,
+        tool_review_from_preview(&call.tool_name, structured_output_preview),
     )
 }
 
@@ -630,7 +633,7 @@ mod tests {
                 .all(|line| !transcript_text(line).contains('>'))
         );
         assert!(snapshot.transcript.iter().any(|line| transcript_text(line)
-            == "• Finished exec_command\n  └ $ ls\n  └ exit 0\n  └ listed files"));
+            == "• Finished exec_command\n  └ $ ls\n  └ result exit 0\n  └ stdout\n    listed files"));
     }
 
     #[test]
@@ -665,7 +668,7 @@ mod tests {
         assert_eq!(snapshot.transcript.len(), 1);
         assert_eq!(
             transcript_text(&snapshot.transcript[0]),
-            "• Finished exec_command\n  └ $ ls\n  └ exit 0\n  └ listed files"
+            "• Finished exec_command\n  └ $ ls\n  └ result exit 0\n  └ stdout\n    listed files"
         );
     }
 
@@ -799,7 +802,7 @@ mod tests {
         assert_eq!(snapshot.transcript.len(), 1);
         assert_eq!(
             transcript_text(&snapshot.transcript[0]),
-            "• Finished exec_command\n  └ $ cargo test\n  └ exit 0\n  └ ok"
+            "• Finished exec_command\n  └ $ cargo test\n  └ result exit 0\n  └ stdout\n    ok"
         );
     }
 
@@ -834,7 +837,7 @@ mod tests {
         });
 
         let transcript = transcript_text(&ui_state.snapshot().transcript[0]);
-        assert!(transcript.contains("  └ exit 1"));
+        assert!(transcript.contains("  └ result exit 1"));
         assert!(transcript.contains("  └ stderr"));
         assert!(transcript.contains("… +"));
         assert!(transcript.contains("    20"));
@@ -877,9 +880,15 @@ mod tests {
         });
 
         let snapshot = ui_state.snapshot();
-        assert!(transcript_text(&snapshot.transcript[0]).contains("  └ diff src/lib.rs"));
-        assert!(transcript_text(&snapshot.transcript[0]).contains("@@ -1,1 +1,1 @@"));
-        assert!(transcript_text(&snapshot.transcript[0]).contains("+new()"));
+        let transcript = transcript_text(&snapshot.transcript[0]);
+        assert!(transcript.contains("  └ files src/lib.rs"));
+        assert!(transcript.contains("action [r] review diff"));
+        assert!(
+            snapshot.transcript[0]
+                .tool_entry()
+                .and_then(|entry| entry.review.as_ref())
+                .is_some()
+        );
     }
 
     fn transcript_text(entry: &crate::frontend::tui::state::TranscriptEntry) -> String {

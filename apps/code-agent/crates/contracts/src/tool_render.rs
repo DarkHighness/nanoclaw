@@ -9,9 +9,34 @@ pub enum ToolDetailBlockKind {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ToolReviewFile {
+    pub path: String,
+    pub preview_lines: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ToolReview {
+    pub summary: Option<String>,
+    pub files: Vec<ToolReviewFile>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ToolDetail {
     Command(String),
     Meta(String),
+    LabeledValue {
+        label: String,
+        value: String,
+    },
+    LabeledBlock {
+        label: String,
+        lines: Vec<String>,
+    },
+    ActionHint {
+        key_hint: String,
+        label: String,
+        detail: Option<String>,
+    },
     TextBlock(Vec<String>),
     NamedBlock {
         label: String,
@@ -31,6 +56,32 @@ impl ToolDetail {
     pub fn serialized_lines(&self) -> Vec<String> {
         match self {
             Self::Command(command) | Self::Meta(command) => vec![format!("  └ {command}")],
+            Self::LabeledValue { label, value } => vec![format!("  └ {label} {value}")],
+            Self::LabeledBlock { label, lines } => {
+                if let Some((first, rest)) = lines.split_first() {
+                    let mut rendered = vec![format!("  └ {label} {first}")];
+                    rendered.extend(
+                        rest.iter()
+                            .filter(|line| !line.trim().is_empty())
+                            .map(|line| format!("    {line}")),
+                    );
+                    rendered
+                } else {
+                    vec![format!("  └ {label}")]
+                }
+            }
+            Self::ActionHint {
+                key_hint,
+                label,
+                detail,
+            } => {
+                let mut line = format!("  └ action [{key_hint}] {label}");
+                if let Some(detail) = detail.as_deref().filter(|detail| !detail.trim().is_empty()) {
+                    line.push_str(" · ");
+                    line.push_str(detail);
+                }
+                vec![line]
+            }
             Self::TextBlock(lines) => serialize_detail_block(lines),
             Self::NamedBlock { label, lines, .. } => {
                 let mut rendered = vec![format!("  └ {label}")];
@@ -67,6 +118,23 @@ pub fn preview_tool_details(details: &[ToolDetail], max_lines: usize) -> Vec<Too
         preview.push(match detail {
             ToolDetail::Command(command) => ToolDetail::Command(command.clone()),
             ToolDetail::Meta(text) => ToolDetail::Meta(text.clone()),
+            ToolDetail::LabeledValue { label, value } => ToolDetail::LabeledValue {
+                label: label.clone(),
+                value: value.clone(),
+            },
+            ToolDetail::LabeledBlock { label, lines } => ToolDetail::LabeledBlock {
+                label: label.clone(),
+                lines: lines.iter().take(remaining.max(1)).cloned().collect(),
+            },
+            ToolDetail::ActionHint {
+                key_hint,
+                label,
+                detail,
+            } => ToolDetail::ActionHint {
+                key_hint: key_hint.clone(),
+                label: label.clone(),
+                detail: detail.clone(),
+            },
             ToolDetail::TextBlock(lines) => {
                 ToolDetail::TextBlock(lines.iter().take(remaining).cloned().collect())
             }
@@ -379,6 +447,58 @@ pub fn tool_output_details(
     generic_output_details(output_preview)
 }
 
+pub fn tool_review_from_preview(
+    tool_name: &str,
+    structured_output_preview: Option<&str>,
+) -> Option<ToolReview> {
+    let structured =
+        structured_output_preview.and_then(|raw| serde_json::from_str::<Value>(raw).ok());
+    tool_review(tool_name, structured.as_ref())
+}
+
+pub fn tool_review(tool_name: &str, structured: Option<&Value>) -> Option<ToolReview> {
+    if !matches!(tool_name, "write" | "edit" | "patch") {
+        return None;
+    }
+
+    let structured = structured?;
+    let summary = structured
+        .get("summary")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|summary| !summary.is_empty())
+        .map(str::to_string);
+    let files = structured
+        .get("file_diffs")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|diff| {
+            let preview = diff
+                .get("preview")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|preview| !preview.is_empty())?;
+            let path = diff
+                .get("path")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|path| !path.is_empty())
+                .unwrap_or("diff")
+                .to_string();
+            Some(ToolReviewFile {
+                path,
+                preview_lines: collapse_preview_text(preview, 48, 120, PreviewCollapse::HeadTail),
+            })
+        })
+        .collect::<Vec<_>>();
+    if files.is_empty() {
+        None
+    } else {
+        Some(ToolReview { summary, files })
+    }
+}
+
 pub fn tool_argument_details(preview_lines: &[String]) -> Vec<ToolDetail> {
     let lines = preview_lines
         .iter()
@@ -391,7 +511,25 @@ pub fn tool_argument_details(preview_lines: &[String]) -> Vec<ToolDetail> {
     if lines.len() == 1 && lines[0].starts_with("$ ") {
         return vec![ToolDetail::Command(lines[0].clone())];
     }
-    vec![ToolDetail::TextBlock(lines)]
+
+    let mut details = vec![ToolDetail::LabeledValue {
+        label: "intent".to_string(),
+        value: lines[0].clone(),
+    }];
+    if let Some(remaining) = lines.get(1..) {
+        if remaining.len() == 1 {
+            details.push(ToolDetail::LabeledValue {
+                label: "context".to_string(),
+                value: remaining[0].clone(),
+            });
+        } else if !remaining.is_empty() {
+            details.push(ToolDetail::LabeledBlock {
+                label: "context".to_string(),
+                lines: remaining.to_vec(),
+            });
+        }
+    }
+    details
 }
 
 fn process_output_details(
@@ -407,7 +545,10 @@ fn process_output_details(
         .map(str::trim)
         .filter(|value| !value.is_empty())
     {
-        detail_lines.push(ToolDetail::Meta(format!("session {session_id}")));
+        detail_lines.push(ToolDetail::LabeledValue {
+            label: "session".to_string(),
+            value: session_id.to_string(),
+        });
     }
 
     if tool_name == "write_stdin" {
@@ -416,14 +557,20 @@ fn process_output_details(
             .and_then(Value::as_u64)
             .filter(|wrote_chars| *wrote_chars > 0)
         {
-            detail_lines.push(ToolDetail::Meta(format!("sent {wrote_chars} char(s)")));
+            detail_lines.push(ToolDetail::LabeledValue {
+                label: "effect".to_string(),
+                value: format!("sent {wrote_chars} char(s)"),
+            });
         }
         if structured
             .and_then(|value| value.get("closed_stdin"))
             .and_then(Value::as_bool)
             .unwrap_or(false)
         {
-            detail_lines.push(ToolDetail::Meta("closed stdin".to_string()));
+            detail_lines.push(ToolDetail::LabeledValue {
+                label: "effect".to_string(),
+                value: "closed stdin".to_string(),
+            });
         }
     }
 
@@ -433,14 +580,20 @@ fn process_output_details(
         .map(str::trim)
         .filter(|value| !value.is_empty() && *value != "completed")
     {
-        detail_lines.push(ToolDetail::Meta(state.to_string()));
+        detail_lines.push(ToolDetail::LabeledValue {
+            label: "state".to_string(),
+            value: state.to_string(),
+        });
     }
 
     let exit_code = structured
         .and_then(|value| value.get("exit_code"))
         .and_then(Value::as_i64);
     if let Some(exit_code) = exit_code {
-        detail_lines.push(ToolDetail::Meta(format!("exit {exit_code}")));
+        detail_lines.push(ToolDetail::LabeledValue {
+            label: "result".to_string(),
+            value: format!("exit {exit_code}"),
+        });
     }
 
     let timed_out = structured
@@ -448,7 +601,10 @@ fn process_output_details(
         .and_then(Value::as_bool)
         .unwrap_or(false);
     if timed_out {
-        detail_lines.push(ToolDetail::Meta("timed out".to_string()));
+        detail_lines.push(ToolDetail::LabeledValue {
+            label: "result".to_string(),
+            value: "timed out".to_string(),
+        });
     }
     if let Some(error) = structured
         .and_then(|value| value.get("error"))
@@ -456,10 +612,10 @@ fn process_output_details(
         .map(str::trim)
         .filter(|value| !value.is_empty())
     {
-        detail_lines.push(ToolDetail::Meta(format!(
-            "error {}",
-            inline_preview_text(error, 96)
-        )));
+        detail_lines.push(ToolDetail::LabeledValue {
+            label: "result".to_string(),
+            value: format!("error {}", inline_preview_text(error, 96)),
+        });
     }
 
     let stdout = structured
@@ -478,35 +634,26 @@ fn process_output_details(
     } else {
         collapse_preview_text(stderr.trim_end(), 8, 120, PreviewCollapse::Tail)
     };
+    let has_stdout_preview = !stdout_preview.is_empty();
+    let has_stderr_preview = !stderr_preview.is_empty();
 
-    match (stdout_preview.is_empty(), stderr_preview.is_empty()) {
-        (false, false) => {
-            detail_lines.push(ToolDetail::NamedBlock {
-                label: "stdout".to_string(),
-                kind: ToolDetailBlockKind::Stdout,
-                lines: stdout_preview,
-            });
-            detail_lines.push(ToolDetail::NamedBlock {
-                label: "stderr".to_string(),
-                kind: ToolDetailBlockKind::Stderr,
-                lines: stderr_preview,
-            });
-        }
-        (false, true) => {
-            detail_lines.push(ToolDetail::TextBlock(stdout_preview));
-        }
-        (true, false) => {
-            detail_lines.push(ToolDetail::NamedBlock {
-                label: "stderr".to_string(),
-                kind: ToolDetailBlockKind::Stderr,
-                lines: stderr_preview,
-            });
-        }
-        (true, true) => {
-            if detail_lines.is_empty() {
-                detail_lines.extend(generic_output_details(output_preview));
-            }
-        }
+    if has_stdout_preview {
+        detail_lines.push(ToolDetail::NamedBlock {
+            label: "stdout".to_string(),
+            kind: ToolDetailBlockKind::Stdout,
+            lines: stdout_preview,
+        });
+    }
+    if has_stderr_preview {
+        detail_lines.push(ToolDetail::NamedBlock {
+            label: "stderr".to_string(),
+            kind: ToolDetailBlockKind::Stderr,
+            lines: stderr_preview,
+        });
+    }
+
+    if !has_stdout_preview && !has_stderr_preview && detail_lines.is_empty() {
+        detail_lines.extend(generic_output_details(output_preview));
     }
 
     detail_lines
@@ -559,17 +706,23 @@ fn file_mutation_output_details(
     }
 
     let mut detail_lines = Vec::new();
-    if let Some(summary) = structured
-        .and_then(|value| value.get("summary"))
-        .and_then(Value::as_str)
-        .map(str::trim)
+    let review = tool_review(tool_name, structured);
+    if let Some(summary) = review
+        .as_ref()
+        .and_then(|review| review.summary.as_deref())
         .filter(|summary| !summary.is_empty())
     {
-        detail_lines.push(ToolDetail::Meta(inline_preview_text(summary, 96)));
+        detail_lines.push(ToolDetail::LabeledValue {
+            label: "effect".to_string(),
+            value: inline_preview_text(summary, 96),
+        });
     } else if let Some(first_line) = output_preview.lines().next().map(str::trim)
         && !first_line.is_empty()
     {
-        detail_lines.push(ToolDetail::Meta(inline_preview_text(first_line, 96)));
+        detail_lines.push(ToolDetail::LabeledValue {
+            label: "effect".to_string(),
+            value: inline_preview_text(first_line, 96),
+        });
     }
 
     if let Some(before) = structured
@@ -580,34 +733,52 @@ fn file_mutation_output_details(
             .and_then(|value| value.get("snapshot_after"))
             .and_then(Value::as_str)
             .unwrap_or("missing");
-        detail_lines.push(ToolDetail::Meta(format!(
-            "snapshot {} -> {}",
-            inline_preview_text(before, 16),
-            inline_preview_text(after, 16)
-        )));
+        detail_lines.push(ToolDetail::LabeledValue {
+            label: "snapshot".to_string(),
+            value: format!(
+                "{} -> {}",
+                inline_preview_text(before, 16),
+                inline_preview_text(after, 16)
+            ),
+        });
     }
 
-    let file_diffs = structured
-        .and_then(|value| value.get("file_diffs"))
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-    for diff in &file_diffs {
-        if let Some(preview) = diff.get("preview").and_then(Value::as_str) {
-            let label = diff
-                .get("path")
-                .and_then(Value::as_str)
-                .map(|path| format!("diff {}", inline_preview_text(path, 96)))
-                .unwrap_or_else(|| "diff".to_string());
-            detail_lines.push(ToolDetail::NamedBlock {
-                label,
-                kind: ToolDetailBlockKind::Diff,
-                lines: collapse_preview_text(preview, 16, 120, PreviewCollapse::HeadTail),
-            });
-        }
+    if let Some(review) = review {
+        detail_lines.push(ToolDetail::LabeledValue {
+            label: "files".to_string(),
+            value: review_file_summary(&review.files),
+        });
+        detail_lines.push(ToolDetail::ActionHint {
+            key_hint: "r".to_string(),
+            label: if review.files.len() == 1 {
+                "review diff".to_string()
+            } else {
+                "review diffs".to_string()
+            },
+            detail: Some(if review.files.len() == 1 {
+                review.files[0].path.clone()
+            } else {
+                format!("{} file(s)", review.files.len())
+            }),
+        });
     }
 
     Some(detail_lines)
+}
+
+fn review_file_summary(files: &[ToolReviewFile]) -> String {
+    match files {
+        [] => "no files".to_string(),
+        [file] => file.path.clone(),
+        [first, second] => format!("2 file(s) · {} · {}", first.path, second.path),
+        [first, second, rest @ ..] => format!(
+            "{} file(s) · {} · {} · +{} more",
+            rest.len() + 2,
+            first.path,
+            second.path,
+            rest.len()
+        ),
+    }
 }
 
 fn serialize_detail_block(lines: &[String]) -> Vec<String> {
@@ -649,7 +820,7 @@ fn inline_preview_text(value: &str, max_chars: usize) -> String {
 mod tests {
     use super::{
         summarize_tool_entry, tool_arguments_preview_lines, tool_output_detail_lines,
-        tool_output_detail_lines_from_preview,
+        tool_output_detail_lines_from_preview, tool_review,
     };
     use serde_json::json;
 
@@ -773,13 +944,14 @@ mod tests {
             ),
         );
 
-        assert!(rendered.contains("  └ exit 0"));
-        assert!(rendered.contains("  └ ok"));
+        assert!(rendered.contains("  └ result exit 0"));
+        assert!(rendered.contains("  └ stdout"));
+        assert!(rendered.contains("    ok"));
         assert!(!rendered.contains("```"));
     }
 
     #[test]
-    fn file_mutations_render_diff_blocks_as_indented_lines() {
+    fn file_mutations_surface_files_and_review_action() {
         let rendered = tool_output_detail_lines(
             "write",
             "Wrote 18 bytes to src/lib.rs",
@@ -792,8 +964,17 @@ mod tests {
             })),
         );
 
-        assert!(rendered.iter().any(|line| line == "  └ diff src/lib.rs"));
-        assert!(rendered.iter().any(|line| line == "    +new()"));
+        assert!(
+            rendered
+                .iter()
+                .any(|line| line == "  └ effect Wrote 18 bytes to src/lib.rs")
+        );
+        assert!(rendered.iter().any(|line| line == "  └ files src/lib.rs"));
+        assert!(
+            rendered
+                .iter()
+                .any(|line| line.contains("action [r] review diff"))
+        );
     }
 
     #[test]
@@ -811,7 +992,36 @@ mod tests {
         );
 
         assert!(rendered.iter().any(|line| line == "  └ session exec_123"));
-        assert!(rendered.iter().any(|line| line == "  └ exit 0"));
-        assert!(rendered.iter().any(|line| line == "  └ ok"));
+        assert!(rendered.iter().any(|line| line == "  └ result exit 0"));
+        assert!(rendered.iter().any(|line| line == "  └ stdout"));
+        assert!(rendered.iter().any(|line| line == "    ok"));
+    }
+
+    #[test]
+    fn file_mutation_review_extracts_structured_diff_preview() {
+        let review = tool_review(
+            "write",
+            Some(&json!({
+                "summary": "Wrote 18 bytes to src/lib.rs",
+                "file_diffs": [{
+                    "path": "src/lib.rs",
+                    "preview": "--- src/lib.rs\n+++ src/lib.rs\n@@ -1,1 +1,1 @@\n-old()\n+new()"
+                }]
+            })),
+        )
+        .expect("expected review");
+
+        assert_eq!(
+            review.summary.as_deref(),
+            Some("Wrote 18 bytes to src/lib.rs")
+        );
+        assert_eq!(review.files.len(), 1);
+        assert_eq!(review.files[0].path, "src/lib.rs");
+        assert!(
+            review.files[0]
+                .preview_lines
+                .iter()
+                .any(|line| line == "+new()")
+        );
     }
 }

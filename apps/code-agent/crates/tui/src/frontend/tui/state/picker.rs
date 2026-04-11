@@ -1,4 +1,5 @@
 use super::*;
+use crate::tool_render::{ToolReview, ToolReviewFile};
 use agent::types::MessageId;
 
 #[derive(Clone, Debug, Default)]
@@ -55,6 +56,14 @@ pub(crate) enum HistoryRollbackState {
     Selecting(HistoryRollbackOverlayState),
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ToolReviewOverlayState {
+    pub(crate) transcript_index: usize,
+    pub(crate) tool_name: String,
+    pub(crate) review: ToolReview,
+    pub(crate) selected: usize,
+}
+
 impl TuiState {
     pub(crate) fn show_main_view<I>(&mut self, title: impl Into<String>, lines: I)
     where
@@ -71,6 +80,7 @@ impl TuiState {
         self.thinking_effort_picker = None;
         self.theme_picker = None;
         self.history_rollback = None;
+        self.tool_review = None;
     }
 
     pub(crate) fn show_transcript_pane(&mut self) {
@@ -81,6 +91,7 @@ impl TuiState {
         self.thinking_effort_picker = None;
         self.theme_picker = None;
         self.history_rollback = None;
+        self.tool_review = None;
     }
 
     pub(crate) fn open_statusline_picker(&mut self) {
@@ -93,6 +104,7 @@ impl TuiState {
         self.thinking_effort_picker = None;
         self.theme_picker = None;
         self.history_rollback = None;
+        self.tool_review = None;
         self.statusline_picker
             .get_or_insert_with(StatusLinePickerState::default)
             .selected = 0;
@@ -108,6 +120,7 @@ impl TuiState {
         self.statusline_picker = None;
         self.theme_picker = None;
         self.history_rollback = None;
+        self.tool_review = None;
         let selected = self
             .session
             .supported_model_reasoning_efforts
@@ -130,6 +143,7 @@ impl TuiState {
         self.thinking_effort_picker = None;
         self.theme_picker = None;
         self.history_rollback = None;
+        self.tool_review = None;
         let selected = self
             .themes
             .iter()
@@ -176,6 +190,7 @@ impl TuiState {
         self.thinking_effort_picker = None;
         self.theme_picker = None;
         self.history_rollback = None;
+        self.tool_review = None;
         true
     }
 
@@ -227,6 +242,7 @@ impl TuiState {
         self.thinking_effort_picker = None;
         self.theme_picker = None;
         self.history_rollback = Some(HistoryRollbackState::Primed);
+        self.tool_review = None;
     }
 
     pub(crate) fn open_history_rollback_overlay(
@@ -248,11 +264,87 @@ impl TuiState {
                 candidates,
             },
         ));
+        self.tool_review = None;
         true
     }
 
     pub(crate) fn clear_history_rollback(&mut self) {
         self.history_rollback = None;
+    }
+
+    pub(crate) fn open_selected_tool_review_overlay(&mut self) -> bool {
+        let Some(transcript_index) = self.transcript_selection else {
+            return false;
+        };
+        let Some(tool) = self
+            .transcript
+            .get(transcript_index)
+            .and_then(TranscriptEntry::tool_entry)
+        else {
+            return false;
+        };
+        let Some(review) = tool.review.clone() else {
+            return false;
+        };
+
+        self.main_pane = MainPaneMode::Transcript;
+        self.collection_picker = None;
+        self.pending_control_picker = None;
+        self.statusline_picker = None;
+        self.thinking_effort_picker = None;
+        self.theme_picker = None;
+        self.history_rollback = None;
+        self.tool_review = Some(ToolReviewOverlayState {
+            transcript_index,
+            tool_name: tool.tool_name.clone(),
+            review,
+            selected: 0,
+        });
+        true
+    }
+
+    pub(crate) fn clear_tool_review(&mut self) {
+        self.tool_review = None;
+    }
+
+    pub(crate) fn tool_review_overlay(&self) -> Option<&ToolReviewOverlayState> {
+        self.tool_review.as_ref()
+    }
+
+    pub(crate) fn move_tool_review_selection(&mut self, backwards: bool) -> bool {
+        let Some(overlay) = self.tool_review.as_mut() else {
+            return false;
+        };
+        let total = overlay.review.files.len();
+        if total == 0 {
+            return false;
+        }
+        overlay.selected = if backwards {
+            overlay.selected.checked_sub(1).unwrap_or(total - 1)
+        } else {
+            (overlay.selected + 1) % total
+        };
+        true
+    }
+
+    pub(crate) fn jump_tool_review_selection(&mut self, oldest: bool) -> bool {
+        let Some(overlay) = self.tool_review.as_mut() else {
+            return false;
+        };
+        if overlay.review.files.is_empty() {
+            return false;
+        }
+        overlay.selected = if oldest {
+            0
+        } else {
+            overlay.review.files.len().saturating_sub(1)
+        };
+        true
+    }
+
+    pub(crate) fn selected_tool_review_file(&self) -> Option<&ToolReviewFile> {
+        let overlay = self.tool_review_overlay()?;
+        overlay.review.files.get(overlay.selected)
     }
 
     pub(crate) fn move_collection_picker(&mut self, backwards: bool) -> bool {
