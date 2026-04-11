@@ -1,3 +1,4 @@
+pub mod interaction;
 pub mod preview;
 pub mod statusline;
 pub mod theme;

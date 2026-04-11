@@ -1,5 +1,5 @@
-use crate::backend::ApprovalDecision;
-pub(crate) use crate::backend::ApprovalPrompt;
+use crate::interaction::ApprovalDecision;
+pub(crate) use crate::interaction::ApprovalPrompt;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 pub(crate) fn approval_decision_for_key(key: KeyEvent) -> Option<ApprovalDecision> {

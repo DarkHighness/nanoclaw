@@ -834,7 +834,7 @@ struct PendingControlTimeline {
 
 struct PendingControlTimelineItem {
     relative_label: &'static str,
-    kind: crate::backend::PendingControlKind,
+    kind: PendingControlKind,
     preview: String,
     reason: Option<String>,
     editing: bool,
@@ -888,20 +888,14 @@ fn pending_control_timeline_detail(item: &PendingControlTimelineItem) -> Transcr
 }
 
 fn pending_control_timeline_kind_label(
-    kind: crate::backend::PendingControlKind,
+    kind: PendingControlKind,
     editing: bool,
 ) -> (&'static str, Color) {
     match (kind, editing) {
-        (crate::backend::PendingControlKind::Prompt, true) => {
-            ("editing queued prompt", palette().user)
-        }
-        (crate::backend::PendingControlKind::Steer, true) => {
-            ("editing queued steer", palette().assistant)
-        }
-        (crate::backend::PendingControlKind::Prompt, false) => ("queued prompt", palette().user),
-        (crate::backend::PendingControlKind::Steer, false) => {
-            ("pending steer", palette().assistant)
-        }
+        (PendingControlKind::Prompt, true) => ("editing queued prompt", palette().user),
+        (PendingControlKind::Steer, true) => ("editing queued steer", palette().assistant),
+        (PendingControlKind::Prompt, false) => ("queued prompt", palette().user),
+        (PendingControlKind::Steer, false) => ("pending steer", palette().assistant),
     }
 }
 
@@ -1168,3 +1162,4 @@ fn shell_status_phrase(line: &str) -> Option<(&str, &str, Color)> {
     }
     None
 }
+use crate::interaction::PendingControlKind;

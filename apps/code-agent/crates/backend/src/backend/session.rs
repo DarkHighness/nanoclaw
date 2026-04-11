@@ -21,14 +21,23 @@ use crate::backend::session_memory_note::{
 use crate::backend::session_resume;
 use crate::backend::task_history::{self, LoadedTask, PersistedTaskSummary};
 use crate::backend::{
-    ApprovalCoordinator, ApprovalDecision, ApprovalPrompt, LoadedMcpPrompt, LoadedMcpResource,
-    McpPromptSummary, McpResourceSummary, McpServerSummary, PermissionRequestCoordinator,
-    PermissionRequestPrompt, ResumeSupport, SessionEvent, SessionEventObserver, SessionEventStream,
-    StartupDiagnosticsSnapshot, UserInputCoordinator, UserInputPrompt, build_system_preamble,
-    list_mcp_prompts, list_mcp_resources, list_mcp_servers, load_mcp_prompt, load_mcp_resource,
+    ApprovalCoordinator, LoadedMcpPrompt, LoadedMcpResource, McpPromptSummary, McpResourceSummary,
+    McpServerSummary, PermissionRequestCoordinator, ResumeSupport, SessionEvent,
+    SessionEventObserver, SessionEventStream, StartupDiagnosticsSnapshot, UserInputCoordinator,
+    build_system_preamble, list_mcp_prompts, list_mcp_resources, list_mcp_servers, load_mcp_prompt,
+    load_mcp_resource,
+};
+use crate::frontend_contract::{
+    pending_control_summary, permission_profile_from_granted, skill_summary_from_skill,
+};
+use crate::interaction::{
+    ModelReasoningEffortOutcome, PendingControlKind, PendingControlSummary, PermissionProfile,
+    PermissionRequestDecision, SessionPermissionMode, SessionPermissionModeOutcome, SkillSummary,
+    UserInputSubmission,
 };
 use crate::provider::{MutableAgentBackend, ReasoningEffortUpdate};
 use crate::statusline::StatusLineConfig;
+use crate::{ApprovalDecision, ApprovalPrompt, PermissionRequestPrompt, UserInputPrompt};
 use agent::mcp::{
     ConnectedMcpServer, McpConnectOptions, McpServerConfig, McpTransportConfig,
     catalog_resource_tools_as_registry_entries, catalog_tools_as_registry_entries,
@@ -43,15 +52,14 @@ use agent::runtime::{
     VisibleHistoryRollbackRound,
 };
 use agent::tools::{
-    GrantedPermissionResponse, HOST_FEATURE_HOST_PROCESS_SURFACES, McpToolAdapter,
-    RequestPermissionProfile, SandboxPolicy, SubagentExecutor, SubagentInputDelivery,
-    SubagentLaunchSpec, SubagentParentContext, UserInputResponse, describe_sandbox_policy,
-    request_permission_profile_from_granted, sandbox_backend_status,
+    HOST_FEATURE_HOST_PROCESS_SURFACES, McpToolAdapter, SandboxPolicy, SubagentExecutor,
+    SubagentInputDelivery, SubagentLaunchSpec, SubagentParentContext, describe_sandbox_policy,
+    sandbox_backend_status,
 };
 use agent::types::{
     AgentSessionId, AgentStatus, AgentTaskSpec, AgentWaitMode, AgentWaitRequest, HookHandler,
     HookRegistration, Message, MessageId, ModelEvent, ModelRequest, SessionId, ToolSpec, TurnId,
-    message_operator_text, new_opaque_id,
+    new_opaque_id,
 };
 use agent::{AgentRuntime, RuntimeCommand, Skill, ToolExecutionContext};
 use anyhow::Result;
@@ -120,30 +128,6 @@ pub struct SessionStartupSnapshot {
     pub host_process_surfaces_allowed: bool,
     pub startup_diagnostics: StartupDiagnosticsSnapshot,
     pub statusline: StatusLineConfig,
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum SessionPermissionMode {
-    #[default]
-    Default,
-    DangerFullAccess,
-}
-
-impl SessionPermissionMode {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Default => "default",
-            Self::DangerFullAccess => "danger-full-access",
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SessionPermissionModeOutcome {
-    pub previous: SessionPermissionMode,
-    pub current: SessionPermissionMode,
-    pub sandbox_summary: String,
-    pub host_process_surfaces_allowed: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -238,27 +222,6 @@ pub struct LiveTaskAttentionOutcome {
     pub action: LiveTaskAttentionAction,
     pub control_id: String,
     pub preview: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ModelReasoningEffortOutcome {
-    pub previous: Option<String>,
-    pub current: Option<String>,
-    pub supported: Vec<String>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PendingControlKind {
-    Prompt,
-    Steer,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PendingControlSummary {
-    pub id: String,
-    pub kind: PendingControlKind,
-    pub preview: String,
-    pub reason: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -608,6 +571,10 @@ impl CodeAgentSession {
         self.skills.as_slice()
     }
 
+    pub fn skill_summaries(&self) -> Vec<SkillSummary> {
+        self.skills.iter().map(skill_summary_from_skill).collect()
+    }
+
     pub fn startup_diagnostics(&self) -> StartupDiagnosticsSnapshot {
         self.startup.read().unwrap().startup_diagnostics.clone()
     }
@@ -681,20 +648,7 @@ impl CodeAgentSession {
         self.control_plane
             .snapshot()
             .into_iter()
-            .map(|queued| match queued.command {
-                RuntimeCommand::Prompt { message, .. } => PendingControlSummary {
-                    id: queued.id.to_string(),
-                    kind: PendingControlKind::Prompt,
-                    preview: message_operator_text(&message),
-                    reason: None,
-                },
-                RuntimeCommand::Steer { message, reason } => PendingControlSummary {
-                    id: queued.id.to_string(),
-                    kind: PendingControlKind::Steer,
-                    preview: message,
-                    reason,
-                },
-            })
+            .map(|queued| pending_control_summary(queued.id.to_string(), queued.command))
             .collect()
     }
 
@@ -723,20 +677,10 @@ impl CodeAgentSession {
                 },
             )
             .ok_or_else(|| anyhow::anyhow!("pending control update failed for {control_ref}"))?;
-        Ok(match updated.command {
-            RuntimeCommand::Prompt { message, .. } => PendingControlSummary {
-                id: updated.id.to_string(),
-                kind: PendingControlKind::Prompt,
-                preview: message_operator_text(&message),
-                reason: None,
-            },
-            RuntimeCommand::Steer { message, reason } => PendingControlSummary {
-                id: updated.id.to_string(),
-                kind: PendingControlKind::Steer,
-                preview: message,
-                reason,
-            },
-        })
+        Ok(pending_control_summary(
+            updated.id.to_string(),
+            updated.command,
+        ))
     }
 
     pub fn remove_pending_control(&self, control_ref: &str) -> Result<PendingControlSummary> {
@@ -746,20 +690,10 @@ impl CodeAgentSession {
             .control_plane
             .remove(&RuntimeCommandId::from(current.id.clone()))
             .ok_or_else(|| anyhow::anyhow!("pending control removal failed for {control_ref}"))?;
-        Ok(match removed.command {
-            RuntimeCommand::Prompt { message, .. } => PendingControlSummary {
-                id: removed.id.to_string(),
-                kind: PendingControlKind::Prompt,
-                preview: message_operator_text(&message),
-                reason: None,
-            },
-            RuntimeCommand::Steer { message, reason } => PendingControlSummary {
-                id: removed.id.to_string(),
-                kind: PendingControlKind::Steer,
-                preview: message,
-                reason,
-            },
-        })
+        Ok(pending_control_summary(
+            removed.id.to_string(),
+            removed.command,
+        ))
     }
 
     pub async fn clear_queued_commands(&self) -> usize {
@@ -932,8 +866,8 @@ impl CodeAgentSession {
         self.user_inputs.snapshot()
     }
 
-    pub fn resolve_user_input(&self, response: UserInputResponse) -> bool {
-        self.user_inputs.resolve(response)
+    pub fn resolve_user_input(&self, submission: UserInputSubmission) -> bool {
+        self.user_inputs.resolve(submission)
     }
 
     pub fn cancel_user_input(&self, reason: impl Into<String>) -> bool {
@@ -944,8 +878,8 @@ impl CodeAgentSession {
         self.permission_requests.snapshot()
     }
 
-    pub fn resolve_permission_request(&self, response: GrantedPermissionResponse) -> bool {
-        self.permission_requests.resolve(response)
+    pub fn resolve_permission_request(&self, decision: PermissionRequestDecision) -> bool {
+        self.permission_requests.resolve(decision)
     }
 
     async fn connect_pending_stdio_mcp_servers(
@@ -1173,13 +1107,11 @@ impl CodeAgentSession {
         self.permission_grants.snapshot()
     }
 
-    pub fn permission_grant_profiles(
-        &self,
-    ) -> (RequestPermissionProfile, RequestPermissionProfile) {
+    pub fn permission_grant_profiles(&self) -> (PermissionProfile, PermissionProfile) {
         let snapshot = self.permission_grant_snapshot();
         (
-            request_permission_profile_from_granted(&snapshot.turn),
-            request_permission_profile_from_granted(&snapshot.session),
+            permission_profile_from_granted(&snapshot.turn),
+            permission_profile_from_granted(&snapshot.session),
         )
     }
 

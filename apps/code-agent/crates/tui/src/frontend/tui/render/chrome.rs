@@ -9,10 +9,9 @@ use super::shared::{
 use super::shell::bottom_band_inner_area;
 use super::theme::palette;
 use super::transcript_markdown::code_span;
-use crate::backend::PermissionRequestPrompt;
 use crate::backend::preview_id;
+use crate::interaction::{PendingControlKind, PermissionProfile, PermissionRequestPrompt};
 use crate::preview::{PreviewCollapse, collapse_preview_lines};
-use agent::tools::RequestPermissionProfile;
 use ratatui::layout::{Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
@@ -382,8 +381,8 @@ pub(super) fn build_composer_line(state: &TuiState) -> Line<'static> {
     if let Some(editing) = state.editing_pending_control.as_ref() {
         spans.push(Span::styled(
             match editing.kind {
-                crate::backend::PendingControlKind::Prompt => "edit queued prompt",
-                crate::backend::PendingControlKind::Steer => "edit queued steer",
+                PendingControlKind::Prompt => "edit queued prompt",
+                PendingControlKind::Steer => "edit queued steer",
             },
             Style::default().fg(palette().muted),
         ));
@@ -732,23 +731,19 @@ pub(super) fn build_permission_request_text(prompt: &PermissionRequestPrompt) ->
     Text::from(lines)
 }
 
-fn permission_profile_lines(profile: &RequestPermissionProfile) -> Vec<Line<'static>> {
+fn permission_profile_lines(profile: &PermissionProfile) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
-    if let Some(file_system) = profile.file_system.as_ref() {
-        if let Some(read) = file_system.read.as_ref() {
-            lines.push(permission_profile_line("read", read));
-        }
-        if let Some(write) = file_system.write.as_ref() {
-            lines.push(permission_profile_line("write", write));
-        }
+    if !profile.read_roots.is_empty() {
+        lines.push(permission_profile_line("read", &profile.read_roots));
     }
-    if let Some(network) = profile.network.as_ref() {
-        if network.enabled == Some(true) {
-            lines.push(permission_profile_line("network", &["full".to_string()]));
-        }
-        if let Some(domains) = network.allow_domains.as_ref() {
-            lines.push(permission_profile_line("domains", domains));
-        }
+    if !profile.write_roots.is_empty() {
+        lines.push(permission_profile_line("write", &profile.write_roots));
+    }
+    if profile.network_full {
+        lines.push(permission_profile_line("network", &["full".to_string()]));
+    }
+    if !profile.network_domains.is_empty() {
+        lines.push(permission_profile_line("domains", &profile.network_domains));
     }
     if lines.is_empty() {
         lines.push(Line::from(vec![
@@ -994,8 +989,8 @@ fn first_input_line_lead(
         format!(
             "{} · ",
             match editing.kind {
-                crate::backend::PendingControlKind::Prompt => "edit queued prompt",
-                crate::backend::PendingControlKind::Steer => "edit queued steer",
+                PendingControlKind::Prompt => "edit queued prompt",
+                PendingControlKind::Steer => "edit queued steer",
             }
         )
     })

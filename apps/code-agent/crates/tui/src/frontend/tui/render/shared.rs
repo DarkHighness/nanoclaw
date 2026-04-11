@@ -1,4 +1,4 @@
-use crate::backend::PendingControlKind;
+use crate::interaction::PendingControlKind;
 use std::cmp::min;
 use unicode_width::UnicodeWidthStr;
 

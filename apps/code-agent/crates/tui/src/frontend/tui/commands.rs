@@ -1,5 +1,5 @@
 use super::state::InspectorEntry;
-use crate::backend::SessionPermissionMode;
+use crate::interaction::SessionPermissionMode;
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1072,7 +1072,7 @@ mod tests {
             SlashCommand::Permissions { mode } => {
                 assert_eq!(
                     mode,
-                    Some(crate::backend::SessionPermissionMode::DangerFullAccess)
+                    Some(crate::interaction::SessionPermissionMode::DangerFullAccess)
                 );
             }
             _ => panic!("unexpected command"),

@@ -1,27 +1,19 @@
+use crate::frontend_contract::permission_request_prompt_from_request;
+use crate::interaction::{PermissionRequestDecision, PermissionRequestPrompt};
 use agent::new_opaque_id;
 use agent::runtime::PermissionGrantStore;
 use agent::tools::{
-    GrantedPermissionResponse, PermissionRequest, PermissionRequestHandler,
-    RequestPermissionProfile, Result as ToolResult, ToolError,
-    request_permission_profile_from_granted,
+    GrantedPermissionResponse, PermissionRequest, PermissionRequestHandler, Result as ToolResult,
+    ToolError,
 };
 use async_trait::async_trait;
 use std::sync::{Arc, RwLock};
 use tokio::sync::oneshot;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PermissionRequestPrompt {
-    pub prompt_id: String,
-    pub reason: Option<String>,
-    pub requested: RequestPermissionProfile,
-    pub requested_normalized: agent::tools::GrantedPermissionProfile,
-    pub current_turn: RequestPermissionProfile,
-    pub current_session: RequestPermissionProfile,
-}
-
 #[derive(Default)]
 struct PermissionRequestCoordinatorState {
     prompt: Option<PermissionRequestPrompt>,
+    requested_permissions: Option<agent::tools::GrantedPermissionProfile>,
     responder: Option<oneshot::Sender<ToolResult<GrantedPermissionResponse>>>,
 }
 
@@ -35,11 +27,26 @@ impl PermissionRequestCoordinator {
         self.inner.read().unwrap().prompt.clone()
     }
 
-    pub fn resolve(&self, response: GrantedPermissionResponse) -> bool {
+    pub fn resolve(&self, decision: PermissionRequestDecision) -> bool {
         let mut inner = self.inner.write().unwrap();
         let responder = inner.responder.take();
+        let requested_permissions = inner.requested_permissions.take();
         inner.prompt = None;
         if let Some(responder) = responder {
+            let response = match decision {
+                PermissionRequestDecision::GrantOnce => GrantedPermissionResponse {
+                    permissions: requested_permissions.unwrap_or_default(),
+                    scope: agent::tools::PermissionGrantScope::Turn,
+                },
+                PermissionRequestDecision::GrantForSession => GrantedPermissionResponse {
+                    permissions: requested_permissions.unwrap_or_default(),
+                    scope: agent::tools::PermissionGrantScope::Session,
+                },
+                PermissionRequestDecision::Deny => GrantedPermissionResponse {
+                    permissions: agent::tools::GrantedPermissionProfile::default(),
+                    scope: agent::tools::PermissionGrantScope::Turn,
+                },
+            };
             let _ = responder.send(Ok(response));
             true
         } else {
@@ -51,6 +58,7 @@ impl PermissionRequestCoordinator {
         let mut inner = self.inner.write().unwrap();
         let responder = inner.responder.take();
         inner.prompt = None;
+        inner.requested_permissions = None;
         if let Some(responder) = responder {
             let _ = responder.send(Err(ToolError::invalid_state(reason.into())));
             true
@@ -62,10 +70,12 @@ impl PermissionRequestCoordinator {
     fn present(
         &self,
         prompt: PermissionRequestPrompt,
+        requested_permissions: agent::tools::GrantedPermissionProfile,
         responder: oneshot::Sender<ToolResult<GrantedPermissionResponse>>,
     ) {
         let mut inner = self.inner.write().unwrap();
         inner.prompt = Some(prompt);
+        inner.requested_permissions = Some(requested_permissions);
         inner.responder = Some(responder);
     }
 }
@@ -93,14 +103,12 @@ impl PermissionRequestHandler for SessionPermissionRequestHandler {
         let snapshot = self.grants.snapshot();
         let (tx, rx) = oneshot::channel();
         self.coordinator.present(
-            PermissionRequestPrompt {
-                prompt_id: new_opaque_id().to_string(),
-                reason: request.reason,
-                requested: request_permission_profile_from_granted(&request.permissions),
-                requested_normalized: request.permissions,
-                current_turn: request_permission_profile_from_granted(&snapshot.turn),
-                current_session: request_permission_profile_from_granted(&snapshot.session),
-            },
+            permission_request_prompt_from_request(
+                new_opaque_id().to_string(),
+                &request,
+                &snapshot,
+            ),
+            request.permissions,
             tx,
         );
         match rx.await {
@@ -141,10 +149,11 @@ impl PermissionRequestHandler for NonInteractivePermissionRequestHandler {
 #[cfg(test)]
 mod tests {
     use super::{PermissionRequestCoordinator, SessionPermissionRequestHandler};
+    use crate::interaction::PermissionRequestDecision;
     use agent::runtime::PermissionGrantStore;
     use agent::tools::{
-        GrantedFilesystemPermissions, GrantedPermissionProfile, PermissionGrantScope,
-        PermissionRequest, PermissionRequestHandler,
+        GrantedFilesystemPermissions, GrantedPermissionProfile, PermissionRequest,
+        PermissionRequestHandler,
     };
     use tokio::task::yield_now;
 
@@ -175,20 +184,11 @@ mod tests {
             }
             yield_now().await;
         };
-        assert_eq!(
-            prompt.requested.file_system.unwrap().write.unwrap().len(),
-            1
-        );
-
-        assert!(
-            coordinator.resolve(agent::tools::GrantedPermissionResponse {
-                permissions: prompt.requested_normalized.clone(),
-                scope: PermissionGrantScope::Session,
-            })
-        );
+        assert_eq!(prompt.requested.write_roots.len(), 1);
+        assert!(coordinator.resolve(PermissionRequestDecision::GrantForSession));
 
         let response = task.await.unwrap().unwrap();
-        assert_eq!(response.scope, PermissionGrantScope::Session);
-        assert_eq!(grants.snapshot().session, prompt.requested_normalized);
+        assert_eq!(response.scope, agent::tools::PermissionGrantScope::Session);
+        assert_eq!(grants.snapshot().session.file_system.write_roots.len(), 1);
     }
 }

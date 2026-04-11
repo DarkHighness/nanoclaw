@@ -21,8 +21,7 @@ mod tool_approval_policy;
 mod user_input;
 
 pub use approval::{
-    ApprovalCoordinator, ApprovalDecision, ApprovalPrompt, NonInteractiveToolApprovalHandler,
-    SessionToolApprovalHandler,
+    ApprovalCoordinator, NonInteractiveToolApprovalHandler, SessionToolApprovalHandler,
 };
 #[allow(unused_imports)]
 pub use boot::CodeAgentSubagentProfileResolver;
@@ -41,16 +40,15 @@ pub use boot_sandbox::{
 };
 pub use events::{SessionEvent, SessionEventObserver, SessionEventStream, SessionToolCall};
 pub use permission_request::{
-    NonInteractivePermissionRequestHandler, PermissionRequestCoordinator, PermissionRequestPrompt,
+    NonInteractivePermissionRequestHandler, PermissionRequestCoordinator,
     SessionPermissionRequestHandler,
 };
 pub use session::{
     CodeAgentSession, HistoryRollbackOutcome, HistoryRollbackRound, LiveTaskAttentionAction,
     LiveTaskAttentionOutcome, LiveTaskControlAction, LiveTaskControlOutcome, LiveTaskMessageAction,
     LiveTaskMessageOutcome, LiveTaskSpawnOutcome, LiveTaskSummary, LiveTaskWaitOutcome,
-    ModelReasoningEffortOutcome, PendingControlKind, PendingControlSummary, SessionOperation,
-    SessionOperationAction, SessionOperationOutcome, SessionPermissionMode,
-    SessionPermissionModeOutcome, SessionStartupSnapshot, SideQuestionOutcome,
+    SessionOperation, SessionOperationAction, SessionOperationOutcome, SessionStartupSnapshot,
+    SideQuestionOutcome,
 };
 pub use session_catalog::{
     PersistedAgentSessionSummary, PersistedSessionSearchMatch, PersistedSessionSummary,
@@ -63,5 +61,5 @@ pub use session_history::{
 pub use task_history::{LoadedTask, LoadedTaskMessage, PersistedTaskSummary};
 pub use tool_approval_policy::build_code_agent_tool_approval_policy;
 pub use user_input::{
-    NonInteractiveUserInputHandler, SessionUserInputHandler, UserInputCoordinator, UserInputPrompt,
+    NonInteractiveUserInputHandler, SessionUserInputHandler, UserInputCoordinator,
 };

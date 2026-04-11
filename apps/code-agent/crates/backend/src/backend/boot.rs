@@ -335,7 +335,7 @@ pub async fn build_session_with_approval_mode(
             stored_session_count: stored_session_count,
             default_sandbox_summary: sandbox_summary.clone(),
             sandbox_summary,
-            permission_mode: super::SessionPermissionMode::Default,
+            permission_mode: crate::SessionPermissionMode::Default,
             host_process_surfaces_allowed,
             startup_diagnostics,
             statusline: options.statusline.clone(),

@@ -1,7 +1,6 @@
 use super::input_history;
-use crate::backend::{
-    PendingControlKind, PendingControlSummary, SessionPermissionMode, StartupDiagnosticsSnapshot,
-};
+use crate::backend::StartupDiagnosticsSnapshot;
+use crate::interaction::{PendingControlKind, PendingControlSummary, SessionPermissionMode};
 use crate::statusline::{StatusLineConfig, StatusLineField, status_line_fields};
 use crate::theme::ThemeSummary;
 use crate::tool_render::{

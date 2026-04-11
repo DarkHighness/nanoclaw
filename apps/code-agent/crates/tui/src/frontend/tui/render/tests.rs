@@ -19,7 +19,6 @@ use super::view::{
     build_statusline_picker_text, build_theme_picker_text, should_render_view_title,
 };
 use super::welcome::build_welcome_lines;
-use crate::backend::{PendingControlKind, PendingControlSummary};
 use crate::frontend::tui::UserInputView;
 use crate::frontend::tui::approval::ApprovalPrompt;
 use crate::frontend::tui::commands::{
@@ -32,9 +31,11 @@ use crate::frontend::tui::state::{
     PlanEntry, StatusLinePickerState, ThemePickerState, ToastTone, TranscriptEntry,
     TranscriptShellDetail, TranscriptToolStatus, TuiState,
 };
+use crate::interaction::{
+    PendingControlKind, PendingControlSummary, UserInputAnswer, UserInputOption, UserInputQuestion,
+};
 use crate::theme::ThemeSummary;
 use crate::tool_render::ToolDetail;
-use agent::tools::{UserInputAnswer, UserInputOption, UserInputQuestion};
 use agent::types::{AgentStatus, MessageId, MessagePart};
 use ratatui::layout::Rect;
 use std::collections::BTreeMap;
@@ -342,11 +343,12 @@ fn welcome_lines_keep_the_start_screen_sparse() {
 
     let lines = build_welcome_lines(&state, 140, 28);
 
-    assert!(
-        lines
-            .iter()
-            .any(|line| line_text_for(line).contains("Code Agent"))
-    );
+    assert!(lines.iter().any(|line| {
+        line_text_for(line).contains("▄▄     ▄▄▄    ▄▄       ▄▄     ▄▄▄")
+    }));
+    assert!(lines.iter().any(|line| {
+        line_text_for(line).contains("▀██▀    ██  ▀██▀  ▀█▄█")
+    }));
     assert!(
         lines
             .iter()
@@ -368,11 +370,9 @@ fn welcome_lines_switch_to_the_compact_logo_on_narrow_viewports() {
 
     let lines = build_welcome_lines(&state, 80, 28);
 
-    assert!(
-        lines
-            .iter()
-            .any(|line| line_text_for(line).contains("Code Agent"))
-    );
+    assert!(lines.iter().any(|line| {
+        line_text_for(line).contains("███  ██ ▄████▄ ███  ██ ▄████▄")
+    }));
     assert!(
         lines
             .iter()
@@ -694,7 +694,7 @@ fn multiline_composer_text_highlights_selected_attachment_row() {
 
 #[test]
 fn user_input_band_renders_progress_and_other_shortcut() {
-    let prompt = crate::backend::UserInputPrompt {
+    let prompt = crate::interaction::UserInputPrompt {
         prompt_id: "prompt_1".to_string(),
         questions: vec![
             UserInputQuestion {
@@ -770,7 +770,7 @@ fn user_input_band_renders_progress_and_other_shortcut() {
 
 #[test]
 fn user_input_band_renders_other_note_mode() {
-    let prompt = crate::backend::UserInputPrompt {
+    let prompt = crate::interaction::UserInputPrompt {
         prompt_id: "prompt_1".to_string(),
         questions: vec![UserInputQuestion {
             id: "scope_choice".to_string(),

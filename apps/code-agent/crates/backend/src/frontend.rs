@@ -1,16 +1,18 @@
 use crate::backend::{
-    ApprovalDecision, ApprovalPrompt, CodeAgentSession, HistoryRollbackOutcome,
-    HistoryRollbackRound, LiveTaskAttentionOutcome, LiveTaskControlOutcome, LiveTaskMessageOutcome,
-    LiveTaskSpawnOutcome, LiveTaskSummary, LiveTaskWaitOutcome, LoadedAgentSession,
-    LoadedMcpPrompt, LoadedMcpResource, LoadedSession, McpPromptSummary, McpResourceSummary,
-    McpServerSummary, ModelReasoningEffortOutcome, PendingControlSummary, PermissionRequestPrompt,
-    PersistedAgentSessionSummary, PersistedSessionSearchMatch, PersistedSessionSummary,
-    SessionEvent, SessionOperation, SessionOperationOutcome, SessionPermissionMode,
-    SessionPermissionModeOutcome, SessionStartupSnapshot, SideQuestionOutcome,
-    StartupDiagnosticsSnapshot, UserInputPrompt,
+    CodeAgentSession, HistoryRollbackOutcome, HistoryRollbackRound, LiveTaskAttentionOutcome,
+    LiveTaskControlOutcome, LiveTaskMessageOutcome, LiveTaskSpawnOutcome, LiveTaskSummary,
+    LiveTaskWaitOutcome, LoadedAgentSession, LoadedMcpPrompt, LoadedMcpResource, LoadedSession,
+    McpPromptSummary, McpResourceSummary, McpServerSummary, PersistedAgentSessionSummary,
+    PersistedSessionSearchMatch, PersistedSessionSummary, SessionEvent, SessionOperation,
+    SessionOperationOutcome, SessionStartupSnapshot, SideQuestionOutcome,
+    StartupDiagnosticsSnapshot,
 };
-use agent::runtime::{PermissionGrantSnapshot, Result as RuntimeResult, RunTurnOutcome};
-use agent::tools::{GrantedPermissionResponse, RequestPermissionProfile, UserInputResponse};
+use crate::interaction::{
+    ApprovalDecision, ApprovalPrompt, ModelReasoningEffortOutcome, PendingControlSummary,
+    PermissionProfile, PermissionRequestDecision, PermissionRequestPrompt, SessionPermissionMode,
+    SessionPermissionModeOutcome, SkillSummary, UserInputPrompt, UserInputSubmission,
+};
+use agent::runtime::{Result as RuntimeResult, RunTurnOutcome};
 use agent::types::{Message, SubmittedPromptSnapshot};
 use anyhow::Result;
 use std::path::{Path, PathBuf};
@@ -59,16 +61,16 @@ impl CodeAgentFrontendSession {
         self.inner.permission_request_prompt()
     }
 
-    pub fn resolve_permission_request(&self, response: GrantedPermissionResponse) -> bool {
-        self.inner.resolve_permission_request(response)
+    pub fn resolve_permission_request(&self, decision: PermissionRequestDecision) -> bool {
+        self.inner.resolve_permission_request(decision)
     }
 
     pub fn user_input_prompt(&self) -> Option<UserInputPrompt> {
         self.inner.user_input_prompt()
     }
 
-    pub fn resolve_user_input(&self, response: UserInputResponse) -> bool {
-        self.inner.resolve_user_input(response)
+    pub fn resolve_user_input(&self, submission: UserInputSubmission) -> bool {
+        self.inner.resolve_user_input(submission)
     }
 
     pub fn cancel_user_input(&self, reason: impl Into<String>) -> bool {
@@ -115,22 +117,16 @@ impl CodeAgentFrontendSession {
         self.inner.set_model_reasoning_effort(effort)
     }
 
-    pub fn skills(&self) -> &[agent::Skill] {
-        self.inner.skills()
-    }
-
     pub fn startup_diagnostics(&self) -> StartupDiagnosticsSnapshot {
         self.inner.startup_diagnostics()
     }
 
-    pub fn permission_grant_snapshot(&self) -> PermissionGrantSnapshot {
-        self.inner.permission_grant_snapshot()
+    pub fn permission_grant_profiles(&self) -> (PermissionProfile, PermissionProfile) {
+        self.inner.permission_grant_profiles()
     }
 
-    pub fn permission_grant_profiles(
-        &self,
-    ) -> (RequestPermissionProfile, RequestPermissionProfile) {
-        self.inner.permission_grant_profiles()
+    pub fn skills(&self) -> Vec<SkillSummary> {
+        self.inner.skill_summaries()
     }
 
     pub fn drain_events(&self) -> Vec<SessionEvent> {

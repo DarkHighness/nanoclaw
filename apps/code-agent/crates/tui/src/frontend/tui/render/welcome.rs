@@ -3,6 +3,21 @@ use crate::frontend::tui::state::TuiState;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
+const FULL_LOGO_LINES: [&str; 6] = [
+    "▄▄     ▄▄▄    ▄▄       ▄▄     ▄▄▄    ▄▄▄▄     ▄   ▄▄▄▄   ▄▄▄         ▄▄     ▄▄▄",
+    "██▄   ██▀   ▄█▀▀█▄     ██▄   ██▀   ▄█▀▀████▄  ▀██████▀  ▀██▀       ▄█▀▀█▄  █▀██  ██  ██▀▀",
+    "███▄  ██    ██  ██     ███▄  ██    ██    ██     ██       ██        ██  ██    ██  ██  ██",
+    "██ ▀█▄██    ██▀▀██     ██ ▀█▄██    ██    ██     ██       ██        ██▀▀██    ██  ██  ██",
+    "██   ▀██  ▄ ██  ██     ██   ▀██    ██    ██     ██       ██      ▄ ██  ██    ██▄ ██▄ ██",
+    "▀██▀    ██  ▀██▀  ▀█▄█ ▀██▀    ██     ▀████▀      ▀█████  ████████ ▀██▀  ▀█▄█  ▀████▀███▀",
+];
+
+const COMPACT_LOGO_LINES: [&str; 3] = [
+    "███  ██ ▄████▄ ███  ██ ▄████▄ ▄█████ ██     ▄████▄ ██     ██",
+    "██ ▀▄██ ██▄▄██ ██ ▀▄██ ██  ██ ██     ██     ██▄▄██ ██ ▄█▄ ██",
+    "██   ██ ██  ██ ██   ██ ▀████▀ ▀█████ ██████ ██  ██  ▀██▀██▀",
+];
+
 pub(super) fn build_welcome_lines(
     state: &TuiState,
     viewport_width: u16,
@@ -28,18 +43,23 @@ fn build_welcome_title_lines(compact: bool) -> Vec<Line<'static>> {
     } else {
         "Terminal shell for focused coding work"
     };
-    vec![
-        Line::from(vec![Span::styled(
-            "Code Agent",
-            Style::default()
-                .fg(palette().header)
-                .add_modifier(Modifier::BOLD),
-        )]),
-        Line::from(vec![Span::styled(
-            subtitle,
-            Style::default().fg(palette().muted),
-        )]),
-    ]
+    let mut lines = if compact {
+        COMPACT_LOGO_LINES
+            .into_iter()
+            .map(logo_line)
+            .collect::<Vec<_>>()
+    } else {
+        FULL_LOGO_LINES
+            .into_iter()
+            .map(logo_line)
+            .collect::<Vec<_>>()
+    };
+    lines.push(Line::raw(""));
+    lines.push(Line::from(vec![Span::styled(
+        subtitle,
+        Style::default().fg(palette().muted),
+    )]));
+    lines
 }
 
 fn build_prompt_line(compact: bool) -> Line<'static> {
@@ -86,4 +106,13 @@ fn model_label(state: &TuiState) -> String {
         Some(effort) => format!("{} · {}", state.session.model, effort),
         None => state.session.model.clone(),
     }
+}
+
+fn logo_line(text: &str) -> Line<'static> {
+    Line::from(vec![Span::styled(
+        text.to_string(),
+        Style::default()
+            .fg(palette().header)
+            .add_modifier(Modifier::BOLD),
+    )])
 }

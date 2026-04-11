@@ -1,16 +1,11 @@
+use crate::frontend_contract::user_input_prompt_from_request;
+use crate::interaction::{UserInputPrompt, UserInputSubmission};
 use agent::tools::{
-    Result as ToolResult, ToolError, UserInputHandler, UserInputQuestion, UserInputRequest,
-    UserInputResponse,
+    Result as ToolResult, ToolError, UserInputHandler, UserInputRequest, UserInputResponse,
 };
 use async_trait::async_trait;
 use std::sync::{Arc, RwLock};
 use tokio::sync::oneshot;
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct UserInputPrompt {
-    pub prompt_id: String,
-    pub questions: Vec<UserInputQuestion>,
-}
 
 #[derive(Default)]
 struct UserInputCoordinatorState {
@@ -31,11 +26,25 @@ impl UserInputCoordinator {
         self.inner.read().unwrap().prompt.clone()
     }
 
-    pub fn resolve(&self, response: UserInputResponse) -> bool {
+    pub fn resolve(&self, submission: UserInputSubmission) -> bool {
         let mut inner = self.inner.write().unwrap();
         let responder = inner.responder.take();
         inner.prompt = None;
         if let Some(responder) = responder {
+            let response = UserInputResponse {
+                answers: submission
+                    .answers
+                    .into_iter()
+                    .map(|(key, answer)| {
+                        (
+                            key,
+                            agent::tools::UserInputAnswer {
+                                answers: answer.answers,
+                            },
+                        )
+                    })
+                    .collect(),
+            };
             let _ = responder.send(Ok(response));
             true
         } else {
@@ -81,10 +90,7 @@ impl UserInputHandler for SessionUserInputHandler {
     async fn request_input(&self, request: UserInputRequest) -> ToolResult<UserInputResponse> {
         let (tx, rx) = oneshot::channel();
         self.coordinator.present(
-            UserInputPrompt {
-                prompt_id: agent::new_opaque_id().to_string(),
-                questions: request.questions,
-            },
+            user_input_prompt_from_request(agent::new_opaque_id().to_string(), request),
             tx,
         );
         match rx.await {
@@ -118,7 +124,8 @@ impl UserInputHandler for NonInteractiveUserInputHandler {
 #[cfg(test)]
 mod tests {
     use super::{SessionUserInputHandler, UserInputCoordinator, UserInputPrompt};
-    use agent::tools::{UserInputAnswer, UserInputHandler, UserInputRequest, UserInputResponse};
+    use crate::interaction::{UserInputAnswer, UserInputSubmission};
+    use agent::tools::{UserInputHandler, UserInputRequest};
     use std::collections::BTreeMap;
     use tokio::task::yield_now;
 
@@ -165,7 +172,7 @@ mod tests {
             }
         );
 
-        assert!(coordinator.resolve(UserInputResponse {
+        assert!(coordinator.resolve(UserInputSubmission {
             answers: BTreeMap::from([(
                 "scope_choice".to_string(),
                 UserInputAnswer {

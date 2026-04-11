@@ -299,15 +299,12 @@ pub(super) fn build_pending_control_text(state: &TuiState) -> Text<'static> {
     Text::from(lines)
 }
 
-fn build_pending_control_row(
-    control: &crate::backend::PendingControlSummary,
-    selected: bool,
-) -> Line<'static> {
+fn build_pending_control_row(control: &PendingControlSummary, selected: bool) -> Line<'static> {
     let marker = if selected { "›" } else { " " };
     let kind_label = pending_control_kind_label(control.kind);
     let accent = match control.kind {
-        crate::backend::PendingControlKind::Prompt => palette().user,
-        crate::backend::PendingControlKind::Steer => palette().assistant,
+        PendingControlKind::Prompt => palette().user,
+        PendingControlKind::Steer => palette().assistant,
     };
     let mut spans = vec![
         Span::styled(
@@ -358,9 +355,7 @@ fn build_pending_control_row(
     Line::from(spans)
 }
 
-fn build_pending_control_context_row(
-    control: &crate::backend::PendingControlSummary,
-) -> Line<'static> {
+fn build_pending_control_context_row(control: &PendingControlSummary) -> Line<'static> {
     let kind_label = pending_control_kind_label(control.kind);
     Line::from(vec![
         Span::styled("  ", Style::default().fg(palette().subtle)),
@@ -374,14 +369,14 @@ fn build_pending_control_context_row(
 }
 
 fn build_selected_pending_control_block(
-    control: &crate::backend::PendingControlSummary,
+    control: &PendingControlSummary,
     selected_index: usize,
     total: usize,
 ) -> Vec<Line<'static>> {
     let kind_label = pending_control_kind_label(control.kind);
     let accent = match control.kind {
-        crate::backend::PendingControlKind::Prompt => palette().user,
-        crate::backend::PendingControlKind::Steer => palette().assistant,
+        PendingControlKind::Prompt => palette().user,
+        PendingControlKind::Steer => palette().assistant,
     };
     vec![
         Line::from(vec![
@@ -414,7 +409,7 @@ fn build_selected_pending_control_block(
 }
 
 fn build_pending_control_detail_row(
-    control: &crate::backend::PendingControlSummary,
+    control: &PendingControlSummary,
     selected_index: usize,
     total: usize,
 ) -> Line<'static> {
@@ -434,8 +429,8 @@ fn build_pending_control_detail_row(
 
 fn pending_kind_label(editing: &PendingControlEditorState) -> &'static str {
     match editing.kind {
-        crate::backend::PendingControlKind::Prompt => "queued prompt",
-        crate::backend::PendingControlKind::Steer => "queued steer",
+        PendingControlKind::Prompt => "queued prompt",
+        PendingControlKind::Steer => "queued steer",
     }
 }
 
@@ -451,11 +446,11 @@ fn pending_control_queue_position_label(selected_index: usize, total: usize) -> 
 struct VisiblePendingControlWindow<'a> {
     start: usize,
     end: usize,
-    items: &'a [crate::backend::PendingControlSummary],
+    items: &'a [PendingControlSummary],
 }
 
 fn visible_pending_control_window<'a>(
-    controls: &'a [crate::backend::PendingControlSummary],
+    controls: &'a [PendingControlSummary],
     picker: &PendingControlPickerState,
     max_items: usize,
 ) -> VisiblePendingControlWindow<'a> {
@@ -499,3 +494,4 @@ fn visible_command_match_window(
         items: &command_hint.matches[start..end],
     }
 }
+use crate::interaction::{PendingControlKind, PendingControlSummary};

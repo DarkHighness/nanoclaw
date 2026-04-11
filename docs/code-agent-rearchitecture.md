@@ -55,7 +55,7 @@ apps/code-agent
 - `code-agent-contracts`
   - Owns presentation-safe shared models and pure helpers.
   - Holds theme catalogs, statusline configuration, preview collapse utilities,
-    and tool output formatting helpers.
+    tool output formatting helpers, and frontend interaction contracts.
   - Contains no host boot orchestration or runtime mutation logic.
 - `code-agent-config`
   - Owns app-local config loading from `.nanoclaw/apps/code-agent.toml`.
@@ -113,6 +113,26 @@ frontend boundary and reduced the size of the TUI controller.
 This is a better industrial direction because boundary intent is now encoded in
 the code layout instead of being left as convention.
 
+## Third-pass decoupling
+
+The next pass removed another source of false layering: frontend interaction
+types still lived effectively inside `backend` because the session and the
+runtime handlers translated data ad hoc.
+
+- Approval, permission-request, user-input, pending-control, and skill-list
+  payloads now live in `code-agent-contracts::interaction`.
+- `code-agent-backend` owns a single internal translation seam
+  (`frontend_contract.rs`) that maps runtime-owned types into those contracts.
+  - This removes duplicated permission-profile mapping from multiple files.
+  - It also keeps session/coordinator modules focused on runtime control rather
+    than frontend shaping.
+- `CodeAgentFrontendSession` now returns contract-safe skill summaries instead
+  of leaking `agent::Skill`, and it no longer exposes unused permission runtime
+  snapshots to the TUI.
+
+This matters because the TUI boundary is now a deliberate host protocol, not
+whatever runtime structures happened to be convenient to forward.
+
 ## UI direction
 
 The UI changes are not just palette swaps. The shell now shifts toward a more
@@ -125,6 +145,8 @@ Codex-like operator surface:
   like a dashboard
 - persistent session header for workspace/model/runtime state
 - reduced visual noise on startup with a compact text-led welcome view
+- preserved ASCII splash as the brand mark, with the surrounding shell chrome
+  simplified instead of deleting the logo entirely
 - shell-first information hierarchy: session header, main transcript, side rail,
   composer, statusline
 

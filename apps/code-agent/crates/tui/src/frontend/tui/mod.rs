@@ -14,10 +14,14 @@ mod tool_state;
 use crate::backend::{
     CodeAgentFrontendSession, HistoryRollbackRound, LiveTaskAttentionAction, LiveTaskControlAction,
     LiveTaskMessageAction, LiveTaskWaitOutcome, LoadedMcpPrompt, LoadedMcpResource, SessionEvent,
-    SessionOperation, SessionOperationAction, SessionOperationOutcome, SessionPermissionMode,
-    SessionStartupSnapshot, SideQuestionOutcome, UserInputPrompt, preview_id,
+    SessionOperation, SessionOperationAction, SessionOperationOutcome, SessionStartupSnapshot,
+    SideQuestionOutcome, preview_id,
 };
 use crate::config::persist_tui_theme_selection;
+use crate::interaction::{
+    PermissionProfile, PermissionRequestDecision, SessionPermissionMode, UserInputAnswer,
+    UserInputPrompt, UserInputSubmission,
+};
 use crate::statusline::status_line_fields;
 use crate::theme::{ThemeCatalog, active_theme_id, install_theme_catalog, set_active_theme};
 use approval::approval_decision_for_key;
@@ -49,9 +53,7 @@ use tool_state::restore_tool_panels;
 
 use agent::RuntimeCommand;
 use agent::tools::{
-    GrantedPermissionResponse, PermissionGrantScope, RequestPermissionProfile,
-    ToolExecutionContext, UserInputAnswer, UserInputResponse, load_tool_image,
-    resolve_tool_path_against_workspace_root,
+    ToolExecutionContext, load_tool_image, resolve_tool_path_against_workspace_root,
 };
 use agent::types::{
     AgentStatus, Message, MessagePart, SubmittedPromptSnapshot, message_operator_text,
@@ -558,7 +560,7 @@ impl CodeAgentTui {
             return false;
         };
         if let Some(decision) = approval_decision_for_key(key) {
-            let approved = matches!(decision, crate::backend::ApprovalDecision::Approve);
+            let approved = matches!(decision, crate::interaction::ApprovalDecision::Approve);
             if self.session.resolve_approval(decision) {
                 self.ui_state.mutate(|state| {
                     if approved {
@@ -576,40 +578,27 @@ impl CodeAgentTui {
     }
 
     fn handle_permission_request_key(&mut self, key: KeyEvent) -> bool {
-        let Some(prompt) = self.session.permission_request_prompt() else {
+        let Some(_prompt) = self.session.permission_request_prompt() else {
             return false;
         };
-        let response = match key.code {
-            KeyCode::Char('y') => Some(GrantedPermissionResponse {
-                permissions: prompt.requested_normalized.clone(),
-                scope: PermissionGrantScope::Turn,
-            }),
-            KeyCode::Char('a') => Some(GrantedPermissionResponse {
-                permissions: prompt.requested_normalized.clone(),
-                scope: PermissionGrantScope::Session,
-            }),
-            KeyCode::Char('n') | KeyCode::Esc => Some(GrantedPermissionResponse {
-                permissions: agent::tools::GrantedPermissionProfile::default(),
-                scope: PermissionGrantScope::Turn,
-            }),
+        let decision = match key.code {
+            KeyCode::Char('y') => Some(PermissionRequestDecision::GrantOnce),
+            KeyCode::Char('a') => Some(PermissionRequestDecision::GrantForSession),
+            KeyCode::Char('n') | KeyCode::Esc => Some(PermissionRequestDecision::Deny),
             _ => None,
         };
-        if let Some(response) = response {
-            let granted = !response.permissions.is_empty();
-            let scope = response.scope;
-            if self.session.resolve_permission_request(response) {
-                self.ui_state.mutate(|state| {
-                    if granted {
-                        let scope_label = match scope {
-                            PermissionGrantScope::Turn => "turn",
-                            PermissionGrantScope::Session => "session",
-                        };
-                        state.status =
-                            format!("Granted additional permissions for the {scope_label}");
-                        state.push_activity(format!(
-                            "granted additional permissions for the {scope_label}"
-                        ));
-                    } else {
+        if let Some(decision) = decision {
+            if self.session.resolve_permission_request(decision) {
+                self.ui_state.mutate(|state| match decision {
+                    PermissionRequestDecision::GrantOnce => {
+                        state.status = "Granted additional permissions for the turn".to_string();
+                        state.push_activity("granted additional permissions for the turn");
+                    }
+                    PermissionRequestDecision::GrantForSession => {
+                        state.status = "Granted additional permissions for the session".to_string();
+                        state.push_activity("granted additional permissions for the session");
+                    }
+                    PermissionRequestDecision::Deny => {
                         state.status = "Denied additional permissions".to_string();
                         state.push_activity("denied additional permissions");
                     }
@@ -1194,10 +1183,10 @@ impl CodeAgentTui {
         };
         let next_question = flow.current_question + 1;
         if next_question >= prompt.questions.len() {
-            let response = UserInputResponse {
+            let submission = UserInputSubmission {
                 answers: flow.answers.clone(),
             };
-            if self.session.resolve_user_input(response) {
+            if self.session.resolve_user_input(submission) {
                 self.active_user_input = None;
                 self.ui_state.mutate(|state| {
                     state.clear_input();
@@ -1943,7 +1932,7 @@ impl CodeAgentTui {
                 Ok(false)
             }
             SlashCommand::Skills => {
-                let skills = self.session.skills().to_vec();
+                let skills = self.session.skills();
                 self.ui_state.mutate(move |state| {
                     let lines = if skills.is_empty() {
                         vec![
@@ -2975,10 +2964,10 @@ fn format_side_question_inspector(outcome: &SideQuestionOutcome) -> Vec<Inspecto
     ]
 }
 
-fn pending_control_kind_label(kind: crate::backend::PendingControlKind) -> &'static str {
+fn pending_control_kind_label(kind: crate::interaction::PendingControlKind) -> &'static str {
     match kind {
-        crate::backend::PendingControlKind::Prompt => "prompt",
-        crate::backend::PendingControlKind::Steer => "steer",
+        crate::interaction::PendingControlKind::Prompt => "prompt",
+        crate::interaction::PendingControlKind::Steer => "steer",
     }
 }
 
@@ -3116,8 +3105,8 @@ fn build_startup_inspector(session: &state::SessionSummary) -> Vec<InspectorEntr
 
 fn build_permissions_inspector(
     snapshot: &SessionStartupSnapshot,
-    turn_grants: &RequestPermissionProfile,
-    session_grants: &RequestPermissionProfile,
+    turn_grants: &PermissionProfile,
+    session_grants: &PermissionProfile,
 ) -> Vec<InspectorEntry> {
     let mut lines = vec![
         InspectorEntry::section("Permissions"),
@@ -3147,32 +3136,28 @@ fn build_permissions_inspector(
     lines
 }
 
-fn permission_profile_summary(profile: &RequestPermissionProfile) -> String {
+fn permission_profile_summary(profile: &PermissionProfile) -> String {
     let mut entries = Vec::new();
-    if let Some(file_system) = profile.file_system.as_ref() {
-        if let Some(read) = file_system.read.as_ref() {
-            entries.push(format!(
-                "read {}",
-                state::preview_text(&read.join(", "), 56)
-            ));
-        }
-        if let Some(write) = file_system.write.as_ref() {
-            entries.push(format!(
-                "write {}",
-                state::preview_text(&write.join(", "), 56)
-            ));
-        }
+    if !profile.read_roots.is_empty() {
+        entries.push(format!(
+            "read {}",
+            state::preview_text(&profile.read_roots.join(", "), 56)
+        ));
     }
-    if let Some(network) = profile.network.as_ref() {
-        if network.enabled == Some(true) {
-            entries.push("network full".to_string());
-        }
-        if let Some(domains) = network.allow_domains.as_ref() {
-            entries.push(format!(
-                "domains {}",
-                state::preview_text(&domains.join(", "), 56)
-            ));
-        }
+    if !profile.write_roots.is_empty() {
+        entries.push(format!(
+            "write {}",
+            state::preview_text(&profile.write_roots.join(", "), 56)
+        ));
+    }
+    if profile.network_full {
+        entries.push("network full".to_string());
+    }
+    if !profile.network_domains.is_empty() {
+        entries.push(format!(
+            "domains {}",
+            state::preview_text(&profile.network_domains.join(", "), 56)
+        ));
     }
     if entries.is_empty() {
         "none".to_string()

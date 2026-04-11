@@ -1,3 +1,4 @@
+use crate::interaction::{ApprovalDecision, ApprovalPrompt};
 use crate::preview::{PreviewCollapse, collapse_preview_text};
 use agent::ToolOrigin;
 use agent::runtime::{
@@ -9,45 +10,17 @@ use serde_json::Value;
 use std::sync::{Arc, RwLock};
 use tokio::sync::oneshot;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ApprovalPrompt {
-    pub tool_name: String,
-    pub origin: String,
-    pub mode: Option<String>,
-    pub working_directory: Option<String>,
-    pub content_label: String,
-    pub content_preview: Vec<String>,
-    pub reasons: Vec<String>,
-}
-
-impl ApprovalPrompt {
-    pub fn from_request(request: &ToolApprovalRequest) -> Self {
-        let (content_label, content_preview) =
-            approval_content_preview(request.call.tool_name.as_str(), &request.call.arguments);
-        Self {
-            tool_name: request.call.tool_name.to_string(),
-            origin: tool_origin_label(&request.call.origin),
-            mode: approval_mode(&request.call.arguments),
-            working_directory: approval_working_directory(&request.call.arguments),
-            content_label,
-            content_preview,
-            reasons: request.reasons.clone(),
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ApprovalDecision {
-    Approve,
-    Deny { reason: Option<String> },
-}
-
-impl ApprovalDecision {
-    fn into_runtime(self) -> ToolApprovalOutcome {
-        match self {
-            Self::Approve => ToolApprovalOutcome::Approve,
-            Self::Deny { reason } => ToolApprovalOutcome::Deny { reason },
-        }
+fn approval_prompt_from_request(request: &ToolApprovalRequest) -> ApprovalPrompt {
+    let (content_label, content_preview) =
+        approval_content_preview(request.call.tool_name.as_str(), &request.call.arguments);
+    ApprovalPrompt {
+        tool_name: request.call.tool_name.to_string(),
+        origin: tool_origin_label(&request.call.origin),
+        mode: approval_mode(&request.call.arguments),
+        working_directory: approval_working_directory(&request.call.arguments),
+        content_label,
+        content_preview,
+        reasons: request.reasons.clone(),
     }
 }
 
@@ -74,7 +47,11 @@ impl ApprovalCoordinator {
         let responder = inner.responder.take();
         inner.prompt = None;
         if let Some(responder) = responder {
-            let _ = responder.send(decision.into_runtime());
+            let outcome = match decision {
+                ApprovalDecision::Approve => ToolApprovalOutcome::Approve,
+                ApprovalDecision::Deny { reason } => ToolApprovalOutcome::Deny { reason },
+            };
+            let _ = responder.send(outcome);
             true
         } else {
             false
@@ -101,7 +78,7 @@ impl SessionToolApprovalHandler {
 #[async_trait]
 impl ToolApprovalHandler for SessionToolApprovalHandler {
     async fn decide(&self, request: ToolApprovalRequest) -> RuntimeResult<ToolApprovalOutcome> {
-        let prompt = ApprovalPrompt::from_request(&request);
+        let prompt = approval_prompt_from_request(&request);
         let (tx, rx) = oneshot::channel();
         self.coordinator.present(prompt, tx);
         match rx.await {
@@ -263,9 +240,10 @@ fn approval_working_directory(arguments: &Value) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        ApprovalCoordinator, ApprovalDecision, ApprovalPrompt, NonInteractiveToolApprovalHandler,
+        ApprovalCoordinator, NonInteractiveToolApprovalHandler, approval_prompt_from_request,
         tool_origin_label,
     };
+    use crate::ApprovalDecision;
     use agent::runtime::{ToolApprovalHandler, ToolApprovalOutcome, ToolApprovalRequest};
     use agent::types::{ToolCall, ToolCallId, ToolOrigin, ToolOutputMode, ToolSource, ToolSpec};
     use serde_json::json;
@@ -321,7 +299,7 @@ mod tests {
 
     #[test]
     fn approval_prompt_extracts_exec_command_context() {
-        let prompt = ApprovalPrompt::from_request(&ToolApprovalRequest {
+        let prompt = approval_prompt_from_request(&ToolApprovalRequest {
             call: ToolCall {
                 id: ToolCallId::new(),
                 call_id: "call-1".into(),

@@ -18,7 +18,7 @@ use super::UserInputView;
 use super::approval::ApprovalPrompt;
 use super::commands::slash_command_hint;
 use super::state::TuiState;
-use crate::backend::PermissionRequestPrompt;
+use crate::interaction::PermissionRequestPrompt;
 use chrome::{
     approval_band_height, composer_cursor_position, composer_height,
     permission_request_band_height, render_approval_band, render_composer,
