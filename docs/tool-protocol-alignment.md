@@ -78,16 +78,25 @@ Completed so far:
   identity only inside ad hoc metadata
 - runtime now filters model-visible tools by typed availability instead of
   blindly forwarding every registered tool to every provider
+- runtime and tool discovery now evaluate typed availability against the active
+  provider, concrete model id, optional agent role, and host capability flags
+  instead of stopping at a provider-only filter
+- host-mediated prompt tools now advertise explicit capability flags so
+  non-interactive sessions hide `request_user_input` and
+  `request_permissions` instead of exposing tools that can only fail at
+  runtime
 - OpenAI Responses mapping now supports freeform/custom tools, including
   transcript replay through `custom_tool_call` and
   `custom_tool_call_output`
 - provider-specific patch surfaces are now live:
-  - `apply_patch` is exposed as a freeform grammar tool for OpenAI
+  - `apply_patch` is exposed as a freeform grammar tool for GPT-5-family
+    OpenAI models
   - `patch` remains a structured function tool for Anthropic
 
 Still pending inside this pass:
 
-- a model-visible approval or permission-request tool contract
+- uniform re-evaluation of host subprocess surfaces from the active session
+  permission mode instead of partially freezing that decision at boot
 
 ## Baseline Rules
 
@@ -281,8 +290,6 @@ industrial baseline:
   text
 - the agent tool family is useful but fragmented; naming and lifecycle are not
   yet normalized to one clear task/session/close/resume model
-- tool exposure is not yet model-aware in the OpenCode sense, where one model
-  family may see `apply_patch` while another sees `edit` and `write`
 - `request_permissions` and `/permissions` now cover the two Codex-like
   permission control planes, but host subprocess surfaces are still partially
   decided at boot instead of being re-evaluated uniformly from the active

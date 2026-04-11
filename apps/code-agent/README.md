@@ -5,7 +5,7 @@ compact `ratatui` terminal UI that still feels like a real product surface.
 
 It intentionally keeps the host layer thin:
 
-- model-visible coding tools: `read`, `view_image`, `write`, `edit`, provider-specific patch tools (`apply_patch` on OpenAI, `patch` on Anthropic), `glob`, `grep`, `list`, `exec_command`, `write_stdin`
+- model-visible coding tools: `read`, `view_image`, `write`, `edit`, provider/model-aware patch surfaces (`apply_patch` for GPT-5-family OpenAI models, `patch` for Anthropic), `glob`, `grep`, `list`, `exec_command`, `write_stdin`
 - discovery tools: `tool_search`, `tool_suggest`
 - optional code-intel tools: `code_symbol_search`, `code_document_symbols`, `code_definitions`, `code_references`, `code_hover`, `code_implementations`, `code_call_hierarchy`
 - agentic tools: `update_plan`, `update_execution`, `skill`, `request_user_input`, `request_permissions`, `task`, `spawn_agent`, `send_input`, `wait_agent`, `resume_agent`, `list_agents`, `close_agent`
@@ -217,6 +217,12 @@ entries are evaluated in order before the compatibility fields above. Remote
 The older `auto_allow_*` and `[approval.exec]` fields are still accepted as
 compatibility sugar. `code-agent` lowers them into the same ordered host rule
 model that powers explicit `approval.rules`.
+
+Model-visible tool exposure is also model-aware now. `code-agent` still keeps
+`write` and `edit` available as the baseline mutators, but the freeform
+`apply_patch` surface is exposed only to GPT-5-family OpenAI models. Other
+OpenAI models fall back to the structured mutator set instead of seeing a
+freeform patch grammar they are not optimized for.
 
 Example:
 

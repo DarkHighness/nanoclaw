@@ -8,7 +8,7 @@ use futures::stream::BoxStream;
 use runtime::{ModelBackend, ModelBackendCapabilities, Result as RuntimeResult};
 use serde_json::Value;
 use tracing::debug;
-use types::ModelRequest;
+use types::{ModelRequest, ToolVisibilityContext};
 
 #[derive(Clone, Debug)]
 pub struct BackendDescriptor {
@@ -150,6 +150,12 @@ impl ModelBackend for ProviderBackend {
             ProviderKind::OpenAi => "openai",
             ProviderKind::Anthropic => "anthropic",
         }
+    }
+
+    fn tool_visibility_context(&self) -> ToolVisibilityContext {
+        ToolVisibilityContext::default()
+            .with_provider(self.provider_name())
+            .with_model(self.descriptor.provider.model.clone())
     }
 
     fn capabilities(&self) -> ModelBackendCapabilities {

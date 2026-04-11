@@ -1,3 +1,4 @@
+use super::HOST_FEATURE_REQUEST_USER_INPUT;
 use crate::annotations::{builtin_tool_spec, tool_approval_profile};
 use crate::registry::Tool;
 use crate::{
@@ -7,7 +8,7 @@ use async_trait::async_trait;
 use schemars::{JsonSchema, schema_for};
 use serde::Serialize;
 use serde_json::Value;
-use types::{MessagePart, ToolCallId, ToolOutputMode, ToolResult, ToolSpec};
+use types::{MessagePart, ToolAvailability, ToolCallId, ToolOutputMode, ToolResult, ToolSpec};
 
 #[derive(Clone, Debug, Serialize, JsonSchema)]
 struct RequestUserInputToolOutput {
@@ -40,6 +41,10 @@ impl Tool for RequestUserInputTool {
             serde_json::to_value(schema_for!(RequestUserInputToolOutput))
                 .expect("request_user_input output schema"),
         )
+        .with_availability(ToolAvailability {
+            feature_flags: vec![HOST_FEATURE_REQUEST_USER_INPUT.to_string()],
+            ..ToolAvailability::default()
+        })
     }
 
     async fn execute(

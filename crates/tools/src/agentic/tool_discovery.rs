@@ -9,6 +9,7 @@ use std::cmp::Reverse;
 use std::collections::BTreeSet;
 use types::{
     CallId, MessagePart, ToolCallId, ToolName, ToolOutputMode, ToolResult, ToolSource, ToolSpec,
+    ToolVisibilityContext,
 };
 
 const DEFAULT_DISCOVERY_LIMIT: usize = 8;
@@ -94,10 +95,15 @@ impl Tool for ToolSearchTool {
         &self,
         call_id: ToolCallId,
         arguments: Value,
-        _ctx: &ToolExecutionContext,
+        ctx: &ToolExecutionContext,
     ) -> Result<ToolResult> {
         let input: ToolSearchInput = serde_json::from_value(arguments)?;
-        let matches = search_registry(&self.registry, &input.query, input.limit)?;
+        let matches = search_registry(
+            &self.registry,
+            &input.query,
+            input.limit,
+            &ctx.model_visibility,
+        )?;
         build_discovery_result(call_id, "tool_search", input.query, matches)
     }
 }
@@ -122,10 +128,15 @@ impl Tool for ToolSuggestTool {
         &self,
         call_id: ToolCallId,
         arguments: Value,
-        _ctx: &ToolExecutionContext,
+        ctx: &ToolExecutionContext,
     ) -> Result<ToolResult> {
         let input: ToolSuggestInput = serde_json::from_value(arguments)?;
-        let matches = search_registry(&self.registry, &input.query, input.limit)?;
+        let matches = search_registry(
+            &self.registry,
+            &input.query,
+            input.limit,
+            &ctx.model_visibility,
+        )?;
         build_discovery_result(call_id, "tool_suggest", input.query, matches)
     }
 }
@@ -134,6 +145,7 @@ fn search_registry(
     registry: &ToolRegistry,
     query: &str,
     limit: Option<usize>,
+    visibility: &ToolVisibilityContext,
 ) -> Result<Vec<ToolDiscoveryItem>> {
     let normalized_query = query.trim().to_lowercase();
     if normalized_query.is_empty() {
@@ -147,7 +159,7 @@ fn search_registry(
     let mut ranked = registry
         .specs()
         .into_iter()
-        .filter(|spec| is_discoverable(spec))
+        .filter(|spec| is_discoverable(spec, visibility))
         .filter_map(|spec| {
             let match_result = rank_spec(&spec, &normalized_query, &query_tokens)?;
             Some((match_result, spec))
@@ -192,8 +204,8 @@ fn tool_source_label(source: &ToolSource) -> String {
     }
 }
 
-fn is_discoverable(spec: &ToolSpec) -> bool {
-    !spec.availability.hidden_from_model && !DISCOVERY_TOOL_NAMES.contains(&spec.name.as_str())
+fn is_discoverable(spec: &ToolSpec, visibility: &ToolVisibilityContext) -> bool {
+    !DISCOVERY_TOOL_NAMES.contains(&spec.name.as_str()) && spec.is_model_visible(visibility)
 }
 
 #[derive(Clone, Debug)]
@@ -354,6 +366,7 @@ mod tests {
     use serde_json::{Value, json};
     use types::{
         ToolAvailability, ToolCallId, ToolOrigin, ToolOutputMode, ToolResult, ToolSource, ToolSpec,
+        ToolVisibilityContext,
     };
 
     #[derive(Clone)]
@@ -361,6 +374,9 @@ mod tests {
         name: &'static str,
         description: &'static str,
         hidden_from_model: bool,
+        provider_allowlist: Vec<String>,
+        model_allowlist: Vec<String>,
+        role_allowlist: Vec<String>,
     }
 
     #[async_trait]
@@ -376,6 +392,9 @@ mod tests {
             )
             .with_availability(ToolAvailability {
                 hidden_from_model: self.hidden_from_model,
+                provider_allowlist: self.provider_allowlist.clone(),
+                model_allowlist: self.model_allowlist.clone(),
+                role_allowlist: self.role_allowlist.clone(),
                 ..ToolAvailability::default()
             })
         }
@@ -400,11 +419,17 @@ mod tests {
             name: "read",
             description: "Read a file window with line numbers.",
             hidden_from_model: false,
+            provider_allowlist: Vec::new(),
+            model_allowlist: Vec::new(),
+            role_allowlist: Vec::new(),
         });
         registry.register(FakeTool {
             name: "read_notes",
             description: "Read stored notes.",
             hidden_from_model: false,
+            provider_allowlist: Vec::new(),
+            model_allowlist: Vec::new(),
+            role_allowlist: Vec::new(),
         });
 
         let tool = registry
@@ -434,16 +459,25 @@ mod tests {
             name: "read",
             description: "Read a file window with line numbers.",
             hidden_from_model: false,
+            provider_allowlist: Vec::new(),
+            model_allowlist: Vec::new(),
+            role_allowlist: Vec::new(),
         });
         registry.register(FakeTool {
             name: "tool_search_hidden",
             description: "Hidden helper.",
             hidden_from_model: true,
+            provider_allowlist: Vec::new(),
+            model_allowlist: Vec::new(),
+            role_allowlist: Vec::new(),
         });
         registry.register(FakeTool {
             name: "code_symbol_search",
             description: "Search symbols and definitions across the workspace.",
             hidden_from_model: false,
+            provider_allowlist: Vec::new(),
+            model_allowlist: Vec::new(),
+            role_allowlist: Vec::new(),
         });
 
         let tool = registry
@@ -486,5 +520,82 @@ mod tests {
             .expect_err("empty discovery query should fail");
 
         assert!(error.to_string().contains("must not be empty"));
+    }
+
+    #[tokio::test]
+    async fn tool_discovery_filters_results_by_model_visibility_context() {
+        let mut registry = ToolRegistry::new();
+        let discovery_registry = registry.clone();
+        registry.register(ToolSearchTool::new(discovery_registry));
+        registry.register(FakeTool {
+            name: "apply_patch",
+            description: "Apply one multi-file patch.",
+            hidden_from_model: false,
+            provider_allowlist: vec!["openai".to_string()],
+            model_allowlist: vec!["gpt-5*".to_string()],
+            role_allowlist: Vec::new(),
+        });
+        registry.register(FakeTool {
+            name: "task_batch",
+            description: "Run one worker batch.",
+            hidden_from_model: false,
+            provider_allowlist: Vec::new(),
+            model_allowlist: Vec::new(),
+            role_allowlist: vec!["worker".to_string()],
+        });
+
+        let tool = registry
+            .get("tool_search")
+            .expect("tool should be registered");
+
+        let root_result = tool
+            .execute(
+                ToolCallId::from("call_root"),
+                json!({"query": "patch worker"}),
+                &ToolExecutionContext {
+                    model_visibility: ToolVisibilityContext::default()
+                        .with_provider("openai")
+                        .with_model("gpt-4.1-mini"),
+                    ..ToolExecutionContext::default()
+                },
+            )
+            .await
+            .expect("root search should succeed");
+        let root_matches = root_result.structured_content.expect("structured output")["matches"]
+            .as_array()
+            .expect("matches array")
+            .clone();
+        assert!(root_matches.is_empty());
+
+        let worker_result = tool
+            .execute(
+                ToolCallId::from("call_worker"),
+                json!({"query": "patch worker"}),
+                &ToolExecutionContext {
+                    model_visibility: ToolVisibilityContext::default()
+                        .with_provider("openai")
+                        .with_model("gpt-5.4")
+                        .with_role("worker"),
+                    ..ToolExecutionContext::default()
+                },
+            )
+            .await
+            .expect("worker search should succeed");
+        let worker_matches =
+            worker_result.structured_content.expect("structured output")["matches"]
+                .as_array()
+                .expect("matches array")
+                .clone();
+
+        assert!(
+            worker_matches
+                .iter()
+                .any(|entry| entry["name"] == "apply_patch")
+        );
+        assert!(
+            worker_matches
+                .iter()
+                .any(|entry| entry["name"] == "task_batch")
+        );
     }
 }

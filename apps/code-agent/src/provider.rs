@@ -4,7 +4,7 @@ use agent::provider::{
     ProviderDescriptor, RequestOptions,
 };
 use agent::runtime::{ModelBackend, ModelBackendCapabilities, Result as RuntimeResult};
-use agent::types::{ModelEvent, ModelRequest};
+use agent::types::{ModelEvent, ModelRequest, ToolVisibilityContext};
 use agent_env::{EnvMap, vars};
 use anyhow::{Result, bail};
 use async_trait::async_trait;
@@ -143,6 +143,18 @@ impl MutableAgentBackend {
 
 #[async_trait]
 impl ModelBackend for MutableAgentBackend {
+    fn provider_name(&self) -> &'static str {
+        let state = self.state.read().unwrap();
+        provider_name(&state.config.model.provider)
+    }
+
+    fn tool_visibility_context(&self) -> ToolVisibilityContext {
+        let state = self.state.read().unwrap();
+        ToolVisibilityContext::default()
+            .with_provider(provider_name(&state.config.model.provider))
+            .with_model(state.config.model.model.clone())
+    }
+
     fn capabilities(&self) -> ModelBackendCapabilities {
         self.state.read().unwrap().backend.capabilities()
     }
@@ -457,6 +469,7 @@ mod tests {
         MutableAgentBackend, build_memory_reasoning_service, default_supported_reasoning_efforts,
         with_reasoning_effort,
     };
+    use agent::runtime::ModelBackend;
     use agent_env::EnvMap;
     use nanoclaw_config::{
         AgentSandboxMode, ModelCapabilitiesConfig, ProviderKind, ResolvedAgentProfile,
@@ -567,6 +580,49 @@ mod tests {
         assert_eq!(update.previous.as_deref(), Some("medium"));
         assert_eq!(update.current.as_deref(), Some("high"));
         assert_eq!(backend.reasoning_effort().as_deref(), Some("high"));
+    }
+
+    #[test]
+    fn mutable_backend_surfaces_provider_and_model_for_tool_visibility() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join(".env"), "OPENAI_API_KEY=test-key\n").unwrap();
+        let env_map = EnvMap::from_workspace_dir(dir.path()).unwrap();
+        let profile = ResolvedAgentProfile {
+            profile_name: "primary".to_string(),
+            model: ResolvedModel {
+                alias: "default".to_string(),
+                provider: ProviderKind::OpenAi,
+                model: "gpt-5.4".to_string(),
+                base_url: Some("https://example.invalid/v1".to_string()),
+                context_window_tokens: 400_000,
+                max_output_tokens: 32_000,
+                compact_trigger_tokens: 320_000,
+                compact_preserve_recent_messages: 8,
+                temperature: None,
+                reasoning_effort: Some("medium".to_string()),
+                supported_reasoning_efforts: Vec::new(),
+                additional_params: None,
+                capabilities: ModelCapabilitiesConfig::default(),
+            },
+            global_system_prompt: None,
+            system_prompt: None,
+            reasoning_effort: Some("medium".to_string()),
+            temperature: None,
+            max_output_tokens: 32_000,
+            additional_params: None,
+            sandbox: AgentSandboxMode::WorkspaceWrite,
+            context_window_tokens: 400_000,
+            compact_trigger_tokens: 320_000,
+            compact_preserve_recent_messages: 8,
+            auto_compact: true,
+        };
+
+        let backend = MutableAgentBackend::from_profile(&profile, &env_map).unwrap();
+        let visibility = backend.tool_visibility_context();
+
+        assert_eq!(backend.provider_name(), "openai");
+        assert_eq!(visibility.provider.as_deref(), Some("openai"));
+        assert_eq!(visibility.model.as_deref(), Some("gpt-5.4"));
     }
 
     #[test]

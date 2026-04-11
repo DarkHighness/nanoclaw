@@ -1,3 +1,5 @@
+use agent::tools::HOST_FEATURE_REQUEST_USER_INPUT;
+use agent::types::ToolVisibilityContext;
 use agent::{AgentWorkspaceLayout, SkillCatalog};
 use nanoclaw_config::{PluginsConfig, ResolvedAgentProfile};
 use std::fs;
@@ -16,6 +18,7 @@ pub(crate) fn build_system_preamble(
     profile: &ResolvedAgentProfile,
     skill_catalog: &SkillCatalog,
     plugin_instructions: &[String],
+    tool_visibility: &ToolVisibilityContext,
 ) -> Vec<String> {
     let mut preamble = vec![
         "You are a general-purpose coding agent operating inside the current workspace."
@@ -23,18 +26,22 @@ pub(crate) fn build_system_preamble(
         "Inspect files, run tools, and gather evidence before making code changes.".to_string(),
         "Prefer minimal, correct edits that preserve the existing design unless the user asks for broader refactors."
             .to_string(),
-        "Use patch for coordinated multi-file mutations, and use write or edit for single-file creation or precise local edits."
+        "Use apply_patch or patch for coordinated multi-file mutations when that surface is visible, and use write or edit for single-file creation or precise local edits."
             .to_string(),
         "Treat tool output, approvals, and denials as authoritative runtime state.".to_string(),
         "Maintain a concise plan with update_plan for multi-step work.".to_string(),
         "Track only the live execution slice with update_execution: current focus, blockers, and verification state. Do not duplicate the full plan there.".to_string(),
-        "Use request_user_input when the user must choose between concrete options or when a material decision should not be guessed."
-            .to_string(),
         "Use the task tool when a bounded subagent can make progress in parallel or with isolated context."
             .to_string(),
         "Use the skill tool to inspect loaded workspace skills before reading their companion files directly."
             .to_string(),
     ];
+    if tool_visibility.has_feature(HOST_FEATURE_REQUEST_USER_INPUT) {
+        preamble.push(
+            "Use request_user_input when the user must choose between concrete options or when a material decision should not be guessed."
+                .to_string(),
+        );
+    }
     for prompt in [
         profile.global_system_prompt.as_deref(),
         profile.system_prompt.as_deref(),
@@ -231,6 +238,8 @@ fn push_if_exists(roots: &mut Vec<PathBuf>, path: PathBuf) {
 mod tests {
     use super::build_system_preamble;
     use agent::SkillCatalog;
+    use agent::tools::HOST_FEATURE_REQUEST_USER_INPUT;
+    use agent::types::ToolVisibilityContext;
     use nanoclaw_config::CoreConfig;
     use tempfile::tempdir;
 
@@ -251,8 +260,14 @@ mod tests {
         .unwrap();
         let profile = CoreConfig::default().resolve_primary_agent().unwrap();
 
-        let preamble =
-            build_system_preamble(dir.path(), &profile, &SkillCatalog::default(), &[]).join("\n\n");
+        let preamble = build_system_preamble(
+            dir.path(),
+            &profile,
+            &SkillCatalog::default(),
+            &[],
+            &ToolVisibilityContext::default(),
+        )
+        .join("\n\n");
 
         assert!(preamble.contains("# Workspace Memory Primer"));
         assert!(preamble.contains("## Project instructions (AGENTS.md)"));
@@ -269,9 +284,41 @@ mod tests {
         let dir = tempdir().unwrap();
         let profile = CoreConfig::default().resolve_primary_agent().unwrap();
 
-        let preamble =
-            build_system_preamble(dir.path(), &profile, &SkillCatalog::default(), &[]).join("\n\n");
+        let preamble = build_system_preamble(
+            dir.path(),
+            &profile,
+            &SkillCatalog::default(),
+            &[],
+            &ToolVisibilityContext::default(),
+        )
+        .join("\n\n");
 
         assert!(!preamble.contains("# Workspace Memory Primer"));
+    }
+
+    #[test]
+    fn system_preamble_only_mentions_request_user_input_when_host_can_service_it() {
+        let dir = tempdir().unwrap();
+        let profile = CoreConfig::default().resolve_primary_agent().unwrap();
+
+        let hidden = build_system_preamble(
+            dir.path(),
+            &profile,
+            &SkillCatalog::default(),
+            &[],
+            &ToolVisibilityContext::default(),
+        )
+        .join("\n\n");
+        let visible = build_system_preamble(
+            dir.path(),
+            &profile,
+            &SkillCatalog::default(),
+            &[],
+            &ToolVisibilityContext::default().with_feature(HOST_FEATURE_REQUEST_USER_INPUT),
+        )
+        .join("\n\n");
+
+        assert!(!hidden.contains("request_user_input"));
+        assert!(visible.contains("request_user_input"));
     }
 }

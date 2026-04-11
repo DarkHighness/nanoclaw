@@ -2,7 +2,11 @@ use crate::{CallId, McpServerName, MessagePart, PluginId, ToolCallId};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::{borrow::Borrow, collections::BTreeMap, fmt};
+use std::{
+    borrow::Borrow,
+    collections::{BTreeMap, BTreeSet},
+    fmt,
+};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -167,14 +171,59 @@ impl McpToolBoundary {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default, JsonSchema)]
 pub struct ToolAvailability {
+    /// Feature flags gate tools on host/runtime capabilities that are not part
+    /// of the provider or model identity.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub feature_flags: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub provider_allowlist: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub model_allowlist: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub role_allowlist: Vec<String>,
     #[serde(default)]
     pub hidden_from_model: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct ToolVisibilityContext {
+    pub provider: Option<String>,
+    pub model: Option<String>,
+    pub role: Option<String>,
+    pub features: BTreeSet<String>,
+}
+
+impl ToolVisibilityContext {
+    #[must_use]
+    pub fn with_provider(mut self, provider: impl Into<String>) -> Self {
+        self.provider = normalize_visibility_value(Some(provider.into()));
+        self
+    }
+
+    #[must_use]
+    pub fn with_model(mut self, model: impl Into<String>) -> Self {
+        self.model = normalize_visibility_value(Some(model.into()));
+        self
+    }
+
+    #[must_use]
+    pub fn with_role(mut self, role: impl Into<String>) -> Self {
+        self.role = normalize_visibility_value(Some(role.into()));
+        self
+    }
+
+    #[must_use]
+    pub fn with_feature(mut self, feature: impl Into<String>) -> Self {
+        if let Some(feature) = normalize_visibility_value(Some(feature.into())) {
+            self.features.insert(feature);
+        }
+        self
+    }
+
+    #[must_use]
+    pub fn has_feature(&self, feature: &str) -> bool {
+        self.features.contains(feature)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -512,19 +561,56 @@ impl ToolSpec {
     }
 
     #[must_use]
-    pub fn is_model_visible_for_provider(&self, provider_name: &str) -> bool {
+    pub fn is_model_visible(&self, context: &ToolVisibilityContext) -> bool {
         if self.availability.hidden_from_model {
             return false;
         }
-        if provider_name == "unknown" {
-            return true;
+        if !self
+            .availability
+            .feature_flags
+            .iter()
+            .all(|required| context.has_feature(required))
+        {
+            return false;
         }
-        self.availability.provider_allowlist.is_empty()
-            || self
+        if !self.availability.provider_allowlist.is_empty()
+            && context
+                .provider
+                .as_deref()
+                .is_some_and(|provider| provider != "unknown")
+            && !self
                 .availability
                 .provider_allowlist
                 .iter()
-                .any(|allowed| allowed == provider_name)
+                .any(|allowed| allowed == context.provider.as_ref().expect("provider checked"))
+        {
+            return false;
+        }
+        if !self.availability.model_allowlist.is_empty()
+            && context.model.as_deref().is_some()
+            && !self.availability.model_allowlist.iter().any(|allowed| {
+                matches_model_allowlist(
+                    allowed,
+                    context.model.as_ref().expect("model checked").as_str(),
+                )
+            })
+        {
+            return false;
+        }
+        if self.availability.role_allowlist.is_empty() {
+            return true;
+        }
+        context.role.as_deref().is_some_and(|role| {
+            self.availability
+                .role_allowlist
+                .iter()
+                .any(|allowed| allowed == role)
+        })
+    }
+
+    #[must_use]
+    pub fn is_model_visible_for_provider(&self, provider_name: &str) -> bool {
+        self.is_model_visible(&ToolVisibilityContext::default().with_provider(provider_name))
     }
 
     #[must_use]
@@ -544,6 +630,23 @@ impl ToolSpec {
             .and_then(Value::as_str)
             .and_then(|server_name| self.mcp_server_boundaries.get(server_name))
     }
+}
+
+fn normalize_visibility_value(value: Option<String>) -> Option<String> {
+    value
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn matches_model_allowlist(pattern: &str, model: &str) -> bool {
+    let pattern = pattern.trim();
+    if pattern.is_empty() {
+        return false;
+    }
+    if let Some(prefix) = pattern.strip_suffix('*') {
+        return model.starts_with(prefix);
+    }
+    model == pattern
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -689,6 +792,7 @@ mod tests {
     use super::{
         McpToolBoundary, McpTransportKind, ToolApprovalProfile, ToolAvailability, ToolCall,
         ToolCallId, ToolName, ToolOrigin, ToolOutputMode, ToolSource, ToolSpec,
+        ToolVisibilityContext,
     };
     use serde_json::json;
     use std::collections::BTreeMap;
@@ -722,6 +826,7 @@ mod tests {
         .with_availability(ToolAvailability {
             feature_flags: vec!["managed-lsp".to_string()],
             provider_allowlist: vec!["openai".to_string()],
+            model_allowlist: vec!["gpt-5*".to_string()],
             role_allowlist: vec!["worker".to_string()],
             hidden_from_model: false,
         })
@@ -760,6 +865,7 @@ mod tests {
                 "availability": {
                     "feature_flags": ["managed-lsp"],
                     "provider_allowlist": ["openai"],
+                    "model_allowlist": ["gpt-5*"],
                     "role_allowlist": ["worker"],
                     "hidden_from_model": false
                 },
@@ -841,5 +947,108 @@ mod tests {
                 McpTransportKind::StreamableHttp,
             ))
         );
+    }
+
+    #[test]
+    fn visibility_context_honors_provider_model_and_role_allowlists() {
+        let spec = ToolSpec::function(
+            "apply_patch",
+            "apply patch",
+            json!({"type": "object"}),
+            ToolOutputMode::Text,
+            ToolOrigin::Local,
+            ToolSource::Builtin,
+        )
+        .with_availability(ToolAvailability {
+            provider_allowlist: vec!["openai".to_string()],
+            model_allowlist: vec!["gpt-5*".to_string()],
+            role_allowlist: vec!["worker".to_string()],
+            ..ToolAvailability::default()
+        });
+
+        assert!(
+            spec.is_model_visible(
+                &ToolVisibilityContext::default()
+                    .with_provider("openai")
+                    .with_model("gpt-5.4")
+                    .with_role("worker")
+            )
+        );
+        assert!(
+            !spec.is_model_visible(
+                &ToolVisibilityContext::default()
+                    .with_provider("openai")
+                    .with_model("gpt-4.1-mini")
+                    .with_role("worker")
+            )
+        );
+        assert!(
+            !spec.is_model_visible(
+                &ToolVisibilityContext::default()
+                    .with_provider("anthropic")
+                    .with_model("claude-sonnet-4-6")
+                    .with_role("worker")
+            )
+        );
+        assert!(
+            !spec.is_model_visible(
+                &ToolVisibilityContext::default()
+                    .with_provider("openai")
+                    .with_model("gpt-5.4")
+            )
+        );
+    }
+
+    #[test]
+    fn visibility_context_requires_declared_feature_flags() {
+        let spec = ToolSpec::function(
+            "request_permissions",
+            "request permissions",
+            json!({"type": "object"}),
+            ToolOutputMode::Text,
+            ToolOrigin::Local,
+            ToolSource::Builtin,
+        )
+        .with_availability(ToolAvailability {
+            feature_flags: vec![
+                "host-user-input".to_string(),
+                "host-permission-request".to_string(),
+            ],
+            ..ToolAvailability::default()
+        });
+
+        assert!(!spec.is_model_visible(&ToolVisibilityContext::default()));
+        assert!(
+            !spec.is_model_visible(
+                &ToolVisibilityContext::default().with_feature("host-user-input")
+            )
+        );
+        assert!(
+            spec.is_model_visible(
+                &ToolVisibilityContext::default()
+                    .with_feature("host-user-input")
+                    .with_feature("host-permission-request")
+            )
+        );
+    }
+
+    #[test]
+    fn unknown_provider_and_model_keep_legacy_visibility_behavior() {
+        let spec = ToolSpec::function(
+            "apply_patch",
+            "apply patch",
+            json!({"type": "object"}),
+            ToolOutputMode::Text,
+            ToolOrigin::Local,
+            ToolSource::Builtin,
+        )
+        .with_availability(ToolAvailability {
+            provider_allowlist: vec!["openai".to_string()],
+            model_allowlist: vec!["gpt-5*".to_string()],
+            ..ToolAvailability::default()
+        });
+
+        assert!(spec.is_model_visible(&ToolVisibilityContext::default()));
+        assert!(spec.is_model_visible(&ToolVisibilityContext::default().with_provider("unknown")));
     }
 }

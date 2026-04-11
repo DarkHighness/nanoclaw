@@ -6,24 +6,31 @@ use futures::{StreamExt, stream, stream::BoxStream};
 use std::sync::{Arc, Mutex};
 use store::{InMemorySessionStore, SessionStore};
 use tools::{
-    ApplyPatchTool, ExecCommandTool, PatchTool, ReadTool, ToolExecutionContext, ToolRegistry,
-    WriteStdinTool,
+    ApplyPatchTool, EditTool, ExecCommandTool, PatchTool, ReadTool, ToolExecutionContext,
+    ToolRegistry, WriteStdinTool, WriteTool,
 };
 use types::{
     DynamicToolSpec, ModelEvent, ModelRequest, SessionEventKind, ToolCall, ToolCallId,
     ToolLifecycleEventEnvelope, ToolLifecycleEventKind, ToolOrigin, ToolSource,
+    ToolVisibilityContext,
 };
 
 #[derive(Clone)]
 struct ProviderRecordingBackend {
     provider_name: &'static str,
+    model_name: Option<String>,
     requests: Arc<Mutex<Vec<ModelRequest>>>,
 }
 
 impl ProviderRecordingBackend {
     fn new(provider_name: &'static str) -> Self {
+        Self::with_model(provider_name, None)
+    }
+
+    fn with_model(provider_name: &'static str, model_name: Option<&str>) -> Self {
         Self {
             provider_name,
+            model_name: model_name.map(str::to_string),
             requests: Arc::new(Mutex::new(Vec::new())),
         }
     }
@@ -37,6 +44,14 @@ impl ProviderRecordingBackend {
 impl ModelBackend for ProviderRecordingBackend {
     fn provider_name(&self) -> &'static str {
         self.provider_name
+    }
+
+    fn tool_visibility_context(&self) -> ToolVisibilityContext {
+        let mut context = ToolVisibilityContext::default().with_provider(self.provider_name);
+        if let Some(model_name) = &self.model_name {
+            context = context.with_model(model_name.clone());
+        }
+        context
     }
 
     async fn stream_turn(
@@ -127,7 +142,10 @@ async fn runtime_sees_dynamic_tools_registered_after_build() {
 #[tokio::test]
 async fn runtime_filters_patch_tools_by_provider_surface() {
     let store = Arc::new(InMemorySessionStore::new());
-    let backend = Arc::new(ProviderRecordingBackend::new("openai"));
+    let backend = Arc::new(ProviderRecordingBackend::with_model(
+        "openai",
+        Some("gpt-5.4"),
+    ));
     let mut registry = ToolRegistry::new();
     registry.register(ApplyPatchTool::new());
     registry.register(PatchTool::new());
@@ -151,6 +169,83 @@ async fn runtime_filters_patch_tools_by_provider_surface() {
         .map(|spec| spec.name.to_string())
         .collect::<Vec<_>>();
     assert_eq!(request_tool_names, vec!["apply_patch"]);
+}
+
+#[tokio::test]
+async fn runtime_filters_apply_patch_by_model_family() {
+    let store = Arc::new(InMemorySessionStore::new());
+    let backend = Arc::new(ProviderRecordingBackend::with_model(
+        "openai",
+        Some("gpt-4.1-mini"),
+    ));
+    let mut registry = ToolRegistry::new();
+    registry.register(ApplyPatchTool::new());
+    registry.register(EditTool::new());
+    registry.register(WriteTool::new());
+    let mut runtime: AgentRuntime = AgentRuntimeBuilder::new(backend.clone(), store)
+        .hook_runner(Arc::new(HookRunner::default()))
+        .tool_registry(registry)
+        .build();
+
+    let tool_names = runtime
+        .tool_specs()
+        .into_iter()
+        .map(|spec| spec.name.to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(tool_names, vec!["edit", "write"]);
+
+    runtime.run_user_prompt("noop").await.unwrap();
+    let requests = backend.requests();
+    let request_tool_names = requests[0]
+        .tools
+        .iter()
+        .map(|spec| spec.name.to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(request_tool_names, vec!["edit", "write"]);
+}
+
+#[tokio::test]
+async fn runtime_filters_role_scoped_tools_outside_matching_agent_context() {
+    let store = Arc::new(InMemorySessionStore::new());
+    let backend = Arc::new(ProviderRecordingBackend::new("openai"));
+    let registry = ToolRegistry::new();
+    registry
+        .register_dynamic(
+            DynamicToolSpec::function(
+                "worker_only",
+                "Only for worker agents",
+                serde_json::json!({"type":"object","properties":{}}),
+            )
+            .with_availability(types::ToolAvailability {
+                role_allowlist: vec!["worker".to_string()],
+                ..types::ToolAvailability::default()
+            }),
+            Arc::new(|call_id, _arguments, _ctx| {
+                Box::pin(async move { Ok(types::ToolResult::text(call_id, "worker_only", "ok")) })
+            }),
+        )
+        .unwrap();
+
+    let root_runtime: AgentRuntime = AgentRuntimeBuilder::new(backend.clone(), store.clone())
+        .tool_registry(registry.clone())
+        .build();
+    assert!(root_runtime.tool_specs().is_empty());
+
+    let worker_runtime: AgentRuntime = AgentRuntimeBuilder::new(backend, store)
+        .tool_registry(registry)
+        .tool_context(ToolExecutionContext {
+            agent_name: Some("worker".to_string()),
+            ..Default::default()
+        })
+        .build();
+    assert_eq!(
+        worker_runtime
+            .tool_specs()
+            .into_iter()
+            .map(|spec| spec.name.to_string())
+            .collect::<Vec<_>>(),
+        vec!["worker_only"]
+    );
 }
 
 #[tokio::test]

@@ -4,7 +4,7 @@ use crate::UserInputHandler;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use types::{AgentId, AgentSessionId, CallId, SessionId, ToolName, TurnId};
+use types::{AgentId, AgentSessionId, CallId, SessionId, ToolName, ToolVisibilityContext, TurnId};
 
 pub trait ToolWriteGuard: Send + Sync {
     fn assert_write_paths(&self, agent_id: Option<&AgentId>, paths: &[PathBuf]) -> Result<()>;
@@ -32,6 +32,7 @@ pub struct ToolExecutionContext {
     pub task_id: Option<String>,
     pub tool_name: Option<ToolName>,
     pub tool_call_id: Option<CallId>,
+    pub model_visibility: ToolVisibilityContext,
     pub write_guard: Option<Arc<dyn ToolWriteGuard>>,
     pub user_input_handler: Option<Arc<dyn UserInputHandler>>,
     pub permission_request_handler: Option<Arc<dyn PermissionRequestHandler>>,
@@ -59,6 +60,7 @@ impl fmt::Debug for ToolExecutionContext {
             .field("task_id", &self.task_id)
             .field("tool_name", &self.tool_name)
             .field("tool_call_id", &self.tool_call_id)
+            .field("model_visibility", &self.model_visibility)
             .finish_non_exhaustive()
     }
 }
@@ -200,6 +202,9 @@ impl ToolExecutionContext {
             let trimmed = value.trim();
             (!trimmed.is_empty()).then(|| trimmed.to_string())
         });
+        if let Some(role) = scoped.agent_name.clone() {
+            scoped.model_visibility.role = Some(role);
+        }
         scoped.task_id = task_id.and_then(|value| {
             let trimmed = value.trim();
             (!trimmed.is_empty()).then(|| trimmed.to_string())
@@ -367,6 +372,7 @@ mod tests {
         assert_eq!(context.agent_id, Some(AgentId::from("agent_1")));
         assert_eq!(context.agent_name.as_deref(), Some("reviewer"));
         assert_eq!(context.task_id.as_deref(), Some("task_1"));
+        assert_eq!(context.model_visibility.role.as_deref(), Some("reviewer"));
     }
 
     #[test]

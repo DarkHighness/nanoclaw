@@ -363,6 +363,7 @@ mod tests {
                 .with_availability(ToolAvailability {
                     feature_flags: vec!["dynamic-tools".to_string()],
                     provider_allowlist: vec!["openai".to_string()],
+                    model_allowlist: vec!["gpt-5*".to_string()],
                     role_allowlist: vec!["worker".to_string()],
                     hidden_from_model: true,
                 })
@@ -406,6 +407,7 @@ mod tests {
                 "availability": {
                     "feature_flags": ["dynamic-tools"],
                     "provider_allowlist": ["openai"],
+                    "model_allowlist": ["gpt-5*"],
                     "role_allowlist": ["worker"],
                     "hidden_from_model": true
                 },

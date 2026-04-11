@@ -2353,11 +2353,18 @@ impl CodeAgentSession {
     }
 
     fn rebuild_system_preamble(&self) -> Vec<String> {
+        let tool_visibility = self
+            .session_tool_context
+            .read()
+            .unwrap()
+            .model_visibility
+            .clone();
         build_system_preamble(
             self.workspace_root(),
             &self.preamble.profile,
             &self.preamble.skill_catalog,
             &self.preamble.plugin_instructions,
+            &tool_visibility,
         )
     }
 

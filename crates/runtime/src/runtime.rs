@@ -67,7 +67,7 @@ impl AgentRuntime {
         hook_runner: Arc<HookRunner>,
         store: Arc<dyn SessionStore>,
         tool_registry: ToolRegistry,
-        tool_context: ToolExecutionContext,
+        mut tool_context: ToolExecutionContext,
         tool_approval_handler: Arc<dyn ToolApprovalHandler>,
         tool_approval_policy: Arc<dyn ToolApprovalPolicy>,
         conversation_compactor: Arc<dyn ConversationCompactor>,
@@ -80,6 +80,20 @@ impl AgentRuntime {
         permission_grants: PermissionGrantStore,
         user_message_augmentor: Option<Arc<dyn UserMessageAugmentor>>,
     ) -> Self {
+        let backend_visibility = backend.tool_visibility_context();
+        if tool_context.model_visibility.provider.is_none() {
+            tool_context.model_visibility.provider = backend_visibility.provider;
+        }
+        if tool_context.model_visibility.model.is_none() {
+            tool_context.model_visibility.model = backend_visibility.model;
+        }
+        if tool_context.model_visibility.role.is_none() {
+            tool_context.model_visibility.role =
+                tool_context.agent_name.as_ref().and_then(|value| {
+                    let trimmed = value.trim();
+                    (!trimmed.is_empty()).then(|| trimmed.to_string())
+                });
+        }
         Self {
             backend,
             hook_runner,
@@ -181,11 +195,10 @@ impl AgentRuntime {
     }
 
     pub(crate) fn model_visible_tool_specs(&self) -> Vec<types::ToolSpec> {
-        let provider_name = self.backend.provider_name();
         self.tool_registry
             .specs()
             .into_iter()
-            .filter(|spec| spec.is_model_visible_for_provider(provider_name))
+            .filter(|spec| spec.is_model_visible(&self.tool_context.model_visibility))
             .collect()
     }
 

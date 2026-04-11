@@ -18,7 +18,7 @@ use crate::backend::{
 use crate::options::AppOptions;
 use crate::provider::{
     MutableAgentBackend, agent_backend_capabilities, build_agent_backend, build_internal_backend,
-    build_memory_reasoning_service, build_mutable_agent_backend, provider_label, provider_name,
+    build_memory_reasoning_service, build_mutable_agent_backend, provider_label,
 };
 use agent::mcp::{
     ConnectedMcpServer, McpConnectOptions, McpServerConfig, McpTransportConfig,
@@ -31,7 +31,8 @@ use agent::runtime::{
     ToolApprovalHandler, ToolApprovalPolicy,
 };
 use agent::tools::{
-    SubagentExecutor, SubagentLaunchSpec, describe_sandbox_policy, ensure_sandbox_policy_supported,
+    HOST_FEATURE_REQUEST_PERMISSIONS, HOST_FEATURE_REQUEST_USER_INPUT, SubagentExecutor,
+    SubagentLaunchSpec, describe_sandbox_policy, ensure_sandbox_policy_supported,
 };
 use agent::types::{HookHandler, HookRegistration};
 use agent::{
@@ -142,10 +143,28 @@ impl SubagentProfileResolver for CodeAgentSubagentProfileResolver {
                 &profile,
                 &self.skill_catalog,
                 &self.plugin_instructions,
+                &base_tool_context.model_visibility,
             ),
             supports_tool_calls: profile.model.capabilities.tool_calls,
         })
     }
+}
+
+fn configure_host_prompt_tool_visibility(
+    tool_context: &mut ToolExecutionContext,
+    approval_mode: SessionApprovalMode,
+) {
+    if !matches!(approval_mode, SessionApprovalMode::Interactive) {
+        return;
+    }
+
+    // Host-mediated prompt tools should only be advertised when the active
+    // session can actually surface and resolve those prompts.
+    tool_context.model_visibility = tool_context
+        .model_visibility
+        .clone()
+        .with_feature(HOST_FEATURE_REQUEST_USER_INPUT)
+        .with_feature(HOST_FEATURE_REQUEST_PERMISSIONS);
 }
 
 pub(crate) async fn build_session(
@@ -197,6 +216,7 @@ pub(crate) async fn build_session_with_approval_mode(
     let mut base_tool_context = build_tool_context(workspace_root, options);
     base_tool_context.user_input_handler = Some(user_input_handler);
     base_tool_context.permission_request_handler = Some(permission_request_handler);
+    configure_host_prompt_tool_visibility(&mut base_tool_context, approval_mode);
     let sandbox_policy = build_sandbox_policy(options, &base_tool_context);
     let tool_context = base_tool_context.with_sandbox_policy(sandbox_policy.clone());
     let session_tool_context = Arc::new(RwLock::new(tool_context.clone()));
@@ -467,6 +487,7 @@ async fn build_runtime(
         &options.primary_profile,
         &skill_catalog,
         &plugin_instructions,
+        &tool_context.model_visibility,
     );
     let subagent_profile_resolver = Arc::new(CodeAgentSubagentProfileResolver {
         core: options.core.clone(),
@@ -491,11 +512,10 @@ async fn build_runtime(
         subagent_profile_resolver,
     ));
     register_subagent_tools(&mut tools, subagent_executor.clone());
-    let provider_name = provider_name(&options.primary_profile.model.provider);
     let tool_specs = tools
         .specs()
         .into_iter()
-        .filter(|spec| spec.is_model_visible_for_provider(provider_name))
+        .filter(|spec| spec.is_model_visible(&tool_context.model_visibility))
         .collect::<Vec<_>>();
     let startup_diagnostics = build_startup_diagnostics_snapshot(
         workspace_root,
@@ -626,11 +646,15 @@ fn ensure_model_supports_registered_tools(
 
 #[cfg(test)]
 mod tests {
-    use super::{filter_boot_mcp_servers, filter_runtime_hooks};
+    use super::{
+        SessionApprovalMode, configure_host_prompt_tool_visibility, filter_boot_mcp_servers,
+        filter_runtime_hooks,
+    };
     use agent::mcp::{McpServerConfig, McpTransportConfig};
     use agent::types::{
         CommandHookHandler, HookEvent, HookHandler, HookRegistration, HttpHookHandler,
     };
+    use agent::{RequestPermissionsTool, RequestUserInputTool, ToolExecutionContext, ToolRegistry};
     use std::collections::BTreeMap;
 
     #[test]
@@ -699,5 +723,37 @@ mod tests {
             retained[0].transport,
             McpTransportConfig::StreamableHttp { .. }
         ));
+    }
+
+    #[test]
+    fn host_prompt_tools_are_only_visible_in_interactive_sessions() {
+        let mut registry = ToolRegistry::new();
+        registry.register(RequestUserInputTool::new());
+        registry.register(RequestPermissionsTool::new());
+
+        let mut interactive = ToolExecutionContext::default();
+        configure_host_prompt_tool_visibility(&mut interactive, SessionApprovalMode::Interactive);
+        let interactive_names = registry
+            .specs()
+            .into_iter()
+            .filter(|spec| spec.is_model_visible(&interactive.model_visibility))
+            .map(|spec| spec.name.to_string())
+            .collect::<Vec<_>>();
+        assert!(interactive_names.contains(&"request_user_input".to_string()));
+        assert!(interactive_names.contains(&"request_permissions".to_string()));
+
+        let mut non_interactive = ToolExecutionContext::default();
+        configure_host_prompt_tool_visibility(
+            &mut non_interactive,
+            SessionApprovalMode::NonInteractive,
+        );
+        let non_interactive_names = registry
+            .specs()
+            .into_iter()
+            .filter(|spec| spec.is_model_visible(&non_interactive.model_visibility))
+            .map(|spec| spec.name.to_string())
+            .collect::<Vec<_>>();
+        assert!(!non_interactive_names.contains(&"request_user_input".to_string()));
+        assert!(!non_interactive_names.contains(&"request_permissions".to_string()));
     }
 }

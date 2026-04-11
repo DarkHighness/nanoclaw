@@ -1,7 +1,7 @@
 use crate::Result;
 use async_trait::async_trait;
 use futures::stream::BoxStream;
-use types::{ModelEvent, ModelRequest};
+use types::{ModelEvent, ModelRequest, ToolVisibilityContext};
 
 /// Effective backend capability surface exposed to host runtimes.
 ///
@@ -50,6 +50,15 @@ impl ModelBackendCapabilities {
 pub trait ModelBackend: Send + Sync {
     fn provider_name(&self) -> &'static str {
         "unknown"
+    }
+
+    fn tool_visibility_context(&self) -> ToolVisibilityContext {
+        let provider_name = self.provider_name();
+        if provider_name == "unknown" {
+            ToolVisibilityContext::default()
+        } else {
+            ToolVisibilityContext::default().with_provider(provider_name)
+        }
     }
 
     fn capabilities(&self) -> ModelBackendCapabilities {
