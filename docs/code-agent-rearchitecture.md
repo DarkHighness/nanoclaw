@@ -257,6 +257,49 @@ catalog-oriented boundary.
 This matters because the session root no longer mixes foreground runtime resume
 control with operator catalog lookup and export plumbing.
 
+## Tenth-pass backend lifecycle breakup
+
+The next cluster was the mutable session lifecycle surface itself. Running a
+turn, queueing prompts, compacting immediately, starting a fresh session,
+reattaching archived runtime state, and publishing session-operation outcomes
+were still sitting directly in `backend/session.rs`.
+
+- Runtime-turn lifecycle and session-operation entrypoints now live in
+  `backend/session/lifecycle.rs`.
+- Fresh-session start and archived-session reattach now live beside the
+  lifecycle helpers they depend on, instead of being interleaved with catalog
+  and host-surface setup code.
+- Runtime session-ref synchronization and operation-outcome projection now live
+  in the same module as the lifecycle mutations they summarize.
+- Sibling session domains now call explicit `pub(super)` lifecycle helpers
+  instead of relying on root-file-local private methods to stay nearby by
+  accident.
+
+This matters because "mutate the active runtime" is now a separable backend
+subdomain rather than another expanding branch of the session root.
+
+## Eleventh-pass backend host-surface breakup
+
+The next remaining cluster in the session root was host-surface
+reconfiguration: deciding which stdio MCP servers are deferred, reconnecting
+them when sandbox policy allows host subprocesses again, filtering runtime
+hooks, rebuilding aggregate MCP resource tools, and projecting startup
+diagnostics after those changes.
+
+- Host-process-dependent MCP and hook reconfiguration now lives in
+  `backend/session/host_surfaces.rs`.
+- Permission-mode switching now depends on explicit host-surface helpers
+  instead of reaching back into a wide session root for policy-specific
+  runtime mutations.
+- Startup-diagnostics projection now sits next to the host-surface mutation
+  logic it summarizes.
+- Deferred stdio MCP reconnection and detachment keep one dedicated module for
+  side effects on the runtime tool registry and server catalog.
+
+This matters because permission policy is now cleaner to reason about: one
+module owns how host-surface changes rewire the runtime, instead of scattering
+that behavior across the session root.
+
 ## UI direction
 
 The UI changes are not just palette swaps. The shell now shifts toward a more
@@ -291,8 +334,8 @@ controller. It is still not the final industrial end-state.
 
 The next refinement steps should be:
 
-- continue splitting `backend/session.rs` so lifecycle, runtime reattachment,
-  startup snapshots, and remaining session-operation helpers are not
+- continue splitting `backend/session.rs` so startup snapshot access, MCP
+  inspection/read surfaces, and reasoning-effort/session-shell helpers are not
   co-located
 - consider moving the remaining history-load/task-load DTO formatting helpers
   fully behind `contracts::ui`-owned adapters so the TUI only depends on
