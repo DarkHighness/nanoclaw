@@ -300,6 +300,59 @@ This matters because permission policy is now cleaner to reason about: one
 module owns how host-surface changes rewire the runtime, instead of scattering
 that behavior across the session root.
 
+## Twelfth-pass backend surface breakup
+
+The next remaining cluster in the backend root was the read-mostly operator
+surface: startup snapshots, MCP listing/load helpers, skill summaries, and
+model reasoning-effort adjustment still lived in `backend/session.rs` even
+though they formed a distinct query/mutation seam for the UI protocol.
+
+- Operator-facing startup snapshot, MCP inspection/read helpers, and skill
+  summary projection now live in `backend/session/surface.rs`.
+- Model reasoning-effort cycling and explicit update helpers now live beside
+  the same surface-level startup projection they mutate.
+- The stale `CodeAgentSession::skills()` helper was deleted instead of being
+  preserved behind dead-code allowance once the UI protocol no longer called
+  it.
+
+This matters because the backend session root is now primarily construction and
+shared session state, while the UI/query surface is an explicit domain module.
+
+## Thirteenth-pass root-module slimming
+
+Several remaining "large files" were no longer large because of production
+coupling; they were large because test suites still lived inline with the root
+integration seams.
+
+- `backend/session.rs` now keeps only the session root and delegates its test
+  suite to `backend/session/tests.rs`.
+- `frontend/tui/state.rs`, `frontend/tui/history.rs`, `frontend/tui/commands.rs`,
+  and `frontend/tui/mod.rs` now delegate their test suites to sibling test
+  files instead of mixing runtime code and verification in one module body.
+- This exposed the real production hotspots and reduced the visible size of the
+  integration seams without changing behavior.
+
+This matters because line count should reflect runtime responsibility, not the
+accidental colocation of tests.
+
+## Fourteenth-pass TUI operator-support breakup
+
+After the test extraction, the remaining bulk inside `frontend/tui/mod.rs` was
+not shell lifecycle logic but a grab bag of operator helper rules: prompt
+submission policy, history-rollback candidate shaping, attachment/editor
+helpers, inspector builders, and live-task completion feedback.
+
+- Those helper functions now live in `frontend/tui/operator_support.rs`.
+- `frontend/tui/mod.rs` is reduced to TUI shell wiring, session facade access,
+  event-loop orchestration, and the small set of root-local types that actually
+  define controller behavior.
+- The TUI controller root is now roughly the size of a real coordinator again
+  instead of being a second hidden god file after `runtime_flow.rs`.
+
+This matters because the TUI root now reads like a controller, while operator
+support policy is isolated in one module that can be split further by domain if
+it starts growing again.
+
 ## UI direction
 
 The UI changes are not just palette swaps. The shell now shifts toward a more
@@ -334,9 +387,9 @@ controller. It is still not the final industrial end-state.
 
 The next refinement steps should be:
 
-- continue splitting `backend/session.rs` so startup snapshot access, MCP
-  inspection/read surfaces, and reasoning-effort/session-shell helpers are not
-  co-located
+- split `frontend/tui/operator_support.rs` again if it starts accumulating
+  unrelated policy; attachment/editor helpers and inspector builders are the
+  first obvious fault line
 - consider moving the remaining history-load/task-load DTO formatting helpers
   fully behind `contracts::ui`-owned adapters so the TUI only depends on
   backend for execution surfaces
