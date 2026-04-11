@@ -61,6 +61,7 @@ use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Instant;
 use store::{SessionStore, SessionSummary};
@@ -85,6 +86,8 @@ const MCP_RESOURCE_TOOL_NAMES: [&str; 3] = [
     "list_mcp_resource_templates",
     "read_mcp_resource",
 ];
+const PERMISSION_MODE_SWITCH_BLOCKED_WHILE_TURN_RUNNING: &str =
+    "cannot switch sandbox mode while a turn is running";
 
 #[derive(Clone)]
 struct SessionPreambleConfig {
@@ -347,6 +350,16 @@ pub(crate) struct SideQuestionOutcome {
     pub(crate) response: String,
 }
 
+struct ActiveTurnGuard {
+    active: Arc<AtomicBool>,
+}
+
+impl Drop for ActiveTurnGuard {
+    fn drop(&mut self) {
+        self.active.store(false, Ordering::Release);
+    }
+}
+
 /// The backend session owns runtime state so frontends can speak to a stable
 /// host contract instead of sharing `AgentRuntime` directly.
 #[derive(Clone)]
@@ -380,6 +393,7 @@ pub(crate) struct CodeAgentSession {
     session_memory_refresh: SharedSessionMemoryRefreshState,
     session_episodic_capture: Arc<Mutex<SessionEpisodicCaptureState>>,
     side_question_context: Arc<RwLock<Option<SideQuestionContextSnapshot>>>,
+    runtime_turn_active: Arc<AtomicBool>,
 }
 
 impl CodeAgentSession {
@@ -462,6 +476,7 @@ impl CodeAgentSession {
             session_memory_refresh,
             session_episodic_capture,
             side_question_context: Arc::new(RwLock::new(side_question_context)),
+            runtime_turn_active: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -626,6 +641,7 @@ impl CodeAgentSession {
     }
 
     pub(crate) async fn apply_control(&self, command: RuntimeCommand) -> Result<()> {
+        let _turn_guard = self.begin_active_turn()?;
         let mut runtime = self.runtime.lock().await;
         if let RuntimeCommand::Prompt { message, .. } = &command {
             self.store_side_question_context(Self::side_question_context_from_runtime(
@@ -760,6 +776,7 @@ impl CodeAgentSession {
     }
 
     pub(crate) async fn drain_queued_controls(&self) -> Result<bool> {
+        let _turn_guard = self.begin_active_turn()?;
         let mut runtime = self.runtime.lock().await;
         let mut observer = SessionEventObserver::new(self.events.clone());
         // Frontends never pop queued prompts themselves. They only wake the
@@ -804,6 +821,7 @@ impl CodeAgentSession {
     }
 
     pub(crate) async fn run_one_shot_prompt(&self, prompt: &str) -> Result<RunTurnOutcome> {
+        let _turn_guard = self.begin_active_turn()?;
         let mut runtime = self.runtime.lock().await;
         self.store_side_question_context(Self::side_question_context_from_runtime(
             &runtime,
@@ -1059,6 +1077,7 @@ impl CodeAgentSession {
         &self,
         mode: SessionPermissionMode,
     ) -> Result<SessionPermissionModeOutcome> {
+        self.ensure_turn_idle_for_permission_switch()?;
         let previous = self.permission_mode();
         let policy = self.sandbox_policy_for_mode(mode);
         let backend_status = sandbox_backend_status(&policy);
@@ -1132,6 +1151,28 @@ impl CodeAgentSession {
             sandbox_summary,
             host_process_surfaces_allowed,
         })
+    }
+
+    fn begin_active_turn(&self) -> Result<ActiveTurnGuard> {
+        if self
+            .runtime_turn_active
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return Err(anyhow::anyhow!("another turn is already running"));
+        }
+        Ok(ActiveTurnGuard {
+            active: self.runtime_turn_active.clone(),
+        })
+    }
+
+    fn ensure_turn_idle_for_permission_switch(&self) -> Result<()> {
+        if self.runtime_turn_active.load(Ordering::Acquire) {
+            return Err(anyhow::anyhow!(
+                PERMISSION_MODE_SWITCH_BLOCKED_WHILE_TURN_RUNNING
+            ));
+        }
+        Ok(())
     }
 
     pub(crate) fn permission_grant_snapshot(&self) -> PermissionGrantSnapshot {
@@ -2956,9 +2997,10 @@ fn prepend_session_title_preview(
 mod tests {
     use super::{
         CodeAgentSession, CompactionWorkingSnapshot, LiveTaskAttentionAction, LiveTaskSummary,
-        LiveTaskWaitOutcome, PendingControlKind, STDIO_MCP_DISABLED_WARNING_PREFIX,
-        SessionMemoryRefreshContext, SessionOperation, SessionOperationAction,
-        SessionPermissionMode, SessionStartupSnapshot, SideQuestionContextSnapshot,
+        LiveTaskWaitOutcome, PERMISSION_MODE_SWITCH_BLOCKED_WHILE_TURN_RUNNING, PendingControlKind,
+        STDIO_MCP_DISABLED_WARNING_PREFIX, SessionMemoryRefreshContext, SessionOperation,
+        SessionOperationAction, SessionPermissionMode, SessionStartupSnapshot,
+        SideQuestionContextSnapshot,
     };
     use crate::backend::boot_runtime::{
         COMMAND_HOOK_DISABLED_WARNING_PREFIX, MANAGED_CODE_INTEL_DISABLED_WARNING_PREFIX,
@@ -3868,6 +3910,66 @@ mod tests {
             snapshot.tool_names,
             vec!["exec_command".to_string(), "write_stdin".to_string()]
         );
+    }
+
+    #[tokio::test]
+    async fn permission_mode_switch_fails_fast_while_turn_is_running() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(InMemorySessionStore::new());
+        let backend = Arc::new(GatedTextBackend::new("still running"));
+        let runtime = AgentRuntimeBuilder::new(backend.clone(), store.clone())
+            .hook_runner(Arc::new(HookRunner::default()))
+            .tool_context(ToolExecutionContext {
+                workspace_root: dir.path().to_path_buf(),
+                workspace_only: true,
+                ..Default::default()
+            })
+            .build();
+        let session = build_session(
+            runtime,
+            Arc::new(NoopSubagentExecutor),
+            store,
+            startup_snapshot(dir.path()),
+        );
+
+        let running = {
+            let session = session.clone();
+            tokio::spawn(async move {
+                session
+                    .apply_control(RuntimeCommand::Prompt {
+                        message: Message::user("hold the turn open"),
+                        submitted_prompt: None,
+                    })
+                    .await
+            })
+        };
+
+        timeout(Duration::from_secs(1), async {
+            loop {
+                if !backend.requests().is_empty() {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("turn should start");
+
+        let error = timeout(
+            Duration::from_millis(100),
+            session.set_permission_mode(SessionPermissionMode::DangerFullAccess),
+        )
+        .await
+        .expect("permission switch should fail fast")
+        .expect_err("permission switch should be rejected while turn is running");
+        assert!(
+            error
+                .to_string()
+                .contains(PERMISSION_MODE_SWITCH_BLOCKED_WHILE_TURN_RUNNING)
+        );
+
+        backend.release();
+        running.await.unwrap().unwrap();
     }
 
     #[tokio::test]

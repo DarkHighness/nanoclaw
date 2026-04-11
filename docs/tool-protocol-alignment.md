@@ -254,7 +254,9 @@ typed markers even when the index uses `text_content()` for matching.
 
 The `code-agent` host also now exposes a Codex-style `/permissions` control
 plane command that switches the session base sandbox mode between `default` and
-`danger-full-access`.
+`danger-full-access`. That control plane is now turn-boundary only: the host
+rejects permission-mode changes while a turn is actively running instead of
+letting them race with model execution.
 
 This is already stronger than Codex on model-visible local file tooling, but it
 is still weaker than Codex and OpenCode on protocol shape and extension
@@ -308,7 +310,9 @@ industrial baseline:
 - `request_permissions` and `/permissions` now cover the two Codex-like
   permission control planes, and the root runtime now re-evaluates host
   subprocess surfaces from the active session permission mode instead of
-  freezing stdio MCP, command hooks, and managed code-intel helpers at boot
+  freezing stdio MCP, command hooks, and managed code-intel helpers at boot.
+  `/permissions` no longer mutates that host-facing capability surface during
+  an active turn; it is rejected until the runtime returns to an idle boundary
 
 ## Target Protocol
 
@@ -607,6 +611,9 @@ Then add higher-variance parity work:
     permission changes now revoke host subprocess execution via the shared
     execution-time gate, and newly spawned children pick up the refreshed
     hook set
+  - reject `/permissions` mode switches while a turn is still running, so host
+    capability changes stay at explicit turn boundaries instead of relying on
+    runtime lock serialization alone
 - remaining:
   - image or binary-view tools if the host app needs them
 
