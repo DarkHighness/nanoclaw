@@ -25,8 +25,9 @@ It intentionally keeps the host layer thin:
 - provider adapter from `provider`
 - workspace skills loaded from conventional skill roots
 - interactive approval for destructive tools and higher-risk external reads,
-  with a narrow host allowlist for safe built-in web research tools, configured
-  simple `exec_command` prefixes, approval-free `write_stdin` follow-ups, and
+  with a narrow host allowlist for safe built-in web research tools,
+  argv-matched `exec_command` trust rules, approval-free `write_stdin`
+  follow-ups, and
   transport-aware MCP resource reads
 - backend-owned approval and runtime event contracts for frontend reuse
 - hook-emitted live TUI cues (`show_toast`, `append_prompt`) projected through
@@ -100,17 +101,20 @@ mode between `default` and `danger-full-access`. Model-issued
 for the current turn or session.
 
 That sandbox toggle is separate from host approval policy. It does not disable
-approval prompts by itself, and `code-agent` now auto-allows only the built-in
-`web_search` / `web_fetch` slice plus local-process `read_mcp_resource` calls
-instead of treating all read-only tools as globally safe.
+approval prompts by itself. `code-agent` now derives host-side approval
+relaxation from app-local approval config instead of baking those choices into
+the policy implementation.
 
-`code-agent` can also remember host-local simple command prefixes through
+`code-agent` can also remember host-local trusted exec rules through
 `.nanoclaw/apps/code-agent.toml`. These rules are intentionally narrow. They
 only apply to built-in local `exec_command` calls whose raw shell string stays a
 single simple command without shell control syntax such as pipes, redirects,
-command substitution, chained commands, or newlines. `write_stdin` does not open
-a second approval step. Harmfulness is decided on `exec_command`, and stdin
-follow-ups stay inside that existing session.
+command substitution, chained commands, or newlines. The host parses that
+simple command into argv tokens and matches either an exact argv sequence or an
+argv prefix rule. Nested shells such as `bash -lc ...` and inline interpreter
+entrypoints such as `python -c ...` stay on the normal approval path. `write_stdin`
+does not open a second approval step. Harmfulness is decided on `exec_command`,
+and stdin follow-ups stay inside that existing session.
 
 `update_plan` and `update_execution` are also approval-free now. They mutate
 host-owned coordination state, not the workspace or an external system, so they
@@ -176,16 +180,43 @@ Set any field to `false` to hide it from the bottom status line.
 Example host-local approval settings:
 
 ```toml
+[approval]
+default_mode = "ask"
+auto_allow_builtin_local_tool_names = ["web_search", "web_fetch"]
+auto_allow_local_stdio_mcp_resource_reads = true
+
+[[approval.rules]]
+effect = "deny"
+reason = "block remote pushes"
+tool_names = ["exec_command"]
+
+[approval.rules.exec]
+argv_exact = ["git", "push"]
+
 [approval.exec]
-always_approve_simple_prefixes = [
-  "git status",
-  "cargo test -p store",
-]
+
+[[approval.exec.rules]]
+argv_prefix = ["git", "status"]
+
+[[approval.exec.rules]]
+argv_exact = ["cargo", "test", "-p", "store"]
 ```
 
-These prefixes match only simple shell commands. A command like `git status`
-can auto-approve `git status --short`, but `git status; rm -rf .` still falls
-back to the normal approval flow.
+These rules match only simple shell commands after tokenization. A rule like
+`argv_prefix = ["git", "status"]` can auto-approve `git status --short`, but
+`git status; rm -rf .`, `bash -lc 'git status'`, and `python -c '...'` still
+fall back to the normal approval flow.
+
+The top-level `[approval]` section controls which built-in local tools stay on
+the host allowlist and whether transport-aware local `stdio` MCP resource reads
+should skip approval. `default_mode` lets the host ask or deny unmatched tool
+calls without changing runtime-wide behavior. Explicit `[[approval.rules]]`
+entries are evaluated in order before the compatibility fields above. Remote
+`streamable_http` MCP resources still stay on the normal approval path.
+
+The older `auto_allow_*` and `[approval.exec]` fields are still accepted as
+compatibility sugar. `code-agent` lowers them into the same ordered host rule
+model that powers explicit `approval.rules`.
 
 Example:
 

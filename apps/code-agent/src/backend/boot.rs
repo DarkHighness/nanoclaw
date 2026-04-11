@@ -476,7 +476,7 @@ async fn build_runtime(
         plugin_instructions: plugin_instructions.clone(),
     });
     let approval_policy: Arc<dyn ToolApprovalPolicy> = Arc::new(
-        build_code_agent_tool_approval_policy(&options.exec_always_approve_simple_prefixes),
+        build_code_agent_tool_approval_policy(&options.approval_policy),
     );
     let subagent_executor: Arc<dyn SubagentExecutor> = Arc::new(RuntimeSubagentExecutor::new(
         hook_runner.clone(),

@@ -786,6 +786,203 @@ mod tests {
         assert_eq!(tools[1].spec().name.as_str(), "list_mcp_resource_templates");
         assert_eq!(tools[2].spec().name.as_str(), "read_mcp_resource");
         assert_eq!(
+            tools
+                .iter()
+                .map(|tool| serde_json::to_value(tool.spec()).unwrap())
+                .collect::<Vec<_>>(),
+            vec![
+                json!({
+                    "name": "list_mcp_resources",
+                    "description": "List MCP resources exposed by connected servers. Supports optional filtering by server name and URI prefix.",
+                    "kind": "function",
+                    "input_schema": {
+                        "properties": {
+                            "server_name": {"type": "string"},
+                            "uri_prefix": {"type": "string"}
+                        },
+                        "type": "object"
+                    },
+                    "output_mode": "text",
+                    "output_schema": {
+                        "properties": {
+                            "server_name": {"type": "string"},
+                            "uri_prefix": {"type": "string"},
+                            "result_count": {"type": "integer"},
+                            "resources": {
+                                "type": "array",
+                                "items": {
+                                    "properties": {
+                                        "server_name": {"type": "string"},
+                                        "uri": {"type": "string"},
+                                        "name": {"type": "string"},
+                                        "title": {"type": "string"},
+                                        "description": {"type": "string"},
+                                        "mime_type": {"type": "string"}
+                                    },
+                                    "required": ["server_name", "uri", "name", "description"],
+                                    "type": "object"
+                                }
+                            }
+                        },
+                        "required": ["result_count", "resources"],
+                        "type": "object"
+                    },
+                    "defer_loading": false,
+                    "origin": {"kind": "mcp", "server_name": "*"},
+                    "source": {"kind": "mcp_resource", "server_name": "*"},
+                    "aliases": [],
+                    "supports_parallel_tool_calls": true,
+                    "availability": {
+                        "hidden_from_model": false
+                    },
+                    "approval": {
+                        "read_only": true,
+                        "mutates_state": false,
+                        "idempotent": true,
+                        "open_world": false,
+                        "needs_network": false,
+                        "needs_host_escape": false
+                    },
+                    "mcp_server_boundaries": {
+                        "fixture": {
+                            "transport": "stdio",
+                            "boundary_class": "local_process"
+                        }
+                    }
+                }),
+                json!({
+                    "name": "list_mcp_resource_templates",
+                    "description": "List MCP resource templates exposed by connected servers. Supports optional filtering by server name and URI template prefix.",
+                    "kind": "function",
+                    "input_schema": {
+                        "properties": {
+                            "server_name": {"type": "string"},
+                            "uri_template_prefix": {"type": "string"}
+                        },
+                        "type": "object"
+                    },
+                    "output_mode": "text",
+                    "output_schema": {
+                        "properties": {
+                            "server_name": {"type": "string"},
+                            "uri_template_prefix": {"type": "string"},
+                            "result_count": {"type": "integer"},
+                            "resource_templates": {
+                                "type": "array",
+                                "items": {
+                                    "properties": {
+                                        "server_name": {"type": "string"},
+                                        "uri_template": {"type": "string"},
+                                        "name": {"type": "string"},
+                                        "title": {"type": "string"},
+                                        "description": {"type": "string"},
+                                        "mime_type": {"type": "string"}
+                                    },
+                                    "required": ["server_name", "uri_template", "name", "description"],
+                                    "type": "object"
+                                }
+                            }
+                        },
+                        "required": ["result_count", "resource_templates"],
+                        "type": "object"
+                    },
+                    "defer_loading": false,
+                    "origin": {"kind": "mcp", "server_name": "*"},
+                    "source": {"kind": "mcp_resource", "server_name": "*"},
+                    "aliases": [],
+                    "supports_parallel_tool_calls": true,
+                    "availability": {
+                        "hidden_from_model": false
+                    },
+                    "approval": {
+                        "read_only": true,
+                        "mutates_state": false,
+                        "idempotent": true,
+                        "open_world": false,
+                        "needs_network": false,
+                        "needs_host_escape": false
+                    },
+                    "mcp_server_boundaries": {
+                        "fixture": {
+                            "transport": "stdio",
+                            "boundary_class": "local_process"
+                        }
+                    }
+                }),
+                json!({
+                    "name": "read_mcp_resource",
+                    "description": "Read one MCP resource from a connected server. Text-like resources return a paged text window; binary-like resources return content parts.",
+                    "kind": "function",
+                    "input_schema": {
+                        "properties": {
+                            "max_chars": {"minimum": 1, "type": "integer"},
+                            "server_name": {"type": "string"},
+                            "start_index": {"minimum": 0, "type": "integer"},
+                            "uri": {"type": "string"}
+                        },
+                        "required": ["server_name", "uri"],
+                        "type": "object"
+                    },
+                    "output_mode": "content_parts",
+                    "output_schema": {
+                        "oneOf": [
+                            {
+                                "properties": {
+                                    "kind": {"const": "text_window"},
+                                    "server_name": {"type": "string"},
+                                    "uri": {"type": "string"},
+                                    "mime_type": {"type": "string"},
+                                    "document_id": {"type": "string"},
+                                    "start_index": {"type": "integer"},
+                                    "end_index": {"type": "integer"},
+                                    "returned_chars": {"type": "integer"},
+                                    "total_chars": {"type": "integer"},
+                                    "remaining_chars": {"type": "integer"},
+                                    "next_start_index": {"type": "integer"},
+                                    "preview_text": {"type": "string"}
+                                },
+                                "required": ["kind", "server_name", "uri", "document_id", "start_index", "end_index", "returned_chars", "total_chars", "remaining_chars", "preview_text"],
+                                "type": "object"
+                            },
+                            {
+                                "properties": {
+                                    "kind": {"const": "content_parts"},
+                                    "uri": {"type": "string"},
+                                    "mime_type": {"type": "string"},
+                                    "part_count": {"type": "integer"},
+                                    "server_name": {"type": "string"}
+                                },
+                                "required": ["kind", "server_name", "uri", "part_count"],
+                                "type": "object"
+                            }
+                        ]
+                    },
+                    "defer_loading": false,
+                    "origin": {"kind": "mcp", "server_name": "*"},
+                    "source": {"kind": "mcp_resource", "server_name": "*"},
+                    "aliases": [],
+                    "supports_parallel_tool_calls": true,
+                    "availability": {
+                        "hidden_from_model": false
+                    },
+                    "approval": {
+                        "read_only": true,
+                        "mutates_state": false,
+                        "idempotent": true,
+                        "open_world": true,
+                        "needs_network": true,
+                        "needs_host_escape": false
+                    },
+                    "mcp_server_boundaries": {
+                        "fixture": {
+                            "transport": "stdio",
+                            "boundary_class": "local_process"
+                        }
+                    }
+                })
+            ]
+        );
+        assert_eq!(
             tools[2].spec().effective_mcp_boundary(&types::ToolCall {
                 id: ToolCallId::new(),
                 call_id: "approval-check".into(),

@@ -209,8 +209,8 @@ mod tests {
     use serde_json::{Value, json};
     use std::sync::Arc;
     use types::{
-        DynamicToolSpec, ToolCallId, ToolName, ToolOrigin, ToolOutputMode, ToolResult, ToolSource,
-        ToolSpec,
+        DynamicToolSpec, ToolApprovalProfile, ToolAvailability, ToolCallId, ToolName, ToolOrigin,
+        ToolOutputMode, ToolResult, ToolSource, ToolSpec,
     };
 
     #[derive(Clone)]
@@ -331,6 +331,95 @@ mod tests {
         assert_eq!(specs.len(), 1);
         assert_eq!(specs[0].source, ToolSource::Dynamic);
         assert_eq!(specs[0].aliases, vec![ToolName::from("lookup")]);
+    }
+
+    #[test]
+    fn dynamic_tool_spec_serialization_is_pinned_after_registration() {
+        let registry = ToolRegistry::new();
+        registry
+            .register_dynamic(
+                DynamicToolSpec::function(
+                    "dynamic_catalog",
+                    "Enumerate one dynamic catalog entry",
+                    json!({
+                        "type": "object",
+                        "properties": {
+                            "query": {"type": "string"}
+                        },
+                        "required": ["query"]
+                    }),
+                )
+                .with_output_mode(ToolOutputMode::ContentParts)
+                .with_output_schema(json!({
+                    "type": "object",
+                    "properties": {
+                        "matches": {"type": "array"}
+                    },
+                    "required": ["matches"]
+                }))
+                .with_defer_loading(true)
+                .with_aliases(vec![ToolName::from("lookup")])
+                .with_parallel_support(true)
+                .with_availability(ToolAvailability {
+                    feature_flags: vec!["dynamic-tools".to_string()],
+                    provider_allowlist: vec!["openai".to_string()],
+                    role_allowlist: vec!["worker".to_string()],
+                    hidden_from_model: true,
+                })
+                .with_approval(
+                    ToolApprovalProfile::new(true, false, Some(true), false)
+                        .with_host_escape(true)
+                        .with_approval_message("Needs dedicated helper process"),
+                ),
+                Arc::new(|call_id, _arguments, _ctx| {
+                    Box::pin(async move { Ok(ToolResult::text(call_id, "dynamic_catalog", "ok")) })
+                }),
+            )
+            .unwrap();
+
+        assert_eq!(
+            serde_json::to_value(&registry.specs()[0]).unwrap(),
+            json!({
+                "name": "dynamic_catalog",
+                "description": "Enumerate one dynamic catalog entry",
+                "kind": "function",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string"}
+                    },
+                    "required": ["query"]
+                },
+                "output_mode": "content_parts",
+                "output_schema": {
+                    "type": "object",
+                    "properties": {
+                        "matches": {"type": "array"}
+                    },
+                    "required": ["matches"]
+                },
+                "defer_loading": true,
+                "origin": {"kind": "local"},
+                "source": {"kind": "dynamic"},
+                "aliases": ["lookup"],
+                "supports_parallel_tool_calls": true,
+                "availability": {
+                    "feature_flags": ["dynamic-tools"],
+                    "provider_allowlist": ["openai"],
+                    "role_allowlist": ["worker"],
+                    "hidden_from_model": true
+                },
+                "approval": {
+                    "read_only": true,
+                    "mutates_state": false,
+                    "idempotent": true,
+                    "open_world": false,
+                    "needs_network": false,
+                    "needs_host_escape": true,
+                    "approval_message": "Needs dedicated helper process"
+                }
+            })
+        );
     }
 
     #[test]

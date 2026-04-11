@@ -1,4 +1,4 @@
-use crate::config::CodeAgentConfig;
+use crate::config::{CodeAgentApprovalPolicyConfig, CodeAgentConfig};
 use crate::provider::ensure_api_key_available;
 use crate::statusline::StatusLineConfig;
 use crate::theme::ThemeCatalog;
@@ -26,7 +26,7 @@ pub(crate) struct AppOptions {
     pub(crate) lsp_enabled: bool,
     pub(crate) lsp_auto_install: bool,
     pub(crate) lsp_install_root: Option<PathBuf>,
-    pub(crate) exec_always_approve_simple_prefixes: Vec<String>,
+    pub(crate) approval_policy: CodeAgentApprovalPolicyConfig,
     pub(crate) statusline: StatusLineConfig,
     pub(crate) theme_catalog: ThemeCatalog,
     pub(crate) one_shot_prompt: Option<String>,
@@ -118,8 +118,7 @@ impl AppOptions {
             lsp_enabled,
             lsp_auto_install,
             lsp_install_root,
-            exec_always_approve_simple_prefixes: workspace_config
-                .exec_always_approve_simple_prefixes,
+            approval_policy: workspace_config.approval_policy,
             statusline: workspace_config.statusline,
             theme_catalog: workspace_config.theme_catalog,
             one_shot_prompt,

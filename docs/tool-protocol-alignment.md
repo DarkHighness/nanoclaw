@@ -543,7 +543,6 @@ new bundle of tools:
     `web_fetch`
   - land the first runtime dynamic registration path on top of the richer
     protocol
-- still open:
   - add golden tests for local, MCP, and dynamic tool spec serialization
 
 ### P1

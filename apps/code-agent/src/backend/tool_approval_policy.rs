@@ -1,130 +1,158 @@
-use agent::runtime::{ToolApprovalPolicy, ToolApprovalPolicyDecision, ToolApprovalRequest};
-use agent::types::{McpToolBoundaryClass, ToolName, ToolOrigin, ToolSource};
-use serde_json::Value;
-use std::collections::BTreeSet;
-
-const AUTO_ALLOW_LOCAL_READ_ONLY_TOOL_NAMES: [&str; 2] = ["web_search", "web_fetch"];
+use crate::config::{
+    CodeAgentApprovalMcpBoundaryMatcher, CodeAgentApprovalOriginMatcher,
+    CodeAgentApprovalPolicyConfig, CodeAgentApprovalRule, CodeAgentApprovalRuleEffect,
+    CodeAgentApprovalSourceMatcher, ExecApprovalRule,
+};
+use agent::runtime::{
+    ToolApprovalMatcher, ToolApprovalPolicy, ToolApprovalPolicyDecision, ToolApprovalRequest,
+    ToolApprovalRule, ToolApprovalRuleSet, ToolArgumentMatcher, ToolMcpBoundaryMatcher,
+    ToolOriginMatcher, ToolSourceMatcher,
+};
+use agent::types::ToolName;
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct CodeAgentToolApprovalPolicy {
-    auto_allow_tool_names: BTreeSet<ToolName>,
-    exec_always_approve_simple_prefixes: Vec<String>,
+    approval_rules: ToolApprovalRuleSet,
+    default_mode: Option<CodeAgentApprovalRuleEffect>,
 }
 
 /// Code Agent keeps approval relaxation host-scoped on purpose.
 ///
 /// The runtime baseline still treats network and open-world access as approval
 /// worthy because that is the safer generic default across hosts. This helper
-/// only suppresses those baseline reasons for a tiny code-agent-owned allowlist
-/// of built-in read-only research tools, local-process MCP resource reads, and
-/// configured simple exec prefixes instead of trusting arbitrary `read_only`
-/// metadata from MCP or custom tools. The policy also checks the
-/// resolved tool source so these names stay bound to built-in implementations
-/// instead of silently widening trust to a future dynamic tool.
+/// compiles ordered host approval rules into shared runtime matcher primitives.
 pub(crate) fn build_code_agent_tool_approval_policy(
-    exec_always_approve_simple_prefixes: &[String],
+    config: &CodeAgentApprovalPolicyConfig,
 ) -> CodeAgentToolApprovalPolicy {
     CodeAgentToolApprovalPolicy {
-        auto_allow_tool_names: auto_allow_tool_names(),
-        exec_always_approve_simple_prefixes: exec_always_approve_simple_prefixes.to_vec(),
+        approval_rules: compile_approval_rules(&config.rules),
+        default_mode: config.default_mode.clone(),
     }
-}
-
-fn auto_allow_tool_names() -> BTreeSet<ToolName> {
-    AUTO_ALLOW_LOCAL_READ_ONLY_TOOL_NAMES
-        .into_iter()
-        .map(ToolName::from)
-        .collect()
 }
 
 impl ToolApprovalPolicy for CodeAgentToolApprovalPolicy {
     fn decide(&self, request: &ToolApprovalRequest) -> ToolApprovalPolicyDecision {
-        if is_auto_allowed_local_mcp_resource_read(request) {
-            return ToolApprovalPolicyDecision::Allow;
+        let shared_decision = self.approval_rules.decide(request);
+        if shared_decision != ToolApprovalPolicyDecision::Abstain {
+            return shared_decision;
         }
-        if !is_builtin_local_request(request) {
-            return ToolApprovalPolicyDecision::Abstain;
+        match self.default_mode {
+            Some(CodeAgentApprovalRuleEffect::Allow) => ToolApprovalPolicyDecision::Allow,
+            Some(CodeAgentApprovalRuleEffect::Ask) => ToolApprovalPolicyDecision::Ask {
+                reason: Some("code-agent approval.default_mode requested review".to_string()),
+            },
+            Some(CodeAgentApprovalRuleEffect::Deny) => ToolApprovalPolicyDecision::Deny {
+                reason: Some("code-agent approval.default_mode denied the request".to_string()),
+            },
+            None => ToolApprovalPolicyDecision::Abstain,
         }
-        if self.auto_allow_tool_names.contains(&request.call.tool_name) {
-            return ToolApprovalPolicyDecision::Allow;
-        }
-        if request.call.tool_name.as_str() == "exec_command"
-            && is_auto_approved_simple_exec_command(
-                &request.call.arguments,
-                &self.exec_always_approve_simple_prefixes,
-            )
-        {
-            return ToolApprovalPolicyDecision::Allow;
-        }
-        ToolApprovalPolicyDecision::Abstain
     }
 }
 
-fn is_builtin_local_request(request: &ToolApprovalRequest) -> bool {
-    request.call.origin == ToolOrigin::Local && request.spec.source == ToolSource::Builtin
+fn compile_approval_rules(rules: &[CodeAgentApprovalRule]) -> ToolApprovalRuleSet {
+    ToolApprovalRuleSet::new(rules.iter().map(compile_approval_rule).collect())
 }
 
-fn is_auto_allowed_local_mcp_resource_read(request: &ToolApprovalRequest) -> bool {
-    if request.call.tool_name.as_str() != "read_mcp_resource" {
-        return false;
-    }
-    if !matches!(request.spec.source, ToolSource::McpResource { .. }) {
-        return false;
-    }
-    request
-        .spec
-        .effective_mcp_boundary(&request.call)
-        .is_some_and(|boundary| boundary.boundary_class == McpToolBoundaryClass::LocalProcess)
-}
-
-fn is_auto_approved_simple_exec_command(arguments: &Value, prefixes: &[String]) -> bool {
-    let Some(command) = arguments
-        .get("cmd")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    else {
-        return false;
+fn compile_approval_rule(rule: &CodeAgentApprovalRule) -> ToolApprovalRule {
+    let matcher = ToolApprovalMatcher {
+        tool_names: rule
+            .tool_names
+            .iter()
+            .cloned()
+            .map(ToolName::from)
+            .collect(),
+        origins: rule.origins.iter().map(compile_origin_matcher).collect(),
+        sources: rule.sources.iter().map(compile_source_matcher).collect(),
+        argument_matchers: compile_argument_matchers(rule),
+        mcp_boundary: rule.mcp_boundary.as_ref().map(compile_mcp_boundary_matcher),
     };
-    if !is_simple_shell_command(command) {
-        return false;
+    match rule.effect {
+        CodeAgentApprovalRuleEffect::Allow => ToolApprovalRule::allow(
+            matcher,
+            rule.reason
+                .clone()
+                .unwrap_or_else(|| "code-agent approval allow rule".to_string()),
+        ),
+        CodeAgentApprovalRuleEffect::Ask => ToolApprovalRule::ask(
+            matcher,
+            rule.reason
+                .clone()
+                .unwrap_or_else(|| "code-agent approval ask rule".to_string()),
+        ),
+        CodeAgentApprovalRuleEffect::Deny => ToolApprovalRule::deny(
+            matcher,
+            rule.reason
+                .clone()
+                .unwrap_or_else(|| "code-agent approval deny rule".to_string()),
+        ),
     }
-    prefixes
-        .iter()
-        .any(|prefix| matches_simple_command_prefix(command, prefix))
 }
 
-fn matches_simple_command_prefix(command: &str, prefix: &str) -> bool {
-    let prefix = prefix.trim();
-    if prefix.is_empty() || !is_simple_shell_command(prefix) {
-        return false;
+fn compile_origin_matcher(origin: &CodeAgentApprovalOriginMatcher) -> ToolOriginMatcher {
+    match origin {
+        CodeAgentApprovalOriginMatcher::Local => ToolOriginMatcher::Local,
+        CodeAgentApprovalOriginMatcher::McpServer(server_name) => ToolOriginMatcher::McpServer {
+            server_name: server_name.clone().into(),
+        },
+        CodeAgentApprovalOriginMatcher::Provider(provider) => ToolOriginMatcher::Provider {
+            provider: provider.clone(),
+        },
     }
-    if command == prefix {
-        return true;
-    }
-    command
-        .strip_prefix(prefix)
-        .and_then(|rest| rest.chars().next())
-        .is_some_and(char::is_whitespace)
 }
 
-fn is_simple_shell_command(command: &str) -> bool {
-    // exec_command always runs through the shell, so host-scoped auto-allow
-    // rules intentionally fail closed on shell control syntax. This keeps the
-    // config limited to simple single-command prefixes instead of silently
-    // trusting pipelines, redirects, substitutions, or chained commands.
-    !command
-        .chars()
-        .any(|ch| matches!(ch, ';' | '&' | '|' | '>' | '<' | '`' | '$' | '\n' | '\r'))
+fn compile_source_matcher(source: &CodeAgentApprovalSourceMatcher) -> ToolSourceMatcher {
+    match source {
+        CodeAgentApprovalSourceMatcher::Builtin => ToolSourceMatcher::Builtin,
+        CodeAgentApprovalSourceMatcher::Dynamic => ToolSourceMatcher::Dynamic,
+        CodeAgentApprovalSourceMatcher::Plugin => ToolSourceMatcher::Plugin,
+        CodeAgentApprovalSourceMatcher::McpTool => ToolSourceMatcher::McpTool,
+        CodeAgentApprovalSourceMatcher::McpResource => ToolSourceMatcher::McpResource,
+        CodeAgentApprovalSourceMatcher::ProviderBuiltin(provider) => {
+            ToolSourceMatcher::ProviderBuiltin {
+                provider: provider.clone(),
+            }
+        }
+    }
+}
+
+fn compile_mcp_boundary_matcher(
+    matcher: &CodeAgentApprovalMcpBoundaryMatcher,
+) -> ToolMcpBoundaryMatcher {
+    ToolMcpBoundaryMatcher {
+        transports: matcher.transports.clone(),
+        boundary_classes: matcher.boundary_classes.clone(),
+    }
+}
+
+fn compile_argument_matchers(rule: &CodeAgentApprovalRule) -> Vec<ToolArgumentMatcher> {
+    let mut matchers = Vec::new();
+    if let Some(exec_rule) = &rule.exec {
+        matchers.push(match exec_rule {
+            ExecApprovalRule::ArgvExact(argv) => ToolArgumentMatcher::SimpleShellArgvExact {
+                pointer: "/cmd".to_string(),
+                argv: argv.clone(),
+            },
+            ExecApprovalRule::ArgvPrefix(argv) => ToolArgumentMatcher::SimpleShellArgvPrefix {
+                pointer: "/cmd".to_string(),
+                argv: argv.clone(),
+            },
+        });
+    }
+    matchers
 }
 
 #[cfg(test)]
 mod tests {
     use super::build_code_agent_tool_approval_policy;
+    use crate::config::{
+        CodeAgentApprovalMcpBoundaryMatcher, CodeAgentApprovalOriginMatcher,
+        CodeAgentApprovalPolicyConfig, CodeAgentApprovalRule, CodeAgentApprovalRuleEffect,
+        CodeAgentApprovalSourceMatcher, ExecApprovalRule,
+    };
     use agent::runtime::{ToolApprovalPolicy, ToolApprovalPolicyDecision};
     use agent::types::{
-        McpToolBoundary, McpTransportKind, ToolCall, ToolCallId, ToolOrigin, ToolOutputMode,
-        ToolSource, ToolSpec,
+        McpToolBoundary, McpToolBoundaryClass, McpTransportKind, ToolCall, ToolCallId, ToolOrigin,
+        ToolOutputMode, ToolSource, ToolSpec,
     };
     use serde_json::json;
     use std::collections::BTreeMap;
@@ -152,6 +180,37 @@ mod tests {
                 source,
             ),
             reasons: Vec::new(),
+        }
+    }
+
+    fn policy_config() -> CodeAgentApprovalPolicyConfig {
+        CodeAgentApprovalPolicyConfig {
+            default_mode: None,
+            rules: vec![
+                CodeAgentApprovalRule {
+                    effect: CodeAgentApprovalRuleEffect::Allow,
+                    reason: Some("code-agent built-in local allowlist".to_string()),
+                    tool_names: ["web_search".to_string(), "web_fetch".to_string()]
+                        .into_iter()
+                        .collect(),
+                    origins: vec![CodeAgentApprovalOriginMatcher::Local],
+                    sources: vec![CodeAgentApprovalSourceMatcher::Builtin],
+                    mcp_boundary: None,
+                    exec: None,
+                },
+                CodeAgentApprovalRule {
+                    effect: CodeAgentApprovalRuleEffect::Allow,
+                    reason: Some("code-agent local stdio MCP resource allowlist".to_string()),
+                    tool_names: ["read_mcp_resource".to_string()].into_iter().collect(),
+                    origins: vec![CodeAgentApprovalOriginMatcher::McpServer("*".to_string())],
+                    sources: vec![CodeAgentApprovalSourceMatcher::McpResource],
+                    mcp_boundary: Some(CodeAgentApprovalMcpBoundaryMatcher {
+                        transports: vec![McpTransportKind::Stdio],
+                        boundary_classes: vec![McpToolBoundaryClass::LocalProcess],
+                    }),
+                    exec: None,
+                },
+            ],
         }
     }
 
@@ -188,7 +247,7 @@ mod tests {
 
     #[test]
     fn auto_allows_builtin_local_web_tools() {
-        let policy = build_code_agent_tool_approval_policy(&[]);
+        let policy = build_code_agent_tool_approval_policy(&policy_config());
 
         assert_eq!(
             policy.decide(&request(
@@ -212,7 +271,7 @@ mod tests {
 
     #[test]
     fn keeps_other_or_non_local_reads_on_the_default_path() {
-        let policy = build_code_agent_tool_approval_policy(&[]);
+        let policy = build_code_agent_tool_approval_policy(&policy_config());
 
         assert_eq!(
             policy.decide(&request(
@@ -238,7 +297,7 @@ mod tests {
 
     #[test]
     fn auto_allows_local_process_mcp_resource_reads_only() {
-        let policy = build_code_agent_tool_approval_policy(&[]);
+        let policy = build_code_agent_tool_approval_policy(&policy_config());
 
         assert_eq!(
             policy.decide(&mcp_resource_request(
@@ -257,8 +316,24 @@ mod tests {
     }
 
     #[test]
+    fn keeps_non_stdio_local_process_markings_on_default_path() {
+        let policy = build_code_agent_tool_approval_policy(&policy_config());
+
+        assert_eq!(
+            policy.decide(&mcp_resource_request(
+                "fixture",
+                McpToolBoundary {
+                    transport: McpTransportKind::StreamableHttp,
+                    boundary_class: McpToolBoundaryClass::LocalProcess,
+                }
+            )),
+            ToolApprovalPolicyDecision::Abstain
+        );
+    }
+
+    #[test]
     fn keeps_name_based_allowlist_bound_to_builtin_sources() {
-        let policy = build_code_agent_tool_approval_policy(&[]);
+        let policy = build_code_agent_tool_approval_policy(&policy_config());
 
         assert_eq!(
             policy.decide(&request(
@@ -272,8 +347,21 @@ mod tests {
     }
 
     #[test]
-    fn auto_allows_configured_simple_exec_prefixes() {
-        let policy = build_code_agent_tool_approval_policy(&["git status".to_string()]);
+    fn auto_allows_configured_exec_argv_prefixes() {
+        let mut config = policy_config();
+        config.rules.push(CodeAgentApprovalRule {
+            effect: CodeAgentApprovalRuleEffect::Allow,
+            reason: Some("exec argv trust".to_string()),
+            tool_names: ["exec_command".to_string()].into_iter().collect(),
+            origins: vec![CodeAgentApprovalOriginMatcher::Local],
+            sources: vec![CodeAgentApprovalSourceMatcher::Builtin],
+            mcp_boundary: None,
+            exec: Some(ExecApprovalRule::ArgvPrefix(vec![
+                "git".to_string(),
+                "status".to_string(),
+            ])),
+        });
+        let policy = build_code_agent_tool_approval_policy(&config);
 
         assert_eq!(
             policy.decide(&request(
@@ -287,8 +375,86 @@ mod tests {
     }
 
     #[test]
+    fn exact_exec_argv_rules_reject_extra_args() {
+        let mut config = policy_config();
+        config.rules.push(CodeAgentApprovalRule {
+            effect: CodeAgentApprovalRuleEffect::Allow,
+            reason: Some("exec argv trust".to_string()),
+            tool_names: ["exec_command".to_string()].into_iter().collect(),
+            origins: vec![CodeAgentApprovalOriginMatcher::Local],
+            sources: vec![CodeAgentApprovalSourceMatcher::Builtin],
+            mcp_boundary: None,
+            exec: Some(ExecApprovalRule::ArgvExact(vec![
+                "cargo".to_string(),
+                "test".to_string(),
+            ])),
+        });
+        let policy = build_code_agent_tool_approval_policy(&config);
+
+        assert_eq!(
+            policy.decide(&request(
+                "exec_command",
+                ToolOrigin::Local,
+                ToolSource::Builtin,
+                json!({"cmd": "cargo test"})
+            )),
+            ToolApprovalPolicyDecision::Allow
+        );
+        assert_eq!(
+            policy.decide(&request(
+                "exec_command",
+                ToolOrigin::Local,
+                ToolSource::Builtin,
+                json!({"cmd": "cargo test -p store"})
+            )),
+            ToolApprovalPolicyDecision::Abstain
+        );
+    }
+
+    #[test]
+    fn quoted_simple_commands_normalize_to_same_argv_match() {
+        let mut config = policy_config();
+        config.rules.push(CodeAgentApprovalRule {
+            effect: CodeAgentApprovalRuleEffect::Allow,
+            reason: Some("exec argv trust".to_string()),
+            tool_names: ["exec_command".to_string()].into_iter().collect(),
+            origins: vec![CodeAgentApprovalOriginMatcher::Local],
+            sources: vec![CodeAgentApprovalSourceMatcher::Builtin],
+            mcp_boundary: None,
+            exec: Some(ExecApprovalRule::ArgvExact(vec![
+                "python".to_string(),
+                "scripts/check.py".to_string(),
+            ])),
+        });
+        let policy = build_code_agent_tool_approval_policy(&config);
+
+        assert_eq!(
+            policy.decide(&request(
+                "exec_command",
+                ToolOrigin::Local,
+                ToolSource::Builtin,
+                json!({"cmd": "python 'scripts/check.py'"})
+            )),
+            ToolApprovalPolicyDecision::Allow
+        );
+    }
+
+    #[test]
     fn keeps_shell_control_syntax_on_the_default_approval_path() {
-        let policy = build_code_agent_tool_approval_policy(&["git status".to_string()]);
+        let mut config = policy_config();
+        config.rules.push(CodeAgentApprovalRule {
+            effect: CodeAgentApprovalRuleEffect::Allow,
+            reason: Some("exec argv trust".to_string()),
+            tool_names: ["exec_command".to_string()].into_iter().collect(),
+            origins: vec![CodeAgentApprovalOriginMatcher::Local],
+            sources: vec![CodeAgentApprovalSourceMatcher::Builtin],
+            mcp_boundary: None,
+            exec: Some(ExecApprovalRule::ArgvPrefix(vec![
+                "git".to_string(),
+                "status".to_string(),
+            ])),
+        });
+        let policy = build_code_agent_tool_approval_policy(&config);
 
         assert_eq!(
             policy.decide(&request(
@@ -302,8 +468,62 @@ mod tests {
     }
 
     #[test]
+    fn keeps_nested_shell_drivers_on_the_default_path() {
+        let mut config = policy_config();
+        config.rules.push(CodeAgentApprovalRule {
+            effect: CodeAgentApprovalRuleEffect::Allow,
+            reason: Some("exec argv trust".to_string()),
+            tool_names: ["exec_command".to_string()].into_iter().collect(),
+            origins: vec![CodeAgentApprovalOriginMatcher::Local],
+            sources: vec![CodeAgentApprovalSourceMatcher::Builtin],
+            mcp_boundary: None,
+            exec: Some(ExecApprovalRule::ArgvExact(vec![
+                "/usr/bin/zsh".to_string(),
+                "-lc".to_string(),
+                "git status".to_string(),
+            ])),
+        });
+        let policy = build_code_agent_tool_approval_policy(&config);
+
+        assert_eq!(
+            policy.decide(&request(
+                "exec_command",
+                ToolOrigin::Local,
+                ToolSource::Builtin,
+                json!({"cmd": "/usr/bin/zsh -lc 'git status'"})
+            )),
+            ToolApprovalPolicyDecision::Abstain
+        );
+    }
+
+    #[test]
+    fn keeps_inline_interpreter_execs_on_the_default_path() {
+        let mut config = policy_config();
+        config.rules.push(CodeAgentApprovalRule {
+            effect: CodeAgentApprovalRuleEffect::Allow,
+            reason: Some("exec argv trust".to_string()),
+            tool_names: ["exec_command".to_string()].into_iter().collect(),
+            origins: vec![CodeAgentApprovalOriginMatcher::Local],
+            sources: vec![CodeAgentApprovalSourceMatcher::Builtin],
+            mcp_boundary: None,
+            exec: Some(ExecApprovalRule::ArgvPrefix(vec!["python".to_string()])),
+        });
+        let policy = build_code_agent_tool_approval_policy(&config);
+
+        assert_eq!(
+            policy.decide(&request(
+                "exec_command",
+                ToolOrigin::Local,
+                ToolSource::Builtin,
+                json!({"cmd": "python -c 'print(1)'"})
+            )),
+            ToolApprovalPolicyDecision::Abstain
+        );
+    }
+
+    #[test]
     fn keeps_write_stdin_on_the_default_path() {
-        let policy = build_code_agent_tool_approval_policy(&[]);
+        let policy = build_code_agent_tool_approval_policy(&policy_config());
 
         assert_eq!(
             policy.decide(&request(
@@ -331,6 +551,141 @@ mod tests {
                 json!({"session_id": "exec-123", "close_stdin": true})
             )),
             ToolApprovalPolicyDecision::Abstain
+        );
+    }
+
+    #[test]
+    fn config_can_disable_local_stdio_mcp_resource_auto_allow() {
+        let mut config = policy_config();
+        config.rules.retain(|rule| {
+            !rule
+                .tool_names
+                .iter()
+                .any(|tool_name| tool_name == "read_mcp_resource")
+        });
+        let policy = build_code_agent_tool_approval_policy(&config);
+
+        assert_eq!(
+            policy.decide(&mcp_resource_request(
+                "fixture",
+                McpToolBoundary::local_process(McpTransportKind::Stdio)
+            )),
+            ToolApprovalPolicyDecision::Abstain
+        );
+    }
+
+    #[test]
+    fn config_can_disable_builtin_web_auto_allow() {
+        let policy = build_code_agent_tool_approval_policy(&CodeAgentApprovalPolicyConfig {
+            default_mode: None,
+            rules: vec![CodeAgentApprovalRule {
+                effect: CodeAgentApprovalRuleEffect::Allow,
+                reason: Some("code-agent local stdio MCP resource allowlist".to_string()),
+                tool_names: ["read_mcp_resource".to_string()].into_iter().collect(),
+                origins: vec![CodeAgentApprovalOriginMatcher::McpServer("*".to_string())],
+                sources: vec![CodeAgentApprovalSourceMatcher::McpResource],
+                mcp_boundary: Some(CodeAgentApprovalMcpBoundaryMatcher {
+                    transports: vec![McpTransportKind::Stdio],
+                    boundary_classes: vec![McpToolBoundaryClass::LocalProcess],
+                }),
+                exec: None,
+            }],
+        });
+
+        assert_eq!(
+            policy.decide(&request(
+                "web_search",
+                ToolOrigin::Local,
+                ToolSource::Builtin,
+                json!({})
+            )),
+            ToolApprovalPolicyDecision::Abstain
+        );
+    }
+
+    #[test]
+    fn compiled_policy_only_relaxes_builtin_local_tool_names() {
+        let policy = build_code_agent_tool_approval_policy(&CodeAgentApprovalPolicyConfig {
+            default_mode: None,
+            rules: vec![CodeAgentApprovalRule {
+                effect: CodeAgentApprovalRuleEffect::Allow,
+                reason: Some("code-agent built-in local allowlist".to_string()),
+                tool_names: ["web_search".to_string()].into_iter().collect(),
+                origins: vec![CodeAgentApprovalOriginMatcher::Local],
+                sources: vec![CodeAgentApprovalSourceMatcher::Builtin],
+                mcp_boundary: None,
+                exec: None,
+            }],
+        });
+
+        assert_eq!(
+            policy.decide(&request(
+                "web_search",
+                ToolOrigin::Local,
+                ToolSource::Builtin,
+                json!({})
+            )),
+            ToolApprovalPolicyDecision::Allow
+        );
+        assert_eq!(
+            policy.decide(&request(
+                "web_search",
+                ToolOrigin::Local,
+                ToolSource::Dynamic,
+                json!({})
+            )),
+            ToolApprovalPolicyDecision::Abstain
+        );
+    }
+
+    #[test]
+    fn default_mode_can_request_review_for_unmatched_calls() {
+        let policy = build_code_agent_tool_approval_policy(&CodeAgentApprovalPolicyConfig {
+            default_mode: Some(CodeAgentApprovalRuleEffect::Ask),
+            rules: Vec::new(),
+        });
+
+        assert_eq!(
+            policy.decide(&request(
+                "grep",
+                ToolOrigin::Local,
+                ToolSource::Builtin,
+                json!({"pattern": "TODO"})
+            )),
+            ToolApprovalPolicyDecision::Ask {
+                reason: Some("code-agent approval.default_mode requested review".to_string())
+            }
+        );
+    }
+
+    #[test]
+    fn deny_rule_can_block_matching_exec_command() {
+        let policy = build_code_agent_tool_approval_policy(&CodeAgentApprovalPolicyConfig {
+            default_mode: None,
+            rules: vec![CodeAgentApprovalRule {
+                effect: CodeAgentApprovalRuleEffect::Deny,
+                reason: Some("dangerous exec is blocked".to_string()),
+                tool_names: ["exec_command".to_string()].into_iter().collect(),
+                origins: vec![CodeAgentApprovalOriginMatcher::Local],
+                sources: vec![CodeAgentApprovalSourceMatcher::Builtin],
+                mcp_boundary: None,
+                exec: Some(ExecApprovalRule::ArgvExact(vec![
+                    "git".to_string(),
+                    "push".to_string(),
+                ])),
+            }],
+        });
+
+        assert_eq!(
+            policy.decide(&request(
+                "exec_command",
+                ToolOrigin::Local,
+                ToolSource::Builtin,
+                json!({"cmd": "git push"})
+            )),
+            ToolApprovalPolicyDecision::Deny {
+                reason: Some("dangerous exec is blocked".to_string())
+            }
         );
     }
 }

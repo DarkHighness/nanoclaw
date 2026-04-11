@@ -18,6 +18,21 @@ auto-allows `read_mcp_resource` only when the request resolves to a locally
 launched `stdio` MCP server. Remote `streamable_http` MCP resources still stay
 on the default approval path.
 
+Follow-up note: `exec_command` trust no longer relies on raw shell-string
+prefixes. Host-local allow rules now match tokenized argv for simple commands,
+with exact or prefix semantics. Nested shells and inline interpreter entrypoints
+stay on the default approval path.
+
+Follow-up note: the host approval surface is now config-driven. `code-agent`
+derives built-in local tool allows, local `stdio` MCP resource read relaxation,
+and argv-based exec trust from app-local approval config instead of keeping
+those choices as hardcoded policy constants.
+
+Follow-up note: the host approval config now supports a full ordered rule model
+with `allow` / `ask` / `deny` effects plus `default_mode`. Legacy
+`auto_allow_*` and `[approval.exec]` inputs still work, but they are lowered
+into the same ordered host rule set for backward compatibility.
+
 ## Goal
 
 Reduce repeated approval prompts in `apps/code-agent` for a narrow set of safe,
@@ -101,6 +116,14 @@ Explicitly **not** included in this slice:
 - `write_stdin`, `update_plan`, and `update_execution` stay approval-free
   because they continue an already-approved session or mutate host-owned
   coordination state.
+- `exec_command` host trust now uses argv-based rules for simple commands rather
+  than raw string prefixes, which keeps host-local trust narrower and less
+  brittle.
+- built-in local read relaxations and local `stdio` MCP resource read relaxations
+  now come from app-local approval config rather than hardcoded policy values.
+- `code-agent` now evaluates ordered host approval rules with `allow`, `ask`,
+  `deny`, and `default_mode`, while keeping the behavior host-scoped and leaving
+  runtime-wide approval semantics unchanged.
 - MCP tool and resource specs now carry transport-aware boundary metadata so
   approval rules can distinguish local `stdio` servers from remote
   `streamable_http` services.

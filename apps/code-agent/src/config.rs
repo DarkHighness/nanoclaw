@@ -6,10 +6,12 @@
 
 use crate::statusline::StatusLineConfig;
 use crate::theme::{ThemeCatalog, load_theme_catalog};
+use agent::types::{McpToolBoundaryClass, McpTransportKind};
 use agent_env::{EnvMap, EnvVar};
 use anyhow::{Context, Result};
 use nanoclaw_config::{CoreConfig, load_optional_app_config};
 use serde::Deserialize;
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use toml_edit::{DocumentMut, Item, Table, value};
 
@@ -34,9 +36,63 @@ pub(crate) struct CodeAgentConfig {
     pub lsp_enabled: bool,
     pub lsp_auto_install: bool,
     pub lsp_install_root: Option<PathBuf>,
-    pub exec_always_approve_simple_prefixes: Vec<String>,
+    pub approval_policy: CodeAgentApprovalPolicyConfig,
     pub statusline: StatusLineConfig,
     pub theme_catalog: ThemeCatalog,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct CodeAgentApprovalPolicyConfig {
+    pub default_mode: Option<CodeAgentApprovalRuleEffect>,
+    pub rules: Vec<CodeAgentApprovalRule>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum CodeAgentApprovalRuleEffect {
+    Allow,
+    Ask,
+    Deny,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct CodeAgentApprovalRule {
+    pub effect: CodeAgentApprovalRuleEffect,
+    pub reason: Option<String>,
+    pub tool_names: BTreeSet<String>,
+    pub origins: Vec<CodeAgentApprovalOriginMatcher>,
+    pub sources: Vec<CodeAgentApprovalSourceMatcher>,
+    pub mcp_boundary: Option<CodeAgentApprovalMcpBoundaryMatcher>,
+    pub exec: Option<ExecApprovalRule>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum CodeAgentApprovalOriginMatcher {
+    Local,
+    McpServer(String),
+    Provider(String),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum CodeAgentApprovalSourceMatcher {
+    Builtin,
+    Dynamic,
+    Plugin,
+    McpTool,
+    McpResource,
+    ProviderBuiltin(String),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct CodeAgentApprovalMcpBoundaryMatcher {
+    pub transports: Vec<McpTransportKind>,
+    pub boundary_classes: Vec<McpToolBoundaryClass>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum ExecApprovalRule {
+    ArgvExact(Vec<String>),
+    ArgvPrefix(Vec<String>),
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -47,16 +103,62 @@ struct CodeAgentAppConfig {
     tui: CodeAgentTuiConfig,
 }
 
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(default)]
 struct CodeAgentApprovalConfig {
+    default_mode: Option<CodeAgentApprovalRuleEffect>,
+    rules: Vec<CodeAgentApprovalRuleConfig>,
+    auto_allow_builtin_local_tool_names: Vec<String>,
+    auto_allow_local_stdio_mcp_resource_reads: bool,
     exec: CodeAgentExecApprovalConfig,
+}
+
+impl Default for CodeAgentApprovalConfig {
+    fn default() -> Self {
+        Self {
+            default_mode: None,
+            rules: Vec::new(),
+            auto_allow_builtin_local_tool_names: vec![
+                "web_search".to_string(),
+                "web_fetch".to_string(),
+            ],
+            auto_allow_local_stdio_mcp_resource_reads: true,
+            exec: CodeAgentExecApprovalConfig::default(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default)]
 struct CodeAgentExecApprovalConfig {
+    rules: Vec<CodeAgentExecApprovalRuleConfig>,
     always_approve_simple_prefixes: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
+struct CodeAgentExecApprovalRuleConfig {
+    argv_exact: Vec<String>,
+    argv_prefix: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
+struct CodeAgentApprovalRuleConfig {
+    effect: Option<CodeAgentApprovalRuleEffect>,
+    reason: Option<String>,
+    tool_names: Vec<String>,
+    origins: Vec<String>,
+    sources: Vec<String>,
+    mcp_boundary: Option<CodeAgentApprovalMcpBoundaryMatcherConfig>,
+    exec: Option<CodeAgentExecApprovalRuleConfig>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
+struct CodeAgentApprovalMcpBoundaryMatcherConfig {
+    transports: Vec<McpTransportKind>,
+    boundary_classes: Vec<McpToolBoundaryClass>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -109,9 +211,7 @@ impl CodeAgentConfig {
                 .install_root
                 .as_deref()
                 .map(|value| resolve_path(workspace_root, value)),
-            exec_always_approve_simple_prefixes: normalize_exec_approval_prefixes(
-                app.approval.exec.always_approve_simple_prefixes,
-            ),
+            approval_policy: normalize_approval_policy(app.approval)?,
             statusline: app.tui.statusline,
             theme_catalog: load_theme_catalog(
                 workspace_root,
@@ -167,7 +267,261 @@ fn resolve_path(base_dir: &Path, value: &str) -> PathBuf {
     }
 }
 
-fn normalize_exec_approval_prefixes(values: Vec<String>) -> Vec<String> {
+fn normalize_exec_approval_rules(
+    rules: Vec<CodeAgentExecApprovalRuleConfig>,
+    legacy_prefixes: Vec<String>,
+) -> Result<Vec<ExecApprovalRule>> {
+    let mut normalized = Vec::new();
+    for rule in rules {
+        let exact = normalize_exec_approval_tokens(rule.argv_exact);
+        let prefix = normalize_exec_approval_tokens(rule.argv_prefix);
+        match (!exact.is_empty(), !prefix.is_empty()) {
+            (true, false) => normalized.push(ExecApprovalRule::ArgvExact(exact)),
+            (false, true) => normalized.push(ExecApprovalRule::ArgvPrefix(prefix)),
+            (false, false) => {
+                anyhow::bail!(
+                    "approval.exec.rules entries require either argv_exact or argv_prefix"
+                )
+            }
+            (true, true) => {
+                anyhow::bail!(
+                    "approval.exec.rules entries must set only one of argv_exact or argv_prefix"
+                )
+            }
+        }
+    }
+
+    for legacy in legacy_prefixes {
+        let trimmed = legacy.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let Some(argv) = shlex::split(trimmed) else {
+            anyhow::bail!(
+                "approval.exec.always_approve_simple_prefixes entry `{trimmed}` is not valid shell tokenization"
+            );
+        };
+        let argv = normalize_exec_approval_tokens(argv);
+        if !argv.is_empty() {
+            normalized.push(ExecApprovalRule::ArgvPrefix(argv));
+        }
+    }
+
+    Ok(normalized)
+}
+
+fn normalize_approval_policy(
+    config: CodeAgentApprovalConfig,
+) -> Result<CodeAgentApprovalPolicyConfig> {
+    let mut rules = normalize_explicit_approval_rules(config.rules)?;
+
+    let auto_allow_builtin_local_tool_names =
+        normalize_auto_allow_tool_names(config.auto_allow_builtin_local_tool_names);
+    if !auto_allow_builtin_local_tool_names.is_empty() {
+        rules.push(CodeAgentApprovalRule {
+            effect: CodeAgentApprovalRuleEffect::Allow,
+            reason: Some("code-agent built-in local allowlist".to_string()),
+            tool_names: auto_allow_builtin_local_tool_names,
+            origins: vec![CodeAgentApprovalOriginMatcher::Local],
+            sources: vec![CodeAgentApprovalSourceMatcher::Builtin],
+            mcp_boundary: None,
+            exec: None,
+        });
+    }
+
+    if config.auto_allow_local_stdio_mcp_resource_reads {
+        rules.push(CodeAgentApprovalRule {
+            effect: CodeAgentApprovalRuleEffect::Allow,
+            reason: Some("code-agent local stdio MCP resource allowlist".to_string()),
+            tool_names: ["read_mcp_resource".to_string()].into_iter().collect(),
+            origins: vec![CodeAgentApprovalOriginMatcher::McpServer("*".to_string())],
+            sources: vec![CodeAgentApprovalSourceMatcher::McpResource],
+            mcp_boundary: Some(CodeAgentApprovalMcpBoundaryMatcher {
+                transports: vec![McpTransportKind::Stdio],
+                boundary_classes: vec![McpToolBoundaryClass::LocalProcess],
+            }),
+            exec: None,
+        });
+    }
+
+    for exec_rule in normalize_exec_approval_rules(
+        config.exec.rules,
+        config.exec.always_approve_simple_prefixes,
+    )? {
+        rules.push(CodeAgentApprovalRule {
+            effect: CodeAgentApprovalRuleEffect::Allow,
+            reason: Some("code-agent exec argv allowlist".to_string()),
+            tool_names: ["exec_command".to_string()].into_iter().collect(),
+            origins: vec![CodeAgentApprovalOriginMatcher::Local],
+            sources: vec![CodeAgentApprovalSourceMatcher::Builtin],
+            mcp_boundary: None,
+            exec: Some(exec_rule),
+        });
+    }
+
+    Ok(CodeAgentApprovalPolicyConfig {
+        default_mode: config.default_mode,
+        rules,
+    })
+}
+
+fn normalize_explicit_approval_rules(
+    rules: Vec<CodeAgentApprovalRuleConfig>,
+) -> Result<Vec<CodeAgentApprovalRule>> {
+    rules
+        .into_iter()
+        .map(normalize_explicit_approval_rule)
+        .collect()
+}
+
+fn normalize_explicit_approval_rule(
+    rule: CodeAgentApprovalRuleConfig,
+) -> Result<CodeAgentApprovalRule> {
+    let Some(effect) = rule.effect else {
+        anyhow::bail!("approval.rules entries require an effect");
+    };
+    let tool_names = normalize_auto_allow_tool_names(rule.tool_names);
+    let origins = rule
+        .origins
+        .into_iter()
+        .map(|value| parse_approval_origin_matcher(&value))
+        .collect::<Result<Vec<_>>>()?;
+    let sources = rule
+        .sources
+        .into_iter()
+        .map(|value| parse_approval_source_matcher(&value))
+        .collect::<Result<Vec<_>>>()?;
+    let mcp_boundary = rule
+        .mcp_boundary
+        .map(|value| CodeAgentApprovalMcpBoundaryMatcher {
+            transports: value.transports,
+            boundary_classes: value.boundary_classes,
+        });
+    let exec = match rule.exec {
+        Some(exec) => Some(normalize_exec_approval_rule(exec)?),
+        None => None,
+    };
+
+    let mut tool_names = tool_names;
+    let mut origins = origins;
+    let mut sources = sources;
+
+    if exec.is_some() {
+        if tool_names.is_empty() {
+            tool_names.insert("exec_command".to_string());
+        }
+        if tool_names.iter().any(|value| value != "exec_command") {
+            anyhow::bail!("approval.rules exec matcher can only target exec_command");
+        }
+        if origins.is_empty() {
+            origins.push(CodeAgentApprovalOriginMatcher::Local);
+        }
+        if sources.is_empty() {
+            sources.push(CodeAgentApprovalSourceMatcher::Builtin);
+        }
+    }
+
+    if tool_names.is_empty()
+        && origins.is_empty()
+        && sources.is_empty()
+        && mcp_boundary.is_none()
+        && exec.is_none()
+    {
+        anyhow::bail!(
+            "approval.rules entries must include at least one matcher or use approval.default_mode"
+        );
+    }
+
+    Ok(CodeAgentApprovalRule {
+        effect,
+        reason: rule
+            .reason
+            .map(|value| value.trim().to_string())
+            .filter(|v| !v.is_empty()),
+        tool_names,
+        origins,
+        sources,
+        mcp_boundary,
+        exec,
+    })
+}
+
+fn normalize_exec_approval_rule(rule: CodeAgentExecApprovalRuleConfig) -> Result<ExecApprovalRule> {
+    let exact = normalize_exec_approval_tokens(rule.argv_exact);
+    let prefix = normalize_exec_approval_tokens(rule.argv_prefix);
+    match (!exact.is_empty(), !prefix.is_empty()) {
+        (true, false) => Ok(ExecApprovalRule::ArgvExact(exact)),
+        (false, true) => Ok(ExecApprovalRule::ArgvPrefix(prefix)),
+        (false, false) => {
+            anyhow::bail!("approval exec matcher requires either argv_exact or argv_prefix")
+        }
+        (true, true) => {
+            anyhow::bail!("approval exec matcher must set only one of argv_exact or argv_prefix")
+        }
+    }
+}
+
+fn parse_approval_origin_matcher(value: &str) -> Result<CodeAgentApprovalOriginMatcher> {
+    let value = value.trim();
+    if value.eq_ignore_ascii_case("local") {
+        return Ok(CodeAgentApprovalOriginMatcher::Local);
+    }
+    if let Some(server_name) = value.strip_prefix("mcp:") {
+        let server_name = server_name.trim();
+        if server_name.is_empty() {
+            anyhow::bail!("approval origin matcher `mcp:` requires a server name");
+        }
+        return Ok(CodeAgentApprovalOriginMatcher::McpServer(
+            server_name.to_string(),
+        ));
+    }
+    if let Some(provider) = value.strip_prefix("provider:") {
+        let provider = provider.trim();
+        if provider.is_empty() {
+            anyhow::bail!("approval origin matcher `provider:` requires a provider name");
+        }
+        return Ok(CodeAgentApprovalOriginMatcher::Provider(
+            provider.to_string(),
+        ));
+    }
+    anyhow::bail!("unsupported approval origin matcher `{value}`")
+}
+
+fn parse_approval_source_matcher(value: &str) -> Result<CodeAgentApprovalSourceMatcher> {
+    let value = value.trim();
+    match value {
+        "builtin" => Ok(CodeAgentApprovalSourceMatcher::Builtin),
+        "dynamic" => Ok(CodeAgentApprovalSourceMatcher::Dynamic),
+        "plugin" => Ok(CodeAgentApprovalSourceMatcher::Plugin),
+        "mcp_tool" => Ok(CodeAgentApprovalSourceMatcher::McpTool),
+        "mcp_resource" => Ok(CodeAgentApprovalSourceMatcher::McpResource),
+        _ => {
+            if let Some(provider) = value.strip_prefix("provider_builtin:") {
+                let provider = provider.trim();
+                if provider.is_empty() {
+                    anyhow::bail!(
+                        "approval source matcher `provider_builtin:` requires a provider name"
+                    );
+                }
+                Ok(CodeAgentApprovalSourceMatcher::ProviderBuiltin(
+                    provider.to_string(),
+                ))
+            } else {
+                anyhow::bail!("unsupported approval source matcher `{value}`")
+            }
+        }
+    }
+}
+
+fn normalize_auto_allow_tool_names(values: Vec<String>) -> BTreeSet<String> {
+    values
+        .into_iter()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .collect()
+}
+
+fn normalize_exec_approval_tokens(values: Vec<String>) -> Vec<String> {
     values
         .into_iter()
         .map(|value| value.trim().to_string())
@@ -177,7 +531,11 @@ fn normalize_exec_approval_prefixes(values: Vec<String>) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{CODE_AGENT_APP_CONFIG_PATH, CodeAgentConfig};
+    use super::{
+        CODE_AGENT_APP_CONFIG_PATH, CodeAgentApprovalOriginMatcher, CodeAgentApprovalPolicyConfig,
+        CodeAgentApprovalRule, CodeAgentApprovalRuleEffect, CodeAgentApprovalSourceMatcher,
+        CodeAgentConfig, ExecApprovalRule,
+    };
     use agent_env::EnvMap;
     use std::sync::{Mutex, OnceLock};
     use tempfile::tempdir;
@@ -236,7 +594,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn loads_exec_approval_prefixes_from_app_config() {
+    async fn loads_exec_approval_rules_from_app_config() {
         let _guard = env_test_lock().lock().unwrap();
         let dir = tempdir().unwrap();
         let app_dir = dir.path().join(".nanoclaw/apps");
@@ -244,8 +602,27 @@ mod tests {
         std::fs::write(
             app_dir.join("code-agent.toml"),
             r#"
+                [approval]
+                default_mode = "ask"
+                auto_allow_builtin_local_tool_names = [" web_search ", "web_fetch", ""]
+                auto_allow_local_stdio_mcp_resource_reads = false
+
+                [[approval.rules]]
+                effect = "deny"
+                reason = "block dangerous pushes"
+                tool_names = ["exec_command"]
+
+                [approval.rules.exec]
+                argv_exact = ["git", "push"]
+
                 [approval.exec]
-                always_approve_simple_prefixes = [" git status ", "", "cargo test -p store"]
+                always_approve_simple_prefixes = [" git diff --stat ", ""]
+
+                [[approval.exec.rules]]
+                argv_prefix = ["git", "status"]
+
+                [[approval.exec.rules]]
+                argv_exact = ["cargo", "test", "-p", "store"]
             "#,
         )
         .unwrap();
@@ -254,8 +631,74 @@ mod tests {
         let config = CodeAgentConfig::load_from_dir(dir.path(), &env_map).unwrap();
 
         assert_eq!(
-            config.exec_always_approve_simple_prefixes,
-            vec!["git status".to_string(), "cargo test -p store".to_string()]
+            config.approval_policy,
+            CodeAgentApprovalPolicyConfig {
+                default_mode: Some(CodeAgentApprovalRuleEffect::Ask),
+                rules: vec![
+                    CodeAgentApprovalRule {
+                        effect: CodeAgentApprovalRuleEffect::Deny,
+                        reason: Some("block dangerous pushes".to_string()),
+                        tool_names: ["exec_command".to_string()].into_iter().collect(),
+                        origins: vec![CodeAgentApprovalOriginMatcher::Local],
+                        sources: vec![CodeAgentApprovalSourceMatcher::Builtin],
+                        mcp_boundary: None,
+                        exec: Some(ExecApprovalRule::ArgvExact(vec![
+                            "git".to_string(),
+                            "push".to_string()
+                        ])),
+                    },
+                    CodeAgentApprovalRule {
+                        effect: CodeAgentApprovalRuleEffect::Allow,
+                        reason: Some("code-agent built-in local allowlist".to_string()),
+                        tool_names: ["web_fetch".to_string(), "web_search".to_string()]
+                            .into_iter()
+                            .collect(),
+                        origins: vec![CodeAgentApprovalOriginMatcher::Local],
+                        sources: vec![CodeAgentApprovalSourceMatcher::Builtin],
+                        mcp_boundary: None,
+                        exec: None,
+                    },
+                    CodeAgentApprovalRule {
+                        effect: CodeAgentApprovalRuleEffect::Allow,
+                        reason: Some("code-agent exec argv allowlist".to_string()),
+                        tool_names: ["exec_command".to_string()].into_iter().collect(),
+                        origins: vec![CodeAgentApprovalOriginMatcher::Local],
+                        sources: vec![CodeAgentApprovalSourceMatcher::Builtin],
+                        mcp_boundary: None,
+                        exec: Some(ExecApprovalRule::ArgvPrefix(vec![
+                            "git".to_string(),
+                            "status".to_string()
+                        ])),
+                    },
+                    CodeAgentApprovalRule {
+                        effect: CodeAgentApprovalRuleEffect::Allow,
+                        reason: Some("code-agent exec argv allowlist".to_string()),
+                        tool_names: ["exec_command".to_string()].into_iter().collect(),
+                        origins: vec![CodeAgentApprovalOriginMatcher::Local],
+                        sources: vec![CodeAgentApprovalSourceMatcher::Builtin],
+                        mcp_boundary: None,
+                        exec: Some(ExecApprovalRule::ArgvExact(vec![
+                            "cargo".to_string(),
+                            "test".to_string(),
+                            "-p".to_string(),
+                            "store".to_string()
+                        ])),
+                    },
+                    CodeAgentApprovalRule {
+                        effect: CodeAgentApprovalRuleEffect::Allow,
+                        reason: Some("code-agent exec argv allowlist".to_string()),
+                        tool_names: ["exec_command".to_string()].into_iter().collect(),
+                        origins: vec![CodeAgentApprovalOriginMatcher::Local],
+                        sources: vec![CodeAgentApprovalSourceMatcher::Builtin],
+                        mcp_boundary: None,
+                        exec: Some(ExecApprovalRule::ArgvPrefix(vec![
+                            "git".to_string(),
+                            "diff".to_string(),
+                            "--stat".to_string()
+                        ])),
+                    }
+                ]
+            }
         );
     }
 

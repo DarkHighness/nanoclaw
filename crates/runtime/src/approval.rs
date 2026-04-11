@@ -5,7 +5,7 @@ use serde_json::Value;
 use std::collections::BTreeSet;
 use types::{
     McpServerName, McpToolBoundary, McpToolBoundaryClass, McpTransportKind, ToolCall, ToolName,
-    ToolSpec,
+    ToolSource, ToolSpec,
 };
 
 #[derive(Clone, Debug, PartialEq)]
@@ -67,8 +67,21 @@ pub enum ToolApprovalRuleEffect {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ToolOriginMatcher {
     Local,
+    // Exact server-name match only. Shared MCP resource tools deliberately use
+    // a literal "*" origin, but this matcher does not implement wildcard
+    // expansion for ordinary per-server MCP tool calls.
     McpServer { server_name: McpServerName },
     Provider { provider: String },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ToolSourceMatcher {
+    Builtin,
+    Dynamic,
+    Plugin,
+    McpTool,
+    McpResource,
+    ProviderBuiltin { provider: String },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -107,6 +120,14 @@ pub enum ToolArgumentMatcher {
         pointer: String,
         matcher: StringMatcher,
     },
+    SimpleShellArgvExact {
+        pointer: String,
+        argv: Vec<String>,
+    },
+    SimpleShellArgvPrefix {
+        pointer: String,
+        argv: Vec<String>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
@@ -139,14 +160,70 @@ impl ToolArgumentMatcher {
                 .and_then(|candidate| Url::parse(candidate).ok())
                 .and_then(|url| url.host_str().map(ToOwned::to_owned))
                 .is_some_and(|host| matcher.matches(&host)),
+            Self::SimpleShellArgvExact { pointer, argv } => arguments
+                .pointer(pointer)
+                .and_then(Value::as_str)
+                .and_then(parse_simple_shell_argv)
+                .is_some_and(|candidate| candidate == *argv),
+            Self::SimpleShellArgvPrefix { pointer, argv } => arguments
+                .pointer(pointer)
+                .and_then(Value::as_str)
+                .and_then(parse_simple_shell_argv)
+                .is_some_and(|candidate| candidate.starts_with(argv)),
         }
     }
+}
+
+fn parse_simple_shell_argv(command: &str) -> Option<Vec<String>> {
+    let command = command.trim();
+    if command.is_empty() || !is_simple_shell_command(command) {
+        return None;
+    }
+    let argv = shlex::split(command)?;
+    let argv = argv
+        .into_iter()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>();
+    if argv.is_empty() || is_disallowed_exec_driver(&argv) {
+        return None;
+    }
+    Some(argv)
+}
+
+fn is_simple_shell_command(command: &str) -> bool {
+    !command
+        .chars()
+        .any(|ch| matches!(ch, ';' | '&' | '|' | '>' | '<' | '`' | '$' | '\n' | '\r'))
+}
+
+fn is_disallowed_exec_driver(argv: &[String]) -> bool {
+    let Some(executable) = argv
+        .first()
+        .map(|value| value.rsplit('/').next().unwrap_or(value))
+    else {
+        return true;
+    };
+    if matches!(
+        executable,
+        "sh" | "bash" | "zsh" | "fish" | "dash" | "ksh" | "csh" | "tcsh"
+    ) {
+        return true;
+    }
+    if matches!(executable, "python" | "python3" | "node" | "ruby" | "perl") {
+        return argv
+            .iter()
+            .skip(1)
+            .any(|arg| matches!(arg.as_str(), "-c" | "-e" | "-m"));
+    }
+    false
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct ToolApprovalMatcher {
     pub tool_names: BTreeSet<ToolName>,
     pub origins: Vec<ToolOriginMatcher>,
+    pub sources: Vec<ToolSourceMatcher>,
     pub argument_matchers: Vec<ToolArgumentMatcher>,
     pub mcp_boundary: Option<ToolMcpBoundaryMatcher>,
 }
@@ -162,6 +239,14 @@ impl ToolApprovalMatcher {
                 .origins
                 .iter()
                 .any(|origin| origin_matches(origin, &request.call.origin))
+        {
+            return false;
+        }
+        if !self.sources.is_empty()
+            && !self
+                .sources
+                .iter()
+                .any(|source| source_matches(source, &request.spec.source))
         {
             return false;
         }
@@ -273,12 +358,27 @@ fn origin_matches(matcher: &ToolOriginMatcher, origin: &types::ToolOrigin) -> bo
     }
 }
 
+fn source_matches(matcher: &ToolSourceMatcher, source: &ToolSource) -> bool {
+    match (matcher, source) {
+        (ToolSourceMatcher::Builtin, ToolSource::Builtin) => true,
+        (ToolSourceMatcher::Dynamic, ToolSource::Dynamic) => true,
+        (ToolSourceMatcher::Plugin, ToolSource::Plugin { .. }) => true,
+        (ToolSourceMatcher::McpTool, ToolSource::McpTool { .. }) => true,
+        (ToolSourceMatcher::McpResource, ToolSource::McpResource { .. }) => true,
+        (
+            ToolSourceMatcher::ProviderBuiltin { provider: left },
+            ToolSource::ProviderBuiltin { provider: right },
+        ) => left == right,
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         StringMatcher, ToolApprovalMatcher, ToolApprovalPolicy, ToolApprovalPolicyDecision,
         ToolApprovalRequest, ToolApprovalRule, ToolApprovalRuleSet, ToolArgumentMatcher,
-        ToolMcpBoundaryMatcher, ToolOriginMatcher,
+        ToolMcpBoundaryMatcher, ToolOriginMatcher, ToolSourceMatcher,
     };
     use serde_json::json;
     use std::collections::BTreeSet;
@@ -318,6 +418,7 @@ mod tests {
             ToolApprovalMatcher {
                 tool_names,
                 origins: vec![ToolOriginMatcher::Local],
+                sources: vec![ToolSourceMatcher::Builtin],
                 argument_matchers: vec![ToolArgumentMatcher::String {
                     pointer: "/cmd".to_string(),
                     matcher: StringMatcher::Prefix("git ".to_string()),
@@ -343,6 +444,7 @@ mod tests {
             ToolApprovalMatcher {
                 tool_names: [ToolName::from("web_fetch")].into_iter().collect(),
                 origins: vec![ToolOriginMatcher::Local],
+                sources: vec![ToolSourceMatcher::Builtin],
                 argument_matchers: vec![ToolArgumentMatcher::UrlHost {
                     pointer: "/url".to_string(),
                     matcher: StringMatcher::Suffix(".internal".to_string()),
@@ -372,6 +474,7 @@ mod tests {
                 ToolApprovalMatcher {
                     tool_names: [ToolName::from("exec_command")].into_iter().collect(),
                     origins: vec![ToolOriginMatcher::Local],
+                    sources: vec![ToolSourceMatcher::Builtin],
                     argument_matchers: vec![ToolArgumentMatcher::String {
                         pointer: "/cmd".to_string(),
                         matcher: StringMatcher::Prefix("git status".to_string()),
@@ -384,6 +487,7 @@ mod tests {
                 ToolApprovalMatcher {
                     tool_names: [ToolName::from("exec_command")].into_iter().collect(),
                     origins: vec![ToolOriginMatcher::Local],
+                    sources: vec![ToolSourceMatcher::Builtin],
                     argument_matchers: vec![ToolArgumentMatcher::Exists {
                         pointer: "/cmd".to_string(),
                     }],
@@ -434,6 +538,7 @@ mod tests {
                 origins: vec![ToolOriginMatcher::McpServer {
                     server_name: "*".into(),
                 }],
+                sources: vec![ToolSourceMatcher::McpResource],
                 argument_matchers: Vec::new(),
                 mcp_boundary: Some(ToolMcpBoundaryMatcher {
                     transports: vec![McpTransportKind::Stdio],
@@ -444,5 +549,76 @@ mod tests {
         )]);
 
         assert_eq!(rules.decide(&request), ToolApprovalPolicyDecision::Allow);
+    }
+
+    #[test]
+    fn simple_shell_argv_matchers_support_exact_and_prefix_matches() {
+        let rules = ToolApprovalRuleSet::new(vec![
+            ToolApprovalRule::allow(
+                ToolApprovalMatcher {
+                    tool_names: [ToolName::from("exec_command")].into_iter().collect(),
+                    origins: vec![ToolOriginMatcher::Local],
+                    sources: vec![ToolSourceMatcher::Builtin],
+                    argument_matchers: vec![ToolArgumentMatcher::SimpleShellArgvPrefix {
+                        pointer: "/cmd".to_string(),
+                        argv: vec!["git".to_string(), "status".to_string()],
+                    }],
+                    mcp_boundary: None,
+                },
+                "git status is safe",
+            ),
+            ToolApprovalRule::allow(
+                ToolApprovalMatcher {
+                    tool_names: [ToolName::from("exec_command")].into_iter().collect(),
+                    origins: vec![ToolOriginMatcher::Local],
+                    sources: vec![ToolSourceMatcher::Builtin],
+                    argument_matchers: vec![ToolArgumentMatcher::SimpleShellArgvExact {
+                        pointer: "/cmd".to_string(),
+                        argv: vec!["python".to_string(), "scripts/check.py".to_string()],
+                    }],
+                    mcp_boundary: None,
+                },
+                "single script run is safe",
+            ),
+        ]);
+
+        assert_eq!(
+            rules.decide(&request(json!({"cmd": "git status --short"}))),
+            ToolApprovalPolicyDecision::Allow
+        );
+        assert_eq!(
+            rules.decide(&request(json!({"cmd": "python 'scripts/check.py'"}))),
+            ToolApprovalPolicyDecision::Allow
+        );
+    }
+
+    #[test]
+    fn simple_shell_argv_matchers_fail_closed_on_unsafe_shell_shapes() {
+        let rules = ToolApprovalRuleSet::new(vec![ToolApprovalRule::allow(
+            ToolApprovalMatcher {
+                tool_names: [ToolName::from("exec_command")].into_iter().collect(),
+                origins: vec![ToolOriginMatcher::Local],
+                sources: vec![ToolSourceMatcher::Builtin],
+                argument_matchers: vec![ToolArgumentMatcher::SimpleShellArgvPrefix {
+                    pointer: "/cmd".to_string(),
+                    argv: vec!["git".to_string()],
+                }],
+                mcp_boundary: None,
+            },
+            "simple git commands are safe",
+        )]);
+
+        assert_eq!(
+            rules.decide(&request(json!({"cmd": "git status; rm -rf ."}))),
+            ToolApprovalPolicyDecision::Abstain
+        );
+        assert_eq!(
+            rules.decide(&request(json!({"cmd": "/usr/bin/zsh -lc 'git status'"}))),
+            ToolApprovalPolicyDecision::Abstain
+        );
+        assert_eq!(
+            rules.decide(&request(json!({"cmd": "python -c 'print(1)'"}))),
+            ToolApprovalPolicyDecision::Abstain
+        );
     }
 }

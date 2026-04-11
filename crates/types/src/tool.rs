@@ -687,11 +687,94 @@ impl ToolResult {
 #[cfg(test)]
 mod tests {
     use super::{
-        McpToolBoundary, McpTransportKind, ToolCall, ToolCallId, ToolOrigin, ToolOutputMode,
-        ToolSource, ToolSpec,
+        McpToolBoundary, McpTransportKind, ToolApprovalProfile, ToolAvailability, ToolCall,
+        ToolCallId, ToolName, ToolOrigin, ToolOutputMode, ToolSource, ToolSpec,
     };
     use serde_json::json;
     use std::collections::BTreeMap;
+
+    #[test]
+    fn local_tool_spec_serialization_is_pinned() {
+        let spec = ToolSpec::function(
+            "inspect_workspace",
+            "Inspect one workspace file",
+            json!({
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"}
+                },
+                "required": ["path"]
+            }),
+            ToolOutputMode::Text,
+            ToolOrigin::Local,
+            ToolSource::Builtin,
+        )
+        .with_output_schema(json!({
+            "type": "object",
+            "properties": {
+                "summary": {"type": "string"}
+            },
+            "required": ["summary"]
+        }))
+        .with_defer_loading(true)
+        .with_aliases(vec![ToolName::from("inspect"), ToolName::from("peek")])
+        .with_parallel_support(true)
+        .with_availability(ToolAvailability {
+            feature_flags: vec!["managed-lsp".to_string()],
+            provider_allowlist: vec!["openai".to_string()],
+            role_allowlist: vec!["worker".to_string()],
+            hidden_from_model: false,
+        })
+        .with_approval(
+            ToolApprovalProfile::new(true, false, Some(true), false)
+                .with_network(true)
+                .with_approval_message("Requires trusted docs endpoint"),
+        );
+
+        assert_eq!(
+            serde_json::to_value(&spec).unwrap(),
+            json!({
+                "name": "inspect_workspace",
+                "description": "Inspect one workspace file",
+                "kind": "function",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string"}
+                    },
+                    "required": ["path"]
+                },
+                "output_mode": "text",
+                "output_schema": {
+                    "type": "object",
+                    "properties": {
+                        "summary": {"type": "string"}
+                    },
+                    "required": ["summary"]
+                },
+                "defer_loading": true,
+                "origin": {"kind": "local"},
+                "source": {"kind": "builtin"},
+                "aliases": ["inspect", "peek"],
+                "supports_parallel_tool_calls": true,
+                "availability": {
+                    "feature_flags": ["managed-lsp"],
+                    "provider_allowlist": ["openai"],
+                    "role_allowlist": ["worker"],
+                    "hidden_from_model": false
+                },
+                "approval": {
+                    "read_only": true,
+                    "mutates_state": false,
+                    "idempotent": true,
+                    "open_world": false,
+                    "needs_network": true,
+                    "needs_host_escape": false,
+                    "approval_message": "Requires trusted docs endpoint"
+                }
+            })
+        );
+    }
 
     #[test]
     fn direct_mcp_boundary_is_resolved_from_tool_spec() {
