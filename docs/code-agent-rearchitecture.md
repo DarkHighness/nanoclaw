@@ -176,7 +176,27 @@ it into a set of domain modules instead of one expanding host controller.
 This reduces one of the previous failure modes: changing operator workflows,
 runtime controls, and background-task logic in the same file.
 
-## Sixth-pass TUI flow breakup
+## Sixth-pass backend memory breakup
+
+The next backend hotspot was session memory management. Structured note refresh,
+episodic capture, compaction handoff persistence, and side-question execution
+were still embedded directly in `backend/session.rs`, even though they form one
+host-owned policy area.
+
+- Session-memory refresh scheduling and persistence now live in
+  `backend/session/memory.rs`.
+- Episodic daily-log capture now lives beside the structured session-note
+  updater instead of being interleaved with general session control methods.
+- Side-question context snapshots and side-question execution now live in the
+  same module as the session-memory pipeline they depend on.
+- `backend/session.rs` now keeps session construction, catalog/export
+  operations, and other cross-domain control methods, while memory maintenance
+  is triggered through the dedicated submodule.
+
+This matters because the session root is no longer responsible for both
+foreground operator commands and the background memory-maintenance pipeline.
+
+## Seventh-pass TUI flow breakup
 
 The main TUI controller was still acting as a god object even after the earlier
 package and protocol work. The next pass split behavior by responsibility
@@ -195,7 +215,7 @@ This matters because command handling, transient runtime orchestration, and raw
 input choreography now change in separate modules with smaller recompilation and
 review surfaces.
 
-## Seventh-pass TUI state breakup
+## Eighth-pass TUI state breakup
 
 The remaining TUI hot spot was `frontend/tui/state.rs`. It still mixed
 transcript DTOs, picker overlays, composer attachment protocol, history recall,
