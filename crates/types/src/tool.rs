@@ -224,6 +224,17 @@ impl ToolVisibilityContext {
     pub fn has_feature(&self, feature: &str) -> bool {
         self.features.contains(feature)
     }
+
+    pub fn set_feature_enabled(&mut self, feature: &str, enabled: bool) {
+        if !enabled {
+            self.features.remove(feature);
+            return;
+        }
+
+        if let Some(feature) = normalize_visibility_value(Some(feature.to_string())) {
+            self.features.insert(feature);
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]

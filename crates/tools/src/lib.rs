@@ -7,6 +7,10 @@
 //! bundles should be exposed through explicit Cargo features instead of
 //! silently expanding the default runtime surface.
 
+/// Host-process tools execute or depend on local child processes and should
+/// only be advertised when the active session mode can actually service them.
+pub const HOST_FEATURE_HOST_PROCESS_SURFACES: &str = "host-process-surfaces";
+
 #[cfg(feature = "agentic-tools")]
 pub mod agentic;
 pub mod annotations;

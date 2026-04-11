@@ -186,6 +186,15 @@ impl AgentRuntime {
         self.tool_context.effective_sandbox_policy = Some(policy);
     }
 
+    pub fn replace_tool_visibility_context(&mut self, visibility: types::ToolVisibilityContext) {
+        self.tool_context.model_visibility = visibility;
+    }
+
+    #[must_use]
+    pub fn tool_visibility_context_snapshot(&self) -> types::ToolVisibilityContext {
+        self.tool_context.model_visibility.clone()
+    }
+
     pub fn replace_base_instructions(&mut self, instructions: Vec<String>) {
         // Hosts may rebuild the stable instruction prefix when switching to a
         // fresh or resumed session. Keep this as an explicit session-boundary

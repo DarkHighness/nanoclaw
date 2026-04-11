@@ -3,10 +3,14 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use tools::{DynamicTool, DynamicToolHandler, McpToolAdapter, Result as ToolsResult, ToolError};
+use tools::{
+    DynamicTool, DynamicToolHandler, HOST_FEATURE_HOST_PROCESS_SURFACES, McpToolAdapter,
+    Result as ToolsResult, ToolError, ToolExecutionContext,
+};
 use types::{
-    CallId, McpServerName, McpToolBoundary, MessagePart, ToolApprovalProfile, ToolCallId,
-    ToolContinuation, ToolOrigin, ToolOutputMode, ToolResult, ToolSource, ToolSpec,
+    CallId, McpServerName, McpToolBoundary, McpToolBoundaryClass, MessagePart, ToolApprovalProfile,
+    ToolAvailability, ToolCallId, ToolContinuation, ToolOrigin, ToolOutputMode, ToolResult,
+    ToolSource, ToolSpec,
 };
 
 const DEFAULT_MCP_RESOURCE_MAX_CHARS: usize = 32 * 1024;
@@ -167,11 +171,12 @@ fn build_list_mcp_resources_tool(servers: Vec<ConnectedMcpServer>) -> DynamicToo
     )
     .with_output_schema(list_mcp_resources_output_schema())
     .with_parallel_support(true)
+    .with_availability(aggregate_resource_tool_availability(&servers))
     .with_mcp_server_boundaries(server_boundaries)
     .with_approval(ToolApprovalProfile::new(true, false, Some(true), false));
-    let handler: DynamicToolHandler = Arc::new(move |call_id, arguments, _ctx| {
+    let handler: DynamicToolHandler = Arc::new(move |call_id, arguments, ctx| {
         let servers = servers.clone();
-        Box::pin(async move { execute_list_mcp_resources(call_id, arguments, &servers) })
+        Box::pin(async move { execute_list_mcp_resources(call_id, arguments, &servers, &ctx) })
     });
     DynamicTool::from_tool_spec(spec, handler)
 }
@@ -192,11 +197,12 @@ fn build_read_mcp_resource_tool(servers: Vec<ConnectedMcpServer>) -> DynamicTool
     )
     .with_output_schema(read_mcp_resource_output_schema())
     .with_parallel_support(true)
+    .with_availability(aggregate_resource_tool_availability(&servers))
     .with_mcp_server_boundaries(server_boundaries)
     .with_approval(ToolApprovalProfile::new(true, false, Some(true), true).with_network(true));
-    let handler: DynamicToolHandler = Arc::new(move |call_id, arguments, _ctx| {
+    let handler: DynamicToolHandler = Arc::new(move |call_id, arguments, ctx| {
         let servers = servers.clone();
-        Box::pin(async move { execute_read_mcp_resource(call_id, arguments, &servers).await })
+        Box::pin(async move { execute_read_mcp_resource(call_id, arguments, &servers, &ctx).await })
     });
     DynamicTool::from_tool_spec(spec, handler)
 }
@@ -217,24 +223,55 @@ fn build_list_mcp_resource_templates_tool(servers: Vec<ConnectedMcpServer>) -> D
     )
     .with_output_schema(list_mcp_resource_templates_output_schema())
     .with_parallel_support(true)
+    .with_availability(aggregate_resource_tool_availability(&servers))
     .with_mcp_server_boundaries(server_boundaries)
     .with_approval(ToolApprovalProfile::new(true, false, Some(true), false));
-    let handler: DynamicToolHandler = Arc::new(move |call_id, arguments, _ctx| {
+    let handler: DynamicToolHandler = Arc::new(move |call_id, arguments, ctx| {
         let servers = servers.clone();
-        Box::pin(async move { execute_list_mcp_resource_templates(call_id, arguments, &servers) })
+        Box::pin(
+            async move { execute_list_mcp_resource_templates(call_id, arguments, &servers, &ctx) },
+        )
     });
     DynamicTool::from_tool_spec(spec, handler)
+}
+
+fn boundary_requires_host_process(boundary: &McpToolBoundary) -> bool {
+    matches!(boundary.boundary_class, McpToolBoundaryClass::LocalProcess)
+}
+
+fn server_requires_host_process(server: &ConnectedMcpServer) -> bool {
+    boundary_requires_host_process(&server.boundary)
+}
+
+fn server_is_visible(ctx: &ToolExecutionContext, server: &ConnectedMcpServer) -> bool {
+    !server_requires_host_process(server)
+        || ctx
+            .model_visibility
+            .has_feature(HOST_FEATURE_HOST_PROCESS_SURFACES)
+}
+
+fn aggregate_resource_tool_availability(servers: &[ConnectedMcpServer]) -> ToolAvailability {
+    if !servers.is_empty() && servers.iter().all(server_requires_host_process) {
+        return ToolAvailability {
+            feature_flags: vec![HOST_FEATURE_HOST_PROCESS_SURFACES.to_string()],
+            ..ToolAvailability::default()
+        };
+    }
+
+    ToolAvailability::default()
 }
 
 fn execute_list_mcp_resources(
     call_id: ToolCallId,
     arguments: Value,
     servers: &[ConnectedMcpServer],
+    ctx: &ToolExecutionContext,
 ) -> ToolsResult<ToolResult> {
     let external_call_id = CallId::from(&call_id);
     let input: ListMcpResourcesInput = serde_json::from_value(arguments)?;
     let resources = servers
         .iter()
+        .filter(|server| server_is_visible(ctx, server))
         .filter(|server| {
             input
                 .server_name
@@ -307,11 +344,13 @@ fn execute_list_mcp_resource_templates(
     call_id: ToolCallId,
     arguments: Value,
     servers: &[ConnectedMcpServer],
+    ctx: &ToolExecutionContext,
 ) -> ToolsResult<ToolResult> {
     let external_call_id = CallId::from(&call_id);
     let input: ListMcpResourceTemplatesInput = serde_json::from_value(arguments)?;
     let resource_templates = servers
         .iter()
+        .filter(|server| server_is_visible(ctx, server))
         .filter(|server| {
             input
                 .server_name
@@ -376,6 +415,7 @@ async fn execute_read_mcp_resource(
     call_id: ToolCallId,
     arguments: Value,
     servers: &[ConnectedMcpServer],
+    ctx: &ToolExecutionContext,
 ) -> ToolsResult<ToolResult> {
     let external_call_id = CallId::from(&call_id);
     let input: ReadMcpResourceInput = serde_json::from_value(arguments)?;
@@ -383,6 +423,12 @@ async fn execute_read_mcp_resource(
         .iter()
         .find(|server| server.server_name == input.server_name)
         .ok_or_else(|| ToolError::invalid(format!("unknown MCP server `{}`", input.server_name)))?;
+    if !server_is_visible(ctx, server) {
+        return Err(ToolError::invalid_state(format!(
+            "MCP server `{}` is unavailable while host process surfaces are disabled",
+            input.server_name
+        )));
+    }
     let resource = server
         .client
         .read_resource(&input.uri)
@@ -716,69 +762,72 @@ mod tests {
     use crate::{ConnectedMcpServer, McpCatalog, McpResource, McpResourceTemplate, MockMcpClient};
     use serde_json::json;
     use std::sync::Arc;
-    use tools::{Tool, ToolExecutionContext};
-    use types::{McpToolBoundary, McpTransportKind, MessagePart, ToolCallId, ToolContinuation};
+    use tools::{HOST_FEATURE_HOST_PROCESS_SURFACES, Tool, ToolExecutionContext};
+    use types::{
+        McpToolBoundary, McpTransportKind, MessagePart, ToolCallId, ToolContinuation,
+        ToolVisibilityContext,
+    };
+
+    fn tool_context_with_host_process() -> ToolExecutionContext {
+        ToolExecutionContext {
+            model_visibility: ToolVisibilityContext::default()
+                .with_feature(HOST_FEATURE_HOST_PROCESS_SURFACES),
+            ..Default::default()
+        }
+    }
+
+    fn fixture_markdown_server(
+        server_name: &str,
+        boundary: McpToolBoundary,
+        uri: &str,
+        description: &str,
+    ) -> ConnectedMcpServer {
+        let catalog = McpCatalog {
+            server_name: server_name.into(),
+            tools: Vec::new(),
+            prompts: Vec::new(),
+            resources: vec![McpResource {
+                uri: uri.to_string(),
+                name: "guide".to_string(),
+                title: Some("Guide".to_string()),
+                description: description.to_string(),
+                mime_type: Some("text/markdown".to_string()),
+                parts: vec![MessagePart::Resource {
+                    uri: uri.to_string(),
+                    mime_type: Some("text/markdown".to_string()),
+                    text: Some("# Guide\n\nUseful context.".to_string()),
+                    metadata: None,
+                }],
+            }],
+            resource_templates: vec![McpResourceTemplate {
+                uri_template: format!("{uri}/{{section}}"),
+                name: "guide-template".to_string(),
+                title: Some("Guide Template".to_string()),
+                description: format!("templated {description}"),
+                mime_type: Some("text/markdown".to_string()),
+            }],
+        };
+        ConnectedMcpServer {
+            server_name: server_name.into(),
+            boundary,
+            client: Arc::new(MockMcpClient::new(
+                catalog.clone(),
+                Arc::new(|_, _| {
+                    unreachable!("tool handler should not run in resource bridge test")
+                }),
+            )),
+            catalog,
+        }
+    }
 
     #[tokio::test]
     async fn resource_bridge_exposes_list_and_read_tools() {
-        let client = Arc::new(MockMcpClient::new(
-            McpCatalog {
-                server_name: "fixture".into(),
-                tools: Vec::new(),
-                prompts: Vec::new(),
-                resources: vec![McpResource {
-                    uri: "fixture://guide".to_string(),
-                    name: "guide".to_string(),
-                    title: Some("Guide".to_string()),
-                    description: "fixture guide".to_string(),
-                    mime_type: Some("text/markdown".to_string()),
-                    parts: vec![MessagePart::Resource {
-                        uri: "fixture://guide".to_string(),
-                        mime_type: Some("text/markdown".to_string()),
-                        text: Some("# Guide\n\nUseful context.".to_string()),
-                        metadata: None,
-                    }],
-                }],
-                resource_templates: vec![McpResourceTemplate {
-                    uri_template: "fixture://guide/{section}".to_string(),
-                    name: "guide-template".to_string(),
-                    title: Some("Guide Template".to_string()),
-                    description: "templated fixture guide".to_string(),
-                    mime_type: Some("text/markdown".to_string()),
-                }],
-            },
-            Arc::new(|_, _| unreachable!("tool handler should not run in resource bridge test")),
-        ));
-        let server = ConnectedMcpServer {
-            server_name: "fixture".into(),
-            boundary: McpToolBoundary::local_process(McpTransportKind::Stdio),
-            client,
-            catalog: McpCatalog {
-                server_name: "fixture".into(),
-                tools: Vec::new(),
-                prompts: Vec::new(),
-                resources: vec![McpResource {
-                    uri: "fixture://guide".to_string(),
-                    name: "guide".to_string(),
-                    title: Some("Guide".to_string()),
-                    description: "fixture guide".to_string(),
-                    mime_type: Some("text/markdown".to_string()),
-                    parts: vec![MessagePart::Resource {
-                        uri: "fixture://guide".to_string(),
-                        mime_type: Some("text/markdown".to_string()),
-                        text: Some("# Guide\n\nUseful context.".to_string()),
-                        metadata: None,
-                    }],
-                }],
-                resource_templates: vec![McpResourceTemplate {
-                    uri_template: "fixture://guide/{section}".to_string(),
-                    name: "guide-template".to_string(),
-                    title: Some("Guide Template".to_string()),
-                    description: "templated fixture guide".to_string(),
-                    mime_type: Some("text/markdown".to_string()),
-                }],
-            },
-        };
+        let server = fixture_markdown_server(
+            "fixture",
+            McpToolBoundary::local_process(McpTransportKind::Stdio),
+            "fixture://guide",
+            "fixture guide",
+        );
 
         let tools = catalog_resource_tools_as_registry_entries(vec![server]);
         assert_eq!(tools.len(), 3);
@@ -833,6 +882,7 @@ mod tests {
                     "aliases": [],
                     "supports_parallel_tool_calls": true,
                     "availability": {
+                        "feature_flags": ["host-process-surfaces"],
                         "hidden_from_model": false
                     },
                     "approval": {
@@ -892,6 +942,7 @@ mod tests {
                     "aliases": [],
                     "supports_parallel_tool_calls": true,
                     "availability": {
+                        "feature_flags": ["host-process-surfaces"],
                         "hidden_from_model": false
                     },
                     "approval": {
@@ -963,6 +1014,7 @@ mod tests {
                     "aliases": [],
                     "supports_parallel_tool_calls": true,
                     "availability": {
+                        "feature_flags": ["host-process-surfaces"],
                         "hidden_from_model": false
                     },
                     "approval": {
@@ -999,7 +1051,7 @@ mod tests {
             .execute(
                 ToolCallId::from("list-call"),
                 json!({}),
-                &ToolExecutionContext::default(),
+                &tool_context_with_host_process(),
             )
             .await
             .unwrap();
@@ -1009,7 +1061,7 @@ mod tests {
             .execute(
                 ToolCallId::from("template-call"),
                 json!({}),
-                &ToolExecutionContext::default(),
+                &tool_context_with_host_process(),
             )
             .await
             .unwrap();
@@ -1026,7 +1078,7 @@ mod tests {
                     "uri": "fixture://guide",
                     "max_chars": 8
                 }),
-                &ToolExecutionContext::default(),
+                &tool_context_with_host_process(),
             )
             .await
             .unwrap();
@@ -1040,6 +1092,87 @@ mod tests {
         assert_eq!(
             read.structured_content.unwrap()["kind"],
             json!("text_window")
+        );
+    }
+
+    #[tokio::test]
+    async fn resource_bridge_hides_local_process_servers_without_host_process_feature() {
+        let local_server = fixture_markdown_server(
+            "local",
+            McpToolBoundary::local_process(McpTransportKind::Stdio),
+            "local://guide",
+            "local fixture guide",
+        );
+        let remote_server = fixture_markdown_server(
+            "remote",
+            McpToolBoundary::remote_service(McpTransportKind::StreamableHttp),
+            "remote://guide",
+            "remote fixture guide",
+        );
+
+        let tools = catalog_resource_tools_as_registry_entries(vec![local_server, remote_server]);
+        assert!(tools[0].spec().availability.feature_flags.is_empty());
+
+        let list_without_feature = tools[0]
+            .execute(
+                ToolCallId::from("list-without-feature"),
+                json!({}),
+                &ToolExecutionContext::default(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            list_without_feature.structured_content.as_ref().unwrap()["result_count"],
+            json!(1)
+        );
+        assert_eq!(
+            list_without_feature.structured_content.as_ref().unwrap()["resources"][0]["server_name"],
+            json!("remote")
+        );
+
+        let read_local_without_feature = tools[2]
+            .execute(
+                ToolCallId::from("read-local-without-feature"),
+                json!({
+                    "server_name": "local",
+                    "uri": "local://guide"
+                }),
+                &ToolExecutionContext::default(),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(
+            read_local_without_feature.to_string(),
+            "tool state error: MCP server `local` is unavailable while host process surfaces are disabled"
+        );
+
+        let list_with_feature = tools[0]
+            .execute(
+                ToolCallId::from("list-with-feature"),
+                json!({}),
+                &tool_context_with_host_process(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            list_with_feature.structured_content.as_ref().unwrap()["result_count"],
+            json!(2)
+        );
+
+        let read_local_with_feature = tools[2]
+            .execute(
+                ToolCallId::from("read-local-with-feature"),
+                json!({
+                    "server_name": "local",
+                    "uri": "local://guide"
+                }),
+                &tool_context_with_host_process(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            read_local_with_feature.structured_content.unwrap()["server_name"],
+            json!("local")
         );
     }
 

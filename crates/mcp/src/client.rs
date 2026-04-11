@@ -18,11 +18,12 @@ use sandbox::{
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
+use tools::HOST_FEATURE_HOST_PROCESS_SURFACES;
 use tracing::{debug, info};
 use types::{
-    McpServerName, McpToolBoundary, McpTransportKind, Message, MessagePart, MessageRole,
-    ToolApprovalProfile, ToolCallId, ToolKind, ToolOrigin, ToolOutputMode, ToolResult, ToolSource,
-    ToolSpec, new_opaque_id,
+    McpServerName, McpToolBoundary, McpToolBoundaryClass, McpTransportKind, Message, MessagePart,
+    MessageRole, ToolApprovalProfile, ToolAvailability, ToolCallId, ToolKind, ToolOrigin,
+    ToolOutputMode, ToolResult, ToolSource, ToolSpec, new_opaque_id,
 };
 
 const MCP_CONNECT_CONCURRENCY_LIMIT: usize = 8;
@@ -433,7 +434,13 @@ fn tool_spec_from_rmcp(
         },
         aliases: Vec::new(),
         supports_parallel_tool_calls: false,
-        availability: Default::default(),
+        availability: match boundary.boundary_class {
+            McpToolBoundaryClass::LocalProcess => ToolAvailability {
+                feature_flags: vec![HOST_FEATURE_HOST_PROCESS_SURFACES.to_string()],
+                ..ToolAvailability::default()
+            },
+            McpToolBoundaryClass::RemoteService => ToolAvailability::default(),
+        },
         approval,
         mcp_boundary: Some(boundary.clone()),
         mcp_server_boundaries: Default::default(),
@@ -667,10 +674,14 @@ fn prompt_message_to_message(message: &PromptMessage) -> Message {
 
 #[cfg(test)]
 mod tests {
-    use super::run_indexed_tasks_ordered;
+    use super::{run_indexed_tasks_ordered, tool_spec_from_rmcp};
+    use rmcp::model::{Tool, ToolAnnotations};
+    use serde_json::{Map, Value, json};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tokio::time::{Duration, sleep};
+    use tools::HOST_FEATURE_HOST_PROCESS_SURFACES;
+    use types::{McpToolBoundary, McpTransportKind};
 
     #[tokio::test]
     async fn indexed_runner_preserves_input_order() {
@@ -719,6 +730,28 @@ mod tests {
         assert!(peak.load(Ordering::SeqCst) <= 3);
     }
 
+    #[test]
+    fn local_process_mcp_tools_require_host_process_feature() {
+        let local_spec = tool_spec_from_rmcp(
+            &"local".into(),
+            &McpToolBoundary::local_process(McpTransportKind::Stdio),
+            fixture_tool(),
+        )
+        .unwrap();
+        assert_eq!(
+            local_spec.availability.feature_flags,
+            vec![HOST_FEATURE_HOST_PROCESS_SURFACES.to_string()]
+        );
+
+        let remote_spec = tool_spec_from_rmcp(
+            &"remote".into(),
+            &McpToolBoundary::remote_service(McpTransportKind::StreamableHttp),
+            fixture_tool(),
+        )
+        .unwrap();
+        assert!(remote_spec.availability.feature_flags.is_empty());
+    }
+
     fn update_peak(peak: &AtomicUsize, candidate: usize) {
         let mut current = peak.load(Ordering::SeqCst);
         while candidate > current {
@@ -727,5 +760,30 @@ mod tests {
                 Err(observed) => current = observed,
             }
         }
+    }
+
+    fn fixture_tool() -> Tool {
+        Tool::new(
+            "inspect_context",
+            "Return fixture data.",
+            json_object(json!({
+                "type": "object",
+                "properties": {
+                    "subject": { "type": "string" }
+                },
+                "required": ["subject"]
+            })),
+        )
+        .with_annotations(
+            ToolAnnotations::with_title("Inspect Context")
+                .read_only(true)
+                .destructive(false)
+                .idempotent(true)
+                .open_world(false),
+        )
+    }
+
+    fn json_object(value: Value) -> Map<String, Value> {
+        value.as_object().cloned().expect("expected JSON object")
     }
 }

@@ -35,9 +35,10 @@ use agent::runtime::{
     VisibleHistoryRollbackRound,
 };
 use agent::tools::{
-    GrantedPermissionResponse, RequestPermissionProfile, SandboxPolicy, SubagentExecutor,
-    SubagentInputDelivery, SubagentLaunchSpec, SubagentParentContext, UserInputResponse,
-    describe_sandbox_policy, request_permission_profile_from_granted, sandbox_backend_status,
+    GrantedPermissionResponse, HOST_FEATURE_HOST_PROCESS_SURFACES, RequestPermissionProfile,
+    SandboxPolicy, SubagentExecutor, SubagentInputDelivery, SubagentLaunchSpec,
+    SubagentParentContext, UserInputResponse, describe_sandbox_policy,
+    request_permission_profile_from_granted, sandbox_backend_status,
 };
 use agent::types::{
     AgentSessionId, AgentStatus, AgentTaskSpec, AgentWaitMode, AgentWaitRequest, Message,
@@ -809,25 +810,41 @@ impl CodeAgentSession {
         let sandbox_summary = describe_sandbox_policy(&policy, &backend_status);
         let host_process_surfaces_allowed =
             !policy.requires_enforcement() || backend_status.is_available();
-
-        {
+        let (tool_names, side_question_context) = {
             let mut runtime = self.runtime.lock().await;
+            let mut visibility = runtime.tool_visibility_context_snapshot();
+            visibility.set_feature_enabled(
+                HOST_FEATURE_HOST_PROCESS_SURFACES,
+                host_process_surfaces_allowed,
+            );
+
             // Sticky `request_permissions` grants stay in the runtime-owned
             // grant store. This setter only swaps the session's base sandbox
             // mode so later tool calls and newly spawned subagents inherit the
             // same host-selected baseline.
+            runtime.replace_tool_visibility_context(visibility);
             runtime.set_base_sandbox_policy(policy.clone());
             self.sync_runtime_session_refs(&runtime);
-        }
+            (
+                runtime.tool_registry_names(),
+                Self::side_question_context_from_runtime(&runtime, None),
+            )
+        };
+        self.store_side_question_context(side_question_context);
         {
             let mut tool_context = self.session_tool_context.write().unwrap();
             tool_context.effective_sandbox_policy = Some(policy);
+            tool_context.model_visibility.set_feature_enabled(
+                HOST_FEATURE_HOST_PROCESS_SURFACES,
+                host_process_surfaces_allowed,
+            );
         }
         {
             let mut startup = self.startup.write().unwrap();
             startup.permission_mode = mode;
             startup.sandbox_summary = sandbox_summary.clone();
             startup.host_process_surfaces_allowed = host_process_surfaces_allowed;
+            startup.tool_names = tool_names;
         }
 
         Ok(SessionPermissionModeOutcome {
@@ -2670,8 +2687,9 @@ mod tests {
         ModelBackend, PermissionGrantStore, Result as RuntimeResult,
     };
     use agent::tools::{
-        Result as ToolResult, SubagentExecutor, SubagentInputDelivery, SubagentLaunchSpec,
-        SubagentParentContext, ToolError, ToolExecutionContext,
+        ExecCommandTool, Result as ToolResult, SubagentExecutor, SubagentInputDelivery,
+        SubagentLaunchSpec, SubagentParentContext, ToolError, ToolExecutionContext, ToolRegistry,
+        WriteStdinTool,
     };
     use agent::types::{
         AgentHandle, AgentId, AgentResultEnvelope, AgentSessionId, AgentStatus, AgentTaskSpec,
@@ -3337,8 +3355,12 @@ mod tests {
     async fn permission_mode_switch_updates_frontend_snapshot() {
         let dir = tempfile::tempdir().unwrap();
         let store = Arc::new(InMemorySessionStore::new());
+        let mut registry = ToolRegistry::new();
+        registry.register(ExecCommandTool::new());
+        registry.register(WriteStdinTool::new());
         let runtime = AgentRuntimeBuilder::new(Arc::new(NeverBackend), store.clone())
             .hook_runner(Arc::new(HookRunner::default()))
+            .tool_registry(registry)
             .tool_context(ToolExecutionContext {
                 workspace_root: dir.path().to_path_buf(),
                 workspace_only: true,
@@ -3365,6 +3387,10 @@ mod tests {
         );
         assert!(snapshot.host_process_surfaces_allowed);
         assert!(snapshot.sandbox_summary.contains("danger-full-access"));
+        assert_eq!(
+            snapshot.tool_names,
+            vec!["exec_command".to_string(), "write_stdin".to_string()]
+        );
     }
 
     #[tokio::test]

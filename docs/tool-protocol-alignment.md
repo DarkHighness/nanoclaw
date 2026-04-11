@@ -2,7 +2,7 @@
 
 Date: 2026-03-30
 
-Status: Active (`P0` complete, `P1` started)
+Status: Active (`P0` complete, `P1` complete, `P2` started)
 
 This note is the live entry point for the current tool-surface alignment pass
 against OpenAI Codex and OpenCode. It converts the earlier review into a
@@ -85,6 +85,15 @@ Completed so far:
   non-interactive sessions hide `request_user_input` and
   `request_permissions` instead of exposing tools that can only fail at
   runtime
+- already-registered host subprocess surfaces now re-evaluate their typed
+  availability from the active session permission mode instead of freezing that
+  decision at boot:
+  - `exec_command` and command-backed custom tools stay registered but appear
+    to the model only when the host exposes the `host-process-surfaces`
+    capability
+  - already-connected local-process MCP tools and MCP resource surfaces share
+    the same feature gate, including execution-time filtering for aggregate MCP
+    resource listing and reads
 - OpenAI Responses mapping now supports freeform/custom tools, including
   transcript replay through `custom_tool_call` and
   `custom_tool_call_output`
@@ -95,8 +104,11 @@ Completed so far:
 
 Still pending inside this pass:
 
-- uniform re-evaluation of host subprocess surfaces from the active session
-  permission mode instead of partially freezing that decision at boot
+- boot-skipped local subprocess surfaces still need lazy reconnect or runtime
+  reload paths if they should appear after a later permission-mode switch:
+  - stdio MCP servers that were never connected at startup
+  - other startup-gated local helper surfaces such as managed subprocess-backed
+    hooks or code-intel helpers
 
 ## Baseline Rules
 
@@ -576,20 +588,33 @@ Then add higher-variance parity work:
 - image or binary-view tools if the host app needs them
 - model-aware tool exposure and substitution rules
 
+- completed:
+  - add the GPT-5-family freeform `apply_patch` surface while preserving the
+    structured local `patch` tool for Anthropic
+  - make typed tool availability evaluate against provider, model, role, and
+    host capability flags instead of only provider identity
+- remaining:
+  - image or binary-view tools if the host app needs them
+  - runtime reconnect or reload for startup-skipped subprocess-backed tool
+    surfaces
+
 ## Immediate Next Implementation Slice
 
 The shared protocol foundation is now in place, and MCP resources now have
 their own first-class tool surfaces. The next slice should stop expanding local
-tool contracts and instead close the remaining typing and high-variance parity
-gaps.
+tool contracts and instead close the remaining runtime-governance gap for
+startup-skipped subprocess-backed surfaces.
 
 The recommended order is:
 
-1. add the remaining higher-variance parity work such as
-   freeform `apply_patch` or model-aware tool substitution rules
+1. add a runtime reconnect or reload path for stdio MCP servers and similar
+   subprocess-backed helpers that are skipped at startup under restrictive
+   permission modes
+2. only then decide whether the host app still needs extra parity work such as
+   image or binary-view tools
 
-That keeps the protocol phase bounded and moves the project from control-plane
-cleanup into the still-missing tool-surface parity work.
+That keeps the protocol phase bounded and closes the last startup-vs-session
+tool-governance mismatch before adding any new high-variance surfaces.
 
 ## Archive Trigger
 

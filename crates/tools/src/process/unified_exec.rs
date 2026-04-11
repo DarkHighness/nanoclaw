@@ -1,3 +1,4 @@
+use crate::HOST_FEATURE_HOST_PROCESS_SURFACES;
 use crate::annotations::{builtin_tool_spec, tool_approval_profile};
 use crate::fs::resolve_tool_path_against_workspace_root;
 use crate::process::{
@@ -25,7 +26,9 @@ use tokio::sync::{Mutex as AsyncMutex, Notify};
 use tokio::task::JoinHandle;
 use tokio::time::sleep;
 use tracing::debug;
-use types::{MessagePart, ToolCallId, ToolOutputMode, ToolResult, ToolSpec, new_opaque_id};
+use types::{
+    MessagePart, ToolAvailability, ToolCallId, ToolOutputMode, ToolResult, ToolSpec, new_opaque_id,
+};
 
 const DEFAULT_YIELD_TIME_MS: u64 = 1_000;
 const MAX_YIELD_TIME_MS: u64 = 30_000;
@@ -450,6 +453,10 @@ impl Tool for ExecCommandTool {
             serde_json::to_value(schema_for!(ExecSessionOutput))
                 .expect("exec_command output schema"),
         )
+        .with_availability(ToolAvailability {
+            feature_flags: vec![HOST_FEATURE_HOST_PROCESS_SURFACES.to_string()],
+            ..ToolAvailability::default()
+        })
     }
 
     async fn execute(

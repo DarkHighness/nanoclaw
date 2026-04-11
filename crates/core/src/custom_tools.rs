@@ -18,12 +18,13 @@ use tokio::io::AsyncWriteExt;
 use tokio::time::{Duration, timeout};
 use tools::{
     DynamicTool, DynamicToolHandler, ExecRequest, ExecutionOrigin, FilesystemPolicy,
-    HostEscapePolicy, NetworkPolicy, ProcessExecutor, ProcessStdio, RuntimeScope, SandboxMode,
-    SandboxPolicy, ToolError, ToolExecutionContext, ToolRegistry,
+    HOST_FEATURE_HOST_PROCESS_SURFACES, HostEscapePolicy, NetworkPolicy, ProcessExecutor,
+    ProcessStdio, RuntimeScope, SandboxMode, SandboxPolicy, ToolError, ToolExecutionContext,
+    ToolRegistry,
 };
 use types::{
-    CallId, MessagePart, PluginId, ToolApprovalProfile, ToolAttachment, ToolCallId,
-    ToolContinuation, ToolOutputMode, ToolResult, ToolSource, ToolSpec,
+    CallId, MessagePart, PluginId, ToolApprovalProfile, ToolAttachment, ToolAvailability,
+    ToolCallId, ToolContinuation, ToolOutputMode, ToolResult, ToolSource, ToolSpec,
 };
 
 const DEFAULT_TIMEOUT_MS: u64 = 30_000;
@@ -352,6 +353,10 @@ impl CustomToolDefinition {
         )
         .with_aliases(validate_aliases(&manifest.aliases)?)
         .with_parallel_support(manifest.supports_parallel_tool_calls)
+        .with_availability(ToolAvailability {
+            feature_flags: vec![HOST_FEATURE_HOST_PROCESS_SURFACES.to_string()],
+            ..ToolAvailability::default()
+        })
         .with_approval(build_approval_profile(manifest.approval)?);
 
         Ok(Self {
@@ -1006,7 +1011,8 @@ mod tests {
     use std::sync::Arc;
     use tempfile::tempdir;
     use tools::{
-        HostProcessExecutor, NetworkPolicy, SandboxPolicy, ToolExecutionContext, ToolRegistry,
+        HOST_FEATURE_HOST_PROCESS_SURFACES, HostProcessExecutor, NetworkPolicy, SandboxPolicy,
+        ToolExecutionContext, ToolRegistry,
     };
     use types::ToolCallId;
 
@@ -1068,6 +1074,10 @@ idempotent = true
         let tool = registry
             .get("echo_payload")
             .expect("custom tool should register");
+        assert_eq!(
+            tool.spec().availability.feature_flags,
+            vec![HOST_FEATURE_HOST_PROCESS_SURFACES.to_string()]
+        );
         let result = tool
             .execute(
                 ToolCallId::new(),
@@ -1171,6 +1181,10 @@ mutates_state = false
             tool.spec().source,
             types::ToolSource::Plugin { ref plugin } if plugin.as_str() == "team_tools"
         ));
+        assert_eq!(
+            tool.spec().availability.feature_flags,
+            vec![HOST_FEATURE_HOST_PROCESS_SURFACES.to_string()]
+        );
         let result = tool
             .execute(
                 ToolCallId::new(),

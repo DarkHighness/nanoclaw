@@ -6,8 +6,8 @@ use futures::{StreamExt, stream, stream::BoxStream};
 use std::sync::{Arc, Mutex};
 use store::{InMemorySessionStore, SessionStore};
 use tools::{
-    ApplyPatchTool, EditTool, ExecCommandTool, PatchTool, ReadTool, ToolExecutionContext,
-    ToolRegistry, WriteStdinTool, WriteTool,
+    ApplyPatchTool, EditTool, ExecCommandTool, HOST_FEATURE_HOST_PROCESS_SURFACES, PatchTool,
+    ReadTool, ToolExecutionContext, ToolRegistry, WriteStdinTool, WriteTool,
 };
 use types::{
     DynamicToolSpec, ModelEvent, ModelRequest, SessionEventKind, ToolCall, ToolCallId,
@@ -249,7 +249,7 @@ async fn runtime_filters_role_scoped_tools_outside_matching_agent_context() {
 }
 
 #[tokio::test]
-async fn runtime_exposes_exec_surfaces_without_legacy_bash() {
+async fn runtime_hides_exec_command_without_host_process_feature() {
     let store = Arc::new(InMemorySessionStore::new());
     let backend = Arc::new(ProviderRecordingBackend::new("openai"));
     let mut registry = ToolRegistry::new();
@@ -258,6 +258,40 @@ async fn runtime_exposes_exec_surfaces_without_legacy_bash() {
     let mut runtime: AgentRuntime = AgentRuntimeBuilder::new(backend.clone(), store)
         .hook_runner(Arc::new(HookRunner::default()))
         .tool_registry(registry)
+        .build();
+
+    let tool_names = runtime
+        .tool_specs()
+        .into_iter()
+        .map(|spec| spec.name.to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(tool_names, vec!["write_stdin"]);
+
+    runtime.run_user_prompt("noop").await.unwrap();
+    let requests = backend.requests();
+    let request_tool_names = requests[0]
+        .tools
+        .iter()
+        .map(|spec| spec.name.to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(request_tool_names, vec!["write_stdin"]);
+}
+
+#[tokio::test]
+async fn runtime_exposes_exec_surfaces_with_host_process_feature() {
+    let store = Arc::new(InMemorySessionStore::new());
+    let backend = Arc::new(ProviderRecordingBackend::new("openai"));
+    let mut registry = ToolRegistry::new();
+    registry.register(ExecCommandTool::new());
+    registry.register(WriteStdinTool::new());
+    let mut runtime: AgentRuntime = AgentRuntimeBuilder::new(backend.clone(), store)
+        .hook_runner(Arc::new(HookRunner::default()))
+        .tool_registry(registry)
+        .tool_context(ToolExecutionContext {
+            model_visibility: ToolVisibilityContext::default()
+                .with_feature(HOST_FEATURE_HOST_PROCESS_SURFACES),
+            ..Default::default()
+        })
         .build();
 
     let tool_names = runtime

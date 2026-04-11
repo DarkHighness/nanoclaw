@@ -1,6 +1,8 @@
 use crate::backend::boot_inputs::DriverHostInputs;
 use crate::backend::boot_mcp::build_startup_diagnostics_snapshot;
-use crate::backend::boot_runtime::{build_runtime_tooling, register_subagent_tools};
+use crate::backend::boot_runtime::{
+    build_runtime_tooling, host_process_surfaces_allowed, register_subagent_tools,
+};
 use crate::backend::memory_recall::WorkspaceMemoryRecallAugmentor;
 use crate::backend::session_memory_compaction::{
     SessionMemoryConversationCompactor, SessionMemoryRefreshState, SharedSessionMemoryRefreshState,
@@ -31,8 +33,9 @@ use agent::runtime::{
     ToolApprovalHandler, ToolApprovalPolicy,
 };
 use agent::tools::{
-    HOST_FEATURE_REQUEST_PERMISSIONS, HOST_FEATURE_REQUEST_USER_INPUT, SubagentExecutor,
-    SubagentLaunchSpec, describe_sandbox_policy, ensure_sandbox_policy_supported,
+    HOST_FEATURE_HOST_PROCESS_SURFACES, HOST_FEATURE_REQUEST_PERMISSIONS,
+    HOST_FEATURE_REQUEST_USER_INPUT, SubagentExecutor, SubagentLaunchSpec, describe_sandbox_policy,
+    ensure_sandbox_policy_supported,
 };
 use agent::types::{HookHandler, HookRegistration};
 use agent::{
@@ -167,6 +170,15 @@ fn configure_host_prompt_tool_visibility(
         .with_feature(HOST_FEATURE_REQUEST_PERMISSIONS);
 }
 
+fn configure_host_process_tool_visibility(tool_context: &mut ToolExecutionContext, enabled: bool) {
+    // Host-process tools may stay registered so permission-mode switches can
+    // reveal or hide them without rebuilding the runtime. The active session
+    // mode still controls whether the model can see those surfaces.
+    tool_context
+        .model_visibility
+        .set_feature_enabled(HOST_FEATURE_HOST_PROCESS_SURFACES, enabled);
+}
+
 pub(crate) async fn build_session(
     options: &AppOptions,
     workspace_root: &Path,
@@ -218,10 +230,14 @@ pub(crate) async fn build_session_with_approval_mode(
     base_tool_context.permission_request_handler = Some(permission_request_handler);
     configure_host_prompt_tool_visibility(&mut base_tool_context, approval_mode);
     let sandbox_policy = build_sandbox_policy(options, &base_tool_context);
-    let tool_context = base_tool_context.with_sandbox_policy(sandbox_policy.clone());
-    let session_tool_context = Arc::new(RwLock::new(tool_context.clone()));
     let sandbox_status = ensure_sandbox_policy_supported(&sandbox_policy)
         .context("sandbox policy cannot be enforced on this host")?;
+    let mut tool_context = base_tool_context.with_sandbox_policy(sandbox_policy.clone());
+    configure_host_process_tool_visibility(
+        &mut tool_context,
+        host_process_surfaces_allowed(&sandbox_policy, &sandbox_status),
+    );
+    let session_tool_context = Arc::new(RwLock::new(tool_context.clone()));
     log_sandbox_status(&sandbox_status);
     let sandbox_summary = describe_sandbox_policy(&sandbox_policy, &sandbox_status);
 
@@ -370,8 +386,11 @@ async fn build_runtime(
     let mut startup_warnings = runtime_tooling.startup_warnings.clone();
     let hook_runner = runtime_tooling.hook_runner.clone();
     let mut tools = runtime_tooling.tools;
+    // Custom tools can stay registered even when the current session mode
+    // hides host-process surfaces. Execution still goes through the same
+    // process executor and active sandbox policy once the operator enables it.
     let custom_tool_executor: Option<Arc<dyn agent::tools::ProcessExecutor>> =
-        host_process_surfaces_allowed.then(|| process_executor.clone() as Arc<_>);
+        Some(process_executor.clone() as Arc<_>);
     let custom_tool_outcome = agent::register_workspace_custom_tools(
         workspace_root,
         custom_tool_executor.clone(),
