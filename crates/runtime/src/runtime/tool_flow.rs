@@ -280,7 +280,8 @@ impl AgentRuntime {
 
         // Sticky grants are applied on top of the host-selected base policy so
         // later tools in the same turn or session inherit request_permissions
-        // outcomes without mutating the original session sandbox contract.
+        // outcomes. This widens execution policy for already-visible tools
+        // only; it does not mutate the model-visible tool surface mid-turn.
         let scoped_tool_context = self
             .tool_context
             .with_sandbox_policy(

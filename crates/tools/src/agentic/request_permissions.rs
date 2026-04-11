@@ -34,7 +34,7 @@ impl Tool for RequestPermissionsTool {
     fn spec(&self) -> ToolSpec {
         builtin_tool_spec(
             "request_permissions",
-            "Request additional filesystem or network permissions from the user. Granted permissions apply automatically to later tool calls in the current turn, or for the rest of the session if the host grants session scope.",
+            "Request additional filesystem or network permissions from the user. Granted permissions widen execution policy for already-visible tools on later tool calls in the current turn, or for the rest of the session if the host grants session scope. They do not add new tools or change tool visibility mid-turn.",
             serde_json::to_value(schema_for!(RequestPermissionsArgs))
                 .expect("request_permissions schema"),
             ToolOutputMode::Text,

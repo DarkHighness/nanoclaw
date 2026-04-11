@@ -3022,19 +3022,21 @@ mod tests {
         ModelBackend, PermissionGrantStore, Result as RuntimeResult,
     };
     use agent::tools::{
-        ExecCommandTool, HOST_FEATURE_HOST_PROCESS_SURFACES, Result as ToolResult,
-        SubagentExecutor, SubagentInputDelivery, SubagentLaunchSpec, SubagentParentContext,
-        ToolError, ToolExecutionContext, ToolRegistry, WriteStdinTool,
+        ExecCommandTool, GrantedPermissionResponse, HOST_FEATURE_HOST_PROCESS_SURFACES,
+        HOST_FEATURE_REQUEST_PERMISSIONS, PermissionGrantScope, PermissionRequest,
+        PermissionRequestHandler, Result as ToolResult, SubagentExecutor, SubagentInputDelivery,
+        SubagentLaunchSpec, SubagentParentContext, ToolError, ToolExecutionContext, ToolRegistry,
+        WriteStdinTool,
     };
     use agent::types::{
         AgentHandle, AgentId, AgentResultEnvelope, AgentSessionId, AgentStatus, AgentTaskSpec,
-        AgentWaitRequest, AgentWaitResponse, CommandHookHandler, HookEvent, HookHandler,
-        HookRegistration, McpToolBoundary, McpTransportKind, Message, MessageId, MessagePart,
-        ModelEvent, ModelRequest, SessionEventEnvelope, SessionEventKind, SessionId,
+        AgentWaitRequest, AgentWaitResponse, CommandHookHandler, DynamicToolSpec, HookEvent,
+        HookHandler, HookRegistration, McpToolBoundary, McpTransportKind, Message, MessageId,
+        MessagePart, ModelEvent, ModelRequest, SessionEventEnvelope, SessionEventKind, SessionId,
         SubmittedPromptSnapshot, ToolAvailability, ToolOrigin, ToolOutputMode, ToolSource,
         ToolSpec, ToolVisibilityContext,
     };
-    use agent::{AgentRuntimeBuilder, RuntimeCommand, Skill, SkillCatalog};
+    use agent::{AgentRuntimeBuilder, RequestPermissionsTool, RuntimeCommand, Skill, SkillCatalog};
     use async_trait::async_trait;
     use futures::{StreamExt, stream, stream::BoxStream};
     use nanoclaw_config::CoreConfig;
@@ -3061,6 +3063,17 @@ mod tests {
 
     struct StaticCompactor;
 
+    #[derive(Clone, Default)]
+    struct PermissionSurfaceBackend {
+        requests: Arc<Mutex<Vec<ModelRequest>>>,
+    }
+
+    impl PermissionSurfaceBackend {
+        fn requests(&self) -> Vec<ModelRequest> {
+            self.requests.lock().unwrap().clone()
+        }
+    }
+
     #[async_trait]
     impl ModelBackend for StreamingTextBackend {
         async fn stream_turn(
@@ -3074,6 +3087,91 @@ mod tests {
                 usage: None,
                 reasoning: Vec::new(),
             })])
+            .boxed())
+        }
+    }
+
+    #[async_trait]
+    impl ModelBackend for PermissionSurfaceBackend {
+        async fn stream_turn(
+            &self,
+            request: ModelRequest,
+        ) -> RuntimeResult<BoxStream<'static, RuntimeResult<ModelEvent>>> {
+            self.requests.lock().unwrap().push(request.clone());
+            let completed_tools = request
+                .messages
+                .iter()
+                .flat_map(|message| message.parts.iter())
+                .filter_map(|part| match part {
+                    MessagePart::ToolResult { result } => Some(result.tool_name.to_string()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+
+            if !completed_tools
+                .iter()
+                .any(|name| name == "request_permissions")
+            {
+                let call = agent::types::ToolCall {
+                    id: agent::types::ToolCallId::new(),
+                    call_id: "call-request-permissions".into(),
+                    tool_name: "request_permissions".into(),
+                    arguments: json!({
+                        "reason": "need write access for the next tool call",
+                        "permissions": {
+                            "file_system": {
+                                "write": ["granted"]
+                            }
+                        }
+                    }),
+                    origin: ToolOrigin::Local,
+                };
+                return Ok(stream::iter(vec![
+                    Ok(ModelEvent::ToolCallRequested { call }),
+                    Ok(ModelEvent::ResponseComplete {
+                        stop_reason: Some("tool_use".to_string()),
+                        message_id: None,
+                        continuation: None,
+                        usage: None,
+                        reasoning: Vec::new(),
+                    }),
+                ])
+                .boxed());
+            }
+
+            if !completed_tools.iter().any(|name| name == "inspect_policy") {
+                let call = agent::types::ToolCall {
+                    id: agent::types::ToolCallId::new(),
+                    call_id: "call-inspect-policy".into(),
+                    tool_name: "inspect_policy".into(),
+                    arguments: json!({}),
+                    origin: ToolOrigin::Local,
+                };
+                return Ok(stream::iter(vec![
+                    Ok(ModelEvent::ToolCallRequested { call }),
+                    Ok(ModelEvent::ResponseComplete {
+                        stop_reason: Some("tool_use".to_string()),
+                        message_id: None,
+                        continuation: None,
+                        usage: None,
+                        reasoning: Vec::new(),
+                    }),
+                ])
+                .boxed());
+            }
+
+            Ok(stream::iter(vec![
+                Ok(ModelEvent::TextDelta {
+                    delta: "done".to_string(),
+                }),
+                Ok(ModelEvent::ResponseComplete {
+                    stop_reason: Some("stop".to_string()),
+                    message_id: None,
+                    continuation: None,
+                    usage: None,
+                    reasoning: Vec::new(),
+                }),
+            ])
             .boxed())
         }
     }
@@ -3213,6 +3311,21 @@ mod tests {
                 }),
             ])
             .boxed())
+        }
+    }
+
+    struct GrantRequestedPermissionsHandler;
+
+    #[async_trait]
+    impl PermissionRequestHandler for GrantRequestedPermissionsHandler {
+        async fn request_permissions(
+            &self,
+            request: PermissionRequest,
+        ) -> ToolResult<GrantedPermissionResponse> {
+            Ok(GrantedPermissionResponse {
+                permissions: request.permissions,
+                scope: PermissionGrantScope::Turn,
+            })
         }
     }
 
@@ -3909,6 +4022,100 @@ mod tests {
         assert_eq!(
             snapshot.tool_names,
             vec!["exec_command".to_string(), "write_stdin".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn request_permissions_widens_same_turn_execution_without_mutating_tool_surface() {
+        let dir = tempfile::tempdir().unwrap();
+        let inspect_path = dir.path().join("granted").join("output.txt");
+        let store = Arc::new(InMemorySessionStore::new());
+        let backend = Arc::new(PermissionSurfaceBackend::default());
+        let mut registry = ToolRegistry::new();
+        registry.register(RequestPermissionsTool::new());
+        registry
+            .register_dynamic(
+                DynamicToolSpec::function(
+                    "inspect_policy",
+                    "Checks whether a granted write root is active",
+                    json!({"type":"object","properties":{}}),
+                ),
+                Arc::new(move |call_id, _arguments, ctx| {
+                    let inspect_path = inspect_path.clone();
+                    Box::pin(async move {
+                        ctx.assert_path_write_allowed(&inspect_path)?;
+                        Ok(agent::types::ToolResult::text(
+                            call_id,
+                            "inspect_policy",
+                            "write allowed",
+                        ))
+                    })
+                }),
+            )
+            .unwrap();
+        let mut runtime = AgentRuntimeBuilder::new(backend.clone(), store)
+            .hook_runner(Arc::new(HookRunner::default()))
+            .tool_registry(registry)
+            .tool_context(ToolExecutionContext {
+                workspace_root: dir.path().to_path_buf(),
+                model_visibility: ToolVisibilityContext::default()
+                    .with_feature(HOST_FEATURE_REQUEST_PERMISSIONS),
+                permission_request_handler: Some(Arc::new(GrantRequestedPermissionsHandler)),
+                ..Default::default()
+            })
+            .build();
+
+        let initial_tool_names = runtime
+            .tool_specs()
+            .into_iter()
+            .map(|spec| spec.name.to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            initial_tool_names,
+            vec![
+                "inspect_policy".to_string(),
+                "request_permissions".to_string()
+            ]
+        );
+
+        let outcome = runtime
+            .run_user_prompt("request write access and then inspect it")
+            .await
+            .unwrap();
+        assert_eq!(outcome.assistant_text, "done");
+
+        let requests = backend.requests();
+        assert_eq!(requests.len(), 3);
+        let first_request_tools = requests[0]
+            .tools
+            .iter()
+            .map(|spec| spec.name.to_string())
+            .collect::<Vec<_>>();
+        let second_request_tools = requests[1]
+            .tools
+            .iter()
+            .map(|spec| spec.name.to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(first_request_tools, initial_tool_names);
+        assert_eq!(second_request_tools, initial_tool_names);
+        assert!(
+            requests[1]
+                .messages
+                .iter()
+                .flat_map(|message| message.parts.iter())
+                .any(|part| matches!(
+                    part,
+                    MessagePart::ToolResult { result }
+                        if result.tool_name.as_str() == "request_permissions"
+                ))
+        );
+        assert_eq!(
+            runtime
+                .tool_specs()
+                .into_iter()
+                .map(|spec| spec.name.to_string())
+                .collect::<Vec<_>>(),
+            initial_tool_names
         );
     }
 

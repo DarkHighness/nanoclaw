@@ -312,7 +312,10 @@ industrial baseline:
   subprocess surfaces from the active session permission mode instead of
   freezing stdio MCP, command hooks, and managed code-intel helpers at boot.
   `/permissions` no longer mutates that host-facing capability surface during
-  an active turn; it is rejected until the runtime returns to an idle boundary
+  an active turn; it is rejected until the runtime returns to an idle boundary.
+  `request_permissions` keeps its narrower turn-local role: it can widen the
+  execution policy for already-visible tools later in the same turn, but it
+  does not add new tools or change tool visibility mid-turn
 
 ## Target Protocol
 
