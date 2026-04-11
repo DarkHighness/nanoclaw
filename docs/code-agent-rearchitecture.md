@@ -353,6 +353,23 @@ This matters because the TUI root now reads like a controller, while operator
 support policy is isolated in one module that can be split further by domain if
 it starts growing again.
 
+## Fifteenth-pass slash-command domain breakup
+
+The next TUI hotspot was `frontend/tui/slash_commands.rs`. Even after the
+controller/root slimming, slash-command handling still mixed the main command
+entrypoint, history/session replay commands, and operator-side task startup
+flow in one file.
+
+- Persisted-history/session replay commands now live in
+  `frontend/tui/slash_commands/history.rs`.
+- Operator-side wait/btw task startup now lives in
+  `frontend/tui/slash_commands/live_tasks.rs`.
+- `frontend/tui/slash_commands.rs` now focuses on the primary slash-command
+  dispatch path instead of owning every command family end-to-end.
+
+This matters because command routing, persisted-history browsing, and
+background operator actions now evolve on separate module seams.
+
 ## UI direction
 
 The UI changes are not just palette swaps. The shell now shifts toward a more
@@ -390,6 +407,9 @@ The next refinement steps should be:
 - split `frontend/tui/operator_support.rs` again if it starts accumulating
   unrelated policy; attachment/editor helpers and inspector builders are the
   first obvious fault line
+- continue splitting `frontend/tui/slash_commands.rs` if the remaining
+  session-control and MCP command branches keep growing; those are now the
+  clearest next domain boundary
 - consider moving the remaining history-load/task-load DTO formatting helpers
   fully behind `contracts::ui`-owned adapters so the TUI only depends on
   backend for execution surfaces
