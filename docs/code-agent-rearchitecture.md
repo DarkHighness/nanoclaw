@@ -234,6 +234,29 @@ transcript presentation, picker overlays, and composer workflow. The root state
 module is still present as an integration seam, but it no longer owns every UI
 behavior itself.
 
+## Ninth-pass backend catalog breakup
+
+The next backend hotspot was the operator-facing session catalog surface.
+Listing sessions, searching by title, resolving human-entered references,
+loading stored sessions, exporting transcripts, and counting persisted sessions
+were still embedded directly in `backend/session.rs`, even though they form one
+catalog-oriented boundary.
+
+- Session and agent-session catalog listing now lives in
+  `backend/session/catalog.rs`.
+- Session-title note loading stays host-owned inside that module because the
+  title comes from derived memory files rather than store-native transcript
+  metadata.
+- Operator reference resolution for session ids, prefixes, and title matches
+  now lives beside the catalog queries it depends on.
+- Task/session load and export helpers now live in the same module as the
+  catalog lookup path they reuse.
+- `backend/session.rs` keeps runtime lifecycle and resume orchestration, while
+  persisted-catalog behavior moves behind the dedicated submodule.
+
+This matters because the session root no longer mixes foreground runtime resume
+control with operator catalog lookup and export plumbing.
+
 ## UI direction
 
 The UI changes are not just palette swaps. The shell now shifts toward a more
@@ -268,10 +291,9 @@ controller. It is still not the final industrial end-state.
 
 The next refinement steps should be:
 
-- split `frontend/tui/state.rs` so transcript state, composer state, and picker
-  state do not evolve inside one file
-- continue splitting `backend/session.rs` so lifecycle, resume/catalog lookup,
-  memory refresh, and side-question handling are not co-located
+- continue splitting `backend/session.rs` so lifecycle, runtime reattachment,
+  startup snapshots, and remaining session-operation helpers are not
+  co-located
 - consider moving the remaining history-load/task-load DTO formatting helpers
   fully behind `contracts::ui`-owned adapters so the TUI only depends on
   backend for execution surfaces
