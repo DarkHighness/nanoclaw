@@ -12,10 +12,16 @@ use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use tokio::process::Command;
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum BackendPathStatus {
+    Available(PathBuf),
+    Unavailable { reason: String },
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct BackendAvailability {
-    macos_seatbelt: Option<PathBuf>,
-    linux_bwrap: Option<PathBuf>,
+    macos_seatbelt: Option<BackendPathStatus>,
+    linux_bwrap: Option<BackendPathStatus>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -81,11 +87,17 @@ pub fn platform_sandbox_backend_available() -> bool {
     let availability = detect_available_backends();
     #[cfg(target_os = "macos")]
     {
-        return availability.macos_seatbelt.is_some();
+        return matches!(
+            availability.macos_seatbelt,
+            Some(BackendPathStatus::Available(_))
+        );
     }
     #[cfg(target_os = "linux")]
     {
-        return availability.linux_bwrap.is_some();
+        return matches!(
+            availability.linux_bwrap,
+            Some(BackendPathStatus::Available(_))
+        );
     }
     #[allow(unreachable_code)]
     false
@@ -161,11 +173,11 @@ pub(crate) fn prepare_with_available_backends(
     attach_allow_domains_proxy_support(&mut request)?;
 
     #[cfg(target_os = "macos")]
-    if let Some(path) = availability.macos_seatbelt.as_deref() {
+    if let Some(BackendPathStatus::Available(path)) = availability.macos_seatbelt.as_ref() {
         return super::platform::macos::prepare_macos_seatbelt_command(request, path);
     }
     #[cfg(target_os = "linux")]
-    if let Some(path) = availability.linux_bwrap.as_deref() {
+    if let Some(BackendPathStatus::Available(path)) = availability.linux_bwrap.as_ref() {
         return super::platform::linux::prepare_linux_bwrap_command(request, path);
     }
 
@@ -193,32 +205,31 @@ pub(crate) fn sandbox_backend_status_with_availability(
 
     #[cfg(target_os = "macos")]
     {
-        return availability
-            .macos_seatbelt
-            .map(|_| SandboxBackendStatus::Available {
+        return match availability.macos_seatbelt {
+            Some(BackendPathStatus::Available(_)) => SandboxBackendStatus::Available {
                 kind: SandboxBackendKind::MacOsSeatbelt,
-            })
-            .unwrap_or_else(|| SandboxBackendStatus::Unavailable {
-                reason: "`sandbox-exec` is unavailable on this host".to_string(),
-            });
+            },
+            Some(BackendPathStatus::Unavailable { reason }) => {
+                SandboxBackendStatus::Unavailable { reason }
+            }
+            None => SandboxBackendStatus::Unavailable {
+                reason: "`sandbox-exec` availability was not provided".to_string(),
+            },
+        };
     }
 
     #[cfg(target_os = "linux")]
     {
-        if availability.linux_bwrap.is_some() {
-            return SandboxBackendStatus::Available {
+        return match availability.linux_bwrap {
+            Some(BackendPathStatus::Available(_)) => SandboxBackendStatus::Available {
                 kind: SandboxBackendKind::LinuxBubblewrap,
-            };
-        }
-        return match super::platform::linux::linux_bwrap_status() {
-            super::platform::linux::LinuxBubblewrapStatus::Available(_) => {
-                SandboxBackendStatus::Available {
-                    kind: SandboxBackendKind::LinuxBubblewrap,
-                }
-            }
-            super::platform::linux::LinuxBubblewrapStatus::Unavailable { reason } => {
+            },
+            Some(BackendPathStatus::Unavailable { reason }) => {
                 SandboxBackendStatus::Unavailable { reason }
             }
+            None => SandboxBackendStatus::Unavailable {
+                reason: "`bwrap` availability was not provided".to_string(),
+            },
         };
     }
 
@@ -234,11 +245,17 @@ pub(crate) fn sandbox_backend_status_with_availability(
 fn allow_domains_backend_available(availability: &BackendAvailability) -> bool {
     #[cfg(target_os = "macos")]
     {
-        return availability.macos_seatbelt.is_some();
+        return matches!(
+            availability.macos_seatbelt,
+            Some(BackendPathStatus::Available(_))
+        );
     }
     #[cfg(target_os = "linux")]
     {
-        return availability.linux_bwrap.is_some();
+        return matches!(
+            availability.linux_bwrap,
+            Some(BackendPathStatus::Available(_))
+        );
     }
     #[allow(unreachable_code)]
     false
@@ -334,11 +351,24 @@ fn detect_available_backends() -> BackendAvailability {
     let mut availability = BackendAvailability::default();
     #[cfg(target_os = "macos")]
     {
-        availability.macos_seatbelt = super::platform::macos::sandbox_exec_path();
+        availability.macos_seatbelt = Some(
+            super::platform::macos::sandbox_exec_path()
+                .map(BackendPathStatus::Available)
+                .unwrap_or_else(|| BackendPathStatus::Unavailable {
+                    reason: "`sandbox-exec` is unavailable on this host".to_string(),
+                }),
+        );
     }
     #[cfg(target_os = "linux")]
     {
-        availability.linux_bwrap = super::platform::linux::find_bwrap_executable();
+        availability.linux_bwrap = Some(match super::platform::linux::linux_bwrap_status() {
+            super::platform::linux::LinuxBubblewrapStatus::Available(path) => {
+                BackendPathStatus::Available(path)
+            }
+            super::platform::linux::LinuxBubblewrapStatus::Unavailable { reason } => {
+                BackendPathStatus::Unavailable { reason }
+            }
+        });
     }
     availability
 }

@@ -23,13 +23,6 @@ pub(crate) enum LinuxBubblewrapStatus {
     Unavailable { reason: String },
 }
 
-pub(crate) fn find_bwrap_executable() -> Option<PathBuf> {
-    match linux_bwrap_status() {
-        LinuxBubblewrapStatus::Available(path) => Some(path),
-        LinuxBubblewrapStatus::Unavailable { .. } => None,
-    }
-}
-
 pub(crate) fn linux_bwrap_status() -> LinuxBubblewrapStatus {
     LINUX_BWRAP_STATUS.get_or_init(detect_bwrap_status).clone()
 }

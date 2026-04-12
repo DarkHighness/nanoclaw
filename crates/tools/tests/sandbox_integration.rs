@@ -139,7 +139,7 @@ bounded_async_test!(
             workspace.path(),
             workspace_policy(workspace.path()),
             BTreeMap::new(),
-            "touch allowed.txt",
+            "printf ok > allowed.txt",
         )
         .await
         .unwrap();
@@ -150,6 +150,10 @@ bounded_async_test!(
             String::from_utf8_lossy(&output.stderr)
         );
         assert!(workspace.path().join("allowed.txt").exists());
+        assert_eq!(
+            std::fs::read_to_string(workspace.path().join("allowed.txt")).unwrap(),
+            "ok"
+        );
     }
 );
 
@@ -291,7 +295,7 @@ bounded_async_test!(
             workspace.path(),
             policy,
             env,
-            "touch allowdomains.txt",
+            "printf ok > allowdomains.txt",
         )
         .await
         .unwrap();
@@ -302,5 +306,9 @@ bounded_async_test!(
             String::from_utf8_lossy(&output.stderr)
         );
         assert!(workspace.path().join("allowdomains.txt").exists());
+        assert_eq!(
+            std::fs::read_to_string(workspace.path().join("allowdomains.txt")).unwrap(),
+            "ok"
+        );
     }
 );

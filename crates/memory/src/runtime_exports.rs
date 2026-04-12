@@ -487,7 +487,10 @@ mod tests {
         SessionMemoryExportRecord, SessionMemoryExportRequest, SessionStore, SessionStoreError,
     };
     use tempfile::tempdir;
-    use types::{AgentSessionId, Message, SessionEventEnvelope, SessionEventKind, SessionId};
+    use types::{
+        AgentSessionId, Message, SessionEventEnvelope, SessionEventKind, SessionId,
+        SubmittedPromptSnapshot,
+    };
 
     macro_rules! bounded_async_test {
         (async fn $name:ident() $body:block) => {
@@ -511,7 +514,7 @@ mod tests {
                     None,
                     None,
                     SessionEventKind::UserPromptSubmit {
-                        prompt: "why did deploy fail?".to_string(),
+                        prompt: SubmittedPromptSnapshot::from_text("why did deploy fail?"),
                     },
                 ))
                 .await
