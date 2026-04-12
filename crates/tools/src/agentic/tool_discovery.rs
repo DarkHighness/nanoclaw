@@ -15,6 +15,7 @@ use types::{
 const DEFAULT_DISCOVERY_LIMIT: usize = 8;
 const MAX_DISCOVERY_LIMIT: usize = 20;
 const DISCOVERY_TOOL_NAMES: &[&str] = &["tool_discover"];
+const TOOL_DISCOVERY_GUIDANCE: &str = "Use skills_list/skill_view for reusable instruction-plus-existing-tool workflows; use tool_discover when you need a typed runtime capability or host-managed integration.";
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 pub struct ToolDiscoverInput {
@@ -37,6 +38,7 @@ struct ToolDiscoveryItem {
 #[derive(Clone, Debug, Serialize, JsonSchema)]
 struct ToolDiscoveryOutput {
     query: String,
+    guidance: String,
     matches: Vec<ToolDiscoveryItem>,
 }
 
@@ -59,7 +61,7 @@ impl Tool for ToolDiscoverTool {
     fn spec(&self) -> ToolSpec {
         builtin_tool_spec(
             "tool_discover",
-            "Discover available model-visible tools by name, alias, and description.",
+            "Discover available model-visible tools by name, alias, and description when you need a typed runtime capability instead of a reusable skill workflow.",
             serde_json::to_value(schema_for!(ToolDiscoverInput)).expect("tool_discover schema"),
             ToolOutputMode::Text,
             tool_approval_profile(true, false, false, false),
@@ -268,6 +270,7 @@ fn build_discovery_result(
 ) -> Result<ToolResult> {
     let output = ToolDiscoveryOutput {
         query: query.clone(),
+        guidance: TOOL_DISCOVERY_GUIDANCE.to_string(),
         matches,
     };
     let structured = serde_json::to_value(&output)
@@ -295,6 +298,7 @@ fn render_discovery_text(tool_name: &str, output: &ToolDiscoveryOutput) -> Strin
         output.query,
         output.matches.len()
     )];
+    lines.push(format!("guidance {}", output.guidance));
     lines.extend(output.matches.iter().map(|entry| {
         format!(
             "tool {} — {} ({})",
@@ -306,7 +310,7 @@ fn render_discovery_text(tool_name: &str, output: &ToolDiscoveryOutput) -> Strin
 
 #[cfg(test)]
 mod tests {
-    use super::ToolDiscoverTool;
+    use super::{TOOL_DISCOVERY_GUIDANCE, ToolDiscoverTool};
     use crate::{Result, Tool, ToolExecutionContext, ToolRegistry};
     use async_trait::async_trait;
     use serde_json::{Value, json};
@@ -388,9 +392,18 @@ mod tests {
             )
             .await
             .expect("search should succeed");
-        let structured = result.structured_content.expect("structured output");
+        let structured = result
+            .structured_content
+            .as_ref()
+            .expect("structured output");
         let matches = structured["matches"].as_array().expect("matches array");
 
+        assert_eq!(structured["guidance"], TOOL_DISCOVERY_GUIDANCE);
+        assert!(
+            result
+                .text_content()
+                .contains("guidance Use skills_list/skill_view")
+        );
         assert_eq!(matches[0]["name"], "read");
         assert!(matches.iter().all(|entry| entry["name"] != "tool_discover"));
     }

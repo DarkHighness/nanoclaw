@@ -118,6 +118,10 @@ auto-generated `/skill_name` slash commands. The slash surface remains
 operator-oriented for host/session actions, but explicit skill invocation is a
 first-class exception so operators can browse and seed skill prompts without
 mirroring arbitrary model tools into slash commands.
+The runtime treats skills as reusable instruction-plus-existing-tool workflows;
+typed runtime integrations such as monitors, worktrees, browser sessions, or
+other host-managed lifecycles stay on the tool surface and should be
+discovered through `tool_discover`.
 
 Managed skills keep archived revisions under the local skill root. `skill_manage`
 can archive, restore, and promote archived revisions; when restore is asked to

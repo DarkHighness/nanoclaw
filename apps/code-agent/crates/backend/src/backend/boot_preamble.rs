@@ -37,6 +37,8 @@ pub fn build_system_preamble(
             .to_string(),
         "Treat leading `$skill_name` directives in the user prompt as explicit requests to resolve that skill through skills_list or skill_view before continuing with the rest of the prompt."
             .to_string(),
+        "Prefer skills for reusable instruction-plus-existing-tool workflows. Use tool_discover when you need a typed runtime capability, host-managed lifecycle, or other integration a skill cannot supply on its own."
+            .to_string(),
     ];
     if tool_visibility.has_feature(HOST_FEATURE_REQUEST_USER_INPUT) {
         preamble.push(
@@ -320,6 +322,22 @@ mod tests {
 
         assert!(!hidden.contains("request_user_input"));
         assert!(visible.contains("request_user_input"));
+    }
+
+    #[test]
+    fn system_preamble_encodes_tool_vs_skill_boundary() {
+        let dir = tempdir().unwrap();
+        let profile = CoreConfig::default().resolve_primary_agent().unwrap();
+
+        let preamble =
+            build_system_preamble(dir.path(), &profile, &[], &ToolVisibilityContext::default())
+                .join("\n\n");
+
+        assert!(
+            preamble
+                .contains("Prefer skills for reusable instruction-plus-existing-tool workflows.")
+        );
+        assert!(preamble.contains("Use tool_discover when you need a typed runtime capability"));
     }
 
     #[test]

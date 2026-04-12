@@ -692,11 +692,11 @@ backed extraction, archival, and promotion workflows be layered on top.
     treating workspace roots as the only source of truth
   - add explicit promotion metadata for archived revisions so default restore
     selection can prefer reviewed reusable candidates over merely newer drafts
+  - encode the Hermes tool-vs-skill split into the static system preamble,
+    tool discovery guidance, and skill inspection output instead of leaving
+    that boundary as documentation-only tribal knowledge
 - next:
   - define verifier-backed extraction of reusable skills from successful runs
-  - align tool-vs-skill guidance with the Hermes split:
-    - use skills for instruction-plus-existing-tool workflows
-    - use tools for capabilities that require typed runtime integration
 
 ### Write set
 

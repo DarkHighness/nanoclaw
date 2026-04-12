@@ -1288,6 +1288,21 @@ fn render_skill_detail(detail: &SkillDetail) -> String {
             .unwrap_or_default();
         lines.push(format!("Hermes source {source_id}{trust}{update}{audit}"));
     }
+    if !detail.summary.platforms.is_empty() {
+        lines.push(format!("Platforms {}", detail.summary.platforms.join(", ")));
+    }
+    if !detail.summary.requires_tools.is_empty() {
+        lines.push(format!(
+            "Requires tools {}",
+            detail.summary.requires_tools.join(", ")
+        ));
+    }
+    if !detail.summary.fallback_for_tools.is_empty() {
+        lines.push(format!(
+            "Fallback for tools {}",
+            detail.summary.fallback_for_tools.join(", ")
+        ));
+    }
     if !detail.shadowed_skill_paths.is_empty() {
         lines.push(format!(
             "Shadowed copies {}",
@@ -1548,6 +1563,9 @@ name: pdf
 description: Use for PDF tasks
 aliases: [acrobat]
 tags: [document]
+platforms: [linux]
+requires_tools: [read]
+fallback_for_tools: [web_fetch]
 hermes:
   source_id: official/pdf
   trust_level: official
@@ -1641,11 +1659,21 @@ Read docs carefully.
         assert_eq!(structured["skill"]["source_id"], "official/pdf");
         assert_eq!(structured["skill"]["trust_level"], "official");
         assert_eq!(structured["skill"]["audit_state"], "clean");
+        assert_eq!(structured["skill"]["platforms"][0], "linux");
+        assert_eq!(structured["skill"]["requires_tools"][0], "read");
+        assert_eq!(structured["skill"]["fallback_for_tools"][0], "web_fetch");
         assert_eq!(
             structured["skill"]["repo_url"],
             "https://agentskills.io/skills/pdf"
         );
         assert!(result.text_content().contains("Hermes source official/pdf"));
+        assert!(result.text_content().contains("Platforms linux"));
+        assert!(result.text_content().contains("Requires tools read"));
+        assert!(
+            result
+                .text_content()
+                .contains("Fallback for tools web_fetch")
+        );
     }
 
     #[tokio::test]
