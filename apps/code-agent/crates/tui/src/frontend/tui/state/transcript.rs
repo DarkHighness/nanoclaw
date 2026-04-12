@@ -421,6 +421,9 @@ fn tool_headline_prefix(
         ToolRenderKind::CronCreate => {
             lifecycle_headline_text(status, "Scheduling automation", "Scheduled automation")
         }
+        ToolRenderKind::CronList => {
+            lifecycle_headline_text(status, "Listing automations", "Listed automations")
+        }
         ToolRenderKind::NotebookEdit => {
             lifecycle_headline_text(status, "Editing notebook", "Updated notebook")
         }
@@ -494,6 +497,7 @@ fn tool_headline_subject_kind(
             TranscriptToolHeadlineSubjectKind::ToolName
         }
         ToolRenderKind::CronCreate
+        | ToolRenderKind::CronList
         | ToolRenderKind::NotebookEdit
         | ToolRenderKind::NotebookRead
         | ToolRenderKind::CodeSearch

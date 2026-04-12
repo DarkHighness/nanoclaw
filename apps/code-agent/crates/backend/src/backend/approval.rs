@@ -223,6 +223,12 @@ fn approval_content_preview(tool_name: &str, arguments: &Value) -> ApprovalConte
                 preview,
             };
         }
+        ToolRenderKind::CronList => {
+            return ApprovalContent {
+                kind: ApprovalContentKind::Arguments,
+                preview: vec!["list automations".to_string()],
+            };
+        }
         ToolRenderKind::NotebookRead => {
             let path = arguments
                 .get("path")

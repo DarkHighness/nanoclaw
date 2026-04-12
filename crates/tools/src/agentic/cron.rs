@@ -13,6 +13,7 @@ use types::{
 };
 
 const CRON_CREATE_TOOL_NAME: &str = "cron_create";
+const CRON_LIST_TOOL_NAME: &str = "cron_list";
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 pub struct CronCreateToolInput {
@@ -74,11 +75,23 @@ pub trait CronManager: Send + Sync {
         parent: SubagentParentContext,
         request: CronCreateRequest,
     ) -> Result<CronSummaryRecord>;
+
+    async fn list_schedules(&self, parent: SubagentParentContext)
+    -> Result<Vec<CronSummaryRecord>>;
 }
 
 #[derive(Clone, Debug, Serialize, JsonSchema)]
 struct CronCreateToolOutput {
     cron: CronSummaryRecord,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
+pub struct CronListToolInput {}
+
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+struct CronListToolOutput {
+    result_count: usize,
+    crons: Vec<CronSummaryRecord>,
 }
 
 #[derive(Clone)]
@@ -87,6 +100,18 @@ pub struct CronCreateTool {
 }
 
 impl CronCreateTool {
+    #[must_use]
+    pub fn new(manager: Arc<dyn CronManager>) -> Self {
+        Self { manager }
+    }
+}
+
+#[derive(Clone)]
+pub struct CronListTool {
+    manager: Arc<dyn CronManager>,
+}
+
+impl CronListTool {
     #[must_use]
     pub fn new(manager: Arc<dyn CronManager>) -> Self {
         Self { manager }
@@ -135,6 +160,44 @@ impl Tool for CronCreateTool {
             cron: summary.clone(),
         }))
         .with_call_id(external_call_id))
+    }
+}
+
+#[async_trait]
+impl Tool for CronListTool {
+    fn spec(&self) -> ToolSpec {
+        builtin_tool_spec(
+            CRON_LIST_TOOL_NAME,
+            "List automations scheduled in the current session. Use this to inspect deferred or recurring work without relying on transcript reconstruction.",
+            serde_json::to_value(schema_for!(CronListToolInput)).expect("cron_list schema"),
+            ToolOutputMode::Text,
+            tool_approval_profile(true, false, false, false),
+        )
+        .with_output_schema(
+            serde_json::to_value(schema_for!(CronListToolOutput)).expect("cron_list output schema"),
+        )
+    }
+
+    async fn execute(
+        &self,
+        call_id: ToolCallId,
+        arguments: Value,
+        ctx: &ToolExecutionContext,
+    ) -> Result<ToolResult> {
+        let external_call_id = CallId::from(&call_id);
+        let _input: CronListToolInput = serde_json::from_value(arguments)?;
+        let crons = self
+            .manager
+            .list_schedules(SubagentParentContext::from(ctx))
+            .await?;
+        Ok(
+            ToolResult::text(call_id, CRON_LIST_TOOL_NAME, render_cron_list_text(&crons))
+                .with_structured_content(json!(CronListToolOutput {
+                    result_count: crons.len(),
+                    crons,
+                }))
+                .with_call_id(external_call_id),
+        )
     }
 }
 
@@ -210,7 +273,29 @@ fn render_cron_create_text(summary: &CronSummaryRecord) -> String {
     let mut lines = vec![format!("Created automation {}", summary.cron_id)];
     lines.push(format!("role {}", summary.role));
     lines.push(format!("summary {}", summary.prompt_summary));
-    lines.push(match &summary.schedule {
+    lines.push(render_cron_schedule_record(&summary.schedule));
+    lines.push(format!("status {}", summary.status));
+    lines.join("\n")
+}
+
+fn render_cron_list_text(crons: &[CronSummaryRecord]) -> String {
+    let mut lines = vec![format!("Listed {} automation(s)", crons.len())];
+    lines.extend(crons.iter().map(render_cron_summary_line));
+    lines.join("\n")
+}
+
+fn render_cron_summary_line(summary: &CronSummaryRecord) -> String {
+    format!(
+        "{} {} · {} · {}",
+        summary.cron_id,
+        summary.status,
+        render_cron_schedule_record(&summary.schedule),
+        summary.prompt_summary
+    )
+}
+
+pub(crate) fn render_cron_schedule_record(schedule: &CronScheduleRecord) -> String {
+    match schedule {
         CronScheduleRecord::Once { run_at_unix_s } => format!("once at {run_at_unix_s}"),
         CronScheduleRecord::Recurring {
             interval_seconds,
@@ -223,22 +308,20 @@ fn render_cron_create_text(summary: &CronSummaryRecord) -> String {
             }
             line
         }
-    });
-    lines.push(format!("status {}", summary.status));
-    lines.join("\n")
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        CronCreateRequest, CronCreateTool, CronCreateToolInput, CronManager, CronScheduleInput,
-        CronScheduleRecord, CronSummaryRecord,
+        CronCreateRequest, CronCreateTool, CronCreateToolInput, CronListTool, CronManager,
+        CronScheduleInput, CronScheduleRecord, CronSummaryRecord,
     };
     use crate::Result;
     use crate::{Tool, ToolExecutionContext};
     use async_trait::async_trait;
     use nanoclaw_test_support::run_current_thread_test;
-    use serde_json::Value;
+    use serde_json::{Value, json};
     use std::sync::{Arc, Mutex};
     use types::{AgentSessionId, CronId, CronStatus, MessagePart, SessionId, ToolCallId};
 
@@ -254,6 +337,7 @@ mod tests {
     #[derive(Default)]
     struct FakeCronManager {
         last_request: Mutex<Option<CronCreateRequest>>,
+        list_response: Mutex<Vec<CronSummaryRecord>>,
     }
 
     #[async_trait]
@@ -282,6 +366,13 @@ mod tests {
                 last_run_at_unix_s: None,
                 run_count: 0,
             })
+        }
+
+        async fn list_schedules(
+            &self,
+            _parent: super::SubagentParentContext,
+        ) -> Result<Vec<CronSummaryRecord>> {
+            Ok(self.list_response.lock().unwrap().clone())
         }
     }
 
@@ -386,6 +477,71 @@ mod tests {
                 .unwrap_err();
 
             assert!(error.to_string().contains("interval_seconds > 0"));
+        }
+    );
+
+    bounded_async_test!(
+        async fn cron_list_returns_typed_schedule_summaries() {
+            let manager = Arc::new(FakeCronManager::default());
+            *manager.list_response.lock().unwrap() = vec![
+                CronSummaryRecord {
+                    cron_id: CronId::from("cron_1"),
+                    session_id: SessionId::from("session_1"),
+                    agent_session_id: AgentSessionId::from("agent_session_1"),
+                    parent_agent_id: None,
+                    latest_task_id: None,
+                    role: "reviewer".to_string(),
+                    prompt_summary: "Review nightly regression queue".to_string(),
+                    status: CronStatus::Scheduled,
+                    schedule: CronScheduleRecord::Recurring {
+                        interval_seconds: 300,
+                        next_run_unix_s: 42,
+                        max_runs: Some(3),
+                    },
+                    created_at_unix_s: 10,
+                    last_run_at_unix_s: None,
+                    run_count: 0,
+                },
+                CronSummaryRecord {
+                    cron_id: CronId::from("cron_2"),
+                    session_id: SessionId::from("session_1"),
+                    agent_session_id: AgentSessionId::from("agent_session_1"),
+                    parent_agent_id: None,
+                    latest_task_id: None,
+                    role: "general-purpose".to_string(),
+                    prompt_summary: "Cleanup stale scratch files".to_string(),
+                    status: CronStatus::Completed,
+                    schedule: CronScheduleRecord::Once { run_at_unix_s: 24 },
+                    created_at_unix_s: 12,
+                    last_run_at_unix_s: Some(24),
+                    run_count: 1,
+                },
+            ];
+            let result = CronListTool::new(manager)
+                .execute(ToolCallId::new(), json!({}), &context())
+                .await
+                .unwrap();
+
+            assert!(!result.is_error);
+            let structured = result.structured_content.unwrap();
+            assert_eq!(
+                structured.get("result_count").and_then(Value::as_u64),
+                Some(2)
+            );
+            assert_eq!(
+                structured
+                    .get("crons")
+                    .and_then(Value::as_array)
+                    .map(Vec::len),
+                Some(2)
+            );
+
+            let MessagePart::Text { text } = &result.parts[0] else {
+                panic!("expected text output");
+            };
+            assert!(text.contains("Listed 2 automation(s)"));
+            assert!(text.contains("cron_1 scheduled"));
+            assert!(text.contains("cron_2 completed"));
         }
     );
 }

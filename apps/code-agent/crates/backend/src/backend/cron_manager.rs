@@ -78,6 +78,23 @@ impl SessionCronManager {
             .cloned()
     }
 
+    fn list_cron_summaries(&self) -> Vec<CronSummaryRecord> {
+        let mut crons = self
+            .crons
+            .lock()
+            .expect("cron registry lock")
+            .values()
+            .map(|state| state.summary())
+            .collect::<Vec<_>>();
+        crons.sort_by(|left, right| {
+            cron_sort_key(left)
+                .cmp(&cron_sort_key(right))
+                .then_with(|| left.created_at_unix_s.cmp(&right.created_at_unix_s))
+                .then_with(|| left.cron_id.cmp(&right.cron_id))
+        });
+        crons
+    }
+
     async fn append_notification(
         &self,
         parent: &SubagentParentContext,
@@ -196,6 +213,14 @@ impl CronManager for SessionCronManager {
         });
         Ok(summary)
     }
+
+    async fn list_schedules(
+        &self,
+        parent: SubagentParentContext,
+    ) -> ToolResult<Vec<CronSummaryRecord>> {
+        let _ = Self::require_parent_session(&parent)?;
+        Ok(self.list_cron_summaries())
+    }
 }
 
 fn schedule_record_from_input(
@@ -266,6 +291,23 @@ fn task_from_template(template: &CronTaskTemplate, run_index: u32) -> AgentTaskS
         requested_write_set: template.requested_write_set.clone(),
         dependency_ids: Vec::new(),
         timeout_seconds: template.timeout_seconds,
+    }
+}
+
+fn cron_sort_key(summary: &CronSummaryRecord) -> (u8, u64) {
+    if summary.status.is_terminal() {
+        return match &summary.schedule {
+            CronScheduleRecord::Recurring {
+                next_run_unix_s, ..
+            } => (1, *next_run_unix_s),
+            CronScheduleRecord::Once { run_at_unix_s } => (1, *run_at_unix_s),
+        };
+    }
+    match &summary.schedule {
+        CronScheduleRecord::Recurring {
+            next_run_unix_s, ..
+        } => (0, *next_run_unix_s),
+        CronScheduleRecord::Once { run_at_unix_s } => (0, *run_at_unix_s),
     }
 }
 
@@ -420,5 +462,61 @@ mod tests {
             SessionEventKind::Notification { source, message }
                 if source == "automation" && message.contains("nightly_review_run_1")
         )));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn cron_manager_lists_session_automations_in_next_run_order() {
+        let store: Arc<dyn SessionStore> = Arc::new(InMemorySessionStore::new());
+        let events = SessionEventStream::default();
+        let task_manager = Arc::new(RecordingTaskManager::default());
+        let manager = SessionCronManager::new(store, events, task_manager);
+
+        let later = manager
+            .create_schedule(
+                parent(),
+                CronCreateRequest {
+                    schedule: CronScheduleInput::OnceAfter { delay_seconds: 120 },
+                    task_template: CronTaskTemplate {
+                        role: "reviewer".to_string(),
+                        prompt: "Review the weekly triage queue".to_string(),
+                        steer: None,
+                        allowed_tools: Vec::new(),
+                        requested_write_set: Vec::new(),
+                        timeout_seconds: None,
+                        summary: "Review the weekly triage queue".to_string(),
+                        task_id_prefix: Some("triage".to_string()),
+                    },
+                },
+            )
+            .await
+            .unwrap();
+        let earlier = manager
+            .create_schedule(
+                parent(),
+                CronCreateRequest {
+                    schedule: CronScheduleInput::EverySeconds {
+                        interval_seconds: 60,
+                        start_after_seconds: Some(30),
+                        max_runs: Some(2),
+                    },
+                    task_template: CronTaskTemplate {
+                        role: "general-purpose".to_string(),
+                        prompt: "Summarize new issue labels".to_string(),
+                        steer: None,
+                        allowed_tools: Vec::new(),
+                        requested_write_set: Vec::new(),
+                        timeout_seconds: None,
+                        summary: "Summarize new issue labels".to_string(),
+                        task_id_prefix: None,
+                    },
+                },
+            )
+            .await
+            .unwrap();
+
+        let listed = manager.list_schedules(parent()).await.unwrap();
+        assert_eq!(listed.len(), 2);
+        assert_eq!(listed[0].cron_id, earlier.cron_id);
+        assert_eq!(listed[1].cron_id, later.cron_id);
     }
 }

@@ -147,6 +147,20 @@ fn code_diagnostics_tool_entry_uses_diagnostics_headline() {
         "• Scheduled automation\n  └ Result cron_123"
     );
 
+    let cron_list_entry = TranscriptEntry::tool_with_completion(
+        TranscriptToolStatus::Finished,
+        "cron_list",
+        vec![ToolDetail::LabeledValue {
+            label: ToolDetailLabel::Result,
+            value: "2 automation(s)".to_string(),
+        }],
+        ToolCompletionState::Success,
+    );
+    assert_eq!(
+        cron_list_entry.serialized(),
+        "• Listed automations\n  └ Result 2 automation(s)"
+    );
+
     let notebook_edit_entry = TranscriptEntry::tool_with_completion(
         TranscriptToolStatus::Finished,
         "notebook_edit",

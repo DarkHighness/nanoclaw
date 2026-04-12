@@ -13,6 +13,7 @@ pub enum ToolRenderKind {
     ExecCommand,
     WriteStdin,
     CronCreate,
+    CronList,
     NotebookEdit,
     NotebookRead,
     CodeSearch,
@@ -38,6 +39,7 @@ impl ToolRenderKind {
             "exec_command" => Self::ExecCommand,
             "write_stdin" => Self::WriteStdin,
             "cron_create" => Self::CronCreate,
+            "cron_list" => Self::CronList,
             "notebook_edit" => Self::NotebookEdit,
             "notebook_read" => Self::NotebookRead,
             "code_search" => Self::CodeSearch,
@@ -458,6 +460,9 @@ pub fn tool_arguments_preview_lines(tool_name: &str, arguments: &Value) -> Vec<S
                 lines.push(format!("role {role}"));
             }
             return lines;
+        }
+        ToolRenderKind::CronList => {
+            return vec!["List automations".to_string()];
         }
         ToolRenderKind::NotebookEdit => {
             let path = arguments
@@ -1130,6 +1135,7 @@ pub fn tool_completion_state(tool_name: &str, structured: Option<&Value>) -> Too
             ToolCompletionState::Neutral
         }
         ToolRenderKind::CronCreate
+        | ToolRenderKind::CronList
         | ToolRenderKind::NotebookEdit
         | ToolRenderKind::NotebookRead
         | ToolRenderKind::CodeSearch
@@ -1188,8 +1194,8 @@ pub fn tool_output_details(
         ToolRenderKind::ExecCommand | ToolRenderKind::WriteStdin => {
             return process_output_details(tool_name, output_preview, structured);
         }
-        ToolRenderKind::CronCreate => {
-            if let Some(details) = cron_output_details(structured) {
+        ToolRenderKind::CronCreate | ToolRenderKind::CronList => {
+            if let Some(details) = cron_output_details(tool_name, structured) {
                 return details;
             }
         }
@@ -1647,8 +1653,40 @@ fn code_search_output_details(structured: Option<&Value>) -> Option<Vec<ToolDeta
     Some(details)
 }
 
-fn cron_output_details(structured: Option<&Value>) -> Option<Vec<ToolDetail>> {
-    let cron = structured?.get("cron")?;
+fn cron_output_details(tool_name: &str, structured: Option<&Value>) -> Option<Vec<ToolDetail>> {
+    let structured = structured?;
+    match ToolRenderKind::classify(tool_name) {
+        ToolRenderKind::CronCreate => {
+            let cron = structured.get("cron")?;
+            Some(single_cron_output_details(cron))
+        }
+        ToolRenderKind::CronList => {
+            let crons = structured.get("crons")?.as_array()?;
+            let result_count = structured
+                .get("result_count")
+                .and_then(Value::as_u64)
+                .unwrap_or(crons.len() as u64);
+            let mut details = vec![ToolDetail::LabeledValue {
+                label: ToolDetailLabel::Result,
+                value: format!("{result_count} automation(s)"),
+            }];
+            let lines = crons
+                .iter()
+                .filter_map(render_cron_compact_summary_line)
+                .collect::<Vec<_>>();
+            if !lines.is_empty() {
+                details.push(ToolDetail::LabeledBlock {
+                    label: ToolDetailLabel::Output,
+                    lines,
+                });
+            }
+            Some(details)
+        }
+        _ => None,
+    }
+}
+
+fn single_cron_output_details(cron: &Value) -> Vec<ToolDetail> {
     let cron_id = cron
         .get("cron_id")
         .and_then(Value::as_str)
@@ -1688,7 +1726,7 @@ fn cron_output_details(structured: Option<&Value>) -> Option<Vec<ToolDetail>> {
             value: truncate_inline(summary, 96),
         });
     }
-    Some(details)
+    details
 }
 
 fn notebook_edit_output_details(structured: Option<&Value>) -> Option<Vec<ToolDetail>> {
@@ -1925,6 +1963,30 @@ fn render_cron_schedule_output(cron: &Value) -> Option<String> {
         }
         _ => None,
     }
+}
+
+fn render_cron_compact_summary_line(cron: &Value) -> Option<String> {
+    let cron_id = cron
+        .get("cron_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?;
+    let status = cron
+        .get("status")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("unknown");
+    let schedule =
+        render_cron_schedule_output(cron).unwrap_or_else(|| "schedule unknown".to_string());
+    let summary = cron
+        .get("prompt_summary")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|summary| truncate_inline(summary, 72))
+        .unwrap_or_else(|| "<empty>".to_string());
+    Some(format!("{cron_id} {status} · {schedule} · {summary}"))
 }
 
 fn render_notebook_applied_edit_summary(operation: &Value) -> Option<String> {
@@ -2784,6 +2846,10 @@ mod tests {
             ]
         );
         assert_eq!(
+            tool_arguments_preview_lines("cron_list", &json!({})),
+            vec!["List automations"]
+        );
+        assert_eq!(
             tool_arguments_preview_lines(
                 "notebook_edit",
                 &json!({
@@ -2868,6 +2934,38 @@ mod tests {
                 .iter()
                 .any(|line| line == "  └ State scheduled")
         );
+
+        let cron_list_rendered = tool_output_detail_lines(
+            "cron_list",
+            "",
+            Some(&json!({
+                "result_count": 2,
+                "crons": [
+                    {
+                        "cron_id": "cron_1",
+                        "status": "scheduled",
+                        "prompt_summary": "Review nightly regression queue",
+                        "schedule": {"kind": "recurring", "interval_seconds": 300, "next_run_unix_s": 42, "max_runs": 3}
+                    },
+                    {
+                        "cron_id": "cron_2",
+                        "status": "completed",
+                        "prompt_summary": "Cleanup stale scratch files",
+                        "schedule": {"kind": "once", "run_at_unix_s": 24}
+                    }
+                ]
+            })),
+        );
+
+        assert_eq!(cron_list_rendered[0], "  └ Result 2 automation(s)");
+        assert!(
+            cron_list_rendered.iter().any(
+                |line| line.contains("cron_1 scheduled · every 300s, next at 42, max 3 run(s)")
+            )
+        );
+        assert!(cron_list_rendered.iter().any(|line| {
+            line.contains("cron_2 completed · once at 24 · Cleanup stale scratch files")
+        }));
 
         let notebook_edit_rendered = tool_output_detail_lines(
             "notebook_edit",
