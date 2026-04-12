@@ -215,7 +215,7 @@ not count here because they are not currently in the live registry.
 - execution:
   `exec_command`, `write_stdin`, `js_repl`
 - web:
-  `web_fetch`, `web_search`, `web_search_backends`
+  `web_fetch`, `web_search`
 - code intelligence:
   `code_symbol_search`, `code_document_symbols`, `code_definitions`,
   `code_references`

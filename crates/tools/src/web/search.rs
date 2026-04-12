@@ -17,7 +17,7 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use time::OffsetDateTime;
 use time::format_description::well_known::{Rfc2822, Rfc3339};
-use types::{MessagePart, ToolCallId, ToolOutputMode, ToolResult, ToolSpec};
+use types::{MessagePart, ToolAvailability, ToolCallId, ToolOutputMode, ToolResult, ToolSpec};
 
 mod engines;
 
@@ -718,6 +718,10 @@ impl Tool for WebSearchBackendsTool {
             ToolOutputMode::Text,
             tool_approval_profile(true, false, true, false),
         )
+        .with_availability(ToolAvailability {
+            hidden_from_model: true,
+            ..ToolAvailability::default()
+        })
         .with_output_schema(
             serde_json::to_value(schema_for!(WebSearchBackendsToolOutput))
                 .expect("web_search_backends output schema"),
@@ -1270,7 +1274,7 @@ mod tests {
     use crate::{Tool, ToolExecutionContext};
     use std::collections::BTreeSet;
     use std::sync::Arc;
-    use types::ToolCallId;
+    use types::{ToolCallId, ToolVisibilityContext};
     use wiremock::matchers::{body_partial_json, header, method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -1497,6 +1501,14 @@ mod tests {
             structured["backends"][1]["missing_requirement"],
             "NANOCLAW_CORE_WEB_SEARCH_BRAVE_API_KEY"
         );
+    }
+
+    #[test]
+    fn web_search_backends_stays_hidden_from_model_visibility() {
+        let spec = WebSearchBackendsTool::new().spec();
+
+        assert!(!spec.is_model_visible(&ToolVisibilityContext::default()));
+        assert!(!spec.is_model_visible(&ToolVisibilityContext::default().with_provider("openai")));
     }
 
     fn brave_results(start: usize, end: usize) -> Vec<serde_json::Value> {
