@@ -4,9 +4,15 @@ pub(crate) fn live_task_wait_notice_entry(outcome: &LiveTaskWaitOutcome) -> Tran
     let headline = format!("Background task {} finished", outcome.task_id);
     let details = live_task_wait_notice_details(outcome);
     match outcome.status {
-        AgentStatus::Completed => TranscriptEntry::success_summary_details(headline, details),
-        AgentStatus::Failed => TranscriptEntry::error_summary_details(headline, details),
-        AgentStatus::Cancelled => TranscriptEntry::warning_summary_details(headline, details),
+        agent::types::TaskStatus::Completed => {
+            TranscriptEntry::success_summary_details(headline, details)
+        }
+        agent::types::TaskStatus::Failed => {
+            TranscriptEntry::error_summary_details(headline, details)
+        }
+        agent::types::TaskStatus::Cancelled => {
+            TranscriptEntry::warning_summary_details(headline, details)
+        }
         _ => TranscriptEntry::shell_summary_details(headline, details),
     }
 }
@@ -59,9 +65,9 @@ pub(crate) fn live_task_wait_notice_details(
 
 pub(crate) fn live_task_wait_ui_toast_tone(outcome: &LiveTaskWaitOutcome) -> ToastTone {
     match outcome.status {
-        AgentStatus::Completed => ToastTone::Success,
-        AgentStatus::Failed => ToastTone::Error,
-        AgentStatus::Cancelled => ToastTone::Warning,
+        agent::types::TaskStatus::Completed => ToastTone::Success,
+        agent::types::TaskStatus::Failed => ToastTone::Error,
+        agent::types::TaskStatus::Cancelled => ToastTone::Warning,
         _ => ToastTone::Info,
     }
 }

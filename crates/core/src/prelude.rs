@@ -9,8 +9,9 @@ pub use tools::{
     AgentResumeTool, PermissionGrantScope, PlanFocusAction, PlanFocusInput, PlanFocusSnapshot,
     PlanFocusStatus, PlanItem, PlanSnapshot, PlanState, PlanStatus, RequestPermissionProfile,
     RequestPermissionsArgs, RequestPermissionsTool, RequestUserInputTool, SkillDetail,
-    SkillSummary, SkillTool, TaskTool, ToolDiscoverTool, UpdatePlanTool, UserInputAnswer,
-    UserInputHandler, UserInputOption, UserInputQuestion, UserInputRequest, UserInputResponse,
+    SkillSummary, SkillTool, TaskCreateTool, TaskGetTool, TaskListTool, TaskManager, TaskStopTool,
+    TaskUpdateTool, ToolDiscoverTool, UpdatePlanTool, UserInputAnswer, UserInputHandler,
+    UserInputOption, UserInputQuestion, UserInputRequest, UserInputResponse,
 };
 #[cfg(feature = "code-intel")]
 pub use tools::{

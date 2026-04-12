@@ -257,7 +257,14 @@ impl SharedRenderObserver {
                 ));
                 if matches!(
                     call.tool_name.as_str(),
-                    "task" | "task_batch" | "spawn_agent" | "wait_agent" | "resume_agent"
+                    "task_create"
+                        | "task_get"
+                        | "task_list"
+                        | "task_update"
+                        | "task_stop"
+                        | "spawn_agent"
+                        | "wait_agent"
+                        | "resume_agent"
                 ) {
                     if let Some(structured) = structured_output_preview {
                         state.push_activity(format!(

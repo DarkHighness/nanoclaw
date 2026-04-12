@@ -993,14 +993,17 @@ fn composer_context_hint_spans(state: &TuiState, hint: &ComposerContextHint) -> 
         ComposerContextHint::LiveTaskFinished { task_id, status } => {
             let status_label = status.to_string();
             let status_style = match status {
-                agent::types::AgentStatus::Completed => Style::default().fg(palette().assistant),
-                agent::types::AgentStatus::Failed => Style::default().fg(palette().error),
-                agent::types::AgentStatus::Cancelled => Style::default().fg(palette().warn),
+                agent::types::TaskStatus::Completed => Style::default().fg(palette().assistant),
+                agent::types::TaskStatus::Failed => Style::default().fg(palette().error),
+                agent::types::TaskStatus::Cancelled => Style::default().fg(palette().warn),
                 _ => Style::default().fg(palette().header),
             };
             let mut spans = vec![
                 Span::styled("task ", Style::default().fg(palette().muted)),
-                Span::styled(preview_id(task_id), Style::default().fg(palette().header)),
+                Span::styled(
+                    preview_id(task_id.as_str()),
+                    Style::default().fg(palette().header),
+                ),
                 Span::styled(" ", Style::default().fg(palette().subtle)),
                 Span::styled(status_label, status_style),
                 Span::styled(" · ", Style::default().fg(palette().subtle)),

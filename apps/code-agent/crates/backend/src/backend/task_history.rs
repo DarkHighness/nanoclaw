@@ -1,8 +1,8 @@
 use super::session_history::{list_sessions, resolve_session_reference};
 use crate::ui::{LoadedTask, LoadedTaskMessage, PersistedTaskSummary};
 use agent::types::{
-    AgentEnvelope, AgentEnvelopeKind, AgentStatus, AgentTaskSpec, Message, SessionEventEnvelope,
-    SessionEventKind, SessionId,
+    AgentEnvelope, AgentEnvelopeKind, AgentTaskSpec, Message, SessionEventEnvelope,
+    SessionEventKind, SessionId, TaskId, TaskStatus,
 };
 use anyhow::{Result, anyhow};
 use std::collections::BTreeMap;
@@ -59,13 +59,16 @@ pub fn resolve_task_reference<'a>(
     tasks: &'a [PersistedTaskSummary],
     task_ref: &str,
 ) -> Result<&'a PersistedTaskSummary> {
-    if let Some(task) = tasks.iter().find(|summary| summary.task_id == task_ref) {
+    if let Some(task) = tasks
+        .iter()
+        .find(|summary| summary.task_id.as_str() == task_ref)
+    {
         return Ok(task);
     }
 
     let matches = tasks
         .iter()
-        .filter(|summary| summary.task_id.starts_with(task_ref))
+        .filter(|summary| summary.task_id.as_str().starts_with(task_ref))
         .collect::<Vec<_>>();
     match matches.as_slice() {
         [] => Err(anyhow!("unknown task id or prefix: {task_ref}")),
@@ -75,7 +78,7 @@ pub fn resolve_task_reference<'a>(
             matches
                 .iter()
                 .take(6)
-                .map(|task| task.task_id.clone())
+                .map(|task| task.task_id.to_string())
                 .collect::<Vec<_>>()
                 .join(", ")
         )),
@@ -92,16 +95,21 @@ fn persisted_task_summaries(
         parent_agent_session_ref: String,
         child_session_ref: Option<String>,
         child_agent_session_ref: Option<String>,
-        status: AgentStatus,
+        status: TaskStatus,
         first_timestamp_ms: u128,
         last_timestamp_ms: u128,
         summary: Option<String>,
     }
 
-    let mut by_task = BTreeMap::<String, TaskAccumulator>::new();
+    let mut by_task = BTreeMap::<TaskId, TaskAccumulator>::new();
     for event in events {
         match &event.event {
-            SessionEventKind::TaskCreated { task, .. } => {
+            SessionEventKind::TaskCreated {
+                task,
+                status,
+                summary,
+                ..
+            } => {
                 by_task
                     .entry(task.task_id.clone())
                     .or_insert_with(|| TaskAccumulator {
@@ -109,10 +117,12 @@ fn persisted_task_summaries(
                         parent_agent_session_ref: event.agent_session_id.to_string(),
                         child_session_ref: None,
                         child_agent_session_ref: None,
-                        status: AgentStatus::Queued,
+                        status: *status,
                         first_timestamp_ms: event.timestamp_ms,
                         last_timestamp_ms: event.timestamp_ms,
-                        summary: Some(preview_text(&task.prompt, 64)),
+                        summary: summary
+                            .clone()
+                            .or_else(|| Some(preview_text(&task.prompt, 64))),
                     });
             }
             SessionEventKind::SubagentStart { handle, task } => {
@@ -124,7 +134,7 @@ fn persisted_task_summaries(
                             parent_agent_session_ref: event.agent_session_id.to_string(),
                             child_session_ref: None,
                             child_agent_session_ref: None,
-                            status: handle.status.clone(),
+                            status: TaskStatus::from(&handle.status),
                             first_timestamp_ms: event.timestamp_ms,
                             last_timestamp_ms: event.timestamp_ms,
                             summary: Some(preview_text(&task.prompt, 64)),
@@ -133,15 +143,29 @@ fn persisted_task_summaries(
                 entry.parent_agent_session_ref = event.agent_session_id.to_string();
                 entry.child_session_ref = Some(handle.session_id.to_string());
                 entry.child_agent_session_ref = Some(handle.agent_session_id.to_string());
-                entry.status = handle.status.clone();
+                entry.status = TaskStatus::from(&handle.status);
                 entry.first_timestamp_ms = entry.first_timestamp_ms.min(event.timestamp_ms);
                 entry.last_timestamp_ms = entry.last_timestamp_ms.max(event.timestamp_ms);
+            }
+            SessionEventKind::TaskUpdated {
+                task_id,
+                status,
+                summary,
+            } => {
+                if let Some(entry) = by_task.get_mut(task_id) {
+                    entry.status = *status;
+                    if let Some(summary) = summary {
+                        entry.summary = Some(summary.clone());
+                    }
+                    entry.first_timestamp_ms = entry.first_timestamp_ms.min(event.timestamp_ms);
+                    entry.last_timestamp_ms = entry.last_timestamp_ms.max(event.timestamp_ms);
+                }
             }
             SessionEventKind::TaskCompleted {
                 task_id, status, ..
             } => {
                 if let Some(entry) = by_task.get_mut(task_id) {
-                    entry.status = status.clone();
+                    entry.status = *status;
                     entry.first_timestamp_ms = entry.first_timestamp_ms.min(event.timestamp_ms);
                     entry.last_timestamp_ms = entry.last_timestamp_ms.max(event.timestamp_ms);
                 }
@@ -156,8 +180,8 @@ fn persisted_task_summaries(
                     entry.child_agent_session_ref = Some(handle.agent_session_id.to_string());
                     entry.status = result
                         .as_ref()
-                        .map(|result| result.status.clone())
-                        .unwrap_or_else(|| handle.status.clone());
+                        .map(|result| TaskStatus::from(&result.status))
+                        .unwrap_or_else(|| TaskStatus::from(&handle.status));
                     entry.summary = result
                         .as_ref()
                         .map(|result| result.summary.clone())
@@ -179,6 +203,7 @@ fn persisted_task_summaries(
             child_session_ref: entry.child_session_ref,
             child_agent_session_ref: entry.child_agent_session_ref,
             role: entry.spec.role,
+            origin: entry.spec.origin,
             status: entry.status,
             first_timestamp_ms: entry.first_timestamp_ms,
             last_timestamp_ms: entry.last_timestamp_ms,
@@ -203,6 +228,22 @@ fn project_loaded_task(
         match &event.event {
             SessionEventKind::TaskCreated { task, .. } if task.task_id == summary.task_id => {
                 spec = Some(task.clone());
+            }
+            SessionEventKind::TaskUpdated {
+                task_id,
+                summary: update_summary,
+                ..
+            } if *task_id == summary.task_id => {
+                if let Some(update_summary) = update_summary {
+                    error = None;
+                    result = None;
+                    if !update_summary.trim().is_empty() {
+                        // Manual task updates do not produce a child result envelope, but the
+                        // operator-facing inspector should still surface the latest task summary.
+                        // Keep it in `summary.summary`; loaded task detail only carries extra
+                        // envelopes, artifacts, and token usage.
+                    }
+                }
             }
             SessionEventKind::SubagentStart { task, .. } if task.task_id == summary.task_id => {
                 spec = Some(task.clone());
@@ -311,7 +352,7 @@ mod tests {
     use agent::types::{
         AgentArtifact, AgentEnvelope, AgentEnvelopeKind, AgentHandle, AgentId, AgentResultEnvelope,
         AgentSessionId, AgentStatus, AgentTaskSpec, Message, SessionEventEnvelope,
-        SessionEventKind, SessionId, TokenLedgerSnapshot,
+        SessionEventKind, SessionId, TaskId, TaskOrigin, TaskStatus, TokenLedgerSnapshot,
     };
     use store::{TokenUsageRecord, TokenUsageScope};
 
@@ -322,9 +363,10 @@ mod tests {
         let child_session_id = SessionId::from("session-child");
         let child_agent_session_id = AgentSessionId::from("agent-child");
         let task = AgentTaskSpec {
-            task_id: "review-task".to_string(),
+            task_id: TaskId::from("review-task"),
             role: "reviewer".to_string(),
             prompt: "inspect the patch".to_string(),
+            origin: TaskOrigin::ChildAgentBacked,
             steer: None,
             allowed_tools: Vec::new(),
             requested_write_set: Vec::new(),
@@ -349,6 +391,8 @@ mod tests {
                 SessionEventKind::TaskCreated {
                     task: task.clone(),
                     parent_agent_id: None,
+                    status: TaskStatus::Queued,
+                    summary: Some("inspect the patch".to_string()),
                 },
             ),
             SessionEventEnvelope::new(
@@ -386,7 +430,7 @@ mod tests {
         let summaries = persisted_task_summaries(session_id.as_str(), &events);
 
         assert_eq!(summaries.len(), 1);
-        assert_eq!(summaries[0].task_id, "review-task");
+        assert_eq!(summaries[0].task_id, TaskId::from("review-task"));
         assert_eq!(
             summaries[0].child_session_ref.as_deref(),
             Some(child_session_id.as_str())
@@ -395,19 +439,21 @@ mod tests {
             summaries[0].child_agent_session_ref.as_deref(),
             Some(child_agent_session_id.as_str())
         );
-        assert_eq!(summaries[0].status, AgentStatus::Completed);
+        assert_eq!(summaries[0].origin, TaskOrigin::ChildAgentBacked);
+        assert_eq!(summaries[0].status, TaskStatus::Completed);
     }
 
     #[test]
     fn project_loaded_task_collects_envelopes_and_token_usage() {
         let summary = PersistedTaskSummary {
-            task_id: "review-task".to_string(),
+            task_id: TaskId::from("review-task"),
             session_ref: "session-root".to_string(),
             parent_agent_session_ref: "agent-root".to_string(),
             child_session_ref: Some("session-child".to_string()),
             child_agent_session_ref: Some("agent-child".to_string()),
             role: "reviewer".to_string(),
-            status: AgentStatus::Completed,
+            origin: TaskOrigin::ChildAgentBacked,
+            status: TaskStatus::Completed,
             first_timestamp_ms: 1,
             last_timestamp_ms: 2,
             summary: "looks good".to_string(),
@@ -416,6 +462,7 @@ mod tests {
             task_id: summary.task_id.clone(),
             role: summary.role.clone(),
             prompt: "inspect the patch".to_string(),
+            origin: summary.origin,
             steer: None,
             allowed_tools: Vec::new(),
             requested_write_set: Vec::new(),
@@ -433,6 +480,8 @@ mod tests {
                 SessionEventKind::TaskCreated {
                     task: task.clone(),
                     parent_agent_id: None,
+                    status: TaskStatus::Queued,
+                    summary: Some("inspect the patch".to_string()),
                 },
             ),
             SessionEventEnvelope::new(

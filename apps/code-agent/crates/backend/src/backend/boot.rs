@@ -13,11 +13,11 @@ use crate::backend::store::build_store;
 use crate::backend::{
     ApprovalCoordinator, NonInteractivePermissionRequestHandler, NonInteractiveToolApprovalHandler,
     NonInteractiveUserInputHandler, PermissionRequestCoordinator, SessionEventStream,
-    SessionPermissionRequestHandler, SessionToolApprovalHandler, SessionUserInputHandler,
-    UserInputCoordinator, build_code_agent_tool_approval_policy, build_plugin_activation_plan,
-    build_sandbox_policy, build_system_preamble, build_tool_context, dedup_mcp_servers,
-    log_sandbox_status, merge_driver_host_inputs, resolve_mcp_servers, resolve_skill_roots,
-    tool_context_for_profile,
+    SessionPermissionRequestHandler, SessionTaskManager, SessionToolApprovalHandler,
+    SessionUserInputHandler, UserInputCoordinator, build_code_agent_tool_approval_policy,
+    build_plugin_activation_plan, build_sandbox_policy, build_system_preamble, build_tool_context,
+    dedup_mcp_servers, log_sandbox_status, merge_driver_host_inputs, resolve_mcp_servers,
+    resolve_skill_roots, tool_context_for_profile,
 };
 use crate::options::AppOptions;
 use crate::provider::{
@@ -813,7 +813,11 @@ where
         skill_catalog.clone(),
         subagent_profile_resolver,
     ));
-    register_subagent_tools(&mut tools, subagent_executor.clone());
+    let task_manager: Arc<dyn agent::tools::TaskManager> = Arc::new(SessionTaskManager::new(
+        store.clone(),
+        subagent_executor.clone(),
+    ));
+    register_subagent_tools(&mut tools, subagent_executor.clone(), task_manager);
     let tool_specs = tools
         .specs()
         .into_iter()

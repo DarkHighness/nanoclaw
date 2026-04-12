@@ -177,7 +177,7 @@ pub(crate) fn format_agent_session_inspector(session: &LoadedAgentSession) -> Ve
 pub(crate) fn format_task_inspector(task: &LoadedTask) -> Vec<InspectorEntry> {
     let mut lines = vec![
         InspectorEntry::section("Task"),
-        InspectorEntry::field("task id", task.summary.task_id.clone()),
+        InspectorEntry::field("task id", task.summary.task_id.to_string()),
         InspectorEntry::field("session ref", task.summary.session_ref.clone()),
         InspectorEntry::field(
             "parent agent session ref",

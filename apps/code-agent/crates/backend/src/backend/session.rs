@@ -64,9 +64,8 @@ use agent::tools::{
     SubagentParentContext,
 };
 use agent::types::{
-    AgentSessionId, AgentStatus, AgentTaskSpec, AgentWaitMode, AgentWaitRequest, HookHandler,
-    HookRegistration, Message, MessageId, ModelEvent, ModelRequest, SessionId, ToolSpec, TurnId,
-    new_opaque_id,
+    AgentSessionId, AgentTaskSpec, AgentWaitMode, AgentWaitRequest, HookHandler, HookRegistration,
+    Message, MessageId, ModelEvent, ModelRequest, SessionId, ToolSpec, TurnId, new_opaque_id,
 };
 use agent::{AgentRuntime, RuntimeCommand, Skill, ToolExecutionContext};
 use anyhow::Result;

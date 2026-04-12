@@ -1,8 +1,8 @@
 use super::super::input_history::{self, ComposerHistoryKind};
 use super::{ComposerContextHint, TuiState, preview_text};
 use agent::types::{
-    AgentStatus, Message, MessagePart, MessageRole, SubmittedPromptAttachment,
-    SubmittedPromptAttachmentKind, SubmittedPromptSnapshot,
+    Message, MessagePart, MessageRole, SubmittedPromptAttachment, SubmittedPromptAttachmentKind,
+    SubmittedPromptSnapshot,
 };
 use std::path::Path;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
@@ -681,13 +681,11 @@ impl TuiState {
 
     pub(crate) fn set_live_task_finished_hint(
         &mut self,
-        task_id: impl Into<String>,
-        status: AgentStatus,
+        task_id: agent::types::TaskId,
+        status: agent::types::TaskStatus,
     ) {
-        self.composer_context_hint = Some(ComposerContextHint::LiveTaskFinished {
-            task_id: task_id.into(),
-            status,
-        });
+        self.composer_context_hint =
+            Some(ComposerContextHint::LiveTaskFinished { task_id, status });
     }
 
     pub(crate) fn clear_composer_context_hint(&mut self) {

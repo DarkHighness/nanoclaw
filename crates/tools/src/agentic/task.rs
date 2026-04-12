@@ -14,12 +14,17 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::fs;
 use types::{
-    AgentHandle, AgentId, AgentInputDelivery, AgentResultEnvelope, AgentSessionId, AgentStatus,
-    AgentTaskSpec, AgentWaitMode, AgentWaitRequest, AgentWaitResponse, CallId, Message,
-    MessagePart, MessageRole, SessionId, ToolCallId, ToolName, ToolOutputMode, ToolResult,
-    ToolSpec, TurnId,
+    AgentHandle, AgentId, AgentInputDelivery, AgentResultEnvelope, AgentSessionId, AgentTaskSpec,
+    AgentWaitMode, AgentWaitRequest, AgentWaitResponse, CallId, Message, MessagePart, MessageRole,
+    SessionId, TaskId, TaskOrigin, TaskRecord, TaskStatus, TaskSummaryRecord, ToolCallId, ToolName,
+    ToolOutputMode, ToolResult, ToolSpec, TurnId,
 };
 
+const TASK_CREATE_TOOL_NAME: &str = "task_create";
+const TASK_GET_TOOL_NAME: &str = "task_get";
+const TASK_LIST_TOOL_NAME: &str = "task_list";
+const TASK_UPDATE_TOOL_NAME: &str = "task_update";
+const TASK_STOP_TOOL_NAME: &str = "task_stop";
 const SPAWN_AGENT_TOOL_NAME: &str = "spawn_agent";
 const SEND_INPUT_TOOL_NAME: &str = "send_input";
 const WAIT_AGENT_TOOL_NAME: &str = "wait_agent";
@@ -66,31 +71,38 @@ pub struct AgentTaskInput {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
-pub struct TaskToolInput {
+pub struct TaskCreateToolInput {
     #[serde(flatten)]
     pub task: AgentTaskInput,
-}
-
-#[derive(Clone, Debug, Serialize, JsonSchema)]
-struct TaskToolOutput {
-    agent: AgentHandle,
-    result: AgentResultEnvelope,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<TaskStatus>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
-pub struct TaskBatchToolInput {
-    pub tasks: Vec<AgentTaskInput>,
-    #[serde(default = "default_wait_mode")]
-    pub mode: AgentWaitMode,
-    #[serde(default)]
-    pub stop_on_error: bool,
+pub struct TaskGetToolInput {
+    pub task_id: TaskId,
 }
 
-#[derive(Clone, Debug, Serialize, JsonSchema)]
-struct TaskBatchToolOutput {
-    completed: Vec<AgentHandle>,
-    pending: Vec<AgentHandle>,
-    results: Vec<AgentResultEnvelope>,
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+pub struct TaskListToolInput {
+    #[serde(default)]
+    pub include_closed: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+pub struct TaskUpdateToolInput {
+    pub task_id: TaskId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<TaskStatus>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+pub struct TaskStopToolInput {
+    pub task_id: TaskId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
@@ -184,10 +196,6 @@ struct LoadedAgentInputFile {
     data_base64: String,
 }
 
-fn default_wait_mode() -> AgentWaitMode {
-    AgentWaitMode::All
-}
-
 #[async_trait]
 pub trait SubagentExecutor: Send + Sync {
     async fn spawn(
@@ -223,6 +231,40 @@ pub trait SubagentExecutor: Send + Sync {
     ) -> Result<AgentHandle>;
 }
 
+#[async_trait]
+pub trait TaskManager: Send + Sync {
+    async fn create_task(
+        &self,
+        parent: SubagentParentContext,
+        task: AgentTaskSpec,
+        status: TaskStatus,
+    ) -> Result<TaskRecord>;
+
+    async fn get_task(&self, parent: SubagentParentContext, task_id: &TaskId)
+    -> Result<TaskRecord>;
+
+    async fn list_tasks(
+        &self,
+        parent: SubagentParentContext,
+        include_closed: bool,
+    ) -> Result<Vec<TaskSummaryRecord>>;
+
+    async fn update_task(
+        &self,
+        parent: SubagentParentContext,
+        task_id: TaskId,
+        status: Option<TaskStatus>,
+        summary: Option<String>,
+    ) -> Result<TaskRecord>;
+
+    async fn stop_task(
+        &self,
+        parent: SubagentParentContext,
+        task_id: TaskId,
+        reason: Option<String>,
+    ) -> Result<TaskRecord>;
+}
+
 macro_rules! define_executor_tool {
     ($name:ident) => {
         #[derive(Clone)]
@@ -239,8 +281,6 @@ macro_rules! define_executor_tool {
     };
 }
 
-define_executor_tool!(TaskTool);
-define_executor_tool!(TaskBatchTool);
 define_executor_tool!(AgentSpawnTool);
 define_executor_tool!(AgentSendTool);
 define_executor_tool!(AgentWaitTool);
@@ -248,18 +288,60 @@ define_executor_tool!(AgentResumeTool);
 define_executor_tool!(AgentListTool);
 define_executor_tool!(AgentCancelTool);
 
+#[derive(Clone)]
+pub struct TaskCreateTool {
+    manager: Arc<dyn TaskManager>,
+}
+
+#[derive(Clone)]
+pub struct TaskGetTool {
+    manager: Arc<dyn TaskManager>,
+}
+
+#[derive(Clone)]
+pub struct TaskListTool {
+    manager: Arc<dyn TaskManager>,
+}
+
+#[derive(Clone)]
+pub struct TaskUpdateTool {
+    manager: Arc<dyn TaskManager>,
+}
+
+#[derive(Clone)]
+pub struct TaskStopTool {
+    manager: Arc<dyn TaskManager>,
+}
+
+macro_rules! define_task_tool {
+    ($name:ident) => {
+        impl $name {
+            #[must_use]
+            pub fn new(manager: Arc<dyn TaskManager>) -> Self {
+                Self { manager }
+            }
+        }
+    };
+}
+
+define_task_tool!(TaskCreateTool);
+define_task_tool!(TaskGetTool);
+define_task_tool!(TaskListTool);
+define_task_tool!(TaskUpdateTool);
+define_task_tool!(TaskStopTool);
+
 #[async_trait]
-impl Tool for TaskTool {
+impl Tool for TaskCreateTool {
     fn spec(&self) -> ToolSpec {
         builtin_tool_spec(
-            "task",
-            "Spawn one child agent, wait for completion, and return its structured result.",
-            serde_json::to_value(schema_for!(TaskToolInput)).expect("task schema"),
+            TASK_CREATE_TOOL_NAME,
+            "Create a first-class task record without launching a child agent. Use spawn_agent when you need a new child runtime; use task_create for tracked work items and TODOs.",
+            serde_json::to_value(schema_for!(TaskCreateToolInput)).expect("task_create schema"),
             ToolOutputMode::Text,
             tool_approval_profile(false, false, false, false),
         )
         .with_output_schema(
-            serde_json::to_value(schema_for!(TaskToolOutput)).expect("task output schema"),
+            serde_json::to_value(schema_for!(TaskRecord)).expect("task_create output schema"),
         )
     }
 
@@ -269,57 +351,41 @@ impl Tool for TaskTool {
         arguments: Value,
         ctx: &ToolExecutionContext,
     ) -> Result<ToolResult> {
-        let input: TaskToolInput = serde_json::from_value(arguments)?;
-        let parent = SubagentParentContext::from(ctx);
-        let task = normalize_task_input(input.task, 1)?;
-        let mut handles = self
-            .executor
-            .spawn(parent.clone(), vec![SubagentLaunchSpec::from_task(task)])
-            .await?;
-        let agent = handles
-            .pop()
-            .ok_or_else(|| ToolError::invalid_state("task spawn returned no agent"))?;
-        let wait = self
-            .executor
-            .wait(
-                parent,
-                AgentWaitRequest {
-                    agent_ids: vec![agent.agent_id.clone()],
-                    mode: AgentWaitMode::All,
-                },
+        let input: TaskCreateToolInput = serde_json::from_value(arguments)?;
+        let task = normalize_task_input(
+            input.task,
+            TaskOrigin::AgentCreated,
+            Some(TaskId::from(format!("task_{call_id}"))),
+        )?;
+        let record = self
+            .manager
+            .create_task(
+                SubagentParentContext::from(ctx),
+                task,
+                input.status.unwrap_or(TaskStatus::Open),
             )
             .await?;
-        let result = wait
-            .results
-            .into_iter()
-            .find(|result| result.agent_id == agent.agent_id)
-            .ok_or_else(|| ToolError::invalid_state("missing child result"))?;
         build_tool_result(
             call_id,
-            "task",
-            format!(
-                "[task {} status={}]\nsummary> {}\n\n{}",
-                agent.role, result.status, result.summary, result.text
-            ),
-            TaskToolOutput { agent, result },
+            TASK_CREATE_TOOL_NAME,
+            render_task_record_line("Created", &record),
+            record,
         )
     }
 }
 
 #[async_trait]
-impl Tool for TaskBatchTool {
+impl Tool for TaskGetTool {
     fn spec(&self) -> ToolSpec {
         builtin_tool_spec(
-            "task_batch",
-            "Spawn multiple child agents with dependency-aware scheduling, wait for completion, and return structured results.",
-            serde_json::to_value(schema_for!(TaskBatchToolInput))
-                .expect("task_batch schema"),
+            TASK_GET_TOOL_NAME,
+            "Load one task record by task id.",
+            serde_json::to_value(schema_for!(TaskGetToolInput)).expect("task_get schema"),
             ToolOutputMode::Text,
-            tool_approval_profile(false, false, false, false),
+            tool_approval_profile(true, false, false, false),
         )
         .with_output_schema(
-            serde_json::to_value(schema_for!(TaskBatchToolOutput))
-                .expect("task_batch output schema"),
+            serde_json::to_value(schema_for!(TaskRecord)).expect("task_get output schema"),
         )
     }
 
@@ -329,38 +395,149 @@ impl Tool for TaskBatchTool {
         arguments: Value,
         ctx: &ToolExecutionContext,
     ) -> Result<ToolResult> {
-        let input: TaskBatchToolInput = serde_json::from_value(arguments)?;
-        if input.tasks.is_empty() {
-            return Err(ToolError::invalid("task_batch requires at least one task"));
-        }
-        let parent = SubagentParentContext::from(ctx);
-        let tasks = input
-            .tasks
-            .into_iter()
-            .enumerate()
-            .map(|(index, task)| normalize_task_input(task, index + 1))
-            .collect::<Result<Vec<_>>>()?
-            .into_iter()
-            .map(SubagentLaunchSpec::from_task)
-            .collect::<Vec<_>>();
-        let handles = self.executor.spawn(parent.clone(), tasks).await?;
-        let wait = wait_for_batch(
-            self.executor.as_ref(),
-            parent,
-            handles,
-            input.mode,
-            input.stop_on_error,
-        )
-        .await?;
+        let input: TaskGetToolInput = serde_json::from_value(arguments)?;
+        let record = self
+            .manager
+            .get_task(SubagentParentContext::from(ctx), &input.task_id)
+            .await?;
         build_tool_result(
             call_id,
-            "task_batch",
-            render_wait_summary("task_batch", &wait, false),
-            TaskBatchToolOutput {
-                completed: wait.completed,
-                pending: wait.pending,
-                results: wait.results,
+            TASK_GET_TOOL_NAME,
+            render_task_record_line("Loaded", &record),
+            record,
+        )
+    }
+}
+
+#[async_trait]
+impl Tool for TaskListTool {
+    fn spec(&self) -> ToolSpec {
+        builtin_tool_spec(
+            TASK_LIST_TOOL_NAME,
+            "List task records visible from the current parent scope.",
+            serde_json::to_value(schema_for!(TaskListToolInput)).expect("task_list schema"),
+            ToolOutputMode::Text,
+            tool_approval_profile(true, false, false, false),
+        )
+        .with_output_schema(
+            serde_json::to_value(schema_for!(Vec<TaskSummaryRecord>))
+                .expect("task_list output schema"),
+        )
+    }
+
+    async fn execute(
+        &self,
+        call_id: ToolCallId,
+        arguments: Value,
+        ctx: &ToolExecutionContext,
+    ) -> Result<ToolResult> {
+        let input: TaskListToolInput = serde_json::from_value(arguments)?;
+        let tasks = self
+            .manager
+            .list_tasks(SubagentParentContext::from(ctx), input.include_closed)
+            .await?;
+        build_tool_result(
+            call_id,
+            TASK_LIST_TOOL_NAME,
+            if tasks.is_empty() {
+                "No tracked tasks.".to_string()
+            } else {
+                tasks
+                    .iter()
+                    .map(render_task_summary_line)
+                    .collect::<Vec<_>>()
+                    .join("\n")
             },
+            tasks,
+        )
+    }
+}
+
+#[async_trait]
+impl Tool for TaskUpdateTool {
+    fn spec(&self) -> ToolSpec {
+        builtin_tool_spec(
+            TASK_UPDATE_TOOL_NAME,
+            "Update task status or summary without changing the shared plan surface.",
+            serde_json::to_value(schema_for!(TaskUpdateToolInput)).expect("task_update schema"),
+            ToolOutputMode::Text,
+            tool_approval_profile(false, false, false, false),
+        )
+        .with_output_schema(
+            serde_json::to_value(schema_for!(TaskRecord)).expect("task_update output schema"),
+        )
+    }
+
+    async fn execute(
+        &self,
+        call_id: ToolCallId,
+        arguments: Value,
+        ctx: &ToolExecutionContext,
+    ) -> Result<ToolResult> {
+        let input: TaskUpdateToolInput = serde_json::from_value(arguments)?;
+        if input.status.is_none()
+            && input
+                .summary
+                .as_ref()
+                .is_none_or(|value| value.trim().is_empty())
+        {
+            return Err(ToolError::invalid(
+                "task_update requires at least one of status or summary",
+            ));
+        }
+        let record = self
+            .manager
+            .update_task(
+                SubagentParentContext::from(ctx),
+                input.task_id,
+                input.status,
+                normalize_optional_non_empty(input.summary),
+            )
+            .await?;
+        build_tool_result(
+            call_id,
+            TASK_UPDATE_TOOL_NAME,
+            render_task_record_line("Updated", &record),
+            record,
+        )
+    }
+}
+
+#[async_trait]
+impl Tool for TaskStopTool {
+    fn spec(&self) -> ToolSpec {
+        builtin_tool_spec(
+            TASK_STOP_TOOL_NAME,
+            "Stop a task by cancelling its live child agent when present, or by marking the record cancelled otherwise.",
+            serde_json::to_value(schema_for!(TaskStopToolInput)).expect("task_stop schema"),
+            ToolOutputMode::Text,
+            tool_approval_profile(false, false, false, false),
+        )
+        .with_output_schema(
+            serde_json::to_value(schema_for!(TaskRecord)).expect("task_stop output schema"),
+        )
+    }
+
+    async fn execute(
+        &self,
+        call_id: ToolCallId,
+        arguments: Value,
+        ctx: &ToolExecutionContext,
+    ) -> Result<ToolResult> {
+        let input: TaskStopToolInput = serde_json::from_value(arguments)?;
+        let record = self
+            .manager
+            .stop_task(
+                SubagentParentContext::from(ctx),
+                input.task_id,
+                normalize_optional_non_empty(input.reason),
+            )
+            .await?;
+        build_tool_result(
+            call_id,
+            TASK_STOP_TOOL_NAME,
+            render_task_record_line("Stopped", &record),
+            record,
         )
     }
 }
@@ -582,7 +759,11 @@ impl Tool for AgentCancelTool {
     }
 }
 
-fn normalize_task_input(input: AgentTaskInput, ordinal: usize) -> Result<AgentTaskSpec> {
+fn normalize_task_input(
+    input: AgentTaskInput,
+    origin: TaskOrigin,
+    fallback_task_id: Option<TaskId>,
+) -> Result<AgentTaskSpec> {
     let prompt = input.prompt.trim().to_string();
     if prompt.is_empty() {
         return Err(ToolError::invalid("agent task prompt must not be empty"));
@@ -596,7 +777,9 @@ fn normalize_task_input(input: AgentTaskInput, ordinal: usize) -> Result<AgentTa
         .task_id
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| format!("task_{ordinal}"));
+        .map(TaskId::from)
+        .or(fallback_task_id)
+        .unwrap_or_else(|| TaskId::from(format!("task_{}", types::new_opaque_id())));
     let dependency_ids = normalize_dependency_ids(input.dependency_ids);
     if dependency_ids
         .iter()
@@ -610,6 +793,7 @@ fn normalize_task_input(input: AgentTaskInput, ordinal: usize) -> Result<AgentTa
         task_id,
         role,
         prompt,
+        origin,
         steer: input
             .steer
             .map(|value| value.trim().to_string())
@@ -637,9 +821,10 @@ async fn normalize_spawn_input(
     .await?;
     Ok(SubagentLaunchSpec {
         task: AgentTaskSpec {
-            task_id: format!("spawn_{}", call_id),
+            task_id: TaskId::from(format!("spawn_{}", call_id)),
             role,
             prompt: normalized.preview_text,
+            origin: TaskOrigin::ChildAgentBacked,
             steer: None,
             allowed_tools: Vec::new(),
             requested_write_set: Vec::new(),
@@ -966,114 +1151,15 @@ fn normalize_paths(paths: Vec<String>) -> Vec<String> {
         .collect()
 }
 
-fn normalize_dependency_ids(dependency_ids: Vec<String>) -> Vec<String> {
+fn normalize_dependency_ids(dependency_ids: Vec<String>) -> Vec<TaskId> {
     let mut unique = BTreeSet::new();
     dependency_ids
         .into_iter()
         .map(|dependency_id| dependency_id.trim().to_string())
         .filter(|dependency_id| !dependency_id.is_empty())
+        .map(TaskId::from)
         .filter(|dependency_id| unique.insert(dependency_id.clone()))
         .collect()
-}
-
-async fn wait_for_batch(
-    executor: &dyn SubagentExecutor,
-    parent: SubagentParentContext,
-    handles: Vec<AgentHandle>,
-    mode: AgentWaitMode,
-    stop_on_error: bool,
-) -> Result<AgentWaitResponse> {
-    let agent_ids = handles
-        .iter()
-        .map(|handle| handle.agent_id.clone())
-        .collect::<Vec<_>>();
-    if !stop_on_error {
-        return executor
-            .wait(parent, AgentWaitRequest { agent_ids, mode })
-            .await;
-    }
-
-    let mut remaining = agent_ids.iter().cloned().collect::<BTreeSet<_>>();
-    let mut completed = BTreeMap::new();
-    let mut results = BTreeMap::new();
-    while !remaining.is_empty() {
-        let wave = executor
-            .wait(
-                parent.clone(),
-                AgentWaitRequest {
-                    agent_ids: remaining.iter().cloned().collect(),
-                    mode: AgentWaitMode::Any,
-                },
-            )
-            .await?;
-        if wave.completed.is_empty() {
-            return Err(ToolError::invalid_state(
-                "wait_agent(any) returned no terminal agent",
-            ));
-        }
-        let saw_failure = wave
-            .results
-            .iter()
-            .any(|result| matches!(result.status, AgentStatus::Failed | AgentStatus::Cancelled));
-        for handle in wave.completed {
-            remaining.remove(&handle.agent_id);
-            completed.insert(handle.agent_id.clone(), handle);
-        }
-        for result in wave.results {
-            results.insert(result.agent_id.clone(), result);
-        }
-        if saw_failure {
-            for agent_id in remaining.iter().cloned().collect::<Vec<_>>() {
-                let _ = executor
-                    .cancel(
-                        parent.clone(),
-                        agent_id.clone(),
-                        Some("task_batch stop_on_error".to_string()),
-                    )
-                    .await;
-            }
-            let tail_ids = remaining.iter().cloned().collect::<Vec<_>>();
-            if !tail_ids.is_empty() {
-                let tail = executor
-                    .wait(
-                        parent.clone(),
-                        AgentWaitRequest {
-                            agent_ids: tail_ids,
-                            mode: AgentWaitMode::All,
-                        },
-                    )
-                    .await?;
-                for handle in tail.completed {
-                    completed.insert(handle.agent_id.clone(), handle);
-                }
-                for result in tail.results {
-                    results.insert(result.agent_id.clone(), result);
-                }
-            }
-            remaining.clear();
-        }
-    }
-
-    let completed_vec = agent_ids
-        .iter()
-        .filter_map(|agent_id| completed.remove(agent_id))
-        .collect::<Vec<_>>();
-    let results_vec = agent_ids
-        .iter()
-        .filter_map(|agent_id| results.remove(agent_id))
-        .collect::<Vec<_>>();
-    Ok(match mode {
-        AgentWaitMode::Any => AgentWaitResponse {
-            completed: completed_vec.into_iter().take(1).collect(),
-            pending: Vec::new(),
-            results: results_vec.into_iter().take(1).collect(),
-        },
-        AgentWaitMode::All => AgentWaitResponse {
-            completed: completed_vec,
-            pending: Vec::new(),
-            results: results_vec,
-        },
-    })
 }
 
 async fn wait_for_targets(
@@ -1199,6 +1285,39 @@ fn render_result_line(result: &AgentResultEnvelope) -> String {
     )
 }
 
+fn render_task_summary_line(summary: &TaskSummaryRecord) -> String {
+    let mut fields = vec![format!(
+        "{} status={} origin={}",
+        summary.task_id, summary.status, summary.origin
+    )];
+    if let Some(child_agent_id) = &summary.child_agent_id {
+        fields.push(format!("agent={child_agent_id}"));
+    }
+    if let Some(summary_text) = &summary.summary {
+        fields.push(format!("summary={summary_text}"));
+    }
+    fields.join(" ")
+}
+
+fn render_task_record_line(verb: &str, record: &TaskRecord) -> String {
+    let mut lines = vec![format!(
+        "{verb} task {} status={} origin={}",
+        record.summary.task_id, record.summary.status, record.summary.origin
+    )];
+    lines.push(format!("role={}", record.spec.role));
+    lines.push(format!("prompt={}", record.spec.prompt));
+    if let Some(summary) = &record.summary.summary {
+        lines.push(format!("summary={summary}"));
+    }
+    if let Some(child_agent_id) = &record.summary.child_agent_id {
+        lines.push(format!("agent={child_agent_id}"));
+    }
+    if !record.claimed_files.is_empty() {
+        lines.push(format!("claimed_files={}", record.claimed_files.join(",")));
+    }
+    lines.join("\n")
+}
+
 fn build_tool_result<T>(
     call_id: ToolCallId,
     tool_name: &str,
@@ -1228,7 +1347,9 @@ mod tests {
     use super::{
         AgentCancelTool, AgentListTool, AgentResumeTool, AgentSendTool, AgentSpawnTool,
         AgentTaskInput, AgentWaitTool, SubagentExecutor, SubagentInputDelivery, SubagentLaunchSpec,
-        SubagentParentContext, TaskBatchTool, TaskBatchToolInput, TaskTool, TaskToolInput,
+        SubagentParentContext, TaskCreateTool, TaskCreateToolInput, TaskGetTool, TaskGetToolInput,
+        TaskListTool, TaskListToolInput, TaskManager, TaskStopTool, TaskStopToolInput,
+        TaskUpdateTool, TaskUpdateToolInput,
     };
     use crate::{Result, Tool, ToolError, ToolExecutionContext, ToolRegistry};
     use async_trait::async_trait;
@@ -1239,8 +1360,8 @@ mod tests {
     use tokio::sync::Notify;
     use types::{
         AgentHandle, AgentId, AgentResultEnvelope, AgentSessionId, AgentStatus, AgentWaitMode,
-        AgentWaitRequest, AgentWaitResponse, Message, MessagePart, MessageRole, SessionId,
-        ToolCallId, ToolName,
+        AgentWaitRequest, AgentWaitResponse, Message, MessagePart, MessageRole, SessionId, TaskId,
+        TaskOrigin, TaskRecord, TaskStatus, TaskSummaryRecord, ToolCallId, ToolName,
     };
 
     fn workspace_context(root: &Path) -> ToolExecutionContext {
@@ -1267,9 +1388,151 @@ mod tests {
         spawned_launches: Vec<SubagentLaunchSpec>,
     }
 
+    #[derive(Default)]
+    struct FakeTaskManager {
+        state: Mutex<BTreeMap<TaskId, TaskRecord>>,
+    }
+
+    impl FakeTaskManager {
+        fn insert(&self, record: TaskRecord) {
+            self.state
+                .lock()
+                .unwrap()
+                .insert(record.summary.task_id.clone(), record);
+        }
+    }
+
+    #[async_trait]
+    impl TaskManager for FakeTaskManager {
+        async fn create_task(
+            &self,
+            parent: SubagentParentContext,
+            task: types::AgentTaskSpec,
+            status: TaskStatus,
+        ) -> Result<TaskRecord> {
+            let record = TaskRecord {
+                summary: TaskSummaryRecord {
+                    task_id: task.task_id.clone(),
+                    session_id: parent
+                        .session_id
+                        .unwrap_or_else(|| SessionId::from("session_root")),
+                    agent_session_id: parent
+                        .agent_session_id
+                        .unwrap_or_else(|| AgentSessionId::from("agent_session_root")),
+                    role: task.role.clone(),
+                    origin: task.origin,
+                    status,
+                    parent_agent_id: parent.parent_agent_id,
+                    child_agent_id: None,
+                    summary: Some(task.prompt.clone()),
+                },
+                spec: task,
+                claimed_files: Vec::new(),
+                result: None,
+                error: None,
+            };
+            self.insert(record.clone());
+            Ok(record)
+        }
+
+        async fn get_task(
+            &self,
+            _parent: SubagentParentContext,
+            task_id: &TaskId,
+        ) -> Result<TaskRecord> {
+            self.state
+                .lock()
+                .unwrap()
+                .get(task_id)
+                .cloned()
+                .ok_or_else(|| ToolError::invalid(format!("unknown task id: {task_id}")))
+        }
+
+        async fn list_tasks(
+            &self,
+            _parent: SubagentParentContext,
+            include_closed: bool,
+        ) -> Result<Vec<TaskSummaryRecord>> {
+            Ok(self
+                .state
+                .lock()
+                .unwrap()
+                .values()
+                .filter(|record| include_closed || !record.summary.status.is_terminal())
+                .map(|record| record.summary.clone())
+                .collect())
+        }
+
+        async fn update_task(
+            &self,
+            _parent: SubagentParentContext,
+            task_id: TaskId,
+            status: Option<TaskStatus>,
+            summary: Option<String>,
+        ) -> Result<TaskRecord> {
+            let mut state = self.state.lock().unwrap();
+            let record = state
+                .get_mut(&task_id)
+                .ok_or_else(|| ToolError::invalid(format!("unknown task id: {task_id}")))?;
+            if let Some(status) = status {
+                record.summary.status = status;
+            }
+            if let Some(summary) = summary {
+                record.summary.summary = Some(summary);
+            }
+            Ok(record.clone())
+        }
+
+        async fn stop_task(
+            &self,
+            _parent: SubagentParentContext,
+            task_id: TaskId,
+            reason: Option<String>,
+        ) -> Result<TaskRecord> {
+            let mut state = self.state.lock().unwrap();
+            let record = state
+                .get_mut(&task_id)
+                .ok_or_else(|| ToolError::invalid(format!("unknown task id: {task_id}")))?;
+            record.summary.status = TaskStatus::Cancelled;
+            record.error = reason;
+            Ok(record.clone())
+        }
+    }
+
     struct BlockingWaitExecutor {
         handles: Vec<AgentHandle>,
         release: Arc<Notify>,
+    }
+
+    fn sample_task_record(task_id: &str, status: TaskStatus, summary: Option<&str>) -> TaskRecord {
+        let task_id = TaskId::from(task_id);
+        TaskRecord {
+            summary: TaskSummaryRecord {
+                task_id: task_id.clone(),
+                session_id: SessionId::from("session_root"),
+                agent_session_id: AgentSessionId::from("agent_session_root"),
+                role: "reviewer".to_string(),
+                origin: TaskOrigin::AgentCreated,
+                status,
+                parent_agent_id: Some(AgentId::from("agent_parent")),
+                child_agent_id: None,
+                summary: summary.map(ToString::to_string),
+            },
+            spec: types::AgentTaskSpec {
+                task_id,
+                role: "reviewer".to_string(),
+                prompt: "inspect workspace".to_string(),
+                origin: TaskOrigin::AgentCreated,
+                steer: None,
+                allowed_tools: vec![ToolName::from("read")],
+                requested_write_set: vec!["src/lib.rs".to_string()],
+                dependency_ids: Vec::new(),
+                timeout_seconds: None,
+            },
+            claimed_files: Vec::new(),
+            result: None,
+            error: None,
+        }
     }
 
     #[async_trait]
@@ -1479,13 +1742,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn task_tool_spawns_and_waits_for_single_agent() {
-        let executor = Arc::new(FakeExecutor::default());
-        let tool = TaskTool::new(executor);
+    async fn task_create_creates_standalone_record() {
+        let manager = Arc::new(FakeTaskManager::default());
+        let tool = TaskCreateTool::new(manager);
         let result = tool
             .execute(
                 ToolCallId::new(),
-                serde_json::to_value(TaskToolInput {
+                serde_json::to_value(TaskCreateToolInput {
                     task: AgentTaskInput {
                         task_id: Some("inspect".to_string()),
                         role: Some("explorer".to_string()),
@@ -1496,6 +1759,7 @@ mod tests {
                         dependency_ids: Vec::new(),
                         timeout_seconds: None,
                     },
+                    status: Some(TaskStatus::Open),
                 })
                 .unwrap(),
                 &ToolExecutionContext::default(),
@@ -1503,109 +1767,132 @@ mod tests {
             .await
             .unwrap();
         let structured = result.structured_content.unwrap();
-        assert_eq!(structured["agent"]["task_id"], "inspect");
-        assert_eq!(structured["result"]["status"], "completed");
+        assert_eq!(structured["summary"]["task_id"], "inspect");
+        assert_eq!(structured["summary"]["status"], "open");
+        assert_eq!(structured["summary"]["origin"], "agent_created");
     }
 
     #[tokio::test]
-    async fn task_batch_fans_out_and_joins() {
-        let executor = Arc::new(FakeExecutor::default());
-        let tool = TaskBatchTool::new(executor);
+    async fn task_list_and_get_round_trip_records() {
+        let manager = Arc::new(FakeTaskManager::default());
+        manager.insert(sample_task_record(
+            "task_open",
+            TaskStatus::Open,
+            Some("inspect workspace"),
+        ));
+        manager.insert(sample_task_record(
+            "task_done",
+            TaskStatus::Completed,
+            Some("done"),
+        ));
+        let list = TaskListTool::new(manager.clone())
+            .execute(
+                ToolCallId::new(),
+                serde_json::to_value(TaskListToolInput {
+                    include_closed: false,
+                })
+                .unwrap(),
+                &ToolExecutionContext::default(),
+            )
+            .await
+            .unwrap();
+        let list_items = list.structured_content.unwrap().as_array().unwrap().clone();
+        assert_eq!(list_items.len(), 1);
+        assert_eq!(list_items[0]["task_id"], "task_open");
+
+        let get = TaskGetTool::new(manager)
+            .execute(
+                ToolCallId::new(),
+                serde_json::to_value(TaskGetToolInput {
+                    task_id: TaskId::from("task_done"),
+                })
+                .unwrap(),
+                &ToolExecutionContext::default(),
+            )
+            .await
+            .unwrap();
+        let structured = get.structured_content.unwrap();
+        assert_eq!(structured["summary"]["task_id"], "task_done");
+        assert_eq!(structured["summary"]["status"], "completed");
+    }
+
+    #[tokio::test]
+    async fn task_update_requires_status_or_summary() {
+        let manager = Arc::new(FakeTaskManager::default());
+        let tool = TaskUpdateTool::new(manager);
+        let error = tool
+            .execute(
+                ToolCallId::new(),
+                serde_json::to_value(TaskUpdateToolInput {
+                    task_id: TaskId::from("task_1"),
+                    status: None,
+                    summary: Some("   ".to_string()),
+                })
+                .unwrap(),
+                &ToolExecutionContext::default(),
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("requires at least one of status or summary")
+        );
+    }
+
+    #[tokio::test]
+    async fn task_update_mutates_existing_record() {
+        let manager = Arc::new(FakeTaskManager::default());
+        manager.insert(sample_task_record(
+            "task_1",
+            TaskStatus::Open,
+            Some("before"),
+        ));
+        let tool = TaskUpdateTool::new(manager);
         let result = tool
             .execute(
                 ToolCallId::new(),
-                json!({
-                    "tasks": [
-                        {"task_id":"a","role":"explorer","prompt":"inspect a"},
-                        {"task_id":"b","role":"reviewer","prompt":"inspect b"}
-                    ],
-                    "mode": "all",
-                    "stop_on_error": false
-                }),
-                &ToolExecutionContext::default(),
-            )
-            .await
-            .unwrap();
-        let structured = result.structured_content.unwrap();
-        assert_eq!(structured["completed"].as_array().unwrap().len(), 2);
-        assert_eq!(structured["results"].as_array().unwrap().len(), 2);
-    }
-
-    #[tokio::test]
-    async fn task_batch_preserves_dependency_ids_for_executor_scheduling() {
-        let executor = Arc::new(FakeExecutor::default());
-        let tool = TaskBatchTool::new(executor.clone());
-        tool.execute(
-            ToolCallId::new(),
-            json!({
-                "tasks": [
-                    {"task_id":"inspect","role":"explorer","prompt":"inspect"},
-                    {"task_id":"review","role":"reviewer","prompt":"review","dependency_ids":["inspect"," inspect "]}
-                ],
-                "mode": "all",
-                "stop_on_error": false
-            }),
-            &ToolExecutionContext::default(),
-        )
-        .await
-        .unwrap();
-
-        let state = executor.state.lock().unwrap();
-        let review = state
-            .spawned_launches
-            .iter()
-            .map(|launch| &launch.task)
-            .find(|task| task.task_id == "review")
-            .expect("review task should be forwarded to the executor");
-        assert_eq!(review.dependency_ids, vec!["inspect"]);
-    }
-
-    #[tokio::test]
-    async fn task_batch_stop_on_error_cancels_remaining_agents() {
-        let executor = Arc::new(FakeExecutor::default());
-        let tool = TaskBatchTool::new(executor.clone());
-        let _ = tool
-            .execute(
-                ToolCallId::new(),
-                serde_json::to_value(TaskBatchToolInput {
-                    tasks: vec![
-                        AgentTaskInput {
-                            task_id: Some("fail".to_string()),
-                            role: Some("failing".to_string()),
-                            prompt: "fail".to_string(),
-                            steer: None,
-                            allowed_tools: Vec::new(),
-                            requested_write_set: Vec::new(),
-                            dependency_ids: Vec::new(),
-                            timeout_seconds: None,
-                        },
-                        AgentTaskInput {
-                            task_id: Some("other".to_string()),
-                            role: Some("worker".to_string()),
-                            prompt: "other".to_string(),
-                            steer: None,
-                            allowed_tools: Vec::new(),
-                            requested_write_set: Vec::new(),
-                            dependency_ids: Vec::new(),
-                            timeout_seconds: None,
-                        },
-                    ],
-                    mode: AgentWaitMode::All,
-                    stop_on_error: true,
+                serde_json::to_value(TaskUpdateToolInput {
+                    task_id: TaskId::from("task_1"),
+                    status: Some(TaskStatus::Running),
+                    summary: Some("after".to_string()),
                 })
                 .unwrap(),
                 &ToolExecutionContext::default(),
             )
             .await
             .unwrap();
-        assert!(
-            executor
-                .state
-                .lock()
-                .unwrap()
-                .cancelled
-                .contains(&AgentId::from("agent_other"))
-        );
+
+        let structured = result.structured_content.unwrap();
+        assert_eq!(structured["summary"]["status"], "running");
+        assert_eq!(structured["summary"]["summary"], "after");
+    }
+
+    #[tokio::test]
+    async fn task_stop_marks_manual_record_cancelled() {
+        let manager = Arc::new(FakeTaskManager::default());
+        manager.insert(sample_task_record(
+            "task_1",
+            TaskStatus::Running,
+            Some("before"),
+        ));
+        let tool = TaskStopTool::new(manager);
+        let result = tool
+            .execute(
+                ToolCallId::new(),
+                serde_json::to_value(TaskStopToolInput {
+                    task_id: TaskId::from("task_1"),
+                    reason: Some("operator stop".to_string()),
+                })
+                .unwrap(),
+                &ToolExecutionContext::default(),
+            )
+            .await
+            .unwrap();
+
+        let structured = result.structured_content.unwrap();
+        assert_eq!(structured["summary"]["status"], "cancelled");
+        assert_eq!(structured["error"], "operator stop");
     }
 
     #[tokio::test]
@@ -1730,7 +2017,8 @@ mod tests {
         assert!(!launch.fork_context);
         assert_eq!(launch.model.as_deref(), Some("gpt-5.4"));
         assert_eq!(launch.reasoning_effort.as_deref(), Some("high"));
-        assert!(launch.task.task_id.starts_with("spawn_"));
+        assert!(launch.task.task_id.as_str().starts_with("spawn_"));
+        assert_eq!(launch.task.origin, TaskOrigin::ChildAgentBacked);
         assert!(launch.task.prompt.contains("Review the current patch."));
         assert!(launch.task.prompt.contains("Focus on regressions."));
         assert!(launch.task.prompt.contains("[mention]"));
@@ -1995,7 +2283,7 @@ mod tests {
                 parent_agent_id: Some(AgentId::from("agent_parent")),
                 session_id: SessionId::from("run_agent_a"),
                 agent_session_id: AgentSessionId::from("session_agent_a"),
-                task_id: "task_a".to_string(),
+                task_id: TaskId::from("task_a"),
                 role: "worker".to_string(),
                 status: AgentStatus::Running,
             },
@@ -2023,7 +2311,7 @@ mod tests {
                 parent_agent_id: Some(AgentId::from("agent_parent")),
                 session_id: SessionId::from("run_pending"),
                 agent_session_id: AgentSessionId::from("session_pending"),
-                task_id: "pending".to_string(),
+                task_id: TaskId::from("pending"),
                 role: "worker".to_string(),
                 status: AgentStatus::Running,
             }],
@@ -2091,11 +2379,15 @@ mod tests {
                 ],
                 timeout_seconds: None,
             },
-            1,
+            TaskOrigin::AgentCreated,
+            None,
         )
         .unwrap();
 
-        assert_eq!(task.dependency_ids, vec!["inspect", "plan"]);
+        assert_eq!(
+            task.dependency_ids,
+            vec![TaskId::from("inspect"), TaskId::from("plan")]
+        );
     }
 
     #[test]
@@ -2111,7 +2403,8 @@ mod tests {
                 dependency_ids: vec!["review".to_string()],
                 timeout_seconds: None,
             },
-            1,
+            TaskOrigin::AgentCreated,
+            None,
         )
         .unwrap_err();
 

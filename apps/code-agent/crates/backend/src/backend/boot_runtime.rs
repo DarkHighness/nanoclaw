@@ -6,7 +6,7 @@ use agent::runtime::{
 use agent::tools::{
     CodeCallHierarchyDirection, CodeCallHierarchyEntry, CodeHover, CodeNavigationTarget,
     CodeReference, CodeSymbol, FileActivityObserver, ProcessExecutor, SandboxBackendStatus,
-    SandboxError, SubagentExecutor,
+    SandboxError, SubagentExecutor, TaskManager,
 };
 use agent::{
     CodeDocumentSymbolsTool, CodeIntelBackend, CodeNavTool, CodeSymbolSearchTool, EditTool,
@@ -501,7 +501,13 @@ pub fn build_runtime_tooling(
 pub fn register_subagent_tools(
     tools: &mut ToolRegistry,
     subagent_executor: Arc<dyn SubagentExecutor>,
+    task_manager: Arc<dyn TaskManager>,
 ) {
+    tools.register(agent::tools::TaskCreateTool::new(task_manager.clone()));
+    tools.register(agent::tools::TaskGetTool::new(task_manager.clone()));
+    tools.register(agent::tools::TaskListTool::new(task_manager.clone()));
+    tools.register(agent::tools::TaskUpdateTool::new(task_manager.clone()));
+    tools.register(agent::tools::TaskStopTool::new(task_manager));
     tools.register(agent::tools::AgentSpawnTool::new(subagent_executor.clone()));
     tools.register(agent::tools::AgentSendTool::new(subagent_executor.clone()));
     tools.register(agent::tools::AgentWaitTool::new(subagent_executor.clone()));
@@ -584,11 +590,13 @@ mod tests {
     use agent::SkillCatalog;
     use agent::tools::{
         NetworkPolicy, SandboxBackendKind, SandboxBackendStatus, SandboxPolicy, SubagentExecutor,
-        SubagentInputDelivery, SubagentLaunchSpec, SubagentParentContext, ToolExecutionContext,
+        SubagentInputDelivery, SubagentLaunchSpec, SubagentParentContext, TaskManager,
+        ToolExecutionContext,
     };
     use agent::types::{
-        AgentHandle, AgentId, AgentResultEnvelope, AgentWaitRequest, AgentWaitResponse, ToolCallId,
-        ToolName,
+        AgentHandle, AgentId, AgentResultEnvelope, AgentSessionId, AgentTaskSpec, AgentWaitRequest,
+        AgentWaitResponse, SessionId, TaskId, TaskRecord, TaskStatus, TaskSummaryRecord,
+        ToolCallId, ToolName,
     };
     use agent_env::EnvMap;
     use async_trait::async_trait;
@@ -726,9 +734,18 @@ mod tests {
             },
             SkillCatalog::default(),
         );
-        register_subagent_tools(&mut tooling.tools, Arc::new(NoopSubagentExecutor));
+        register_subagent_tools(
+            &mut tooling.tools,
+            Arc::new(NoopSubagentExecutor),
+            Arc::new(NoopTaskManager),
+        );
 
         let tool_names = tooling.tools.names();
+        assert!(tool_names.iter().any(|name| name.as_str() == "task_create"));
+        assert!(tool_names.iter().any(|name| name.as_str() == "task_get"));
+        assert!(tool_names.iter().any(|name| name.as_str() == "task_list"));
+        assert!(tool_names.iter().any(|name| name.as_str() == "task_update"));
+        assert!(tool_names.iter().any(|name| name.as_str() == "task_stop"));
         assert!(tool_names.iter().any(|name| name.as_str() == "spawn_agent"));
         assert!(tool_names.iter().any(|name| name.as_str() == "send_input"));
         assert!(tool_names.iter().any(|name| name.as_str() == "wait_agent"));
@@ -806,7 +823,11 @@ mod tests {
             },
             SkillCatalog::default(),
         );
-        register_subagent_tools(&mut tooling.tools, Arc::new(NoopSubagentExecutor));
+        register_subagent_tools(
+            &mut tooling.tools,
+            Arc::new(NoopSubagentExecutor),
+            Arc::new(NoopTaskManager),
+        );
 
         let openai_specs = tooling
             .tools
@@ -986,6 +1007,8 @@ mod tests {
 
     struct NoopSubagentExecutor;
 
+    struct NoopTaskManager;
+
     #[async_trait]
     impl SubagentExecutor for NoopSubagentExecutor {
         async fn spawn(
@@ -1048,6 +1071,105 @@ mod tests {
             Err(agent::tools::ToolError::invalid_state(
                 "test executor does not support cancel",
             ))
+        }
+    }
+
+    #[async_trait]
+    impl TaskManager for NoopTaskManager {
+        async fn create_task(
+            &self,
+            _parent: SubagentParentContext,
+            task: AgentTaskSpec,
+            status: TaskStatus,
+        ) -> agent::tools::Result<TaskRecord> {
+            Ok(TaskRecord {
+                summary: TaskSummaryRecord {
+                    task_id: task.task_id.clone(),
+                    session_id: SessionId::from("session_root"),
+                    agent_session_id: AgentSessionId::from("agent_session_root"),
+                    role: task.role.clone(),
+                    origin: task.origin,
+                    status,
+                    parent_agent_id: None,
+                    child_agent_id: None,
+                    summary: Some(task.prompt.clone()),
+                },
+                spec: task,
+                claimed_files: Vec::new(),
+                result: None,
+                error: None,
+            })
+        }
+
+        async fn get_task(
+            &self,
+            _parent: SubagentParentContext,
+            task_id: &TaskId,
+        ) -> agent::tools::Result<TaskRecord> {
+            Ok(TaskRecord {
+                summary: TaskSummaryRecord {
+                    task_id: task_id.clone(),
+                    session_id: SessionId::from("session_root"),
+                    agent_session_id: AgentSessionId::from("agent_session_root"),
+                    role: "reviewer".to_string(),
+                    origin: agent::types::TaskOrigin::AgentCreated,
+                    status: TaskStatus::Open,
+                    parent_agent_id: None,
+                    child_agent_id: None,
+                    summary: Some("task".to_string()),
+                },
+                spec: AgentTaskSpec {
+                    task_id: task_id.clone(),
+                    role: "reviewer".to_string(),
+                    prompt: "task".to_string(),
+                    origin: agent::types::TaskOrigin::AgentCreated,
+                    steer: None,
+                    allowed_tools: Vec::new(),
+                    requested_write_set: Vec::new(),
+                    dependency_ids: Vec::new(),
+                    timeout_seconds: None,
+                },
+                claimed_files: Vec::new(),
+                result: None,
+                error: None,
+            })
+        }
+
+        async fn list_tasks(
+            &self,
+            _parent: SubagentParentContext,
+            _include_closed: bool,
+        ) -> agent::tools::Result<Vec<TaskSummaryRecord>> {
+            Ok(Vec::new())
+        }
+
+        async fn update_task(
+            &self,
+            parent: SubagentParentContext,
+            task_id: TaskId,
+            status: Option<TaskStatus>,
+            summary: Option<String>,
+        ) -> agent::tools::Result<TaskRecord> {
+            let mut record = self.get_task(parent, &task_id).await?;
+            if let Some(status) = status {
+                record.summary.status = status;
+            }
+            if let Some(summary) = summary {
+                record.summary.summary = Some(summary);
+            }
+            Ok(record)
+        }
+
+        async fn stop_task(
+            &self,
+            parent: SubagentParentContext,
+            task_id: TaskId,
+            reason: Option<String>,
+        ) -> agent::tools::Result<TaskRecord> {
+            let mut record = self.get_task(parent, &task_id).await?;
+            record.summary.status = TaskStatus::Cancelled;
+            record.error = reason;
+            Ok(record)
         }
     }
 }

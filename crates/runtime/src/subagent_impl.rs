@@ -25,12 +25,10 @@ use types::{
     AgentArtifact, AgentEnvelope, AgentEnvelopeKind, AgentHandle, AgentId, AgentResultEnvelope,
     AgentSessionId, AgentStatus, AgentTaskSpec, AgentWaitRequest, AgentWaitResponse,
     HookRegistration, Message, MessageRole, SessionEventEnvelope, SessionEventKind, SessionId,
-    ToolName,
+    TaskStatus, ToolName,
 };
 
 const DEFAULT_EXCLUDED_CHILD_TOOLS: &[&str] = &[
-    "task",
-    "task_batch",
     "spawn_agent",
     "send_input",
     "wait_agent",
@@ -560,6 +558,8 @@ impl RuntimeSubagentExecutor {
                 SessionEventKind::TaskCreated {
                     task: child.task.clone(),
                     parent_agent_id: parent.parent_agent_id.clone(),
+                    status: TaskStatus::Queued,
+                    summary: Some(child.task.prompt.clone()),
                 },
                 SessionEventKind::AgentEnvelope {
                     envelope: AgentEnvelope::new(
@@ -651,7 +651,7 @@ impl RuntimeSubagentExecutor {
             .map(|child| child.handle.agent_id.clone())
             .collect::<Vec<_>>();
         let mut dependency_counts = BTreeMap::new();
-        let mut reverse_edges: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        let mut reverse_edges: BTreeMap<types::TaskId, Vec<types::TaskId>> = BTreeMap::new();
         for child in planned.iter_mut() {
             let mut dependency_agent_ids = Vec::with_capacity(child.task.dependency_ids.len());
             let mut intra_batch_dependencies = 0usize;
@@ -707,7 +707,7 @@ impl RuntimeSubagentExecutor {
             .tool_context(plan.profile.tool_context.clone().with_agent_scope_metadata(
                 plan.handle.agent_id.clone(),
                 Some(plan.task.role.clone()),
-                Some(plan.task.task_id.clone()),
+                Some(plan.task.task_id.to_string()),
                 self.write_lease_manager.clone(),
             ))
             .tool_approval_handler(self.tool_approval_handler.clone())
@@ -811,7 +811,7 @@ impl RuntimeSubagentExecutor {
             match snapshot.handle.status {
                 AgentStatus::Completed => {}
                 AgentStatus::Failed | AgentStatus::Cancelled => failures.push(DependencyFailure {
-                    task_id: snapshot.task.task_id,
+                    task_id: snapshot.task.task_id.to_string(),
                     status: snapshot.handle.status,
                     summary: snapshot.result.map(|result| result.summary),
                 }),
@@ -990,7 +990,7 @@ impl RuntimeSubagentExecutor {
                 SessionEventKind::TaskCompleted {
                     task_id: task.task_id.clone(),
                     agent_id: handle.agent_id.clone(),
-                    status: status.clone(),
+                    status: TaskStatus::from(status),
                 },
             )
             .await;
@@ -1067,7 +1067,7 @@ impl RuntimeSubagentExecutor {
                 SessionEventKind::TaskCompleted {
                     task_id: task.task_id.clone(),
                     agent_id: handle.agent_id.clone(),
-                    status: AgentStatus::Failed,
+                    status: TaskStatus::Failed,
                 },
             )
             .await;
@@ -1393,7 +1393,7 @@ impl SubagentExecutor for RuntimeSubagentExecutor {
             SessionEventKind::TaskCompleted {
                 task_id: handle.task_id.clone(),
                 agent_id: handle.agent_id.clone(),
-                status: AgentStatus::Cancelled,
+                status: TaskStatus::Cancelled,
             },
         )
         .await
@@ -1642,7 +1642,7 @@ impl ChildAgentWorker {
         events.push(SessionEventKind::TaskCompleted {
             task_id: self.task.task_id.clone(),
             agent_id: handle.agent_id.clone(),
-            status: result.status.clone(),
+            status: TaskStatus::from(&result.status),
         });
         events.push(SessionEventKind::SubagentStop {
             handle,
@@ -1707,7 +1707,7 @@ impl ChildAgentWorker {
                 SessionEventKind::TaskCompleted {
                     task_id: self.task.task_id.clone(),
                     agent_id: handle.agent_id.clone(),
-                    status: AgentStatus::Cancelled,
+                    status: TaskStatus::Cancelled,
                 },
                 SessionEventKind::SubagentStop {
                     handle,
@@ -1768,7 +1768,7 @@ impl ChildAgentWorker {
                 SessionEventKind::TaskCompleted {
                     task_id: self.task.task_id.clone(),
                     agent_id: handle.agent_id.clone(),
-                    status: AgentStatus::Failed,
+                    status: TaskStatus::Failed,
                 },
                 SessionEventKind::SubagentStop {
                     handle,

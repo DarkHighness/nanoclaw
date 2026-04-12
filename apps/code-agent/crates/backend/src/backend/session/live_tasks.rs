@@ -26,6 +26,7 @@ impl CodeAgentSession {
             task_id: new_live_task_id(),
             role: role.to_string(),
             prompt: prompt.to_string(),
+            origin: agent::types::TaskOrigin::UserCreated,
             steer: None,
             allowed_tools: Vec::new(),
             requested_write_set: Vec::new(),
@@ -72,7 +73,7 @@ impl CodeAgentSession {
             requested_ref: task_or_agent_ref.to_string(),
             agent_id: updated.agent_id.to_string(),
             task_id: updated.task_id,
-            status: updated.status.clone(),
+            status: updated.status.clone().into(),
             action: if handle.status.is_terminal() {
                 LiveTaskMessageAction::AlreadyTerminal
             } else {
@@ -125,7 +126,7 @@ impl CodeAgentSession {
             requested_ref: task_or_agent_ref.to_string(),
             agent_id: completed.agent_id.to_string(),
             task_id: completed.task_id,
-            status: completed.status,
+            status: completed.status.into(),
             summary: result.summary,
             claimed_files: result.claimed_files,
             remaining_live_tasks,
@@ -181,7 +182,7 @@ impl CodeAgentSession {
             requested_ref: task_or_agent_ref.to_string(),
             agent_id: updated.agent_id.to_string(),
             task_id: updated.task_id,
-            status: updated.status.clone(),
+            status: updated.status.clone().into(),
             action: if handle.status.is_terminal() {
                 LiveTaskControlAction::AlreadyTerminal
             } else {
@@ -204,8 +205,8 @@ impl CodeAgentSession {
     }
 }
 
-fn new_live_task_id() -> String {
-    format!("task_{}", new_opaque_id())
+fn new_live_task_id() -> agent::types::TaskId {
+    format!("task_{}", new_opaque_id()).into()
 }
 
 fn live_task_summary(handle: &agent::types::AgentHandle) -> LiveTaskSummary {
@@ -213,7 +214,8 @@ fn live_task_summary(handle: &agent::types::AgentHandle) -> LiveTaskSummary {
         agent_id: handle.agent_id.to_string(),
         task_id: handle.task_id.clone(),
         role: handle.role.clone(),
-        status: handle.status.clone(),
+        origin: agent::types::TaskOrigin::ChildAgentBacked,
+        status: handle.status.clone().into(),
         session_ref: handle.session_id.to_string(),
         agent_session_ref: handle.agent_session_id.to_string(),
     }
@@ -262,19 +264,22 @@ fn render_live_task_attention_task(task: &LiveTaskSummary) -> String {
     format!("{} ({}, {})", task.task_id, task.role, task.status)
 }
 
-fn live_task_attention_instruction(status: AgentStatus) -> &'static str {
+fn live_task_attention_instruction(status: agent::types::TaskStatus) -> &'static str {
     match status {
-        AgentStatus::Completed => {
+        agent::types::TaskStatus::Completed => {
             "Review the completed background task and integrate any useful findings."
         }
-        AgentStatus::Failed => "Inspect the failed background task and decide whether to retry it.",
-        AgentStatus::Cancelled => {
+        agent::types::TaskStatus::Failed => {
+            "Inspect the failed background task and decide whether to retry it."
+        }
+        agent::types::TaskStatus::Cancelled => {
             "Inspect the cancelled background task and decide whether it should be restarted."
         }
-        AgentStatus::Queued
-        | AgentStatus::Running
-        | AgentStatus::WaitingApproval
-        | AgentStatus::WaitingMessage => {
+        agent::types::TaskStatus::Open
+        | agent::types::TaskStatus::Queued
+        | agent::types::TaskStatus::Running
+        | agent::types::TaskStatus::WaitingApproval
+        | agent::types::TaskStatus::WaitingMessage => {
             "Inspect the background task state before deciding on the next step."
         }
     }
@@ -286,7 +291,7 @@ fn resolve_live_task_reference<'a>(
 ) -> Result<&'a agent::types::AgentHandle> {
     if let Some(handle) = handles
         .iter()
-        .find(|handle| handle.task_id == task_or_agent_ref)
+        .find(|handle| handle.task_id.as_str() == task_or_agent_ref)
     {
         return Ok(handle);
     }
@@ -299,7 +304,7 @@ fn resolve_live_task_reference<'a>(
 
     let task_matches = handles
         .iter()
-        .filter(|handle| handle.task_id.starts_with(task_or_agent_ref))
+        .filter(|handle| handle.task_id.as_str().starts_with(task_or_agent_ref))
         .collect::<Vec<_>>();
     match task_matches.as_slice() {
         [handle] => return Ok(handle),
@@ -310,7 +315,7 @@ fn resolve_live_task_reference<'a>(
                 task_matches
                     .iter()
                     .take(6)
-                    .map(|handle| handle.task_id.clone())
+                    .map(|handle| handle.task_id.to_string())
                     .collect::<Vec<_>>()
                     .join(", ")
             ));

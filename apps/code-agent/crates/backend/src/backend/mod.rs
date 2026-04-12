@@ -17,6 +17,7 @@ mod session_memory_note;
 mod session_resume;
 mod store;
 mod task_history;
+mod task_manager;
 mod tool_approval_policy;
 mod user_input;
 
@@ -58,6 +59,7 @@ pub use permission_request::{
 };
 pub use session::CodeAgentSession;
 pub use session_history::{message_to_text, preview_id};
+pub(crate) use task_manager::SessionTaskManager;
 pub use tool_approval_policy::build_code_agent_tool_approval_policy;
 pub use user_input::{
     NonInteractiveUserInputHandler, SessionUserInputHandler, UserInputCoordinator,

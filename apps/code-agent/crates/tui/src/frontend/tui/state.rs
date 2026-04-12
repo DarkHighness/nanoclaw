@@ -7,7 +7,7 @@ use crate::tool_render::{
     ToolRenderKind, ToolReview, preview_tool_details, serialize_tool_details,
 };
 use crate::ui::StartupDiagnosticsSnapshot;
-use agent::types::{AgentStatus, SubmittedPromptSnapshot, TokenLedgerSnapshot};
+use agent::types::{SubmittedPromptSnapshot, TokenLedgerSnapshot};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, RwLock};
@@ -186,8 +186,8 @@ pub(crate) struct PlanFocusEntry {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum ComposerContextHint {
     LiveTaskFinished {
-        task_id: String,
-        status: AgentStatus,
+        task_id: agent::types::TaskId,
+        status: agent::types::TaskStatus,
     },
 }
 

@@ -43,7 +43,7 @@ use crate::theme::ThemeSummary;
 use crate::tool_render::{
     ToolCommand, ToolCompletionState, ToolDetail, ToolDetailLabel, ToolReview, ToolReviewFile,
 };
-use agent::types::{AgentStatus, MessageId, MessagePart};
+use agent::types::{MessageId, MessagePart, TaskId, TaskStatus};
 use ratatui::layout::Rect;
 use std::collections::BTreeMap;
 
@@ -667,8 +667,8 @@ fn composer_line_surfaces_live_task_hint_while_turn_running() {
     let mut state = TuiState::default();
     state.turn_running = true;
     state.composer_context_hint = Some(ComposerContextHint::LiveTaskFinished {
-        task_id: "task_123456".to_string(),
-        status: AgentStatus::Completed,
+        task_id: TaskId::from("task_123456"),
+        status: TaskStatus::Completed,
     });
 
     let line = build_composer_line(&state);
@@ -685,8 +685,8 @@ fn composer_line_surfaces_live_task_hint_while_turn_running() {
 fn composer_line_surfaces_live_task_hint_while_idle() {
     let mut state = TuiState::default();
     state.composer_context_hint = Some(ComposerContextHint::LiveTaskFinished {
-        task_id: "task_123456".to_string(),
-        status: AgentStatus::Failed,
+        task_id: TaskId::from("task_123456"),
+        status: TaskStatus::Failed,
     });
 
     let line = build_composer_line(&state);

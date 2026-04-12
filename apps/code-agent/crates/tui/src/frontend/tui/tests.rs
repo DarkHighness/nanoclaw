@@ -12,7 +12,7 @@ use super::{
 };
 use crate::interaction::SessionPermissionMode;
 use crate::ui::{HistoryRollbackRound, LiveTaskSummary, LiveTaskWaitOutcome};
-use agent::types::{AgentStatus, Message, MessageId, MessagePart, MessageRole};
+use agent::types::{Message, MessageId, MessagePart, MessageRole, TaskId, TaskOrigin, TaskStatus};
 use crossterm::event::KeyCode;
 use std::path::{Path, PathBuf};
 
@@ -179,16 +179,17 @@ fn attachment_prompt_running_enter_queues_follow_up_instead_of_steer() {
 fn live_task_wait_toast_mentions_remaining_running_tasks() {
     let outcome = LiveTaskWaitOutcome {
         requested_ref: "task_123".to_string(),
-        task_id: "task_123".to_string(),
-        status: AgentStatus::Completed,
+        task_id: TaskId::from("task_123"),
+        status: TaskStatus::Completed,
         summary: "done".to_string(),
         agent_id: "agent_123".to_string(),
         claimed_files: Vec::new(),
         remaining_live_tasks: vec![LiveTaskSummary {
             agent_id: "agent_456".to_string(),
-            task_id: "task_456".to_string(),
+            task_id: TaskId::from("task_456"),
             role: "reviewer".to_string(),
-            status: AgentStatus::Running,
+            origin: TaskOrigin::ChildAgentBacked,
+            status: TaskStatus::Running,
             session_ref: "session_456".to_string(),
             agent_session_ref: "agent-session-456".to_string(),
         }],

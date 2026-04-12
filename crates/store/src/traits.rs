@@ -612,8 +612,9 @@ pub(crate) fn searchable_session_event_strings(event: &SessionEventEnvelope) -> 
         SessionEventKind::TaskCreated {
             task,
             parent_agent_id,
+            ..
         } => {
-            values.push(task.task_id.clone());
+            values.push(task.task_id.to_string());
             values.push(task.role.clone());
             values.push(task.prompt.clone());
             values.extend(task.requested_write_set.clone());
@@ -626,13 +627,24 @@ pub(crate) fn searchable_session_event_strings(event: &SessionEventEnvelope) -> 
             agent_id,
             status,
         } => {
-            values.push(task_id.clone());
+            values.push(task_id.to_string());
             values.push(agent_id.to_string());
             values.push(status.to_string());
         }
+        SessionEventKind::TaskUpdated {
+            task_id,
+            status,
+            summary,
+        } => {
+            values.push(task_id.to_string());
+            values.push(status.to_string());
+            if let Some(summary) = summary {
+                values.push(summary.clone());
+            }
+        }
         SessionEventKind::SubagentStart { handle, task } => {
             values.push(handle.agent_id.to_string());
-            values.push(handle.task_id.clone());
+            values.push(handle.task_id.to_string());
             values.push(handle.role.clone());
             values.push(task.prompt.clone());
             values.extend(task.requested_write_set.clone());
@@ -640,7 +652,7 @@ pub(crate) fn searchable_session_event_strings(event: &SessionEventEnvelope) -> 
         SessionEventKind::AgentEnvelope { envelope } => match &envelope.kind {
             types::AgentEnvelopeKind::SpawnRequested { task }
             | types::AgentEnvelopeKind::Started { task } => {
-                values.push(task.task_id.clone());
+                values.push(task.task_id.to_string());
                 values.push(task.role.clone());
             }
             types::AgentEnvelopeKind::StatusChanged { status } => {
@@ -666,7 +678,7 @@ pub(crate) fn searchable_session_event_strings(event: &SessionEventEnvelope) -> 
                 values.push(owner.to_string());
             }
             types::AgentEnvelopeKind::Result { result } => {
-                values.push(result.task_id.clone());
+                values.push(result.task_id.to_string());
                 values.push(result.agent_id.to_string());
                 values.push(result.status.to_string());
                 values.push(result.summary.clone());
@@ -690,7 +702,7 @@ pub(crate) fn searchable_session_event_strings(event: &SessionEventEnvelope) -> 
             error,
         } => {
             values.push(handle.agent_id.to_string());
-            values.push(handle.task_id.clone());
+            values.push(handle.task_id.to_string());
             values.push(handle.status.to_string());
             if let Some(result) = result {
                 values.push(result.summary.clone());
@@ -788,7 +800,7 @@ fn collect_child_run_token_usage_contexts(
                     context.agent_name = Some(task.role.clone());
                 }
                 if context.task_id.is_none() {
-                    context.task_id = Some(task.task_id.clone());
+                    context.task_id = Some(task.task_id.to_string());
                 }
             }
             SessionEventKind::SubagentStop { handle, .. } => {
@@ -799,7 +811,7 @@ fn collect_child_run_token_usage_contexts(
                     context.agent_name = Some(handle.role.clone());
                 }
                 if context.task_id.is_none() {
-                    context.task_id = Some(handle.task_id.clone());
+                    context.task_id = Some(handle.task_id.to_string());
                 }
             }
             SessionEventKind::AgentEnvelope { envelope } => {
@@ -817,12 +829,12 @@ fn collect_child_run_token_usage_contexts(
                             context.agent_name = Some(task.role.clone());
                         }
                         if context.task_id.is_none() {
-                            context.task_id = Some(task.task_id.clone());
+                            context.task_id = Some(task.task_id.to_string());
                         }
                     }
                     types::AgentEnvelopeKind::Result { result } => {
                         if context.task_id.is_none() {
-                            context.task_id = Some(result.task_id.clone());
+                            context.task_id = Some(result.task_id.to_string());
                         }
                     }
                     _ => {}
@@ -888,8 +900,8 @@ pub(crate) fn group_events_for_memory_export(
             // records under task scope and later overwrite the fallback session
             // with the child session once spawn/start events provide it.
             SessionEventKind::TaskCreated { task, .. } => {
-                let group = tasks.entry(task.task_id.clone()).or_default();
-                group.task_id = Some(task.task_id.clone());
+                let group = tasks.entry(task.task_id.to_string()).or_default();
+                group.task_id = Some(task.task_id.to_string());
                 if group.agent_session_id.is_none() {
                     group.agent_session_id = Some(event.agent_session_id.clone());
                 }
@@ -904,7 +916,7 @@ pub(crate) fn group_events_for_memory_export(
                     .unwrap_or_default();
                 push_task_event(
                     &mut tasks,
-                    task_id.clone(),
+                    task_id.to_string(),
                     Some(&context),
                     Some(&event.agent_session_id),
                     event,
@@ -924,7 +936,7 @@ pub(crate) fn group_events_for_memory_export(
                 push_subagent_event(&mut subagents, handle.agent_id.to_string(), &context, event);
                 push_task_event(
                     &mut tasks,
-                    task.task_id.clone(),
+                    task.task_id.to_string(),
                     Some(&context),
                     Some(&handle.agent_session_id),
                     event,
@@ -944,7 +956,7 @@ pub(crate) fn group_events_for_memory_export(
                         );
                         push_task_event(
                             &mut tasks,
-                            task.task_id.clone(),
+                            task.task_id.to_string(),
                             Some(&context),
                             Some(&envelope.agent_session_id),
                             event,
@@ -961,7 +973,7 @@ pub(crate) fn group_events_for_memory_export(
                         );
                         push_task_event(
                             &mut tasks,
-                            result.task_id.clone(),
+                            result.task_id.to_string(),
                             Some(&context),
                             Some(&envelope.agent_session_id),
                             event,
@@ -1001,7 +1013,7 @@ pub(crate) fn group_events_for_memory_export(
                 push_subagent_event(&mut subagents, handle.agent_id.to_string(), &context, event);
                 push_task_event(
                     &mut tasks,
-                    handle.task_id.clone(),
+                    handle.task_id.to_string(),
                     Some(&context),
                     Some(&handle.agent_session_id),
                     event,

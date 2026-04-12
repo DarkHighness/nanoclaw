@@ -299,9 +299,10 @@ fn collect_loaded_subagents(
                     .or_insert_with(|| SubagentAccumulator {
                         handle: handle.clone(),
                         task: AgentTaskSpec {
-                            task_id: "unknown".to_string(),
+                            task_id: "unknown".into(),
                             role: "worker".to_string(),
                             prompt: String::new(),
+                            origin: agent::types::TaskOrigin::ChildAgentBacked,
                             steer: None,
                             allowed_tools: Vec::new(),
                             requested_write_set: Vec::new(),
@@ -492,14 +493,15 @@ mod tests {
             parent_agent_id: None,
             session_id: child_session_id.clone(),
             agent_session_id: child_agent_session_id.clone(),
-            task_id: "review-task".to_string(),
+            task_id: "review-task".into(),
             role: "reviewer".to_string(),
             status: AgentStatus::Completed,
         };
         let task = AgentTaskSpec {
-            task_id: "review-task".to_string(),
+            task_id: "review-task".into(),
             role: "reviewer".to_string(),
             prompt: "inspect the patch".to_string(),
+            origin: agent::types::TaskOrigin::ChildAgentBacked,
             steer: None,
             allowed_tools: Vec::new(),
             requested_write_set: Vec::new(),
@@ -592,7 +594,7 @@ mod tests {
                 session_id: child_session_id.clone(),
                 agent_session_id: Some(child_agent_session_id.clone()),
                 agent_name: Some("reviewer".to_string()),
-                task_id: Some(task.task_id.clone()),
+                task_id: Some(task.task_id.to_string()),
                 ledger: TokenLedgerSnapshot::default(),
             }],
             tasks: Vec::new(),

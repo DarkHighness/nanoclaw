@@ -1,5 +1,7 @@
 use crate::PermissionRequestHandler;
 use crate::Result;
+#[cfg(feature = "agentic-tools")]
+use crate::TaskManager;
 use crate::UserInputHandler;
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -36,11 +38,14 @@ pub struct ToolExecutionContext {
     pub write_guard: Option<Arc<dyn ToolWriteGuard>>,
     pub user_input_handler: Option<Arc<dyn UserInputHandler>>,
     pub permission_request_handler: Option<Arc<dyn PermissionRequestHandler>>,
+    #[cfg(feature = "agentic-tools")]
+    pub task_manager: Option<Arc<dyn TaskManager>>,
 }
 
 impl fmt::Debug for ToolExecutionContext {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ToolExecutionContext")
+        let mut debug = f.debug_struct("ToolExecutionContext");
+        debug
             .field("workspace_root", &self.workspace_root)
             .field("worktree_root", &self.worktree_root)
             .field("sandbox_root", &self.sandbox_root)
@@ -60,8 +65,13 @@ impl fmt::Debug for ToolExecutionContext {
             .field("task_id", &self.task_id)
             .field("tool_name", &self.tool_name)
             .field("tool_call_id", &self.tool_call_id)
-            .field("model_visibility", &self.model_visibility)
-            .finish_non_exhaustive()
+            .field("model_visibility", &self.model_visibility);
+        #[cfg(feature = "agentic-tools")]
+        debug.field(
+            "task_manager",
+            &self.task_manager.as_ref().map(|_| "<handler>"),
+        );
+        debug.finish_non_exhaustive()
     }
 }
 

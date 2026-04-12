@@ -481,8 +481,8 @@ mod tests {
             role_allowlist: Vec::new(),
         });
         registry.register(FakeTool {
-            name: "task_batch",
-            description: "Run one worker batch.",
+            name: "worker_only_tool",
+            description: "Visible only to worker-role models.",
             hidden_from_model: false,
             provider_allowlist: Vec::new(),
             model_allowlist: Vec::new(),
@@ -540,7 +540,7 @@ mod tests {
         assert!(
             worker_matches
                 .iter()
-                .any(|entry| entry["name"] == "task_batch")
+                .any(|entry| entry["name"] == "worker_only_tool")
         );
     }
 }

@@ -125,21 +125,33 @@ fn format_tool_origin(origin: &agent::types::ToolOrigin) -> String {
     }
 }
 
-fn task_status_summary(task_id: &str, status: &AgentStatus) -> (SummaryTone, String) {
+fn task_status_summary(
+    task_id: &agent::types::TaskId,
+    status: &agent::types::TaskStatus,
+) -> (SummaryTone, String) {
     match status {
-        AgentStatus::Completed => (SummaryTone::Success, format!("Task {task_id} completed")),
-        AgentStatus::Failed => (SummaryTone::Error, format!("Task {task_id} failed")),
-        AgentStatus::Cancelled => (SummaryTone::Error, format!("Task {task_id} cancelled")),
-        AgentStatus::WaitingApproval => (
+        agent::types::TaskStatus::Completed => {
+            (SummaryTone::Success, format!("Task {task_id} completed"))
+        }
+        agent::types::TaskStatus::Failed => (SummaryTone::Error, format!("Task {task_id} failed")),
+        agent::types::TaskStatus::Cancelled => {
+            (SummaryTone::Error, format!("Task {task_id} cancelled"))
+        }
+        agent::types::TaskStatus::WaitingApproval => (
             SummaryTone::Info,
             format!("Task {task_id} is awaiting approval"),
         ),
-        AgentStatus::WaitingMessage => (
+        agent::types::TaskStatus::WaitingMessage => (
             SummaryTone::Info,
             format!("Task {task_id} is waiting for a message"),
         ),
-        AgentStatus::Queued => (SummaryTone::Info, format!("Task {task_id} is queued")),
-        AgentStatus::Running => (SummaryTone::Info, format!("Task {task_id} is running")),
+        agent::types::TaskStatus::Open => (SummaryTone::Info, format!("Task {task_id} is open")),
+        agent::types::TaskStatus::Queued => {
+            (SummaryTone::Info, format!("Task {task_id} is queued"))
+        }
+        agent::types::TaskStatus::Running => {
+            (SummaryTone::Info, format!("Task {task_id} is running"))
+        }
     }
 }
 
@@ -197,7 +209,8 @@ fn format_agent_envelope_kind(kind: &AgentEnvelopeKind) -> TranscriptEntry {
             ],
         ),
         AgentEnvelopeKind::Result { result } => {
-            let (tone, headline) = task_status_summary(&result.task_id, &result.status);
+            let task_status = agent::types::TaskStatus::from(&result.status);
+            let (tone, headline) = task_status_summary(&result.task_id, &task_status);
             summary_entry(
                 tone,
                 headline,
@@ -435,6 +448,21 @@ pub(crate) fn format_session_event_line(event: &SessionEventEnvelope) -> Transcr
                 format!("prompt {}", preview_text(&task.prompt, 72)),
             ],
         ),
+        SessionEventKind::TaskUpdated {
+            task_id,
+            status,
+            summary,
+        } => {
+            let (tone, headline) = task_status_summary(task_id, status);
+            summary_entry(
+                tone,
+                headline,
+                [summary
+                    .as_deref()
+                    .map(|summary| format!("summary {}", preview_text(summary, 72)))
+                    .unwrap_or_else(|| "summary unchanged".to_string())],
+            )
+        }
         SessionEventKind::TaskCompleted {
             task_id,
             agent_id,

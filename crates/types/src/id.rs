@@ -129,6 +129,7 @@ define_id!(CallId);
 define_id!(ResponseId);
 define_id!(ReasoningId);
 define_id!(AgentId);
+define_string_identifier!(TaskId);
 define_string_identifier!(PluginId);
 define_string_identifier!(PluginDriverId);
 define_string_identifier!(HookName);

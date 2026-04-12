@@ -36,8 +36,8 @@ use agent::types::{
     AgentWaitRequest, AgentWaitResponse, CommandHookHandler, DynamicToolSpec, HookEvent,
     HookHandler, HookRegistration, McpToolBoundary, McpTransportKind, Message, MessageId,
     MessagePart, ModelEvent, ModelRequest, SessionEventEnvelope, SessionEventKind, SessionId,
-    SubmittedPromptSnapshot, ToolAvailability, ToolOrigin, ToolOutputMode, ToolSource, ToolSpec,
-    ToolVisibilityContext,
+    SubmittedPromptSnapshot, TaskId, TaskOrigin, TaskStatus, ToolAvailability, ToolOrigin,
+    ToolOutputMode, ToolSource, ToolSpec, ToolVisibilityContext,
 };
 use agent::{AgentRuntimeBuilder, RequestPermissionsTool, RuntimeCommand, Skill, SkillCatalog};
 use async_trait::async_trait;
@@ -825,7 +825,7 @@ fn sample_handle(task_id: &str, agent_id: &str, status: AgentStatus) -> AgentHan
         parent_agent_id: None,
         session_id: SessionId::from("session-1"),
         agent_session_id: agent::types::AgentSessionId::from(format!("agent-session-{task_id}")),
-        task_id: task_id.to_string(),
+        task_id: TaskId::from(task_id),
         role: "worker".to_string(),
         status,
     }
@@ -2593,8 +2593,8 @@ async fn live_task_listing_projects_sorted_child_handles() {
     let live_tasks = session.list_live_tasks().await.unwrap();
 
     assert_eq!(live_tasks.len(), 2);
-    assert_eq!(live_tasks[0].task_id, "task-a");
-    assert_eq!(live_tasks[1].task_id, "task-b");
+    assert_eq!(live_tasks[0].task_id, TaskId::from("task-a"));
+    assert_eq!(live_tasks[1].task_id, TaskId::from("task-b"));
     assert_eq!(live_tasks[0].role, "researcher");
 }
 
@@ -2622,9 +2622,10 @@ async fn spawn_live_task_returns_handle_and_tracks_active_parent_context() {
         .unwrap();
 
     assert_eq!(outcome.task.role, "reviewer");
-    assert_eq!(outcome.task.status, AgentStatus::Queued);
+    assert_eq!(outcome.task.origin, TaskOrigin::ChildAgentBacked);
+    assert_eq!(outcome.task.status, TaskStatus::Queued);
     assert_eq!(outcome.prompt, "inspect the failing tests");
-    assert!(outcome.task.task_id.starts_with("task_"));
+    assert!(outcome.task.task_id.as_str().starts_with("task_"));
     let spawned_tasks = executor.spawned_tasks.lock().unwrap();
     assert_eq!(spawned_tasks.len(), 1);
     assert_eq!(spawned_tasks[0].role, "reviewer");
@@ -2676,8 +2677,8 @@ async fn cancel_live_task_updates_backend_outcome() {
         .unwrap();
 
     assert_eq!(outcome.action, super::LiveTaskControlAction::Cancelled);
-    assert_eq!(outcome.task_id, "task-cancel");
-    assert_eq!(outcome.status, AgentStatus::Cancelled);
+    assert_eq!(outcome.task_id, TaskId::from("task-cancel"));
+    assert_eq!(outcome.status, TaskStatus::Cancelled);
 }
 
 #[tokio::test]
@@ -2710,7 +2711,7 @@ async fn send_live_task_routes_steer_message_to_child_agent() {
         .unwrap();
 
     assert_eq!(outcome.action, super::LiveTaskMessageAction::Sent);
-    assert_eq!(outcome.task_id, "task-send");
+    assert_eq!(outcome.task_id, TaskId::from("task-send"));
     let sent_messages = executor.sent_messages.lock().unwrap();
     assert_eq!(sent_messages.len(), 1);
     assert_eq!(sent_messages[0].0, AgentId::from("agent-send"));
@@ -2736,7 +2737,7 @@ async fn wait_live_task_returns_terminal_result_summary() {
         pending: Vec::new(),
         results: vec![AgentResultEnvelope {
             agent_id: AgentId::from("agent-wait"),
-            task_id: "task-wait".to_string(),
+            task_id: TaskId::from("task-wait"),
             status: AgentStatus::Completed,
             summary: "finished child task".to_string(),
             text: "done".to_string(),
@@ -2761,17 +2762,18 @@ async fn wait_live_task_returns_terminal_result_summary() {
 
     let outcome = session.wait_live_task("task-wait").await.unwrap();
 
-    assert_eq!(outcome.task_id, "task-wait");
-    assert_eq!(outcome.status, AgentStatus::Completed);
+    assert_eq!(outcome.task_id, TaskId::from("task-wait"));
+    assert_eq!(outcome.status, TaskStatus::Completed);
     assert_eq!(outcome.summary, "finished child task");
     assert_eq!(outcome.claimed_files, vec!["src/lib.rs".to_string()]);
     assert_eq!(
         outcome.remaining_live_tasks,
         vec![LiveTaskSummary {
             agent_id: "agent-followup".to_string(),
-            task_id: "task-followup".to_string(),
+            task_id: TaskId::from("task-followup"),
             role: "worker".to_string(),
-            status: AgentStatus::Running,
+            origin: TaskOrigin::ChildAgentBacked,
+            status: TaskStatus::Running,
             session_ref: "session-1".to_string(),
             agent_session_ref: "agent-session-task-followup".to_string(),
         }]
@@ -2799,15 +2801,16 @@ fn schedule_live_task_attention_queues_prompt_when_idle() {
     let outcome = LiveTaskWaitOutcome {
         requested_ref: "task-wait".to_string(),
         agent_id: "agent-wait".to_string(),
-        task_id: "task-wait".to_string(),
-        status: AgentStatus::Completed,
+        task_id: TaskId::from("task-wait"),
+        status: TaskStatus::Completed,
         summary: "finished child task".to_string(),
         claimed_files: vec!["src/lib.rs".to_string()],
         remaining_live_tasks: vec![LiveTaskSummary {
             agent_id: "agent-followup".to_string(),
-            task_id: "task-followup".to_string(),
+            task_id: TaskId::from("task-followup"),
             role: "reviewer".to_string(),
-            status: AgentStatus::Running,
+            origin: TaskOrigin::ChildAgentBacked,
+            status: TaskStatus::Running,
             session_ref: "session-1".to_string(),
             agent_session_ref: "agent-session-task-followup".to_string(),
         }],
@@ -2868,8 +2871,8 @@ fn schedule_live_task_attention_schedules_steer_when_turn_running() {
     let outcome = LiveTaskWaitOutcome {
         requested_ref: "task-wait".to_string(),
         agent_id: "agent-wait".to_string(),
-        task_id: "task-wait".to_string(),
-        status: AgentStatus::Failed,
+        task_id: TaskId::from("task-wait"),
+        status: TaskStatus::Failed,
         summary: "child task failed".to_string(),
         claimed_files: Vec::new(),
         remaining_live_tasks: Vec::new(),

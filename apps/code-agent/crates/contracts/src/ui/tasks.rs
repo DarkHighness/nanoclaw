@@ -1,12 +1,15 @@
-use agent::types::{AgentArtifact, AgentResultEnvelope, AgentStatus, AgentTaskSpec, Message};
+use agent::types::{
+    AgentArtifact, AgentResultEnvelope, AgentTaskSpec, Message, TaskId, TaskOrigin, TaskStatus,
+};
 use store::TokenUsageRecord;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LiveTaskSummary {
     pub agent_id: String,
-    pub task_id: String,
+    pub task_id: TaskId,
     pub role: String,
-    pub status: AgentStatus,
+    pub origin: TaskOrigin,
+    pub status: TaskStatus,
     pub session_ref: String,
     pub agent_session_ref: String,
 }
@@ -27,8 +30,8 @@ pub enum LiveTaskControlAction {
 pub struct LiveTaskControlOutcome {
     pub requested_ref: String,
     pub agent_id: String,
-    pub task_id: String,
-    pub status: AgentStatus,
+    pub task_id: TaskId,
+    pub status: TaskStatus,
     pub action: LiveTaskControlAction,
 }
 
@@ -42,8 +45,8 @@ pub enum LiveTaskMessageAction {
 pub struct LiveTaskMessageOutcome {
     pub requested_ref: String,
     pub agent_id: String,
-    pub task_id: String,
-    pub status: AgentStatus,
+    pub task_id: TaskId,
+    pub status: TaskStatus,
     pub action: LiveTaskMessageAction,
     pub message: String,
 }
@@ -52,8 +55,8 @@ pub struct LiveTaskMessageOutcome {
 pub struct LiveTaskWaitOutcome {
     pub requested_ref: String,
     pub agent_id: String,
-    pub task_id: String,
-    pub status: AgentStatus,
+    pub task_id: TaskId,
+    pub status: TaskStatus,
     pub summary: String,
     pub claimed_files: Vec<String>,
     pub remaining_live_tasks: Vec<LiveTaskSummary>,
@@ -74,13 +77,14 @@ pub struct LiveTaskAttentionOutcome {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PersistedTaskSummary {
-    pub task_id: String,
+    pub task_id: TaskId,
     pub session_ref: String,
     pub parent_agent_session_ref: String,
     pub child_session_ref: Option<String>,
     pub child_agent_session_ref: Option<String>,
     pub role: String,
-    pub status: AgentStatus,
+    pub origin: TaskOrigin,
+    pub status: TaskStatus,
     pub first_timestamp_ms: u128,
     pub last_timestamp_ms: u128,
     pub summary: String,

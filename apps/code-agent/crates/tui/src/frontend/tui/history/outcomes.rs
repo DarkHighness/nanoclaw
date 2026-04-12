@@ -90,15 +90,15 @@ pub(crate) fn format_live_task_message_outcome(
 
 pub(crate) fn format_live_task_wait_outcome(outcome: &LiveTaskWaitOutcome) -> Vec<InspectorEntry> {
     let (tone, headline) = match outcome.status {
-        AgentStatus::Completed => (
+        agent::types::TaskStatus::Completed => (
             SummaryTone::Info,
             format!("Finished waiting for task {}", outcome.task_id),
         ),
-        AgentStatus::Failed => (
+        agent::types::TaskStatus::Failed => (
             SummaryTone::Error,
             format!("Finished waiting for task {}", outcome.task_id),
         ),
-        AgentStatus::Cancelled => (
+        agent::types::TaskStatus::Cancelled => (
             SummaryTone::Error,
             format!("Waiting cancelled for task {}", outcome.task_id),
         ),

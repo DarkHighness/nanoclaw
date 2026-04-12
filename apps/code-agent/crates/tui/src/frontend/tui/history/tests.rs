@@ -12,8 +12,8 @@ use crate::ui::{
     SessionExportKind, SessionOperationAction, SessionOperationOutcome, SessionStartupSnapshot,
 };
 use agent::types::{
-    AgentSessionId, AgentStatus, Message, SessionEventEnvelope, SessionEventKind, SessionId,
-    ToolCall, ToolCallId, ToolOrigin, ToolResult,
+    AgentSessionId, Message, SessionEventEnvelope, SessionEventKind, SessionId, TaskId, TaskOrigin,
+    TaskStatus, ToolCall, ToolCallId, ToolOrigin, ToolResult,
 };
 use serde_json::json;
 use std::path::PathBuf;
@@ -207,15 +207,16 @@ fn live_task_wait_outcome_uses_terminal_status_marker() {
     let lines = format_live_task_wait_outcome(&LiveTaskWaitOutcome {
         requested_ref: "task_1".to_string(),
         agent_id: "agent_1".to_string(),
-        task_id: "task_1".to_string(),
-        status: AgentStatus::Completed,
+        task_id: TaskId::from("task_1"),
+        status: TaskStatus::Completed,
         summary: "Updated planner and wrote tests".to_string(),
         claimed_files: vec!["src/lib.rs".to_string()],
         remaining_live_tasks: vec![LiveTaskSummary {
             agent_id: "agent_2".to_string(),
-            task_id: "task_2".to_string(),
+            task_id: TaskId::from("task_2"),
             role: "reviewer".to_string(),
-            status: AgentStatus::Running,
+            origin: TaskOrigin::ChildAgentBacked,
+            status: TaskStatus::Running,
             session_ref: "session_2".to_string(),
             agent_session_ref: "agent-session-2".to_string(),
         }],

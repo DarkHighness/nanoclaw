@@ -1,6 +1,6 @@
 use crate::{
     AgentId, AgentSessionId, CallId, ContextWindowUsage, EnvelopeId, EventId, HookEvent,
-    HookResult, Message, MessageId, MessagePart, Reasoning, ResponseId, SessionId,
+    HookResult, Message, MessageId, MessagePart, Reasoning, ResponseId, SessionId, TaskId,
     TokenLedgerSnapshot, TokenUsage, TokenUsagePhase, ToolCall, ToolCallId, ToolName, ToolSpec,
     TurnId,
 };
@@ -50,6 +50,83 @@ impl fmt::Display for AgentStatus {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskStatus {
+    Open,
+    Queued,
+    Running,
+    WaitingApproval,
+    WaitingMessage,
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+impl TaskStatus {
+    #[must_use]
+    pub fn is_terminal(&self) -> bool {
+        matches!(self, Self::Completed | Self::Failed | Self::Cancelled)
+    }
+}
+
+impl fmt::Display for TaskStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let value = match self {
+            Self::Open => "open",
+            Self::Queued => "queued",
+            Self::Running => "running",
+            Self::WaitingApproval => "waiting_approval",
+            Self::WaitingMessage => "waiting_message",
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+            Self::Cancelled => "cancelled",
+        };
+        f.write_str(value)
+    }
+}
+
+impl From<AgentStatus> for TaskStatus {
+    fn from(value: AgentStatus) -> Self {
+        match value {
+            AgentStatus::Queued => Self::Queued,
+            AgentStatus::Running => Self::Running,
+            AgentStatus::WaitingApproval => Self::WaitingApproval,
+            AgentStatus::WaitingMessage => Self::WaitingMessage,
+            AgentStatus::Completed => Self::Completed,
+            AgentStatus::Failed => Self::Failed,
+            AgentStatus::Cancelled => Self::Cancelled,
+        }
+    }
+}
+
+impl From<&AgentStatus> for TaskStatus {
+    fn from(value: &AgentStatus) -> Self {
+        Self::from(value.clone())
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskOrigin {
+    UserCreated,
+    AgentCreated,
+    ChildAgentBacked,
+    AutomationBacked,
+}
+
+impl fmt::Display for TaskOrigin {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let value = match self {
+            Self::UserCreated => "user_created",
+            Self::AgentCreated => "agent_created",
+            Self::ChildAgentBacked => "child_agent_backed",
+            Self::AutomationBacked => "automation_backed",
+        };
+        f.write_str(value)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentInputDelivery {
@@ -75,7 +152,7 @@ pub struct AgentHandle {
     pub parent_agent_id: Option<AgentId>,
     pub session_id: SessionId,
     pub agent_session_id: AgentSessionId,
-    pub task_id: String,
+    pub task_id: TaskId,
     pub role: String,
     pub status: AgentStatus,
 }
@@ -92,9 +169,10 @@ pub struct AgentArtifact {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct AgentTaskSpec {
-    pub task_id: String,
+    pub task_id: TaskId,
     pub role: String,
     pub prompt: String,
+    pub origin: TaskOrigin,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub steer: Option<String>,
     #[serde(default)]
@@ -102,7 +180,7 @@ pub struct AgentTaskSpec {
     #[serde(default)]
     pub requested_write_set: Vec<String>,
     #[serde(default)]
-    pub dependency_ids: Vec<String>,
+    pub dependency_ids: Vec<TaskId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_seconds: Option<u64>,
 }
@@ -110,7 +188,7 @@ pub struct AgentTaskSpec {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct AgentResultEnvelope {
     pub agent_id: AgentId,
-    pub task_id: String,
+    pub task_id: TaskId,
     pub status: AgentStatus,
     pub summary: String,
     pub text: String,
@@ -120,6 +198,34 @@ pub struct AgentResultEnvelope {
     pub claimed_files: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub structured_payload: Option<Value>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct TaskSummaryRecord {
+    pub task_id: TaskId,
+    pub session_id: SessionId,
+    pub agent_session_id: AgentSessionId,
+    pub role: String,
+    pub origin: TaskOrigin,
+    pub status: TaskStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_agent_id: Option<AgentId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub child_agent_id: Option<AgentId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct TaskRecord {
+    pub summary: TaskSummaryRecord,
+    pub spec: AgentTaskSpec,
+    #[serde(default)]
+    pub claimed_files: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<AgentResultEnvelope>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -689,11 +795,20 @@ pub enum SessionEventKind {
     TaskCreated {
         task: AgentTaskSpec,
         parent_agent_id: Option<AgentId>,
+        status: TaskStatus,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        summary: Option<String>,
+    },
+    TaskUpdated {
+        task_id: TaskId,
+        status: TaskStatus,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        summary: Option<String>,
     },
     TaskCompleted {
-        task_id: String,
+        task_id: TaskId,
         agent_id: AgentId,
-        status: AgentStatus,
+        status: TaskStatus,
     },
     SubagentStart {
         handle: AgentHandle,
