@@ -69,7 +69,9 @@ pub struct CodeReference {
     pub is_definition: bool,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(
+    Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize, JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum CodeSearchMatchKind {
     Symbol,
@@ -92,8 +94,33 @@ impl Display for CodeSearchMatchKind {
     }
 }
 
+#[derive(
+    Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize, JsonSchema,
+)]
+#[serde(transparent)]
+pub struct CodeSearchScore(pub u16);
+
+impl CodeSearchScore {
+    #[must_use]
+    pub const fn new(value: u16) -> Self {
+        Self(value)
+    }
+
+    #[must_use]
+    pub const fn value(self) -> u16 {
+        self.0
+    }
+}
+
+impl Display for CodeSearchScore {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, JsonSchema)]
 pub struct CodeSearchMatch {
+    pub score: CodeSearchScore,
     pub kind: CodeSearchMatchKind,
     pub location: CodeLocation,
     pub line_text: String,

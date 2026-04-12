@@ -1,10 +1,11 @@
 mod protocol;
 mod support;
 
+use crate::code_intel::index::{matches_search_prefix, normalized_path_prefix};
 use crate::code_intel::{
     CodeCallHierarchyDirection, CodeCallHierarchyEntry, CodeDiagnostic, CodeHover,
-    CodeIntelBackend, CodeNavigationTarget, CodeReference, CodeSearchMatch, CodeSymbol,
-    WorkspaceTextCodeIntelBackend,
+    CodeIntelBackend, CodeNavigationTarget, CodeReference, CodeSearchMatch, CodeSearchMatchKind,
+    CodeSearchScore, CodeSymbol, WorkspaceTextCodeIntelBackend,
 };
 use crate::file_activity::FileActivityObserver;
 use crate::process::{
@@ -129,7 +130,34 @@ impl CodeIntelBackend for ManagedCodeIntelBackend {
         limit: usize,
         ctx: &ToolExecutionContext,
     ) -> Result<Vec<CodeSearchMatch>> {
-        self.fallback.search(query, path_prefix, limit, ctx).await
+        let lowered_query = query.trim().to_ascii_lowercase();
+        if lowered_query.is_empty() {
+            return Ok(Vec::new());
+        }
+        let normalized_prefix = normalized_path_prefix(path_prefix);
+        let semantic = self
+            .runtime
+            .workspace_symbols(query, limit)
+            .await?
+            .into_iter()
+            .filter(|symbol| {
+                matches_search_prefix(&symbol.location.path, normalized_prefix.as_deref())
+            })
+            .map(|symbol| CodeSearchMatch {
+                score: semantic_symbol_search_score(&symbol, &lowered_query),
+                kind: CodeSearchMatchKind::Symbol,
+                line_text: symbol
+                    .signature
+                    .clone()
+                    .unwrap_or_else(|| symbol.name.clone()),
+                symbol_name: Some(symbol.name),
+                symbol_kind: Some(symbol.kind),
+                signature: symbol.signature,
+                location: symbol.location,
+            })
+            .collect::<Vec<_>>();
+        let lexical = self.fallback.search(query, path_prefix, limit, ctx).await?;
+        Ok(merge_search_matches(semantic, lexical, limit))
     }
 
     async fn workspace_symbols(
@@ -1790,6 +1818,59 @@ fn merge_symbols(
     merged
 }
 
+fn merge_search_matches(
+    semantic: Vec<CodeSearchMatch>,
+    lexical: Vec<CodeSearchMatch>,
+    limit: usize,
+) -> Vec<CodeSearchMatch> {
+    let mut seen = BTreeSet::new();
+    let mut merged = Vec::new();
+    for entry in semantic.into_iter().chain(lexical) {
+        let key = (
+            entry.kind,
+            entry.location.path.clone(),
+            entry.location.line,
+            entry.location.column,
+            entry.symbol_name.clone(),
+        );
+        if seen.insert(key) {
+            merged.push(entry);
+        }
+        if merged.len() >= limit {
+            break;
+        }
+    }
+    merged.sort_by(|left, right| {
+        right
+            .score
+            .cmp(&left.score)
+            .then_with(|| left.location.path.cmp(&right.location.path))
+            .then_with(|| left.location.line.cmp(&right.location.line))
+            .then_with(|| left.location.column.cmp(&right.location.column))
+    });
+    merged
+}
+
+fn semantic_symbol_search_score(symbol: &CodeSymbol, lowered_query: &str) -> CodeSearchScore {
+    let lowered_name = symbol.name.to_ascii_lowercase();
+    let lowered_signature = symbol
+        .signature
+        .as_deref()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if lowered_name == lowered_query {
+        CodeSearchScore::new(1000)
+    } else if lowered_name.starts_with(lowered_query) {
+        CodeSearchScore::new(960)
+    } else if lowered_name.contains(lowered_query) {
+        CodeSearchScore::new(920)
+    } else if lowered_signature.contains(lowered_query) {
+        CodeSearchScore::new(880)
+    } else {
+        CodeSearchScore::new(820)
+    }
+}
+
 fn symbol_name_for_target(target: &CodeNavigationTarget) -> Option<String> {
     match target {
         CodeNavigationTarget::Symbol(symbol) => Some(symbol.trim().to_string()),
@@ -1801,8 +1882,11 @@ fn symbol_name_for_target(target: &CodeNavigationTarget) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{WATCH_DEBOUNCE, merge_symbols};
-    use crate::code_intel::{CodeLocation, CodeSymbol, CodeSymbolKind};
+    use super::{WATCH_DEBOUNCE, merge_search_matches, merge_symbols};
+    use crate::code_intel::{
+        CodeLocation, CodeSearchMatch, CodeSearchMatchKind, CodeSearchScore, CodeSymbol,
+        CodeSymbolKind,
+    };
     use tokio::time::{Instant, sleep, timeout};
 
     #[test]
@@ -1834,6 +1918,56 @@ mod tests {
         assert_eq!(merged.len(), 2);
         assert_eq!(merged[0].name, "Engine");
         assert_eq!(merged[1].name, "Runner");
+    }
+
+    #[test]
+    fn merge_search_prefers_semantic_scores_and_dedupes_duplicates() {
+        let semantic = vec![CodeSearchMatch {
+            score: CodeSearchScore::new(1000),
+            kind: CodeSearchMatchKind::Symbol,
+            location: CodeLocation {
+                path: "src/lib.rs".into(),
+                line: 4,
+                column: 12,
+            },
+            line_text: "pub struct Engine;".into(),
+            symbol_name: Some("Engine".into()),
+            symbol_kind: Some(CodeSymbolKind::Struct),
+            signature: Some("pub struct Engine;".into()),
+        }];
+        let lexical = vec![
+            CodeSearchMatch {
+                score: CodeSearchScore::new(900),
+                kind: CodeSearchMatchKind::Symbol,
+                location: CodeLocation {
+                    path: "src/lib.rs".into(),
+                    line: 4,
+                    column: 12,
+                },
+                line_text: "pub struct Engine;".into(),
+                symbol_name: Some("Engine".into()),
+                symbol_kind: Some(CodeSymbolKind::Struct),
+                signature: Some("pub struct Engine;".into()),
+            },
+            CodeSearchMatch {
+                score: CodeSearchScore::new(560),
+                kind: CodeSearchMatchKind::Text,
+                location: CodeLocation {
+                    path: "src/runner.rs".into(),
+                    line: 10,
+                    column: 7,
+                },
+                line_text: "let engine = Engine::new();".into(),
+                symbol_name: None,
+                symbol_kind: None,
+                signature: None,
+            },
+        ];
+
+        let merged = merge_search_matches(semantic, lexical, 8);
+        assert_eq!(merged.len(), 2);
+        assert_eq!(merged[0].score, CodeSearchScore::new(1000));
+        assert_eq!(merged[1].kind, CodeSearchMatchKind::Text);
     }
 
     #[tokio::test]

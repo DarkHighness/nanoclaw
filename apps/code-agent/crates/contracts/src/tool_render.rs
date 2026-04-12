@@ -1714,6 +1714,11 @@ fn render_code_search_match_summary(entry: &Value) -> Option<String> {
     let path = entry.get("location")?.get("path")?.as_str()?.trim();
     let line = entry.get("location")?.get("line")?.as_u64()?;
     let column = entry.get("location")?.get("column")?.as_u64()?;
+    let score_suffix = entry
+        .get("score")
+        .and_then(Value::as_u64)
+        .map(|score| format!(" · score {score}"))
+        .unwrap_or_default();
     match entry.get("kind")?.as_str()? {
         "symbol" => {
             let symbol_name = entry
@@ -1729,7 +1734,7 @@ fn render_code_search_match_summary(entry: &Value) -> Option<String> {
                 .filter(|value| !value.is_empty())
                 .unwrap_or("symbol");
             Some(format!(
-                "[{symbol_kind}] {path}:{line}:{column} {symbol_name}"
+                "[{symbol_kind}] {path}:{line}:{column} {symbol_name}{score_suffix}"
             ))
         }
         "text" => {
@@ -1740,7 +1745,7 @@ fn render_code_search_match_summary(entry: &Value) -> Option<String> {
                 .filter(|value| !value.is_empty())
                 .map(|value| truncate_inline(value, 88))
                 .unwrap_or_else(|| "<snippet>".to_string());
-            Some(format!("{path}:{line}:{column} {preview}"))
+            Some(format!("{path}:{line}:{column} {preview}{score_suffix}"))
         }
         _ => None,
     }
@@ -2529,6 +2534,7 @@ mod tests {
                 "result_count": 2,
                 "matches": [
                     {
+                        "score": 1000,
                         "kind": "symbol",
                         "location": {"path": "src/runtime.rs", "line": 10, "column": 12},
                         "symbol_name": "Engine",
@@ -2537,6 +2543,7 @@ mod tests {
                         "signature": "pub struct Engine;"
                     },
                     {
+                        "score": 560,
                         "kind": "text",
                         "location": {"path": "src/runtime.rs", "line": 22, "column": 9},
                         "line_text": "let _ = Engine {};"
@@ -2554,12 +2561,12 @@ mod tests {
         assert!(
             search_rendered
                 .iter()
-                .any(|line| line.contains("[struct] src/runtime.rs:10:12 Engine"))
+                .any(|line| line.contains("[struct] src/runtime.rs:10:12 Engine · score 1000"))
         );
         assert!(
             search_rendered
                 .iter()
-                .any(|line| line.contains("src/runtime.rs:22:9 let _ = Engine {};"))
+                .any(|line| line.contains("src/runtime.rs:22:9 let _ = Engine {}; · score 560"))
         );
 
         let rendered = tool_output_detail_lines(

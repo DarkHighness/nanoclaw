@@ -14,7 +14,7 @@ Status: Active
 | Phase 4: Checkpoint And Restore | Deferred | Rollback remains transcript/history-centric, and a durable checkpoint design has not been locked yet. |
 | Phase 5: Diagnostics | Complete | `code_diagnostics` exists as a typed tool surface and no longer has a mirrored slash command. |
 | Phase 6: Cron / Automation | Not Started | No scheduled execution tool family yet. |
-| Phase 7: Code Search | In Progress | Canonical `code_search` now exists as a typed lexical symbol+snippet surface; semantic/index-backed ranking is still pending. |
+| Phase 7: Code Search | Complete | Canonical `code_search` now returns typed ranked matches with explicit scores; managed backends merge semantic workspace-symbol hits with lexical snippet fallback, while lexical-only hosts still expose deterministic index-backed ranking. |
 | Phase 8: Browser / Computer Use | Not Started | No first-class browser session tools yet. |
 | Phase 9: Notebook Editing | In Progress | Feature-gated `notebook_read` now exposes typed notebook cells and metadata; notebook mutation still falls back to generic file tooling until `notebook_edit` lands. |
 | Cross-cutting: Operator Slash Surface | In Progress | Tool-mirroring slash commands have been pruned; operator/session commands remain, and installed skills are now surfaced as explicit `/skill_name` slash invocations plus `$skill_name` composer directives. |

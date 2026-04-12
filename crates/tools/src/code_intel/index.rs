@@ -1,12 +1,13 @@
 use crate::ToolExecutionContext;
 use crate::code_intel::{
     CodeIntelBackend, CodeLocation, CodeNavigationTarget, CodeReference, CodeSearchMatch,
-    CodeSearchMatchKind, CodeSymbol, CodeSymbolKind,
+    CodeSearchMatchKind, CodeSearchScore, CodeSymbol, CodeSymbolKind,
 };
 use crate::{Result, ToolError};
 use async_trait::async_trait;
 use ignore::WalkBuilder;
 use regex::{Regex, RegexBuilder};
+use std::cmp::Reverse;
 use std::collections::{BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -166,6 +167,7 @@ impl WorkspaceTextCodeIntelBackend {
                     continue;
                 }
                 matches.push(CodeSearchMatch {
+                    score: CodeSearchScore::new(0),
                     kind: CodeSearchMatchKind::Text,
                     location: CodeLocation {
                         path: display_path.clone(),
@@ -181,6 +183,10 @@ impl WorkspaceTextCodeIntelBackend {
                     break 'files;
                 }
             }
+        }
+
+        for entry in &mut matches {
+            entry.score = code_search_match_score(entry, &lowered_query);
         }
 
         matches.sort_by(|left, right| {
@@ -367,7 +373,7 @@ fn symbol_query_rank(symbol: &CodeSymbol, query: &str) -> (u8, String, usize, us
 fn code_search_match_sort_key(
     entry: &CodeSearchMatch,
     lowered_query: &str,
-) -> (u8, String, usize, usize, String) {
+) -> (Reverse<CodeSearchScore>, u8, String, usize, usize, String) {
     let query_rank = match entry.kind {
         CodeSearchMatchKind::Symbol => {
             let lowered_name = entry
@@ -395,6 +401,7 @@ fn code_search_match_sort_key(
         }
     };
     (
+        Reverse(entry.score),
         query_rank,
         entry.location.path.clone(),
         entry.location.line,
@@ -405,6 +412,7 @@ fn code_search_match_sort_key(
 
 fn symbol_to_search_match(symbol: CodeSymbol) -> CodeSearchMatch {
     CodeSearchMatch {
+        score: CodeSearchScore::new(0),
         kind: CodeSearchMatchKind::Symbol,
         location: symbol.location,
         line_text: symbol
@@ -417,7 +425,7 @@ fn symbol_to_search_match(symbol: CodeSymbol) -> CodeSearchMatch {
     }
 }
 
-fn normalized_path_prefix(path_prefix: Option<&str>) -> Option<String> {
+pub(crate) fn normalized_path_prefix(path_prefix: Option<&str>) -> Option<String> {
     path_prefix
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -430,13 +438,47 @@ fn normalized_path_prefix(path_prefix: Option<&str>) -> Option<String> {
         })
 }
 
-fn matches_search_prefix(display_path: &str, path_prefix: Option<&str>) -> bool {
+pub(crate) fn matches_search_prefix(display_path: &str, path_prefix: Option<&str>) -> bool {
     path_prefix.is_none_or(|prefix| {
         display_path == prefix
             || display_path
                 .strip_prefix(prefix)
                 .is_some_and(|suffix| suffix.starts_with('/'))
     })
+}
+
+pub(crate) fn code_search_match_score(
+    entry: &CodeSearchMatch,
+    lowered_query: &str,
+) -> CodeSearchScore {
+    match entry.kind {
+        CodeSearchMatchKind::Symbol => {
+            let lowered_name = entry
+                .symbol_name
+                .as_deref()
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            if lowered_name == lowered_query {
+                CodeSearchScore::new(900)
+            } else if lowered_name.starts_with(lowered_query) {
+                CodeSearchScore::new(840)
+            } else if lowered_name.contains(lowered_query) {
+                CodeSearchScore::new(760)
+            } else {
+                CodeSearchScore::new(640)
+            }
+        }
+        CodeSearchMatchKind::Text => {
+            let lowered_line = entry.line_text.to_ascii_lowercase();
+            if lowered_line == lowered_query {
+                CodeSearchScore::new(620)
+            } else if lowered_line.contains(lowered_query) {
+                CodeSearchScore::new(560)
+            } else {
+                CodeSearchScore::new(420)
+            }
+        }
+    }
 }
 
 fn definition_regex() -> &'static Regex {
@@ -678,7 +720,7 @@ fn is_identifier_byte(ch: u8) -> bool {
 mod tests {
     use super::{CodeIntelBackend, WorkspaceTextCodeIntelBackend};
     use crate::ToolExecutionContext;
-    use crate::code_intel::{CodeNavigationTarget, CodeSearchMatchKind};
+    use crate::code_intel::{CodeNavigationTarget, CodeSearchMatchKind, CodeSearchScore};
 
     fn context(root: &std::path::Path) -> ToolExecutionContext {
         ToolExecutionContext {
@@ -823,7 +865,9 @@ mod tests {
         assert_eq!(matches.len(), 2);
         assert_eq!(matches[0].kind, CodeSearchMatchKind::Symbol);
         assert_eq!(matches[0].location.path, "src/runtime/lib.rs");
+        assert_eq!(matches[0].score, CodeSearchScore::new(900));
         assert_eq!(matches[1].kind, CodeSearchMatchKind::Text);
         assert_eq!(matches[1].location.path, "src/runtime/lib.rs");
+        assert_eq!(matches[1].score, CodeSearchScore::new(560));
     }
 }

@@ -1120,9 +1120,10 @@ fn format_code_search_output(
                     .symbol_kind
                     .unwrap_or(crate::code_intel::CodeSymbolKind::Unknown);
                 lines.push(format!(
-                    "{}. [symbol:{}] {}:{}:{} {}",
+                    "{}. [symbol:{} score={}] {}:{}:{} {}",
                     index + 1,
                     symbol_kind,
+                    entry.score,
                     entry.location.path,
                     entry.location.line,
                     entry.location.column,
@@ -1134,8 +1135,9 @@ fn format_code_search_output(
             }
             CodeSearchMatchKind::Text => {
                 lines.push(format!(
-                    "{}. [text] {}:{}:{}",
+                    "{}. [text score={}] {}:{}:{}",
                     index + 1,
+                    entry.score,
                     entry.location.path,
                     entry.location.line,
                     entry.location.column
@@ -1296,6 +1298,7 @@ fn symbol_to_json(symbol: &CodeSymbol) -> Value {
 
 fn code_search_match_to_json(entry: &CodeSearchMatch) -> Value {
     json!({
+        "score": entry.score.value(),
         "kind": entry.kind.as_str(),
         "path": entry.location.path,
         "line": entry.location.line,
@@ -1386,6 +1389,7 @@ mod tests {
             };
             Ok(vec![
                 CodeSearchMatch {
+                    score: crate::code_intel::CodeSearchScore::new(1000),
                     kind: CodeSearchMatchKind::Symbol,
                     location: CodeLocation {
                         path: path.clone(),
@@ -1398,6 +1402,7 @@ mod tests {
                     signature: Some("pub struct Engine;".to_string()),
                 },
                 CodeSearchMatch {
+                    score: crate::code_intel::CodeSearchScore::new(560),
                     kind: CodeSearchMatchKind::Text,
                     location: CodeLocation {
                         path,
@@ -1612,13 +1617,14 @@ mod tests {
 
         let text = result.text_content();
         assert!(text.contains("Code search for Engine in src/runtime"));
-        assert!(text.contains("[symbol:struct] src/runtime.rs:10:12 Engine"));
-        assert!(text.contains("[text] src/runtime.rs:22:9"));
+        assert!(text.contains("[symbol:struct score=1000] src/runtime.rs:10:12 Engine"));
+        assert!(text.contains("[text score=560] src/runtime.rs:22:9"));
 
         let structured = result.structured_content.unwrap();
         assert_eq!(structured["query"], "Engine");
         assert_eq!(structured["requested_path_prefix"], "src/runtime");
         assert_eq!(structured["resolved_path_prefix"], "src/runtime");
+        assert_eq!(structured["matches"][0]["score"], 1000);
         assert_eq!(structured["matches"][0]["kind"], "symbol");
         assert_eq!(structured["matches"][1]["kind"], "text");
     }
