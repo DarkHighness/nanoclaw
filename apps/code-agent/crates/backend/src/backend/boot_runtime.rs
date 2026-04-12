@@ -14,9 +14,9 @@ use agent::{
     CodeSymbolSearchTool, EditTool, ExecCommandTool, GlobTool, GrepTool, JsReplTool, ListTool,
     ManagedCodeIntelBackend, ManagedCodeIntelOptions, ManagedPolicyProcessExecutor, PatchTool,
     PlanState, ReadTool, RequestPermissionsTool, RequestUserInputTool, SandboxPolicy, SkillCatalog,
-    SkillTool, TaskTool, ToolCallId, ToolExecutionContext, ToolRegistry, ToolResult,
-    ToolSearchTool, ToolSuggestTool, UpdatePlanTool, ViewImageTool, WebFetchTool,
-    WebSearchBackendsTool, WebSearchTool, WorkspaceTextCodeIntelBackend, WriteStdinTool, WriteTool,
+    SkillTool, TaskTool, ToolCallId, ToolDiscoverTool, ToolExecutionContext, ToolRegistry,
+    ToolResult, UpdatePlanTool, ViewImageTool, WebFetchTool, WebSearchBackendsTool, WebSearchTool,
+    WorkspaceTextCodeIntelBackend, WriteStdinTool, WriteTool,
 };
 use async_trait::async_trait;
 use serde_json::Value;
@@ -579,8 +579,7 @@ fn build_builtin_tools(
         code_intel_backend.clone(),
     ));
     tools.register(CodeCallHierarchyTool::with_backend(code_intel_backend));
-    tools.register(ToolSearchTool::new(discovery_registry.clone()));
-    tools.register(ToolSuggestTool::new(discovery_registry));
+    tools.register(ToolDiscoverTool::new(discovery_registry));
     tools.register(UpdatePlanTool::new(plan_state));
     tools.register(SkillTool::new(skill_catalog));
     tools.register(RequestUserInputTool::new());
@@ -711,11 +710,10 @@ mod tests {
 
         let tool_names = tooling.tools.names();
         assert!(tool_names.iter().any(|name| name.as_str() == "view_image"));
-        assert!(tool_names.iter().any(|name| name.as_str() == "tool_search"));
         assert!(
             tool_names
                 .iter()
-                .any(|name| name.as_str() == "tool_suggest")
+                .any(|name| name.as_str() == "tool_discover")
         );
         assert!(
             tool_names

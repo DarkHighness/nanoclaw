@@ -9,9 +9,8 @@ pub use tools::{
     AgentResumeTool, PermissionGrantScope, PlanFocusAction, PlanFocusInput, PlanFocusSnapshot,
     PlanFocusStatus, PlanItem, PlanSnapshot, PlanState, PlanStatus, RequestPermissionProfile,
     RequestPermissionsArgs, RequestPermissionsTool, RequestUserInputTool, SkillDetail,
-    SkillSummary, SkillTool, TaskTool, ToolSearchTool, ToolSuggestTool, UpdatePlanTool,
-    UserInputAnswer, UserInputHandler, UserInputOption, UserInputQuestion, UserInputRequest,
-    UserInputResponse,
+    SkillSummary, SkillTool, TaskTool, ToolDiscoverTool, UpdatePlanTool, UserInputAnswer,
+    UserInputHandler, UserInputOption, UserInputQuestion, UserInputRequest, UserInputResponse,
 };
 pub use tools::{
     ApplyPatchTool, EditTool, ExecCommandTool, GlobTool, GrepTool, HostProcessExecutor, JsReplTool,

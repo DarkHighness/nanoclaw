@@ -14,17 +14,10 @@ use types::{
 
 const DEFAULT_DISCOVERY_LIMIT: usize = 8;
 const MAX_DISCOVERY_LIMIT: usize = 20;
-const DISCOVERY_TOOL_NAMES: &[&str] = &["tool_search", "tool_suggest"];
+const DISCOVERY_TOOL_NAMES: &[&str] = &["tool_discover", "tool_search", "tool_suggest"];
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
-pub struct ToolSearchInput {
-    pub query: String,
-    #[serde(default)]
-    pub limit: Option<usize>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
-pub struct ToolSuggestInput {
+pub struct ToolDiscoverInput {
     pub query: String,
     #[serde(default)]
     pub limit: Option<usize>,
@@ -48,27 +41,13 @@ struct ToolDiscoveryOutput {
 }
 
 #[derive(Clone)]
-pub struct ToolSearchTool {
+pub struct ToolDiscoverTool {
     // Keep a live registry handle so discovery results include tools registered
     // after boot, such as MCP projections, plugins, and workspace custom tools.
     registry: ToolRegistry,
 }
 
-#[derive(Clone)]
-pub struct ToolSuggestTool {
-    // Suggestions need the same shared-state view as tool_search so they stay
-    // aligned with runtime-visible tool surfaces instead of a boot-time snapshot.
-    registry: ToolRegistry,
-}
-
-impl ToolSearchTool {
-    #[must_use]
-    pub fn new(registry: ToolRegistry) -> Self {
-        Self { registry }
-    }
-}
-
-impl ToolSuggestTool {
+impl ToolDiscoverTool {
     #[must_use]
     pub fn new(registry: ToolRegistry) -> Self {
         Self { registry }
@@ -76,18 +55,19 @@ impl ToolSuggestTool {
 }
 
 #[async_trait]
-impl Tool for ToolSearchTool {
+impl Tool for ToolDiscoverTool {
     fn spec(&self) -> ToolSpec {
         builtin_tool_spec(
-            "tool_search",
-            "Search available model-visible tools by name, alias, and description.",
-            serde_json::to_value(schema_for!(ToolSearchInput)).expect("tool_search schema"),
+            "tool_discover",
+            "Discover available model-visible tools by name, alias, and description.",
+            serde_json::to_value(schema_for!(ToolDiscoverInput)).expect("tool_discover schema"),
             ToolOutputMode::Text,
             tool_approval_profile(true, false, false, false),
         )
+        .with_aliases(vec!["tool_search".into(), "tool_suggest".into()])
         .with_output_schema(
             serde_json::to_value(schema_for!(ToolDiscoveryOutput))
-                .expect("tool_search output schema"),
+                .expect("tool_discover output schema"),
         )
     }
 
@@ -97,47 +77,14 @@ impl Tool for ToolSearchTool {
         arguments: Value,
         ctx: &ToolExecutionContext,
     ) -> Result<ToolResult> {
-        let input: ToolSearchInput = serde_json::from_value(arguments)?;
+        let input: ToolDiscoverInput = serde_json::from_value(arguments)?;
         let matches = search_registry(
             &self.registry,
             &input.query,
             input.limit,
             &ctx.model_visibility,
         )?;
-        build_discovery_result(call_id, "tool_search", input.query, matches)
-    }
-}
-
-#[async_trait]
-impl Tool for ToolSuggestTool {
-    fn spec(&self) -> ToolSpec {
-        builtin_tool_spec(
-            "tool_suggest",
-            "Suggest the most relevant available tools for a task or intent description.",
-            serde_json::to_value(schema_for!(ToolSuggestInput)).expect("tool_suggest schema"),
-            ToolOutputMode::Text,
-            tool_approval_profile(true, false, false, false),
-        )
-        .with_output_schema(
-            serde_json::to_value(schema_for!(ToolDiscoveryOutput))
-                .expect("tool_suggest output schema"),
-        )
-    }
-
-    async fn execute(
-        &self,
-        call_id: ToolCallId,
-        arguments: Value,
-        ctx: &ToolExecutionContext,
-    ) -> Result<ToolResult> {
-        let input: ToolSuggestInput = serde_json::from_value(arguments)?;
-        let matches = search_registry(
-            &self.registry,
-            &input.query,
-            input.limit,
-            &ctx.model_visibility,
-        )?;
-        build_discovery_result(call_id, "tool_suggest", input.query, matches)
+        build_discovery_result(call_id, "tool_discover", input.query, matches)
     }
 }
 
@@ -360,7 +307,7 @@ fn render_discovery_text(tool_name: &str, output: &ToolDiscoveryOutput) -> Strin
 
 #[cfg(test)]
 mod tests {
-    use super::{ToolSearchTool, ToolSuggestTool};
+    use super::ToolDiscoverTool;
     use crate::{Result, Tool, ToolExecutionContext, ToolRegistry};
     use async_trait::async_trait;
     use serde_json::{Value, json};
@@ -410,11 +357,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tool_search_prefers_exact_name_matches() {
+    async fn tool_discover_prefers_exact_name_matches() {
         let mut registry = ToolRegistry::new();
         let discovery_registry = registry.clone();
-        registry.register(ToolSearchTool::new(discovery_registry.clone()));
-        registry.register(ToolSuggestTool::new(discovery_registry));
+        registry.register(ToolDiscoverTool::new(discovery_registry));
         registry.register(FakeTool {
             name: "read",
             description: "Read a file window with line numbers.",
@@ -433,7 +379,7 @@ mod tests {
         });
 
         let tool = registry
-            .get("tool_search")
+            .get("tool_discover")
             .expect("tool should be registered");
         let result = tool
             .execute(
@@ -447,14 +393,14 @@ mod tests {
         let matches = structured["matches"].as_array().expect("matches array");
 
         assert_eq!(matches[0]["name"], "read");
-        assert!(matches.iter().all(|entry| entry["name"] != "tool_search"));
+        assert!(matches.iter().all(|entry| entry["name"] != "tool_discover"));
     }
 
     #[tokio::test]
-    async fn tool_suggest_uses_live_registry_state_after_registration() {
+    async fn tool_discover_aliases_remain_live_after_registration() {
         let mut registry = ToolRegistry::new();
         let discovery_registry = registry.clone();
-        registry.register(ToolSuggestTool::new(discovery_registry));
+        registry.register(ToolDiscoverTool::new(discovery_registry));
         registry.register(FakeTool {
             name: "read",
             description: "Read a file window with line numbers.",
@@ -505,9 +451,9 @@ mod tests {
     #[tokio::test]
     async fn tool_discovery_rejects_empty_queries() {
         let mut registry = ToolRegistry::new();
-        registry.register(ToolSearchTool::new(registry.clone()));
+        registry.register(ToolDiscoverTool::new(registry.clone()));
         let tool = registry
-            .get("tool_search")
+            .get("tool_discover")
             .expect("tool should be registered");
 
         let error = tool
@@ -526,7 +472,7 @@ mod tests {
     async fn tool_discovery_filters_results_by_model_visibility_context() {
         let mut registry = ToolRegistry::new();
         let discovery_registry = registry.clone();
-        registry.register(ToolSearchTool::new(discovery_registry));
+        registry.register(ToolDiscoverTool::new(discovery_registry));
         registry.register(FakeTool {
             name: "apply_patch",
             description: "Apply one multi-file patch.",
@@ -545,7 +491,7 @@ mod tests {
         });
 
         let tool = registry
-            .get("tool_search")
+            .get("tool_discover")
             .expect("tool should be registered");
 
         let root_result = tool
