@@ -8,7 +8,7 @@ It intentionally keeps the host layer thin:
 - model-visible coding tools: `read`, `write`, `edit`, `patch_files`, `glob`, `grep`, `list`, `exec_command`, `write_stdin`
 - discovery tools: `tool_discover`
 - operator/debug-only tools: `web_search_backends`
-- optional code-intel tools: `code_symbol_search`, `code_document_symbols`, `code_nav`
+- optional code-intel tools: `code_search`, `code_symbol_search`, `code_document_symbols`, `code_nav`
 - agentic tools: `skills_list`, `skill_view`, `skill_manage`, `request_user_input`, `request_permissions`, `task_create`, `task_get`, `task_list`, `task_update`, `task_stop`, `spawn_agent`, `send_input`, `wait_agent`, `resume_agent`, `list_agents`, `close_agent`
   - `spawn_agent` accepts Codex-style launch overrides such as `fork_context`, `model`, and `reasoning_effort`
   - `spawn_agent` and `send_input` now forward `message + items` as structured user messages instead of flattening them into steering prose

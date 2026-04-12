@@ -418,6 +418,9 @@ fn tool_headline_prefix(
     }
 
     match ToolRenderKind::classify(tool_name) {
+        ToolRenderKind::CodeSearch => {
+            lifecycle_headline_text(status, "Searching code", "Searched code")
+        }
         ToolRenderKind::CodeDiagnostics => {
             lifecycle_headline_text(status, "Inspecting diagnostics", "Inspected diagnostics")
         }
@@ -481,7 +484,8 @@ fn tool_headline_subject_kind(
         ToolRenderKind::ExecCommand | ToolRenderKind::WriteStdin | ToolRenderKind::Generic => {
             TranscriptToolHeadlineSubjectKind::ToolName
         }
-        ToolRenderKind::CodeDiagnostics
+        ToolRenderKind::CodeSearch
+        | ToolRenderKind::CodeDiagnostics
         | ToolRenderKind::MonitorStart
         | ToolRenderKind::MonitorList
         | ToolRenderKind::MonitorStop

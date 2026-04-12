@@ -21,9 +21,9 @@ pub use tools::{
 pub use tools::{
     CodeCallHierarchyDirection, CodeCallHierarchyEntry, CodeDiagnostic, CodeDiagnosticSeverity,
     CodeDiagnosticSource, CodeDiagnosticsTool, CodeDocumentSymbolsTool, CodeHover,
-    CodeIntelBackend, CodeNavOperation, CodeNavTool, CodeReference, CodeSymbol, CodeSymbolKind,
-    CodeSymbolSearchTool, ManagedCodeIntelBackend, ManagedCodeIntelOptions,
-    WorkspaceTextCodeIntelBackend,
+    CodeIntelBackend, CodeNavOperation, CodeNavTool, CodeReference, CodeSearchMatch,
+    CodeSearchMatchKind, CodeSearchTool, CodeSymbol, CodeSymbolKind, CodeSymbolSearchTool,
+    ManagedCodeIntelBackend, ManagedCodeIntelOptions, WorkspaceTextCodeIntelBackend,
 };
 pub use tools::{
     EditTool, ExecCommandTool, GlobTool, GrepTool, HostProcessExecutor, JsReplTool, ListTool,

@@ -1,11 +1,12 @@
 use crate::ToolExecutionContext;
 use crate::code_intel::{
-    CodeIntelBackend, CodeLocation, CodeNavigationTarget, CodeReference, CodeSymbol, CodeSymbolKind,
+    CodeIntelBackend, CodeLocation, CodeNavigationTarget, CodeReference, CodeSearchMatch,
+    CodeSearchMatchKind, CodeSymbol, CodeSymbolKind,
 };
 use crate::{Result, ToolError};
 use async_trait::async_trait;
 use ignore::WalkBuilder;
-use regex::Regex;
+use regex::{Regex, RegexBuilder};
 use std::collections::{BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -116,12 +117,95 @@ impl WorkspaceTextCodeIntelBackend {
             })
             .collect()
     }
+
+    fn collect_search_matches(
+        &self,
+        root: &Path,
+        query: &str,
+        path_prefix: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<CodeSearchMatch>> {
+        let normalized_query = query.trim();
+        if normalized_query.is_empty() {
+            return Ok(Vec::new());
+        }
+        let normalized_prefix = normalized_path_prefix(path_prefix);
+        let lowered_query = normalized_query.to_ascii_lowercase();
+
+        let mut matches = self
+            .collect_workspace_symbols(root)?
+            .into_iter()
+            .filter(|symbol| {
+                matches_search_prefix(&symbol.location.path, normalized_prefix.as_deref())
+            })
+            .filter(|symbol| symbol.name.to_ascii_lowercase().contains(&lowered_query))
+            .map(symbol_to_search_match)
+            .collect::<Vec<_>>();
+
+        let symbol_lines = matches
+            .iter()
+            .map(|entry| (entry.location.path.clone(), entry.location.line))
+            .collect::<HashSet<_>>();
+
+        let pattern = build_search_query_regex(normalized_query)?;
+        let candidate_limit = limit.saturating_mul(4).max(limit);
+        'files: for path in self.workspace_files(root) {
+            let display_path = display_path(root, &path);
+            if !matches_search_prefix(&display_path, normalized_prefix.as_deref()) {
+                continue;
+            }
+            let source = match std::fs::read_to_string(&path) {
+                Ok(source) => source,
+                Err(_) => continue,
+            };
+            for (line_idx, line) in source.lines().enumerate() {
+                let Some(found) = pattern.find(line) else {
+                    continue;
+                };
+                if symbol_lines.contains(&(display_path.clone(), line_idx + 1)) {
+                    continue;
+                }
+                matches.push(CodeSearchMatch {
+                    kind: CodeSearchMatchKind::Text,
+                    location: CodeLocation {
+                        path: display_path.clone(),
+                        line: line_idx + 1,
+                        column: found.start() + 1,
+                    },
+                    line_text: compact_line(line),
+                    symbol_name: None,
+                    symbol_kind: None,
+                    signature: None,
+                });
+                if matches.len() >= candidate_limit {
+                    break 'files;
+                }
+            }
+        }
+
+        matches.sort_by(|left, right| {
+            code_search_match_sort_key(left, &lowered_query)
+                .cmp(&code_search_match_sort_key(right, &lowered_query))
+        });
+        matches.truncate(limit);
+        Ok(matches)
+    }
 }
 
 #[async_trait]
 impl CodeIntelBackend for WorkspaceTextCodeIntelBackend {
     fn name(&self) -> &'static str {
         "workspace_text_scan_v1"
+    }
+
+    async fn search(
+        &self,
+        query: &str,
+        path_prefix: Option<&str>,
+        limit: usize,
+        ctx: &ToolExecutionContext,
+    ) -> Result<Vec<CodeSearchMatch>> {
+        self.collect_search_matches(ctx.effective_root(), query, path_prefix, limit)
     }
 
     async fn workspace_symbols(
@@ -280,6 +364,81 @@ fn symbol_query_rank(symbol: &CodeSymbol, query: &str) -> (u8, String, usize, us
     )
 }
 
+fn code_search_match_sort_key(
+    entry: &CodeSearchMatch,
+    lowered_query: &str,
+) -> (u8, String, usize, usize, String) {
+    let query_rank = match entry.kind {
+        CodeSearchMatchKind::Symbol => {
+            let lowered_name = entry
+                .symbol_name
+                .as_deref()
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            if lowered_name == lowered_query {
+                0
+            } else if lowered_name.starts_with(lowered_query) {
+                1
+            } else {
+                2
+            }
+        }
+        CodeSearchMatchKind::Text => {
+            let lowered_line = entry.line_text.to_ascii_lowercase();
+            if lowered_line == lowered_query {
+                4
+            } else if lowered_line.contains(lowered_query) {
+                5
+            } else {
+                6
+            }
+        }
+    };
+    (
+        query_rank,
+        entry.location.path.clone(),
+        entry.location.line,
+        entry.location.column,
+        entry.symbol_name.clone().unwrap_or_default(),
+    )
+}
+
+fn symbol_to_search_match(symbol: CodeSymbol) -> CodeSearchMatch {
+    CodeSearchMatch {
+        kind: CodeSearchMatchKind::Symbol,
+        location: symbol.location,
+        line_text: symbol
+            .signature
+            .clone()
+            .unwrap_or_else(|| symbol.name.clone()),
+        symbol_name: Some(symbol.name),
+        symbol_kind: Some(symbol.kind),
+        signature: symbol.signature,
+    }
+}
+
+fn normalized_path_prefix(path_prefix: Option<&str>) -> Option<String> {
+    path_prefix
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| {
+            value
+                .replace('\\', "/")
+                .trim_start_matches("./")
+                .trim_start_matches('/')
+                .to_string()
+        })
+}
+
+fn matches_search_prefix(display_path: &str, path_prefix: Option<&str>) -> bool {
+    path_prefix.is_none_or(|prefix| {
+        display_path == prefix
+            || display_path
+                .strip_prefix(prefix)
+                .is_some_and(|suffix| suffix.starts_with('/'))
+    })
+}
+
 fn definition_regex() -> &'static Regex {
     static REGEX: OnceLock<Regex> = OnceLock::new();
     REGEX.get_or_init(|| {
@@ -410,6 +569,13 @@ fn compact_line(line: &str) -> String {
     shortened
 }
 
+fn build_search_query_regex(query: &str) -> Result<Regex> {
+    RegexBuilder::new(&regex::escape(query))
+        .case_insensitive(true)
+        .build()
+        .map_err(|source| ToolError::invalid(format!("invalid search query `{query}`: {source}")))
+}
+
 fn display_path(root: &Path, path: &Path) -> String {
     path.strip_prefix(root)
         .unwrap_or(path)
@@ -512,7 +678,7 @@ fn is_identifier_byte(ch: u8) -> bool {
 mod tests {
     use super::{CodeIntelBackend, WorkspaceTextCodeIntelBackend};
     use crate::ToolExecutionContext;
-    use crate::code_intel::CodeNavigationTarget;
+    use crate::code_intel::{CodeNavigationTarget, CodeSearchMatchKind};
 
     fn context(root: &std::path::Path) -> ToolExecutionContext {
         ToolExecutionContext {
@@ -630,5 +796,34 @@ mod tests {
         assert_eq!(definitions.len(), 1);
         assert_eq!(definitions[0].name, "compute_total");
         assert_eq!(definitions[0].location.path, "src/lib.rs");
+    }
+
+    #[tokio::test]
+    async fn code_search_returns_symbol_and_text_matches_with_path_prefix() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src/runtime")).unwrap();
+        std::fs::create_dir_all(dir.path().join("src/other")).unwrap();
+        std::fs::write(
+            dir.path().join("src/runtime/lib.rs"),
+            "pub struct Engine;\nfn boot() { let _ = Engine; }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("src/other/lib.rs"),
+            "pub struct Worker;\nfn boot() { let _ = Engine; }\n",
+        )
+        .unwrap();
+
+        let backend = WorkspaceTextCodeIntelBackend::new();
+        let matches = backend
+            .search("Engine", Some("src/runtime"), 8, &context(dir.path()))
+            .await
+            .unwrap();
+
+        assert_eq!(matches.len(), 2);
+        assert_eq!(matches[0].kind, CodeSearchMatchKind::Symbol);
+        assert_eq!(matches[0].location.path, "src/runtime/lib.rs");
+        assert_eq!(matches[1].kind, CodeSearchMatchKind::Text);
+        assert_eq!(matches[1].location.path, "src/runtime/lib.rs");
     }
 }

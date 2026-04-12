@@ -12,6 +12,7 @@ pub enum ToolDetailBlockKind {
 pub enum ToolRenderKind {
     ExecCommand,
     WriteStdin,
+    CodeSearch,
     CodeDiagnostics,
     MonitorStart,
     MonitorList,
@@ -33,6 +34,7 @@ impl ToolRenderKind {
         match tool_name {
             "exec_command" => Self::ExecCommand,
             "write_stdin" => Self::WriteStdin,
+            "code_search" => Self::CodeSearch,
             "code_diagnostics" => Self::CodeDiagnostics,
             "monitor_start" => Self::MonitorStart,
             "monitor_list" => Self::MonitorList,
@@ -420,6 +422,27 @@ pub fn tool_arguments_preview_lines(tool_name: &str, arguments: &Value) -> Vec<S
                 PreviewCollapse::Head,
             ));
             return lines;
+        }
+        ToolRenderKind::CodeSearch => {
+            let query = arguments
+                .get("query")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or("<empty>");
+            if let Some(path_prefix) = arguments
+                .get("path_prefix")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                return vec![format!(
+                    "Search code for {} in {}",
+                    truncate_inline(query, 72),
+                    truncate_inline(path_prefix, 72)
+                )];
+            }
+            return vec![format!("Search code for {}", truncate_inline(query, 80))];
         }
         ToolRenderKind::CodeDiagnostics => {
             if let Some(path) = arguments
@@ -1019,7 +1042,8 @@ pub fn tool_completion_state(tool_name: &str, structured: Option<&Value>) -> Too
         ToolRenderKind::ExecCommand | ToolRenderKind::WriteStdin | ToolRenderKind::MonitorStart => {
             ToolCompletionState::Neutral
         }
-        ToolRenderKind::CodeDiagnostics
+        ToolRenderKind::CodeSearch
+        | ToolRenderKind::CodeDiagnostics
         | ToolRenderKind::MonitorList
         | ToolRenderKind::MonitorStop
         | ToolRenderKind::WorktreeEnter
@@ -1073,6 +1097,11 @@ pub fn tool_output_details(
     match ToolRenderKind::classify(tool_name) {
         ToolRenderKind::ExecCommand | ToolRenderKind::WriteStdin => {
             return process_output_details(tool_name, output_preview, structured);
+        }
+        ToolRenderKind::CodeSearch => {
+            if let Some(details) = code_search_output_details(structured) {
+                return details;
+            }
         }
         ToolRenderKind::CodeDiagnostics => {
             if let Some(details) = code_diagnostics_output_details(structured) {
@@ -1446,6 +1475,106 @@ fn code_diagnostics_output_details(structured: Option<&Value>) -> Option<Vec<Too
         });
     }
     Some(details)
+}
+
+fn code_search_output_details(structured: Option<&Value>) -> Option<Vec<ToolDetail>> {
+    let structured = structured?;
+    let result_count = structured
+        .get("result_count")
+        .and_then(Value::as_u64)
+        .or_else(|| {
+            structured
+                .get("matches")
+                .and_then(Value::as_array)
+                .map(|matches| matches.len() as u64)
+        })
+        .unwrap_or(0);
+    let mut details = vec![ToolDetail::LabeledValue {
+        label: ToolDetailLabel::Result,
+        value: format!("{result_count} match(es)"),
+    }];
+
+    if let Some(path_prefix) = structured
+        .get("requested_path_prefix")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        details.push(ToolDetail::LabeledValue {
+            label: ToolDetailLabel::Context,
+            value: path_prefix.to_string(),
+        });
+    } else {
+        details.push(ToolDetail::LabeledValue {
+            label: ToolDetailLabel::Context,
+            value: "workspace".to_string(),
+        });
+    }
+
+    if let Some(backend) = structured
+        .get("backend")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        details.push(ToolDetail::LabeledValue {
+            label: ToolDetailLabel::State,
+            value: backend.to_string(),
+        });
+    }
+
+    let lines = structured
+        .get("matches")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .take(6)
+        .filter_map(render_code_search_match_summary)
+        .collect::<Vec<_>>();
+    if !lines.is_empty() {
+        details.push(ToolDetail::LabeledBlock {
+            label: ToolDetailLabel::Output,
+            lines,
+        });
+    }
+
+    Some(details)
+}
+
+fn render_code_search_match_summary(entry: &Value) -> Option<String> {
+    let path = entry.get("location")?.get("path")?.as_str()?.trim();
+    let line = entry.get("location")?.get("line")?.as_u64()?;
+    let column = entry.get("location")?.get("column")?.as_u64()?;
+    match entry.get("kind")?.as_str()? {
+        "symbol" => {
+            let symbol_name = entry
+                .get("symbol_name")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or("<symbol>");
+            let symbol_kind = entry
+                .get("symbol_kind")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or("symbol");
+            Some(format!(
+                "[{symbol_kind}] {path}:{line}:{column} {symbol_name}"
+            ))
+        }
+        "text" => {
+            let preview = entry
+                .get("line_text")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(|value| truncate_inline(value, 88))
+                .unwrap_or_else(|| "<snippet>".to_string());
+            Some(format!("{path}:{line}:{column} {preview}"))
+        }
+        _ => None,
+    }
 }
 
 fn worktree_output_details(tool_name: &str, structured: Option<&Value>) -> Option<Vec<ToolDetail>> {
@@ -2124,6 +2253,17 @@ mod tests {
     #[test]
     fn code_diagnostics_arguments_render_scope_preview() {
         assert_eq!(
+            tool_arguments_preview_lines("code_search", &json!({"query": "Engine"})),
+            vec!["Search code for Engine"]
+        );
+        assert_eq!(
+            tool_arguments_preview_lines(
+                "code_search",
+                &json!({"query": "Engine", "path_prefix": "src/runtime"})
+            ),
+            vec!["Search code for Engine in src/runtime"]
+        );
+        assert_eq!(
             tool_arguments_preview_lines("code_diagnostics", &json!({})),
             vec!["Inspect workspace diagnostics"]
         );
@@ -2135,6 +2275,49 @@ mod tests {
 
     #[test]
     fn code_diagnostics_output_renders_typed_summary() {
+        let search_rendered = tool_output_detail_lines(
+            "code_search",
+            "",
+            Some(&json!({
+                "query": "Engine",
+                "requested_path_prefix": "src/runtime",
+                "backend": "managed_lsp_with_text_fallback_v1",
+                "result_count": 2,
+                "matches": [
+                    {
+                        "kind": "symbol",
+                        "location": {"path": "src/runtime.rs", "line": 10, "column": 12},
+                        "symbol_name": "Engine",
+                        "symbol_kind": "struct",
+                        "line_text": "pub struct Engine;",
+                        "signature": "pub struct Engine;"
+                    },
+                    {
+                        "kind": "text",
+                        "location": {"path": "src/runtime.rs", "line": 22, "column": 9},
+                        "line_text": "let _ = Engine {};"
+                    }
+                ]
+            })),
+        );
+
+        assert_eq!(search_rendered[0], "  └ Result 2 match(es)");
+        assert!(
+            search_rendered
+                .iter()
+                .any(|line| line == "  └ Context src/runtime")
+        );
+        assert!(
+            search_rendered
+                .iter()
+                .any(|line| line.contains("[struct] src/runtime.rs:10:12 Engine"))
+        );
+        assert!(
+            search_rendered
+                .iter()
+                .any(|line| line.contains("src/runtime.rs:22:9 let _ = Engine {};"))
+        );
+
         let rendered = tool_output_detail_lines(
             "code_diagnostics",
             "",

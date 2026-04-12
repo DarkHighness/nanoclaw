@@ -182,6 +182,25 @@ fn approval_content_preview(tool_name: &str, arguments: &Value) -> ApprovalConte
                 preview,
             };
         }
+        ToolRenderKind::CodeSearch => {
+            let query = arguments
+                .get("query")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or("<empty>");
+            let preview = arguments
+                .get("path_prefix")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(|path_prefix| vec![format!("search code for {query} in {path_prefix}")])
+                .unwrap_or_else(|| vec![format!("search code for {query}")]);
+            return ApprovalContent {
+                kind: ApprovalContentKind::Arguments,
+                preview,
+            };
+        }
         ToolRenderKind::CodeDiagnostics => {
             let preview = arguments
                 .get("path")

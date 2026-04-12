@@ -3,7 +3,7 @@ mod support;
 
 use crate::code_intel::{
     CodeCallHierarchyDirection, CodeCallHierarchyEntry, CodeDiagnostic, CodeHover,
-    CodeIntelBackend, CodeNavigationTarget, CodeReference, CodeSymbol,
+    CodeIntelBackend, CodeNavigationTarget, CodeReference, CodeSearchMatch, CodeSymbol,
     WorkspaceTextCodeIntelBackend,
 };
 use crate::file_activity::FileActivityObserver;
@@ -120,6 +120,16 @@ impl FileActivityObserver for ManagedCodeIntelBackend {
 impl CodeIntelBackend for ManagedCodeIntelBackend {
     fn name(&self) -> &'static str {
         "managed_lsp_with_text_fallback_v1"
+    }
+
+    async fn search(
+        &self,
+        query: &str,
+        path_prefix: Option<&str>,
+        limit: usize,
+        ctx: &ToolExecutionContext,
+    ) -> Result<Vec<CodeSearchMatch>> {
+        self.fallback.search(query, path_prefix, limit, ctx).await
     }
 
     async fn workspace_symbols(

@@ -69,6 +69,42 @@ pub struct CodeReference {
     pub is_definition: bool,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CodeSearchMatchKind {
+    Symbol,
+    Text,
+}
+
+impl CodeSearchMatchKind {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Symbol => "symbol",
+            Self::Text => "text",
+        }
+    }
+}
+
+impl Display for CodeSearchMatchKind {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, JsonSchema)]
+pub struct CodeSearchMatch {
+    pub kind: CodeSearchMatchKind,
+    pub location: CodeLocation,
+    pub line_text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub symbol_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub symbol_kind: Option<CodeSymbolKind>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature: Option<String>,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, JsonSchema)]
 pub struct CodeHover {
     pub contents: String,
@@ -205,6 +241,16 @@ impl CodeNavigationTarget {
 pub trait CodeIntelBackend: Send + Sync {
     /// Stable backend identifier for metadata and host-level auditing.
     fn name(&self) -> &'static str;
+
+    async fn search(
+        &self,
+        _query: &str,
+        _path_prefix: Option<&str>,
+        _limit: usize,
+        _ctx: &ToolExecutionContext,
+    ) -> Result<Vec<CodeSearchMatch>> {
+        Ok(Vec::new())
+    }
 
     async fn workspace_symbols(
         &self,

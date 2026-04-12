@@ -5,12 +5,12 @@ use agent::runtime::{
 };
 use agent::tools::{
     CodeCallHierarchyDirection, CodeCallHierarchyEntry, CodeDiagnostic, CodeHover,
-    CodeNavigationTarget, CodeReference, CodeSymbol, FileActivityObserver, MonitorManager,
-    ProcessExecutor, SandboxBackendStatus, SandboxError, SubagentExecutor, TaskManager,
-    WorktreeManager,
+    CodeNavigationTarget, CodeReference, CodeSearchMatch, CodeSymbol, FileActivityObserver,
+    MonitorManager, ProcessExecutor, SandboxBackendStatus, SandboxError, SubagentExecutor,
+    TaskManager, WorktreeManager,
 };
 use agent::{
-    CodeDiagnosticsTool, CodeDocumentSymbolsTool, CodeIntelBackend, CodeNavTool,
+    CodeDiagnosticsTool, CodeDocumentSymbolsTool, CodeIntelBackend, CodeNavTool, CodeSearchTool,
     CodeSymbolSearchTool, EditTool, ExecCommandTool, GlobTool, GrepTool, JsReplTool, ListTool,
     ManagedCodeIntelBackend, ManagedCodeIntelOptions, ManagedPolicyProcessExecutor,
     MonitorListTool, MonitorStartTool, MonitorStopTool, PatchFilesTool, ReadTool,
@@ -345,6 +345,20 @@ impl CodeIntelBackend for SwitchableCodeIntelBackend {
         }
     }
 
+    async fn search(
+        &self,
+        query: &str,
+        path_prefix: Option<&str>,
+        limit: usize,
+        ctx: &ToolExecutionContext,
+    ) -> agent::tools::Result<Vec<CodeSearchMatch>> {
+        if let Some(backend) = self.managed_backend_snapshot() {
+            backend.search(query, path_prefix, limit, ctx).await
+        } else {
+            self.fallback.search(query, path_prefix, limit, ctx).await
+        }
+    }
+
     async fn workspace_symbols(
         &self,
         query: &str,
@@ -591,6 +605,7 @@ fn build_builtin_tools(
         sandbox_policy.clone(),
     ));
     tools.register(GuardedWriteStdinTool::new(process_executor));
+    tools.register(CodeSearchTool::with_backend(code_intel_backend.clone()));
     tools.register(CodeSymbolSearchTool::with_backend(
         code_intel_backend.clone(),
     ));
@@ -842,6 +857,7 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert!(openai_visible.iter().any(|name| name == "code_nav"));
+        assert!(openai_visible.iter().any(|name| name == "code_search"));
     }
 
     #[test]

@@ -133,6 +133,20 @@ fn transcript_entry_from_string_round_trips_prefixed_summary_blocks() {
 
 #[test]
 fn code_diagnostics_tool_entry_uses_diagnostics_headline() {
+    let search_entry = TranscriptEntry::tool_with_completion(
+        TranscriptToolStatus::Finished,
+        "code_search",
+        vec![ToolDetail::LabeledValue {
+            label: ToolDetailLabel::Result,
+            value: "3 match(es)".to_string(),
+        }],
+        ToolCompletionState::Success,
+    );
+    assert_eq!(
+        search_entry.serialized(),
+        "• Searched code\n  └ Result 3 match(es)"
+    );
+
     let entry = TranscriptEntry::tool_with_completion(
         TranscriptToolStatus::Finished,
         "code_diagnostics",

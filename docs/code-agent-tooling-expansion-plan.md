@@ -11,10 +11,10 @@ Status: Active
 | Phase 1: Task Model | Complete | `task_create`, `task_get`, `task_list`, `task_update`, `task_stop` are registered, `update_plan` has been removed, and the TUI now restores live/current task state from typed task events. |
 | Phase 2: Monitor | Complete | `monitor_start`, `monitor_list`, `monitor_stop` are registered and surfaced through typed monitor/session flows. |
 | Phase 3: Worktree Lifecycle | Complete | `worktree_enter`, `worktree_list`, and `worktree_exit` now exist with persisted worktree events, shared runtime context switching, child-agent dedicated worktree opt-in, and persisted task/worktree summaries that survive reload. |
-| Phase 4: Checkpoint And Restore | Not Started | Rollback remains transcript/history-centric. |
+| Phase 4: Checkpoint And Restore | Deferred | Rollback remains transcript/history-centric, and a durable checkpoint design has not been locked yet. |
 | Phase 5: Diagnostics | Complete | `code_diagnostics` exists as a typed tool surface and no longer has a mirrored slash command. |
 | Phase 6: Cron / Automation | Not Started | No scheduled execution tool family yet. |
-| Phase 7: Code Search | Not Started | No semantic/index-backed `code_search` surface yet. |
+| Phase 7: Code Search | In Progress | Canonical `code_search` now exists as a typed lexical symbol+snippet surface; semantic/index-backed ranking is still pending. |
 | Phase 8: Browser / Computer Use | Not Started | No first-class browser session tools yet. |
 | Phase 9: Notebook Editing | Not Started | Notebook work still falls back to generic file tooling. |
 | Cross-cutting: Operator Slash Surface | In Progress | Tool-mirroring slash commands have been pruned; operator/session commands remain, and installed skills are now surfaced as explicit `/skill_name` slash invocations plus `$skill_name` composer directives. |
@@ -44,7 +44,7 @@ Design companions:
 The current runtime already exposes a credible baseline:
 
 - grounded file tools: `read`, `write`, `edit`, `patch_files`
-- code search/navigation primitives: `glob`, `grep`, `list`,
+- code search/navigation primitives: `glob`, `grep`, `list`, `code_search`,
   `code_symbol_search`, `code_document_symbols`, `code_nav`
 - execution and browsing: `exec_command`, `write_stdin`, `web_fetch`,
   `web_search`

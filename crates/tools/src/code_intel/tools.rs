@@ -2,8 +2,8 @@ use crate::ToolExecutionContext;
 use crate::annotations::{builtin_tool_spec, tool_approval_profile};
 use crate::code_intel::{
     CodeCallHierarchyDirection, CodeCallHierarchyEntry, CodeDiagnostic, CodeHover,
-    CodeIntelBackend, CodeNavigationTarget, CodeReference, CodeSymbol,
-    WorkspaceTextCodeIntelBackend,
+    CodeIntelBackend, CodeNavigationTarget, CodeReference, CodeSearchMatch, CodeSearchMatchKind,
+    CodeSymbol, WorkspaceTextCodeIntelBackend,
 };
 use crate::fs::resolve_tool_path_against_workspace_root;
 use crate::registry::Tool;
@@ -18,7 +18,16 @@ use types::{MessagePart, ToolCallId, ToolOutputMode, ToolResult, ToolSpec};
 
 const DEFAULT_RESULT_LIMIT: usize = 32;
 const MAX_RESULT_LIMIT: usize = 200;
+const CODE_SEARCH_TOOL_NAME: &str = "code_search";
 const CODE_DIAGNOSTICS_TOOL_NAME: &str = "code_diagnostics";
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+pub struct CodeSearchInput {
+    pub query: String,
+    #[serde(default)]
+    pub path_prefix: Option<String>,
+    pub limit: Option<usize>,
+}
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 pub struct CodeSymbolSearchInput {
@@ -114,6 +123,19 @@ struct CodeDiagnosticsToolOutput {
 }
 
 #[derive(Clone, Debug, Serialize, JsonSchema)]
+struct CodeSearchToolOutput {
+    query: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    requested_path_prefix: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    resolved_path_prefix: Option<String>,
+    limit: usize,
+    backend: String,
+    result_count: usize,
+    matches: Vec<CodeSearchMatch>,
+}
+
+#[derive(Clone, Debug, Serialize, JsonSchema)]
 #[serde(tag = "operation", rename_all = "snake_case")]
 pub enum CodeNavToolOutput {
     Definitions {
@@ -160,6 +182,11 @@ pub struct CodeSymbolSearchTool {
 }
 
 #[derive(Clone)]
+pub struct CodeSearchTool {
+    backend: Arc<dyn CodeIntelBackend>,
+}
+
+#[derive(Clone)]
 pub struct CodeDocumentSymbolsTool {
     backend: Arc<dyn CodeIntelBackend>,
 }
@@ -175,6 +202,12 @@ pub struct CodeDiagnosticsTool {
 }
 
 impl Default for CodeSymbolSearchTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Default for CodeSearchTool {
     fn default() -> Self {
         Self::new()
     }
@@ -199,6 +232,18 @@ impl Default for CodeDiagnosticsTool {
 }
 
 impl CodeSymbolSearchTool {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::with_backend(Arc::new(WorkspaceTextCodeIntelBackend::new()))
+    }
+
+    #[must_use]
+    pub fn with_backend(backend: Arc<dyn CodeIntelBackend>) -> Self {
+        Self { backend }
+    }
+}
+
+impl CodeSearchTool {
     #[must_use]
     pub fn new() -> Self {
         Self::with_backend(Arc::new(WorkspaceTextCodeIntelBackend::new()))
@@ -316,6 +361,79 @@ impl Tool for CodeSymbolSearchTool {
             })),
             is_error: false,
         })
+    }
+}
+
+#[async_trait]
+impl Tool for CodeSearchTool {
+    fn spec(&self) -> ToolSpec {
+        builtin_tool_spec(
+            CODE_SEARCH_TOOL_NAME,
+            "Search code across the workspace. Returns typed symbol and text matches with path, line/column, and inline snippets.",
+            serde_json::to_value(schema_for!(CodeSearchInput)).expect("code_search schema"),
+            ToolOutputMode::Text,
+            tool_approval_profile(true, false, true, false),
+        )
+        .with_output_schema(
+            serde_json::to_value(schema_for!(CodeSearchToolOutput))
+                .expect("code_search output schema"),
+        )
+    }
+
+    async fn execute(
+        &self,
+        call_id: ToolCallId,
+        arguments: Value,
+        ctx: &ToolExecutionContext,
+    ) -> Result<ToolResult> {
+        let external_call_id = types::CallId::from(&call_id);
+        let input: CodeSearchInput = serde_json::from_value(arguments)?;
+        let query = input.query.trim();
+        if query.is_empty() {
+            return Err(ToolError::invalid("code_search requires a non-empty query"));
+        }
+        let limit = clamp_limit(input.limit);
+        let (requested_path_prefix, resolved_path_prefix) =
+            resolve_search_path_prefix(input.path_prefix.as_deref(), ctx)?;
+        let matches = self
+            .backend
+            .search(query, resolved_path_prefix.as_deref(), limit, ctx)
+            .await?;
+        let backend_name = self.backend.name().to_string();
+        let text = format_code_search_output(
+            query,
+            requested_path_prefix.as_deref(),
+            resolved_path_prefix.as_deref(),
+            limit,
+            &backend_name,
+            &matches,
+        );
+        let structured_output = CodeSearchToolOutput {
+            query: query.to_string(),
+            requested_path_prefix,
+            resolved_path_prefix,
+            limit,
+            backend: backend_name.clone(),
+            result_count: matches.len(),
+            matches: matches.clone(),
+        };
+        let metadata = json!({
+            "query": structured_output.query.clone(),
+            "requested_path_prefix": structured_output.requested_path_prefix.clone(),
+            "resolved_path_prefix": structured_output.resolved_path_prefix.clone(),
+            "limit": structured_output.limit,
+            "backend": backend_name,
+            "result_count": structured_output.result_count,
+            "matches": matches.iter().map(code_search_match_to_json).collect::<Vec<_>>(),
+        });
+        Ok(build_text_tool_result(
+            call_id,
+            external_call_id,
+            CODE_SEARCH_TOOL_NAME,
+            text,
+            structured_output,
+            metadata,
+        ))
     }
 }
 
@@ -808,6 +926,27 @@ fn resolve_diagnostics_scope(
     ))
 }
 
+fn resolve_search_path_prefix(
+    path_prefix: Option<&str>,
+    ctx: &ToolExecutionContext,
+) -> Result<(Option<String>, Option<String>)> {
+    let Some(path_prefix) = path_prefix.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok((None, None));
+    };
+    let resolved = resolve_tool_path_against_workspace_root(
+        path_prefix,
+        ctx.effective_root(),
+        ctx.container_workdir.as_deref(),
+    )?;
+    ctx.assert_path_read_allowed(&resolved)?;
+    let display = resolved
+        .strip_prefix(ctx.effective_root())
+        .unwrap_or(&resolved)
+        .to_string_lossy()
+        .replace('\\', "/");
+    Ok((Some(path_prefix.to_string()), Some(display)))
+}
+
 fn resolve_navigation_target(
     symbol: Option<&str>,
     path: Option<&str>,
@@ -945,6 +1084,64 @@ fn format_diagnostics_output(
         lines.push(format!("   source: {}", diagnostic.source));
         if let Some(provider) = diagnostic.provider.as_deref() {
             lines.push(format!("   provider: {provider}"));
+        }
+    }
+    lines.join("\n")
+}
+
+fn format_code_search_output(
+    query: &str,
+    requested_path_prefix: Option<&str>,
+    resolved_path_prefix: Option<&str>,
+    limit: usize,
+    backend_name: &str,
+    matches: &[CodeSearchMatch],
+) -> String {
+    let scope_summary = match requested_path_prefix {
+        Some(path_prefix) => format!("Code search for {query} in {path_prefix}"),
+        None => format!("Workspace code search for {query}"),
+    };
+    let mut lines = vec![format!(
+        "{scope_summary} · {} result(s) · backend {backend_name} · limit {limit}",
+        matches.len()
+    )];
+    if let Some(resolved_path_prefix) = resolved_path_prefix {
+        lines.push(format!("resolved path prefix: {resolved_path_prefix}"));
+    }
+    if matches.is_empty() {
+        lines.push("No code matched the requested query.".to_string());
+        return lines.join("\n");
+    }
+    for (index, entry) in matches.iter().enumerate() {
+        match entry.kind {
+            CodeSearchMatchKind::Symbol => {
+                let symbol_name = entry.symbol_name.as_deref().unwrap_or("<symbol>");
+                let symbol_kind = entry
+                    .symbol_kind
+                    .unwrap_or(crate::code_intel::CodeSymbolKind::Unknown);
+                lines.push(format!(
+                    "{}. [symbol:{}] {}:{}:{} {}",
+                    index + 1,
+                    symbol_kind,
+                    entry.location.path,
+                    entry.location.line,
+                    entry.location.column,
+                    symbol_name
+                ));
+                if let Some(signature) = entry.signature.as_deref() {
+                    lines.push(format!("   sig> {signature}"));
+                }
+            }
+            CodeSearchMatchKind::Text => {
+                lines.push(format!(
+                    "{}. [text] {}:{}:{}",
+                    index + 1,
+                    entry.location.path,
+                    entry.location.line,
+                    entry.location.column
+                ));
+                lines.push(format!("   line> {}", entry.line_text));
+            }
         }
     }
     lines.join("\n")
@@ -1097,6 +1294,19 @@ fn symbol_to_json(symbol: &CodeSymbol) -> Value {
     })
 }
 
+fn code_search_match_to_json(entry: &CodeSearchMatch) -> Value {
+    json!({
+        "kind": entry.kind.as_str(),
+        "path": entry.location.path,
+        "line": entry.location.line,
+        "column": entry.location.column,
+        "line_text": entry.line_text,
+        "symbol_name": entry.symbol_name,
+        "symbol_kind": entry.symbol_kind.map(|kind| kind.as_str()),
+        "signature": entry.signature,
+    })
+}
+
 fn reference_to_json(reference: &CodeReference) -> Value {
     json!({
         "symbol": reference.symbol,
@@ -1134,14 +1344,15 @@ fn call_hierarchy_to_json(call: &CodeCallHierarchyEntry) -> Value {
 #[cfg(test)]
 mod tests {
     use super::{
-        CodeDiagnosticsTool, CodeDocumentSymbolsTool, CodeNavTool, CodeSymbolSearchTool, Tool,
+        CodeDiagnosticsTool, CodeDocumentSymbolsTool, CodeNavTool, CodeSearchTool,
+        CodeSymbolSearchTool, Tool,
     };
     use crate::Result;
     use crate::ToolExecutionContext;
     use crate::code_intel::{
         CodeCallHierarchyDirection, CodeCallHierarchyEntry, CodeDiagnostic, CodeDiagnosticSeverity,
         CodeDiagnosticSource, CodeHover, CodeIntelBackend, CodeLocation, CodeNavigationTarget,
-        CodeReference, CodeSymbol, CodeSymbolKind,
+        CodeReference, CodeSearchMatch, CodeSearchMatchKind, CodeSymbol, CodeSymbolKind,
     };
     use async_trait::async_trait;
     use serde_json::json;
@@ -1156,6 +1367,49 @@ mod tests {
     impl CodeIntelBackend for StubBackend {
         fn name(&self) -> &'static str {
             "stub_backend"
+        }
+
+        async fn search(
+            &self,
+            query: &str,
+            path_prefix: Option<&str>,
+            _limit: usize,
+            _ctx: &ToolExecutionContext,
+        ) -> Result<Vec<CodeSearchMatch>> {
+            if query == "missing" {
+                return Ok(Vec::new());
+            }
+            let path = if path_prefix == Some("src/runtime") {
+                "src/runtime.rs".to_string()
+            } else {
+                "src/lib.rs".to_string()
+            };
+            Ok(vec![
+                CodeSearchMatch {
+                    kind: CodeSearchMatchKind::Symbol,
+                    location: CodeLocation {
+                        path: path.clone(),
+                        line: 10,
+                        column: 12,
+                    },
+                    line_text: "pub struct Engine;".to_string(),
+                    symbol_name: Some("Engine".to_string()),
+                    symbol_kind: Some(CodeSymbolKind::Struct),
+                    signature: Some("pub struct Engine;".to_string()),
+                },
+                CodeSearchMatch {
+                    kind: CodeSearchMatchKind::Text,
+                    location: CodeLocation {
+                        path,
+                        line: 22,
+                        column: 9,
+                    },
+                    line_text: "let _ = Engine {};".to_string(),
+                    symbol_name: None,
+                    symbol_kind: None,
+                    signature: None,
+                },
+            ])
         }
 
         async fn workspace_symbols(
@@ -1338,6 +1592,35 @@ mod tests {
         let structured = result.structured_content.unwrap();
         assert_eq!(structured["query"], "Engine");
         assert_eq!(structured["symbols"][0]["name"], "Engine");
+    }
+
+    #[tokio::test]
+    async fn code_search_tool_returns_typed_symbol_and_text_matches() {
+        let dir = tempfile::tempdir().unwrap();
+        let tool = CodeSearchTool::with_backend(Arc::new(StubBackend));
+        let result = tool
+            .execute(
+                ToolCallId::new(),
+                json!({
+                    "query": "Engine",
+                    "path_prefix": "src/runtime"
+                }),
+                &context(dir.path()),
+            )
+            .await
+            .unwrap();
+
+        let text = result.text_content();
+        assert!(text.contains("Code search for Engine in src/runtime"));
+        assert!(text.contains("[symbol:struct] src/runtime.rs:10:12 Engine"));
+        assert!(text.contains("[text] src/runtime.rs:22:9"));
+
+        let structured = result.structured_content.unwrap();
+        assert_eq!(structured["query"], "Engine");
+        assert_eq!(structured["requested_path_prefix"], "src/runtime");
+        assert_eq!(structured["resolved_path_prefix"], "src/runtime");
+        assert_eq!(structured["matches"][0]["kind"], "symbol");
+        assert_eq!(structured["matches"][1]["kind"], "text");
     }
 
     #[tokio::test]
