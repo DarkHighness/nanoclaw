@@ -321,6 +321,37 @@ fn approval_content_preview(tool_name: &str, arguments: &Value) -> ApprovalConte
                 preview,
             };
         }
+        ToolRenderKind::BrowserOpen => {
+            let url = arguments
+                .get("url")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or("<unknown>");
+            let mut preview = vec![format!("open browser {url}")];
+            preview.push(
+                if arguments
+                    .get("headless")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(true)
+                {
+                    "mode headless".to_string()
+                } else {
+                    "mode headful".to_string()
+                },
+            );
+            if let Some(viewport) = arguments.get("viewport").and_then(Value::as_object) {
+                let width = viewport.get("width").and_then(Value::as_u64).unwrap_or(0);
+                let height = viewport.get("height").and_then(Value::as_u64).unwrap_or(0);
+                if width > 0 && height > 0 {
+                    preview.push(format!("viewport {width}x{height}"));
+                }
+            }
+            return ApprovalContent {
+                kind: ApprovalContentKind::Arguments,
+                preview,
+            };
+        }
         ToolRenderKind::MonitorStart => {
             let command = arguments.get("cmd").and_then(Value::as_str);
             if let Some(command) = command.map(str::trim).filter(|command| !command.is_empty()) {
@@ -599,6 +630,43 @@ mod tests {
                     "cwd /workspace/web".to_string()
                 ],
             }
+        );
+    }
+
+    #[test]
+    fn approval_prompt_extracts_browser_open_context() {
+        let prompt = approval_prompt_from_request(&ToolApprovalRequest {
+            call: ToolCall {
+                id: ToolCallId::new(),
+                call_id: "call-browser".into(),
+                tool_name: "browser_open".into(),
+                arguments: json!({
+                    "url": "https://example.com",
+                    "headless": false,
+                    "viewport": {"width": 1280, "height": 720}
+                }),
+                origin: ToolOrigin::Local,
+            },
+            spec: ToolSpec::function(
+                "browser_open",
+                "open browser session",
+                json!({"type":"object"}),
+                ToolOutputMode::Text,
+                ToolOrigin::Local,
+                ToolSource::Builtin,
+            ),
+            reasons: vec!["browser automation requires review".to_string()],
+        });
+
+        assert_eq!(prompt.tool_name, "browser_open");
+        assert_eq!(prompt.content.kind, ApprovalContentKind::Arguments);
+        assert_eq!(
+            prompt.content.preview,
+            vec![
+                "open browser https://example.com".to_string(),
+                "mode headful".to_string(),
+                "viewport 1280x720".to_string(),
+            ]
         );
     }
 

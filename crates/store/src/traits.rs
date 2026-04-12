@@ -469,6 +469,21 @@ fn previewable_event_strings(event: &SessionEventEnvelope) -> Vec<String> {
             }
             _ => searchable_session_event_strings(event),
         },
+        SessionEventKind::BrowserOpened { summary }
+        | SessionEventKind::BrowserUpdated { summary } => {
+            let mut values = vec![
+                summary.browser_id.to_string(),
+                summary.status.to_string(),
+                summary.current_url.clone(),
+            ];
+            if let Some(title) = summary.title.as_ref() {
+                values.push(title.clone());
+            }
+            if let Some(task_id) = summary.task_id.as_ref() {
+                values.push(task_id.to_string());
+            }
+            values
+        }
         _ => searchable_session_event_strings(event),
     }
 }
@@ -655,6 +670,26 @@ pub(crate) fn searchable_session_event_strings(event: &SessionEventEnvelope) -> 
             values.push(summary.status.to_string());
             values.push(summary.cwd.clone());
             values.push(summary.command.clone());
+        }
+        SessionEventKind::BrowserOpened { summary }
+        | SessionEventKind::BrowserUpdated { summary } => {
+            values.push(summary.browser_id.to_string());
+            values.push(summary.status.to_string());
+            values.push(summary.current_url.clone());
+            values.push(if summary.headless {
+                "headless".to_string()
+            } else {
+                "headful".to_string()
+            });
+            if let Some(title) = &summary.title {
+                values.push(title.clone());
+            }
+            if let Some(viewport) = summary.viewport.as_ref() {
+                values.push(format!("{}x{}", viewport.width, viewport.height));
+            }
+            if let Some(task_id) = &summary.task_id {
+                values.push(task_id.to_string());
+            }
         }
         SessionEventKind::WorktreeEntered { summary }
         | SessionEventKind::WorktreeUpdated { summary } => {

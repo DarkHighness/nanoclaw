@@ -8,6 +8,7 @@ version.workspace = true
 default = []
 agentic-tools = []
 automation-tools = ["agentic-tools"]
+browser-tools = []
 code-intel = []
 notebook-tools = []
 web-tools = ["dep:reqwest", "dep:scraper", "dep:quick-xml", "dep:time"]

@@ -12,8 +12,9 @@ use crate::tool_render::{
 };
 use crate::ui::{SessionEvent, SessionNotificationSource, SessionToastVariant, SessionToolCall};
 use agent::types::{
-    AgentHandle, AgentResultEnvelope, AgentTaskSpec, MonitorEventKind, MonitorStatus,
-    MonitorStream, MonitorSummaryRecord, TaskId, TaskStatus, WorktreeStatus, WorktreeSummaryRecord,
+    AgentHandle, AgentResultEnvelope, AgentTaskSpec, BrowserSummaryRecord, MonitorEventKind,
+    MonitorStatus, MonitorStream, MonitorSummaryRecord, TaskId, TaskStatus, WorktreeStatus,
+    WorktreeSummaryRecord,
 };
 use std::time::Instant;
 
@@ -301,6 +302,30 @@ impl SharedRenderObserver {
                         .map(|value| format!(": {}", preview_text(value, 44)))
                         .unwrap_or_default()
                 ));
+            }
+            SessionEvent::BrowserOpened { summary } => {
+                state.push_transcript(browser_entry(
+                    format!("Opened browser {}", summary.browser_id),
+                    &summary,
+                ));
+                state.status = format!("Browser {}", summary.browser_id);
+                state.push_activity(format!(
+                    "opened browser {} {}",
+                    summary.browser_id,
+                    preview_text(&summary.current_url, 48)
+                ));
+            }
+            SessionEvent::BrowserUpdated { summary } => {
+                state.push_transcript(browser_entry(
+                    format!(
+                        "{} browser {}",
+                        browser_status_label(summary.status),
+                        summary.browser_id
+                    ),
+                    &summary,
+                ));
+                state.status = format!("Browser {} {}", summary.browser_id, summary.status);
+                state.push_activity(format!("browser {} {}", summary.browser_id, summary.status));
             }
             SessionEvent::MonitorStarted { summary } => {
                 state.upsert_active_monitor(
@@ -786,6 +811,54 @@ fn flush_transcript_ready_tool_cells(state: &mut super::state::TuiState) {
     }
 }
 
+fn browser_entry(headline: String, summary: &BrowserSummaryRecord) -> TranscriptEntry {
+    TranscriptEntry::shell_summary_details(headline, browser_summary_details(summary))
+}
+
+fn browser_summary_details(summary: &BrowserSummaryRecord) -> Vec<TranscriptShellDetail> {
+    let mut details = vec![
+        TranscriptShellDetail::Raw {
+            text: format!("status {}", summary.status),
+            continuation: false,
+        },
+        TranscriptShellDetail::Raw {
+            text: format!("url {}", summary.current_url),
+            continuation: false,
+        },
+        TranscriptShellDetail::Raw {
+            text: if summary.headless {
+                "mode headless".to_string()
+            } else {
+                "mode headful".to_string()
+            },
+            continuation: false,
+        },
+    ];
+    if let Some(viewport) = summary.viewport.as_ref() {
+        details.push(TranscriptShellDetail::Raw {
+            text: format!("viewport {}x{}", viewport.width, viewport.height),
+            continuation: false,
+        });
+    }
+    if let Some(title) = summary
+        .title
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        details.push(TranscriptShellDetail::Raw {
+            text: format!("title {}", preview_text(title, 72)),
+            continuation: false,
+        });
+    }
+    if let Some(task_id) = summary.task_id.as_ref() {
+        details.push(TranscriptShellDetail::Raw {
+            text: format!("task {}", task_id),
+            continuation: false,
+        });
+    }
+    details
+}
+
 fn running_monitor_entry(summary: &MonitorSummaryRecord) -> TranscriptShellEntry {
     TranscriptShellEntry::new_with_status(
         format!("Running monitor {}", summary.monitor_id),
@@ -872,6 +945,14 @@ fn worktree_summary_details(summary: &WorktreeSummaryRecord) -> Vec<TranscriptSh
         });
     }
     details
+}
+
+fn browser_status_label(status: agent::types::BrowserStatus) -> &'static str {
+    match status {
+        agent::types::BrowserStatus::Open => "Opened",
+        agent::types::BrowserStatus::Closed => "Closed",
+        agent::types::BrowserStatus::Failed => "Failed",
+    }
 }
 
 fn apply_monitor_event(active: &mut super::state::ActiveMonitorCell, event: &MonitorEventKind) {

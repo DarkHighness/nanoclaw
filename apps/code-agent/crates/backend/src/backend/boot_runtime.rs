@@ -1,8 +1,12 @@
 use crate::options::AppOptions;
+#[cfg(feature = "browser-tools")]
+use agent::BrowserOpenTool;
 use agent::runtime::RuntimeError;
 use agent::runtime::{
     CommandHookExecutor, DefaultCommandHookExecutor, HookRunner, LoopDetectionConfig,
 };
+#[cfg(feature = "browser-tools")]
+use agent::tools::BrowserManager;
 use agent::tools::{
     CodeCallHierarchyDirection, CodeCallHierarchyEntry, CodeDiagnostic, CodeHover,
     CodeNavigationTarget, CodeReference, CodeSearchMatch, CodeSymbol, FileActivityObserver,
@@ -556,6 +560,11 @@ pub fn register_monitor_tools(tools: &mut ToolRegistry, monitor_manager: Arc<dyn
     tools.register(MonitorStartTool::new(monitor_manager.clone()));
     tools.register(MonitorListTool::new(monitor_manager.clone()));
     tools.register(MonitorStopTool::new(monitor_manager));
+}
+
+#[cfg(feature = "browser-tools")]
+pub fn register_browser_tools(tools: &mut ToolRegistry, browser_manager: Arc<dyn BrowserManager>) {
+    tools.register(BrowserOpenTool::new(browser_manager));
 }
 
 #[cfg(feature = "automation-tools")]

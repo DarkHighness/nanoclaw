@@ -15,6 +15,8 @@ pub const HOST_FEATURE_HOST_PROCESS_SURFACES: &str = "host-process-surfaces";
 #[cfg(feature = "agentic-tools")]
 pub mod agentic;
 pub mod annotations;
+#[cfg(feature = "browser-tools")]
+pub mod browser;
 #[cfg(feature = "code-intel")]
 pub mod code_intel;
 pub mod context;
@@ -33,6 +35,8 @@ pub mod web;
 #[cfg(feature = "agentic-tools")]
 pub use agentic::*;
 pub use annotations::*;
+#[cfg(feature = "browser-tools")]
+pub use browser::*;
 #[cfg(feature = "code-intel")]
 pub use code_intel::*;
 pub use context::*;

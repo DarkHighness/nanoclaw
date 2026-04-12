@@ -11,6 +11,7 @@ agentic-tools = [
     "tools/agentic-tools",
 ]
 automation-tools = ["agentic-tools", "tools/automation-tools"]
+browser-tools = ["tools/browser-tools"]
 code-intel = ["tools/code-intel"]
 memory-embed = ["memory/memory-embed"]
 notebook-tools = ["tools/notebook-tools"]

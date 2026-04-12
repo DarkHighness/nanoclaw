@@ -17,6 +17,8 @@ pub use tools::{
     UserInputOption, UserInputQuestion, UserInputRequest, UserInputResponse, WorktreeEnterTool,
     WorktreeExitTool, WorktreeListTool,
 };
+#[cfg(feature = "browser-tools")]
+pub use tools::{BrowserManager, BrowserOpenTool, BrowserRuntimeContext};
 #[cfg(feature = "code-intel")]
 pub use tools::{
     CodeCallHierarchyDirection, CodeCallHierarchyEntry, CodeDiagnostic, CodeDiagnosticSeverity,

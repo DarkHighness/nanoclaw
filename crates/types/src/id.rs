@@ -132,6 +132,7 @@ define_id!(AgentId);
 define_string_identifier!(TaskId);
 define_string_identifier!(CronId);
 define_string_identifier!(MonitorId);
+define_string_identifier!(BrowserId);
 define_string_identifier!(WorktreeId);
 define_string_identifier!(PluginId);
 define_string_identifier!(PluginDriverId);

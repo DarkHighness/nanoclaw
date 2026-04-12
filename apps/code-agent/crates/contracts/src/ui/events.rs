@@ -1,7 +1,7 @@
 use agent::types::{
-    AgentHandle, AgentId, AgentResultEnvelope, AgentTaskSpec, MessageId, MonitorEventRecord,
-    MonitorSummaryRecord, TaskId, TaskStatus, TokenLedgerSnapshot, TokenUsagePhase, WorktreeId,
-    WorktreeSummaryRecord,
+    AgentHandle, AgentId, AgentResultEnvelope, AgentTaskSpec, BrowserSummaryRecord, MessageId,
+    MonitorEventRecord, MonitorSummaryRecord, TaskId, TaskStatus, TokenLedgerSnapshot,
+    TokenUsagePhase, WorktreeId, WorktreeSummaryRecord,
 };
 use std::path::PathBuf;
 
@@ -135,6 +135,12 @@ pub enum SessionEvent {
     ToolLifecycleCancelled {
         call: SessionToolCall,
         reason: Option<String>,
+    },
+    BrowserOpened {
+        summary: BrowserSummaryRecord,
+    },
+    BrowserUpdated {
+        summary: BrowserSummaryRecord,
     },
     MonitorStarted {
         summary: MonitorSummaryRecord,

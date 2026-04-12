@@ -441,6 +441,18 @@ pub(crate) fn format_session_event_line(event: &SessionEventEnvelope) -> Transcr
             format!("Notification from {source}"),
             [format!("message {}", preview_text(message, 72))],
         ),
+        SessionEventKind::BrowserOpened { summary } => info_summary_entry(
+            format!("Opened browser {}", summary.browser_id),
+            browser_summary_lines(summary),
+        ),
+        SessionEventKind::BrowserUpdated { summary } => info_summary_entry(
+            format!(
+                "{} browser {}",
+                browser_status_label(summary.status),
+                summary.browser_id
+            ),
+            browser_summary_lines(summary),
+        ),
         SessionEventKind::MonitorStarted { summary } => {
             TranscriptEntry::shell_summary_status_details(
                 TranscriptShellStatus::Running,
@@ -661,6 +673,37 @@ fn worktree_summary_lines(summary: &agent::types::WorktreeSummaryRecord) -> [Str
             .map(|label| format!("label {}", preview_text(label, 48)))
             .unwrap_or_default(),
     ]
+}
+
+fn browser_summary_lines(summary: &agent::types::BrowserSummaryRecord) -> [String; 4] {
+    [
+        format!("status {}", summary.status),
+        format!("url {}", preview_text(&summary.current_url, 72)),
+        if summary.headless {
+            "mode headless".to_string()
+        } else {
+            "mode headful".to_string()
+        },
+        summary
+            .viewport
+            .as_ref()
+            .map(|viewport| format!("viewport {}x{}", viewport.width, viewport.height))
+            .or_else(|| {
+                summary
+                    .title
+                    .as_deref()
+                    .map(|title| format!("title {}", preview_text(title, 72)))
+            })
+            .unwrap_or_else(|| "viewport default".to_string()),
+    ]
+}
+
+fn browser_status_label(status: agent::types::BrowserStatus) -> &'static str {
+    match status {
+        agent::types::BrowserStatus::Open => "Opened",
+        agent::types::BrowserStatus::Closed => "Closed",
+        agent::types::BrowserStatus::Failed => "Failed",
+    }
 }
 
 fn monitor_summary_details(

@@ -19,6 +19,7 @@ pub enum ToolRenderKind {
     NotebookRead,
     CodeSearch,
     CodeDiagnostics,
+    BrowserOpen,
     MonitorStart,
     MonitorList,
     MonitorStop,
@@ -46,6 +47,7 @@ impl ToolRenderKind {
             "notebook_read" => Self::NotebookRead,
             "code_search" => Self::CodeSearch,
             "code_diagnostics" => Self::CodeDiagnostics,
+            "browser_open" => Self::BrowserOpen,
             "monitor_start" => Self::MonitorStart,
             "monitor_list" => Self::MonitorList,
             "monitor_stop" => Self::MonitorStop,
@@ -560,6 +562,30 @@ pub fn tool_arguments_preview_lines(tool_name: &str, arguments: &Value) -> Vec<S
                 )];
             }
             return vec!["Inspect workspace diagnostics".to_string()];
+        }
+        ToolRenderKind::BrowserOpen => {
+            let url = arguments
+                .get("url")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or("<unknown>");
+            let mut lines = vec![format!("Open browser {}", truncate_inline(url, 80))];
+            if arguments
+                .get("headless")
+                .and_then(Value::as_bool)
+                .is_some_and(|headless| !headless)
+            {
+                lines.push("mode headful".to_string());
+            }
+            if let Some(viewport) = arguments.get("viewport").and_then(Value::as_object) {
+                let width = viewport.get("width").and_then(Value::as_u64).unwrap_or(0);
+                let height = viewport.get("height").and_then(Value::as_u64).unwrap_or(0);
+                if width > 0 && height > 0 {
+                    lines.push(format!("viewport {width}x{height}"));
+                }
+            }
+            return lines;
         }
         ToolRenderKind::MonitorStart => {
             let command = arguments.get("cmd").and_then(Value::as_str);
@@ -1152,6 +1178,7 @@ pub fn tool_completion_state(tool_name: &str, structured: Option<&Value>) -> Too
         | ToolRenderKind::NotebookRead
         | ToolRenderKind::CodeSearch
         | ToolRenderKind::CodeDiagnostics
+        | ToolRenderKind::BrowserOpen
         | ToolRenderKind::MonitorList
         | ToolRenderKind::MonitorStop
         | ToolRenderKind::WorktreeEnter
@@ -1228,6 +1255,11 @@ pub fn tool_output_details(
         }
         ToolRenderKind::CodeDiagnostics => {
             if let Some(details) = code_diagnostics_output_details(structured) {
+                return details;
+            }
+        }
+        ToolRenderKind::BrowserOpen => {
+            if let Some(details) = browser_output_details(structured) {
                 return details;
             }
         }
@@ -1598,6 +1630,81 @@ fn code_diagnostics_output_details(structured: Option<&Value>) -> Option<Vec<Too
             lines,
         });
     }
+    Some(details)
+}
+
+fn browser_output_details(structured: Option<&Value>) -> Option<Vec<ToolDetail>> {
+    let browser = structured?.get("browser")?;
+    let mut details = Vec::new();
+    if let Some(browser_id) = browser
+        .get("browser_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        details.push(ToolDetail::LabeledValue {
+            label: ToolDetailLabel::Session,
+            value: browser_id.to_string(),
+        });
+    }
+    if let Some(url) = browser
+        .get("current_url")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        details.push(ToolDetail::LabeledValue {
+            label: ToolDetailLabel::Context,
+            value: truncate_inline(url, 88),
+        });
+    }
+
+    let mut state_parts = Vec::new();
+    if let Some(status) = browser
+        .get("status")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        state_parts.push(status.to_string());
+    }
+    state_parts.push(
+        if browser
+            .get("headless")
+            .and_then(Value::as_bool)
+            .unwrap_or(true)
+        {
+            "headless".to_string()
+        } else {
+            "headful".to_string()
+        },
+    );
+    if let Some(viewport) = browser.get("viewport").and_then(Value::as_object) {
+        let width = viewport.get("width").and_then(Value::as_u64).unwrap_or(0);
+        let height = viewport.get("height").and_then(Value::as_u64).unwrap_or(0);
+        if width > 0 && height > 0 {
+            state_parts.push(format!("{width}x{height}"));
+        }
+    }
+    if !state_parts.is_empty() {
+        details.push(ToolDetail::LabeledValue {
+            label: ToolDetailLabel::State,
+            value: state_parts.join(" · "),
+        });
+    }
+
+    if let Some(title) = browser
+        .get("title")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        details.push(ToolDetail::LabeledValue {
+            label: ToolDetailLabel::Result,
+            value: truncate_inline(title, 88),
+        });
+    }
+
     Some(details)
 }
 
@@ -2922,6 +3029,21 @@ mod tests {
             tool_arguments_preview_lines("code_diagnostics", &json!({"path": "src/lib.rs"})),
             vec!["Inspect diagnostics for src/lib.rs"]
         );
+        assert_eq!(
+            tool_arguments_preview_lines(
+                "browser_open",
+                &json!({
+                    "url": "https://example.com",
+                    "headless": false,
+                    "viewport": {"width": 1280, "height": 720}
+                })
+            ),
+            vec![
+                "Open browser https://example.com",
+                "mode headful",
+                "viewport 1280x720"
+            ]
+        );
     }
 
     #[test]
@@ -2949,6 +3071,37 @@ mod tests {
             cron_rendered
                 .iter()
                 .any(|line| line == "  └ State scheduled")
+        );
+
+        let browser_rendered = tool_output_detail_lines(
+            "browser_open",
+            "",
+            Some(&json!({
+                "browser": {
+                    "browser_id": "browser_123",
+                    "status": "open",
+                    "current_url": "https://example.com/app",
+                    "headless": false,
+                    "title": "Example App",
+                    "viewport": {"width": 1280, "height": 720}
+                }
+            })),
+        );
+        assert_eq!(browser_rendered[0], "  └ Session browser_123");
+        assert!(
+            browser_rendered
+                .iter()
+                .any(|line| line == "  └ Context https://example.com/app")
+        );
+        assert!(
+            browser_rendered
+                .iter()
+                .any(|line| line == "  └ State open · headful · 1280x720")
+        );
+        assert!(
+            browser_rendered
+                .iter()
+                .any(|line| line == "  └ Result Example App")
         );
 
         let cron_list_rendered = tool_output_detail_lines(

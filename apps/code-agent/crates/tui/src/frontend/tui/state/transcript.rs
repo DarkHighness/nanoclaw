@@ -439,6 +439,9 @@ fn tool_headline_prefix(
         ToolRenderKind::CodeDiagnostics => {
             lifecycle_headline_text(status, "Inspecting diagnostics", "Inspected diagnostics")
         }
+        ToolRenderKind::BrowserOpen => {
+            lifecycle_headline_text(status, "Opening browser", "Opened browser")
+        }
         ToolRenderKind::SendInput => {
             lifecycle_headline_text(status, "Sending follow-up", "Sent follow-up")
         }
@@ -506,6 +509,7 @@ fn tool_headline_subject_kind(
         | ToolRenderKind::NotebookRead
         | ToolRenderKind::CodeSearch
         | ToolRenderKind::CodeDiagnostics
+        | ToolRenderKind::BrowserOpen
         | ToolRenderKind::MonitorStart
         | ToolRenderKind::MonitorList
         | ToolRenderKind::MonitorStop

@@ -1,8 +1,8 @@
 use crate::{
-    AgentId, AgentSessionId, CallId, ContextWindowUsage, CronId, EnvelopeId, EventId, HookEvent,
-    HookResult, Message, MessageId, MessagePart, MonitorId, Reasoning, ResponseId, SessionId,
-    TaskId, TokenLedgerSnapshot, TokenUsage, TokenUsagePhase, ToolCall, ToolCallId, ToolName,
-    ToolSpec, TurnId, WorktreeId,
+    AgentId, AgentSessionId, BrowserId, CallId, ContextWindowUsage, CronId, EnvelopeId, EventId,
+    HookEvent, HookResult, Message, MessageId, MessagePart, MonitorId, Reasoning, ResponseId,
+    SessionId, TaskId, TokenLedgerSnapshot, TokenUsage, TokenUsagePhase, ToolCall, ToolCallId,
+    ToolName, ToolSpec, TurnId, WorktreeId,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Deserializer, Serialize};
@@ -157,6 +157,32 @@ impl fmt::Display for CronStatus {
             Self::Scheduled => "scheduled",
             Self::Completed => "completed",
             Self::Cancelled => "cancelled",
+            Self::Failed => "failed",
+        };
+        f.write_str(value)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum BrowserStatus {
+    Open,
+    Closed,
+    Failed,
+}
+
+impl BrowserStatus {
+    #[must_use]
+    pub fn is_terminal(&self) -> bool {
+        matches!(self, Self::Closed | Self::Failed)
+    }
+}
+
+impl fmt::Display for BrowserStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let value = match self {
+            Self::Open => "open",
+            Self::Closed => "closed",
             Self::Failed => "failed",
         };
         f.write_str(value)
@@ -402,6 +428,35 @@ pub struct CronSummaryRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_run_at_unix_s: Option<u64>,
     pub run_count: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct BrowserViewportRecord {
+    pub width: u32,
+    pub height: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct BrowserSummaryRecord {
+    pub browser_id: BrowserId,
+    pub session_id: SessionId,
+    pub agent_session_id: AgentSessionId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_agent_id: Option<AgentId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<TaskId>,
+    pub status: BrowserStatus,
+    pub current_url: String,
+    pub headless: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub viewport: Option<BrowserViewportRecord>,
+    pub opened_at_unix_s: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_at_unix_s: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub closed_at_unix_s: Option<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -1020,6 +1075,12 @@ pub enum SessionEventKind {
     Notification {
         source: String,
         message: String,
+    },
+    BrowserOpened {
+        summary: BrowserSummaryRecord,
+    },
+    BrowserUpdated {
+        summary: BrowserSummaryRecord,
     },
     MonitorStarted {
         summary: MonitorSummaryRecord,
