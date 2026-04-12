@@ -19,7 +19,7 @@ Status: Active
 | Phase 9: Notebook Editing | Complete | Feature-gated `notebook_read` and `notebook_edit` now expose typed notebook inspection and mutation without falling back to raw `.ipynb` JSON tooling. |
 | Cross-cutting: Operator Slash Surface | In Progress | Tool-mirroring slash commands have been pruned; operator/session commands remain, and installed skills are now surfaced as explicit `/skill_name` slash invocations plus `$skill_name` composer directives. |
 | Cross-cutting: Tool Review Surface | In Progress | Typed transcript cells exist, but operator review for running input/output/failure still needs a fuller design pass. |
-| Cross-cutting: Skill Lifecycle & Self-Evolution | In Progress | Hermes-style `skills_list`, `skill_view`, and `skill_manage` now exist with managed-vs-external roots, managed roots deterministically override readonly external copies, and shadowed copies are now surfaced as provenance; verifier-backed extraction, richer provenance update flows, and archival/promotion are still missing. |
+| Cross-cutting: Skill Lifecycle & Self-Evolution | In Progress | Hermes-style `skills_list`, `skill_view`, and `skill_manage` now exist with managed-vs-external roots, managed roots deterministically override readonly external copies, shadowed copies are surfaced as provenance, and Hermes-style trust/update/audit metadata now flows through skill loading plus `skills_list` / `skill_view`; verifier-backed extraction and archival/promotion are still missing. |
 
 ## Goal
 
@@ -686,9 +686,10 @@ backed extraction, archival, and promotion workflows be layered on top.
   - remove prompt-manifest/system-preamble catalog injection
   - surface installed skills in the TUI as `/skill_name` slash commands while
     keeping `$skill_name` composer directives
+  - surface Hermes-style provenance trust/update/audit metadata through typed
+    skill loading and `skills_list` / `skill_view`
 - next:
   - define verifier-backed extraction of reusable skills from successful runs
-  - record richer provenance, trust, and update/audit state
   - add archive/promotion storage instead of treating workspace roots as the
     only source of truth
   - align tool-vs-skill guidance with the Hermes split:

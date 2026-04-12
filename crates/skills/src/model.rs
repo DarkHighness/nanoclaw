@@ -1,3 +1,4 @@
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use types::{HookRegistration, ToolName};
@@ -58,6 +59,7 @@ pub struct SkillActivation {
 pub struct SkillProvenance {
     pub root: SkillRoot,
     pub skill_dir: PathBuf,
+    pub hub: Option<SkillHubProvenance>,
     pub shadowed_copies: Vec<SkillShadow>,
 }
 
@@ -66,6 +68,85 @@ impl SkillProvenance {
     pub fn skill_path(&self) -> PathBuf {
         self.skill_dir.join("SKILL.md")
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SkillTrustLevel {
+    Builtin,
+    Official,
+    Trusted,
+    Community,
+}
+
+impl SkillTrustLevel {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Builtin => "builtin",
+            Self::Official => "official",
+            Self::Trusted => "trusted",
+            Self::Community => "community",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SkillUpdateState {
+    UpToDate,
+    UpdateAvailable,
+    Drifted,
+}
+
+impl SkillUpdateState {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::UpToDate => "up_to_date",
+            Self::UpdateAvailable => "update_available",
+            Self::Drifted => "drifted",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SkillAuditState {
+    Clean,
+    Warn,
+    Blocked,
+}
+
+impl SkillAuditState {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Clean => "clean",
+            Self::Warn => "warn",
+            Self::Blocked => "blocked",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SkillHubProvenance {
+    pub source_id: String,
+    pub trust_level: SkillTrustLevel,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub update_state: Option<SkillUpdateState>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audit_state: Option<SkillAuditState>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub install_command: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bundle_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upstream_bundle_hash: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

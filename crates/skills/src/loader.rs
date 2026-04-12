@@ -1,7 +1,11 @@
 use crate::frontmatter::SkillFrontmatter;
-use crate::{Result, Skill, SkillActivation, SkillCatalog, SkillError, SkillProvenance, SkillRoot};
+use crate::{
+    Result, Skill, SkillActivation, SkillCatalog, SkillError, SkillHubProvenance, SkillProvenance,
+    SkillRoot,
+};
 use futures::{StreamExt, TryStreamExt, stream};
 use regex::Regex;
+use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use tokio::fs;
@@ -31,6 +35,7 @@ pub async fn load_skill_from_dir(dir: impl AsRef<Path>, root: &SkillRoot) -> Res
     } else {
         parse_frontmatter(&raw)?
     };
+    let hub = parse_skill_hub_provenance(&frontmatter.extra)?;
     Ok(Skill {
         name: frontmatter.name,
         description: frontmatter.description,
@@ -52,6 +57,7 @@ pub async fn load_skill_from_dir(dir: impl AsRef<Path>, root: &SkillRoot) -> Res
         provenance: SkillProvenance {
             root: root.clone(),
             skill_dir: dir.to_path_buf(),
+            hub,
             shadowed_copies: Vec::new(),
         },
     })
@@ -177,6 +183,52 @@ fn validate_required_skill_fields(frontmatter: &SkillFrontmatter) -> Result<()> 
         ));
     }
     Ok(())
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct SkillHubProvenanceFrontmatter {
+    source_id: String,
+    trust_level: crate::SkillTrustLevel,
+    #[serde(default)]
+    update_state: Option<crate::SkillUpdateState>,
+    #[serde(default)]
+    audit_state: Option<crate::SkillAuditState>,
+    #[serde(default)]
+    repo_url: Option<String>,
+    #[serde(default)]
+    detail_url: Option<String>,
+    #[serde(default)]
+    install_command: Option<String>,
+    #[serde(default)]
+    bundle_hash: Option<String>,
+    #[serde(default)]
+    upstream_bundle_hash: Option<String>,
+}
+
+fn parse_skill_hub_provenance(
+    extra: &BTreeMap<String, serde_yaml::Value>,
+) -> Result<Option<SkillHubProvenance>> {
+    let Some(raw) = extra.get("hermes") else {
+        return Ok(None);
+    };
+    let parsed: SkillHubProvenanceFrontmatter =
+        serde_yaml::from_value(raw.clone()).map_err(SkillError::Yaml)?;
+    if parsed.source_id.trim().is_empty() {
+        return Err(SkillError::invalid_format(
+            "skill hermes metadata requires a non-empty source_id",
+        ));
+    }
+    Ok(Some(SkillHubProvenance {
+        source_id: parsed.source_id,
+        trust_level: parsed.trust_level,
+        update_state: parsed.update_state,
+        audit_state: parsed.audit_state,
+        repo_url: parsed.repo_url,
+        detail_url: parsed.detail_url,
+        install_command: parsed.install_command,
+        bundle_hash: parsed.bundle_hash,
+        upstream_bundle_hash: parsed.upstream_bundle_hash,
+    }))
 }
 
 async fn collect_child_paths(dir: PathBuf) -> Result<Vec<PathBuf>> {
@@ -379,6 +431,53 @@ Use for high-signal reviews.
         assert_eq!(skill.aliases, vec!["rvw".to_string()]);
         assert!(skill.body.contains("Use for high-signal reviews."));
         assert!(!skill.body.contains("wrong-name"));
+    }
+
+    #[tokio::test]
+    async fn loader_parses_hermes_provenance_metadata_from_skill_toml() {
+        let dir = tempdir().unwrap();
+        let skill_dir = dir.path().join("k8s");
+        fs::create_dir_all(&skill_dir).await.unwrap();
+
+        fs::write(
+            skill_dir.join("skill.toml"),
+            r#"
+                name = "k8s"
+                description = "Use for Kubernetes tasks"
+
+                [hermes]
+                source_id = "official/k8s"
+                trust_level = "official"
+                update_state = "update_available"
+                audit_state = "clean"
+                repo_url = "https://agentskills.io/skills/k8s"
+                detail_url = "https://agentskills.io/skills/k8s/versions/1"
+                install_command = "hermes skill install k8s"
+                bundle_hash = "bundle-1"
+                upstream_bundle_hash = "bundle-2"
+            "#,
+        )
+        .await
+        .unwrap();
+        fs::write(skill_dir.join("SKILL.md"), "Use for Kubernetes tasks.")
+            .await
+            .unwrap();
+
+        let skill = load_skill_from_dir(&skill_dir, &SkillRoot::managed(dir.path().join("skills")))
+            .await
+            .unwrap();
+        let hub = skill.provenance.hub.expect("expected hermes metadata");
+        assert_eq!(hub.source_id, "official/k8s");
+        assert_eq!(hub.trust_level, crate::SkillTrustLevel::Official);
+        assert_eq!(
+            hub.update_state,
+            Some(crate::SkillUpdateState::UpdateAvailable)
+        );
+        assert_eq!(hub.audit_state, Some(crate::SkillAuditState::Clean));
+        assert_eq!(
+            hub.install_command.as_deref(),
+            Some("hermes skill install k8s")
+        );
     }
 
     #[tokio::test]

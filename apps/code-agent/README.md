@@ -38,6 +38,7 @@ It intentionally keeps the host layer thin:
   - `skill_manage` mutates only the managed root and tells the model to refresh via `skills_list`/`skill_view`
   - managed/local skill roots keep precedence over readonly external roots, so operator-created skills override imported copies deterministically
   - shadowed external copies are surfaced in `skills_list` / `skill_view` provenance instead of being silently discarded
+  - optional Hermes provenance metadata (`source_id`, `trust_level`, `update_state`, `audit_state`) now round-trips through skill loading and appears in `skills_list` / `skill_view`
 - interactive approval for destructive tools and higher-risk external reads,
   with a narrow host allowlist for safe built-in web research tools,
   argv-matched `exec_command` trust rules, approval-free `write_stdin`

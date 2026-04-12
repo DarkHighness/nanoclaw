@@ -111,6 +111,14 @@ pub struct SkillSummary {
     pub platforms: Vec<String>,
     pub requires_tools: Vec<String>,
     pub fallback_for_tools: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trust_level: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub update_state: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audit_state: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, JsonSchema)]
@@ -121,6 +129,16 @@ pub struct SkillDetail {
     pub references: Vec<String>,
     pub scripts: Vec<String>,
     pub assets: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub install_command: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bundle_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upstream_bundle_hash: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instruction: Option<String>,
 }
@@ -760,9 +778,19 @@ fn render_skill_list(query: Option<&str>, skills: &[SkillSummary]) -> String {
         } else {
             format!(" · shadowed: {}", skill.shadowed_copy_count)
         };
+        let trust = skill
+            .trust_level
+            .as_deref()
+            .map(|value| format!(" · trust: {value}"))
+            .unwrap_or_default();
+        let update = skill
+            .update_state
+            .as_deref()
+            .map(|value| format!(" · update: {value}"))
+            .unwrap_or_default();
         lines.push(format!(
-            "- /{} · {}{}{}{}",
-            skill.name, skill.description, aliases, tags, shadowed
+            "- /{} · {}{}{}{}{}{}",
+            skill.name, skill.description, aliases, tags, shadowed, trust, update
         ));
     }
     lines.join("\n")
@@ -778,6 +806,27 @@ fn render_skill_detail(detail: &SkillDetail) -> String {
             detail.summary.root_kind, detail.summary.writable
         ),
     ];
+    if let Some(source_id) = detail.summary.source_id.as_deref() {
+        let trust = detail
+            .summary
+            .trust_level
+            .as_deref()
+            .map(|value| format!(" · trust {value}"))
+            .unwrap_or_default();
+        let update = detail
+            .summary
+            .update_state
+            .as_deref()
+            .map(|value| format!(" · update {value}"))
+            .unwrap_or_default();
+        let audit = detail
+            .summary
+            .audit_state
+            .as_deref()
+            .map(|value| format!(" · audit {value}"))
+            .unwrap_or_default();
+        lines.push(format!("Hermes source {source_id}{trust}{update}{audit}"));
+    }
     if !detail.shadowed_skill_paths.is_empty() {
         lines.push(format!(
             "Shadowed copies {}",
@@ -792,6 +841,21 @@ fn render_skill_detail(detail: &SkillDetail) -> String {
     }
     if !detail.assets.is_empty() {
         lines.push(format!("Assets {}", detail.assets.join(", ")));
+    }
+    if let Some(repo_url) = detail.repo_url.as_deref() {
+        lines.push(format!("Repo {}", repo_url));
+    }
+    if let Some(detail_url) = detail.detail_url.as_deref() {
+        lines.push(format!("Detail {}", detail_url));
+    }
+    if let Some(install_command) = detail.install_command.as_deref() {
+        lines.push(format!("Install {}", install_command));
+    }
+    if let Some(bundle_hash) = detail.bundle_hash.as_deref() {
+        lines.push(format!("Bundle hash {}", bundle_hash));
+    }
+    if let Some(upstream_bundle_hash) = detail.upstream_bundle_hash.as_deref() {
+        lines.push(format!("Upstream bundle hash {}", upstream_bundle_hash));
     }
     lines.join("\n")
 }
@@ -809,6 +873,7 @@ fn render_skill_manage_result(output: &SkillManageOutput) -> String {
 }
 
 fn skill_summary(skill: &Skill) -> SkillSummary {
+    let hub = skill.provenance.hub.as_ref();
     SkillSummary {
         name: skill.name.clone(),
         description: skill.description.clone(),
@@ -835,10 +900,19 @@ fn skill_summary(skill: &Skill) -> SkillSummary {
             .iter()
             .map(ToString::to_string)
             .collect(),
+        source_id: hub.map(|hub| hub.source_id.clone()),
+        trust_level: hub.map(|hub| hub.trust_level.as_str().to_string()),
+        update_state: hub
+            .and_then(|hub| hub.update_state)
+            .map(|state| state.as_str().to_string()),
+        audit_state: hub
+            .and_then(|hub| hub.audit_state)
+            .map(|state| state.as_str().to_string()),
     }
 }
 
 fn skill_detail(skill: &Skill, include_instruction: bool) -> SkillDetail {
+    let hub = skill.provenance.hub.as_ref();
     SkillDetail {
         summary: skill_summary(skill),
         shadowed_skill_paths: skill
@@ -850,6 +924,11 @@ fn skill_detail(skill: &Skill, include_instruction: bool) -> SkillDetail {
         references: relative_paths(&skill.root_dir, &skill.references),
         scripts: relative_paths(&skill.root_dir, &skill.scripts),
         assets: relative_paths(&skill.root_dir, &skill.assets),
+        repo_url: hub.and_then(|hub| hub.repo_url.clone()),
+        detail_url: hub.and_then(|hub| hub.detail_url.clone()),
+        install_command: hub.and_then(|hub| hub.install_command.clone()),
+        bundle_hash: hub.and_then(|hub| hub.bundle_hash.clone()),
+        upstream_bundle_hash: hub.and_then(|hub| hub.upstream_bundle_hash.clone()),
         instruction: include_instruction.then(|| skill.system_instruction()),
     }
 }
@@ -955,6 +1034,12 @@ name: pdf
 description: Use for PDF tasks
 aliases: [acrobat]
 tags: [document]
+hermes:
+  source_id: official/pdf
+  trust_level: official
+  update_state: up_to_date
+  audit_state: clean
+  repo_url: https://agentskills.io/skills/pdf
 ---
 
 Inspect PDFs carefully.
@@ -1000,6 +1085,8 @@ Read docs carefully.
         let structured = result.structured_content.as_ref().unwrap();
         assert_eq!(structured["result_count"], 2);
         assert_eq!(structured["skills"][0]["slash_command"], "/docs");
+        assert_eq!(structured["skills"][1]["trust_level"], "official");
+        assert_eq!(structured["skills"][1]["update_state"], "up_to_date");
     }
 
     #[tokio::test]
@@ -1019,6 +1106,32 @@ Read docs carefully.
         let structured = result.structured_content.as_ref().unwrap();
         assert_eq!(structured["kind"], "file");
         assert_eq!(structured["file"]["content"], "guide");
+    }
+
+    #[tokio::test]
+    async fn skill_view_surfaces_hermes_provenance_details() {
+        let tool = SkillViewTool::new(catalog().await);
+        let result = tool
+            .execute(
+                ToolCallId::new(),
+                json!({
+                    "name": "pdf",
+                    "include_instruction": true
+                }),
+                &crate::ToolExecutionContext::default(),
+            )
+            .await
+            .unwrap();
+        let structured = result.structured_content.as_ref().unwrap();
+        assert_eq!(structured["kind"], "skill");
+        assert_eq!(structured["skill"]["source_id"], "official/pdf");
+        assert_eq!(structured["skill"]["trust_level"], "official");
+        assert_eq!(structured["skill"]["audit_state"], "clean");
+        assert_eq!(
+            structured["skill"]["repo_url"],
+            "https://agentskills.io/skills/pdf"
+        );
+        assert!(result.text_content().contains("Hermes source official/pdf"));
     }
 
     #[tokio::test]
