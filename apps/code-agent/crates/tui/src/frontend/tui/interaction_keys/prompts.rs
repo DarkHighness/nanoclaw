@@ -11,9 +11,11 @@ impl CodeAgentTui {
                 self.ui_state.mutate(|state| {
                     if approved {
                         state.status = format!("Approved {}", prompt.tool_name);
+                        state.turn_phase = super::super::state::TurnPhase::Working;
                         state.push_activity(format!("approved {}", prompt.tool_name));
                     } else {
                         state.status = format!("Denied {}", prompt.tool_name);
+                        state.turn_phase = super::super::state::TurnPhase::Failed;
                         state.push_activity(format!("denied {}", prompt.tool_name));
                     }
                 });
@@ -38,14 +40,17 @@ impl CodeAgentTui {
                 self.ui_state.mutate(|state| match decision {
                     PermissionRequestDecision::GrantOnce => {
                         state.status = "Granted additional permissions for the turn".to_string();
+                        state.turn_phase = super::super::state::TurnPhase::Working;
                         state.push_activity("granted additional permissions for the turn");
                     }
                     PermissionRequestDecision::GrantForSession => {
                         state.status = "Granted additional permissions for the session".to_string();
+                        state.turn_phase = super::super::state::TurnPhase::Working;
                         state.push_activity("granted additional permissions for the session");
                     }
                     PermissionRequestDecision::Deny => {
                         state.status = "Denied additional permissions".to_string();
+                        state.turn_phase = super::super::state::TurnPhase::Failed;
                         state.push_activity("denied additional permissions");
                     }
                 });

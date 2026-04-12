@@ -342,11 +342,11 @@ fn build_pending_control_row(control: &PendingControlSummary, selected: bool) ->
             }),
         ),
     ];
-    if let Some(reason) = control.reason.as_deref() {
+    if let Some(reason) = control.reason.as_ref() {
         spans.push(Span::styled(" · ", Style::default().fg(palette().subtle)));
         spans.push(Span::styled(
             preview_text(
-                &format_pending_control_reason(Some(reason)).unwrap_or_else(|| reason.to_string()),
+                &format_pending_control_reason(Some(reason)).unwrap_or_default(),
                 24,
             ),
             Style::default().fg(palette().muted),
@@ -420,7 +420,7 @@ fn build_pending_control_detail_row(
             Style::default().fg(palette().subtle),
         ),
     ];
-    if let Some(reason) = format_pending_control_reason(control.reason.as_deref()) {
+    if let Some(reason) = format_pending_control_reason(control.reason.as_ref()) {
         spans.push(Span::styled(" · ", Style::default().fg(palette().subtle)));
         spans.push(Span::styled(reason, Style::default().fg(palette().muted)));
     }

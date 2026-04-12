@@ -66,7 +66,7 @@ impl CodeAgentTui {
     pub(crate) async fn schedule_runtime_steer_while_active(
         &mut self,
         message: String,
-        reason: Option<String>,
+        reason: Option<crate::interaction::PendingControlReason>,
     ) {
         let preview = state::preview_text(&message, 40);
         match self.schedule_runtime_steer(message, reason) {
@@ -103,7 +103,7 @@ impl CodeAgentTui {
             state.transcript_scroll = u16::MAX;
             state.turn_running = true;
             state.turn_started_at = Some(Instant::now());
-            state.active_tool_label = None;
+            state.clear_missing_live_tool_selection();
             state.status = "Working".to_string();
             state.push_activity(preview.clone());
         });
@@ -127,7 +127,7 @@ impl CodeAgentTui {
             state.transcript_scroll = u16::MAX;
             state.turn_running = true;
             state.turn_started_at = Some(Instant::now());
-            state.active_tool_label = None;
+            state.clear_missing_live_tool_selection();
             state.session.queued_commands = queued;
             state.status = "Working".to_string();
         });
@@ -163,7 +163,7 @@ impl CodeAgentTui {
             self.ui_state.mutate(|state| {
                 state.turn_running = false;
                 state.turn_started_at = None;
-                state.active_tool_label = None;
+                state.clear_missing_live_tool_selection();
                 state.push_transcript(state::TranscriptEntry::error_summary_details(
                     "Interrupted current turn",
                     Vec::new(),
@@ -181,7 +181,7 @@ impl CodeAgentTui {
             self.ui_state.mutate(|state| {
                 state.turn_running = false;
                 state.turn_started_at = None;
-                state.active_tool_label = None;
+                state.clear_missing_live_tool_selection();
                 state.status =
                     "Interrupted current turn. What should nanoclaw do next?".to_string();
                 state.push_transcript(state::TranscriptEntry::error_summary_details(

@@ -1,4 +1,4 @@
-use super::super::state::{ToastTone, TuiState, preview_text};
+use super::super::state::{ToastTone, TuiState, TurnPhase, preview_text};
 use super::theme::palette;
 use crate::backend::preview_id;
 use chrono::Local;
@@ -62,7 +62,7 @@ pub(super) fn format_footer_context(state: &TuiState) -> Line<'static> {
         spans.push(Span::styled(
             if state.turn_running { "●" } else { "•" },
             Style::default()
-                .fg(status_color(status))
+                .fg(status_color(state))
                 .add_modifier(Modifier::BOLD),
         ));
         spans.push(Span::raw(" "));
@@ -204,16 +204,12 @@ pub(super) fn format_toast_line(state: &TuiState) -> Line<'static> {
     ])
 }
 
-pub(super) fn status_color(status: &str) -> Color {
-    let lower = status.to_ascii_lowercase();
-    if lower.contains("error") || lower.contains("failed") || lower.contains("denied") {
-        palette().error
-    } else if lower.contains("approval") || lower.contains("running") || lower.contains("waiting") {
-        palette().warn
-    } else if lower.contains("ready") || lower.contains("complete") || lower.contains("approved") {
-        palette().assistant
-    } else {
-        palette().user
+pub(super) fn status_color(state: &TuiState) -> Color {
+    match state.turn_phase {
+        TurnPhase::Idle => palette().assistant,
+        TurnPhase::Working => palette().user,
+        TurnPhase::WaitingApproval => palette().warn,
+        TurnPhase::Failed => palette().error,
     }
 }
 

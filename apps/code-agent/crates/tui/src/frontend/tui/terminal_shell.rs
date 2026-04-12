@@ -184,8 +184,8 @@ impl CodeAgentTui {
             KeyCode::BackTab => {
                 let _ = self.apply_command_completion(true);
             }
-            KeyCode::Up if self.handle_transcript_selection_navigation(true) => {}
-            KeyCode::Down if self.handle_transcript_selection_navigation(false) => {}
+            KeyCode::Up if self.handle_tool_selection_navigation(true) => {}
+            KeyCode::Down if self.handle_tool_selection_navigation(false) => {}
             KeyCode::Up => self.handle_vertical_navigation(true),
             KeyCode::Down => self.handle_vertical_navigation(false),
             KeyCode::Left => {
@@ -202,13 +202,13 @@ impl CodeAgentTui {
                 self.ui_state
                     .mutate(|state| state.scroll_focused_page(viewport_height, false, false));
             }
-            KeyCode::Home if self.handle_transcript_selection_boundary(true) => {}
+            KeyCode::Home if self.handle_tool_selection_boundary(true) => {}
             KeyCode::Home => {
                 if !self.move_input_cursor_home() {
                     self.ui_state.mutate(|state| state.scroll_focused_home());
                 }
             }
-            KeyCode::End if self.handle_transcript_selection_boundary(false) => {}
+            KeyCode::End if self.handle_tool_selection_boundary(false) => {}
             KeyCode::End => {
                 if !self.move_input_cursor_end() {
                     self.ui_state.mutate(|state| state.scroll_focused_end());
@@ -261,7 +261,7 @@ impl CodeAgentTui {
             }
             KeyCode::Char('r') | KeyCode::Char('R')
                 if !key.modifiers.contains(KeyModifiers::CONTROL)
-                    && self.transcript_selection_active() =>
+                    && self.tool_selection_active() =>
             {
                 self.open_selected_tool_review();
             }
@@ -290,7 +290,7 @@ impl CodeAgentTui {
         });
     }
 
-    fn handle_transcript_selection_navigation(&mut self, backwards: bool) -> bool {
+    fn handle_tool_selection_navigation(&mut self, backwards: bool) -> bool {
         let snapshot = self.ui_state.snapshot();
         if !snapshot.input.is_empty()
             || snapshot.main_pane != state::MainPaneMode::Transcript
@@ -299,22 +299,24 @@ impl CodeAgentTui {
         {
             return false;
         }
-        if !snapshot
-            .transcript
-            .iter()
-            .any(|entry| entry.tool_entry().is_some())
+        if snapshot.selected_tool_entry().is_none()
+            && snapshot
+                .transcript
+                .iter()
+                .all(|entry| entry.tool_entry().is_none())
+            && snapshot.active_tools.is_empty()
         {
             return false;
         }
 
         self.ui_state.mutate(|state| {
-            let _ = state.move_transcript_selection(backwards);
+            let _ = state.move_tool_selection(backwards);
         });
-        self.refresh_transcript_selection_status();
+        self.refresh_tool_selection_status();
         true
     }
 
-    fn handle_transcript_selection_boundary(&mut self, oldest: bool) -> bool {
+    fn handle_tool_selection_boundary(&mut self, oldest: bool) -> bool {
         let snapshot = self.ui_state.snapshot();
         if !snapshot.input.is_empty()
             || snapshot.main_pane != state::MainPaneMode::Transcript
@@ -323,24 +325,25 @@ impl CodeAgentTui {
         {
             return false;
         }
-        if !snapshot
+        if snapshot
             .transcript
             .iter()
-            .any(|entry| entry.tool_entry().is_some())
+            .all(|entry| entry.tool_entry().is_none())
+            && snapshot.active_tools.is_empty()
         {
             return false;
         }
 
         self.ui_state.mutate(|state| {
-            let _ = state.jump_transcript_selection(oldest);
+            let _ = state.jump_tool_selection(oldest);
         });
-        self.refresh_transcript_selection_status();
+        self.refresh_tool_selection_status();
         true
     }
 
-    fn refresh_transcript_selection_status(&self) {
+    fn refresh_tool_selection_status(&self) {
         let snapshot = self.ui_state.snapshot();
-        let Some(tool) = snapshot.selected_transcript_tool() else {
+        let Some(tool) = snapshot.selected_tool_entry() else {
             return;
         };
         self.ui_state.mutate(|state| {
@@ -357,15 +360,15 @@ impl CodeAgentTui {
         snapshot.input.is_empty()
             && snapshot.main_pane == state::MainPaneMode::Transcript
             && snapshot
-                .selected_transcript_tool()
+                .selected_tool_entry()
                 .is_some_and(|tool| tool.review.is_some())
     }
 
-    fn transcript_selection_active(&self) -> bool {
+    fn tool_selection_active(&self) -> bool {
         let snapshot = self.ui_state.snapshot();
         snapshot.input.is_empty()
             && snapshot.main_pane == state::MainPaneMode::Transcript
-            && snapshot.transcript_selection.is_some()
+            && snapshot.tool_selection.is_some()
     }
 
     async fn handle_tab_key(&mut self) -> Result<()> {
@@ -474,11 +477,11 @@ impl CodeAgentTui {
         }
         if snapshot.input.is_empty()
             && snapshot.main_pane == state::MainPaneMode::Transcript
-            && snapshot.transcript_selection.is_some()
+            && snapshot.tool_selection.is_some()
         {
             self.ui_state.mutate(|state| {
-                state.clear_transcript_selection();
-                state.status = "Cleared transcript selection".to_string();
+                state.clear_tool_selection();
+                state.status = "Cleared tool selection".to_string();
             });
             return Ok(());
         }

@@ -1,12 +1,13 @@
 use super::{
-    ComposerDraftAttachmentKind, ComposerDraftAttachmentState, ComposerDraftState,
+    ActiveToolEntry, ComposerDraftAttachmentKind, ComposerDraftAttachmentState, ComposerDraftState,
     ComposerKillBufferState, ComposerRowAttachmentPreview, HistoryRollbackCandidate,
     InspectorAction, InspectorEntry, MainPaneMode, SharedUiState, ToastState, ToastTone,
-    TranscriptEntry, TranscriptToolStatus, TuiState, composer_draft_from_messages,
-    composer_draft_from_parts, draft_preview_text, git_snapshot, page_scroll_amount,
+    ToolSelectionTarget, TranscriptEntry, TranscriptToolEntry, TranscriptToolStatus, TuiState,
+    composer_draft_from_messages, composer_draft_from_parts, draft_preview_text, git_snapshot,
+    page_scroll_amount,
 };
 use crate::theme::ThemeSummary;
-use crate::tool_render::{ToolDetail, ToolReview, ToolReviewFile};
+use crate::tool_render::{ToolDetail, ToolDetailLabel, ToolReview, ToolReviewFile};
 use agent::types::{
     Message, MessageId, MessagePart, MessageRole, SubmittedPromptAttachment,
     SubmittedPromptAttachmentKind, SubmittedPromptSnapshot,
@@ -165,33 +166,42 @@ fn transcript_selection_moves_between_tool_entries_only() {
             TranscriptToolStatus::Finished,
             "write",
             vec![ToolDetail::LabeledValue {
-                label: "effect".to_string(),
+                label: ToolDetailLabel::Effect,
                 value: "Updated src/lib.rs".to_string(),
             }],
         ),
     ];
 
-    assert!(state.move_transcript_selection(false));
-    assert_eq!(state.transcript_selection, Some(1));
+    assert!(state.move_tool_selection(false));
+    assert_eq!(
+        state.tool_selection,
+        Some(ToolSelectionTarget::Transcript(1))
+    );
 
-    assert!(state.move_transcript_selection(false));
-    assert_eq!(state.transcript_selection, Some(3));
+    assert!(state.move_tool_selection(false));
+    assert_eq!(
+        state.tool_selection,
+        Some(ToolSelectionTarget::Transcript(3))
+    );
 
-    assert!(state.move_transcript_selection(false));
-    assert_eq!(state.transcript_selection, Some(1));
+    assert!(state.move_tool_selection(false));
+    assert_eq!(
+        state.tool_selection,
+        Some(ToolSelectionTarget::Transcript(1))
+    );
 }
 
 #[test]
 fn selected_tool_review_overlay_uses_review_from_selected_entry() {
     let mut state = TuiState {
-        transcript_selection: Some(0),
+        tool_selection: Some(ToolSelectionTarget::Transcript(0)),
         ..TuiState::default()
     };
     state.transcript = vec![TranscriptEntry::tool_with_review(
         TranscriptToolStatus::Finished,
         "write",
         vec![ToolDetail::LabeledValue {
-            label: "effect".to_string(),
+            label: ToolDetailLabel::Effect,
             value: "Updated src/lib.rs".to_string(),
         }],
         Some(ToolReview {
@@ -202,6 +212,73 @@ fn selected_tool_review_overlay_uses_review_from_selected_entry() {
             }],
         }),
     )];
+
+    assert!(state.open_selected_tool_review_overlay());
+    assert_eq!(
+        state
+            .selected_tool_review_file()
+            .map(|file| file.path.as_str()),
+        Some("src/lib.rs")
+    );
+}
+
+#[test]
+fn tool_selection_cycles_across_committed_and_live_tools() {
+    let mut state = TuiState::default();
+    state.transcript = vec![TranscriptEntry::tool(
+        TranscriptToolStatus::Finished,
+        "write",
+        vec![ToolDetail::LabeledValue {
+            label: ToolDetailLabel::Effect,
+            value: "Updated src/lib.rs".to_string(),
+        }],
+    )];
+    state.active_tools = vec![ActiveToolEntry {
+        call_id: "call-1".to_string(),
+        entry: TranscriptToolEntry::new(
+            TranscriptToolStatus::Running,
+            "exec_command",
+            vec![ToolDetail::Command("$ cargo test".to_string())],
+        ),
+    }];
+
+    assert!(state.move_tool_selection(false));
+    assert_eq!(
+        state.tool_selection,
+        Some(ToolSelectionTarget::Transcript(0))
+    );
+
+    assert!(state.move_tool_selection(false));
+    assert_eq!(
+        state.tool_selection,
+        Some(ToolSelectionTarget::Live("call-1".to_string()))
+    );
+}
+
+#[test]
+fn selected_tool_review_overlay_can_open_from_live_tool_selection() {
+    let mut state = TuiState {
+        tool_selection: Some(ToolSelectionTarget::Live("call-1".to_string())),
+        ..TuiState::default()
+    };
+    state.active_tools = vec![ActiveToolEntry {
+        call_id: "call-1".to_string(),
+        entry: TranscriptToolEntry::new_with_review(
+            TranscriptToolStatus::Running,
+            "write",
+            vec![ToolDetail::LabeledValue {
+                label: ToolDetailLabel::Effect,
+                value: "Updating src/lib.rs".to_string(),
+            }],
+            Some(ToolReview {
+                summary: Some("Updating src/lib.rs".to_string()),
+                files: vec![ToolReviewFile {
+                    path: "src/lib.rs".to_string(),
+                    preview_lines: vec!["+new()".to_string()],
+                }],
+            }),
+        ),
+    }];
 
     assert!(state.open_selected_tool_review_overlay());
     assert_eq!(

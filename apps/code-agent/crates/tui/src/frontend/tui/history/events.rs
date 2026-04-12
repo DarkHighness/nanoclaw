@@ -301,16 +301,16 @@ pub(crate) fn format_session_event_line(event: &SessionEventEnvelope) -> Transcr
         SessionEventKind::ToolApprovalRequested { call, reasons } => {
             let preview_lines =
                 tool_arguments_preview_lines(call.tool_name.as_str(), &call.arguments);
-            let mut detail_lines = vec![ToolDetail::Meta(format!(
-                "origin {}",
-                format_tool_origin(&call.origin)
-            ))];
+            let mut detail_lines = vec![ToolDetail::LabeledValue {
+                label: crate::tool_render::ToolDetailLabel::Origin,
+                value: format_tool_origin(&call.origin),
+            }];
             detail_lines.extend(tool_argument_details(&preview_lines));
             if let Some(reason) = reasons.first() {
-                detail_lines.push(ToolDetail::Meta(format!(
-                    "reason {}",
-                    preview_text(reason, 72)
-                )));
+                detail_lines.push(ToolDetail::LabeledValue {
+                    label: crate::tool_render::ToolDetailLabel::Reason,
+                    value: preview_text(reason, 72),
+                });
             }
             TranscriptEntry::tool(
                 TranscriptToolStatus::WaitingApproval,
@@ -331,7 +331,10 @@ pub(crate) fn format_session_event_line(event: &SessionEventEnvelope) -> Transcr
             call.tool_name.to_string(),
             format_reason_detail(reason.as_deref())
                 .into_iter()
-                .map(ToolDetail::Meta)
+                .map(|value| ToolDetail::LabeledValue {
+                    label: crate::tool_render::ToolDetailLabel::Reason,
+                    value: value.trim_start_matches("reason ").to_string(),
+                })
                 .collect(),
         ),
         SessionEventKind::ToolCallStarted { call } => {
@@ -367,10 +370,10 @@ pub(crate) fn format_session_event_line(event: &SessionEventEnvelope) -> Transcr
             let preview_lines =
                 tool_arguments_preview_lines(call.tool_name.as_str(), &call.arguments);
             let mut detail_lines = tool_argument_details(&preview_lines);
-            detail_lines.push(ToolDetail::Meta(format!(
-                "error {}",
-                preview_text(error, 72)
-            )));
+            detail_lines.push(ToolDetail::LabeledValue {
+                label: crate::tool_render::ToolDetailLabel::Result,
+                value: format!("error {}", preview_text(error, 72)),
+            });
             TranscriptEntry::tool(
                 TranscriptToolStatus::Failed,
                 call.tool_name.to_string(),

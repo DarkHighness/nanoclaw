@@ -1,5 +1,8 @@
-use crate::interaction::{ApprovalDecision, ApprovalPrompt};
+use crate::interaction::{
+    ApprovalContent, ApprovalContentKind, ApprovalDecision, ApprovalOrigin, ApprovalPrompt,
+};
 use crate::preview::{PreviewCollapse, collapse_preview_text};
+use crate::tool_render::ToolRenderKind;
 use agent::ToolOrigin;
 use agent::runtime::{
     Result as RuntimeResult, RuntimeError, ToolApprovalHandler, ToolApprovalOutcome,
@@ -11,15 +14,14 @@ use std::sync::{Arc, RwLock};
 use tokio::sync::oneshot;
 
 fn approval_prompt_from_request(request: &ToolApprovalRequest) -> ApprovalPrompt {
-    let (content_label, content_preview) =
+    let content =
         approval_content_preview(request.call.tool_name.as_str(), &request.call.arguments);
     ApprovalPrompt {
         tool_name: request.call.tool_name.to_string(),
         origin: tool_origin_label(&request.call.origin),
         mode: approval_mode(&request.call.arguments),
         working_directory: approval_working_directory(&request.call.arguments),
-        content_label,
-        content_preview,
+        content,
         reasons: request.reasons.clone(),
     }
 }
@@ -118,103 +120,121 @@ impl ToolApprovalHandler for NonInteractiveToolApprovalHandler {
     }
 }
 
-fn tool_origin_label(origin: &ToolOrigin) -> String {
+fn tool_origin_label(origin: &ToolOrigin) -> ApprovalOrigin {
     match origin {
-        ToolOrigin::Local => "local".to_string(),
-        ToolOrigin::Mcp { server_name } => format!("mcp:{server_name}"),
-        ToolOrigin::Provider { provider } => format!("provider:{provider}"),
+        ToolOrigin::Local => ApprovalOrigin::Local,
+        ToolOrigin::Mcp { server_name } => ApprovalOrigin::Mcp {
+            server_name: server_name.to_string(),
+        },
+        ToolOrigin::Provider { provider } => ApprovalOrigin::Provider {
+            provider: provider.clone(),
+        },
     }
 }
 
-fn approval_content_preview(tool_name: &str, arguments: &Value) -> (String, Vec<String>) {
-    if tool_name == "exec_command" {
-        let command = arguments.get("cmd").and_then(Value::as_str);
-        if let Some(command) = command.map(str::trim).filter(|command| !command.is_empty()) {
-            return (
-                "command".to_string(),
-                collapse_preview_text(&format!("$ {command}"), 6, 96, PreviewCollapse::Head),
-            );
+fn approval_content_preview(tool_name: &str, arguments: &Value) -> ApprovalContent {
+    match ToolRenderKind::classify(tool_name) {
+        ToolRenderKind::ExecCommand => {
+            let command = arguments.get("cmd").and_then(Value::as_str);
+            if let Some(command) = command.map(str::trim).filter(|command| !command.is_empty()) {
+                return ApprovalContent {
+                    kind: ApprovalContentKind::Command,
+                    preview: collapse_preview_text(
+                        &format!("$ {command}"),
+                        6,
+                        96,
+                        PreviewCollapse::Head,
+                    ),
+                };
+            }
         }
-    }
-
-    if tool_name == "write_stdin" {
-        let session_id = arguments
-            .get("session_id")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .unwrap_or("<unknown>");
-        let close_stdin = arguments
-            .get("close_stdin")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
-        let chars = arguments
-            .get("chars")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        if close_stdin && chars.is_empty() {
-            return (
-                "stdin".to_string(),
-                vec![format!("close stdin {session_id}")],
-            );
+        ToolRenderKind::WriteStdin => {
+            let session_id = arguments
+                .get("session_id")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or("<unknown>");
+            let close_stdin = arguments
+                .get("close_stdin")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let chars = arguments
+                .get("chars")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let preview = if close_stdin && chars.is_empty() {
+                vec![format!("close stdin {session_id}")]
+            } else if chars.is_empty() {
+                vec![format!("poll session {session_id}")]
+            } else {
+                let mut lines = vec![format!("session {session_id}")];
+                lines.extend(collapse_preview_text(
+                    &format!("stdin {}", chars.escape_default()),
+                    4,
+                    96,
+                    PreviewCollapse::Head,
+                ));
+                lines
+            };
+            return ApprovalContent {
+                kind: ApprovalContentKind::Stdin,
+                preview,
+            };
         }
-        if chars.is_empty() {
-            return (
-                "stdin".to_string(),
-                vec![format!("poll session {session_id}")],
-            );
+        ToolRenderKind::UpdatePlan => {
+            let item_count = arguments
+                .get("plan")
+                .and_then(Value::as_array)
+                .map_or(0, Vec::len);
+            let mut preview = vec![if item_count == 0 {
+                "clear plan".to_string()
+            } else {
+                format!("set {item_count} plan step(s)")
+            }];
+            if let Some(explanation) = arguments
+                .get("explanation")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                preview.extend(collapse_preview_text(
+                    explanation,
+                    2,
+                    96,
+                    PreviewCollapse::Head,
+                ));
+            }
+            return ApprovalContent {
+                kind: ApprovalContentKind::PlanUpdate,
+                preview,
+            };
         }
-        let mut lines = vec![format!("session {session_id}")];
-        lines.extend(collapse_preview_text(
-            &format!("stdin {}", chars.escape_default()),
-            4,
-            96,
-            PreviewCollapse::Head,
-        ));
-        return ("stdin".to_string(), lines);
-    }
-
-    if tool_name == "update_plan" {
-        let item_count = arguments
-            .get("plan")
-            .and_then(Value::as_array)
-            .map_or(0, Vec::len);
-        let mut lines = vec![if item_count == 0 {
-            "clear plan".to_string()
-        } else {
-            format!("set {item_count} plan step(s)")
-        }];
-        if let Some(explanation) = arguments
-            .get("explanation")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        {
-            lines.extend(collapse_preview_text(
-                explanation,
-                2,
-                96,
-                PreviewCollapse::Head,
-            ));
-        }
-        return ("arguments".to_string(), lines);
+        ToolRenderKind::UpdateExecution
+        | ToolRenderKind::SendInput
+        | ToolRenderKind::SpawnAgent
+        | ToolRenderKind::WaitAgent
+        | ToolRenderKind::ResumeAgent
+        | ToolRenderKind::CloseAgent
+        | ToolRenderKind::FileMutation
+        | ToolRenderKind::Generic => {}
     }
 
     for key in ["path", "uri", "query", "prompt", "message"] {
         if let Some(value) = arguments.get(key).and_then(Value::as_str)
             && !value.trim().is_empty()
         {
-            return (
-                "arguments".to_string(),
-                collapse_preview_text(value.trim(), 6, 96, PreviewCollapse::Head),
-            );
+            return ApprovalContent {
+                kind: ApprovalContentKind::Arguments,
+                preview: collapse_preview_text(value.trim(), 6, 96, PreviewCollapse::Head),
+            };
         }
     }
 
-    (
-        "arguments".to_string(),
-        collapse_preview_text(&arguments.to_string(), 8, 88, PreviewCollapse::Head),
-    )
+    ApprovalContent {
+        kind: ApprovalContentKind::Arguments,
+        preview: collapse_preview_text(&arguments.to_string(), 8, 88, PreviewCollapse::Head),
+    }
 }
 
 fn approval_mode(arguments: &Value) -> Option<String> {
@@ -243,7 +263,7 @@ mod tests {
         ApprovalCoordinator, NonInteractiveToolApprovalHandler, approval_prompt_from_request,
         tool_origin_label,
     };
-    use crate::ApprovalDecision;
+    use crate::{ApprovalContent, ApprovalContentKind, ApprovalDecision, ApprovalOrigin};
     use agent::runtime::{ToolApprovalHandler, ToolApprovalOutcome, ToolApprovalRequest};
     use agent::types::{ToolCall, ToolCallId, ToolOrigin, ToolOutputMode, ToolSource, ToolSpec};
     use serde_json::json;
@@ -288,12 +308,14 @@ mod tests {
 
     #[test]
     fn tool_origin_labels_provider_variants() {
-        assert_eq!(tool_origin_label(&ToolOrigin::Local), "local");
+        assert_eq!(tool_origin_label(&ToolOrigin::Local), ApprovalOrigin::Local);
         assert_eq!(
             tool_origin_label(&ToolOrigin::Mcp {
                 server_name: "docs".into(),
             }),
-            "mcp:docs"
+            ApprovalOrigin::Mcp {
+                server_name: "docs".to_string(),
+            }
         );
     }
 
@@ -322,13 +344,18 @@ mod tests {
         });
 
         assert_eq!(prompt.tool_name, "exec_command");
-        assert_eq!(prompt.origin, "local");
+        assert_eq!(prompt.origin, ApprovalOrigin::Local);
         assert_eq!(prompt.mode, None);
         assert_eq!(
             prompt.working_directory.as_deref(),
             Some("/workspace/apps/code-agent")
         );
-        assert_eq!(prompt.content_label, "command");
-        assert_eq!(prompt.content_preview, vec!["$ cargo test -p code-agent"]);
+        assert_eq!(
+            prompt.content,
+            ApprovalContent {
+                kind: ApprovalContentKind::Command,
+                preview: vec!["$ cargo test -p code-agent".to_string()],
+            }
+        );
     }
 }

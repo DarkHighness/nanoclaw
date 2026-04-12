@@ -39,7 +39,7 @@ impl CodeAgentTui {
             PlainInputSubmitAction::SteerActiveTurn => {
                 self.schedule_runtime_steer_while_active(
                     submission.prompt_snapshot.text,
-                    Some("inline_enter".to_string()),
+                    Some(crate::interaction::PendingControlReason::InlineEnter),
                 )
                 .await;
             }

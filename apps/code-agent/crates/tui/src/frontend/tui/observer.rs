@@ -1,21 +1,20 @@
 use super::state::{
-    SharedUiState, ToastTone, TranscriptEntry, TranscriptShellDetail, TranscriptToolStatus,
-    preview_text,
+    ActiveToolEntry, SharedUiState, ToastTone, TranscriptEntry, TranscriptShellDetail,
+    TranscriptToolEntry, TranscriptToolStatus, TurnPhase, preview_text,
 };
 use super::tool_state::{
     execution_state_from_tool_output, execution_update_entry_from_tool_output,
     plan_items_from_tool_output, plan_update_entry_from_tool_output,
 };
 use crate::tool_render::{
-    ToolDetail, tool_argument_details, tool_output_details_from_preview, tool_review_from_preview,
+    ToolDetail, ToolDetailLabel, tool_argument_details, tool_output_details_from_preview,
+    tool_review_from_preview,
 };
 use crate::ui::{SessionEvent, SessionToolCall};
-use std::collections::HashMap;
 
 pub(crate) struct SharedRenderObserver {
     ui_state: SharedUiState,
     active_assistant_line: Option<usize>,
-    active_tool_lines: HashMap<String, usize>,
 }
 
 impl SharedRenderObserver {
@@ -23,7 +22,6 @@ impl SharedRenderObserver {
         Self {
             ui_state,
             active_assistant_line: None,
-            active_tool_lines: HashMap::new(),
         }
     }
 
@@ -56,10 +54,11 @@ impl SharedRenderObserver {
             }
             SessionEvent::UserPromptAdded { prompt } => {
                 self.active_assistant_line = None;
-                self.active_tool_lines.clear();
-                state.active_tool_label = None;
+                state.active_tools.clear();
+                state.clear_tool_selection();
                 state.push_transcript(TranscriptEntry::UserPrompt(prompt.clone()));
                 state.status = "Working".to_string();
+                state.turn_phase = TurnPhase::Working;
                 state.push_activity(format!("user prompt: {}", preview_text(&prompt, 40)));
             }
             SessionEvent::AssistantTextDelta { delta } => {
@@ -73,6 +72,7 @@ impl SharedRenderObserver {
                     self.active_assistant_line = Some(state.transcript.len() - 1);
                 }
                 state.status = "Working".to_string();
+                state.turn_phase = TurnPhase::Working;
             }
             SessionEvent::CompactionCompleted {
                 reason,
@@ -103,6 +103,7 @@ impl SharedRenderObserver {
                 } else {
                     format!("Working ({iteration})")
                 };
+                state.turn_phase = TurnPhase::Working;
             }
             SessionEvent::TokenUsageUpdated { ledger, .. } => {
                 state.session.token_ledger = ledger.clone();
@@ -153,29 +154,18 @@ impl SharedRenderObserver {
                 } else {
                     "Working".to_string()
                 };
+                state.turn_phase = TurnPhase::Working;
             }
             SessionEvent::ToolCallRequested { call } => {
                 state.status = "Working".to_string();
-                state.active_tool_label = Some(call.tool_name.clone());
-                let line_index = replace_or_push_tool_line(
-                    state,
-                    self.active_tool_lines.get(&call.call_id).copied(),
-                    requested_tool_entry(&call),
-                );
-                self.active_tool_lines
-                    .insert(call.call_id.clone(), line_index);
+                state.turn_phase = TurnPhase::Working;
+                upsert_active_tool(state, &call.call_id, requested_tool_card(&call));
                 state.push_activity(format!("requested {}", call.tool_name));
             }
             SessionEvent::ToolApprovalRequested { call, reasons } => {
                 state.status = "Waiting for approval".to_string();
-                state.active_tool_label = Some(call.tool_name.clone());
-                let line_index = replace_or_push_tool_line(
-                    state,
-                    self.active_tool_lines.get(&call.call_id).copied(),
-                    waiting_tool_entry(&call, &reasons),
-                );
-                self.active_tool_lines
-                    .insert(call.call_id.clone(), line_index);
+                state.turn_phase = TurnPhase::WaitingApproval;
+                upsert_active_tool(state, &call.call_id, waiting_tool_card(&call, &reasons));
                 state.push_activity(format!(
                     "approval needed for {} ({})",
                     call.tool_name,
@@ -189,14 +179,21 @@ impl SharedRenderObserver {
             } => {
                 if approved {
                     state.status = "Working".to_string();
-                    state.active_tool_label = Some(call.tool_name.clone());
+                    state.turn_phase = TurnPhase::Working;
+                    upsert_active_tool(
+                        state,
+                        &call.call_id,
+                        approved_tool_card(&call, reason.as_deref()),
+                    );
                     state.push_activity(format!("approved {}", call.tool_name));
                 } else {
                     let reason = reason.unwrap_or_else(|| "permission denied".to_string());
                     state.status = format!("Denied {}: {}", call.tool_name, reason);
-                    state.active_tool_label = None;
-                    let existing = self.active_tool_lines.remove(&call.call_id);
-                    replace_tool_line(state, existing, denied_tool_entry(&call, &reason));
+                    state.turn_phase = TurnPhase::Failed;
+                    remove_active_tool(state, &call.call_id);
+                    let transcript_index = state.transcript.len();
+                    state.push_transcript(denied_tool_entry(&call, &reason));
+                    state.promote_live_tool_selection(&call.call_id, transcript_index);
                     state.push_activity(format!(
                         "denied {}: {}",
                         call.tool_name,
@@ -206,12 +203,8 @@ impl SharedRenderObserver {
             }
             SessionEvent::ToolLifecycleStarted { call } => {
                 state.status = "Working".to_string();
-                state.active_tool_label = Some(call.tool_name.clone());
-                let existing = self.active_tool_lines.get(&call.call_id).copied();
-                let line_index =
-                    replace_or_push_tool_line(state, existing, running_tool_entry(&call));
-                self.active_tool_lines
-                    .insert(call.call_id.clone(), line_index);
+                state.turn_phase = TurnPhase::Working;
+                upsert_active_tool(state, &call.call_id, running_tool_card(&call));
                 state.push_activity(format!("running {}", call.tool_name));
             }
             SessionEvent::ToolLifecycleCompleted {
@@ -220,7 +213,7 @@ impl SharedRenderObserver {
                 structured_output_preview,
             } => {
                 state.status = format!("Completed {}", call.tool_name);
-                state.active_tool_label = None;
+                state.turn_phase = TurnPhase::Working;
                 if let Some(plan_items) = plan_items_from_tool_output(
                     &call.tool_name,
                     structured_output_preview.as_deref(),
@@ -233,15 +226,14 @@ impl SharedRenderObserver {
                 ) {
                     state.execution = execution;
                 }
-                replace_tool_line(
-                    state,
-                    self.active_tool_lines.remove(&call.call_id),
-                    completed_tool_entry(
-                        &call,
-                        &output_preview,
-                        structured_output_preview.as_deref(),
-                    ),
-                );
+                remove_active_tool(state, &call.call_id);
+                let transcript_index = state.transcript.len();
+                state.push_transcript(completed_tool_entry(
+                    &call,
+                    &output_preview,
+                    structured_output_preview.as_deref(),
+                ));
+                state.promote_live_tool_selection(&call.call_id, transcript_index);
                 state.push_activity(format!(
                     "{} -> {}",
                     call.tool_name,
@@ -268,12 +260,11 @@ impl SharedRenderObserver {
             }
             SessionEvent::ToolLifecycleFailed { call, error } => {
                 state.status = format!("{} failed", call.tool_name);
-                state.active_tool_label = None;
-                replace_tool_line(
-                    state,
-                    self.active_tool_lines.remove(&call.call_id),
-                    failed_tool_entry(&call, &error),
-                );
+                state.turn_phase = TurnPhase::Failed;
+                remove_active_tool(state, &call.call_id);
+                let transcript_index = state.transcript.len();
+                state.push_transcript(failed_tool_entry(&call, &error));
+                state.promote_live_tool_selection(&call.call_id, transcript_index);
                 state.push_activity(format!(
                     "{} failed: {}",
                     call.tool_name,
@@ -282,12 +273,11 @@ impl SharedRenderObserver {
             }
             SessionEvent::ToolLifecycleCancelled { call, reason } => {
                 state.status = format!("{} cancelled", call.tool_name);
-                state.active_tool_label = None;
-                replace_tool_line(
-                    state,
-                    self.active_tool_lines.remove(&call.call_id),
-                    cancelled_tool_entry(&call, reason.as_deref()),
-                );
+                state.turn_phase = TurnPhase::Failed;
+                remove_active_tool(state, &call.call_id);
+                let transcript_index = state.transcript.len();
+                state.push_transcript(cancelled_tool_entry(&call, reason.as_deref()));
+                state.promote_live_tool_selection(&call.call_id, transcript_index);
                 state.push_activity(format!(
                     "{} cancelled{}",
                     call.tool_name,
@@ -299,20 +289,36 @@ impl SharedRenderObserver {
             }
             SessionEvent::TurnCompleted { .. } => {
                 self.active_assistant_line = None;
-                self.active_tool_lines.clear();
-                state.active_tool_label = None;
+                state.active_tools.clear();
+                state.clear_missing_live_tool_selection();
                 state.status = "Ready".to_string();
+                state.turn_phase = TurnPhase::Idle;
                 state.push_activity("turn complete");
             }
         });
     }
 }
 
-fn requested_tool_entry(call: &SessionToolCall) -> TranscriptEntry {
-    TranscriptEntry::tool(
+fn requested_tool_card(call: &SessionToolCall) -> TranscriptToolEntry {
+    TranscriptToolEntry::new(
         TranscriptToolStatus::Requested,
         call.tool_name.clone(),
         tool_argument_detail_lines(call),
+    )
+}
+
+fn approved_tool_card(call: &SessionToolCall, reason: Option<&str>) -> TranscriptToolEntry {
+    let mut detail_lines = tool_argument_detail_lines(call);
+    if let Some(reason) = reason.map(str::trim).filter(|reason| !reason.is_empty()) {
+        detail_lines.push(ToolDetail::LabeledValue {
+            label: ToolDetailLabel::Reason,
+            value: preview_text(reason, 72),
+        });
+    }
+    TranscriptToolEntry::new(
+        TranscriptToolStatus::Approved,
+        call.tool_name.clone(),
+        detail_lines,
     )
 }
 
@@ -366,7 +372,10 @@ fn map_ui_toast_tone(variant: &str) -> ToastTone {
 
 fn denied_tool_entry(call: &SessionToolCall, reason: &str) -> TranscriptEntry {
     let mut detail_lines = tool_argument_detail_lines(call);
-    detail_lines.push(ToolDetail::Meta(preview_text(reason, 72)));
+    detail_lines.push(ToolDetail::LabeledValue {
+        label: ToolDetailLabel::Reason,
+        value: preview_text(reason, 72),
+    });
     TranscriptEntry::tool(
         TranscriptToolStatus::Denied,
         call.tool_name.clone(),
@@ -374,20 +383,23 @@ fn denied_tool_entry(call: &SessionToolCall, reason: &str) -> TranscriptEntry {
     )
 }
 
-fn waiting_tool_entry(call: &SessionToolCall, reasons: &[String]) -> TranscriptEntry {
+fn waiting_tool_card(call: &SessionToolCall, reasons: &[String]) -> TranscriptToolEntry {
     let mut detail_lines = tool_argument_detail_lines(call);
     if let Some(reason) = reasons.first() {
-        detail_lines.push(ToolDetail::Meta(preview_text(reason, 72)));
+        detail_lines.push(ToolDetail::LabeledValue {
+            label: ToolDetailLabel::Reason,
+            value: preview_text(reason, 72),
+        });
     }
-    TranscriptEntry::tool(
+    TranscriptToolEntry::new(
         TranscriptToolStatus::WaitingApproval,
         call.tool_name.clone(),
         detail_lines,
     )
 }
 
-fn running_tool_entry(call: &SessionToolCall) -> TranscriptEntry {
-    TranscriptEntry::tool(
+fn running_tool_card(call: &SessionToolCall) -> TranscriptToolEntry {
+    TranscriptToolEntry::new(
         TranscriptToolStatus::Running,
         call.tool_name.clone(),
         tool_argument_detail_lines(call),
@@ -426,7 +438,10 @@ fn completed_tool_entry(
 
 fn failed_tool_entry(call: &SessionToolCall, error: &str) -> TranscriptEntry {
     let mut detail_lines = tool_argument_detail_lines(call);
-    detail_lines.push(ToolDetail::Meta(preview_text(error, 72)));
+    detail_lines.push(ToolDetail::LabeledValue {
+        label: ToolDetailLabel::Result,
+        value: preview_text(error, 72),
+    });
     TranscriptEntry::tool(
         TranscriptToolStatus::Failed,
         call.tool_name.clone(),
@@ -436,11 +451,12 @@ fn failed_tool_entry(call: &SessionToolCall, error: &str) -> TranscriptEntry {
 
 fn cancelled_tool_entry(call: &SessionToolCall, reason: Option<&str>) -> TranscriptEntry {
     let mut detail_lines = tool_argument_detail_lines(call);
-    detail_lines.push(ToolDetail::Meta(
-        reason
+    detail_lines.push(ToolDetail::LabeledValue {
+        label: ToolDetailLabel::Result,
+        value: reason
             .map(|value| preview_text(value, 72))
             .unwrap_or_else(|| "cancelled".to_string()),
-    ));
+    });
     TranscriptEntry::tool(
         TranscriptToolStatus::Cancelled,
         call.tool_name.clone(),
@@ -452,41 +468,40 @@ fn tool_argument_detail_lines(call: &SessionToolCall) -> Vec<ToolDetail> {
     tool_argument_details(&call.arguments_preview)
 }
 
-fn replace_tool_line(
+fn upsert_active_tool(
     state: &mut super::state::TuiState,
-    index: Option<usize>,
-    replacement: TranscriptEntry,
+    call_id: &str,
+    entry: TranscriptToolEntry,
 ) {
-    if let Some(index) = index {
-        if state.replace_transcript(index, replacement.clone()) {
-            return;
-        }
+    if let Some(existing) = state
+        .active_tools
+        .iter_mut()
+        .find(|active| active.call_id == call_id)
+    {
+        existing.entry = entry;
+        return;
     }
-    state.push_transcript(replacement);
+
+    state.active_tools.push(ActiveToolEntry {
+        call_id: call_id.to_string(),
+        entry,
+    });
 }
 
-// Approval, execution, and terminal tool states intentionally share one
-// transcript cell so the operator reads one progressing operation instead of
-// a stream of disconnected status fragments.
-fn replace_or_push_tool_line(
-    state: &mut super::state::TuiState,
-    index: Option<usize>,
-    replacement: TranscriptEntry,
-) -> usize {
-    if let Some(index) = index {
-        if state.replace_transcript(index, replacement.clone()) {
-            return index;
-        }
+fn remove_active_tool(state: &mut super::state::TuiState, call_id: &str) {
+    if let Some(index) = state
+        .active_tools
+        .iter()
+        .position(|active| active.call_id == call_id)
+    {
+        state.active_tools.remove(index);
     }
-
-    state.push_transcript(replacement);
-    state.transcript.len().saturating_sub(1)
 }
 
 #[cfg(test)]
 mod tests {
     use super::SharedRenderObserver;
-    use crate::frontend::tui::state::SharedUiState;
+    use crate::frontend::tui::state::{SharedUiState, ToolSelectionTarget};
     use crate::ui::{SessionEvent, SessionToolCall};
     use agent::types::{ContextWindowUsage, TokenLedgerSnapshot, TokenUsage, TokenUsagePhase};
     use serde_json::json;
@@ -673,6 +688,43 @@ mod tests {
     }
 
     #[test]
+    fn completed_live_tool_keeps_selection_on_the_committed_result() {
+        let ui_state = SharedUiState::new();
+        let call = SessionToolCall {
+            tool_name: "exec_command".to_string(),
+            call_id: "call_123".to_string(),
+            origin: "shell".to_string(),
+            arguments_preview: vec!["$ ls".to_string()],
+        };
+        let mut observer = SharedRenderObserver::new(ui_state.clone());
+
+        observer.apply_event(SessionEvent::ToolLifecycleStarted { call: call.clone() });
+        ui_state.mutate(|state| {
+            state.tool_selection = Some(ToolSelectionTarget::Live("call_123".to_string()));
+        });
+        observer.apply_event(SessionEvent::ToolLifecycleCompleted {
+            call,
+            output_preview: "listed files".to_string(),
+            structured_output_preview: Some(
+                json!({
+                    "kind": "run",
+                    "exit_code": 0,
+                    "timed_out": false,
+                    "stdout": {"text": "listed files", "chars": 12, "truncated": false},
+                    "stderr": {"text": "", "chars": 0, "truncated": false}
+                })
+                .to_string(),
+            ),
+        });
+
+        let snapshot = ui_state.snapshot();
+        assert_eq!(
+            snapshot.tool_selection,
+            Some(ToolSelectionTarget::Transcript(0))
+        );
+    }
+
+    #[test]
     fn update_plan_results_update_side_rail_snapshot() {
         let ui_state = SharedUiState::new();
         let call = SessionToolCall {
@@ -707,7 +759,10 @@ mod tests {
         );
         assert_eq!(snapshot.plan_items.len(), 2);
         assert_eq!(snapshot.plan_items[1].content, "Refine TUI");
-        assert_eq!(snapshot.plan_items[1].status, "in_progress");
+        assert_eq!(
+            snapshot.plan_items[1].status,
+            crate::frontend::tui::state::PlanEntryStatus::InProgress
+        );
     }
 
     #[test]
@@ -747,11 +802,8 @@ mod tests {
             "• Updated Execution\n  └ [~] Run focused regression checks\n  └ scope root session\n  └ next Inspect failures\n  └ verify cargo test -p code-agent"
         );
         assert_eq!(
-            snapshot
-                .execution
-                .as_ref()
-                .map(|entry| entry.status.as_str()),
-            Some("verifying")
+            snapshot.execution.as_ref().map(|entry| &entry.status),
+            Some(&crate::frontend::tui::state::ExecutionStatus::Verifying)
         );
         assert_eq!(
             snapshot

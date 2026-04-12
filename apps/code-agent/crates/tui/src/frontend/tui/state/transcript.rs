@@ -84,7 +84,13 @@ impl TranscriptShellDetail {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct TranscriptShellEntry {
     pub(crate) headline: String,
+    pub(crate) status: Option<TranscriptShellStatus>,
     pub(crate) detail_lines: Vec<TranscriptShellDetail>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TranscriptShellStatus {
+    Queued,
 }
 
 impl TranscriptShellEntry {
@@ -92,8 +98,17 @@ impl TranscriptShellEntry {
         headline: impl Into<String>,
         detail_lines: Vec<TranscriptShellDetail>,
     ) -> Self {
+        Self::new_with_status(headline, None, detail_lines)
+    }
+
+    pub(crate) fn new_with_status(
+        headline: impl Into<String>,
+        status: Option<TranscriptShellStatus>,
+        detail_lines: Vec<TranscriptShellDetail>,
+    ) -> Self {
         Self {
             headline: headline.into(),
+            status,
             detail_lines,
         }
     }
@@ -128,7 +143,7 @@ impl TranscriptShellEntry {
             index = next;
         }
 
-        Self::new(headline, detail_lines)
+        Self::new_with_status(headline, None, detail_lines)
     }
 
     pub(crate) fn serialized_lines(&self) -> Vec<String> {
@@ -185,7 +200,7 @@ impl TranscriptShellEntry {
             break;
         }
 
-        Self::new(self.headline.clone(), detail_lines)
+        Self::new_with_status(self.headline.clone(), self.status, detail_lines)
     }
 
     pub(crate) fn serialized_body(&self) -> String {
@@ -396,7 +411,7 @@ impl TranscriptPlanEntry {
             lines.extend(self.items.iter().map(|item| {
                 format!(
                     "  └ [{}] {}",
-                    plan_status_marker(item.status.as_str()),
+                    plan_status_marker(&item.status),
                     item.content
                 )
             }));
@@ -454,20 +469,20 @@ impl TranscriptExecutionEntry {
     }
 }
 
-fn plan_status_marker(status: &str) -> &'static str {
+fn plan_status_marker(status: &PlanEntryStatus) -> &'static str {
     match status {
-        "completed" => "x",
-        "in_progress" => "~",
-        _ => " ",
+        PlanEntryStatus::Completed => "x",
+        PlanEntryStatus::InProgress => "~",
+        PlanEntryStatus::Pending | PlanEntryStatus::Other(_) => " ",
     }
 }
 
-fn execution_status_marker(status: &str) -> &'static str {
+fn execution_status_marker(status: &ExecutionStatus) -> &'static str {
     match status {
-        "completed" => "x",
-        "blocked" => "!",
-        "verifying" => "~",
-        _ => ">",
+        ExecutionStatus::Completed => "x",
+        ExecutionStatus::Blocked => "!",
+        ExecutionStatus::Verifying => "~",
+        ExecutionStatus::Active | ExecutionStatus::Other(_) => ">",
     }
 }
 
@@ -527,6 +542,18 @@ impl TranscriptEntry {
         detail_lines: Vec<TranscriptShellDetail>,
     ) -> Self {
         Self::ShellSummary(TranscriptShellEntry::new(headline, detail_lines))
+    }
+
+    pub(crate) fn shell_summary_status_details(
+        status: TranscriptShellStatus,
+        headline: impl Into<String>,
+        detail_lines: Vec<TranscriptShellDetail>,
+    ) -> Self {
+        Self::ShellSummary(TranscriptShellEntry::new_with_status(
+            headline,
+            Some(status),
+            detail_lines,
+        ))
     }
 
     pub(crate) fn success_summary_details(

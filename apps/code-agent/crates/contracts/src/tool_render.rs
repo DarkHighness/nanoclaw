@@ -8,6 +8,74 @@ pub enum ToolDetailBlockKind {
     Diff,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ToolRenderKind {
+    ExecCommand,
+    WriteStdin,
+    UpdatePlan,
+    UpdateExecution,
+    SendInput,
+    SpawnAgent,
+    WaitAgent,
+    ResumeAgent,
+    CloseAgent,
+    FileMutation,
+    Generic,
+}
+
+impl ToolRenderKind {
+    pub fn classify(tool_name: &str) -> Self {
+        match tool_name {
+            "exec_command" => Self::ExecCommand,
+            "write_stdin" => Self::WriteStdin,
+            "update_plan" => Self::UpdatePlan,
+            "update_execution" => Self::UpdateExecution,
+            "send_input" => Self::SendInput,
+            "spawn_agent" => Self::SpawnAgent,
+            "wait_agent" => Self::WaitAgent,
+            "resume_agent" => Self::ResumeAgent,
+            "close_agent" => Self::CloseAgent,
+            "write" | "edit" | "patch" => Self::FileMutation,
+            _ => Self::Generic,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ToolDetailLabel {
+    Intent,
+    Context,
+    Session,
+    State,
+    Result,
+    Effect,
+    Snapshot,
+    Files,
+    Output,
+    Origin,
+    Reason,
+    Note,
+}
+
+impl ToolDetailLabel {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Intent => "intent",
+            Self::Context => "context",
+            Self::Session => "session",
+            Self::State => "state",
+            Self::Result => "result",
+            Self::Effect => "effect",
+            Self::Snapshot => "snapshot",
+            Self::Files => "files",
+            Self::Output => "output",
+            Self::Origin => "origin",
+            Self::Reason => "reason",
+            Self::Note => "note",
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ToolReviewFile {
     pub path: String,
@@ -25,11 +93,11 @@ pub enum ToolDetail {
     Command(String),
     Meta(String),
     LabeledValue {
-        label: String,
+        label: ToolDetailLabel,
         value: String,
     },
     LabeledBlock {
-        label: String,
+        label: ToolDetailLabel,
         lines: Vec<String>,
     },
     ActionHint {
@@ -56,10 +124,12 @@ impl ToolDetail {
     pub fn serialized_lines(&self) -> Vec<String> {
         match self {
             Self::Command(command) | Self::Meta(command) => vec![format!("  └ {command}")],
-            Self::LabeledValue { label, value } => vec![format!("  └ {label} {value}")],
+            Self::LabeledValue { label, value } => {
+                vec![format!("  └ {} {value}", label.as_str())]
+            }
             Self::LabeledBlock { label, lines } => {
                 if let Some((first, rest)) = lines.split_first() {
-                    let mut rendered = vec![format!("  └ {label} {first}")];
+                    let mut rendered = vec![format!("  └ {} {first}", label.as_str())];
                     rendered.extend(
                         rest.iter()
                             .filter(|line| !line.trim().is_empty())
@@ -67,7 +137,7 @@ impl ToolDetail {
                     );
                     rendered
                 } else {
-                    vec![format!("  └ {label}")]
+                    vec![format!("  └ {}", label.as_str())]
                 }
             }
             Self::ActionHint {
@@ -166,162 +236,166 @@ pub fn summarize_tool_entry(headline: impl Into<String>, detail_lines: Vec<Strin
 }
 
 pub fn tool_arguments_preview_lines(tool_name: &str, arguments: &Value) -> Vec<String> {
-    if tool_name == "exec_command" {
-        let command = arguments.get("cmd").and_then(Value::as_str);
-        if let Some(command) = command.map(str::trim).filter(|command| !command.is_empty()) {
-            return collapse_preview_text(&format!("$ {command}"), 4, 96, PreviewCollapse::Head);
+    match ToolRenderKind::classify(tool_name) {
+        ToolRenderKind::ExecCommand => {
+            let command = arguments.get("cmd").and_then(Value::as_str);
+            if let Some(command) = command.map(str::trim).filter(|command| !command.is_empty()) {
+                return collapse_preview_text(
+                    &format!("$ {command}"),
+                    4,
+                    96,
+                    PreviewCollapse::Head,
+                );
+            }
         }
-    }
-
-    if tool_name == "write_stdin" {
-        let session_id = arguments
-            .get("session_id")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .unwrap_or("<unknown>");
-        let close_stdin = arguments
-            .get("close_stdin")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
-        let chars = arguments
-            .get("chars")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        if close_stdin && chars.is_empty() {
-            return vec![format!("close stdin {session_id}")];
-        }
-        if chars.is_empty() {
-            return vec![format!("poll session {session_id}")];
-        }
-        let mut lines = vec![format!("session {session_id}")];
-        lines.extend(collapse_preview_text(
-            &format!("stdin {}", chars.escape_default()),
-            3,
-            96,
-            PreviewCollapse::Head,
-        ));
-        return lines;
-    }
-
-    if tool_name == "update_plan" {
-        let item_count = arguments
-            .get("plan")
-            .and_then(Value::as_array)
-            .map_or(0, Vec::len);
-        let mut lines = vec![if item_count == 0 {
-            "clear plan".to_string()
-        } else {
-            format!("set {item_count} plan step(s)")
-        }];
-        if let Some(explanation) = arguments
-            .get("explanation")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        {
+        ToolRenderKind::WriteStdin => {
+            let session_id = arguments
+                .get("session_id")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or("<unknown>");
+            let close_stdin = arguments
+                .get("close_stdin")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let chars = arguments
+                .get("chars")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            if close_stdin && chars.is_empty() {
+                return vec![format!("close stdin {session_id}")];
+            }
+            if chars.is_empty() {
+                return vec![format!("poll session {session_id}")];
+            }
+            let mut lines = vec![format!("session {session_id}")];
             lines.extend(collapse_preview_text(
-                explanation,
-                2,
+                &format!("stdin {}", chars.escape_default()),
+                3,
                 96,
                 PreviewCollapse::Head,
             ));
+            return lines;
         }
-        return lines;
-    }
-
-    if tool_name == "send_input" {
-        let target = arguments
-            .get("target")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .unwrap_or("<unknown>");
-        let interrupt = arguments
-            .get("interrupt")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
-        let mut lines = vec![if interrupt {
-            format!("interrupt+restart {target}")
-        } else {
-            format!("queue input {target}")
-        }];
-        if let Some(message) = arguments
-            .get("message")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        {
-            lines.extend(collapse_preview_text(message, 3, 96, PreviewCollapse::Head));
-        }
-        lines.extend(preview_input_item_argument_lines(arguments.get("items"), 2));
-        return lines;
-    }
-
-    if tool_name == "spawn_agent" {
-        let agent_type = arguments
-            .get("agent_type")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .unwrap_or("general-purpose");
-        let model = arguments
-            .get("model")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty());
-        let reasoning_effort = arguments
-            .get("reasoning_effort")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty());
-        let fork_context = arguments
-            .get("fork_context")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
-        let mut summary = format!("spawn {agent_type}");
-        if fork_context {
-            summary.push_str(" forked");
-        }
-        if let Some(model) = model {
-            summary.push_str(&format!(" model={model}"));
-        }
-        if let Some(reasoning_effort) = reasoning_effort {
-            summary.push_str(&format!(" effort={reasoning_effort}"));
-        }
-        let mut lines = vec![summary];
-        if let Some(message) = arguments
-            .get("message")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        {
-            lines.extend(collapse_preview_text(message, 3, 96, PreviewCollapse::Head));
-        }
-        lines.extend(preview_input_item_argument_lines(arguments.get("items"), 2));
-        return lines;
-    }
-
-    if tool_name == "wait_agent" {
-        let target_count = arguments
-            .get("targets")
-            .and_then(Value::as_array)
-            .map_or(0, Vec::len);
-        let timeout_ms = arguments.get("timeout_ms").and_then(Value::as_u64);
-        return vec![match timeout_ms {
-            Some(timeout_ms) => format!("wait {target_count} agent(s) timeout={timeout_ms}ms"),
-            None => format!("wait {target_count} agent(s)"),
-        }];
-    }
-
-    if matches!(tool_name, "resume_agent" | "close_agent") {
-        for key in ["id", "target"] {
-            if let Some(value) = arguments.get(key).and_then(Value::as_str)
-                && !value.trim().is_empty()
+        ToolRenderKind::UpdatePlan => {
+            let item_count = arguments
+                .get("plan")
+                .and_then(Value::as_array)
+                .map_or(0, Vec::len);
+            let mut lines = vec![if item_count == 0 {
+                "clear plan".to_string()
+            } else {
+                format!("set {item_count} plan step(s)")
+            }];
+            if let Some(explanation) = arguments
+                .get("explanation")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
             {
-                return vec![format!("agent {}", value.trim())];
+                lines.extend(collapse_preview_text(
+                    explanation,
+                    2,
+                    96,
+                    PreviewCollapse::Head,
+                ));
+            }
+            return lines;
+        }
+        ToolRenderKind::SendInput => {
+            let target = arguments
+                .get("target")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or("<unknown>");
+            let interrupt = arguments
+                .get("interrupt")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let mut lines = vec![if interrupt {
+                format!("interrupt+restart {target}")
+            } else {
+                format!("queue input {target}")
+            }];
+            if let Some(message) = arguments
+                .get("message")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                lines.extend(collapse_preview_text(message, 3, 96, PreviewCollapse::Head));
+            }
+            lines.extend(preview_input_item_argument_lines(arguments.get("items"), 2));
+            return lines;
+        }
+        ToolRenderKind::SpawnAgent => {
+            let agent_type = arguments
+                .get("agent_type")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or("general-purpose");
+            let model = arguments
+                .get("model")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty());
+            let reasoning_effort = arguments
+                .get("reasoning_effort")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty());
+            let fork_context = arguments
+                .get("fork_context")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let mut summary = format!("spawn {agent_type}");
+            if fork_context {
+                summary.push_str(" forked");
+            }
+            if let Some(model) = model {
+                summary.push_str(&format!(" model={model}"));
+            }
+            if let Some(reasoning_effort) = reasoning_effort {
+                summary.push_str(&format!(" effort={reasoning_effort}"));
+            }
+            let mut lines = vec![summary];
+            if let Some(message) = arguments
+                .get("message")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                lines.extend(collapse_preview_text(message, 3, 96, PreviewCollapse::Head));
+            }
+            lines.extend(preview_input_item_argument_lines(arguments.get("items"), 2));
+            return lines;
+        }
+        ToolRenderKind::WaitAgent => {
+            let target_count = arguments
+                .get("targets")
+                .and_then(Value::as_array)
+                .map_or(0, Vec::len);
+            let timeout_ms = arguments.get("timeout_ms").and_then(Value::as_u64);
+            return vec![match timeout_ms {
+                Some(timeout_ms) => format!("wait {target_count} agent(s) timeout={timeout_ms}ms"),
+                None => format!("wait {target_count} agent(s)"),
+            }];
+        }
+        ToolRenderKind::ResumeAgent | ToolRenderKind::CloseAgent => {
+            for key in ["id", "target"] {
+                if let Some(value) = arguments.get(key).and_then(Value::as_str)
+                    && !value.trim().is_empty()
+                {
+                    return vec![format!("agent {}", value.trim())];
+                }
             }
         }
+        ToolRenderKind::UpdateExecution
+        | ToolRenderKind::FileMutation
+        | ToolRenderKind::Generic => {}
     }
 
     for key in ["path", "uri", "query", "prompt", "message", "cmd"] {
@@ -435,13 +509,25 @@ pub fn tool_output_details(
     output_preview: &str,
     structured: Option<&Value>,
 ) -> Vec<ToolDetail> {
-    if matches!(tool_name, "exec_command" | "write_stdin") {
-        return process_output_details(tool_name, output_preview, structured);
-    }
-
-    if let Some(detail_lines) = file_mutation_output_details(tool_name, output_preview, structured)
-    {
-        return detail_lines;
+    match ToolRenderKind::classify(tool_name) {
+        ToolRenderKind::ExecCommand | ToolRenderKind::WriteStdin => {
+            return process_output_details(tool_name, output_preview, structured);
+        }
+        ToolRenderKind::FileMutation => {
+            if let Some(detail_lines) =
+                file_mutation_output_details(tool_name, output_preview, structured)
+            {
+                return detail_lines;
+            }
+        }
+        ToolRenderKind::UpdatePlan
+        | ToolRenderKind::UpdateExecution
+        | ToolRenderKind::SendInput
+        | ToolRenderKind::SpawnAgent
+        | ToolRenderKind::WaitAgent
+        | ToolRenderKind::ResumeAgent
+        | ToolRenderKind::CloseAgent
+        | ToolRenderKind::Generic => {}
     }
 
     generic_output_details(output_preview)
@@ -457,7 +543,7 @@ pub fn tool_review_from_preview(
 }
 
 pub fn tool_review(tool_name: &str, structured: Option<&Value>) -> Option<ToolReview> {
-    if !matches!(tool_name, "write" | "edit" | "patch") {
+    if ToolRenderKind::classify(tool_name) != ToolRenderKind::FileMutation {
         return None;
     }
 
@@ -513,18 +599,18 @@ pub fn tool_argument_details(preview_lines: &[String]) -> Vec<ToolDetail> {
     }
 
     let mut details = vec![ToolDetail::LabeledValue {
-        label: "intent".to_string(),
+        label: ToolDetailLabel::Intent,
         value: lines[0].clone(),
     }];
     if let Some(remaining) = lines.get(1..) {
         if remaining.len() == 1 {
             details.push(ToolDetail::LabeledValue {
-                label: "context".to_string(),
+                label: ToolDetailLabel::Context,
                 value: remaining[0].clone(),
             });
         } else if !remaining.is_empty() {
             details.push(ToolDetail::LabeledBlock {
-                label: "context".to_string(),
+                label: ToolDetailLabel::Context,
                 lines: remaining.to_vec(),
             });
         }
@@ -546,7 +632,7 @@ fn process_output_details(
         .filter(|value| !value.is_empty())
     {
         detail_lines.push(ToolDetail::LabeledValue {
-            label: "session".to_string(),
+            label: ToolDetailLabel::Session,
             value: session_id.to_string(),
         });
     }
@@ -558,7 +644,7 @@ fn process_output_details(
             .filter(|wrote_chars| *wrote_chars > 0)
         {
             detail_lines.push(ToolDetail::LabeledValue {
-                label: "effect".to_string(),
+                label: ToolDetailLabel::Effect,
                 value: format!("sent {wrote_chars} char(s)"),
             });
         }
@@ -568,7 +654,7 @@ fn process_output_details(
             .unwrap_or(false)
         {
             detail_lines.push(ToolDetail::LabeledValue {
-                label: "effect".to_string(),
+                label: ToolDetailLabel::Effect,
                 value: "closed stdin".to_string(),
             });
         }
@@ -581,7 +667,7 @@ fn process_output_details(
         .filter(|value| !value.is_empty() && *value != "completed")
     {
         detail_lines.push(ToolDetail::LabeledValue {
-            label: "state".to_string(),
+            label: ToolDetailLabel::State,
             value: state.to_string(),
         });
     }
@@ -591,7 +677,7 @@ fn process_output_details(
         .and_then(Value::as_i64);
     if let Some(exit_code) = exit_code {
         detail_lines.push(ToolDetail::LabeledValue {
-            label: "result".to_string(),
+            label: ToolDetailLabel::Result,
             value: format!("exit {exit_code}"),
         });
     }
@@ -602,7 +688,7 @@ fn process_output_details(
         .unwrap_or(false);
     if timed_out {
         detail_lines.push(ToolDetail::LabeledValue {
-            label: "result".to_string(),
+            label: ToolDetailLabel::Result,
             value: "timed out".to_string(),
         });
     }
@@ -613,7 +699,7 @@ fn process_output_details(
         .filter(|value| !value.is_empty())
     {
         detail_lines.push(ToolDetail::LabeledValue {
-            label: "result".to_string(),
+            label: ToolDetailLabel::Result,
             value: format!("error {}", inline_preview_text(error, 96)),
         });
     }
@@ -693,7 +779,10 @@ fn generic_output_details(output_preview: &str) -> Vec<ToolDetail> {
         ))];
     }
 
-    vec![ToolDetail::Meta(inline_preview_text(output_preview, 96))]
+    vec![ToolDetail::LabeledValue {
+        label: ToolDetailLabel::Output,
+        value: inline_preview_text(output_preview, 96),
+    }]
 }
 
 fn file_mutation_output_details(
@@ -701,7 +790,7 @@ fn file_mutation_output_details(
     output_preview: &str,
     structured: Option<&Value>,
 ) -> Option<Vec<ToolDetail>> {
-    if !matches!(tool_name, "write" | "edit" | "patch") {
+    if ToolRenderKind::classify(tool_name) != ToolRenderKind::FileMutation {
         return None;
     }
 
@@ -713,14 +802,14 @@ fn file_mutation_output_details(
         .filter(|summary| !summary.is_empty())
     {
         detail_lines.push(ToolDetail::LabeledValue {
-            label: "effect".to_string(),
+            label: ToolDetailLabel::Effect,
             value: inline_preview_text(summary, 96),
         });
     } else if let Some(first_line) = output_preview.lines().next().map(str::trim)
         && !first_line.is_empty()
     {
         detail_lines.push(ToolDetail::LabeledValue {
-            label: "effect".to_string(),
+            label: ToolDetailLabel::Effect,
             value: inline_preview_text(first_line, 96),
         });
     }
@@ -734,7 +823,7 @@ fn file_mutation_output_details(
             .and_then(Value::as_str)
             .unwrap_or("missing");
         detail_lines.push(ToolDetail::LabeledValue {
-            label: "snapshot".to_string(),
+            label: ToolDetailLabel::Snapshot,
             value: format!(
                 "{} -> {}",
                 inline_preview_text(before, 16),
@@ -745,7 +834,7 @@ fn file_mutation_output_details(
 
     if let Some(review) = review {
         detail_lines.push(ToolDetail::LabeledValue {
-            label: "files".to_string(),
+            label: ToolDetailLabel::Files,
             value: review_file_summary(&review.files),
         });
         detail_lines.push(ToolDetail::ActionHint {

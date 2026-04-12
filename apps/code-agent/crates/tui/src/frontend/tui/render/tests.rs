@@ -27,17 +27,19 @@ use crate::frontend::tui::commands::{
     SlashCommandHint, SlashCommandSpec,
 };
 use crate::frontend::tui::state::{
-    ComposerContextHint, ComposerDraftAttachmentKind, ComposerDraftAttachmentState,
-    ComposerDraftState, ExecutionEntry, HistoryRollbackCandidate, InspectorAction, InspectorEntry,
-    MainPaneMode, PlanEntry, StatusLinePickerState, ThemePickerState, ToastTone, TranscriptEntry,
-    TranscriptShellDetail, TranscriptToolStatus, TuiState,
+    ActiveToolEntry, ComposerContextHint, ComposerDraftAttachmentKind,
+    ComposerDraftAttachmentState, ComposerDraftState, ExecutionEntry, ExecutionStatus,
+    HistoryRollbackCandidate, InspectorAction, InspectorEntry, MainPaneMode, PlanEntry,
+    PlanEntryStatus, StatusLinePickerState, ThemePickerState, ToastTone, ToolSelectionTarget,
+    TranscriptEntry, TranscriptShellDetail, TranscriptToolStatus, TuiState,
 };
 use crate::interaction::{
-    PendingControlKind, PendingControlSummary, PermissionProfile, PermissionRequestPrompt,
-    UserInputAnswer, UserInputOption, UserInputQuestion,
+    ApprovalContent, ApprovalContentKind, ApprovalOrigin, PendingControlKind, PendingControlReason,
+    PendingControlSummary, PermissionProfile, PermissionRequestPrompt, UserInputAnswer,
+    UserInputOption, UserInputQuestion,
 };
 use crate::theme::ThemeSummary;
-use crate::tool_render::{ToolDetail, ToolReview, ToolReviewFile};
+use crate::tool_render::{ToolDetail, ToolDetailLabel, ToolReview, ToolReviewFile};
 use agent::types::{AgentStatus, MessageId, MessagePart};
 use ratatui::layout::Rect;
 use std::collections::BTreeMap;
@@ -215,7 +217,7 @@ fn transcript_expands_tool_details_when_enabled() {
 fn selected_tool_entry_surfaces_review_action_in_collapsed_mode() {
     let mut state = TuiState {
         main_pane: MainPaneMode::Transcript,
-        transcript_selection: Some(0),
+        tool_selection: Some(ToolSelectionTarget::Transcript(0)),
         ..TuiState::default()
     };
     state.transcript = vec![reviewable_tool_transcript_entry()];
@@ -412,7 +414,7 @@ fn pending_control_band_surfaces_selected_prompt_and_editing_state() {
             id: "cmd_2".to_string(),
             kind: PendingControlKind::Steer,
             preview: "keep the diff small".to_string(),
-            reason: Some("inline_enter".to_string()),
+            reason: Some(PendingControlReason::InlineEnter),
         },
     ];
     let _ = state.open_pending_control_picker(true);
@@ -517,7 +519,7 @@ fn composer_line_surfaces_pending_picker_shortcuts() {
             id: "cmd_2".to_string(),
             kind: PendingControlKind::Steer,
             preview: "keep the diff small".to_string(),
-            reason: Some("inline_enter".to_string()),
+            reason: Some(PendingControlReason::InlineEnter),
         },
     ];
     let _ = state.open_pending_control_picker(true);
@@ -1030,7 +1032,11 @@ fn live_progress_hides_queue_count_while_pending_picker_is_open() {
         main_pane: MainPaneMode::Transcript,
         turn_running: true,
         status: "Working".to_string(),
-        active_tool_label: Some("exec_command".to_string()),
+        active_tools: vec![active_tool_entry(
+            "call-1",
+            "exec_command",
+            TranscriptToolStatus::Running,
+        )],
         ..TuiState::default()
     };
     state.pending_controls = vec![PendingControlSummary {
@@ -1055,8 +1061,11 @@ fn transcript_hides_progress_line_while_tool_cell_is_active() {
         main_pane: MainPaneMode::Transcript,
         turn_running: true,
         status: "Working".to_string(),
-        active_tool_label: Some("exec_command".to_string()),
-        transcript: vec![running_tool_transcript_entry()],
+        active_tools: vec![active_tool_entry(
+            "call-1",
+            "exec_command",
+            TranscriptToolStatus::Running,
+        )],
         ..TuiState::default()
     };
 
@@ -1085,8 +1094,11 @@ fn transcript_merges_pending_controls_into_the_active_tool_timeline_cell() {
         main_pane: MainPaneMode::Transcript,
         turn_running: true,
         status: "Working".to_string(),
-        active_tool_label: Some("exec_command".to_string()),
-        transcript: vec![running_tool_transcript_entry()],
+        active_tools: vec![active_tool_entry(
+            "call-1",
+            "exec_command",
+            TranscriptToolStatus::Running,
+        )],
         ..TuiState::default()
     };
     state.pending_controls = vec![
@@ -1100,7 +1112,7 @@ fn transcript_merges_pending_controls_into_the_active_tool_timeline_cell() {
             id: "cmd_2".to_string(),
             kind: PendingControlKind::Steer,
             preview: "keep the diff small".to_string(),
-            reason: Some("inline_enter".to_string()),
+            reason: Some(PendingControlReason::InlineEnter),
         },
     ];
 
@@ -1139,8 +1151,11 @@ fn transcript_bridges_pending_picker_into_the_active_tool_timeline() {
         main_pane: MainPaneMode::Transcript,
         turn_running: true,
         status: "Working".to_string(),
-        active_tool_label: Some("exec_command".to_string()),
-        transcript: vec![running_tool_transcript_entry()],
+        active_tools: vec![active_tool_entry(
+            "call-1",
+            "exec_command",
+            TranscriptToolStatus::Running,
+        )],
         ..TuiState::default()
     };
     state.pending_controls = vec![
@@ -1154,7 +1169,7 @@ fn transcript_bridges_pending_picker_into_the_active_tool_timeline() {
             id: "cmd_2".to_string(),
             kind: PendingControlKind::Steer,
             preview: "keep the diff small".to_string(),
-            reason: Some("inline_enter".to_string()),
+            reason: Some(PendingControlReason::InlineEnter),
         },
     ];
     state.session.queued_commands = state.pending_controls.len();
@@ -1242,7 +1257,7 @@ fn transcript_surfaces_pending_control_timeline_summary() {
             id: "cmd_2".to_string(),
             kind: PendingControlKind::Steer,
             preview: "keep the diff small".to_string(),
-            reason: Some("inline_enter".to_string()),
+            reason: Some(PendingControlReason::InlineEnter),
         },
     ];
 
@@ -1310,7 +1325,7 @@ fn transcript_collapses_older_pending_controls_into_a_summary_line() {
             id: "cmd_3".to_string(),
             kind: PendingControlKind::Steer,
             preview: "third".to_string(),
-            reason: Some("manual_command".to_string()),
+            reason: Some(PendingControlReason::ManualCommand),
         },
     ];
 
@@ -1358,7 +1373,7 @@ fn transcript_keeps_an_older_editing_pending_control_visible() {
             id: "cmd_3".to_string(),
             kind: PendingControlKind::Steer,
             preview: "latest steer".to_string(),
-            reason: Some("manual_command".to_string()),
+            reason: Some(PendingControlReason::ManualCommand),
         },
     ];
     state.editing_pending_control = Some(crate::frontend::tui::state::PendingControlEditorState {
@@ -1534,6 +1549,21 @@ fn running_tool_transcript_entry() -> TranscriptEntry {
     )
 }
 
+fn active_tool_entry(
+    call_id: &str,
+    tool_name: &str,
+    status: TranscriptToolStatus,
+) -> ActiveToolEntry {
+    ActiveToolEntry {
+        call_id: call_id.to_string(),
+        entry: crate::frontend::tui::state::TranscriptToolEntry::new(
+            status,
+            tool_name,
+            vec![ToolDetail::Command("$ cargo test".to_string())],
+        ),
+    }
+}
+
 fn finished_tool_transcript_entry() -> TranscriptEntry {
     TranscriptEntry::tool(
         TranscriptToolStatus::Finished,
@@ -1552,11 +1582,11 @@ fn reviewable_tool_transcript_entry() -> TranscriptEntry {
         "write",
         vec![
             ToolDetail::LabeledValue {
-                label: "effect".to_string(),
+                label: ToolDetailLabel::Effect,
                 value: "Updated src/lib.rs".to_string(),
             },
             ToolDetail::LabeledValue {
-                label: "files".to_string(),
+                label: ToolDetailLabel::Files,
                 value: "src/lib.rs".to_string(),
             },
             ToolDetail::ActionHint {
@@ -1594,17 +1624,17 @@ fn transcript_renders_plan_updates_as_dedicated_cells() {
             PlanEntry {
                 id: "p1".to_string(),
                 content: "Inspect the current plan renderer".to_string(),
-                status: "completed".to_string(),
+                status: PlanEntryStatus::Completed,
             },
             PlanEntry {
                 id: "p2".to_string(),
                 content: "Promote update_plan into a dedicated cell".to_string(),
-                status: "in_progress".to_string(),
+                status: PlanEntryStatus::InProgress,
             },
             PlanEntry {
                 id: "p3".to_string(),
                 content: "Verify snapshots and tests".to_string(),
-                status: "pending".to_string(),
+                status: PlanEntryStatus::Pending,
             },
         ],
     )];
@@ -1645,7 +1675,7 @@ fn transcript_renders_execution_updates_as_dedicated_cells() {
         "Updated Execution",
         Some(ExecutionEntry {
             scope_label: "root session".to_string(),
-            status: "blocked".to_string(),
+            status: ExecutionStatus::Blocked,
             summary: "Waiting for the new LSP protocol parser".to_string(),
             next_action: Some("Patch protocol tests".to_string()),
             verification: None,
@@ -1684,7 +1714,7 @@ fn side_rail_stays_disabled_even_when_transcript_has_live_context() {
     state.plan_items = vec![PlanEntry {
         id: "t1".to_string(),
         content: "Refine transcript".to_string(),
-        status: "in_progress".to_string(),
+        status: PlanEntryStatus::InProgress,
     }];
 
     assert!(!should_render_side_rail(
@@ -1701,7 +1731,7 @@ fn side_rail_stays_disabled_even_when_transcript_has_live_context() {
 #[test]
 fn tool_review_overlay_renders_file_list_and_preview() {
     let mut state = TuiState {
-        transcript_selection: Some(0),
+        tool_selection: Some(ToolSelectionTarget::Transcript(0)),
         ..TuiState::default()
     };
     state.transcript = vec![reviewable_tool_transcript_entry()];
@@ -1725,11 +1755,13 @@ fn tool_review_overlay_renders_file_list_and_preview() {
 fn approval_modal_uses_structured_command_preview() {
     let text = build_approval_text(&ApprovalPrompt {
         tool_name: "exec_command".to_string(),
-        origin: "local".to_string(),
+        origin: ApprovalOrigin::Local,
         mode: Some("run".to_string()),
         working_directory: Some("/workspace/apps/code-agent".to_string()),
-        content_label: "command".to_string(),
-        content_preview: vec!["$ cargo test".to_string()],
+        content: ApprovalContent {
+            kind: ApprovalContentKind::Command,
+            preview: vec!["$ cargo test".to_string()],
+        },
         reasons: vec!["sandbox policy requires approval".to_string()],
     });
 
@@ -1764,11 +1796,13 @@ fn approval_modal_uses_structured_command_preview() {
 fn approval_modal_hides_local_origin_when_it_adds_no_operator_value() {
     let text = build_approval_text(&ApprovalPrompt {
         tool_name: "write".to_string(),
-        origin: "local".to_string(),
+        origin: ApprovalOrigin::Local,
         mode: None,
         working_directory: None,
-        content_label: "arguments".to_string(),
-        content_preview: vec!["src/main.rs".to_string()],
+        content: ApprovalContent {
+            kind: ApprovalContentKind::Arguments,
+            preview: vec!["src/main.rs".to_string()],
+        },
         reasons: vec!["needs approval".to_string()],
     });
 
@@ -2102,11 +2136,13 @@ fn main_pane_viewport_height_does_not_shrink_for_approval_modal() {
     let area = Rect::new(0, 0, 120, 30);
     let approval = ApprovalPrompt {
         tool_name: "exec_command".to_string(),
-        origin: "local".to_string(),
+        origin: ApprovalOrigin::Local,
         mode: None,
         working_directory: None,
-        content_label: "command".to_string(),
-        content_preview: vec!["$ cargo test".to_string()],
+        content: ApprovalContent {
+            kind: ApprovalContentKind::Command,
+            preview: vec!["$ cargo test".to_string()],
+        },
         reasons: vec!["sandbox policy requires approval".to_string()],
     };
 

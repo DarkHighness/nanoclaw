@@ -102,11 +102,11 @@ impl CodeAgentTui {
     pub(super) fn schedule_runtime_steer(
         &self,
         message: impl Into<String>,
-        reason: Option<String>,
+        reason: Option<crate::interaction::PendingControlReason>,
     ) -> Result<String> {
         self.dispatch(UICommand::ScheduleRuntimeSteer {
             message: message.into(),
-            reason,
+            reason: reason.map(|value| value.runtime_value()),
         })
     }
 

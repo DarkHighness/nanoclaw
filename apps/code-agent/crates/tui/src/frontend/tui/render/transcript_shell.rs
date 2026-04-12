@@ -1,7 +1,7 @@
 use super::super::state::{
-    TranscriptEntry, TranscriptExecutionEntry, TranscriptPlanEntry, TranscriptShellBlockKind,
-    TranscriptShellDetail, TranscriptShellEntry, TranscriptToolEntry, TranscriptToolStatus,
-    TuiState, preview_text,
+    ExecutionStatus, PlanEntryStatus, TranscriptEntry, TranscriptExecutionEntry,
+    TranscriptPlanEntry, TranscriptShellBlockKind, TranscriptShellDetail, TranscriptShellEntry,
+    TranscriptShellStatus, TranscriptToolEntry, TranscriptToolStatus, TuiState, preview_text,
 };
 use super::shared::{
     pending_control_focus_label, pending_control_kind_label, pending_control_reason_label,
@@ -12,7 +12,7 @@ use super::transcript::TranscriptEntryKind;
 use super::transcript_markdown::render_shell_code_block;
 use super::transcript_markdown_blocks::code_span;
 use super::transcript_markdown_line::render_transcript_body_line;
-use crate::tool_render::{ToolDetail, ToolDetailBlockKind};
+use crate::tool_render::{ToolDetail, ToolDetailBlockKind, ToolDetailLabel};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use std::time::Instant;
@@ -158,7 +158,7 @@ pub(super) fn render_shell_summary_body(
 
         if first_visible
             && let Some(animated) =
-                render_animated_shell_status_line(raw_line, marker, kind, animation_frame)
+                render_animated_shell_status_line(None, raw_line, marker, kind, animation_frame)
         {
             rendered.push(animated);
         } else {
@@ -189,9 +189,13 @@ pub(super) fn render_shell_summary_entry(
     animation_frame: Option<u128>,
 ) -> Vec<Line<'static>> {
     let mut rendered = Vec::new();
-    if let Some(animated) =
-        render_animated_shell_status_line(&summary.headline, marker, kind, animation_frame)
-    {
+    if let Some(animated) = render_animated_shell_status_line(
+        summary.status,
+        &summary.headline,
+        marker,
+        kind,
+        animation_frame,
+    ) {
         rendered.push(animated);
     } else if !summary.headline.trim().is_empty() {
         rendered.push(render_transcript_body_line(
@@ -289,8 +293,8 @@ pub(super) fn render_plan_entry(
     }
 
     for item in &entry.items {
-        let (marker, status_style, content_style) = match item.status.as_str() {
-            "completed" => (
+        let (marker, status_style, content_style) = match &item.status {
+            PlanEntryStatus::Completed => (
                 "✔ ",
                 Style::default()
                     .fg(palette().assistant)
@@ -299,7 +303,7 @@ pub(super) fn render_plan_entry(
                     .fg(palette().subtle)
                     .add_modifier(Modifier::CROSSED_OUT | Modifier::DIM),
             ),
-            "in_progress" => (
+            PlanEntryStatus::InProgress => (
                 "□ ",
                 Style::default()
                     .fg(palette().accent)
@@ -308,7 +312,7 @@ pub(super) fn render_plan_entry(
                     .fg(palette().text)
                     .add_modifier(Modifier::BOLD),
             ),
-            _ => (
+            PlanEntryStatus::Pending | PlanEntryStatus::Other(_) => (
                 "□ ",
                 Style::default().fg(palette().subtle),
                 Style::default().fg(palette().text),
@@ -349,11 +353,11 @@ pub(super) fn render_execution_entry(
         return rendered;
     };
 
-    let (status_color, status_label) = match state.status.as_str() {
-        "blocked" => (palette().error, "blocked"),
-        "verifying" => (palette().accent, "verifying"),
-        "completed" => (palette().assistant, "completed"),
-        _ => (palette().header, "active"),
+    let (status_color, status_label) = match &state.status {
+        ExecutionStatus::Blocked => (palette().error, "blocked"),
+        ExecutionStatus::Verifying => (palette().accent, "verifying"),
+        ExecutionStatus::Completed => (palette().assistant, "completed"),
+        ExecutionStatus::Active | ExecutionStatus::Other(_) => (palette().header, "active"),
     };
     rendered.push(Line::from(vec![
         transcript_continuation_prefix(kind),
@@ -403,14 +407,17 @@ pub(super) fn render_execution_entry(
 }
 
 fn render_animated_shell_status_line(
+    status: Option<TranscriptShellStatus>,
     raw_line: &str,
     marker: &str,
     kind: TranscriptEntryKind,
     animation_frame: Option<u128>,
 ) -> Option<Line<'static>> {
     let frame_ms = animation_frame?;
-    let (status, remainder, accent) = shell_status_phrase(raw_line)?;
-    let mut spans = animated_status_phrase_spans(status, frame_ms, accent);
+    let (status_label, remainder, accent) = status
+        .and_then(|status| shell_status_phrase(status, raw_line))
+        .or_else(|| legacy_shell_status_phrase(raw_line))?;
+    let mut spans = animated_status_phrase_spans(status_label, frame_ms, accent);
     if !remainder.is_empty() {
         spans.push(Span::styled(
             remainder.to_string(),
@@ -481,14 +488,14 @@ pub(super) fn transcript_continuation_prefix(kind: TranscriptEntryKind) -> Span<
     }
 }
 
-pub(super) fn transcript_body_style(marker: &str, kind: TranscriptEntryKind, line: &str) -> Style {
+pub(super) fn transcript_body_style(marker: &str, kind: TranscriptEntryKind, _line: &str) -> Style {
     let style = match kind {
         TranscriptEntryKind::UserPrompt | TranscriptEntryKind::AssistantMessage => {
             Style::default().fg(palette().text)
         }
         TranscriptEntryKind::PlanUpdate => Style::default().fg(palette().text),
         TranscriptEntryKind::ExecutionUpdate => Style::default().fg(palette().text),
-        TranscriptEntryKind::ShellSummary => Style::default().fg(summary_color(line)),
+        TranscriptEntryKind::ShellSummary => Style::default().fg(palette().muted),
         TranscriptEntryKind::SuccessSummary => Style::default().fg(palette().assistant),
         TranscriptEntryKind::ErrorSummary => Style::default().fg(palette().error),
         TranscriptEntryKind::WarningSummary => Style::default().fg(palette().warn),
@@ -542,19 +549,19 @@ fn render_tool_detail(detail: &ToolDetail, kind: TranscriptEntryKind) -> Vec<Lin
         ToolDetail::Meta(text) => vec![detail_line(
             false,
             labeled_detail_spans(
-                tool_meta_label(text),
-                tool_meta_label_color(text),
+                ToolDetailLabel::Note.as_str(),
+                tool_detail_label_color(ToolDetailLabel::Note),
                 vec![Span::styled(text.clone(), shell_meta_style(text))],
             ),
         )],
         ToolDetail::LabeledValue { label, value } => vec![detail_line(
             false,
             labeled_detail_spans(
-                label,
-                tool_detail_label_color(label),
+                label.as_str(),
+                tool_detail_label_color(*label),
                 vec![Span::styled(
                     value.clone(),
-                    tool_detail_value_style(label, value),
+                    tool_detail_value_style(*label, value),
                 )],
             ),
         )],
@@ -674,17 +681,17 @@ fn render_named_tool_block(
     rendered
 }
 
-fn render_labeled_tool_block(label: &str, lines: &[String]) -> Vec<Line<'static>> {
+fn render_labeled_tool_block(label: &ToolDetailLabel, lines: &[String]) -> Vec<Line<'static>> {
     let mut rendered = Vec::new();
     if let Some((first, rest)) = lines.split_first() {
         rendered.push(detail_line(
             false,
             labeled_detail_spans(
-                label,
-                tool_detail_label_color(label),
+                label.as_str(),
+                tool_detail_label_color(*label),
                 vec![Span::styled(
                     first.clone(),
-                    tool_detail_value_style(label, first),
+                    tool_detail_value_style(*label, first),
                 )],
             ),
         ));
@@ -700,7 +707,7 @@ fn render_labeled_tool_block(label: &str, lines: &[String]) -> Vec<Line<'static>
     } else {
         rendered.push(detail_line(
             false,
-            labeled_detail_spans(label, tool_detail_label_color(label), Vec::new()),
+            labeled_detail_spans(label.as_str(), tool_detail_label_color(*label), Vec::new()),
         ));
     }
     rendered
@@ -794,41 +801,29 @@ fn tool_action_spans(key_hint: &str, label: &str, detail: Option<&str>) -> Vec<S
     spans
 }
 
-fn tool_detail_label_color(label: &str) -> Color {
+fn tool_detail_label_color(label: ToolDetailLabel) -> Color {
     match label {
-        "intent" | "command" => palette().accent,
-        "effect" | "action" => palette().assistant,
-        "files" => palette().header,
-        "result" => palette().warn,
-        _ => palette().subtle,
+        ToolDetailLabel::Intent | ToolDetailLabel::Context => palette().accent,
+        ToolDetailLabel::Effect => palette().assistant,
+        ToolDetailLabel::Files | ToolDetailLabel::Snapshot => palette().header,
+        ToolDetailLabel::Result | ToolDetailLabel::Reason => palette().warn,
+        ToolDetailLabel::Origin | ToolDetailLabel::State | ToolDetailLabel::Note => {
+            palette().subtle
+        }
+        ToolDetailLabel::Session | ToolDetailLabel::Output => palette().muted,
     }
 }
 
-fn tool_detail_value_style(label: &str, value: &str) -> Style {
+fn tool_detail_value_style(label: ToolDetailLabel, value: &str) -> Style {
     match label {
-        "result" => shell_meta_style(value),
-        "files" => Style::default().fg(palette().text),
-        "effect" => Style::default().fg(palette().text),
-        "intent" => Style::default().fg(palette().text),
+        ToolDetailLabel::Result => shell_meta_style(value),
+        ToolDetailLabel::Files
+        | ToolDetailLabel::Effect
+        | ToolDetailLabel::Intent
+        | ToolDetailLabel::Context
+        | ToolDetailLabel::Snapshot => Style::default().fg(palette().text),
+        ToolDetailLabel::Output => Style::default().fg(palette().muted),
         _ => Style::default().fg(palette().muted),
-    }
-}
-
-fn tool_meta_label(text: &str) -> &'static str {
-    if text.starts_with("exit ") || text == "timed out" || text == "cancelled" {
-        "result"
-    } else {
-        "note"
-    }
-}
-
-fn tool_meta_label_color(text: &str) -> Color {
-    if text.starts_with("exit ") {
-        shell_meta_style(text).fg.unwrap_or(palette().text)
-    } else if text == "timed out" || text == "cancelled" {
-        palette().warn
-    } else {
-        palette().subtle
     }
 }
 
@@ -913,15 +908,15 @@ pub(super) fn live_progress_lines(state: &TuiState) -> Vec<Line<'static>> {
             Span::styled(
                 progress_marker(state),
                 Style::default()
-                    .fg(status_color(&state.status))
+                    .fg(status_color(state))
                     .add_modifier(Modifier::BOLD),
             ),
             Span::raw(" "),
         ];
         let mut progress_label = preview_text(&status, 56);
-        if let Some(tool_label) = state.active_tool_label.as_deref() {
+        if let Some(tool_label) = live_tool_progress_label(state) {
             progress_label.push_str(" · ");
-            progress_label.push_str(tool_label);
+            progress_label.push_str(&tool_label);
         }
         spans.extend(animated_progress_text_spans(
             &progress_label,
@@ -930,13 +925,15 @@ pub(super) fn live_progress_lines(state: &TuiState) -> Vec<Line<'static>> {
         if state.session.queued_commands > 0 && state.pending_control_picker.is_none() {
             spans.push(Span::styled(" · ", Style::default().fg(palette().subtle)));
             spans.push(Span::styled(
-                if state.active_tool_label.is_some() {
+                if state.active_tools.is_empty() {
+                    format!("{} queued", state.session.queued_commands)
+                } else if state.active_tools.len() == 1 {
                     format!(
                         "{} queued behind current tool",
                         state.session.queued_commands
                     )
                 } else {
-                    format!("{} queued", state.session.queued_commands)
+                    format!("{} queued behind live tools", state.session.queued_commands)
                 },
                 Style::default().fg(palette().muted),
             ));
@@ -975,15 +972,21 @@ pub(super) fn pending_control_timeline_entry(state: &TuiState) -> Option<Transcr
         });
     }
     detail_lines.extend(timeline.recent.iter().map(pending_control_timeline_detail));
-    Some(TranscriptEntry::shell_summary_details(
+    Some(TranscriptEntry::shell_summary_status_details(
+        TranscriptShellStatus::Queued,
         format!("Queued follow-ups · {}", state.pending_controls.len()),
         detail_lines,
     ))
 }
 
 pub(super) fn pending_control_picker_bridge_entry(state: &TuiState) -> Option<TranscriptEntry> {
-    pending_control_picker_bridge_label(state)
-        .map(|label| TranscriptEntry::shell_summary_details(label, Vec::new()))
+    pending_control_picker_bridge_label(state).map(|label| {
+        TranscriptEntry::shell_summary_status_details(
+            TranscriptShellStatus::Queued,
+            label,
+            Vec::new(),
+        )
+    })
 }
 
 pub(super) fn pending_control_embedded_lines(
@@ -1167,7 +1170,7 @@ fn pending_control_timeline(state: &TuiState) -> Option<PendingControlTimeline> 
                 relative_label,
                 kind: control.kind,
                 preview: preview_text(&control.preview, 72),
-                reason: pending_control_reason_label(control.reason.as_deref())
+                reason: pending_control_reason_label(control.reason.as_ref())
                     .map(|reason| preview_text(&reason, 28)),
                 editing: state
                     .editing_pending_control
@@ -1274,10 +1277,30 @@ pub(super) fn animation_frame_ms(started_at: Instant, now: Instant) -> u128 {
 }
 
 fn live_progress_summary(state: &TuiState) -> String {
-    match state.status.as_str() {
-        "Waiting for approval" => "Waiting for approval".to_string(),
-        status if !status.is_empty() => status.to_string(),
-        _ => "Working".to_string(),
+    if state.turn_phase == super::super::state::TurnPhase::WaitingApproval {
+        "Waiting for approval".to_string()
+    } else if !state.status.is_empty() {
+        state.status.clone()
+    } else {
+        "Working".to_string()
+    }
+}
+
+fn live_tool_progress_label(state: &TuiState) -> Option<String> {
+    match state.active_tools.as_slice() {
+        [] => None,
+        [active] => Some(active.entry.tool_name.clone()),
+        active_tools => {
+            let names = active_tools
+                .iter()
+                .map(|active| active.entry.tool_name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            Some(preview_text(
+                &format!("{} live tools: {}", active_tools.len(), names),
+                40,
+            ))
+        }
     }
 }
 
@@ -1288,33 +1311,6 @@ fn progress_marker(state: &TuiState) -> &'static str {
         "+"
     } else {
         "·"
-    }
-}
-
-pub(super) fn summary_color(line: &str) -> Color {
-    let lower = line.to_ascii_lowercase();
-    if lower.contains("failed")
-        || lower.contains("error")
-        || lower.contains("denied")
-        || lower.contains("cancelled")
-    {
-        palette().error
-    } else if lower.contains("approved")
-        || lower.contains("complete")
-        || lower.contains("loaded")
-        || lower.contains("ready")
-        || lower.contains("called")
-    {
-        palette().assistant
-    } else if lower.contains("waiting")
-        || lower.contains("blocked")
-        || lower.contains("running")
-        || lower.contains("queued")
-        || lower.contains("applying")
-    {
-        palette().warn
-    } else {
-        palette().text
     }
 }
 
@@ -1331,34 +1327,57 @@ fn tool_status_label(status: TranscriptToolStatus) -> (&'static str, Color) {
     }
 }
 
-fn shell_status_phrase(line: &str) -> Option<(&str, &str, Color)> {
+pub(super) fn tool_status_accent(status: TranscriptToolStatus) -> Color {
+    let (_, accent) = tool_status_label(status);
+    accent
+}
+
+pub(super) fn shell_status_accent(status: Option<TranscriptShellStatus>) -> Color {
+    match status {
+        Some(TranscriptShellStatus::Queued) => palette().warn,
+        None => palette().muted,
+    }
+}
+
+fn shell_status_phrase(
+    status: TranscriptShellStatus,
+    line: &str,
+) -> Option<(&'static str, &str, Color)> {
+    let (phrase, accent) = match status {
+        TranscriptShellStatus::Queued => ("Queued", palette().warn),
+    };
+    line.strip_prefix(phrase)
+        .map(|remainder| (phrase, remainder, accent))
+}
+
+fn legacy_shell_status_phrase(line: &str) -> Option<(&'static str, &str, Color)> {
+    // Legacy transcript previews and raw summary bodies do not carry typed
+    // status metadata. Keep a render-only fallback here instead of rebuilding
+    // state from strings elsewhere in the TUI.
     if line.starts_with("Awaiting approval for ") {
-        let phrase = "Awaiting approval";
-        return Some((phrase, &line[phrase.len()..], palette().warn));
+        return Some((
+            "Awaiting approval",
+            &line["Awaiting approval".len()..],
+            palette().warn,
+        ));
     }
-    if line.starts_with("Requested ") {
-        let phrase = "Requested";
-        return Some((phrase, &line[phrase.len()..], palette().warn));
+    if let Some(remainder) = line.strip_prefix("Requested") {
+        return Some(("Requested", remainder, palette().warn));
     }
-    if line.starts_with("Queued ") {
-        let phrase = "Queued";
-        return Some((phrase, &line[phrase.len()..], palette().warn));
+    if let Some(remainder) = line.strip_prefix("Queued") {
+        return Some(("Queued", remainder, palette().warn));
     }
-    if line.starts_with("Running ") {
-        let phrase = "Running";
-        return Some((phrase, &line[phrase.len()..], palette().user));
+    if let Some(remainder) = line.strip_prefix("Running") {
+        return Some(("Running", remainder, palette().user));
     }
-    if line.starts_with("Finished ") {
-        let phrase = "Finished";
-        return Some((phrase, &line[phrase.len()..], palette().assistant));
+    if let Some(remainder) = line.strip_prefix("Finished") {
+        return Some(("Finished", remainder, palette().assistant));
     }
-    if line.starts_with("Approved ") {
-        let phrase = "Approved";
-        return Some((phrase, &line[phrase.len()..], palette().assistant));
+    if let Some(remainder) = line.strip_prefix("Approved") {
+        return Some(("Approved", remainder, palette().assistant));
     }
-    if line.starts_with("Denied ") {
-        let phrase = "Denied";
-        return Some((phrase, &line[phrase.len()..], palette().error));
+    if let Some(remainder) = line.strip_prefix("Denied") {
+        return Some(("Denied", remainder, palette().error));
     }
     None
 }

@@ -324,7 +324,7 @@ fn tool_completion_event_includes_shell_summary_details() {
 
     assert_eq!(
         format_session_event_line(&event).serialized(),
-        "• Finished exec_command\n  └ $ cargo test\n  └ tests passed"
+        "• Finished exec_command\n  └ $ cargo test\n  └ output tests passed"
     );
 }
 

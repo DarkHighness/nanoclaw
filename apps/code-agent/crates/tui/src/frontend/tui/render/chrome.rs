@@ -8,7 +8,9 @@ use super::shell::bottom_band_inner_area;
 use super::theme::palette;
 use super::transcript_markdown::code_span;
 use crate::backend::preview_id;
-use crate::interaction::{PendingControlKind, PermissionProfile, PermissionRequestPrompt};
+use crate::interaction::{
+    ApprovalOrigin, PendingControlKind, PermissionProfile, PermissionRequestPrompt,
+};
 use crate::preview::{PreviewCollapse, collapse_preview_lines};
 use ratatui::layout::{Constraint, Direction, Layout, Margin, Position, Rect};
 use ratatui::style::{Modifier, Style};
@@ -170,12 +172,12 @@ pub(super) fn build_approval_text(approval: &ApprovalPrompt) -> Text<'static> {
     if let Some(context) = approval_context_line(approval) {
         lines.push(context);
     }
-    for (index, line) in approval_preview_lines(&approval.content_preview)
+    for (index, line) in approval_preview_lines(&approval.content.preview)
         .into_iter()
         .enumerate()
     {
         lines.push(approval_detail_line(
-            (index == 0).then_some(approval.content_label.as_str()),
+            (index == 0).then_some(approval.content.kind.as_str()),
             vec![code_span(&line)],
         ));
     }
@@ -236,11 +238,20 @@ fn approval_section_label(label: &str) -> Line<'static> {
 
 fn approval_context_line(approval: &ApprovalPrompt) -> Option<Line<'static>> {
     let mut spans = Vec::new();
-    if approval.origin != "local" {
-        spans.push(Span::styled(
-            approval.origin.clone(),
-            Style::default().fg(palette().muted),
-        ));
+    match &approval.origin {
+        ApprovalOrigin::Local => {}
+        ApprovalOrigin::Mcp { server_name } => {
+            spans.push(Span::styled(
+                format!("mcp:{server_name}"),
+                Style::default().fg(palette().muted),
+            ));
+        }
+        ApprovalOrigin::Provider { provider } => {
+            spans.push(Span::styled(
+                format!("provider:{provider}"),
+                Style::default().fg(palette().muted),
+            ));
+        }
     }
     if let Some(working_directory) = approval.working_directory.as_deref() {
         if !spans.is_empty() {

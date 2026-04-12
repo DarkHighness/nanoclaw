@@ -1,6 +1,6 @@
 use crate::interaction::{
-    PendingControlKind, PendingControlSummary, PermissionProfile, PermissionRequestPrompt,
-    SkillSummary, UserInputOption, UserInputPrompt, UserInputQuestion,
+    PendingControlKind, PendingControlReason, PendingControlSummary, PermissionProfile,
+    PermissionRequestPrompt, SkillSummary, UserInputOption, UserInputPrompt, UserInputQuestion,
 };
 use agent::runtime::PermissionGrantSnapshot;
 use agent::tools::{
@@ -94,7 +94,7 @@ pub(crate) fn pending_control_summary(
             id: id.into(),
             kind: PendingControlKind::Steer,
             preview: message,
-            reason,
+            reason: reason.map(PendingControlReason::from_runtime_label),
         },
     }
 }

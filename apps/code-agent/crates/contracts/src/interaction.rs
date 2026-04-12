@@ -1,13 +1,44 @@
 use std::collections::BTreeMap;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ApprovalOrigin {
+    Local,
+    Mcp { server_name: String },
+    Provider { provider: String },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ApprovalContentKind {
+    Command,
+    Stdin,
+    PlanUpdate,
+    Arguments,
+}
+
+impl ApprovalContentKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Command => "command",
+            Self::Stdin => "stdin",
+            Self::PlanUpdate => "plan",
+            Self::Arguments => "arguments",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ApprovalContent {
+    pub kind: ApprovalContentKind,
+    pub preview: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ApprovalPrompt {
     pub tool_name: String,
-    pub origin: String,
+    pub origin: ApprovalOrigin,
     pub mode: Option<String>,
     pub working_directory: Option<String>,
-    pub content_label: String,
-    pub content_preview: Vec<String>,
+    pub content: ApprovalContent,
     pub reasons: Vec<String>,
 }
 
@@ -124,9 +155,42 @@ pub enum PendingControlKind {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PendingControlReason {
+    InlineEnter,
+    ManualCommand,
+    Other(String),
+}
+
+impl PendingControlReason {
+    pub fn from_runtime_label(reason: String) -> Self {
+        match reason.trim() {
+            "inline_enter" => Self::InlineEnter,
+            "manual_command" => Self::ManualCommand,
+            _ => Self::Other(reason),
+        }
+    }
+
+    pub fn runtime_value(&self) -> String {
+        match self {
+            Self::InlineEnter => "inline_enter".to_string(),
+            Self::ManualCommand => "manual_command".to_string(),
+            Self::Other(reason) => reason.clone(),
+        }
+    }
+
+    pub fn label(&self) -> String {
+        match self {
+            Self::InlineEnter => "from Enter while running".to_string(),
+            Self::ManualCommand => "from /steer".to_string(),
+            Self::Other(reason) => reason.replace('_', " "),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PendingControlSummary {
     pub id: String,
     pub kind: PendingControlKind,
     pub preview: String,
-    pub reason: Option<String>,
+    pub reason: Option<PendingControlReason>,
 }

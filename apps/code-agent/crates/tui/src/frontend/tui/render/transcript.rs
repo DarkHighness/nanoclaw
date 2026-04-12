@@ -1,4 +1,6 @@
-use super::super::state::{TranscriptEntry, TranscriptToolEntry, TranscriptToolStatus, TuiState};
+use super::super::state::{
+    ToolSelectionTarget, TranscriptEntry, TranscriptToolEntry, TranscriptToolStatus, TuiState,
+};
 use super::transcript_markdown::render_markdown_body;
 use super::transcript_shell::{
     animation_frame_ms, live_progress_lines, pending_control_embedded_lines,
@@ -78,10 +80,10 @@ pub(super) fn build_transcript_lines_for_width(
 
     if !state.transcript.is_empty() {
         for (index, entry) in state.transcript.iter().enumerate() {
-            let selected = state.transcript_selection == Some(index);
-            let active_tool_entry = state.turn_running
-                && index + 1 == state.transcript.len()
-                && entry.tool_entry().is_some();
+            let selected = matches!(
+                state.tool_selection.as_ref(),
+                Some(ToolSelectionTarget::Transcript(selected)) if *selected == index
+            );
             if index > 0 {
                 lines.push(Line::raw(""));
                 if entry_kind_from_cell(entry) == TranscriptEntryKind::UserPrompt {
@@ -101,19 +103,45 @@ pub(super) fn build_transcript_lines_for_width(
                 highlight_transcript_cell(&mut cell_lines);
             }
             lines.extend(cell_lines);
-            if active_tool_entry {
-                if let Some(embedded) =
-                    pending_control_embedded_lines(state, tool_timeline_animation)
-                {
-                    pending_controls_embedded = true;
-                    lines.extend(embedded);
-                } else if let Some(bridge) =
-                    pending_control_picker_embedded_lines(state, tool_timeline_animation)
-                {
-                    pending_controls_embedded = true;
-                    lines.extend(bridge);
-                }
+        }
+    }
+
+    if !state.active_tools.is_empty() {
+        if !lines.is_empty() {
+            lines.push(Line::raw(""));
+        }
+        lines.push(Line::from(vec![Span::styled(
+            format!("Live Tools · {}", state.active_tools.len()),
+            Style::default().fg(palette().muted),
+        )]));
+        lines.push(Line::raw(""));
+        for (index, active) in state.active_tools.iter().enumerate() {
+            let active_entry = TranscriptEntry::Tool(active.entry.clone());
+            let selected = matches!(
+                state.tool_selection.as_ref(),
+                Some(ToolSelectionTarget::Live(selected)) if selected == &active.call_id
+            );
+            lines.extend(format_transcript_cell_with_mode(
+                &active_entry,
+                state.show_tool_details,
+                state
+                    .turn_running
+                    .then_some(tool_timeline_animation)
+                    .flatten(),
+                selected,
+            ));
+            if index + 1 < state.active_tools.len() {
+                lines.push(Line::raw(""));
             }
+        }
+        if let Some(embedded) = pending_control_embedded_lines(state, tool_timeline_animation) {
+            pending_controls_embedded = true;
+            lines.extend(embedded);
+        } else if let Some(bridge) =
+            pending_control_picker_embedded_lines(state, tool_timeline_animation)
+        {
+            pending_controls_embedded = true;
+            lines.extend(bridge);
         }
     }
 
@@ -239,7 +267,7 @@ fn entry_accent(entry: &TranscriptEntry, kind: TranscriptEntryKind) -> ratatui::
     if let Some(tool) = entry.tool_entry() {
         return match kind {
             TranscriptEntryKind::ShellSummary => {
-                super::transcript_shell::summary_color(&tool.headline)
+                super::transcript_shell::tool_status_accent(tool.status)
             }
             TranscriptEntryKind::PlanUpdate => palette().muted,
             TranscriptEntryKind::ExecutionUpdate => palette().accent,
@@ -256,7 +284,10 @@ fn entry_accent(entry: &TranscriptEntry, kind: TranscriptEntryKind) -> ratatui::
         TranscriptEntryKind::UserPrompt => palette().user,
         TranscriptEntryKind::PlanUpdate => palette().muted,
         TranscriptEntryKind::ExecutionUpdate => palette().accent,
-        TranscriptEntryKind::ShellSummary => super::transcript_shell::summary_color(entry.body()),
+        TranscriptEntryKind::ShellSummary => entry
+            .shell_summary()
+            .map(|summary| super::transcript_shell::shell_status_accent(summary.status))
+            .unwrap_or_else(|| palette().muted),
         TranscriptEntryKind::SuccessSummary => palette().assistant,
         TranscriptEntryKind::ErrorSummary => palette().error,
         TranscriptEntryKind::WarningSummary => palette().warn,

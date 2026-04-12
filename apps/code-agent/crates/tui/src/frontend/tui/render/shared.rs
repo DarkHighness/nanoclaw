@@ -1,4 +1,4 @@
-use crate::interaction::PendingControlKind;
+use crate::interaction::{PendingControlKind, PendingControlReason};
 use std::cmp::min;
 use unicode_width::UnicodeWidthStr;
 
@@ -32,13 +32,10 @@ pub(super) fn clamp_scroll(requested: u16, content_lines: usize, viewport_height
     }
 }
 
-pub(super) fn pending_control_reason_label(reason: Option<&str>) -> Option<String> {
-    let reason = reason.map(str::trim).filter(|value| !value.is_empty())?;
-    Some(match reason {
-        "inline_enter" => "from Enter while running".to_string(),
-        "manual_command" => "from /steer".to_string(),
-        _ => reason.replace('_', " "),
-    })
+pub(super) fn pending_control_reason_label(
+    reason: Option<&PendingControlReason>,
+) -> Option<String> {
+    reason.map(PendingControlReason::label)
 }
 
 pub(super) fn pending_control_kind_label(kind: PendingControlKind) -> &'static str {

@@ -53,7 +53,7 @@ impl CodeAgentTui {
         let opened = {
             let snapshot = self.ui_state.snapshot();
             snapshot
-                .selected_transcript_tool()
+                .selected_tool_entry()
                 .is_some_and(|tool| tool.review.is_some())
         };
 

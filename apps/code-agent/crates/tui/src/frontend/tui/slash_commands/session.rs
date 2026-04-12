@@ -136,14 +136,16 @@ impl CodeAgentTui {
                 if self.turn_task.is_some() {
                     self.schedule_runtime_steer_while_active(
                         message,
-                        Some("manual_command".to_string()),
+                        Some(crate::interaction::PendingControlReason::ManualCommand),
                     )
                     .await;
                     return Ok(false);
                 }
                 self.start_command(RuntimeCommand::Steer {
                     message,
-                    reason: Some("manual_command".to_string()),
+                    reason: Some(
+                        crate::interaction::PendingControlReason::ManualCommand.runtime_value(),
+                    ),
                 })
                 .await;
                 Ok(false)

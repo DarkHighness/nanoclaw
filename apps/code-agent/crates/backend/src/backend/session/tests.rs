@@ -12,8 +12,7 @@ use crate::backend::{
     ApprovalCoordinator, McpServerSummary, PermissionRequestCoordinator, SessionEventStream,
     StartupDiagnosticsSnapshot, UserInputCoordinator, list_mcp_servers,
 };
-use crate::interaction::PendingControlKind;
-use crate::interaction::SessionPermissionMode;
+use crate::interaction::{PendingControlKind, PendingControlReason, SessionPermissionMode};
 use crate::statusline::StatusLineConfig;
 use agent::mcp::{
     ConnectedMcpServer, McpCatalog, McpResource, McpResourceTemplate, McpServerConfig,
@@ -1488,10 +1487,16 @@ async fn take_pending_steers_drains_all_steers_in_fifo_order() {
         .await
         .unwrap();
     let steer_one = session
-        .schedule_runtime_steer("first steer", Some("manual_command".to_string()))
+        .schedule_runtime_steer(
+            "first steer",
+            Some(PendingControlReason::ManualCommand.runtime_value()),
+        )
         .unwrap();
     let steer_two = session
-        .schedule_runtime_steer("latest steer", Some("inline_enter".to_string()))
+        .schedule_runtime_steer(
+            "latest steer",
+            Some(PendingControlReason::InlineEnter.runtime_value()),
+        )
         .unwrap();
 
     let promoted = session.take_pending_steers().unwrap();
@@ -1500,11 +1505,14 @@ async fn take_pending_steers_drains_all_steers_in_fifo_order() {
     assert_eq!(promoted[0].id, steer_one);
     assert_eq!(promoted[0].kind, PendingControlKind::Steer);
     assert_eq!(promoted[0].preview, "first steer");
-    assert_eq!(promoted[0].reason.as_deref(), Some("manual_command"));
+    assert_eq!(
+        promoted[0].reason,
+        Some(PendingControlReason::ManualCommand)
+    );
     assert_eq!(promoted[1].id, steer_two);
     assert_eq!(promoted[1].kind, PendingControlKind::Steer);
     assert_eq!(promoted[1].preview, "latest steer");
-    assert_eq!(promoted[1].reason.as_deref(), Some("inline_enter"));
+    assert_eq!(promoted[1].reason, Some(PendingControlReason::InlineEnter));
 
     let remaining = session.pending_controls();
     assert_eq!(remaining.len(), 1);
@@ -2888,8 +2896,10 @@ fn schedule_live_task_attention_schedules_steer_when_turn_running() {
     assert_eq!(pending.len(), 1);
     assert_eq!(pending[0].kind, PendingControlKind::Steer);
     assert_eq!(
-        pending[0].reason.as_deref(),
-        Some("live_task_wait_complete:task-wait")
+        pending[0].reason,
+        Some(PendingControlReason::Other(
+            "live_task_wait_complete:task-wait".to_string()
+        ))
     );
     assert_eq!(pending[0].preview, scheduled.preview);
 }

@@ -58,7 +58,7 @@ pub(crate) enum HistoryRollbackState {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ToolReviewOverlayState {
-    pub(crate) transcript_index: usize,
+    pub(crate) selection: ToolSelectionTarget,
     pub(crate) tool_name: String,
     pub(crate) review: ToolReview,
     pub(crate) selected: usize,
@@ -273,16 +273,13 @@ impl TuiState {
     }
 
     pub(crate) fn open_selected_tool_review_overlay(&mut self) -> bool {
-        let Some(transcript_index) = self.transcript_selection else {
+        let Some(selection) = self.tool_selection.clone() else {
             return false;
         };
-        let Some(tool) = self
-            .transcript
-            .get(transcript_index)
-            .and_then(TranscriptEntry::tool_entry)
-        else {
+        let Some(tool) = self.selected_tool_entry() else {
             return false;
         };
+        let tool_name = tool.tool_name.clone();
         let Some(review) = tool.review.clone() else {
             return false;
         };
@@ -295,8 +292,8 @@ impl TuiState {
         self.theme_picker = None;
         self.history_rollback = None;
         self.tool_review = Some(ToolReviewOverlayState {
-            transcript_index,
-            tool_name: tool.tool_name.clone(),
+            selection,
+            tool_name,
             review,
             selected: 0,
         });

@@ -39,7 +39,7 @@ impl CodeAgentSession {
                     },
                     PendingControlKind::Steer => RuntimeCommand::Steer {
                         message: content.to_string(),
-                        reason: current.reason.clone(),
+                        reason: current.reason.as_ref().map(|reason| reason.runtime_value()),
                     },
                 },
             )

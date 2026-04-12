@@ -29,7 +29,7 @@ pub(crate) use picker::{
 pub(crate) use transcript::{
     InspectorAction, InspectorEntry, InspectorKeyAction, TranscriptEntry, TranscriptExecutionEntry,
     TranscriptPlanEntry, TranscriptShellBlockKind, TranscriptShellDetail, TranscriptShellEntry,
-    TranscriptToolEntry, TranscriptToolStatus,
+    TranscriptShellStatus, TranscriptToolEntry, TranscriptToolStatus,
 };
 
 #[derive(Clone, Debug, Default)]
@@ -76,16 +76,58 @@ pub(crate) enum MainPaneMode {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) enum PlanEntryStatus {
+    #[default]
+    Pending,
+    InProgress,
+    Completed,
+    Other(String),
+}
+
+impl PlanEntryStatus {
+    pub(crate) fn from_wire(status: &str) -> Self {
+        match status.trim() {
+            "pending" | "" => Self::Pending,
+            "in_progress" => Self::InProgress,
+            "completed" => Self::Completed,
+            other => Self::Other(other.to_string()),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct PlanEntry {
     pub(crate) id: String,
     pub(crate) content: String,
-    pub(crate) status: String,
+    pub(crate) status: PlanEntryStatus,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) enum ExecutionStatus {
+    #[default]
+    Active,
+    Blocked,
+    Verifying,
+    Completed,
+    Other(String),
+}
+
+impl ExecutionStatus {
+    pub(crate) fn from_wire(status: &str) -> Self {
+        match status.trim() {
+            "" | "active" => Self::Active,
+            "blocked" => Self::Blocked,
+            "verifying" => Self::Verifying,
+            "completed" => Self::Completed,
+            other => Self::Other(other.to_string()),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct ExecutionEntry {
     pub(crate) scope_label: String,
-    pub(crate) status: String,
+    pub(crate) status: ExecutionStatus,
     pub(crate) summary: String,
     pub(crate) next_action: Option<String>,
     pub(crate) verification: Option<String>,
@@ -109,11 +151,32 @@ pub(crate) enum ToastTone {
     Error,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum TurnPhase {
+    #[default]
+    Idle,
+    Working,
+    WaitingApproval,
+    Failed,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ToastState {
     pub(crate) message: String,
     pub(crate) tone: ToastTone,
     pub(crate) expires_at: Instant,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ActiveToolEntry {
+    pub(crate) call_id: String,
+    pub(crate) entry: TranscriptToolEntry,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum ToolSelectionTarget {
+    Transcript(usize),
+    Live(String),
 }
 
 #[derive(Clone, Debug, Default)]
@@ -138,7 +201,8 @@ pub(crate) struct TuiState {
     pub(crate) composer_context_hint: Option<ComposerContextHint>,
     pub(crate) toast: Option<ToastState>,
     pub(crate) transcript: Vec<TranscriptEntry>,
-    pub(crate) transcript_selection: Option<usize>,
+    pub(crate) active_tools: Vec<ActiveToolEntry>,
+    pub(crate) tool_selection: Option<ToolSelectionTarget>,
     pub(crate) transcript_scroll: u16,
     pub(crate) follow_transcript: bool,
     pub(crate) inspector_title: String,
@@ -147,9 +211,9 @@ pub(crate) struct TuiState {
     pub(crate) activity: Vec<String>,
     pub(crate) activity_scroll: u16,
     pub(crate) status: String,
+    pub(crate) turn_phase: TurnPhase,
     pub(crate) turn_running: bool,
     pub(crate) turn_started_at: Option<Instant>,
-    pub(crate) active_tool_label: Option<String>,
     pub(crate) plan_items: Vec<PlanEntry>,
     pub(crate) execution: Option<ExecutionEntry>,
     pub(crate) pending_controls: Vec<PendingControlSummary>,
@@ -176,19 +240,6 @@ impl TuiState {
     pub(crate) fn push_transcript(&mut self, entry: impl Into<TranscriptEntry>) {
         self.transcript.push(entry.into());
         self.mark_transcript_follow();
-    }
-
-    pub(crate) fn replace_transcript(
-        &mut self,
-        index: usize,
-        entry: impl Into<TranscriptEntry>,
-    ) -> bool {
-        let Some(slot) = self.transcript.get_mut(index) else {
-            return false;
-        };
-        *slot = entry.into();
-        self.mark_transcript_follow();
-        true
     }
 
     pub(crate) fn append_transcript_text(&mut self, index: usize, delta: &str) -> bool {
@@ -231,15 +282,15 @@ impl TuiState {
         expired
     }
 
-    pub(crate) fn move_transcript_selection(&mut self, backwards: bool) -> bool {
-        let selectable = selectable_transcript_indices(&self.transcript);
+    pub(crate) fn move_tool_selection(&mut self, backwards: bool) -> bool {
+        let selectable = selectable_tool_targets(&self.transcript, &self.active_tools);
         if selectable.is_empty() {
             return false;
         }
-        let current = self.transcript_selection.and_then(|selected| {
+        let current = self.tool_selection.as_ref().and_then(|selected| {
             selectable
                 .iter()
-                .position(|candidate| *candidate == selected)
+                .position(|candidate| candidate == selected)
         });
         let next = match current {
             Some(current) if backwards => current.checked_sub(1).unwrap_or(selectable.len() - 1),
@@ -248,35 +299,60 @@ impl TuiState {
             None => 0,
         };
         self.follow_transcript = false;
-        self.transcript_selection = Some(selectable[next]);
+        self.tool_selection = Some(selectable[next].clone());
         true
     }
 
-    pub(crate) fn jump_transcript_selection(&mut self, oldest: bool) -> bool {
-        let selectable = selectable_transcript_indices(&self.transcript);
+    pub(crate) fn jump_tool_selection(&mut self, oldest: bool) -> bool {
+        let selectable = selectable_tool_targets(&self.transcript, &self.active_tools);
         if selectable.is_empty() {
             return false;
         }
         self.follow_transcript = false;
-        self.transcript_selection = Some(if oldest {
-            selectable[0]
+        self.tool_selection = Some(if oldest {
+            selectable[0].clone()
         } else {
-            selectable[selectable.len() - 1]
+            selectable[selectable.len() - 1].clone()
         });
         true
     }
 
-    pub(crate) fn clear_transcript_selection(&mut self) {
-        self.transcript_selection = None;
+    pub(crate) fn clear_tool_selection(&mut self) {
+        self.tool_selection = None;
     }
 
-    pub(crate) fn selected_transcript_entry(&self) -> Option<&TranscriptEntry> {
-        let index = self.transcript_selection?;
-        self.transcript.get(index)
+    pub(crate) fn selected_tool_entry(&self) -> Option<&TranscriptToolEntry> {
+        match self.tool_selection.as_ref()? {
+            ToolSelectionTarget::Transcript(index) => self
+                .transcript
+                .get(*index)
+                .and_then(TranscriptEntry::tool_entry),
+            ToolSelectionTarget::Live(call_id) => self
+                .active_tools
+                .iter()
+                .find(|active| active.call_id == *call_id)
+                .map(|active| &active.entry),
+        }
     }
 
-    pub(crate) fn selected_transcript_tool(&self) -> Option<&TranscriptToolEntry> {
-        self.selected_transcript_entry()?.tool_entry()
+    pub(crate) fn promote_live_tool_selection(&mut self, call_id: &str, transcript_index: usize) {
+        if matches!(
+            self.tool_selection.as_ref(),
+            Some(ToolSelectionTarget::Live(selected)) if selected == call_id
+        ) {
+            self.tool_selection = Some(ToolSelectionTarget::Transcript(transcript_index));
+        }
+    }
+
+    pub(crate) fn clear_missing_live_tool_selection(&mut self) {
+        if let Some(ToolSelectionTarget::Live(call_id)) = self.tool_selection.as_ref()
+            && !self
+                .active_tools
+                .iter()
+                .any(|active| active.call_id == *call_id)
+        {
+            self.tool_selection = None;
+        }
     }
 
     pub(crate) fn scroll_focused(&mut self, delta: i16) {
@@ -323,12 +399,25 @@ impl TuiState {
     }
 }
 
-fn selectable_transcript_indices(transcript: &[TranscriptEntry]) -> Vec<usize> {
-    transcript
+fn selectable_tool_targets(
+    transcript: &[TranscriptEntry],
+    active_tools: &[ActiveToolEntry],
+) -> Vec<ToolSelectionTarget> {
+    let mut selectable = transcript
         .iter()
         .enumerate()
-        .filter_map(|(index, entry)| entry.tool_entry().map(|_| index))
-        .collect()
+        .filter_map(|(index, entry)| {
+            entry
+                .tool_entry()
+                .map(|_| ToolSelectionTarget::Transcript(index))
+        })
+        .collect::<Vec<_>>();
+    selectable.extend(
+        active_tools
+            .iter()
+            .map(|active| ToolSelectionTarget::Live(active.call_id.clone())),
+    );
+    selectable
 }
 
 fn bump_scroll(value: &mut u16, delta: i16) {

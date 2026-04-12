@@ -19,7 +19,7 @@ impl CodeAgentTui {
                     self.ui_state.mutate(|state| {
                         state.turn_running = false;
                         state.turn_started_at = None;
-                        state.active_tool_label = None;
+                        state.clear_missing_live_tool_selection();
                         state.session.git = git.clone();
                         if let Some(stored_session_count) = stored_session_count {
                             state.session.stored_session_count = stored_session_count;
@@ -31,7 +31,7 @@ impl CodeAgentTui {
                     self.ui_state.mutate(|state| {
                         state.turn_running = false;
                         state.turn_started_at = None;
-                        state.active_tool_label = None;
+                        state.clear_missing_live_tool_selection();
                         state.session.git = git.clone();
                         state.status = format!("Error: {message}");
                         state.push_transcript(state::TranscriptEntry::error_summary_details(
@@ -48,7 +48,7 @@ impl CodeAgentTui {
                     self.ui_state.mutate(|state| {
                         state.turn_running = false;
                         state.turn_started_at = None;
-                        state.active_tool_label = None;
+                        state.clear_missing_live_tool_selection();
                         state.session.git = git.clone();
                         state.status = format!("Task join error: {error}");
                         state.push_activity(format!("task join error: {error}"));

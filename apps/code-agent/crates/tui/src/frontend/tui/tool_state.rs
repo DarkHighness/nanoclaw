@@ -1,4 +1,4 @@
-use super::state::{ExecutionEntry, PlanEntry, TranscriptEntry};
+use super::state::{ExecutionEntry, ExecutionStatus, PlanEntry, PlanEntryStatus, TranscriptEntry};
 use agent::types::{SessionEventEnvelope, SessionEventKind};
 use serde_json::Value;
 
@@ -105,7 +105,7 @@ fn plan_payload_from_tool_output(
                 Some(PlanEntry {
                     id: step.clone(),
                     content: step,
-                    status: item.get("status")?.as_str()?.to_string(),
+                    status: PlanEntryStatus::from_wire(item.get("status")?.as_str()?),
                 })
             })
             .collect(),
@@ -143,7 +143,7 @@ fn parse_execution_state_payload(value: &Value) -> Option<ExecutionEntry> {
     value.as_object()?;
     Some(ExecutionEntry {
         scope_label: String::new(),
-        status: value.get("status")?.as_str()?.to_string(),
+        status: ExecutionStatus::from_wire(value.get("status")?.as_str()?),
         summary: value.get("summary")?.as_str()?.to_string(),
         next_action: value
             .get("next_action")
@@ -162,7 +162,7 @@ fn parse_execution_state_payload(value: &Value) -> Option<ExecutionEntry> {
 
 #[cfg(test)]
 mod tests {
-    use super::{execution_state_from_tool_output, restore_tool_panels};
+    use super::{ExecutionStatus, execution_state_from_tool_output, restore_tool_panels};
     use agent::types::{
         AgentSessionId, CallId, MessagePart, SessionEventEnvelope, SessionEventKind, SessionId,
         ToolCall, ToolCallId, ToolOrigin, ToolResult,
@@ -189,7 +189,7 @@ mod tests {
         )
         .expect("set payload");
         assert_eq!(set.as_ref().unwrap().scope_label, "session root");
-        assert_eq!(set.as_ref().unwrap().status, "active");
+        assert_eq!(set.as_ref().unwrap().status, ExecutionStatus::Active);
 
         let clear = execution_state_from_tool_output(
             "update_execution",
@@ -280,6 +280,9 @@ mod tests {
 
         let restored = restore_tool_panels(&events);
         assert_eq!(restored.plan_items.len(), 1);
-        assert_eq!(restored.execution.as_ref().unwrap().status, "verifying");
+        assert_eq!(
+            restored.execution.as_ref().unwrap().status,
+            ExecutionStatus::Verifying
+        );
     }
 }
