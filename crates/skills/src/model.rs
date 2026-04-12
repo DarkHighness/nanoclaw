@@ -58,9 +58,23 @@ pub struct SkillActivation {
 pub struct SkillProvenance {
     pub root: SkillRoot,
     pub skill_dir: PathBuf,
+    pub shadowed_copies: Vec<SkillShadow>,
 }
 
 impl SkillProvenance {
+    #[must_use]
+    pub fn skill_path(&self) -> PathBuf {
+        self.skill_dir.join("SKILL.md")
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SkillShadow {
+    pub root: SkillRoot,
+    pub skill_dir: PathBuf,
+}
+
+impl SkillShadow {
     #[must_use]
     pub fn skill_path(&self) -> PathBuf {
         self.skill_dir.join("SKILL.md")

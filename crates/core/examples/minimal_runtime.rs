@@ -84,6 +84,7 @@ fn example_skill(workspace_root: &std::path::Path) -> Skill {
         provenance: agent::SkillProvenance {
             root: agent::SkillRoot::managed(AgentWorkspaceLayout::new(workspace_root).skills_dir()),
             skill_dir: workspace_root.join(".skills").join("workspace-rules"),
+            shadowed_copies: Vec::new(),
         },
     }
 }

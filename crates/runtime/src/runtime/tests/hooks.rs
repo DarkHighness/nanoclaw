@@ -61,6 +61,7 @@ async fn runtime_applies_hook_effects_without_mutating_base_instructions() {
         provenance: skills::SkillProvenance {
             root: skills::SkillRoot::managed(PathBuf::from("/tmp/skills")),
             skill_dir: PathBuf::from("/tmp/pdf"),
+            shadowed_copies: Vec::new(),
         },
     }]);
     let hook_runner = Arc::new(HookRunner::with_services(

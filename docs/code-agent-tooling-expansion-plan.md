@@ -19,7 +19,7 @@ Status: Active
 | Phase 9: Notebook Editing | Not Started | Notebook work still falls back to generic file tooling. |
 | Cross-cutting: Operator Slash Surface | In Progress | Tool-mirroring slash commands have been pruned; operator/session commands remain, and installed skills are now surfaced as explicit `/skill_name` slash invocations plus `$skill_name` composer directives. |
 | Cross-cutting: Tool Review Surface | In Progress | Typed transcript cells exist, but operator review for running input/output/failure still needs a fuller design pass. |
-| Cross-cutting: Skill Lifecycle & Self-Evolution | In Progress | Hermes-style `skills_list`, `skill_view`, and `skill_manage` now exist with managed-vs-external roots, and managed roots now deterministically override readonly external copies; verifier-backed extraction, richer provenance update flows, and archival/promotion are still missing. |
+| Cross-cutting: Skill Lifecycle & Self-Evolution | In Progress | Hermes-style `skills_list`, `skill_view`, and `skill_manage` now exist with managed-vs-external roots, managed roots deterministically override readonly external copies, and shadowed copies are now surfaced as provenance; verifier-backed extraction, richer provenance update flows, and archival/promotion are still missing. |
 
 ## Goal
 

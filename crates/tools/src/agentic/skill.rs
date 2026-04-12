@@ -107,6 +107,7 @@ pub struct SkillSummary {
     pub slash_command: String,
     pub root_kind: String,
     pub writable: bool,
+    pub shadowed_copy_count: usize,
     pub platforms: Vec<String>,
     pub requires_tools: Vec<String>,
     pub fallback_for_tools: Vec<String>,
@@ -116,6 +117,7 @@ pub struct SkillSummary {
 pub struct SkillDetail {
     #[serde(flatten)]
     pub summary: SkillSummary,
+    pub shadowed_skill_paths: Vec<String>,
     pub references: Vec<String>,
     pub scripts: Vec<String>,
     pub assets: Vec<String>,
@@ -753,9 +755,14 @@ fn render_skill_list(query: Option<&str>, skills: &[SkillSummary]) -> String {
         } else {
             format!(" · tags: {}", skill.tags.join(", "))
         };
+        let shadowed = if skill.shadowed_copy_count == 0 {
+            String::new()
+        } else {
+            format!(" · shadowed: {}", skill.shadowed_copy_count)
+        };
         lines.push(format!(
-            "- /{} · {}{}{}",
-            skill.name, skill.description, aliases, tags
+            "- /{} · {}{}{}{}",
+            skill.name, skill.description, aliases, tags, shadowed
         ));
     }
     lines.join("\n")
@@ -771,6 +778,12 @@ fn render_skill_detail(detail: &SkillDetail) -> String {
             detail.summary.root_kind, detail.summary.writable
         ),
     ];
+    if !detail.shadowed_skill_paths.is_empty() {
+        lines.push(format!(
+            "Shadowed copies {}",
+            detail.shadowed_skill_paths.join(", ")
+        ));
+    }
     if !detail.references.is_empty() {
         lines.push(format!("References {}", detail.references.join(", ")));
     }
@@ -808,6 +821,7 @@ fn skill_summary(skill: &Skill) -> SkillSummary {
             SkillRootKind::External => "external".to_string(),
         },
         writable: skill.provenance.root.writable(),
+        shadowed_copy_count: skill.provenance.shadowed_copies.len(),
         platforms: skill.activation.platforms.clone(),
         requires_tools: skill
             .activation
@@ -827,6 +841,12 @@ fn skill_summary(skill: &Skill) -> SkillSummary {
 fn skill_detail(skill: &Skill, include_instruction: bool) -> SkillDetail {
     SkillDetail {
         summary: skill_summary(skill),
+        shadowed_skill_paths: skill
+            .provenance
+            .shadowed_copies
+            .iter()
+            .map(|shadow| shadow.skill_path().display().to_string())
+            .collect(),
         references: relative_paths(&skill.root_dir, &skill.references),
         scripts: relative_paths(&skill.root_dir, &skill.scripts),
         assets: relative_paths(&skill.root_dir, &skill.assets),
@@ -1037,5 +1057,77 @@ Read docs carefully.
             .await
             .unwrap_err();
         assert!(error.to_string().contains("read-only root"));
+    }
+
+    #[tokio::test]
+    async fn skills_list_and_view_surface_shadowed_skill_copies() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        let managed_root = root.join("managed");
+        let external_root = root.join("external");
+        let managed_skill = managed_root.join("review");
+        let external_skill = external_root.join("review");
+        fs::create_dir_all(&managed_skill).await.unwrap();
+        fs::create_dir_all(&external_skill).await.unwrap();
+        fs::write(
+            managed_skill.join("SKILL.md"),
+            r#"---
+name: review
+description: Use for reviews
+---
+
+Use the managed copy.
+"#,
+        )
+        .await
+        .unwrap();
+        fs::write(
+            external_skill.join("SKILL.md"),
+            r#"---
+name: review
+description: Use for reviews
+---
+
+Use the external copy.
+"#,
+        )
+        .await
+        .unwrap();
+
+        let catalog = load_skill_roots(&[
+            SkillRoot::managed(managed_root),
+            SkillRoot::external(external_root.clone()),
+        ])
+        .await
+        .unwrap();
+
+        let list = SkillsListTool::new(catalog.clone())
+            .execute(
+                ToolCallId::new(),
+                json!({}),
+                &crate::ToolExecutionContext::default(),
+            )
+            .await
+            .unwrap();
+        let listed = list.structured_content.as_ref().unwrap();
+        assert_eq!(listed["skills"][0]["shadowed_copy_count"], 1);
+
+        let view = SkillViewTool::new(catalog)
+            .execute(
+                ToolCallId::new(),
+                json!({
+                    "name": "review"
+                }),
+                &crate::ToolExecutionContext::default(),
+            )
+            .await
+            .unwrap();
+        let detail = view.structured_content.as_ref().unwrap();
+        assert_eq!(detail["kind"], "skill");
+        assert_eq!(detail["skill"]["shadowed_copy_count"], 1);
+        assert_eq!(
+            detail["skill"]["shadowed_skill_paths"][0],
+            external_skill.join("SKILL.md").display().to_string()
+        );
     }
 }

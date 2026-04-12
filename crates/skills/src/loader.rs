@@ -52,6 +52,7 @@ pub async fn load_skill_from_dir(dir: impl AsRef<Path>, root: &SkillRoot) -> Res
         provenance: SkillProvenance {
             root: root.clone(),
             skill_dir: dir.to_path_buf(),
+            shadowed_copies: Vec::new(),
         },
     })
 }
@@ -91,13 +92,24 @@ pub async fn load_skill_roots(roots: &[SkillRoot]) -> Result<SkillCatalog> {
         .collect::<Vec<_>>();
     let loaded = run_indexed_tasks_ordered(tasks, SKILL_LOAD_CONCURRENCY_LIMIT).await?;
     let mut seen_names = BTreeMap::new();
+    let mut shadowed_by_name = BTreeMap::<String, Vec<crate::SkillShadow>>::new();
     let mut skills = Vec::new();
     for skill in loaded {
         if seen_names.contains_key(&skill.name) {
+            shadowed_by_name
+                .entry(skill.name.clone())
+                .or_default()
+                .push(crate::SkillShadow {
+                    root: skill.provenance.root.clone(),
+                    skill_dir: skill.provenance.skill_dir.clone(),
+                });
             continue;
         }
         seen_names.insert(skill.name.clone(), ());
         skills.push(skill);
+    }
+    for skill in &mut skills {
+        skill.provenance.shadowed_copies = shadowed_by_name.remove(&skill.name).unwrap_or_default();
     }
     Ok(SkillCatalog::from_parts(roots.to_vec(), skills))
 }
@@ -299,6 +311,11 @@ Use the external root version.
         assert_eq!(skill.description, "Managed review skill");
         assert!(skill.body.contains("managed root version"));
         assert!(skill.provenance.root.writable());
+        assert_eq!(skill.provenance.shadowed_copies.len(), 1);
+        assert_eq!(
+            skill.provenance.shadowed_copies[0].skill_path(),
+            external_skill.join("SKILL.md")
+        );
     }
 
     #[tokio::test]
