@@ -2,6 +2,7 @@ use agent::AgentWorkspaceLayout;
 use agent::tools::HOST_FEATURE_REQUEST_USER_INPUT;
 use agent::types::ToolVisibilityContext;
 use nanoclaw_config::{PluginsConfig, ResolvedAgentProfile};
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -191,8 +192,11 @@ pub fn resolve_skill_roots(
             .map(agent::SkillRoot::external),
     );
     roots.retain(|root| root.kind == agent::SkillRootKind::Managed || root.path.exists());
-    roots.sort_by(|left, right| left.path.cmp(&right.path));
-    roots.dedup_by(|left, right| left.path == right.path);
+    // Skill root order is policy, not presentation. Preserve the configured/default
+    // precedence so the managed root wins over readonly external roots and plugin
+    // roots extend that stack instead of reordering it lexicographically.
+    let mut seen = BTreeSet::new();
+    roots.retain(|root| seen.insert(root.path.clone()));
     roots
 }
 
@@ -249,7 +253,7 @@ fn push_if_exists(roots: &mut Vec<agent::SkillRoot>, root: agent::SkillRoot) {
 
 #[cfg(test)]
 mod tests {
-    use super::build_system_preamble;
+    use super::{build_system_preamble, resolve_skill_roots};
     use agent::tools::HOST_FEATURE_REQUEST_USER_INPUT;
     use agent::types::ToolVisibilityContext;
     use nanoclaw_config::CoreConfig;
@@ -316,5 +320,25 @@ mod tests {
 
         assert!(!hidden.contains("request_user_input"));
         assert!(visible.contains("request_user_input"));
+    }
+
+    #[test]
+    fn resolve_skill_roots_keeps_managed_root_ahead_of_external_roots() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".codex/skills")).unwrap();
+        std::fs::create_dir_all(dir.path().join(".nanoclaw/skills")).unwrap();
+        let plugin_root = dir.path().join("plugin-skills");
+        std::fs::create_dir_all(&plugin_root).unwrap();
+        let plugin_plan = agent::plugins::PluginActivationPlan {
+            skill_roots: vec![plugin_root.clone()],
+            ..agent::plugins::PluginActivationPlan::default()
+        };
+
+        let roots = resolve_skill_roots(&[], dir.path(), &plugin_plan);
+
+        assert_eq!(roots[0].kind, agent::SkillRootKind::Managed);
+        assert_eq!(roots[0].path, dir.path().join(".nanoclaw/skills"));
+        assert_eq!(roots[1].path, dir.path().join(".codex/skills"));
+        assert!(roots.iter().any(|root| root.path == plugin_root));
     }
 }

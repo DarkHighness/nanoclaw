@@ -29,6 +29,7 @@ It intentionally keeps the host layer thin:
   - `skills_list` discovers the catalog without injecting it into the system prompt
   - `skill_view` progressively loads `SKILL.md` content or companion files on demand
   - `skill_manage` mutates only the managed root and tells the model to refresh via `skills_list`/`skill_view`
+  - managed/local skill roots keep precedence over readonly external roots, so operator-created skills override imported copies deterministically
 - interactive approval for destructive tools and higher-risk external reads,
   with a narrow host allowlist for safe built-in web research tools,
   argv-matched `exec_command` trust rules, approval-free `write_stdin`

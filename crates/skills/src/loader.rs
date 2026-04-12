@@ -2,7 +2,7 @@ use crate::frontmatter::SkillFrontmatter;
 use crate::{Result, Skill, SkillActivation, SkillCatalog, SkillError, SkillProvenance, SkillRoot};
 use futures::{StreamExt, TryStreamExt, stream};
 use regex::Regex;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use tokio::fs;
 
@@ -58,7 +58,8 @@ pub async fn load_skill_from_dir(dir: impl AsRef<Path>, root: &SkillRoot) -> Res
 
 pub async fn load_skill_roots(roots: &[SkillRoot]) -> Result<SkillCatalog> {
     let mut skill_dirs = Vec::new();
-    for root in roots {
+    let mut seen_dirs = BTreeSet::new();
+    for (root_index, root) in roots.iter().enumerate() {
         if !root.path.exists() {
             continue;
         }
@@ -67,18 +68,23 @@ pub async fn load_skill_roots(roots: &[SkillRoot]) -> Result<SkillCatalog> {
             .map_err(|source| SkillError::read_path(root.path.display().to_string(), source))?;
         while let Some(entry) = entries.next_entry().await? {
             let path = entry.path();
-            if entry.file_type().await?.is_dir() && path.join("SKILL.md").exists() {
-                skill_dirs.push((root.clone(), path));
+            if entry.file_type().await?.is_dir()
+                && path.join("SKILL.md").exists()
+                && seen_dirs.insert(path.clone())
+            {
+                skill_dirs.push((root_index, root.clone(), path));
             }
         }
     }
-    skill_dirs.sort_by(|left, right| left.1.cmp(&right.1));
-    skill_dirs.dedup_by(|left, right| left.1 == right.1);
+    // Root order carries precedence semantics: managed/local roots should win over
+    // readonly external roots, and configured/plugin roots should keep the order
+    // chosen by the host instead of drifting into lexical path order.
+    skill_dirs.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.2.cmp(&right.2)));
 
     let tasks = skill_dirs
         .into_iter()
         .enumerate()
-        .map(|(index, (root, path))| async move {
+        .map(|(index, (_, root, path))| async move {
             let skill = load_skill_from_dir(&path, &root).await?;
             Ok::<_, SkillError>((index, skill))
         })
@@ -245,6 +251,53 @@ Use for PDF work.
             .unwrap();
         let skill = registry.resolve("acrobat").unwrap();
         assert_eq!(skill.name, "pdf");
+        assert!(skill.provenance.root.writable());
+    }
+
+    #[tokio::test]
+    async fn managed_root_wins_when_skill_names_overlap_external_roots() {
+        let dir = tempdir().unwrap();
+        let managed_root = dir.path().join("managed");
+        let external_root = dir.path().join("external");
+        let managed_skill = managed_root.join("review");
+        let external_skill = external_root.join("review");
+        fs::create_dir_all(&managed_skill).await.unwrap();
+        fs::create_dir_all(&external_skill).await.unwrap();
+        fs::write(
+            managed_skill.join("SKILL.md"),
+            r#"---
+name: review
+description: Managed review skill
+---
+
+Use the managed root version.
+"#,
+        )
+        .await
+        .unwrap();
+        fs::write(
+            external_skill.join("SKILL.md"),
+            r#"---
+name: review
+description: External review skill
+---
+
+Use the external root version.
+"#,
+        )
+        .await
+        .unwrap();
+
+        let registry = load_skill_roots(&[
+            SkillRoot::managed(managed_root),
+            SkillRoot::external(external_root),
+        ])
+        .await
+        .unwrap();
+
+        let skill = registry.resolve("review").unwrap();
+        assert_eq!(skill.description, "Managed review skill");
+        assert!(skill.body.contains("managed root version"));
         assert!(skill.provenance.root.writable());
     }
 
