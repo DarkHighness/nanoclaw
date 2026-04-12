@@ -8,6 +8,7 @@ use super::history_rollback_overlay::{
 use super::main_pane_viewport_height;
 use super::picker::build_command_hint_text;
 use super::statusline::{format_footer_context, format_toast_line, toast_height};
+use super::theme::palette;
 use super::tool_review_overlay::{build_tool_review_list_text, build_tool_review_preview_text};
 use super::transcript::TranscriptEntryKind;
 use super::transcript::build_transcript_lines;
@@ -39,7 +40,9 @@ use crate::interaction::{
     UserInputOption, UserInputQuestion,
 };
 use crate::theme::ThemeSummary;
-use crate::tool_render::{ToolDetail, ToolDetailLabel, ToolReview, ToolReviewFile};
+use crate::tool_render::{
+    ToolCommand, ToolCompletionState, ToolDetail, ToolDetailLabel, ToolReview, ToolReviewFile,
+};
 use agent::types::{AgentStatus, MessageId, MessagePart};
 use ratatui::layout::Rect;
 use std::collections::BTreeMap;
@@ -151,11 +154,11 @@ fn transcript_separates_assistant_and_tool_entries_with_breathing_room() {
 
     assert_eq!(line_text_for(&rendered[0]), "• assistant reply");
     assert!(line_text_for(&rendered[1]).is_empty());
-    assert_eq!(line_text_for(&rendered[2]), "• exec_command [running]");
+    assert_eq!(line_text_for(&rendered[2]), "• Running cargo test");
     assert!(
         rendered
             .iter()
-            .any(|line| line_text_for(line).contains("$ cargo test"))
+            .any(|line| line_text_for(line).contains("cargo test"))
     );
 }
 
@@ -169,10 +172,11 @@ fn transcript_collapses_tool_details_by_default() {
 
     let rendered = build_transcript_lines(&state);
 
-    assert!(rendered.iter().any(|line| {
-        let text = line_text_for(line);
-        text.contains("exec_command") && text.contains("[finished]")
-    }));
+    assert!(
+        rendered
+            .iter()
+            .any(|line| line_text_for(line).contains("Ran cargo test"))
+    );
     assert!(rendered.iter().any(|line| {
         line.spans
             .iter()
@@ -211,6 +215,98 @@ fn transcript_expands_tool_details_when_enabled() {
             .iter()
             .any(|line| line_text_for(line).contains("ok"))
     );
+}
+
+#[test]
+fn transcript_renders_exec_commands_with_highlighted_action_verb_and_shell_subject() {
+    let mut state = TuiState {
+        main_pane: MainPaneMode::Transcript,
+        ..TuiState::default()
+    };
+    state.transcript = vec![TranscriptEntry::tool(
+        TranscriptToolStatus::Finished,
+        "exec_command",
+        vec![command_tool_detail("cargo test -- --nocapture")],
+    )];
+
+    let rendered = build_transcript_lines(&state);
+    let line = rendered
+        .iter()
+        .find(|line| line_text_for(line).contains("Ran cargo test -- --nocapture"))
+        .expect("expected command headline");
+
+    assert_eq!(line_text_for(line), "• Ran cargo test -- --nocapture");
+    assert!(line.spans.iter().any(|span| {
+        span.content.as_ref() == "Ran"
+            && span.style.fg == Some(palette().assistant)
+            && span
+                .style
+                .add_modifier
+                .contains(ratatui::style::Modifier::BOLD)
+    }),);
+    assert!(line.spans.iter().any(|span| {
+        span.content.as_ref() == "cargo"
+            && span.style.fg == Some(palette().header)
+            && span
+                .style
+                .add_modifier
+                .contains(ratatui::style::Modifier::BOLD)
+    }),);
+    assert!(
+        line.spans
+            .iter()
+            .any(|span| span.content.as_ref() == "--nocapture"
+                && span.style.fg == Some(palette().accent)),
+    );
+}
+
+#[test]
+fn transcript_renders_exploration_commands_with_summary_detail() {
+    let mut state = TuiState {
+        main_pane: MainPaneMode::Transcript,
+        ..TuiState::default()
+    };
+    state.transcript = vec![TranscriptEntry::tool(
+        TranscriptToolStatus::Finished,
+        "exec_command",
+        vec![command_tool_detail("sed -n '1,200p' src/lib.rs tests.rs")],
+    )];
+
+    let rendered = build_transcript_lines(&state);
+
+    assert!(
+        rendered
+            .iter()
+            .any(|line| line_text_for(line).contains("Explored"))
+    );
+    assert!(
+        rendered
+            .iter()
+            .any(|line| line_text_for(line).contains("Read lib.rs, tests.rs"))
+    );
+}
+
+#[test]
+fn transcript_colors_completed_command_marker_from_typed_completion_state() {
+    let mut state = TuiState {
+        main_pane: MainPaneMode::Transcript,
+        ..TuiState::default()
+    };
+    state.transcript = vec![TranscriptEntry::tool_with_completion(
+        TranscriptToolStatus::Finished,
+        "exec_command",
+        vec![command_tool_detail("cargo test -- --nocapture")],
+        ToolCompletionState::Failure,
+    )];
+
+    let rendered = build_transcript_lines(&state);
+    let line = rendered
+        .iter()
+        .find(|line| line_text_for(line).contains("Ran cargo test -- --nocapture"))
+        .expect("expected completed command headline");
+
+    assert_eq!(line.spans[0].content.as_ref(), "•");
+    assert_eq!(line.spans[0].style.fg, Some(palette().error));
 }
 
 #[test]
@@ -1051,7 +1147,7 @@ fn live_progress_hides_queue_count_while_pending_picker_is_open() {
     let rendered = live_progress_lines(&state);
     let text = line_text_for(&rendered[0]);
 
-    assert!(text.contains("Working · exec_command"));
+    assert!(text.contains("Working · Running cargo test"));
     assert!(!text.contains("queued behind current tool"));
 }
 
@@ -1073,7 +1169,7 @@ fn transcript_hides_progress_line_while_tool_cell_is_active() {
 
     let running_count = rendered
         .iter()
-        .filter(|line| line_text_for(line).contains("exec_command [running]"))
+        .filter(|line| line_text_for(line) == "• Running cargo test")
         .count();
     assert_eq!(running_count, 1);
     assert!(
@@ -1084,7 +1180,7 @@ fn transcript_hides_progress_line_while_tool_cell_is_active() {
     assert!(
         rendered
             .iter()
-            .any(|line| line_text_for(line).contains("Working · exec_command"))
+            .any(|line| line_text_for(line).contains("Working · Running cargo test"))
     );
 }
 
@@ -1120,7 +1216,7 @@ fn transcript_merges_pending_controls_into_the_active_tool_timeline_cell() {
 
     let running_count = rendered
         .iter()
-        .filter(|line| line_text_for(line).contains("exec_command [running]"))
+        .filter(|line| line_text_for(line) == "• Running cargo test")
         .count();
     assert_eq!(running_count, 1);
     let queued_headline = rendered
@@ -1545,7 +1641,7 @@ fn running_tool_transcript_entry() -> TranscriptEntry {
     TranscriptEntry::tool(
         TranscriptToolStatus::Running,
         "exec_command",
-        vec![ToolDetail::Command("$ cargo test".to_string())],
+        vec![command_tool_detail("cargo test")],
     )
 }
 
@@ -1559,7 +1655,7 @@ fn active_tool_entry(
         entry: crate::frontend::tui::state::TranscriptToolEntry::new(
             status,
             tool_name,
-            vec![ToolDetail::Command("$ cargo test".to_string())],
+            vec![command_tool_detail("cargo test")],
         ),
     }
 }
@@ -1569,11 +1665,15 @@ fn finished_tool_transcript_entry() -> TranscriptEntry {
         TranscriptToolStatus::Finished,
         "exec_command",
         vec![
-            ToolDetail::Command("$ cargo test".to_string()),
+            command_tool_detail("cargo test"),
             ToolDetail::Meta("exit 0".to_string()),
             ToolDetail::TextBlock(vec!["ok".to_string()]),
         ],
     )
+}
+
+fn command_tool_detail(command: &str) -> ToolDetail {
+    ToolDetail::Command(ToolCommand::from_preview(&format!("$ {command}")))
 }
 
 fn reviewable_tool_transcript_entry() -> TranscriptEntry {

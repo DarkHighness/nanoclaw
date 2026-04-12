@@ -12,7 +12,10 @@ use super::transcript::TranscriptEntryKind;
 use super::transcript_markdown::render_shell_code_block;
 use super::transcript_markdown_blocks::code_span;
 use super::transcript_markdown_line::render_transcript_body_line;
-use crate::tool_render::{ToolDetail, ToolDetailBlockKind, ToolDetailLabel};
+use crate::tool_render::{
+    ToolCommand, ToolCommandIntent, ToolCompletionState, ToolDetail, ToolDetailBlockKind,
+    ToolDetailLabel, ToolRenderKind,
+};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use std::time::Instant;
@@ -69,7 +72,8 @@ pub(super) fn render_collapsed_tool_entry(
             ),
         ]));
     }
-    prefix_transcript_marker(&mut rendered, marker, accent, kind);
+    let _ = (marker, accent);
+    prefix_tool_marker(&mut rendered, &preview, kind, animation_frame);
     rendered
 }
 
@@ -435,12 +439,21 @@ fn render_animated_tool_status_line(
 ) -> Option<Line<'static>> {
     let frame_ms = animation_frame?;
     let _ = (marker, kind);
-    let (status_label, accent) = tool_status_label(entry.status);
-    let mut spans = tool_name_spans(&entry.tool_name);
-    spans.push(Span::styled(" ", Style::default().fg(palette().subtle)));
-    spans.push(Span::styled("[", Style::default().fg(palette().subtle)));
-    spans.extend(animated_status_phrase_spans(status_label, frame_ms, accent));
-    spans.push(Span::styled("]", Style::default().fg(palette().subtle)));
+    let headline = tool_headline(entry);
+    if !matches!(
+        entry.status,
+        TranscriptToolStatus::Running
+            | TranscriptToolStatus::Requested
+            | TranscriptToolStatus::WaitingApproval
+    ) {
+        return Some(render_tool_status_line(entry));
+    }
+
+    let mut spans = animated_status_phrase_spans(headline.verb, frame_ms, headline.accent);
+    if let Some(subject) = headline.subject {
+        spans.push(Span::styled(" ", Style::default().fg(palette().subtle)));
+        spans.extend(render_tool_subject_spans(subject));
+    }
     Some(Line::from(spans))
 }
 
@@ -459,6 +472,24 @@ pub(super) fn prefix_transcript_marker(
             marker.to_string(),
             transcript_marker_style(marker, accent, kind),
         ),
+        Span::raw(" "),
+    ];
+    spans.extend(lines[index].spans.clone());
+    lines[index] = Line::from(spans);
+}
+
+pub(super) fn prefix_tool_marker(
+    lines: &mut [Line<'static>],
+    entry: &TranscriptToolEntry,
+    kind: TranscriptEntryKind,
+    animation_frame: Option<u128>,
+) {
+    let index = lines
+        .iter()
+        .position(line_has_visible_content)
+        .unwrap_or_default();
+    let mut spans = vec![
+        tool_marker_span(entry, kind, animation_frame),
         Span::raw(" "),
     ];
     spans.extend(lines[index].spans.clone());
@@ -508,6 +539,40 @@ pub(super) fn transcript_body_style(marker: &str, kind: TranscriptEntryKind, _li
     }
 }
 
+fn tool_marker_span(
+    entry: &TranscriptToolEntry,
+    kind: TranscriptEntryKind,
+    animation_frame: Option<u128>,
+) -> Span<'static> {
+    let marker = entry.marker();
+    let accent = tool_status_accent(entry.status, entry.completion);
+    if entry.status == TranscriptToolStatus::Running
+        && let Some(frame_ms) = animation_frame
+    {
+        return animated_tool_marker(marker, frame_ms);
+    }
+    Span::styled(
+        marker.to_string(),
+        transcript_marker_style(marker, accent, kind).add_modifier(Modifier::BOLD),
+    )
+}
+
+fn animated_tool_marker(marker: &str, frame_ms: u128) -> Span<'static> {
+    let phase = ((frame_ms / 160) % 6) as usize;
+    let (color, modifier) = match phase {
+        0 => (palette().subtle, Modifier::empty()),
+        1 => (palette().muted, Modifier::empty()),
+        2 => (palette().text, Modifier::empty()),
+        3 => (palette().assistant, Modifier::BOLD),
+        4 => (palette().header, Modifier::BOLD),
+        _ => (palette().user, Modifier::BOLD),
+    };
+    Span::styled(
+        marker.to_string(),
+        Style::default().fg(color).add_modifier(modifier),
+    )
+}
+
 fn render_shell_detail(
     detail: &TranscriptShellDetail,
     kind: TranscriptEntryKind,
@@ -542,10 +607,7 @@ fn render_shell_detail(
 
 fn render_tool_detail(detail: &ToolDetail, kind: TranscriptEntryKind) -> Vec<Line<'static>> {
     match detail {
-        ToolDetail::Command(command) => vec![detail_line(
-            false,
-            labeled_detail_spans("command", palette().accent, vec![code_span(command)]),
-        )],
+        ToolDetail::Command(command) => render_command_detail(command),
         ToolDetail::Meta(text) => vec![detail_line(
             false,
             labeled_detail_spans(
@@ -584,6 +646,28 @@ fn render_tool_detail(detail: &ToolDetail, kind: TranscriptEntryKind) -> Vec<Lin
             kind: block_kind,
             lines,
         } => render_named_tool_block(label, *block_kind, lines),
+    }
+}
+
+fn render_command_detail(command: &ToolCommand) -> Vec<Line<'static>> {
+    match command.intent {
+        ToolCommandIntent::Explore => {
+            let summary = command
+                .summary_line()
+                .unwrap_or_else(|| command.preview_line());
+            vec![detail_line(
+                false,
+                vec![Span::styled(summary, Style::default().fg(palette().text))],
+            )]
+        }
+        ToolCommandIntent::Execute => vec![detail_line(
+            false,
+            labeled_detail_spans(
+                "command",
+                palette().accent,
+                shell_command_spans(&command.raw),
+            ),
+        )],
     }
 }
 
@@ -714,25 +798,177 @@ fn render_labeled_tool_block(label: &ToolDetailLabel, lines: &[String]) -> Vec<L
 }
 
 fn render_tool_status_line(entry: &TranscriptToolEntry) -> Line<'static> {
-    let (status_label, accent) = tool_status_label(entry.status);
-    let mut spans = tool_name_spans(&entry.tool_name);
-    spans.push(Span::styled(" ", Style::default().fg(palette().subtle)));
-    spans.push(Span::styled("[", Style::default().fg(palette().subtle)));
-    spans.push(Span::styled(
-        status_label.to_string(),
-        Style::default().fg(accent).add_modifier(Modifier::BOLD),
-    ));
-    spans.push(Span::styled("]", Style::default().fg(palette().subtle)));
+    let headline = tool_headline(entry);
+    let mut spans = vec![Span::styled(
+        headline.verb.to_string(),
+        Style::default()
+            .fg(headline.accent)
+            .add_modifier(Modifier::BOLD),
+    )];
+    if let Some(subject) = headline.subject {
+        spans.push(Span::styled(" ", Style::default().fg(palette().subtle)));
+        spans.extend(render_tool_subject_spans(subject));
+    }
     Line::from(spans)
 }
 
-fn tool_name_spans(tool_name: &str) -> Vec<Span<'static>> {
-    vec![Span::styled(
-        tool_name.to_string(),
-        Style::default()
-            .fg(palette().header)
-            .add_modifier(Modifier::BOLD),
-    )]
+#[derive(Clone, Copy)]
+struct ToolHeadline<'a> {
+    verb: &'static str,
+    accent: Color,
+    subject: Option<ToolHeadlineSubject<'a>>,
+}
+
+#[derive(Clone, Copy)]
+enum ToolHeadlineSubject<'a> {
+    Command(&'a ToolCommand),
+    Text(&'a str),
+}
+
+fn tool_headline(entry: &TranscriptToolEntry) -> ToolHeadline<'_> {
+    let accent = tool_status_accent(entry.status, entry.completion);
+    if let Some(command) = first_tool_command(entry) {
+        if command.intent == ToolCommandIntent::Explore {
+            return ToolHeadline {
+                verb: exploration_verb(entry.status),
+                accent,
+                subject: None,
+            };
+        }
+        return ToolHeadline {
+            verb: command_verb(entry.status),
+            accent,
+            subject: Some(ToolHeadlineSubject::Command(command)),
+        };
+    }
+
+    let kind = ToolRenderKind::classify(&entry.tool_name);
+    let (verb, subject) = tool_kind_headline(kind, entry.status, &entry.tool_name);
+    ToolHeadline {
+        verb,
+        accent,
+        subject,
+    }
+}
+
+fn tool_kind_headline<'a>(
+    kind: ToolRenderKind,
+    status: TranscriptToolStatus,
+    tool_name: &'a str,
+) -> (&'static str, Option<ToolHeadlineSubject<'a>>) {
+    match kind {
+        ToolRenderKind::UpdatePlan => (
+            lifecycle_verb(status, "Updating plan", "Updated plan"),
+            None,
+        ),
+        ToolRenderKind::UpdateExecution => (
+            lifecycle_verb(status, "Updating execution", "Updated execution"),
+            None,
+        ),
+        ToolRenderKind::SendInput => (
+            lifecycle_verb(status, "Sending follow-up", "Sent follow-up"),
+            None,
+        ),
+        ToolRenderKind::SpawnAgent => (
+            lifecycle_verb(status, "Spawning agent", "Spawned agent"),
+            None,
+        ),
+        ToolRenderKind::WaitAgent => (
+            lifecycle_verb(status, "Waiting on agents", "Waited on agents"),
+            None,
+        ),
+        ToolRenderKind::ResumeAgent => (
+            lifecycle_verb(status, "Resuming agent", "Resumed agent"),
+            None,
+        ),
+        ToolRenderKind::CloseAgent => (
+            lifecycle_verb(status, "Closing agent", "Closed agent"),
+            None,
+        ),
+        ToolRenderKind::FileMutation => (
+            lifecycle_verb(status, "Editing files", "Updated files"),
+            None,
+        ),
+        ToolRenderKind::ExecCommand | ToolRenderKind::WriteStdin | ToolRenderKind::Generic => (
+            generic_tool_verb(status),
+            Some(ToolHeadlineSubject::Text(tool_name)),
+        ),
+    }
+}
+
+fn lifecycle_verb(
+    status: TranscriptToolStatus,
+    running: &'static str,
+    finished: &'static str,
+) -> &'static str {
+    match status {
+        TranscriptToolStatus::Requested => running,
+        TranscriptToolStatus::WaitingApproval => "Awaiting approval",
+        TranscriptToolStatus::Approved => "Approved",
+        TranscriptToolStatus::Running => running,
+        TranscriptToolStatus::Finished => finished,
+        TranscriptToolStatus::Denied => "Denied",
+        TranscriptToolStatus::Failed => "Failed",
+        TranscriptToolStatus::Cancelled => "Cancelled",
+    }
+}
+
+fn generic_tool_verb(status: TranscriptToolStatus) -> &'static str {
+    match status {
+        TranscriptToolStatus::Requested => "Calling",
+        TranscriptToolStatus::WaitingApproval => "Awaiting approval",
+        TranscriptToolStatus::Approved => "Approved",
+        TranscriptToolStatus::Running => "Calling",
+        TranscriptToolStatus::Finished => "Called",
+        TranscriptToolStatus::Denied => "Denied",
+        TranscriptToolStatus::Failed => "Failed",
+        TranscriptToolStatus::Cancelled => "Cancelled",
+    }
+}
+
+fn command_verb(status: TranscriptToolStatus) -> &'static str {
+    match status {
+        TranscriptToolStatus::Requested => "Will run",
+        TranscriptToolStatus::WaitingApproval => "Awaiting approval to run",
+        TranscriptToolStatus::Approved => "Approved command",
+        TranscriptToolStatus::Running => "Running",
+        TranscriptToolStatus::Finished => "Ran",
+        TranscriptToolStatus::Denied => "Denied command",
+        TranscriptToolStatus::Failed => "Command failed",
+        TranscriptToolStatus::Cancelled => "Cancelled command",
+    }
+}
+
+fn exploration_verb(status: TranscriptToolStatus) -> &'static str {
+    match status {
+        TranscriptToolStatus::Requested => "Will explore",
+        TranscriptToolStatus::WaitingApproval => "Awaiting approval to explore",
+        TranscriptToolStatus::Approved => "Approved exploration",
+        TranscriptToolStatus::Running => "Exploring",
+        TranscriptToolStatus::Finished => "Explored",
+        TranscriptToolStatus::Denied => "Denied exploration",
+        TranscriptToolStatus::Failed => "Exploration failed",
+        TranscriptToolStatus::Cancelled => "Cancelled exploration",
+    }
+}
+
+fn first_tool_command(entry: &TranscriptToolEntry) -> Option<&ToolCommand> {
+    entry.detail_lines.iter().find_map(|detail| match detail {
+        ToolDetail::Command(command) => Some(command),
+        _ => None,
+    })
+}
+
+fn render_tool_subject_spans(subject: ToolHeadlineSubject<'_>) -> Vec<Span<'static>> {
+    match subject {
+        ToolHeadlineSubject::Command(command) => shell_command_spans(&command.raw),
+        ToolHeadlineSubject::Text(text) => vec![Span::styled(
+            text.to_string(),
+            Style::default()
+                .fg(palette().header)
+                .add_modifier(Modifier::BOLD),
+        )],
+    }
 }
 
 fn detail_line(continuation: bool, mut spans: Vec<Span<'static>>) -> Line<'static> {
@@ -799,6 +1035,139 @@ fn tool_action_spans(key_hint: &str, label: &str, detail: Option<&str>) -> Vec<S
         ));
     }
     spans
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ShellTokenKind {
+    Whitespace,
+    Command,
+    Flag,
+    String,
+    Operator,
+    Env,
+    Path,
+    Text,
+}
+
+fn shell_command_spans(command: &str) -> Vec<Span<'static>> {
+    tokenize_shell_command(command)
+        .into_iter()
+        .map(|(token, kind)| Span::styled(token, shell_token_style(kind)))
+        .collect()
+}
+
+fn shell_token_style(kind: ShellTokenKind) -> Style {
+    match kind {
+        ShellTokenKind::Whitespace => Style::default().fg(palette().subtle),
+        ShellTokenKind::Command => Style::default()
+            .fg(palette().header)
+            .add_modifier(Modifier::BOLD),
+        ShellTokenKind::Flag => Style::default().fg(palette().accent),
+        ShellTokenKind::String => Style::default().fg(palette().assistant),
+        ShellTokenKind::Operator => Style::default()
+            .fg(palette().subtle)
+            .add_modifier(Modifier::BOLD),
+        ShellTokenKind::Env => Style::default().fg(palette().user),
+        ShellTokenKind::Path => Style::default().fg(palette().text),
+        ShellTokenKind::Text => Style::default().fg(palette().muted),
+    }
+}
+
+fn tokenize_shell_command(command: &str) -> Vec<(String, ShellTokenKind)> {
+    let chars = command.chars().collect::<Vec<_>>();
+    let mut tokens = Vec::new();
+    let mut index = 0usize;
+    let mut expect_command = true;
+
+    while index < chars.len() {
+        let ch = chars[index];
+        if ch.is_whitespace() {
+            let start = index;
+            while index < chars.len() && chars[index].is_whitespace() {
+                index += 1;
+            }
+            tokens.push((
+                chars[start..index].iter().collect(),
+                ShellTokenKind::Whitespace,
+            ));
+            continue;
+        }
+
+        if is_shell_operator_char(ch) {
+            let start = index;
+            index += 1;
+            while index < chars.len() && is_shell_operator_char(chars[index]) {
+                index += 1;
+            }
+            let token = chars[start..index].iter().collect::<String>();
+            if resets_shell_command_position(&token) {
+                expect_command = true;
+            }
+            tokens.push((token, ShellTokenKind::Operator));
+            continue;
+        }
+
+        let start = index;
+        let kind = if matches!(ch, '\'' | '"') {
+            let quote = ch;
+            index += 1;
+            while index < chars.len() {
+                let current = chars[index];
+                index += 1;
+                if current == quote {
+                    break;
+                }
+                if quote == '"' && current == '\\' && index < chars.len() {
+                    index += 1;
+                }
+            }
+            ShellTokenKind::String
+        } else {
+            while index < chars.len()
+                && !chars[index].is_whitespace()
+                && !is_shell_operator_char(chars[index])
+            {
+                index += 1;
+            }
+            classify_shell_word(
+                &chars[start..index].iter().collect::<String>(),
+                expect_command,
+            )
+        };
+        let token = chars[start..index].iter().collect::<String>();
+        if !matches!(kind, ShellTokenKind::Whitespace | ShellTokenKind::Operator)
+            && !matches!(kind, ShellTokenKind::Env)
+        {
+            expect_command = false;
+        }
+        tokens.push((token, kind));
+    }
+
+    tokens
+}
+
+fn classify_shell_word(token: &str, expect_command: bool) -> ShellTokenKind {
+    if expect_command && token.contains('=') && !token.starts_with('-') {
+        return ShellTokenKind::Env;
+    }
+    if expect_command {
+        return ShellTokenKind::Command;
+    }
+    if token.starts_with('-') {
+        return ShellTokenKind::Flag;
+    }
+    if token.contains('/') || token.starts_with('.') || token.starts_with('~') {
+        return ShellTokenKind::Path;
+    }
+    ShellTokenKind::Text
+}
+
+fn is_shell_operator_char(ch: char) -> bool {
+    matches!(ch, '|' | '&' | ';' | '(' | ')' | '<' | '>')
+}
+
+fn resets_shell_command_position(token: &str) -> bool {
+    matches!(token, "|" | "||" | "&&" | ";")
 }
 
 fn tool_detail_label_color(label: ToolDetailLabel) -> Color {
@@ -1289,11 +1658,11 @@ fn live_progress_summary(state: &TuiState) -> String {
 fn live_tool_progress_label(state: &TuiState) -> Option<String> {
     match state.active_tools.as_slice() {
         [] => None,
-        [active] => Some(active.entry.tool_name.clone()),
+        [active] => Some(tool_progress_label(&active.entry)),
         active_tools => {
             let names = active_tools
                 .iter()
-                .map(|active| active.entry.tool_name.as_str())
+                .map(|active| tool_progress_label(&active.entry))
                 .collect::<Vec<_>>()
                 .join(", ");
             Some(preview_text(
@@ -1314,22 +1683,33 @@ fn progress_marker(state: &TuiState) -> &'static str {
     }
 }
 
-fn tool_status_label(status: TranscriptToolStatus) -> (&'static str, Color) {
-    match status {
-        TranscriptToolStatus::WaitingApproval => ("awaiting approval", palette().warn),
-        TranscriptToolStatus::Requested => ("requested", palette().warn),
-        TranscriptToolStatus::Running => ("running", palette().user),
-        TranscriptToolStatus::Finished => ("finished", palette().assistant),
-        TranscriptToolStatus::Approved => ("approved", palette().assistant),
-        TranscriptToolStatus::Denied => ("denied", palette().error),
-        TranscriptToolStatus::Cancelled => ("cancelled", palette().error),
-        TranscriptToolStatus::Failed => ("failed", palette().error),
+fn tool_progress_label(entry: &TranscriptToolEntry) -> String {
+    let headline = tool_headline(entry);
+    match headline.subject {
+        Some(ToolHeadlineSubject::Command(command)) => {
+            format!("{} {}", headline.verb, preview_text(&command.raw, 28))
+        }
+        Some(ToolHeadlineSubject::Text(subject)) => format!("{} {}", headline.verb, subject),
+        None => headline.verb.to_string(),
     }
 }
 
-pub(super) fn tool_status_accent(status: TranscriptToolStatus) -> Color {
-    let (_, accent) = tool_status_label(status);
-    accent
+pub(super) fn tool_status_accent(
+    status: TranscriptToolStatus,
+    completion: ToolCompletionState,
+) -> Color {
+    match status {
+        TranscriptToolStatus::Requested | TranscriptToolStatus::WaitingApproval => palette().warn,
+        TranscriptToolStatus::Running => palette().user,
+        TranscriptToolStatus::Approved => palette().assistant,
+        TranscriptToolStatus::Finished => match completion {
+            ToolCompletionState::Failure => palette().error,
+            ToolCompletionState::Neutral | ToolCompletionState::Success => palette().assistant,
+        },
+        TranscriptToolStatus::Denied
+        | TranscriptToolStatus::Failed
+        | TranscriptToolStatus::Cancelled => palette().error,
+    }
 }
 
 pub(super) fn shell_status_accent(status: Option<TranscriptShellStatus>) -> Color {

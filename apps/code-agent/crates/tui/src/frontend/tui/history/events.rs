@@ -360,10 +360,14 @@ pub(crate) fn format_session_event_line(event: &SessionEventEnvelope) -> Transcr
                 &output.text_content(),
                 output.structured_content.as_ref(),
             ));
-            TranscriptEntry::tool(
+            TranscriptEntry::tool_with_completion(
                 TranscriptToolStatus::Finished,
                 call.tool_name.to_string(),
                 detail_lines,
+                crate::tool_render::tool_completion_state(
+                    call.tool_name.as_str(),
+                    output.structured_content.as_ref(),
+                ),
             )
         }
         SessionEventKind::ToolCallFailed { call, error } => {

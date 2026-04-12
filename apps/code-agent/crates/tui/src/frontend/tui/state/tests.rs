@@ -7,7 +7,7 @@ use super::{
     page_scroll_amount,
 };
 use crate::theme::ThemeSummary;
-use crate::tool_render::{ToolDetail, ToolDetailLabel, ToolReview, ToolReviewFile};
+use crate::tool_render::{ToolCommand, ToolDetail, ToolDetailLabel, ToolReview, ToolReviewFile};
 use agent::types::{
     Message, MessageId, MessagePart, MessageRole, SubmittedPromptAttachment,
     SubmittedPromptAttachmentKind, SubmittedPromptSnapshot,
@@ -159,7 +159,7 @@ fn transcript_selection_moves_between_tool_entries_only() {
         TranscriptEntry::tool(
             TranscriptToolStatus::Running,
             "exec_command",
-            vec![ToolDetail::Command("$ cargo test".to_string())],
+            vec![command_tool_detail("cargo test")],
         ),
         TranscriptEntry::UserPrompt("prompt".to_string()),
         TranscriptEntry::tool(
@@ -238,7 +238,7 @@ fn tool_selection_cycles_across_committed_and_live_tools() {
         entry: TranscriptToolEntry::new(
             TranscriptToolStatus::Running,
             "exec_command",
-            vec![ToolDetail::Command("$ cargo test".to_string())],
+            vec![command_tool_detail("cargo test")],
         ),
     }];
 
@@ -253,6 +253,10 @@ fn tool_selection_cycles_across_committed_and_live_tools() {
         state.tool_selection,
         Some(ToolSelectionTarget::Live("call-1".to_string()))
     );
+}
+
+fn command_tool_detail(command: &str) -> ToolDetail {
+    ToolDetail::Command(ToolCommand::from_preview(&format!("$ {command}")))
 }
 
 #[test]

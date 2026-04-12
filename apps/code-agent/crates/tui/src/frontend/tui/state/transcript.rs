@@ -285,31 +285,127 @@ pub(crate) enum TranscriptToolStatus {
 }
 
 impl TranscriptToolStatus {
-    fn headline(self, tool_name: &str) -> String {
-        match self {
-            Self::Requested => format!("Requested {tool_name}"),
-            Self::WaitingApproval => format!("Awaiting approval for {tool_name}"),
-            Self::Approved => format!("Approved {tool_name}"),
-            Self::Running => format!("Running {tool_name}"),
-            Self::Finished => format!("Finished {tool_name}"),
-            Self::Denied => format!("Denied {tool_name}"),
-            Self::Failed => format!("{tool_name} failed"),
-            Self::Cancelled => format!("Cancelled {tool_name}"),
+    fn marker(self) -> &'static str {
+        let _ = self;
+        "•"
+    }
+}
+
+fn default_tool_completion(status: TranscriptToolStatus) -> ToolCompletionState {
+    match status {
+        TranscriptToolStatus::Requested
+        | TranscriptToolStatus::WaitingApproval
+        | TranscriptToolStatus::Running => ToolCompletionState::Neutral,
+        TranscriptToolStatus::Denied
+        | TranscriptToolStatus::Failed
+        | TranscriptToolStatus::Cancelled => ToolCompletionState::Failure,
+        TranscriptToolStatus::Approved | TranscriptToolStatus::Finished => {
+            ToolCompletionState::Success
         }
     }
+}
 
-    fn marker(self) -> &'static str {
-        match self {
-            Self::Approved => "✔",
-            Self::Denied | Self::Failed | Self::Cancelled => "✗",
-            Self::Requested | Self::WaitingApproval | Self::Running | Self::Finished => "•",
+fn tool_headline_text(
+    status: TranscriptToolStatus,
+    tool_name: &str,
+    detail_lines: &[ToolDetail],
+) -> String {
+    if let Some(command) = detail_lines.iter().find_map(|detail| match detail {
+        ToolDetail::Command(command) => Some(command),
+        _ => None,
+    }) {
+        return if command.intent == ToolCommandIntent::Explore {
+            exploration_headline_text(status).to_string()
+        } else {
+            format!("{} {}", command_headline_text(status), command.raw)
+        };
+    }
+
+    match ToolRenderKind::classify(tool_name) {
+        ToolRenderKind::UpdatePlan => {
+            lifecycle_headline_text(status, "Updating plan", "Updated plan")
         }
+        ToolRenderKind::UpdateExecution => {
+            lifecycle_headline_text(status, "Updating execution", "Updated execution")
+        }
+        ToolRenderKind::SendInput => {
+            lifecycle_headline_text(status, "Sending follow-up", "Sent follow-up")
+        }
+        ToolRenderKind::SpawnAgent => {
+            lifecycle_headline_text(status, "Spawning agent", "Spawned agent")
+        }
+        ToolRenderKind::WaitAgent => {
+            lifecycle_headline_text(status, "Waiting on agents", "Waited on agents")
+        }
+        ToolRenderKind::ResumeAgent => {
+            lifecycle_headline_text(status, "Resuming agent", "Resumed agent")
+        }
+        ToolRenderKind::CloseAgent => {
+            lifecycle_headline_text(status, "Closing agent", "Closed agent")
+        }
+        ToolRenderKind::FileMutation => {
+            lifecycle_headline_text(status, "Editing files", "Updated files")
+        }
+        ToolRenderKind::ExecCommand | ToolRenderKind::WriteStdin | ToolRenderKind::Generic => {
+            format!("{} {}", generic_headline_text(status), tool_name)
+        }
+    }
+}
+
+fn lifecycle_headline_text(status: TranscriptToolStatus, running: &str, finished: &str) -> String {
+    match status {
+        TranscriptToolStatus::Requested | TranscriptToolStatus::Running => running.to_string(),
+        TranscriptToolStatus::WaitingApproval => "Awaiting approval".to_string(),
+        TranscriptToolStatus::Approved => "Approved".to_string(),
+        TranscriptToolStatus::Finished => finished.to_string(),
+        TranscriptToolStatus::Denied => "Denied".to_string(),
+        TranscriptToolStatus::Failed => "Failed".to_string(),
+        TranscriptToolStatus::Cancelled => "Cancelled".to_string(),
+    }
+}
+
+fn generic_headline_text(status: TranscriptToolStatus) -> &'static str {
+    match status {
+        TranscriptToolStatus::Requested | TranscriptToolStatus::Running => "Calling",
+        TranscriptToolStatus::WaitingApproval => "Awaiting approval",
+        TranscriptToolStatus::Approved => "Approved",
+        TranscriptToolStatus::Finished => "Called",
+        TranscriptToolStatus::Denied => "Denied",
+        TranscriptToolStatus::Failed => "Failed",
+        TranscriptToolStatus::Cancelled => "Cancelled",
+    }
+}
+
+fn command_headline_text(status: TranscriptToolStatus) -> &'static str {
+    match status {
+        TranscriptToolStatus::Requested => "Will run",
+        TranscriptToolStatus::WaitingApproval => "Awaiting approval to run",
+        TranscriptToolStatus::Approved => "Approved command",
+        TranscriptToolStatus::Running => "Running",
+        TranscriptToolStatus::Finished => "Ran",
+        TranscriptToolStatus::Denied => "Denied command",
+        TranscriptToolStatus::Failed => "Command failed",
+        TranscriptToolStatus::Cancelled => "Cancelled command",
+    }
+}
+
+fn exploration_headline_text(status: TranscriptToolStatus) -> &'static str {
+    match status {
+        TranscriptToolStatus::Requested => "Will explore",
+        TranscriptToolStatus::WaitingApproval => "Awaiting approval to explore",
+        TranscriptToolStatus::Approved => "Approved exploration",
+        TranscriptToolStatus::Running => "Exploring",
+        TranscriptToolStatus::Finished => "Explored",
+        TranscriptToolStatus::Denied => "Denied exploration",
+        TranscriptToolStatus::Failed => "Exploration failed",
+        TranscriptToolStatus::Cancelled => "Cancelled exploration",
     }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct TranscriptToolEntry {
     pub(crate) status: TranscriptToolStatus,
+    pub(crate) completion: ToolCompletionState,
     pub(crate) tool_name: String,
     pub(crate) headline: String,
     pub(crate) detail_lines: Vec<ToolDetail>,
@@ -322,19 +418,43 @@ impl TranscriptToolEntry {
         tool_name: impl Into<String>,
         detail_lines: Vec<ToolDetail>,
     ) -> Self {
-        Self::new_with_review(status, tool_name, detail_lines, None)
+        Self::new_with_review_and_completion(
+            status,
+            tool_name,
+            detail_lines,
+            None,
+            default_tool_completion(status),
+        )
     }
 
+    #[cfg(test)]
     pub(crate) fn new_with_review(
         status: TranscriptToolStatus,
         tool_name: impl Into<String>,
         detail_lines: Vec<ToolDetail>,
         review: Option<ToolReview>,
     ) -> Self {
+        Self::new_with_review_and_completion(
+            status,
+            tool_name,
+            detail_lines,
+            review,
+            default_tool_completion(status),
+        )
+    }
+
+    pub(crate) fn new_with_review_and_completion(
+        status: TranscriptToolStatus,
+        tool_name: impl Into<String>,
+        detail_lines: Vec<ToolDetail>,
+        review: Option<ToolReview>,
+        completion: ToolCompletionState,
+    ) -> Self {
         let tool_name = tool_name.into();
-        let headline = status.headline(&tool_name);
+        let headline = tool_headline_text(status, &tool_name, &detail_lines);
         Self {
             status,
+            completion,
             tool_name,
             headline,
             detail_lines,
@@ -359,6 +479,7 @@ impl TranscriptToolEntry {
     pub(crate) fn preview_with_detail_lines(&self, max_lines: usize) -> Self {
         Self {
             status: self.status,
+            completion: self.completion,
             tool_name: self.tool_name.clone(),
             headline: self.headline.clone(),
             detail_lines: preview_tool_details(&self.detail_lines, max_lines),
@@ -508,6 +629,22 @@ impl TranscriptEntry {
         Self::Tool(TranscriptToolEntry::new(status, tool_name, detail_lines))
     }
 
+    pub(crate) fn tool_with_completion(
+        status: TranscriptToolStatus,
+        tool_name: impl Into<String>,
+        detail_lines: Vec<ToolDetail>,
+        completion: ToolCompletionState,
+    ) -> Self {
+        Self::Tool(TranscriptToolEntry::new_with_review_and_completion(
+            status,
+            tool_name,
+            detail_lines,
+            None,
+            completion,
+        ))
+    }
+
+    #[cfg(test)]
     pub(crate) fn tool_with_review(
         status: TranscriptToolStatus,
         tool_name: impl Into<String>,
@@ -519,6 +656,22 @@ impl TranscriptEntry {
             tool_name,
             detail_lines,
             review,
+        ))
+    }
+
+    pub(crate) fn tool_with_review_and_completion(
+        status: TranscriptToolStatus,
+        tool_name: impl Into<String>,
+        detail_lines: Vec<ToolDetail>,
+        review: Option<ToolReview>,
+        completion: ToolCompletionState,
+    ) -> Self {
+        Self::Tool(TranscriptToolEntry::new_with_review_and_completion(
+            status,
+            tool_name,
+            detail_lines,
+            review,
+            completion,
         ))
     }
 

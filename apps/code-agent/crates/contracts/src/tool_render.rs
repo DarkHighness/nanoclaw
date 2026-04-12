@@ -76,6 +76,82 @@ impl ToolDetailLabel {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ToolCompletionState {
+    #[default]
+    Neutral,
+    Success,
+    Failure,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ToolCommandIntent {
+    Execute,
+    Explore,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ToolCommandSummaryVerb {
+    List,
+    Read,
+    Search,
+    Inspect,
+}
+
+impl ToolCommandSummaryVerb {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::List => "List",
+            Self::Read => "Read",
+            Self::Search => "Search",
+            Self::Inspect => "Inspect",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ToolCommandSummary {
+    pub verb: ToolCommandSummaryVerb,
+    pub subject: String,
+}
+
+impl ToolCommandSummary {
+    pub fn line(&self) -> String {
+        if self.subject.trim().is_empty() {
+            self.verb.as_str().to_string()
+        } else {
+            format!("{} {}", self.verb.as_str(), self.subject)
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ToolCommand {
+    pub raw: String,
+    pub intent: ToolCommandIntent,
+    pub summary: Option<ToolCommandSummary>,
+}
+
+impl ToolCommand {
+    pub fn from_preview(preview_line: &str) -> Self {
+        let raw = preview_line
+            .trim()
+            .strip_prefix("$ ")
+            .unwrap_or(preview_line.trim())
+            .trim()
+            .to_string();
+        classify_tool_command(&raw)
+    }
+
+    pub fn preview_line(&self) -> String {
+        format!("$ {}", self.raw)
+    }
+
+    pub fn summary_line(&self) -> Option<String> {
+        self.summary.as_ref().map(ToolCommandSummary::line)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ToolReviewFile {
     pub path: String,
@@ -90,7 +166,7 @@ pub struct ToolReview {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ToolDetail {
-    Command(String),
+    Command(ToolCommand),
     Meta(String),
     LabeledValue {
         label: ToolDetailLabel,
@@ -123,7 +199,13 @@ pub fn serialize_tool_details(details: &[ToolDetail]) -> Vec<String> {
 impl ToolDetail {
     pub fn serialized_lines(&self) -> Vec<String> {
         match self {
-            Self::Command(command) | Self::Meta(command) => vec![format!("  └ {command}")],
+            Self::Command(command) => vec![format!(
+                "  └ {}",
+                command
+                    .summary_line()
+                    .unwrap_or_else(|| command.preview_line())
+            )],
+            Self::Meta(command) => vec![format!("  └ {command}")],
             Self::LabeledValue { label, value } => {
                 vec![format!("  └ {} {value}", label.as_str())]
             }
@@ -474,6 +556,297 @@ fn truncate_inline(value: &str, max_chars: usize) -> String {
     truncated
 }
 
+fn classify_tool_command(raw: &str) -> ToolCommand {
+    let tokens = shlex::split(raw).unwrap_or_default();
+    let summary = classify_exploration_summary(&tokens);
+    let intent = if summary.is_some() {
+        ToolCommandIntent::Explore
+    } else {
+        ToolCommandIntent::Execute
+    };
+    ToolCommand {
+        raw: raw.to_string(),
+        intent,
+        summary,
+    }
+}
+
+fn classify_exploration_summary(tokens: &[String]) -> Option<ToolCommandSummary> {
+    if tokens.is_empty() {
+        return None;
+    }
+
+    let segments = shell_segments(tokens);
+    if segments.is_empty() || !segments.iter().all(|segment| is_read_only_segment(segment)) {
+        return None;
+    }
+
+    classify_primary_exploration_segment(segments[0])
+}
+
+fn shell_segments(tokens: &[String]) -> Vec<&[String]> {
+    let mut segments = Vec::new();
+    let mut start = 0usize;
+    for (index, token) in tokens.iter().enumerate() {
+        if matches!(token.as_str(), "|" | "||" | "&&" | ";") {
+            if start < index {
+                segments.push(&tokens[start..index]);
+            }
+            start = index + 1;
+        }
+    }
+    if start < tokens.len() {
+        segments.push(&tokens[start..]);
+    }
+    segments
+}
+
+fn is_read_only_segment(segment: &[String]) -> bool {
+    let Some(command) = segment.first().map(String::as_str) else {
+        return false;
+    };
+    match command {
+        "ls" | "tree" | "find" | "rg" | "grep" | "cat" | "head" | "tail" | "nl" | "pwd"
+        | "stat" | "wc" => true,
+        "sed" => !segment
+            .iter()
+            .skip(1)
+            .any(|token| token == "-i" || token.starts_with("-i")),
+        "git" => matches!(
+            segment.get(1).map(String::as_str),
+            Some("status" | "diff" | "log" | "show" | "grep" | "ls-files" | "branch" | "rev-parse")
+        ),
+        _ => false,
+    }
+}
+
+fn classify_primary_exploration_segment(segment: &[String]) -> Option<ToolCommandSummary> {
+    let command = segment.first()?.as_str();
+    match command {
+        "ls" | "tree" | "find" => Some(ToolCommandSummary {
+            verb: ToolCommandSummaryVerb::List,
+            subject: summarize_listing_target(segment),
+        }),
+        "pwd" => Some(ToolCommandSummary {
+            verb: ToolCommandSummaryVerb::Inspect,
+            subject: "working directory".to_string(),
+        }),
+        "rg" | "grep" => summarize_search(segment),
+        "cat" | "head" | "tail" | "nl" => summarize_read(segment, 1),
+        "sed" => summarize_sed_read(segment),
+        "stat" | "wc" => summarize_inspect_paths(segment),
+        "git" => summarize_git_inspection(segment),
+        _ => None,
+    }
+}
+
+fn summarize_listing_target(segment: &[String]) -> String {
+    first_positional_arg(segment, 1)
+        .as_deref()
+        .map(compact_command_target)
+        .unwrap_or_else(|| ".".to_string())
+}
+
+fn summarize_search(segment: &[String]) -> Option<ToolCommandSummary> {
+    let positionals = positional_args(segment, 1);
+    let pattern = positionals
+        .first()
+        .map(|value| compact_inline_summary(value))?;
+    let subject = if let Some(scope) = positionals.get(1) {
+        format!("{pattern} in {}", compact_command_target(scope))
+    } else {
+        pattern
+    };
+    Some(ToolCommandSummary {
+        verb: ToolCommandSummaryVerb::Search,
+        subject,
+    })
+}
+
+fn summarize_read(segment: &[String], start_index: usize) -> Option<ToolCommandSummary> {
+    let files = positional_args(segment, start_index)
+        .into_iter()
+        .map(|value| compact_command_target(&value))
+        .collect::<Vec<_>>();
+    if files.is_empty() {
+        return None;
+    }
+    Some(ToolCommandSummary {
+        verb: ToolCommandSummaryVerb::Read,
+        subject: compact_subject_list(&files),
+    })
+}
+
+fn summarize_sed_read(segment: &[String]) -> Option<ToolCommandSummary> {
+    let mut script_consumed = false;
+    let mut files = Vec::new();
+
+    for token in segment.iter().skip(1) {
+        if token == "--" {
+            script_consumed = true;
+            continue;
+        }
+        if token.starts_with('-') && !script_consumed {
+            continue;
+        }
+        if !script_consumed {
+            script_consumed = true;
+            continue;
+        }
+        files.push(compact_command_target(token));
+    }
+
+    if files.is_empty() {
+        None
+    } else {
+        Some(ToolCommandSummary {
+            verb: ToolCommandSummaryVerb::Read,
+            subject: compact_subject_list(&files),
+        })
+    }
+}
+
+fn summarize_inspect_paths(segment: &[String]) -> Option<ToolCommandSummary> {
+    let targets = positional_args(segment, 1)
+        .into_iter()
+        .map(|value| compact_command_target(&value))
+        .collect::<Vec<_>>();
+    let subject = if targets.is_empty() {
+        segment.first()?.clone()
+    } else {
+        compact_subject_list(&targets)
+    };
+    Some(ToolCommandSummary {
+        verb: ToolCommandSummaryVerb::Inspect,
+        subject,
+    })
+}
+
+fn summarize_git_inspection(segment: &[String]) -> Option<ToolCommandSummary> {
+    let subcommand = segment.get(1).map(String::as_str)?;
+    let mut subject = format!("git {subcommand}");
+    let targets = positional_args(segment, 2);
+    if let Some(target) = targets.first() {
+        subject.push(' ');
+        subject.push_str(&compact_command_target(target));
+    }
+    Some(ToolCommandSummary {
+        verb: ToolCommandSummaryVerb::Inspect,
+        subject,
+    })
+}
+
+fn first_positional_arg(segment: &[String], start_index: usize) -> Option<String> {
+    positional_args(segment, start_index).into_iter().next()
+}
+
+fn positional_args(segment: &[String], start_index: usize) -> Vec<String> {
+    let mut after_double_dash = false;
+    let mut args = Vec::new();
+    for token in segment.iter().skip(start_index) {
+        if token == "--" {
+            after_double_dash = true;
+            continue;
+        }
+        if !after_double_dash && token.starts_with('-') {
+            continue;
+        }
+        args.push(token.clone());
+    }
+    args
+}
+
+fn compact_command_target(value: &str) -> String {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return ".".to_string();
+    }
+    let display = trimmed.trim_end_matches('/');
+    display
+        .rsplit('/')
+        .find(|segment| !segment.is_empty())
+        .unwrap_or(display)
+        .to_string()
+}
+
+fn compact_subject_list(values: &[String]) -> String {
+    match values {
+        [] => String::new(),
+        [only] => only.clone(),
+        _ => values.join(", "),
+    }
+}
+
+fn compact_inline_summary(value: &str) -> String {
+    truncate_inline(value.trim_matches('\'').trim_matches('"'), 48)
+}
+
+pub fn tool_completion_state_from_preview(
+    tool_name: &str,
+    structured_output_preview: Option<&str>,
+) -> ToolCompletionState {
+    let structured =
+        structured_output_preview.and_then(|raw| serde_json::from_str::<Value>(raw).ok());
+    tool_completion_state(tool_name, structured.as_ref())
+}
+
+pub fn tool_completion_state(tool_name: &str, structured: Option<&Value>) -> ToolCompletionState {
+    let Some(structured) = structured else {
+        return ToolCompletionState::Success;
+    };
+
+    if structured
+        .get("error")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .is_some()
+    {
+        return ToolCompletionState::Failure;
+    }
+
+    if structured
+        .get("timed_out")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return ToolCompletionState::Failure;
+    }
+
+    if let Some(exit_code) = structured.get("exit_code").and_then(Value::as_i64) {
+        return if exit_code == 0 {
+            ToolCompletionState::Success
+        } else {
+            ToolCompletionState::Failure
+        };
+    }
+
+    if let Some(state) = structured
+        .get("state")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return match state {
+            "failed" | "error" | "cancelled" => ToolCompletionState::Failure,
+            _ => ToolCompletionState::Success,
+        };
+    }
+
+    match ToolRenderKind::classify(tool_name) {
+        ToolRenderKind::ExecCommand | ToolRenderKind::WriteStdin => ToolCompletionState::Neutral,
+        ToolRenderKind::UpdatePlan
+        | ToolRenderKind::UpdateExecution
+        | ToolRenderKind::SendInput
+        | ToolRenderKind::SpawnAgent
+        | ToolRenderKind::WaitAgent
+        | ToolRenderKind::ResumeAgent
+        | ToolRenderKind::CloseAgent
+        | ToolRenderKind::FileMutation
+        | ToolRenderKind::Generic => ToolCompletionState::Success,
+    }
+}
+
 pub fn tool_output_detail_lines_from_preview(
     tool_name: &str,
     output_preview: &str,
@@ -595,7 +968,7 @@ pub fn tool_argument_details(preview_lines: &[String]) -> Vec<ToolDetail> {
         return Vec::new();
     }
     if lines.len() == 1 && lines[0].starts_with("$ ") {
-        return vec![ToolDetail::Command(lines[0].clone())];
+        return vec![ToolDetail::Command(ToolCommand::from_preview(&lines[0]))];
     }
 
     let mut details = vec![ToolDetail::LabeledValue {

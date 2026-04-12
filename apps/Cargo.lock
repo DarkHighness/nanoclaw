@@ -921,6 +921,7 @@ dependencies = [
  "ratatui-core",
  "serde",
  "serde_json",
+ "shlex",
  "store",
  "tempfile",
  "toml",

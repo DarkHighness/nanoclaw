@@ -7,8 +7,8 @@ use super::tool_state::{
     plan_items_from_tool_output, plan_update_entry_from_tool_output,
 };
 use crate::tool_render::{
-    ToolDetail, ToolDetailLabel, tool_argument_details, tool_output_details_from_preview,
-    tool_review_from_preview,
+    ToolDetail, ToolDetailLabel, tool_argument_details, tool_completion_state_from_preview,
+    tool_output_details_from_preview, tool_review_from_preview,
 };
 use crate::ui::{SessionEvent, SessionToolCall};
 
@@ -428,11 +428,12 @@ fn completed_tool_entry(
         output_preview,
         structured_output_preview,
     ));
-    TranscriptEntry::tool_with_review(
+    TranscriptEntry::tool_with_review_and_completion(
         TranscriptToolStatus::Finished,
         call.tool_name.clone(),
         detail_lines,
         tool_review_from_preview(&call.tool_name, structured_output_preview),
+        tool_completion_state_from_preview(&call.tool_name, structured_output_preview),
     )
 }
 
@@ -648,7 +649,7 @@ mod tests {
                 .all(|line| !transcript_text(line).contains('>'))
         );
         assert!(snapshot.transcript.iter().any(|line| transcript_text(line)
-            == "• Finished exec_command\n  └ $ ls\n  └ result exit 0\n  └ stdout\n    listed files"));
+            == "• Explored\n  └ List .\n  └ result exit 0\n  └ stdout\n    listed files"));
     }
 
     #[test]
@@ -683,7 +684,7 @@ mod tests {
         assert_eq!(snapshot.transcript.len(), 1);
         assert_eq!(
             transcript_text(&snapshot.transcript[0]),
-            "• Finished exec_command\n  └ $ ls\n  └ result exit 0\n  └ stdout\n    listed files"
+            "• Explored\n  └ List .\n  └ result exit 0\n  └ stdout\n    listed files"
         );
     }
 
@@ -854,7 +855,7 @@ mod tests {
         assert_eq!(snapshot.transcript.len(), 1);
         assert_eq!(
             transcript_text(&snapshot.transcript[0]),
-            "• Finished exec_command\n  └ $ cargo test\n  └ result exit 0\n  └ stdout\n    ok"
+            "• Ran cargo test\n  └ $ cargo test\n  └ result exit 0\n  └ stdout\n    ok"
         );
     }
 

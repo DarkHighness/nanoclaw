@@ -5,10 +5,10 @@ use super::transcript_markdown::render_markdown_body;
 use super::transcript_shell::{
     animation_frame_ms, live_progress_lines, pending_control_embedded_lines,
     pending_control_picker_bridge_entry, pending_control_picker_embedded_lines,
-    pending_control_timeline_entry, prefix_transcript_marker, render_collapsed_shell_summary,
-    render_collapsed_tool_entry, render_execution_entry, render_plan_entry,
-    render_shell_summary_entry, render_tool_entry, should_collapse_shell_details,
-    should_collapse_tool_details,
+    pending_control_timeline_entry, prefix_tool_marker, prefix_transcript_marker,
+    render_collapsed_shell_summary, render_collapsed_tool_entry, render_execution_entry,
+    render_plan_entry, render_shell_summary_entry, render_tool_entry,
+    should_collapse_shell_details, should_collapse_tool_details,
 };
 pub(super) use super::transcript_shell::{
     line_has_visible_content, line_to_plain_text, transcript_body_style,
@@ -222,7 +222,11 @@ fn format_transcript_cell_with_mode(
         return render_collapsed_shell_summary(entry, marker, accent, kind, animation_frame);
     }
     let mut rendered = render_transcript_body(entry, marker, kind, animation_frame);
-    prefix_transcript_marker(&mut rendered, marker, accent, kind);
+    if let Some(tool) = entry.tool_entry() {
+        prefix_tool_marker(&mut rendered, tool, kind, animation_frame);
+    } else {
+        prefix_transcript_marker(&mut rendered, marker, accent, kind);
+    }
     rendered
 }
 
@@ -267,7 +271,7 @@ fn entry_accent(entry: &TranscriptEntry, kind: TranscriptEntryKind) -> ratatui::
     if let Some(tool) = entry.tool_entry() {
         return match kind {
             TranscriptEntryKind::ShellSummary => {
-                super::transcript_shell::tool_status_accent(tool.status)
+                super::transcript_shell::tool_status_accent(tool.status, tool.completion)
             }
             TranscriptEntryKind::PlanUpdate => palette().muted,
             TranscriptEntryKind::ExecutionUpdate => palette().accent,

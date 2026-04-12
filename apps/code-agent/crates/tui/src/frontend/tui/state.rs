@@ -2,7 +2,8 @@ use crate::interaction::{PendingControlKind, PendingControlSummary, SessionPermi
 use crate::statusline::{StatusLineConfig, StatusLineField, status_line_fields};
 use crate::theme::ThemeSummary;
 use crate::tool_render::{
-    ToolDetail, ToolDetailBlockKind, ToolReview, preview_tool_details, serialize_tool_details,
+    ToolCommandIntent, ToolCompletionState, ToolDetail, ToolDetailBlockKind, ToolRenderKind,
+    ToolReview, preview_tool_details, serialize_tool_details,
 };
 use crate::ui::StartupDiagnosticsSnapshot;
 use agent::types::{AgentStatus, SubmittedPromptSnapshot, TokenLedgerSnapshot};

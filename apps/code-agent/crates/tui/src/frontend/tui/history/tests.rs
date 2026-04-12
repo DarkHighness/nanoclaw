@@ -296,7 +296,7 @@ fn tool_approval_event_uses_shell_summary_layout() {
 
     assert_eq!(
         format_session_event_line(&event).serialized(),
-        "• Awaiting approval for exec_command\n  └ origin local\n  └ $ cargo test\n  └ reason sandbox policy requires approval"
+        "• Awaiting approval to run cargo test\n  └ origin local\n  └ $ cargo test\n  └ reason sandbox policy requires approval"
     );
 }
 
@@ -324,7 +324,7 @@ fn tool_completion_event_includes_shell_summary_details() {
 
     assert_eq!(
         format_session_event_line(&event).serialized(),
-        "• Finished exec_command\n  └ $ cargo test\n  └ output tests passed"
+        "• Ran cargo test\n  └ $ cargo test\n  └ output tests passed"
     );
 }
 
@@ -368,7 +368,7 @@ fn file_tool_completion_event_includes_diff_block() {
     );
 
     let rendered = format_session_event_line(&event).serialized();
-    assert!(rendered.contains("• Finished write"));
+    assert!(rendered.contains("• Updated files"));
     assert!(rendered.contains("  └ files src/lib.rs"));
     assert!(rendered.contains("action [r] review diff"));
 }
