@@ -61,7 +61,7 @@ pub struct RuntimeSubagentExecutor {
     hook_runner: Arc<HookRunner>,
     store: Arc<dyn SessionStore>,
     tool_registry: ToolRegistry,
-    tool_context: ToolExecutionContext,
+    tool_context: Arc<RwLock<ToolExecutionContext>>,
     tool_approval_handler: Arc<dyn ToolApprovalHandler>,
     tool_approval_policy: Arc<dyn ToolApprovalPolicy>,
     loop_detection_config: LoopDetectionConfig,
@@ -194,7 +194,7 @@ impl RuntimeSubagentExecutor {
         hook_runner: Arc<HookRunner>,
         store: Arc<dyn SessionStore>,
         tool_registry: ToolRegistry,
-        tool_context: ToolExecutionContext,
+        tool_context: Arc<RwLock<ToolExecutionContext>>,
         tool_approval_handler: Arc<dyn ToolApprovalHandler>,
         tool_approval_policy: Arc<dyn ToolApprovalPolicy>,
         loop_detection_config: LoopDetectionConfig,
@@ -573,13 +573,14 @@ impl RuntimeSubagentExecutor {
     }
 
     fn resolve_write_set(&self, files: &[String]) -> std::result::Result<Vec<PathBuf>, ToolError> {
+        let tool_context = self.tool_context.read().unwrap().clone();
         files
             .iter()
             .map(|file| {
                 resolve_tool_path_against_workspace_root(
                     file,
-                    self.tool_context.effective_root(),
-                    self.tool_context.container_workdir.as_deref(),
+                    tool_context.effective_root(),
+                    tool_context.container_workdir.as_deref(),
                 )
             })
             .collect()
@@ -1184,6 +1185,8 @@ impl SubagentExecutor for RuntimeSubagentExecutor {
                 task_id: task.task_id.clone(),
                 role: task.role.clone(),
                 status: AgentStatus::Queued,
+                worktree_id: parent.active_worktree_id.clone(),
+                worktree_root: parent.worktree_root.clone(),
             };
             let (session, persist_session_seed) = self
                 .build_child_session(&parent, &handle, launch.fork_context)

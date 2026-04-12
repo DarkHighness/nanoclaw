@@ -219,6 +219,8 @@ fn live_task_wait_outcome_uses_terminal_status_marker() {
             status: TaskStatus::Running,
             session_ref: "session_2".to_string(),
             agent_session_ref: "agent-session-2".to_string(),
+            worktree_id: None,
+            worktree_root: None,
         }],
     });
     let lines = inspector_line_texts(&lines);

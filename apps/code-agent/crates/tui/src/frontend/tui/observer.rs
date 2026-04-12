@@ -13,7 +13,7 @@ use crate::tool_render::{
 use crate::ui::{SessionEvent, SessionNotificationSource, SessionToastVariant, SessionToolCall};
 use agent::types::{
     AgentHandle, AgentResultEnvelope, AgentTaskSpec, MonitorEventKind, MonitorStatus,
-    MonitorStream, MonitorSummaryRecord, TaskId, TaskStatus,
+    MonitorStream, MonitorSummaryRecord, TaskId, TaskStatus, WorktreeStatus, WorktreeSummaryRecord,
 };
 use std::time::Instant;
 
@@ -386,6 +386,32 @@ impl SharedRenderObserver {
                 state.push_transcript(completed);
                 state.status = format!("Monitor {} {}", summary.monitor_id, summary.status);
                 state.push_activity(format!("monitor {} {}", summary.monitor_id, summary.status));
+            }
+            SessionEvent::WorktreeEntered { summary } => {
+                state.push_transcript(worktree_entry(
+                    format!("Entered Worktree {}", summary.worktree_id),
+                    &summary,
+                ));
+                state.status = format!("Worktree {}", summary.worktree_id);
+                state.push_activity(format!(
+                    "entered worktree {}",
+                    preview_text(summary.root.display().to_string().as_str(), 48)
+                ));
+            }
+            SessionEvent::WorktreeUpdated { summary } => {
+                state.push_transcript(worktree_entry(
+                    format!(
+                        "{} Worktree {}",
+                        worktree_status_label(summary.status),
+                        summary.worktree_id
+                    ),
+                    &summary,
+                ));
+                state.status = format!("Worktree {} {}", summary.worktree_id, summary.status);
+                state.push_activity(format!(
+                    "worktree {} {}",
+                    summary.worktree_id, summary.status
+                ));
             }
             SessionEvent::TaskCreated {
                 task,
@@ -809,6 +835,44 @@ fn monitor_summary_details(summary: &MonitorSummaryRecord) -> Vec<TranscriptShel
     details
 }
 
+fn worktree_entry(headline: String, summary: &WorktreeSummaryRecord) -> TranscriptEntry {
+    TranscriptEntry::shell_summary_details(headline, worktree_summary_details(summary))
+}
+
+fn worktree_summary_details(summary: &WorktreeSummaryRecord) -> Vec<TranscriptShellDetail> {
+    let mut details = vec![
+        TranscriptShellDetail::Raw {
+            text: format!("scope {}", summary.scope),
+            continuation: false,
+        },
+        TranscriptShellDetail::Raw {
+            text: format!("status {}", summary.status),
+            continuation: false,
+        },
+        TranscriptShellDetail::Raw {
+            text: format!("root {}", summary.root.display()),
+            continuation: false,
+        },
+    ];
+    if let Some(label) = summary
+        .label
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        details.push(TranscriptShellDetail::Raw {
+            text: format!("label {}", label),
+            continuation: false,
+        });
+    }
+    if let Some(task_id) = summary.task_id.as_ref() {
+        details.push(TranscriptShellDetail::Raw {
+            text: format!("task {}", task_id),
+            continuation: false,
+        });
+    }
+    details
+}
+
 fn apply_monitor_event(active: &mut super::state::ActiveMonitorCell, event: &MonitorEventKind) {
     match event {
         MonitorEventKind::Line { stream, text } => {
@@ -911,6 +975,14 @@ fn task_created_entry(
     )
 }
 
+fn worktree_status_label(status: WorktreeStatus) -> &'static str {
+    match status {
+        WorktreeStatus::Active => "Updated Active",
+        WorktreeStatus::Inactive => "Updated Inactive",
+        WorktreeStatus::Removed => "Removed",
+    }
+}
+
 fn task_updated_entry(
     task_id: &TaskId,
     status: TaskStatus,
@@ -942,22 +1014,35 @@ fn task_completed_entry(
 }
 
 fn subagent_started_entry(handle: &AgentHandle, task: &AgentTaskSpec) -> TranscriptEntry {
+    let mut details = vec![
+        TranscriptShellDetail::Raw {
+            text: format!("task {}", task.task_id),
+            continuation: false,
+        },
+        TranscriptShellDetail::Raw {
+            text: format!("prompt {}", preview_text(&task.prompt, 72)),
+            continuation: false,
+        },
+    ];
+    if let Some(worktree_id) = handle.worktree_id.as_ref() {
+        details.push(TranscriptShellDetail::Raw {
+            text: format!("worktree {}", worktree_id),
+            continuation: false,
+        });
+    }
+    if let Some(worktree_root) = handle.worktree_root.as_ref() {
+        details.push(TranscriptShellDetail::Raw {
+            text: format!("root {}", worktree_root.display()),
+            continuation: false,
+        });
+    }
     TranscriptEntry::shell_summary_details(
         format!(
             "Started {} Agent {}",
             handle.role,
             preview_text(handle.agent_id.as_str(), 24)
         ),
-        vec![
-            TranscriptShellDetail::Raw {
-                text: format!("task {}", task.task_id),
-                continuation: false,
-            },
-            TranscriptShellDetail::Raw {
-                text: format!("prompt {}", preview_text(&task.prompt, 72)),
-                continuation: false,
-            },
-        ],
+        details,
     )
 }
 

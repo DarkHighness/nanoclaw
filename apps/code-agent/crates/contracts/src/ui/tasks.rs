@@ -1,6 +1,8 @@
 use agent::types::{
     AgentArtifact, AgentResultEnvelope, AgentTaskSpec, Message, TaskId, TaskOrigin, TaskStatus,
+    WorktreeId,
 };
+use std::path::PathBuf;
 use store::TokenUsageRecord;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -12,6 +14,8 @@ pub struct LiveTaskSummary {
     pub status: TaskStatus,
     pub session_ref: String,
     pub agent_session_ref: String,
+    pub worktree_id: Option<WorktreeId>,
+    pub worktree_root: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

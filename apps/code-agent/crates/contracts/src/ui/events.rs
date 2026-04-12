@@ -1,6 +1,7 @@
 use agent::types::{
     AgentHandle, AgentId, AgentResultEnvelope, AgentTaskSpec, MessageId, MonitorEventRecord,
     MonitorSummaryRecord, TaskId, TaskStatus, TokenLedgerSnapshot, TokenUsagePhase,
+    WorktreeSummaryRecord,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -142,6 +143,12 @@ pub enum SessionEvent {
     },
     MonitorUpdated {
         summary: MonitorSummaryRecord,
+    },
+    WorktreeEntered {
+        summary: WorktreeSummaryRecord,
+    },
+    WorktreeUpdated {
+        summary: WorktreeSummaryRecord,
     },
     TaskCreated {
         task: AgentTaskSpec,

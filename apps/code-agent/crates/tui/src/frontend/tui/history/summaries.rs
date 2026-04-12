@@ -63,14 +63,24 @@ pub(crate) fn format_task_summary_collection(summary: &PersistedTaskSummary) -> 
 }
 
 pub(crate) fn format_live_task_summary_collection(summary: &LiveTaskSummary) -> InspectorEntry {
+    let mut secondary = format!(
+        "role {} · agent {} · session {}",
+        summary.role,
+        preview_id(&summary.agent_id),
+        preview_id(&summary.session_ref)
+    );
+    if let Some(worktree_id) = summary.worktree_id.as_ref() {
+        secondary.push_str(&format!(" · worktree {}", worktree_id));
+    }
+    if let Some(worktree_root) = summary.worktree_root.as_ref() {
+        secondary.push_str(&format!(
+            " · {}",
+            preview_text(&worktree_root.display().to_string(), 48)
+        ));
+    }
     InspectorEntry::actionable_collection_with_alt(
         format!("{}  {}", summary.task_id, summary.status),
-        Some(format!(
-            "role {} · agent {} · session {}",
-            summary.role,
-            preview_id(&summary.agent_id),
-            preview_id(&summary.session_ref)
-        )),
+        Some(secondary),
         InspectorAction::WaitLiveTask {
             task_or_agent_ref: summary.task_id.to_string(),
         },

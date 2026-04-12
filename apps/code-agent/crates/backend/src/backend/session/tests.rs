@@ -452,6 +452,8 @@ impl SubagentExecutor for RecordingSubagentExecutor {
                 task_id: task.task_id.clone(),
                 role: task.role.clone(),
                 status: AgentStatus::Queued,
+                worktree_id: None,
+                worktree_root: None,
             };
             handles.push(handle.clone());
             spawned.push(handle);
@@ -683,12 +685,25 @@ fn build_session_with_runtime_state(
             events.clone(),
             process_executor.clone() as Arc<dyn agent::tools::ProcessExecutor>,
         ));
+    let worktree_manager = Arc::new(crate::backend::SessionWorktreeManager::new(
+        store.clone(),
+        events.clone(),
+        process_executor.clone() as Arc<dyn agent::tools::ProcessExecutor>,
+        startup.workspace_root.clone(),
+        session_tool_context.clone(),
+    ));
+    let command_hook_executor = Arc::new(SwitchableCommandHookExecutor::new(
+        process_executor.clone(),
+        default_sandbox_policy.clone(),
+        startup.host_process_surfaces_allowed,
+    ));
     CodeAgentSession::new(
         runtime,
         None,
         session_memory_model_backend,
         subagent_executor,
         monitor_manager,
+        worktree_manager,
         store,
         mcp_servers,
         configured_mcp_servers,
@@ -696,11 +711,7 @@ fn build_session_with_runtime_state(
         configured_runtime_hooks,
         process_executor.clone() as Arc<dyn agent::tools::ProcessExecutor>,
         process_executor.clone(),
-        Arc::new(SwitchableCommandHookExecutor::new(
-            process_executor,
-            default_sandbox_policy.clone(),
-            startup.host_process_surfaces_allowed,
-        )),
+        command_hook_executor,
         code_intel_backend,
         ApprovalCoordinator::default(),
         UserInputCoordinator::default(),
@@ -832,6 +843,8 @@ fn sample_handle(task_id: &str, agent_id: &str, status: AgentStatus) -> AgentHan
         task_id: TaskId::from(task_id),
         role: "worker".to_string(),
         status,
+        worktree_id: None,
+        worktree_root: None,
     }
 }
 
@@ -2782,6 +2795,8 @@ async fn wait_live_task_returns_terminal_result_summary() {
             status: TaskStatus::Running,
             session_ref: "session-1".to_string(),
             agent_session_ref: "agent-session-task-followup".to_string(),
+            worktree_id: None,
+            worktree_root: None,
         }]
     );
 }
@@ -2819,6 +2834,8 @@ fn schedule_live_task_attention_queues_prompt_when_idle() {
             status: TaskStatus::Running,
             session_ref: "session-1".to_string(),
             agent_session_ref: "agent-session-task-followup".to_string(),
+            worktree_id: None,
+            worktree_root: None,
         }],
     };
 

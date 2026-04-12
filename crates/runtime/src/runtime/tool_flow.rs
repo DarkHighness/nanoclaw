@@ -282,11 +282,11 @@ impl AgentRuntime {
         // later tools in the same turn or session inherit request_permissions
         // outcomes. This widens execution policy for already-visible tools
         // only; it does not mutate the model-visible tool surface mid-turn.
-        let scoped_tool_context = self
-            .tool_context
+        let base_tool_context = self.tool_context.read().unwrap().clone();
+        let scoped_tool_context = base_tool_context
             .with_sandbox_policy(
                 self.permission_grants
-                    .effective_sandbox_policy(&self.tool_context.sandbox_policy())?,
+                    .effective_sandbox_policy(&base_tool_context.sandbox_policy())?,
             )
             .with_runtime_scope(
                 self.session.session_id.clone(),

@@ -381,6 +381,8 @@ mod tests {
             task_id: task.task_id.clone(),
             role: task.role.clone(),
             status: AgentStatus::Completed,
+            worktree_id: None,
+            worktree_root: None,
         };
         let events = vec![
             SessionEventEnvelope::new(

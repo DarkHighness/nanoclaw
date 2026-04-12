@@ -9,7 +9,7 @@ use schemars::{JsonSchema, schema_for};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::fs;
@@ -17,7 +17,7 @@ use types::{
     AgentHandle, AgentId, AgentInputDelivery, AgentResultEnvelope, AgentSessionId, AgentTaskSpec,
     AgentWaitMode, AgentWaitRequest, AgentWaitResponse, CallId, Message, MessagePart, MessageRole,
     SessionId, TaskId, TaskOrigin, TaskRecord, TaskStatus, TaskSummaryRecord, ToolCallId, ToolName,
-    ToolOutputMode, ToolResult, ToolSpec, TurnId,
+    ToolOutputMode, ToolResult, ToolSpec, TurnId, WorktreeId,
 };
 
 const TASK_CREATE_TOOL_NAME: &str = "task_create";
@@ -38,6 +38,8 @@ pub struct SubagentParentContext {
     pub agent_session_id: Option<AgentSessionId>,
     pub turn_id: Option<TurnId>,
     pub parent_agent_id: Option<AgentId>,
+    pub active_worktree_id: Option<WorktreeId>,
+    pub worktree_root: Option<PathBuf>,
 }
 
 impl From<&ToolExecutionContext> for SubagentParentContext {
@@ -47,6 +49,8 @@ impl From<&ToolExecutionContext> for SubagentParentContext {
             agent_session_id: ctx.agent_session_id.clone(),
             turn_id: ctx.turn_id.clone(),
             parent_agent_id: ctx.agent_id.clone(),
+            active_worktree_id: ctx.active_worktree_id.clone(),
+            worktree_root: Some(ctx.worktree_root().to_path_buf()),
         }
     }
 }
@@ -1425,6 +1429,8 @@ mod tests {
                     parent_agent_id: parent.parent_agent_id,
                     child_agent_id: None,
                     summary: Some(task.prompt.clone()),
+                    worktree_id: parent.active_worktree_id,
+                    worktree_root: parent.worktree_root,
                 },
                 spec: task,
                 claimed_files: Vec::new(),
@@ -1517,6 +1523,8 @@ mod tests {
                 parent_agent_id: Some(AgentId::from("agent_parent")),
                 child_agent_id: None,
                 summary: summary.map(ToString::to_string),
+                worktree_id: None,
+                worktree_root: None,
             },
             spec: types::AgentTaskSpec {
                 task_id,
@@ -1556,6 +1564,8 @@ mod tests {
                     task_id: task.task_id.clone(),
                     role: task.role.clone(),
                     status: AgentStatus::Running,
+                    worktree_id: None,
+                    worktree_root: None,
                 };
                 state.handles.insert(agent_id.clone(), handle.clone());
                 state.results.insert(
@@ -2286,6 +2296,8 @@ mod tests {
                 task_id: TaskId::from("task_a"),
                 role: "worker".to_string(),
                 status: AgentStatus::Running,
+                worktree_id: None,
+                worktree_root: None,
             },
         );
         tool.execute(
@@ -2314,6 +2326,8 @@ mod tests {
                 task_id: TaskId::from("pending"),
                 role: "worker".to_string(),
                 status: AgentStatus::Running,
+                worktree_id: None,
+                worktree_root: None,
             }],
             release: Arc::new(Notify::new()),
         }));

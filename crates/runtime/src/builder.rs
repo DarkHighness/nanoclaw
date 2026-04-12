@@ -5,7 +5,7 @@ use crate::{
     ToolApprovalPolicy, UserMessageAugmentor,
 };
 use skills::SkillCatalog;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use store::SessionStore;
 use tools::{ToolExecutionContext, ToolRegistry};
 use types::HookRegistration;
@@ -15,7 +15,7 @@ pub struct AgentRuntimeBuilder {
     hook_runner: Arc<HookRunner>,
     store: Arc<dyn SessionStore>,
     tool_registry: ToolRegistry,
-    tool_context: ToolExecutionContext,
+    tool_context: Arc<RwLock<ToolExecutionContext>>,
     tool_approval_handler: Arc<dyn ToolApprovalHandler>,
     tool_approval_policy: Arc<dyn ToolApprovalPolicy>,
     conversation_compactor: Arc<dyn ConversationCompactor>,
@@ -37,7 +37,7 @@ impl AgentRuntimeBuilder {
             hook_runner: Arc::new(HookRunner::default()),
             store,
             tool_registry: ToolRegistry::new(),
-            tool_context: ToolExecutionContext::default(),
+            tool_context: Arc::new(RwLock::new(ToolExecutionContext::default())),
             tool_approval_handler: Arc::new(AlwaysAllowToolApprovalHandler),
             tool_approval_policy: Arc::new(NoopToolApprovalPolicy),
             conversation_compactor: Arc::new(NoopConversationCompactor),
@@ -66,6 +66,12 @@ impl AgentRuntimeBuilder {
 
     #[must_use]
     pub fn tool_context(mut self, tool_context: ToolExecutionContext) -> Self {
+        self.tool_context = Arc::new(RwLock::new(tool_context));
+        self
+    }
+
+    #[must_use]
+    pub fn shared_tool_context(mut self, tool_context: Arc<RwLock<ToolExecutionContext>>) -> Self {
         self.tool_context = tool_context;
         self
     }

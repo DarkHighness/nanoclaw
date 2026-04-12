@@ -193,6 +193,8 @@ fn live_task_wait_toast_mentions_remaining_running_tasks() {
             status: TaskStatus::Running,
             session_ref: "session_456".to_string(),
             agent_session_ref: "agent-session-456".to_string(),
+            worktree_id: None,
+            worktree_root: None,
         }],
     };
 

@@ -112,6 +112,13 @@ impl CodeAgentSession {
         self.store_side_question_context(side_question_context.clone());
         self.reset_session_memory_refresh_state(&side_question_context)
             .await;
+        self.worktree_manager
+            .sync_attached_session(
+                SessionId::from(session_ref.clone()),
+                AgentSessionId::from(agent_session_ref.clone()),
+            )
+            .await
+            .map_err(anyhow::Error::from)?;
         self.set_runtime_session_refs(session_ref, agent_session_ref);
         self.refresh_stored_session_count().await?;
         Ok(self
@@ -178,6 +185,13 @@ impl CodeAgentSession {
         self.store_side_question_context(side_question_context.clone());
         self.reset_session_memory_refresh_state(&side_question_context)
             .await;
+        self.worktree_manager
+            .sync_attached_session(
+                SessionId::from(active_session_ref.clone()),
+                AgentSessionId::from(active_agent_session_ref.clone()),
+            )
+            .await
+            .map_err(anyhow::Error::from)?;
         self.set_runtime_session_refs(active_session_ref, active_agent_session_ref);
         self.refresh_stored_session_count().await?;
         Ok(self

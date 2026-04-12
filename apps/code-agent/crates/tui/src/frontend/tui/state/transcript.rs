@@ -448,6 +448,15 @@ fn tool_headline_prefix(
         ToolRenderKind::MonitorStop => {
             lifecycle_headline_text(status, "Stopping monitor", "Stopped monitor")
         }
+        ToolRenderKind::WorktreeEnter => {
+            lifecycle_headline_text(status, "Entering worktree", "Entered worktree")
+        }
+        ToolRenderKind::WorktreeList => {
+            lifecycle_headline_text(status, "Listing worktrees", "Listed worktrees")
+        }
+        ToolRenderKind::WorktreeExit => {
+            lifecycle_headline_text(status, "Exiting worktree", "Exited worktree")
+        }
         ToolRenderKind::ExecCommand | ToolRenderKind::WriteStdin | ToolRenderKind::Generic => {
             generic_headline_text(status)
         }
@@ -476,6 +485,9 @@ fn tool_headline_subject_kind(
         | ToolRenderKind::MonitorStart
         | ToolRenderKind::MonitorList
         | ToolRenderKind::MonitorStop
+        | ToolRenderKind::WorktreeEnter
+        | ToolRenderKind::WorktreeList
+        | ToolRenderKind::WorktreeExit
         | ToolRenderKind::SendInput
         | ToolRenderKind::SpawnAgent
         | ToolRenderKind::WaitAgent

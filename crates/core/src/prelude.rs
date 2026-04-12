@@ -9,12 +9,13 @@ pub use skills::{
 pub use store::{FileSessionStore, InMemorySessionStore, SessionStore};
 #[cfg(feature = "agentic-tools")]
 pub use tools::{
-    AgentResumeTool, PermissionGrantScope, RequestPermissionProfile, RequestPermissionsArgs,
-    RequestPermissionsTool, RequestUserInputTool, SkillDetail, SkillFileView, SkillManageOutput,
-    SkillManageTool, SkillSummary, SkillViewOutput, SkillViewTool, SkillsListOutput,
-    SkillsListTool, TaskCreateTool, TaskGetTool, TaskListTool, TaskManager, TaskStopTool,
-    TaskUpdateTool, ToolDiscoverTool, UserInputAnswer, UserInputHandler, UserInputOption,
-    UserInputQuestion, UserInputRequest, UserInputResponse,
+    AgentResumeTool, PRIMARY_WORKTREE_ID, PermissionGrantScope, RequestPermissionProfile,
+    RequestPermissionsArgs, RequestPermissionsTool, RequestUserInputTool, SkillDetail,
+    SkillFileView, SkillManageOutput, SkillManageTool, SkillSummary, SkillViewOutput,
+    SkillViewTool, SkillsListOutput, SkillsListTool, TaskCreateTool, TaskGetTool, TaskListTool,
+    TaskManager, TaskStopTool, TaskUpdateTool, ToolDiscoverTool, UserInputAnswer, UserInputHandler,
+    UserInputOption, UserInputQuestion, UserInputRequest, UserInputResponse, WorktreeEnterTool,
+    WorktreeExitTool, WorktreeListTool,
 };
 #[cfg(feature = "code-intel")]
 pub use tools::{

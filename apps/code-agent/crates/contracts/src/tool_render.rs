@@ -16,6 +16,9 @@ pub enum ToolRenderKind {
     MonitorStart,
     MonitorList,
     MonitorStop,
+    WorktreeEnter,
+    WorktreeList,
+    WorktreeExit,
     SendInput,
     SpawnAgent,
     WaitAgent,
@@ -34,6 +37,9 @@ impl ToolRenderKind {
             "monitor_start" => Self::MonitorStart,
             "monitor_list" => Self::MonitorList,
             "monitor_stop" => Self::MonitorStop,
+            "worktree_enter" => Self::WorktreeEnter,
+            "worktree_list" => Self::WorktreeList,
+            "worktree_exit" => Self::WorktreeExit,
             "send_input" => Self::SendInput,
             "spawn_agent" => Self::SpawnAgent,
             "wait_agent" => Self::WaitAgent,
@@ -473,6 +479,40 @@ pub fn tool_arguments_preview_lines(tool_name: &str, arguments: &Value) -> Vec<S
                 }
                 return lines;
             }
+        }
+        ToolRenderKind::WorktreeEnter => {
+            let mut lines = vec!["Enter session worktree".to_string()];
+            if let Some(label) = arguments
+                .get("label")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                lines.push(format!("label {}", truncate_inline(label, 72)));
+            }
+            return lines;
+        }
+        ToolRenderKind::WorktreeList => {
+            let include_inactive = arguments
+                .get("include_inactive")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            return vec![if include_inactive {
+                "List worktrees including inactive".to_string()
+            } else {
+                "List active worktrees".to_string()
+            }];
+        }
+        ToolRenderKind::WorktreeExit => {
+            if let Some(worktree_id) = arguments
+                .get("worktree_id")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                return vec![format!("Exit worktree {worktree_id}")];
+            }
+            return vec!["Exit current worktree".to_string()];
         }
         ToolRenderKind::SendInput => {
             let target = arguments
@@ -975,6 +1015,9 @@ pub fn tool_completion_state(tool_name: &str, structured: Option<&Value>) -> Too
         ToolRenderKind::CodeDiagnostics
         | ToolRenderKind::MonitorList
         | ToolRenderKind::MonitorStop
+        | ToolRenderKind::WorktreeEnter
+        | ToolRenderKind::WorktreeList
+        | ToolRenderKind::WorktreeExit
         | ToolRenderKind::SendInput
         | ToolRenderKind::SpawnAgent
         | ToolRenderKind::WaitAgent
@@ -1033,6 +1076,13 @@ pub fn tool_output_details(
         | ToolRenderKind::MonitorList
         | ToolRenderKind::MonitorStop => {
             if let Some(details) = monitor_output_details(tool_name, structured) {
+                return details;
+            }
+        }
+        ToolRenderKind::WorktreeEnter
+        | ToolRenderKind::WorktreeList
+        | ToolRenderKind::WorktreeExit => {
+            if let Some(details) = worktree_output_details(tool_name, structured) {
                 return details;
             }
         }
@@ -1391,6 +1441,35 @@ fn code_diagnostics_output_details(structured: Option<&Value>) -> Option<Vec<Too
     Some(details)
 }
 
+fn worktree_output_details(tool_name: &str, structured: Option<&Value>) -> Option<Vec<ToolDetail>> {
+    let structured = structured?;
+    match ToolRenderKind::classify(tool_name) {
+        ToolRenderKind::WorktreeEnter | ToolRenderKind::WorktreeExit => {
+            let worktree = structured.get("worktree")?;
+            Some(single_worktree_output_details(worktree))
+        }
+        ToolRenderKind::WorktreeList => {
+            let worktrees = structured.get("worktrees")?.as_array()?;
+            let mut details = vec![ToolDetail::LabeledValue {
+                label: ToolDetailLabel::Result,
+                value: format!("{} worktree(s)", worktrees.len()),
+            }];
+            let lines = worktrees
+                .iter()
+                .filter_map(render_worktree_summary_line)
+                .collect::<Vec<_>>();
+            if !lines.is_empty() {
+                details.push(ToolDetail::LabeledBlock {
+                    label: ToolDetailLabel::Output,
+                    lines,
+                });
+            }
+            Some(details)
+        }
+        _ => None,
+    }
+}
+
 fn single_monitor_output_details(monitor: &Value) -> Vec<ToolDetail> {
     let mut details = Vec::new();
     if let Some(monitor_id) = monitor
@@ -1440,6 +1519,66 @@ fn single_monitor_output_details(monitor: &Value) -> Vec<ToolDetail> {
     details
 }
 
+fn single_worktree_output_details(worktree: &Value) -> Vec<ToolDetail> {
+    let mut details = Vec::new();
+    if let Some(worktree_id) = worktree
+        .get("worktree_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        details.push(ToolDetail::LabeledValue {
+            label: ToolDetailLabel::Session,
+            value: worktree_id.to_string(),
+        });
+    }
+    if let Some(status) = worktree
+        .get("status")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        details.push(ToolDetail::LabeledValue {
+            label: ToolDetailLabel::State,
+            value: status.to_string(),
+        });
+    }
+    if let Some(root) = worktree
+        .get("root")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        details.push(ToolDetail::LabeledValue {
+            label: ToolDetailLabel::Context,
+            value: root.to_string(),
+        });
+    }
+    if let Some(scope) = worktree
+        .get("scope")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        details.push(ToolDetail::LabeledValue {
+            label: ToolDetailLabel::Note,
+            value: format!("scope {scope}"),
+        });
+    }
+    if let Some(label) = worktree
+        .get("label")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        details.push(ToolDetail::LabeledValue {
+            label: ToolDetailLabel::Note,
+            value: format!("label {}", inline_preview_text(label, 72)),
+        });
+    }
+    details
+}
+
 fn render_monitor_summary_line(monitor: &Value) -> Option<String> {
     let monitor_id = monitor
         .get("monitor_id")
@@ -1464,6 +1603,46 @@ fn render_monitor_summary_line(monitor: &Value) -> Option<String> {
         status,
         inline_preview_text(command, 72)
     ))
+}
+
+fn render_worktree_summary_line(worktree: &Value) -> Option<String> {
+    let worktree_id = worktree
+        .get("worktree_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?;
+    let status = worktree
+        .get("status")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("unknown");
+    let root = worktree
+        .get("root")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("<unknown>");
+    let label = worktree
+        .get("label")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    Some(match label {
+        Some(label) => format!(
+            "{} {} · {} · {}",
+            worktree_id,
+            status,
+            inline_preview_text(root, 56),
+            inline_preview_text(label, 24)
+        ),
+        None => format!(
+            "{} {} · {}",
+            worktree_id,
+            status,
+            inline_preview_text(root, 72)
+        ),
+    })
 }
 
 fn render_code_diagnostic_line(diagnostic: &Value) -> Option<String> {
@@ -1976,6 +2155,52 @@ mod tests {
                 .iter()
                 .any(|line| line.contains("[warning] src/lib.rs:7:3 unused parameter"))
         );
+    }
+
+    #[test]
+    fn worktree_arguments_render_typed_preview() {
+        assert_eq!(
+            tool_arguments_preview_lines("worktree_enter", &json!({"label": "feature auth"})),
+            vec!["Enter session worktree", "label feature auth"]
+        );
+        assert_eq!(
+            tool_arguments_preview_lines("worktree_list", &json!({"include_inactive": true})),
+            vec!["List worktrees including inactive"]
+        );
+        assert_eq!(
+            tool_arguments_preview_lines("worktree_exit", &json!({"worktree_id": "worktree_123"})),
+            vec!["Exit worktree worktree_123"]
+        );
+    }
+
+    #[test]
+    fn worktree_output_renders_typed_summary() {
+        let rendered = tool_output_detail_lines(
+            "worktree_enter",
+            "",
+            Some(&json!({
+                "worktree": {
+                    "worktree_id": "worktree_123",
+                    "scope": "session",
+                    "status": "active",
+                    "root": "/tmp/nanoclaw-worktrees/feature-auth",
+                    "label": "feature auth"
+                }
+            })),
+        );
+
+        assert!(
+            rendered
+                .iter()
+                .any(|line| line == "  └ Session worktree_123")
+        );
+        assert!(rendered.iter().any(|line| line == "  └ State active"));
+        assert!(
+            rendered
+                .iter()
+                .any(|line| line == "  └ Context /tmp/nanoclaw-worktrees/feature-auth")
+        );
+        assert!(rendered.iter().any(|line| line == "  └ Note scope session"));
     }
 
     #[test]

@@ -21,6 +21,7 @@ mod task_history;
 mod task_manager;
 mod tool_approval_policy;
 mod user_input;
+mod worktree_manager;
 
 pub use crate::ui::{
     HistoryRollbackOutcome, HistoryRollbackRound, LiveMonitorControlAction,
@@ -67,3 +68,4 @@ pub use tool_approval_policy::build_code_agent_tool_approval_policy;
 pub use user_input::{
     NonInteractiveUserInputHandler, SessionUserInputHandler, UserInputCoordinator,
 };
+pub(crate) use worktree_manager::SessionWorktreeManager;

@@ -7,6 +7,7 @@ use agent::tools::{
     CodeCallHierarchyDirection, CodeCallHierarchyEntry, CodeDiagnostic, CodeHover,
     CodeNavigationTarget, CodeReference, CodeSymbol, FileActivityObserver, MonitorManager,
     ProcessExecutor, SandboxBackendStatus, SandboxError, SubagentExecutor, TaskManager,
+    WorktreeManager,
 };
 use agent::{
     CodeDiagnosticsTool, CodeDocumentSymbolsTool, CodeIntelBackend, CodeNavTool,
@@ -16,7 +17,8 @@ use agent::{
     RequestPermissionsTool, RequestUserInputTool, SandboxPolicy, SkillCatalog, SkillManageTool,
     SkillViewTool, SkillsListTool, ToolCallId, ToolDiscoverTool, ToolExecutionContext,
     ToolRegistry, ToolResult, WebFetchTool, WebSearchBackendsTool, WebSearchTool,
-    WorkspaceTextCodeIntelBackend, WriteStdinTool, WriteTool,
+    WorkspaceTextCodeIntelBackend, WorktreeEnterTool, WorktreeExitTool, WorktreeListTool,
+    WriteStdinTool, WriteTool,
 };
 use async_trait::async_trait;
 use serde_json::Value;
@@ -536,6 +538,15 @@ pub fn register_monitor_tools(tools: &mut ToolRegistry, monitor_manager: Arc<dyn
     tools.register(MonitorStartTool::new(monitor_manager.clone()));
     tools.register(MonitorListTool::new(monitor_manager.clone()));
     tools.register(MonitorStopTool::new(monitor_manager));
+}
+
+pub fn register_worktree_tools(
+    tools: &mut ToolRegistry,
+    worktree_manager: Arc<dyn WorktreeManager>,
+) {
+    tools.register(WorktreeEnterTool::new(worktree_manager.clone()));
+    tools.register(WorktreeListTool::new(worktree_manager.clone()));
+    tools.register(WorktreeExitTool::new(worktree_manager));
 }
 
 fn build_builtin_tools(
@@ -1116,6 +1127,8 @@ mod tests {
                     parent_agent_id: None,
                     child_agent_id: None,
                     summary: Some(task.prompt.clone()),
+                    worktree_id: None,
+                    worktree_root: None,
                 },
                 spec: task,
                 claimed_files: Vec::new(),
@@ -1140,6 +1153,8 @@ mod tests {
                     parent_agent_id: None,
                     child_agent_id: None,
                     summary: Some("task".to_string()),
+                    worktree_id: None,
+                    worktree_root: None,
                 },
                 spec: AgentTaskSpec {
                     task_id: task_id.clone(),

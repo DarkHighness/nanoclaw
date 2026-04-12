@@ -2,12 +2,13 @@ use crate::{
     AgentId, AgentSessionId, CallId, ContextWindowUsage, EnvelopeId, EventId, HookEvent,
     HookResult, Message, MessageId, MessagePart, MonitorId, Reasoning, ResponseId, SessionId,
     TaskId, TokenLedgerSnapshot, TokenUsage, TokenUsagePhase, ToolCall, ToolCallId, ToolName,
-    ToolSpec, TurnId,
+    ToolSpec, TurnId, WorktreeId,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 use std::fmt;
+use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -152,6 +153,49 @@ impl fmt::Display for MonitorStream {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
+pub enum WorktreeScope {
+    Session,
+    ChildAgent,
+}
+
+impl fmt::Display for WorktreeScope {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let value = match self {
+            Self::Session => "session",
+            Self::ChildAgent => "child_agent",
+        };
+        f.write_str(value)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum WorktreeStatus {
+    Active,
+    Inactive,
+    Removed,
+}
+
+impl WorktreeStatus {
+    #[must_use]
+    pub fn is_active(&self) -> bool {
+        matches!(self, Self::Active)
+    }
+}
+
+impl fmt::Display for WorktreeStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let value = match self {
+            Self::Active => "active",
+            Self::Inactive => "inactive",
+            Self::Removed => "removed",
+        };
+        f.write_str(value)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
 pub enum TaskOrigin {
     UserCreated,
     AgentCreated,
@@ -199,6 +243,10 @@ pub struct AgentHandle {
     pub task_id: TaskId,
     pub role: String,
     pub status: AgentStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_id: Option<WorktreeId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_root: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -258,6 +306,10 @@ pub struct TaskSummaryRecord {
     pub child_agent_id: Option<AgentId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_id: Option<WorktreeId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_root: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -289,6 +341,27 @@ pub struct MonitorSummaryRecord {
     pub started_at_unix_s: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub finished_at_unix_s: Option<u64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct WorktreeSummaryRecord {
+    pub worktree_id: WorktreeId,
+    pub session_id: SessionId,
+    pub agent_session_id: AgentSessionId,
+    pub scope: WorktreeScope,
+    pub status: WorktreeStatus,
+    pub root: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_agent_id: Option<AgentId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<TaskId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub child_agent_id: Option<AgentId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    pub created_at_unix_s: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_at_unix_s: Option<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -889,6 +962,12 @@ pub enum SessionEventKind {
     },
     MonitorStarted {
         summary: MonitorSummaryRecord,
+    },
+    WorktreeEntered {
+        summary: WorktreeSummaryRecord,
+    },
+    WorktreeUpdated {
+        summary: WorktreeSummaryRecord,
     },
     MonitorEvent {
         event: MonitorEventRecord,

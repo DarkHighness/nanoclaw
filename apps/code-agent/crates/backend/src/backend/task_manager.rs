@@ -127,6 +127,8 @@ impl TaskManager for SessionTaskManager {
                 parent_agent_id: parent.parent_agent_id,
                 child_agent_id: None,
                 summary: initial_summary,
+                worktree_id: parent.active_worktree_id,
+                worktree_root: parent.worktree_root,
             },
             spec: task,
             claimed_files: Vec::new(),
@@ -253,6 +255,8 @@ fn task_summary_record_from_summary(summary: crate::ui::PersistedTaskSummary) ->
         parent_agent_id: None,
         child_agent_id: None,
         summary: Some(summary.summary),
+        worktree_id: None,
+        worktree_root: None,
     }
 }
 
@@ -276,6 +280,8 @@ fn task_record_from_loaded_task(loaded: LoadedTask) -> TaskRecord {
             parent_agent_id: None,
             child_agent_id,
             summary: summary_text,
+            worktree_id: None,
+            worktree_root: None,
         },
         spec: loaded.spec,
         claimed_files,

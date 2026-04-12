@@ -14,7 +14,7 @@ use crate::{
     UserMessageAugmentor, append_transcript_message,
 };
 use skills::SkillCatalog;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use store::SessionStore;
 use tools::{ToolExecutionContext, ToolRegistry};
 use tracing::info;
@@ -25,7 +25,7 @@ pub struct AgentRuntime {
     hook_runner: Arc<HookRunner>,
     store: Arc<dyn SessionStore>,
     tool_registry: ToolRegistry,
-    tool_context: ToolExecutionContext,
+    tool_context: Arc<RwLock<ToolExecutionContext>>,
     tool_approval_handler: Arc<dyn ToolApprovalHandler>,
     tool_approval_policy: Arc<dyn ToolApprovalPolicy>,
     conversation_compactor: Arc<dyn ConversationCompactor>,
@@ -67,7 +67,7 @@ impl AgentRuntime {
         hook_runner: Arc<HookRunner>,
         store: Arc<dyn SessionStore>,
         tool_registry: ToolRegistry,
-        mut tool_context: ToolExecutionContext,
+        tool_context: Arc<RwLock<ToolExecutionContext>>,
         tool_approval_handler: Arc<dyn ToolApprovalHandler>,
         tool_approval_policy: Arc<dyn ToolApprovalPolicy>,
         conversation_compactor: Arc<dyn ConversationCompactor>,
@@ -80,19 +80,22 @@ impl AgentRuntime {
         permission_grants: PermissionGrantStore,
         user_message_augmentor: Option<Arc<dyn UserMessageAugmentor>>,
     ) -> Self {
-        let backend_visibility = backend.tool_visibility_context();
-        if tool_context.model_visibility.provider.is_none() {
-            tool_context.model_visibility.provider = backend_visibility.provider;
-        }
-        if tool_context.model_visibility.model.is_none() {
-            tool_context.model_visibility.model = backend_visibility.model;
-        }
-        if tool_context.model_visibility.role.is_none() {
-            tool_context.model_visibility.role =
-                tool_context.agent_name.as_ref().and_then(|value| {
-                    let trimmed = value.trim();
-                    (!trimmed.is_empty()).then(|| trimmed.to_string())
-                });
+        {
+            let backend_visibility = backend.tool_visibility_context();
+            let mut tool_context_guard = tool_context.write().unwrap();
+            if tool_context_guard.model_visibility.provider.is_none() {
+                tool_context_guard.model_visibility.provider = backend_visibility.provider;
+            }
+            if tool_context_guard.model_visibility.model.is_none() {
+                tool_context_guard.model_visibility.model = backend_visibility.model;
+            }
+            if tool_context_guard.model_visibility.role.is_none() {
+                tool_context_guard.model_visibility.role =
+                    tool_context_guard.agent_name.as_ref().and_then(|value| {
+                        let trimmed = value.trim();
+                        (!trimmed.is_empty()).then(|| trimmed.to_string())
+                    });
+            }
         }
         Self {
             backend,
@@ -176,18 +179,18 @@ impl AgentRuntime {
 
     #[must_use]
     pub fn base_sandbox_policy(&self) -> tools::SandboxPolicy {
-        self.tool_context.sandbox_policy()
+        self.tool_context.read().unwrap().sandbox_policy()
     }
 
     pub fn set_base_sandbox_policy(&mut self, policy: tools::SandboxPolicy) {
         // `request_permissions` widens the per-turn execution policy separately.
         // This setter only updates the host-selected base mode (`default` vs
         // `danger-full-access`) that future tool calls inherit.
-        self.tool_context.effective_sandbox_policy = Some(policy);
+        self.tool_context.write().unwrap().effective_sandbox_policy = Some(policy);
     }
 
     pub fn replace_tool_visibility_context(&mut self, visibility: types::ToolVisibilityContext) {
-        self.tool_context.model_visibility = visibility;
+        self.tool_context.write().unwrap().model_visibility = visibility;
     }
 
     pub fn replace_hooks(&mut self, hooks: Vec<HookRegistration>) {
@@ -196,14 +199,15 @@ impl AgentRuntime {
 
     #[must_use]
     pub fn tool_visibility_context_snapshot(&self) -> types::ToolVisibilityContext {
-        self.tool_context.model_visibility.clone()
+        self.tool_context.read().unwrap().model_visibility.clone()
     }
 
     pub(crate) fn model_visible_tool_specs(&self) -> Vec<types::ToolSpec> {
+        let visibility = self.tool_context.read().unwrap().model_visibility.clone();
         self.tool_registry
             .specs()
             .into_iter()
-            .filter(|spec| spec.is_model_visible(&self.tool_context.model_visibility))
+            .filter(|spec| spec.is_model_visible(&visibility))
             .collect()
     }
 

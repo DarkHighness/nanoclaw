@@ -4,6 +4,7 @@ use crate::backend::boot_runtime::{
     COMMAND_HOOK_DISABLED_WARNING_PREFIX, SwitchableCodeIntelBackend,
     SwitchableCommandHookExecutor, SwitchableHostProcessExecutor, build_runtime_tooling,
     host_process_surfaces_allowed, register_monitor_tools, register_subagent_tools,
+    register_worktree_tools,
 };
 use crate::backend::memory_recall::WorkspaceMemoryRecallAugmentor;
 use crate::backend::session_memory_compaction::{
@@ -14,10 +15,11 @@ use crate::backend::{
     ApprovalCoordinator, NonInteractivePermissionRequestHandler, NonInteractiveToolApprovalHandler,
     NonInteractiveUserInputHandler, PermissionRequestCoordinator, SessionEventPublisher,
     SessionEventStream, SessionMonitorManager, SessionPermissionRequestHandler, SessionTaskManager,
-    SessionToolApprovalHandler, SessionUserInputHandler, UserInputCoordinator,
-    build_code_agent_tool_approval_policy, build_plugin_activation_plan, build_sandbox_policy,
-    build_system_preamble, build_tool_context, dedup_mcp_servers, log_sandbox_status,
-    merge_driver_host_inputs, resolve_mcp_servers, resolve_skill_roots, tool_context_for_profile,
+    SessionToolApprovalHandler, SessionUserInputHandler, SessionWorktreeManager,
+    UserInputCoordinator, build_code_agent_tool_approval_policy, build_plugin_activation_plan,
+    build_sandbox_policy, build_system_preamble, build_tool_context, dedup_mcp_servers,
+    log_sandbox_status, merge_driver_host_inputs, resolve_mcp_servers, resolve_skill_roots,
+    tool_context_for_profile,
 };
 use crate::options::AppOptions;
 use crate::provider::{
@@ -58,6 +60,7 @@ struct RuntimeBuildResult {
     session_memory_refresh_state: SharedSessionMemoryRefreshState,
     subagent_executor: Arc<dyn SubagentExecutor>,
     monitor_manager: Arc<dyn agent::tools::MonitorManager>,
+    worktree_manager: Arc<SessionWorktreeManager>,
     store: Arc<dyn store::SessionStore>,
     skill_catalog: SkillCatalog,
     plugin_instructions: Vec<String>,
@@ -352,6 +355,7 @@ where
         session_memory_refresh_state,
         subagent_executor,
         monitor_manager,
+        worktree_manager,
         store,
         skill_catalog,
         plugin_instructions: _plugin_instructions,
@@ -412,6 +416,7 @@ where
         Some(session_memory_model_backend),
         subagent_executor,
         monitor_manager,
+        worktree_manager,
         store,
         mcp_servers,
         mcp_server_configs,
@@ -793,7 +798,7 @@ where
     let subagent_profile_resolver = Arc::new(CodeAgentSubagentProfileResolver {
         core: options.core.clone(),
         env_map: options.env_map.clone(),
-        base_tool_context: session_tool_context,
+        base_tool_context: session_tool_context.clone(),
         skill_catalog: skill_catalog.clone(),
         plugin_instructions: plugin_instructions.clone(),
     });
@@ -805,7 +810,7 @@ where
         hook_runner.clone(),
         store.clone(),
         tools.clone(),
-        tool_context.clone(),
+        session_tool_context.clone(),
         approval_handler.clone(),
         approval_policy.clone(),
         loop_detection_config.clone(),
@@ -825,7 +830,15 @@ where
             events.clone(),
             runtime_tooling.process_executor.clone(),
         ));
+    let worktree_manager = Arc::new(SessionWorktreeManager::new(
+        store.clone(),
+        events.clone(),
+        runtime_tooling.process_executor.clone(),
+        workspace_root.to_path_buf(),
+        session_tool_context.clone(),
+    ));
     register_monitor_tools(&mut tools, monitor_manager.clone());
+    register_worktree_tools(&mut tools, worktree_manager.clone());
     register_subagent_tools(&mut tools, subagent_executor.clone(), task_manager);
     let tool_specs = tools
         .specs()
@@ -844,7 +857,7 @@ where
     let runtime_builder = AgentRuntimeBuilder::new(backend.clone(), store.clone())
         .hook_runner(hook_runner)
         .tool_registry(tools)
-        .tool_context(tool_context)
+        .shared_tool_context(session_tool_context.clone())
         .tool_approval_handler(approval_handler)
         .tool_approval_policy(approval_policy)
         .permission_grants(permission_grants)
@@ -876,6 +889,7 @@ where
         session_memory_refresh_state,
         subagent_executor,
         monitor_manager,
+        worktree_manager,
         store,
         skill_catalog,
         plugin_instructions,

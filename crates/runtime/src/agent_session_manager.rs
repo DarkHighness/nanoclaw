@@ -341,6 +341,8 @@ mod tests {
                 task_id: "task_1".into(),
                 role: "explorer".to_string(),
                 status: AgentStatus::Running,
+                worktree_id: None,
+                worktree_root: None,
             },
             AgentTaskSpec {
                 task_id: "task_1".into(),
@@ -408,6 +410,8 @@ mod tests {
                 task_id: "task_1".into(),
                 role: "explorer".to_string(),
                 status: AgentStatus::Running,
+                worktree_id: None,
+                worktree_root: None,
             },
             AgentTaskSpec {
                 task_id: "task_1".into(),
@@ -448,6 +452,8 @@ mod tests {
                 task_id: "task_1".into(),
                 role: "explorer".to_string(),
                 status: AgentStatus::Running,
+                worktree_id: None,
+                worktree_root: None,
             },
             AgentTaskSpec {
                 task_id: "task_1".into(),
@@ -483,6 +489,8 @@ mod tests {
                     task_id: format!("task_{agent_id}").into(),
                     role: "explorer".to_string(),
                     status: AgentStatus::Running,
+                    worktree_id: None,
+                    worktree_root: None,
                 },
                 AgentTaskSpec {
                     task_id: format!("task_{agent_id}").into(),
@@ -559,6 +567,8 @@ mod tests {
                     task_id: format!("task_{agent_id}").into(),
                     role: "explorer".to_string(),
                     status: AgentStatus::Running,
+                    worktree_id: None,
+                    worktree_root: None,
                 },
                 AgentTaskSpec {
                     task_id: format!("task_{agent_id}").into(),
@@ -598,6 +608,8 @@ mod tests {
                 task_id: "task_1".into(),
                 role: "explorer".to_string(),
                 status: AgentStatus::Completed,
+                worktree_id: None,
+                worktree_root: None,
             },
             AgentTaskSpec {
                 task_id: "task_1".into(),

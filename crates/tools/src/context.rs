@@ -6,7 +6,9 @@ use crate::UserInputHandler;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use types::{AgentId, AgentSessionId, CallId, SessionId, ToolName, ToolVisibilityContext, TurnId};
+use types::{
+    AgentId, AgentSessionId, CallId, SessionId, ToolName, ToolVisibilityContext, TurnId, WorktreeId,
+};
 
 pub trait ToolWriteGuard: Send + Sync {
     fn assert_write_paths(&self, agent_id: Option<&AgentId>, paths: &[PathBuf]) -> Result<()>;
@@ -16,6 +18,7 @@ pub trait ToolWriteGuard: Send + Sync {
 pub struct ToolExecutionContext {
     pub workspace_root: PathBuf,
     pub worktree_root: Option<PathBuf>,
+    pub active_worktree_id: Option<WorktreeId>,
     pub sandbox_root: Option<PathBuf>,
     pub additional_roots: Vec<PathBuf>,
     pub read_only_roots: Vec<PathBuf>,
@@ -48,6 +51,7 @@ impl fmt::Debug for ToolExecutionContext {
         debug
             .field("workspace_root", &self.workspace_root)
             .field("worktree_root", &self.worktree_root)
+            .field("active_worktree_id", &self.active_worktree_id)
             .field("sandbox_root", &self.sandbox_root)
             .field("additional_roots", &self.additional_roots)
             .field("effective_sandbox_policy", &self.effective_sandbox_policy)

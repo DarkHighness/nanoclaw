@@ -496,6 +496,8 @@ mod tests {
             task_id: "review-task".into(),
             role: "reviewer".to_string(),
             status: AgentStatus::Completed,
+            worktree_id: None,
+            worktree_root: None,
         };
         let task = AgentTaskSpec {
             task_id: "review-task".into(),

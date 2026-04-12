@@ -3,6 +3,7 @@ mod request_user_input;
 mod skill;
 mod task;
 mod tool_discovery;
+mod worktree;
 
 /// Host-coordinated prompt tools stay hidden when the active session cannot
 /// service interactive prompts.
@@ -14,3 +15,4 @@ pub use request_user_input::*;
 pub use skill::*;
 pub use task::*;
 pub use tool_discovery::*;
+pub use worktree::*;

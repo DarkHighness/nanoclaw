@@ -201,6 +201,8 @@ impl CodeAgentSession {
             agent_session_id: Some(AgentSessionId::from(startup.root_agent_session_id)),
             turn_id: None,
             parent_agent_id: None,
+            active_worktree_id: None,
+            worktree_root: None,
         }
     }
 }
@@ -218,6 +220,8 @@ fn live_task_summary(handle: &agent::types::AgentHandle) -> LiveTaskSummary {
         status: handle.status.clone().into(),
         session_ref: handle.session_id.to_string(),
         agent_session_ref: handle.agent_session_id.to_string(),
+        worktree_id: handle.worktree_id.clone(),
+        worktree_root: handle.worktree_root.clone(),
     }
 }
 
@@ -261,7 +265,14 @@ fn render_live_task_attention_message(outcome: &LiveTaskWaitOutcome) -> String {
 }
 
 fn render_live_task_attention_task(task: &LiveTaskSummary) -> String {
-    format!("{} ({}, {})", task.task_id, task.role, task.status)
+    if let Some(worktree_id) = task.worktree_id.as_ref() {
+        format!(
+            "{} ({}, {}, worktree {})",
+            task.task_id, task.role, task.status, worktree_id
+        )
+    } else {
+        format!("{} ({}, {})", task.task_id, task.role, task.status)
+    }
 }
 
 fn live_task_attention_instruction(status: agent::types::TaskStatus) -> &'static str {

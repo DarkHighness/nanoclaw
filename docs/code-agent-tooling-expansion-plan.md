@@ -10,7 +10,7 @@ Status: Active
 | --- | --- | --- |
 | Phase 1: Task Model | Complete | `task_create`, `task_get`, `task_list`, `task_update`, `task_stop` are registered, `update_plan` has been removed, and the TUI now restores live/current task state from typed task events. |
 | Phase 2: Monitor | Complete | `monitor_start`, `monitor_list`, `monitor_stop` are registered and surfaced through typed monitor/session flows. |
-| Phase 3: Worktree Lifecycle | Not Started | No typed worktree lifecycle yet. |
+| Phase 3: Worktree Lifecycle | In Progress | `worktree_enter`, `worktree_list`, and `worktree_exit` now exist with persisted worktree events, shared runtime context switching, and typed transcript rendering. Child-agent dedicated worktree opt-in and persisted task/worktree summaries are still pending. |
 | Phase 4: Checkpoint And Restore | Not Started | Rollback remains transcript/history-centric. |
 | Phase 5: Diagnostics | Complete | `code_diagnostics` exists as a typed tool surface and no longer has a mirrored slash command. |
 | Phase 6: Cron / Automation | Not Started | No scheduled execution tool family yet. |
@@ -289,6 +289,21 @@ blocking the main conversation.
 
 Make isolated worktrees first-class runtime objects instead of an implicit
 sandbox/workspace-root detail.
+
+### Current status
+
+- Session-scoped worktree lifecycle now exists as a typed tool family:
+  - `worktree_enter`
+  - `worktree_list`
+  - `worktree_exit`
+- Entering or exiting a worktree updates the shared runtime tool context, so
+  later tools in the same session inherit the active worktree root.
+- Worktree lifecycle is persisted through typed session events and projected
+  into transcript/history surfaces.
+- Still pending:
+  - child-agent dedicated worktree opt-in
+  - persisted task summaries that retain worktree attachment across reload
+  - richer operator review for worktree ownership and rollback
 
 ### User-facing outcome
 

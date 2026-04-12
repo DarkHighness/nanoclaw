@@ -656,6 +656,25 @@ pub(crate) fn searchable_session_event_strings(event: &SessionEventEnvelope) -> 
             values.push(summary.cwd.clone());
             values.push(summary.command.clone());
         }
+        SessionEventKind::WorktreeEntered { summary }
+        | SessionEventKind::WorktreeUpdated { summary } => {
+            values.push(summary.worktree_id.to_string());
+            values.push(summary.scope.to_string());
+            values.push(summary.status.to_string());
+            values.push(summary.root.display().to_string());
+            if let Some(label) = &summary.label {
+                values.push(label.clone());
+            }
+            if let Some(task_id) = &summary.task_id {
+                values.push(task_id.to_string());
+            }
+            if let Some(parent_agent_id) = &summary.parent_agent_id {
+                values.push(parent_agent_id.to_string());
+            }
+            if let Some(child_agent_id) = &summary.child_agent_id {
+                values.push(child_agent_id.to_string());
+            }
+        }
         SessionEventKind::TaskCreated {
             task,
             parent_agent_id,

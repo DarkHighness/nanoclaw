@@ -519,6 +519,18 @@ pub(crate) fn format_session_event_line(event: &SessionEventEnvelope) -> Transcr
                 monitor_summary_details(summary),
             )
         }
+        SessionEventKind::WorktreeEntered { summary } => info_summary_entry(
+            format!("Entered worktree {}", summary.worktree_id),
+            worktree_summary_lines(summary),
+        ),
+        SessionEventKind::WorktreeUpdated { summary } => info_summary_entry(
+            format!(
+                "{} worktree {}",
+                worktree_status_label(summary.status),
+                summary.worktree_id
+            ),
+            worktree_summary_lines(summary),
+        ),
         SessionEventKind::TaskCreated { task, .. } => info_summary_entry(
             format!("Spawned task {}", task.task_id),
             [
@@ -625,6 +637,30 @@ fn monitor_status_label(status: agent::types::MonitorStatus) -> &'static str {
         agent::types::MonitorStatus::Failed => "Failed",
         agent::types::MonitorStatus::Cancelled => "Cancelled",
     }
+}
+
+fn worktree_status_label(status: agent::types::WorktreeStatus) -> &'static str {
+    match status {
+        agent::types::WorktreeStatus::Active => "Updated active",
+        agent::types::WorktreeStatus::Inactive => "Updated inactive",
+        agent::types::WorktreeStatus::Removed => "Removed",
+    }
+}
+
+fn worktree_summary_lines(summary: &agent::types::WorktreeSummaryRecord) -> [String; 4] {
+    [
+        format!("scope {}", summary.scope),
+        format!("status {}", summary.status),
+        format!(
+            "root {}",
+            preview_text(&summary.root.display().to_string(), 72)
+        ),
+        summary
+            .label
+            .as_deref()
+            .map(|label| format!("label {}", preview_text(label, 48)))
+            .unwrap_or_default(),
+    ]
 }
 
 fn monitor_summary_details(

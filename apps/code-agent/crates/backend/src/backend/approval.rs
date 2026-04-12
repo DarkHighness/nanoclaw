@@ -249,6 +249,47 @@ fn approval_content_preview(tool_name: &str, arguments: &Value) -> ApprovalConte
                 preview,
             };
         }
+        ToolRenderKind::WorktreeEnter => {
+            let mut preview = vec!["enter session worktree".to_string()];
+            if let Some(label) = arguments
+                .get("label")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                preview.extend(collapse_preview_text(label, 2, 96, PreviewCollapse::Head));
+            }
+            return ApprovalContent {
+                kind: ApprovalContentKind::Arguments,
+                preview,
+            };
+        }
+        ToolRenderKind::WorktreeList => {
+            let include_inactive = arguments
+                .get("include_inactive")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            return ApprovalContent {
+                kind: ApprovalContentKind::Arguments,
+                preview: vec![if include_inactive {
+                    "list worktrees including inactive".to_string()
+                } else {
+                    "list active worktrees".to_string()
+                }],
+            };
+        }
+        ToolRenderKind::WorktreeExit => {
+            let worktree_id = arguments
+                .get("worktree_id")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or("current");
+            return ApprovalContent {
+                kind: ApprovalContentKind::Arguments,
+                preview: vec![format!("exit worktree {worktree_id}")],
+            };
+        }
         ToolRenderKind::SendInput
         | ToolRenderKind::SpawnAgent
         | ToolRenderKind::WaitAgent

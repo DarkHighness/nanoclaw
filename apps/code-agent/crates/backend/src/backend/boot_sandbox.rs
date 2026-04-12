@@ -1,8 +1,8 @@
 use crate::options::AppOptions;
-use agent::ToolExecutionContext;
 use agent::tools::{
     SandboxBackendStatus, SandboxPolicy, describe_sandbox_policy, sandbox_backend_status,
 };
+use agent::{PRIMARY_WORKTREE_ID, ToolExecutionContext, WorktreeId};
 use agent_env::EnvMap;
 use nanoclaw_config::{AgentSandboxMode, ResolvedAgentProfile};
 use std::collections::BTreeSet;
@@ -61,6 +61,7 @@ pub fn build_tool_context(workspace_root: &Path, options: &AppOptions) -> ToolEx
     ToolExecutionContext {
         workspace_root: workspace_root.to_path_buf(),
         worktree_root: Some(workspace_root.to_path_buf()),
+        active_worktree_id: Some(WorktreeId::from(PRIMARY_WORKTREE_ID)),
         workspace_only: options.workspace_only,
         model_context_window_tokens: Some(options.primary_profile.context_window_tokens),
         ..Default::default()
