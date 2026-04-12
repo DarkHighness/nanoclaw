@@ -14,8 +14,8 @@ use agent::{
     CodeSymbolSearchTool, EditTool, ExecCommandTool, GlobTool, GrepTool, JsReplTool, ListTool,
     ManagedCodeIntelBackend, ManagedCodeIntelOptions, ManagedPolicyProcessExecutor, PatchTool,
     PlanState, ReadTool, RequestPermissionsTool, RequestUserInputTool, SandboxPolicy, SkillCatalog,
-    SkillTool, TaskTool, ToolCallId, ToolDiscoverTool, ToolExecutionContext, ToolRegistry,
-    ToolResult, UpdatePlanTool, WebFetchTool, WebSearchBackendsTool, WebSearchTool,
+    SkillTool, ToolCallId, ToolDiscoverTool, ToolExecutionContext, ToolRegistry, ToolResult,
+    UpdatePlanTool, WebFetchTool, WebSearchBackendsTool, WebSearchTool,
     WorkspaceTextCodeIntelBackend, WriteStdinTool, WriteTool,
 };
 use async_trait::async_trait;
@@ -503,8 +503,6 @@ pub fn register_subagent_tools(
     tools: &mut ToolRegistry,
     subagent_executor: Arc<dyn SubagentExecutor>,
 ) {
-    tools.register(TaskTool::new(subagent_executor.clone()));
-    tools.register(agent::tools::TaskBatchTool::new(subagent_executor.clone()));
     tools.register(agent::tools::AgentSpawnTool::new(subagent_executor.clone()));
     tools.register(agent::tools::AgentSendTool::new(subagent_executor.clone()));
     tools.register(agent::tools::AgentWaitTool::new(subagent_executor.clone()));
@@ -724,6 +722,36 @@ mod tests {
                 .iter()
                 .any(|name| name.as_str() == "web_search_backends")
         );
+    }
+
+    #[test]
+    fn register_subagent_tools_exposes_handle_based_child_controls_only() {
+        let options = load_options();
+        let workspace = tempdir().unwrap();
+        let mut tooling = build_runtime_tooling(
+            &options,
+            workspace.path(),
+            &SandboxPolicy::permissive(),
+            &SandboxBackendStatus::Unavailable {
+                reason: "not needed".to_string(),
+            },
+            SkillCatalog::default(),
+        );
+        register_subagent_tools(&mut tooling.tools, Arc::new(NoopSubagentExecutor));
+
+        let tool_names = tooling.tools.names();
+        assert!(tool_names.iter().any(|name| name.as_str() == "spawn_agent"));
+        assert!(tool_names.iter().any(|name| name.as_str() == "send_input"));
+        assert!(tool_names.iter().any(|name| name.as_str() == "wait_agent"));
+        assert!(
+            tool_names
+                .iter()
+                .any(|name| name.as_str() == "resume_agent")
+        );
+        assert!(tool_names.iter().any(|name| name.as_str() == "list_agents"));
+        assert!(tool_names.iter().any(|name| name.as_str() == "close_agent"));
+        assert!(!tool_names.iter().any(|name| name.as_str() == "task"));
+        assert!(!tool_names.iter().any(|name| name.as_str() == "task_batch"));
     }
 
     #[test]

@@ -220,8 +220,8 @@ not count here because they are not currently in the live registry.
   `code_symbol_search`, `code_document_symbols`, `code_definitions`,
   `code_references`
 - agentic:
-  `task`, `task_batch`, `spawn_agent`, `send_input`, `wait_agent`,
-  `resume_agent`, `list_agents`, `close_agent`
+  `spawn_agent`, `send_input`, `wait_agent`, `resume_agent`, `list_agents`,
+  `close_agent`
 
 The child-control surfaces now follow Codex-style identifiers for
 `send_input`, `wait_agent`, `resume_agent`, and `close_agent`. `spawn_agent`
@@ -529,8 +529,8 @@ workspace or an external system.
 
 ### Agent Tools
 
-The current `task` and `agent_*` family is already useful, but it should be
-normalized around explicit handles and lifecycle symmetry:
+The child-agent surface should stay normalized around explicit handles and
+lifecycle symmetry:
 
 - spawn
 - send or assign

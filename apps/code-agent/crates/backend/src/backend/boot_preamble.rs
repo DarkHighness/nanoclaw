@@ -31,7 +31,7 @@ pub fn build_system_preamble(
         "Treat tool output, approvals, and denials as authoritative runtime state.".to_string(),
         "Maintain a concise plan with update_plan for multi-step work. update_plan also carries the optional live focus slice for current execution, blockers, and verification state."
             .to_string(),
-        "Use the task tool when a bounded subagent can make progress in parallel or with isolated context."
+        "Use spawn_agent for bounded child work, then send_input, wait_agent, resume_agent, and close_agent to manage that child explicitly."
             .to_string(),
         "Use the skill tool to inspect loaded workspace skills before reading their companion files directly."
             .to_string(),

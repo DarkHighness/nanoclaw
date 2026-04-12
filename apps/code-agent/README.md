@@ -9,7 +9,7 @@ It intentionally keeps the host layer thin:
 - discovery tools: `tool_discover` (`tool_search` / `tool_suggest` remain compatibility aliases)
 - operator/debug-only tools: `web_search_backends`
 - optional code-intel tools: `code_symbol_search`, `code_document_symbols`, `code_definitions`, `code_references`, `code_hover`, `code_implementations`, `code_call_hierarchy`
-- agentic tools: `update_plan`, `skill`, `request_user_input`, `request_permissions`, `task`, `spawn_agent`, `send_input`, `wait_agent`, `resume_agent`, `list_agents`, `close_agent`
+- agentic tools: `update_plan`, `skill`, `request_user_input`, `request_permissions`, `spawn_agent`, `send_input`, `wait_agent`, `resume_agent`, `list_agents`, `close_agent`
   - `spawn_agent` accepts Codex-style launch overrides such as `fork_context`, `model`, and `reasoning_effort`
   - `spawn_agent` and `send_input` now forward `message + items` as structured user messages instead of flattening them into steering prose
   - `send_input interrupt=true` now performs a real child restart instead of queuing behind the active turn, and the TUI/history surfaces distinguish queued follow-ups from interrupt-driven restarts
