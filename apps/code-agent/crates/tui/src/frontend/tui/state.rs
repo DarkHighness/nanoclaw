@@ -7,6 +7,7 @@ use crate::theme::ThemeSummary;
 use crate::tool_render::{
     ToolCommand, ToolCommandIntent, ToolCompletionState, ToolDetail, ToolDetailBlockKind,
     ToolRenderKind, ToolReview, preview_tool_details, serialize_tool_details,
+    tool_review_from_details,
 };
 use crate::ui::StartupDiagnosticsSnapshot;
 use agent::types::{SubmittedPromptSnapshot, TaskId, TaskOrigin, TaskStatus, TokenLedgerSnapshot};

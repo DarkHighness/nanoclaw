@@ -41,7 +41,8 @@ use crate::interaction::{
 };
 use crate::theme::ThemeSummary;
 use crate::tool_render::{
-    ToolCommand, ToolCompletionState, ToolDetail, ToolDetailLabel, ToolReview, ToolReviewFile,
+    ToolCommand, ToolCompletionState, ToolDetail, ToolDetailBlockKind, ToolDetailLabel, ToolReview,
+    ToolReviewItem, ToolReviewItemKind, ToolReviewKind,
 };
 use agent::types::{MessageId, MessagePart, TaskId, TaskOrigin, TaskStatus};
 use ratatui::layout::Rect;
@@ -1739,9 +1740,11 @@ fn reviewable_tool_transcript_entry() -> TranscriptEntry {
             },
         ],
         Some(ToolReview {
+            kind: ToolReviewKind::FileDiff,
             summary: Some("Updated src/lib.rs".to_string()),
-            files: vec![ToolReviewFile {
-                path: "src/lib.rs".to_string(),
+            items: vec![ToolReviewItem {
+                title: "src/lib.rs".to_string(),
+                preview_kind: ToolReviewItemKind::Diff,
                 preview_lines: vec![
                     "--- src/lib.rs".to_string(),
                     "+++ src/lib.rs".to_string(),
@@ -1834,6 +1837,56 @@ fn tool_review_overlay_renders_file_list_and_preview() {
         let text = line_text_for(line);
         text.contains("+new()")
     }));
+}
+
+#[test]
+fn tool_review_overlay_renders_structured_sections_for_non_diff_tools() {
+    let mut state = TuiState {
+        tool_selection: Some(ToolSelectionTarget::Transcript(0)),
+        ..TuiState::default()
+    };
+    state.transcript = vec![TranscriptEntry::tool(
+        TranscriptToolStatus::Failed,
+        "exec_command",
+        vec![
+            command_tool_detail("cargo test -- --nocapture"),
+            ToolDetail::LabeledValue {
+                label: ToolDetailLabel::Result,
+                value: "exit 101".to_string(),
+            },
+            ToolDetail::NamedBlock {
+                label: "Stderr".to_string(),
+                kind: ToolDetailBlockKind::Stderr,
+                lines: vec!["test failed".to_string()],
+            },
+        ],
+    )];
+
+    assert!(state.open_selected_tool_review_overlay());
+
+    let list = build_tool_review_list_text(&state);
+    let preview = build_tool_review_preview_text(&state);
+
+    assert!(
+        text_lines(&list)
+            .iter()
+            .any(|line| line.contains("Command"))
+    );
+    assert!(
+        text_lines(&list)
+            .iter()
+            .any(|line| line.contains("cargo test -- --nocapture"))
+    );
+    assert!(
+        text_lines(&preview)
+            .iter()
+            .any(|line| line.contains("cargo test -- --nocapture"))
+    );
+    assert!(
+        text_lines(&preview)
+            .iter()
+            .any(|line| line.contains("Section Preview"))
+    );
 }
 
 #[test]

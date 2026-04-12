@@ -1,5 +1,5 @@
 use super::*;
-use crate::tool_render::{ToolReview, ToolReviewFile};
+use crate::tool_render::{ToolReview, ToolReviewItem};
 use agent::types::MessageId;
 
 #[derive(Clone, Debug, Default)]
@@ -312,7 +312,7 @@ impl TuiState {
         let Some(overlay) = self.tool_review.as_mut() else {
             return false;
         };
-        let total = overlay.review.files.len();
+        let total = overlay.review.items.len();
         if total == 0 {
             return false;
         }
@@ -328,20 +328,20 @@ impl TuiState {
         let Some(overlay) = self.tool_review.as_mut() else {
             return false;
         };
-        if overlay.review.files.is_empty() {
+        if overlay.review.items.is_empty() {
             return false;
         }
         overlay.selected = if oldest {
             0
         } else {
-            overlay.review.files.len().saturating_sub(1)
+            overlay.review.items.len().saturating_sub(1)
         };
         true
     }
 
-    pub(crate) fn selected_tool_review_file(&self) -> Option<&ToolReviewFile> {
+    pub(crate) fn selected_tool_review_item(&self) -> Option<&ToolReviewItem> {
         let overlay = self.tool_review_overlay()?;
-        overlay.review.files.get(overlay.selected)
+        overlay.review.items.get(overlay.selected)
     }
 
     pub(crate) fn move_collection_picker(&mut self, backwards: bool) -> bool {

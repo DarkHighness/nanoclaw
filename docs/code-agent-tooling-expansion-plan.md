@@ -18,7 +18,7 @@ Status: Active
 | Phase 8: Browser / Computer Use | Complete | Feature-gated `browser_open`, `browser_snapshot`, `browser_click`, `browser_type`, `browser_eval`, `browser_screenshot`, and `browser_close` now cover typed browser session creation, DOM inspection, click/type/eval interactions, screenshot capture, and explicit session teardown. |
 | Phase 9: Notebook Editing | Complete | Feature-gated `notebook_read` and `notebook_edit` now expose typed notebook inspection and mutation without falling back to raw `.ipynb` JSON tooling. |
 | Cross-cutting: Operator Slash Surface | In Progress | Tool-mirroring slash commands have been pruned; operator/session commands remain, and installed skills are now surfaced as explicit `/skill_name` slash invocations plus `$skill_name` composer directives. |
-| Cross-cutting: Tool Review Surface | In Progress | Typed transcript cells exist, but operator review for running input/output/failure still needs a fuller design pass. |
+| Cross-cutting: Tool Review Surface | Complete | `ToolReview` is now a typed item-based review substrate instead of a diff-only file list, and the TUI can open the same centered review overlay for running, failed, and completed tools with structured sections or file diffs. |
 | Cross-cutting: Skill Lifecycle & Self-Evolution | In Progress | Hermes-style `skills_list`, `skill_view`, and `skill_manage` now exist with managed-vs-external roots, managed roots deterministically override readonly external copies, shadowed copies are surfaced as provenance, and Hermes-style trust/update/audit metadata now flows through skill loading plus `skills_list` / `skill_view`; verifier-backed extraction and archival/promotion are still missing. |
 
 ## Goal
@@ -730,19 +730,27 @@ running concurrently.
 - Operators can inspect input/output/review payloads without reopening raw
   protocol dumps.
 
-### Planned work
+### Completed work
 
-- tighten typed tool render contracts for running vs terminal states
-- improve structured input/output summaries and head/tail collapsing rules
-- keep approval, running tool state, and final result distinct in the TUI
-- avoid protocol text like `path>` / `query>` leaking into operator-facing
-  rendering when structured fields exist
+- generalized `ToolReview` from diff-only file previews to typed review items
+  with `file_diff` vs structured section kinds
+- taught transcript tool entries to retain reviewable structured input/output
+  sections even when the tool did not emit file diffs
+- kept file-diff review as the canonical surface for mutating tools while
+  letting running/failed command, browser, and other typed tools reuse the
+  same operator review overlay
+- aligned the overlay UI around typed nouns (`files` vs `sections`) instead of
+  hard-coding every review flow to diff/file semantics
+- kept raw protocol markers such as `path>` / `query>` out of operator-facing
+  review and transcript rendering whenever typed fields exist
 
 ### Exit criteria
 
 - The transcript remains readable under concurrent tool activity.
 - The operator can tell what ran, what is still running, and what failed
   without expanding raw payloads.
+- The same review overlay can inspect both file diffs and structured
+  input/output sections without falling back to raw JSON payload dumps.
 
 ## Recommended Delivery Order
 

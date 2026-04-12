@@ -9,7 +9,8 @@ use super::{
 use crate::frontend::tui::input_history::{ComposerHistoryKind, PersistedComposerHistoryEntry};
 use crate::theme::ThemeSummary;
 use crate::tool_render::{
-    ToolCommand, ToolCompletionState, ToolDetail, ToolDetailLabel, ToolReview, ToolReviewFile,
+    ToolCommand, ToolCompletionState, ToolDetail, ToolDetailBlockKind, ToolDetailLabel, ToolReview,
+    ToolReviewItem, ToolReviewItemKind, ToolReviewKind,
 };
 use agent::types::{
     Message, MessageId, MessagePart, MessageRole, SubmittedPromptAttachment,
@@ -389,9 +390,11 @@ fn selected_tool_review_overlay_uses_review_from_selected_entry() {
             value: "Updated src/lib.rs".to_string(),
         }],
         Some(ToolReview {
+            kind: ToolReviewKind::FileDiff,
             summary: Some("Updated src/lib.rs".to_string()),
-            files: vec![ToolReviewFile {
-                path: "src/lib.rs".to_string(),
+            items: vec![ToolReviewItem {
+                title: "src/lib.rs".to_string(),
+                preview_kind: ToolReviewItemKind::Diff,
                 preview_lines: vec!["+new()".to_string()],
             }],
         }),
@@ -400,8 +403,8 @@ fn selected_tool_review_overlay_uses_review_from_selected_entry() {
     assert!(state.open_selected_tool_review_overlay());
     assert_eq!(
         state
-            .selected_tool_review_file()
-            .map(|file| file.path.as_str()),
+            .selected_tool_review_item()
+            .map(|item| item.title.as_str()),
         Some("src/lib.rs")
     );
 }
@@ -459,9 +462,11 @@ fn selected_tool_review_overlay_can_open_from_live_tool_selection() {
                 value: "Updating src/lib.rs".to_string(),
             }],
             Some(ToolReview {
+                kind: ToolReviewKind::FileDiff,
                 summary: Some("Updating src/lib.rs".to_string()),
-                files: vec![ToolReviewFile {
-                    path: "src/lib.rs".to_string(),
+                items: vec![ToolReviewItem {
+                    title: "src/lib.rs".to_string(),
+                    preview_kind: ToolReviewItemKind::Diff,
                     preview_lines: vec!["+new()".to_string()],
                 }],
             }),
@@ -471,10 +476,42 @@ fn selected_tool_review_overlay_can_open_from_live_tool_selection() {
     assert!(state.open_selected_tool_review_overlay());
     assert_eq!(
         state
-            .selected_tool_review_file()
-            .map(|file| file.path.as_str()),
+            .selected_tool_review_item()
+            .map(|item| item.title.as_str()),
         Some("src/lib.rs")
     );
+}
+
+#[test]
+fn selected_tool_review_overlay_derives_structured_review_from_tool_details() {
+    let mut state = TuiState {
+        tool_selection: Some(ToolSelectionTarget::Transcript(0)),
+        ..TuiState::default()
+    };
+    state.transcript = vec![TranscriptEntry::tool(
+        TranscriptToolStatus::Failed,
+        "exec_command",
+        vec![
+            command_tool_detail("cargo test"),
+            ToolDetail::LabeledValue {
+                label: ToolDetailLabel::Result,
+                value: "exit 101".to_string(),
+            },
+            ToolDetail::NamedBlock {
+                label: "Stderr".to_string(),
+                kind: ToolDetailBlockKind::Stderr,
+                lines: vec!["test failure".to_string()],
+            },
+        ],
+    )];
+
+    assert!(state.open_selected_tool_review_overlay());
+    let overlay = state
+        .tool_review_overlay()
+        .expect("expected review overlay");
+    assert_eq!(overlay.review.kind, ToolReviewKind::Structured);
+    assert_eq!(overlay.review.items.len(), 3);
+    assert_eq!(overlay.review.items[0].title, "Command");
 }
 
 #[test]

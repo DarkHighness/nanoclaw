@@ -1,6 +1,7 @@
 use super::super::state::TuiState;
 use super::shared::clamp_scroll;
 use super::theme::palette;
+use super::transcript_shell::render_tool_review_preview_lines;
 use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span, Text};
@@ -62,9 +63,13 @@ pub(super) fn render_tool_review_overlay(
         list.lines.len(),
         body[0].height.saturating_sub(2),
     );
+    let list_title = match overlay.review.kind {
+        crate::tool_render::ToolReviewKind::FileDiff => " Files ",
+        crate::tool_render::ToolReviewKind::Structured => " Sections ",
+    };
     frame.render_widget(
         Block::default()
-            .title(" Files ")
+            .title(list_title)
             .title_style(
                 Style::default()
                     .fg(palette().accent)
@@ -90,9 +95,13 @@ pub(super) fn render_tool_review_overlay(
         }),
     );
 
+    let preview_title = match overlay.review.kind {
+        crate::tool_render::ToolReviewKind::FileDiff => " Diff Preview ",
+        crate::tool_render::ToolReviewKind::Structured => " Section Preview ",
+    };
     frame.render_widget(
         Block::default()
-            .title(" Diff Preview ")
+            .title(preview_title)
             .title_style(
                 Style::default()
                     .fg(palette().header)
@@ -129,7 +138,7 @@ pub(super) fn build_tool_review_summary_text(state: &TuiState) -> Text<'static> 
     let Some(overlay) = state.tool_review_overlay() else {
         return Text::from(Vec::<Line<'static>>::new());
     };
-    let selected = state.selected_tool_review_file();
+    let selected = state.selected_tool_review_item();
     let mut lines = vec![Line::from(vec![
         Span::styled("tool", Style::default().fg(palette().muted)),
         Span::styled(" · ", Style::default().fg(palette().subtle)),
@@ -142,9 +151,10 @@ pub(super) fn build_tool_review_summary_text(state: &TuiState) -> Text<'static> 
         Span::styled(" · ", Style::default().fg(palette().subtle)),
         Span::styled(
             format!(
-                "file {} of {}",
+                "{} {} of {}",
+                overlay.review.kind.singular_label(),
                 overlay.selected + 1,
-                overlay.review.files.len()
+                overlay.review.items.len()
             ),
             Style::default().fg(palette().accent),
         ),
@@ -163,9 +173,12 @@ pub(super) fn build_tool_review_summary_text(state: &TuiState) -> Text<'static> 
         ]));
     } else if let Some(selected) = selected {
         lines.push(Line::from(vec![
-            Span::styled("file", Style::default().fg(palette().muted)),
+            Span::styled(
+                overlay.review.kind.singular_label(),
+                Style::default().fg(palette().muted),
+            ),
             Span::styled(" · ", Style::default().fg(palette().subtle)),
-            Span::styled(selected.path.clone(), Style::default().fg(palette().text)),
+            Span::styled(selected.title.clone(), Style::default().fg(palette().text)),
         ]));
     }
 
@@ -178,7 +191,7 @@ pub(super) fn build_tool_review_list_text(state: &TuiState) -> Text<'static> {
     };
 
     let mut lines = Vec::new();
-    for (index, file) in overlay.review.files.iter().enumerate() {
+    for (index, item) in overlay.review.items.iter().enumerate() {
         let selected = overlay.selected == index;
         lines.push(Line::from(vec![
             Span::styled(
@@ -191,7 +204,7 @@ pub(super) fn build_tool_review_list_text(state: &TuiState) -> Text<'static> {
             ),
             Span::raw(" "),
             Span::styled(
-                file.path.clone(),
+                item.title.clone(),
                 Style::default()
                     .fg(if selected {
                         palette().header
@@ -208,11 +221,11 @@ pub(super) fn build_tool_review_list_text(state: &TuiState) -> Text<'static> {
         lines.push(Line::from(vec![
             Span::raw("  "),
             Span::styled(
-                format!("{} preview line(s)", file.preview_lines.len()),
+                tool_review_item_summary(&overlay.review.kind, item),
                 Style::default().fg(palette().muted),
             ),
         ]));
-        if index + 1 < overlay.review.files.len() {
+        if index + 1 < overlay.review.items.len() {
             lines.push(Line::raw(""));
         }
     }
@@ -221,29 +234,29 @@ pub(super) fn build_tool_review_list_text(state: &TuiState) -> Text<'static> {
 }
 
 pub(super) fn build_tool_review_preview_text(state: &TuiState) -> Text<'static> {
-    let Some(file) = state.selected_tool_review_file() else {
+    let Some(overlay) = state.tool_review_overlay() else {
+        return Text::from(Vec::<Line<'static>>::new());
+    };
+    let Some(item) = state.selected_tool_review_item() else {
         return Text::from(Vec::<Line<'static>>::new());
     };
 
     let mut lines = vec![
         Line::from(vec![
-            Span::styled("Diff Preview", Style::default().fg(palette().header)),
+            Span::styled(
+                match overlay.review.kind {
+                    crate::tool_render::ToolReviewKind::FileDiff => "Diff Preview",
+                    crate::tool_render::ToolReviewKind::Structured => "Section Preview",
+                },
+                Style::default().fg(palette().header),
+            ),
             Span::styled(" · ", Style::default().fg(palette().subtle)),
-            Span::styled(file.path.clone(), Style::default().fg(palette().text)),
+            Span::styled(item.title.clone(), Style::default().fg(palette().text)),
         ]),
         Line::raw(""),
     ];
 
-    lines.extend(file.preview_lines.iter().map(|line| {
-        let style = if line.starts_with('+') {
-            Style::default().fg(palette().assistant)
-        } else if line.starts_with('-') {
-            Style::default().fg(palette().error)
-        } else {
-            Style::default().fg(palette().text)
-        };
-        Line::from(Span::styled(line.clone(), style))
-    }));
+    lines.extend(render_tool_review_preview_lines(item));
 
     Text::from(lines)
 }
@@ -278,4 +291,39 @@ fn centered_rect(area: Rect, width_percent: u16, height_percent: u16) -> Rect {
             Constraint::Percentage((100_u16.saturating_sub(width_percent)) / 2),
         ])
         .split(vertical[1])[1]
+}
+
+fn tool_review_item_summary(
+    review_kind: &crate::tool_render::ToolReviewKind,
+    item: &crate::tool_render::ToolReviewItem,
+) -> String {
+    match review_kind {
+        crate::tool_render::ToolReviewKind::FileDiff => {
+            format!("{} preview line(s)", item.preview_lines.len())
+        }
+        crate::tool_render::ToolReviewKind::Structured => {
+            let first_line = item
+                .preview_lines
+                .iter()
+                .find(|line| !line.trim().is_empty())
+                .map(|line| truncate_inline(line, 72))
+                .unwrap_or_else(|| "empty preview".to_string());
+            if item.preview_lines.len() > 1 {
+                format!("{first_line} · +{} more", item.preview_lines.len() - 1)
+            } else {
+                first_line
+            }
+        }
+    }
+}
+
+fn truncate_inline(text: &str, max_chars: usize) -> String {
+    let trimmed = text.trim();
+    let mut chars = trimmed.chars();
+    let truncated = chars.by_ref().take(max_chars).collect::<String>();
+    if chars.next().is_some() {
+        format!("{truncated}…")
+    } else {
+        truncated
+    }
 }

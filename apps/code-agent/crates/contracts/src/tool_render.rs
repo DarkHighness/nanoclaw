@@ -232,15 +232,49 @@ impl ToolCommand {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ToolReviewFile {
-    pub path: String,
+pub struct ToolReviewItem {
+    pub title: String,
+    pub preview_kind: ToolReviewItemKind,
     pub preview_lines: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ToolReviewKind {
+    FileDiff,
+    Structured,
+}
+
+impl ToolReviewKind {
+    pub fn singular_label(self) -> &'static str {
+        match self {
+            Self::FileDiff => "file",
+            Self::Structured => "section",
+        }
+    }
+
+    pub fn plural_label(self) -> &'static str {
+        match self {
+            Self::FileDiff => "files",
+            Self::Structured => "sections",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ToolReviewItemKind {
+    #[default]
+    Neutral,
+    Command,
+    Stdout,
+    Stderr,
+    Diff,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ToolReview {
+    pub kind: ToolReviewKind,
     pub summary: Option<String>,
-    pub files: Vec<ToolReviewFile>,
+    pub items: Vec<ToolReviewItem>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1536,7 +1570,7 @@ pub fn tool_review(tool_name: &str, structured: Option<&Value>) -> Option<ToolRe
         .map(str::trim)
         .filter(|summary| !summary.is_empty())
         .map(str::to_string);
-    let files = structured
+    let items = structured
         .get("file_diffs")
         .and_then(Value::as_array)
         .into_iter()
@@ -1554,17 +1588,86 @@ pub fn tool_review(tool_name: &str, structured: Option<&Value>) -> Option<ToolRe
                 .filter(|path| !path.is_empty())
                 .unwrap_or("diff")
                 .to_string();
-            Some(ToolReviewFile {
-                path,
+            Some(ToolReviewItem {
+                title: path,
+                preview_kind: ToolReviewItemKind::Diff,
                 preview_lines: collapse_preview_text(preview, 48, 120, PreviewCollapse::HeadTail),
             })
         })
         .collect::<Vec<_>>();
-    if files.is_empty() {
+    if items.is_empty() {
         None
     } else {
-        Some(ToolReview { summary, files })
+        Some(ToolReview {
+            kind: ToolReviewKind::FileDiff,
+            summary,
+            items,
+        })
     }
+}
+
+pub fn tool_review_from_details(detail_lines: &[ToolDetail]) -> Option<ToolReview> {
+    let items = detail_lines
+        .iter()
+        .filter_map(review_item_from_detail)
+        .collect::<Vec<_>>();
+    if items.is_empty() {
+        return None;
+    }
+
+    Some(ToolReview {
+        kind: ToolReviewKind::Structured,
+        summary: tool_review_detail_summary(detail_lines),
+        items,
+    })
+}
+
+pub fn append_tool_review_action_hint(detail_lines: &mut Vec<ToolDetail>, review: &ToolReview) {
+    if review.items.is_empty()
+        || detail_lines.iter().any(|detail| {
+            matches!(
+                detail,
+                ToolDetail::ActionHint { key_hint, .. } if key_hint.eq_ignore_ascii_case("r")
+            )
+        })
+    {
+        return;
+    }
+
+    let (label, detail) = match review.kind {
+        ToolReviewKind::FileDiff => {
+            if review.items.len() == 1 {
+                (
+                    "review diff".to_string(),
+                    Some(review.items[0].title.clone()),
+                )
+            } else {
+                (
+                    "review diffs".to_string(),
+                    Some(format!("{} file(s)", review.items.len())),
+                )
+            }
+        }
+        ToolReviewKind::Structured => {
+            if review.items.len() == 1 {
+                (
+                    "review section".to_string(),
+                    Some(review.items[0].title.clone()),
+                )
+            } else {
+                (
+                    "review sections".to_string(),
+                    Some(format!("{} section(s)", review.items.len())),
+                )
+            }
+        }
+    };
+
+    detail_lines.push(ToolDetail::ActionHint {
+        key_hint: "r".to_string(),
+        label,
+        detail,
+    });
 }
 
 pub fn tool_argument_details(preview_lines: &[String]) -> Vec<ToolDetail> {
@@ -3156,39 +3259,120 @@ fn file_mutation_output_details(
     if let Some(review) = review {
         detail_lines.push(ToolDetail::LabeledValue {
             label: ToolDetailLabel::Files,
-            value: review_file_summary(&review.files),
+            value: review_item_summary(&review),
         });
-        detail_lines.push(ToolDetail::ActionHint {
-            key_hint: "r".to_string(),
-            label: if review.files.len() == 1 {
-                "review diff".to_string()
-            } else {
-                "review diffs".to_string()
-            },
-            detail: Some(if review.files.len() == 1 {
-                review.files[0].path.clone()
-            } else {
-                format!("{} file(s)", review.files.len())
-            }),
-        });
+        append_tool_review_action_hint(&mut detail_lines, &review);
     }
 
     Some(detail_lines)
 }
 
-fn review_file_summary(files: &[ToolReviewFile]) -> String {
-    match files {
-        [] => "no files".to_string(),
-        [file] => file.path.clone(),
-        [first, second] => format!("2 file(s) · {} · {}", first.path, second.path),
+fn review_item_summary(review: &ToolReview) -> String {
+    match review.items.as_slice() {
+        [] => format!("no {}", review.kind.plural_label()),
+        [item] => item.title.clone(),
+        [first, second] => format!(
+            "2 {} · {} · {}",
+            review.kind.plural_label(),
+            first.title,
+            second.title
+        ),
         [first, second, rest @ ..] => format!(
-            "{} file(s) · {} · {} · +{} more",
+            "{} {} · {} · {} · +{} more",
             rest.len() + 2,
-            first.path,
-            second.path,
+            review.kind.plural_label(),
+            first.title,
+            second.title,
             rest.len()
         ),
     }
+}
+
+fn review_item_from_detail(detail: &ToolDetail) -> Option<ToolReviewItem> {
+    match detail {
+        ToolDetail::Command(command) => {
+            let mut preview_lines = vec![command.preview_line()];
+            if command.intent == ToolCommandIntent::Explore {
+                preview_lines.extend(command.summary_lines());
+            }
+            Some(ToolReviewItem {
+                title: "Command".to_string(),
+                preview_kind: ToolReviewItemKind::Command,
+                preview_lines: collapse_review_preview_lines(&preview_lines),
+            })
+        }
+        ToolDetail::Meta(text) => Some(ToolReviewItem {
+            title: ToolDetailLabel::Note.as_str().to_string(),
+            preview_kind: ToolReviewItemKind::Neutral,
+            preview_lines: collapse_review_preview_lines(&[text.clone()]),
+        }),
+        ToolDetail::LabeledValue { label, value } => Some(ToolReviewItem {
+            title: label.as_str().to_string(),
+            preview_kind: ToolReviewItemKind::Neutral,
+            preview_lines: collapse_review_preview_lines(&[value.clone()]),
+        }),
+        ToolDetail::LabeledBlock { label, lines } => Some(ToolReviewItem {
+            title: label.as_str().to_string(),
+            preview_kind: ToolReviewItemKind::Neutral,
+            preview_lines: collapse_review_preview_lines(lines),
+        }),
+        ToolDetail::ActionHint { .. } => None,
+        ToolDetail::TextBlock(lines) => Some(ToolReviewItem {
+            title: ToolDetailLabel::Output.as_str().to_string(),
+            preview_kind: ToolReviewItemKind::Neutral,
+            preview_lines: collapse_review_preview_lines(lines),
+        }),
+        ToolDetail::NamedBlock { label, kind, lines } => Some(ToolReviewItem {
+            title: label.clone(),
+            preview_kind: match kind {
+                ToolDetailBlockKind::Stdout => ToolReviewItemKind::Stdout,
+                ToolDetailBlockKind::Stderr => ToolReviewItemKind::Stderr,
+                ToolDetailBlockKind::Diff => ToolReviewItemKind::Diff,
+            },
+            preview_lines: collapse_review_preview_lines(lines),
+        }),
+    }
+    .filter(|item| !item.preview_lines.is_empty())
+}
+
+fn collapse_review_preview_lines(lines: &[String]) -> Vec<String> {
+    let body = lines
+        .iter()
+        .filter(|line| !line.trim().is_empty())
+        .cloned()
+        .collect::<Vec<_>>();
+    if body.is_empty() {
+        return Vec::new();
+    }
+    collapse_preview_text(&body.join("\n"), 48, 120, PreviewCollapse::HeadTail)
+}
+
+fn tool_review_detail_summary(detail_lines: &[ToolDetail]) -> Option<String> {
+    detail_lines.iter().find_map(|detail| match detail {
+        ToolDetail::LabeledValue { label, value }
+            if matches!(
+                label,
+                ToolDetailLabel::Effect
+                    | ToolDetailLabel::Result
+                    | ToolDetailLabel::State
+                    | ToolDetailLabel::Reason
+            ) && !value.trim().is_empty() =>
+        {
+            Some(inline_preview_text(value, 96))
+        }
+        ToolDetail::LabeledBlock { label, lines }
+            if matches!(
+                label,
+                ToolDetailLabel::Effect
+                    | ToolDetailLabel::Result
+                    | ToolDetailLabel::State
+                    | ToolDetailLabel::Reason
+            ) =>
+        {
+            lines.first().map(|line| inline_preview_text(line, 96))
+        }
+        _ => None,
+    })
 }
 
 fn serialize_detail_block(lines: &[String]) -> Vec<String> {
@@ -3434,8 +3618,10 @@ fn inline_preview_text(value: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        summarize_tool_entry, tool_arguments_preview_lines, tool_output_detail_lines,
-        tool_output_detail_lines_from_preview, tool_review,
+        ToolCommand, ToolDetail, ToolDetailBlockKind, ToolDetailLabel, ToolReviewItemKind,
+        ToolReviewKind, summarize_tool_entry, tool_arguments_preview_lines,
+        tool_output_detail_lines, tool_output_detail_lines_from_preview, tool_review,
+        tool_review_from_details,
     };
     use serde_json::json;
 
@@ -4490,10 +4676,11 @@ mod tests {
             review.summary.as_deref(),
             Some("Wrote 18 bytes to src/lib.rs")
         );
-        assert_eq!(review.files.len(), 1);
-        assert_eq!(review.files[0].path, "src/lib.rs");
+        assert_eq!(review.kind, ToolReviewKind::FileDiff);
+        assert_eq!(review.items.len(), 1);
+        assert_eq!(review.items[0].title, "src/lib.rs");
         assert!(
-            review.files[0]
+            review.items[0]
                 .preview_lines
                 .iter()
                 .any(|line| line == "+new()")
@@ -4519,7 +4706,33 @@ mod tests {
             review.summary.as_deref(),
             Some("Updated analysis.ipynb with 1 notebook operation(s)")
         );
-        assert_eq!(review.files.len(), 1);
-        assert_eq!(review.files[0].path, "analysis.ipynb");
+        assert_eq!(review.kind, ToolReviewKind::FileDiff);
+        assert_eq!(review.items.len(), 1);
+        assert_eq!(review.items[0].title, "analysis.ipynb");
+    }
+
+    #[test]
+    fn structured_review_derives_sections_from_tool_details() {
+        let review = tool_review_from_details(&[
+            ToolDetail::Command(ToolCommand::from_preview("$ cargo test -- --nocapture")),
+            ToolDetail::LabeledValue {
+                label: ToolDetailLabel::Result,
+                value: "exit 101".to_string(),
+            },
+            ToolDetail::NamedBlock {
+                label: "Stderr".to_string(),
+                kind: ToolDetailBlockKind::Stderr,
+                lines: vec!["test failure".to_string()],
+            },
+        ])
+        .expect("expected structured review");
+
+        assert_eq!(review.kind, ToolReviewKind::Structured);
+        assert_eq!(review.summary.as_deref(), Some("exit 101"));
+        assert_eq!(review.items.len(), 3);
+        assert_eq!(review.items[0].title, "Command");
+        assert_eq!(review.items[0].preview_kind, ToolReviewItemKind::Command);
+        assert_eq!(review.items[1].title, "Result");
+        assert_eq!(review.items[2].preview_kind, ToolReviewItemKind::Stderr);
     }
 }

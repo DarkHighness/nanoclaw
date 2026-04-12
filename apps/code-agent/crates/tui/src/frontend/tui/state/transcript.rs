@@ -654,6 +654,7 @@ impl TranscriptToolEntry {
         completion: ToolCompletionState,
     ) -> Self {
         let tool_name = tool_name.into();
+        let review = review.or_else(|| tool_review_from_details(&detail_lines));
         let headline = tool_headline_text(status, &tool_name, &detail_lines);
         Self {
             status,

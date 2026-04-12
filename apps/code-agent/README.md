@@ -45,6 +45,9 @@ It intentionally keeps the host layer thin:
   follow-ups, and
   transport-aware MCP resource reads
 - backend-owned approval and runtime event contracts for frontend reuse
+- typed tool review overlays:
+  - file mutations still open diff-focused review
+  - running, failed, and completed non-file tools now open the same centered review surface with structured sections for command/input/output details instead of raw JSON dumps
 - hook-emitted live TUI cues (`show_toast`, `append_prompt`) projected through
   the runtime observer plane instead of synthetic transcript text
 - streaming assistant output in a `ratatui` TUI

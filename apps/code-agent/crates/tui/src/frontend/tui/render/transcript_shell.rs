@@ -14,7 +14,7 @@ use super::transcript_markdown_blocks::code_span;
 use super::transcript_markdown_line::render_transcript_body_line;
 use crate::tool_render::{
     ToolCommand, ToolCommandIntent, ToolCompletionState, ToolDetail, ToolDetailBlockKind,
-    ToolDetailLabel,
+    ToolDetailLabel, ToolReviewItem, ToolReviewItemKind,
 };
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -716,6 +716,44 @@ fn render_tool_subject_spans(subject: ToolHeadlineSubject<'_>) -> Vec<Span<'stat
     }
 }
 
+pub(super) fn render_tool_review_preview_lines(item: &ToolReviewItem) -> Vec<Line<'static>> {
+    item.preview_lines
+        .iter()
+        .map(|line| {
+            let spans = match item.preview_kind {
+                ToolReviewItemKind::Command => {
+                    if let Some(command) = line.strip_prefix("$ ") {
+                        let mut spans = vec![
+                            Span::styled("$", Style::default().fg(palette().accent)),
+                            Span::styled(" ", Style::default().fg(palette().subtle)),
+                        ];
+                        spans.extend(shell_command_spans(command));
+                        spans
+                    } else {
+                        shell_command_spans(line)
+                    }
+                }
+                ToolReviewItemKind::Stdout => vec![Span::styled(
+                    line.clone(),
+                    Style::default().fg(palette().text),
+                )],
+                ToolReviewItemKind::Stderr => vec![Span::styled(
+                    line.clone(),
+                    Style::default().fg(palette().error),
+                )],
+                ToolReviewItemKind::Diff => {
+                    vec![tool_block_span(line, TranscriptShellBlockKind::Diff)]
+                }
+                ToolReviewItemKind::Neutral => vec![Span::styled(
+                    line.clone(),
+                    Style::default().fg(palette().text),
+                )],
+            };
+            Line::from(spans)
+        })
+        .collect()
+}
+
 fn detail_line(continuation: bool, mut spans: Vec<Span<'static>>) -> Line<'static> {
     let prefix = if continuation { "    " } else { "  └ " };
     spans.insert(
@@ -794,7 +832,7 @@ enum ShellTokenKind {
     Text,
 }
 
-fn shell_command_spans(command: &str) -> Vec<Span<'static>> {
+pub(super) fn shell_command_spans(command: &str) -> Vec<Span<'static>> {
     tokenize_shell_command(command)
         .into_iter()
         .map(|(token, kind)| Span::styled(token, shell_token_style(kind)))

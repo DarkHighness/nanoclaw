@@ -81,15 +81,17 @@ impl CodeAgentTui {
         let Some(overlay) = snapshot.tool_review_overlay() else {
             return;
         };
-        let Some(file) = snapshot.selected_tool_review_file() else {
+        let Some(item) = snapshot.selected_tool_review_item() else {
             return;
         };
         self.ui_state.mutate(|state| {
+            let noun = overlay.review.kind.singular_label();
             state.status = format!(
-                "Reviewing {} file {} of {}",
-                file.path,
+                "Reviewing {} {} {} of {}",
+                item.title,
+                noun,
                 overlay.selected + 1,
-                overlay.review.files.len()
+                overlay.review.items.len()
             );
         });
     }
