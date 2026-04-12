@@ -17,7 +17,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 
-const MAX_COMPOSER_HEIGHT: u16 = 8;
+const MAX_COMPOSER_HEIGHT: u16 = 9;
 
 pub(super) fn render_composer(
     frame: &mut ratatui::Frame<'_>,
@@ -40,7 +40,7 @@ pub(super) fn render_composer(
 }
 
 pub(super) fn composer_height(state: &TuiState, user_input: Option<&UserInputView<'_>>) -> u16 {
-    composer_text_line_count(state, user_input).clamp(2, MAX_COMPOSER_HEIGHT)
+    composer_text_line_count(state, user_input).clamp(3, MAX_COMPOSER_HEIGHT)
 }
 
 pub(super) fn composer_cursor_position(

@@ -27,8 +27,10 @@ pub(super) fn build_welcome_lines(
     let mut core = build_welcome_title_lines(compact);
     core.push(Line::raw(""));
     core.push(build_meta_summary_line(state));
+    core.push(build_runtime_summary_line(state));
     core.push(Line::raw(""));
     core.push(build_prompt_line(compact));
+    core.push(Line::raw(""));
     core.push(build_shortcut_line(compact));
 
     let top_padding = usize::from(viewport_height.saturating_sub(core.len() as u16) / 2);
@@ -66,7 +68,7 @@ fn build_prompt_line(compact: bool) -> Line<'static> {
     let detail = if compact {
         "Ask for a change or run /help."
     } else {
-        "Ask for a change, inspect the workspace, or run /help."
+        "Ask for a change, inspect the workspace, review history, or run /help."
     };
     Line::from(vec![Span::styled(
         detail,
@@ -76,9 +78,9 @@ fn build_prompt_line(compact: bool) -> Line<'static> {
 
 fn build_shortcut_line(compact: bool) -> Line<'static> {
     let suffix = if compact {
-        "Enter run · Tab queue · ^T effort"
+        "Enter run · Tab queue · ↑ history · ^T effort"
     } else {
-        "Enter run · Tab queue · ^T effort · ^O editor"
+        "Enter run · Tab queue · ↑ history · ^T effort · ^O editor"
     };
     Line::from(vec![Span::styled(
         suffix,
@@ -98,6 +100,35 @@ fn build_meta_summary_line(state: &TuiState) -> Line<'static> {
         Span::styled("model", Style::default().fg(palette().subtle)),
         Span::styled(" ", Style::default().fg(palette().subtle)),
         Span::styled(model_label(state), Style::default().fg(palette().accent)),
+    ])
+}
+
+fn build_runtime_summary_line(state: &TuiState) -> Line<'static> {
+    let diagnostics = &state.session.startup_diagnostics;
+    Line::from(vec![
+        Span::styled("tools", Style::default().fg(palette().subtle)),
+        Span::styled(" ", Style::default().fg(palette().subtle)),
+        Span::styled(
+            (diagnostics.local_tool_count + diagnostics.mcp_tool_count).to_string(),
+            Style::default().fg(palette().muted),
+        ),
+        Span::styled("  ·  ", Style::default().fg(palette().subtle)),
+        Span::styled("mcp", Style::default().fg(palette().subtle)),
+        Span::styled(" ", Style::default().fg(palette().subtle)),
+        Span::styled(
+            diagnostics.mcp_servers.len().to_string(),
+            Style::default().fg(palette().assistant),
+        ),
+        Span::styled("  ·  ", Style::default().fg(palette().subtle)),
+        Span::styled("plugins", Style::default().fg(palette().subtle)),
+        Span::styled(" ", Style::default().fg(palette().subtle)),
+        Span::styled(
+            format!(
+                "{}/{}",
+                diagnostics.enabled_plugin_count, diagnostics.total_plugin_count
+            ),
+            Style::default().fg(palette().accent),
+        ),
     ])
 }
 

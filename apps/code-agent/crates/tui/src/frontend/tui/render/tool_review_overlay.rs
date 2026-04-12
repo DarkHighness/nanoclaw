@@ -14,7 +14,7 @@ pub(super) fn render_tool_review_overlay(
     let Some(overlay) = state.tool_review_overlay() else {
         return;
     };
-    let popup = centered_rect(area, 84, 78);
+    let popup = centered_rect(area, 86, 80);
     frame.render_widget(Clear, popup);
     frame.render_widget(
         Block::default()
@@ -32,19 +32,19 @@ pub(super) fn render_tool_review_overlay(
 
     let inner = popup.inner(Margin {
         vertical: 1,
-        horizontal: 1,
+        horizontal: 2,
     });
     let sections = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),
+            Constraint::Length(4),
             Constraint::Min(8),
             Constraint::Length(2),
         ])
         .split(inner);
     let body = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(34), Constraint::Percentage(66)])
+        .constraints([Constraint::Percentage(36), Constraint::Percentage(64)])
         .split(sections[1]);
 
     frame.render_widget(
@@ -60,21 +60,61 @@ pub(super) fn render_tool_review_overlay(
     let scroll = clamp_scroll(
         requested_scroll.min(u16::MAX as usize) as u16,
         list.lines.len(),
-        body[0].height,
+        body[0].height.saturating_sub(2),
+    );
+    frame.render_widget(
+        Block::default()
+            .title(" Files ")
+            .title_style(
+                Style::default()
+                    .fg(palette().accent)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(palette().border_active))
+            .style(Style::default().bg(palette().bottom_pane_bg)),
+        body[0],
     );
     frame.render_widget(
         Paragraph::new(list)
             .scroll((scroll, 0))
             .wrap(Wrap { trim: false })
-            .style(Style::default().fg(palette().text).bg(palette().footer_bg)),
-        body[0],
+            .style(
+                Style::default()
+                    .fg(palette().text)
+                    .bg(palette().bottom_pane_bg),
+            ),
+        body[0].inner(Margin {
+            vertical: 1,
+            horizontal: 2,
+        }),
     );
 
     frame.render_widget(
+        Block::default()
+            .title(" Diff Preview ")
+            .title_style(
+                Style::default()
+                    .fg(palette().header)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(palette().border_active))
+            .style(Style::default().bg(palette().bottom_pane_bg)),
+        body[1],
+    );
+    frame.render_widget(
         Paragraph::new(build_tool_review_preview_text(state))
             .wrap(Wrap { trim: false })
-            .style(Style::default().fg(palette().text).bg(palette().footer_bg)),
-        body[1],
+            .style(
+                Style::default()
+                    .fg(palette().text)
+                    .bg(palette().bottom_pane_bg),
+            ),
+        body[1].inner(Margin {
+            vertical: 1,
+            horizontal: 2,
+        }),
     );
 
     frame.render_widget(

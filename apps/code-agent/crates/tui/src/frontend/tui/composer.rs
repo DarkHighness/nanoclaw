@@ -350,18 +350,11 @@ impl CodeAgentTui {
                 state.record_input_history(prompt)
             };
             if recorded {
-                persisted = Some((
-                    state.input_history().to_vec(),
-                    state.command_history().to_vec(),
-                ));
+                persisted = Some(state.persisted_history_entries.clone());
             }
         });
-        if let Some((prompt_entries, command_entries)) = persisted {
-            input_history::persist_input_history(
-                &workspace_root,
-                &prompt_entries,
-                &command_entries,
-            );
+        if let Some(entries) = persisted {
+            input_history::persist_input_history(&workspace_root, &entries);
         }
     }
 
@@ -373,18 +366,11 @@ impl CodeAgentTui {
             state.clear_toast();
             let _ = state.record_local_input_draft(submission.local_history_draft.clone());
             if state.record_input_history(submission.prompt_snapshot.clone()) {
-                persisted = Some((
-                    state.input_history().to_vec(),
-                    state.command_history().to_vec(),
-                ));
+                persisted = Some(state.persisted_history_entries.clone());
             }
         });
-        if let Some((prompt_entries, command_entries)) = persisted {
-            input_history::persist_input_history(
-                &workspace_root,
-                &prompt_entries,
-                &command_entries,
-            );
+        if let Some(entries) = persisted {
+            input_history::persist_input_history(&workspace_root, &entries);
         }
     }
 

@@ -1,4 +1,5 @@
 use super::*;
+use crate::frontend::tui::commands::slash_command_hint;
 
 pub(crate) enum TerminalLoopControl {
     Continue,
@@ -285,9 +286,13 @@ impl CodeAgentTui {
     }
 
     fn handle_vertical_navigation(&mut self, backwards: bool) {
-        if self.move_selected_row_attachment(backwards)
-            || self.move_command_selection(backwards)
-            || self.navigate_input_history(backwards)
+        if self.move_selected_row_attachment(backwards) || self.move_command_selection(backwards) {
+            return;
+        }
+        if self.slash_command_modal_active() {
+            return;
+        }
+        if self.navigate_input_history(backwards)
             || self.move_input_cursor_vertical(backwards)
             || self.move_input_cursor_boundary(backwards)
         {
@@ -296,6 +301,12 @@ impl CodeAgentTui {
         self.ui_state.mutate(|state| {
             state.scroll_focused(if backwards { -1 } else { 1 });
         });
+    }
+
+    fn slash_command_modal_active(&self) -> bool {
+        let snapshot = self.ui_state.snapshot();
+        snapshot.input.starts_with('/')
+            && slash_command_hint(&snapshot.input, snapshot.command_completion_index).is_some()
     }
 
     fn handle_tool_selection_navigation(&mut self, backwards: bool) -> bool {

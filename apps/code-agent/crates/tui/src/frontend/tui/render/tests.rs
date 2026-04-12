@@ -499,8 +499,14 @@ fn welcome_lines_keep_the_start_screen_sparse() {
     assert!(lines.iter().any(|line| {
         line_text_for(line).contains("workspace nanoclaw  ·  model gpt-5.4 · high")
     }));
+    assert!(
+        lines
+            .iter()
+            .any(|line| { line_text_for(line).contains("tools 0  ·  mcp 0  ·  plugins 0/0") })
+    );
     assert!(lines.iter().any(|line| {
-        line_text_for(line).contains("Ask for a change, inspect the workspace, or run /help.")
+        line_text_for(line)
+            .contains("Ask for a change, inspect the workspace, review history, or run /help.")
     }));
 }
 
@@ -1208,6 +1214,15 @@ fn transcript_hides_progress_line_while_tool_cell_is_active() {
             .iter()
             .any(|line| line_text_for(line).contains("Working · Running cargo test"))
     );
+}
+
+#[test]
+fn live_progress_hides_idle_queue_summary_when_empty() {
+    let state = TuiState::default();
+
+    let rendered = live_progress_lines(&state);
+
+    assert!(rendered.is_empty());
 }
 
 #[test]
@@ -1979,7 +1994,7 @@ fn permission_request_modal_does_not_shrink_main_pane_viewport() {
 
     let viewport = main_pane_viewport_height(area, &state, None, Some(&prompt), None);
 
-    assert_eq!(viewport, 27);
+    assert_eq!(viewport, 30 - composer_height(&state, None) - 1);
 }
 
 #[test]
@@ -2236,7 +2251,7 @@ fn footer_context_renders_configured_status_items() {
         footer
             .spans
             .iter()
-            .any(|span| { span.content.as_ref().contains("queue 0") })
+            .all(|span| { !span.content.as_ref().contains("queue 0") })
     );
     assert!(
         footer

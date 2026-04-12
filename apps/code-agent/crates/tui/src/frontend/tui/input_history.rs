@@ -36,6 +36,7 @@ pub(crate) struct PersistedComposerHistoryEntry {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct LoadedComposerHistory {
+    pub(crate) entries: Vec<PersistedComposerHistoryEntry>,
     pub(crate) prompts: Vec<SubmittedPromptSnapshot>,
     pub(crate) commands: Vec<SubmittedPromptSnapshot>,
 }
@@ -145,17 +146,17 @@ pub(crate) fn load_input_history(workspace_root: &Path) -> LoadedComposerHistory
     let mut loaded = LoadedComposerHistory::default();
     for entry in entries {
         match entry.kind {
-            ComposerHistoryKind::Prompt => loaded.prompts.push(entry.prompt),
-            ComposerHistoryKind::Command => loaded.commands.push(entry.prompt),
+            ComposerHistoryKind::Prompt => loaded.prompts.push(entry.prompt.clone()),
+            ComposerHistoryKind::Command => loaded.commands.push(entry.prompt.clone()),
         }
+        loaded.entries.push(entry);
     }
     loaded
 }
 
 pub(crate) fn persist_input_history(
     workspace_root: &Path,
-    prompt_entries: &[SubmittedPromptSnapshot],
-    command_entries: &[SubmittedPromptSnapshot],
+    entries: &[PersistedComposerHistoryEntry],
 ) {
     let path = composer_history_path(workspace_root);
     if let Some(parent) = path.parent()
@@ -181,29 +182,11 @@ pub(crate) fn persist_input_history(
         }
     };
     let mut writer = BufWriter::new(file);
-    let mut entries = Vec::with_capacity(prompt_entries.len() + command_entries.len());
-    entries.extend(
-        prompt_entries
-            .iter()
-            .cloned()
-            .map(|prompt| PersistedComposerHistoryEntry {
-                kind: ComposerHistoryKind::Prompt,
-                prompt,
-            }),
-    );
-    entries.extend(
-        command_entries
-            .iter()
-            .cloned()
-            .map(|prompt| PersistedComposerHistoryEntry {
-                kind: ComposerHistoryKind::Command,
-                prompt,
-            }),
-    );
     for entry in entries {
-        if let Err(error) =
-            serde_json::to_writer(&mut writer, &StoredComposerHistoryLine::Typed(entry))
-        {
+        if let Err(error) = serde_json::to_writer(
+            &mut writer,
+            &StoredComposerHistoryLine::Typed(entry.clone()),
+        ) {
             warn!(
                 path = %path.display(),
                 error = %error,
@@ -232,8 +215,8 @@ pub(crate) fn persist_input_history(
 #[cfg(test)]
 mod tests {
     use super::{
-        ComposerHistoryKind, MAX_COMPOSER_HISTORY_ENTRIES, load_input_history,
-        persist_input_history, record_input_history,
+        ComposerHistoryKind, MAX_COMPOSER_HISTORY_ENTRIES, PersistedComposerHistoryEntry,
+        load_input_history, persist_input_history, record_input_history,
     };
     use agent::AgentWorkspaceLayout;
     use agent::types::{
@@ -289,15 +272,26 @@ mod tests {
         persist_input_history(
             first.path(),
             &[
-                SubmittedPromptSnapshot::from_text("prompt one"),
-                SubmittedPromptSnapshot::from_text("prompt two"),
+                PersistedComposerHistoryEntry {
+                    kind: ComposerHistoryKind::Prompt,
+                    prompt: SubmittedPromptSnapshot::from_text("prompt one"),
+                },
+                PersistedComposerHistoryEntry {
+                    kind: ComposerHistoryKind::Command,
+                    prompt: SubmittedPromptSnapshot::from_text("/help"),
+                },
+                PersistedComposerHistoryEntry {
+                    kind: ComposerHistoryKind::Prompt,
+                    prompt: SubmittedPromptSnapshot::from_text("prompt two"),
+                },
             ],
-            &[SubmittedPromptSnapshot::from_text("/help")],
         );
         persist_input_history(
             second.path(),
-            &[SubmittedPromptSnapshot::from_text("other workspace")],
-            &[],
+            &[PersistedComposerHistoryEntry {
+                kind: ComposerHistoryKind::Prompt,
+                prompt: SubmittedPromptSnapshot::from_text("other workspace"),
+            }],
         );
 
         let first_loaded = load_input_history(first.path());
@@ -311,6 +305,18 @@ mod tests {
         assert_eq!(
             first_loaded.commands,
             vec![SubmittedPromptSnapshot::from_text("/help")]
+        );
+        assert_eq!(
+            first_loaded
+                .entries
+                .into_iter()
+                .map(|entry| (entry.kind, entry.prompt.text))
+                .collect::<Vec<_>>(),
+            vec![
+                (ComposerHistoryKind::Prompt, "prompt one".to_string()),
+                (ComposerHistoryKind::Command, "/help".to_string()),
+                (ComposerHistoryKind::Prompt, "prompt two".to_string()),
+            ]
         );
 
         let second_loaded = load_input_history(second.path());

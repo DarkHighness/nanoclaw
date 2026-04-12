@@ -1,3 +1,4 @@
+use super::input_history::PersistedComposerHistoryEntry;
 use crate::interaction::{PendingControlKind, PendingControlSummary, SessionPermissionMode};
 use crate::statusline::{StatusLineConfig, StatusLineField, status_line_fields};
 use crate::theme::ThemeSummary;
@@ -350,6 +351,7 @@ pub(crate) struct TuiState {
     pub(crate) kill_buffer: Option<ComposerKillBufferState>,
     pub(crate) input_history: Vec<SubmittedPromptSnapshot>,
     pub(crate) command_history: Vec<SubmittedPromptSnapshot>,
+    pub(crate) persisted_history_entries: Vec<PersistedComposerHistoryEntry>,
     pub(crate) local_input_history: Vec<ComposerDraftState>,
     pub(crate) local_command_history: Vec<ComposerDraftState>,
     pub(crate) input_history_navigation: Option<ComposerHistoryNavigationState>,

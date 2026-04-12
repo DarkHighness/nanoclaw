@@ -4,10 +4,12 @@ use agent_env::EnvMap;
 use anyhow::{Context, Result, bail};
 use code_agent_backend::{
     AppOptions, CodeAgentUiSession, SandboxFallbackNotice, SessionApprovalMode,
-    build_sandbox_fallback_notice, build_session, build_session_with_approval_mode,
-    inject_process_env, inspect_sandbox_preflight,
+    build_sandbox_fallback_notice, build_session_with_approval_mode,
+    build_session_with_approval_mode_and_progress, inject_process_env, inspect_sandbox_preflight,
 };
-use code_agent_tui::{CodeAgentTui, SharedUiState, confirm_unsandboxed_startup_screen};
+use code_agent_tui::{
+    CodeAgentTui, SharedUiState, StartupLoadingScreen, confirm_unsandboxed_startup_screen,
+};
 use std::env;
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
@@ -105,7 +107,28 @@ async fn async_main(workspace_root: PathBuf, options: AppOptions) -> Result<()> 
     }
 
     let ui_state = SharedUiState::new();
-    let session = CodeAgentUiSession::from(build_session(&options, &workspace_root).await?);
+    let workspace_name = workspace_root
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("workspace")
+        .to_string();
+    let model_reasoning_effort = options.primary_profile.reasoning_effort.clone();
+    let mut loading_screen = StartupLoadingScreen::enter(
+        workspace_name,
+        options.primary_profile.model.model.clone(),
+        model_reasoning_effort,
+    )?;
+    let session = build_session_with_approval_mode_and_progress(
+        &options,
+        &workspace_root,
+        SessionApprovalMode::Interactive,
+        |update| {
+            let _ = loading_screen.apply(update);
+        },
+    )
+    .await;
+    loading_screen.leave()?;
+    let session = CodeAgentUiSession::from(session?);
 
     CodeAgentTui::new(
         session,

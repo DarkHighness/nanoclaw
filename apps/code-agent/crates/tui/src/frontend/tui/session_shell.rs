@@ -44,7 +44,11 @@ impl CodeAgentTui {
             follow_transcript: true,
             ..TuiState::default()
         };
-        state.set_input_history(input_history.prompts, input_history.commands);
+        state.set_input_history(
+            input_history.entries,
+            input_history.prompts,
+            input_history.commands,
+        );
         state.push_activity("session ready");
         state
     }
@@ -94,7 +98,6 @@ impl CodeAgentTui {
         startup.session.queued_commands = 0;
         startup.show_transcript_pane();
         startup.follow_transcript = true;
-        startup.transcript = format_visible_transcript_lines(&outcome.transcript);
         startup.transcript_scroll = u16::MAX;
 
         match outcome.action {
@@ -106,6 +109,7 @@ impl CodeAgentTui {
                 ));
             }
             SessionOperationAction::AlreadyAttached => {
+                startup.transcript = format_visible_transcript_lines(&outcome.transcript);
                 let requested = outcome
                     .requested_agent_session_ref
                     .as_deref()
@@ -120,6 +124,7 @@ impl CodeAgentTui {
                 startup.push_activity(format!("resume no-op {}", preview_id(requested)));
             }
             SessionOperationAction::Reattached => {
+                startup.transcript = format_visible_transcript_lines(&outcome.transcript);
                 startup.inspector_title = "Resume".to_string();
                 startup.inspector_scroll = 0;
                 startup.inspector = format_session_operation_outcome(&outcome);

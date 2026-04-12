@@ -9,8 +9,16 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct ComposerHistoryNavigationState {
+    pub(crate) mode: ComposerHistoryBrowseMode,
     pub(crate) index: usize,
     pub(crate) draft: ComposerDraftState,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ComposerHistoryBrowseMode {
+    PromptOnly,
+    CommandOnly,
+    Combined,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -544,38 +552,54 @@ impl TuiState {
 
     pub(crate) fn set_input_history(
         &mut self,
+        entries: Vec<input_history::PersistedComposerHistoryEntry>,
         prompts: Vec<SubmittedPromptSnapshot>,
         commands: Vec<SubmittedPromptSnapshot>,
     ) {
+        self.persisted_history_entries = entries;
         self.input_history = prompts;
         self.command_history = commands;
         self.input_history_navigation = None;
     }
 
-    pub(crate) fn input_history(&self) -> &[SubmittedPromptSnapshot] {
-        &self.input_history
-    }
-
-    pub(crate) fn command_history(&self) -> &[SubmittedPromptSnapshot] {
-        &self.command_history
-    }
-
     pub(crate) fn record_input_history(&mut self, prompt: SubmittedPromptSnapshot) -> bool {
         self.input_history_navigation = None;
-        record_persistent_history_entry(
+        let recorded = record_persistent_history_entry(
             &mut self.input_history,
             ComposerHistoryKind::Prompt,
             prompt,
-        )
+        );
+        if recorded {
+            let _ = input_history::record_input_history(
+                &mut self.persisted_history_entries,
+                ComposerHistoryKind::Prompt,
+                self.input_history
+                    .last()
+                    .cloned()
+                    .expect("recorded prompt history must have a tail entry"),
+            );
+        }
+        recorded
     }
 
     pub(crate) fn record_command_history(&mut self, prompt: SubmittedPromptSnapshot) -> bool {
         self.input_history_navigation = None;
-        record_persistent_history_entry(
+        let recorded = record_persistent_history_entry(
             &mut self.command_history,
             ComposerHistoryKind::Command,
             prompt,
-        )
+        );
+        if recorded {
+            let _ = input_history::record_input_history(
+                &mut self.persisted_history_entries,
+                ComposerHistoryKind::Command,
+                self.command_history
+                    .last()
+                    .cloned()
+                    .expect("recorded command history must have a tail entry"),
+            );
+        }
+        recorded
     }
 
     pub(crate) fn record_local_input_history(&mut self, input: &str) -> bool {
@@ -1036,11 +1060,17 @@ impl TuiState {
     }
 
     pub(crate) fn browse_input_history(&mut self, backwards: bool) -> bool {
-        let history = self.history_entry_drafts();
-        if history.is_empty() {
+        if self.input_history_navigation.is_none() && !self.input_cursor_at_history_boundary() {
             return false;
         }
-        if self.input_history_navigation.is_none() && !self.input_cursor_at_history_boundary() {
+
+        let mode = self
+            .input_history_navigation
+            .as_ref()
+            .map(|navigation| navigation.mode)
+            .unwrap_or_else(|| self.history_browse_mode());
+        let history = self.history_entry_drafts_for_mode(mode);
+        if history.is_empty() {
             return false;
         }
 
@@ -1051,6 +1081,7 @@ impl TuiState {
             };
             self.replace_input_draft(history[next_index].clone());
             self.input_history_navigation = Some(ComposerHistoryNavigationState {
+                mode,
                 index: next_index,
                 draft,
             });
@@ -1063,6 +1094,7 @@ impl TuiState {
         if navigation.index + 1 < history.len() {
             self.replace_input_draft(history[navigation.index + 1].clone());
             self.input_history_navigation = Some(ComposerHistoryNavigationState {
+                mode: navigation.mode,
                 index: navigation.index + 1,
                 draft: navigation.draft,
             });
@@ -1097,22 +1129,48 @@ impl TuiState {
         .normalized()
     }
 
-    fn history_entry_drafts(&self) -> Vec<ComposerDraftState> {
-        let history_kind = ComposerHistoryKind::classify_text(&self.input);
-        let persistent_history = match history_kind {
-            ComposerHistoryKind::Prompt => &self.input_history,
-            ComposerHistoryKind::Command => &self.command_history,
+    fn history_browse_mode(&self) -> ComposerHistoryBrowseMode {
+        if self.input.trim_start().starts_with('/') {
+            ComposerHistoryBrowseMode::CommandOnly
+        } else if self.persisted_history_entries.is_empty() {
+            ComposerHistoryBrowseMode::PromptOnly
+        } else {
+            ComposerHistoryBrowseMode::Combined
+        }
+    }
+
+    fn history_entry_drafts_for_mode(
+        &self,
+        mode: ComposerHistoryBrowseMode,
+    ) -> Vec<ComposerDraftState> {
+        let persistent_history = match mode {
+            ComposerHistoryBrowseMode::PromptOnly => self
+                .input_history
+                .iter()
+                .cloned()
+                .map(|snapshot| composer_draft_from_prompt_snapshot(&snapshot))
+                .collect::<Vec<_>>(),
+            ComposerHistoryBrowseMode::CommandOnly => self
+                .command_history
+                .iter()
+                .cloned()
+                .map(|snapshot| composer_draft_from_prompt_snapshot(&snapshot))
+                .collect::<Vec<_>>(),
+            ComposerHistoryBrowseMode::Combined => self
+                .persisted_history_entries
+                .iter()
+                .cloned()
+                .map(|entry| composer_draft_from_prompt_snapshot(&entry.prompt))
+                .collect::<Vec<_>>(),
         };
-        let local_history = match history_kind {
-            ComposerHistoryKind::Prompt => &self.local_input_history,
-            ComposerHistoryKind::Command => &self.local_command_history,
+        let local_history = match mode {
+            ComposerHistoryBrowseMode::CommandOnly => &self.local_command_history,
+            ComposerHistoryBrowseMode::PromptOnly | ComposerHistoryBrowseMode::Combined => {
+                &self.local_input_history
+            }
         };
 
-        let mut entries = persistent_history
-            .iter()
-            .cloned()
-            .map(|snapshot| composer_draft_from_prompt_snapshot(&snapshot))
-            .collect::<Vec<_>>();
+        let mut entries = persistent_history;
         if local_history.is_empty() {
             return entries;
         }

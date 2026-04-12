@@ -23,16 +23,19 @@ use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Paragraph, Wrap};
 use std::time::Instant;
 
+const TRANSCRIPT_SIDE_PADDING: u16 = 3;
+const WELCOME_SIDE_PADDING: u16 = 4;
+
 pub(super) fn render_transcript(frame: &mut ratatui::Frame<'_>, area: Rect, state: &TuiState) {
     frame.render_widget(
         Block::default().style(Style::default().bg(palette().main_bg)),
         area,
     );
-    let inner = area.inner(Margin {
-        vertical: 0,
-        horizontal: 2,
-    });
     if state.transcript.is_empty() && !state.turn_running && state.session.queued_commands == 0 {
+        let inner = area.inner(Margin {
+            vertical: 0,
+            horizontal: WELCOME_SIDE_PADDING,
+        });
         let lines = build_welcome_lines(state, inner.width, inner.height);
         let empty = Paragraph::new(Text::from(lines))
             .alignment(Alignment::Center)
@@ -42,14 +45,20 @@ pub(super) fn render_transcript(frame: &mut ratatui::Frame<'_>, area: Rect, stat
         return;
     }
 
-    let lines = build_transcript_lines_for_width(state, inner.width);
-    let scroll = shared::clamp_scroll(state.transcript_scroll, lines.len(), inner.height);
+    let content_width = area
+        .width
+        .saturating_sub(TRANSCRIPT_SIDE_PADDING.saturating_mul(2));
+    let lines = pad_transcript_lines(
+        build_transcript_lines_for_width(state, content_width),
+        usize::from(TRANSCRIPT_SIDE_PADDING),
+    );
+    let scroll = shared::clamp_scroll(state.transcript_scroll, lines.len(), area.height);
     let transcript = Paragraph::new(Text::from(lines))
         .scroll((scroll, 0))
         .alignment(Alignment::Left)
         .wrap(Wrap { trim: false })
         .style(Style::default().fg(palette().text).bg(palette().main_bg));
-    frame.render_widget(transcript, inner);
+    frame.render_widget(transcript, area);
 }
 
 #[cfg(test)]
@@ -182,6 +191,30 @@ fn turn_divider(width: u16) -> Line<'static> {
         "─".repeat(width),
         Style::default().fg(palette().subtle),
     ))
+}
+
+fn pad_transcript_lines(lines: Vec<Line<'static>>, padding: usize) -> Vec<Line<'static>> {
+    if padding == 0 {
+        return lines;
+    }
+    lines
+        .into_iter()
+        .map(|mut line| {
+            if line_text_is_divider(&line) || line.spans.is_empty() {
+                return line;
+            }
+            line.spans.insert(0, Span::raw(" ".repeat(padding)));
+            line
+        })
+        .collect()
+}
+
+fn line_text_is_divider(line: &Line<'static>) -> bool {
+    !line.spans.is_empty()
+        && line
+            .spans
+            .iter()
+            .all(|span| span.content.chars().all(|ch| ch == '─'))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

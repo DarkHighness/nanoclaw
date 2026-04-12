@@ -15,7 +15,7 @@ pub(super) fn render_history_rollback_overlay(
     let Some(overlay) = state.history_rollback_overlay() else {
         return;
     };
-    let popup = centered_rect(area, 82, 78);
+    let popup = centered_rect(area, 84, 80);
     frame.render_widget(Clear, popup);
     frame.render_widget(
         Block::default()
@@ -38,14 +38,14 @@ pub(super) fn render_history_rollback_overlay(
     let sections = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),
+            Constraint::Length(4),
             Constraint::Min(8),
-            Constraint::Length(1),
+            Constraint::Length(2),
         ])
         .split(inner);
     let body = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(36), Constraint::Percentage(64)])
+        .constraints([Constraint::Percentage(38), Constraint::Percentage(62)])
         .split(sections[1]);
 
     frame.render_widget(
@@ -58,7 +58,7 @@ pub(super) fn render_history_rollback_overlay(
             )
             .borders(Borders::ALL)
             .border_style(Style::default().fg(palette().border_active))
-            .style(Style::default().bg(palette().footer_bg)),
+            .style(Style::default().bg(palette().bottom_pane_bg)),
         body[0],
     );
     frame.render_widget(
@@ -71,16 +71,16 @@ pub(super) fn render_history_rollback_overlay(
             )
             .borders(Borders::ALL)
             .border_style(Style::default().fg(palette().border_active))
-            .style(Style::default().bg(palette().footer_bg)),
+            .style(Style::default().bg(palette().bottom_pane_bg)),
         body[1],
     );
     let list_area = body[0].inner(Margin {
         vertical: 1,
-        horizontal: 1,
+        horizontal: 2,
     });
     let preview_area = body[1].inner(Margin {
         vertical: 1,
-        horizontal: 1,
+        horizontal: 2,
     });
 
     frame.render_widget(
@@ -104,14 +104,22 @@ pub(super) fn render_history_rollback_overlay(
         Paragraph::new(list)
             .scroll((scroll, 0))
             .wrap(Wrap { trim: false })
-            .style(Style::default().fg(palette().text).bg(palette().footer_bg)),
+            .style(
+                Style::default()
+                    .fg(palette().text)
+                    .bg(palette().bottom_pane_bg),
+            ),
         list_area,
     );
 
     frame.render_widget(
         Paragraph::new(build_history_rollback_preview_text(state))
             .wrap(Wrap { trim: false })
-            .style(Style::default().fg(palette().text).bg(palette().footer_bg)),
+            .style(
+                Style::default()
+                    .fg(palette().text)
+                    .bg(palette().bottom_pane_bg),
+            ),
         preview_area,
     );
 

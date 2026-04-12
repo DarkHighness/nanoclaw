@@ -36,7 +36,11 @@ pub use approval::{
 };
 #[allow(unused_imports)]
 pub use boot::CodeAgentSubagentProfileResolver;
-pub use boot::{SessionApprovalMode, build_session, build_session_with_approval_mode};
+pub use boot::{
+    BootProgressItem, BootProgressItemKind, BootProgressStage, BootProgressStatus,
+    BootProgressUpdate, SessionApprovalMode, build_session, build_session_with_approval_mode,
+    build_session_with_approval_mode_and_progress,
+};
 pub use boot_inputs::driver_host_output_lines;
 pub use boot_inputs::{dedup_mcp_servers, merge_driver_host_inputs, resolve_mcp_servers};
 pub use boot_mcp::{

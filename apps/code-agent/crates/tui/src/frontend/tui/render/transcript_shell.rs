@@ -1224,7 +1224,7 @@ pub(super) fn live_progress_lines(state: &TuiState) -> Vec<Line<'static>> {
             Style::default().fg(palette().muted),
         ));
         vec![Line::from(spans)]
-    } else if state.pending_control_picker.is_none() {
+    } else if state.pending_control_picker.is_none() && state.session.queued_commands > 0 {
         vec![Line::from(vec![
             Span::styled(
                 "+",

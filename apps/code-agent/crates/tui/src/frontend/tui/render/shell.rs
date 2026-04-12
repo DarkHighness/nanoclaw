@@ -21,7 +21,7 @@ pub(super) fn render_main_pane(frame: &mut ratatui::Frame<'_>, area: Rect, state
 pub(super) fn bottom_band_inner_area(area: Rect) -> Rect {
     area.inner(Margin {
         vertical: 0,
-        horizontal: 1,
+        horizontal: 2,
     })
 }
 

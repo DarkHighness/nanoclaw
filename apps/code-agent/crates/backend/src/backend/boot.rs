@@ -77,6 +77,84 @@ struct RuntimeBuildResult {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BootProgressStage {
+    Store,
+    Plugins,
+    Skills,
+    Tooling,
+    Mcp,
+    Finalize,
+}
+
+impl BootProgressStage {
+    pub const ALL: [Self; 6] = [
+        Self::Store,
+        Self::Plugins,
+        Self::Skills,
+        Self::Tooling,
+        Self::Mcp,
+        Self::Finalize,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Store => "Store",
+            Self::Plugins => "Plugins",
+            Self::Skills => "Skills",
+            Self::Tooling => "Tooling",
+            Self::Mcp => "MCP",
+            Self::Finalize => "Finalize",
+        }
+    }
+
+    pub fn position(self) -> usize {
+        Self::ALL
+            .iter()
+            .position(|stage| *stage == self)
+            .expect("boot progress stage must stay registered")
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BootProgressStatus {
+    Started,
+    Completed,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BootProgressItemKind {
+    Store,
+    Plugin,
+    SkillRoot,
+    Skill,
+    McpServer,
+    ToolSurface,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BootProgressItem {
+    pub kind: BootProgressItemKind,
+    pub label: String,
+}
+
+impl BootProgressItem {
+    fn new(kind: BootProgressItemKind, label: impl Into<String>) -> Self {
+        Self {
+            kind,
+            label: label.into(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BootProgressUpdate {
+    pub stage: BootProgressStage,
+    pub status: BootProgressStatus,
+    pub items: Vec<BootProgressItem>,
+    pub note: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SessionApprovalMode {
     Interactive,
     NonInteractive,
@@ -192,8 +270,13 @@ pub async fn build_session(
     options: &AppOptions,
     workspace_root: &Path,
 ) -> Result<super::CodeAgentSession> {
-    build_session_with_approval_mode(options, workspace_root, SessionApprovalMode::Interactive)
-        .await
+    build_session_with_approval_mode_and_progress(
+        options,
+        workspace_root,
+        SessionApprovalMode::Interactive,
+        |_| {},
+    )
+    .await
 }
 
 pub async fn build_session_with_approval_mode(
@@ -201,6 +284,19 @@ pub async fn build_session_with_approval_mode(
     workspace_root: &Path,
     approval_mode: SessionApprovalMode,
 ) -> Result<super::CodeAgentSession> {
+    build_session_with_approval_mode_and_progress(options, workspace_root, approval_mode, |_| {})
+        .await
+}
+
+pub async fn build_session_with_approval_mode_and_progress<F>(
+    options: &AppOptions,
+    workspace_root: &Path,
+    approval_mode: SessionApprovalMode,
+    mut progress: F,
+) -> Result<super::CodeAgentSession>
+where
+    F: FnMut(BootProgressUpdate),
+{
     let approvals = ApprovalCoordinator::default();
     let user_inputs = UserInputCoordinator::default();
     let permission_requests = PermissionRequestCoordinator::default();
@@ -282,8 +378,24 @@ pub async fn build_session_with_approval_mode(
         sandbox_policy.clone(),
         sandbox_status,
         permission_grants.clone(),
+        &mut progress,
     )
     .await?;
+    progress(BootProgressUpdate {
+        stage: BootProgressStage::Finalize,
+        status: BootProgressStatus::Started,
+        items: vec![
+            BootProgressItem::new(
+                BootProgressItemKind::ToolSurface,
+                provider_label(&options.primary_profile),
+            ),
+            BootProgressItem::new(
+                BootProgressItemKind::ToolSurface,
+                options.primary_profile.model.model.clone(),
+            ),
+        ],
+        note: Some("Publishing session surfaces".to_string()),
+    });
     let tool_names = runtime.tool_registry_names();
     let supported_model_reasoning_efforts = model_backend.supported_reasoning_efforts();
     let backend_capabilities = agent_backend_capabilities(&options.primary_profile);
@@ -294,7 +406,7 @@ pub async fn build_session_with_approval_mode(
     let root_agent_session_id = runtime.agent_session_id().to_string();
     let session_memory_model_backend: Arc<dyn ModelBackend> = Arc::new(model_backend.clone());
 
-    Ok(super::CodeAgentSession::new(
+    let session = super::CodeAgentSession::new(
         runtime,
         Some(model_backend),
         Some(session_memory_model_backend),
@@ -346,10 +458,20 @@ pub async fn build_session_with_approval_mode(
         skills,
         memory_backend,
         session_memory_refresh_state,
-    ))
+    );
+    progress(BootProgressUpdate {
+        stage: BootProgressStage::Finalize,
+        status: BootProgressStatus::Completed,
+        items: vec![BootProgressItem::new(
+            BootProgressItemKind::ToolSurface,
+            session.startup_snapshot().active_session_ref,
+        )],
+        note: Some("Session ready".to_string()),
+    });
+    Ok(session)
 }
 
-async fn build_runtime(
+async fn build_runtime<F>(
     options: &AppOptions,
     workspace_root: &Path,
     approval_handler: Arc<dyn ToolApprovalHandler>,
@@ -358,7 +480,20 @@ async fn build_runtime(
     sandbox_policy: SandboxPolicy,
     sandbox_status: agent::tools::SandboxBackendStatus,
     permission_grants: PermissionGrantStore,
-) -> Result<RuntimeBuildResult> {
+    progress: &mut F,
+) -> Result<RuntimeBuildResult>
+where
+    F: FnMut(BootProgressUpdate),
+{
+    progress(BootProgressUpdate {
+        stage: BootProgressStage::Store,
+        status: BootProgressStatus::Started,
+        items: vec![BootProgressItem::new(
+            BootProgressItemKind::Store,
+            "session store",
+        )],
+        note: Some("Opening persisted state".to_string()),
+    });
     let session_memory_refresh_state = Arc::new(Mutex::new(SessionMemoryRefreshState::default()));
     let model_backend = build_mutable_agent_backend(&options.primary_profile, &options.env_map)?;
     let backend: Arc<dyn ModelBackend> = Arc::new(model_backend.clone());
@@ -375,13 +510,74 @@ async fn build_runtime(
             0
         }
     };
+    progress(BootProgressUpdate {
+        stage: BootProgressStage::Store,
+        status: BootProgressStatus::Completed,
+        items: vec![BootProgressItem::new(
+            BootProgressItemKind::Store,
+            store_handle.label.clone(),
+        )],
+        note: Some(format!("{stored_session_count} stored session(s)")),
+    });
+    progress(BootProgressUpdate {
+        stage: BootProgressStage::Plugins,
+        status: BootProgressStatus::Started,
+        items: Vec::new(),
+        note: Some("Resolving plugin activation plan".to_string()),
+    });
     let plugin_plan = build_plugin_activation_plan(workspace_root, &options.plugins)
         .context("failed to build plugin activation plan")?;
+    let enabled_plugins = plugin_plan
+        .plugin_states
+        .iter()
+        .filter(|state| state.enabled)
+        .map(|state| {
+            BootProgressItem::new(BootProgressItemKind::Plugin, state.plugin_id.to_string())
+        })
+        .collect::<Vec<_>>();
+    progress(BootProgressUpdate {
+        stage: BootProgressStage::Plugins,
+        status: BootProgressStatus::Completed,
+        items: enabled_plugins,
+        note: Some(format!(
+            "{} plugin(s) enabled",
+            plugin_plan
+                .plugin_states
+                .iter()
+                .filter(|state| state.enabled)
+                .count()
+        )),
+    });
     let skill_roots = resolve_skill_roots(&options.skill_roots, workspace_root, &plugin_plan);
+    progress(BootProgressUpdate {
+        stage: BootProgressStage::Skills,
+        status: BootProgressStatus::Started,
+        items: skill_roots
+            .iter()
+            .map(|root| {
+                let label = root
+                    .strip_prefix(workspace_root)
+                    .unwrap_or(root.as_path())
+                    .display()
+                    .to_string();
+                BootProgressItem::new(BootProgressItemKind::SkillRoot, label)
+            })
+            .collect(),
+        note: Some("Loading skill roots".to_string()),
+    });
     let skill_catalog = agent::skills::load_skill_roots(&skill_roots)
         .await
         .context("failed to load skill roots")?;
     let skills = skill_catalog.all().to_vec();
+    progress(BootProgressUpdate {
+        stage: BootProgressStage::Skills,
+        status: BootProgressStatus::Completed,
+        items: skills
+            .iter()
+            .map(|skill| BootProgressItem::new(BootProgressItemKind::Skill, skill.name.clone()))
+            .collect(),
+        note: Some(format!("{} skill(s) loaded", skills.len())),
+    });
     let runtime_hooks = plugin_plan.hooks.clone();
     let plugin_mcp_servers = plugin_plan.mcp_servers.clone();
     let plugin_instructions = plugin_plan.instructions.clone();
@@ -393,6 +589,16 @@ async fn build_runtime(
             session_memory_refresh_state.clone(),
             model_compactor,
         ));
+    progress(BootProgressUpdate {
+        stage: BootProgressStage::Tooling,
+        status: BootProgressStatus::Started,
+        items: vec![
+            BootProgressItem::new(BootProgressItemKind::ToolSurface, "local tools"),
+            BootProgressItem::new(BootProgressItemKind::ToolSurface, "command hooks"),
+            BootProgressItem::new(BootProgressItemKind::ToolSurface, "code intelligence"),
+        ],
+        note: Some("Building runtime surfaces".to_string()),
+    });
     // Runtime tooling assembly is still host boot work, but it lives behind a
     // dedicated helper so later frontends inherit the same process-local tool,
     // hook, and LSP wiring without reopening this orchestration block.
@@ -411,6 +617,29 @@ async fn build_runtime(
     let mut startup_warnings = runtime_tooling.startup_warnings.clone();
     let hook_runner = runtime_tooling.hook_runner.clone();
     let mut tools = runtime_tooling.tools;
+    progress(BootProgressUpdate {
+        stage: BootProgressStage::Tooling,
+        status: BootProgressStatus::Completed,
+        items: vec![
+            BootProgressItem::new(
+                BootProgressItemKind::ToolSurface,
+                if host_process_surfaces_allowed {
+                    "host surfaces enabled"
+                } else {
+                    "host surfaces degraded"
+                },
+            ),
+            BootProgressItem::new(
+                BootProgressItemKind::ToolSurface,
+                if runtime_tooling.startup_warnings.is_empty() {
+                    "startup checks clean"
+                } else {
+                    "startup warnings present"
+                },
+            ),
+        ],
+        note: Some("Runtime surfaces ready".to_string()),
+    });
     // Custom tools can stay registered even when the current session mode
     // hides host-process surfaces. Execution still goes through the same
     // process executor and active sandbox policy once the operator enables it.
@@ -479,6 +708,17 @@ async fn build_runtime(
         &driver_outcome,
     );
     let resolved_mcp_servers = dedup_mcp_servers(resolve_mcp_servers(&mcp_servers, workspace_root));
+    progress(BootProgressUpdate {
+        stage: BootProgressStage::Mcp,
+        status: BootProgressStatus::Started,
+        items: resolved_mcp_servers
+            .iter()
+            .map(|server| {
+                BootProgressItem::new(BootProgressItemKind::McpServer, server.name.to_string())
+            })
+            .collect(),
+        note: Some("Connecting MCP servers".to_string()),
+    });
     let boot_mcp_servers = filter_boot_mcp_servers(
         resolved_mcp_servers.clone(),
         host_process_surfaces_allowed,
@@ -509,6 +749,23 @@ async fn build_runtime(
         }
         connected_mcp_servers = connected;
     }
+    progress(BootProgressUpdate {
+        stage: BootProgressStage::Mcp,
+        status: BootProgressStatus::Completed,
+        items: connected_mcp_servers
+            .iter()
+            .map(|server| {
+                BootProgressItem::new(
+                    BootProgressItemKind::McpServer,
+                    server.server_name.to_string(),
+                )
+            })
+            .collect(),
+        note: Some(format!(
+            "{} MCP server(s) connected",
+            connected_mcp_servers.len()
+        )),
+    });
     ensure_model_supports_registered_tools(
         &options.primary_profile,
         agent_backend_capabilities(&options.primary_profile),

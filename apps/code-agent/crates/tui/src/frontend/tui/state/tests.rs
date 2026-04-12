@@ -6,6 +6,7 @@ use super::{
     TranscriptToolStatus, TuiState, composer_draft_from_messages, composer_draft_from_parts,
     draft_preview_text, git_snapshot, page_scroll_amount,
 };
+use crate::frontend::tui::input_history::{ComposerHistoryKind, PersistedComposerHistoryEntry};
 use crate::theme::ThemeSummary;
 use crate::tool_render::{
     ToolCommand, ToolCompletionState, ToolDetail, ToolDetailLabel, ToolReview, ToolReviewFile,
@@ -562,6 +563,36 @@ fn empty_input_history_prefers_prompt_entries_over_command_history() {
 
     assert!(state.browse_input_history(true));
     assert_eq!(state.input, "second prompt");
+}
+
+#[test]
+fn non_slash_history_recall_uses_persisted_cross_type_order() {
+    let mut state = TuiState {
+        persisted_history_entries: vec![
+            PersistedComposerHistoryEntry {
+                kind: ComposerHistoryKind::Prompt,
+                prompt: SubmittedPromptSnapshot::from_text("first prompt"),
+            },
+            PersistedComposerHistoryEntry {
+                kind: ComposerHistoryKind::Command,
+                prompt: SubmittedPromptSnapshot::from_text("/help"),
+            },
+            PersistedComposerHistoryEntry {
+                kind: ComposerHistoryKind::Prompt,
+                prompt: SubmittedPromptSnapshot::from_text("second prompt"),
+            },
+        ],
+        ..TuiState::default()
+    };
+
+    assert!(state.browse_input_history(true));
+    assert_eq!(state.input, "second prompt");
+
+    assert!(state.browse_input_history(true));
+    assert_eq!(state.input, "/help");
+
+    assert!(state.browse_input_history(true));
+    assert_eq!(state.input, "first prompt");
 }
 
 #[test]

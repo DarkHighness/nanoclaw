@@ -146,14 +146,10 @@ pub(super) fn format_footer_context(state: &TuiState) -> Line<'static> {
     );
     push_status_item(
         &mut spans,
-        config.queue.then(|| {
+        (config.queue && state.session.queued_commands > 0).then(|| {
             (
                 format!("queue {}", state.session.queued_commands),
-                if state.session.queued_commands == 0 {
-                    Style::default().fg(palette().muted)
-                } else {
-                    Style::default().fg(palette().warn)
-                },
+                Style::default().fg(palette().warn),
             )
         }),
     );
