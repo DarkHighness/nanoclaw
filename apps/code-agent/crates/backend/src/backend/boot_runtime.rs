@@ -1,4 +1,6 @@
 use crate::options::AppOptions;
+#[cfg(feature = "automation-tools")]
+use agent::CronCreateTool;
 use agent::runtime::RuntimeError;
 use agent::runtime::{
     CommandHookExecutor, DefaultCommandHookExecutor, HookRunner, LoopDetectionConfig,
@@ -554,6 +556,14 @@ pub fn register_monitor_tools(tools: &mut ToolRegistry, monitor_manager: Arc<dyn
     tools.register(MonitorStartTool::new(monitor_manager.clone()));
     tools.register(MonitorListTool::new(monitor_manager.clone()));
     tools.register(MonitorStopTool::new(monitor_manager));
+}
+
+#[cfg(feature = "automation-tools")]
+pub fn register_automation_tools(
+    tools: &mut ToolRegistry,
+    cron_manager: Arc<dyn agent::CronManager>,
+) {
+    tools.register(CronCreateTool::new(cron_manager));
 }
 
 pub fn register_worktree_tools(

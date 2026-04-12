@@ -133,6 +133,20 @@ fn transcript_entry_from_string_round_trips_prefixed_summary_blocks() {
 
 #[test]
 fn code_diagnostics_tool_entry_uses_diagnostics_headline() {
+    let cron_entry = TranscriptEntry::tool_with_completion(
+        TranscriptToolStatus::Finished,
+        "cron_create",
+        vec![ToolDetail::LabeledValue {
+            label: ToolDetailLabel::Result,
+            value: "cron_123".to_string(),
+        }],
+        ToolCompletionState::Success,
+    );
+    assert_eq!(
+        cron_entry.serialized(),
+        "• Scheduled automation\n  └ Result cron_123"
+    );
+
     let notebook_edit_entry = TranscriptEntry::tool_with_completion(
         TranscriptToolStatus::Finished,
         "notebook_edit",

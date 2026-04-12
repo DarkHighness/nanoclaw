@@ -25,6 +25,8 @@ pub use tools::{
     CodeSearchMatchKind, CodeSearchTool, CodeSymbol, CodeSymbolKind, CodeSymbolSearchTool,
     ManagedCodeIntelBackend, ManagedCodeIntelOptions, WorkspaceTextCodeIntelBackend,
 };
+#[cfg(feature = "automation-tools")]
+pub use tools::{CronCreateTool, CronManager};
 pub use tools::{
     EditTool, ExecCommandTool, GlobTool, GrepTool, HostProcessExecutor, JsReplTool, ListTool,
     ManagedPolicyProcessExecutor, MonitorListTool, MonitorManager, MonitorRuntimeContext,

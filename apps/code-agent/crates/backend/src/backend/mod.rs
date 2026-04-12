@@ -5,6 +5,8 @@ mod boot_mcp;
 mod boot_preamble;
 mod boot_runtime;
 mod boot_sandbox;
+#[cfg(feature = "automation-tools")]
+mod cron_manager;
 mod events;
 mod memory_recall;
 mod monitor_manager;
@@ -55,6 +57,8 @@ pub use boot_sandbox::{
     SandboxFallbackNotice, build_sandbox_fallback_notice, build_sandbox_policy, build_tool_context,
     inject_process_env, inspect_sandbox_preflight, log_sandbox_status, tool_context_for_profile,
 };
+#[cfg(feature = "automation-tools")]
+pub(crate) use cron_manager::SessionCronManager;
 pub use events::{SessionEventObserver, SessionEventPublisher, SessionEventStream};
 pub(crate) use monitor_manager::SessionMonitorManager;
 pub use permission_request::{

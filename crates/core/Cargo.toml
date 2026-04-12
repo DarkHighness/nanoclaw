@@ -10,6 +10,7 @@ agentic-tools = [
     "runtime/agentic-tools",
     "tools/agentic-tools",
 ]
+automation-tools = ["agentic-tools", "tools/automation-tools"]
 code-intel = ["tools/code-intel"]
 memory-embed = ["memory/memory-embed"]
 notebook-tools = ["tools/notebook-tools"]

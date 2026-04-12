@@ -1,5 +1,9 @@
+#[cfg(feature = "automation-tools")]
+use crate::backend::SessionCronManager;
 use crate::backend::boot_inputs::DriverHostInputs;
 use crate::backend::boot_mcp::build_startup_diagnostics_snapshot;
+#[cfg(feature = "automation-tools")]
+use crate::backend::boot_runtime::register_automation_tools;
 use crate::backend::boot_runtime::{
     COMMAND_HOOK_DISABLED_WARNING_PREFIX, SwitchableCodeIntelBackend,
     SwitchableCommandHookExecutor, SwitchableHostProcessExecutor, build_runtime_tooling,
@@ -832,12 +836,20 @@ where
         subagent_executor.clone(),
         events.clone(),
     ));
+    #[cfg(feature = "automation-tools")]
+    let cron_manager: Arc<dyn agent::CronManager> = Arc::new(SessionCronManager::new(
+        store.clone(),
+        events.clone(),
+        task_manager.clone(),
+    ));
     let monitor_manager: Arc<dyn agent::tools::MonitorManager> =
         Arc::new(SessionMonitorManager::new(
             store.clone(),
             events.clone(),
             runtime_tooling.process_executor.clone(),
         ));
+    #[cfg(feature = "automation-tools")]
+    register_automation_tools(&mut tools, cron_manager);
     register_monitor_tools(&mut tools, monitor_manager.clone());
     register_worktree_tools(&mut tools, worktree_manager.clone());
     register_subagent_tools(&mut tools, subagent_executor.clone(), task_manager);

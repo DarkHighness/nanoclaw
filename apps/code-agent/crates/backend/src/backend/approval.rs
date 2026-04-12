@@ -182,6 +182,47 @@ fn approval_content_preview(tool_name: &str, arguments: &Value) -> ApprovalConte
                 preview,
             };
         }
+        ToolRenderKind::CronCreate => {
+            let mut preview = vec!["schedule automation".to_string()];
+            if let Some(summary) = arguments
+                .get("summary")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                preview.push(summary.to_string());
+            }
+            if let Some(schedule) = arguments.get("schedule") {
+                if let Some(kind) = schedule
+                    .get("kind")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                {
+                    match kind {
+                        "once_after" => {
+                            if let Some(delay_seconds) =
+                                schedule.get("delay_seconds").and_then(Value::as_u64)
+                            {
+                                preview.push(format!("once after {delay_seconds}s"));
+                            }
+                        }
+                        "every_seconds" => {
+                            if let Some(interval_seconds) =
+                                schedule.get("interval_seconds").and_then(Value::as_u64)
+                            {
+                                preview.push(format!("every {interval_seconds}s"));
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            return ApprovalContent {
+                kind: ApprovalContentKind::Arguments,
+                preview,
+            };
+        }
         ToolRenderKind::NotebookRead => {
             let path = arguments
                 .get("path")
@@ -538,6 +579,47 @@ mod tests {
                 preview: vec![
                     "$ npm run dev".to_string(),
                     "cwd /workspace/web".to_string()
+                ],
+            }
+        );
+    }
+
+    #[test]
+    fn approval_prompt_extracts_cron_create_context() {
+        let prompt = approval_prompt_from_request(&ToolApprovalRequest {
+            call: ToolCall {
+                id: ToolCallId::new(),
+                call_id: "call-cron".into(),
+                tool_name: "cron_create".into(),
+                arguments: json!({
+                    "summary": "Review nightly regression queue",
+                    "schedule": {
+                        "kind": "every_seconds",
+                        "interval_seconds": 300
+                    }
+                }),
+                origin: ToolOrigin::Local,
+            },
+            spec: ToolSpec::function(
+                "cron_create",
+                "create automation",
+                json!({"type":"object"}),
+                ToolOutputMode::Text,
+                ToolOrigin::Local,
+                ToolSource::Builtin,
+            ),
+            reasons: vec!["automation requires review".to_string()],
+        });
+
+        assert_eq!(prompt.tool_name, "cron_create");
+        assert_eq!(
+            prompt.content,
+            ApprovalContent {
+                kind: ApprovalContentKind::Arguments,
+                preview: vec![
+                    "schedule automation".to_string(),
+                    "Review nightly regression queue".to_string(),
+                    "every 300s".to_string()
                 ],
             }
         );

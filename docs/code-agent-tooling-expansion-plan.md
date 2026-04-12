@@ -13,7 +13,7 @@ Status: Active
 | Phase 3: Worktree Lifecycle | Complete | `worktree_enter`, `worktree_list`, and `worktree_exit` now exist with persisted worktree events, shared runtime context switching, child-agent dedicated worktree opt-in, and persisted task/worktree summaries that survive reload. |
 | Phase 4: Checkpoint And Restore | Deferred | Rollback remains transcript/history-centric, and a durable checkpoint design has not been locked yet. |
 | Phase 5: Diagnostics | Complete | `code_diagnostics` exists as a typed tool surface and no longer has a mirrored slash command. |
-| Phase 6: Cron / Automation | Not Started | No scheduled execution tool family yet. |
+| Phase 6: Cron / Automation | In Progress | `cron_create` now exists behind `automation-tools` and materializes session-local `automation_backed` tasks plus typed notifications; `cron_list`, `cron_delete`, and restart persistence are still missing. |
 | Phase 7: Code Search | Complete | Canonical `code_search` now returns typed ranked matches with explicit scores; managed backends merge semantic workspace-symbol hits with lexical snippet fallback, while lexical-only hosts still expose deterministic index-backed ranking. |
 | Phase 8: Browser / Computer Use | Not Started | No first-class browser session tools yet. |
 | Phase 9: Notebook Editing | Complete | Feature-gated `notebook_read` and `notebook_edit` now expose typed notebook inspection and mutation without falling back to raw `.ipynb` JSON tooling. |
@@ -485,6 +485,15 @@ without an always-open interactive session.
 
 - Add typed schedule expressions and next-run metadata.
 - Separate session-scoped schedules from future persistent automations.
+
+### Current status
+
+- `cron_create` is implemented behind the `automation-tools` feature.
+- It supports one-shot delays and recurring `every_seconds` schedules.
+- Created automations currently live in the owning session process only.
+- Each run materializes a typed `automation_backed` task and publishes a typed
+  automation notification into the session stream.
+- `cron_list`, `cron_delete`, and durable restart recovery remain outstanding.
 
 ### Write set
 

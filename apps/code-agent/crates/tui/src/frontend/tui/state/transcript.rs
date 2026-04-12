@@ -418,6 +418,9 @@ fn tool_headline_prefix(
     }
 
     match ToolRenderKind::classify(tool_name) {
+        ToolRenderKind::CronCreate => {
+            lifecycle_headline_text(status, "Scheduling automation", "Scheduled automation")
+        }
         ToolRenderKind::NotebookEdit => {
             lifecycle_headline_text(status, "Editing notebook", "Updated notebook")
         }
@@ -490,7 +493,8 @@ fn tool_headline_subject_kind(
         ToolRenderKind::ExecCommand | ToolRenderKind::WriteStdin | ToolRenderKind::Generic => {
             TranscriptToolHeadlineSubjectKind::ToolName
         }
-        ToolRenderKind::NotebookEdit
+        ToolRenderKind::CronCreate
+        | ToolRenderKind::NotebookEdit
         | ToolRenderKind::NotebookRead
         | ToolRenderKind::CodeSearch
         | ToolRenderKind::CodeDiagnostics

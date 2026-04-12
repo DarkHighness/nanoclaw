@@ -1,5 +1,5 @@
 use crate::{
-    AgentId, AgentSessionId, CallId, ContextWindowUsage, EnvelopeId, EventId, HookEvent,
+    AgentId, AgentSessionId, CallId, ContextWindowUsage, CronId, EnvelopeId, EventId, HookEvent,
     HookResult, Message, MessageId, MessagePart, MonitorId, Reasoning, ResponseId, SessionId,
     TaskId, TokenLedgerSnapshot, TokenUsage, TokenUsagePhase, ToolCall, ToolCallId, ToolName,
     ToolSpec, TurnId, WorktreeId,
@@ -130,6 +130,34 @@ impl fmt::Display for MonitorStatus {
             Self::Completed => "completed",
             Self::Failed => "failed",
             Self::Cancelled => "cancelled",
+        };
+        f.write_str(value)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CronStatus {
+    Scheduled,
+    Completed,
+    Cancelled,
+    Failed,
+}
+
+impl CronStatus {
+    #[must_use]
+    pub fn is_terminal(&self) -> bool {
+        matches!(self, Self::Completed | Self::Cancelled | Self::Failed)
+    }
+}
+
+impl fmt::Display for CronStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let value = match self {
+            Self::Scheduled => "scheduled",
+            Self::Completed => "completed",
+            Self::Cancelled => "cancelled",
+            Self::Failed => "failed",
         };
         f.write_str(value)
     }
@@ -341,6 +369,39 @@ pub struct MonitorSummaryRecord {
     pub started_at_unix_s: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub finished_at_unix_s: Option<u64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum CronScheduleRecord {
+    Once {
+        run_at_unix_s: u64,
+    },
+    Recurring {
+        interval_seconds: u64,
+        next_run_unix_s: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_runs: Option<u32>,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct CronSummaryRecord {
+    pub cron_id: CronId,
+    pub session_id: SessionId,
+    pub agent_session_id: AgentSessionId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_agent_id: Option<AgentId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latest_task_id: Option<TaskId>,
+    pub role: String,
+    pub prompt_summary: String,
+    pub status: CronStatus,
+    pub schedule: CronScheduleRecord,
+    pub created_at_unix_s: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_run_at_unix_s: Option<u64>,
+    pub run_count: u32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

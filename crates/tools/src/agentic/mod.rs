@@ -1,3 +1,5 @@
+#[cfg(feature = "automation-tools")]
+mod cron;
 mod request_permissions;
 mod request_user_input;
 mod skill;
@@ -10,6 +12,8 @@ mod worktree;
 pub const HOST_FEATURE_REQUEST_USER_INPUT: &str = "host-user-input";
 pub const HOST_FEATURE_REQUEST_PERMISSIONS: &str = "host-permission-request";
 
+#[cfg(feature = "automation-tools")]
+pub use cron::*;
 pub use request_permissions::*;
 pub use request_user_input::*;
 pub use skill::*;

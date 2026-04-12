@@ -6,6 +6,7 @@ version = "0.1.0"
 
 [features]
 default = []
+automation-tools = ["agent/automation-tools", "code-agent-backend/automation-tools"]
 memory-embed = ["agent/memory-embed"]
 notebook-tools = ["agent/notebook-tools", "code-agent-backend/notebook-tools"]
 

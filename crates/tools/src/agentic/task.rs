@@ -775,7 +775,7 @@ impl Tool for AgentCancelTool {
     }
 }
 
-fn normalize_task_input(
+pub(crate) fn normalize_task_input(
     input: AgentTaskInput,
     origin: TaskOrigin,
     fallback_task_id: Option<TaskId>,
@@ -919,7 +919,7 @@ async fn normalize_agent_input(
     })
 }
 
-fn normalize_optional_non_empty(value: Option<String>) -> Option<String> {
+pub(crate) fn normalize_optional_non_empty(value: Option<String>) -> Option<String> {
     value
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
@@ -1158,7 +1158,7 @@ fn trim_optional_field(value: Option<&str>) -> Option<&str> {
     value.map(str::trim).filter(|value| !value.is_empty())
 }
 
-fn normalize_paths(paths: Vec<String>) -> Vec<String> {
+pub(crate) fn normalize_paths(paths: Vec<String>) -> Vec<String> {
     let mut unique = BTreeSet::new();
     paths
         .into_iter()
