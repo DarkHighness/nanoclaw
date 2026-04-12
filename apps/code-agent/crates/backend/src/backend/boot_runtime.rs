@@ -21,7 +21,7 @@ use agent::{
     WriteStdinTool, WriteTool,
 };
 #[cfg(feature = "automation-tools")]
-use agent::{CronCreateTool, CronListTool};
+use agent::{CronCreateTool, CronDeleteTool, CronListTool};
 #[cfg(feature = "notebook-tools")]
 use agent::{NotebookEditTool, NotebookReadTool};
 use async_trait::async_trait;
@@ -564,7 +564,8 @@ pub fn register_automation_tools(
     cron_manager: Arc<dyn agent::CronManager>,
 ) {
     tools.register(CronCreateTool::new(cron_manager.clone()));
-    tools.register(CronListTool::new(cron_manager));
+    tools.register(CronListTool::new(cron_manager.clone()));
+    tools.register(CronDeleteTool::new(cron_manager));
 }
 
 pub fn register_worktree_tools(

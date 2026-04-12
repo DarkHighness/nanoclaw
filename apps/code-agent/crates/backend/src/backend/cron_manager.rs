@@ -14,17 +14,32 @@ use code_agent_contracts::ui::SessionNotificationSource;
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use store::SessionStore;
+use tokio::sync::Notify;
+use tokio::task::JoinHandle;
 use tokio::time::{Duration, sleep};
 
 struct SessionCron {
     parent: SubagentParentContext,
     summary: Mutex<CronSummaryRecord>,
     task_template: CronTaskTemplate,
+    wake: Notify,
+    run_loop: Mutex<Option<JoinHandle<()>>>,
 }
 
 impl SessionCron {
     fn summary(&self) -> CronSummaryRecord {
         self.summary.lock().expect("cron summary lock").clone()
+    }
+
+    fn install_run_loop(&self, handle: JoinHandle<()>) {
+        *self.run_loop.lock().expect("cron run loop lock") = Some(handle);
+    }
+
+    fn abort_run_loop(&self) {
+        if let Some(handle) = self.run_loop.lock().expect("cron run loop lock").take() {
+            handle.abort();
+        }
+        self.wake.notify_waiters();
     }
 }
 
@@ -126,9 +141,16 @@ impl SessionCronManager {
             let Some(state) = self.cron_state(&cron_id) else {
                 return;
             };
-            let wait_seconds = wait_seconds_until_next_run(&state.summary());
+            let current = state.summary();
+            if current.status.is_terminal() {
+                return;
+            }
+            let wait_seconds = wait_seconds_until_next_run(&current);
             if wait_seconds > 0 {
-                sleep(Duration::from_secs(wait_seconds)).await;
+                tokio::select! {
+                    _ = sleep(Duration::from_secs(wait_seconds)) => {}
+                    _ = state.wake.notified() => continue,
+                }
             }
             let should_continue = self.fire_schedule(state).await;
             if !should_continue {
@@ -140,6 +162,9 @@ impl SessionCronManager {
     async fn fire_schedule(&self, state: Arc<SessionCron>) -> bool {
         let current = state.summary();
         if current.status.is_terminal() {
+            return false;
+        }
+        if state.summary().status.is_terminal() {
             return false;
         }
 
@@ -204,13 +229,16 @@ impl CronManager for SessionCronManager {
             parent,
             summary: Mutex::new(summary.clone()),
             task_template: request.task_template,
+            wake: Notify::new(),
+            run_loop: Mutex::new(None),
         });
-        self.insert_cron(state);
+        self.insert_cron(state.clone());
         let manager = self.clone();
         let cron_id = summary.cron_id.clone();
-        tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
             manager.run_schedule(cron_id).await;
         });
+        state.install_run_loop(handle);
         Ok(summary)
     }
 
@@ -220,6 +248,35 @@ impl CronManager for SessionCronManager {
     ) -> ToolResult<Vec<CronSummaryRecord>> {
         let _ = Self::require_parent_session(&parent)?;
         Ok(self.list_cron_summaries())
+    }
+
+    async fn delete_schedule(
+        &self,
+        parent: SubagentParentContext,
+        cron_id: &CronId,
+    ) -> ToolResult<CronSummaryRecord> {
+        let _ = Self::require_parent_session(&parent)?;
+        let state = self
+            .cron_state(cron_id)
+            .ok_or_else(|| ToolError::invalid(format!("unknown automation {cron_id}")))?;
+        let (summary, changed) = {
+            let mut summary = state.summary.lock().expect("cron summary lock");
+            let changed = !summary.status.is_terminal();
+            if !summary.status.is_terminal() {
+                summary.status = CronStatus::Cancelled;
+            }
+            (summary.clone(), changed)
+        };
+        if changed {
+            state.abort_run_loop();
+            let _ = self
+                .append_notification(
+                    &state.parent,
+                    format!("automation {} cancelled", summary.cron_id),
+                )
+                .await;
+        }
+        Ok(summary)
     }
 }
 
@@ -518,5 +575,64 @@ mod tests {
         assert_eq!(listed.len(), 2);
         assert_eq!(listed[0].cron_id, earlier.cron_id);
         assert_eq!(listed[1].cron_id, later.cron_id);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn cron_manager_delete_cancels_future_runs_and_keeps_tombstone() {
+        let store: Arc<dyn SessionStore> = Arc::new(InMemorySessionStore::new());
+        let events = SessionEventStream::default();
+        let task_manager = Arc::new(RecordingTaskManager::default());
+        let manager = SessionCronManager::new(store.clone(), events.clone(), task_manager.clone());
+
+        let summary = manager
+            .create_schedule(
+                parent(),
+                CronCreateRequest {
+                    schedule: CronScheduleInput::OnceAfter {
+                        delay_seconds: 3600,
+                    },
+                    task_template: CronTaskTemplate {
+                        role: "reviewer".to_string(),
+                        prompt: "Review the delayed automation queue".to_string(),
+                        steer: None,
+                        allowed_tools: Vec::new(),
+                        requested_write_set: Vec::new(),
+                        timeout_seconds: None,
+                        summary: "Review the delayed automation queue".to_string(),
+                        task_id_prefix: Some("delayed_review".to_string()),
+                    },
+                },
+            )
+            .await
+            .unwrap();
+
+        let deleted = manager
+            .delete_schedule(parent(), &summary.cron_id)
+            .await
+            .unwrap();
+        assert_eq!(deleted.status, CronStatus::Cancelled);
+
+        tokio::task::yield_now().await;
+        tokio::task::yield_now().await;
+        assert!(task_manager.created.lock().unwrap().is_empty());
+
+        let listed = manager.list_schedules(parent()).await.unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].cron_id, summary.cron_id);
+        assert_eq!(listed[0].status, CronStatus::Cancelled);
+
+        let drained = events.drain();
+        assert!(drained.iter().any(|event| matches!(
+            event,
+            SessionEvent::Notification { message, .. }
+                if message.contains("cancelled")
+        )));
+
+        let persisted = store.events(&SessionId::from("session_1")).await.unwrap();
+        assert!(persisted.iter().any(|event| matches!(
+            &event.event,
+            SessionEventKind::Notification { source, message }
+                if source == "automation" && message.contains("cancelled")
+        )));
     }
 }

@@ -161,6 +161,20 @@ fn code_diagnostics_tool_entry_uses_diagnostics_headline() {
         "• Listed automations\n  └ Result 2 automation(s)"
     );
 
+    let cron_delete_entry = TranscriptEntry::tool_with_completion(
+        TranscriptToolStatus::Finished,
+        "cron_delete",
+        vec![ToolDetail::LabeledValue {
+            label: ToolDetailLabel::Result,
+            value: "cron_1".to_string(),
+        }],
+        ToolCompletionState::Success,
+    );
+    assert_eq!(
+        cron_delete_entry.serialized(),
+        "• Cancelled automation\n  └ Result cron_1"
+    );
+
     let notebook_edit_entry = TranscriptEntry::tool_with_completion(
         TranscriptToolStatus::Finished,
         "notebook_edit",

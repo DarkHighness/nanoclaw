@@ -14,6 +14,7 @@ pub enum ToolRenderKind {
     WriteStdin,
     CronCreate,
     CronList,
+    CronDelete,
     NotebookEdit,
     NotebookRead,
     CodeSearch,
@@ -40,6 +41,7 @@ impl ToolRenderKind {
             "write_stdin" => Self::WriteStdin,
             "cron_create" => Self::CronCreate,
             "cron_list" => Self::CronList,
+            "cron_delete" => Self::CronDelete,
             "notebook_edit" => Self::NotebookEdit,
             "notebook_read" => Self::NotebookRead,
             "code_search" => Self::CodeSearch,
@@ -463,6 +465,15 @@ pub fn tool_arguments_preview_lines(tool_name: &str, arguments: &Value) -> Vec<S
         }
         ToolRenderKind::CronList => {
             return vec!["List automations".to_string()];
+        }
+        ToolRenderKind::CronDelete => {
+            let cron_id = arguments
+                .get("cron_id")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or("<unknown>");
+            return vec![format!("Cancel automation {cron_id}")];
         }
         ToolRenderKind::NotebookEdit => {
             let path = arguments
@@ -1136,6 +1147,7 @@ pub fn tool_completion_state(tool_name: &str, structured: Option<&Value>) -> Too
         }
         ToolRenderKind::CronCreate
         | ToolRenderKind::CronList
+        | ToolRenderKind::CronDelete
         | ToolRenderKind::NotebookEdit
         | ToolRenderKind::NotebookRead
         | ToolRenderKind::CodeSearch
@@ -1194,7 +1206,7 @@ pub fn tool_output_details(
         ToolRenderKind::ExecCommand | ToolRenderKind::WriteStdin => {
             return process_output_details(tool_name, output_preview, structured);
         }
-        ToolRenderKind::CronCreate | ToolRenderKind::CronList => {
+        ToolRenderKind::CronCreate | ToolRenderKind::CronList | ToolRenderKind::CronDelete => {
             if let Some(details) = cron_output_details(tool_name, structured) {
                 return details;
             }
@@ -1656,7 +1668,7 @@ fn code_search_output_details(structured: Option<&Value>) -> Option<Vec<ToolDeta
 fn cron_output_details(tool_name: &str, structured: Option<&Value>) -> Option<Vec<ToolDetail>> {
     let structured = structured?;
     match ToolRenderKind::classify(tool_name) {
-        ToolRenderKind::CronCreate => {
+        ToolRenderKind::CronCreate | ToolRenderKind::CronDelete => {
             let cron = structured.get("cron")?;
             Some(single_cron_output_details(cron))
         }
@@ -2850,6 +2862,10 @@ mod tests {
             vec!["List automations"]
         );
         assert_eq!(
+            tool_arguments_preview_lines("cron_delete", &json!({"cron_id": "cron_1"})),
+            vec!["Cancel automation cron_1"]
+        );
+        assert_eq!(
             tool_arguments_preview_lines(
                 "notebook_edit",
                 &json!({
@@ -2966,6 +2982,26 @@ mod tests {
         assert!(cron_list_rendered.iter().any(|line| {
             line.contains("cron_2 completed · once at 24 · Cleanup stale scratch files")
         }));
+
+        let cron_delete_rendered = tool_output_detail_lines(
+            "cron_delete",
+            "",
+            Some(&json!({
+                "cron": {
+                    "cron_id": "cron_1",
+                    "status": "cancelled",
+                    "prompt_summary": "Review nightly regression queue",
+                    "schedule": {"kind": "recurring", "interval_seconds": 300, "next_run_unix_s": 42, "max_runs": 3}
+                }
+            })),
+        );
+
+        assert_eq!(cron_delete_rendered[0], "  └ Result cron_1");
+        assert!(
+            cron_delete_rendered
+                .iter()
+                .any(|line| line == "  └ State cancelled")
+        );
 
         let notebook_edit_rendered = tool_output_detail_lines(
             "notebook_edit",

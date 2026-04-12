@@ -7,7 +7,7 @@ It intentionally keeps the host layer thin:
 
 - model-visible coding tools: `read`, `write`, `edit`, `patch_files`, `glob`, `grep`, `list`, `exec_command`, `write_stdin`
 - optional notebook tools (`notebook-tools` feature): `notebook_read`, `notebook_edit`
-- optional automation tools (`automation-tools` feature): `cron_create`, `cron_list`
+- optional automation tools (`automation-tools` feature): `cron_create`, `cron_list`, `cron_delete`
 - discovery tools: `tool_discover`
 - operator/debug-only tools: `web_search_backends`
 - optional code-intel tools: `code_search`, `code_symbol_search`, `code_document_symbols`, `code_nav`

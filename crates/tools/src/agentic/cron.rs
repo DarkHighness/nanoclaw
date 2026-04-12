@@ -14,6 +14,7 @@ use types::{
 
 const CRON_CREATE_TOOL_NAME: &str = "cron_create";
 const CRON_LIST_TOOL_NAME: &str = "cron_list";
+const CRON_DELETE_TOOL_NAME: &str = "cron_delete";
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 pub struct CronCreateToolInput {
@@ -78,6 +79,12 @@ pub trait CronManager: Send + Sync {
 
     async fn list_schedules(&self, parent: SubagentParentContext)
     -> Result<Vec<CronSummaryRecord>>;
+
+    async fn delete_schedule(
+        &self,
+        parent: SubagentParentContext,
+        cron_id: &types::CronId,
+    ) -> Result<CronSummaryRecord>;
 }
 
 #[derive(Clone, Debug, Serialize, JsonSchema)]
@@ -88,10 +95,20 @@ struct CronCreateToolOutput {
 #[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
 pub struct CronListToolInput {}
 
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+pub struct CronDeleteToolInput {
+    pub cron_id: types::CronId,
+}
+
 #[derive(Clone, Debug, Serialize, JsonSchema)]
 struct CronListToolOutput {
     result_count: usize,
     crons: Vec<CronSummaryRecord>,
+}
+
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+struct CronDeleteToolOutput {
+    cron: CronSummaryRecord,
 }
 
 #[derive(Clone)]
@@ -112,6 +129,18 @@ pub struct CronListTool {
 }
 
 impl CronListTool {
+    #[must_use]
+    pub fn new(manager: Arc<dyn CronManager>) -> Self {
+        Self { manager }
+    }
+}
+
+#[derive(Clone)]
+pub struct CronDeleteTool {
+    manager: Arc<dyn CronManager>,
+}
+
+impl CronDeleteTool {
     #[must_use]
     pub fn new(manager: Arc<dyn CronManager>) -> Self {
         Self { manager }
@@ -201,6 +230,46 @@ impl Tool for CronListTool {
     }
 }
 
+#[async_trait]
+impl Tool for CronDeleteTool {
+    fn spec(&self) -> ToolSpec {
+        builtin_tool_spec(
+            CRON_DELETE_TOOL_NAME,
+            "Cancel an automation so it stops materializing future tasks while preserving its typed record for later inspection.",
+            serde_json::to_value(schema_for!(CronDeleteToolInput)).expect("cron_delete schema"),
+            ToolOutputMode::Text,
+            tool_approval_profile(false, true, false, false),
+        )
+        .with_output_schema(
+            serde_json::to_value(schema_for!(CronDeleteToolOutput))
+                .expect("cron_delete output schema"),
+        )
+    }
+
+    async fn execute(
+        &self,
+        call_id: ToolCallId,
+        arguments: Value,
+        ctx: &ToolExecutionContext,
+    ) -> Result<ToolResult> {
+        let external_call_id = CallId::from(&call_id);
+        let input: CronDeleteToolInput = serde_json::from_value(arguments)?;
+        let summary = self
+            .manager
+            .delete_schedule(SubagentParentContext::from(ctx), &input.cron_id)
+            .await?;
+        Ok(ToolResult::text(
+            call_id,
+            CRON_DELETE_TOOL_NAME,
+            render_cron_delete_text(&summary),
+        )
+        .with_structured_content(json!(CronDeleteToolOutput {
+            cron: summary.clone(),
+        }))
+        .with_call_id(external_call_id))
+    }
+}
+
 fn validate_cron_schedule(schedule: &CronScheduleInput) -> Result<()> {
     match schedule {
         CronScheduleInput::OnceAfter { .. } => Ok(()),
@@ -284,6 +353,14 @@ fn render_cron_list_text(crons: &[CronSummaryRecord]) -> String {
     lines.join("\n")
 }
 
+fn render_cron_delete_text(summary: &CronSummaryRecord) -> String {
+    let mut lines = vec![format!("Cancelled automation {}", summary.cron_id)];
+    lines.push(format!("status {}", summary.status));
+    lines.push(render_cron_schedule_record(&summary.schedule));
+    lines.push(format!("summary {}", summary.prompt_summary));
+    lines.join("\n")
+}
+
 fn render_cron_summary_line(summary: &CronSummaryRecord) -> String {
     format!(
         "{} {} · {} · {}",
@@ -314,8 +391,9 @@ pub(crate) fn render_cron_schedule_record(schedule: &CronScheduleRecord) -> Stri
 #[cfg(test)]
 mod tests {
     use super::{
-        CronCreateRequest, CronCreateTool, CronCreateToolInput, CronListTool, CronManager,
-        CronScheduleInput, CronScheduleRecord, CronSummaryRecord,
+        CronCreateRequest, CronCreateTool, CronCreateToolInput, CronDeleteTool,
+        CronDeleteToolInput, CronListTool, CronManager, CronScheduleInput, CronScheduleRecord,
+        CronSummaryRecord,
     };
     use crate::Result;
     use crate::{Tool, ToolExecutionContext};
@@ -338,6 +416,7 @@ mod tests {
     struct FakeCronManager {
         last_request: Mutex<Option<CronCreateRequest>>,
         list_response: Mutex<Vec<CronSummaryRecord>>,
+        deleted: Mutex<Option<types::CronId>>,
     }
 
     #[async_trait]
@@ -373,6 +452,32 @@ mod tests {
             _parent: super::SubagentParentContext,
         ) -> Result<Vec<CronSummaryRecord>> {
             Ok(self.list_response.lock().unwrap().clone())
+        }
+
+        async fn delete_schedule(
+            &self,
+            _parent: super::SubagentParentContext,
+            cron_id: &types::CronId,
+        ) -> Result<CronSummaryRecord> {
+            *self.deleted.lock().unwrap() = Some(cron_id.clone());
+            Ok(CronSummaryRecord {
+                cron_id: cron_id.clone(),
+                session_id: SessionId::from("session_1"),
+                agent_session_id: AgentSessionId::from("agent_session_1"),
+                parent_agent_id: None,
+                latest_task_id: Some(types::TaskId::from("task_1")),
+                role: "reviewer".to_string(),
+                prompt_summary: "Review nightly regression queue".to_string(),
+                status: CronStatus::Cancelled,
+                schedule: CronScheduleRecord::Recurring {
+                    interval_seconds: 300,
+                    next_run_unix_s: 42,
+                    max_runs: Some(3),
+                },
+                created_at_unix_s: 7,
+                last_run_at_unix_s: None,
+                run_count: 0,
+            })
         }
     }
 
@@ -542,6 +647,37 @@ mod tests {
             assert!(text.contains("Listed 2 automation(s)"));
             assert!(text.contains("cron_1 scheduled"));
             assert!(text.contains("cron_2 completed"));
+        }
+    );
+
+    bounded_async_test!(
+        async fn cron_delete_returns_cancelled_summary() {
+            let manager = Arc::new(FakeCronManager::default());
+            let result = CronDeleteTool::new(manager.clone())
+                .execute(
+                    ToolCallId::new(),
+                    serde_json::to_value(CronDeleteToolInput {
+                        cron_id: types::CronId::from("cron_1"),
+                    })
+                    .unwrap(),
+                    &context(),
+                )
+                .await
+                .unwrap();
+
+            assert_eq!(
+                manager.deleted.lock().unwrap().clone(),
+                Some(types::CronId::from("cron_1"))
+            );
+            let structured = result.structured_content.unwrap();
+            assert_eq!(
+                structured.pointer("/cron/status").and_then(Value::as_str),
+                Some("cancelled")
+            );
+            let MessagePart::Text { text } = &result.parts[0] else {
+                panic!("expected text output");
+            };
+            assert!(text.contains("Cancelled automation cron_1"));
         }
     );
 }
