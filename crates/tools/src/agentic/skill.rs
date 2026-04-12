@@ -8,6 +8,7 @@ use serde_json::Value;
 use skills::{Skill, SkillCatalog, SkillRootKind, load_skill_roots};
 use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::fs;
 use types::{MessagePart, ToolCallId, ToolOutputMode, ToolResult, ToolSpec};
 
@@ -15,6 +16,8 @@ const DEFAULT_SKILL_LIMIT: usize = 20;
 const MAX_SKILL_LIMIT: usize = 100;
 const SKILL_MANAGE_REFRESH_NOTE: &str =
     "Skill catalog changed. Re-run skills_list or skill_view before relying on updated skills.";
+const SKILL_ARCHIVE_DIR: &str = ".archive";
+const SKILL_ARCHIVE_METADATA_FILE: &str = "skill_archive.toml";
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 pub struct SkillsListToolInput {
@@ -85,6 +88,16 @@ pub enum SkillManageToolInput {
     },
     Delete {
         name: String,
+    },
+    Archive {
+        name: String,
+        #[serde(default)]
+        reason: Option<String>,
+    },
+    Restore {
+        name: String,
+        #[serde(default)]
+        archive_id: Option<String>,
     },
     WriteFile {
         name: String,
@@ -171,6 +184,10 @@ pub struct SkillManageOutput {
     pub skill: Option<SkillSummary>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub file_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archive_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archive_path: Option<String>,
     pub note: String,
 }
 
@@ -381,7 +398,7 @@ impl Tool for SkillManageTool {
     fn spec(&self) -> ToolSpec {
         builtin_tool_spec(
             "skill_manage",
-            "Create, edit, patch, delete, or manage companion files for skills in the managed skill root.",
+            "Create, edit, patch, archive, restore, delete, or manage companion files for skills in the managed skill root.",
             serde_json::to_value(schema_for!(SkillManageToolInput)).expect("skill_manage schema"),
             ToolOutputMode::ContentParts,
             tool_approval_profile(false, true, false, false),
@@ -451,6 +468,8 @@ impl Tool for SkillManageTool {
                     action: "create".to_string(),
                     skill: Some(skill_summary(&skill)),
                     file_path: None,
+                    archive_id: None,
+                    archive_path: None,
                     note: SKILL_MANAGE_REFRESH_NOTE.to_string(),
                 }
             }
@@ -490,6 +509,8 @@ impl Tool for SkillManageTool {
                     action: "edit".to_string(),
                     skill: Some(skill_summary(&skill)),
                     file_path: None,
+                    archive_id: None,
+                    archive_path: None,
                     note: SKILL_MANAGE_REFRESH_NOTE.to_string(),
                 }
             }
@@ -543,6 +564,8 @@ impl Tool for SkillManageTool {
                     action: "patch".to_string(),
                     skill: Some(skill_summary(&skill)),
                     file_path: None,
+                    archive_id: None,
+                    archive_path: None,
                     note: SKILL_MANAGE_REFRESH_NOTE.to_string(),
                 }
             }
@@ -554,10 +577,75 @@ impl Tool for SkillManageTool {
                     action: "delete".to_string(),
                     skill: None,
                     file_path: None,
+                    archive_id: None,
+                    archive_path: None,
                     note: format!(
                         "Deleted skill `{}`. {}",
                         existing.name, SKILL_MANAGE_REFRESH_NOTE
                     ),
+                }
+            }
+            SkillManageToolInput::Archive { name, reason } => {
+                let existing = managed_skill(&self.catalog, &name)?;
+                let archive_id = next_skill_archive_id();
+                let archive_dir =
+                    skill_archive_snapshot_dir(&managed_root.path, &existing.name, &archive_id);
+                let archive_parent = archive_dir
+                    .parent()
+                    .ok_or_else(|| ToolError::invalid_state("invalid archive directory"))?;
+                ctx.assert_path_write_allowed(archive_parent)?;
+                fs::create_dir_all(archive_parent).await?;
+                fs::rename(&existing.root_dir, &archive_dir).await?;
+                write_skill_archive_metadata(
+                    &archive_dir,
+                    &SkillArchiveMetadata {
+                        skill_name: existing.name.clone(),
+                        archive_id: archive_id.clone(),
+                        archived_from: existing.root_dir.display().to_string(),
+                        archived_reason: reason
+                            .as_deref()
+                            .map(str::trim)
+                            .filter(|value| !value.is_empty())
+                            .map(str::to_string),
+                    },
+                )
+                .await?;
+                self.refresh_catalog().await?;
+                SkillManageOutput {
+                    action: "archive".to_string(),
+                    skill: None,
+                    file_path: None,
+                    archive_id: Some(archive_id),
+                    archive_path: Some(archive_dir.display().to_string()),
+                    note: format!(
+                        "Archived skill `{}`. {}",
+                        existing.name, SKILL_MANAGE_REFRESH_NOTE
+                    ),
+                }
+            }
+            SkillManageToolInput::Restore { name, archive_id } => {
+                let canonical = validate_skill_name(&name)?;
+                if self.catalog.resolve(&canonical).is_some() {
+                    return Err(ToolError::invalid(format!(
+                        "skill `{canonical}` already exists in the managed root"
+                    )));
+                }
+                let archive = resolve_skill_archive(&managed_root.path, &canonical, archive_id)?;
+                let restored_dir = managed_root.path.join(&canonical);
+                ctx.assert_path_read_allowed(&archive.path)?;
+                ctx.assert_path_write_allowed(&restored_dir)?;
+                copy_directory_tree(&archive.path, &restored_dir).await?;
+                let refreshed = self.refresh_catalog().await?;
+                let skill = refreshed.resolve(&canonical).ok_or_else(|| {
+                    ToolError::invalid_state("restored skill missing after refresh")
+                })?;
+                SkillManageOutput {
+                    action: "restore".to_string(),
+                    skill: Some(skill_summary(&skill)),
+                    file_path: None,
+                    archive_id: Some(archive.archive_id),
+                    archive_path: Some(archive.path.display().to_string()),
+                    note: SKILL_MANAGE_REFRESH_NOTE.to_string(),
                 }
             }
             SkillManageToolInput::WriteFile {
@@ -582,6 +670,8 @@ impl Tool for SkillManageTool {
                     action: "write_file".to_string(),
                     skill: Some(skill_summary(&skill)),
                     file_path: Some(relative),
+                    archive_id: None,
+                    archive_path: None,
                     note: SKILL_MANAGE_REFRESH_NOTE.to_string(),
                 }
             }
@@ -600,6 +690,8 @@ impl Tool for SkillManageTool {
                     action: "remove_file".to_string(),
                     skill: Some(skill_summary(&skill)),
                     file_path: Some(relative),
+                    archive_id: None,
+                    archive_path: None,
                     note: SKILL_MANAGE_REFRESH_NOTE.to_string(),
                 }
             }
@@ -686,6 +778,15 @@ struct ManagedSkillFrontmatterCore<'a> {
     extension_metadata: &'a BTreeMap<String, serde_yaml::Value>,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct SkillArchiveMetadata {
+    skill_name: String,
+    archive_id: String,
+    archived_from: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    archived_reason: Option<String>,
+}
+
 fn slice_is_empty<T>(value: &[T]) -> bool {
     value.is_empty()
 }
@@ -711,6 +812,144 @@ async fn write_skill_manifest(skill_dir: &Path, spec: &ManagedSkillSpec) -> Resu
     let content = format!("---\n{}---\n\n{}\n", yaml, spec.instruction.trim());
     fs::write(skill_dir.join("SKILL.md"), content).await?;
     Ok(())
+}
+
+async fn write_skill_archive_metadata(
+    archive_dir: &Path,
+    metadata: &SkillArchiveMetadata,
+) -> Result<()> {
+    let mut raw = String::new();
+    raw.push_str(&format!("skill_name = {:?}\n", metadata.skill_name));
+    raw.push_str(&format!("archive_id = {:?}\n", metadata.archive_id));
+    raw.push_str(&format!("archived_from = {:?}\n", metadata.archived_from));
+    if let Some(reason) = metadata.archived_reason.as_deref() {
+        raw.push_str(&format!("archived_reason = {:?}\n", reason));
+    }
+    fs::write(archive_dir.join(SKILL_ARCHIVE_METADATA_FILE), raw).await?;
+    Ok(())
+}
+
+fn skill_archive_root(managed_root: &Path) -> PathBuf {
+    managed_root.join(SKILL_ARCHIVE_DIR)
+}
+
+fn skill_archive_snapshot_dir(managed_root: &Path, skill_name: &str, archive_id: &str) -> PathBuf {
+    // Keep archived revisions under a nested `.archive/<skill>/<archive_id>` tree so the
+    // normal skill loader, which only scans immediate children of the managed root, does not
+    // accidentally surface archived snapshots as active skills.
+    skill_archive_root(managed_root)
+        .join(skill_name)
+        .join(archive_id)
+}
+
+fn next_skill_archive_id() -> String {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos()
+        .to_string()
+}
+
+#[derive(Clone, Debug)]
+struct ResolvedSkillArchive {
+    archive_id: String,
+    path: PathBuf,
+}
+
+fn resolve_skill_archive(
+    managed_root: &Path,
+    skill_name: &str,
+    requested_archive_id: Option<String>,
+) -> Result<ResolvedSkillArchive> {
+    let skill_name = validate_skill_name(skill_name)?;
+    let archives_root = skill_archive_root(managed_root).join(&skill_name);
+    if !archives_root.exists() {
+        return Err(ToolError::invalid(format!(
+            "skill `{skill_name}` does not have any archived revisions"
+        )));
+    }
+
+    if let Some(archive_id) = requested_archive_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        let archive_path = archives_root.join(archive_id);
+        if archive_path.join("SKILL.md").exists() {
+            return Ok(ResolvedSkillArchive {
+                archive_id: archive_id.to_string(),
+                path: archive_path,
+            });
+        }
+        return Err(ToolError::invalid(format!(
+            "archive `{archive_id}` was not found for skill `{skill_name}`"
+        )));
+    }
+
+    let entries = std::fs::read_dir(&archives_root).map_err(|error| {
+        ToolError::invalid_state(format!(
+            "failed to inspect archived revisions for `{skill_name}`: {error}"
+        ))
+    })?;
+    let mut archives = entries
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir() && path.join("SKILL.md").exists())
+        .filter_map(|path| {
+            let archive_id = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(str::to_string)?;
+            Some((archive_id, path))
+        })
+        .collect::<Vec<_>>();
+    archives.sort_by(|left, right| {
+        parse_archive_sort_key(&right.0).cmp(&parse_archive_sort_key(&left.0))
+    });
+    let Some((archive_id, path)) = archives.into_iter().next() else {
+        return Err(ToolError::invalid(format!(
+            "skill `{skill_name}` does not have any archived revisions"
+        )));
+    };
+    Ok(ResolvedSkillArchive { archive_id, path })
+}
+
+fn parse_archive_sort_key(value: &str) -> u128 {
+    value.parse::<u128>().unwrap_or_default()
+}
+
+async fn copy_directory_tree(source: &Path, destination: &Path) -> Result<()> {
+    if destination.exists() {
+        return Err(ToolError::invalid(format!(
+            "destination already exists: {}",
+            destination.display()
+        )));
+    }
+    fs::create_dir_all(destination).await?;
+    copy_directory_entries(source, destination).await
+}
+
+fn copy_directory_entries<'a>(
+    source: &'a Path,
+    destination: &'a Path,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>> {
+    Box::pin(async move {
+        let mut entries = fs::read_dir(source).await?;
+        while let Some(entry) = entries.next_entry().await? {
+            let entry_path = entry.path();
+            if entry.file_name().to_string_lossy() == SKILL_ARCHIVE_METADATA_FILE {
+                continue;
+            }
+            let destination_path = destination.join(entry.file_name());
+            if entry.file_type().await?.is_dir() {
+                fs::create_dir_all(&destination_path).await?;
+                copy_directory_entries(&entry_path, &destination_path).await?;
+            } else {
+                let _ = fs::copy(&entry_path, &destination_path).await?;
+            }
+        }
+        Ok(())
+    })
 }
 
 fn fuzzy_skill_matches(catalog: &SkillCatalog, query: &str, limit: usize) -> Vec<SkillSummary> {
@@ -867,6 +1106,12 @@ fn render_skill_manage_result(output: &SkillManageOutput) -> String {
     }
     if let Some(file_path) = output.file_path.as_deref() {
         lines.push(format!("File {}", file_path));
+    }
+    if let Some(archive_id) = output.archive_id.as_deref() {
+        lines.push(format!("Archive {}", archive_id));
+    }
+    if let Some(archive_path) = output.archive_path.as_deref() {
+        lines.push(format!("Archive path {}", archive_path));
     }
     lines.push(output.note.clone());
     lines.join("\n")
@@ -1170,6 +1415,83 @@ Read docs carefully.
             .await
             .unwrap_err();
         assert!(error.to_string().contains("read-only root"));
+    }
+
+    #[tokio::test]
+    async fn skill_manage_archive_moves_skill_out_of_active_catalog() {
+        let catalog = catalog().await;
+        let tool = SkillManageTool::new(catalog.clone());
+        let result = tool
+            .execute(
+                ToolCallId::new(),
+                json!({
+                    "action": "archive",
+                    "name": "pdf",
+                    "reason": "superseded"
+                }),
+                &crate::ToolExecutionContext::default(),
+            )
+            .await
+            .unwrap();
+
+        let structured = result.structured_content.as_ref().unwrap();
+        let archive_id = structured["archive_id"]
+            .as_str()
+            .expect("expected archive id");
+        let archive_path = structured["archive_path"]
+            .as_str()
+            .expect("expected archive path");
+        assert!(!archive_id.is_empty());
+        assert!(archive_path.contains("/.archive/pdf/"));
+        assert!(catalog.resolve("pdf").is_none());
+        assert!(std::path::Path::new(archive_path).join("SKILL.md").exists());
+    }
+
+    #[tokio::test]
+    async fn skill_manage_restore_rehydrates_latest_archived_skill() {
+        let catalog = catalog().await;
+        let tool = SkillManageTool::new(catalog.clone());
+
+        let archived = tool
+            .execute(
+                ToolCallId::new(),
+                json!({
+                    "action": "archive",
+                    "name": "pdf"
+                }),
+                &crate::ToolExecutionContext::default(),
+            )
+            .await
+            .unwrap();
+        let archive_id = archived.structured_content.as_ref().unwrap()["archive_id"]
+            .as_str()
+            .expect("expected archive id")
+            .to_string();
+
+        let restored = tool
+            .execute(
+                ToolCallId::new(),
+                json!({
+                    "action": "restore",
+                    "name": "pdf"
+                }),
+                &crate::ToolExecutionContext::default(),
+            )
+            .await
+            .unwrap();
+
+        let structured = restored.structured_content.as_ref().unwrap();
+        assert_eq!(structured["skill"]["name"], "pdf");
+        assert_eq!(structured["archive_id"], archive_id);
+        assert!(catalog.resolve("pdf").is_some());
+        assert!(
+            catalog
+                .resolve("pdf")
+                .expect("restored skill")
+                .root_dir
+                .join("references/guide.md")
+                .exists()
+        );
     }
 
     #[tokio::test]

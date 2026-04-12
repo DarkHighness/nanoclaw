@@ -19,7 +19,7 @@ Status: Active
 | Phase 9: Notebook Editing | Complete | Feature-gated `notebook_read` and `notebook_edit` now expose typed notebook inspection and mutation without falling back to raw `.ipynb` JSON tooling. |
 | Cross-cutting: Operator Slash Surface | In Progress | Tool-mirroring slash commands have been pruned; operator/session commands remain, and installed skills are now surfaced as explicit `/skill_name` slash invocations plus `$skill_name` composer directives. |
 | Cross-cutting: Tool Review Surface | Complete | `ToolReview` is now a typed item-based review substrate instead of a diff-only file list, and the TUI can open the same centered review overlay for running, failed, and completed tools with structured sections or file diffs. |
-| Cross-cutting: Skill Lifecycle & Self-Evolution | In Progress | Hermes-style `skills_list`, `skill_view`, and `skill_manage` now exist with managed-vs-external roots, managed roots deterministically override readonly external copies, shadowed copies are surfaced as provenance, and Hermes-style trust/update/audit metadata now flows through skill loading plus `skills_list` / `skill_view`; verifier-backed extraction and archival/promotion are still missing. |
+| Cross-cutting: Skill Lifecycle & Self-Evolution | In Progress | Hermes-style `skills_list`, `skill_view`, and `skill_manage` now exist with managed-vs-external roots, managed roots deterministically override readonly external copies, shadowed copies are surfaced as provenance, Hermes-style trust/update/audit metadata now flows through skill loading plus `skills_list` / `skill_view`, and managed skills now support archived snapshots plus typed restore; verifier-backed extraction and promotion are still missing. |
 
 ## Goal
 
@@ -688,13 +688,15 @@ backed extraction, archival, and promotion workflows be layered on top.
     keeping `$skill_name` composer directives
   - surface Hermes-style provenance trust/update/audit metadata through typed
     skill loading and `skills_list` / `skill_view`
+  - add managed archive/restore flow so skill mutations are reversible without
+    treating workspace roots as the only source of truth
 - next:
   - define verifier-backed extraction of reusable skills from successful runs
-  - add archive/promotion storage instead of treating workspace roots as the
-    only source of truth
   - align tool-vs-skill guidance with the Hermes split:
     - use skills for instruction-plus-existing-tool workflows
     - use tools for capabilities that require typed runtime integration
+  - add promotion policy on top of archived skill revisions instead of treating
+    every archived snapshot as equally eligible for reuse
 
 ### Write set
 

@@ -35,7 +35,7 @@ It intentionally keeps the host layer thin:
 - Hermes-style skill discovery and mutation:
   - `skills_list` discovers the catalog without injecting it into the system prompt
   - `skill_view` progressively loads `SKILL.md` content or companion files on demand
-  - `skill_manage` mutates only the managed root and tells the model to refresh via `skills_list`/`skill_view`
+  - `skill_manage` mutates only the managed root, supports managed `archive` / `restore`, and tells the model to refresh via `skills_list` / `skill_view`
   - managed/local skill roots keep precedence over readonly external roots, so operator-created skills override imported copies deterministically
   - shadowed external copies are surfaced in `skills_list` / `skill_view` provenance instead of being silently discarded
   - optional Hermes provenance metadata (`source_id`, `trust_level`, `update_state`, `audit_state`) now round-trips through skill loading and appears in `skills_list` / `skill_view`
