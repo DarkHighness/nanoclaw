@@ -182,6 +182,19 @@ fn approval_content_preview(tool_name: &str, arguments: &Value) -> ApprovalConte
                 preview,
             };
         }
+        ToolRenderKind::CodeDiagnostics => {
+            let preview = arguments
+                .get("path")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(|path| vec![format!("inspect diagnostics for {path}")])
+                .unwrap_or_else(|| vec!["inspect workspace diagnostics".to_string()]);
+            return ApprovalContent {
+                kind: ApprovalContentKind::Arguments,
+                preview,
+            };
+        }
         ToolRenderKind::UpdatePlan => {
             let item_count = arguments
                 .get("plan")

@@ -204,6 +204,9 @@ impl CodeAgentUiSession {
             } => UIAsyncResult::LiveMonitorControlOutcome(
                 self.inner.stop_live_monitor(&monitor_ref, reason).await?,
             ),
+            UIAsyncCommand::CodeDiagnostics { path } => {
+                UIAsyncResult::CodeDiagnostics(self.inner.code_diagnostics(path.as_deref()).await?)
+            }
             UIAsyncCommand::LoadSession { session_ref } => {
                 UIAsyncResult::LoadedSession(self.inner.load_session(&session_ref).await?)
             }

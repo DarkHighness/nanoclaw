@@ -1,6 +1,6 @@
 use crate::code_intel::{
-    CodeCallHierarchyDirection, CodeCallHierarchyEntry, CodeHover, CodeLocation, CodeReference,
-    CodeSymbol, CodeSymbolKind,
+    CodeCallHierarchyDirection, CodeCallHierarchyEntry, CodeDiagnostic, CodeDiagnosticSeverity,
+    CodeDiagnosticSource, CodeHover, CodeLocation, CodeReference, CodeSymbol, CodeSymbolKind,
 };
 use serde_json::{Value, json};
 use std::io;
@@ -422,32 +422,35 @@ pub(crate) fn configuration_response(params: &Value) -> Vec<Value> {
 
 // Diagnostics are cached immediately on publish so later tool surfaces can expose them
 // without re-parsing raw server payloads.
-#[allow(dead_code)]
-pub(crate) struct DiagnosticEntry {
-    pub(crate) location: CodeLocation,
-    pub(crate) severity: Option<u64>,
-    pub(crate) message: String,
-    pub(crate) source: Option<String>,
-}
-
 pub(crate) fn parse_diagnostic_entry(
     value: &Value,
     document_path: &Path,
     workspace_root: &Path,
-) -> Option<DiagnosticEntry> {
-    Some(DiagnosticEntry {
+) -> Option<CodeDiagnostic> {
+    Some(CodeDiagnostic {
         location: CodeLocation {
             path: display_path(workspace_root, document_path),
             line: value.pointer("/range/start/line")?.as_u64()? as usize + 1,
             column: value.pointer("/range/start/character")?.as_u64()? as usize + 1,
         },
-        severity: value.get("severity").and_then(Value::as_u64),
+        severity: diagnostic_severity(value.get("severity").and_then(Value::as_u64)),
         message: value.get("message")?.as_str()?.to_string(),
-        source: value
+        source: CodeDiagnosticSource::Lsp,
+        provider: value
             .get("source")
             .and_then(Value::as_str)
             .map(ToOwned::to_owned),
     })
+}
+
+fn diagnostic_severity(raw: Option<u64>) -> CodeDiagnosticSeverity {
+    match raw {
+        Some(1) => CodeDiagnosticSeverity::Error,
+        Some(2) => CodeDiagnosticSeverity::Warning,
+        Some(3) => CodeDiagnosticSeverity::Information,
+        Some(4) => CodeDiagnosticSeverity::Hint,
+        _ => CodeDiagnosticSeverity::Unknown,
+    }
 }
 
 fn display_path(root: &Path, path: &Path) -> String {

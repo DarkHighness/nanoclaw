@@ -4,18 +4,19 @@ use agent::runtime::{
     CommandHookExecutor, DefaultCommandHookExecutor, HookRunner, LoopDetectionConfig,
 };
 use agent::tools::{
-    CodeCallHierarchyDirection, CodeCallHierarchyEntry, CodeHover, CodeNavigationTarget,
-    CodeReference, CodeSymbol, FileActivityObserver, MonitorManager, ProcessExecutor,
-    SandboxBackendStatus, SandboxError, SubagentExecutor, TaskManager,
+    CodeCallHierarchyDirection, CodeCallHierarchyEntry, CodeDiagnostic, CodeHover,
+    CodeNavigationTarget, CodeReference, CodeSymbol, FileActivityObserver, MonitorManager,
+    ProcessExecutor, SandboxBackendStatus, SandboxError, SubagentExecutor, TaskManager,
 };
 use agent::{
-    CodeDocumentSymbolsTool, CodeIntelBackend, CodeNavTool, CodeSymbolSearchTool, EditTool,
-    ExecCommandTool, GlobTool, GrepTool, JsReplTool, ListTool, ManagedCodeIntelBackend,
-    ManagedCodeIntelOptions, ManagedPolicyProcessExecutor, MonitorListTool, MonitorStartTool,
-    MonitorStopTool, PatchFilesTool, PlanState, ReadTool, RequestPermissionsTool,
-    RequestUserInputTool, SandboxPolicy, SkillCatalog, SkillTool, ToolCallId, ToolDiscoverTool,
-    ToolExecutionContext, ToolRegistry, ToolResult, UpdatePlanTool, WebFetchTool,
-    WebSearchBackendsTool, WebSearchTool, WorkspaceTextCodeIntelBackend, WriteStdinTool, WriteTool,
+    CodeDiagnosticsTool, CodeDocumentSymbolsTool, CodeIntelBackend, CodeNavTool,
+    CodeSymbolSearchTool, EditTool, ExecCommandTool, GlobTool, GrepTool, JsReplTool, ListTool,
+    ManagedCodeIntelBackend, ManagedCodeIntelOptions, ManagedPolicyProcessExecutor,
+    MonitorListTool, MonitorStartTool, MonitorStopTool, PatchFilesTool, PlanState, ReadTool,
+    RequestPermissionsTool, RequestUserInputTool, SandboxPolicy, SkillCatalog, SkillTool,
+    ToolCallId, ToolDiscoverTool, ToolExecutionContext, ToolRegistry, ToolResult, UpdatePlanTool,
+    WebFetchTool, WebSearchBackendsTool, WebSearchTool, WorkspaceTextCodeIntelBackend,
+    WriteStdinTool, WriteTool,
 };
 use async_trait::async_trait;
 use serde_json::Value;
@@ -439,6 +440,19 @@ impl CodeIntelBackend for SwitchableCodeIntelBackend {
                 .await
         }
     }
+
+    async fn diagnostics(
+        &self,
+        path: Option<&Path>,
+        limit: usize,
+        ctx: &ToolExecutionContext,
+    ) -> agent::tools::Result<Vec<CodeDiagnostic>> {
+        if let Some(backend) = self.managed_backend_snapshot() {
+            backend.diagnostics(path, limit, ctx).await
+        } else {
+            self.fallback.diagnostics(path, limit, ctx).await
+        }
+    }
 }
 
 pub fn build_runtime_tooling(
@@ -574,6 +588,9 @@ fn build_builtin_tools(
         code_intel_backend.clone(),
     ));
     tools.register(CodeNavTool::with_backend(code_intel_backend.clone()));
+    tools.register(CodeDiagnosticsTool::with_backend(
+        code_intel_backend.clone(),
+    ));
     tools.register(ToolDiscoverTool::new(discovery_registry));
     tools.register(UpdatePlanTool::new(plan_state));
     tools.register(SkillTool::new(skill_catalog));

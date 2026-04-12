@@ -35,6 +35,9 @@ impl From<SlashSubcommand> for SlashCommand {
             SlashSubcommand::Tools => Self::Tools,
             SlashSubcommand::Skills => Self::Skills,
             SlashSubcommand::Diagnostics => Self::Diagnostics,
+            SlashSubcommand::CodeDiagnostics { path } => Self::CodeDiagnostics {
+                path: join_optional_tail(path),
+            },
             SlashSubcommand::Mcp => Self::Mcp,
             SlashSubcommand::Prompts => Self::Prompts,
             SlashSubcommand::Resources => Self::Resources,

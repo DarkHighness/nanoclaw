@@ -125,6 +125,27 @@ impl CodeAgentTui {
                 });
                 Ok(false)
             }
+            SlashCommand::CodeDiagnostics { path } => {
+                let diagnostics: Vec<agent::tools::CodeDiagnostic> = self
+                    .run_ui(UIAsyncCommand::CodeDiagnostics { path: path.clone() })
+                    .await?;
+                let title = path
+                    .as_deref()
+                    .filter(|value| !value.trim().is_empty())
+                    .map(|value| format!("Code Diagnostics · {}", value.trim()))
+                    .unwrap_or_else(|| "Code Diagnostics".to_string());
+                let inspector = format_code_diagnostics_inspector(&diagnostics);
+                self.ui_state.mutate(move |state| {
+                    state.show_main_view(title, inspector);
+                    state.status = if diagnostics.is_empty() {
+                        "No live code diagnostics".to_string()
+                    } else {
+                        format!("Listed {} code diagnostic(s)", diagnostics.len())
+                    };
+                    state.push_activity("inspected live code diagnostics");
+                });
+                Ok(false)
+            }
             SlashCommand::Steer { message } => {
                 let Some(message) = message else {
                     self.ui_state.mutate(|state| {

@@ -132,6 +132,24 @@ fn transcript_entry_from_string_round_trips_prefixed_summary_blocks() {
 }
 
 #[test]
+fn code_diagnostics_tool_entry_uses_diagnostics_headline() {
+    let entry = TranscriptEntry::tool_with_completion(
+        TranscriptToolStatus::Finished,
+        "code_diagnostics",
+        vec![ToolDetail::LabeledValue {
+            label: ToolDetailLabel::Result,
+            value: "2 diagnostic(s)".to_string(),
+        }],
+        ToolCompletionState::Success,
+    );
+
+    assert_eq!(
+        entry.serialized(),
+        "• Inspected diagnostics\n  └ Result 2 diagnostic(s)"
+    );
+}
+
+#[test]
 fn expired_toast_is_cleared_on_next_tick() {
     let mut state = TuiState::default();
     state.toast = Some(ToastState {

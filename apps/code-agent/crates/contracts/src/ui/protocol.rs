@@ -23,6 +23,7 @@ use crate::interaction::{
     SessionPermissionModeOutcome, SkillSummary, UserInputPrompt, UserInputSubmission,
 };
 use agent::runtime::RuntimeCommand;
+use agent::tools::CodeDiagnostic;
 use agent::types::{Message, SubmittedPromptSnapshot};
 use std::path::PathBuf;
 
@@ -169,6 +170,9 @@ pub enum UIAsyncCommand {
         monitor_ref: String,
         reason: Option<String>,
     },
+    CodeDiagnostics {
+        path: Option<String>,
+    },
     LoadSession {
         session_ref: String,
     },
@@ -223,6 +227,7 @@ pub enum UIAsyncResult {
     LiveTaskControlOutcome(LiveTaskControlOutcome),
     LiveMonitors(Vec<LiveMonitorSummary>),
     LiveMonitorControlOutcome(LiveMonitorControlOutcome),
+    CodeDiagnostics(Vec<CodeDiagnostic>),
     LoadedSession(LoadedSession),
     LoadedAgentSession(LoadedAgentSession),
     LoadedTask(LoadedTask),
@@ -335,6 +340,7 @@ impl_ui_async_value!(LiveTaskWaitOutcome, LiveTaskWaitOutcome);
 impl_ui_async_value!(LiveTaskControlOutcome, LiveTaskControlOutcome);
 impl_ui_async_value!(Vec<LiveMonitorSummary>, LiveMonitors);
 impl_ui_async_value!(LiveMonitorControlOutcome, LiveMonitorControlOutcome);
+impl_ui_async_value!(Vec<CodeDiagnostic>, CodeDiagnostics);
 impl_ui_async_value!(LoadedSession, LoadedSession);
 impl_ui_async_value!(LoadedAgentSession, LoadedAgentSession);
 impl_ui_async_value!(LoadedTask, LoadedTask);

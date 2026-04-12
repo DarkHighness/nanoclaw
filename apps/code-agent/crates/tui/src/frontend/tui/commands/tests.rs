@@ -131,6 +131,23 @@ fn parses_stop_monitor_with_optional_reason_tail() {
 }
 
 #[test]
+fn parses_code_diagnostics_with_optional_path_tail() {
+    assert!(matches!(
+        parse_slash_command("/code_diagnostics"),
+        SlashCommand::CodeDiagnostics { path: None }
+    ));
+    match parse_slash_command("/code_diagnostics crates/tools/src/code_intel/tools.rs") {
+        SlashCommand::CodeDiagnostics { path } => {
+            assert_eq!(
+                path.as_deref(),
+                Some("crates/tools/src/code_intel/tools.rs")
+            );
+        }
+        _ => panic!("unexpected command"),
+    }
+}
+
+#[test]
 fn parses_permissions_mode_switch() {
     match parse_slash_command("/permissions danger-full-access") {
         SlashCommand::Permissions { mode } => {

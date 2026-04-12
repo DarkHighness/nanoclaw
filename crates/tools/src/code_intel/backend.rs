@@ -78,6 +78,70 @@ pub struct CodeHover {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
+pub enum CodeDiagnosticSeverity {
+    Error,
+    Warning,
+    Information,
+    Hint,
+    Unknown,
+}
+
+impl CodeDiagnosticSeverity {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Error => "error",
+            Self::Warning => "warning",
+            Self::Information => "information",
+            Self::Hint => "hint",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+impl Display for CodeDiagnosticSeverity {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CodeDiagnosticSource {
+    Lsp,
+    Lexical,
+    BuildOutput,
+}
+
+impl CodeDiagnosticSource {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Lsp => "lsp",
+            Self::Lexical => "lexical",
+            Self::BuildOutput => "build_output",
+        }
+    }
+}
+
+impl Display for CodeDiagnosticSource {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, JsonSchema)]
+pub struct CodeDiagnostic {
+    pub location: CodeLocation,
+    pub severity: CodeDiagnosticSeverity,
+    pub message: String,
+    pub source: CodeDiagnosticSource,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
 pub enum CodeCallHierarchyDirection {
     Incoming,
     Outgoing,
@@ -195,6 +259,15 @@ pub trait CodeIntelBackend: Send + Sync {
         _limit: usize,
         _ctx: &ToolExecutionContext,
     ) -> Result<Vec<CodeCallHierarchyEntry>> {
+        Ok(Vec::new())
+    }
+
+    async fn diagnostics(
+        &self,
+        _path: Option<&Path>,
+        _limit: usize,
+        _ctx: &ToolExecutionContext,
+    ) -> Result<Vec<CodeDiagnostic>> {
         Ok(Vec::new())
     }
 }

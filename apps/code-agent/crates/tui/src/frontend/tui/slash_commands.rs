@@ -20,6 +20,7 @@ impl CodeAgentTui {
             | SlashCommand::Tools
             | SlashCommand::Skills
             | SlashCommand::Diagnostics
+            | SlashCommand::CodeDiagnostics { .. }
             | SlashCommand::Steer { .. }
             | SlashCommand::Queue
             | SlashCommand::Permissions { .. }

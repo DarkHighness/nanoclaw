@@ -1,8 +1,9 @@
 use crate::ToolExecutionContext;
 use crate::annotations::{builtin_tool_spec, tool_approval_profile};
 use crate::code_intel::{
-    CodeCallHierarchyDirection, CodeCallHierarchyEntry, CodeHover, CodeIntelBackend,
-    CodeNavigationTarget, CodeReference, CodeSymbol, WorkspaceTextCodeIntelBackend,
+    CodeCallHierarchyDirection, CodeCallHierarchyEntry, CodeDiagnostic, CodeHover,
+    CodeIntelBackend, CodeNavigationTarget, CodeReference, CodeSymbol,
+    WorkspaceTextCodeIntelBackend,
 };
 use crate::fs::resolve_tool_path_against_workspace_root;
 use crate::registry::Tool;
@@ -11,11 +12,13 @@ use async_trait::async_trait;
 use schemars::{JsonSchema, schema_for};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use std::path::Path;
 use std::sync::Arc;
 use types::{MessagePart, ToolCallId, ToolOutputMode, ToolResult, ToolSpec};
 
 const DEFAULT_RESULT_LIMIT: usize = 32;
 const MAX_RESULT_LIMIT: usize = 200;
+const CODE_DIAGNOSTICS_TOOL_NAME: &str = "code_diagnostics";
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 pub struct CodeSymbolSearchInput {
@@ -26,6 +29,13 @@ pub struct CodeSymbolSearchInput {
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 pub struct CodeDocumentSymbolsInput {
     pub path: String,
+    pub limit: Option<usize>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+pub struct CodeDiagnosticsInput {
+    #[serde(default)]
+    pub path: Option<String>,
     pub limit: Option<usize>,
 }
 
@@ -91,6 +101,19 @@ struct CodeDocumentSymbolsToolOutput {
 }
 
 #[derive(Clone, Debug, Serialize, JsonSchema)]
+struct CodeDiagnosticsToolOutput {
+    scope: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    requested_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    resolved_path: Option<String>,
+    limit: usize,
+    backend: String,
+    result_count: usize,
+    diagnostics: Vec<CodeDiagnostic>,
+}
+
+#[derive(Clone, Debug, Serialize, JsonSchema)]
 #[serde(tag = "operation", rename_all = "snake_case")]
 pub enum CodeNavToolOutput {
     Definitions {
@@ -146,6 +169,11 @@ pub struct CodeNavTool {
     backend: Arc<dyn CodeIntelBackend>,
 }
 
+#[derive(Clone)]
+pub struct CodeDiagnosticsTool {
+    backend: Arc<dyn CodeIntelBackend>,
+}
+
 impl Default for CodeSymbolSearchTool {
     fn default() -> Self {
         Self::new()
@@ -159,6 +187,12 @@ impl Default for CodeDocumentSymbolsTool {
 }
 
 impl Default for CodeNavTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Default for CodeDiagnosticsTool {
     fn default() -> Self {
         Self::new()
     }
@@ -189,6 +223,18 @@ impl CodeDocumentSymbolsTool {
 }
 
 impl CodeNavTool {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::with_backend(Arc::new(WorkspaceTextCodeIntelBackend::new()))
+    }
+
+    #[must_use]
+    pub fn with_backend(backend: Arc<dyn CodeIntelBackend>) -> Self {
+        Self { backend }
+    }
+}
+
+impl CodeDiagnosticsTool {
     #[must_use]
     pub fn new() -> Self {
         Self::with_backend(Arc::new(WorkspaceTextCodeIntelBackend::new()))
@@ -662,10 +708,104 @@ impl Tool for CodeNavTool {
     }
 }
 
+#[async_trait]
+impl Tool for CodeDiagnosticsTool {
+    fn spec(&self) -> ToolSpec {
+        builtin_tool_spec(
+            CODE_DIAGNOSTICS_TOOL_NAME,
+            "Inspect cached code diagnostics for a file or the current workspace. Returns typed errors and warnings from managed code-intel backends.",
+            serde_json::to_value(schema_for!(CodeDiagnosticsInput))
+                .expect("code_diagnostics schema"),
+            ToolOutputMode::Text,
+            tool_approval_profile(true, false, true, false),
+        )
+        .with_output_schema(
+            serde_json::to_value(schema_for!(CodeDiagnosticsToolOutput))
+                .expect("code_diagnostics output schema"),
+        )
+    }
+
+    async fn execute(
+        &self,
+        call_id: ToolCallId,
+        arguments: Value,
+        ctx: &ToolExecutionContext,
+    ) -> Result<ToolResult> {
+        let external_call_id = types::CallId::from(&call_id);
+        let input: CodeDiagnosticsInput = serde_json::from_value(arguments)?;
+        let limit = clamp_limit(input.limit);
+        let (requested_path, resolved_path, scope) =
+            resolve_diagnostics_scope(input.path.as_deref(), ctx)?;
+        let diagnostics = self
+            .backend
+            .diagnostics(resolved_path.as_deref(), limit, ctx)
+            .await?;
+        let backend_name = self.backend.name().to_string();
+        let resolved_path_display = resolved_path.as_ref().map(|path| {
+            path.strip_prefix(ctx.effective_root())
+                .unwrap_or(path)
+                .to_string_lossy()
+                .replace('\\', "/")
+        });
+        let text = format_diagnostics_output(
+            requested_path.as_deref(),
+            resolved_path.as_deref(),
+            limit,
+            &backend_name,
+            &diagnostics,
+        );
+        let structured_output = CodeDiagnosticsToolOutput {
+            scope,
+            requested_path,
+            resolved_path: resolved_path_display,
+            limit,
+            backend: backend_name.clone(),
+            result_count: diagnostics.len(),
+            diagnostics,
+        };
+        let metadata = json!({
+            "scope": structured_output.scope.clone(),
+            "requested_path": structured_output.requested_path.clone(),
+            "resolved_path": structured_output.resolved_path.clone(),
+            "limit": structured_output.limit,
+            "backend": backend_name,
+            "result_count": structured_output.result_count,
+        });
+        Ok(build_text_tool_result(
+            call_id,
+            external_call_id,
+            CODE_DIAGNOSTICS_TOOL_NAME,
+            text,
+            structured_output,
+            metadata,
+        ))
+    }
+}
+
 fn clamp_limit(limit: Option<usize>) -> usize {
     limit
         .unwrap_or(DEFAULT_RESULT_LIMIT)
         .clamp(1, MAX_RESULT_LIMIT)
+}
+
+fn resolve_diagnostics_scope(
+    path: Option<&str>,
+    ctx: &ToolExecutionContext,
+) -> Result<(Option<String>, Option<std::path::PathBuf>, String)> {
+    let Some(path) = path.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok((None, None, "workspace".to_string()));
+    };
+    let resolved = resolve_tool_path_against_workspace_root(
+        path,
+        ctx.effective_root(),
+        ctx.container_workdir.as_deref(),
+    )?;
+    ctx.assert_path_read_allowed(&resolved)?;
+    Ok((
+        Some(path.to_string()),
+        Some(resolved),
+        format!("path:{path}"),
+    ))
 }
 
 fn resolve_navigation_target(
@@ -768,6 +908,46 @@ fn format_navigation_target_label(target: &CodeNavigationTarget) -> String {
             ..
         } => format!("{display_path}:{line}:{column}"),
     }
+}
+
+fn format_diagnostics_output(
+    requested_path: Option<&str>,
+    resolved_path: Option<&Path>,
+    limit: usize,
+    backend_name: &str,
+    diagnostics: &[CodeDiagnostic],
+) -> String {
+    let scope_summary = match requested_path {
+        Some(requested_path) => format!("Path diagnostics for {requested_path}"),
+        None => "Workspace diagnostics".to_string(),
+    };
+    let mut lines = vec![format!(
+        "{scope_summary} · {} result(s) · backend {backend_name} · limit {limit}",
+        diagnostics.len()
+    )];
+    if let Some(resolved_path) = resolved_path {
+        lines.push(format!("resolved path: {}", resolved_path.display()));
+    }
+    if diagnostics.is_empty() {
+        lines.push("No cached diagnostics were available for the requested scope.".to_string());
+        return lines.join("\n");
+    }
+    for (index, diagnostic) in diagnostics.iter().enumerate() {
+        lines.push(format!(
+            "{}. [{}] {}:{}:{} {}",
+            index + 1,
+            diagnostic.severity,
+            diagnostic.location.path,
+            diagnostic.location.line,
+            diagnostic.location.column,
+            diagnostic.message
+        ));
+        lines.push(format!("   source: {}", diagnostic.source));
+        if let Some(provider) = diagnostic.provider.as_deref() {
+            lines.push(format!("   provider: {provider}"));
+        }
+    }
+    lines.join("\n")
 }
 
 fn format_symbols_output(
@@ -953,12 +1133,15 @@ fn call_hierarchy_to_json(call: &CodeCallHierarchyEntry) -> Value {
 
 #[cfg(test)]
 mod tests {
-    use super::{CodeDocumentSymbolsTool, CodeNavTool, CodeSymbolSearchTool, Tool};
+    use super::{
+        CodeDiagnosticsTool, CodeDocumentSymbolsTool, CodeNavTool, CodeSymbolSearchTool, Tool,
+    };
     use crate::Result;
     use crate::ToolExecutionContext;
     use crate::code_intel::{
-        CodeCallHierarchyDirection, CodeCallHierarchyEntry, CodeHover, CodeIntelBackend,
-        CodeLocation, CodeNavigationTarget, CodeReference, CodeSymbol, CodeSymbolKind,
+        CodeCallHierarchyDirection, CodeCallHierarchyEntry, CodeDiagnostic, CodeDiagnosticSeverity,
+        CodeDiagnosticSource, CodeHover, CodeIntelBackend, CodeLocation, CodeNavigationTarget,
+        CodeReference, CodeSymbol, CodeSymbolKind,
     };
     use async_trait::async_trait;
     use serde_json::json;
@@ -1101,6 +1284,28 @@ mod tests {
                 },
                 detail: Some("fn dispatch_request()".to_string()),
                 call_site_count: 2,
+            }])
+        }
+
+        async fn diagnostics(
+            &self,
+            path: Option<&Path>,
+            _limit: usize,
+            _ctx: &ToolExecutionContext,
+        ) -> Result<Vec<CodeDiagnostic>> {
+            let path = path
+                .map(|value| value.to_string_lossy().replace('\\', "/"))
+                .unwrap_or_else(|| "src/lib.rs".to_string());
+            Ok(vec![CodeDiagnostic {
+                location: CodeLocation {
+                    path,
+                    line: 7,
+                    column: 3,
+                },
+                severity: CodeDiagnosticSeverity::Warning,
+                message: "unused parameter".to_string(),
+                source: CodeDiagnosticSource::Lsp,
+                provider: Some("rust-analyzer".to_string()),
             }])
         }
     }
@@ -1296,6 +1501,37 @@ mod tests {
             call_hierarchy.structured_content.as_ref().unwrap()["calls"][0]["call_site_count"],
             2
         );
+    }
+
+    #[tokio::test]
+    async fn code_diagnostics_tool_returns_structured_diagnostics() {
+        let dir = tempfile::tempdir().unwrap();
+        let sample = dir.path().join("src/lib.rs");
+        std::fs::create_dir_all(sample.parent().unwrap()).unwrap();
+        std::fs::write(&sample, "fn demo(unused: i32) {}\n").unwrap();
+
+        let result = CodeDiagnosticsTool::with_backend(Arc::new(StubBackend))
+            .execute(
+                ToolCallId::new(),
+                json!({
+                    "path": "src/lib.rs",
+                    "limit": 8
+                }),
+                &context(dir.path()),
+            )
+            .await
+            .unwrap();
+
+        let text = result.text_content();
+        assert!(text.contains("Path diagnostics for src/lib.rs"));
+        assert!(text.contains("[warning]"));
+        assert!(text.contains("unused parameter"));
+
+        let structured = result.structured_content.unwrap();
+        assert_eq!(structured["scope"], "path:src/lib.rs");
+        assert_eq!(structured["resolved_path"], "src/lib.rs");
+        assert_eq!(structured["diagnostics"][0]["provider"], "rust-analyzer");
+        assert_eq!(structured["diagnostics"][0]["severity"], "warning");
     }
 
     #[tokio::test]

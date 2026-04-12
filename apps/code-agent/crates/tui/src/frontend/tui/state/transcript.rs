@@ -418,6 +418,9 @@ fn tool_headline_prefix(
     }
 
     match ToolRenderKind::classify(tool_name) {
+        ToolRenderKind::CodeDiagnostics => {
+            lifecycle_headline_text(status, "Inspecting diagnostics", "Inspected diagnostics")
+        }
         ToolRenderKind::UpdatePlan => {
             lifecycle_headline_text(status, "Updating plan", "Updated plan")
         }
@@ -473,6 +476,7 @@ fn tool_headline_subject_kind(
             TranscriptToolHeadlineSubjectKind::ToolName
         }
         ToolRenderKind::UpdatePlan
+        | ToolRenderKind::CodeDiagnostics
         | ToolRenderKind::MonitorStart
         | ToolRenderKind::MonitorList
         | ToolRenderKind::MonitorStop

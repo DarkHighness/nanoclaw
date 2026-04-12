@@ -5,7 +5,7 @@ license.workspace = true
 version.workspace = true
 
 [dependencies]
-agent = { path = "../../../../crates/core" }
+agent = { path = "../../../../crates/core", features = ["code-intel"] }
 anyhow.workspace = true
 ratatui.workspace = true
 serde.workspace = true

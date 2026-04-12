@@ -2,8 +2,9 @@ mod protocol;
 mod support;
 
 use crate::code_intel::{
-    CodeCallHierarchyDirection, CodeCallHierarchyEntry, CodeHover, CodeIntelBackend,
-    CodeNavigationTarget, CodeReference, CodeSymbol, WorkspaceTextCodeIntelBackend,
+    CodeCallHierarchyDirection, CodeCallHierarchyEntry, CodeDiagnostic, CodeHover,
+    CodeIntelBackend, CodeNavigationTarget, CodeReference, CodeSymbol,
+    WorkspaceTextCodeIntelBackend,
 };
 use crate::file_activity::FileActivityObserver;
 use crate::process::{
@@ -15,10 +16,10 @@ use notify::{
     Config as NotifyConfig, Event as NotifyEvent, RecommendedWatcher, RecursiveMode, Watcher,
 };
 use protocol::{
-    DiagnosticEntry, configuration_response, file_uri_from_path, file_uri_to_path,
-    identifier_at_position, parse_call_hierarchy_calls, parse_diagnostic_entry,
-    parse_document_symbols, parse_hover, parse_locations_as_references, parse_locations_as_symbols,
-    parse_workspace_symbols, read_lsp_message, zero_based_position,
+    configuration_response, file_uri_from_path, file_uri_to_path, identifier_at_position,
+    parse_call_hierarchy_calls, parse_diagnostic_entry, parse_document_symbols, parse_hover,
+    parse_locations_as_references, parse_locations_as_symbols, parse_workspace_symbols,
+    read_lsp_message, zero_based_position,
 };
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
@@ -219,6 +220,19 @@ impl CodeIntelBackend for ManagedCodeIntelBackend {
         self.fallback
             .call_hierarchy(target, direction, limit, ctx)
             .await
+    }
+
+    async fn diagnostics(
+        &self,
+        path: Option<&Path>,
+        limit: usize,
+        ctx: &ToolExecutionContext,
+    ) -> Result<Vec<CodeDiagnostic>> {
+        let semantic = self.runtime.diagnostics(path, limit).await?;
+        if !semantic.is_empty() {
+            return Ok(semantic);
+        }
+        self.fallback.diagnostics(path, limit, ctx).await
     }
 }
 
@@ -630,6 +644,43 @@ impl ManagedLspRuntime {
         }
         calls.truncate(limit);
         Ok(calls)
+    }
+
+    async fn diagnostics(
+        self: &Arc<Self>,
+        path: Option<&Path>,
+        limit: usize,
+    ) -> Result<Vec<CodeDiagnostic>> {
+        let mut diagnostics = if let Some(path) = path {
+            let Some(session) = self.ensure_session_for_path(path).await? else {
+                return Ok(Vec::new());
+            };
+            self.ensure_document_synced(path).await?;
+            session.diagnostics_for_path(path)
+        } else {
+            self.ready_sessions()
+                .into_iter()
+                .flat_map(|session| session.diagnostics_snapshot())
+                .collect::<Vec<_>>()
+        };
+        diagnostics.sort_by(|left, right| {
+            (
+                left.location.path.as_str(),
+                left.location.line,
+                left.location.column,
+                left.severity.as_str(),
+                left.message.as_str(),
+            )
+                .cmp(&(
+                    right.location.path.as_str(),
+                    right.location.line,
+                    right.location.column,
+                    right.severity.as_str(),
+                    right.message.as_str(),
+                ))
+        });
+        diagnostics.truncate(limit);
+        Ok(diagnostics)
     }
 
     async fn resolve_position_target(
@@ -1048,7 +1099,7 @@ struct LspSession {
     next_id: AtomicI64,
     pending: Arc<Mutex<BTreeMap<i64, oneshot::Sender<std::result::Result<Value, String>>>>>,
     documents: Mutex<BTreeMap<PathBuf, OpenDocument>>,
-    diagnostics: Mutex<BTreeMap<PathBuf, Vec<DiagnosticEntry>>>,
+    diagnostics: Mutex<BTreeMap<PathBuf, Vec<CodeDiagnostic>>>,
     watch_registrations: Mutex<Vec<WatchRegistration>>,
     alive: AtomicBool,
     ready: AtomicBool,
@@ -1056,6 +1107,24 @@ struct LspSession {
 }
 
 impl LspSession {
+    fn diagnostics_snapshot(&self) -> Vec<CodeDiagnostic> {
+        self.diagnostics
+            .lock()
+            .expect("LSP diagnostics map lock")
+            .values()
+            .flat_map(|entries| entries.iter().cloned())
+            .collect()
+    }
+
+    fn diagnostics_for_path(&self, path: &Path) -> Vec<CodeDiagnostic> {
+        self.diagnostics
+            .lock()
+            .expect("LSP diagnostics map lock")
+            .get(path)
+            .cloned()
+            .unwrap_or_default()
+    }
+
     async fn start(
         spec: &'static LanguageServerSpec,
         workspace_root: PathBuf,

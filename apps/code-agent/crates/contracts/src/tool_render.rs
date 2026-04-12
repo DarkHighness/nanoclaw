@@ -12,6 +12,7 @@ pub enum ToolDetailBlockKind {
 pub enum ToolRenderKind {
     ExecCommand,
     WriteStdin,
+    CodeDiagnostics,
     MonitorStart,
     MonitorList,
     MonitorStop,
@@ -30,6 +31,7 @@ impl ToolRenderKind {
         match tool_name {
             "exec_command" => Self::ExecCommand,
             "write_stdin" => Self::WriteStdin,
+            "code_diagnostics" => Self::CodeDiagnostics,
             "monitor_start" => Self::MonitorStart,
             "monitor_list" => Self::MonitorList,
             "monitor_stop" => Self::MonitorStop,
@@ -414,6 +416,20 @@ pub fn tool_arguments_preview_lines(tool_name: &str, arguments: &Value) -> Vec<S
                 PreviewCollapse::Head,
             ));
             return lines;
+        }
+        ToolRenderKind::CodeDiagnostics => {
+            if let Some(path) = arguments
+                .get("path")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                return vec![format!(
+                    "Inspect diagnostics for {}",
+                    truncate_inline(path, 80)
+                )];
+            }
+            return vec!["Inspect workspace diagnostics".to_string()];
         }
         ToolRenderKind::MonitorStart => {
             let command = arguments.get("cmd").and_then(Value::as_str);
@@ -1011,7 +1027,8 @@ pub fn tool_completion_state(tool_name: &str, structured: Option<&Value>) -> Too
         ToolRenderKind::ExecCommand | ToolRenderKind::WriteStdin | ToolRenderKind::MonitorStart => {
             ToolCompletionState::Neutral
         }
-        ToolRenderKind::MonitorList
+        ToolRenderKind::CodeDiagnostics
+        | ToolRenderKind::MonitorList
         | ToolRenderKind::MonitorStop
         | ToolRenderKind::UpdatePlan
         | ToolRenderKind::SendInput
@@ -1062,6 +1079,11 @@ pub fn tool_output_details(
     match ToolRenderKind::classify(tool_name) {
         ToolRenderKind::ExecCommand | ToolRenderKind::WriteStdin => {
             return process_output_details(tool_name, output_preview, structured);
+        }
+        ToolRenderKind::CodeDiagnostics => {
+            if let Some(details) = code_diagnostics_output_details(structured) {
+                return details;
+            }
         }
         ToolRenderKind::MonitorStart
         | ToolRenderKind::MonitorList
@@ -1360,6 +1382,72 @@ fn monitor_output_details(tool_name: &str, structured: Option<&Value>) -> Option
     }
 }
 
+fn code_diagnostics_output_details(structured: Option<&Value>) -> Option<Vec<ToolDetail>> {
+    let structured = structured?;
+    let result_count = structured
+        .get("result_count")
+        .and_then(Value::as_u64)
+        .or_else(|| {
+            structured
+                .get("diagnostics")
+                .and_then(Value::as_array)
+                .map(|diagnostics| diagnostics.len() as u64)
+        })
+        .unwrap_or(0);
+    let mut details = vec![ToolDetail::LabeledValue {
+        label: ToolDetailLabel::Result,
+        value: format!("{result_count} diagnostic(s)"),
+    }];
+
+    if let Some(path) = structured
+        .get("requested_path")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        details.push(ToolDetail::LabeledValue {
+            label: ToolDetailLabel::Context,
+            value: path.to_string(),
+        });
+    } else if structured
+        .get("scope")
+        .and_then(Value::as_str)
+        .is_some_and(|scope| scope == "workspace")
+    {
+        details.push(ToolDetail::LabeledValue {
+            label: ToolDetailLabel::Context,
+            value: "workspace".to_string(),
+        });
+    }
+
+    if let Some(backend) = structured
+        .get("backend")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        details.push(ToolDetail::LabeledValue {
+            label: ToolDetailLabel::State,
+            value: backend.to_string(),
+        });
+    }
+
+    let lines = structured
+        .get("diagnostics")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(render_code_diagnostic_line)
+        .collect::<Vec<_>>();
+    if !lines.is_empty() {
+        details.push(ToolDetail::LabeledBlock {
+            label: ToolDetailLabel::Output,
+            lines,
+        });
+    }
+    Some(details)
+}
+
 fn single_monitor_output_details(monitor: &Value) -> Vec<ToolDetail> {
     let mut details = Vec::new();
     if let Some(monitor_id) = monitor
@@ -1433,6 +1521,46 @@ fn render_monitor_summary_line(monitor: &Value) -> Option<String> {
         status,
         inline_preview_text(command, 72)
     ))
+}
+
+fn render_code_diagnostic_line(diagnostic: &Value) -> Option<String> {
+    let severity = diagnostic
+        .get("severity")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("unknown");
+    let message = diagnostic
+        .get("message")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("<empty>");
+    let location = diagnostic.get("location")?;
+    let path = location
+        .get("path")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("<unknown>");
+    let line = location
+        .get("line")
+        .and_then(Value::as_u64)
+        .unwrap_or_default();
+    let column = location
+        .get("column")
+        .and_then(Value::as_u64)
+        .unwrap_or_default();
+    let mut rendered = format!("[{severity}] {path}:{line}:{column} {message}");
+    if let Some(provider) = diagnostic
+        .get("provider")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        rendered.push_str(&format!(" · {provider}"));
+    }
+    Some(rendered)
 }
 
 fn collapse_command_output(
@@ -1862,6 +1990,49 @@ mod tests {
         assert_eq!(rendered[0], "interrupt+restart agent_123");
         assert!(rendered[1].contains("[local_image] path=/tmp/failure.png"));
         assert!(rendered[2].contains("focus the diff hunk"));
+    }
+
+    #[test]
+    fn code_diagnostics_arguments_render_scope_preview() {
+        assert_eq!(
+            tool_arguments_preview_lines("code_diagnostics", &json!({})),
+            vec!["Inspect workspace diagnostics"]
+        );
+        assert_eq!(
+            tool_arguments_preview_lines("code_diagnostics", &json!({"path": "src/lib.rs"})),
+            vec!["Inspect diagnostics for src/lib.rs"]
+        );
+    }
+
+    #[test]
+    fn code_diagnostics_output_renders_typed_summary() {
+        let rendered = tool_output_detail_lines(
+            "code_diagnostics",
+            "",
+            Some(&json!({
+                "scope": "path:src/lib.rs",
+                "requested_path": "src/lib.rs",
+                "backend": "managed_lsp_with_text_fallback_v1",
+                "result_count": 1,
+                "diagnostics": [
+                    {
+                        "location": {"path": "src/lib.rs", "line": 7, "column": 3},
+                        "severity": "warning",
+                        "message": "unused parameter",
+                        "source": "lsp",
+                        "provider": "rust-analyzer"
+                    }
+                ]
+            })),
+        );
+
+        assert_eq!(rendered[0], "  └ Result 1 diagnostic(s)");
+        assert!(rendered.iter().any(|line| line == "  └ Context src/lib.rs"));
+        assert!(
+            rendered
+                .iter()
+                .any(|line| line.contains("[warning] src/lib.rs:7:3 unused parameter"))
+        );
     }
 
     #[test]

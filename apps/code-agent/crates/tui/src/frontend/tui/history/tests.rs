@@ -1,6 +1,7 @@
 use super::{
-    format_agent_session_summary_collection, format_live_task_wait_outcome,
-    format_session_event_line, format_session_export_result, format_session_operation_outcome,
+    format_agent_session_summary_collection, format_code_diagnostics_inspector,
+    format_live_task_wait_outcome, format_session_event_line, format_session_export_result,
+    format_session_operation_outcome,
     summaries::{
         format_agent_session_summary_line, format_session_search_line, format_session_summary_line,
     },
@@ -11,6 +12,7 @@ use crate::ui::{
     PersistedSessionSearchMatch, PersistedSessionSummary, ResumeSupport, SessionExportArtifact,
     SessionExportKind, SessionOperationAction, SessionOperationOutcome, SessionStartupSnapshot,
 };
+use agent::tools::{CodeDiagnostic, CodeDiagnosticSeverity, CodeDiagnosticSource};
 use agent::types::{
     AgentSessionId, Message, SessionEventEnvelope, SessionEventKind, SessionId, TaskId, TaskOrigin,
     TaskStatus, ToolCall, ToolCallId, ToolOrigin, ToolResult,
@@ -31,6 +33,44 @@ fn export_result_includes_kind_path_and_item_count() {
     assert!(lines.iter().any(|line| line == "export: transcript text"));
     assert!(lines.iter().any(|line| line == "path: /workspace/out.txt"));
     assert!(lines.iter().any(|line| line == "items: 4"));
+}
+
+#[test]
+fn code_diagnostics_inspector_summarizes_counts_and_entries() {
+    let lines = format_code_diagnostics_inspector(&[
+        CodeDiagnostic {
+            location: agent::tools::CodeLocation {
+                path: "src/lib.rs".to_string(),
+                line: 7,
+                column: 3,
+            },
+            severity: CodeDiagnosticSeverity::Error,
+            message: "missing lifetime specifier".to_string(),
+            source: CodeDiagnosticSource::Lsp,
+            provider: Some("rust-analyzer".to_string()),
+        },
+        CodeDiagnostic {
+            location: agent::tools::CodeLocation {
+                path: "src/main.rs".to_string(),
+                line: 4,
+                column: 9,
+            },
+            severity: CodeDiagnosticSeverity::Warning,
+            message: "unused variable".to_string(),
+            source: CodeDiagnosticSource::Lsp,
+            provider: None,
+        },
+    ]);
+    let lines = inspector_line_texts(&lines);
+
+    assert!(lines.iter().any(|line| line == "diagnostics: 2"));
+    assert!(lines.iter().any(|line| line == "errors: 1"));
+    assert!(lines.iter().any(|line| line == "warnings: 1"));
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.contains("[error] src/lib.rs:7:3 missing lifetime specifier"))
+    );
 }
 
 #[test]

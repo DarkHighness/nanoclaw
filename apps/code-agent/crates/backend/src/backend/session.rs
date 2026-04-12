@@ -25,6 +25,7 @@ use crate::backend::{
 };
 mod catalog;
 mod controls;
+mod diagnostics;
 mod dialogs;
 mod history;
 mod host_surfaces;

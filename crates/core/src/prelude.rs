@@ -15,7 +15,8 @@ pub use tools::{
 };
 #[cfg(feature = "code-intel")]
 pub use tools::{
-    CodeCallHierarchyDirection, CodeCallHierarchyEntry, CodeDocumentSymbolsTool, CodeHover,
+    CodeCallHierarchyDirection, CodeCallHierarchyEntry, CodeDiagnostic, CodeDiagnosticSeverity,
+    CodeDiagnosticSource, CodeDiagnosticsTool, CodeDocumentSymbolsTool, CodeHover,
     CodeIntelBackend, CodeNavOperation, CodeNavTool, CodeReference, CodeSymbol, CodeSymbolKind,
     CodeSymbolSearchTool, ManagedCodeIntelBackend, ManagedCodeIntelOptions,
     WorkspaceTextCodeIntelBackend,

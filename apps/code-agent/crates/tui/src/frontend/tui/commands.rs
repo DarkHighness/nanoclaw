@@ -303,6 +303,12 @@ const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
     },
     SlashCommandSpec {
         section: "Catalog",
+        name: "code_diagnostics",
+        usage: "code_diagnostics [path]",
+        summary: "inspect live code diagnostics",
+    },
+    SlashCommandSpec {
+        section: "Catalog",
         name: "mcp",
         usage: "mcp",
         summary: "list MCP servers",
@@ -375,6 +381,9 @@ pub(crate) enum SlashCommand {
     Tools,
     Skills,
     Diagnostics,
+    CodeDiagnostics {
+        path: Option<String>,
+    },
     Mcp,
     Prompts,
     Resources,
@@ -506,6 +515,10 @@ enum SlashSubcommand {
     Tools,
     Skills,
     Diagnostics,
+    CodeDiagnostics {
+        #[arg(value_name = "PATH", trailing_var_arg = true)]
+        path: Vec<String>,
+    },
     Mcp,
     Prompts,
     Resources,
