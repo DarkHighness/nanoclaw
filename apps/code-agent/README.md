@@ -8,6 +8,7 @@ It intentionally keeps the host layer thin:
 - model-visible coding tools: `read`, `write`, `edit`, `patch_files`, `glob`, `grep`, `list`, `exec_command`, `write_stdin`
 - optional notebook tools (`notebook-tools` feature): `notebook_read`, `notebook_edit`
 - optional automation tools (`automation-tools` feature): `cron_create`, `cron_list`, `cron_delete`
+  - automations persist typed schedule + task-template state, restore on startup, and remain session-scoped instead of leaking across sessions
 - optional browser tools (`browser-tools` feature): `browser_open`,
   `browser_snapshot`, `browser_click`, `browser_type`, `browser_eval`,
   `browser_screenshot`, `browser_close`

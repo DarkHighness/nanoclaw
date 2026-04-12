@@ -6,17 +6,18 @@ use agent::tools::{
 };
 use agent::types::{
     AgentSessionId, AgentTaskSpec, CronId, CronScheduleRecord, CronStatus, CronSummaryRecord,
-    SessionEventEnvelope, SessionEventKind, SessionId, TaskId, TaskOrigin, TaskStatus,
-    new_opaque_id,
+    CronTaskTemplateRecord, SessionEventEnvelope, SessionEventKind, SessionId, TaskId, TaskOrigin,
+    TaskStatus, new_opaque_id,
 };
 use async_trait::async_trait;
 use code_agent_contracts::ui::SessionNotificationSource;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
-use store::SessionStore;
+use store::{SessionStore, SessionStoreError};
 use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 use tokio::time::{Duration, sleep};
+use tracing::warn;
 
 struct SessionCron {
     parent: SubagentParentContext,
@@ -32,7 +33,10 @@ impl SessionCron {
     }
 
     fn install_run_loop(&self, handle: JoinHandle<()>) {
-        *self.run_loop.lock().expect("cron run loop lock") = Some(handle);
+        let mut slot = self.run_loop.lock().expect("cron run loop lock");
+        if let Some(existing) = slot.replace(handle) {
+            existing.abort();
+        }
     }
 
     fn abort_run_loop(&self) {
@@ -48,7 +52,8 @@ pub struct SessionCronManager {
     store: Arc<dyn SessionStore>,
     events: SessionEventStream,
     task_manager: Arc<dyn TaskManager>,
-    crons: Arc<Mutex<BTreeMap<CronId, Arc<SessionCron>>>>,
+    crons: Arc<Mutex<BTreeMap<SessionId, BTreeMap<CronId, Arc<SessionCron>>>>>,
+    loaded_sessions: Arc<Mutex<BTreeSet<SessionId>>>,
 }
 
 impl SessionCronManager {
@@ -63,7 +68,24 @@ impl SessionCronManager {
             events,
             task_manager,
             crons: Arc::new(Mutex::new(BTreeMap::new())),
+            loaded_sessions: Arc::new(Mutex::new(BTreeSet::new())),
         }
+    }
+
+    pub async fn restore_all_sessions(&self) -> ToolResult<()> {
+        let sessions = self
+            .store
+            .list_sessions()
+            .await
+            .map_err(|error| ToolError::invalid_state(error.to_string()))?;
+        for session in sessions {
+            self.restore_session(&session.session_id).await?;
+            self.loaded_sessions
+                .lock()
+                .expect("cron loaded sessions lock")
+                .insert(session.session_id);
+        }
+        Ok(())
     }
 
     fn require_parent_session(
@@ -78,27 +100,119 @@ impl SessionCronManager {
         Ok((session_id, agent_session_id))
     }
 
-    fn insert_cron(&self, state: Arc<SessionCron>) {
-        self.crons
+    async fn ensure_session_loaded(&self, session_id: &SessionId) -> ToolResult<()> {
+        if self
+            .loaded_sessions
             .lock()
-            .expect("cron registry lock")
-            .insert(state.summary().cron_id.clone(), state);
+            .expect("cron loaded sessions lock")
+            .contains(session_id)
+        {
+            return Ok(());
+        }
+        self.restore_session(session_id).await?;
+        self.loaded_sessions
+            .lock()
+            .expect("cron loaded sessions lock")
+            .insert(session_id.clone());
+        Ok(())
     }
 
-    fn cron_state(&self, cron_id: &CronId) -> Option<Arc<SessionCron>> {
+    async fn restore_session(&self, session_id: &SessionId) -> ToolResult<()> {
+        let events = self
+            .store
+            .events(session_id)
+            .await
+            .or_else(|error| match error {
+                SessionStoreError::SessionNotFound(_) => Ok(Vec::new()),
+                other => Err(other),
+            })
+            .map_err(|error| ToolError::invalid_state(error.to_string()))?;
+
+        let mut restored = BTreeMap::<CronId, (CronSummaryRecord, CronTaskTemplateRecord)>::new();
+        for envelope in events {
+            match envelope.event {
+                SessionEventKind::CronCreated {
+                    summary,
+                    task_template,
+                } if &summary.session_id == session_id => {
+                    restored.insert(summary.cron_id.clone(), (summary, task_template));
+                }
+                SessionEventKind::CronUpdated { summary } if &summary.session_id == session_id => {
+                    if let Some((existing, _)) = restored.get_mut(&summary.cron_id) {
+                        *existing = summary;
+                    } else {
+                        warn!(
+                            cron_id = %summary.cron_id,
+                            session_id = %summary.session_id,
+                            "ignoring cron update without matching creation event during restore"
+                        );
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // Startup restore needs the full task template and parent execution context, not just the
+        // latest cron summary. Reconstruct the live registry from typed cron events instead of
+        // replaying string notifications or partial task records.
+        let session_crons = restored
+            .into_iter()
+            .map(|(cron_id, (summary, task_template))| {
+                let state = Arc::new(SessionCron {
+                    parent: parent_from_cron_records(&summary, &task_template),
+                    summary: Mutex::new(summary.clone()),
+                    task_template: task_template_from_record(&task_template),
+                    wake: Notify::new(),
+                    run_loop: Mutex::new(None),
+                });
+                (cron_id, state)
+            })
+            .collect::<BTreeMap<_, _>>();
+
+        let active_states = session_crons
+            .values()
+            .filter(|state| !state.summary().status.is_terminal())
+            .cloned()
+            .collect::<Vec<_>>();
         self.crons
             .lock()
             .expect("cron registry lock")
-            .get(cron_id)
+            .insert(session_id.clone(), session_crons);
+        // Install the registry entry before starting run loops so resumed schedules can resolve
+        // their own state immediately instead of racing against startup reconstruction.
+        for state in active_states {
+            self.spawn_run_loop(state);
+        }
+        Ok(())
+    }
+
+    fn insert_cron(&self, state: Arc<SessionCron>) {
+        let summary = state.summary();
+        self.crons
+            .lock()
+            .expect("cron registry lock")
+            .entry(summary.session_id.clone())
+            .or_default()
+            .insert(summary.cron_id, state);
+    }
+
+    fn cron_state(&self, session_id: &SessionId, cron_id: &CronId) -> Option<Arc<SessionCron>> {
+        self.crons
+            .lock()
+            .expect("cron registry lock")
+            .get(session_id)
+            .and_then(|session_crons| session_crons.get(cron_id))
             .cloned()
     }
 
-    fn list_cron_summaries(&self) -> Vec<CronSummaryRecord> {
+    fn list_cron_summaries(&self, session_id: &SessionId) -> Vec<CronSummaryRecord> {
         let mut crons = self
             .crons
             .lock()
             .expect("cron registry lock")
-            .values()
+            .get(session_id)
+            .into_iter()
+            .flat_map(|session_crons| session_crons.values())
             .map(|state| state.summary())
             .collect::<Vec<_>>();
         crons.sort_by(|left, right| {
@@ -108,6 +222,44 @@ impl SessionCronManager {
                 .then_with(|| left.cron_id.cmp(&right.cron_id))
         });
         crons
+    }
+
+    async fn append_cron_created(
+        &self,
+        parent: &SubagentParentContext,
+        summary: CronSummaryRecord,
+        task_template: CronTaskTemplateRecord,
+    ) -> ToolResult<()> {
+        self.store
+            .append(SessionEventEnvelope::new(
+                summary.session_id.clone(),
+                summary.agent_session_id.clone(),
+                parent.turn_id.clone(),
+                None,
+                SessionEventKind::CronCreated {
+                    summary,
+                    task_template,
+                },
+            ))
+            .await
+            .map_err(|error| ToolError::invalid_state(error.to_string()))
+    }
+
+    async fn append_cron_updated(
+        &self,
+        parent: &SubagentParentContext,
+        summary: CronSummaryRecord,
+    ) -> ToolResult<()> {
+        self.store
+            .append(SessionEventEnvelope::new(
+                summary.session_id.clone(),
+                summary.agent_session_id.clone(),
+                parent.turn_id.clone(),
+                None,
+                SessionEventKind::CronUpdated { summary },
+            ))
+            .await
+            .map_err(|error| ToolError::invalid_state(error.to_string()))
     }
 
     async fn append_notification(
@@ -138,7 +290,13 @@ impl SessionCronManager {
 
     async fn run_schedule(&self, cron_id: CronId) {
         loop {
-            let Some(state) = self.cron_state(&cron_id) else {
+            let Some(state) = self
+                .crons
+                .lock()
+                .expect("cron registry lock")
+                .values()
+                .find_map(|session_crons| session_crons.get(&cron_id).cloned())
+            else {
                 return;
             };
             let current = state.summary();
@@ -181,12 +339,25 @@ impl SessionCronManager {
                     current.cron_id, record.summary.task_id
                 );
                 let _ = self.append_notification(&state.parent, message).await;
-                let keep_running = {
+                let updated_summary = {
                     let mut summary = state.summary.lock().expect("cron summary lock");
                     update_summary_after_run(&mut summary, &record.summary.task_id);
-                    !summary.status.is_terminal()
+                    summary.clone()
                 };
-                keep_running
+                if let Err(error) = self
+                    .append_cron_updated(&state.parent, updated_summary.clone())
+                    .await
+                {
+                    warn!(
+                        cron_id = %updated_summary.cron_id,
+                        session_id = %updated_summary.session_id,
+                        error = %error,
+                        "failed to persist cron update after scheduled task run"
+                    );
+                    state.summary.lock().expect("cron summary lock").status = CronStatus::Failed;
+                    return false;
+                };
+                !updated_summary.status.is_terminal()
             }
             Err(error) => {
                 let _ = self
@@ -195,10 +366,34 @@ impl SessionCronManager {
                         format!("automation {} failed: {}", current.cron_id, error),
                     )
                     .await;
-                state.summary.lock().expect("cron summary lock").status = CronStatus::Failed;
+                let failed_summary = {
+                    let mut summary = state.summary.lock().expect("cron summary lock");
+                    summary.status = CronStatus::Failed;
+                    summary.clone()
+                };
+                if let Err(persist_error) = self
+                    .append_cron_updated(&state.parent, failed_summary.clone())
+                    .await
+                {
+                    warn!(
+                        cron_id = %failed_summary.cron_id,
+                        session_id = %failed_summary.session_id,
+                        error = %persist_error,
+                        "failed to persist cron failure state"
+                    );
+                }
                 false
             }
         }
+    }
+
+    fn spawn_run_loop(&self, state: Arc<SessionCron>) {
+        let manager = self.clone();
+        let cron_id = state.summary().cron_id.clone();
+        let handle = tokio::spawn(async move {
+            manager.run_schedule(cron_id).await;
+        });
+        state.install_run_loop(handle);
     }
 }
 
@@ -210,6 +405,7 @@ impl CronManager for SessionCronManager {
         request: CronCreateRequest,
     ) -> ToolResult<CronSummaryRecord> {
         let (session_id, agent_session_id) = Self::require_parent_session(&parent)?;
+        self.ensure_session_loaded(&session_id).await?;
         let created_at_unix_s = unix_timestamp_s();
         let summary = CronSummaryRecord {
             cron_id: CronId::from(format!("cron_{}", new_opaque_id())),
@@ -232,13 +428,14 @@ impl CronManager for SessionCronManager {
             wake: Notify::new(),
             run_loop: Mutex::new(None),
         });
+        self.append_cron_created(
+            &state.parent,
+            summary.clone(),
+            task_template_record_from_state(&state.parent, &state.task_template),
+        )
+        .await?;
         self.insert_cron(state.clone());
-        let manager = self.clone();
-        let cron_id = summary.cron_id.clone();
-        let handle = tokio::spawn(async move {
-            manager.run_schedule(cron_id).await;
-        });
-        state.install_run_loop(handle);
+        self.spawn_run_loop(state);
         Ok(summary)
     }
 
@@ -246,8 +443,9 @@ impl CronManager for SessionCronManager {
         &self,
         parent: SubagentParentContext,
     ) -> ToolResult<Vec<CronSummaryRecord>> {
-        let _ = Self::require_parent_session(&parent)?;
-        Ok(self.list_cron_summaries())
+        let (session_id, _) = Self::require_parent_session(&parent)?;
+        self.ensure_session_loaded(&session_id).await?;
+        Ok(self.list_cron_summaries(&session_id))
     }
 
     async fn delete_schedule(
@@ -255,9 +453,10 @@ impl CronManager for SessionCronManager {
         parent: SubagentParentContext,
         cron_id: &CronId,
     ) -> ToolResult<CronSummaryRecord> {
-        let _ = Self::require_parent_session(&parent)?;
+        let (session_id, _) = Self::require_parent_session(&parent)?;
+        self.ensure_session_loaded(&session_id).await?;
         let state = self
-            .cron_state(cron_id)
+            .cron_state(&session_id, cron_id)
             .ok_or_else(|| ToolError::invalid(format!("unknown automation {cron_id}")))?;
         let (summary, changed) = {
             let mut summary = state.summary.lock().expect("cron summary lock");
@@ -269,6 +468,8 @@ impl CronManager for SessionCronManager {
         };
         if changed {
             state.abort_run_loop();
+            self.append_cron_updated(&state.parent, summary.clone())
+                .await?;
             let _ = self
                 .append_notification(
                     &state.parent,
@@ -277,6 +478,51 @@ impl CronManager for SessionCronManager {
                 .await;
         }
         Ok(summary)
+    }
+}
+
+fn task_template_record_from_state(
+    parent: &SubagentParentContext,
+    template: &CronTaskTemplate,
+) -> CronTaskTemplateRecord {
+    CronTaskTemplateRecord {
+        role: template.role.clone(),
+        prompt: template.prompt.clone(),
+        steer: template.steer.clone(),
+        allowed_tools: template.allowed_tools.clone(),
+        requested_write_set: template.requested_write_set.clone(),
+        timeout_seconds: template.timeout_seconds,
+        summary: template.summary.clone(),
+        task_id_prefix: template.task_id_prefix.clone(),
+        active_worktree_id: parent.active_worktree_id.clone(),
+        worktree_root: parent.worktree_root.clone(),
+    }
+}
+
+fn task_template_from_record(record: &CronTaskTemplateRecord) -> CronTaskTemplate {
+    CronTaskTemplate {
+        role: record.role.clone(),
+        prompt: record.prompt.clone(),
+        steer: record.steer.clone(),
+        allowed_tools: record.allowed_tools.clone(),
+        requested_write_set: record.requested_write_set.clone(),
+        timeout_seconds: record.timeout_seconds,
+        summary: record.summary.clone(),
+        task_id_prefix: record.task_id_prefix.clone(),
+    }
+}
+
+fn parent_from_cron_records(
+    summary: &CronSummaryRecord,
+    task_template: &CronTaskTemplateRecord,
+) -> SubagentParentContext {
+    SubagentParentContext {
+        session_id: Some(summary.session_id.clone()),
+        agent_session_id: Some(summary.agent_session_id.clone()),
+        turn_id: None,
+        parent_agent_id: summary.parent_agent_id.clone(),
+        active_worktree_id: task_template.active_worktree_id.clone(),
+        worktree_root: task_template.worktree_root.clone(),
     }
 }
 
@@ -381,8 +627,10 @@ mod tests {
     use crate::backend::SessionEventStream;
     use crate::ui::SessionEvent;
     use agent::tools::CronScheduleInput;
+    use agent::types::WorktreeId;
     use agent::{TaskRecord, TaskSummaryRecord};
     use async_trait::async_trait;
+    use std::path::PathBuf;
     use std::sync::Mutex as StdMutex;
     use store::{InMemorySessionStore, SessionStore};
 
@@ -463,9 +711,27 @@ mod tests {
     }
 
     fn parent() -> SubagentParentContext {
+        parent_for_session("session_1")
+    }
+
+    fn parent_for_session(session_id: &str) -> SubagentParentContext {
         SubagentParentContext {
-            session_id: Some(SessionId::from("session_1")),
+            session_id: Some(SessionId::from(session_id)),
             agent_session_id: Some(AgentSessionId::from("agent_session_1")),
+            ..Default::default()
+        }
+    }
+
+    fn parent_with_worktree(
+        session_id: &str,
+        worktree_id: &str,
+        worktree_root: &str,
+    ) -> SubagentParentContext {
+        SubagentParentContext {
+            session_id: Some(SessionId::from(session_id)),
+            agent_session_id: Some(AgentSessionId::from("agent_session_1")),
+            active_worktree_id: Some(WorktreeId::from(worktree_id)),
+            worktree_root: Some(PathBuf::from(worktree_root)),
             ..Default::default()
         }
     }
@@ -514,6 +780,18 @@ mod tests {
         )));
 
         let persisted = store.events(&SessionId::from("session_1")).await.unwrap();
+        assert!(persisted.iter().any(|event| matches!(
+            &event.event,
+            SessionEventKind::CronCreated { summary: persisted_summary, .. }
+                if persisted_summary.cron_id == summary.cron_id
+        )));
+        assert!(persisted.iter().any(|event| matches!(
+            &event.event,
+            SessionEventKind::CronUpdated { summary: persisted_summary }
+                if persisted_summary.cron_id == summary.cron_id
+                    && persisted_summary.status == CronStatus::Completed
+                    && persisted_summary.latest_task_id.as_ref().is_some_and(|task_id| task_id.as_str() == "nightly_review_run_1")
+        )));
         assert!(persisted.iter().any(|event| matches!(
             &event.event,
             SessionEventKind::Notification { source, message }
@@ -578,6 +856,67 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn cron_manager_list_is_session_scoped() {
+        let store: Arc<dyn SessionStore> = Arc::new(InMemorySessionStore::new());
+        let events = SessionEventStream::default();
+        let task_manager = Arc::new(RecordingTaskManager::default());
+        let manager = SessionCronManager::new(store, events, task_manager);
+
+        let session_one = manager
+            .create_schedule(
+                parent_for_session("session_1"),
+                CronCreateRequest {
+                    schedule: CronScheduleInput::OnceAfter { delay_seconds: 300 },
+                    task_template: CronTaskTemplate {
+                        role: "reviewer".to_string(),
+                        prompt: "Review session one".to_string(),
+                        steer: None,
+                        allowed_tools: Vec::new(),
+                        requested_write_set: Vec::new(),
+                        timeout_seconds: None,
+                        summary: "Review session one".to_string(),
+                        task_id_prefix: Some("session_one".to_string()),
+                    },
+                },
+            )
+            .await
+            .unwrap();
+        let session_two = manager
+            .create_schedule(
+                parent_for_session("session_2"),
+                CronCreateRequest {
+                    schedule: CronScheduleInput::OnceAfter { delay_seconds: 300 },
+                    task_template: CronTaskTemplate {
+                        role: "reviewer".to_string(),
+                        prompt: "Review session two".to_string(),
+                        steer: None,
+                        allowed_tools: Vec::new(),
+                        requested_write_set: Vec::new(),
+                        timeout_seconds: None,
+                        summary: "Review session two".to_string(),
+                        task_id_prefix: Some("session_two".to_string()),
+                    },
+                },
+            )
+            .await
+            .unwrap();
+
+        let listed_one = manager
+            .list_schedules(parent_for_session("session_1"))
+            .await
+            .unwrap();
+        let listed_two = manager
+            .list_schedules(parent_for_session("session_2"))
+            .await
+            .unwrap();
+
+        assert_eq!(listed_one.len(), 1);
+        assert_eq!(listed_one[0].cron_id, session_one.cron_id);
+        assert_eq!(listed_two.len(), 1);
+        assert_eq!(listed_two[0].cron_id, session_two.cron_id);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn cron_manager_delete_cancels_future_runs_and_keeps_tombstone() {
         let store: Arc<dyn SessionStore> = Arc::new(InMemorySessionStore::new());
         let events = SessionEventStream::default();
@@ -631,8 +970,105 @@ mod tests {
         let persisted = store.events(&SessionId::from("session_1")).await.unwrap();
         assert!(persisted.iter().any(|event| matches!(
             &event.event,
+            SessionEventKind::CronUpdated { summary: persisted_summary }
+                if persisted_summary.cron_id == summary.cron_id
+                    && persisted_summary.status == CronStatus::Cancelled
+        )));
+        assert!(persisted.iter().any(|event| matches!(
+            &event.event,
             SessionEventKind::Notification { source, message }
                 if source == "automation" && message.contains("cancelled")
+        )));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn restore_all_sessions_resumes_persisted_automations_with_worktree_context() {
+        let store: Arc<dyn SessionStore> = Arc::new(InMemorySessionStore::new());
+        let session_id = SessionId::from("session_1");
+        let agent_session_id = AgentSessionId::from("agent_session_1");
+        let cron_id = CronId::from("cron_restore");
+        store
+            .append(SessionEventEnvelope::new(
+                session_id.clone(),
+                agent_session_id.clone(),
+                None,
+                None,
+                SessionEventKind::CronCreated {
+                    summary: CronSummaryRecord {
+                        cron_id: cron_id.clone(),
+                        session_id: session_id.clone(),
+                        agent_session_id: agent_session_id.clone(),
+                        parent_agent_id: None,
+                        latest_task_id: None,
+                        role: "reviewer".to_string(),
+                        prompt_summary: "Restore persisted automation".to_string(),
+                        status: CronStatus::Scheduled,
+                        schedule: CronScheduleRecord::Once { run_at_unix_s: 0 },
+                        created_at_unix_s: 1,
+                        last_run_at_unix_s: None,
+                        run_count: 0,
+                    },
+                    task_template: CronTaskTemplateRecord {
+                        role: "reviewer".to_string(),
+                        prompt: "Restore persisted automation".to_string(),
+                        steer: Some("focus on restored schedules".to_string()),
+                        allowed_tools: Vec::new(),
+                        requested_write_set: vec!["src/lib.rs".to_string()],
+                        timeout_seconds: Some(30),
+                        summary: "Restore persisted automation".to_string(),
+                        task_id_prefix: Some("restored".to_string()),
+                        active_worktree_id: Some(WorktreeId::from("worktree_restore")),
+                        worktree_root: Some(PathBuf::from("/tmp/worktree_restore")),
+                    },
+                },
+            ))
+            .await
+            .unwrap();
+
+        let events = SessionEventStream::default();
+        let task_manager = Arc::new(RecordingTaskManager::default());
+        let manager = SessionCronManager::new(store.clone(), events.clone(), task_manager.clone());
+        manager.restore_all_sessions().await.unwrap();
+
+        tokio::task::yield_now().await;
+        tokio::task::yield_now().await;
+
+        let created = task_manager.created.lock().unwrap().clone();
+        assert_eq!(created.len(), 1);
+        assert_eq!(created[0].summary.task_id.as_str(), "restored_run_1");
+        assert_eq!(
+            created[0].summary.worktree_id,
+            Some(WorktreeId::from("worktree_restore"))
+        );
+        assert_eq!(
+            created[0].summary.worktree_root,
+            Some(PathBuf::from("/tmp/worktree_restore"))
+        );
+
+        let listed = manager
+            .list_schedules(parent_with_worktree(
+                "session_1",
+                "worktree_restore",
+                "/tmp/worktree_restore",
+            ))
+            .await
+            .unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].cron_id, cron_id);
+        assert_eq!(listed[0].status, CronStatus::Completed);
+
+        let persisted = store.events(&session_id).await.unwrap();
+        assert!(persisted.iter().any(|event| matches!(
+            &event.event,
+            SessionEventKind::CronUpdated { summary: persisted_summary }
+                if persisted_summary.cron_id == CronId::from("cron_restore")
+                    && persisted_summary.status == CronStatus::Completed
+                    && persisted_summary.latest_task_id.as_ref().is_some_and(|task_id| task_id.as_str() == "restored_run_1")
+        )));
+        assert!(events.drain().iter().any(|event| matches!(
+            event,
+            SessionEvent::Notification { message, .. }
+                if message.contains("queued task restored_run_1")
         )));
     }
 }

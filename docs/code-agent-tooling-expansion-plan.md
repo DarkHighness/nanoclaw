@@ -13,7 +13,7 @@ Status: Active
 | Phase 3: Worktree Lifecycle | Complete | `worktree_enter`, `worktree_list`, and `worktree_exit` now exist with persisted worktree events, shared runtime context switching, child-agent dedicated worktree opt-in, and persisted task/worktree summaries that survive reload. |
 | Phase 4: Checkpoint And Restore | Deferred | Rollback remains transcript/history-centric, and a durable checkpoint design has not been locked yet. |
 | Phase 5: Diagnostics | Complete | `code_diagnostics` exists as a typed tool surface and no longer has a mirrored slash command. |
-| Phase 6: Cron / Automation | In Progress | `cron_create`, `cron_list`, and `cron_delete` now exist behind `automation-tools`; schedules are still session-local, and restart persistence remains outstanding. |
+| Phase 6: Cron / Automation | Complete | `cron_create`, `cron_list`, and `cron_delete` now persist typed schedule/template state, restore on startup, stay session-scoped, and resume future runs after process restart. |
 | Phase 7: Code Search | Complete | Canonical `code_search` now returns typed ranked matches with explicit scores; managed backends merge semantic workspace-symbol hits with lexical snippet fallback, while lexical-only hosts still expose deterministic index-backed ranking. |
 | Phase 8: Browser / Computer Use | Complete | Feature-gated `browser_open`, `browser_snapshot`, `browser_click`, `browser_type`, `browser_eval`, `browser_screenshot`, and `browser_close` now cover typed browser session creation, DOM inspection, click/type/eval interactions, screenshot capture, and explicit session teardown. |
 | Phase 9: Notebook Editing | Complete | Feature-gated `notebook_read` and `notebook_edit` now expose typed notebook inspection and mutation without falling back to raw `.ipynb` JSON tooling. |
@@ -491,13 +491,17 @@ without an always-open interactive session.
 - `cron_create`, `cron_list`, and `cron_delete` are implemented behind the
   `automation-tools` feature.
 - It supports one-shot delays and recurring `every_seconds` schedules.
-- Created automations currently live in the owning session process only.
 - Each run materializes a typed `automation_backed` task and publishes a typed
   automation notification into the session stream.
 - `cron_list` returns typed schedule summaries ordered by their next run.
 - `cron_delete` cancels future runs while keeping a typed cancelled tombstone
   for later inspection.
-- Durable restart recovery remains outstanding.
+- Created automations persist their full typed task template plus execution
+  context, including attached worktree ownership when present.
+- Startup now restores persisted schedules and resumes any non-terminal
+  automation without waiting for an operator-side `cron_list`.
+- `cron_list` and `cron_delete` are session-scoped and no longer leak
+  schedules across sessions.
 
 ### Write set
 

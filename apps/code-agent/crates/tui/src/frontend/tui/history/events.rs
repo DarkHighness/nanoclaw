@@ -543,6 +543,18 @@ pub(crate) fn format_session_event_line(event: &SessionEventEnvelope) -> Transcr
             ),
             worktree_summary_lines(summary),
         ),
+        SessionEventKind::CronCreated { summary, .. } => info_summary_entry(
+            format!("Created automation {}", summary.cron_id),
+            cron_summary_lines(summary),
+        ),
+        SessionEventKind::CronUpdated { summary } => info_summary_entry(
+            format!(
+                "{} automation {}",
+                cron_status_label(summary.status),
+                summary.cron_id
+            ),
+            cron_summary_lines(summary),
+        ),
         SessionEventKind::TaskCreated { task, .. } => info_summary_entry(
             format!("Spawned task {}", task.task_id),
             [
@@ -673,6 +685,50 @@ fn worktree_summary_lines(summary: &agent::types::WorktreeSummaryRecord) -> [Str
             .map(|label| format!("label {}", preview_text(label, 48)))
             .unwrap_or_default(),
     ]
+}
+
+fn cron_status_label(status: agent::types::CronStatus) -> &'static str {
+    match status {
+        agent::types::CronStatus::Scheduled => "Updated scheduled",
+        agent::types::CronStatus::Completed => "Completed",
+        agent::types::CronStatus::Cancelled => "Cancelled",
+        agent::types::CronStatus::Failed => "Failed",
+    }
+}
+
+fn cron_summary_lines(summary: &agent::types::CronSummaryRecord) -> [String; 4] {
+    [
+        format!("status {}", summary.status),
+        format!("role {}", summary.role),
+        format!(
+            "schedule {}",
+            preview_text(&render_cron_schedule_summary(&summary.schedule), 72)
+        ),
+        summary
+            .latest_task_id
+            .as_ref()
+            .map(|task_id| format!("latest task {}", task_id))
+            .unwrap_or_else(|| format!("summary {}", preview_text(&summary.prompt_summary, 72))),
+    ]
+}
+
+fn render_cron_schedule_summary(schedule: &agent::types::CronScheduleRecord) -> String {
+    match schedule {
+        agent::types::CronScheduleRecord::Once { run_at_unix_s } => {
+            format!("once at {run_at_unix_s}")
+        }
+        agent::types::CronScheduleRecord::Recurring {
+            interval_seconds,
+            next_run_unix_s,
+            max_runs,
+        } => {
+            let mut summary = format!("every {interval_seconds}s next {next_run_unix_s}");
+            if let Some(max_runs) = max_runs {
+                summary.push_str(&format!(" max {max_runs}"));
+            }
+            summary
+        }
+    }
 }
 
 fn browser_summary_lines(summary: &agent::types::BrowserSummaryRecord) -> [String; 4] {

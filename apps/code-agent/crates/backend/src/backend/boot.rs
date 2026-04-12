@@ -841,11 +841,15 @@ where
         events.clone(),
     ));
     #[cfg(feature = "automation-tools")]
-    let cron_manager: Arc<dyn agent::CronManager> = Arc::new(SessionCronManager::new(
-        store.clone(),
-        events.clone(),
-        task_manager.clone(),
-    ));
+    let cron_manager = SessionCronManager::new(store.clone(), events.clone(), task_manager.clone());
+    #[cfg(feature = "automation-tools")]
+    if let Err(error) = cron_manager.restore_all_sessions().await {
+        let warning = format!("failed to restore persisted automations: {error}");
+        warn!("{warning}");
+        startup_warnings.push(warning);
+    }
+    #[cfg(feature = "automation-tools")]
+    let cron_manager: Arc<dyn agent::CronManager> = Arc::new(cron_manager);
     let monitor_manager: Arc<dyn agent::tools::MonitorManager> =
         Arc::new(SessionMonitorManager::new(
             store.clone(),

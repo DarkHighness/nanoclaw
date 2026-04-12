@@ -431,6 +431,27 @@ pub struct CronSummaryRecord {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct CronTaskTemplateRecord {
+    pub role: String,
+    pub prompt: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub steer: Option<String>,
+    #[serde(default)]
+    pub allowed_tools: Vec<ToolName>,
+    #[serde(default)]
+    pub requested_write_set: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_seconds: Option<u64>,
+    pub summary: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_id_prefix: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_worktree_id: Option<WorktreeId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_root: Option<PathBuf>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct BrowserViewportRecord {
     pub width: u32,
     pub height: u32,
@@ -1090,6 +1111,13 @@ pub enum SessionEventKind {
     },
     WorktreeUpdated {
         summary: WorktreeSummaryRecord,
+    },
+    CronCreated {
+        summary: CronSummaryRecord,
+        task_template: CronTaskTemplateRecord,
+    },
+    CronUpdated {
+        summary: CronSummaryRecord,
     },
     MonitorEvent {
         event: MonitorEventRecord,

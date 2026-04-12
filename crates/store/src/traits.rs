@@ -710,6 +710,35 @@ pub(crate) fn searchable_session_event_strings(event: &SessionEventEnvelope) -> 
                 values.push(child_agent_id.to_string());
             }
         }
+        SessionEventKind::CronCreated {
+            summary,
+            task_template,
+        } => {
+            values.push(summary.cron_id.to_string());
+            values.push(summary.status.to_string());
+            values.push(summary.role.clone());
+            values.push(summary.prompt_summary.clone());
+            values.push(render_cron_schedule_summary(&summary.schedule));
+            values.push(task_template.prompt.clone());
+            values.extend(task_template.allowed_tools.iter().map(ToString::to_string));
+            values.extend(task_template.requested_write_set.clone());
+            if let Some(worktree_id) = task_template.active_worktree_id.as_ref() {
+                values.push(worktree_id.to_string());
+            }
+            if let Some(worktree_root) = task_template.worktree_root.as_ref() {
+                values.push(worktree_root.display().to_string());
+            }
+        }
+        SessionEventKind::CronUpdated { summary } => {
+            values.push(summary.cron_id.to_string());
+            values.push(summary.status.to_string());
+            values.push(summary.role.clone());
+            values.push(summary.prompt_summary.clone());
+            values.push(render_cron_schedule_summary(&summary.schedule));
+            if let Some(task_id) = summary.latest_task_id.as_ref() {
+                values.push(task_id.to_string());
+            }
+        }
         SessionEventKind::TaskCreated {
             task,
             parent_agent_id,
@@ -821,6 +850,23 @@ pub(crate) fn searchable_session_event_strings(event: &SessionEventEnvelope) -> 
     }
     values.retain(|value| !value.trim().is_empty());
     values
+}
+
+fn render_cron_schedule_summary(schedule: &types::CronScheduleRecord) -> String {
+    match schedule {
+        types::CronScheduleRecord::Once { run_at_unix_s } => format!("once at {run_at_unix_s}"),
+        types::CronScheduleRecord::Recurring {
+            interval_seconds,
+            next_run_unix_s,
+            max_runs,
+        } => {
+            let mut summary = format!("every {interval_seconds}s next {next_run_unix_s}");
+            if let Some(max_runs) = max_runs {
+                summary.push_str(&format!(" max {max_runs}"));
+            }
+            summary
+        }
+    }
 }
 
 #[must_use]
