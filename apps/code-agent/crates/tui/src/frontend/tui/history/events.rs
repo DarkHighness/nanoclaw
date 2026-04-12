@@ -1,5 +1,38 @@
 use super::*;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PersistedTranscriptPrefix {
+    User,
+    Assistant,
+    System,
+    Tool,
+    Error,
+}
+
+impl PersistedTranscriptPrefix {
+    fn marker(self) -> &'static str {
+        match self {
+            Self::User => "user> ",
+            Self::Assistant => "assistant> ",
+            Self::System => "system> ",
+            Self::Tool => "tool> ",
+            Self::Error => "error> ",
+        }
+    }
+
+    fn parse(raw: &str) -> Option<(Self, &str)> {
+        [
+            Self::User,
+            Self::Assistant,
+            Self::System,
+            Self::Tool,
+            Self::Error,
+        ]
+        .into_iter()
+        .find_map(|prefix| raw.strip_prefix(prefix.marker()).map(|body| (prefix, body)))
+    }
+}
+
 fn completed_tool_entry(
     tool_name: &str,
     structured: Option<&serde_json::Value>,
@@ -38,18 +71,20 @@ fn project_transcript_lines(transcript: &[Message]) -> Vec<TranscriptEntry> {
 }
 
 fn project_transcript_entry(raw: &str) -> TranscriptEntry {
-    if let Some(body) = raw.strip_prefix("user> ") {
-        TranscriptEntry::UserPrompt(body.to_string())
-    } else if let Some(body) = raw.strip_prefix("assistant> ") {
-        TranscriptEntry::AssistantMessage(body.to_string())
-    } else if let Some(body) = raw.strip_prefix("system> ") {
-        TranscriptEntry::AssistantMessage(body.to_string())
-    } else if let Some(body) = raw.strip_prefix("tool> ") {
-        TranscriptEntry::AssistantMessage(body.to_string())
-    } else if let Some(body) = raw.strip_prefix("error> ") {
-        error_summary_entry(body.to_string(), std::iter::empty::<String>())
-    } else {
-        TranscriptEntry::AssistantMessage(raw.to_string())
+    match PersistedTranscriptPrefix::parse(raw) {
+        Some((PersistedTranscriptPrefix::User, body)) => {
+            TranscriptEntry::UserPrompt(body.to_string())
+        }
+        Some((
+            PersistedTranscriptPrefix::Assistant
+            | PersistedTranscriptPrefix::System
+            | PersistedTranscriptPrefix::Tool,
+            body,
+        )) => TranscriptEntry::AssistantMessage(body.to_string()),
+        Some((PersistedTranscriptPrefix::Error, body)) => {
+            error_summary_entry(body.to_string(), std::iter::empty::<String>())
+        }
+        None => TranscriptEntry::AssistantMessage(raw.to_string()),
     }
 }
 

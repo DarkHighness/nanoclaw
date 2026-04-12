@@ -1,6 +1,66 @@
 use super::*;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TranscriptSerializedPrefix {
+    UserPrompt,
+    Bullet,
+    Success,
+    Error,
+    Warning,
+}
+
+impl TranscriptSerializedPrefix {
+    pub(crate) fn marker(self) -> &'static str {
+        match self {
+            Self::UserPrompt => "› ",
+            Self::Bullet => "• ",
+            Self::Success => "✔ ",
+            Self::Error => "✗ ",
+            Self::Warning => "⚠ ",
+        }
+    }
+
+    pub(crate) fn parse(line: &str) -> Option<(Self, &str)> {
+        [
+            Self::UserPrompt,
+            Self::Success,
+            Self::Error,
+            Self::Warning,
+            Self::Bullet,
+        ]
+        .into_iter()
+        .find_map(|prefix| {
+            line.strip_prefix(prefix.marker())
+                .map(|body| (prefix, body))
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TranscriptDetailPrefix {
+    Branch,
+    Continuation,
+}
+
+impl TranscriptDetailPrefix {
+    pub(crate) fn marker(self) -> &'static str {
+        match self {
+            Self::Branch => "  └ ",
+            Self::Continuation => "    ",
+        }
+    }
+
+    pub(crate) fn parse(line: &str) -> Option<(Self, &str)> {
+        [Self::Branch, Self::Continuation]
+            .into_iter()
+            .find_map(|prefix| {
+                line.strip_prefix(prefix.marker())
+                    .map(|body| (prefix, body))
+            })
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum TranscriptShellBlockKind {
     Stdout,
     Stderr,
@@ -35,16 +95,10 @@ pub(crate) enum TranscriptShellDetail {
 
 impl TranscriptShellDetail {
     pub(crate) fn from_prefixed(raw: &str) -> Option<Self> {
-        if let Some(detail) = raw.strip_prefix("  └ ") {
+        if let Some((prefix, detail)) = TranscriptDetailPrefix::parse(raw) {
             return Some(Self::Raw {
                 text: detail.to_string(),
-                continuation: false,
-            });
-        }
-        if let Some(detail) = raw.strip_prefix("    ") {
-            return Some(Self::Raw {
-                text: detail.to_string(),
-                continuation: true,
+                continuation: prefix == TranscriptDetailPrefix::Continuation,
             });
         }
         if raw.trim().is_empty() {
@@ -71,11 +125,12 @@ impl TranscriptShellDetail {
                 rendered
             }
             Self::Raw { text, continuation } => {
-                if *continuation {
-                    vec![format!("    {text}")]
+                let prefix = if *continuation {
+                    TranscriptDetailPrefix::Continuation
                 } else {
-                    vec![format!("  └ {text}")]
-                }
+                    TranscriptDetailPrefix::Branch
+                };
+                vec![format!("{}{text}", prefix.marker())]
             }
         }
     }
@@ -121,20 +176,31 @@ impl TranscriptShellEntry {
         let mut index = 0;
 
         while let Some(raw_line) = remaining.get(index).copied() {
-            let Some(detail) = raw_line.strip_prefix("  └ ") else {
+            let Some((prefix, detail)) = TranscriptDetailPrefix::parse(raw_line) else {
                 if let Some(detail_line) = TranscriptShellDetail::from_prefixed(raw_line) {
                     detail_lines.push(detail_line);
                 }
                 index += 1;
                 continue;
             };
+            if prefix != TranscriptDetailPrefix::Branch {
+                if let Some(detail_line) = TranscriptShellDetail::from_prefixed(raw_line) {
+                    detail_lines.push(detail_line);
+                }
+                index += 1;
+                continue;
+            }
 
             let mut block_lines = Vec::new();
             let mut next = index + 1;
             while let Some(continuation) = remaining.get(next).copied() {
-                let Some(continuation) = continuation.strip_prefix("    ") else {
+                let Some((prefix, continuation)) = TranscriptDetailPrefix::parse(continuation)
+                else {
                     break;
                 };
+                if prefix != TranscriptDetailPrefix::Continuation {
+                    break;
+                }
                 block_lines.push(continuation.to_string());
                 next += 1;
             }
@@ -242,11 +308,12 @@ fn serialize_detail_block(lines: &[String]) -> Vec<String> {
         .filter(|line| !line.trim().is_empty())
         .enumerate()
     {
-        if index == 0 {
-            rendered.push(format!("  └ {line}"));
+        let prefix = if index == 0 {
+            TranscriptDetailPrefix::Branch
         } else {
-            rendered.push(format!("    {line}"));
-        }
+            TranscriptDetailPrefix::Continuation
+        };
+        rendered.push(format!("{}{line}", prefix.marker()));
     }
     rendered
 }
@@ -868,15 +935,47 @@ impl TranscriptEntry {
 
     pub(crate) fn serialized(&self) -> String {
         match self {
-            Self::UserPrompt(text) => format!("› {text}"),
-            Self::AssistantMessage(text) => format!("• {text}"),
+            Self::UserPrompt(text) => {
+                format!(
+                    "{}{}",
+                    TranscriptSerializedPrefix::UserPrompt.marker(),
+                    text
+                )
+            }
+            Self::AssistantMessage(text) => {
+                format!("{}{}", TranscriptSerializedPrefix::Bullet.marker(), text)
+            }
             Self::Tool(entry) => format!("{} {}", entry.marker(), entry.serialized_body()),
-            Self::Plan(entry) => format!("• {}", entry.serialized_body()),
-            Self::Execution(entry) => format!("• {}", entry.serialized_body()),
-            Self::ShellSummary(summary) => format!("• {}", summary.serialized_body()),
-            Self::SuccessSummary(summary) => format!("✔ {}", summary.serialized_body()),
-            Self::ErrorSummary(summary) => format!("✗ {}", summary.serialized_body()),
-            Self::WarningSummary(summary) => format!("⚠ {}", summary.serialized_body()),
+            Self::Plan(entry) => format!(
+                "{}{}",
+                TranscriptSerializedPrefix::Bullet.marker(),
+                entry.serialized_body()
+            ),
+            Self::Execution(entry) => format!(
+                "{}{}",
+                TranscriptSerializedPrefix::Bullet.marker(),
+                entry.serialized_body()
+            ),
+            Self::ShellSummary(summary) => format!(
+                "{}{}",
+                TranscriptSerializedPrefix::Bullet.marker(),
+                summary.serialized_body()
+            ),
+            Self::SuccessSummary(summary) => format!(
+                "{}{}",
+                TranscriptSerializedPrefix::Success.marker(),
+                summary.serialized_body()
+            ),
+            Self::ErrorSummary(summary) => format!(
+                "{}{}",
+                TranscriptSerializedPrefix::Error.marker(),
+                summary.serialized_body()
+            ),
+            Self::WarningSummary(summary) => format!(
+                "{}{}",
+                TranscriptSerializedPrefix::Warning.marker(),
+                summary.serialized_body()
+            ),
         }
     }
 
@@ -981,23 +1080,29 @@ impl From<&str> for TranscriptEntry {
 
 impl From<String> for TranscriptEntry {
     fn from(value: String) -> Self {
-        if let Some(body) = value.strip_prefix("› ") {
-            return Self::UserPrompt(body.to_string());
-        }
-        if let Some(body) = value.strip_prefix("✔ ") {
-            return Self::SuccessSummary(TranscriptShellEntry::from_body(body));
-        }
-        if let Some(body) = value.strip_prefix("✗ ") {
-            return Self::ErrorSummary(TranscriptShellEntry::from_body(body));
-        }
-        if let Some(body) = value.strip_prefix("⚠ ") {
-            return Self::WarningSummary(TranscriptShellEntry::from_body(body));
-        }
-        if let Some(body) = value.strip_prefix("• ") {
-            if body.lines().any(|line| line.starts_with("  └ ")) {
-                return Self::ShellSummary(TranscriptShellEntry::from_body(body));
-            }
-            return Self::AssistantMessage(body.to_string());
+        if let Some((prefix, body)) = TranscriptSerializedPrefix::parse(&value) {
+            return match prefix {
+                TranscriptSerializedPrefix::UserPrompt => Self::UserPrompt(body.to_string()),
+                TranscriptSerializedPrefix::Success => {
+                    Self::SuccessSummary(TranscriptShellEntry::from_body(body))
+                }
+                TranscriptSerializedPrefix::Error => {
+                    Self::ErrorSummary(TranscriptShellEntry::from_body(body))
+                }
+                TranscriptSerializedPrefix::Warning => {
+                    Self::WarningSummary(TranscriptShellEntry::from_body(body))
+                }
+                TranscriptSerializedPrefix::Bullet => {
+                    if body.lines().any(|line| {
+                        TranscriptDetailPrefix::parse(line)
+                            .is_some_and(|(prefix, _)| prefix == TranscriptDetailPrefix::Branch)
+                    }) {
+                        Self::ShellSummary(TranscriptShellEntry::from_body(body))
+                    } else {
+                        Self::AssistantMessage(body.to_string())
+                    }
+                }
+            };
         }
         Self::AssistantMessage(value)
     }

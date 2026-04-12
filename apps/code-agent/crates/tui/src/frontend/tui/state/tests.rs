@@ -91,6 +91,14 @@ fn transcript_push_merges_finished_exploration_entries() {
 }
 
 #[test]
+fn transcript_entry_from_string_round_trips_prefixed_summary_blocks() {
+    let raw = "✔ Exported transcript\n  └ session session-1\n    wrote /tmp/out.txt".to_string();
+    let entry = TranscriptEntry::from(raw.clone());
+
+    assert_eq!(entry.serialized(), raw);
+}
+
+#[test]
 fn expired_toast_is_cleared_on_next_tick() {
     let mut state = TuiState::default();
     state.toast = Some(ToastState {

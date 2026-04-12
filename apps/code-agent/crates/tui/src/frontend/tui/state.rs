@@ -28,10 +28,10 @@ pub(crate) use picker::{
     ThinkingEffortPickerState, ToolReviewOverlayState,
 };
 pub(crate) use transcript::{
-    InspectorAction, InspectorEntry, InspectorKeyAction, TranscriptEntry, TranscriptExecutionEntry,
-    TranscriptPlanEntry, TranscriptShellBlockKind, TranscriptShellDetail, TranscriptShellEntry,
-    TranscriptShellStatus, TranscriptToolEntry, TranscriptToolHeadlineSubjectKind,
-    TranscriptToolStatus,
+    InspectorAction, InspectorEntry, InspectorKeyAction, TranscriptDetailPrefix, TranscriptEntry,
+    TranscriptExecutionEntry, TranscriptPlanEntry, TranscriptSerializedPrefix,
+    TranscriptShellBlockKind, TranscriptShellDetail, TranscriptShellEntry, TranscriptShellStatus,
+    TranscriptToolEntry, TranscriptToolHeadlineSubjectKind, TranscriptToolStatus,
 };
 
 #[derive(Clone, Debug, Default)]

@@ -1642,35 +1642,74 @@ fn shell_status_phrase(
         .map(|remainder| (phrase, remainder, accent))
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LegacyShellStatusPhrase {
+    AwaitingApproval,
+    Requested,
+    Queued,
+    Running,
+    Finished,
+    Approved,
+    Denied,
+}
+
+impl LegacyShellStatusPhrase {
+    fn label(self) -> &'static str {
+        match self {
+            Self::AwaitingApproval => "Awaiting approval",
+            Self::Requested => "Requested",
+            Self::Queued => "Queued",
+            Self::Running => "Running",
+            Self::Finished => "Finished",
+            Self::Approved => "Approved",
+            Self::Denied => "Denied",
+        }
+    }
+
+    fn prefix(self) -> &'static str {
+        match self {
+            Self::AwaitingApproval => "Awaiting approval for ",
+            Self::Requested => "Requested",
+            Self::Queued => "Queued",
+            Self::Running => "Running",
+            Self::Finished => "Finished",
+            Self::Approved => "Approved",
+            Self::Denied => "Denied",
+        }
+    }
+
+    fn accent(self) -> Color {
+        match self {
+            Self::AwaitingApproval | Self::Requested | Self::Queued => palette().warn,
+            Self::Running => palette().user,
+            Self::Finished | Self::Approved => palette().assistant,
+            Self::Denied => palette().error,
+        }
+    }
+
+    fn parse(line: &str) -> Option<(Self, &str)> {
+        [
+            Self::AwaitingApproval,
+            Self::Requested,
+            Self::Queued,
+            Self::Running,
+            Self::Finished,
+            Self::Approved,
+            Self::Denied,
+        ]
+        .into_iter()
+        .find_map(|phrase| {
+            line.strip_prefix(phrase.prefix())
+                .map(|remainder| (phrase, remainder))
+        })
+    }
+}
+
 fn legacy_shell_status_phrase(line: &str) -> Option<(&'static str, &str, Color)> {
     // Legacy transcript previews and raw summary bodies do not carry typed
     // status metadata. Keep a render-only fallback here instead of rebuilding
     // state from strings elsewhere in the TUI.
-    if line.starts_with("Awaiting approval for ") {
-        return Some((
-            "Awaiting approval",
-            &line["Awaiting approval".len()..],
-            palette().warn,
-        ));
-    }
-    if let Some(remainder) = line.strip_prefix("Requested") {
-        return Some(("Requested", remainder, palette().warn));
-    }
-    if let Some(remainder) = line.strip_prefix("Queued") {
-        return Some(("Queued", remainder, palette().warn));
-    }
-    if let Some(remainder) = line.strip_prefix("Running") {
-        return Some(("Running", remainder, palette().user));
-    }
-    if let Some(remainder) = line.strip_prefix("Finished") {
-        return Some(("Finished", remainder, palette().assistant));
-    }
-    if let Some(remainder) = line.strip_prefix("Approved") {
-        return Some(("Approved", remainder, palette().assistant));
-    }
-    if let Some(remainder) = line.strip_prefix("Denied") {
-        return Some(("Denied", remainder, palette().error));
-    }
-    None
+    LegacyShellStatusPhrase::parse(line)
+        .map(|(phrase, remainder)| (phrase.label(), remainder, phrase.accent()))
 }
 use crate::interaction::PendingControlKind;

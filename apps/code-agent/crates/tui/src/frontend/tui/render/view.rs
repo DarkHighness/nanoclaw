@@ -495,6 +495,8 @@ fn render_collection_transcript_entry(
     entry: &super::super::state::TranscriptEntry,
     accent: Color,
 ) -> Vec<Line<'static>> {
+    use super::super::state::{TranscriptDetailPrefix, TranscriptSerializedPrefix};
+
     let mut rendered = Vec::new();
     for (index, line) in super::transcript::format_transcript_cell(entry)
         .into_iter()
@@ -502,11 +504,8 @@ fn render_collection_transcript_entry(
     {
         if index == 0 {
             let text = super::transcript::line_to_plain_text(&line);
-            let body = text
-                .strip_prefix("• ")
-                .or_else(|| text.strip_prefix("✔ "))
-                .or_else(|| text.strip_prefix("✗ "))
-                .or_else(|| text.strip_prefix("⚠ "))
+            let body = TranscriptSerializedPrefix::parse(&text)
+                .map(|(_, body)| body)
                 .unwrap_or(text.as_str())
                 .to_string();
             rendered.push(Line::from(vec![
@@ -522,18 +521,20 @@ fn render_collection_transcript_entry(
             ]));
         } else {
             let text = super::transcript::line_to_plain_text(&line);
-            if let Some(detail) = text.strip_prefix("  └ ") {
-                rendered.push(Line::from(vec![
-                    Span::styled("  ", Style::default().fg(palette().subtle)),
-                    Span::styled(detail.to_string(), Style::default().fg(palette().muted)),
-                ]));
-            } else if let Some(detail) = text.strip_prefix("    ") {
-                rendered.push(Line::from(vec![
-                    Span::styled("  ", Style::default().fg(palette().subtle)),
-                    Span::styled(detail.to_string(), Style::default().fg(palette().subtle)),
-                ]));
-            } else {
-                rendered.push(line);
+            match TranscriptDetailPrefix::parse(&text) {
+                Some((TranscriptDetailPrefix::Branch, detail)) => {
+                    rendered.push(Line::from(vec![
+                        Span::styled("  ", Style::default().fg(palette().subtle)),
+                        Span::styled(detail.to_string(), Style::default().fg(palette().muted)),
+                    ]));
+                }
+                Some((TranscriptDetailPrefix::Continuation, detail)) => {
+                    rendered.push(Line::from(vec![
+                        Span::styled("  ", Style::default().fg(palette().subtle)),
+                        Span::styled(detail.to_string(), Style::default().fg(palette().subtle)),
+                    ]));
+                }
+                None => rendered.push(line),
             }
         }
     }
