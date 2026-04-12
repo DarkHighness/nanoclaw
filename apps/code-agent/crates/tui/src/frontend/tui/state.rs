@@ -44,6 +44,52 @@ pub(crate) struct GitSnapshot {
     pub(crate) untracked: usize,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GitPorcelainState {
+    Unmodified,
+    Changed,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum GitPorcelainEntry {
+    BranchHeader(String),
+    Tracked {
+        index: GitPorcelainState,
+        worktree: GitPorcelainState,
+    },
+    Untracked,
+    Ignored,
+}
+
+impl GitPorcelainEntry {
+    fn parse(line: &str) -> Option<Self> {
+        if let Some(branch) = line.strip_prefix("## ") {
+            return Some(Self::BranchHeader(branch.to_string()));
+        }
+        if let Some(status) = line.get(..2) {
+            return match status {
+                "??" => Some(Self::Untracked),
+                "!!" => Some(Self::Ignored),
+                _ => {
+                    let mut chars = status.chars();
+                    let index = parse_git_porcelain_state(chars.next()?)?;
+                    let worktree = parse_git_porcelain_state(chars.next()?)?;
+                    Some(Self::Tracked { index, worktree })
+                }
+            };
+        }
+        None
+    }
+}
+
+fn parse_git_porcelain_state(marker: char) -> Option<GitPorcelainState> {
+    match marker {
+        ' ' => Some(GitPorcelainState::Unmodified),
+        'M' | 'A' | 'D' | 'R' | 'C' | 'U' | 'T' => Some(GitPorcelainState::Changed),
+        _ => None,
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub(crate) struct SessionSummary {
     pub(crate) workspace_name: String,
@@ -521,26 +567,32 @@ pub(crate) fn git_snapshot(
         return GitSnapshot::default();
     }
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let mut lines = stdout.lines();
-    let branch = lines
-        .next()
-        .map(|line| line.trim_start_matches("## ").to_string())
-        .unwrap_or_else(|| "unknown".to_string());
     let repo_name = git_repo_name(workspace_root).unwrap_or_default();
+    let mut branch = "unknown".to_string();
     let mut staged = 0;
     let mut modified = 0;
     let mut untracked = 0;
-    for line in lines {
-        if line.starts_with("??") {
-            untracked += 1;
+    // `git status --short --branch` is a stable porcelain protocol. Parse it
+    // into typed entries here so UI counters do not depend on ad-hoc prefix
+    // slicing spread across the renderer.
+    for line in stdout.lines() {
+        let Some(entry) = GitPorcelainEntry::parse(line) else {
             continue;
-        }
-        let bytes = line.as_bytes();
-        if bytes.first().copied().unwrap_or(b' ') != b' ' {
-            staged += 1;
-        }
-        if bytes.get(1).copied().unwrap_or(b' ') != b' ' {
-            modified += 1;
+        };
+        match entry {
+            GitPorcelainEntry::BranchHeader(parsed_branch) => branch = parsed_branch,
+            GitPorcelainEntry::Tracked { index, worktree } => {
+                if index == GitPorcelainState::Changed {
+                    staged += 1;
+                }
+                if worktree == GitPorcelainState::Changed {
+                    modified += 1;
+                }
+            }
+            GitPorcelainEntry::Untracked => {
+                untracked += 1;
+            }
+            GitPorcelainEntry::Ignored => {}
         }
     }
     GitSnapshot {

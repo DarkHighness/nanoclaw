@@ -1,10 +1,10 @@
 use super::{
     ActiveToolEntry, ComposerDraftAttachmentKind, ComposerDraftAttachmentState, ComposerDraftState,
-    ComposerKillBufferState, ComposerRowAttachmentPreview, HistoryRollbackCandidate,
-    InspectorAction, InspectorEntry, MainPaneMode, SharedUiState, ToastState, ToastTone,
-    ToolSelectionTarget, TranscriptEntry, TranscriptToolEntry, TranscriptToolStatus, TuiState,
-    composer_draft_from_messages, composer_draft_from_parts, draft_preview_text, git_snapshot,
-    page_scroll_amount,
+    ComposerKillBufferState, ComposerRowAttachmentPreview, GitPorcelainEntry, GitPorcelainState,
+    HistoryRollbackCandidate, InspectorAction, InspectorEntry, MainPaneMode, SharedUiState,
+    ToastState, ToastTone, ToolSelectionTarget, TranscriptEntry, TranscriptToolEntry,
+    TranscriptToolStatus, TuiState, composer_draft_from_messages, composer_draft_from_parts,
+    draft_preview_text, git_snapshot, page_scroll_amount,
 };
 use crate::theme::ThemeSummary;
 use crate::tool_render::{
@@ -25,6 +25,38 @@ fn git_snapshot_skips_host_process_when_disabled() {
     assert!(!snapshot.available);
     assert!(snapshot.repo_name.is_empty());
     assert!(snapshot.branch.is_empty());
+}
+
+#[test]
+fn git_porcelain_parser_distinguishes_branch_tracked_and_untracked_entries() {
+    assert_eq!(
+        GitPorcelainEntry::parse("## main...origin/main"),
+        Some(GitPorcelainEntry::BranchHeader(
+            "main...origin/main".to_string()
+        ))
+    );
+    assert_eq!(
+        GitPorcelainEntry::parse("M  src/lib.rs"),
+        Some(GitPorcelainEntry::Tracked {
+            index: GitPorcelainState::Changed,
+            worktree: GitPorcelainState::Unmodified,
+        })
+    );
+    assert_eq!(
+        GitPorcelainEntry::parse(" M src/lib.rs"),
+        Some(GitPorcelainEntry::Tracked {
+            index: GitPorcelainState::Unmodified,
+            worktree: GitPorcelainState::Changed,
+        })
+    );
+    assert_eq!(
+        GitPorcelainEntry::parse("?? scratch.txt"),
+        Some(GitPorcelainEntry::Untracked)
+    );
+    assert_eq!(
+        GitPorcelainEntry::parse("!! target/"),
+        Some(GitPorcelainEntry::Ignored)
+    );
 }
 
 #[test]
