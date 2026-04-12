@@ -14,9 +14,9 @@ mod session_bridge;
 mod session_shell;
 mod slash_commands;
 mod state;
+mod task_state;
 mod terminal_shell;
 mod tool_review;
-mod tool_state;
 
 use crate::backend::{CodeAgentUiSession, preview_id};
 use crate::config::persist_tui_theme_selection;
@@ -64,7 +64,7 @@ use state::{
     ComposerSubmission, InspectorEntry, ToastTone, TranscriptEntry, TranscriptShellDetail,
     TuiState,
 };
-use tool_state::restore_tool_panels;
+use task_state::restore_tracked_tasks;
 
 use agent::RuntimeCommand;
 use agent::tools::{

@@ -11,7 +11,6 @@ pub enum ApprovalOrigin {
 pub enum ApprovalContentKind {
     Command,
     Stdin,
-    PlanUpdate,
     Arguments,
 }
 
@@ -20,7 +19,6 @@ impl ApprovalContentKind {
         match self {
             Self::Command => "command",
             Self::Stdin => "stdin",
-            Self::PlanUpdate => "plan",
             Self::Arguments => "arguments",
         }
     }

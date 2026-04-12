@@ -2,8 +2,9 @@ use crate::agent_mailbox::{AgentControlMessage, AgentMailboxReceiver, agent_mail
 use crate::{
     AgentRuntime, AgentRuntimeBuilder, AgentSessionManager, CompactionConfig,
     ConversationCompactor, HookRunner, LoopDetectionConfig, ModelBackend, Result, RuntimeError,
-    RuntimeSession, ToolApprovalHandler, ToolApprovalPolicy, WriteLeaseManager,
-    fork_runtime_session, load_runtime_session, seed_runtime_session_events,
+    RuntimeProgressEvent, RuntimeProgressSink, RuntimeSession, ToolApprovalHandler,
+    ToolApprovalPolicy, WriteLeaseManager, fork_runtime_session, load_runtime_session,
+    seed_runtime_session_events,
 };
 use async_trait::async_trait;
 use dashmap::DashMap;
@@ -17,9 +18,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use store::SessionStore;
 use tools::{
-    PlanState, SubagentExecutor, SubagentInputDelivery, SubagentLaunchSpec, SubagentParentContext,
-    ToolError, ToolExecutionContext, ToolRegistry, UpdatePlanTool,
-    resolve_tool_path_against_workspace_root,
+    SubagentExecutor, SubagentInputDelivery, SubagentLaunchSpec, SubagentParentContext, ToolError,
+    ToolExecutionContext, ToolRegistry, resolve_tool_path_against_workspace_root,
 };
 use types::{
     AgentArtifact, AgentEnvelope, AgentEnvelopeKind, AgentHandle, AgentId, AgentResultEnvelope,
@@ -68,6 +68,7 @@ pub struct RuntimeSubagentExecutor {
     hooks: Arc<RwLock<Vec<HookRegistration>>>,
     skill_catalog: SkillCatalog,
     profile_resolver: Arc<dyn SubagentProfileResolver>,
+    progress_sink: Option<Arc<dyn RuntimeProgressSink>>,
     session_manager: AgentSessionManager,
     write_lease_manager: Arc<WriteLeaseManager>,
     resumable_children: Arc<DashMap<AgentId, ResumableChildState>>,
@@ -137,6 +138,55 @@ where
         .await;
 }
 
+fn runtime_progress_event_from_parent_event(
+    event: SessionEventKind,
+) -> Option<RuntimeProgressEvent> {
+    match event {
+        SessionEventKind::TaskCreated {
+            task,
+            parent_agent_id,
+            status,
+            summary,
+        } => Some(RuntimeProgressEvent::TaskCreated {
+            task,
+            parent_agent_id,
+            status,
+            summary,
+        }),
+        SessionEventKind::TaskUpdated {
+            task_id,
+            status,
+            summary,
+        } => Some(RuntimeProgressEvent::TaskUpdated {
+            task_id,
+            status,
+            summary,
+        }),
+        SessionEventKind::TaskCompleted {
+            task_id,
+            agent_id,
+            status,
+        } => Some(RuntimeProgressEvent::TaskCompleted {
+            task_id,
+            agent_id,
+            status,
+        }),
+        SessionEventKind::SubagentStart { handle, task } => {
+            Some(RuntimeProgressEvent::SubagentStarted { handle, task })
+        }
+        SessionEventKind::SubagentStop {
+            handle,
+            result,
+            error,
+        } => Some(RuntimeProgressEvent::SubagentStopped {
+            handle,
+            result,
+            error,
+        }),
+        _ => None,
+    }
+}
+
 impl RuntimeSubagentExecutor {
     #[allow(clippy::too_many_arguments)]
     #[must_use]
@@ -151,6 +201,7 @@ impl RuntimeSubagentExecutor {
         hooks: Arc<RwLock<Vec<HookRegistration>>>,
         skill_catalog: SkillCatalog,
         profile_resolver: Arc<dyn SubagentProfileResolver>,
+        progress_sink: Option<Arc<dyn RuntimeProgressSink>>,
     ) -> Self {
         Self {
             hook_runner,
@@ -163,6 +214,7 @@ impl RuntimeSubagentExecutor {
             hooks,
             skill_catalog,
             profile_resolver,
+            progress_sink,
             session_manager: AgentSessionManager::new(),
             write_lease_manager: Arc::new(WriteLeaseManager::new()),
             resumable_children: Arc::new(DashMap::new()),
@@ -183,13 +235,7 @@ impl RuntimeSubagentExecutor {
                 .cloned()
                 .collect::<Vec<_>>()
         };
-        let mut filtered = self.tool_registry.filtered_by_names(&allowed_names);
-        if filtered.remove("update_plan") {
-            // `filtered_by_names` reuses the parent's tool Arcs. Coordination
-            // tools hold mutable host state, so child runtimes need a fresh
-            // plan instance instead of sharing the parent's plan/focus surface.
-            filtered.register(UpdatePlanTool::new(PlanState::default()));
-        }
+        let filtered = self.tool_registry.filtered_by_names(&allowed_names);
         let resolved_names = filtered.names();
         if !requested.is_empty() && resolved_names.is_empty() {
             return Err(RuntimeError::invalid_state(
@@ -279,7 +325,8 @@ impl RuntimeSubagentExecutor {
         self.store
             .append_batch(
                 events
-                    .into_iter()
+                    .iter()
+                    .cloned()
                     .map(|event| {
                         SessionEventEnvelope::new(
                             session_id.clone(),
@@ -292,7 +339,21 @@ impl RuntimeSubagentExecutor {
                     .collect(),
             )
             .await
-            .map_err(RuntimeError::from)
+            .map_err(RuntimeError::from)?;
+        self.publish_parent_progress(events)?;
+        Ok(())
+    }
+
+    fn publish_parent_progress(&self, events: Vec<SessionEventKind>) -> Result<()> {
+        let Some(progress_sink) = self.progress_sink.as_ref() else {
+            return Ok(());
+        };
+        for event in events {
+            if let Some(progress) = runtime_progress_event_from_parent_event(event) {
+                progress_sink.emit(progress)?;
+            }
+        }
+        Ok(())
     }
 
     async fn append_agent_envelope(

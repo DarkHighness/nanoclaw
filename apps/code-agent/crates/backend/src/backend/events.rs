@@ -3,7 +3,9 @@ use crate::ui::{
     SessionEvent, SessionNotificationSource, SessionToastVariant, SessionToolCall,
     SessionToolOrigin,
 };
-use agent::runtime::{Result as RuntimeResult, RuntimeObserver, RuntimeProgressEvent};
+use agent::runtime::{
+    Result as RuntimeResult, RuntimeObserver, RuntimeProgressEvent, RuntimeProgressSink,
+};
 use agent::types::{MessageId, ToolLifecycleEventKind};
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
@@ -34,6 +36,18 @@ impl SessionEventStream {
 pub struct SessionEventObserver {
     stream: SessionEventStream,
     captured: Vec<SessionEvent>,
+}
+
+#[derive(Clone)]
+pub struct SessionEventPublisher {
+    stream: SessionEventStream,
+}
+
+impl SessionEventPublisher {
+    #[must_use]
+    pub fn new(stream: SessionEventStream) -> Self {
+        Self { stream }
+    }
 }
 
 impl SessionEventObserver {
@@ -77,111 +91,161 @@ impl SessionEventObserver {
 
 impl RuntimeObserver for SessionEventObserver {
     fn on_event(&mut self, event: RuntimeProgressEvent) -> RuntimeResult<()> {
-        let session_event = match event {
-            RuntimeProgressEvent::SteerApplied { message, reason } => {
-                SessionEvent::SteerApplied { message, reason }
-            }
-            RuntimeProgressEvent::UserPromptAdded { prompt } => {
-                SessionEvent::UserPromptAdded { prompt }
-            }
-            RuntimeProgressEvent::AssistantTextDelta { delta } => {
-                SessionEvent::AssistantTextDelta { delta }
-            }
-            RuntimeProgressEvent::CompactionCompleted {
-                reason,
-                source_message_count,
-                retained_message_count,
-                summary,
-                compacted_through_message_id,
-                summary_message_id,
-            } => SessionEvent::CompactionCompleted {
-                reason,
-                source_message_count,
-                retained_message_count,
-                summary,
-                compacted_through_message_id,
-                summary_message_id,
-            },
-            RuntimeProgressEvent::ModelRequestStarted { iteration, .. } => {
-                SessionEvent::ModelRequestStarted { iteration }
-            }
-            RuntimeProgressEvent::TokenUsageUpdated { phase, ledger } => {
-                SessionEvent::TokenUsageUpdated { phase, ledger }
-            }
-            RuntimeProgressEvent::Notification { source, message } => SessionEvent::Notification {
-                source: SessionNotificationSource::from_runtime(source),
-                message,
-            },
-            RuntimeProgressEvent::TuiToastShow { variant, message } => SessionEvent::TuiToastShow {
-                variant: session_toast_variant(&variant),
-                message,
-            },
-            RuntimeProgressEvent::TuiPromptAppend {
-                text,
-                only_when_empty,
-            } => SessionEvent::TuiPromptAppend {
-                text,
-                only_when_empty,
-            },
-            RuntimeProgressEvent::ModelResponseCompleted {
-                assistant_text,
-                tool_calls,
-            } => SessionEvent::ModelResponseCompleted {
-                assistant_text,
-                tool_call_count: tool_calls.len(),
-            },
-            RuntimeProgressEvent::ToolCallRequested { call } => SessionEvent::ToolCallRequested {
-                call: session_tool_call(&call),
-            },
-            RuntimeProgressEvent::ToolApprovalRequested { call, reasons } => {
-                SessionEvent::ToolApprovalRequested {
-                    call: session_tool_call(&call),
-                    reasons,
-                }
-            }
-            RuntimeProgressEvent::ToolApprovalResolved {
-                call,
-                approved,
-                reason,
-            } => SessionEvent::ToolApprovalResolved {
-                call: session_tool_call(&call),
-                approved,
-                reason,
-            },
-            RuntimeProgressEvent::ToolLifecycle { event } => match event.event {
-                ToolLifecycleEventKind::Started { call } => SessionEvent::ToolLifecycleStarted {
-                    call: session_tool_call(&call),
-                },
-                ToolLifecycleEventKind::Completed { call, output } => {
-                    SessionEvent::ToolLifecycleCompleted {
-                        call: session_tool_call(&call),
-                        output_preview: output.text_content(),
-                        structured_output_preview: output
-                            .structured_content
-                            .as_ref()
-                            .map(ToString::to_string),
-                    }
-                }
-                ToolLifecycleEventKind::Failed { call, error } => {
-                    SessionEvent::ToolLifecycleFailed {
-                        call: session_tool_call(&call),
-                        error,
-                    }
-                }
-                ToolLifecycleEventKind::Cancelled { call, reason } => {
-                    SessionEvent::ToolLifecycleCancelled {
-                        call: session_tool_call(&call),
-                        reason,
-                    }
-                }
-            },
-            RuntimeProgressEvent::TurnCompleted { assistant_text, .. } => {
-                SessionEvent::TurnCompleted { assistant_text }
-            }
-        };
+        let session_event = project_session_event(event);
         self.stream.push(session_event.clone());
         self.captured.push(session_event);
         Ok(())
+    }
+}
+
+impl RuntimeProgressSink for SessionEventPublisher {
+    fn emit(&self, event: RuntimeProgressEvent) -> RuntimeResult<()> {
+        self.stream.push(project_session_event(event));
+        Ok(())
+    }
+}
+
+fn project_session_event(event: RuntimeProgressEvent) -> SessionEvent {
+    match event {
+        RuntimeProgressEvent::SteerApplied { message, reason } => {
+            SessionEvent::SteerApplied { message, reason }
+        }
+        RuntimeProgressEvent::UserPromptAdded { prompt } => {
+            SessionEvent::UserPromptAdded { prompt }
+        }
+        RuntimeProgressEvent::AssistantTextDelta { delta } => {
+            SessionEvent::AssistantTextDelta { delta }
+        }
+        RuntimeProgressEvent::CompactionCompleted {
+            reason,
+            source_message_count,
+            retained_message_count,
+            summary,
+            compacted_through_message_id,
+            summary_message_id,
+        } => SessionEvent::CompactionCompleted {
+            reason,
+            source_message_count,
+            retained_message_count,
+            summary,
+            compacted_through_message_id,
+            summary_message_id,
+        },
+        RuntimeProgressEvent::ModelRequestStarted { iteration, .. } => {
+            SessionEvent::ModelRequestStarted { iteration }
+        }
+        RuntimeProgressEvent::TokenUsageUpdated { phase, ledger } => {
+            SessionEvent::TokenUsageUpdated { phase, ledger }
+        }
+        RuntimeProgressEvent::Notification { source, message } => SessionEvent::Notification {
+            source: SessionNotificationSource::from_runtime(source),
+            message,
+        },
+        RuntimeProgressEvent::TuiToastShow { variant, message } => SessionEvent::TuiToastShow {
+            variant: session_toast_variant(&variant),
+            message,
+        },
+        RuntimeProgressEvent::TuiPromptAppend {
+            text,
+            only_when_empty,
+        } => SessionEvent::TuiPromptAppend {
+            text,
+            only_when_empty,
+        },
+        RuntimeProgressEvent::ModelResponseCompleted {
+            assistant_text,
+            tool_calls,
+        } => SessionEvent::ModelResponseCompleted {
+            assistant_text,
+            tool_call_count: tool_calls.len(),
+        },
+        RuntimeProgressEvent::ToolCallRequested { call } => SessionEvent::ToolCallRequested {
+            call: session_tool_call(&call),
+        },
+        RuntimeProgressEvent::ToolApprovalRequested { call, reasons } => {
+            SessionEvent::ToolApprovalRequested {
+                call: session_tool_call(&call),
+                reasons,
+            }
+        }
+        RuntimeProgressEvent::ToolApprovalResolved {
+            call,
+            approved,
+            reason,
+        } => SessionEvent::ToolApprovalResolved {
+            call: session_tool_call(&call),
+            approved,
+            reason,
+        },
+        RuntimeProgressEvent::ToolLifecycle { event } => match event.event {
+            ToolLifecycleEventKind::Started { call } => SessionEvent::ToolLifecycleStarted {
+                call: session_tool_call(&call),
+            },
+            ToolLifecycleEventKind::Completed { call, output } => {
+                SessionEvent::ToolLifecycleCompleted {
+                    call: session_tool_call(&call),
+                    output_preview: output.text_content(),
+                    structured_output_preview: output
+                        .structured_content
+                        .as_ref()
+                        .map(ToString::to_string),
+                }
+            }
+            ToolLifecycleEventKind::Failed { call, error } => SessionEvent::ToolLifecycleFailed {
+                call: session_tool_call(&call),
+                error,
+            },
+            ToolLifecycleEventKind::Cancelled { call, reason } => {
+                SessionEvent::ToolLifecycleCancelled {
+                    call: session_tool_call(&call),
+                    reason,
+                }
+            }
+        },
+        RuntimeProgressEvent::TaskCreated {
+            task,
+            parent_agent_id,
+            status,
+            summary,
+        } => SessionEvent::TaskCreated {
+            task,
+            parent_agent_id,
+            status,
+            summary,
+        },
+        RuntimeProgressEvent::TaskUpdated {
+            task_id,
+            status,
+            summary,
+        } => SessionEvent::TaskUpdated {
+            task_id,
+            status,
+            summary,
+        },
+        RuntimeProgressEvent::TaskCompleted {
+            task_id,
+            agent_id,
+            status,
+        } => SessionEvent::TaskCompleted {
+            task_id,
+            agent_id,
+            status,
+        },
+        RuntimeProgressEvent::SubagentStarted { handle, task } => {
+            SessionEvent::SubagentStarted { handle, task }
+        }
+        RuntimeProgressEvent::SubagentStopped {
+            handle,
+            result,
+            error,
+        } => SessionEvent::SubagentStopped {
+            handle,
+            result,
+            error,
+        },
+        RuntimeProgressEvent::TurnCompleted { assistant_text, .. } => {
+            SessionEvent::TurnCompleted { assistant_text }
+        }
     }
 }
 

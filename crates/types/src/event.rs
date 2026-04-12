@@ -1021,7 +1021,8 @@ mod tests {
     use super::{
         AgentEnvelope, AgentEnvelopeKind, AgentResultEnvelope, AgentStatus, AgentTaskSpec,
         SessionEventEnvelope, SessionEventKind, SubmittedPromptAttachment,
-        SubmittedPromptAttachmentKind, SubmittedPromptSnapshot, ToolLifecycleEventKind,
+        SubmittedPromptAttachmentKind, SubmittedPromptSnapshot, TaskOrigin, TaskStatus,
+        ToolLifecycleEventKind,
     };
     use crate::{AgentId, ToolCall, ToolCallId, ToolName, ToolOrigin, ToolResult};
 
@@ -1064,9 +1065,10 @@ mod tests {
     #[test]
     fn agent_envelope_retains_parent_relation_and_result_payload() {
         let task = AgentTaskSpec {
-            task_id: "task_1".to_string(),
+            task_id: "task_1".into(),
             role: "reviewer".to_string(),
             prompt: "inspect".to_string(),
+            origin: TaskOrigin::ChildAgentBacked,
             steer: None,
             allowed_tools: vec!["read".into()],
             requested_write_set: vec!["src/lib.rs".to_string()],
@@ -1081,7 +1083,7 @@ mod tests {
             AgentEnvelopeKind::Result {
                 result: AgentResultEnvelope {
                     agent_id: AgentId::from("agent_child"),
-                    task_id: "task_1".to_string(),
+                    task_id: "task_1".into(),
                     status: AgentStatus::Completed,
                     summary: "done".to_string(),
                     text: "ok".to_string(),
@@ -1113,16 +1115,16 @@ mod tests {
             None,
             None,
             SessionEventKind::TaskCompleted {
-                task_id: "task_1".to_string(),
+                task_id: "task_1".into(),
                 agent_id: "agent_1".into(),
-                status: AgentStatus::Cancelled,
+                status: TaskStatus::Cancelled,
             },
         );
 
         assert!(matches!(
             event.event,
             SessionEventKind::TaskCompleted {
-                status: AgentStatus::Cancelled,
+                status: TaskStatus::Cancelled,
                 ..
             }
         ));

@@ -1,5 +1,6 @@
 use agent::types::{
-    MessageId, MonitorEventRecord, MonitorSummaryRecord, TokenLedgerSnapshot, TokenUsagePhase,
+    AgentHandle, AgentId, AgentResultEnvelope, AgentTaskSpec, MessageId, MonitorEventRecord,
+    MonitorSummaryRecord, TaskId, TaskStatus, TokenLedgerSnapshot, TokenUsagePhase,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -141,6 +142,31 @@ pub enum SessionEvent {
     },
     MonitorUpdated {
         summary: MonitorSummaryRecord,
+    },
+    TaskCreated {
+        task: AgentTaskSpec,
+        parent_agent_id: Option<AgentId>,
+        status: TaskStatus,
+        summary: Option<String>,
+    },
+    TaskUpdated {
+        task_id: TaskId,
+        status: TaskStatus,
+        summary: Option<String>,
+    },
+    TaskCompleted {
+        task_id: TaskId,
+        agent_id: AgentId,
+        status: TaskStatus,
+    },
+    SubagentStarted {
+        handle: AgentHandle,
+        task: AgentTaskSpec,
+    },
+    SubagentStopped {
+        handle: AgentHandle,
+        result: Option<AgentResultEnvelope>,
+        error: Option<String>,
     },
     TurnCompleted {
         assistant_text: String,

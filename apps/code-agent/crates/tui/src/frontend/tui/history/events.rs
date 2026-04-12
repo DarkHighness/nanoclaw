@@ -38,8 +38,8 @@ fn completed_tool_entry(
     tool_name: &str,
     structured: Option<&serde_json::Value>,
 ) -> Option<TranscriptEntry> {
-    let structured = structured.and_then(|value| serde_json::to_string(value).ok());
-    plan_update_entry_from_tool_output(tool_name, structured.as_deref())
+    let _ = (tool_name, structured);
+    None
 }
 
 pub(crate) fn format_session_transcript_lines(session: &LoadedSession) -> Vec<TranscriptEntry> {

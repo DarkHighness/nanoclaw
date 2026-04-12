@@ -70,9 +70,9 @@ Completed so far:
   local tools
 - connected MCP servers now project their resources through dedicated
   `list_mcp_resources` and `read_mcp_resource` dynamic tools
-- the old `todo_*` workflow state has been collapsed into one `update_plan`
-  tool that keeps Codex-style `step` and `status` payloads while preserving the
-  existing shared runtime plan state
+- the old transcript-only workflow state has been replaced by typed `task_*`
+  coordination plus live task/subagent events that the TUI and history layers
+  can restore without parsing tool prose
 - `ToolResult` now includes first-class `attachments` and `continuation`
 - representative continuation emitters are live for:
   - `read` via file-window cursors
@@ -175,7 +175,8 @@ Codex currently exposes the following major tool families:
   `exec_command`, `write_stdin`, grammar-capable patch application, shell
   variants, `js_repl`
 - planning and interaction:
-  `update_plan`, `request_user_input`, `request_permissions`
+  `task_create`, `task_get`, `task_list`, `task_update`, `task_stop`,
+  `request_user_input`, `request_permissions`
 - discovery and resources:
   `tool_discover`, `list_mcp_resources`,
   `list_mcp_resource_templates`, `read_mcp_resource`
@@ -251,7 +252,8 @@ formatting forks. Session search also now splits content-oriented matching from
 operator-visible previews, so structured message parts still render with their
 typed markers even when the index uses `text_content()` for matching.
 - state:
-  `update_plan`, `request_user_input`, `request_permissions`
+  `task_create`, `task_get`, `task_list`, `task_update`, `task_stop`,
+  `request_user_input`, `request_permissions`
 - discovery:
   `tool_discover`
 
@@ -517,19 +519,19 @@ approved execution session, not like a fresh risky action.
 
 ### Planning And Interaction
 
-Add first-class planning and interactive clarification tools:
+Add first-class interactive clarification and typed coordination tools:
 
-- `update_plan` over the existing shared plan state, not a second workflow
-  storage path
+- `task_create`, `task_get`, `task_list`, `task_update`, `task_stop` over a
+  typed task store and live task/subagent event stream
 - `request_user_input` over a host-owned prompt coordinator rather than a
   runtime control-plane escape hatch
 
 These should not be treated as one-off application commands. They are part of
 the runtime contract for industrial code agents.
 
-That also means `update_plan` and similar coordination surfaces should stay out
-of the normal tool-approval path. They mutate host-owned workflow state, not the
-workspace or an external system.
+Typed `task_*` coordination and similar host-owned workflow tools should stay
+out of the normal tool-approval path. They mutate host-owned workflow state,
+not the workspace or an external system.
 
 ### Agent Tools
 
@@ -583,9 +585,8 @@ new bundle of tools:
 Once the shared protocol exists, add the missing industrial extension surfaces:
 
 - completed:
-  - replace the old `todo_read` and `todo_write` pair with a single
-    `update_plan` surface that projects Codex-style `step` and `status`
-    payloads
+  - replace the old `todo_read` and `todo_write` pair with typed `task_*`
+    coordination and live task/subagent events
   - add `request_user_input` as a host-mediated workflow tool over a shared
     backend prompt/response coordinator, with multi-question batches,
     structured answer vectors, and host-supplied `Other` note capture

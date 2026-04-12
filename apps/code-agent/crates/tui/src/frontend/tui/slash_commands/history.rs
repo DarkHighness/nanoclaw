@@ -54,7 +54,7 @@ impl CodeAgentTui {
                     .await?;
                 let inspector = format_agent_session_inspector(&loaded);
                 let transcript = format_visible_transcript_lines(&loaded.transcript);
-                let restored = restore_tool_panels(&loaded.events);
+                let tracked_tasks = restore_tracked_tasks(&loaded.events);
                 let agent_session_ref_preview = preview_id(&loaded.summary.agent_session_ref);
                 let transcript_count = loaded.summary.transcript_message_count;
                 self.ui_state.mutate(move |state| {
@@ -65,8 +65,7 @@ impl CodeAgentTui {
                     state.inspector = inspector;
                     state.transcript = transcript;
                     state.transcript_scroll = 0;
-                    state.plan_items = restored.plan_items;
-                    state.focus = restored.focus;
+                    state.replace_tracked_tasks(tracked_tasks);
                     state.status = format!(
                         "Loaded agent session {} with {} transcript messages",
                         agent_session_ref_preview, transcript_count
@@ -202,7 +201,7 @@ impl CodeAgentTui {
                     .await?;
                 let inspector = format_session_inspector(&loaded);
                 let transcript = format_session_transcript_lines(&loaded);
-                let restored = restore_tool_panels(&loaded.events);
+                let tracked_tasks = restore_tracked_tasks(&loaded.events);
                 let session_ref_preview = preview_id(loaded.summary.session_id.as_str());
                 let transcript_count = loaded.summary.transcript_message_count;
                 self.ui_state.mutate(move |state| {
@@ -213,8 +212,7 @@ impl CodeAgentTui {
                     state.inspector = inspector;
                     state.transcript = transcript;
                     state.transcript_scroll = 0;
-                    state.plan_items = restored.plan_items;
-                    state.focus = restored.focus;
+                    state.replace_tracked_tasks(tracked_tasks);
                     state.status = format!(
                         "Loaded session {} with {} transcript messages",
                         session_ref_preview, transcript_count
@@ -249,8 +247,17 @@ impl CodeAgentTui {
                     state.inspector = inspector;
                     state.transcript = transcript;
                     state.transcript_scroll = 0;
-                    state.plan_items.clear();
-                    state.focus = None;
+                    state.replace_tracked_tasks(vec![
+                        crate::frontend::tui::state::TrackedTaskSummary {
+                            task_id: loaded.summary.task_id.clone(),
+                            role: loaded.summary.role.clone(),
+                            origin: loaded.summary.origin,
+                            status: loaded.summary.status,
+                            summary: Some(loaded.summary.summary.clone()),
+                            parent_agent_id: None,
+                            child_agent_id: None,
+                        },
+                    ]);
                     state.status = format!(
                         "Loaded task {} with {} child transcript messages",
                         task_id, transcript_count

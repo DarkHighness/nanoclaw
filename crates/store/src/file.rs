@@ -714,9 +714,10 @@ mod tests {
             let child_agent_session_id = AgentSessionId::new();
             let agent_id = AgentId::new();
             let task = AgentTaskSpec {
-                task_id: "task-usage".to_string(),
+                task_id: "task-usage".into(),
                 role: "reviewer".to_string(),
                 prompt: "review the patch".to_string(),
+                origin: types::TaskOrigin::ChildAgentBacked,
                 steer: None,
                 allowed_tools: Vec::new(),
                 requested_write_set: Vec::new(),
@@ -1312,9 +1313,10 @@ mod tests {
             let child_agent_session_id = AgentSessionId::new();
             let agent_id = AgentId::new();
             let task = AgentTaskSpec {
-                task_id: "task-17".to_string(),
+                task_id: "task-17".into(),
                 role: "reviewer".to_string(),
                 prompt: "review the patch".to_string(),
+                origin: types::TaskOrigin::ChildAgentBacked,
                 steer: None,
                 allowed_tools: Vec::new(),
                 requested_write_set: vec!["src/lib.rs".to_string()],
@@ -1353,6 +1355,8 @@ mod tests {
                 SessionEventKind::TaskCreated {
                     task: task.clone(),
                     parent_agent_id: None,
+                    status: types::TaskStatus::Open,
+                    summary: Some(task.prompt.clone()),
                 },
                 SessionEventKind::AgentEnvelope {
                     envelope: AgentEnvelope::new(
@@ -1393,7 +1397,7 @@ mod tests {
                 SessionEventKind::TaskCompleted {
                     task_id: task.task_id.clone(),
                     agent_id: agent_id.clone(),
-                    status: AgentStatus::Completed,
+                    status: types::TaskStatus::Completed,
                 },
                 SessionEventKind::SubagentStop {
                     handle: AgentHandle {

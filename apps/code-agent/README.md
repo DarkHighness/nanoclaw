@@ -9,7 +9,7 @@ It intentionally keeps the host layer thin:
 - discovery tools: `tool_discover`
 - operator/debug-only tools: `web_search_backends`
 - optional code-intel tools: `code_symbol_search`, `code_document_symbols`, `code_nav`
-- agentic tools: `update_plan`, `skill`, `request_user_input`, `request_permissions`, `spawn_agent`, `send_input`, `wait_agent`, `resume_agent`, `list_agents`, `close_agent`
+- agentic tools: `skill`, `request_user_input`, `request_permissions`, `task_create`, `task_get`, `task_list`, `task_update`, `task_stop`, `spawn_agent`, `send_input`, `wait_agent`, `resume_agent`, `list_agents`, `close_agent`
   - `spawn_agent` accepts Codex-style launch overrides such as `fork_context`, `model`, and `reasoning_effort`
   - `spawn_agent` and `send_input` now forward `message + items` as structured user messages instead of flattening them into steering prose
   - `send_input interrupt=true` now performs a real child restart instead of queuing behind the active turn, and the TUI/history surfaces distinguish queued follow-ups from interrupt-driven restarts
@@ -117,12 +117,11 @@ entrypoints such as `python -c ...` stay on the normal approval path. `write_std
 does not open a second approval step. Harmfulness is decided on `exec_command`,
 and stdin follow-ups stay inside that existing session.
 
-`update_plan` is also approval-free now. It mutates host-owned coordination
-state, including the shared high-level plan and the optional live focus slice,
-not the workspace or an external system, so it no longer shares the same
-approval path as filesystem writes or new process execution. It is not the
-primary execution tracker for `task_*`; typed task records own TODO/live-task
-state, while `update_plan` stays reserved for operator-visible coordination.
+Typed `task_*` coordination is approval-free. These tools mutate host-owned
+task state rather than the workspace or an external system, so they do not
+share the same approval path as filesystem writes or new process execution.
+The TUI and history surfaces now track typed task records directly instead of
+projecting a separate high-level plan surface.
 
 MCP resource reads now use the connected server boundary instead of treating
 every MCP resource as the same risk. Resources from locally launched `stdio`

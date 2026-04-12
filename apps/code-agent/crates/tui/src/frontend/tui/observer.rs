@@ -2,15 +2,19 @@ use super::state::{
     ActiveToolCell, SharedUiState, ToastTone, TranscriptEntry, TranscriptShellDetail,
     TranscriptShellEntry, TranscriptToolEntry, TranscriptToolStatus, TurnPhase, preview_text,
 };
-use super::tool_state::{
-    focus_state_from_tool_output, plan_items_from_tool_output, plan_update_entry_from_tool_output,
+use super::task_state::{
+    apply_subagent_started, apply_subagent_stopped, apply_task_completed, apply_task_created,
+    apply_task_updated,
 };
 use crate::tool_render::{
     ToolDetail, ToolDetailLabel, compact_successful_exploration_details, tool_argument_details,
     tool_completion_state_from_preview, tool_output_details_from_preview, tool_review_from_preview,
 };
 use crate::ui::{SessionEvent, SessionNotificationSource, SessionToastVariant, SessionToolCall};
-use agent::types::{MonitorEventKind, MonitorStatus, MonitorStream, MonitorSummaryRecord};
+use agent::types::{
+    AgentHandle, AgentResultEnvelope, AgentTaskSpec, MonitorEventKind, MonitorStatus,
+    MonitorStream, MonitorSummaryRecord, TaskId, TaskStatus,
+};
 use std::time::Instant;
 
 pub(crate) struct SharedRenderObserver {
@@ -218,18 +222,6 @@ impl SharedRenderObserver {
             } => {
                 state.status = format!("Completed {}", call.tool_name);
                 state.turn_phase = TurnPhase::Working;
-                if let Some(plan_items) = plan_items_from_tool_output(
-                    &call.tool_name,
-                    structured_output_preview.as_deref(),
-                ) {
-                    state.plan_items = plan_items;
-                }
-                if let Some(focus) = focus_state_from_tool_output(
-                    &call.tool_name,
-                    structured_output_preview.as_deref(),
-                ) {
-                    state.focus = focus;
-                }
                 let completed_entry = completed_tool_entry(
                     &call,
                     &output_preview,
@@ -395,6 +387,72 @@ impl SharedRenderObserver {
                 state.status = format!("Monitor {} {}", summary.monitor_id, summary.status);
                 state.push_activity(format!("monitor {} {}", summary.monitor_id, summary.status));
             }
+            SessionEvent::TaskCreated {
+                task,
+                parent_agent_id,
+                status,
+                summary,
+            } => {
+                apply_task_created(
+                    &mut state.tracked_tasks,
+                    &task,
+                    parent_agent_id.as_ref(),
+                    status,
+                    summary.clone(),
+                );
+                state.push_transcript(task_created_entry(&task, status, summary.as_deref()));
+                state.status = format!("Tracked task {}", task.task_id);
+                state.push_activity(format!("task created {}", task.task_id));
+            }
+            SessionEvent::TaskUpdated {
+                task_id,
+                status,
+                summary,
+            } => {
+                apply_task_updated(&mut state.tracked_tasks, &task_id, status, summary.clone());
+                state.push_transcript(task_updated_entry(&task_id, status, summary.as_deref()));
+                state.status = format!("Task {} {}", task_id, status);
+                state.push_activity(format!("task {} {}", task_id, status));
+            }
+            SessionEvent::TaskCompleted {
+                task_id,
+                agent_id,
+                status,
+            } => {
+                apply_task_completed(&mut state.tracked_tasks, &task_id, &agent_id, status);
+                state.push_transcript(task_completed_entry(&task_id, &agent_id, status));
+                state.status = format!("Task {} {}", task_id, status);
+                state.push_activity(format!("task {} {}", task_id, status));
+            }
+            SessionEvent::SubagentStarted { handle, task } => {
+                apply_subagent_started(
+                    &mut state.tracked_tasks,
+                    handle.agent_id.as_str(),
+                    &task,
+                    &handle.status,
+                );
+                state.push_transcript(subagent_started_entry(&handle, &task));
+                state.push_activity(format!("started {} task {}", handle.role, handle.task_id));
+            }
+            SessionEvent::SubagentStopped {
+                handle,
+                result,
+                error,
+            } => {
+                apply_subagent_stopped(
+                    &mut state.tracked_tasks,
+                    &handle.task_id,
+                    handle.agent_id.as_str(),
+                    result.as_ref(),
+                    error.as_deref(),
+                );
+                state.push_transcript(subagent_stopped_entry(
+                    &handle,
+                    result.as_ref(),
+                    error.as_deref(),
+                ));
+                state.push_activity(format!("stopped task {}", handle.task_id));
+            }
             SessionEvent::TurnCompleted { .. } => {
                 self.active_assistant_line = None;
                 flush_transcript_ready_tool_cells(state);
@@ -524,12 +582,6 @@ fn completed_tool_entry(
     output_preview: &str,
     structured_output_preview: Option<&str>,
 ) -> TranscriptEntry {
-    if let Some(plan_entry) =
-        plan_update_entry_from_tool_output(&call.tool_name, structured_output_preview)
-    {
-        return plan_entry;
-    }
-
     let mut detail_lines = tool_argument_detail_lines(call);
     detail_lines.extend(tool_output_details_from_preview(
         &call.tool_name,
@@ -832,15 +884,124 @@ fn push_monitor_output_line(entry: &mut TranscriptShellEntry, stream: MonitorStr
     });
 }
 
+fn task_created_entry(
+    task: &AgentTaskSpec,
+    status: TaskStatus,
+    summary: Option<&str>,
+) -> TranscriptEntry {
+    TranscriptEntry::shell_summary_details(
+        format!("Tracked Task {} ({status})", task.task_id),
+        vec![
+            TranscriptShellDetail::Raw {
+                text: format!("role {}", task.role),
+                continuation: false,
+            },
+            TranscriptShellDetail::Raw {
+                text: format!("origin {}", task.origin),
+                continuation: false,
+            },
+            TranscriptShellDetail::Raw {
+                text: format!(
+                    "summary {}",
+                    preview_text(summary.unwrap_or(&task.prompt), 72)
+                ),
+                continuation: false,
+            },
+        ],
+    )
+}
+
+fn task_updated_entry(
+    task_id: &TaskId,
+    status: TaskStatus,
+    summary: Option<&str>,
+) -> TranscriptEntry {
+    TranscriptEntry::shell_summary_details(
+        format!("Updated Task {task_id} ({status})"),
+        vec![TranscriptShellDetail::Raw {
+            text: summary
+                .map(|value| format!("summary {}", preview_text(value, 72)))
+                .unwrap_or_else(|| "summary unchanged".to_string()),
+            continuation: false,
+        }],
+    )
+}
+
+fn task_completed_entry(
+    task_id: &TaskId,
+    agent_id: &agent::types::AgentId,
+    status: TaskStatus,
+) -> TranscriptEntry {
+    TranscriptEntry::shell_summary_details(
+        format!("Completed Task {task_id} ({status})"),
+        vec![TranscriptShellDetail::Raw {
+            text: format!("agent {}", preview_text(agent_id.as_str(), 40)),
+            continuation: false,
+        }],
+    )
+}
+
+fn subagent_started_entry(handle: &AgentHandle, task: &AgentTaskSpec) -> TranscriptEntry {
+    TranscriptEntry::shell_summary_details(
+        format!(
+            "Started {} Agent {}",
+            handle.role,
+            preview_text(handle.agent_id.as_str(), 24)
+        ),
+        vec![
+            TranscriptShellDetail::Raw {
+                text: format!("task {}", task.task_id),
+                continuation: false,
+            },
+            TranscriptShellDetail::Raw {
+                text: format!("prompt {}", preview_text(&task.prompt, 72)),
+                continuation: false,
+            },
+        ],
+    )
+}
+
+fn subagent_stopped_entry(
+    handle: &AgentHandle,
+    result: Option<&AgentResultEnvelope>,
+    error: Option<&str>,
+) -> TranscriptEntry {
+    let headline = if error.is_some() {
+        format!(
+            "Stopped Agent {} (failed)",
+            preview_text(handle.agent_id.as_str(), 24)
+        )
+    } else {
+        format!(
+            "Stopped Agent {}",
+            preview_text(handle.agent_id.as_str(), 24)
+        )
+    };
+    let mut details = Vec::new();
+    if let Some(result) = result {
+        details.push(TranscriptShellDetail::Raw {
+            text: format!("summary {}", preview_text(&result.summary, 72)),
+            continuation: false,
+        });
+    }
+    if let Some(error) = error {
+        details.push(TranscriptShellDetail::Raw {
+            text: format!("error {}", preview_text(error, 72)),
+            continuation: false,
+        });
+    }
+    TranscriptEntry::shell_summary_details(headline, details)
+}
+
 #[cfg(test)]
 mod tests {
     use super::SharedRenderObserver;
     use crate::frontend::tui::state::{SharedUiState, ToolSelectionTarget, TranscriptEntry};
     use crate::ui::{SessionEvent, SessionNotificationSource, SessionToolCall, SessionToolOrigin};
     use agent::types::{
-        AgentSessionId, ContextWindowUsage, MonitorEventKind, MonitorEventRecord, MonitorId,
-        MonitorStatus, MonitorStream, MonitorSummaryRecord, SessionId, TokenLedgerSnapshot,
-        TokenUsage, TokenUsagePhase,
+        AgentSessionId, AgentTaskSpec, ContextWindowUsage, MonitorEventKind, MonitorEventRecord,
+        MonitorId, MonitorStatus, MonitorStream, MonitorSummaryRecord, SessionId, TaskId,
+        TaskOrigin, TaskStatus, TokenLedgerSnapshot, TokenUsage, TokenUsagePhase,
     };
     use serde_json::json;
 
@@ -1237,94 +1398,76 @@ mod tests {
     }
 
     #[test]
-    fn update_plan_results_update_side_rail_snapshot() {
+    fn task_events_update_tracked_task_snapshot() {
         let ui_state = SharedUiState::new();
-        let call = SessionToolCall {
-            tool_name: "update_plan".to_string(),
-            call_id: "call_123".to_string(),
-            origin: SessionToolOrigin::Local,
-            arguments_preview: vec!["set 2 plan step(s)".to_string()],
+        let task = AgentTaskSpec {
+            task_id: TaskId::from("task_123"),
+            role: "reviewer".to_string(),
+            prompt: "Inspect repo".to_string(),
+            origin: TaskOrigin::AgentCreated,
+            steer: None,
+            allowed_tools: Vec::new(),
+            requested_write_set: Vec::new(),
+            dependency_ids: Vec::new(),
+            timeout_seconds: None,
         };
         let mut observer = SharedRenderObserver::new(ui_state.clone());
 
-        observer.apply_event(SessionEvent::ToolLifecycleCompleted {
-            call,
-            output_preview: "updated todos".to_string(),
-            structured_output_preview: Some(
-                json!({
-                    "kind": "success",
-                    "warnings": ["demoted 1 extra in_progress step(s) to pending"],
-                    "items": [
-                        {"step": "Inspect repo", "status": "completed"},
-                        {"step": "Refine TUI", "status": "in_progress"}
-                    ]
-                })
-                .to_string(),
-            ),
+        observer.apply_event(SessionEvent::TaskCreated {
+            task: task.clone(),
+            parent_agent_id: None,
+            status: TaskStatus::Open,
+            summary: Some("Inspect repo".to_string()),
+        });
+        observer.apply_event(SessionEvent::TaskUpdated {
+            task_id: task.task_id.clone(),
+            status: TaskStatus::Running,
+            summary: Some("Refine TUI".to_string()),
         });
 
         let snapshot = ui_state.snapshot();
-        assert_eq!(snapshot.transcript.len(), 1);
+        assert_eq!(snapshot.transcript.len(), 2);
         assert_eq!(
             transcript_text(&snapshot.transcript[0]),
-            "• Updated Plan\n  └ warning demoted 1 extra in_progress step(s) to pending\n  └ [x] Inspect repo\n  └ [~] Refine TUI"
+            "• Tracked Task task_123 (open)\n  └ role reviewer\n  └ origin agent_created\n  └ summary Inspect repo"
         );
-        assert_eq!(snapshot.plan_items.len(), 2);
-        assert_eq!(snapshot.plan_items[1].content, "Refine TUI");
         assert_eq!(
-            snapshot.plan_items[1].status,
-            crate::frontend::tui::state::PlanEntryStatus::InProgress
+            transcript_text(&snapshot.transcript[1]),
+            "• Updated Task task_123 (running)\n  └ summary Refine TUI"
+        );
+        assert_eq!(snapshot.tracked_tasks.len(), 1);
+        assert_eq!(snapshot.tracked_tasks[0].task_id, TaskId::from("task_123"));
+        assert_eq!(snapshot.tracked_tasks[0].status, TaskStatus::Running);
+        assert_eq!(
+            snapshot.tracked_tasks[0].summary.as_deref(),
+            Some("Refine TUI")
         );
     }
 
     #[test]
-    fn update_plan_focus_results_update_snapshot() {
+    fn task_completion_events_update_snapshot() {
         let ui_state = SharedUiState::new();
-        let call = SessionToolCall {
-            tool_name: "update_plan".to_string(),
-            call_id: "call_exec".to_string(),
-            origin: SessionToolOrigin::Local,
-            arguments_preview: vec!["set focus".to_string()],
-        };
         let mut observer = SharedRenderObserver::new(ui_state.clone());
+        let task_id = TaskId::from("task_exec");
 
-        observer.apply_event(SessionEvent::ToolLifecycleCompleted {
-            call,
-            output_preview: "updated focus".to_string(),
-            structured_output_preview: Some(
-                json!({
-                    "kind": "success",
-                    "plan_updated": false,
-                    "focus_updated": true,
-                    "items": [],
-                    "focus": {
-                        "scope_label": "root session",
-                        "status": "verifying",
-                        "summary": "Run focused regression checks",
-                        "next_action": "Inspect failures",
-                        "verification": "cargo test -p code-agent"
-                    }
-                })
-                .to_string(),
-            ),
+        observer.apply_event(SessionEvent::TaskCompleted {
+            task_id: task_id.clone(),
+            agent_id: "agent_123".into(),
+            status: TaskStatus::Completed,
         });
 
         let snapshot = ui_state.snapshot();
         assert_eq!(snapshot.transcript.len(), 1);
         assert_eq!(
             transcript_text(&snapshot.transcript[0]),
-            "• Updated Focus\n  └ [~] Run focused regression checks\n  └ scope root session\n  └ next Inspect failures\n  └ verify cargo test -p code-agent"
+            "• Completed Task task_exec (completed)\n  └ agent agent_123"
         );
+        assert_eq!(snapshot.tracked_tasks.len(), 1);
+        assert_eq!(snapshot.tracked_tasks[0].task_id, task_id);
+        assert_eq!(snapshot.tracked_tasks[0].status, TaskStatus::Completed);
         assert_eq!(
-            snapshot.focus.as_ref().map(|entry| &entry.status),
-            Some(&crate::frontend::tui::state::PlanFocusStatus::Verifying)
-        );
-        assert_eq!(
-            snapshot
-                .focus
-                .as_ref()
-                .map(|entry| entry.scope_label.as_str()),
-            Some("root session")
+            snapshot.tracked_tasks[0].child_agent_id.as_deref(),
+            Some("agent_123")
         );
     }
 

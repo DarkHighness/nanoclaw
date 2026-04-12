@@ -9,7 +9,7 @@ use crate::tool_render::{
     ToolRenderKind, ToolReview, preview_tool_details, serialize_tool_details,
 };
 use crate::ui::StartupDiagnosticsSnapshot;
-use agent::types::{SubmittedPromptSnapshot, TokenLedgerSnapshot};
+use agent::types::{SubmittedPromptSnapshot, TaskId, TaskOrigin, TaskStatus, TokenLedgerSnapshot};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, RwLock};
@@ -32,9 +32,9 @@ pub(crate) use picker::{
 };
 pub(crate) use transcript::{
     InspectorAction, InspectorEntry, InspectorKeyAction, TranscriptDetailPrefix, TranscriptEntry,
-    TranscriptPlanEntry, TranscriptPlanFocusChange, TranscriptSerializedPrefix,
-    TranscriptShellBlockKind, TranscriptShellDetail, TranscriptShellEntry, TranscriptShellStatus,
-    TranscriptToolEntry, TranscriptToolHeadlineSubjectKind, TranscriptToolStatus,
+    TranscriptSerializedPrefix, TranscriptShellBlockKind, TranscriptShellDetail,
+    TranscriptShellEntry, TranscriptShellStatus, TranscriptToolEntry,
+    TranscriptToolHeadlineSubjectKind, TranscriptToolStatus,
 };
 
 #[derive(Clone, Debug, Default)]
@@ -125,65 +125,6 @@ pub(crate) enum MainPaneMode {
     #[default]
     Transcript,
     View,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) enum PlanEntryStatus {
-    #[default]
-    Pending,
-    InProgress,
-    Completed,
-    Other(String),
-}
-
-impl PlanEntryStatus {
-    pub(crate) fn from_wire(status: &str) -> Self {
-        match status.trim() {
-            "pending" | "" => Self::Pending,
-            "in_progress" => Self::InProgress,
-            "completed" => Self::Completed,
-            other => Self::Other(other.to_string()),
-        }
-    }
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) struct PlanEntry {
-    pub(crate) id: String,
-    pub(crate) content: String,
-    pub(crate) status: PlanEntryStatus,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) enum PlanFocusStatus {
-    #[default]
-    Active,
-    Blocked,
-    Verifying,
-    Completed,
-    Other(String),
-}
-
-impl PlanFocusStatus {
-    pub(crate) fn from_wire(status: &str) -> Self {
-        match status.trim() {
-            "" | "active" => Self::Active,
-            "blocked" => Self::Blocked,
-            "verifying" => Self::Verifying,
-            "completed" => Self::Completed,
-            other => Self::Other(other.to_string()),
-        }
-    }
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) struct PlanFocusEntry {
-    pub(crate) scope_label: String,
-    pub(crate) status: PlanFocusStatus,
-    pub(crate) summary: String,
-    pub(crate) next_action: Option<String>,
-    pub(crate) verification: Option<String>,
-    pub(crate) blocker: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -339,6 +280,17 @@ pub(crate) struct ActiveMonitorCell {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct TrackedTaskSummary {
+    pub(crate) task_id: TaskId,
+    pub(crate) role: String,
+    pub(crate) origin: TaskOrigin,
+    pub(crate) status: TaskStatus,
+    pub(crate) summary: Option<String>,
+    pub(crate) parent_agent_id: Option<String>,
+    pub(crate) child_agent_id: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum ToolSelectionTarget {
     Transcript(usize),
     LiveCell(String),
@@ -371,6 +323,7 @@ pub(crate) struct TuiState {
     pub(crate) transcript: Vec<TranscriptEntry>,
     pub(crate) active_tool_cells: Vec<ActiveToolCell>,
     pub(crate) active_monitors: Vec<ActiveMonitorCell>,
+    pub(crate) tracked_tasks: Vec<TrackedTaskSummary>,
     pub(crate) tool_selection: Option<ToolSelectionTarget>,
     pub(crate) transcript_scroll: u16,
     pub(crate) follow_transcript: bool,
@@ -383,8 +336,6 @@ pub(crate) struct TuiState {
     pub(crate) turn_phase: TurnPhase,
     pub(crate) turn_running: bool,
     pub(crate) turn_started_at: Option<Instant>,
-    pub(crate) plan_items: Vec<PlanEntry>,
-    pub(crate) focus: Option<PlanFocusEntry>,
     pub(crate) pending_controls: Vec<PendingControlSummary>,
     pub(crate) pending_control_picker: Option<PendingControlPickerState>,
     pub(crate) editing_pending_control: Option<PendingControlEditorState>,
@@ -497,6 +448,10 @@ impl TuiState {
 
     pub(crate) fn clear_tool_selection(&mut self) {
         self.tool_selection = None;
+    }
+
+    pub(crate) fn replace_tracked_tasks(&mut self, tasks: Vec<TrackedTaskSummary>) {
+        self.tracked_tasks = tasks;
     }
 
     pub(crate) fn selected_tool_entry(&self) -> Option<&TranscriptToolEntry> {

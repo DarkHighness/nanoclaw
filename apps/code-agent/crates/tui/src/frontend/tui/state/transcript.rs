@@ -421,9 +421,6 @@ fn tool_headline_prefix(
         ToolRenderKind::CodeDiagnostics => {
             lifecycle_headline_text(status, "Inspecting diagnostics", "Inspected diagnostics")
         }
-        ToolRenderKind::UpdatePlan => {
-            lifecycle_headline_text(status, "Updating plan", "Updated plan")
-        }
         ToolRenderKind::SendInput => {
             lifecycle_headline_text(status, "Sending follow-up", "Sent follow-up")
         }
@@ -475,8 +472,7 @@ fn tool_headline_subject_kind(
         ToolRenderKind::ExecCommand | ToolRenderKind::WriteStdin | ToolRenderKind::Generic => {
             TranscriptToolHeadlineSubjectKind::ToolName
         }
-        ToolRenderKind::UpdatePlan
-        | ToolRenderKind::CodeDiagnostics
+        ToolRenderKind::CodeDiagnostics
         | ToolRenderKind::MonitorStart
         | ToolRenderKind::MonitorList
         | ToolRenderKind::MonitorStop
@@ -685,138 +681,10 @@ impl TranscriptToolEntry {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct TranscriptPlanEntry {
-    pub(crate) headline: String,
-    pub(crate) plan_changed: bool,
-    pub(crate) focus_change: TranscriptPlanFocusChange,
-    pub(crate) explanation: Option<String>,
-    pub(crate) warnings: Vec<String>,
-    pub(crate) items: Vec<PlanEntry>,
-    pub(crate) focus: Option<PlanFocusEntry>,
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) enum TranscriptPlanFocusChange {
-    #[default]
-    Unchanged,
-    Updated,
-    Cleared,
-}
-
-impl TranscriptPlanEntry {
-    pub(crate) fn new(
-        plan_changed: bool,
-        focus_change: TranscriptPlanFocusChange,
-        explanation: Option<String>,
-        warnings: Vec<String>,
-        items: Vec<PlanEntry>,
-        focus: Option<PlanFocusEntry>,
-    ) -> Self {
-        Self {
-            headline: plan_headline(plan_changed, focus_change),
-            plan_changed,
-            focus_change,
-            explanation: explanation
-                .map(|value| value.trim().to_string())
-                .filter(|value| !value.is_empty()),
-            warnings: warnings
-                .into_iter()
-                .map(|value| value.trim().to_string())
-                .filter(|value| !value.is_empty())
-                .collect(),
-            items,
-            focus,
-        }
-    }
-
-    pub(crate) fn serialized_lines(&self) -> Vec<String> {
-        let mut lines = vec![self.headline.clone()];
-        if let Some(explanation) = &self.explanation {
-            lines.push(format!("  └ {explanation}"));
-        }
-        lines.extend(
-            self.warnings
-                .iter()
-                .map(|warning| format!("  └ warning {warning}")),
-        );
-        match self.focus_change {
-            TranscriptPlanFocusChange::Updated => {
-                if let Some(focus) = &self.focus {
-                    lines.push(format!(
-                        "  └ [{}] {}",
-                        focus_status_marker(&focus.status),
-                        focus.summary
-                    ));
-                    if !focus.scope_label.is_empty() {
-                        lines.push(format!("  └ scope {}", focus.scope_label));
-                    }
-                    if let Some(next_action) = focus.next_action.as_deref() {
-                        lines.push(format!("  └ next {next_action}"));
-                    }
-                    if let Some(verification) = focus.verification.as_deref() {
-                        lines.push(format!("  └ verify {verification}"));
-                    }
-                    if let Some(blocker) = focus.blocker.as_deref() {
-                        lines.push(format!("  └ blocker {blocker}"));
-                    }
-                }
-            }
-            TranscriptPlanFocusChange::Cleared => lines.push("  └ focus cleared".to_string()),
-            TranscriptPlanFocusChange::Unchanged => {}
-        }
-        if !self.plan_changed {
-            return lines;
-        }
-        if self.items.is_empty() {
-            lines.push("  └ (no steps provided)".to_string());
-        } else {
-            lines.extend(self.items.iter().map(|item| {
-                format!(
-                    "  └ [{}] {}",
-                    plan_status_marker(&item.status),
-                    item.content
-                )
-            }));
-        }
-        lines
-    }
-
-    pub(crate) fn serialized_body(&self) -> String {
-        self.serialized_lines().join("\n")
-    }
-}
-
-fn plan_status_marker(status: &PlanEntryStatus) -> &'static str {
-    match status {
-        PlanEntryStatus::Completed => "x",
-        PlanEntryStatus::InProgress => "~",
-        PlanEntryStatus::Pending | PlanEntryStatus::Other(_) => " ",
-    }
-}
-
-fn focus_status_marker(status: &PlanFocusStatus) -> &'static str {
-    match status {
-        PlanFocusStatus::Completed => "x",
-        PlanFocusStatus::Blocked => "!",
-        PlanFocusStatus::Verifying => "~",
-        PlanFocusStatus::Active | PlanFocusStatus::Other(_) => ">",
-    }
-}
-
-fn plan_headline(plan_changed: bool, focus_change: TranscriptPlanFocusChange) -> String {
-    match (plan_changed, focus_change) {
-        (_, TranscriptPlanFocusChange::Updated) if !plan_changed => "Updated Focus".to_string(),
-        (_, TranscriptPlanFocusChange::Cleared) if !plan_changed => "Cleared Focus".to_string(),
-        _ => "Updated Plan".to_string(),
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum TranscriptEntry {
     UserPrompt(String),
     AssistantMessage(String),
     Tool(TranscriptToolEntry),
-    Plan(TranscriptPlanEntry),
     ShellSummary(TranscriptShellEntry),
     SuccessSummary(TranscriptShellEntry),
     ErrorSummary(TranscriptShellEntry),
@@ -878,24 +746,6 @@ impl TranscriptEntry {
         ))
     }
 
-    pub(crate) fn plan_update(
-        plan_changed: bool,
-        focus_change: TranscriptPlanFocusChange,
-        explanation: Option<String>,
-        warnings: Vec<String>,
-        items: Vec<PlanEntry>,
-        focus: Option<PlanFocusEntry>,
-    ) -> Self {
-        Self::Plan(TranscriptPlanEntry::new(
-            plan_changed,
-            focus_change,
-            explanation,
-            warnings,
-            items,
-            focus,
-        ))
-    }
-
     pub(crate) fn shell_summary_details(
         headline: impl Into<String>,
         detail_lines: Vec<TranscriptShellDetail>,
@@ -943,7 +793,6 @@ impl TranscriptEntry {
                 true
             }
             Self::Tool(_)
-            | Self::Plan(_)
             | Self::ShellSummary(_)
             | Self::SuccessSummary(_)
             | Self::ErrorSummary(_)
@@ -971,11 +820,6 @@ impl TranscriptEntry {
                 format!("{}{}", TranscriptSerializedPrefix::Bullet.marker(), text)
             }
             Self::Tool(entry) => format!("{} {}", entry.marker(), entry.serialized_body()),
-            Self::Plan(entry) => format!(
-                "{}{}",
-                TranscriptSerializedPrefix::Bullet.marker(),
-                entry.serialized_body()
-            ),
             Self::ShellSummary(summary) => format!(
                 "{}{}",
                 TranscriptSerializedPrefix::Bullet.marker(),
@@ -1004,7 +848,6 @@ impl TranscriptEntry {
             Self::UserPrompt(_) => "›",
             Self::AssistantMessage(_) | Self::ShellSummary(_) => "•",
             Self::Tool(entry) => entry.marker(),
-            Self::Plan(_) => "•",
             Self::SuccessSummary(_) => "✔",
             Self::ErrorSummary(_) => "✗",
             Self::WarningSummary(_) => "⚠",
@@ -1015,7 +858,6 @@ impl TranscriptEntry {
         match self {
             Self::UserPrompt(text) | Self::AssistantMessage(text) => text,
             Self::Tool(entry) => entry.headline.as_str(),
-            Self::Plan(entry) => entry.headline.as_str(),
             Self::ShellSummary(summary)
             | Self::SuccessSummary(summary)
             | Self::ErrorSummary(summary)
@@ -1029,7 +871,7 @@ impl TranscriptEntry {
             | Self::SuccessSummary(summary)
             | Self::ErrorSummary(summary)
             | Self::WarningSummary(summary) => Some(summary),
-            Self::UserPrompt(_) | Self::AssistantMessage(_) | Self::Tool(_) | Self::Plan(_) => None,
+            Self::UserPrompt(_) | Self::AssistantMessage(_) | Self::Tool(_) => None,
         }
     }
 
@@ -1042,20 +884,6 @@ impl TranscriptEntry {
             Self::Tool(entry) => Some(entry),
             Self::UserPrompt(_)
             | Self::AssistantMessage(_)
-            | Self::Plan(_)
-            | Self::ShellSummary(_)
-            | Self::SuccessSummary(_)
-            | Self::ErrorSummary(_)
-            | Self::WarningSummary(_) => None,
-        }
-    }
-
-    pub(crate) fn plan_entry(&self) -> Option<&TranscriptPlanEntry> {
-        match self {
-            Self::Plan(entry) => Some(entry),
-            Self::UserPrompt(_)
-            | Self::AssistantMessage(_)
-            | Self::Tool(_)
             | Self::ShellSummary(_)
             | Self::SuccessSummary(_)
             | Self::ErrorSummary(_)

@@ -8,7 +8,7 @@ Status: Active
 
 | Area | Status | Notes |
 | --- | --- | --- |
-| Phase 1: Task Model | Complete | `task_create`, `task_get`, `task_list`, `task_update`, `task_stop` are registered and backed by typed task records. |
+| Phase 1: Task Model | Complete | `task_create`, `task_get`, `task_list`, `task_update`, `task_stop` are registered, `update_plan` has been removed, and the TUI now restores live/current task state from typed task events. |
 | Phase 2: Monitor | Complete | `monitor_start`, `monitor_list`, `monitor_stop` are registered and surfaced through typed monitor/session flows. |
 | Phase 3: Worktree Lifecycle | Not Started | No typed worktree lifecycle yet. |
 | Phase 4: Checkpoint And Restore | Not Started | Rollback remains transcript/history-centric. |
@@ -48,8 +48,7 @@ The current runtime already exposes a credible baseline:
   `code_symbol_search`, `code_document_symbols`, `code_nav`
 - execution and browsing: `exec_command`, `write_stdin`, `web_fetch`,
   `web_search`
-- host-mediated coordination: `update_plan`, `request_user_input`,
-  `request_permissions`
+- host-mediated coordination: `request_user_input`, `request_permissions`
 - multi-agent handles: `spawn_agent`, `send_input`, `wait_agent`,
   `resume_agent`, `list_agents`, `close_agent`
 - MCP resource bridging and dynamic tool registration
@@ -141,8 +140,9 @@ The current TUI operator surfaces relevant to this plan are defined in:
    transcript text.
 
 3. Keep host-owned coordination distinct from model-owned content editing.
-   `update_plan` remains high-level coordination state. Execution objects such
-   as tasks, monitors, checkpoints, and worktrees get their own tool families.
+   Execution objects such as tasks, monitors, checkpoints, and worktrees get
+   their own tool families. Do not reintroduce a transcript-only plan surface
+   as a second coordination model.
 
 4. Ship each phase end-to-end.
    Each slice must include protocol, runtime wiring, persistence, TUI surface,
@@ -158,18 +158,17 @@ The current TUI operator surfaces relevant to this plan are defined in:
    runtime supervision. Explicit skill invocation belongs to composer-native
    `$skill_name` directives, not to tool-mirroring slash commands.
 
-7. Keep `update_plan` narrow.
-   `update_plan` is host-owned coordination state, not a replacement for typed
-   task, monitor, checkpoint, or worktree entities. If an object needs its own
-   lifecycle, persistence, or operator controls, it should not be shoved into
-   the plan.
+7. Keep one execution model.
+   If an object needs its own lifecycle, persistence, or operator controls, it
+   must be modeled as a typed entity instead of being projected into transcript
+   prose or an auxiliary plan surface.
 
 ## Phase 1: Task Model
 
 ### Objective
 
 Introduce a first-class task object model so execution tracking stops leaking
-into `update_plan`, live-task side channels, and transcript-only summaries.
+into live-task side channels and transcript-only summaries.
 
 ### User-facing outcome
 
@@ -209,7 +208,7 @@ into `update_plan`, live-task side channels, and transcript-only summaries.
 
 ### Required refactors
 
-- Keep `update_plan` focused on plan/focus only.
+- Remove `update_plan` instead of keeping a second coordination surface.
 - Move live-task operator summaries to typed task records.
 - Stop treating child-agent handles as the only execution object.
 
@@ -222,7 +221,7 @@ into `update_plan`, live-task side channels, and transcript-only summaries.
 
 ### Exit criteria
 
-- The model can manage tasks without touching `update_plan`.
+- The model manages task coordination exclusively through typed task tools.
 - The TUI task views stop depending on transcript parsing for task state.
 
 ## Phase 2: Monitor
@@ -736,7 +735,6 @@ Every phase must ship with:
 - Do not force skills through slash commands when `$skill_name` in the
   composer is the correct explicit invocation path.
 - Do not encode new state machines as transcript strings.
-- Do not let `update_plan` absorb task, checkpoint, or monitor semantics.
 - Do not reintroduce slash commands that merely proxy model tools when a typed
   picker action or direct model tool invocation already exists.
 
@@ -749,7 +747,3 @@ The next highest-value implementation slices are:
 3. cross-cutting: finish the operator tool review surface for concurrent
    running/completed tool cells
 4. cross-cutting: add skill lifecycle state and promotion flow
-
-Do not remove `update_plan` unless task, checkpoint, worktree, and operator
-review flows can already express the same high-level coordination need without
-regressing shared visibility.

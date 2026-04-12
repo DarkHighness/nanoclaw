@@ -1,4 +1,3 @@
-mod plan;
 mod request_permissions;
 mod request_user_input;
 mod skill;
@@ -10,7 +9,6 @@ mod tool_discovery;
 pub const HOST_FEATURE_REQUEST_USER_INPUT: &str = "host-user-input";
 pub const HOST_FEATURE_REQUEST_PERMISSIONS: &str = "host-permission-request";
 
-pub use plan::*;
 pub use request_permissions::*;
 pub use request_user_input::*;
 pub use skill::*;

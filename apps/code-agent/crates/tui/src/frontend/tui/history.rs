@@ -1,7 +1,6 @@
 use super::state::{
     InspectorEntry, TranscriptEntry, TranscriptShellDetail, TranscriptToolStatus, preview_text,
 };
-use super::tool_state::plan_update_entry_from_tool_output;
 use crate::backend::{message_to_text, preview_id};
 use crate::tool_render::{
     ToolDetail, tool_argument_details, tool_arguments_preview_lines, tool_output_details,

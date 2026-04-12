@@ -8,10 +8,9 @@ Follow-up note: `write_stdin` no longer carries its own approval burden. The
 harmful decision belongs to `exec_command`, so stdin follow-ups stay approval
 free while `exec_command` keeps the host-scoped approval boundary.
 
-Follow-up note: `update_plan` stays approval-free as well. It mutates
-host-owned coordination state, including the shared task plan and optional live
-focus state, not the workspace or an external system, so it no longer shares
-the filesystem or process approval path.
+Follow-up note: typed `task_*` coordination stays approval-free as well. These
+tools mutate host-owned task state, not the workspace or an external system, so
+they do not share the filesystem or process approval path.
 
 Follow-up note: MCP resource reads are now transport-aware. `code-agent`
 auto-allows `read_mcp_resource` only when the request resolves to a locally
@@ -113,8 +112,8 @@ Explicitly **not** included in this slice:
 
 - `apps/code-agent` keeps the approval relaxation host-scoped through
   `tool_approval_policy.rs` and the existing runtime wiring.
-- `write_stdin` and `update_plan` stay approval-free because they continue an
-  already-approved session or mutate host-owned coordination state.
+- `write_stdin` and typed `task_*` coordination stay approval-free because they
+  continue an already-approved session or mutate host-owned coordination state.
 - `exec_command` host trust now uses argv-based rules for simple commands rather
   than raw string prefixes, which keeps host-local trust narrower and less
   brittle.

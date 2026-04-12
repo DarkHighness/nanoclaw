@@ -1,8 +1,7 @@
 use super::super::state::{
-    PlanEntryStatus, PlanFocusStatus, TranscriptEntry, TranscriptPlanEntry,
-    TranscriptPlanFocusChange, TranscriptShellBlockKind, TranscriptShellDetail,
-    TranscriptShellEntry, TranscriptShellStatus, TranscriptToolEntry,
-    TranscriptToolHeadlineSubjectKind, TranscriptToolStatus, TuiState, preview_text,
+    TranscriptEntry, TranscriptShellBlockKind, TranscriptShellDetail, TranscriptShellEntry,
+    TranscriptShellStatus, TranscriptToolEntry, TranscriptToolHeadlineSubjectKind,
+    TranscriptToolStatus, TuiState, preview_text,
 };
 use super::shared::{
     pending_control_focus_label, pending_control_kind_label, pending_control_reason_label,
@@ -247,160 +246,6 @@ pub(super) fn render_tool_entry(
     rendered
 }
 
-pub(super) fn render_plan_entry(
-    entry: &TranscriptPlanEntry,
-    _marker: &str,
-    kind: TranscriptEntryKind,
-) -> Vec<Line<'static>> {
-    let mut rendered = vec![Line::from(Span::styled(
-        entry.headline.clone(),
-        Style::default()
-            .fg(palette().text)
-            .add_modifier(Modifier::BOLD),
-    ))];
-
-    if let Some(explanation) = entry.explanation.as_deref() {
-        rendered.push(Line::from(vec![
-            transcript_continuation_prefix(kind),
-            Span::styled(
-                explanation.to_string(),
-                Style::default()
-                    .fg(palette().subtle)
-                    .add_modifier(Modifier::ITALIC),
-            ),
-        ]));
-    }
-
-    for warning in &entry.warnings {
-        rendered.push(Line::from(vec![
-            transcript_continuation_prefix(kind),
-            Span::styled(
-                "warning ".to_string(),
-                Style::default()
-                    .fg(palette().warn)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(warning.clone(), Style::default().fg(palette().text)),
-        ]));
-    }
-
-    if matches!(entry.focus_change, TranscriptPlanFocusChange::Updated) {
-        if let Some(focus) = &entry.focus {
-            let (status_color, status_label) = match &focus.status {
-                PlanFocusStatus::Blocked => (palette().error, "blocked"),
-                PlanFocusStatus::Verifying => (palette().accent, "verifying"),
-                PlanFocusStatus::Completed => (palette().assistant, "completed"),
-                PlanFocusStatus::Active | PlanFocusStatus::Other(_) => (palette().header, "active"),
-            };
-            rendered.push(Line::from(vec![
-                transcript_continuation_prefix(kind),
-                Span::styled(
-                    format!("{status_label} · "),
-                    Style::default()
-                        .fg(status_color)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(focus.summary.clone(), Style::default().fg(palette().text)),
-            ]));
-            if !focus.scope_label.is_empty() {
-                rendered.push(Line::from(vec![
-                    transcript_continuation_prefix(kind),
-                    Span::styled(
-                        format!("scope {}", focus.scope_label),
-                        Style::default().fg(palette().subtle),
-                    ),
-                ]));
-            }
-            if let Some(next_action) = focus.next_action.as_deref() {
-                rendered.push(Line::from(vec![
-                    transcript_continuation_prefix(kind),
-                    Span::styled("next ", Style::default().fg(palette().muted)),
-                    Span::styled(next_action.to_string(), Style::default().fg(palette().text)),
-                ]));
-            }
-            if let Some(verification) = focus.verification.as_deref() {
-                rendered.push(Line::from(vec![
-                    transcript_continuation_prefix(kind),
-                    Span::styled("verify ", Style::default().fg(palette().muted)),
-                    Span::styled(
-                        verification.to_string(),
-                        Style::default().fg(palette().text),
-                    ),
-                ]));
-            }
-            if let Some(blocker) = focus.blocker.as_deref() {
-                rendered.push(Line::from(vec![
-                    transcript_continuation_prefix(kind),
-                    Span::styled("blocker ", Style::default().fg(palette().error)),
-                    Span::styled(blocker.to_string(), Style::default().fg(palette().text)),
-                ]));
-            }
-        }
-    } else if matches!(entry.focus_change, TranscriptPlanFocusChange::Cleared) {
-        rendered.push(Line::from(vec![
-            transcript_continuation_prefix(kind),
-            Span::styled(
-                "focus cleared".to_string(),
-                Style::default()
-                    .fg(palette().subtle)
-                    .add_modifier(Modifier::ITALIC),
-            ),
-        ]));
-    }
-
-    if !entry.plan_changed {
-        return rendered;
-    }
-
-    if entry.items.is_empty() {
-        rendered.push(Line::from(vec![
-            transcript_continuation_prefix(kind),
-            Span::styled(
-                "(no steps provided)".to_string(),
-                Style::default()
-                    .fg(palette().subtle)
-                    .add_modifier(Modifier::ITALIC),
-            ),
-        ]));
-        return rendered;
-    }
-
-    for item in &entry.items {
-        let (marker, status_style, content_style) = match &item.status {
-            PlanEntryStatus::Completed => (
-                "✔ ",
-                Style::default()
-                    .fg(palette().assistant)
-                    .add_modifier(Modifier::DIM),
-                Style::default()
-                    .fg(palette().subtle)
-                    .add_modifier(Modifier::CROSSED_OUT | Modifier::DIM),
-            ),
-            PlanEntryStatus::InProgress => (
-                "□ ",
-                Style::default()
-                    .fg(palette().accent)
-                    .add_modifier(Modifier::BOLD),
-                Style::default()
-                    .fg(palette().text)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            PlanEntryStatus::Pending | PlanEntryStatus::Other(_) => (
-                "□ ",
-                Style::default().fg(palette().subtle),
-                Style::default().fg(palette().text),
-            ),
-        };
-        rendered.push(Line::from(vec![
-            transcript_continuation_prefix(kind),
-            Span::styled(marker.to_string(), status_style),
-            Span::styled(item.content.clone(), content_style),
-        ]));
-    }
-
-    rendered
-}
-
 fn render_animated_shell_status_line(
     status: Option<TranscriptShellStatus>,
     raw_line: &str,
@@ -515,7 +360,6 @@ pub(super) fn transcript_body_style(marker: &str, kind: TranscriptEntryKind, _li
         TranscriptEntryKind::UserPrompt | TranscriptEntryKind::AssistantMessage => {
             Style::default().fg(palette().text)
         }
-        TranscriptEntryKind::PlanUpdate => Style::default().fg(palette().text),
         TranscriptEntryKind::ShellSummary => Style::default().fg(palette().muted),
         TranscriptEntryKind::SuccessSummary => Style::default().fg(palette().assistant),
         TranscriptEntryKind::ErrorSummary => Style::default().fg(palette().error),
@@ -1142,7 +986,6 @@ fn shell_block_label_style(kind: TranscriptShellBlockKind) -> Style {
 fn shell_block_line_style(kind: TranscriptEntryKind) -> Style {
     match kind {
         TranscriptEntryKind::SuccessSummary => Style::default().fg(palette().text),
-        TranscriptEntryKind::PlanUpdate => Style::default().fg(palette().text),
         TranscriptEntryKind::ErrorSummary
         | TranscriptEntryKind::WarningSummary
         | TranscriptEntryKind::ShellSummary

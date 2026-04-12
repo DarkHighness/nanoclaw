@@ -30,9 +30,8 @@ use crate::frontend::tui::commands::{
 use crate::frontend::tui::state::{
     ActiveToolCell, ComposerContextHint, ComposerDraftAttachmentKind, ComposerDraftAttachmentState,
     ComposerDraftState, HistoryRollbackCandidate, InspectorAction, InspectorEntry, MainPaneMode,
-    PlanEntry, PlanEntryStatus, PlanFocusEntry, PlanFocusStatus, StatusLinePickerState,
-    ThemePickerState, ToastTone, ToolSelectionTarget, TranscriptEntry, TranscriptPlanFocusChange,
-    TranscriptShellDetail, TranscriptToolStatus, TuiState,
+    StatusLinePickerState, ThemePickerState, ToastTone, ToolSelectionTarget, TrackedTaskSummary,
+    TranscriptEntry, TranscriptShellDetail, TranscriptToolStatus, TuiState,
 };
 use crate::interaction::{
     ApprovalContent, ApprovalContentKind, ApprovalOrigin, PendingControlKind, PendingControlReason,
@@ -43,7 +42,7 @@ use crate::theme::ThemeSummary;
 use crate::tool_render::{
     ToolCommand, ToolCompletionState, ToolDetail, ToolDetailLabel, ToolReview, ToolReviewFile,
 };
-use agent::types::{MessageId, MessagePart, TaskId, TaskStatus};
+use agent::types::{MessageId, MessagePart, TaskId, TaskOrigin, TaskStatus};
 use ratatui::layout::Rect;
 use std::collections::BTreeMap;
 
@@ -1751,101 +1750,32 @@ fn reviewable_tool_transcript_entry() -> TranscriptEntry {
 }
 
 #[test]
-fn transcript_renders_plan_updates_as_dedicated_cells() {
+fn transcript_renders_task_tracking_cells() {
     let mut state = TuiState {
         main_pane: MainPaneMode::Transcript,
         ..TuiState::default()
     };
-    state.transcript = vec![TranscriptEntry::plan_update(
-        true,
-        TranscriptPlanFocusChange::Unchanged,
-        Some("Keep the transcript focused on the next slice.".to_string()),
-        vec!["Demoted extra active steps to pending.".to_string()],
+    state.transcript = vec![TranscriptEntry::shell_summary_details(
+        "Tracked Task task_123 (running)",
         vec![
-            PlanEntry {
-                id: "p1".to_string(),
-                content: "Inspect the current plan renderer".to_string(),
-                status: PlanEntryStatus::Completed,
-            },
-            PlanEntry {
-                id: "p2".to_string(),
-                content: "Promote update_plan into a dedicated cell".to_string(),
-                status: PlanEntryStatus::InProgress,
-            },
-            PlanEntry {
-                id: "p3".to_string(),
-                content: "Verify snapshots and tests".to_string(),
-                status: PlanEntryStatus::Pending,
-            },
+            raw_detail("role reviewer"),
+            raw_detail("summary inspect transcript renderer"),
+            raw_detail("origin agent-created"),
         ],
-        None,
     )];
 
     let rendered = build_transcript_lines(&state);
     assert_eq!(rendered[0].spans[0].content.as_ref(), "•");
-    assert_eq!(rendered[0].spans[2].content.as_ref(), "Updated Plan");
-    assert!(rendered.iter().any(|line| {
-        line_text_for(line).contains("Keep the transcript focused on the next slice.")
-    }));
-    assert!(rendered.iter().any(|line| {
-        line_text_for(line).contains("warning Demoted extra active steps to pending.")
-    }));
     assert!(
         rendered
             .iter()
-            .any(|line| line_text_for(line).contains("Inspect the current plan renderer"))
+            .any(|line| line_text_for(line).contains("Tracked Task task_123 (running)"))
     );
     assert!(
         rendered
             .iter()
-            .any(|line| line_text_for(line).contains("Promote update_plan into a dedicated cell"))
+            .any(|line| line_text_for(line).contains("summary inspect transcript renderer"))
     );
-    assert!(
-        rendered
-            .iter()
-            .any(|line| line_text_for(line).contains("Verify snapshots and tests"))
-    );
-}
-
-#[test]
-fn transcript_renders_focus_updates_inside_plan_cells() {
-    let mut state = TuiState {
-        main_pane: MainPaneMode::Transcript,
-        ..TuiState::default()
-    };
-    state.transcript = vec![TranscriptEntry::plan_update(
-        false,
-        TranscriptPlanFocusChange::Updated,
-        None,
-        Vec::new(),
-        Vec::new(),
-        Some(PlanFocusEntry {
-            scope_label: "root session".to_string(),
-            status: PlanFocusStatus::Blocked,
-            summary: "Waiting for the new LSP protocol parser".to_string(),
-            next_action: Some("Patch protocol tests".to_string()),
-            verification: None,
-            blocker: Some("protocol parser still missing hover support".to_string()),
-        }),
-    )];
-
-    let rendered = build_transcript_lines(&state);
-    assert!(
-        rendered
-            .iter()
-            .any(|line| { line_text_for(line).contains("Updated Focus") })
-    );
-    assert!(rendered.iter().any(|line| {
-        line_text_for(line).contains("blocked · Waiting for the new LSP protocol parser")
-    }));
-    assert!(
-        rendered
-            .iter()
-            .any(|line| { line_text_for(line).contains("scope root session") })
-    );
-    assert!(rendered.iter().any(|line| {
-        line_text_for(line).contains("blocker protocol parser still missing hover support")
-    }));
 }
 
 fn text_lines(text: &ratatui::text::Text<'_>) -> Vec<String> {
@@ -1857,10 +1787,14 @@ fn side_rail_stays_disabled_even_when_transcript_has_live_context() {
     let mut state = TuiState::default();
     state.main_pane = MainPaneMode::Transcript;
     state.session.tool_names = vec!["code_symbol_search".to_string()];
-    state.plan_items = vec![PlanEntry {
-        id: "t1".to_string(),
-        content: "Refine transcript".to_string(),
-        status: PlanEntryStatus::InProgress,
+    state.tracked_tasks = vec![TrackedTaskSummary {
+        task_id: TaskId::from("task_1"),
+        role: "reviewer".to_string(),
+        origin: TaskOrigin::AgentCreated,
+        status: TaskStatus::Running,
+        summary: Some("Refine transcript".to_string()),
+        parent_agent_id: None,
+        child_agent_id: None,
     }];
 
     assert!(!should_render_side_rail(

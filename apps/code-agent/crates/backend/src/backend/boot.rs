@@ -12,8 +12,8 @@ use crate::backend::session_memory_compaction::{
 use crate::backend::store::build_store;
 use crate::backend::{
     ApprovalCoordinator, NonInteractivePermissionRequestHandler, NonInteractiveToolApprovalHandler,
-    NonInteractiveUserInputHandler, PermissionRequestCoordinator, SessionEventStream,
-    SessionMonitorManager, SessionPermissionRequestHandler, SessionTaskManager,
+    NonInteractiveUserInputHandler, PermissionRequestCoordinator, SessionEventPublisher,
+    SessionEventStream, SessionMonitorManager, SessionPermissionRequestHandler, SessionTaskManager,
     SessionToolApprovalHandler, SessionUserInputHandler, UserInputCoordinator,
     build_code_agent_tool_approval_policy, build_plugin_activation_plan, build_sandbox_policy,
     build_system_preamble, build_tool_context, dedup_mcp_servers, log_sandbox_status,
@@ -803,6 +803,7 @@ where
         skill_catalog: skill_catalog.clone(),
         plugin_instructions: plugin_instructions.clone(),
     });
+    let subagent_progress_sink = Arc::new(SessionEventPublisher::new(events.clone()));
     let approval_policy: Arc<dyn ToolApprovalPolicy> = Arc::new(
         build_code_agent_tool_approval_policy(&options.approval_policy),
     );
@@ -817,10 +818,12 @@ where
         runtime_hook_state.clone(),
         skill_catalog.clone(),
         subagent_profile_resolver,
+        Some(subagent_progress_sink),
     ));
     let task_manager: Arc<dyn agent::tools::TaskManager> = Arc::new(SessionTaskManager::new(
         store.clone(),
         subagent_executor.clone(),
+        events.clone(),
     ));
     let monitor_manager: Arc<dyn agent::tools::MonitorManager> =
         Arc::new(SessionMonitorManager::new(

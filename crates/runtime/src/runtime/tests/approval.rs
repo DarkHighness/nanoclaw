@@ -9,10 +9,10 @@ use async_trait::async_trait;
 use futures::{StreamExt, stream, stream::BoxStream};
 use std::sync::Arc;
 use store::{InMemorySessionStore, SessionStore};
-use tools::{ReadTool, Tool, ToolExecutionContext, ToolRegistry};
+use tools::{ReadTool, ToolExecutionContext, ToolRegistry};
 use types::{
-    MessagePart, ModelEvent, ModelRequest, SessionEventKind, ToolCall, ToolCallId, ToolOrigin,
-    ToolOutputMode, ToolResult, ToolSource, ToolSpec,
+    ModelEvent, ModelRequest, SessionEventKind, ToolCall, ToolCallId, ToolOrigin, ToolOutputMode,
+    ToolSource, ToolSpec,
 };
 
 struct ApprovalRecoveringBackend;
@@ -52,103 +52,6 @@ impl ModelBackend for ApprovalRecoveringBackend {
             Ok(stream::iter(vec![
                 Ok(ModelEvent::TextDelta {
                     delta: "approval recovered".to_string(),
-                }),
-                Ok(ModelEvent::ResponseComplete {
-                    stop_reason: Some("stop".to_string()),
-                    message_id: None,
-                    continuation: None,
-                    usage: None,
-                    reasoning: Vec::new(),
-                }),
-            ])
-            .boxed())
-        }
-    }
-}
-
-struct CoordinationToolBackend {
-    tool_name: &'static str,
-    arguments: serde_json::Value,
-}
-
-struct InternalCoordinationTool {
-    name: &'static str,
-}
-
-#[async_trait]
-impl Tool for InternalCoordinationTool {
-    fn spec(&self) -> ToolSpec {
-        ToolSpec::function(
-            self.name,
-            "internal coordination tool",
-            serde_json::json!({"type":"object"}),
-            ToolOutputMode::Text,
-            ToolOrigin::Local,
-            ToolSource::Builtin,
-        )
-        .with_approval(types::ToolApprovalProfile::new(
-            false,
-            false,
-            Some(true),
-            false,
-        ))
-    }
-
-    async fn execute(
-        &self,
-        call_id: ToolCallId,
-        _arguments: serde_json::Value,
-        _ctx: &ToolExecutionContext,
-    ) -> tools::Result<ToolResult> {
-        Ok(ToolResult {
-            id: call_id,
-            call_id: format!("call-{}-result", self.name).into(),
-            tool_name: self.name.into(),
-            parts: vec![MessagePart::text("ok")],
-            attachments: Vec::new(),
-            structured_content: None,
-            continuation: None,
-            metadata: None,
-            is_error: false,
-        })
-    }
-}
-
-#[async_trait]
-impl ModelBackend for CoordinationToolBackend {
-    async fn stream_turn(
-        &self,
-        request: ModelRequest,
-    ) -> Result<BoxStream<'static, Result<ModelEvent>>> {
-        let has_tool_result = request.messages.iter().any(|message| {
-            message
-                .parts
-                .iter()
-                .any(|part| matches!(part, types::MessagePart::ToolResult { .. }))
-        });
-        if !has_tool_result {
-            let call = ToolCall {
-                id: ToolCallId::new(),
-                call_id: format!("call-{}-1", self.tool_name).into(),
-                tool_name: self.tool_name.into(),
-                arguments: self.arguments.clone(),
-                origin: ToolOrigin::Local,
-            };
-            Ok(stream::iter(vec![
-                Ok(ModelEvent::ToolCallRequested { call }),
-                Ok(ModelEvent::ResponseComplete {
-                    stop_reason: Some("tool_use".to_string()),
-                    message_id: None,
-                    continuation: None,
-                    usage: None,
-                    reasoning: Vec::new(),
-                }),
-            ])
-            .boxed())
-        } else {
-            Ok(stream::iter(vec![
-                Ok(ModelEvent::TextDelta {
-                    delta: format!("{} done", self.tool_name),
                 }),
                 Ok(ModelEvent::ResponseComplete {
                     stop_reason: Some("stop".to_string()),
@@ -415,93 +318,6 @@ async fn approval_policy_can_require_review_for_otherwise_safe_tools() {
                     .any(|reason: &String| reason.contains("sensitive file read requires review"))
         )
     }));
-}
-
-#[tokio::test]
-async fn update_plan_does_not_trigger_tool_approval_requests() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut registry = ToolRegistry::new();
-    registry.register(InternalCoordinationTool {
-        name: "update_plan",
-    });
-    let approval_handler = Arc::new(MockApprovalHandler::default());
-    let store = Arc::new(InMemorySessionStore::new());
-    let mut runtime: AgentRuntime = AgentRuntimeBuilder::new(
-        Arc::new(CoordinationToolBackend {
-            tool_name: "update_plan",
-            arguments: serde_json::json!({
-                "plan": [
-                    {"step": "Inspect approval model", "status": "in_progress"}
-                ]
-            }),
-        }),
-        store.clone(),
-    )
-    .hook_runner(Arc::new(HookRunner::default()))
-    .tool_registry(registry)
-    .tool_context(ToolExecutionContext {
-        workspace_root: dir.path().to_path_buf(),
-        workspace_only: true,
-        model_context_window_tokens: Some(128_000),
-        ..Default::default()
-    })
-    .tool_approval_handler(approval_handler.clone())
-    .build();
-
-    let outcome = runtime.run_user_prompt("update the plan").await.unwrap();
-
-    assert_eq!(outcome.assistant_text, "update_plan done");
-    assert!(approval_handler.requests().is_empty());
-    let events = store.events(&runtime.session_id()).await.unwrap();
-    assert!(!events.iter().any(|event| matches!(
-        &event.event,
-        SessionEventKind::ToolApprovalRequested { call, .. }
-            if call.tool_name == types::ToolName::from("update_plan")
-    )));
-}
-
-#[tokio::test]
-async fn update_plan_focus_updates_do_not_trigger_tool_approval_requests() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut registry = ToolRegistry::new();
-    registry.register(InternalCoordinationTool {
-        name: "update_plan",
-    });
-    let approval_handler = Arc::new(MockApprovalHandler::default());
-    let store = Arc::new(InMemorySessionStore::new());
-    let mut runtime: AgentRuntime = AgentRuntimeBuilder::new(
-        Arc::new(CoordinationToolBackend {
-            tool_name: "update_plan",
-            arguments: serde_json::json!({
-                "focus": {
-                    "status": "active",
-                    "summary": "Inspect approval model"
-                }
-            }),
-        }),
-        store.clone(),
-    )
-    .hook_runner(Arc::new(HookRunner::default()))
-    .tool_registry(registry)
-    .tool_context(ToolExecutionContext {
-        workspace_root: dir.path().to_path_buf(),
-        workspace_only: true,
-        model_context_window_tokens: Some(128_000),
-        ..Default::default()
-    })
-    .tool_approval_handler(approval_handler.clone())
-    .build();
-
-    let outcome = runtime.run_user_prompt("update focus state").await.unwrap();
-
-    assert_eq!(outcome.assistant_text, "update_plan done");
-    assert!(approval_handler.requests().is_empty());
-    let events = store.events(&runtime.session_id()).await.unwrap();
-    assert!(!events.iter().any(|event| matches!(
-        &event.event,
-        SessionEventKind::ToolApprovalRequested { call, .. }
-            if call.tool_name == types::ToolName::from("update_plan")
-    )));
 }
 
 #[test]

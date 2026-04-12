@@ -1,6 +1,7 @@
 use crate::Result;
 use types::{
-    MessageId, TokenLedgerSnapshot, TokenUsagePhase, ToolCall, ToolLifecycleEventEnvelope, TurnId,
+    AgentHandle, AgentId, AgentResultEnvelope, AgentTaskSpec, MessageId, TaskId, TaskStatus,
+    TokenLedgerSnapshot, TokenUsagePhase, ToolCall, ToolLifecycleEventEnvelope, TurnId,
 };
 
 #[derive(Clone, Debug, PartialEq)]
@@ -69,6 +70,31 @@ pub enum RuntimeProgressEvent {
     ToolLifecycle {
         event: ToolLifecycleEventEnvelope,
     },
+    TaskCreated {
+        task: AgentTaskSpec,
+        parent_agent_id: Option<AgentId>,
+        status: TaskStatus,
+        summary: Option<String>,
+    },
+    TaskUpdated {
+        task_id: TaskId,
+        status: TaskStatus,
+        summary: Option<String>,
+    },
+    TaskCompleted {
+        task_id: TaskId,
+        agent_id: AgentId,
+        status: TaskStatus,
+    },
+    SubagentStarted {
+        handle: AgentHandle,
+        task: AgentTaskSpec,
+    },
+    SubagentStopped {
+        handle: AgentHandle,
+        result: Option<AgentResultEnvelope>,
+        error: Option<String>,
+    },
     TurnCompleted {
         turn_id: TurnId,
         assistant_text: String,
@@ -77,6 +103,12 @@ pub enum RuntimeProgressEvent {
 
 pub trait RuntimeObserver: Send {
     fn on_event(&mut self, event: RuntimeProgressEvent) -> Result<()>;
+}
+
+/// Long-lived host integrations such as a TUI session event stream need a
+/// cloneable publish surface instead of a per-turn mutable observer borrow.
+pub trait RuntimeProgressSink: Send + Sync {
+    fn emit(&self, event: RuntimeProgressEvent) -> Result<()>;
 }
 
 #[derive(Default)]

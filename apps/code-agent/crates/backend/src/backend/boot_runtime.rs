@@ -12,11 +12,10 @@ use agent::{
     CodeDiagnosticsTool, CodeDocumentSymbolsTool, CodeIntelBackend, CodeNavTool,
     CodeSymbolSearchTool, EditTool, ExecCommandTool, GlobTool, GrepTool, JsReplTool, ListTool,
     ManagedCodeIntelBackend, ManagedCodeIntelOptions, ManagedPolicyProcessExecutor,
-    MonitorListTool, MonitorStartTool, MonitorStopTool, PatchFilesTool, PlanState, ReadTool,
+    MonitorListTool, MonitorStartTool, MonitorStopTool, PatchFilesTool, ReadTool,
     RequestPermissionsTool, RequestUserInputTool, SandboxPolicy, SkillCatalog, SkillTool,
-    ToolCallId, ToolDiscoverTool, ToolExecutionContext, ToolRegistry, ToolResult, UpdatePlanTool,
-    WebFetchTool, WebSearchBackendsTool, WebSearchTool, WorkspaceTextCodeIntelBackend,
-    WriteStdinTool, WriteTool,
+    ToolCallId, ToolDiscoverTool, ToolExecutionContext, ToolRegistry, ToolResult, WebFetchTool,
+    WebSearchBackendsTool, WebSearchTool, WorkspaceTextCodeIntelBackend, WriteStdinTool, WriteTool,
 };
 use async_trait::async_trait;
 use serde_json::Value;
@@ -546,7 +545,6 @@ fn build_builtin_tools(
 ) -> ToolRegistry {
     let file_activity_backend = code_intel_backend.clone();
     let code_intel_backend: Arc<dyn CodeIntelBackend> = code_intel_backend;
-    let plan_state = PlanState::default();
     let mut tools = ToolRegistry::new();
     let discovery_registry = tools.clone();
 
@@ -592,7 +590,6 @@ fn build_builtin_tools(
         code_intel_backend.clone(),
     ));
     tools.register(ToolDiscoverTool::new(discovery_registry));
-    tools.register(UpdatePlanTool::new(plan_state));
     tools.register(SkillTool::new(skill_catalog));
     tools.register(RequestUserInputTool::new());
     tools.register(RequestPermissionsTool::new());

@@ -54,7 +54,7 @@ pub use boot_sandbox::{
     SandboxFallbackNotice, build_sandbox_fallback_notice, build_sandbox_policy, build_tool_context,
     inject_process_env, inspect_sandbox_preflight, log_sandbox_status, tool_context_for_profile,
 };
-pub use events::{SessionEventObserver, SessionEventStream};
+pub use events::{SessionEventObserver, SessionEventPublisher, SessionEventStream};
 pub(crate) use monitor_manager::SessionMonitorManager;
 pub use permission_request::{
     NonInteractivePermissionRequestHandler, PermissionRequestCoordinator,

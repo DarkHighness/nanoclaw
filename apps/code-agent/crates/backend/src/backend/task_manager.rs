@@ -1,5 +1,7 @@
+use crate::backend::SessionEventStream;
 use crate::backend::task_history;
 use crate::ui::LoadedTask;
+use crate::ui::SessionEvent;
 use agent::tools::{Result as ToolResult, SubagentExecutor, SubagentParentContext, TaskManager};
 use agent::types::{
     AgentSessionId, SessionEventEnvelope, SessionEventKind, SessionId, TaskId, TaskRecord,
@@ -13,14 +15,20 @@ use store::SessionStore;
 pub struct SessionTaskManager {
     store: Arc<dyn SessionStore>,
     subagent_executor: Arc<dyn SubagentExecutor>,
+    events: SessionEventStream,
 }
 
 impl SessionTaskManager {
     #[must_use]
-    pub fn new(store: Arc<dyn SessionStore>, subagent_executor: Arc<dyn SubagentExecutor>) -> Self {
+    pub fn new(
+        store: Arc<dyn SessionStore>,
+        subagent_executor: Arc<dyn SubagentExecutor>,
+        events: SessionEventStream,
+    ) -> Self {
         Self {
             store,
             subagent_executor,
+            events,
         }
     }
 
@@ -76,6 +84,10 @@ impl SessionTaskManager {
             .map_err(map_anyhow)?;
         Ok(task_record_from_loaded_task(loaded))
     }
+
+    fn publish_session_event(&self, event: SessionEvent) {
+        self.events.publish(event);
+    }
 }
 
 #[async_trait]
@@ -98,6 +110,12 @@ impl TaskManager for SessionTaskManager {
             },
         )
         .await?;
+        self.publish_session_event(SessionEvent::TaskCreated {
+            task: task.clone(),
+            parent_agent_id: parent.parent_agent_id.clone(),
+            status,
+            summary: initial_summary.clone(),
+        });
         Ok(TaskRecord {
             summary: TaskSummaryRecord {
                 task_id: task.task_id.clone(),
@@ -175,10 +193,15 @@ impl TaskManager for SessionTaskManager {
             SessionEventKind::TaskUpdated {
                 task_id: task_id.clone(),
                 status: status.unwrap_or(TaskStatus::Open),
-                summary,
+                summary: summary.clone(),
             },
         )
         .await?;
+        self.publish_session_event(SessionEvent::TaskUpdated {
+            task_id: task_id.clone(),
+            status: status.unwrap_or(TaskStatus::Open),
+            summary: summary.clone(),
+        });
         self.load_current_session_task(&parent, &task_id).await
     }
 
@@ -206,10 +229,15 @@ impl TaskManager for SessionTaskManager {
             SessionEventKind::TaskUpdated {
                 task_id: task_id.clone(),
                 status: TaskStatus::Cancelled,
-                summary: reason,
+                summary: reason.clone(),
             },
         )
         .await?;
+        self.publish_session_event(SessionEvent::TaskUpdated {
+            task_id: task_id.clone(),
+            status: TaskStatus::Cancelled,
+            summary: reason.clone(),
+        });
         self.load_current_session_task(&parent, &task_id).await
     }
 }

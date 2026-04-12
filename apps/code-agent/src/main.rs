@@ -560,9 +560,10 @@ mod tests {
 
         let profile = resolver
             .resolve_profile(&SubagentLaunchSpec::from_task(AgentTaskSpec {
-                task_id: "review".to_string(),
+                task_id: "review".into(),
                 role: "reviewer".to_string(),
                 prompt: "review".to_string(),
+                origin: agent::types::TaskOrigin::AgentCreated,
                 steer: None,
                 allowed_tools: Vec::new(),
                 requested_write_set: Vec::new(),
@@ -624,9 +625,10 @@ mod tests {
 
         let launch = SubagentLaunchSpec {
             task: AgentTaskSpec {
-                task_id: "review".to_string(),
+                task_id: "review".into(),
                 role: "reviewer".to_string(),
                 prompt: "review".to_string(),
+                origin: agent::types::TaskOrigin::AgentCreated,
                 steer: None,
                 allowed_tools: Vec::new(),
                 requested_write_set: Vec::new(),

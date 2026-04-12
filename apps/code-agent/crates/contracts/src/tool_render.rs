@@ -16,7 +16,6 @@ pub enum ToolRenderKind {
     MonitorStart,
     MonitorList,
     MonitorStop,
-    UpdatePlan,
     SendInput,
     SpawnAgent,
     WaitAgent,
@@ -35,7 +34,6 @@ impl ToolRenderKind {
             "monitor_start" => Self::MonitorStart,
             "monitor_list" => Self::MonitorList,
             "monitor_stop" => Self::MonitorStop,
-            "update_plan" => Self::UpdatePlan,
             "send_input" => Self::SendInput,
             "spawn_agent" => Self::SpawnAgent,
             "wait_agent" => Self::WaitAgent,
@@ -475,59 +473,6 @@ pub fn tool_arguments_preview_lines(tool_name: &str, arguments: &Value) -> Vec<S
                 }
                 return lines;
             }
-        }
-        ToolRenderKind::UpdatePlan => {
-            let mut lines = Vec::new();
-            if arguments.get("plan").is_some() {
-                let item_count = arguments
-                    .get("plan")
-                    .and_then(Value::as_array)
-                    .map_or(0, Vec::len);
-                lines.push(if item_count == 0 {
-                    "clear plan".to_string()
-                } else {
-                    format!("set {item_count} plan step(s)")
-                });
-            }
-            if let Some(focus) = arguments.get("focus") {
-                let action = focus.get("action").and_then(Value::as_str).unwrap_or("set");
-                lines.push(match action {
-                    "clear" => "clear focus".to_string(),
-                    _ => {
-                        let status = focus
-                            .get("status")
-                            .and_then(Value::as_str)
-                            .map(str::trim)
-                            .filter(|value| !value.is_empty())
-                            .unwrap_or("active");
-                        match focus
-                            .get("summary")
-                            .and_then(Value::as_str)
-                            .map(str::trim)
-                            .filter(|value| !value.is_empty())
-                        {
-                            Some(summary) => {
-                                format!("set {status} focus {}", truncate_inline(summary, 48))
-                            }
-                            None => format!("set {status} focus"),
-                        }
-                    }
-                });
-            }
-            if let Some(explanation) = arguments
-                .get("explanation")
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-            {
-                lines.extend(collapse_preview_text(
-                    explanation,
-                    2,
-                    96,
-                    PreviewCollapse::Head,
-                ));
-            }
-            return lines;
         }
         ToolRenderKind::SendInput => {
             let target = arguments
@@ -1030,7 +975,6 @@ pub fn tool_completion_state(tool_name: &str, structured: Option<&Value>) -> Too
         ToolRenderKind::CodeDiagnostics
         | ToolRenderKind::MonitorList
         | ToolRenderKind::MonitorStop
-        | ToolRenderKind::UpdatePlan
         | ToolRenderKind::SendInput
         | ToolRenderKind::SpawnAgent
         | ToolRenderKind::WaitAgent
@@ -1099,8 +1043,7 @@ pub fn tool_output_details(
                 return detail_lines;
             }
         }
-        ToolRenderKind::UpdatePlan
-        | ToolRenderKind::SendInput
+        ToolRenderKind::SendInput
         | ToolRenderKind::SpawnAgent
         | ToolRenderKind::WaitAgent
         | ToolRenderKind::ResumeAgent
