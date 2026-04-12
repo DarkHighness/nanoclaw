@@ -15,7 +15,7 @@ Status: Active
 | Phase 5: Diagnostics | Complete | `code_diagnostics` exists as a typed tool surface and no longer has a mirrored slash command. |
 | Phase 6: Cron / Automation | In Progress | `cron_create`, `cron_list`, and `cron_delete` now exist behind `automation-tools`; schedules are still session-local, and restart persistence remains outstanding. |
 | Phase 7: Code Search | Complete | Canonical `code_search` now returns typed ranked matches with explicit scores; managed backends merge semantic workspace-symbol hits with lexical snippet fallback, while lexical-only hosts still expose deterministic index-backed ranking. |
-| Phase 8: Browser / Computer Use | In Progress | Feature-gated `browser_open`, `browser_snapshot`, and `browser_click` now cover typed browser session creation, DOM inspection, and click-driven browser updates; typing, screenshots, eval, and close flows are still outstanding. |
+| Phase 8: Browser / Computer Use | In Progress | Feature-gated `browser_open`, `browser_snapshot`, `browser_click`, and `browser_type` now cover typed browser session creation, DOM inspection, click updates, and form/input automation; screenshots, eval, and close flows are still outstanding. |
 | Phase 9: Notebook Editing | Complete | Feature-gated `notebook_read` and `notebook_edit` now expose typed notebook inspection and mutation without falling back to raw `.ipynb` JSON tooling. |
 | Cross-cutting: Operator Slash Surface | In Progress | Tool-mirroring slash commands have been pruned; operator/session commands remain, and installed skills are now surfaced as explicit `/skill_name` slash invocations plus `$skill_name` composer directives. |
 | Cross-cutting: Tool Review Surface | In Progress | Typed transcript cells exist, but operator review for running input/output/failure still needs a fuller design pass. |
@@ -593,8 +593,9 @@ visual validation that web search/fetch cannot cover.
     and optional bounded HTML previews without falling back to generic JSON
   - `browser_click` resolves browser sessions through the same typed selection
     rules and persists click-driven `BrowserUpdated` summaries
+  - `browser_type` adds clear/submit/navigation controls instead of splitting
+    input automation across multiple ad-hoc tool names
 - next:
-  - add `browser_type`
   - add `browser_eval`
   - add `browser_screenshot`
   - add `browser_close`

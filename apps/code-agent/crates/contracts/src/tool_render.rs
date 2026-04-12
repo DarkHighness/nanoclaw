@@ -22,6 +22,7 @@ pub enum ToolRenderKind {
     BrowserOpen,
     BrowserSnapshot,
     BrowserClick,
+    BrowserType,
     MonitorStart,
     MonitorList,
     MonitorStop,
@@ -52,6 +53,7 @@ impl ToolRenderKind {
             "browser_open" => Self::BrowserOpen,
             "browser_snapshot" => Self::BrowserSnapshot,
             "browser_click" => Self::BrowserClick,
+            "browser_type" => Self::BrowserType,
             "monitor_start" => Self::MonitorStart,
             "monitor_list" => Self::MonitorList,
             "monitor_stop" => Self::MonitorStop,
@@ -637,6 +639,52 @@ pub fn tool_arguments_preview_lines(tool_name: &str, arguments: &Value) -> Vec<S
                     .unwrap_or_else(|| "Click current browser".to_string()),
                 format!("selector {}", truncate_inline(selector, 80)),
             ];
+            if arguments
+                .get("wait_for_navigation")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            {
+                lines.push("wait for navigation".to_string());
+            }
+            return lines;
+        }
+        ToolRenderKind::BrowserType => {
+            let selector = arguments
+                .get("selector")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or("<unknown>");
+            let text_len = arguments
+                .get("text")
+                .and_then(Value::as_str)
+                .map(|text| text.chars().count())
+                .unwrap_or(0);
+            let mut lines = vec![
+                arguments
+                    .get("browser_id")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(|browser_id| format!("Type into browser {browser_id}"))
+                    .unwrap_or_else(|| "Type into current browser".to_string()),
+                format!("selector {}", truncate_inline(selector, 80)),
+                format!("text {text_len} char(s)"),
+            ];
+            if arguments
+                .get("clear_first")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            {
+                lines.push("mode replace".to_string());
+            }
+            if arguments
+                .get("submit")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            {
+                lines.push("submit enter".to_string());
+            }
             if arguments
                 .get("wait_for_navigation")
                 .and_then(Value::as_bool)
@@ -1240,6 +1288,7 @@ pub fn tool_completion_state(tool_name: &str, structured: Option<&Value>) -> Too
         | ToolRenderKind::BrowserOpen
         | ToolRenderKind::BrowserSnapshot
         | ToolRenderKind::BrowserClick
+        | ToolRenderKind::BrowserType
         | ToolRenderKind::MonitorList
         | ToolRenderKind::MonitorStop
         | ToolRenderKind::WorktreeEnter
@@ -1331,6 +1380,11 @@ pub fn tool_output_details(
         }
         ToolRenderKind::BrowserClick => {
             if let Some(details) = browser_click_output_details(structured) {
+                return details;
+            }
+        }
+        ToolRenderKind::BrowserType => {
+            if let Some(details) = browser_type_output_details(structured) {
                 return details;
             }
         }
@@ -1911,6 +1965,65 @@ fn browser_click_output_details(structured: Option<&Value>) -> Option<Vec<ToolDe
     }) && !state_detail.contains("updated")
     {
         *state_detail = format!("{state_detail} · updated");
+    }
+    Some(details)
+}
+
+fn browser_type_output_details(structured: Option<&Value>) -> Option<Vec<ToolDetail>> {
+    let structured = structured?;
+    let _browser = structured.get("browser")?;
+    let mut details = browser_open_output_details(Some(structured))?;
+    let text_len = structured
+        .get("text")
+        .and_then(Value::as_str)
+        .map(|text| text.chars().count())
+        .unwrap_or(0);
+    if let Some(selector) = structured
+        .get("selector")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        details.insert(
+            1,
+            ToolDetail::LabeledValue {
+                label: ToolDetailLabel::Effect,
+                value: format!(
+                    "typed {text_len} char(s) into {}",
+                    truncate_inline(selector, 64)
+                ),
+            },
+        );
+    }
+    if let Some(state_detail) = details.iter_mut().find_map(|detail| match detail {
+        ToolDetail::LabeledValue { label, value } if *label == ToolDetailLabel::State => {
+            Some(value)
+        }
+        _ => None,
+    }) && !state_detail.contains("updated")
+    {
+        *state_detail = format!("{state_detail} · updated");
+    }
+    let mut notes = Vec::new();
+    if structured
+        .get("clear_first")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        notes.push("replace existing value".to_string());
+    }
+    if structured
+        .get("submit")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        notes.push("submit with Enter".to_string());
+    }
+    if !notes.is_empty() {
+        details.push(ToolDetail::LabeledBlock {
+            label: ToolDetailLabel::Note,
+            lines: notes,
+        });
     }
     Some(details)
 }
@@ -3317,6 +3430,27 @@ mod tests {
                 "wait for navigation"
             ]
         );
+        assert_eq!(
+            tool_arguments_preview_lines(
+                "browser_type",
+                &json!({
+                    "browser_id": "browser_123",
+                    "selector": "#search",
+                    "text": "release notes",
+                    "clear_first": true,
+                    "submit": true,
+                    "wait_for_navigation": true
+                })
+            ),
+            vec![
+                "Type into browser browser_123",
+                "selector #search",
+                "text 13 char(s)",
+                "mode replace",
+                "submit enter",
+                "wait for navigation"
+            ]
+        );
     }
 
     #[test]
@@ -3472,6 +3606,54 @@ mod tests {
             browser_click_rendered
                 .iter()
                 .any(|line| line == "  └ Result Clicked Example App")
+        );
+
+        let browser_type_rendered = tool_output_detail_lines(
+            "browser_type",
+            "",
+            Some(&json!({
+                "browser": {
+                    "browser_id": "browser_123",
+                    "status": "open",
+                    "current_url": "https://example.com/typed?selector=%23search&mode=replace&submit=1",
+                    "headless": true,
+                    "title": "Typed Example App",
+                    "viewport": {"width": 1280, "height": 720}
+                },
+                "selector": "#search",
+                "text": "release notes",
+                "clear_first": true,
+                "submit": true
+            })),
+        );
+        assert_eq!(browser_type_rendered[0], "  └ Session browser_123");
+        assert!(
+            browser_type_rendered
+                .iter()
+                .any(|line| line == "  └ Effect typed 13 char(s) into #search")
+        );
+        assert!(browser_type_rendered.iter().any(|line| {
+            line == "  └ Context https://example.com/typed?selector=%23search&mode=replace&submit=1"
+        }));
+        assert!(
+            browser_type_rendered
+                .iter()
+                .any(|line| line == "  └ State open · headless · 1280x720 · updated")
+        );
+        assert!(
+            browser_type_rendered
+                .iter()
+                .any(|line| line == "  └ Result Typed Example App")
+        );
+        assert!(
+            browser_type_rendered
+                .iter()
+                .any(|line| line == "  └ Note replace existing value")
+        );
+        assert!(
+            browser_type_rendered
+                .iter()
+                .any(|line| line == "    submit with Enter")
         );
 
         let cron_list_rendered = tool_output_detail_lines(

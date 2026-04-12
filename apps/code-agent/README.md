@@ -9,7 +9,7 @@ It intentionally keeps the host layer thin:
 - optional notebook tools (`notebook-tools` feature): `notebook_read`, `notebook_edit`
 - optional automation tools (`automation-tools` feature): `cron_create`, `cron_list`, `cron_delete`
 - optional browser tools (`browser-tools` feature): `browser_open`,
-  `browser_snapshot`, `browser_click`
+  `browser_snapshot`, `browser_click`, `browser_type`
 - discovery tools: `tool_discover`
 - operator/debug-only tools: `web_search_backends`
 - optional code-intel tools: `code_search`, `code_symbol_search`, `code_document_symbols`, `code_nav`

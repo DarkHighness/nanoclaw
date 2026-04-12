@@ -3,7 +3,7 @@ use crate::ui::SessionEvent;
 use agent::tools::{
     BrowserClickRequest, BrowserManager, BrowserOpenRequest, BrowserRuntimeContext,
     BrowserSnapshotElement, BrowserSnapshotElementKind, BrowserSnapshotRecord,
-    BrowserSnapshotRequest, Result as ToolResult, ToolError,
+    BrowserSnapshotRequest, BrowserTypeRequest, Result as ToolResult, ToolError,
 };
 use agent::types::{
     BrowserId, BrowserStatus, BrowserSummaryRecord, SessionEventEnvelope, SessionEventKind,
@@ -17,7 +17,12 @@ use store::SessionStore;
 
 trait BrowserHandle: Send + Sync {
     fn snapshot(&self, request: &BrowserSnapshotRequest) -> ToolResult<BrowserSnapshotRecord>;
-    fn click(&self, selector: &str, wait_for_navigation: bool) -> ToolResult<BrowserClickOutcome>;
+    fn click(
+        &self,
+        selector: &str,
+        wait_for_navigation: bool,
+    ) -> ToolResult<BrowserInteractionOutcome>;
+    fn type_text(&self, request: &BrowserTypeRequest) -> ToolResult<BrowserInteractionOutcome>;
 }
 
 struct BrowserLaunch {
@@ -26,7 +31,7 @@ struct BrowserLaunch {
     title: Option<String>,
 }
 
-struct BrowserClickOutcome {
+struct BrowserInteractionOutcome {
     current_url: String,
     title: Option<String>,
 }
@@ -152,6 +157,21 @@ impl SessionBrowserManager {
             .insert(state.summary().browser_id.clone(), state);
     }
 
+    async fn apply_interaction_outcome(
+        &self,
+        runtime: &BrowserRuntimeContext,
+        state: Arc<SessionBrowser>,
+        outcome: BrowserInteractionOutcome,
+    ) -> ToolResult<BrowserSummaryRecord> {
+        let summary = state.update_summary(|summary| {
+            summary.current_url = outcome.current_url;
+            summary.title = outcome.title;
+            summary.updated_at_unix_s = Some(unix_timestamp_s());
+        });
+        self.publish_updated(runtime, summary.clone()).await?;
+        Ok(summary)
+    }
+
     fn resolve_browser_state(
         &self,
         runtime: &BrowserRuntimeContext,
@@ -269,13 +289,22 @@ impl BrowserManager for SessionBrowserManager {
                 .map_err(|error| {
                     ToolError::invalid_state(format!("failed to join browser task: {error}"))
                 })??;
-        let summary = state.update_summary(|summary| {
-            summary.current_url = click.current_url;
-            summary.title = click.title;
-            summary.updated_at_unix_s = Some(unix_timestamp_s());
-        });
-        self.publish_updated(&runtime, summary.clone()).await?;
-        Ok(summary)
+        self.apply_interaction_outcome(&runtime, state, click).await
+    }
+
+    async fn type_browser(
+        &self,
+        runtime: BrowserRuntimeContext,
+        request: BrowserTypeRequest,
+    ) -> ToolResult<BrowserSummaryRecord> {
+        let state = self.resolve_browser_state(&runtime, request.browser_id.as_ref())?;
+        let handle = state._handle.clone();
+        let typed = tokio::task::spawn_blocking(move || handle.type_text(&request))
+            .await
+            .map_err(|error| {
+                ToolError::invalid_state(format!("failed to join browser task: {error}"))
+            })??;
+        self.apply_interaction_outcome(&runtime, state, typed).await
     }
 }
 
@@ -368,7 +397,11 @@ impl BrowserHandle for HeadlessChromeBrowserHandle {
         })
     }
 
-    fn click(&self, selector: &str, wait_for_navigation: bool) -> ToolResult<BrowserClickOutcome> {
+    fn click(
+        &self,
+        selector: &str,
+        wait_for_navigation: bool,
+    ) -> ToolResult<BrowserInteractionOutcome> {
         self._tab
             .find_element(selector)
             .map_err(|error| {
@@ -389,7 +422,61 @@ impl BrowserHandle for HeadlessChromeBrowserHandle {
                 ))
             })?;
         }
-        Ok(BrowserClickOutcome {
+        Ok(BrowserInteractionOutcome {
+            current_url: self._tab.get_url(),
+            title: self
+                ._tab
+                .get_title()
+                .ok()
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty()),
+        })
+    }
+
+    fn type_text(&self, request: &BrowserTypeRequest) -> ToolResult<BrowserInteractionOutcome> {
+        let element = self._tab.find_element(&request.selector).map_err(|error| {
+            ToolError::invalid_state(format!(
+                "failed to resolve browser selector {}: {error}",
+                request.selector
+            ))
+        })?;
+        if request.clear_first {
+            element
+                .call_js_fn(
+                    "function() { if ('value' in this) { this.value = ''; this.dispatchEvent(new Event('input', { bubbles: true })); this.dispatchEvent(new Event('change', { bubbles: true })); } return true; }",
+                    vec![],
+                    false,
+                )
+                .map_err(|error| {
+                    ToolError::invalid_state(format!(
+                        "failed to clear browser selector {}: {error}",
+                        request.selector
+                    ))
+                })?;
+        }
+        element.type_into(&request.text).map_err(|error| {
+            ToolError::invalid_state(format!(
+                "failed to type into browser selector {}: {error}",
+                request.selector
+            ))
+        })?;
+        if request.submit {
+            self._tab.press_key("Enter").map_err(|error| {
+                ToolError::invalid_state(format!(
+                    "failed to submit browser selector {}: {error}",
+                    request.selector
+                ))
+            })?;
+        }
+        if request.wait_for_navigation {
+            self._tab.wait_until_navigated().map_err(|error| {
+                ToolError::invalid_state(format!(
+                    "browser navigation did not complete after typing into {}: {error}",
+                    request.selector
+                ))
+            })?;
+        }
+        Ok(BrowserInteractionOutcome {
             current_url: self._tab.get_url(),
             title: self
                 ._tab
@@ -604,10 +691,26 @@ mod tests {
             &self,
             selector: &str,
             _wait_for_navigation: bool,
-        ) -> ToolResult<BrowserClickOutcome> {
-            Ok(BrowserClickOutcome {
+        ) -> ToolResult<BrowserInteractionOutcome> {
+            Ok(BrowserInteractionOutcome {
                 current_url: format!("https://example.com/clicked?selector={selector}"),
                 title: Some("Clicked Example App".to_string()),
+            })
+        }
+
+        fn type_text(&self, request: &BrowserTypeRequest) -> ToolResult<BrowserInteractionOutcome> {
+            let mode = if request.clear_first {
+                "replace"
+            } else {
+                "append"
+            };
+            let submit_suffix = if request.submit { "&submit=1" } else { "" };
+            Ok(BrowserInteractionOutcome {
+                current_url: format!(
+                    "https://example.com/typed?selector={}&mode={mode}{submit_suffix}",
+                    request.selector
+                ),
+                title: Some("Typed Example App".to_string()),
             })
         }
     }
@@ -827,6 +930,76 @@ mod tests {
             SessionEventKind::BrowserUpdated { summary: persisted_summary }
                 if persisted_summary.browser_id == summary.browser_id
                 && persisted_summary.current_url == "https://example.com/clicked?selector=#deploy"
+        )));
+    }
+
+    #[tokio::test]
+    async fn type_browser_updates_summary_and_publishes_event() {
+        let store: Arc<dyn SessionStore> = Arc::new(InMemorySessionStore::new());
+        let events = SessionEventStream::default();
+        let backend = Arc::new(FakeBrowserBackend::default());
+        let manager = SessionBrowserManager::with_backend(store.clone(), events.clone(), backend);
+        let runtime = BrowserRuntimeContext {
+            session_id: Some(agent::types::SessionId::from("session-1")),
+            agent_session_id: Some(agent::types::AgentSessionId::from("agent-session-1")),
+            turn_id: Some(agent::types::TurnId::from("turn-1")),
+            parent_agent_id: Some(agent::types::AgentId::from("agent-1")),
+            task_id: Some(agent::types::TaskId::from("task-1")),
+        };
+        let summary = manager
+            .open_browser(
+                runtime.clone(),
+                BrowserOpenRequest {
+                    url: "https://example.com".to_string(),
+                    headless: true,
+                    viewport: None,
+                },
+            )
+            .await
+            .expect("browser should open");
+        let _ = events.drain();
+
+        let typed = manager
+            .type_browser(
+                runtime.clone(),
+                BrowserTypeRequest {
+                    browser_id: Some(summary.browser_id.clone()),
+                    selector: "#search".to_string(),
+                    text: "release notes".to_string(),
+                    clear_first: true,
+                    submit: true,
+                    wait_for_navigation: false,
+                },
+            )
+            .await
+            .expect("browser typing should update the typed summary");
+
+        assert_eq!(
+            typed.current_url,
+            "https://example.com/typed?selector=#search&mode=replace&submit=1"
+        );
+        assert_eq!(typed.title.as_deref(), Some("Typed Example App"));
+        assert!(typed.updated_at_unix_s.is_some());
+
+        let published = events.drain();
+        assert!(matches!(
+            published.as_slice(),
+            [SessionEvent::BrowserUpdated { summary: published_summary }]
+                if published_summary.browser_id == summary.browser_id
+                && published_summary.current_url
+                    == "https://example.com/typed?selector=#search&mode=replace&submit=1"
+        ));
+
+        let persisted = store
+            .events(&agent::types::SessionId::from("session-1"))
+            .await
+            .expect("session events should load");
+        assert!(persisted.iter().any(|event| matches!(
+            &event.event,
+            SessionEventKind::BrowserUpdated { summary: persisted_summary }
+                if persisted_summary.browser_id == summary.browser_id
+                && persisted_summary.current_url
+                    == "https://example.com/typed?selector=#search&mode=replace&submit=1"
         )));
     }
 }

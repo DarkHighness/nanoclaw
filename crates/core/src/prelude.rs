@@ -20,6 +20,7 @@ pub use tools::{
 #[cfg(feature = "browser-tools")]
 pub use tools::{
     BrowserClickTool, BrowserManager, BrowserOpenTool, BrowserRuntimeContext, BrowserSnapshotTool,
+    BrowserTypeTool,
 };
 #[cfg(feature = "code-intel")]
 pub use tools::{
