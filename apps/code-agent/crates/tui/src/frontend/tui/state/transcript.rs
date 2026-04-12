@@ -454,6 +454,11 @@ fn tool_headline_prefix(
         ToolRenderKind::BrowserEval => {
             lifecycle_headline_text(status, "Evaluating browser", "Evaluated browser")
         }
+        ToolRenderKind::BrowserScreenshot => lifecycle_headline_text(
+            status,
+            "Capturing browser screenshot",
+            "Captured browser screenshot",
+        ),
         ToolRenderKind::BrowserClose => {
             lifecycle_headline_text(status, "Closing browser", "Closed browser")
         }
@@ -529,6 +534,7 @@ fn tool_headline_subject_kind(
         | ToolRenderKind::BrowserClick
         | ToolRenderKind::BrowserType
         | ToolRenderKind::BrowserEval
+        | ToolRenderKind::BrowserScreenshot
         | ToolRenderKind::BrowserClose
         | ToolRenderKind::MonitorStart
         | ToolRenderKind::MonitorList

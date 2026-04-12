@@ -492,6 +492,28 @@ fn approval_content_preview(tool_name: &str, arguments: &Value) -> ApprovalConte
                 preview,
             };
         }
+        ToolRenderKind::BrowserScreenshot => {
+            let mut preview = vec![
+                arguments
+                    .get("browser_id")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(|browser_id| format!("capture screenshot for browser {browser_id}"))
+                    .unwrap_or_else(|| "capture screenshot for current browser".to_string()),
+            ];
+            if arguments
+                .get("full_page")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            {
+                preview.push("full page".to_string());
+            }
+            return ApprovalContent {
+                kind: ApprovalContentKind::Arguments,
+                preview,
+            };
+        }
         ToolRenderKind::BrowserClose => {
             let mut preview = vec![
                 arguments
@@ -985,6 +1007,41 @@ mod tests {
                 "document.title".to_string(),
                 "window.location.href".to_string(),
                 "await promise".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn approval_prompt_extracts_browser_screenshot_context() {
+        let prompt = approval_prompt_from_request(&ToolApprovalRequest {
+            call: ToolCall {
+                id: ToolCallId::new(),
+                call_id: "call-browser-screenshot".into(),
+                tool_name: "browser_screenshot".into(),
+                arguments: json!({
+                    "browser_id": "browser_123",
+                    "full_page": true
+                }),
+                origin: ToolOrigin::Local,
+            },
+            spec: ToolSpec::function(
+                "browser_screenshot",
+                "capture browser screenshot",
+                json!({"type":"object"}),
+                ToolOutputMode::ContentParts,
+                ToolOrigin::Local,
+                ToolSource::Builtin,
+            ),
+            reasons: vec!["browser automation requires review".to_string()],
+        });
+
+        assert_eq!(prompt.tool_name, "browser_screenshot");
+        assert_eq!(prompt.content.kind, ApprovalContentKind::Arguments);
+        assert_eq!(
+            prompt.content.preview,
+            vec![
+                "capture screenshot for browser browser_123".to_string(),
+                "full page".to_string(),
             ]
         );
     }

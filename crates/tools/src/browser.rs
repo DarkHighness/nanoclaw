@@ -8,8 +8,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::sync::Arc;
 use types::{
-    AgentId, AgentSessionId, BrowserId, BrowserSummaryRecord, BrowserViewportRecord, SessionId,
-    ToolAvailability, ToolCallId, ToolOutputMode, ToolResult, ToolSpec, TurnId,
+    AgentId, AgentSessionId, BrowserId, BrowserSummaryRecord, BrowserViewportRecord, MessagePart,
+    SessionId, ToolAttachment, ToolAvailability, ToolCallId, ToolOutputMode, ToolResult, ToolSpec,
+    TurnId,
 };
 
 const BROWSER_OPEN_TOOL_NAME: &str = "browser_open";
@@ -17,6 +18,7 @@ const BROWSER_SNAPSHOT_TOOL_NAME: &str = "browser_snapshot";
 const BROWSER_CLICK_TOOL_NAME: &str = "browser_click";
 const BROWSER_TYPE_TOOL_NAME: &str = "browser_type";
 const BROWSER_EVAL_TOOL_NAME: &str = "browser_eval";
+const BROWSER_SCREENSHOT_TOOL_NAME: &str = "browser_screenshot";
 const BROWSER_CLOSE_TOOL_NAME: &str = "browser_close";
 const DEFAULT_BROWSER_TEXT_LINES: usize = 12;
 const DEFAULT_BROWSER_ELEMENT_COUNT: usize = 8;
@@ -103,9 +105,24 @@ pub struct BrowserEvalRequest {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BrowserScreenshotRequest {
+    pub browser_id: Option<BrowserId>,
+    pub full_page: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BrowserCloseRequest {
     pub browser_id: Option<BrowserId>,
     pub fire_unload: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BrowserScreenshotCapture {
+    pub browser: BrowserSummaryRecord,
+    pub mime_type: String,
+    pub byte_length: usize,
+    pub data_base64: String,
+    pub full_page: bool,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
@@ -176,6 +193,12 @@ pub trait BrowserManager: Send + Sync {
         request: BrowserEvalRequest,
     ) -> Result<(BrowserSummaryRecord, Value)>;
 
+    async fn screenshot_browser(
+        &self,
+        runtime: BrowserRuntimeContext,
+        request: BrowserScreenshotRequest,
+    ) -> Result<BrowserScreenshotCapture>;
+
     async fn close_browser(
         &self,
         runtime: BrowserRuntimeContext,
@@ -239,6 +262,14 @@ pub struct BrowserEvalToolInput {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+pub struct BrowserScreenshotToolInput {
+    #[serde(default)]
+    pub browser_id: Option<BrowserId>,
+    #[serde(default)]
+    pub full_page: Option<bool>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 pub struct BrowserCloseToolInput {
     #[serde(default)]
     pub browser_id: Option<BrowserId>,
@@ -277,6 +308,19 @@ struct BrowserEvalToolOutput {
 }
 
 #[derive(Clone, Debug, Serialize, JsonSchema)]
+struct BrowserScreenshotArtifact {
+    mime_type: String,
+    byte_length: usize,
+    full_page: bool,
+}
+
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+struct BrowserScreenshotToolOutput {
+    browser: BrowserSummaryRecord,
+    screenshot: BrowserScreenshotArtifact,
+}
+
+#[derive(Clone, Debug, Serialize, JsonSchema)]
 struct BrowserCloseToolOutput {
     browser: BrowserSummaryRecord,
     fire_unload: bool,
@@ -304,6 +348,11 @@ pub struct BrowserTypeTool {
 
 #[derive(Clone)]
 pub struct BrowserEvalTool {
+    manager: Arc<dyn BrowserManager>,
+}
+
+#[derive(Clone)]
+pub struct BrowserScreenshotTool {
     manager: Arc<dyn BrowserManager>,
 }
 
@@ -341,6 +390,13 @@ impl BrowserTypeTool {
 }
 
 impl BrowserEvalTool {
+    #[must_use]
+    pub fn new(manager: Arc<dyn BrowserManager>) -> Self {
+        Self { manager }
+    }
+}
+
+impl BrowserScreenshotTool {
     #[must_use]
     pub fn new(manager: Arc<dyn BrowserManager>) -> Self {
         Self { manager }
@@ -654,6 +710,87 @@ impl Tool for BrowserEvalTool {
 }
 
 #[async_trait]
+impl Tool for BrowserScreenshotTool {
+    fn spec(&self) -> ToolSpec {
+        builtin_tool_spec(
+            BROWSER_SCREENSHOT_TOOL_NAME,
+            "Capture a typed PNG screenshot from an open browser session and return the image as a first-class tool result part plus structured metadata.",
+            serde_json::to_value(schema_for!(BrowserScreenshotToolInput))
+                .expect("browser_screenshot schema"),
+            ToolOutputMode::ContentParts,
+            tool_approval_profile(true, false, false, true).with_network(true),
+        )
+        .with_output_schema(
+            serde_json::to_value(schema_for!(BrowserScreenshotToolOutput))
+                .expect("browser_screenshot output schema"),
+        )
+        .with_availability(ToolAvailability {
+            feature_flags: vec![HOST_FEATURE_HOST_PROCESS_SURFACES.to_string()],
+            provider_allowlist: vec!["openai".to_string()],
+            model_allowlist: vec!["gpt-5*".to_string()],
+            ..ToolAvailability::default()
+        })
+    }
+
+    async fn execute(
+        &self,
+        call_id: ToolCallId,
+        arguments: Value,
+        ctx: &ToolExecutionContext,
+    ) -> Result<ToolResult> {
+        let external_call_id = types::CallId::from(&call_id);
+        let input: BrowserScreenshotToolInput = serde_json::from_value(arguments)?;
+        let request = BrowserScreenshotRequest {
+            browser_id: input.browser_id,
+            full_page: input.full_page.unwrap_or(false),
+        };
+        let capture = self
+            .manager
+            .screenshot_browser(BrowserRuntimeContext::from(ctx), request)
+            .await?;
+        let browser = capture.browser.clone();
+        let mime_type = capture.mime_type.clone();
+        let byte_length = capture.byte_length;
+        let full_page = capture.full_page;
+        Ok(ToolResult {
+            id: call_id,
+            call_id: external_call_id,
+            tool_name: BROWSER_SCREENSHOT_TOOL_NAME.into(),
+            parts: vec![
+                MessagePart::text(render_browser_screenshot(&browser, &capture)),
+                MessagePart::Image {
+                    mime_type: mime_type.clone(),
+                    data_base64: capture.data_base64,
+                },
+            ],
+            attachments: vec![ToolAttachment {
+                kind: "browser_screenshot".to_string(),
+                name: Some(format!("{}.png", browser.browser_id)),
+                mime_type: Some(mime_type.clone()),
+                uri: None,
+                metadata: Some(json!({
+                    "browser_id": browser.browser_id,
+                    "current_url": browser.current_url,
+                    "byte_length": byte_length,
+                    "full_page": full_page,
+                })),
+            }],
+            structured_content: Some(json!(BrowserScreenshotToolOutput {
+                browser,
+                screenshot: BrowserScreenshotArtifact {
+                    mime_type,
+                    byte_length,
+                    full_page,
+                },
+            })),
+            continuation: None,
+            metadata: None,
+            is_error: false,
+        })
+    }
+}
+
+#[async_trait]
 impl Tool for BrowserCloseTool {
     fn spec(&self) -> ToolSpec {
         builtin_tool_spec(
@@ -811,6 +948,33 @@ fn render_browser_eval(browser: &BrowserSummaryRecord, result: &Value) -> String
     lines.join("\n")
 }
 
+fn render_browser_screenshot(
+    browser: &BrowserSummaryRecord,
+    capture: &BrowserScreenshotCapture,
+) -> String {
+    let mut lines = vec![format!(
+        "captured browser screenshot {}",
+        browser.browser_id
+    )];
+    lines.push(format!("url {}", browser.current_url));
+    lines.push(format!("status {}", browser.status));
+    lines.push(if capture.full_page {
+        "mode full_page".to_string()
+    } else {
+        "mode viewport".to_string()
+    });
+    lines.push(format!("bytes {}", capture.byte_length));
+    if let Some(title) = browser
+        .title
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        lines.push(format!("title {title}"));
+    }
+    lines.join("\n")
+}
+
 fn render_browser_close(browser: &BrowserSummaryRecord) -> String {
     let mut lines = vec![format!("closed browser {}", browser.browser_id)];
     lines.push(format!("url {}", browser.current_url));
@@ -833,8 +997,8 @@ fn clamp_snapshot_limit(candidate: Option<usize>, default: usize, max: usize) ->
 #[cfg(test)]
 mod tests {
     use super::{
-        BrowserClickTool, BrowserCloseTool, BrowserEvalTool, BrowserOpenTool, BrowserSnapshotTool,
-        BrowserTypeTool,
+        BrowserClickTool, BrowserCloseTool, BrowserEvalTool, BrowserOpenTool,
+        BrowserScreenshotTool, BrowserSnapshotTool, BrowserTypeTool,
     };
     use crate::registry::Tool;
     use serde_json::Value;
@@ -930,6 +1094,24 @@ mod tests {
     }
 
     #[test]
+    fn browser_screenshot_spec_exposes_feature_and_model_constraints() {
+        let spec = BrowserScreenshotTool::new(std::sync::Arc::new(FailingManager)).spec();
+        assert_eq!(spec.name.as_str(), "browser_screenshot");
+        assert_eq!(
+            spec.availability.feature_flags,
+            vec![crate::HOST_FEATURE_HOST_PROCESS_SURFACES.to_string()]
+        );
+        assert_eq!(
+            spec.availability.provider_allowlist,
+            vec!["openai".to_string()]
+        );
+        assert_eq!(
+            spec.availability.model_allowlist,
+            vec!["gpt-5*".to_string()]
+        );
+    }
+
+    #[test]
     fn browser_close_spec_exposes_feature_and_model_constraints() {
         let spec = BrowserCloseTool::new(std::sync::Arc::new(FailingManager)).spec();
         assert_eq!(spec.name.as_str(), "browser_close");
@@ -988,6 +1170,14 @@ mod tests {
             _runtime: super::BrowserRuntimeContext,
             _request: super::BrowserEvalRequest,
         ) -> crate::Result<(BrowserSummaryRecord, Value)> {
+            unreachable!("spec test does not execute the tool")
+        }
+
+        async fn screenshot_browser(
+            &self,
+            _runtime: super::BrowserRuntimeContext,
+            _request: super::BrowserScreenshotRequest,
+        ) -> crate::Result<super::BrowserScreenshotCapture> {
             unreachable!("spec test does not execute the tool")
         }
 

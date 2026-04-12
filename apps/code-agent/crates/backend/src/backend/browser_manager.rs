@@ -2,15 +2,16 @@ use crate::backend::SessionEventStream;
 use crate::ui::SessionEvent;
 use agent::tools::{
     BrowserClickRequest, BrowserCloseRequest, BrowserEvalRequest, BrowserManager,
-    BrowserOpenRequest, BrowserRuntimeContext, BrowserSnapshotElement, BrowserSnapshotElementKind,
-    BrowserSnapshotRecord, BrowserSnapshotRequest, BrowserTypeRequest, Result as ToolResult,
-    ToolError,
+    BrowserOpenRequest, BrowserRuntimeContext, BrowserScreenshotCapture, BrowserScreenshotRequest,
+    BrowserSnapshotElement, BrowserSnapshotElementKind, BrowserSnapshotRecord,
+    BrowserSnapshotRequest, BrowserTypeRequest, Result as ToolResult, ToolError,
 };
 use agent::types::{
     BrowserId, BrowserStatus, BrowserSummaryRecord, SessionEventEnvelope, SessionEventKind,
     SessionId, new_opaque_id,
 };
 use async_trait::async_trait;
+use base64::Engine;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -19,6 +20,10 @@ use store::SessionStore;
 
 trait BrowserHandle: Send + Sync {
     fn snapshot(&self, request: &BrowserSnapshotRequest) -> ToolResult<BrowserSnapshotRecord>;
+    fn screenshot(
+        &self,
+        request: &BrowserScreenshotRequest,
+    ) -> ToolResult<BrowserScreenshotOutcome>;
     fn click(
         &self,
         selector: &str,
@@ -43,6 +48,11 @@ struct BrowserInteractionOutcome {
 struct BrowserEvalOutcome {
     browser: BrowserInteractionOutcome,
     result: Value,
+}
+
+struct BrowserScreenshotOutcome {
+    browser: BrowserInteractionOutcome,
+    png_bytes: Vec<u8>,
 }
 
 trait BrowserBackend: Send + Sync {
@@ -341,6 +351,32 @@ impl BrowserManager for SessionBrowserManager {
         Ok((summary, evaluated.result))
     }
 
+    async fn screenshot_browser(
+        &self,
+        runtime: BrowserRuntimeContext,
+        request: BrowserScreenshotRequest,
+    ) -> ToolResult<BrowserScreenshotCapture> {
+        let state = self.resolve_browser_state(&runtime, request.browser_id.as_ref())?;
+        let handle = state._handle.clone();
+        let full_page = request.full_page;
+        let screenshot = tokio::task::spawn_blocking(move || handle.screenshot(&request))
+            .await
+            .map_err(|error| {
+                ToolError::invalid_state(format!("failed to join browser task: {error}"))
+            })??;
+        let mut browser = state.summary();
+        browser.current_url = screenshot.browser.current_url;
+        browser.title = screenshot.browser.title;
+        let byte_length = screenshot.png_bytes.len();
+        Ok(BrowserScreenshotCapture {
+            browser,
+            mime_type: "image/png".to_string(),
+            byte_length,
+            data_base64: base64::engine::general_purpose::STANDARD.encode(screenshot.png_bytes),
+            full_page,
+        })
+    }
+
     async fn close_browser(
         &self,
         runtime: BrowserRuntimeContext,
@@ -455,6 +491,49 @@ impl BrowserHandle for HeadlessChromeBrowserHandle {
             text_preview,
             interactive_elements,
             html_preview,
+        })
+    }
+
+    fn screenshot(
+        &self,
+        request: &BrowserScreenshotRequest,
+    ) -> ToolResult<BrowserScreenshotOutcome> {
+        use headless_chrome::protocol::cdp::Page;
+
+        let png_bytes = self
+            ._tab
+            .call_method(Page::CaptureScreenshot {
+                format: Some(Page::CaptureScreenshotFormatOption::Png),
+                quality: None,
+                clip: None,
+                from_surface: Some(true),
+                capture_beyond_viewport: Some(request.full_page),
+                optimize_for_speed: None,
+            })
+            .map_err(|error| {
+                ToolError::invalid_state(format!("failed to capture browser screenshot: {error}"))
+            })
+            .and_then(|result| {
+                base64::engine::general_purpose::STANDARD
+                    .decode(result.data)
+                    .map_err(|error| {
+                        ToolError::invalid_state(format!(
+                            "failed to decode browser screenshot payload: {error}"
+                        ))
+                    })
+            })?;
+
+        Ok(BrowserScreenshotOutcome {
+            browser: BrowserInteractionOutcome {
+                current_url: self._tab.get_url(),
+                title: self
+                    ._tab
+                    .get_title()
+                    .ok()
+                    .map(|value| value.trim().to_string())
+                    .filter(|value| !value.is_empty()),
+            },
+            png_bytes,
         })
     }
 
@@ -777,6 +856,19 @@ mod tests {
             })
         }
 
+        fn screenshot(
+            &self,
+            _request: &BrowserScreenshotRequest,
+        ) -> ToolResult<BrowserScreenshotOutcome> {
+            Ok(BrowserScreenshotOutcome {
+                browser: BrowserInteractionOutcome {
+                    current_url: "https://example.com/app".to_string(),
+                    title: Some("Example App".to_string()),
+                },
+                png_bytes: b"\x89PNG\r\n\x1a\nfake-browser-shot".to_vec(),
+            })
+        }
+
         fn click(
             &self,
             selector: &str,
@@ -1040,6 +1132,65 @@ mod tests {
             SessionEventKind::BrowserUpdated { summary: persisted_summary }
                 if persisted_summary.browser_id == summary.browser_id
                 && persisted_summary.current_url == "https://example.com/clicked?selector=#deploy"
+        )));
+    }
+
+    #[tokio::test]
+    async fn screenshot_browser_returns_typed_image_without_persisting_update_event() {
+        let store: Arc<dyn SessionStore> = Arc::new(InMemorySessionStore::new());
+        let events = SessionEventStream::default();
+        let backend = Arc::new(FakeBrowserBackend::default());
+        let manager = SessionBrowserManager::with_backend(store.clone(), events.clone(), backend);
+        let runtime = BrowserRuntimeContext {
+            session_id: Some(agent::types::SessionId::from("session-1")),
+            agent_session_id: Some(agent::types::AgentSessionId::from("agent-session-1")),
+            turn_id: Some(agent::types::TurnId::from("turn-1")),
+            parent_agent_id: Some(agent::types::AgentId::from("agent-1")),
+            task_id: Some(agent::types::TaskId::from("task-1")),
+        };
+        let summary = manager
+            .open_browser(
+                runtime.clone(),
+                BrowserOpenRequest {
+                    url: "https://example.com".to_string(),
+                    headless: true,
+                    viewport: None,
+                },
+            )
+            .await
+            .expect("browser should open");
+        let _ = events.drain();
+
+        let capture = manager
+            .screenshot_browser(
+                runtime.clone(),
+                BrowserScreenshotRequest {
+                    browser_id: Some(summary.browser_id.clone()),
+                    full_page: true,
+                },
+            )
+            .await
+            .expect("browser screenshot should capture typed image output");
+
+        assert_eq!(capture.browser.browser_id, summary.browser_id);
+        assert_eq!(capture.browser.current_url, "https://example.com/app");
+        assert_eq!(capture.browser.title.as_deref(), Some("Example App"));
+        assert_eq!(capture.mime_type, "image/png");
+        assert!(capture.byte_length > 8);
+        assert!(capture.full_page);
+        assert!(capture.data_base64.starts_with("iVBORw0KG"));
+
+        let published = events.drain();
+        assert!(published.is_empty());
+
+        let persisted = store
+            .events(&agent::types::SessionId::from("session-1"))
+            .await
+            .expect("session events should load");
+        assert!(!persisted.iter().any(|event| matches!(
+            &event.event,
+            SessionEventKind::BrowserUpdated { summary: persisted_summary }
+                if persisted_summary.browser_id == summary.browser_id
         )));
     }
 

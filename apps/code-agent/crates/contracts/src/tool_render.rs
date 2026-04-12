@@ -24,6 +24,7 @@ pub enum ToolRenderKind {
     BrowserClick,
     BrowserType,
     BrowserEval,
+    BrowserScreenshot,
     BrowserClose,
     MonitorStart,
     MonitorList,
@@ -57,6 +58,7 @@ impl ToolRenderKind {
             "browser_click" => Self::BrowserClick,
             "browser_type" => Self::BrowserType,
             "browser_eval" => Self::BrowserEval,
+            "browser_screenshot" => Self::BrowserScreenshot,
             "browser_close" => Self::BrowserClose,
             "monitor_start" => Self::MonitorStart,
             "monitor_list" => Self::MonitorList,
@@ -724,6 +726,25 @@ pub fn tool_arguments_preview_lines(tool_name: &str, arguments: &Value) -> Vec<S
             }
             return lines;
         }
+        ToolRenderKind::BrowserScreenshot => {
+            let mut lines = vec![
+                arguments
+                    .get("browser_id")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(|browser_id| format!("Capture screenshot for browser {browser_id}"))
+                    .unwrap_or_else(|| "Capture screenshot for current browser".to_string()),
+            ];
+            if arguments
+                .get("full_page")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            {
+                lines.push("full page".to_string());
+            }
+            return lines;
+        }
         ToolRenderKind::BrowserClose => {
             let mut lines = vec![
                 arguments
@@ -1339,6 +1360,7 @@ pub fn tool_completion_state(tool_name: &str, structured: Option<&Value>) -> Too
         | ToolRenderKind::BrowserClick
         | ToolRenderKind::BrowserType
         | ToolRenderKind::BrowserEval
+        | ToolRenderKind::BrowserScreenshot
         | ToolRenderKind::BrowserClose
         | ToolRenderKind::MonitorList
         | ToolRenderKind::MonitorStop
@@ -1441,6 +1463,11 @@ pub fn tool_output_details(
         }
         ToolRenderKind::BrowserEval => {
             if let Some(details) = browser_eval_output_details(structured) {
+                return details;
+            }
+        }
+        ToolRenderKind::BrowserScreenshot => {
+            if let Some(details) = browser_screenshot_output_details(structured) {
                 return details;
             }
         }
@@ -2122,6 +2149,44 @@ fn browser_eval_output_details(structured: Option<&Value>) -> Option<Vec<ToolDet
     {
         *state_detail = format!("{state_detail} · updated");
     }
+    Some(details)
+}
+
+fn browser_screenshot_output_details(structured: Option<&Value>) -> Option<Vec<ToolDetail>> {
+    let structured = structured?;
+    let _browser = structured.get("browser")?;
+    let screenshot = structured.get("screenshot")?;
+    let mut details = browser_open_output_details(Some(structured))?;
+    details.insert(
+        1,
+        ToolDetail::LabeledValue {
+            label: ToolDetailLabel::Effect,
+            value: "captured screenshot".to_string(),
+        },
+    );
+    let mime_type = screenshot
+        .get("mime_type")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("image/png");
+    let byte_length = screenshot
+        .get("byte_length")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let mode = if screenshot
+        .get("full_page")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        "full page"
+    } else {
+        "viewport"
+    };
+    details.push(ToolDetail::LabeledValue {
+        label: ToolDetailLabel::Output,
+        value: format!("{mime_type} · {byte_length} byte(s) · {mode}"),
+    });
     Some(details)
 }
 
@@ -3589,6 +3654,16 @@ mod tests {
         );
         assert_eq!(
             tool_arguments_preview_lines(
+                "browser_screenshot",
+                &json!({
+                    "browser_id": "browser_123",
+                    "full_page": true
+                })
+            ),
+            vec!["Capture screenshot for browser browser_123", "full page"]
+        );
+        assert_eq!(
+            tool_arguments_preview_lines(
                 "browser_close",
                 &json!({
                     "browser_id": "browser_123",
@@ -3888,6 +3963,52 @@ mod tests {
             browser_close_rendered
                 .iter()
                 .any(|line| line == "  └ Note ran unload handlers")
+        );
+
+        let browser_screenshot_rendered = tool_output_detail_lines(
+            "browser_screenshot",
+            "",
+            Some(&json!({
+                "browser": {
+                    "browser_id": "browser_123",
+                    "status": "open",
+                    "current_url": "https://example.com/app",
+                    "headless": true,
+                    "title": "Example App",
+                    "viewport": {"width": 1280, "height": 720}
+                },
+                "screenshot": {
+                    "mime_type": "image/png",
+                    "byte_length": 42,
+                    "full_page": true
+                }
+            })),
+        );
+        assert_eq!(browser_screenshot_rendered[0], "  └ Session browser_123");
+        assert!(
+            browser_screenshot_rendered
+                .iter()
+                .any(|line| line == "  └ Effect captured screenshot")
+        );
+        assert!(
+            browser_screenshot_rendered
+                .iter()
+                .any(|line| line == "  └ Context https://example.com/app")
+        );
+        assert!(
+            browser_screenshot_rendered
+                .iter()
+                .any(|line| line == "  └ State open · headless · 1280x720")
+        );
+        assert!(
+            browser_screenshot_rendered
+                .iter()
+                .any(|line| line == "  └ Result Example App")
+        );
+        assert!(
+            browser_screenshot_rendered
+                .iter()
+                .any(|line| line == "  └ Output image/png · 42 byte(s) · full page")
         );
 
         let cron_list_rendered = tool_output_detail_lines(
